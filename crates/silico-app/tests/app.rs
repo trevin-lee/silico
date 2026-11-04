@@ -14419,6 +14419,34 @@ fn a_move_asked_while_a_dialog_is_open_is_refused_and_said() {
 }
 
 #[test]
+fn a_move_asked_in_sketch_mode_is_refused_and_said_and_sends_nothing() {
+    // A move made in sketch mode would land inside its range: Cancel would drop it
+    // unasked, and Finish fold it into the sketch's one undo step.
+    let f = fixture();
+    let mut h = triangle_opened(&f);
+    assert_eq!(items(&h), ["Washer", "Plate", "Triangle"]);
+    let sent = h.state().tabs()[0].sent.len();
+    let washer = timeline(&h).get_by_label("Washer").rect();
+    drag_item(
+        &mut h,
+        "Plate",
+        washer.left_center() + eframe::egui::vec2(3.0, 0.0),
+    );
+    step(&mut h);
+    // Said in the status bar, where the timeline's other refusals are.
+    assert!(
+        h.query_all_by_label("Finish or cancel the sketch before moving a feature")
+            .next()
+            .is_some()
+    );
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert_eq!(items(&h), ["Washer", "Plate", "Triangle"]);
+    assert!(sketch_mode(&h).is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn hovering_a_timeline_item_highlights_the_faces_its_feature_made() {
     let f = fixture();
     let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
@@ -15552,6 +15580,77 @@ fn ctrl_shift_b_does_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
     }
     assert_eq!(h.state().tabs()[0].rebuilds_all, 0);
     assert_eq!(boxes(&f), built);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_rebuild_everything_check_an_edit_overtook_marks_nothing_once_it_answers() {
+    use std::sync::atomic::AtomicUsize;
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "rebuilt", |h| {
+        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
+    });
+    settled(&mut h);
+    // The next box made is refused, once: Rebuild everything makes the Block again, and its
+    // check marks it.
+    let refused = Arc::new(AtomicUsize::new(0));
+    let once = Arc::clone(&refused);
+    f.kernel.refuse(move |op| {
+        (is_box(op) && once.fetch_add(1, Ordering::SeqCst) == 0)
+            .then(|| Error::new(ErrorCode::KernelFailed, "the block came apart"))
+    });
+    let id = h.state().tabs()[0].id;
+    // Its check sent, its box held, so no frame takes its answer before the edit is sent.
+    let hold = f.kernel.hold(is_box);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 1);
+    assert!(f.kernel.wait_running(1, WAIT));
+    assert!(h.state().tabs()[0].checking());
+    hold.release();
+    // Its check answered by the session, the box refused, before any frame takes it.
+    let deadline = Instant::now() + WAIT;
+    while refused.load(Ordering::SeqCst) == 0
+        || f.sessions
+            .status(&id)
+            .result
+            .as_ref()
+            .map_or(true, |status| status.running.is_some())
+    {
+        assert!(Instant::now() < deadline, "the check never answered");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // An edit sent before the tab takes that answer: the Block 41 long, which builds (the
+    // refusal was once).
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.edit(
+            &sessions,
+            silico_app::tab::Edit {
+                feature: silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+                field: "length".to_owned(),
+                value: json::read(b"41").unwrap(),
+            },
+        );
+    }
+    // The old check's answer is taken, and its mark never shown, frame after frame, until
+    // the edit's own check has answered (which may say what the document's text lacks, as
+    // the first did: no fingerprints).
+    let marked = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .said
+            .values()
+            .any(|said| said.message == "the block came apart")
+    };
+    for frame in 0..30 {
+        step(&mut h);
+        assert!(!marked(&h), "frame {frame}: {:?}", h.state().tabs()[0].said);
+    }
+    settled(&mut h);
+    assert!(!marked(&h));
+    assert!(!h.state().tabs()[0].checking());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -18883,6 +18982,52 @@ fn boxed(f: &Fixture) -> AppHarness {
     h
 }
 
+#[test]
+fn closing_the_tab_mid_drag_asks_first_though_the_drags_transaction_hasnt_answered() {
+    use silico_app::sketch::PointerAction::{Move, Press};
+    let f = fixture();
+    // Freedoms counted, so the corner is free to drag.
+    counting(&f);
+    let mut h = boxed(&f);
+    assert!(!h.state().tabs()[0].unsaved());
+    // The corner pa000003 pressed and moved: one frame of the overlay, as `sketch_events`
+    // gives it, and none of the app's after it, so the drag's `begin` and `drag_begin` are
+    // sent and neither answer taken: no transaction open yet.
+    hand_camera(&mut h);
+    {
+        let _marked = never_waits::marked();
+        let ctx = eframe::egui::Context::default();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        let events = [pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)];
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let input = silico_app::sketch::FrameInput {
+                events: &events,
+                pointer: events.last().map(|event| event.at),
+                project: &to_screen,
+                to_plane: &to_sketch,
+            };
+            tab.sketch_frame(&sessions, &painter, &input);
+        });
+        output.textures_delta.clear();
+    }
+    assert_eq!(drag_sends(&h, "drag_begin"), 1);
+    assert!(the_drag(&h).is_some_and(|drag| drag.in_flight()));
+    assert!(!h.state().tabs()[0].transaction);
+    // What Close asks on: the drag holds an edit under way.
+    assert!(h.state().tabs()[0].unsaved());
+    // And the window's Close asks.
+    h.get_by_label("Close boxed.silico").click();
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question, or the tab closed", |h| {
+        anywhere(h, question) || h.state().tabs().is_empty()
+    });
+    assert!(anywhere(&h, question));
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// Sketch mode's drag.
 fn the_drag(h: &AppHarness) -> Option<&silico_app::sketch::drag::Drag> {
     h.state().tabs()[0].drag.as_ref()
@@ -20773,26 +20918,38 @@ fn the_modify_boxs_buttons_are_its_icons_named_accept_and_cancel_with_no_glyph_d
             "{name} {button:?}"
         );
     }
-    // Drawn as icons: no ✓, ✕, or a font's stand-in for one, among the text the frame draws
-    // in the box (the status bar's Shortcuts key, main's, is a "?" of its own).
+    // Drawn as icons: no ✓ or ✕ among all the text the frame draws, and no font's stand-in
+    // for one ("?") among the text it draws in the box (the status bar's Shortcuts key,
+    // main's, is a "?" of its own, outside it).
     let field = dialog.get_by_role(Role::TextInput).rect();
     let area = ["Accept", "Cancel"]
         .into_iter()
         .map(|name| dialog.get_by_role_and_label(Role::Button, name).rect())
         .fold(field, |area, button| area.union(button));
-    let texts: Vec<String> = painted(&h)
+    let texts: Vec<(String, bool)> = painted(&h)
         .iter()
         .filter_map(|shape| match shape {
-            eframe::egui::Shape::Text(text) if area.intersects(text.visual_bounding_rect()) => {
-                Some(text.galley.text().to_owned())
-            }
+            eframe::egui::Shape::Text(text) => Some((
+                text.galley.text().to_owned(),
+                area.intersects(text.visual_bounding_rect()),
+            )),
             _ => None,
         })
         .collect();
-    for glyph in ["✓", "✕", "?"] {
-        assert!(!texts.iter().any(|t| t == glyph), "{glyph} in {texts:?}");
+    for glyph in ["✓", "✕"] {
+        assert!(
+            !texts.iter().any(|(t, _)| t == glyph),
+            "{glyph} in {texts:?}"
+        );
     }
-    assert!(texts.iter().any(|t| t == "20"), "{texts:?}");
+    assert!(
+        !texts.iter().any(|(t, in_box)| t == "?" && *in_box),
+        "? in the box: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|(t, in_box)| t == "20" && *in_box),
+        "{texts:?}"
+    );
     // Cancel skips: the measured value placed, the box closed.
     dialog.get_by_role_and_label(Role::Button, "Cancel").click();
     step(&mut h);

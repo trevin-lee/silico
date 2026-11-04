@@ -881,40 +881,55 @@ impl Tab {
             || (self.transaction && !self.quiet())
     }
 
-    /// Whether a move, a dialog's add, or sketch mode's add, edit, dimension's value, or
-    /// over-defining dimension's choice is queued or running: each changes the document,
-    /// and may be under way before the transaction its `begin` opens is.
+    /// Whether a move, a dialog's add, sketch mode's add, edit, dimension's value, or
+    /// over-defining dimension's choice, or a drag is queued or running: each changes the
+    /// document, and may be under way before the transaction its `begin` opens is. Every
+    /// kind queued and under way is named, so a new one is weighed here.
     fn changing(&self) -> bool {
-        self.edits.queue.iter().any(|queued| {
-            matches!(
-                queued,
-                Queued::Move { .. }
-                    | Queued::Add { .. }
-                    | Queued::AddSketch { .. }
-                    | Queued::SketchRemove { .. }
-                    | Queued::SketchJoin { .. }
-                    | Queued::SketchAdd { .. }
-                    | Queued::SketchTrim { .. }
-                    | Queued::SketchSplit { .. }
-                    | Queued::SketchExtend { .. }
-                    | Queued::DimensionValue { .. }
-                    | Queued::Offer { .. }
-            )
-        }) || self.under.iter().any(|under| {
-            matches!(
-                under,
-                Under::Move { .. }
-                    | Under::Add { .. }
-                    | Under::Base { .. }
-                    | Under::AddSketch { .. }
-                    | Under::SketchEdit { .. }
-                    | Under::SketchJoin { .. }
-                    | Under::SketchAdd { .. }
-                    | Under::SketchCut { .. }
-                    | Under::DimensionValue { .. }
-                    | Under::OfferField { .. }
-            )
-        })
+        let queued = self.edits.queue.iter().any(|queued| match queued {
+            Queued::Move { .. }
+            | Queued::Add { .. }
+            | Queued::AddSketch { .. }
+            | Queued::SketchRemove { .. }
+            | Queued::SketchJoin { .. }
+            | Queued::SketchAdd { .. }
+            | Queued::SketchTrim { .. }
+            | Queued::SketchSplit { .. }
+            | Queued::SketchExtend { .. }
+            | Queued::DimensionValue { .. }
+            | Queued::Offer { .. } => true,
+            // An edit is `edits.idle`'s; a save, a revert, a step, a load, and a dialog's or
+            // sketch mode's opening or closing change nothing of their own.
+            Queued::Edit(_)
+            | Queued::Save { .. }
+            | Queued::SaveAs { .. }
+            | Queued::Revert { .. }
+            | Queued::Step { .. }
+            | Queued::Opened { .. }
+            | Queued::Load { .. }
+            | Queued::Closed { .. } => false,
+        });
+        let under = self.under.iter().any(|under| match under {
+            Under::Move { .. }
+            | Under::Add { .. }
+            | Under::Base { .. }
+            | Under::AddSketch { .. }
+            | Under::SketchEdit { .. }
+            | Under::SketchJoin { .. }
+            | Under::SketchAdd { .. }
+            | Under::SketchCut { .. }
+            | Under::DimensionValue { .. }
+            | Under::OfferField { .. } => true,
+            Under::Begin(_)
+            | Under::Commit { .. }
+            | Under::Rollback { .. }
+            | Under::Step { .. }
+            | Under::SaveAs { .. }
+            | Under::Close(_)
+            | Under::Load { .. } => false,
+        });
+        // A drag's begin, moves, or end under way: its edit lands as it ends.
+        queued || under || self.dragging()
     }
 
     /// Save As (`commit` with a path, docs/design/m5.0-app.md §4): once everything asked
@@ -1072,34 +1087,7 @@ impl Tab {
         }
         if let Some((gate, read)) = self.check_read.take() {
             match read.try_take() {
-                Ok(response) => {
-                    let superseded = std::mem::take(&mut self.check_superseded);
-                    let fresh = std::mem::take(&mut self.fresh_out);
-                    if fresh {
-                        // Rebuild everything's: what it published is read again.
-                        self.timeline_asked = None;
-                    }
-                    // Only a check of the newest model says what's marked: one of an older
-                    // (its timeline taken since, this frame or before) would bring back what
-                    // that timeline let go. The tab's own check is of the newest timeline's
-                    // revision and model; Rebuild everything's, of the current model as it
-                    // was sent, is the newest unless an edit has superseded it since. The
-                    // newest's is asked next, if it's wanted.
-                    let newest = self
-                        .timeline
-                        .as_ref()
-                        .map(|timeline| (timeline.revision, timeline.model));
-                    let current = if fresh {
-                        !superseded
-                    } else {
-                        self.checked.is_some() && self.checked == newest
-                    };
-                    if let Ok(answer) = response.result
-                        && current
-                    {
-                        self.took_check(&answer, gate);
-                    }
-                }
+                Ok(response) => self.took_check_answer(gate, response),
                 Err(read) => self.check_read = Some((gate, read)),
             }
         }
@@ -1119,6 +1107,47 @@ impl Tab {
             });
         }
         self.advance(sessions);
+    }
+
+    /// The check read out answered, `gate` if it's of a document the gate refused: what it
+    /// says marked if it's of the newest model.
+    ///
+    /// Only a check of the newest model says what's marked: one of an older (its timeline
+    /// taken since, this frame or before) would bring back what that timeline let go. The
+    /// tab's own check is of the newest timeline's revision and model. Rebuild everything's
+    /// is of the current model as it was sent: the newest unless the revision has moved on
+    /// since, by an edit the tab sent (`check_superseded`), or by what it didn't send (the
+    /// session's reload of its file changed on disk, the tab's rollback, another client's
+    /// edit), which the newest timeline's revision, past the one the check read, shows.
+    /// The newest's is asked next, if it's wanted.
+    fn took_check_answer(&mut self, gate: bool, response: Response<CheckAnswer>) {
+        let superseded = std::mem::take(&mut self.check_superseded);
+        let fresh = std::mem::take(&mut self.fresh_out);
+        if fresh {
+            // Rebuild everything's: what it published is read again.
+            self.timeline_asked = None;
+        }
+        let newest = self
+            .timeline
+            .as_ref()
+            .map(|timeline| (timeline.revision, timeline.model));
+        let current = if fresh {
+            // The revision of the model it read; of a document the gate refused, which has
+            // none, the session's as it answered.
+            let read = response
+                .model
+                .as_ref()
+                .map(|model| model.revision)
+                .or_else(|| response.session.as_ref().map(|session| session.revision));
+            !superseded && read.is_some() && read == newest.map(|(revision, _)| revision)
+        } else {
+            self.checked.is_some() && self.checked == newest
+        };
+        if let Ok(answer) = response.result
+            && current
+        {
+            self.took_check(&answer, gate);
+        }
     }
 
     /// A timeline read refused: what it says of the published model kept, and asked again
@@ -2131,9 +2160,9 @@ impl Tab {
 
     /// `feature` moved along the timeline before `before`, or to the end for none
     /// (`move_feature`), as an edit is: inside the tab's transaction, begun first if none is
-    /// open, and sent once everything asked before it has answered. Never while a dialog is
-    /// open (its Cancel undoes to where it opened) or the tab closes: then it's said why, and
-    /// nothing is sent. A refusal is said in the status bar.
+    /// open, and sent once everything asked before it has answered. Never while a dialog or
+    /// sketch mode is open (its Cancel undoes to where it opened) or the tab closes: then
+    /// it's said why, and nothing is sent. A refusal is said in the status bar.
     pub fn move_feature<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -2142,6 +2171,12 @@ impl Tab {
     ) {
         if self.in_dialog() {
             self.message = Some("Close the dialog before moving a feature".to_owned());
+            return;
+        }
+        // Sketch mode's Cancel undoes to where it opened, and its Finish is one step for
+        // undo: a move made inside would be dropped unasked, or folded into the sketch's.
+        if self.in_sketch() {
+            self.message = Some("Finish or cancel the sketch before moving a feature".to_owned());
             return;
         }
         if self.closing() {
@@ -4718,6 +4753,92 @@ mod tests {
             "{:?}",
             tab.document_problems
         );
+    }
+
+    #[test]
+    fn a_rebuild_everything_check_of_a_revision_a_reload_moved_past_marks_nothing() {
+        // The block's build refused: Rebuild everything's check marks it.
+        use silico_core::kernel::{Op, Primitive};
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("part.silico");
+        std::fs::write(&document, BLOCK).unwrap();
+        let kernel = silico_core::fake::FakeKernel::new(1).unwrap();
+        kernel.refuse(|op| {
+            matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
+                .then(|| silico_core::Error::new(ErrorCode::KernelFailed, "the block came apart"))
+        });
+        // The session compares its file on disk as often as it may, reading it as it is.
+        let read: silico_core::disk::Reader = Arc::new(|path: &std::path::Path| {
+            std::fs::read(path).map_or(silico_core::disk::Found::Gone, |bytes| {
+                silico_core::disk::Found::Bytes(bytes)
+            })
+        });
+        let now: silico_core::disk::Clock = Arc::new(std::time::Instant::now);
+        let sessions: FakeSessions = Arc::new(
+            Sessions::with_cache_opener(Arc::new(kernel), |dir| {
+                silico_core::cache::Cache::unsealed(dir)
+            })
+            .watching_disk(std::time::Duration::ZERO, read, now)
+            .unwrap(),
+        );
+        let opened = sessions.open(&document, false).wait();
+        let id = opened.session.unwrap().id;
+        let mut tab = Tab::opened(
+            id,
+            document.to_str().unwrap().to_owned(),
+            &opened.result.unwrap().problems,
+        );
+        let timeline = sessions
+            .timeline(&id, ModelChoice::Current)
+            .wait()
+            .result
+            .unwrap();
+        let first = timeline.revision;
+        tab.took_timeline(timeline);
+        // Ctrl+Shift+B, and its check answered, of the first revision, marking the block.
+        tab.rebuild_all(&sessions);
+        let (gate, read) = tab.check_read.take().unwrap();
+        let answered = read.wait();
+        assert_eq!(
+            answered.model.as_ref().map(|model| model.revision),
+            Some(first)
+        );
+        assert!(
+            !answered
+                .result
+                .as_ref()
+                .unwrap()
+                .problems
+                .errors()
+                .is_empty()
+        );
+        // Before the tab takes it, the file changed on disk, and the session's reload (no
+        // transaction open) moves the revision on: nothing the tab sent.
+        std::fs::write(
+            &document,
+            BLOCK.replace(r#""name": "Hole""#, r#""name": "Bore""#),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let timeline = loop {
+            let timeline = sessions
+                .timeline(&id, ModelChoice::Current)
+                .wait()
+                .result
+                .unwrap();
+            if timeline.revision > first {
+                break timeline;
+            }
+            assert!(std::time::Instant::now() < deadline, "never reloaded");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        tab.took_timeline(timeline);
+        assert!(!tab.check_superseded);
+        // The check of the revision before it marks nothing.
+        tab.took_check_answer(gate, answered);
+        assert!(tab.said.is_empty(), "{:?}", tab.said);
+        assert!(tab.document_problems.is_empty());
+        assert!(!tab.fresh_out);
     }
 
     #[test]
