@@ -384,12 +384,7 @@ fn a_document_the_gate_refuses_opens_with_its_problems_shown() {
         assert!(features.contains(&name.to_owned()), "{name}: {features:?}");
     }
     // No feature can be made in it: only `replace_text` mends it.
-    assert!(
-        h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Box")
-            .accesskit_node()
-            .is_disabled()
-    );
+    assert!(create_off(&mut h, "Box"));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -1744,12 +1739,7 @@ fn the_name_field_is_off_while_its_tab_closes() {
     assert!(h.state().tabs()[0].closing(), "not closing");
     assert!(name_field(&h).accesskit_node().is_disabled());
     // Nor can a dialog open: what it sent would come after the close.
-    assert!(
-        h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Box")
-            .accesskit_node()
-            .is_disabled()
-    );
+    assert!(create_off(&mut h, "Box"));
     let before = name_field(&h).value();
     name_field(&h).type_text("z");
     step(&mut h);
@@ -3085,14 +3075,63 @@ fn dialog_open(h: &AppHarness) -> bool {
     h.query_by_role(Role::Dialog).is_some()
 }
 
-/// The dialog of `kind` opened from the toolbar's CREATE.
+/// The primitives, which the toolbar keeps in CREATE's drop-down alone (app.js:394,
+/// interact.js:170).
+const PRIMITIVES: [&str; 5] = ["Box", "Cylinder", "Sphere", "Cone", "Torus"];
+
+/// The dialog of `kind` opened from the toolbar's CREATE: a sweep from its row, a
+/// primitive from its drop-down.
 fn create(h: &mut AppHarness, kind: &str) {
-    h.get_by_role_and_label(Role::Toolbar, "CREATE")
-        .get_by_label(kind)
-        .click();
+    if PRIMITIVES.contains(&kind) {
+        open_create_menu(h);
+        h.get_by_role_and_label(Role::Menu, "CREATE")
+            .get_by_label(kind)
+            .click();
+    } else {
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label(kind)
+            .click();
+    }
     step_until(h, "the dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, kind).is_some()
     });
+}
+
+/// CREATE's drop-down opened by a click on its label (`.tb-label`), laid out (egui lays a
+/// new popup out unseen in its first frame).
+fn open_create_menu(h: &mut AppHarness) {
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_role_and_label(Role::Button, "CREATE")
+        .click();
+    step_until(h, "CREATE's drop-down", |h| {
+        h.query_by_role_and_label(Role::Menu, "CREATE").is_some()
+    });
+    step(h);
+}
+
+/// Whether CREATE's `kind` is off: a sweep in its row; a primitive in its drop-down, which
+/// this opens and closes again by a second click on its label.
+fn create_off(h: &mut AppHarness, kind: &str) -> bool {
+    if !PRIMITIVES.contains(&kind) {
+        return h
+            .get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label(kind)
+            .accesskit_node()
+            .is_disabled();
+    }
+    open_create_menu(h);
+    let off = h
+        .get_by_role_and_label(Role::Menu, "CREATE")
+        .get_by_label(kind)
+        .accesskit_node()
+        .is_disabled();
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_role_and_label(Role::Button, "CREATE")
+        .click();
+    step_until(h, "CREATE's drop-down closed", |h| {
+        h.query_by_role_and_label(Role::Menu, "CREATE").is_none()
+    });
+    off
 }
 
 /// The dialog's input labelled `label`.
@@ -3943,12 +3982,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     });
     settled(&mut h);
     // One dialog at a time: CREATE's tools off.
-    assert!(
-        h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Box")
-            .accesskit_node()
-            .is_disabled()
-    );
+    assert!(create_off(&mut h, "Box"));
     // Undo and redo are the dialog's Cancel's while it's open: off.
     let sent = h.state().tabs()[0].sent.clone();
     assert!(
@@ -4132,15 +4166,13 @@ fn the_cutting_sweeps_are_off_with_no_body_to_cut() {
         .join("\n");
     let (mut h, _) = f.opened("sketch.silico", &only_sketch);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
-    let create = h.get_by_role_and_label(Role::Toolbar, "CREATE");
-    let off = |kind: &str| create.get_by_label(kind).accesskit_node().is_disabled();
     for kind in ["Pocket", "Groove"] {
-        assert!(off(kind), "{kind}");
+        assert!(create_off(&mut h, kind), "{kind}");
     }
     for kind in [
         "Box", "Cylinder", "Sphere", "Cone", "Torus", "Pad", "Revolve",
     ] {
-        assert!(!off(kind), "{kind}");
+        assert!(!create_off(&mut h, kind), "{kind}");
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -4257,12 +4289,7 @@ fn esc_while_edit_feature_reads_the_feature_opens_no_dialog() {
     // Reading it, one dialog at a time: CREATE's tools off (drawn before the timeline
     // took the double-click, so from the next frame).
     step(&mut h);
-    assert!(
-        h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Box")
-            .accesskit_node()
-            .is_disabled()
-    );
+    assert!(create_off(&mut h, "Box"));
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     hold.release();
@@ -8122,26 +8149,33 @@ fn a_camera_moved_before_the_first_read_answers_isnt_taken_back_by_homes_fit() {
 
 #[test]
 fn a_perspective_view_reads_each_body_at_its_nearest_points_half_pixel() {
-    // From (25, −500, 25) onto (25, 25, 25) at 30°: both cubes' nearest faces are at y = 0,
-    // 500 mm deep, so each half pixel is 500 · tan 15° / H. The small cube is meshed at its
-    // power of two below; the large one's floor, 0.1732, is coarser than that level, so
-    // it's meshed at its floor, serving [0, 0.25).
+    // From (25, −d, 25) onto (25, 25, 25) at 30°: both cubes' nearest faces are at y = 0,
+    // d deep, so each half pixel is d · tan 15° / H, for the frame's H. With d set so that's
+    // 0.24, the small cube is meshed at the power of two below, 0.125; the large one's
+    // floor, 0.1732, is coarser than that level, so it's meshed at its floor, serving
+    // [0, 0.25). The target is 25 deeper, past 0.25: a body read at the target's depth
+    // would be meshed a level coarser.
     let f = fixture();
     let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES);
     meshes_settled(&mut h);
+    let height = f64::from(view(&h).frame().unwrap().size_px[1]);
+    let tan = libm::tan(15f64.to_radians());
+    let depth = 0.24 * height / tan;
+    assert!(
+        (depth + 25.0) * tan / height >= 0.25,
+        "the frame, {height} high, puts the target's half pixel under 0.25"
+    );
     view_mut(&mut h).set_camera(silico_protocol::Camera {
         projection: silico_protocol::Projection::Perspective {
             field_of_view: 30.0,
         },
-        eye: [25.0, -500.0, 25.0],
+        eye: [25.0, -depth, 25.0],
         target: [25.0; 3],
         up: [0.0, 0.0, 1.0],
     });
     meshes_settled(&mut h);
-    let height = f64::from(view(&h).frame().unwrap().size_px[1]);
-    let half = 500.0 * libm::tan(15f64.to_radians()) / height;
-    let level = libm::exp2(libm::floor(libm::log2(half)));
-    assert!(level < 0.1732 && 2.0 * level > half);
+    assert_eq!(f64::from(view(&h).frame().unwrap().size_px[1]), height);
+    let level = 0.125;
     let small = &view(&h).bodies()[&1];
     assert_eq!((small.level, small.serves), (level, [level, 2.0 * level]));
     let large = &view(&h).bodies()[&2];
@@ -12083,6 +12117,809 @@ fn the_app_bar_draws_the_shown_tab_in_gray_200_on_lavapipe() {
             let below = eframe::egui::pos2(other.left() + 5.0, other.bottom() + 0.5);
             assert_eq!(pixel(below), [0x27, 0x26, 0x26, 0xff], "{other:?}");
             assert_eq!(never_waits::waits(), 0);
+        },
+    );
+}
+
+// ---- The toolbar (docs/design/m5-ui/DESIGN.md, *Layout*; styles.css's `.tb-*` and
+// `.btn-finish`; app.js's `renderToolbar` and `CMD`, interact.js's drop-downs) ----
+
+/// The labels of `node`'s buttons, in the tree's order.
+fn buttons_of(node: &egui_kittest::Node<'_>) -> Vec<String> {
+    node.query_all_by_role(Role::Button)
+        .filter_map(|node| node.accesskit_node().label())
+        .collect()
+}
+
+/// The labels of `node`'s buttons that are on.
+fn on_of(node: &egui_kittest::Node<'_>) -> Vec<String> {
+    node.query_all_by_role(Role::Button)
+        .filter(|node| !node.accesskit_node().is_disabled())
+        .filter_map(|node| node.accesskit_node().label())
+        .collect()
+}
+
+/// The toolbar's panels: every toolbar but the canvas's navigation bar, in order.
+fn panels_of<'a>(nodes: impl Iterator<Item = egui_kittest::Node<'a>>) -> Vec<String> {
+    nodes
+        .filter_map(|node| node.accesskit_node().label())
+        .filter(|label| label != "Navigation bar")
+        .collect()
+}
+
+/// The toolbar's tabs, each with whether it's the one shown.
+fn tabs_of<'a>(nodes: impl Iterator<Item = egui_kittest::Node<'a>>) -> Vec<(String, bool)> {
+    nodes
+        .map(|node| {
+            let shown = toggled(&node) == Some(true);
+            (node.accesskit_node().label().unwrap_or_default(), shown)
+        })
+        .collect()
+}
+
+/// The texts of the labels the window shows (a tooltip's lines among them).
+fn label_texts<'a>(nodes: impl Iterator<Item = egui_kittest::Node<'a>>) -> Vec<String> {
+    nodes
+        .filter_map(|node| {
+            let node = node.accesskit_node();
+            node.label().or_else(|| node.value())
+        })
+        .collect()
+}
+
+/// CREATE's row, as app.js:394 lays it out: Create Sketch and the sweeps.
+const CREATE_ROW: [&str; 5] = ["Create Sketch", "Pad", "Pocket", "Revolve", "Groove"];
+
+#[test]
+fn the_toolbar_holds_solids_panels_their_buttons_in_the_prototypes_order_and_sizes() {
+    let f = fixture();
+    let h = f.themed_with(&["example.silico"]);
+    // `.tb-tabs`: SOLID, shown; no SKETCH with no sketch open.
+    assert_eq!(
+        tabs_of(h.query_all_by_role(Role::Tab)),
+        [("SOLID".to_owned(), true)]
+    );
+    assert!(h.query_by_role_and_label(Role::Label, "DESIGN").is_some());
+    // CREATE, MODIFY, INSPECT, SELECT (DESIGN.md, *Layout*), each its row then its label.
+    assert_eq!(
+        panels_of(h.query_all_by_role(Role::Toolbar)),
+        ["CREATE", "MODIFY", "INSPECT", "SELECT"]
+    );
+    let panel = |label: &'static str| h.get_by_role_and_label(Role::Toolbar, label);
+    let mut create: Vec<&str> = CREATE_ROW.to_vec();
+    create.push("CREATE");
+    assert_eq!(buttons_of(&panel("CREATE")), create);
+    for primitive in PRIMITIVES {
+        assert!(
+            panel("CREATE").query_by_label(primitive).is_none(),
+            "{primitive}"
+        );
+    }
+    assert_eq!(
+        buttons_of(&panel("MODIFY")),
+        [
+            "Fillet",
+            "Chamfer",
+            "Union",
+            "Subtract",
+            "Intersect",
+            "MODIFY"
+        ]
+    );
+    assert_eq!(buttons_of(&panel("INSPECT")), ["Measure", "INSPECT"]);
+    assert_eq!(
+        buttons_of(&panel("SELECT")),
+        ["Faces", "Edges", "Vertices", "SELECT"]
+    );
+    // On: every dialog (the example has a body, so the cuts too) and the drop-downs; off:
+    // Create Sketch, until sketch mode, and what isn't built.
+    let mut on: Vec<&str> = CREATE_ROW[1..].to_vec();
+    on.push("CREATE");
+    assert_eq!(on_of(&panel("CREATE")), on);
+    for label in ["MODIFY", "INSPECT", "SELECT"] {
+        assert_eq!(on_of(&panel(label)), [label]);
+    }
+    // Sizes (`--toolbar-tabs-h: 24px`, `--toolbar-h: 52px`, `.tb-btn` 30 square 1 apart
+    // with `.tb-panel`'s 4 above), from the toolbar's top left: DESIGN's top (`.tb-ws`, the
+    // tabs' row's height), and its left less `.tb-tabs`' 8. The buttons' tops 24 + 4 down;
+    // the first's left after `.tb-panels`' 6 and the first panel's 6.
+    let design = h.get_by_role_and_label(Role::Label, "DESIGN").rect();
+    let (left, top) = (design.left() - 8.0, design.top());
+    // Under the 30 high app bar, whose tabs run from its top.
+    assert_eq!(top, bar_button(&h, "example.silico").rect().top() + 30.0);
+    assert_eq!(design.height(), 24.0 - 1.0);
+    let rect = |label: &str| panel("CREATE").get_by_label(label).rect();
+    for label in CREATE_ROW {
+        assert_eq!(
+            rect(label).size(),
+            eframe::egui::vec2(30.0, 30.0),
+            "{label}"
+        );
+        assert_eq!(rect(label).top(), top + 24.0 + 4.0, "{label}");
+    }
+    assert_eq!(rect("Create Sketch").left(), left + 6.0 + 6.0);
+    for pair in CREATE_ROW.windows(2) {
+        assert_eq!(
+            rect(pair[1]).left() - rect(pair[0]).right(),
+            1.0,
+            "{pair:?}"
+        );
+    }
+    // `.tb-label`: 1 under the row, 14 of line and 1 of padding over and under; MODIFY's
+    // first button after CREATE's last, CREATE's 6 of padding (`.tb-panel`'s `padding: 4px
+    // 6px 0`), its 1 of `border-right`, and MODIFY's 6.
+    let label = rect("CREATE");
+    assert_eq!(label.top(), rect("Groove").bottom() + 1.0);
+    assert_eq!(label.height(), 16.0);
+    let fillet = panel("MODIFY").get_by_label("Fillet").rect();
+    assert_eq!(fillet.left() - rect("Groove").right(), 6.0 + 1.0 + 6.0);
+    // `.tb-tab`: 22 high, on the tabs' row's border; the toolbar ends 1 under its panels.
+    let solid = h.get_by_role_and_label(Role::Tab, "SOLID").rect();
+    assert_eq!(solid.height(), 22.0);
+    assert_eq!(solid.bottom(), top + 24.0 - 1.0);
+    assert_eq!(solid.left(), design.right() + 2.0 + 6.0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn each_toolbar_button_names_its_command_and_says_what_it_does_or_that_it_isnt_built() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    // app.js's `CMD`: each command's `label` and `desc`; one not built says so after it.
+    for (panel, button, lines) in [
+        (
+            "CREATE",
+            "Pad",
+            vec!["Extrudes a sketch's profile into solid"],
+        ),
+        (
+            "CREATE",
+            "Pocket",
+            vec!["Cuts a sketch's profile out of the solid"],
+        ),
+        ("CREATE", "Revolve", vec!["Sweeps a profile around an axis"]),
+        (
+            "CREATE",
+            "Groove",
+            vec!["Cuts a profile swept around an axis"],
+        ),
+        (
+            "CREATE",
+            "Create Sketch",
+            vec!["Sketches on an origin plane. Not built yet"],
+        ),
+        (
+            "MODIFY",
+            "Fillet",
+            vec!["Rounds the selected edges. Not built yet"],
+        ),
+        (
+            "MODIFY",
+            "Chamfer",
+            vec!["Bevels the selected edges. Not built yet"],
+        ),
+        ("MODIFY", "Union", vec!["Not built yet"]),
+        (
+            "INSPECT",
+            "Measure",
+            vec!["Distance, angle, and size of what you select. Not built yet"],
+        ),
+        (
+            "SELECT",
+            "Edges",
+            vec!["Toggles whether edges can be selected. Not built yet"],
+        ),
+    ] {
+        pointer_away(&mut h);
+        h.get_by_role_and_label(Role::Toolbar, panel)
+            .get_by_label(button)
+            .hover();
+        step_until(&mut h, "its tooltip", |h| {
+            h.query_by_role_and_label(Role::Label, button).is_some()
+        });
+        step(&mut h);
+        let shown = label_texts(h.query_all_by_role(Role::Label));
+        let at = shown.iter().position(|text| text == button).unwrap();
+        // The title, then the line, if any, and nothing more of the tooltip's.
+        let after: Vec<&str> = shown[at + 1..].iter().map(String::as_str).collect();
+        assert!(after.starts_with(&lines), "{button}: {shown:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    let open = |h: &mut AppHarness, label: &str| {
+        pointer_away(h);
+        h.get_by_role_and_label(Role::Toolbar, label)
+            .get_by_role_and_label(Role::Button, label)
+            .click();
+        step(h);
+        step(h);
+    };
+    // interact.js:172: the filters under a heading, all of them, and Clear selection (Esc),
+    // which the app has: off with nothing selected.
+    open(&mut h, "SELECT");
+    let menu = h.get_by_role_and_label(Role::Menu, "SELECT");
+    let entries = buttons_of(&menu);
+    assert_eq!(
+        entries[..4],
+        ["Faces", "Edges", "Vertices", "Select all filters"]
+    );
+    assert_eq!(entries.len(), 5, "{entries:?}");
+    assert!(entries[4].starts_with("Clear selection"), "{entries:?}");
+    assert!(menu.query_by_label("SELECTION FILTERS").is_some());
+    assert!(on_of(&menu).is_empty());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    // interact.js:170: Create Sketch, the sweeps, and the primitives under a heading.
+    open(&mut h, "CREATE");
+    let menu = h.get_by_role_and_label(Role::Menu, "CREATE");
+    let entries = buttons_of(&menu);
+    assert_eq!(entries.len(), 10, "{entries:?}");
+    assert!(entries[0].starts_with("Create Sketch"), "{entries:?}");
+    assert_eq!(entries[1..5], CREATE_ROW[1..]);
+    assert_eq!(entries[5..], PRIMITIVES);
+    assert!(menu.query_by_label("PRIMITIVES").is_some());
+    let mut on: Vec<&str> = CREATE_ROW[1..].iter().chain(&PRIMITIVES).copied().collect();
+    on.sort_unstable();
+    let mut menu_on = on_of(&menu);
+    menu_on.sort_unstable();
+    assert_eq!(menu_on, on);
+    // An entry opens its dialog, as the row's button does, and the menu closes.
+    menu.get_by_label("Cylinder").click();
+    step_until(&mut h, "the dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    assert!(h.query_by_role_and_label(Role::Menu, "CREATE").is_none());
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| {
+        h.query_by_role(Role::Dialog).is_none()
+    });
+    settled(&mut h);
+    // interact.js:171: the edge tools, and the booleans under a heading, none built.
+    open(&mut h, "MODIFY");
+    let menu = h.get_by_role_and_label(Role::Menu, "MODIFY");
+    assert_eq!(
+        buttons_of(&menu),
+        ["Fillet", "Chamfer", "Union", "Subtract", "Intersect"]
+    );
+    assert!(menu.query_by_label("COMBINE").is_some());
+    assert!(on_of(&menu).is_empty());
+    // An entry not built says so after the prototype's line, as its button does.
+    h.get_by_role_and_label(Role::Menu, "MODIFY")
+        .get_by_label("Fillet")
+        .hover();
+    step_until(&mut h, "its tooltip", |h| {
+        h.query_by_role_and_label(Role::Label, "Rounds the selected edges. Not built yet")
+            .is_some()
+    });
+    open(&mut h, "INSPECT");
+    let menu = h.get_by_role_and_label(Role::Menu, "INSPECT");
+    assert_eq!(buttons_of(&menu), ["Measure"]);
+    assert!(on_of(&menu).is_empty());
+    // With a feature selected, Clear selection clears it, as Esc does.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    select(&mut h, "Pin");
+    open(&mut h, "SELECT");
+    let menu = h.get_by_role_and_label(Role::Menu, "SELECT");
+    let clear = menu
+        .query_all_by_role(Role::Button)
+        .find(|node| {
+            node.accesskit_node()
+                .label()
+                .is_some_and(|label| label.starts_with("Clear selection"))
+        })
+        .unwrap();
+    assert!(!clear.accesskit_node().is_disabled());
+    clear.click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].selected, None);
+    assert!(h.query_by_role_and_label(Role::Menu, "SELECT").is_none());
+    // With a feature selected and a dialog open, Clear selection is off: the dialog's
+    // Cancel (Esc) comes first.
+    select(&mut h, "Pin");
+    create(&mut h, "Box");
+    settled(&mut h);
+    assert!(h.state().tabs()[0].selected.is_some());
+    open(&mut h, "SELECT");
+    let clear = h
+        .get_by_role_and_label(Role::Menu, "SELECT")
+        .query_all_by_role(Role::Button)
+        .find(|node| {
+            node.accesskit_node()
+                .label()
+                .is_some_and(|label| label.starts_with("Clear selection"))
+        })
+        .unwrap();
+    assert!(clear.accesskit_node().is_disabled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The toolbar's state as a test stubs it (sketch mode's among it), and what it was asked.
+struct ToolbarStub {
+    in_sketch: bool,
+    create_sketch: Option<bool>,
+    off: Vec<silico_app::dialog::Kind>,
+    selected: bool,
+    acts: Vec<silico_app::toolbar::Act>,
+}
+
+impl ToolbarStub {
+    fn new() -> Self {
+        Self {
+            in_sketch: false,
+            create_sketch: None,
+            off: Vec::new(),
+            selected: false,
+            acts: Vec::new(),
+        }
+    }
+}
+
+type ToolbarHarness = Harness<'static, ToolbarStub>;
+
+/// The toolbar alone, drawn in the theme from `stub`, by `builder`.
+fn toolbar_with(
+    builder: egui_kittest::HarnessBuilder<ToolbarStub>,
+    stub: ToolbarStub,
+) -> ToolbarHarness {
+    let mut h = builder
+        .with_size((1280.0, 600.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(
+            |ui, stub: &mut ToolbarStub| {
+                let off = stub.off.clone();
+                let can_open = move |kind| !off.contains(&kind);
+                let shown = silico_app::toolbar::Shown {
+                    in_sketch: stub.in_sketch,
+                    create_sketch: stub.create_sketch,
+                    can_open: &can_open,
+                    selected: stub.selected,
+                };
+                // The whole window, as the app's frame has it, not the harness's panel inside
+                // its margin.
+                let window = eframe::egui::UiBuilder::new().max_rect(ui.ctx().content_rect());
+                let act = ui
+                    .scope_builder(window, |ui| silico_app::toolbar::show(ui, &shown))
+                    .inner;
+                stub.acts.extend(act);
+            },
+            stub,
+        );
+    silico_app::theme::apply(&h.ctx);
+    h.step();
+    h.step();
+    h
+}
+
+fn toolbar(stub: ToolbarStub) -> ToolbarHarness {
+    toolbar_with(Harness::builder(), stub)
+}
+
+/// Frames stepped until `done` holds, for a second of the harness's time at most, and one
+/// more: egui lays a new popup out unseen in its first frame, and places it in its next.
+#[track_caller]
+fn toolbar_until(h: &mut ToolbarHarness, what: &str, done: impl Fn(&ToolbarHarness) -> bool) {
+    for _ in 0..120 {
+        h.step();
+        if done(h) {
+            h.step();
+            return;
+        }
+    }
+    panic!("never {what}");
+}
+
+/// The pointer away from the toolbar, a frame drawn.
+fn toolbar_pointer_away(h: &mut ToolbarHarness) {
+    h.hover_at(eframe::egui::pos2(640.0, 590.0));
+    h.step();
+    h.step();
+}
+
+#[test]
+fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
+    use silico_app::toolbar::Act;
+    let mut h = toolbar(ToolbarStub::new());
+    assert_eq!(
+        tabs_of(h.query_all_by_role(Role::Tab)),
+        [("SOLID".to_owned(), true)]
+    );
+    assert!(h.query_by_label("Finish Sketch").is_none());
+    // A sketch open (#351's `tab.in_sketch()`): SKETCH after SOLID, and shown; its panels
+    // (app.js:384), none of their tools built in the toolbar yet; Finish Sketch, on.
+    h.state_mut().in_sketch = true;
+    h.step();
+    h.step();
+    assert_eq!(
+        tabs_of(h.query_all_by_role(Role::Tab)),
+        [("SOLID".to_owned(), false), ("SKETCH".to_owned(), true)]
+    );
+    assert_eq!(
+        panels_of(h.query_all_by_role(Role::Toolbar)),
+        ["CREATE", "MODIFY", "CONSTRAINTS", "INSPECT"]
+    );
+    let panel = |h: &ToolbarHarness, label: &str| {
+        buttons_of(&h.get_by_role_and_label(Role::Toolbar, label))
+    };
+    assert_eq!(
+        panel(&h, "CREATE"),
+        [
+            "Line",
+            "Rectangle",
+            "Circle",
+            "Arc",
+            "Point",
+            "Construction",
+            "CREATE"
+        ]
+    );
+    assert_eq!(panel(&h, "MODIFY"), ["Trim", "Extend", "Split", "MODIFY"]);
+    assert_eq!(
+        panel(&h, "CONSTRAINTS"),
+        [
+            "Smart Dimension",
+            "Horizontal",
+            "Vertical",
+            "Coincident",
+            "Tangent",
+            "Equal",
+            "Parallel",
+            "Perpendicular",
+            "Midpoint",
+            "Symmetric",
+            "Fix",
+            "CONSTRAINTS"
+        ]
+    );
+    assert_eq!(panel(&h, "INSPECT"), ["Measure", "INSPECT"]);
+    for label in ["CREATE", "MODIFY", "CONSTRAINTS", "INSPECT"] {
+        assert_eq!(
+            on_of(&h.get_by_role_and_label(Role::Toolbar, label)),
+            [label]
+        );
+    }
+    // `.tb-finish`: at the panels' right end, inside `.tb-panels`' 6 and its own 8; 30
+    // high, centred in the 52 of panels under the 24 of tabs.
+    let finish = h.get_by_role_and_label(Role::Button, "Finish Sketch");
+    assert!(!finish.accesskit_node().is_disabled());
+    let rect = finish.rect();
+    assert_eq!(rect.right(), 1280.0 - 6.0 - 8.0);
+    assert_eq!(rect.height(), 30.0);
+    assert_eq!(rect.center().y, 24.0 + 52.0 / 2.0);
+    // Its tooltip: its name, its key (app.js: `Mod Enter`), and the prototype's line.
+    finish.hover();
+    toolbar_until(&mut h, "its tooltip", |h| {
+        h.query_by_role_and_label(Role::Label, "Keeps your changes and rebuilds")
+            .is_some()
+    });
+    h.step();
+    let command = if h.ctx.os() == eframe::egui::os::OperatingSystem::Mac {
+        "⌘"
+    } else {
+        "Ctrl"
+    };
+    let texts = |h: &ToolbarHarness| -> Vec<String> {
+        h.output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                eframe::egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    };
+    toolbar_until(&mut h, "its tooltip drawn", |h| {
+        texts(h)
+            .iter()
+            .any(|text| text == "Keeps your changes and rebuilds")
+    });
+    let texts = texts(&h);
+    assert!(texts.iter().any(|text| text == command), "{texts:?}");
+    assert!(texts.iter().any(|text| text == "Enter"), "{texts:?}");
+    // A label's drop-down lists its row's commands, CONSTRAINTS' among them.
+    let label = |h: &ToolbarHarness| {
+        h.get_by_role_and_label(Role::Toolbar, "CONSTRAINTS")
+            .get_by_role_and_label(Role::Button, "CONSTRAINTS")
+            .click();
+    };
+    label(&h);
+    toolbar_until(&mut h, "CONSTRAINTS' drop-down", |h| {
+        h.query_by_role_and_label(Role::Menu, "CONSTRAINTS")
+            .is_some()
+    });
+    let mut row = panel(&h, "CONSTRAINTS");
+    row.pop();
+    assert_eq!(
+        buttons_of(&h.get_by_role_and_label(Role::Menu, "CONSTRAINTS")),
+        row
+    );
+    label(&h);
+    toolbar_until(&mut h, "CONSTRAINTS' drop-down closed", |h| {
+        h.query_by_role_and_label(Role::Menu, "CONSTRAINTS")
+            .is_none()
+    });
+    // A click says Finish Sketch, which the caller sends to sketch mode's finish.
+    h.get_by_role_and_label(Role::Button, "Finish Sketch")
+        .click();
+    h.step();
+    assert_eq!(h.state().acts, [Act::FinishSketch]);
+    // The sketch closed: SOLID's again, and no Finish Sketch.
+    h.state_mut().in_sketch = false;
+    h.step();
+    h.step();
+    assert_eq!(
+        tabs_of(h.query_all_by_role(Role::Tab)),
+        [("SOLID".to_owned(), true)]
+    );
+    assert!(h.query_by_label("Finish Sketch").is_none());
+    assert_eq!(h.state().acts, [Act::FinishSketch]);
+}
+
+#[test]
+fn create_sketch_waits_for_sketch_mode_then_offers_the_origin_planes_from_its_button_and_creates_drop_down()
+ {
+    use silico_app::toolbar::Act;
+    use silico_core::document::OriginPlane;
+    let create_sketch = |h: &ToolbarHarness| {
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    };
+    // No sketch mode: off, and its tooltip says it isn't built.
+    let mut h = toolbar(ToolbarStub::new());
+    assert!(create_sketch(&h));
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .hover();
+    toolbar_until(&mut h, "its tooltip", |h| {
+        h.query_by_role_and_label(Role::Label, "Sketches on an origin plane. Not built yet")
+            .is_some()
+    });
+    // Sketch mode, but it can't open now (#351's `tab.can_sketch()` false): off, built.
+    let mut stub = ToolbarStub::new();
+    stub.create_sketch = Some(false);
+    let mut h = toolbar(stub);
+    assert!(create_sketch(&h));
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .hover();
+    toolbar_until(&mut h, "its tooltip", |h| {
+        h.query_by_role_and_label(Role::Label, "Sketches on an origin plane")
+            .is_some()
+    });
+    assert!(h.query_by_label_contains("Not built").is_none());
+    // It can: on, and a click opens the origin's planes; one clicked says it.
+    let mut stub = ToolbarStub::new();
+    stub.create_sketch = Some(true);
+    let mut h = toolbar(stub);
+    assert!(!create_sketch(&h));
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    toolbar_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_some()
+    });
+    let planes = h.get_by_role_and_label(Role::Menu, "Create Sketch");
+    assert_eq!(buttons_of(&planes), ["XY plane", "XZ plane", "YZ plane"]);
+    planes.get_by_label("XZ plane").click();
+    h.step();
+    h.step();
+    assert_eq!(h.state().acts, [Act::CreateSketch(OriginPlane::Xz)]);
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_none()
+    );
+    // And from CREATE's drop-down, as a menu of its own.
+    toolbar_pointer_away(&mut h);
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_role_and_label(Role::Button, "CREATE")
+        .click();
+    toolbar_until(&mut h, "CREATE's drop-down", |h| {
+        h.query_by_role_and_label(Role::Menu, "CREATE").is_some()
+    });
+    h.get_by_role_and_label(Role::Menu, "CREATE")
+        .query_all_by_role(Role::Button)
+        .find(|node| {
+            node.accesskit_node()
+                .label()
+                .is_some_and(|label| label.starts_with("Create Sketch"))
+        })
+        .unwrap()
+        .click();
+    toolbar_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Menu, "Create Sketch")
+        .get_by_label("YZ plane")
+        .click();
+    h.step();
+    h.step();
+    assert_eq!(
+        h.state().acts,
+        [
+            Act::CreateSketch(OriginPlane::Xz),
+            Act::CreateSketch(OriginPlane::Yz)
+        ]
+    );
+    assert!(h.query_by_role_and_label(Role::Menu, "CREATE").is_none());
+}
+
+#[test]
+fn a_dialog_that_cant_open_is_off_in_creates_row_and_drop_down_and_one_that_can_says_so_once() {
+    use silico_app::dialog::Kind;
+    use silico_app::toolbar::Act;
+    let mut stub = ToolbarStub::new();
+    stub.off = vec![Kind::Pocket, Kind::Groove];
+    let mut h = toolbar(stub);
+    let create = h.get_by_role_and_label(Role::Toolbar, "CREATE");
+    let off = |label: &str| create.get_by_label(label).accesskit_node().is_disabled();
+    assert!(off("Pocket") && off("Groove"));
+    assert!(!off("Pad") && !off("Revolve"));
+    create.get_by_label("Pad").click();
+    h.step();
+    assert_eq!(h.state().acts, [Act::Dialog(Kind::Pad)]);
+    // A click on an off one says nothing.
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Pocket")
+        .click();
+    h.step();
+    assert_eq!(h.state().acts, [Act::Dialog(Kind::Pad)]);
+    toolbar_pointer_away(&mut h);
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_role_and_label(Role::Button, "CREATE")
+        .click();
+    toolbar_until(&mut h, "CREATE's drop-down", |h| {
+        h.query_by_role_and_label(Role::Menu, "CREATE").is_some()
+    });
+    let menu = h.get_by_role_and_label(Role::Menu, "CREATE");
+    let menu_off = |label: &str| menu.get_by_label(label).accesskit_node().is_disabled();
+    assert!(menu_off("Pocket") && menu_off("Groove"));
+    assert!(!menu_off("Pad") && !menu_off("Box") && !menu_off("Torus"));
+    menu.get_by_label("Torus").click();
+    h.step();
+    h.step();
+    assert_eq!(
+        h.state().acts,
+        [Act::Dialog(Kind::Pad), Act::Dialog(Kind::Torus)]
+    );
+}
+
+#[test]
+fn the_toolbar_draws_solid_in_gray_200_and_its_hovered_button_in_gray_300_on_lavapipe() {
+    on_lavapipe(
+        "the_toolbar_draws_solid_in_gray_200_and_its_hovered_button_in_gray_300_on_lavapipe",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            let path = f.file("bracket.silico", A_BOX);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            let pad = h
+                .get_by_role_and_label(Role::Toolbar, "CREATE")
+                .get_by_label("Pad")
+                .rect();
+            h.hover_at(pad.left_top() + eframe::egui::vec2(2.0, 2.0));
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            // SOLID, shown: Gray.200 (`.tb-tab.active`), in its left padding, clear of its
+            // rounded corner and its text.
+            let solid = h.get_by_role_and_label(Role::Tab, "SOLID").rect();
+            let inside = eframe::egui::pos2(solid.left() + 5.0, solid.center().y);
+            assert_eq!(pixel(inside), [0x21, 0x21, 0x21, 0xff], "{solid:?}");
+            // The toolbar's own fill beside it, Gray.100 (`#toolbar`), and the tabs' border
+            // under it, Gray.200 (`.tb-tabs`), and the toolbar's under the panels, Gray.250.
+            let beside = eframe::egui::pos2(solid.right() + 40.0, solid.center().y);
+            assert_eq!(pixel(beside), [0x0d, 0x0d, 0x0d, 0xff]);
+            let under = eframe::egui::pos2(solid.right() + 40.0, solid.bottom() + 0.5);
+            assert_eq!(pixel(under), [0x21, 0x21, 0x21, 0xff]);
+            let bottom =
+                eframe::egui::pos2(solid.right() + 40.0, solid.bottom() + 1.0 + 52.0 + 0.5);
+            assert_eq!(pixel(bottom), [0x27, 0x26, 0x26, 0xff]);
+            // CREATE's border at its right, Gray.200 (`.tb-panel`'s `border-right`), in the
+            // column after its 6 of padding past Groove; the padding itself the toolbar's.
+            let groove = h
+                .get_by_role_and_label(Role::Toolbar, "CREATE")
+                .get_by_label("Groove")
+                .rect();
+            let border = eframe::egui::pos2(groove.right() + 6.5, groove.center().y);
+            assert_eq!(pixel(border), [0x21, 0x21, 0x21, 0xff], "{groove:?}");
+            let padding = eframe::egui::pos2(groove.right() + 3.0, groove.center().y);
+            assert_eq!(pixel(padding), [0x0d, 0x0d, 0x0d, 0xff], "{groove:?}");
+            // Pad, hovered: Gray.300 (`.tb-btn:hover`), clear of its rounded corner and its
+            // icon.
+            let inside = eframe::egui::pos2(pad.left() + 4.0, pad.center().y);
+            assert_eq!(pixel(inside), [0x2c, 0x2b, 0x2b, 0xff], "{pad:?}");
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
+}
+
+#[test]
+fn the_sketch_tab_and_finish_sketch_are_blue_500_on_lavapipe() {
+    on_lavapipe(
+        "the_sketch_tab_and_finish_sketch_are_blue_500_on_lavapipe",
+        || {
+            let state = lavapipe_render_state();
+            let builder = Harness::builder().renderer(
+                egui_kittest::wgpu::WgpuTestRenderer::from_render_state(state.clone()),
+            );
+            let mut stub = ToolbarStub::new();
+            stub.in_sketch = true;
+            let mut h = toolbar_with(builder, stub);
+            toolbar_pointer_away(&mut h);
+            let rendered = h.render().unwrap();
+            let image = |x, y| rendered.get_pixel(x, y).0;
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |image: &dyn Fn(u32, u32) -> [u8; 4], at: eframe::egui::Pos2| {
+                image((at.x * ppp) as u32, (at.y * ppp) as u32)
+            };
+            // SKETCH: Blue.500 (`.tb-tab.ctx`, `--blue`), in its left padding.
+            let sketch = h.get_by_role_and_label(Role::Tab, "SKETCH").rect();
+            let inside = eframe::egui::pos2(sketch.left() + 5.0, sketch.center().y);
+            assert_eq!(
+                pixel(&image, inside),
+                [0x18, 0x6a, 0xdd, 0xff],
+                "{sketch:?}"
+            );
+            // SOLID, not shown: no fill, the toolbar's Gray.100.
+            let solid = h.get_by_role_and_label(Role::Tab, "SOLID").rect();
+            let inside = eframe::egui::pos2(solid.left() + 5.0, solid.center().y);
+            assert_eq!(pixel(&image, inside), [0x0d, 0x0d, 0x0d, 0xff], "{solid:?}");
+            // Finish Sketch: Blue.500 (`.btn-finish`), in its left padding, clear of its
+            // rounded corners and its icon.
+            let finish = h
+                .get_by_role_and_label(Role::Button, "Finish Sketch")
+                .rect();
+            let inside = eframe::egui::pos2(finish.left() + 6.0, finish.center().y);
+            assert_eq!(
+                pixel(&image, inside),
+                [0x18, 0x6a, 0xdd, 0xff],
+                "{finish:?}"
+            );
+            // Hovered: the prototype's `#2a78e8` (`.btn-finish:hover`); the pointer, which the
+            // harness draws, at its right end, clear of where it's read.
+            h.hover_at(eframe::egui::pos2(finish.right() - 8.0, finish.top() + 4.0));
+            h.step();
+            h.step();
+            let rendered = h.render().unwrap();
+            let image = |x, y| rendered.get_pixel(x, y).0;
+            assert_eq!(
+                pixel(&image, inside),
+                [0x2a, 0x78, 0xe8, 0xff],
+                "{finish:?}"
+            );
         },
     );
 }

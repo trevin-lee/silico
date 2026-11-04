@@ -527,7 +527,7 @@ fn header(ui: &mut Ui, name: &str) {
         RichText::new(name.to_uppercase())
             .size(theme::HEADER_SIZE)
             .color(theme::TEXT_SUBDUED)
-            .extra_letter_spacing(theme::START_HEADER_LETTER_SPACING),
+            .extra_letter_spacing(theme::CAPITALS_LETTER_SPACING),
     );
     ui.add_space(theme::START_HEADER_GAP);
 }

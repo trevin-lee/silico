@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Ui};
+use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Ui};
 use silico_core::command::{
     Opened, RebuildState, Response, Running, RunningCommand, SessionId, Sessions,
 };
@@ -20,7 +20,7 @@ use silico_core::kernel::Clients;
 
 use crate::bar;
 use crate::browse::{self, Ask, Browse, Browsing, Pick};
-use crate::dialog::{Action, Kind};
+use crate::dialog::Action;
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::panes::{self, Pane, Panes};
@@ -28,6 +28,7 @@ use crate::recent::Recents;
 use crate::start::{self, Warm};
 use crate::tab::{DiskChoice, Tab, said};
 use crate::theme;
+use crate::toolbar;
 
 /// How long past [`DISK_CHECK_INTERVAL`] the idle frame comes: a comparison is due once the
 /// last one ended a whole interval ago, so a frame exactly an interval after the one that
@@ -1017,15 +1018,7 @@ impl<P: Clients + 'static> App<P> {
             self.home = true;
         }
         let file = bar::button(ui, Icon::Menu, Some("File"), "File", true, None);
-        let config = egui::containers::menu::MenuConfig::new();
-        egui::Popup::menu(&file)
-            .close_behavior(config.close_behavior)
-            .style(config.style.clone())
-            .info(
-                egui::UiStackInfo::new(egui::UiKind::Menu)
-                    .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
-            )
-            .show(|ui| self.file_menu(ui, started));
+        bar::menu(&file, |ui| self.file_menu(ui, started));
         // Off on Home, as the shortcuts are (the prototype's `S.view === 'doc'`): the
         // document is hidden.
         let tab = self
@@ -1184,48 +1177,43 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// The toolbar (section 8): the Design workspace's SOLID tab, its panels named, and
-    /// CREATE's tools, each opening its feature's dialog (M5.8): the primitives, and the
-    /// features that sweep a sketch's profile (those that cut, only with a body to cut).
+    /// The toolbar (section 8; `toolbar`): the Design workspace's SOLID tab and its panels,
+    /// CREATE's tools each opening its feature's dialog (M5.8): the primitives, and the
+    /// features that sweep a sketch's profile (those that cut, only with a body to cut); and
+    /// SELECT's Clear selection.
     fn toolbar(&mut self, ui: &mut Ui, started: &mut bool) {
-        let sessions = &self.sessions;
         let mut tab = self
             .active
             .and_then(|active| self.tabs.iter_mut().find(|tab| tab.id == active));
-        egui::Panel::top("toolbar")
-            .exact_size(theme::TITLE_BAR_HEIGHT * 2.0)
-            .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.label(RichText::new("DESIGN").strong());
-                    ui.separator();
-                    ui.label(RichText::new("SOLID").strong());
-                    ui.separator();
-                    ui.label(RichText::new("CREATE").small());
-                    ui.scope_builder(egui::UiBuilder::new().id_salt("create"), |ui| {
-                        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
-                            node.set_role(egui::accesskit::Role::Toolbar);
-                            node.set_label("CREATE");
-                        });
-                        ui.horizontal(|ui| {
-                            for kind in Kind::ALL {
-                                let enabled = tab.as_ref().is_some_and(|tab| tab.can_open(kind));
-                                if ui
-                                    .add_enabled(enabled, egui::Button::new(kind.title()))
-                                    .clicked()
-                                    && let Some(tab) = tab.as_mut()
-                                {
-                                    tab.open_dialog(sessions, kind);
-                                    *started = true;
-                                }
-                            }
-                        });
-                    });
-                    for panel in ["MODIFY", "INSPECT", "SELECT"] {
-                        ui.separator();
-                        ui.label(RichText::new(panel).small());
-                    }
-                });
-            });
+        let act = {
+            let shown = tab.as_deref();
+            let can_open = |kind| shown.is_some_and(|tab| tab.can_open(kind));
+            toolbar::show(
+                ui,
+                &toolbar::Shown {
+                    // Sketch mode (#351) wires these: `tab.in_sketch() -> bool`, and
+                    // `Some(tab.can_sketch())` (`tab.can_sketch() -> bool`).
+                    in_sketch: false,
+                    create_sketch: None,
+                    can_open: &can_open,
+                    selected: shown.is_some_and(|tab| tab.selected.is_some() && !tab.in_dialog()),
+                },
+            )
+        };
+        let Some(tab) = tab.as_mut() else {
+            return;
+        };
+        match act {
+            Some(toolbar::Act::Dialog(kind)) => {
+                tab.open_dialog(&self.sessions, kind);
+                *started = true;
+            }
+            Some(toolbar::Act::ClearSelection) => tab.selected = None,
+            // Sketch mode (#351) wires these: `CreateSketch(plane)` to
+            // `tab.create_sketch(&self.sessions, plane)` and `*started = true`, and
+            // `FinishSketch` to `tab.finish_sketch(&self.sessions, true)` (false is Cancel).
+            Some(toolbar::Act::CreateSketch(_) | toolbar::Act::FinishSketch) | None => {}
+        }
     }
 
     /// The status bar: the rebuild (`status.rebuild`) or the session's own reload, the stop
