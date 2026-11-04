@@ -477,6 +477,21 @@ crates/silico-app/src/viewport.rs | sequenced | replace < with <= | #376
 # `.tb-row`'s 1px (`TOOLBAR_BUTTON_GAP`). The gaps' count times 1 and divided by 1 are the
 # same width, bit for bit, so nothing drawn tells them apart; any other gap's would.
 crates/silico-app/src/toolbar.rs | panel | replace * with / | #362
+# The native file dialog (#363). `browse::Native` is made only from eframe's CreationContext,
+# which only `eframe::run_native` gives, with the app's real window, and its `browse` opens
+# the platform's own panel (rfd: an NSOpenPanel sheet on macOS, the XDG portal on Linux).
+# No headless test can make one or drive its panel, so these are unreachable from tests;
+# every test of Open and Browse… goes through the `Browse` trait's stand-in. The real
+# panel was checked in the running app on macOS (#363's body): ⌘O brought the Open sheet
+# up on Silico's own window, in front, with the .silico filter. `on`'s `&&` only decides
+# whether a warning is logged for a missing window. `browse` replaced with None is the
+# panel never opening, which the stand-in's tests of the typed fallback cover in kind.
+# The Focus condition's `&&` and `!=` decide whether the app's window is brought to the
+# front when the sheet begins, observable only in a real window manager.
+crates/silico-app/src/browse.rs | Native::on | replace && with || | #363
+crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace <impl Browse for Native>::browse -> Option<Answer> with None | #363
+crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace && with || | #363
+crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace != with == | #363
 # The render limits' box corners (#353). `box_corners` gives a box's eight corners, each axis
 # `k`'s coordinate chosen by bit `k` of `i`, `low` for 0 and `high` for 1: `== 0` as `!= 0`
 # swaps `low` and `high` on every axis for every `i`, so the array holds the same eight

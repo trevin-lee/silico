@@ -14,6 +14,8 @@ use eframe::egui::{self, RichText, Ui};
 use silico_core::document::FeatureId;
 use silico_core::document::json::{self, Node, Value as Json};
 
+use crate::theme::{self, FieldKind};
+
 /// The features a dialog makes or edits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -583,12 +585,9 @@ impl Dialog {
                     };
                     match &mut input.value {
                         Value::Length(text) | Value::Angle(text) => {
-                            let mut edit = egui::TextEdit::singleline(text)
-                                .id_salt(("dialog-input", input.label))
-                                .desired_width(120.0);
-                            if red {
-                                edit = edit.text_color(error);
-                            }
+                            let edit = egui::TextEdit::singleline(text).desired_width(120.0);
+                            let salt = ("dialog-input", input.label);
+                            let edit = theme::field(ui, edit, salt, FieldKind::Dialog, red);
                             ui.add_enabled(enabled, edit).labelled_by(label.id);
                             ui.label(unit);
                         }

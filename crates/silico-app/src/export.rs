@@ -16,6 +16,7 @@ use silico_core::document::{FeatureId, Length};
 
 use crate::browse;
 use crate::tab::Row;
+use crate::theme::{self, FieldKind};
 
 /// What the dialog holds while it's open: the format, the 3MF's tolerance as typed, the
 /// bodies, and the path, of the document of session `session`.
@@ -183,12 +184,8 @@ impl ExportForm {
                 ui.horizontal(|ui| {
                     let label = ui.label("Tolerance");
                     let red = unreadable(&self.tolerance);
-                    let mut edit = egui::TextEdit::singleline(&mut self.tolerance)
-                        .id_salt("export-tolerance")
-                        .desired_width(100.0);
-                    if red {
-                        edit = edit.text_color(ui.visuals().error_fg_color);
-                    }
+                    let edit = egui::TextEdit::singleline(&mut self.tolerance).desired_width(100.0);
+                    let edit = theme::field(ui, edit, "export-tolerance", FieldKind::Modify, red);
                     ui.add(edit).labelled_by(label.id);
                     ui.label("mm");
                 });
@@ -208,8 +205,15 @@ impl ExportForm {
             }
             ui.horizontal(|ui| {
                 let label = ui.label("Path");
-                ui.add(egui::TextEdit::singleline(&mut self.path).id_salt("export-path"))
-                    .labelled_by(label.id);
+                let edit = egui::TextEdit::singleline(&mut self.path);
+                ui.add(theme::field(
+                    ui,
+                    edit,
+                    "export-path",
+                    FieldKind::Modify,
+                    false,
+                ))
+                .labelled_by(label.id);
                 if let Some(on) = shown.browse
                     && browse::button(ui, on)
                 {

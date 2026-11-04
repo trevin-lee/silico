@@ -3,9 +3,10 @@
 # gate meets the same cases every run (pixi.toml's test task fixes PROPTEST_RNG_SEED), this
 # looks for the cases it never meets (.github/workflows/proptest-explore.yml runs it on idle
 # runners). Each round draws a random u64 for PROPTEST_RNG_SEED, says it, and runs every test
-# but those tests/mutants.sh leaves out for holding to a wall clock or GiBs (its $filter): no
-# filter tells a property's tests from the rest, which share their binaries and ignore the
-# seed. Each property takes its own case count each round (not PROPTEST_CASES, which proptest
+# but those tests/mutants.sh leaves out for holding to a wall clock or GiBs (its
+# $explore_filter): no filter tells a property's tests from the rest, which share their
+# binaries and ignore the seed. The slow proptests mutants leave out ($slow) run here, each
+# given 20 minutes a try and no retry. Each property takes its own case count each round (not PROPTEST_CASES, which proptest
 # lets override every test's own, so a property that takes 32 costly cases would take the
 # variable's count, and one that takes 20,000 fewer): four rounds meet four times the cases.
 # About an hour in all, as a filler mutants shard has, the build included: a round starts
@@ -33,7 +34,8 @@ set -euo pipefail
 
 # Before the tree's checkout, which cds away from this script's directory.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# The tests mutants leave out ($filter): this sources tests/mutants.sh for it alone.
+# The tests left out ($explore_filter) and the slow proptests ($slow): this sources
+# tests/mutants.sh for them alone.
 # shellcheck source=tests/mutants.sh
 source "$here/mutants.sh"
 
@@ -110,6 +112,14 @@ trap 'rm -f "$nextest_config"' EXIT
   printf '\n[profile.silico-explore]\nfail-fast = false\nretries = 2\n'
   printf 'slow-timeout = { period = "60s", terminate-after = 5 }\n'
   printf '\n[profile.silico-explore.junit]\npath = "%s"\n' "$out/junit.xml"
+  # The slow proptests (tests/mutants.sh's $slow): beside the others, as the gate runs them,
+  # given 20 minutes a try, and no retry, since 20 minutes covers load and a property's
+  # failure is run again alone below.
+  if [ -n "$slow" ]; then
+    printf '\n[[profile.silico-explore.overrides]]\nfilter = "%s"\n' "$slow"
+    printf 'retries = 0\n'
+    printf 'slow-timeout = { period = "120s", terminate-after = 10 }\n'
+  fi
 } >"$nextest_config"
 nextest=(cargo nextest run --config-file "$nextest_config" --profile silico-explore)
 junit=$out/junit.xml
@@ -122,6 +132,7 @@ reruns_end=$((end + 900))
 # the run reports them all in one issue, unrun (proptest-failures.py's MOST_ISSUES).
 most_issues=5
 rerun_most=600
+rerun_slow_most=1200
 
 # Runs "$@" for at most $1 seconds, where `timeout` is (CI's Linux; not macOS's base system,
 # where it runs unbounded). Its status 124 says the time ran out.
@@ -165,7 +176,12 @@ failures() {
         status=0
         # $args is "-p <crate> <cargo's flag for the binary>", split as words.
         # shellcheck disable=SC2086
-        PROPTEST_RNG_SEED=$this within $((left < rerun_most ? left : rerun_most)) \
+        most=$rerun_most
+        # A slow proptest needs up to its 20 minutes again.
+        for slow_test in "${slow_proptests[@]+"${slow_proptests[@]}"}"; do
+          if [ "$test" = "$slow_test" ]; then most=$rerun_slow_most; fi
+        done
+        PROPTEST_RNG_SEED=$this within $((left < most ? left : most)) \
           "${nextest[@]}" --retries 0 $args -E "test(=$test)" </dev/null || status=$?
         if [ "$status" -eq 0 ]; then
           result=passed
@@ -201,7 +217,7 @@ while :; do
   began=$SECONDS
   status=0
   PROPTEST_RNG_SEED=$this within $((end - SECONDS > 1 ? end - SECONDS : 1)) \
-    "${nextest[@]}" --workspace -E "$filter" || status=$?
+    "${nextest[@]}" --workspace -E "$explore_filter" || status=$?
   took=$((SECONDS - began))
   printf '%s\t%s\t%s\t%s\n' "$round" "$this" "$status" "$took" >>"$out/rounds.tsv"
   if [ -f "$junit" ]; then mv "$junit" "$out/round-$round.xml"; fi
