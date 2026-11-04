@@ -453,3 +453,13 @@ crates/silico-app/src/viewport.rs | View::zoom | replace && with || | #341
 crates/silico-core/src/views.rs | fit_along | replace == with != | #341
 crates/silico-core/src/views.rs | fit_along | replace == with != | #341
 crates/silico-core/src/views.rs | fit_along | replace == with != | #341
+# The frame's left and right events numbered together (#371). `sequenced` puts a right click
+# first when its place is less than the next left event's: `r < l` as `r <= l` differs only
+# for a right click and a left event of one place. A place is 0 (a Cancel a navigation tool
+# forces: a left event) or i + 1 for the frame's i-th egui event, and one egui event is one
+# button's: a PointerButton event makes a left event or a right click, never both, and
+# WindowFocused(false) makes a left Cancel and only ends a right press, making no click. So
+# no two of one place come from both lists, and either comparison gives the same order.
+# (This mutant went untested in #371's own run, whose shard 0 baseline failed; #376's run
+# on main tested it and found it equivalent.)
+crates/silico-app/src/viewport.rs | sequenced | replace < with <= | #376
