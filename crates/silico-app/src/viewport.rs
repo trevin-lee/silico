@@ -376,6 +376,16 @@ pub struct View {
     /// The elements drawn highlighted, set from outside (M5.7's selection): passed through,
     /// but for one of a body the frame doesn't draw, or that its mesh hasn't.
     pub highlights: BTreeSet<(u32, Element)>,
+    /// The feature hovered in the timeline (DESIGN.md, *Hover linking*): the faces it made,
+    /// as each face's name says ([`Name::feature`]), are highlighted with the selection's
+    /// while it's hovered.
+    ///
+    /// [`Name::feature`]: silico_core::naming::Name::feature
+    ///
+    /// SEAM: the prototype tints them with the maker's colour,
+    /// [`theme::VIEWPORT_FEATURE_HOVER_TINT`] (`#d4dbff` at 0.4), not the selection's; that
+    /// comes once the renderer has a second highlight style.
+    pub linked: Option<FeatureId>,
     picking: Option<PixelRect>,
     picked: Option<Picking>,
     frame: Option<ViewFrame>,
@@ -404,6 +414,7 @@ impl Default for View {
             drag: None,
             tool: None,
             highlights: BTreeSet::new(),
+            linked: None,
             picking: None,
             picked: None,
             frame: None,
@@ -489,6 +500,24 @@ impl View {
     /// The bodies whose meshes the tab holds, by number.
     pub fn bodies(&self) -> &BTreeMap<u32, ViewBody> {
         &self.bodies
+    }
+
+    /// The faces the feature hovered in the timeline made ([`linked`](Self::linked)), in
+    /// every body that holds one, as each face's name says: none with none hovered.
+    pub fn linked_faces(&self) -> Vec<(u32, Element)> {
+        let Some(feature) = &self.linked else {
+            return Vec::new();
+        };
+        self.bodies
+            .iter()
+            .flat_map(|(number, body)| {
+                body.faces
+                    .iter()
+                    .zip(1u32..)
+                    .filter(|(face, _)| face.name.feature() == feature)
+                    .map(|(_, n)| (*number, Element::Face(n)))
+            })
+            .collect()
     }
 
     /// The published revision the bodies were read from, once a read has answered.
@@ -1397,15 +1426,14 @@ pub fn show<P: Clients + 'static>(
         return;
     };
     let now = drawing.now();
-    let hidden: BTreeSet<&FeatureId> = tab
+    let now_hidden: BTreeSet<FeatureId> = tab
         .browser
         .bodies
         .iter()
-        .filter(|row| tab.hidden.contains(&row.name))
-        .map(|row| &row.id)
+        .filter(|row| !tab.shown(&crate::tab::Hideable::Feature(row.id.clone())))
+        .map(|row| row.id.clone())
         .collect();
     let view = &mut tab.view;
-    let now_hidden: BTreeSet<FeatureId> = hidden.iter().map(|id| (*id).clone()).collect();
     if now_hidden != view.hidden {
         view.hidden = now_hidden;
         // A body shown again may reach farther than the view's least allowed.
@@ -1488,10 +1516,14 @@ pub fn show<P: Clients + 'static>(
         .collect();
     // A highlight of a body not drawn, or of an element its mesh hasn't, would have the
     // renderer refuse the whole frame.
+    let linked = view.linked_faces();
     let highlights = view
         .highlights
         .iter()
         .copied()
+        .chain(linked)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .filter(|(number, element)| {
             bodies.binary_search(number).is_ok()
                 && view

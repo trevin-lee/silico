@@ -11,28 +11,31 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Ui};
-use silico_core::command::{
-    Opened, RebuildState, Response, Running, RunningCommand, SessionId, Sessions,
-};
+use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Ui};
+use silico_core::command::{Opened, Response, Running, SessionId, Sessions};
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::kernel::Clients;
 
+use crate::bar;
 use crate::browse::{self, Ask, Browse, Browsing, Pick};
-use crate::dialog::{Action, Kind};
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::panes::{self, Pane, Panes};
 use crate::recent::Recents;
 use crate::start::{self, Warm};
 use crate::tab::{DiskChoice, Tab, said};
-use crate::theme;
+use crate::theme::{self, FieldKind};
+use crate::toolbar;
 
 /// How long past [`DISK_CHECK_INTERVAL`] the idle frame comes: a comparison is due once the
 /// last one ended a whole interval ago, so a frame exactly an interval after the one that
 /// started it would come a little early, and the next comparison a whole interval late
 /// (#267's idle cadence). This much covers a comparison's own read on any likely file.
 pub const IDLE_MARGIN: Duration = Duration::from_millis(100);
+
+/// Redo's shortcut beside Ctrl+Y: Shift+Ctrl+Z (Shift+Command+Z on macOS).
+const REDO_SHIFTED: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::Z);
 
 /// The delay of the frame the app asks for when nothing it waits on has answered: one each
 /// [`DISK_CHECK_INTERVAL`], whose `status` starts the next comparison (section 3, *Idle*).
@@ -74,6 +77,34 @@ fn enter_is_ok(ui: &mut Ui) -> bool {
     })
 }
 
+/// Hide/Show's shortcut, H with no modifier (DESIGN.md, *Keyboard*: Fusion's V, moved to
+/// H), shown in the browser's eyes' tooltips.
+pub(crate) const HIDE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::H);
+
+/// Whether `shortcut` was pressed this frame with exactly its modifiers (egui's own match
+/// ignores Shift and Alt, so Shift+H and Alt+H stay free for other commands), and freshly,
+/// never the system's repeat of a key held down: taking it if so.
+fn take_bare(ui: &mut Ui, shortcut: KeyboardShortcut) -> bool {
+    ui.input_mut(|input| {
+        let mut pressed = false;
+        input.events.retain(|event| {
+            let fresh = matches!(
+                event,
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } if *key == shortcut.logical_key && *modifiers == shortcut.modifiers
+            );
+            pressed |= fresh;
+            !fresh
+        });
+        pressed
+    })
+}
+
 /// What the app is asking the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Asking {
@@ -90,6 +121,17 @@ enum Asking {
     Replace(SessionId, String),
     /// What to export of session's document, and where (M5.12): the form is `export`.
     Export(SessionId),
+}
+
+/// What a native dialog's answer goes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Browsed {
+    /// The path field of the question it was asked from (its Browse…), if that question is
+    /// still asked when it comes.
+    Field(Asking),
+    /// Open's own panel (File > Open…, Command+O, the start page's Open…): the file picked
+    /// is opened, whatever is asked meanwhile.
+    Open,
 }
 
 /// An open under way: its number, the order it was asked in, the path it was asked with, and
@@ -175,15 +217,18 @@ pub struct App<P: Clients + 'static> {
     /// What opens the native file dialogs, the Browse… buttons beside the path fields: none
     /// shown without it.
     browser: Option<Box<dyn Browse>>,
-    /// The native dialog open, for the question it was asked from: its answer goes to that
-    /// question, if it's still asked when it comes.
-    browsing: Option<Browsing<Asking>>,
+    /// The native dialog open, for what its answer goes to: the question it was asked from,
+    /// if it's still asked when it comes, or Open, which opens it.
+    browsing: Option<Browsing<Browsed>>,
     /// The folder of the last path a native dialog picked: where the next starts, if its
     /// document's folder isn't known.
     last_folder: Option<PathBuf>,
     /// The Home tab shown, over the open documents' (the start page, which shows anyway
     /// while none is open).
     home: bool,
+    /// The tab last scrolled into view in the app bar: a tab shown since, by a click or an
+    /// open, is scrolled to until it's in view, once.
+    tab_in_view: Option<SessionId>,
     /// The documents opened lately, if the app keeps a list.
     recents: Option<Recents>,
     /// The warm start's state, if the app warms its workers.
@@ -223,6 +268,7 @@ impl<P: Clients + 'static> App<P> {
             browsing: None,
             last_folder: None,
             home: false,
+            tab_in_view: None,
             recents: None,
             warm: None,
             silico: "silico".to_owned(),
@@ -417,8 +463,16 @@ impl<P: Clients + 'static> App<P> {
         }
         self.toolbar(ui, &mut started);
         self.status_bar(ui, &mut started);
+        // Over the status bar, across the window's width, under a docked dialog too; drawn
+        // before the viewport, which highlights the faces of the feature hovered in it.
+        let active = self.active_place();
+        crate::timeline::show(
+            ui,
+            active.and_then(|at| self.tabs.get_mut(at)),
+            &self.sessions,
+            &mut started,
+        );
         self.disk_banner(ui, &mut started);
-        self.dialog_panel(ui, &mut started, dialog_key);
         egui::CentralPanel::default().show(ui, |ui| {
             let active = self.active_place();
             let shown = active.and_then(|at| self.tabs.get(at)).map(|tab| tab.id);
@@ -444,6 +498,7 @@ impl<P: Clients + 'static> App<P> {
                 name,
                 started: &mut started,
                 drawing,
+                dialog_key,
             };
             tree.ui(&mut panes, ui);
         });
@@ -456,7 +511,7 @@ impl<P: Clients + 'static> App<P> {
         match act {
             start::Act::None => {}
             start::Act::New => self.asking = Some(Asking::Path { create: true }),
-            start::Act::Open => self.asking = Some(Asking::Path { create: false }),
+            start::Act::Open => self.ask_open(ui.ctx()),
             start::Act::Recent(path) => *started |= self.open_recent(&path),
             start::Act::CopyMcpConfig => ui.ctx().copy_text(self.mcp_config()),
         }
@@ -646,11 +701,13 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// Ctrl+S saves and Ctrl+Shift+S asks where to save as (neither while a dialog is
-    /// open), Ctrl+W closes, Ctrl+Z and Ctrl+Y undo and redo (docs/ux/solidworks.md, §6),
-    /// Esc stops what's running and Ctrl+B rebuilds what was stopped (§5, *Rebuild*). With a dialog open, Enter and Esc are
-    /// the dialog's, taken here and given to it once its inputs have taken this frame's
-    /// typing ([`dialog_panel`](Self::dialog_panel)). Whether a command was started, and
-    /// the dialog's key.
+    /// open), Ctrl+W closes, Ctrl+Z undoes and Ctrl+Y or Ctrl+Shift+Z redoes
+    /// (docs/ux/solidworks.md, §6; DESIGN.md, *Keyboard*), Esc stops what's running and
+    /// Ctrl+B rebuilds what was stopped (§5, *Rebuild*), and H hides or shows the selected
+    /// body or sketch, outside a text field. With a dialog open, Enter and Esc are the
+    /// dialog's, taken here and given to it once its inputs have taken this frame's typing
+    /// (`Panes::dialog`, in `crate::panes`). Whether a command was started, and the
+    /// dialog's key.
     fn keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
         self.modal_key = None;
         if self.asking.is_some() {
@@ -667,13 +724,18 @@ impl<P: Clients + 'static> App<P> {
             };
             return (escape || enter, None);
         }
-        // Ctrl+N and Ctrl+O: New's and Open's dialogs, as the File menu's and the start
-        // page's.
+        // Ctrl+N and Ctrl+O: New's dialog and Open's panel, as the File menu's and the
+        // start page's.
         for (key, create) in [(Key::N, true), (Key::O, false)] {
             if ui.input_mut(|input| {
                 input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))
             }) {
-                self.asking = Some(Asking::Path { create });
+                if create {
+                    self.asking = Some(Asking::Path { create });
+                } else {
+                    let ctx = ui.ctx().clone();
+                    self.ask_open(&ctx);
+                }
                 return (false, None);
             }
         }
@@ -712,17 +774,25 @@ impl<P: Clients + 'static> App<P> {
                 input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))
             })
         };
+        // Shift+Ctrl+Z before Ctrl+Z, which egui would match with the Shift aside: Redo, as
+        // Ctrl+Y is (DESIGN.md, *Keyboard*), never an Undo.
+        let shift_redo = ui.input_mut(|input| input.consume_shortcut(&REDO_SHIFTED));
         let (save, close, undo, redo, rebuild) = (
             pressed(Key::S),
             pressed(Key::W),
             pressed(Key::Z),
-            pressed(Key::Y),
+            pressed(Key::Y) || shift_redo,
             pressed(Key::B),
         );
         let stop = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
+        // H hides or shows the selection (DESIGN.md, *Keyboard*), never a letter typed.
+        let hide = !ui.ctx().text_edit_focused() && take_bare(ui, HIDE);
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return (false, None);
         };
+        if hide {
+            tab.toggle_selected_shown();
+        }
         let sessions = &self.sessions;
         if save && tab.unsaved() && !tab.in_dialog() {
             tab.save(sessions, false);
@@ -755,67 +825,6 @@ impl<P: Clients + 'static> App<P> {
         )
     }
 
-    /// The open dialog, docked at the right (open item 27): drawn, what's changed in it sent,
-    /// and its OK or Cancel taken, or `key`: Enter is OK, if OK is on; Esc goes to the first
-    /// of these there is (section 3), a dialog's preview rebuilding, which it stops, the
-    /// dialog left open, or the dialog, which it cancels (one still being read too;
-    /// [`Tab::dialog_escape`]).
-    fn dialog_panel(&mut self, ui: &mut Ui, started: &mut bool, key: Option<Key>) {
-        let sessions = &self.sessions;
-        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
-            return;
-        };
-        if tab.dialog.is_none() {
-            if key == Some(Key::Escape) && tab.in_dialog() {
-                tab.close_dialog(sessions, false);
-            }
-            return;
-        }
-        let refused: Vec<&'static str> = tab
-            .dialog
-            .iter()
-            .flat_map(|dialog| dialog.inputs.iter().map(|input| input.part.field()))
-            .filter(|field| tab.field_refused(field))
-            .collect();
-        let said = tab.dialog_said();
-        let Some(mut dialog) = tab.dialog.take() else {
-            return;
-        };
-        let enabled = !tab.closing();
-        let mut action = Action::None;
-        egui::Panel::right("dialog")
-            .resizable(false)
-            .default_size(280.0)
-            .show(ui, |ui| {
-                let title = dialog.kind.title();
-                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
-                    node.set_role(egui::accesskit::Role::Dialog);
-                    node.set_label(title);
-                });
-                let rows = &tab.browser.sketches;
-                let named = |id: &silico_core::document::FeatureId| {
-                    rows.iter()
-                        .find(|row| &row.id == id)
-                        .map(|row| row.name.clone())
-                };
-                let refused = |field: &str| refused.contains(&field);
-                action = dialog.ui(ui, &said, &named, &refused, enabled);
-            });
-        tab.dialog = Some(dialog);
-        *started |= tab.dialog_changed(sessions);
-        match key {
-            Some(Key::Enter) if tab.can_ok() => action = Action::Ok,
-            Some(Key::Escape) if tab.dialog_escape(sessions) => action = Action::Cancel,
-            _ => {}
-        }
-        match action {
-            Action::None => {}
-            Action::Ok => tab.close_dialog(sessions, true),
-            Action::Cancel => tab.close_dialog(sessions, false),
-        }
-        *started |= action != Action::None;
-    }
-
     /// Close the tab of session `id`: asking first if it holds edits (decision 1).
     fn close(&mut self, id: SessionId) {
         let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
@@ -828,11 +837,11 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// The native dialog's answer, if it has come, never waited for: a path picked fills the
-    /// path field of the question it was asked from (Open's opens it), if that question is
-    /// still asked; a cancel, or a question no longer asked, changes nothing, nor does
-    /// Export's while its export runs or asks whether to replace. Whether a command was
-    /// started.
+    /// The native dialog's answer, if it has come, never waited for: Open's panel's pick
+    /// opened; a path picked through Browse… filling the path field of the question it was
+    /// asked from (the typed-path Open's opens it), if that question is still asked; a
+    /// cancel, or a question no longer asked, changes nothing, nor does Export's while its
+    /// export runs or asks whether to replace. Whether a command was started.
     fn take_browsed(&mut self) -> bool {
         let Some(answer) = self.browsing.as_mut().and_then(Browsing::poll) else {
             return false;
@@ -849,9 +858,11 @@ impl<P: Clients + 'static> App<P> {
         {
             self.last_folder = Some(folder.to_path_buf());
         }
-        if self.asking.as_ref() != Some(&what) {
-            return false;
-        }
+        let what = match what {
+            Browsed::Field(what) if self.asking.as_ref() == Some(&what) => Some(what),
+            Browsed::Field(_) => return false,
+            Browsed::Open => None,
+        };
         let path = match path.into_os_string().into_string() {
             Ok(path) => path,
             Err(path) => {
@@ -862,6 +873,12 @@ impl<P: Clients + 'static> App<P> {
                 self.message_from = None;
                 return false;
             }
+        };
+        let Some(what) = what else {
+            // Open's panel: the file picked opened, as Browse…'s pick in the typed-path Open
+            // is, its tab and the recent documents following once it answers.
+            self.open(&path, false);
+            return true;
         };
         match what {
             Asking::Path { create: false } => {
@@ -898,11 +915,61 @@ impl<P: Clients + 'static> App<P> {
         self.browser.is_some() && browse::button(ui, self.browsing.is_none())
     }
 
-    /// The native dialog of `asking`'s path field, opened, its answer polled each frame.
+    /// Open (File > Open…, Command+O, the start page's Open…): the platform's own open panel
+    /// at once, the file picked opened when it answers ([`take_browsed`](Self::take_browsed)),
+    /// a cancel doing nothing. With no native dialogs, or one that won't open, or while
+    /// another native dialog is open (a Browse…'s), the typed-path Open asked instead; while
+    /// Open's own panel is open, nothing.
+    fn ask_open(&mut self, ctx: &egui::Context) {
+        let typed = Asking::Path { create: false };
+        match &self.browsing {
+            Some(browsing) if browsing.what == Browsed::Open => return,
+            Some(_) => {
+                self.asking = Some(typed);
+                return;
+            }
+            None => {}
+        }
+        let Some(ask) = self.ask_of(&typed) else {
+            return;
+        };
+        if !self.start_browsing(Browsed::Open, &ask, ctx) {
+            self.asking = Some(typed);
+        }
+    }
+
+    /// The native dialog of `asking`'s path field, opened, its answer polled each frame; if
+    /// none will open, said.
     fn browse(&mut self, asking: Asking, ctx: &egui::Context) {
         if self.browsing.is_some() {
             return;
         }
+        let Some(ask) = self.ask_of(&asking) else {
+            return;
+        };
+        if !self.start_browsing(Browsed::Field(asking), &ask, ctx) {
+            self.message = Some("The file dialog didn't open: type the path".to_owned());
+            self.message_from = None;
+        }
+    }
+
+    /// The native dialog `ask`, opened for `what`, its answer polled each frame: whether one
+    /// opened (none without native dialogs).
+    fn start_browsing(&mut self, what: Browsed, ask: &Ask, ctx: &egui::Context) -> bool {
+        let Some(answer) = self
+            .browser
+            .as_mut()
+            .and_then(|browser| browser.browse(ask))
+        else {
+            return false;
+        };
+        self.browsing = Some(Browsing::new(what, answer, ctx));
+        true
+    }
+
+    /// What the native dialog of `asking`'s path field is asked: where it starts, its
+    /// filters, and its title. None for a question with no path, or of a tab or form gone.
+    fn ask_of(&self, asking: &Asking) -> Option<Ask> {
         let tab = |id: SessionId| self.tabs.iter().find(|tab| tab.id == id);
         // The document's folder, or else the last a dialog picked in (else the platform's).
         let folder = |document: Option<&str>| {
@@ -910,7 +977,7 @@ impl<P: Clients + 'static> App<P> {
                 .and_then(browse::folder_of)
                 .or_else(|| self.last_folder.clone())
         };
-        let ask = match &asking {
+        let ask = match asking {
             Asking::Path { create } => {
                 let shown = self.active_place().and_then(|at| self.tabs.get(at));
                 Ask {
@@ -927,7 +994,7 @@ impl<P: Clients + 'static> App<P> {
                 }
             }
             Asking::SaveAs(id) => {
-                let Some(tab) = tab(*id) else { return };
+                let tab = tab(*id)?;
                 Ask {
                     pick: Pick::Save,
                     title: format!("Save {} as", tab.name()),
@@ -937,10 +1004,8 @@ impl<P: Clients + 'static> App<P> {
                 }
             }
             Asking::Export(id) => {
-                let Some(tab) = tab(*id) else { return };
-                let Some(form) = self.export.as_ref().filter(|form| form.session == *id) else {
-                    return;
-                };
+                let tab = tab(*id)?;
+                let form = self.export.as_ref().filter(|form| form.session == *id)?;
                 Ask {
                     pick: Pick::Save,
                     title: format!("Export {}", tab.name()),
@@ -949,273 +1014,289 @@ impl<P: Clients + 'static> App<P> {
                     file_name: browse::file_name_of(&form.path),
                 }
             }
-            Asking::Close(_) | Asking::Quit | Asking::Replace(..) => return,
+            Asking::Close(_) | Asking::Quit | Asking::Replace(..) => return None,
         };
-        let Some(browser) = self.browser.as_mut() else {
-            return;
-        };
-        let answer = browser.browse(&ask);
-        self.browsing = Some(Browsing::new(asking, answer, ctx));
+        Some(ask)
     }
 
-    /// The application bar (section 8): the File menu, Save, Undo and Redo, and the open
-    /// documents' tabs, an asterisk on a changed one's (docs/ux/solidworks.md, §6).
+    /// The application bar (section 8; docs/design/m5-ui/DESIGN.md, *Layout*): Home, the
+    /// File menu, Save, Undo and Redo, and the open documents' tabs, an asterisk on a changed
+    /// one's (docs/ux/solidworks.md, §6), scrolling across when they overflow. On macOS it's
+    /// the window's title bar (`bar`).
     fn app_bar(&mut self, ui: &mut Ui, started: &mut bool) {
         egui::Panel::top("app_bar")
             .exact_size(theme::TOP_BAR_HEIGHT)
+            .frame(egui::Frame::NONE.fill(theme::TOP_BAR_BG))
+            .show_separator_line(false)
             .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    // Home, at the far left: the start page, over the open documents.
-                    let start_shown = self.start_shown();
-                    // On: Gray.250 behind a white icon (`.ab-btn.on`), not the selection's blue.
-                    let (fill, icon) = if start_shown {
-                        (theme::HOVER_BG, theme::TEXT_STRONG)
-                    } else {
-                        (egui::Color32::TRANSPARENT, theme::TEXT_DEFAULT)
-                    };
-                    let home = ui
-                        .add(
-                            egui::Button::image(crate::icons::icon(Icon::Home).tint(icon))
-                                .fill(fill)
-                                .frame_when_inactive(start_shown),
-                        )
-                        .on_hover_text("Home: New, Open, and the documents opened lately");
-                    home.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::WidgetType::Button,
-                            true,
-                            start_shown,
-                            "Home",
-                        )
-                    });
-                    if home.clicked() {
-                        self.home = true;
-                    }
-                    let open = !self.tabs.is_empty();
-                    let transaction = self
-                        .active_place()
-                        .and_then(|at| self.tabs.get(at))
-                        .is_some_and(|tab| tab.transaction);
-                    // Revert is off while the tab closes: its close drops the edits already.
-                    let revertible = transaction
-                        && self
-                            .active_place()
-                            .and_then(|at| self.tabs.get(at))
-                            .is_some_and(|tab| !tab.closing());
-                    ui.menu_button("File", |ui| {
-                        if ui.button("New…").clicked() {
-                            self.asking = Some(Asking::Path { create: true });
-                            ui.close();
-                        }
-                        if ui.button("Open…").clicked() {
-                            self.asking = Some(Asking::Path { create: false });
-                            ui.close();
-                        }
-                        if ui
-                            .add_enabled(self.save_as_offered(), egui::Button::new("Save As…"))
-                            .clicked()
-                        {
-                            if let Some(id) = self.active {
-                                self.save_as_path.clear();
-                                self.asking = Some(Asking::SaveAs(id));
-                            }
-                            ui.close();
-                        }
-                        // Off while the tab closes, as Save As is.
-                        if ui
-                            .add_enabled(self.save_as_offered(), egui::Button::new("Export…"))
-                            .clicked()
-                        {
-                            if let Some(tab) =
-                                self.active_place().and_then(|at| self.tabs.get_mut(at))
-                            {
-                                tab.export_opened();
-                                self.export = Some(ExportForm::new(tab.id, &tab.path));
-                                self.asking = Some(Asking::Export(tab.id));
-                            }
-                            ui.close();
-                        }
-                        if ui
-                            .add_enabled(revertible, egui::Button::new("Revert"))
-                            .clicked()
-                        {
-                            if let Some(tab) =
-                                self.active_place().and_then(|at| self.tabs.get_mut(at))
-                            {
-                                tab.revert(&self.sessions, false);
-                                *started = true;
-                            }
-                            ui.close();
-                        }
-                        if ui.add_enabled(open, egui::Button::new("Close")).clicked() {
-                            if let Some(id) = self.active {
-                                self.close(id);
-                            }
-                            *started = true;
-                            ui.close();
-                        }
-                    });
-                    let tab = self.active_place().and_then(|at| self.tabs.get_mut(at));
-                    // Off while a dialog is open: its OK or Cancel ends its edits first.
-                    let unsaved = tab
-                        .as_ref()
-                        .is_some_and(|tab| tab.unsaved() && !tab.in_dialog());
-                    if ui.add_enabled(unsaved, egui::Button::new("Save")).clicked()
-                        && let Some(tab) = tab
-                    {
-                        tab.save(&self.sessions, false);
-                        *started = true;
-                    }
-                    let (undoable, redoable) = self
-                        .active_place()
-                        .and_then(|at| self.tabs.get(at))
-                        .map_or((false, false), |tab| (tab.undoable(), tab.redoable()));
-                    for (undo, word, enabled) in
-                        [(true, "Undo", undoable), (false, "Redo", redoable)]
-                    {
-                        if ui.add_enabled(enabled, egui::Button::new(word)).clicked()
-                            && let Some(tab) =
-                                self.active_place().and_then(|at| self.tabs.get_mut(at))
-                        {
-                            tab.step(&self.sessions, undo);
-                            *started = true;
-                        }
-                    }
-                    ui.separator();
-                    let mut close = None;
-                    for tab in &self.tabs {
-                        let title = if tab.unsaved() {
-                            format!("{} *", tab.name())
-                        } else {
-                            tab.name().to_owned()
-                        };
-                        if ui
-                            .selectable_label(Some(tab.id) == self.active && !start_shown, &title)
-                            .clicked()
-                        {
-                            self.active = Some(tab.id);
-                            self.home = false;
-                        }
-                        let x = ui.add(egui::Button::new("×").frame(false));
-                        let closing = format!("Close {}", tab.name());
-                        x.widget_info(|| {
-                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &closing)
-                        });
-                        if x.clicked() {
-                            close = Some(tab.id);
-                        }
-                    }
-                    if let Some(id) = close {
-                        self.close(id);
-                        *started = true;
-                    }
-                });
+                let bar = ui.max_rect();
+                bar::move_window(ui, bar);
+                bar::border(ui, bar);
+                // The row above the border, its items centred in it.
+                let row =
+                    egui::Rect::from_min_max(bar.min, egui::pos2(bar.right(), bar.bottom() - 1.0));
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(row)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = theme::APP_BAR_ITEM_SPACING;
+                        bar::inset(ui);
+                        self.app_bar_buttons(ui, started);
+                        bar::separator(ui);
+                        self.document_tabs(ui, started);
+                    },
+                );
             });
     }
 
-    /// The toolbar (section 8): the Design workspace's SOLID tab, its panels named, and
-    /// CREATE's tools, each opening its feature's dialog (M5.8): the primitives, and the
-    /// features that sweep a sketch's profile (those that cut, only with a body to cut).
+    /// The app bar's buttons: Home, at the far left (the start page, over the open
+    /// documents), the File menu, Save, Undo, and Redo.
+    fn app_bar_buttons(&mut self, ui: &mut Ui, started: &mut bool) {
+        let start_shown = self.start_shown();
+        let home = bar::button(ui, Icon::Home, None, "Home", true, Some(start_shown));
+        let home = bar::tooltip(
+            home,
+            "Home",
+            None,
+            Some("New, Open, and the documents opened lately"),
+        );
+        if home.clicked() {
+            self.home = true;
+        }
+        let file = bar::button(ui, Icon::Menu, Some("File"), "File", true, None);
+        bar::menu(&file, |ui| self.file_menu(ui, started));
+        // Off on Home, as the shortcuts are (the prototype's `S.view === 'doc'`): the
+        // document is hidden.
+        let tab = self
+            .active_place()
+            .filter(|_| !start_shown)
+            .and_then(|at| self.tabs.get_mut(at));
+        // Off while a dialog is open: its OK or Cancel ends its edits first.
+        let unsaved = tab
+            .as_ref()
+            .is_some_and(|tab| tab.unsaved() && !tab.in_dialog());
+        let said = tab
+            .as_ref()
+            .filter(|_| unsaved)
+            .map(|tab| format!("Writes your edits to {}", tab.name()));
+        let save = bar::button(ui, Icon::Save, None, "Save", unsaved, None);
+        let shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
+        if bar::tooltip(save, "Save", Some(shortcut), said.as_deref()).clicked()
+            && let Some(tab) = tab
+        {
+            tab.save(&self.sessions, false);
+            *started = true;
+        }
+        let (undoable, redoable) = self
+            .active_place()
+            .filter(|_| !start_shown)
+            .and_then(|at| self.tabs.get(at))
+            .map_or((false, false), |tab| (tab.undoable(), tab.redoable()));
+        // Redo's shortcut as the prototype names it: Shift+Command+Z on macOS, Ctrl+Y
+        // elsewhere (each works on both).
+        let redo = if ui.ctx().os() == egui::os::OperatingSystem::Mac {
+            REDO_SHIFTED
+        } else {
+            KeyboardShortcut::new(Modifiers::COMMAND, Key::Y)
+        };
+        for (undo, icon, word, shortcut, enabled) in [
+            (
+                true,
+                Icon::Undo,
+                "Undo",
+                KeyboardShortcut::new(Modifiers::COMMAND, Key::Z),
+                undoable,
+            ),
+            (false, Icon::Redo, "Redo", redo, redoable),
+        ] {
+            let button = bar::button(ui, icon, None, word, enabled, None);
+            if bar::tooltip(button, word, Some(shortcut), None).clicked()
+                && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at))
+            {
+                tab.step(&self.sessions, undo);
+                *started = true;
+            }
+        }
+    }
+
+    /// The File menu's items: New…, Open…, Save As…, Export…, Revert, and Close.
+    fn file_menu(&mut self, ui: &mut Ui, started: &mut bool) {
+        let open = !self.tabs.is_empty();
+        let transaction = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .is_some_and(|tab| tab.transaction);
+        // Revert is off while the tab closes: its close drops the edits already.
+        let revertible = transaction
+            && self
+                .active_place()
+                .and_then(|at| self.tabs.get(at))
+                .is_some_and(|tab| !tab.closing());
+        if ui.button("New…").clicked() {
+            self.asking = Some(Asking::Path { create: true });
+            ui.close();
+        }
+        if ui.button("Open…").clicked() {
+            let ctx = ui.ctx().clone();
+            self.ask_open(&ctx);
+            ui.close();
+        }
+        if ui
+            .add_enabled(self.save_as_offered(), egui::Button::new("Save As…"))
+            .clicked()
+        {
+            if let Some(id) = self.active {
+                self.save_as_path.clear();
+                self.asking = Some(Asking::SaveAs(id));
+            }
+            ui.close();
+        }
+        // Off while the tab closes, as Save As is.
+        if ui
+            .add_enabled(self.save_as_offered(), egui::Button::new("Export…"))
+            .clicked()
+        {
+            if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
+                tab.export_opened();
+                self.export = Some(ExportForm::new(tab.id, &tab.path));
+                self.asking = Some(Asking::Export(tab.id));
+            }
+            ui.close();
+        }
+        if ui
+            .add_enabled(revertible, egui::Button::new("Revert"))
+            .clicked()
+        {
+            if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
+                tab.revert(&self.sessions, false);
+                *started = true;
+            }
+            ui.close();
+        }
+        if ui.add_enabled(open, egui::Button::new("Close")).clicked() {
+            if let Some(id) = self.active {
+                self.close(id);
+            }
+            *started = true;
+            ui.close();
+        }
+    }
+
+    /// The open documents' tabs, after the separator: a click shows one's document, and its
+    /// ×, shown while it's hovered or shown, closes it. A tab newly shown is scrolled into
+    /// view.
+    fn document_tabs(&mut self, ui: &mut Ui, started: &mut bool) {
+        let start_shown = self.start_shown();
+        let mut show = None;
+        let mut close = None;
+        let in_view = &mut self.tab_in_view;
+        bar::tab_strip(ui, |ui| {
+            for (at, tab) in self.tabs.iter().enumerate() {
+                let active = Some(tab.id) == self.active && !start_shown;
+                let drawn = bar::doc_tab(
+                    ui,
+                    &bar::DocTab {
+                        name: tab.name(),
+                        path: &tab.path,
+                        unsaved: tab.unsaved(),
+                        active,
+                        first: at == 0,
+                    },
+                );
+                // Scrolled to until it's in view; then left where the person scrolls.
+                if active && *in_view != Some(tab.id) && drawn.in_view(ui) {
+                    *in_view = Some(tab.id);
+                }
+                if drawn.close.clicked() {
+                    close = Some(tab.id);
+                } else if drawn.tab.clicked() {
+                    show = Some(tab.id);
+                }
+            }
+        });
+        if let Some(id) = show {
+            self.active = Some(id);
+            self.home = false;
+        }
+        if let Some(id) = close {
+            self.close(id);
+            *started = true;
+        }
+    }
+
+    /// The toolbar (section 8; `toolbar`): the Design workspace's SOLID tab and its panels,
+    /// CREATE's tools each opening its feature's dialog (M5.8): the primitives, and the
+    /// features that sweep a sketch's profile (those that cut, only with a body to cut); and
+    /// SELECT's Clear selection.
     fn toolbar(&mut self, ui: &mut Ui, started: &mut bool) {
-        let sessions = &self.sessions;
         let mut tab = self
             .active
             .and_then(|active| self.tabs.iter_mut().find(|tab| tab.id == active));
-        egui::Panel::top("toolbar")
-            .exact_size(theme::TITLE_BAR_HEIGHT * 2.0)
-            .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.label(RichText::new("DESIGN").strong());
-                    ui.separator();
-                    ui.label(RichText::new("SOLID").strong());
-                    ui.separator();
-                    ui.label(RichText::new("CREATE").small());
-                    ui.scope_builder(egui::UiBuilder::new().id_salt("create"), |ui| {
-                        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
-                            node.set_role(egui::accesskit::Role::Toolbar);
-                            node.set_label("CREATE");
-                        });
-                        ui.horizontal(|ui| {
-                            for kind in Kind::ALL {
-                                let enabled = tab.as_ref().is_some_and(|tab| tab.can_open(kind));
-                                if ui
-                                    .add_enabled(enabled, egui::Button::new(kind.title()))
-                                    .clicked()
-                                    && let Some(tab) = tab.as_mut()
-                                {
-                                    tab.open_dialog(sessions, kind);
-                                    *started = true;
-                                }
-                            }
-                        });
-                    });
-                    for panel in ["MODIFY", "INSPECT", "SELECT"] {
-                        ui.separator();
-                        ui.label(RichText::new(panel).small());
-                    }
-                });
-            });
+        let act = {
+            let shown = tab.as_deref();
+            let can_open = |kind| shown.is_some_and(|tab| tab.can_open(kind));
+            toolbar::show(
+                ui,
+                &toolbar::Shown {
+                    // Sketch mode (#351) wires these: `tab.in_sketch() -> bool`, and
+                    // `Some(tab.can_sketch())` (`tab.can_sketch() -> bool`).
+                    in_sketch: false,
+                    create_sketch: None,
+                    can_open: &can_open,
+                    selected: shown.is_some_and(|tab| tab.selected.is_some() && !tab.in_dialog()),
+                },
+            )
+        };
+        let Some(tab) = tab.as_mut() else {
+            return;
+        };
+        match act {
+            Some(toolbar::Act::Dialog(kind)) => {
+                tab.open_dialog(&self.sessions, kind);
+                *started = true;
+            }
+            Some(toolbar::Act::ClearSelection) => tab.selected = None,
+            // Sketch mode (#351) wires these: `CreateSketch(plane)` to
+            // `tab.create_sketch(&self.sessions, plane)` and `*started = true`, and
+            // `FinishSketch` to `tab.finish_sketch(&self.sessions, true)` (false is Cancel).
+            Some(toolbar::Act::CreateSketch(_) | toolbar::Act::FinishSketch) | None => {}
+        }
     }
 
-    /// The status bar: the rebuild (`status.rebuild`) or the session's own reload, the stop
-    /// button (`cancel` naming the rebuild, on while it runs, whatever command runs: section
-    /// 3, *Stop*), and the last refusal.
+    /// The status bar (`crate::status`): the rebuild (`status.rebuild`) or the session's own
+    /// reload, the stop button (`cancel` naming the rebuild, on while it runs, whatever
+    /// command runs: section 3, *Stop*), Rebuild, the last refusal, the file on disk (its
+    /// chip offering again the choice kept), and whether the document is saved.
     fn status_bar(&mut self, ui: &mut Ui, started: &mut bool) {
         egui::Panel::bottom("status_bar")
-            .exact_size(theme::TITLE_BAR_HEIGHT)
+            .exact_size(theme::STATUS_BAR_HEIGHT)
+            .resizable(false)
+            .frame(egui::Frame::NONE)
             .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    let message = self.message.clone();
-                    let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
-                        // No document: how the warm start stands (decision 10).
-                        if let Some(warm) = &self.warm {
-                            start::warm_status(ui, warm.state());
-                        }
-                        if let Some(message) = message {
-                            ui.colored_label(ui.visuals().error_fg_color, message);
-                        }
-                        return;
-                    };
-                    let status = tab.status.clone();
-                    let running = status.as_ref().and_then(|status| status.running);
-                    let rebuild = status.as_ref().map(|status| &status.rebuild);
-                    let said = match (running, rebuild) {
-                        (Some(RunningCommand::Reload), _) => {
-                            format!("Reloading {} from disk", tab.name())
-                        }
-                        (_, Some(rebuild)) => match (rebuild.state, &rebuild.progress) {
-                            (RebuildState::Running, Some(progress)) => {
-                                format!("Rebuilding: {} of {} steps", progress.done, progress.steps)
-                            }
-                            (RebuildState::Running, None) => "Rebuilding".to_owned(),
-                            (RebuildState::Done, _) => "Rebuilt".to_owned(),
-                            (RebuildState::Faulted, _) => "The kernel faulted".to_owned(),
-                            (RebuildState::Stopped, _) => "Rebuild stopped".to_owned(),
-                            (RebuildState::Idle, _) => String::new(),
-                        },
-                        (_, None) => String::new(),
-                    };
-                    ui.label(said);
-                    let stoppable = tab.stoppable();
-                    if ui
-                        .add_enabled(stoppable, egui::Button::new("Stop"))
-                        .clicked()
-                    {
-                        tab.stop(&self.sessions);
-                        *started = true;
-                    }
-                    // Rebuild (Ctrl+B), on while the tab's revision's rebuild is stopped.
-                    if ui
-                        .add_enabled(tab.can_rebuild(), egui::Button::new("Rebuild"))
-                        .clicked()
-                    {
-                        tab.rebuild(&self.sessions);
-                        *started = true;
-                    }
-                    for message in [message, tab.message.clone()].into_iter().flatten() {
-                        ui.colored_label(ui.visuals().error_fg_color, message);
-                    }
-                });
+                let message = self.message.clone();
+                let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
+                    // No document: how the warm start stands (decision 10).
+                    let warming = self.warm.as_ref().map(Warm::state);
+                    crate::status::bar(ui, &crate::status::unopened(warming, message));
+                    return;
+                };
+                let asked = crate::status::bar(ui, &crate::status::of(tab, message));
+                if asked.stop {
+                    tab.stop(&self.sessions);
+                    *started = true;
+                }
+                if asked.rebuild {
+                    tab.rebuild(&self.sessions);
+                    *started = true;
+                }
+                if asked.disk
+                    && tab.disk_choice == DiskChoice::Kept
+                    && let Some(disk) = tab.status.as_ref().and_then(|status| status.disk)
+                {
+                    // The edits kept over a file changed on disk: the choice offered again.
+                    tab.disk_choice = DiskChoice::Offered(disk);
+                }
             });
     }
 
@@ -1273,8 +1354,15 @@ impl<P: Clients + 'static> App<P> {
                 });
                 ui.horizontal(|ui| {
                     let label = ui.label("Path");
-                    ui.add(egui::TextEdit::singleline(&mut self.open_path))
-                        .labelled_by(label.id);
+                    let edit = egui::TextEdit::singleline(&mut self.open_path);
+                    ui.add(theme::field(
+                        ui,
+                        edit,
+                        "open-path",
+                        FieldKind::Modify,
+                        false,
+                    ))
+                    .labelled_by(label.id);
                     browse = self.browse_button(ui);
                 });
                 ui.horizontal(|ui| {
@@ -1303,8 +1391,15 @@ impl<P: Clients + 'static> App<P> {
                 ));
                 ui.horizontal(|ui| {
                     let label = ui.label("Path");
-                    ui.add(egui::TextEdit::singleline(&mut self.save_as_path))
-                        .labelled_by(label.id);
+                    let edit = egui::TextEdit::singleline(&mut self.save_as_path);
+                    ui.add(theme::field(
+                        ui,
+                        edit,
+                        "save-as-path",
+                        FieldKind::Modify,
+                        false,
+                    ))
+                    .labelled_by(label.id);
                     browse = self.browse_button(ui);
                 });
                 ui.horizontal(|ui| {
