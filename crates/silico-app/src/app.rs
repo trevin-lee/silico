@@ -5,7 +5,7 @@
 //! frame after anything changes, and with nothing pending one frame a second compares the
 //! files on disk.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,17 +86,27 @@ fn enter_is_ok(ui: &mut Ui) -> bool {
 /// What the app is asking the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Asking {
-    /// A path to open, or (`create`) to make a new document at (open item 30).
-    Path { create: bool },
+    /// A path to open, typed: Open's fallback when its panel won't open.
+    Open,
     /// Whether to save a changed document before closing it (docs/ux/solidworks.md, §6),
     /// by its session, whatever opens or closes meanwhile.
     Close(SessionId),
     /// Whether to save the changed documents before quitting.
     Quit,
-    /// A path to save session's document to (Save As), by its session.
-    SaveAs(SessionId),
-    /// Whether to replace the file a Save As of session's document found at its path.
-    Replace(SessionId, String),
+    /// A path to save `session`'s document to, typed (Save As, and an untitled part's
+    /// Save): the Save panel's fallback when it won't open. Then closed, if `then_close`
+    /// (Close's or Quit's Save of an untitled part), whose Cancel refuses that close.
+    SaveAs {
+        session: SessionId,
+        then_close: bool,
+    },
+    /// Whether to replace the file a typed Save As of `session`'s document found at
+    /// `path`; then closed, if `then_close`.
+    Replace {
+        session: SessionId,
+        path: String,
+        then_close: bool,
+    },
     /// What to export of session's document, and where (M5.12): the form is `export`.
     Export(SessionId),
 }
@@ -110,18 +120,43 @@ enum Browsed {
     /// Open's own panel (File > Open…, Command+O, the start page's Open…): the file picked
     /// is opened, whatever is asked meanwhile.
     Open,
+    /// The Save panel of `session`'s document (Save As, and an untitled part's Save): its
+    /// document saved as the file picked, if its tab is still open and not closing, then
+    /// closed if `then_close`; a cancel, if it was to close, refuses the close.
+    SaveAs {
+        session: SessionId,
+        then_close: bool,
+    },
 }
 
-/// An open under way: its number, the order it was asked in, the path it was asked with, and
-/// its command, running.
+/// What an open was asked for: the document at a path, or an untitled part, shown by the
+/// name it was given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Part {
+    File(String),
+    Untitled(String),
+}
+
+impl Part {
+    /// The path asked for: none for an untitled part.
+    fn path(&self) -> Option<&str> {
+        match self {
+            Part::File(path) => Some(path),
+            Part::Untitled(_) => None,
+        }
+    }
+}
+
+/// An open under way: its number, the order it was asked in, what it was asked for, and its
+/// command, running.
 struct Opening<R = Running<Opened>> {
     number: u64,
-    path: String,
+    part: Part,
     running: R,
 }
 
-/// An open that answered: its number, the path it was asked with, and its answer.
-type Answered<T = Response<Opened>> = (u64, String, T);
+/// An open that answered: its number, what it was asked for, and its answer.
+type Answered<T = Response<Opened>> = (u64, Part, T);
 
 /// The opens under way split into those that have answered, each with its answer, and those
 /// still pending, both in the order asked: every answered one taken at once, none waiting on
@@ -135,15 +170,15 @@ fn split_answered<R, T>(
     let mut pending = Vec::new();
     for Opening {
         number,
-        path,
+        part,
         running,
     } in opening
     {
         match try_take(running) {
-            Ok(answer) => answered.push((number, path, answer)),
+            Ok(answer) => answered.push((number, part, answer)),
             Err(running) => pending.push(Opening {
                 number,
-                path,
+                part,
                 running,
             }),
         }
@@ -160,14 +195,20 @@ pub struct App<P: Clients + 'static> {
     opening: Vec<Opening>,
     /// The number the next open is asked with.
     next_open: u64,
+    /// How many untitled parts New has asked for in this run: the next is named by one
+    /// more, so no name is given twice in a run, whatever has closed since (macOS's rule).
+    untitled: u64,
+    /// The untitled parts whose Save panel a quit's Save all has still to open, in turn,
+    /// one at a time: let go if the quit stops.
+    quit_saves: VecDeque<SessionId>,
     /// Each tab's open number, by its session: the tabs stand in that order, the order their
     /// opens were asked in, whatever order they answered in (each session opens on a thread
     /// of its own); and an open answering after one asked later than it, whose tab is still
     /// open, isn't shown over that one.
     open_numbers: BTreeMap<SessionId, u64>,
     asking: Option<Asking>,
-    /// The Open (and New) dialog's path field, kept from the last time it was open; and
-    /// Save As's, empty each time it opens.
+    /// The typed-path Open's field, kept from the last time it was open; and the typed Save
+    /// As's, empty each time it opens.
     open_path: String,
     save_as_path: String,
     /// The export dialog's form, while it's open.
@@ -229,6 +270,8 @@ impl<P: Clients + 'static> App<P> {
             active: None,
             opening: Vec::new(),
             next_open: 0,
+            untitled: 0,
+            quit_saves: VecDeque::new(),
             open_numbers: BTreeMap::new(),
             asking: None,
             open_path: String::new(),
@@ -300,12 +343,13 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The workspace Copy MCP config names ([`start::workspace`]): the folder of the
-    /// document shown, else of the newest recent one found, else the Documents folder.
+    /// document shown, else (none shown, or an untitled part, which has no folder) of the
+    /// newest recent one found, else the Documents folder.
     fn workspace(&self) -> Option<PathBuf> {
         let shown = self
             .active_place()
             .and_then(|at| self.tabs.get(at))
-            .map(|tab| tab.path.as_str());
+            .and_then(|tab| tab.path.as_deref());
         let recents = self.recents.as_ref().map(Recents::list).unwrap_or_default();
         start::workspace(shown, recents, self.documents.as_deref())
     }
@@ -388,12 +432,32 @@ impl<P: Clients + 'static> App<P> {
 
     /// Opens the document at `path`, as the Open dialog does: a tab once it has opened.
     pub fn open(&mut self, path: &str, create: bool) {
+        let running = self.sessions.open(path, create);
+        self.opening(Part::File(path.to_owned()), running);
+    }
+
+    /// A new, untitled part (File > New, Command+N, the start page's New part): opened at
+    /// once, asking nothing, with no file until its first save (`open` with no path). Named
+    /// "Untitled", then "Untitled 2", "Untitled 3", and so on, one more each time, never a
+    /// name given before in this run.
+    pub fn new_part(&mut self) {
+        self.untitled += 1;
+        let name = match self.untitled {
+            1 => "Untitled".to_owned(),
+            n => format!("Untitled {n}"),
+        };
+        let running = self.sessions.open_untitled();
+        self.opening(Part::Untitled(name), running);
+    }
+
+    /// The open of `part`, `running`, numbered in the order asked: a tab once it opens.
+    fn opening(&mut self, part: Part, running: Running<Opened>) {
         let number = self.next_open;
         self.next_open += 1;
         self.opening.push(Opening {
             number,
-            path: path.to_owned(),
-            running: self.sessions.open(path, create),
+            part,
+            running,
         });
     }
 
@@ -492,12 +556,15 @@ impl<P: Clients + 'static> App<P> {
         self.after_drawing(ui, started);
     }
 
-    /// What the start page's `act` asks: New's and Open's dialogs, a recent document opened
-    /// (or its tab shown, if it's open), or the MCP config copied.
+    /// What the start page's `act` asks: a new untitled part, Open's panel, a recent
+    /// document opened (or its tab shown, if it's open), or the MCP config copied.
     fn start_act(&mut self, ui: &Ui, act: start::Act, started: &mut bool) {
         match act {
             start::Act::None => {}
-            start::Act::New => self.asking = Some(Asking::Path { create: true }),
+            start::Act::New => {
+                self.new_part();
+                *started = true;
+            }
             start::Act::Open => self.ask_open(ui.ctx()),
             start::Act::Recent(path) => *started |= self.open_recent(&path),
             start::Act::CopyMcpConfig => ui.ctx().copy_text(self.mcp_config()),
@@ -511,12 +578,20 @@ impl<P: Clients + 'static> App<P> {
         let same = |other: &str| {
             std::path::absolute(other).is_ok_and(|at| at == std::path::Path::new(path))
         };
-        if let Some(tab) = self.tabs.iter().find(|tab| same(&tab.path)) {
+        if let Some(tab) = self
+            .tabs
+            .iter()
+            .find(|tab| tab.path.as_deref().is_some_and(same))
+        {
             self.active = Some(tab.id);
             self.home = false;
             return false;
         }
-        if self.opening.iter().any(|opening| same(&opening.path)) {
+        if self
+            .opening
+            .iter()
+            .any(|opening| opening.part.path().is_some_and(same))
+        {
             return false;
         }
         self.open(path, false);
@@ -534,6 +609,7 @@ impl<P: Clients + 'static> App<P> {
             self.sheet = None;
         }
         self.ask(ui, &mut started);
+        started |= self.next_quit_save(ui.ctx());
         if self.quitting && self.tabs.is_empty() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -580,33 +656,46 @@ impl<P: Clients + 'static> App<P> {
             split_answered(std::mem::take(&mut self.opening), Running::try_take);
         self.opening = pending;
         self.take_opens(answered);
+        let mut refused = Vec::new();
         for tab in &mut self.tabs {
             let path = tab.path.clone();
             tab.poll(&self.sessions);
-            // Saved as another file: listed in Recent as an open is.
+            // Saved as another file (an untitled part's first save among them): listed in
+            // Recent as an open is.
             if tab.path != path
-                && let Some(recents) = &self.recents
+                && let Some(path) = &tab.path
             {
-                recents.opened(&tab.path);
+                if let Some(recents) = &self.recents {
+                    recents.opened(path);
+                }
+                // An export form opened while it was untitled: a relative path is in its
+                // folder from now on.
+                if let Some(form) = self.export.as_mut().filter(|form| form.session == tab.id) {
+                    form.saved_as(path);
+                }
             }
             // Asked once nothing else is: kept on the tab meanwhile.
             if self.asking.is_none()
-                && let Some(path) = tab.take_replace_asked()
+                && let Some((path, then_close)) = tab.take_replace_asked()
             {
-                self.asking = Some(Asking::Replace(tab.id, path));
+                self.asking = Some(Asking::Replace {
+                    session: tab.id,
+                    path,
+                    then_close,
+                });
             }
             // An export written: its dialog closes.
             if tab.take_exported() && self.asking == Some(Asking::Export(tab.id)) {
                 self.asking = None;
                 self.export = None;
             }
-            if tab.take_close_refused() && self.quitting {
-                // A tab's save or revert was refused: it stays, holding its edits, and the
-                // quit stops, said.
-                self.quitting = false;
-                self.message = Some(format!("Quit stopped: {} wasn't closed", tab.name()));
-                self.message_from = None;
+            if tab.take_close_refused() {
+                refused.push(tab.name().to_owned());
             }
+        }
+        // A tab's save or revert was refused: it stays, holding its edits, and a quit stops.
+        for name in refused {
+            self.close_refused(&name);
         }
         let open_numbers = &mut self.open_numbers;
         self.tabs.retain(|tab| {
@@ -620,12 +709,69 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// The opens that answered since the last poll, `(number, path, response)` each, taken in
+    /// A tab's close refused (its save or revert refused, or its Save panel cancelled): a
+    /// quit under way stops, said, and the Save panels it had still to open are let go; a
+    /// Save panel open is to close its part no more, so a later pick saves it and leaves it
+    /// open.
+    fn close_refused(&mut self, name: &str) {
+        if self.quitting {
+            self.quitting = false;
+            self.quit_saves.clear();
+            if let Some(Browsing {
+                what: Browsed::SaveAs { then_close, .. },
+                ..
+            }) = &mut self.browsing
+            {
+                *then_close = false;
+            }
+            self.message = Some(format!("Quit stopped: {name} wasn't closed"));
+            self.message_from = None;
+        }
+    }
+
+    /// The next of a quit's untitled parts to save, once nothing is asked and no panel is
+    /// open: its Save panel opened, the part closed once it's saved. One whose Save As (a
+    /// panel's pick from before the quit) is queued or running is waited for, and then
+    /// closed if that left it with no edits, saved (and closed) if it gave it a file and
+    /// edits were made after, or asked again if it's still untitled (its Save As refused,
+    /// and said). One gone or already closing is passed over. Whether a command was
+    /// started.
+    fn next_quit_save(&mut self, ctx: &egui::Context) -> bool {
+        while self.quitting && self.asking.is_none() && self.browsing.is_none() {
+            let Some(&id) = self.quit_saves.front() else {
+                return false;
+            };
+            let Some(tab) = self
+                .tabs
+                .iter_mut()
+                .find(|tab| tab.id == id && !tab.closing())
+            else {
+                self.quit_saves.pop_front();
+                continue;
+            };
+            if tab.saving_as() {
+                return false;
+            }
+            self.quit_saves.pop_front();
+            if !tab.unsaved() {
+                tab.close(&self.sessions);
+                return true;
+            }
+            if !tab.is_untitled() {
+                tab.save(&self.sessions, true);
+                return true;
+            }
+            self.ask_save_as(id, true, ctx);
+        }
+        false
+    }
+
+    /// The opens that answered since the last poll, `(number, part, response)` each, taken in
     /// the order they were asked, so what's said comes out the same whether they answered in
     /// one poll or in several.
     fn take_opens(&mut self, answered: Vec<Answered>) {
-        for (number, path, response) in answered {
-            self.take_open(number, path, response);
+        for (number, part, response) in answered {
+            self.take_open(number, part, response);
         }
     }
 
@@ -634,22 +780,27 @@ impl<P: Clients + 'static> App<P> {
     /// an open asked after it is open (a late answer never takes the tab shown). An open asked
     /// after the one whose refusal is said clears it (as one does any other message); one
     /// asked before it, answering late, never does.
-    fn take_open(&mut self, number: u64, path: String, response: Response<Opened>) {
+    fn take_open(&mut self, number: u64, part: Part, response: Response<Opened>) {
         let opened = match response.result {
             Ok(opened) => opened,
             Err(problems) => {
                 self.message = Some(said(&problems));
                 self.message_from = Some(number);
                 // A recent document's: dropped from the list if nothing is at its path.
-                if let Some(recents) = self.recents.as_ref().filter(|recents| recents.holds(&path))
+                if let Some(path) = part.path()
+                    && let Some(recents) =
+                        self.recents.as_ref().filter(|recents| recents.holds(path))
                 {
-                    recents.check(&path);
+                    recents.check(path);
                 }
                 return;
             }
         };
-        if let Some(recents) = &self.recents {
-            recents.opened(&path);
+        // An untitled part isn't listed until its first save gives it a file.
+        if let Some(recents) = &self.recents
+            && let Some(path) = part.path()
+        {
+            recents.opened(path);
         }
         if self.message_from.is_none_or(|from| number > from) {
             self.message = None;
@@ -670,8 +821,11 @@ impl<P: Clients + 'static> App<P> {
             .values()
             .max()
             .is_none_or(|&newest| number > newest);
-        self.tabs
-            .insert(at, Tab::opened(id, path, &opened.problems));
+        let tab = match part {
+            Part::File(path) => Tab::opened(id, path, &opened.problems),
+            Part::Untitled(name) => Tab::untitled(id, name, &opened.problems),
+        };
+        self.tabs.insert(at, tab);
         self.open_numbers.insert(id, number);
         if shown {
             self.active = Some(id);
@@ -735,16 +889,16 @@ impl<P: Clients + 'static> App<P> {
             self.sheet = Some(Sheet::default());
             return (false, None);
         }
-        // Ctrl+N and Ctrl+O: New's dialog and Open's panel, as the File menu's and the
-        // start page's.
-        for (command, create) in [(Command::New, true), (Command::Open, false)] {
+        // Ctrl+N and Ctrl+O: a new untitled part and Open's panel, as the File menu's and
+        // the start page's.
+        for command in [Command::New, Command::Open] {
             if shortcuts::take(ui, command) {
-                if create {
-                    self.asking = Some(Asking::Path { create });
-                } else {
-                    let ctx = ui.ctx().clone();
-                    self.ask_open(&ctx);
+                if command == Command::New {
+                    self.new_part();
+                    return (true, None);
                 }
+                let ctx = ui.ctx().clone();
+                self.ask_open(&ctx);
                 return (false, None);
             }
         }
@@ -759,9 +913,12 @@ impl<P: Clients + 'static> App<P> {
         }
         // Before Ctrl+S, which a Ctrl+Shift+S also is, its Shift aside.
         let save_as = shortcuts::take(ui, Command::SaveAs);
-        if save_as && self.save_as_offered() {
-            self.save_as_path.clear();
-            self.asking = self.active.map(Asking::SaveAs);
+        if save_as
+            && self.save_as_offered()
+            && let Some(id) = self.active
+        {
+            let ctx = ui.ctx().clone();
+            self.ask_save_as(id, false, &ctx);
             return (false, None);
         }
         let in_dialog = self
@@ -820,7 +977,15 @@ impl<P: Clients + 'static> App<P> {
             tab.view.ask(ask);
         }
         let sessions = &self.sessions;
-        if save && tab.unsaved() && !tab.in_dialog() {
+        // An untitled part's Save asks where, through the Save panel, once the tab is let go:
+        // with no edits too, as its first save writes the document all the same.
+        let mut save_panel = None;
+        if save && tab.is_untitled() {
+            // Not while a Save As of its runs: its answer gives it its file.
+            if !tab.in_dialog() && !tab.closing() && !tab.saving_as() {
+                save_panel = Some(tab.id);
+            }
+        } else if save && tab.unsaved() && !tab.in_dialog() {
             tab.save(sessions, false);
         }
         if undo && tab.undoable() {
@@ -846,6 +1011,10 @@ impl<P: Clients + 'static> App<P> {
         if stop && !in_dialog {
             tab.escape(sessions);
         }
+        if let Some(id) = save_panel {
+            let ctx = ui.ctx().clone();
+            self.ask_save_as(id, false, &ctx);
+        }
         if close && let Some(id) = self.active {
             self.close(id);
         }
@@ -868,10 +1037,12 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The native dialog's answer, if it has come, never waited for: Open's panel's pick
-    /// opened; a path picked through Browse… filling the path field of the question it was
-    /// asked from (the typed-path Open's opens it), if that question is still asked; a
-    /// cancel, or a question no longer asked, changes nothing, nor does Export's while its
-    /// export runs or asks whether to replace. Whether a command was started.
+    /// opened; the Save panel's pick saved as ([`saved_as`](Self::saved_as)); a path picked
+    /// through Browse… filling the path field of the question it was asked from (the
+    /// typed-path Open's opens it), if that question is still asked; a cancel, or a question
+    /// no longer asked, changes nothing (but a cancelled Save panel that was to close its
+    /// tab refuses the close), nor does Export's while its export runs or asks whether to
+    /// replace. Whether a command was started.
     fn take_browsed(&mut self) -> bool {
         let Some(answer) = self.browsing.as_mut().and_then(Browsing::poll) else {
             return false;
@@ -880,6 +1051,13 @@ impl<P: Clients + 'static> App<P> {
             return false;
         };
         let Some(path) = answer else {
+            if let Browsed::SaveAs {
+                session,
+                then_close: true,
+            } = what
+            {
+                self.save_panel_refused(session);
+            }
             return false;
         };
         if let Some(folder) = path
@@ -888,11 +1066,6 @@ impl<P: Clients + 'static> App<P> {
         {
             self.last_folder = Some(folder.to_path_buf());
         }
-        let what = match what {
-            Browsed::Field(what) if self.asking.as_ref() == Some(&what) => Some(what),
-            Browsed::Field(_) => return false,
-            Browsed::Open => None,
-        };
         let path = match path.into_os_string().into_string() {
             Ok(path) => path,
             Err(path) => {
@@ -901,25 +1074,39 @@ impl<P: Clients + 'static> App<P> {
                     std::path::Path::new(&path).display()
                 ));
                 self.message_from = None;
+                if let Browsed::SaveAs {
+                    session,
+                    then_close: true,
+                } = what
+                {
+                    self.save_panel_refused(session);
+                }
                 return false;
             }
         };
-        let Some(what) = what else {
-            // Open's panel: the file picked opened, as Browse…'s pick in the typed-path Open
-            // is, its tab and the recent documents following once it answers.
-            self.open(&path, false);
-            return true;
+        let what = match what {
+            Browsed::Field(what) if self.asking.as_ref() == Some(&what) => what,
+            Browsed::Field(_) => return false,
+            Browsed::Open => {
+                // Open's panel: the file picked opened, as Browse…'s pick in the typed-path
+                // Open is, its tab and the recent documents following once it answers.
+                self.open(&path, false);
+                return true;
+            }
+            Browsed::SaveAs {
+                session,
+                then_close,
+            } => return self.saved_as(session, path, then_close),
         };
         match what {
-            Asking::Path { create: false } => {
+            Asking::Open => {
                 self.open(&path, false);
                 // As a typed path's open takes it.
                 self.open_path.clear();
                 self.asking = None;
                 return true;
             }
-            Asking::Path { create: true } => self.open_path = path,
-            Asking::SaveAs(_) => self.save_as_path = path,
+            Asking::SaveAs { .. } => self.save_as_path = path,
             Asking::Export(id) => {
                 // Its path field is off while the export runs or asks whether to replace.
                 let idle = self
@@ -934,9 +1121,41 @@ impl<P: Clients + 'static> App<P> {
                     form.browsed(path);
                 }
             }
-            Asking::Close(_) | Asking::Quit | Asking::Replace(..) => {}
+            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } => {}
         }
         false
+    }
+
+    /// The Save panel's pick, `path`, for `session`'s document: saved as it (`commit` with
+    /// the path and `replace`, the panel having asked about a file there), then closed if
+    /// `then_close`, if its tab is still open and not closing (Don't save chosen while a
+    /// panel of the portal's was open); else nothing. Its own file picked is a Save (the core
+    /// refuses a Save As to it, and the tab saves instead). Whether a command was started.
+    fn saved_as(&mut self, session: SessionId, path: String, then_close: bool) -> bool {
+        let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == session && !tab.closing())
+        else {
+            return false;
+        };
+        // Its own file picked (by any path to it) is refused by the core as its own, which
+        // the tab then takes as a Save.
+        tab.save_as(&self.sessions, path, true, then_close);
+        true
+    }
+
+    /// `session`'s Save panel, which was to close its tab, cancelled (or its pick unusable):
+    /// the close refused, so a quit stops.
+    fn save_panel_refused(&mut self, session: SessionId) {
+        if let Some(name) = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id == session)
+            .map(|tab| tab.name().to_owned())
+        {
+            self.close_refused(&name);
+        }
     }
 
     /// The Browse… button beside a path field, if the app has native dialogs: off while one
@@ -953,7 +1172,7 @@ impl<P: Clients + 'static> App<P> {
     /// another native dialog is open (a Browse…'s), the typed-path Open asked instead; while
     /// Open's own panel is open, nothing.
     fn ask_open(&mut self, ctx: &egui::Context) {
-        let typed = Asking::Path { create: false };
+        let typed = Asking::Open;
         match &self.browsing {
             Some(browsing) if browsing.what == Browsed::Open => return,
             Some(_) => {
@@ -966,6 +1185,50 @@ impl<P: Clients + 'static> App<P> {
             return;
         };
         if !self.start_browsing(Browsed::Open, &ask, ctx) {
+            self.asking = Some(typed);
+        }
+    }
+
+    /// Save As (File > Save As…, Command+Shift+S), and an untitled part's Save (Command+S,
+    /// the app bar's Save, and Close's and Quit's, which then close it, `then_close`): the
+    /// platform's own Save panel for `session`'s document at once, which saves it as the
+    /// file picked when it answers ([`saved_as`](Self::saved_as)). With no native dialogs,
+    /// or one that won't open, or while another native dialog is open, the typed Save As
+    /// asked instead; while this document's own Save panel is open, nothing more (but a
+    /// close asked meanwhile is taken on by it).
+    fn ask_save_as(&mut self, session: SessionId, then_close: bool, ctx: &egui::Context) {
+        let typed = Asking::SaveAs {
+            session,
+            then_close,
+        };
+        match &mut self.browsing {
+            Some(Browsing {
+                what:
+                    Browsed::SaveAs {
+                        session: open,
+                        then_close: closes,
+                    },
+                ..
+            }) if *open == session => {
+                *closes |= then_close;
+                return;
+            }
+            Some(_) => {
+                self.save_as_path.clear();
+                self.asking = Some(typed);
+                return;
+            }
+            None => {}
+        }
+        let Some(ask) = self.ask_of(&typed) else {
+            return;
+        };
+        let panel = Browsed::SaveAs {
+            session,
+            then_close,
+        };
+        if !self.start_browsing(panel, &ask, ctx) {
+            self.save_as_path.clear();
             self.asking = Some(typed);
         }
     }
@@ -1010,43 +1273,47 @@ impl<P: Clients + 'static> App<P> {
                 .or_else(|| self.last_folder.clone())
         };
         let ask = match asking {
-            Asking::Path { create } => {
+            Asking::Open => {
                 let shown = self.active_place().and_then(|at| self.tabs.get(at));
                 Ask {
-                    pick: if *create { Pick::Save } else { Pick::Open },
-                    title: if *create {
-                        "New document"
-                    } else {
-                        "Open document"
-                    }
-                    .to_owned(),
+                    pick: Pick::Open,
+                    title: "Open document".to_owned(),
                     filters: vec![browse::DOCUMENTS],
-                    folder: folder(shown.map(|tab| tab.path.as_str())),
+                    folder: folder(shown.and_then(|tab| tab.path.as_deref())),
                     file_name: None,
                 }
             }
-            Asking::SaveAs(id) => {
-                let tab = tab(*id)?;
+            Asking::SaveAs { session, .. } => {
+                let tab = tab(*session)?;
                 Ask {
                     pick: Pick::Save,
                     title: format!("Save {} as", tab.name()),
                     filters: vec![browse::DOCUMENTS],
-                    folder: folder(Some(&tab.path)),
-                    file_name: browse::file_name_of(&tab.path),
+                    folder: folder(tab.path.as_deref()),
+                    // An untitled part's: its name, a document's.
+                    file_name: match &tab.path {
+                        Some(path) => browse::file_name_of(path),
+                        None => Some(format!("{}.silico", tab.name())),
+                    },
                 }
             }
             Asking::Export(id) => {
                 let tab = tab(*id)?;
                 let form = self.export.as_ref().filter(|form| form.session == *id)?;
+                // An untitled part's: the folder of the path in its field, if that's a full
+                // one (it has no folder of its own).
+                let typed = std::path::Path::new(&form.path)
+                    .is_absolute()
+                    .then_some(form.path.as_str());
                 Ask {
                     pick: Pick::Save,
                     title: format!("Export {}", tab.name()),
                     filters: browse::export_filters(form.step),
-                    folder: folder(Some(&tab.path)),
+                    folder: folder(tab.path.as_deref().or(typed)),
                     file_name: browse::file_name_of(&form.path),
                 }
             }
-            Asking::Close(_) | Asking::Quit | Asking::Replace(..) => return None,
+            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } => return None,
         };
         Some(ask)
     }
@@ -1104,21 +1371,34 @@ impl<P: Clients + 'static> App<P> {
             .active_place()
             .filter(|_| !start_shown)
             .and_then(|at| self.tabs.get_mut(at));
-        // Off while a dialog is open: its OK or Cancel ends its edits first.
-        let unsaved = tab
-            .as_ref()
-            .is_some_and(|tab| tab.unsaved() && !tab.in_dialog());
-        let said = tab
-            .as_ref()
-            .filter(|_| unsaved)
-            .map(|tab| format!("Writes your edits to {}", tab.name()));
+        // Off while a dialog is open: its OK or Cancel ends its edits first. On for an
+        // untitled part with no edits too, its first save writing it, but not while it closes
+        // or a Save As of its runs.
+        let unsaved = tab.as_ref().is_some_and(|tab| {
+            !tab.in_dialog()
+                && if tab.is_untitled() {
+                    !tab.closing() && !tab.saving_as()
+                } else {
+                    tab.unsaved()
+                }
+        });
+        let said = tab.as_ref().filter(|_| unsaved).map(|tab| match tab.path {
+            Some(_) => format!("Writes your edits to {}", tab.name()),
+            None => format!("Asks where to save {}, then writes it", tab.name()),
+        });
         let save = bar::button(ui, Icon::Save, None, Command::Save.label(), unsaved, None);
         let shortcut = Command::Save.shown(ui.ctx());
         if bar::tooltip(save, Command::Save.label(), shortcut, said.as_deref()).clicked()
             && let Some(tab) = tab
         {
-            tab.save(&self.sessions, false);
-            *started = true;
+            // An untitled part's asks where, through the Save panel.
+            if tab.is_untitled() {
+                let (id, ctx) = (tab.id, ui.ctx().clone());
+                self.ask_save_as(id, false, &ctx);
+            } else {
+                tab.save(&self.sessions, false);
+                *started = true;
+            }
         }
         let (undoable, redoable) = self
             .active_place()
@@ -1142,7 +1422,7 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// The File menu's items: New…, Open…, Save As…, Export…, Revert, and Close.
+    /// The File menu's items: New, Open…, Save As…, Export…, Revert, and Close.
     fn file_menu(&mut self, ui: &mut Ui, started: &mut bool) {
         let open = !self.tabs.is_empty();
         let transaction = self
@@ -1155,8 +1435,10 @@ impl<P: Clients + 'static> App<P> {
                 .active_place()
                 .and_then(|at| self.tabs.get(at))
                 .is_some_and(|tab| !tab.closing());
-        if ui.button("New…").clicked() {
-            self.asking = Some(Asking::Path { create: true });
+        // New asks nothing: an untitled part at once.
+        if ui.button("New").clicked() {
+            self.new_part();
+            *started = true;
             ui.close();
         }
         if ui.button("Open…").clicked() {
@@ -1169,8 +1451,8 @@ impl<P: Clients + 'static> App<P> {
             .clicked()
         {
             if let Some(id) = self.active {
-                self.save_as_path.clear();
-                self.asking = Some(Asking::SaveAs(id));
+                let ctx = ui.ctx().clone();
+                self.ask_save_as(id, false, &ctx);
             }
             ui.close();
         }
@@ -1181,7 +1463,10 @@ impl<P: Clients + 'static> App<P> {
         {
             if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
                 tab.export_opened();
-                self.export = Some(ExportForm::new(tab.id, &tab.path));
+                self.export = Some(match &tab.path {
+                    Some(path) => ExportForm::new(tab.id, path),
+                    None => ExportForm::untitled(tab.id, tab.name(), self.documents.as_deref()),
+                });
                 self.asking = Some(Asking::Export(tab.id));
             }
             ui.close();
@@ -1220,7 +1505,7 @@ impl<P: Clients + 'static> App<P> {
                     ui,
                     &bar::DocTab {
                         name: tab.name(),
-                        path: &tab.path,
+                        path: tab.path.as_deref(),
                         unsaved: tab.unsaved(),
                         active,
                         first: at == 0,
@@ -1435,14 +1720,13 @@ impl<P: Clients + 'static> App<P> {
         let enter_cap = Command::Ok.keys_text(ui.ctx());
         let mut done = false;
         let mut browse = false;
+        // An untitled part's Save, asked by Close or Quit, through its Save panel once the
+        // question has gone; and a close refused (a typed Save As cancelled that was to close).
+        let mut save_panel = None;
+        let mut refused = None;
         modal::show(ui.ctx(), egui::Id::new("asking"), |ui| match asking {
-            Asking::Path { create } => {
-                let (icon, title) = if create {
-                    (Icon::NewDoc, "New document")
-                } else {
-                    (Icon::Open, "Open document")
-                };
-                modal::head(ui, Some(icon), title);
+            Asking::Open => {
+                modal::head(ui, Some(Icon::Open), "Open document");
                 let beside = self.browse_button();
                 modal::body(ui, |ui| {
                     let label = modal::label(ui, "Path");
@@ -1451,19 +1735,18 @@ impl<P: Clients + 'static> App<P> {
                     let (_, button) = modal::field(ui, edit, label.id, beside);
                     browse = button.is_some_and(browse::clicked);
                 });
-                let word = if create { "Create" } else { "Open" };
                 let ([], [cancel, ok]) = modal::foot(
                     ui,
                     [],
                     [
                         Button::new("Cancel", Kind::Secondary),
-                        Button::new(word, Kind::Primary).cap(&enter_cap),
+                        Button::new("Open", Kind::Primary).cap(&enter_cap),
                     ],
                 );
                 // The path as typed; only an empty one (spaces aside) opens nothing.
                 if (ok || enter) && !self.open_path.trim().is_empty() {
                     let path = std::mem::take(&mut self.open_path);
-                    self.open(&path, create);
+                    self.open(&path, false);
                     *started = true;
                     done = true;
                 }
@@ -1471,12 +1754,26 @@ impl<P: Clients + 'static> App<P> {
                     done = true;
                 }
             }
-            Asking::SaveAs(id) => {
+            Asking::SaveAs {
+                session: id,
+                then_close,
+            } => {
                 let name = self
                     .tabs
                     .iter()
                     .find(|tab| tab.id == id)
                     .map(|tab| tab.name().to_owned());
+                // An untitled part's path must be a full one: it has no folder.
+                let document = self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == id)
+                    .map(|tab| tab.path.clone());
+                let typed = self.save_as_path.trim();
+                let no_folder = !typed.is_empty()
+                    && document.as_ref().is_some_and(|document| {
+                        export::beside(document.as_deref(), &self.save_as_path).is_none()
+                    });
                 let title = format!("Save {} as", name.as_deref().unwrap_or("the document"));
                 modal::head(ui, Some(Icon::Save), &title);
                 let beside = self.browse_button();
@@ -1486,6 +1783,10 @@ impl<P: Clients + 'static> App<P> {
                     let edit = theme::field(ui, edit, "save-as-path", FieldKind::Modify, false);
                     let (_, button) = modal::field(ui, edit, label.id, beside);
                     browse = button.is_some_and(browse::clicked);
+                    if no_folder {
+                        ui.add_space(theme::MODAL_LABEL_MARGIN_TOP);
+                        modal::text(ui, export::NO_FOLDER, theme::ERROR_TEXT);
+                    }
                 });
                 let ([], [cancel, save]) = modal::foot(
                     ui,
@@ -1495,20 +1796,23 @@ impl<P: Clients + 'static> App<P> {
                         Button::new("Save", Kind::Primary).cap(&enter_cap),
                     ],
                 );
-                if (save || enter) && !self.save_as_path.trim().is_empty() {
+                if (save || enter) && !self.save_as_path.trim().is_empty() && !no_folder {
                     let typed = std::mem::take(&mut self.save_as_path);
-                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id)
                         // A relative path is in the document's folder.
-                        let path = export::beside(&tab.path, &typed)
-                            .to_string_lossy()
-                            .into_owned();
-                        tab.save_as(&self.sessions, path, false);
+                        && let Some(path) = export::beside(tab.path.as_deref(), &typed)
+                    {
+                        let path = path.to_string_lossy().into_owned();
+                        tab.save_as(&self.sessions, path, false, then_close);
                     }
                     *started = true;
                     done = true;
                 }
                 if cancel || escape {
                     done = true;
+                    if then_close {
+                        refused = Some(id);
+                    }
                 }
             }
             Asking::Export(id) => {
@@ -1556,7 +1860,11 @@ impl<P: Clients + 'static> App<P> {
                     }
                 }
             }
-            Asking::Replace(id, path) => {
+            Asking::Replace {
+                session: id,
+                path,
+                then_close,
+            } => {
                 modal::head(ui, Some(Icon::Warn), "Replace the file?");
                 modal::body(ui, |ui| {
                     modal::text(
@@ -1575,13 +1883,16 @@ impl<P: Clients + 'static> App<P> {
                 );
                 if replace {
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-                        tab.save_as(&self.sessions, path.clone(), true);
+                        tab.save_as(&self.sessions, path.clone(), true, then_close);
                     }
                     *started = true;
                     done = true;
                 }
                 if cancel || escape {
                     done = true;
+                    if then_close {
+                        refused = Some(id);
+                    }
                 }
             }
             Asking::Close(id) => {
@@ -1612,8 +1923,11 @@ impl<P: Clients + 'static> App<P> {
                 );
                 let sessions = &self.sessions;
                 if save {
-                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-                        tab.save(sessions, true);
+                    match self.tabs.iter_mut().find(|tab| tab.id == id) {
+                        // An untitled part's asks where first.
+                        Some(tab) if tab.is_untitled() => save_panel = Some(id),
+                        Some(tab) => tab.save(sessions, true),
+                        None => {}
                     }
                     *started = true;
                     done = true;
@@ -1657,8 +1971,36 @@ impl<P: Clients + 'static> App<P> {
                 );
                 let sessions = &self.sessions;
                 if save || drop {
+                    self.quit_saves.clear();
                     for tab in &mut self.tabs {
                         match (tab.unsaved(), save) {
+                            // Its own Save panel open already (Command+S, the portal's
+                            // leaving the window usable): that panel closes it, as Close's
+                            // Save would have it.
+                            (true, true)
+                                if tab.is_untitled()
+                                    && matches!(
+                                        &self.browsing,
+                                        Some(Browsing {
+                                            what: Browsed::SaveAs { session, .. },
+                                            ..
+                                        }) if *session == tab.id
+                                    ) =>
+                            {
+                                if let Some(Browsing {
+                                    what: Browsed::SaveAs { then_close, .. },
+                                    ..
+                                }) = &mut self.browsing
+                                {
+                                    *then_close = true;
+                                }
+                            }
+                            // An untitled part's Save panel, each in turn, after this
+                            // question has gone ([`next_quit_save`]); one whose Save As
+                            // runs waits for it.
+                            (true, true) if tab.is_untitled() => {
+                                self.quit_saves.push_back(tab.id);
+                            }
                             (true, true) => tab.save(sessions, true),
                             (true, false) => tab.revert(sessions, true),
                             (false, _) => tab.close(sessions),
@@ -1685,6 +2027,12 @@ impl<P: Clients + 'static> App<P> {
             }
             self.asking = None;
         }
+        if let Some(id) = refused {
+            self.save_panel_refused(id);
+        }
+        if let Some(id) = save_panel {
+            self.ask_save_as(id, true, ui.ctx());
+        }
     }
 }
 
@@ -1704,7 +2052,7 @@ mod tests {
     use silico_core::sketch::SketchSolver;
     use tempfile::TempDir;
 
-    use super::{Answered, App, Opening, split_answered};
+    use super::{Answered, App, Opening, Part, split_answered};
     use crate::tab::said;
 
     /// A block: any document the gate takes.
@@ -1750,7 +2098,7 @@ mod tests {
     fn asked(app: &App<Fake>, number: u64, path: &std::path::Path) -> Answered {
         let path = path.to_str().unwrap().to_owned();
         let response = app.sessions().open(&path, false).wait();
-        (number, path, response)
+        (number, Part::File(path), response)
     }
 
     /// What the app says once a refusal and an open, asked as its `refused`th and `opened`th,
@@ -1903,7 +2251,7 @@ mod tests {
             .into_iter()
             .map(|(number, running)| Opening {
                 number,
-                path: format!("{number}.silico"),
+                part: Part::File(format!("{number}.silico")),
                 running,
             })
             .collect();
@@ -1911,15 +2259,15 @@ mod tests {
         assert_eq!(
             answered,
             [
-                (1, "1.silico".to_owned(), 10),
-                (3, "3.silico".to_owned(), 30)
+                (1, Part::File("1.silico".to_owned()), 10),
+                (3, Part::File("3.silico".to_owned()), 30)
             ]
         );
-        let pending: Vec<(u64, &str)> = pending
+        let pending: Vec<(u64, Option<&str>)> = pending
             .iter()
-            .map(|opening| (opening.number, opening.path.as_str()))
+            .map(|opening| (opening.number, opening.part.path()))
             .collect();
-        assert_eq!(pending, [(2, "2.silico")]);
+        assert_eq!(pending, [(2, Some("2.silico"))]);
     }
 
     #[test]

@@ -1483,7 +1483,7 @@ fn two_documents_each_show_their_own_features() {
 }
 
 #[test]
-fn new_through_its_dialog_makes_the_file_and_open_cancelled_opens_nothing() {
+fn new_opens_an_untitled_part_at_once_making_no_file_and_open_cancelled_opens_nothing() {
     let f = fixture();
     let mut h = f.app();
     h.get_by_label("File").click();
@@ -1497,21 +1497,52 @@ fn new_through_its_dialog_makes_the_file_and_open_cancelled_opens_nothing() {
         step(&mut h);
     }
     assert!(h.state().tabs().is_empty());
-    let made = f.dir.path().join("new.silico");
+    let before = listing(f.dir.path());
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "New…").click();
-    step_until(&mut h, "the dialog", |h| anywhere(h, "New document"));
-    h.get_by_role(Role::TextInput).focus();
-    step(&mut h);
-    h.get_by_role(Role::TextInput)
-        .type_text(made.to_str().unwrap());
-    step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Create")
-        .click_accesskit();
-    step_until(&mut h, "its tab", |h| anywhere(h, "new.silico"));
-    assert!(made.is_file());
+    // New asks nothing: no ellipsis, and no question.
+    h.get_by_role_and_label(Role::Button, "New").click();
+    // Its tab, a button named by the part (the properties panel names it too).
+    step_until(&mut h, "its tab", |h| {
+        h.query_by_role_and_label(Role::Button, "Untitled")
+            .is_some()
+    });
+    assert!(!anywhere(&h, "New document"));
+    assert!(h.query_by_role_and_label(Role::TextInput, "Path").is_none());
+    let tab = &h.state().tabs()[0];
+    assert_eq!(tab.name(), "Untitled");
+    assert_eq!(tab.path, None);
+    assert!(!tab.unsaved());
+    // The session is the core's untitled one: no path, and its text the empty document.
+    assert_eq!(
+        f.sessions.status(&tab.id).session.unwrap().path,
+        None::<String>
+    );
+    // Nothing made on disk.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(listing(f.dir.path()), before);
     assert_eq!(never_waits::waits(), 0);
+}
+
+/// The names in `dir`, sorted, and those in its folders, as `folder/name`.
+fn listing(dir: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.file_type().unwrap().is_dir() {
+            names.extend(
+                listing(&entry.path())
+                    .into_iter()
+                    .map(|inner| format!("{name}/{inner}")),
+            );
+        }
+        names.push(name);
+    }
+    names.sort();
+    names
 }
 
 #[test]
@@ -2907,7 +2938,7 @@ fn save_as_writes_the_new_file_and_the_tab_follows_it() {
     step_until(&mut h, "the tab of the new file", |h| {
         anywhere(h, "copy.silico") && !anywhere(h, "copy.silico *")
     });
-    assert_eq!(h.state().tabs()[0].path, copy.to_str().unwrap());
+    assert_eq!(h.state().tabs()[0].path.as_deref(), copy.to_str());
     // The new file holds the document as the session holds it, byte for byte; the old one
     // is as it was.
     let id = h.state().tabs()[0].id;
@@ -2969,7 +3000,7 @@ fn save_as_saves_only_on_its_save_and_only_with_a_path() {
     }
     assert!(anywhere(&h, "Save example.silico as"));
     assert_eq!(h.state().tabs()[0].saves, 0);
-    assert_eq!(h.state().tabs()[0].path, old.to_str().unwrap());
+    assert_eq!(h.state().tabs()[0].path.as_deref(), old.to_str());
     assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -3052,7 +3083,7 @@ fn a_save_as_the_core_refuses_is_said_and_the_tab_stays_on_its_file() {
             .is_some()
     });
     assert!(!json.exists());
-    assert_eq!(h.state().tabs()[0].path, old.to_str().unwrap());
+    assert_eq!(h.state().tabs()[0].path.as_deref(), old.to_str());
     assert!(anywhere(&h, "example.silico *"));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -3275,19 +3306,22 @@ fn the_replace_question_waits_for_another_question_to_be_answered() {
     let there = f.file("there.silico", "an older copy");
     let (hold, check) = hold_queue(&f, &h, 0);
     save_as(&mut h, &there);
-    // Another question asked while the Save As waits.
+    // Another question asked while the Save As waits (Open's typed path: no native
+    // dialogs here).
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "New…").click();
-    step_until(&mut h, "the New question", |h| anywhere(h, "New document"));
+    h.get_by_role_and_label(Role::Button, "Open…").click();
+    step_until(&mut h, "the Open question", |h| {
+        anywhere(h, "Open document")
+    });
     hold.release();
     let _ = check.wait();
     let asked = format!("{} already exists. Replace it?", there.to_str().unwrap());
     for _ in 0..20 {
         step(&mut h);
         assert!(
-            anywhere(&h, "New document"),
-            "the New question was replaced"
+            anywhere(&h, "Open document"),
+            "the Open question was replaced"
         );
     }
     assert!(!anywhere(&h, &asked));
@@ -6751,7 +6785,7 @@ fn a_bare_name_is_written_in_the_documents_folder_for_export_and_save_as() {
     step(&mut h);
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the tab of the new file", |h| {
-        h.state().tabs()[0].path == folder.join("bare.silico").to_str().unwrap()
+        h.state().tabs()[0].path.as_deref() == folder.join("bare.silico").to_str()
     });
     assert!(folder.join("bare.silico").is_file());
     assert_eq!(never_waits::waits(), 0);
@@ -6916,7 +6950,7 @@ fn a_path_is_sent_as_typed_spaces_and_all() {
     step(&mut h);
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "saved there", |h| {
-        h.state().tabs()[0].path == folder.join(" spaced.silico").to_str().unwrap()
+        h.state().tabs()[0].path.as_deref() == folder.join(" spaced.silico").to_str()
     });
     assert!(folder.join(" spaced.silico").is_file());
     // Open: spaces alone are no path; Enter opens nothing, and nothing is refused.
@@ -9847,7 +9881,7 @@ fn opens_panel_asks_for_a_silico_file_frames_climb_while_it_is_open_and_its_pick
     browser.answer(Some(&path));
     assert!(repaints.load(Ordering::SeqCst) >= 1);
     step_until(&mut h, "its tab", |h| anywhere(h, "picked.silico"));
-    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    assert_eq!(h.state().tabs()[0].path.as_deref(), path.to_str());
     assert!(!anywhere(&h, "Open document"));
     // Open again: the shown document's folder is where it starts.
     file_menu_item(&mut h, "Open…");
@@ -9883,7 +9917,7 @@ fn the_typed_path_opens_browse_asks_for_a_silico_file_and_its_pick_opens_as_type
     let path = f.file("picked.silico", EXAMPLE);
     browser.answer(Some(&path));
     step_until(&mut h, "its tab", |h| anywhere(h, "picked.silico"));
-    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    assert_eq!(h.state().tabs()[0].path.as_deref(), path.to_str());
     assert!(!anywhere(&h, "Open document"));
     // Open again, the panel refusing still: its field emptied.
     typed_open(&mut h, &browser);
@@ -9931,21 +9965,22 @@ fn a_cancelled_browse_changes_nothing() {
     h.get_by_role_and_label(Role::Button, "Cancel")
         .click_accesskit();
     step_until(&mut h, "the dialog gone", |h| !anywhere(h, "Open document"));
-    // Save As: cancelled, its field stays empty and nothing is saved.
-    file_menu(&mut h, "Save As…", "Save example.silico as");
-    browse(&mut h, &browser);
+    // Save As: its Save panel at once, cancelled: nothing is saved, and no question is
+    // asked after it.
+    let asked = browser.asked().len();
+    file_menu_item(&mut h, "Save As…");
+    step_until(&mut h, "the Save panel asked", |_| {
+        browser.asked().len() > asked
+    });
+    assert_eq!(browser.asked()[asked].pick, Pick::Save);
     browser.answer(None);
     for _ in 0..10 {
         step(&mut h);
+        assert!(!anywhere(&h, "Save example.silico as"));
     }
-    assert_eq!(path_value(&h), "");
     assert_eq!(h.state().tabs()[0].saves, 0);
-    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
-    h.get_by_role_and_label(Role::Button, "Cancel")
-        .click_accesskit();
-    step_until(&mut h, "the dialog gone", |h| {
-        !anywhere(h, "Save example.silico as")
-    });
+    assert_eq!(h.state().tabs()[0].path.as_deref(), path.to_str());
+    assert_eq!(h.state().message(), None);
     // Export: cancelled, its path is the one it had.
     open_export(&mut h);
     let before = path_value(&h);
@@ -10340,13 +10375,33 @@ fn right_clicks_leave_the_left_buttons_stream_as_it_was() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// Frames stepped until the native dialog has been asked for an `nth` time (from 1), none
+/// of them showing the typed Save As: the Save panel asked at once, with no question first.
+#[track_caller]
+fn save_panel_asked(h: &mut AppHarness, browser: &FakeBrowser, nth: usize) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        step(h);
+        assert!(
+            h.query_by_role_and_label(Role::TextInput, "Path").is_none(),
+            "a typed path asked for"
+        );
+        if browser.asked().len() >= nth {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the Save panel never asked");
+    }
+    assert_eq!(browser.asked().len(), nth);
+    assert_eq!(browser.asked()[nth - 1].pick, Pick::Save);
+}
+
 #[test]
-fn save_as_browse_fills_the_path_and_save_and_replace_go_on_as_typed() {
+fn save_as_asks_the_save_panel_and_its_pick_is_saved_replacing_a_file_there() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let (mut h, old) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
-    file_menu(&mut h, "Save As…", "Save example.silico as");
-    browse(&mut h, &browser);
+    file_menu_item(&mut h, "Save As…");
+    save_panel_asked(&mut h, &browser, 1);
     assert_eq!(
         browser.asked(),
         [Ask {
@@ -10357,52 +10412,47 @@ fn save_as_browse_fills_the_path_and_save_and_replace_go_on_as_typed() {
             file_name: Some("example.silico".to_owned()),
         }]
     );
+    // While it's open: frames climb, nothing saved; Save As again asks no second panel.
     let frames = h.state().frames();
     for _ in 0..20 {
         step(&mut h);
     }
     assert_eq!(h.state().frames(), frames + 20);
-    // Picked: the field holds it, and nothing is saved until Save.
-    let copy = f.dir.path().join("copy.silico");
-    browser.answer(Some(&copy));
-    step_until(&mut h, "the field filled", |h| {
-        path_value(h) == copy.to_str().unwrap()
-    });
-    for _ in 0..10 {
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    file_menu_item(&mut h, "Save As…");
+    for _ in 0..5 {
         step(&mut h);
     }
-    assert_eq!(h.state().tabs()[0].saves, 0);
-    assert!(!copy.exists());
-    h.query_all_by_role_and_label(Role::Button, "Save")
-        .last()
-        .unwrap()
-        .click_accesskit();
+    assert_eq!(browser.asked().len(), 1);
+    // Picked: saved as it at once, the tab following the new file.
+    let copy = f.dir.path().join("copy.silico");
+    browser.answer(Some(&copy));
     step_until(&mut h, "the tab of the new file", |h| {
-        h.state().tabs()[0].path == copy.to_str().unwrap()
+        h.state().tabs()[0].path.as_deref() == copy.to_str()
     });
-    assert!(copy.is_file());
+    assert_eq!(h.state().tabs()[0].saves, 1);
+    // The document as the session holds it, byte for byte; the old file as it was.
+    let id = h.state().tabs()[0].id;
+    let held = f.sessions.text(&id, None).wait().result.unwrap().text;
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), held);
+    assert_eq!(names_in(&copy), ["Block", "Pin", "Hole"]);
     assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
-    // A file already there, picked: asked about as when typed, and Cancel writes nothing.
+    // A file already there, picked: the panel asked about replacing it, so it's replaced,
+    // with no question of the app's.
     let there = f.file("there.silico", "an older copy");
     step_until(&mut h, "saved", |h| !anywhere(h, "copy.silico *"));
-    file_menu(&mut h, "Save As…", "Save copy.silico as");
-    browse(&mut h, &browser);
+    file_menu_item(&mut h, "Save As…");
+    save_panel_asked(&mut h, &browser, 2);
     // Now the new file's folder and name.
     assert_eq!(browser.asked()[1].file_name.as_deref(), Some("copy.silico"));
+    assert_eq!(browser.asked()[1].folder.as_deref(), Some(f.dir.path()));
     browser.answer(Some(&there));
-    step_until(&mut h, "the field filled", |h| {
-        path_value(h) == there.to_str().unwrap()
+    step_until(&mut h, "the tab of the file replaced", |h| {
+        h.state().tabs()[0].path.as_deref() == there.to_str()
     });
-    h.query_all_by_role_and_label(Role::Button, "Save")
-        .last()
-        .unwrap()
-        .click_accesskit();
     let asked = format!("{} already exists. Replace it?", there.to_str().unwrap());
-    step_until(&mut h, "the question", |h| anywhere(h, &asked));
-    h.get_by_role_and_label(Role::Button, "Cancel")
-        .click_accesskit();
-    step_until(&mut h, "the question gone", |h| !anywhere(h, &asked));
-    assert_eq!(std::fs::read_to_string(&there).unwrap(), "an older copy");
+    assert!(!anywhere(&h, &asked));
+    assert_eq!(std::fs::read_to_string(&there).unwrap(), held);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -10490,39 +10540,43 @@ fn exports_browse_asks_its_formats_fills_the_path_and_the_format_follows_it() {
 }
 
 #[test]
-fn news_browse_asks_where_to_save_and_starts_in_the_last_folder_picked() {
+fn an_untitled_parts_save_panel_asks_its_name_and_the_next_starts_in_the_folder_picked() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let mut h = f.app_browsing(&browser);
-    file_menu(&mut h, "New…", "New document");
-    browse(&mut h, &browser);
+    // New asks nothing, not even the panel: an untitled part at once.
+    file_menu_item(&mut h, "New");
+    step_until(&mut h, "its tab", |h| h.state().tabs().len() == 1);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(browser.asked().is_empty());
+    // Save As: the panel, named by the part, starting where the platform says (no folder
+    // picked yet, and the part has none).
+    file_menu_item(&mut h, "Save As…");
+    save_panel_asked(&mut h, &browser, 1);
     assert_eq!(
         browser.asked(),
         [Ask {
             pick: Pick::Save,
-            title: "New document".to_owned(),
+            title: "Save Untitled as".to_owned(),
             filters: vec![browse_mod::DOCUMENTS],
             folder: None,
-            file_name: None,
+            file_name: Some("Untitled.silico".to_owned()),
         }]
     );
     let sub = f.dir.path().join("sub");
     std::fs::create_dir(&sub).unwrap();
     let made = sub.join("new.silico");
     browser.answer(Some(&made));
-    step_until(&mut h, "the field filled", |h| {
-        path_value(h) == made.to_str().unwrap()
+    step_until(&mut h, "the tab of the new file", |h| {
+        h.state().tabs()[0].path.as_deref() == made.to_str()
     });
-    // Filled, not made: Create makes it.
-    for _ in 0..10 {
-        step(&mut h);
-    }
-    assert!(!made.exists());
-    assert!(h.state().tabs().is_empty());
-    h.get_by_role_and_label(Role::Button, "Cancel")
-        .click_accesskit();
-    step_until(&mut h, "the dialog gone", |h| !anywhere(h, "New document"));
-    // No document open: the next starts in the folder last picked in.
+    assert!(made.is_file());
+    assert_eq!(h.state().tabs()[0].name(), "new.silico");
+    // Closed: no document open, the next starts in the folder last picked in.
+    h.get_by_label("Close new.silico").click();
+    step_until(&mut h, "it closed", |h| h.state().tabs().is_empty());
     file_menu_item(&mut h, "Open…");
     open_panel_asked(&mut h, &browser, 2);
     assert_eq!(browser.asked()[1].folder.as_deref(), Some(sub.as_path()));
@@ -10577,7 +10631,7 @@ fn an_opens_pick_answering_while_save_as_is_asked_neither_opens_nor_fills_it() {
         step(&mut h);
     }
     assert_eq!(h.state().tabs().len(), 1);
-    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    assert_eq!(h.state().tabs()[0].path.as_deref(), path.to_str());
     assert!(anywhere(&h, "Save example.silico as"));
     assert_eq!(path_value(&h), "");
     assert_eq!(h.state().tabs()[0].saves, 0);
@@ -10609,17 +10663,17 @@ fn open_panels_pick_answering_while_save_as_is_asked_opens_it_and_leaves_save_as
     let picked = f.file("picked.silico", EXAMPLE);
     browser.answer(Some(&picked));
     step_until(&mut h, "its tab", |h| h.state().tabs().len() == 2);
-    assert_eq!(h.state().tabs()[1].path, picked.to_str().unwrap());
+    assert_eq!(h.state().tabs()[1].path.as_deref(), picked.to_str());
     // Save As still asked of the first document, its field as it was.
     assert!(anywhere(&h, "Save example.silico as"));
     assert_eq!(path_value(&h), "");
-    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    assert_eq!(h.state().tabs()[0].path.as_deref(), path.to_str());
     assert_eq!(h.state().tabs()[0].saves, 0);
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
-fn an_exports_pick_answering_while_new_is_asked_neither_fills_it_nor_exports() {
+fn an_exports_pick_answering_while_open_is_asked_neither_fills_it_nor_exports() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let (mut h, _) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
@@ -10629,14 +10683,15 @@ fn an_exports_pick_answering_while_new_is_asked_neither_fills_it_nor_exports() {
     browse(&mut h, &browser);
     press(&mut h, "Cancel");
     step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
-    // New asked, and only then Export's pick answers, a STEP name.
-    file_menu(&mut h, "New…", "New document");
+    // The typed-path Open asked (Export's dialog still open, so not its panel), and only
+    // then Export's pick answers, a STEP name.
+    file_menu(&mut h, "Open…", "Open document");
     let late = f.dir.path().join("late.step");
     browser.answer(Some(&late));
     for _ in 0..20 {
         step(&mut h);
     }
-    assert!(anywhere(&h, "New document"));
+    assert!(anywhere(&h, "Open document"));
     assert_eq!(path_value(&h), "");
     assert!(!browse_button(&h).accesskit_node().is_disabled());
     assert_eq!(h.state().tabs().len(), 1);
@@ -10644,7 +10699,7 @@ fn an_exports_pick_answering_while_new_is_asked_neither_fills_it_nor_exports() {
     assert!(!late.exists());
     h.get_by_role_and_label(Role::Button, "Cancel")
         .click_accesskit();
-    step_until(&mut h, "the dialog gone", |h| !anywhere(h, "New document"));
+    step_until(&mut h, "the dialog gone", |h| !anywhere(h, "Open document"));
     // Export again: its path and format as they began, 3MF's tolerance asked.
     open_export(&mut h);
     assert_eq!(path_value(&h), before);
@@ -10711,18 +10766,18 @@ fn a_cancel_picks_no_folder() {
     file_menu_item(&mut h, "Open…");
     open_panel_asked(&mut h, &browser, 2);
     assert_eq!(browser.asked()[1].folder, None);
-    // So too through Browse… (New's).
+    // So too through Browse… (the typed-path Open's, its panel refused: a third asked).
     browser.answer(None);
     step(&mut h);
-    file_menu(&mut h, "New…", "New document");
+    typed_open(&mut h, &browser);
     browse(&mut h, &browser);
     browser.answer(None);
     step_until(&mut h, "Browse… on again", |h| {
         !browse_button(h).accesskit_node().is_disabled()
     });
     browse(&mut h, &browser);
-    assert_eq!(browser.asked().len(), 4);
-    assert_eq!(browser.asked()[3].folder, None);
+    assert_eq!(browser.asked().len(), 5);
+    assert_eq!(browser.asked()[4].folder, None);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -10731,7 +10786,7 @@ fn browse_while_a_dialog_is_open_is_off_and_says_why_when_hovered() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let mut h = f.app_browsing(&browser);
-    file_menu(&mut h, "New…", "New document");
+    typed_open(&mut h, &browser);
     let why = "A file dialog is already open";
     // On: hovered, it says nothing.
     browse_button(&h).hover();
@@ -11076,7 +11131,11 @@ fn each_way_to_open_opens_the_panels_pick() {
         browser.answer(Some(&path));
         step_until(&mut h, "its tab", |h| !h.state().tabs().is_empty());
         assert_eq!(h.state().tabs().len(), 1, "{route}");
-        assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap(), "{route}");
+        assert_eq!(
+            h.state().tabs()[0].path.as_deref(),
+            path.to_str(),
+            "{route}"
+        );
         step_until(&mut h, "the start page left", |h| !start_shown(h));
         assert!(!anywhere(&h, "Open document"), "{route}");
         assert_eq!(never_waits::waits(), 0);
@@ -11106,7 +11165,11 @@ fn a_panel_that_wont_open_asks_for_a_typed_path_which_opens() {
         step(&mut h);
         h.key_press(eframe::egui::Key::Enter);
         step_until(&mut h, "its tab", |h| !h.state().tabs().is_empty());
-        assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap(), "{route}");
+        assert_eq!(
+            h.state().tabs()[0].path.as_deref(),
+            path.to_str(),
+            "{route}"
+        );
         step_until(&mut h, "the question gone", |h| {
             !anywhere(h, "Open document")
         });
@@ -11307,12 +11370,13 @@ fn open_while_a_browse_is_open_asks_for_a_typed_path_and_opens_no_second_dialog(
     let f = fixture();
     let browser = FakeBrowser::default();
     let mut h = f.app_browsing(&browser);
-    // New's Browse…, its native dialog left open, and New cancelled.
-    file_menu(&mut h, "New…", "New document");
+    // The typed Open's Browse… (its panel refused), its native dialog left open, and that
+    // Open cancelled.
+    typed_open(&mut h, &browser);
     browse(&mut h, &browser);
     h.get_by_role_and_label(Role::Button, "Cancel")
         .click_accesskit();
-    step_until(&mut h, "New gone", |h| !anywhere(h, "New document"));
+    step_until(&mut h, "Open gone", |h| !anywhere(h, "Open document"));
     let asked = browser.asked().len();
     // Open: the typed-path question, the platform's dialog not asked for again.
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::O);
@@ -11478,16 +11542,18 @@ fn with_no_document_the_start_page_shows_new_open_recent_and_copy_mcp_config() {
     assert!(h.query_by_role_and_label(Role::Toolbar, "CREATE").is_none());
     // Home is the page shown.
     assert_eq!(toggled(&home_button(&h)), Some(true));
-    // New part asks where the new document goes, as File > New… does.
+    // New part opens an untitled part at once, as File > New does, asking nothing, and
+    // the start page gives way to it; listed in Recent only once it's saved.
     start_page(&h)
         .get_by_role_and_label(Role::Button, "New part")
         .click();
-    step_until(&mut h, "New's dialog", |h| anywhere(h, "New document"));
-    h.get_by_role_and_label(Role::Button, "Cancel")
-        .click_accesskit();
-    step_until(&mut h, "it gone", |h| !anywhere(h, "New document"));
-    assert!(h.state().tabs().is_empty());
-    assert!(start_shown(&h));
+    step_until(&mut h, "its tab", |h| h.state().tabs().len() == 1);
+    assert!(!anywhere(&h, "New document"));
+    assert_eq!(h.state().tabs()[0].name(), "Untitled");
+    step_until(&mut h, "the start page left", |h| !start_shown(h));
+    home_button(&h).click();
+    step_until(&mut h, "Home", start_shown);
+    assert!(recent_names(&h).is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -11569,7 +11635,7 @@ fn the_start_pages_open_asks_the_panel_as_file_open_does_and_its_pick_opens_and_
     open_panel_asked(&mut h, &browser, 1);
     browser.answer(Some(&path));
     step_until(&mut h, "its tab", |h| !h.state().tabs().is_empty());
-    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    assert_eq!(h.state().tabs()[0].path.as_deref(), path.to_str());
     step_until(&mut h, "the start page left", |h| !start_shown(h));
     // Listed in Recent, as a typed path's open is.
     home_button(&h).click();
@@ -11580,20 +11646,22 @@ fn the_start_pages_open_asks_the_panel_as_file_open_does_and_its_pick_opens_and_
 }
 
 #[test]
-fn command_n_and_command_o_ask_for_new_and_open_from_the_start_page() {
+fn command_n_and_command_o_make_a_part_and_ask_for_open_from_the_start_page() {
     let f = fixture();
     let mut h = f.app();
     step(&mut h);
-    for (key, heading) in [
-        (eframe::egui::Key::N, "New document"),
-        (eframe::egui::Key::O, "Open document"),
-    ] {
-        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
-        step_until(&mut h, heading, |h| anywhere(h, heading));
-        h.key_press(eframe::egui::Key::Escape);
-        step_until(&mut h, "it gone", |h| !anywhere(h, heading));
-    }
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::O);
+    step_until(&mut h, "Open document", |h| anywhere(h, "Open document"));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "it gone", |h| !anywhere(h, "Open document"));
     assert!(h.state().tabs().is_empty());
+    // Command+N: an untitled part at once, no question.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::N);
+    step_until(&mut h, "its tab", |h| h.state().tabs().len() == 1);
+    assert!(!anywhere(&h, "New document"));
+    assert_eq!(h.state().tabs()[0].name(), "Untitled");
+    assert_eq!(h.state().tabs()[0].path, None);
+    step_until(&mut h, "the start page left", |h| !start_shown(h));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -11723,7 +11791,7 @@ fn recent_lists_the_last_opened_newest_first_each_once_and_a_new_app_reads_them(
             .iter()
             .any(|tab| tab.name() == "two.silico")
     });
-    assert_eq!(again.state().tabs()[0].path, two);
+    assert_eq!(again.state().tabs()[0].path.as_deref(), Some(two));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -12121,7 +12189,7 @@ fn a_document_saved_as_another_file_is_listed_first_in_recent() {
     let copy = f.dir.path().join("copy.silico");
     save_as(&mut h, &copy);
     step_until(&mut h, "the tab of the new file", |h| {
-        h.state().tabs()[0].path == copy.to_str().unwrap()
+        h.state().tabs()[0].path.as_deref() == copy.to_str()
     });
     home_button(&h).click();
     step_until(&mut h, "Recent, the copy first", |h| {
@@ -15241,7 +15309,11 @@ fn under_the_sheet_no_shortcut_acts() {
     assert!(tab.hidden.is_empty());
     assert!(anywhere(&h, "example.silico *"));
     assert_eq!(view(&h).camera(), &camera);
-    assert!(!anywhere(&h, "New document"));
+    assert_eq!(
+        h.state().tabs().len(),
+        1,
+        "Ctrl+N made a part under the sheet"
+    );
     assert_eq!(
         f.kernel
             .calls()
@@ -15514,13 +15586,14 @@ fn ctrl_shift_b_does_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
     assert_eq!((tab.rebuilds_all, tab.rebuilds), (0, 0));
     assert!(rebuild_stopped(&h), "still stopped");
     assert_eq!(boxes(&f), built);
-    // The dialog cancelled; a modal open (New's), off its field.
+    // The dialog cancelled; a modal open (the typed Open's, with no native dialogs), off
+    // its field.
     h.key_press(Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    h.key_press_modifiers(Modifiers::COMMAND, Key::N);
-    step_until(&mut h, "New's dialog", |h| anywhere(h, "New document"));
-    off_fields(&mut h, "New document");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::O);
+    step_until(&mut h, "Open's question", |h| anywhere(h, "Open document"));
+    off_fields(&mut h, "Open document");
     let built = boxes(&f);
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
     for _ in 0..5 {
@@ -15533,7 +15606,7 @@ fn ctrl_shift_b_does_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
 
 // ---- Each command's keys do what its button or menu item does ----
 
-/// A question's modal (New's, Open's, Save As's) asked by `chord`, then by `click`: each
+/// A question's modal (Open's, Save As's) asked by `chord`, then by `click`: each
 /// asks `title`.
 fn same_question(h: &mut AppHarness, chord: Chord, title: &str, click: impl Fn(&mut AppHarness)) {
     press_chord(h, chord);
@@ -15613,18 +15686,36 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
     for entry in REGISTRY {
         let command = entry.command;
         match command {
-            Command::New | Command::Open => {
+            Command::New => {
+                // An untitled part at once, by its keys and by the start page's own button,
+                // labelled as the registry names the command: each from a fresh app, so
+                // each is the run's first, "Untitled".
+                let untitled = |ask: &dyn Fn(&mut AppHarness)| {
+                    let f = fixture();
+                    let mut h = f.app();
+                    step(&mut h);
+                    ask(&mut h);
+                    step_until(&mut h, "the untitled part's tab", |h| {
+                        h.state().tabs().len() == 1
+                    });
+                    let tab = &h.state().tabs()[0];
+                    assert_eq!((tab.name(), tab.path.as_deref()), ("Untitled", None));
+                };
+                for chord in keys_of(command) {
+                    untitled(&|h| press_chord(h, chord));
+                }
+                untitled(&|h| {
+                    start_page(h).get_by_label(entry.label).click();
+                    step(h);
+                });
+            }
+            Command::Open => {
                 // The start page's own, labelled as the registry names the command.
                 let f = fixture();
                 let mut h = f.app();
                 step(&mut h);
-                let title = if command == Command::New {
-                    "New document"
-                } else {
-                    "Open document"
-                };
                 for chord in keys_of(command) {
-                    same_question(&mut h, chord, title, |h| {
+                    same_question(&mut h, chord, "Open document", |h| {
                         start_page(h).get_by_label(entry.label).click();
                         step(h);
                     });
@@ -16135,5 +16226,1175 @@ fn ctrl_shift_b_alone_asks_for_the_next_frame_at_once() {
     ));
     assert_eq!(h.state().tabs()[0].rebuilds_all, 1);
     assert_eq!(h.state().tabs()[0].rebuilds, 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Untitled parts (docs/design/m5.0-app.md §4, New; open item 30, overturned) ----
+//
+// New opens a part with no file (`open_untitled`), named "Untitled", "Untitled 2", ...; its
+// first save is a Save As through the Save panel (the stand-in, as above), and with no
+// native dialogs, or one that won't open, through the typed Save As. Expected names and
+// paths are written here by hand; files' contents are the session's text, read from the
+// core, and the features' names in them.
+
+/// Command+N pressed, and the new part's tab waited for.
+fn new_part(h: &mut AppHarness) {
+    let before = h.state().tabs().len();
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::N);
+    step_until(h, "the untitled part's tab", |h| {
+        h.state().tabs().len() == before + 1
+    });
+}
+
+/// The tab named `name`.
+fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a silico_app::tab::Tab {
+    h.state()
+        .tabs()
+        .iter()
+        .find(|tab| tab.name() == name)
+        .unwrap_or_else(|| panic!("no tab {name}"))
+}
+
+/// A box added to the part shown, named `name`, through CREATE's Box dialog and its OK:
+/// the part then holds unsaved edits, its tab marked.
+fn add_box(h: &mut AppHarness, name: &str) {
+    create(h, "Box");
+    step_until(h, "its add answered", |h| {
+        tab_named(h, name)
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    dialog(h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(h, "the dialog closed", |h| !dialog_open(h));
+    let marked = format!("{name} *");
+    step_until(h, "unsaved", |h| {
+        tab_named(h, name).edits.idle() && tab_named(h, name).unsaved() && anywhere(h, &marked)
+    });
+}
+
+/// The question's button `label`, the last of that label (after the app bar's Save).
+fn answer_question(h: &mut AppHarness, label: &str) {
+    h.query_all_by_role_and_label(Role::Button, label)
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step(h);
+}
+
+#[test]
+fn new_names_parts_untitled_then_untitled_2_and_never_gives_a_name_again() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    new_part(&mut h);
+    let names = |h: &AppHarness| -> Vec<String> {
+        h.state()
+            .tabs()
+            .iter()
+            .map(|tab| tab.name().to_owned())
+            .collect()
+    };
+    assert_eq!(names(&h), ["Untitled", "Untitled 2"]);
+    // Untitled 2, holding no edits, closed without asking; then New: Untitled 3, the name
+    // Untitled 2 had never given again in this run.
+    h.get_by_label("Close Untitled 2").click();
+    step_until(&mut h, "it closed", |h| h.state().tabs().len() == 1);
+    assert!(!anywhere(&h, "Save changes to Untitled 2 before closing?"));
+    new_part(&mut h);
+    assert_eq!(names(&h), ["Untitled", "Untitled 3"]);
+    step_until(&mut h, "Untitled 3 shown", |h| {
+        toggled(&h.get_by_role_and_label(Role::Button, "Untitled 3")) == Some(true)
+    });
+    // Each a session of its own, none with a file.
+    let tabs = h.state().tabs();
+    assert_ne!(tabs[0].id, tabs[1].id);
+    for tab in tabs {
+        assert_eq!(tab.path, None);
+        assert_eq!(
+            f.sessions.status(&tab.id).session.unwrap().path,
+            None::<String>
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_untitled_parts_edit_is_marked_and_command_s_saves_it_through_the_save_panel() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    assert!(anywhere(&h, "Untitled *"));
+    // Command+S: the Save panel, named by the part; nothing written until it answers.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    save_panel_asked(&mut h, &browser, 1);
+    assert_eq!(
+        browser.asked(),
+        [Ask {
+            pick: Pick::Save,
+            title: "Save Untitled as".to_owned(),
+            filters: vec![browse_mod::DOCUMENTS],
+            folder: None,
+            file_name: Some("Untitled.silico".to_owned()),
+        }]
+    );
+    // Command+S again while it's open: no second panel, nothing sent.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(browser.asked().len(), 1);
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert!(!h.state().tabs()[0].sent.contains(&Sent::Commit));
+    // Picked: committed to it, the tab renamed and clean.
+    let part = f.dir.path().join("part.silico");
+    browser.answer(Some(&part));
+    step_until(&mut h, "renamed and clean", |h| {
+        anywhere(h, "part.silico") && !anywhere(h, "part.silico *")
+    });
+    let tab = &h.state().tabs()[0];
+    assert_eq!(tab.path.as_deref(), part.to_str());
+    assert_eq!(tab.name(), "part.silico");
+    assert_eq!(tab.saves, 1);
+    assert!(!tab.unsaved());
+    assert_eq!(tab.message, None);
+    assert!(!anywhere(&h, "Untitled"));
+    // The file holds the document as the session holds it: the box.
+    let id = tab.id;
+    let held = f.sessions.text(&id, None).wait().result.unwrap().text;
+    assert_eq!(std::fs::read_to_string(&part).unwrap(), held);
+    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(
+        f.sessions.status(&id).session.unwrap().path.as_deref(),
+        part.to_str()
+    );
+    // From now on a file's: Command+S commits to it, asking nothing.
+    select(&mut h, "Box");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "part.silico *")
+    });
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "saved", |h| !anywhere(h, "part.silico *"));
+    assert_eq!(names_in(&part), ["xBox"]);
+    assert_eq!(browser.asked().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn closing_an_edited_untitled_part_asks_and_dont_save_leaves_nothing_and_a_cancel_keeps_it() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    let before = listing(f.dir.path());
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    let question = "Save changes to Untitled before closing?";
+    // Close: asked. Save: the Save panel, cancelled: the part stays, its edits held, and
+    // nothing is said or sent.
+    h.get_by_label("Close Untitled").click();
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    answer_question(&mut h, "Save");
+    save_panel_asked(&mut h, &browser, 1);
+    assert_eq!(
+        browser.asked()[0].file_name.as_deref(),
+        Some("Untitled.silico")
+    );
+    browser.answer(None);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    let tab = &h.state().tabs()[0];
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(tab.unsaved() && tab.transaction && !tab.closing());
+    assert_eq!(tab.saves, 0);
+    assert_eq!(h.state().message(), None);
+    assert!(!anywhere(&h, question));
+    // Close again, Don't save: closed, nothing left on disk, no panel asked.
+    h.get_by_label("Close Untitled").click();
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    answer_question(&mut h, "Don't save");
+    step_until(&mut h, "it closed", |h| h.state().tabs().is_empty());
+    assert_eq!(browser.asked().len(), 1);
+    assert_eq!(listing(f.dir.path()), before);
+    // A quit's Save all, its panel cancelled: the quit stops, the part kept, the window
+    // open, and that said.
+    new_part(&mut h);
+    add_box(&mut h, "Untitled 2");
+    close_window(&mut h);
+    assert!(told(&h, false), "a close with edits held wasn't cancelled");
+    step_until(&mut h, "the quit question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    answer_question(&mut h, "Save all");
+    save_panel_asked(&mut h, &browser, 2);
+    assert_eq!(browser.asked()[1].title, "Save Untitled 2 as");
+    browser.answer(None);
+    step_until(&mut h, "the quit stopped", |h| {
+        h.state().message() == Some("Quit stopped: Untitled 2 wasn't closed")
+    });
+    for _ in 0..20 {
+        step(&mut h);
+        assert!(!told(&h, true), "the window closed with Untitled 2's edits");
+    }
+    let tab = &h.state().tabs()[0];
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(tab.unsaved() && !tab.closing());
+    assert_eq!(browser.asked().len(), 2);
+    assert_eq!(listing(f.dir.path()), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn quitting_with_two_edited_untitled_parts_saves_each_through_its_panel_in_turn() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    new_part(&mut h);
+    add_box(&mut h, "Untitled 2");
+    close_window(&mut h);
+    assert!(told(&h, false), "a close with edits held wasn't cancelled");
+    step_until(&mut h, "the quit question", |h| {
+        anywhere(h, "Save changes before quitting?")
+            && h.query_by_label_contains("Unsaved: Untitled, Untitled 2. Quitting")
+                .is_some()
+    });
+    answer_question(&mut h, "Save all");
+    // The first's panel; the second's waits for it.
+    save_panel_asked(&mut h, &browser, 1);
+    assert_eq!(browser.asked()[0].title, "Save Untitled as");
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(browser.asked().len(), 1);
+    let one = f.dir.path().join("one.silico");
+    browser.answer(Some(&one));
+    save_panel_asked(&mut h, &browser, 2);
+    assert_eq!(browser.asked()[1].title, "Save Untitled 2 as");
+    assert_eq!(
+        browser.asked()[1].file_name.as_deref(),
+        Some("Untitled 2.silico")
+    );
+    let two = f.dir.path().join("two.silico");
+    browser.answer(Some(&two));
+    step_until(&mut h, "the window closing", |h| told(h, true));
+    assert!(h.state().tabs().is_empty());
+    for path in [&one, &two] {
+        assert_eq!(names_in(path), ["Box"], "{}", path.display());
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn quitting_with_three_untitled_parts_stops_at_the_one_whose_panel_is_cancelled() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    for name in ["Untitled", "Untitled 2", "Untitled 3"] {
+        new_part(&mut h);
+        add_box(&mut h, name);
+    }
+    close_window(&mut h);
+    step_until(&mut h, "the quit question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    answer_question(&mut h, "Save all");
+    save_panel_asked(&mut h, &browser, 1);
+    let one = f.dir.path().join("one.silico");
+    browser.answer(Some(&one));
+    save_panel_asked(&mut h, &browser, 2);
+    assert_eq!(browser.asked()[1].title, "Save Untitled 2 as");
+    browser.answer(None);
+    step_until(&mut h, "the quit stopped and the first closed", |h| {
+        h.state().message() == Some("Quit stopped: Untitled 2 wasn't closed")
+            && h.state().tabs().len() == 2
+    });
+    // The third's panel never asked: the quit stopped before it.
+    for _ in 0..20 {
+        step(&mut h);
+        assert!(!told(&h, true));
+    }
+    assert_eq!(browser.asked().len(), 2);
+    let names: Vec<&str> = h.state().tabs().iter().map(|tab| tab.name()).collect();
+    assert_eq!(names, ["Untitled 2", "Untitled 3"]);
+    assert!(h.state().tabs().iter().all(|tab| tab.unsaved()));
+    assert_eq!(names_in(&one), ["Box"]);
+    // A second quit asks again, and its Save all asks the second's panel first.
+    close_window(&mut h);
+    step_until(&mut h, "asked again", |h| {
+        anywhere(h, "Save changes before quitting?")
+            && h.query_by_label_contains("Unsaved: Untitled 2, Untitled 3. Quitting")
+                .is_some()
+    });
+    answer_question(&mut h, "Save all");
+    save_panel_asked(&mut h, &browser, 3);
+    assert_eq!(browser.asked()[2].title, "Save Untitled 2 as");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_untitled_parts_export_refuses_a_path_that_isnt_full_and_takes_one_that_is() {
+    use silico_core::command::export::{Export, ExportFormat};
+    let f = fixture();
+    let documents = f.dir.path().join("Documents");
+    let mut h = f.app_made(|app| app.documents_folder(Some(documents.clone())));
+    step(&mut h);
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Export…").click();
+    step_until(&mut h, "the export dialog", |h| {
+        anywhere(h, "Export Untitled")
+    });
+    // Its path starts in the Documents folder, named by the part.
+    assert_eq!(
+        path_value(&h),
+        documents.join("Untitled.3mf").to_str().unwrap()
+    );
+    let refusal = "Give a full path: an untitled part has no folder";
+    assert!(!anywhere(&h, refusal));
+    press(&mut h, "STEP");
+    for typed in ["out.step", "sub/out.step"] {
+        set_field(&mut h, "Path", typed);
+        step(&mut h);
+        assert!(anywhere(&h, refusal), "{typed}");
+        assert!(
+            h.get_by_role_and_label(Role::Button, "Export")
+                .accesskit_node()
+                .is_disabled(),
+            "{typed}"
+        );
+        press(&mut h, "Export");
+        h.key_press(eframe::egui::Key::Enter);
+        for _ in 0..5 {
+            step(&mut h);
+        }
+        assert!(h.state().tabs()[0].exports.is_empty(), "{typed}");
+        assert!(!f.dir.path().join(typed).exists(), "{typed}");
+    }
+    // A full path: taken, and written.
+    let out = f.dir.path().join("out.step");
+    set_field(&mut h, "Path", out.to_str().unwrap());
+    step(&mut h);
+    assert!(!anywhere(&h, refusal));
+    press(&mut h, "Export");
+    step_until(&mut h, "the dialog closed", |h| {
+        !anywhere(h, "Export Untitled")
+    });
+    assert_eq!(
+        h.state().tabs()[0].exports,
+        [Export {
+            format: ExportFormat::Step,
+            path: out.clone(),
+            replace: false,
+            features: None,
+        }]
+    );
+    assert!(out.is_file());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_no_native_dialog_an_untitled_parts_save_asks_for_a_typed_full_path() {
+    let f = fixture();
+    // No native dialogs at all, then a panel that won't open: the typed Save As each time.
+    for refusing in [None, Some(FakeBrowser::default())] {
+        let mut h = match &refusing {
+            None => f.app(),
+            Some(browser) => {
+                browser.refusing(true);
+                f.app_browsing(browser)
+            }
+        };
+        step(&mut h);
+        new_part(&mut h);
+        add_box(&mut h, "Untitled");
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+        step_until(&mut h, "the typed Save As", |h| {
+            anywhere(h, "Save Untitled as")
+        });
+        if let Some(browser) = &refusing {
+            // The panel was asked for first.
+            assert_eq!(browser.asked().len(), 1);
+            assert_eq!(browser.asked()[0].pick, Pick::Save);
+        }
+        // A path that isn't full: refused, said, nothing sent.
+        path_field(&h).focus();
+        step(&mut h);
+        path_field(&h).type_text("rel.silico");
+        step(&mut h);
+        step(&mut h);
+        let refusal = "Give a full path: an untitled part has no folder";
+        assert!(anywhere(&h, refusal));
+        h.key_press(eframe::egui::Key::Enter);
+        for _ in 0..5 {
+            step(&mut h);
+        }
+        assert!(anywhere(&h, "Save Untitled as"));
+        assert_eq!(h.state().tabs()[0].saves, 0);
+        assert!(!Path::new("rel.silico").exists());
+        // A full one: saved to it.
+        let made = f
+            .dir
+            .path()
+            .join(format!("typed-{}.silico", refusing.is_some()));
+        set_field(&mut h, "Path", made.to_str().unwrap());
+        step(&mut h);
+        assert!(!anywhere(&h, refusal));
+        answer_question(&mut h, "Save");
+        step_until(&mut h, "saved as it", |h| {
+            h.state().tabs()[0].path.as_deref() == made.to_str() && !anywhere(h, "Save Untitled as")
+        });
+        step_until(&mut h, "clean", |h| !h.state().tabs()[0].unsaved());
+        assert_eq!(names_in(&made), ["Box"]);
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn an_untitled_part_is_listed_in_recent_only_once_its_first_save_gives_it_a_file() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let file = f.recents_file();
+    let mut h = f.app_made(|app| {
+        app.remembering(Recents::at(file))
+            .browsing(Box::new(browser.clone()))
+    });
+    recents_read(&mut h);
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    // Home, a while: nothing listed.
+    home_button(&h).click();
+    step_until(&mut h, "Home", start_shown);
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(recent_names(&h).is_empty());
+    assert!(
+        h.state()
+            .recents()
+            .is_some_and(|recents| recents.list().is_empty())
+    );
+    // Back to it, and saved: listed.
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the part", |h| !start_shown(h));
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    save_panel_asked(&mut h, &browser, 1);
+    let part = f.dir.path().join("part.silico");
+    browser.answer(Some(&part));
+    step_until(&mut h, "saved", |h| {
+        h.state().tabs()[0].path.as_deref() == part.to_str()
+    });
+    home_button(&h).click();
+    step_until(&mut h, "listed", |h| {
+        start_shown(h) && recent_names(h) == ["part.silico"]
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn copy_mcp_config_with_an_untitled_part_shown_serves_the_newest_recent_ones_folder_then_documents()
+{
+    let f = fixture();
+    let models = f.dir.path().join("models");
+    std::fs::create_dir(&models).unwrap();
+    let kept = models.join("b.silico");
+    std::fs::write(&kept, EXAMPLE).unwrap();
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{}\n", kept.to_str().unwrap()),
+    )
+    .unwrap();
+    let documents = f.dir.path().join("Documents");
+    let file = f.recents_file();
+    let mut h = f.app_made(|app| {
+        app.serving_with("/opt/silico/bin/silico".to_owned())
+            .documents_folder(Some(documents.clone()))
+            .remembering(Recents::at(file))
+    });
+    recents_read(&mut h);
+    new_part(&mut h);
+    // The untitled part shown has no folder: the newest recent's is named.
+    assert_eq!(
+        h.state().mcp_config(),
+        config_serving(models.to_str().unwrap())
+    );
+    home_button(&h).click();
+    step_until(&mut h, "Home", start_shown);
+    assert_eq!(
+        copy_config(&mut h),
+        Some(config_serving(models.to_str().unwrap()))
+    );
+    assert!(!anywhere(&h, silico_app::start::NO_WORKSPACE_NOTE));
+    // With no recent list: the Documents folder.
+    let mut bare = f.app_made(|app| {
+        app.serving_with("/opt/silico/bin/silico".to_owned())
+            .documents_folder(Some(documents.clone()))
+    });
+    step(&mut bare);
+    new_part(&mut bare);
+    assert_eq!(
+        bare.state().mcp_config(),
+        config_serving(documents.to_str().unwrap())
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn quits_save_all_with_a_parts_own_save_panel_open_saves_it_once_through_that_panel() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    let before = listing(f.dir.path());
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    // Command+S: its panel open (the portal's leaves the window usable), then a quit.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    save_panel_asked(&mut h, &browser, 1);
+    close_window(&mut h);
+    step_until(&mut h, "the quit question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    answer_question(&mut h, "Save all");
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    // No second panel: the one open saves it, and closes it.
+    assert_eq!(browser.asked().len(), 1);
+    let part = f.dir.path().join("part.silico");
+    browser.answer(Some(&part));
+    step_until(&mut h, "the window closing", |h| told(h, true));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(browser.asked().len(), 1);
+    assert_eq!(names_in(&part), ["Box"]);
+    // One document written: the part's, and no other.
+    let documents = |listed: Vec<String>| -> Vec<String> {
+        listed
+            .into_iter()
+            .filter(|name| name.ends_with(".silico"))
+            .collect()
+    };
+    assert!(documents(before).is_empty());
+    assert_eq!(documents(listing(f.dir.path())), ["part.silico"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn quits_save_all_while_a_parts_save_as_runs_waits_for_it_and_asks_no_panel() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    save_panel_asked(&mut h, &browser, 1);
+    // Picked, its Save As held behind the session's queue.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let part = f.dir.path().join("part.silico");
+    browser.answer(Some(&part));
+    step_until(&mut h, "the Save As sent", |h| {
+        h.state().tabs()[0].saving_as()
+    });
+    close_window(&mut h);
+    step_until(&mut h, "the quit question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    answer_question(&mut h, "Save all");
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(browser.asked().len(), 1);
+    assert!(!told(&h, true));
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the window closing", |h| told(h, true));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(browser.asked().len(), 1);
+    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_stopped_quit_leaves_a_save_panel_it_marked_to_save_without_closing() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    // A document whose save will be a conflict, and an untitled part with its panel open.
+    let theirs_path = f.file("a.silico", EXAMPLE);
+    h.state_mut().open(theirs_path.to_str().unwrap(), false);
+    step_until(&mut h, "its features", |h| {
+        h.query_by_role_and_label(Role::Pane, "Timeline").is_some() && shows(h, "Timeline", "Pin")
+    });
+    select(&mut h, "Pin");
+    type_name(&mut h, "Q");
+    step_until(&mut h, "unsaved", |h| anywhere(h, "a.silico *"));
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    save_panel_asked(&mut h, &browser, 1);
+    let theirs = EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#);
+    std::fs::write(&theirs_path, &theirs).unwrap();
+    close_window(&mut h);
+    step_until(&mut h, "the quit question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    answer_question(&mut h, "Save all");
+    step_until(&mut h, "the quit stopped", |h| {
+        h.state().message() == Some("Quit stopped: a.silico wasn't closed")
+    });
+    // The pick now saves the part, and leaves it open.
+    let part = f.dir.path().join("part.silico");
+    browser.answer(Some(&part));
+    step_until(&mut h, "saved", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .any(|tab| tab.path.as_deref() == part.to_str() && !tab.unsaved())
+    });
+    for _ in 0..20 {
+        step(&mut h);
+        assert!(!told(&h, true));
+    }
+    assert_eq!(h.state().tabs().len(), 2);
+    assert!(h.state().tabs().iter().all(|tab| !tab.closing()));
+    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_no_native_dialogs_close_and_quit_save_an_untitled_part_through_the_typed_save_as() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    new_part(&mut h);
+    add_box(&mut h, "Untitled 2");
+    // Close's Save: the typed Save As, a full path, saved and closed.
+    h.get_by_label("Untitled *").click();
+    step(&mut h);
+    h.get_by_label("Close Untitled").click();
+    step_until(&mut h, "the close question", |h| {
+        anywhere(h, "Save changes to Untitled before closing?")
+    });
+    answer_question(&mut h, "Save");
+    step_until(&mut h, "the typed Save As", |h| {
+        anywhere(h, "Save Untitled as")
+    });
+    let one = f.dir.path().join("one.silico");
+    type_path(&mut h, &one);
+    answer_question(&mut h, "Save");
+    step_until(&mut h, "saved and closed", |h| {
+        h.state().tabs().len() == 1 && h.state().tabs()[0].name() == "Untitled 2"
+    });
+    assert_eq!(names_in(&one), ["Box"]);
+    // Quit's Save all, its typed Save As cancelled: the quit stops, the part kept.
+    close_window(&mut h);
+    step_until(&mut h, "the quit question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    answer_question(&mut h, "Save all");
+    step_until(&mut h, "the typed Save As", |h| {
+        anywhere(h, "Save Untitled 2 as")
+    });
+    answer_question(&mut h, "Cancel");
+    step_until(&mut h, "the quit stopped", |h| {
+        h.state().message() == Some("Quit stopped: Untitled 2 wasn't closed")
+    });
+    for _ in 0..20 {
+        step(&mut h);
+        assert!(!told(&h, true));
+    }
+    assert!(h.state().tabs()[0].unsaved());
+    // Quit again, Save all, a path to a file there, and Replace: saved over it and closed,
+    // and the window with it.
+    let there = f.file("there.silico", "an older copy");
+    close_window(&mut h);
+    step_until(&mut h, "the quit question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    answer_question(&mut h, "Save all");
+    step_until(&mut h, "the typed Save As", |h| {
+        anywhere(h, "Save Untitled 2 as")
+    });
+    type_path(&mut h, &there);
+    answer_question(&mut h, "Save");
+    let asked = format!("{} already exists. Replace it?", there.to_str().unwrap());
+    step_until(&mut h, "the Replace question", |h| anywhere(h, &asked));
+    answer_question(&mut h, "Replace");
+    step_until(&mut h, "the window closing", |h| told(h, true));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(names_in(&there), ["Box"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_untitled_parts_save_is_on_with_no_edits_and_asks_the_panel() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    new_part(&mut h);
+    step(&mut h);
+    assert!(!h.state().tabs()[0].unsaved());
+    let save = || {
+        h.query_all_by_role_and_label(Role::Button, "Save")
+            .next()
+            .unwrap()
+            .accesskit_node()
+            .is_disabled()
+    };
+    assert!(!save(), "Save off on an untitled part");
+    // The app bar's Save: the panel; cancelled, then Command+S: the panel again.
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .next()
+        .unwrap()
+        .click_accesskit();
+    save_panel_asked(&mut h, &browser, 1);
+    browser.answer(None);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    save_panel_asked(&mut h, &browser, 2);
+    let part = f.dir.path().join("empty.silico");
+    browser.answer(Some(&part));
+    step_until(&mut h, "saved", |h| {
+        h.state().tabs()[0].path.as_deref() == part.to_str()
+    });
+    // The empty document, as the session holds it.
+    let id = h.state().tabs()[0].id;
+    let held = f.sessions.text(&id, None).wait().result.unwrap().text;
+    assert_eq!(std::fs::read_to_string(&part).unwrap(), held);
+    assert!(names_in(&part).is_empty());
+    // A file's now, with no edits: Save off.
+    step_until(&mut h, "Save off", |h| {
+        h.query_all_by_role_and_label(Role::Button, "Save")
+            .next()
+            .unwrap()
+            .accesskit_node()
+            .is_disabled()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_untitled_parts_tab_and_save_say_it_has_no_file_when_hovered() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    h.get_by_role_and_label(Role::Button, "Untitled").hover();
+    step_until(&mut h, "the tab's tooltip", |h| {
+        anywhere(h, "Not saved to a file yet")
+    });
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .next()
+        .unwrap()
+        .hover();
+    step_until(&mut h, "Save's tooltip", |h| {
+        anywhere(h, "Asks where to save Untitled, then writes it")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_untitled_parts_export_browse_starts_in_its_paths_folder_or_the_platforms() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let documents = f.dir.path().join("Documents");
+    let mut h = f.app_made(|app| {
+        app.documents_folder(Some(documents.clone()))
+            .browsing(Box::new(browser.clone()))
+    });
+    step(&mut h);
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Export…").click();
+    step_until(&mut h, "the export dialog", |h| {
+        anywhere(h, "Export Untitled")
+    });
+    browse(&mut h, &browser);
+    assert_eq!(
+        browser.asked()[0].folder.as_deref(),
+        Some(documents.as_path())
+    );
+    assert_eq!(
+        browser.asked()[0].file_name.as_deref(),
+        Some("Untitled.3mf")
+    );
+    browser.answer(None);
+    // A path that isn't full: no folder of its own, so the platform's.
+    set_field(&mut h, "Path", "out.3mf");
+    browse(&mut h, &browser);
+    assert_eq!(browser.asked()[1].folder, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_save_as_that_closes_its_part_counts_as_closing_while_it_runs() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    h.get_by_label("Close Untitled").click();
+    step_until(&mut h, "the close question", |h| {
+        anywhere(h, "Save changes to Untitled before closing?")
+    });
+    answer_question(&mut h, "Save");
+    save_panel_asked(&mut h, &browser, 1);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let part = f.dir.path().join("part.silico");
+    browser.answer(Some(&part));
+    step_until(&mut h, "the Save As sent", |h| {
+        h.state().tabs()[0].saving_as()
+    });
+    assert!(h.state().tabs()[0].closing());
+    // Closing: Save As and Export are off, as for a save that closes.
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    for item in ["Save As…", "Export…"] {
+        assert!(
+            button_off_start(&h, item).accesskit_node().is_disabled(),
+            "{item}"
+        );
+    }
+    h.key_press(eframe::egui::Key::Escape);
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "closed", |h| h.state().tabs().is_empty());
+    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// `path` typed into the typed Save As's empty Path field.
+fn type_path(h: &mut AppHarness, path: &Path) {
+    path_field(h).focus();
+    step(h);
+    path_field(h).type_text(path.to_str().unwrap());
+    step(h);
+    step(h);
+}
+
+// ---- Untitled parts: which part a Save panel, a quit, and Save act on ----
+//
+// Each of these pins one choice the app makes between two parts, or between a Save panel
+// open and one to open: two untitled parts, one with its panel open; a quit with a part's
+// panel open, or with a part closed meanwhile; Save while a dialog is open or a Save As
+// runs; and an export form open across a part's first save. Expected names, paths, and
+// counts of panels asked are written here by hand.
+
+/// The app bar's Save button.
+fn bar_save(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .next()
+        .unwrap()
+}
+
+#[test]
+fn a_second_untitled_parts_save_while_the_firsts_panel_is_open_asks_its_own_typed_save_as() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    new_part(&mut h);
+    add_box(&mut h, "Untitled 2");
+    // Untitled shown, and Command+S: its panel.
+    h.get_by_label("Untitled *").click();
+    step(&mut h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    save_panel_asked(&mut h, &browser, 1);
+    assert_eq!(browser.asked()[0].title, "Save Untitled as");
+    // Untitled 2 shown, and Command+S: not the first's panel, which is open (one native
+    // dialog at a time), but Untitled 2's own typed Save As.
+    h.get_by_label("Untitled 2 *").click();
+    step(&mut h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(
+        anywhere(&h, "Save Untitled 2 as"),
+        "Untitled 2's typed Save As"
+    );
+    assert!(!anywhere(&h, "Save Untitled as"));
+    assert_eq!(browser.asked().len(), 1);
+    // Each saved to its own file: Untitled 2 to the path typed, Untitled to the panel's
+    // pick, and neither closed.
+    let two = f.dir.path().join("two.silico");
+    type_path(&mut h, &two);
+    answer_question(&mut h, "Save");
+    step_until(&mut h, "Untitled 2 saved", |h| {
+        h.state().tabs()[1].path.as_deref() == two.to_str()
+    });
+    assert_eq!(h.state().tabs()[0].path, None);
+    let one = f.dir.path().join("one.silico");
+    browser.answer(Some(&one));
+    step_until(&mut h, "Untitled saved", |h| {
+        h.state().tabs()[0].path.as_deref() == one.to_str()
+    });
+    let names: Vec<&str> = h.state().tabs().iter().map(|tab| tab.name()).collect();
+    assert_eq!(names, ["one.silico", "two.silico"]);
+    assert!(h.state().tabs().iter().all(|tab| !tab.unsaved()));
+    for path in [&one, &two] {
+        assert_eq!(names_in(path), ["Box"], "{}", path.display());
+    }
+    assert_eq!(browser.asked().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_quits_save_all_with_a_parts_panel_open_then_cancelled_stops_the_quit_asking_no_second_panel() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    save_panel_asked(&mut h, &browser, 1);
+    close_window(&mut h);
+    step_until(&mut h, "the quit question", |h| {
+        anywhere(h, "Save changes before quitting?")
+    });
+    answer_question(&mut h, "Save all");
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(browser.asked().len(), 1);
+    // The panel the quit took on, cancelled: the part's close refused, so the quit stops,
+    // said, and no second panel is asked for it.
+    browser.answer(None);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(
+        browser.asked().len(),
+        1,
+        "a second panel asked for Untitled"
+    );
+    step_until(&mut h, "the quit stopped", |h| {
+        h.state().message() == Some("Quit stopped: Untitled wasn't closed")
+    });
+    for _ in 0..20 {
+        step(&mut h);
+        assert!(!told(&h, true), "the window closed with Untitled's edits");
+    }
+    assert_eq!(browser.asked().len(), 1);
+    let tab = &h.state().tabs()[0];
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!((tab.name(), tab.path.as_deref()), ("Untitled", None));
+    assert!(tab.unsaved() && !tab.closing());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_quit_passes_over_an_untitled_part_closed_without_saving_while_anothers_panel_was_open() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    let before = listing(f.dir.path());
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    new_part(&mut h);
+    add_box(&mut h, "Untitled 2");
+    close_window(&mut h);
+    step_until(&mut h, "the quit question", |h| {
+        anywhere(h, "Save changes before quitting?")
+    });
+    answer_question(&mut h, "Save all");
+    save_panel_asked(&mut h, &browser, 1);
+    assert_eq!(browser.asked()[0].title, "Save Untitled as");
+    // While Untitled's panel is open, Untitled 2 closed, Don't save, its rollback held:
+    // it's closing when Untitled's pick comes.
+    let (hold, check) = hold_queue(&f, &h, 1);
+    h.get_by_label("Close Untitled 2").click();
+    step_until(&mut h, "the close question", |h| {
+        anywhere(h, "Save changes to Untitled 2 before closing?")
+    });
+    answer_question(&mut h, "Don't save");
+    step_until(&mut h, "Untitled 2 closing", |h| {
+        h.state().tabs()[1].closing()
+    });
+    let one = f.dir.path().join("one.silico");
+    browser.answer(Some(&one));
+    step_until(&mut h, "Untitled saved", |h| {
+        h.state().tabs()[0].path.as_deref() == one.to_str()
+    });
+    // Untitled 2, its turn come, closing already: passed over, no panel asked for it.
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(browser.asked().len(), 1);
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(h.state().tabs()[0].name(), "Untitled 2");
+    assert!(h.state().tabs()[0].closing());
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the window closing", |h| told(h, true));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(browser.asked().len(), 1);
+    assert_eq!(names_in(&one), ["Box"]);
+    // No other document written: Untitled 2's edits dropped, as Don't save says.
+    let documents = |listed: Vec<String>| -> Vec<String> {
+        listed
+            .into_iter()
+            .filter(|name| name.ends_with(".silico"))
+            .collect()
+    };
+    assert!(documents(before).is_empty());
+    assert_eq!(documents(listing(f.dir.path())), ["one.silico"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_untitled_parts_save_is_off_and_command_s_asks_nothing_in_a_dialog_or_while_its_save_as_runs()
+{
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    new_part(&mut h);
+    step(&mut h);
+    assert!(!bar_save(&h).accesskit_node().is_disabled());
+    // A dialog open: Save off, and Command+S asks no panel.
+    create(&mut h, "Box");
+    step_until(&mut h, "its add answered", |h| {
+        tab_named(h, "Untitled")
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    assert!(bar_save(&h).accesskit_node().is_disabled());
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(browser.asked().is_empty());
+    assert!(dialog_open(&h));
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    step_until(&mut h, "unsaved", |h| {
+        tab_named(h, "Untitled").edits.idle() && anywhere(h, "Untitled *")
+    });
+    assert!(!bar_save(&h).accesskit_node().is_disabled());
+    // Its Save As picked and held: neither closing nor a dialog, but saving as. Save off,
+    // and Command+S asks no second panel.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    save_panel_asked(&mut h, &browser, 1);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let part = f.dir.path().join("part.silico");
+    browser.answer(Some(&part));
+    step_until(&mut h, "the Save As sent", |h| {
+        h.state().tabs()[0].saving_as()
+    });
+    let tab = &h.state().tabs()[0];
+    assert!(!tab.closing() && !tab.in_dialog());
+    step(&mut h);
+    assert!(bar_save(&h).accesskit_node().is_disabled());
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(browser.asked().len(), 1);
+    assert!(h.state().tabs()[0].saving_as());
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "saved", |h| {
+        h.state().tabs()[0].path.as_deref() == part.to_str() && !h.state().tabs()[0].unsaved()
+    });
+    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(browser.asked().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_export_form_opened_while_untitled_takes_a_relative_path_in_the_folder_of_its_first_save() {
+    use silico_core::command::export::{Export, ExportFormat};
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let documents = f.dir.path().join("Documents");
+    let mut h = f.app_made(|app| {
+        app.documents_folder(Some(documents.clone()))
+            .browsing(Box::new(browser.clone()))
+    });
+    step(&mut h);
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    // Its Save panel open (the portal's leaves the window usable), and Export… opened.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    save_panel_asked(&mut h, &browser, 1);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Export…").click();
+    step_until(&mut h, "the export dialog", |h| {
+        anywhere(h, "Export Untitled")
+    });
+    let refusal = "Give a full path: an untitled part has no folder";
+    press(&mut h, "STEP");
+    set_field(&mut h, "Path", "out.step");
+    step(&mut h);
+    assert!(anywhere(&h, refusal));
+    // The panel's pick: the part's first save, while the form is open. A relative path is
+    // in the folder of its file from then on.
+    let folder = f.dir.path().join("parts");
+    std::fs::create_dir(&folder).unwrap();
+    let part = folder.join("part.silico");
+    browser.answer(Some(&part));
+    step_until(&mut h, "saved", |h| {
+        h.state().tabs()[0].path.as_deref() == part.to_str()
+    });
+    step(&mut h);
+    assert!(!anywhere(&h, refusal));
+    assert_eq!(path_value(&h), "out.step");
+    assert!(anywhere(&h, "Export part.silico"));
+    press(&mut h, "Export");
+    step_until(&mut h, "the dialog closed", |h| {
+        !anywhere(h, "Export part.silico")
+    });
+    let out = folder.join("out.step");
+    assert_eq!(
+        h.state().tabs()[0].exports,
+        [Export {
+            format: ExportFormat::Step,
+            path: out.clone(),
+            replace: false,
+            features: None,
+        }]
+    );
+    assert!(out.is_file());
+    assert!(!f.dir.path().join("out.step").exists());
     assert_eq!(never_waits::waits(), 0);
 }

@@ -1645,6 +1645,10 @@ pub(crate) fn exists(given: &Path, field: &str) -> Error {
 /// client with its own way of saying `replace` (the CLI's `--replace`) says it its way.
 pub const REPLACE_ADVICE: &str = "give replace: true to replace it, or another path";
 
+/// What a Save As to the session's own file (by any path to it) suggests: a client with its
+/// own way of saving it (the app's Save) takes it as that.
+pub const OWN_FILE_ADVICE: &str = "give path null to save to it, or another path";
+
 /// The permissions [`write_beside`] makes its new file with: those of the file it replaces,
 /// if one, without its type's bits (so never more open than it while it's written), or
 /// `rw-r--r--`.
