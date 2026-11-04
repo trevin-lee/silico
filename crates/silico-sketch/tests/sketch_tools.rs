@@ -162,6 +162,7 @@ impl Fixture {
             sketch: &read.members,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         let outcome = self.tool.handle(&context, &mut self.ids, event, self.keys);
         assert_eq!(outcome.message, None, "{event:?}");
@@ -552,6 +553,7 @@ impl Fixture {
             sketch: &read.members,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         let ids: &mut dyn NewIds = if self.sort_first {
             &mut self.first
@@ -829,6 +831,7 @@ fn each_equal_horizontal_distance_after_the_first_is_offered() {
             sketch: &read.members,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         tool.settle(&context, &read.states);
         assert_eq!(tool.busy(), n > 0, "{n}");

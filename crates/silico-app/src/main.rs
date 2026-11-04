@@ -55,7 +55,8 @@ fn main() -> ExitCode {
         options(),
         Box::new(move |creation| {
             silico_app::theme::apply(&creation.egui_ctx);
-            let app = App::new(sessions);
+            // Browse… opens the platform's own file dialogs.
+            let app = App::new(sessions).browsing(Box::new(silico_app::browse::Native));
             // The viewport drawn by silico-render on eframe's own device; with no wgpu, or
             // one it can't draw on, the app runs and its viewport says why it draws nothing.
             let app = match creation.wgpu_render_state.as_ref() {
