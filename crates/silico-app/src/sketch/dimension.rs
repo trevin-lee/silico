@@ -4,9 +4,11 @@
 //! dimension over-defines are the core's (`sketch_tools::SmartDimension`, #345, and its
 //! [`offer`]); here is only what's drawn of them and what's sent.
 //!
-//! - **The Modify box** takes what's typed raw and whole: Smart Dimension's as
-//!   `DimensionEvent::Typed`, a placed dimension's as the text of its `set_field`, read by the
-//!   core's own reader, never trimmed or parsed here (SD9). A refusal is said in the box.
+//! - **The Modify box** takes what's typed raw and whole, never trimmed: Smart Dimension's as
+//!   `DimensionEvent::Typed`, which the core reads; a placed dimension's read here, whole, by
+//!   the core's JSON reader (`json::read`) into the `set_field` value, whose field the core
+//!   then reads as the document reads a value (SD9). A refusal is said in the box. (#370
+//!   gives both boxes the core's one reading, `read_typed`.)
 //! - **The prompt** offers SolidWorks' three choices for a dimension that over-defines,
 //!   placed or edited: Driven (`set_field` of its `driving` to false), Leave (nothing), and
 //!   Cancel (`undo`), each made against the revision its add or edit made, through the tab's
@@ -64,6 +66,9 @@ pub struct Edited {
     pub before: silico_core::sketch_states::SketchState,
     pub flagged: BTreeSet<ElementId>,
     pub dofs: i32,
+    /// Whether the read it was made on had its solve refused: kept with the edit for
+    /// #370's `PlacementKind::Edit { before_refused }`.
+    pub before_refused: bool,
     pub made: Option<Revision>,
 }
 
@@ -87,7 +92,10 @@ impl Edited {
                 .filter(|(_, state)| state.flagged())
                 .map(|(id, _)| id.clone())
                 .collect(),
+            // The one place of this workaround: once #370 is on main, `Placement.kind` is
+            // `PlacementKind::Edit { before_refused }`, from the field below, replacing it.
             dofs: i32::MAX,
+            before_refused: read.states.solve_problem.is_some(),
             made: None,
         }
     }
@@ -198,6 +206,7 @@ pub fn modify_box(ctx: &egui::Context, view: &ModifyView) -> Option<ModifyAction
                                     ui.add(
                                         egui::TextEdit::singleline(&mut text)
                                             .id(id)
+                                            .char_limit(MODIFY_CHAR_LIMIT)
                                             .frame(egui::Frame::NONE)
                                             .desired_width(SKETCH_MODIFY_FIELD_WIDTH)
                                             .text_color(if view.said.is_some() {

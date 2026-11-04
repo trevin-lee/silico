@@ -970,7 +970,7 @@ impl<P: Clients + 'static> App<P> {
         };
         let canvas = self.canvas.unwrap_or_else(|| ui.ctx().content_rect());
         let bar = mode.bar_view(&name, enabled);
-        let view = mode.palette_view(revision);
+        let view = mode.palette_view(revision, tab.drag.as_ref());
         // Smart Dimension's Modify box, at its dimension's text, and the over-define prompt
         // (SD7), each the prototype's.
         let modify = mode.modify_view();

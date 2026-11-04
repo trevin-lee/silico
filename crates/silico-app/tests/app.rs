@@ -8780,7 +8780,7 @@ fn a_refused_read_is_kept_and_said_and_delete_still_goes_to_the_core() {
     });
     let said = {
         let mode = sketch_mode(&h).unwrap();
-        mode.palette_view(h.state().tabs()[0].revision).said
+        mode.palette_view(h.state().tabs()[0].revision, None).said
     };
     let said = said.unwrap();
     step_until(&mut h, "it said", |h| anywhere(h, &said));
@@ -9842,7 +9842,7 @@ fn a_tools_adds_with_no_sketch_to_send_them_to_are_refused_to_it() {
                 project: &to_screen,
                 to_plane: &to_sketch,
             };
-            mode.frame(&ui.painter().clone(), &input);
+            mode.frame(&ui.painter().clone(), &input, &mut None);
         });
         output.textures_delta.clear();
         mode.sketch = None;
@@ -10241,12 +10241,24 @@ fn a_conflicting_dimension_is_placed_reads_over_defined_naming_them_and_driven_c
     // Leave: nothing sent; the sketch over defined, the dimension kept, driving.
     read_with_constraints(&mut h, 9);
     let left = over_define(&f, &mut h, 70.0, "36", 10);
-    let sent = h.state().tabs()[0].sent.len();
+    let last = h.state().tabs()[0].sent.last().cloned();
+    let asked = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .sent
+            .iter()
+            .filter(|sent| {
+                matches!(sent, Sent::Undo(_))
+                    || **sent == Sent::Edit(format!("constraints.{left}.driving"))
+            })
+            .count()
+    };
+    let before = asked(&h);
     choose(&mut h, "Leave it driving");
     for _ in 0..10 {
         step(&mut h);
     }
-    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert_eq!(h.state().tabs()[0].sent.last().cloned(), last);
+    assert_eq!(asked(&h), before);
     assert!(prompt(&h).is_none());
     assert_eq!(
         sketch_state(&h).map(|s| s.0),
@@ -10297,6 +10309,49 @@ fn a_conflicting_dimension_is_placed_reads_over_defined_naming_them_and_driven_c
     assert_eq!(
         length_parts(&constraint_of(&sketch_of_text(&f, &h, &id), &last).form),
         Some((right, "37".to_owned(), true))
+    );
+    // Cancel overtaken the same way: its undo, against the add's revision, refused as a
+    // conflict, said, sent once, and the dimension kept.
+    let cancelled = over_define(&f, &mut h, 80.0, "38", 12);
+    let revision = f.sessions.status(&session).session.unwrap().revision;
+    let renamed = f
+        .sessions
+        .set_field(
+            &session,
+            revision,
+            FeatureId::new(&id).unwrap(),
+            "name".to_owned(),
+            json::read(br#""Renamed again""#).unwrap(),
+        )
+        .wait();
+    assert!(renamed.result.is_ok(), "{:?}", renamed.result);
+    let undos = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .sent
+            .iter()
+            .filter(|sent| **sent == Sent::Undo(None))
+            .count()
+    };
+    let before = undos(&h);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0]
+            .sketch_offer(&sessions, silico_core::sketch_tools::OfferChoice::Cancel);
+    }
+    assert_eq!(h.state().tabs()[0].message, None);
+    step_until(&mut h, "the cancel overtaken", |h| {
+        h.state().tabs()[0].message.as_deref() == Some(silico_app::tab::OVERTAKEN)
+    });
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(undos(&h), before + 1);
+    assert!(
+        sketch_of_text(&f, &h, &id)
+            .constraints
+            .iter()
+            .any(|c| c.id.as_str() == cancelled)
     );
     assert_ne!(text_of(&f, &h), before_any);
     assert_eq!(never_waits::waits(), 0);
@@ -10370,6 +10425,26 @@ fn the_modify_boxs_text_typed_reaches_the_core_as_typed_and_its_refusal_is_said_
             .is_some_and(|d| d.query_by_label(&refused).is_some())
     });
     assert_eq!(sketch_of_text(&f, &h, id.as_str()).constraints.len(), 6);
+    // Its field takes at most 256 characters: 300 typed after its four, 252 of them kept.
+    h.input_mut().events.push(eframe::egui::Event::Key {
+        key: eframe::egui::Key::End,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    h.query_by_role_and_label(Role::Dialog, "Modify dimension")
+        .unwrap()
+        .get_by_label("Value in millimetres")
+        .focus();
+    step(&mut h);
+    h.query_by_role_and_label(Role::Dialog, "Modify dimension")
+        .unwrap()
+        .get_by_label("Value in millimetres")
+        .type_text(&"1".repeat(300));
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(field(&h).map(|text| text.chars().count()), Some(256));
     // " 25 ", spaces and all, as the core gets it: its reader takes them, 25.
     modify(
         &f,
@@ -10558,7 +10633,7 @@ fn boxed(f: &Fixture) -> AppHarness {
 
 /// Sketch mode's drag.
 fn the_drag(h: &AppHarness) -> Option<&silico_app::sketch::drag::Drag> {
-    sketch_mode(h).and_then(|mode| mode.drag.as_ref())
+    h.state().tabs()[0].drag.as_ref()
 }
 
 /// The place of the point `id` in what the drag shows.
@@ -10581,7 +10656,7 @@ fn drag_sends(h: &AppHarness, what: &'static str) -> usize {
 }
 
 #[test]
-fn a_dragged_corner_follows_the_newest_cursor_one_move_in_flight_frames_climbing_while_held_and_ends_in_one_edit()
+fn a_dragged_corner_follows_the_newest_cursor_one_move_in_flight_the_ui_never_waiting_and_ends_in_one_edit()
  {
     use silico_app::sketch::PointerAction::{Press, Release};
     let f = fixture();
@@ -10625,30 +10700,27 @@ fn a_dragged_corner_follows_the_newest_cursor_one_move_in_flight_frames_climbing
             to_screen([52.05, 32.03]).unwrap()
         ]
     );
-    // The sketch worker held: one move sent, solving; three more cursors, none sent, the
-    // frames climbing and the UI thread never waiting.
+    // The sketch worker held: one move sent, solving; three more cursors over frames that
+    // go on, none sent, and the UI thread never waiting on the held move.
     f.sketches.hold();
     sketch_events(&f, &mut h, &moved(54.0, 34.0));
     assert!(f.sketches.wait_held(WAIT));
     assert_eq!(the_drag(&h).unwrap().moves_sent, 2);
-    let frames = sketch_mode(&h).unwrap().frames;
+    assert_eq!(the_drag(&h).unwrap().last_sent(), Some([54.0, 34.0]));
     for k in 0..3 {
         let k = f64::from(k);
         sketch_events(&f, &mut h, &moved(55.0 + k, 35.0 + k));
         step(&mut h);
     }
     assert_eq!(the_drag(&h).unwrap().moves_sent, 2);
-    assert_eq!(sketch_mode(&h).unwrap().frames, frames + 3);
     assert_eq!(never_waits::waits(), 0);
-    // Released: the held move answers, and only the newest cursor, (57, 37), goes next.
+    // Released: the held move answers, and only the newest cursor, (57, 37), goes next:
+    // three moves in all, (55, 35) and (56, 36) never sent.
     f.sketches.release();
     step_until(&mut h, "the newest move sent", |h| {
         the_drag(h).is_some_and(|d| d.moves_sent == 3)
     });
-    assert_eq!(
-        the_drag(&h).unwrap().sent,
-        [[52.0, 32.0], [54.0, 34.0], [57.0, 37.0]]
-    );
+    assert_eq!(the_drag(&h).unwrap().last_sent(), Some([57.0, 37.0]));
     step_until(&mut h, "its frame", |h| {
         the_drag(h).is_some_and(|d| d.frames == 3)
     });
@@ -10763,7 +10835,8 @@ fn a_drag_past_the_window_follows_the_unclamped_cursor_and_one_past_reach_is_sai
         the_drag(h).is_some_and(|d| d.frames == 1)
     });
     let cursor = to_sketch(outside).unwrap();
-    assert_eq!(the_drag(&h).unwrap().sent, [cursor]);
+    assert_eq!(the_drag(&h).unwrap().moves_sent, 1);
+    assert_eq!(the_drag(&h).unwrap().last_sent(), Some(cursor));
     let shown = shown_at(&h, "pa000003").unwrap();
     assert!((shown[0] - (cursor[0] + 0.05)).abs() < 1e-9);
     assert!((shown[1] - (cursor[1] + 0.03)).abs() < 1e-9);
@@ -10798,5 +10871,489 @@ fn a_drag_past_the_window_follows_the_unclamped_cursor_and_one_past_reach_is_sai
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #368's review: a drag's end and sketch mode's leaving; the queue behind a drag ----
+
+/// Stepped until the drag has drawn `frames` solved frames.
+fn drag_frames(h: &mut AppHarness, frames: u64) {
+    step_until(h, "the drag's frame", |h| {
+        the_drag(h).is_some_and(|d| d.frames == frames)
+    });
+}
+
+/// The session's `status.drag`.
+fn status_drag(f: &Fixture, h: &AppHarness) -> Option<silico_core::command::DragOpen> {
+    let id = h.state().tabs()[0].id;
+    f.sessions.status(&id).result.unwrap().drag
+}
+
+#[test]
+fn finish_while_a_released_drags_end_is_held_keeps_its_edit_and_one_undo_takes_it_back() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    let text = text_of(&f, &h);
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    drag_frames(&mut h, 1);
+    // Released with the sketch worker held: its end, sent, solves held.
+    f.sketches.hold();
+    sketch_events(&f, &mut h, &[pointer(Release, 52.0, 32.0)]);
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    assert!(f.sketches.wait_held(WAIT));
+    // Finish: sketch mode closes, and its close waits for the drag's end.
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].finish_sketch(&sessions, true);
+    }
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(sketch_mode(&h).is_none());
+    assert!(the_drag(&h).is_some_and(|d| d.in_flight()));
+    assert!(h.state().tabs()[0].unsettled());
+    f.sketches.release();
+    settled(&mut h);
+    // The drag's edit stays: the corner at (52.05, 32.03), the fake's frame.
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let corner = sketch
+        .points
+        .iter()
+        .find(|p| p.id.as_str() == "pa000003")
+        .unwrap();
+    assert!((corner.x.mm() - 52.05).abs() < 1e-9 && (corner.y.mm() - 32.03).abs() < 1e-9);
+    assert!(the_drag(&h).is_none());
+    assert_eq!(h.state().tabs()[0].message, None);
+    // One undo takes back the sketch mode's edits, the drag's: the text byte for byte.
+    assert!(h.state().tabs()[0].undoable());
+    h.state_mut().tabs_mut()[0].step(&Arc::clone(&f.sessions), true);
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_by_its_key_mid_drag_ends_the_drag_from_its_begin_and_leaves_no_drag_open() {
+    use silico_app::sketch::PointerAction::{Move, Press};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    let text = text_of(&f, &h);
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    drag_frames(&mut h, 1);
+    assert!(status_drag(&f, &h).is_some());
+    // ⌘↵ with the press still held.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Enter);
+    step(&mut h);
+    settled(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    assert!(the_drag(&h).is_none());
+    assert_eq!(status_drag(&f, &h), None);
+    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_after_a_released_drag_whose_end_is_held_undoes_it_with_no_conflict() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    // A first drag, Finished: a transaction open before sketch mode opens again, so its
+    // Cancel is an undo to where it opened, made against the session's revision.
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    drag_frames(&mut h, 1);
+    sketch_events(&f, &mut h, &[pointer(Release, 52.0, 32.0)]);
+    settled(&mut h);
+    step_until(&mut h, "the drag's read", |h| the_drag(h).is_none());
+    leave_sketch(&mut h, true);
+    let text = text_of(&f, &h);
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    settled(&mut h);
+    // A second, of the opposite corner, released with its end held, then Cancel.
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 10.0, 10.0), pointer(Move, 8.0, 8.0)],
+    );
+    drag_frames(&mut h, 1);
+    f.sketches.hold();
+    sketch_events(&f, &mut h, &[pointer(Release, 8.0, 8.0)]);
+    assert!(f.sketches.wait_held(WAIT));
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].finish_sketch(&sessions, false);
+    }
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    f.sketches.release();
+    settled(&mut h);
+    // Undone to where it opened, the first drag's edit kept, no conflict said.
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(text_of(&f, &h), text);
+    assert!(h.state().tabs()[0].transaction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn delete_during_a_drag_waits_for_its_end_then_goes_against_its_revision_and_both_land() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    // The bottom, na000001, selected; then the corner pa000003 dragged.
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    assert_eq!(
+        sketch_mode(&h)
+            .unwrap()
+            .selected_ids()
+            .iter()
+            .map(|i| i.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        ["na000001"]
+    );
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    drag_frames(&mut h, 1);
+    // A move held in the worker, and Delete pressed: nothing sent while the drag lasts.
+    f.sketches.hold();
+    sketch_events(&f, &mut h, &moved(54.0, 34.0));
+    assert!(f.sketches.wait_held(WAIT));
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    sketch_events(&f, &mut h, &[pointer(Release, 54.0, 34.0)]);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(drag_sends(&h, "sketch_remove"), 0);
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    // The worker let go: the drag ends, then the removal goes, against the drag's revision.
+    f.sketches.release();
+    settled(&mut h);
+    let sent = &h.state().tabs()[0].sent;
+    let end = sent
+        .iter()
+        .position(|s| *s == Sent::SketchEdit("drag_end"))
+        .unwrap();
+    let remove = sent
+        .iter()
+        .position(|s| *s == Sent::SketchEdit("sketch_remove"))
+        .unwrap();
+    assert!(end < remove);
+    assert_eq!(h.state().tabs()[0].message, None);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert!(sketch.lines.iter().all(|l| l.id.as_str() != "na000001"));
+    let corner = sketch
+        .points
+        .iter()
+        .find(|p| p.id.as_str() == "pa000003")
+        .unwrap();
+    assert!((corner.x.mm() - 54.05).abs() < 1e-9 && (corner.y.mm() - 34.03).abs() < 1e-9);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`BOXED`] with the bottom's length, 40.
+const BOXED_LENGTH: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Box", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 50, "y": 30, "construction": false}, {"id": "pa000004", "x": 10, "y": 30, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}, {"id": "ka000005", "type": "length", "line": "na000001", "value": 40, "driving": true}]}
+  ]
+}
+"#;
+
+/// As [`counting`], but a length of 99 mm repeats the others (redundant), which leaves the
+/// sketch's constraints agreeing, so a drag may begin.
+fn counting_redundant_99(f: &Fixture) {
+    use silico_protocol::{Solved, SolverConstraint, Tag};
+    f.sketches.answer(|system| {
+        let sent = FakeSketches::as_sent(system);
+        let equations = system
+            .constraints
+            .iter()
+            .filter(|c| c.tag().is_some())
+            .count();
+        let dofs = system.unknowns.len() as i32 - equations as i32;
+        let redundant: Vec<Tag> = system
+            .constraints
+            .iter()
+            .filter_map(|c| match c {
+                SolverConstraint::Distance { tag, value, .. }
+                    if system.values.get(value.0 as usize) == Some(&99.0) =>
+                {
+                    Some(*tag)
+                }
+                _ => None,
+            })
+            .collect();
+        Ok(Solved {
+            dofs,
+            redundant,
+            free: if dofs > 0 {
+                system.unknowns.clone()
+            } else {
+                Vec::new()
+            },
+            ..sent
+        })
+    });
+}
+
+#[test]
+fn esc_takes_a_held_drag_before_the_over_define_prompt_and_then_the_prompts_cancel() {
+    use silico_app::sketch::PointerAction::{Move, Press};
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    counting_redundant_99(&f);
+    let (mut h, _) = f.opened("boxed.silico", BOXED_LENGTH);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    let text = text_of(&f, &h);
+    // The bottom's length set to 99, which repeats the others: the three offered.
+    sketch_events(&f, &mut h, &[]);
+    let at = label_of_dimension(&h, "ka000005");
+    sketch_events(&f, &mut h, &double_clicked_at(at));
+    modify(&f, &mut h, ModifyAction::Typed("99".to_owned()));
+    modify(&f, &mut h, ModifyAction::Accept);
+    settled(&mut h);
+    step_until(&mut h, "the offer", |h| {
+        sketch_mode(h).is_some_and(|m| m.offer().is_some())
+    });
+    // The far corner, still free, dragged while the prompt is up.
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    drag_frames(&mut h, 1);
+    // The first Esc ends the drag from its begin; the prompt stays.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    assert!(sketch_mode(&h).unwrap().offer().is_some());
+    assert!(!h.state().tabs()[0].sent.contains(&Sent::Undo(None)));
+    // The second is the prompt's Cancel: the edit undone, the text as it was.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert!(sketch_mode(&h).unwrap().offer().is_none());
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_press_on_a_read_older_than_the_sessions_state_begins_no_drag() {
+    use silico_app::sketch::PointerAction::{Move, Press};
+    use silico_core::document::FeatureId;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    settled(&mut h);
+    // Another client renames the sketch; the tab polled once, which learns the new
+    // revision and asks its read, still to be taken: the read drawn is the one before.
+    let session = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&session).session.unwrap().revision;
+    let renamed = f
+        .sessions
+        .set_field(
+            &session,
+            revision,
+            FeatureId::new("s0000001").unwrap(),
+            "name".to_owned(),
+            json::read(br#""Renamed""#).unwrap(),
+        )
+        .wait();
+    assert!(renamed.result.is_ok(), "{:?}", renamed.result);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].poll(&sessions);
+    }
+    assert!(h.state().tabs()[0].revision > revision);
+    assert_eq!(
+        sketch_mode(&h).unwrap().read.as_ref().and_then(|r| r.model),
+        Some(revision)
+    );
+    // A press and a move on it: no drag begun, the grab let go.
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(drag_sends(&h, "drag_begin"), 0);
+    assert!(the_drag(&h).is_none());
+    // Once the read of the new revision is taken, a press drags again.
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(
+            silico_app::sketch::PointerAction::Release,
+            52.0,
+            32.0,
+        )],
+    );
+    step_until(&mut h, "the new read", |h| {
+        sketch_mode(h)
+            .and_then(|m| m.read.as_ref())
+            .and_then(|r| r.model)
+            .is_some_and(|model| model > revision)
+    });
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    assert_eq!(drag_sends(&h, "drag_begin"), 1);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_while_the_begin_is_unanswered_ends_the_drag_once_it_answers() {
+    use silico_app::sketch::PointerAction::{Move, Press};
+    use silico_core::command::CheckModel;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    let text = text_of(&f, &h);
+    // Another client's fresh check, its rebuild's solve held, ahead in the session's queue.
+    f.sketches.hold();
+    let session = h.state().tabs()[0].id;
+    let check = f
+        .sessions
+        .check(&session, CheckModel::Current { fresh: true });
+    assert!(f.sketches.wait_held(WAIT));
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    assert_eq!(drag_sends(&h, "drag_begin"), 1);
+    // Esc with the begin queued behind it: ended, its end to go once the begin answers.
+    h.key_press(eframe::egui::Key::Escape);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(drag_sends(&h, "drag_end"), 0);
+    assert!(the_drag(&h).is_some_and(|d| !d.held() && d.in_flight()));
+    f.sketches.release();
+    assert!(check.wait().result.is_ok());
+    settled(&mut h);
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    assert_eq!(status_drag(&f, &h), None);
+    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A circle of radius 10 about (30, 30), free.
+const CIRCLED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Round", "plane": "xy", "points": [{"id": "pc000001", "x": 30, "y": 30, "construction": false}], "lines": [], "circles": [{"id": "ca000001", "center": "pc000001", "radius": 10, "construction": false}], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn a_line_dragged_by_its_edge_moves_whole_and_a_circles_edge_passes_the_cores_press_check() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    use silico_core::command::DragGrab;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    // The bottom, na000001, pressed at (30, 10.3), 0.3 mm off it: grabbed at (30, 10), on
+    // it exactly, which the core's press check takes.
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 30.0, 10.3), pointer(Move, 30.0, 15.0)],
+    );
+    assert_eq!(
+        the_drag(&h).unwrap().grab,
+        DragGrab::Edge {
+            curve: silico_core::document::ElementId::new("na000001").unwrap(),
+            press: [30.0, 10.0]
+        }
+    );
+    drag_frames(&mut h, 1);
+    // Its two ends by the cursor's offset from the press, (0, 5), each nudged a thousandth
+    // of where it began, as the fake answers: (10.01, 15.01) and (50.05, 15.01).
+    let near = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
+    assert!(near(shown_at(&h, "pa000001").unwrap(), [10.01, 15.01]));
+    assert!(near(shown_at(&h, "pa000002").unwrap(), [50.05, 15.01]));
+    sketch_events(&f, &mut h, &[pointer(Release, 30.0, 15.0)]);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].message, None);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let at = |id: &str| {
+        let p = sketch.points.iter().find(|p| p.id.as_str() == id).unwrap();
+        [p.x.mm(), p.y.mm()]
+    };
+    assert!(near(at("pa000001"), [10.01, 15.01]));
+    assert!(near(at("pa000002"), [50.05, 15.01]));
+    // A circle's edge: pressed on it at (40, 30), dragged out, begun and ended with no
+    // refusal (the fake's frame keeps the radius).
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("circled.silico", CIRCLED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Round"));
+    double_click(&mut h, "Browser", "Round");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 40.0, 30.0), pointer(Move, 45.0, 30.0)],
+    );
+    assert_eq!(
+        the_drag(&h).unwrap().grab,
+        DragGrab::Edge {
+            curve: silico_core::document::ElementId::new("ca000001").unwrap(),
+            press: [40.0, 30.0]
+        }
+    );
+    drag_frames(&mut h, 1);
+    sketch_events(&f, &mut h, &[pointer(Release, 45.0, 30.0)]);
+    settled(&mut h);
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    assert_eq!(status_drag(&f, &h), None);
     assert_eq!(never_waits::waits(), 0);
 }

@@ -244,8 +244,6 @@ pub struct SketchMode {
     /// For Create Sketch, the revision its add came to: its undo goes no further back, so it
     /// never undoes the sketch it's in (Cancel still goes back to where it opened).
     pub undo_floor: Option<Revision>,
-    /// The drag under way, from its press to the read of its edit (M5.11c).
-    pub drag: Option<Drag>,
     /// A placed dimension's Modify box, open; how many have opened; its edit sent, to be
     /// judged on the read of the revision it made; and the offer that judgement made (SD7),
     /// with that revision, open until it's answered or a later read comes.
@@ -257,8 +255,6 @@ pub struct SketchMode {
     asks: Vec<Ask>,
     /// Where the Modify box open stands on the screen, as the last frame projected it.
     modify_screen: Option<Pos2>,
-    /// How many frames the viewport has given it: what a test counts.
-    pub frames: u64,
     /// The pick tolerance, in millimetres, at the last frame's view's middle: what Smart
     /// Dimension is given with a read or the Modify box, between pointer events.
     tolerance: f64,
@@ -288,14 +284,12 @@ impl SketchMode {
             pointer: None,
             undone: 0,
             undo_floor: None,
-            drag: None,
             edit_box: None,
             edit_boxes: 0,
             edited: None,
             edit_offer: None,
             asks: Vec::new(),
             modify_screen: None,
-            frames: 0,
             tolerance: 0.0,
         }
     }
@@ -341,9 +335,8 @@ impl SketchMode {
     }
 
     /// `read` kept as the newest, and the selection kept to what it still holds; Smart
-    /// Dimension given it (`settle`); a drag ended at its revision or before let go; and an
-    /// edit of a dimension judged on it, if it's of the revision the edit made, or its offer
-    /// let go, if it's of a later one.
+    /// Dimension given it (`settle`); and an edit of a dimension judged on it, if it's of the
+    /// revision the edit made, or its offer let go, if it's of a later one.
     pub(crate) fn took(&mut self, read: Read) {
         if let Ok(sketch) = &read.result {
             let held: BTreeSet<&ElementId> = sketch.members.elements().map(|(id, _)| id).collect();
@@ -356,10 +349,6 @@ impl SketchMode {
         }
         self.read = Some(read);
         self.taken += 1;
-        let model = self.read.as_ref().and_then(|read| read.model);
-        if let Some(drag) = self.drag.as_mut() {
-            drag.read(model);
-        }
         if let Some(input) = tool_input(
             &self.read,
             self.sketch.as_ref(),
@@ -460,10 +449,11 @@ impl SketchMode {
     /// drawn of the sketch is worked out again only when the read, the selection, what's
     /// shown, or the view changes, and its profile's fill only for a new read or a zoom past
     /// a power of two.
-    pub fn frame(&mut self, painter: &Painter, input: &FrameInput<'_>) {
-        self.frames += 1;
-        if self.drag.as_ref().is_some_and(Drag::over) {
-            self.drag = None;
+    /// The tab's drag, `dragged`, is given it: begun by a press here, moved and ended by the
+    /// frame's events, and drawn in the read's place while it lasts.
+    pub fn frame(&mut self, painter: &Painter, input: &FrameInput<'_>, dragged: &mut Option<Drag>) {
+        if dragged.as_ref().is_some_and(Drag::over) {
+            *dragged = None;
         }
         self.pointer = input.pointer.and_then(|p| (input.to_plane)(p));
         let clip = painter.clip_rect();
@@ -471,7 +461,7 @@ impl SketchMode {
         self.tolerance = scale.mm(SKETCH_PICK_TOLERANCE);
         // A drag's press takes the left button till it ends; then a tool on, before the
         // selection (the plan's precedence).
-        let dragging = self.drag.as_ref().is_some_and(Drag::held);
+        let dragging = dragged.as_ref().is_some_and(Drag::held);
         let selecting: &[PointerEvent] = if self.tools.choice().is_some() && !dragging {
             self.pressed = None;
             let held = painter.ctx().input(|i| Modifiers {
@@ -486,16 +476,16 @@ impl SketchMode {
         for event in selecting {
             match event.action {
                 PointerAction::Press => {
-                    let found = self.found(input, event.at);
-                    if self.drag.is_none() {
-                        self.drag = found
+                    let found = self.found(input, event.at, dragged.as_ref());
+                    if dragged.is_none() {
+                        *dragged = found
                             .as_ref()
                             .and_then(|hit| self.grab(hit, input, event.at));
                     }
                     self.pressed = Some((found, event.ctrl));
                 }
                 PointerAction::Move => {
-                    if let Some(drag) = self.drag.as_mut().filter(|drag| drag.held()) {
+                    if let Some(drag) = dragged.as_mut().filter(|drag| drag.held()) {
                         if !drag.moved && (event.at - drag.press).length() > SKETCH_DRAG_THRESHOLD {
                             // A drag, not a click: its release selects nothing.
                             drag.moved = true;
@@ -506,17 +496,15 @@ impl SketchMode {
                         }
                     }
                 }
-                PointerAction::Release
-                    if self.drag.as_ref().is_some_and(|d| d.held() && d.moved) =>
-                {
-                    if let Some(drag) = self.drag.as_mut() {
+                PointerAction::Release if dragged.as_ref().is_some_and(|d| d.held() && d.moved) => {
+                    if let Some(drag) = dragged.as_mut() {
                         drag.release((input.to_plane)(event.at));
                     }
                 }
                 PointerAction::Release => {
                     // A press that never moved is a click: no drag.
-                    if self.drag.as_ref().is_some_and(Drag::held) {
-                        self.drag = None;
+                    if dragged.as_ref().is_some_and(Drag::held) {
+                        *dragged = None;
                     }
                     if let Some((found, ctrl)) = self.pressed.take() {
                         // What the press was on, if the read now still holds it: a read
@@ -531,15 +519,17 @@ impl SketchMode {
                 }
                 PointerAction::Cancel => {
                     self.pressed = None;
-                    match self.drag.as_mut() {
+                    match dragged.as_mut() {
                         Some(drag) if drag.held() && drag.moved => {
                             drag.cancel();
                         }
-                        Some(drag) if drag.held() => self.drag = None,
+                        Some(drag) if drag.held() => *dragged = None,
                         _ => {}
                     }
                 }
-                PointerAction::DoubleClick => self.edit_dimension_at(input, event.at),
+                PointerAction::DoubleClick => {
+                    self.edit_dimension_at(input, event.at, dragged.as_ref());
+                }
                 PointerAction::RightClick => {}
             }
         }
@@ -560,7 +550,7 @@ impl SketchMode {
             visible,
             chord_tolerance: SKETCH_CHORD_TOLERANCE,
         };
-        let mut drawn = self.drawing(&view, clip);
+        let mut drawn = self.drawing(&view, clip, dragged.as_ref());
         drawn.extend(preview(self.tools.preview(), &view));
         if let (Some(dimension), Some(read)) = (self.tools.dimension_preview(), self.drawable()) {
             drawn.extend(dimension_preview(
@@ -578,9 +568,11 @@ impl SketchMode {
         painter.extend(to_shapes(painter, &drawn));
     }
 
-    /// What's under `at` on the screen, within the pick tolerance at the view's scale there.
-    fn found(&self, input: &FrameInput<'_>, at: Pos2) -> Option<Hit> {
-        let read = self.drawable()?;
+    /// What's under `at` on the screen, within the pick tolerance at the view's scale there:
+    /// of what's drawn, the drag's last frame while it lasts (once it has ended, until the
+    /// read of its edit comes), or else the newest read.
+    fn found(&self, input: &FrameInput<'_>, at: Pos2, dragged: Option<&Drag>) -> Option<Hit> {
+        let read = dragged.and_then(Drag::shown).or_else(|| self.drawable())?;
         let scale = scale_at(input.to_plane, at)?;
         let on = (input.to_plane)(at)?;
         hit(read, on, scale.mm(SKETCH_PICK_TOLERANCE), scale)
@@ -597,7 +589,7 @@ impl SketchMode {
             .sketch
             .clone()
             .filter(|sketch| *sketch == read.sketch)?;
-        self.read.as_ref()?.model?;
+        let model = self.read.as_ref()?.model?;
         let states = &read.states;
         let free = |state: Option<&MemberState>| state == Some(&MemberState::UnderDefined);
         let grab = match hit.kind {
@@ -622,17 +614,18 @@ impl SketchMode {
             }
             ElementKind::Constraint => return None,
         };
-        Some(Drag::pressed(sketch, grab, read.clone(), at))
+        Some(Drag::pressed(sketch, grab, read.clone(), model, at))
     }
 
-    /// A double-click at `at` on the screen: on a dimension, its Modify box opened with its
-    /// value (section 9: a placed dimension edited), unless an offer is open or an edit's
-    /// answer is awaited.
-    fn edit_dimension_at(&mut self, input: &FrameInput<'_>, at: Pos2) {
+    /// A double-click at `at` on the screen: on a driving dimension, its Modify box opened
+    /// with its value (section 9: a placed dimension edited), unless an offer is open or an
+    /// edit's answer is awaited. A driven one's value is measured, never typed, so it opens
+    /// none, as SolidWorks edits none.
+    fn edit_dimension_at(&mut self, input: &FrameInput<'_>, at: Pos2, dragged: Option<&Drag>) {
         if self.offer().is_some() || self.edit_box.as_ref().is_some_and(|edit| edit.sent) {
             return;
         }
-        let Some(found) = self.found(input, at) else {
+        let Some(found) = self.found(input, at, dragged) else {
             return;
         };
         let Some(read) = self.drawable() else {
@@ -643,6 +636,7 @@ impl SketchMode {
             .constraints
             .iter()
             .find(|c| c.id == found.id)
+            .filter(|c| c.form.driving() != Some(false))
             .and_then(|c| value_of(&c.form))
         else {
             return;
@@ -734,12 +728,9 @@ impl SketchMode {
     /// What's drawn of the read through `view`, in `clip`: the last frame's, if nothing it's
     /// of has changed; otherwise worked out again, with the profile's fill worked out again
     /// only for a new read or another power-of-two scale.
-    fn drawing(&mut self, view: &View<'_>, clip: Rect) -> Vec<Drawn> {
+    fn drawing(&mut self, view: &View<'_>, clip: Rect, drag: Option<&Drag>) -> Vec<Drawn> {
         // A drag's frame is drawn in the read's place, over its begin state's ghost.
-        let dragged = self
-            .drag
-            .as_ref()
-            .and_then(|drag| Some((drag.shown()?, drag.begin(), drag.frames)));
+        let dragged = drag.and_then(|drag| Some((drag.shown()?, drag.begin(), drag.frames)));
         let Some(read) = dragged.map(|(shown, ..)| shown).or_else(|| {
             self.read
                 .as_ref()
@@ -839,7 +830,7 @@ impl SketchMode {
     /// What the palette shows, the tab at `revision`: the state's words; the read's refusal
     /// if it's of the session's own revision (one of an older model, from before the sketch
     /// was added, waits for the next); and the plane's problem.
-    pub fn palette_view(&self, revision: Revision) -> PaletteView {
+    pub fn palette_view(&self, revision: Revision, drag: Option<&Drag>) -> PaletteView {
         let said = match &self.read {
             Some(Read {
                 result: Err(problems),
@@ -860,10 +851,7 @@ impl SketchMode {
                     locked: preview.locked,
                     unavailable: preview.unavailable.as_ref().map(|m| m.text()),
                 }),
-            dragging: self
-                .drag
-                .as_ref()
-                .is_some_and(|drag| drag.moved && !drag.over()),
+            dragging: drag.is_some_and(|drag| drag.moved && !drag.over()),
             said,
             plane_problem: self.plane_problem().map(|error| {
                 (
@@ -990,6 +978,8 @@ impl SketchMode {
                     ) else {
                         return;
                     };
+                    // The one place the edit box reads its text; once #370 is on main, the
+                    // core's `read_typed(&form, text)?.node()`, as Smart Dimension's box reads.
                     match silico_core::document::json::read(edit.text.as_bytes()) {
                         Ok(value) => {
                             edit.sent = true;
@@ -1056,19 +1046,10 @@ impl SketchMode {
         std::mem::take(&mut self.asks)
     }
 
-    /// Esc, or a cancel of the press, with a drag under way: ended from the begin state
-    /// (`drag_end` with none, once its begin has answered; nothing, if it never began).
-    /// Whether one was under way to end.
-    pub fn cancel_drag(&mut self) -> bool {
-        let Some(drag) = self.drag.as_mut() else {
-            return false;
-        };
+    /// The press under way let go, so its release clicks nothing: what Esc does to a press
+    /// on something that would have been dragged, as it ends.
+    pub fn let_go_press(&mut self) {
         self.pressed = None;
-        if !drag.moved {
-            self.drag = None;
-            return true;
-        }
-        drag.cancel()
     }
 
     /// Esc, with a tool on: the gesture ended and the tool left, the tool told if the sketch

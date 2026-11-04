@@ -1348,7 +1348,7 @@ fn a_frames_presses_select_ctrl_adds_and_a_press_on_nothing_clears() {
                 project: &hand,
                 to_plane: &unhand,
             };
-            mode.frame(painter, &input);
+            mode.frame(painter, &input, &mut None);
         });
     };
     let selected = |mode: &SketchMode| -> Vec<String> {
@@ -1565,12 +1565,12 @@ fn the_palette_says_a_refused_read_of_the_tabs_revision_and_waits_on_an_older_on
         model: Some(r(2)),
         result: Err(refused),
     });
-    assert_eq!(mode.palette_view(r(3)).said, None);
+    assert_eq!(mode.palette_view(r(3), None).said, None);
     assert_eq!(
-        mode.palette_view(r(2)).said.as_deref(),
+        mode.palette_view(r(2), None).said.as_deref(),
         Some("the document has no feature s0000001")
     );
-    assert_eq!(mode.palette_view(r(2)).state, None);
+    assert_eq!(mode.palette_view(r(2), None).state, None);
 }
 
 #[test]
@@ -1641,7 +1641,7 @@ fn the_status_line_names_the_sketch_its_pointer_by_the_planes_axes_and_its_state
         Some("u 15.000 · v -5.250 mm")
     );
     assert_eq!(
-        mode.palette_view(silico_core::command::Revision::OPENED)
+        mode.palette_view(silico_core::command::Revision::OPENED, None)
             .plane_problem,
         Some(("gone".to_owned(), None))
     );
@@ -2068,7 +2068,7 @@ fn a_plate_with_sixty_holes_fills_less_its_holes_and_steady_frames_reuse_the_dra
                     project: &project,
                     to_plane: &to_plane,
                 };
-                mode.frame(painter, &input);
+                mode.frame(painter, &input, &mut None);
             }
         });
     };
@@ -2178,7 +2178,7 @@ fn frames_at(mode: &mut SketchMode, zoom: f64, pan: f64, n: usize) {
                 project: &*project,
                 to_plane: &*to_plane,
             };
-            mode.frame(painter, &input);
+            mode.frame(painter, &input, &mut None);
         }
     });
 }
@@ -2676,7 +2676,7 @@ fn the_bar_and_the_palette_are_drawn_dark_on_a_window_showing_the_light_theme() 
     read.states.dofs = 4;
     let mode = mode_on(read);
     let bar = mode.bar_view("Sketch1", true);
-    let view = mode.palette_view(silico_core::command::Revision::OPENED);
+    let view = mode.palette_view(silico_core::command::Revision::OPENED, None);
     let mut settings = bar::Settings::default();
     let mut texts = texts_on_light(|ui| {
         bar::sketch_bar(ui, &bar);
@@ -2841,8 +2841,9 @@ fn mode_at(read: SketchRead) -> SketchMode {
     mode
 }
 
-/// One frame of `events`, through the hand projection, the pointer at the last of them.
-fn frame_of(mode: &mut SketchMode, events: &[PointerEvent]) {
+/// One frame of `events`, through the hand projection, the pointer at the last of them, with
+/// the tab's drag `drag`.
+fn frame_of(mode: &mut SketchMode, drag: &mut Option<drag::Drag>, events: &[PointerEvent]) {
     let pointer = events.last().map(|event| event.at);
     with_painter(|painter| {
         let input = FrameInput {
@@ -2851,7 +2852,7 @@ fn frame_of(mode: &mut SketchMode, events: &[PointerEvent]) {
             project: &hand,
             to_plane: &unhand,
         };
-        mode.frame(painter, &input);
+        mode.frame(painter, &input, drag);
     });
 }
 
@@ -3037,9 +3038,14 @@ fn a_drags_ghost_is_the_begin_state_of_what_moved_faint_and_nothing_else() {
 fn a_press_on_an_under_defined_corner_that_moves_past_the_threshold_is_a_drag_and_selects_nothing()
 {
     let mut mode = mode_at(under(rectangle(Vec::new())));
+    let mut dragged: Option<drag::Drag> = None;
     let corner = at_mm(40.0, 20.0);
-    frame_of(&mut mode, &[event(PointerAction::Press, corner, false)]);
-    let drag = mode.drag.as_ref().unwrap();
+    frame_of(
+        &mut mode,
+        &mut dragged,
+        &[event(PointerAction::Press, corner, false)],
+    );
+    let drag = dragged.as_ref().unwrap();
     assert_eq!(
         drag.grab,
         silico_core::command::DragGrab::Point(id("pa000003"))
@@ -3048,25 +3054,28 @@ fn a_press_on_an_under_defined_corner_that_moves_past_the_threshold_is_a_drag_an
     // 2 points: within the 3-point threshold, still a press.
     frame_of(
         &mut mode,
+        &mut dragged,
         &[event(PointerAction::Move, corner + vec2(2.0, 0.0), false)],
     );
-    assert!(!mode.drag.as_ref().unwrap().moved);
+    assert!(!dragged.as_ref().unwrap().moved);
     // 40 points right and 30 up: (44, 23) on the plane. A drag, whose begin waits for the tab.
     frame_of(
         &mut mode,
+        &mut dragged,
         &[event(
             PointerAction::Move,
             corner + vec2(40.0, -30.0),
             false,
         )],
     );
-    let drag = mode.drag.as_ref().unwrap();
+    let drag = dragged.as_ref().unwrap();
     assert!(drag.moved && drag.wants_begin() && drag.held());
     // Shown at the begin state till a frame comes.
     assert_eq!(drag.shown().map(|read| read.members.points.len()), Some(4));
     // Released: no click, so nothing selected, and the drag ends at its cursor.
     frame_of(
         &mut mode,
+        &mut dragged,
         &[event(
             PointerAction::Release,
             corner + vec2(40.0, -30.0),
@@ -3074,16 +3083,18 @@ fn a_press_on_an_under_defined_corner_that_moves_past_the_threshold_is_a_drag_an
         )],
     );
     assert!(mode.selection.is_empty());
-    let drag = mode.drag.as_ref().unwrap();
+    let drag = dragged.as_ref().unwrap();
     assert!(!drag.held() && !drag.over());
     // An edge: the right side pressed 0.4 mm off it at (40.4, 10) is grabbed at (40, 10).
     let mut mode = mode_at(under(rectangle(Vec::new())));
+    let mut dragged: Option<drag::Drag> = None;
     frame_of(
         &mut mode,
+        &mut dragged,
         &[event(PointerAction::Press, at_mm(40.4, 10.0), false)],
     );
     assert_eq!(
-        mode.drag.as_ref().unwrap().grab,
+        dragged.as_ref().unwrap().grab,
         silico_core::command::DragGrab::Edge {
             curve: id("na000002"),
             press: [40.0, 10.0]
@@ -3092,9 +3103,10 @@ fn a_press_on_an_under_defined_corner_that_moves_past_the_threshold_is_a_drag_an
     // A press that never moves is a click: selected, no drag.
     frame_of(
         &mut mode,
+        &mut dragged,
         &[event(PointerAction::Release, at_mm(40.4, 10.0), false)],
     );
-    assert!(mode.drag.is_none());
+    assert!(dragged.is_none());
     assert_eq!(
         mode.selected_ids()
             .iter()
@@ -3113,16 +3125,18 @@ fn a_fully_defined_member_or_a_constraint_or_a_tool_on_starts_no_drag_and_a_pres
         &[],
     );
     let mut mode = mode_at(full);
+    let mut dragged: Option<drag::Drag> = None;
     let corner = at_mm(40.0, 20.0);
     frame_of(
         &mut mode,
+        &mut dragged,
         &[
             event(PointerAction::Press, corner, false),
             event(PointerAction::Move, corner + vec2(40.0, -30.0), false),
             event(PointerAction::Release, corner + vec2(40.0, -30.0), false),
         ],
     );
-    assert!(mode.drag.is_none());
+    assert!(dragged.is_none());
     assert_eq!(
         mode.selected_ids()
             .iter()
@@ -3132,28 +3146,45 @@ fn a_fully_defined_member_or_a_constraint_or_a_tool_on_starts_no_drag_and_a_pres
     );
     // A tool on takes the press: no drag of an under-defined corner either.
     let mut mode = mode_at(under(rectangle(Vec::new())));
+    let mut dragged: Option<drag::Drag> = None;
     mode.tools.choose(Some(tools::Choice::Dimension));
-    frame_of(&mut mode, &[event(PointerAction::Press, corner, false)]);
     frame_of(
         &mut mode,
+        &mut dragged,
+        &[event(PointerAction::Press, corner, false)],
+    );
+    frame_of(
+        &mut mode,
+        &mut dragged,
         &[event(PointerAction::Move, corner + vec2(40.0, 0.0), false)],
     );
-    assert!(mode.drag.is_none());
+    assert!(dragged.is_none());
     // A read of no model it names (a refused or older read's) drags nothing.
     let mut mode = mode_on(under(rectangle(Vec::new())));
+    let mut dragged: Option<drag::Drag> = None;
     mode.sketch = Some(silico_core::document::FeatureId::new("s0000001").unwrap());
-    frame_of(&mut mode, &[event(PointerAction::Press, corner, false)]);
-    assert!(mode.drag.is_none());
+    frame_of(
+        &mut mode,
+        &mut dragged,
+        &[event(PointerAction::Press, corner, false)],
+    );
+    assert!(dragged.is_none());
 }
 
 #[test]
 fn a_read_mid_drag_leaves_the_drags_drawing_and_a_cursor_off_the_plane_or_past_the_view_is_kept_or_dropped()
  {
     let mut mode = mode_at(under(rectangle(Vec::new())));
+    let mut dragged: Option<drag::Drag> = None;
     let corner = at_mm(40.0, 20.0);
-    frame_of(&mut mode, &[event(PointerAction::Press, corner, false)]);
     frame_of(
         &mut mode,
+        &mut dragged,
+        &[event(PointerAction::Press, corner, false)],
+    );
+    frame_of(
+        &mut mode,
+        &mut dragged,
         &[event(
             PointerAction::Move,
             corner + vec2(40.0, -30.0),
@@ -3167,8 +3198,8 @@ fn a_read_mid_drag_leaves_the_drags_drawing_and_a_cursor_off_the_plane_or_past_t
         model: Revision::OPENED.next().and_then(Revision::next),
         result: Ok(under(moved)),
     });
-    frame_of(&mut mode, &[]);
-    let drag = mode.drag.as_ref().unwrap();
+    frame_of(&mut mode, &mut dragged, &[]);
+    let drag = dragged.as_ref().unwrap();
     assert!(drag.held());
     // Still the drag's begin state drawn: the corner at (500, 300), not (1000, −400).
     let corner_drawn: Vec<Pos2> = mode
@@ -3184,45 +3215,69 @@ fn a_read_mid_drag_leaves_the_drags_drawing_and_a_cursor_off_the_plane_or_past_t
     // the screen is (−510, −9949.9).
     frame_of(
         &mut mode,
+        &mut dragged,
         &[event(PointerAction::Move, pos2(-5000.0, 99999.0), false)],
     );
     // One that isn't a place (NaN) is dropped, and a release there ends at the last that was.
     let nowhere = pos2(f32::NAN, f32::NAN);
-    frame_of(&mut mode, &[event(PointerAction::Move, nowhere, false)]);
-    frame_of(&mut mode, &[event(PointerAction::Release, nowhere, false)]);
-    let drag = mode.drag.as_ref().unwrap();
+    frame_of(
+        &mut mode,
+        &mut dragged,
+        &[event(PointerAction::Move, nowhere, false)],
+    );
+    frame_of(
+        &mut mode,
+        &mut dragged,
+        &[event(PointerAction::Release, nowhere, false)],
+    );
+    let drag = dragged.as_ref().unwrap();
     assert!(!drag.held() && !drag.over() && drag.wants_begin());
     // Esc now has nothing held to cancel.
-    assert!(!mode.drag.as_mut().unwrap().cancel());
+    assert!(!dragged.as_mut().unwrap().cancel());
 }
 
 #[test]
-fn esc_or_a_cancel_ends_a_drag_from_its_begin_and_one_that_never_moved_is_let_go() {
+fn a_cancel_ends_a_drag_from_its_begin_and_one_that_never_moved_is_let_go() {
     let corner = at_mm(40.0, 20.0);
     let mut mode = mode_at(under(rectangle(Vec::new())));
-    frame_of(&mut mode, &[event(PointerAction::Press, corner, false)]);
-    // Esc before it moved: no drag, nothing to send.
-    assert!(mode.cancel_drag());
-    assert!(mode.drag.is_none());
-    // Moved, then cancelled: it's to end from its begin state, its begin never sent, so
-    // it's over with nothing sent.
-    frame_of(&mut mode, &[event(PointerAction::Press, corner, false)]);
+    let mut dragged: Option<drag::Drag> = None;
     frame_of(
         &mut mode,
+        &mut dragged,
+        &[event(PointerAction::Press, corner, false)],
+    );
+    // Cancelled before it moved: no drag, nothing to send.
+    frame_of(
+        &mut mode,
+        &mut dragged,
+        &[event(PointerAction::Cancel, corner, false)],
+    );
+    assert!(dragged.is_none());
+    // Moved, then cancelled: it's to end from its begin state, its begin never sent, so
+    // it's over with nothing sent.
+    frame_of(
+        &mut mode,
+        &mut dragged,
+        &[event(PointerAction::Press, corner, false)],
+    );
+    frame_of(
+        &mut mode,
+        &mut dragged,
         &[event(PointerAction::Move, corner + vec2(40.0, 0.0), false)],
     );
     frame_of(
         &mut mode,
+        &mut dragged,
         &[event(
             PointerAction::Cancel,
             corner + vec2(40.0, 0.0),
             false,
         )],
     );
-    let drag = mode.drag.as_ref().unwrap();
+    let drag = dragged.as_ref().unwrap();
     assert!(!drag.held() && !drag.wants_begin() && drag.over());
-    frame_of(&mut mode, &[]);
-    assert!(mode.drag.is_none());
+    frame_of(&mut mode, &mut dragged, &[]);
+    assert!(dragged.is_none());
 }
 
 #[test]
@@ -3231,7 +3286,8 @@ fn a_double_click_on_a_dimension_opens_its_box_with_its_value_whose_text_is_aske
     use silico_core::document::json::Value;
     let read = under(rectangle(vec![length("ka000001", "na000001", "40", true)]));
     let mut mode = mode_at(read);
-    frame_of(&mut mode, &[]);
+    let mut dragged: Option<drag::Drag> = None;
+    frame_of(&mut mode, &mut dragged, &[]);
     // Its value's label, where the read's drawing put it.
     let label = mode
         .last_drawn()
@@ -3246,7 +3302,7 @@ fn a_double_click_on_a_dimension_opens_its_box_with_its_value_whose_text_is_aske
     let mut clicks = press(label, false).to_vec();
     clicks.extend(press(label, false));
     clicks.push(event(PointerAction::DoubleClick, label, false));
-    frame_of(&mut mode, &clicks);
+    frame_of(&mut mode, &mut dragged, &clicks);
     let edit = mode.edit_box.as_ref().unwrap();
     assert_eq!((edit.text.as_str(), edit.unit), ("40", "mm"));
     assert_eq!(edit.constraint, id("ka000001"));
@@ -3282,8 +3338,91 @@ fn a_double_click_on_a_dimension_opens_its_box_with_its_value_whose_text_is_aske
     mode.value_answered(Revision::OPENED.next().unwrap(), Ok(false));
     assert!(mode.edit_box.is_none() && mode.edited.is_none());
     // Esc's way: a box closed with nothing asked.
-    frame_of(&mut mode, &clicks);
+    frame_of(&mut mode, &mut dragged, &clicks);
     mode.modify(ModifyAction::Skip);
     assert!(mode.edit_box.is_none());
     assert!(mode.take_asks().is_empty());
+}
+
+#[test]
+fn a_driven_dimension_double_clicked_opens_no_modify_box() {
+    let read = under(rectangle(vec![length("ka000001", "na000001", "40", false)]));
+    let mut mode = mode_at(read);
+    let mut dragged: Option<drag::Drag> = None;
+    frame_of(&mut mode, &mut dragged, &[]);
+    let label = mode
+        .last_drawn()
+        .iter()
+        .find_map(|d| match d {
+            Drawn::Label {
+                of: Some(of),
+                at,
+                text,
+                ..
+            } if of.as_str() == "ka000001" => {
+                assert_eq!(text, "(40)");
+                Some(*at)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let mut clicks = press(label, false).to_vec();
+    clicks.extend(press(label, false));
+    clicks.push(event(PointerAction::DoubleClick, label, false));
+    frame_of(&mut mode, &mut dragged, &clicks);
+    assert!(mode.edit_box.is_none());
+    assert!(mode.modify_view().is_none());
+    // Its click selected it all the same.
+    assert_eq!(
+        mode.selected_ids()
+            .iter()
+            .map(|i| i.as_str())
+            .collect::<Vec<_>>(),
+        ["ka000001"]
+    );
+}
+
+#[test]
+fn after_a_drag_ends_a_press_hits_what_its_last_frame_drew_until_the_read_of_its_edit() {
+    let begin = under(rectangle(Vec::new()));
+    let mut moved = begin.clone();
+    if let Some(p) = moved
+        .members
+        .points
+        .iter_mut()
+        .find(|p| p.id == id("pa000003"))
+    {
+        p.x = Coordinate::new(45.0).unwrap();
+        p.y = Coordinate::new(25.0).unwrap();
+    }
+    let mut mode = mode_at(begin.clone());
+    // A drag of the corner, ended at revision 3, its last frame the corner at (45, 25); the
+    // read of revision 3 not yet come.
+    let mut dragged = Some(drag::Drag::ended_at(
+        silico_core::document::FeatureId::new("s0000001").unwrap(),
+        silico_core::command::DragGrab::Point(id("pa000003")),
+        begin,
+        moved,
+        Revision::OPENED.next().and_then(Revision::next).unwrap(),
+    ));
+    // A click at (45, 25), where the corner is drawn, 7 mm from anything the old read has.
+    frame_of(&mut mode, &mut dragged, &press(at_mm(45.0, 25.0), false));
+    assert_eq!(
+        mode.selected_ids()
+            .iter()
+            .map(|i| i.as_str())
+            .collect::<Vec<_>>(),
+        ["pa000003"]
+    );
+    // And it's drawn there.
+    let corner: Vec<Pos2> = mode
+        .last_drawn()
+        .iter()
+        .filter(|d| {
+            matches!(d, Drawn::Point { selected: true, .. })
+                && d.of().is_some_and(|i| i.as_str() == "pa000003")
+        })
+        .flat_map(Drawn::positions)
+        .collect();
+    assert_eq!(corner, [at_mm(45.0, 25.0)]);
 }

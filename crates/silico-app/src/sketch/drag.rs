@@ -65,8 +65,10 @@ pub struct Drag {
     /// was, put on the exact curve.
     pub sketch: FeatureId,
     pub grab: DragGrab,
-    /// The read it was pressed on: the begin state, as drawn, and its ghost's.
+    /// The read it was pressed on, and the revision of the model it read: the begin state,
+    /// as drawn, and its ghost's. It begins only if the session is still at that state.
     begin: SketchRead,
+    pub model: Revision,
     /// Where it was pressed on the screen, and whether it has moved past the threshold.
     pub(crate) press: Pos2,
     pub(crate) moved: bool,
@@ -75,23 +77,32 @@ pub struct Drag {
     /// How it was ended, once it was.
     released: Option<Release>,
     phase: Phase,
-    /// The begin state with the newest solved frame's values, once one came.
+    /// The begin state with the newest solved frame's values, once one came: copied from
+    /// the begin state once, each frame's values then set in it.
     shown: Option<SketchRead>,
     /// How many solved frames it has drawn, and how many moves it has sent: what the
     /// drawing is keyed on, and what a test counts.
     pub frames: u64,
     pub moves_sent: u64,
-    /// The cursor each move was sent with, in order: what a test reads.
-    pub sent: Vec<[f64; 2]>,
+    /// The cursor the last move was sent with.
+    last_sent: Option<[f64; 2]>,
 }
 
 impl Drag {
-    /// A press on `grab` of `sketch`, at `press` on the screen, over the read `begin`.
-    pub fn pressed(sketch: FeatureId, grab: DragGrab, begin: SketchRead, press: Pos2) -> Self {
+    /// A press on `grab` of `sketch`, at `press` on the screen, over the read `begin`, of the
+    /// model at `model`.
+    pub fn pressed(
+        sketch: FeatureId,
+        grab: DragGrab,
+        begin: SketchRead,
+        model: Revision,
+        press: Pos2,
+    ) -> Self {
         Drag {
             sketch,
             grab,
             begin,
+            model,
             press,
             moved: false,
             cursor: None,
@@ -100,7 +111,43 @@ impl Drag {
             shown: None,
             frames: 0,
             moves_sent: 0,
-            sent: Vec::new(),
+            last_sent: None,
+        }
+    }
+
+    /// A drag ended at `made`, its last frame `shown`, the read of its edit still to come:
+    /// what a test starts from.
+    #[cfg(test)]
+    pub(crate) fn ended_at(
+        sketch: FeatureId,
+        grab: DragGrab,
+        begin: SketchRead,
+        shown: SketchRead,
+        made: Revision,
+    ) -> Self {
+        let mut drag = Drag::pressed(sketch, grab, begin, made, Pos2::ZERO);
+        drag.moved = true;
+        drag.released = Some(Release::Cancel);
+        drag.shown = Some(shown);
+        drag.phase = Phase::Ended { made };
+        drag
+    }
+
+    /// The cursor the last move was sent with, if one was.
+    pub fn last_sent(&self) -> Option<[f64; 2]> {
+        self.last_sent
+    }
+
+    /// Whether its begin has been sent.
+    pub fn begun_sent(&self) -> bool {
+        !matches!(self.phase, Phase::Pressed)
+    }
+
+    /// Nothing more to draw: sketch mode has closed. An ended drag is over (no read of its
+    /// edit will come to it); any other goes on with the core, unseen.
+    pub fn unshown(&mut self) {
+        if matches!(self.phase, Phase::Ended { .. }) {
+            self.phase = Phase::Over;
         }
     }
 
@@ -263,9 +310,9 @@ impl Drag {
                         continue;
                     }
                     let moving = match (moving, self.cursor) {
-                        (None, Some(to)) if self.sent.last() != Some(&to) => {
+                        (None, Some(to)) if self.last_sent != Some(to) => {
                             self.moves_sent += 1;
-                            self.sent.push(to);
+                            self.last_sent = Some(to);
                             Some((sessions.drag_move(session, to), to))
                         }
                         (moving, _) => moving,
@@ -297,7 +344,7 @@ impl Drag {
         if frame.frame != FrameEnd::Solved {
             return;
         }
-        let mut shown = self.begin.clone();
+        let shown = self.shown.get_or_insert_with(|| self.begin.clone());
         for (id, [x, y]) in &frame.points {
             if let (Some(point), Some(x), Some(y)) = (
                 shown.members.points.iter_mut().find(|p| &p.id == id),
@@ -316,7 +363,6 @@ impl Drag {
                 circle.radius = r;
             }
         }
-        self.shown = Some(shown);
         self.frames += 1;
     }
 }

@@ -508,7 +508,11 @@ pub struct Tab {
     export_disowned: bool,
     /// The viewport's camera, meshes, and `meshes` read (M5.6).
     pub view: crate::viewport::View,
-    /// Sketch mode's drag, as its begin was sent: what its end's edit is told against.
+    /// Sketch mode's drag, from its press to the read of its edit: the tab's, not sketch
+    /// mode's, so what waits behind it (the queue, Finish's and Cancel's close) still sees
+    /// it once sketch mode has closed. And the drag as its begin was sent: what its end's
+    /// edit is told against.
+    pub drag: Option<Drag>,
     drag_sending: Option<Sending>,
 }
 
@@ -600,6 +604,7 @@ impl Tab {
             exported: false,
             export_disowned: false,
             view: crate::viewport::View::default(),
+            drag: None,
             drag_sending: None,
         }
     }
@@ -802,6 +807,10 @@ impl Tab {
     fn read_sketches<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if let Some(mode) = self.sketch.as_mut() {
             mode.poll(sessions, &self.id, self.published);
+            // A drag ended at the newest read's revision or before is drawn by the read.
+            if let Some(drag) = self.drag.as_mut() {
+                drag.read(mode.read.as_ref().and_then(|read| read.model));
+            }
         }
         self.prefixes.poll(
             sessions,
@@ -1104,6 +1113,7 @@ impl Tab {
                             // Nothing to edit: sketch mode leaves, as Cancel does, the
                             // transaction its add began, if it did, rolled back.
                             if ours {
+                                self.leave_drag();
                                 self.sketch = None;
                                 self.edits.queue.push_front(Queued::Closed {
                                     ok: false,
@@ -1735,10 +1745,42 @@ impl Tab {
     /// Whether sketch mode's drag has anything under way with the core: its begin, moves,
     /// or end. What's queued waits for it, as an edit landing would end it.
     fn dragging(&self) -> bool {
-        self.sketch
-            .as_ref()
-            .and_then(|mode| mode.drag.as_ref())
-            .is_some_and(Drag::in_flight)
+        self.drag.as_ref().is_some_and(Drag::in_flight)
+    }
+
+    /// Sketch mode leaving (Finish, Cancel, a revert, or Create Sketch's add refused), with a
+    /// drag: one whose press is still held ended from its begin state (`drag_end` with none,
+    /// once its begin answers); one whose begin never went out let go; one released kept, so
+    /// its edit lands, and what's queued after it (the leaving's close) waits for its end.
+    /// Its end is sent as the drag is next driven (each poll).
+    fn leave_drag(&mut self) {
+        let Some(drag) = self.drag.as_mut() else {
+            return;
+        };
+        if !drag.begun_sent() {
+            self.drag = None;
+            return;
+        }
+        drag.cancel();
+    }
+
+    /// Esc, or a cancel of the press, with a drag under way: ended from its begin state
+    /// (`drag_end` with none, once its begin has answered; nothing, if it never began); a
+    /// press that never moved let go, its release clicking nothing. Whether one was held.
+    fn cancel_drag<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
+        let Some(drag) = self.drag.as_mut().filter(|drag| drag.held()) else {
+            return false;
+        };
+        if let Some(mode) = self.sketch.as_mut() {
+            mode.let_go_press();
+        }
+        if !drag.moved {
+            self.drag = None;
+            return true;
+        }
+        drag.cancel();
+        self.drive_drag(sessions);
+        true
     }
 
     /// Whether nothing of the tab's is under way: no edit in flight or queued, nothing
@@ -1825,7 +1867,9 @@ impl Tab {
         // to edit.
         self.dialog = None;
         self.loading = None;
+        self.leave_drag();
         self.sketch = None;
+        self.drive_drag(sessions);
         let kept = self
             .edits
             .queue
@@ -2012,6 +2056,10 @@ impl Tab {
     /// cleared (sketch mode's first, then the feature's); or, with none, a rebuild running
     /// stopped quietly ([`stop_quietly`](Self::stop_quietly)); with neither, nothing.
     pub fn escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        // A drag held ends from its begin state: section 3's first, before anything else.
+        if self.cancel_drag(sessions) {
+            return;
+        }
         // The over-define prompt's Esc is its Cancel (the prototype's key).
         if self
             .sketch
@@ -2019,11 +2067,6 @@ impl Tab {
             .is_some_and(|mode| mode.offer().is_some())
         {
             self.sketch_offer(sessions, OfferChoice::Cancel);
-            return;
-        }
-        // A drag ends from its begin state (section 3: the first Esc takes).
-        if self.sketch.as_mut().is_some_and(SketchMode::cancel_drag) {
-            self.drive_drag(sessions);
             return;
         }
         // A placed dimension's Modify box closes, its value as it was.
@@ -2508,9 +2551,13 @@ impl Tab {
     /// transaction: as a dialog's OK and Cancel are ([`close_dialog`](Self::close_dialog)).
     /// Neither while the tab closes.
     pub fn finish_sketch<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, ok: bool) {
-        if self.closing() || self.sketch.take().is_none() {
+        if self.closing() || self.sketch.is_none() {
             return;
         }
+        // Its close waits for a drag's end (the queue waits while one is under way).
+        self.leave_drag();
+        self.sketch = None;
+        self.drive_drag(sessions);
         self.edits
             .queue
             .push_back(Queued::Closed { ok, sketch: true });
@@ -2542,7 +2589,7 @@ impl Tab {
         input: &FrameInput<'_>,
     ) {
         if let Some(mode) = self.sketch.as_mut() {
-            mode.frame(painter, input);
+            mode.frame(painter, input, &mut self.drag);
         }
         self.sketch_requests(sessions);
         self.drive_drag(sessions);
@@ -2581,10 +2628,19 @@ impl Tab {
     /// is held and undone as any other's), and its answers polled and its moves and end sent
     /// ([`Drag::poll`]); its refusals said, its end's edit taken as an edit's is.
     fn drive_drag<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        let ready = self.quiet() && !self.closing();
-        let Some(mut drag) = self.sketch.as_mut().and_then(|mode| mode.drag.take()) else {
+        let ready = self.quiet() && !self.closing() && self.sketch.is_some();
+        let Some(mut drag) = self.drag.take() else {
             return;
         };
+        // Only from a read of the state the session is at: a press on an older one (an edit
+        // since, its read still to come) drags nothing.
+        if drag.wants_begin() && ready && self.state_of(drag.model) != self.state_of(self.revision)
+        {
+            if let Some(mode) = self.sketch.as_mut() {
+                mode.let_go_press();
+            }
+            return;
+        }
         if drag.wants_begin() && ready {
             self.message = None;
             self.begin_if_none(sessions);
@@ -2614,12 +2670,17 @@ impl Tab {
                 }
             }
         }
+        if self.sketch.is_none() {
+            drag.unshown();
+        }
+        let in_flight = drag.in_flight();
         // Kept till it's over; then let go, so the next press may begin another.
-        if let Some(mode) = self.sketch.as_mut()
-            && mode.drag.is_none()
-            && !drag.over()
-        {
-            mode.drag = Some(drag);
+        if self.drag.is_none() && !drag.over() {
+            self.drag = Some(drag);
+        }
+        // Its end answered: what waited behind it (a close among them) goes now.
+        if !in_flight {
+            self.advance(sessions);
         }
     }
 

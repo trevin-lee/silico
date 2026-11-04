@@ -133,7 +133,7 @@ impl Desk {
                 project: &hand,
                 to_plane: &unhand,
             };
-            mode.frame(painter, &input);
+            mode.frame(painter, &input, &mut None);
         });
         self.take();
     }
@@ -926,6 +926,7 @@ fn no_tool_works_before_its_sketch_is_read_or_on_a_read_of_another() {
                 project: &hand,
                 to_plane: &unhand,
             },
+            &mut None,
         );
     });
     assert!(!mode.tools.busy());
@@ -945,6 +946,7 @@ fn no_tool_works_before_its_sketch_is_read_or_on_a_read_of_another() {
                 project: &hand,
                 to_plane: &unhand,
             },
+            &mut None,
         );
     });
     assert!(!mode.tools.busy());
