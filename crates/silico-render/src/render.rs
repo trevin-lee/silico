@@ -1484,6 +1484,55 @@ pub fn ray(camera: &Camera, size_px: [u32; 2], pixel: [f64; 2]) -> Option<([f64;
     }
 }
 
+/// Where `world`, a point in the document's coordinates, lands in a view from `camera`
+/// `size_px` in pixels: from the image's top-left, x right and y down, in pixels (a pixel's
+/// centre is half a pixel in), in f64. The inverse of [`ray`]: by the projection the renderer
+/// draws with ([`view_projection`], its f32 matrix taken in f64), so it lands where the
+/// bodies are drawn, and a point on a pixel's ray lands on that pixel. A point off the image
+/// lands off it, all the same.
+///
+/// None, in perspective, for a point nearer the eye along the view than
+/// [`MIN_EYE_DISTANCE`] (behind it among them), where the drawing cuts what it draws (its
+/// pyramid, depth ≥ [`MIN_EYE_DISTANCE`]), so what's drawn over the view and the bodies
+/// agree on what's seen. An orthographic view has no behind: any finite point projects.
+/// None, too, for a camera [`Camera::check`] refuses at this size, a size of 0 on a side, a
+/// point that isn't finite, or one whose pixel isn't.
+pub fn project(camera: &Camera, size_px: [u32; 2], world: [f64; 3]) -> Option<[f64; 2]> {
+    let [width, height] = size_px;
+    if width == 0 || height == 0 || !world.iter().all(|c| c.is_finite()) {
+        return None;
+    }
+    let frame = camera.check(width, height).ok()?;
+    // About the camera's point, as [`View`] draws: the eye in perspective, the target
+    // orthographic (whose depth x and y don't depend on).
+    let (origin, far) = match camera.projection {
+        Projection::Perspective { .. } => (camera.eye, 0.0),
+        Projection::Orthographic { .. } => (camera.target, 1.0),
+    };
+    let d = sub(world, origin);
+    let view = glam::DVec4::new(
+        dot(frame.right, d),
+        dot(frame.up, d),
+        dot(frame.back, d),
+        1.0,
+    );
+    // Its depth as the drawing's pyramid takes it ([`View::eye_frame`]); NaN where the
+    // point is so far that its offsets overflow.
+    let depth = -view.z;
+    if matches!(camera.projection, Projection::Perspective { .. })
+        && (depth.is_nan() || depth < MIN_EYE_DISTANCE)
+    {
+        return None;
+    }
+    let projection = view_projection(camera.projection, size_px, far);
+    let clip = projection.projection_from_view(size_px).as_dmat4() * view;
+    let pixel = [
+        (clip.x / clip.w + 1.0) / 2.0 * f64::from(width),
+        (1.0 - clip.y / clip.w) / 2.0 * f64::from(height),
+    ];
+    pixel.iter().all(|c| c.is_finite()).then_some(pixel)
+}
+
 /// Where a mesh stored about `centre` is drawn, for the camera at `origin` (then `depth`
 /// back along the view) with `frame`: the view's rotation (its right, up, and back as the
 /// world's x, y, and z, where the fixed camera looks along −z with +y up), and the centre

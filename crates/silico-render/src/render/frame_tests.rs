@@ -10,14 +10,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use silico_protocol::{Camera, Mesh, Projection};
+use silico_protocol::{Camera, MIN_EYE_DISTANCE, Mesh, Projection};
 
 use super::tests::on_lavapipe;
 use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjection};
 
 use super::{
     BACKGROUND, Element, Frame, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, PendingPick,
-    Pick, Picking, PixelRect, RenderFailure, Renderer, ray,
+    Pick, Picking, PixelRect, RenderFailure, Renderer, project, ray,
 };
 use crate::bench::{box_mesh, front_of_a_box};
 
@@ -1132,6 +1132,183 @@ fn a_ray_through_a_pixel_far_off_the_image_is_finite_or_none() {
     let d = 0.8 * f64::MAX / 5e8;
     let (origin, _) = ray(&corner, [2, 2], [1.0 + d, 1.0 + d]).unwrap();
     assert!(origin.iter().all(|c| c.is_finite()), "{origin:?}");
+}
+
+/// `got` within `within` pixels of `want`, on each axis.
+fn assert_pixel(got: Option<[f64; 2]>, want: [f64; 2], within: f64) {
+    let got = got.expect("not projected");
+    assert!(
+        (0..2).all(|k| (got[k] - want[k]).abs() <= within),
+        "{got:?} against {want:?}"
+    );
+}
+
+#[test]
+fn a_box_corner_projects_to_the_pixel_worked_by_hand() {
+    // The corner (0, 0, 10), its top front left. From the front, orthographic: column
+    // 32 + (0 − 21) × 12/11, row 24 − (10 − 7) × 12/11. To 2e-6 of a pixel: the GPU's
+    // matrix is f32, its entries to 6e-8 of them, and the offsets are some 20 pixels.
+    let size = [WIDTH, HEIGHT];
+    let corner = [0.0, 0.0, 10.0];
+    let want: [f64; 2] = [32.0 - 21.0 * 12.0 / 11.0, 24.0 - 3.0 * 12.0 / 11.0];
+    assert!((want[0] - 9.0909).abs() < 1e-4 && (want[1] - 20.7273).abs() < 1e-4);
+    assert_pixel(project(&front(), size, corner), want, 2e-6);
+    // In perspective, 40° high from (21, −50, 7): 50 mm along the view, 21 left and 3 up,
+    // so tan 20° of half the height (24 rows) for each unit, and tan 20° × 4/3 of half the
+    // width (32 columns).
+    let tan = libm::tan(20f64.to_radians());
+    let want = [
+        32.0 - 21.0 / 50.0 / (tan * 4.0 / 3.0) * 32.0,
+        24.0 - 3.0 / 50.0 / tan * 24.0,
+    ];
+    assert_pixel(project(&front_in_perspective(), size, corner), want, 2e-6);
+    // A point off the image lands off it: (−100, 0, 7), 121 mm left, from the front.
+    assert_pixel(
+        project(&front(), size, [-100.0, 0.0, 7.0]),
+        [32.0 - 121.0 * 12.0 / 11.0, 24.0],
+        1e-5,
+    );
+}
+
+#[test]
+fn a_point_on_a_pixels_ray_projects_back_to_the_pixel() {
+    // Pixels across the image and off it, at depths along each ray from a micrometre to
+    // ten metres (and before the view's plane, orthographic): back to the pixel, to 1e-9
+    // of it.
+    let size = [WIDTH, HEIGHT];
+    let ortho = Projection::Orthographic { view_height: 60.0 };
+    let wide = Projection::Perspective {
+        field_of_view: 60.0,
+    };
+    let pixels = [
+        [0.0, 0.0],
+        [0.5, 0.5],
+        [32.0, 24.0],
+        [63.5, 47.5],
+        [64.0, 48.0],
+        [13.25, 40.75],
+        [-20.0, 70.0],
+    ];
+    for camera in [
+        front(),
+        front_in_perspective(),
+        from_the_corner(ortho),
+        from_the_corner(wide),
+    ] {
+        let perspective = matches!(camera.projection, Projection::Perspective { .. });
+        for pixel in pixels {
+            let (origin, direction) = ray(&camera, size, pixel).unwrap();
+            let mut along = vec![1e-3, 1.0, 37.5, 1e4];
+            if !perspective {
+                along.extend([0.0, -50.0]);
+            }
+            for t in along {
+                let p: [f64; 3] = std::array::from_fn(|k| origin[k] + direction[k] * t);
+                let got = project(&camera, size, p).unwrap();
+                let length = |[x, y]: [f64; 2]| (x * x + y * y).sqrt();
+                let scale = length(pixel).max(1.0);
+                let off = length([got[0] - pixel[0], got[1] - pixel[1]]);
+                assert!(
+                    off <= 1e-9 * scale,
+                    "{camera:?} {pixel:?} at {t}: {got:?}, {off:e} off"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn project_is_none_behind_the_eye_where_the_drawing_cuts_and_for_what_the_checks_refuse() {
+    let size = [WIDTH, HEIGHT];
+    // From the origin along +y: a point MIN_EYE_DISTANCE along the view projects (the
+    // drawing's pyramid holds depth ≥ MIN_EYE_DISTANCE), one an ulp nearer doesn't, nor the
+    // eye, nor what's behind it.
+    let at_the_origin = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        eye: [0.0; 3],
+        target: [0.0, 10.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let nearer = f64::from_bits(MIN_EYE_DISTANCE.to_bits() - 1);
+    assert_pixel(
+        project(&at_the_origin, size, [0.0, MIN_EYE_DISTANCE, 0.0]),
+        [32.0, 24.0],
+        1e-9,
+    );
+    for y in [nearer, 0.0, -1.0, -1e9] {
+        assert_eq!(project(&at_the_origin, size, [0.0, y, 0.0]), None, "{y}");
+    }
+    // Orthographic has no behind: from the front, a point 1 km behind the eye projects.
+    assert_pixel(
+        project(&front(), size, [21.0, -1e6, 7.0]),
+        [32.0, 24.0],
+        1e-9,
+    );
+    // Not finite, in or out.
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for k in 0..3 {
+            let mut p = [20.0, 0.0, 5.0];
+            p[k] = bad;
+            assert_eq!(project(&front(), size, p), None);
+            assert_eq!(project(&front_in_perspective(), size, p), None);
+        }
+    }
+    let narrow = Camera {
+        projection: Projection::Orthographic { view_height: 1e-3 },
+        ..front()
+    };
+    assert!(project(&narrow, size, [1e300, 0.0, 7.0]).is_some());
+    assert_eq!(project(&narrow, size, [f64::MAX, 0.0, 7.0]), None);
+    // A camera or size the checks refuse.
+    let at_the_target = Camera {
+        eye: front().target,
+        ..front()
+    };
+    assert_eq!(project(&at_the_target, size, [20.0, 0.0, 5.0]), None);
+    assert_eq!(project(&front(), [0, HEIGHT], [20.0, 0.0, 5.0]), None);
+    assert_eq!(project(&front(), [WIDTH, 0], [20.0, 0.0, 5.0]), None);
+}
+
+#[test]
+fn a_faces_projected_centre_is_that_face_in_a_frames_picking() {
+    on_lavapipe(
+        "render::frame_tests::a_faces_projected_centre_is_that_face_in_a_frames_picking",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            // Close enough that each face seen is many pixels across, its centre clear of its
+            // edges' 2-pixel strokes.
+            let ortho = Projection::Orthographic { view_height: 40.0 };
+            let wide = Projection::Perspective {
+                field_of_view: 30.0,
+            };
+            // The box's faces' centres: x high (Face2), y low (Face3), z high (Face6). From
+            // the front only Face3 is seen; from the corner all three.
+            let centres = [
+                (2, [40.0, 10.0, 5.0]),
+                (3, [20.0, 0.0, 5.0]),
+                (6, [20.0, 10.0, 10.0]),
+            ];
+            for (camera, seen) in [
+                (front(), &[3][..]),
+                (front_in_perspective(), &[3][..]),
+                (from_the_corner(ortho), &[2, 3, 6][..]),
+                (from_the_corner(wide), &[2, 3, 6][..]),
+            ] {
+                for &(face, centre) in centres.iter().filter(|(f, _)| seen.contains(f)) {
+                    let at = project(&camera, [WIDTH, HEIGHT], centre).unwrap();
+                    let pixel = at.map(|c| c.floor() as i32);
+                    let found = hit(r, &frame(&camera, &[1], &[], Some(rect(pixel, [1, 1]))));
+                    assert_eq!(
+                        found.map(|(body, element, _)| (body, element)),
+                        Some((1, Element::Face(face))),
+                        "{camera:?}: Face{face}'s centre at {at:?}"
+                    );
+                }
+            }
+        },
+    );
 }
 
 #[test]
