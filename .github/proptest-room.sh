@@ -5,6 +5,9 @@
 #   - a bench or an oracle sweep is going: a bench measures times, and a sweep, a night's or
 #     filler's, holds cases to deadlines, which a run at the idle weight beside it would
 #     share the CPU of;
+#   - filler's oracle sweep is due (no filler sweep started on BRANCH in four hours, as
+#     filler.yml reckons it): the filler waits for an exploration going before it starts the
+#     sweep, so one started now would hold it back by up to an hour;
 #   - a real mutants run is starting (no shard yet: its plan is cancelling filler, and its
 #     shards will want filler's runners) or has a shard waiting for a runner: unlike filler.yml,
 #     which lets filler start beside a lane whose every runner is busy, this can't ask for
@@ -16,12 +19,14 @@
 # (cancel-filler.sh). A failed look at GitHub's runs fails this, and with it the run: no
 # exploration starts unchecked.
 #
-# Needs GH_TOKEN (actions: read) and GH_REPO.
+# Needs GH_TOKEN (actions: read), GH_REPO, and BRANCH, the branch filler runs on (main).
 set -euo pipefail
 . "${BASH_SOURCE[0]%/*}/gh.sh"
 
-# The runners labelled filler (filler.yml's pool).
+# The runners labelled filler (filler.yml's pool), and how often filler sweeps (its
+# oracle_every).
 pool=10
+oracle_every=$((4 * 3600))
 
 report() { echo "$1"; echo "$1" >>"$GITHUB_STEP_SUMMARY"; }
 decide() {
@@ -38,6 +43,12 @@ active=$(for status in queued in_progress; do
 done)
 if awk -F '\t' '$2 == "bench.yml" || $2 == "oracle-sweep.yml" { found = 1 } END { exit !found }' <<<"$active"; then
   decide false "Not started: a bench or an oracle sweep is going."
+fi
+recent=$(gh run list --workflow oracle-sweep.yml --branch "$BRANCH" --limit 100 --json displayTitle,createdAt \
+  --jq "[.[] | select((.displayTitle | startswith(\"filler \"))
+          and now - (.createdAt | fromdateiso8601) < $oracle_every)] | length")
+if [ "$recent" -eq 0 ]; then
+  decide false "Not started: filler's oracle sweep is due, and goes first."
 fi
 
 # The jobs of every run going: the run's id, the job's status, its runner, and its name.

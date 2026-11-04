@@ -1,12 +1,12 @@
 # Sourced by tests/gate.sh, tests/mutants.sh, and tests/proptest-explore.sh: checks out the
-# committed tree (HEAD, or
-# the commit SILICO_TREE_COMMIT names, so a script can test commits older than itself) into
-# a worktree in the user cache, one per checkout, reused between runs and cleaned of
-# everything untracked except build caches (target/, target-mutants/, target-filler/ and .pixi/), so runs
-# after the first are incremental, and cds into it. (Not inside the repository: Cargo would
-# take the outer checkout's workspace for the tree's.) The gate and mutation testing share
-# it, taking turns under one lock; on CI each keeps its own build in it (SILICO_TARGET,
-# below), so neither evicts the other's.
+# committed tree (HEAD, or the commit SILICO_TREE_COMMIT names, so a script can test commits
+# older than itself) into a worktree in the user cache, one per checkout, reused between
+# runs and cleaned of everything untracked except build caches (target/, target-mutants/,
+# target-filler/ and .pixi/), so runs after the first are incremental, and cds into it. (Not
+# inside the repository: Cargo would take the outer checkout's workspace for the tree's.)
+# The gate, mutation testing, and the proptest exploration share it, taking turns under one
+# lock; on CI the gate, mutants, and filler (filler mutants and the exploration) each keep a
+# build of their own in it (SILICO_TARGET, below), so none evicts another's.
 #
 # Re-runs the sourcing script ("$0", with its arguments) holding the lock, so source it
 # before anything with side effects.

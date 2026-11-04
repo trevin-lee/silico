@@ -7,19 +7,26 @@
 # filter tells a property's tests from the rest, which share their binaries and ignore the
 # seed. Each property takes its own case count each round (not PROPTEST_CASES, which proptest
 # lets override every test's own, so a property that takes 32 costly cases would take the
-# variable's count, and one that takes 20,000 fewer): four rounds meet four times the cases. A
-# round starts only while one more, as long as the longest yet, would end within the minutes
-# given, the build not counted; the first failing round is the last. In the gate's worktree
+# variable's count, and one that takes 20,000 fewer): four rounds meet four times the cases.
+# About an hour in all, as a filler mutants shard has, the build included: a round starts
+# only in the first three quarters of the minutes, and only if one as long as the longest yet
+# would end within them, and the last is cut off at their end. The first failing round is the
+# last: each property failure in it (if no more than five) is run again alone at its seed,
+# within a quarter hour more, and only one that fails again, giving an input, gets an issue of
+# its own; the rest go to one issue (tests/proptest-failures.py). In the gate's worktree
 # (tests/committed-tree.sh), as mutants are, so it never edits a checkout someone works in.
 #
 # Writes to OUTPUT (absolute: the tree is elsewhere): rounds.tsv (each round's seed, nextest's
 # exit status, and seconds), round-N.xml (its JUnit report), and, for a round whose tests
-# failed, failures/ (each failed test's issue title and body, tests/proptest-failures.py) and
-# failures.md. Exits 0 when every round passed, or nextest's status for the round that didn't.
+# failed, reruns.tsv and rerun-N.xml (what each run alone found, and its report), failures/
+# (each issue's title and body) and failures.md; and outcome, how far it got (below). Exits 0
+# when no test failed (a round cut off at the end too), 1 when tests failed, or nextest's
+# status when it failed naming no test.
 #
 # Run through pixi:  pixi run proptest-explore -- /tmp/explore          (new seeds)
 #                    pixi run proptest-explore -- /tmp/explore SEED     (one round at SEED)
-# PROPTEST_EXPLORE_ROUNDS (4) and PROPTEST_EXPLORE_MINUTES (60) bound it. To run one failing
+# PROPTEST_EXPLORE_ROUNDS (4) and PROPTEST_EXPLORE_MINUTES (60) bound it; the minutes are kept
+# where `timeout` is (Linux), and only between rounds elsewhere. To run one failing
 # test again, `PROPTEST_RNG_SEED=SEED pixi run cargo nextest run -p ...`, which each failure's
 # body gives in full; not `pixi run test`, whose task fixes the seed.
 set -euo pipefail
@@ -80,9 +87,17 @@ report() {
   if [ -n "${GITHUB_STEP_SUMMARY-}" ]; then echo "$1" >>"$GITHUB_STEP_SUMMARY"; fi
 }
 
+# The exploration's clock: the build counts, as a filler mutants shard's hour does.
+start=$SECONDS
 pixi run occt
 pixi install -e oracle
 mkdir -p "$out"
+# Nothing an earlier run left here is read as this one's.
+rm -rf "$out/failures" "$out/failures.md" "$out/reruns.tsv" "$out/junit.xml" "$out"/round-*.xml "$out"/rerun-*.xml
+# How far it got, for the report (.github/proptest-report.sh): setup, until the rounds start;
+# rounds, while they run; then passed or failed. A run stopped mid-round from outside (its
+# step's time limit) leaves rounds, which is no setup failure.
+echo setup >"$out/outcome"
 # The tree's own config with a profile added, as tests/mutants.sh adds its own: each test 5
 # minutes a try, at the idle priority CI gives it, with two retries, so a test only load
 # slowed passes on one (a property's failure, its seed fixed, fails all three); every test
@@ -96,13 +111,87 @@ trap 'rm -f "$nextest_config"' EXIT
   printf 'slow-timeout = { period = "60s", terminate-after = 5 }\n'
   printf '\n[profile.silico-explore.junit]\npath = "%s"\n' "$out/junit.xml"
 } >"$nextest_config"
-nextest=(cargo nextest run --workspace --config-file "$nextest_config" --profile silico-explore)
+nextest=(cargo nextest run --config-file "$nextest_config" --profile silico-explore)
 junit=$out/junit.xml
+# Rounds start only in the first three quarters of the minutes, and end, cut off if they
+# must, at the minutes' end; a failure's runs alone (below) have a quarter hour more.
+last_start=$((start + minutes * 45))
+end=$((start + minutes * 60))
+reruns_end=$((end + 900))
+# The most property failures run again alone, each for at most 10 minutes: past that many,
+# the run reports them all in one issue, unrun (proptest-failures.py's MOST_ISSUES).
+most_issues=5
+rerun_most=600
+
+# Runs "$@" for at most $1 seconds, where `timeout` is (CI's Linux; not macOS's base system,
+# where it runs unbounded). Its status 124 says the time ran out.
+within() {
+  local seconds=$1
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --kill-after=120 "$seconds" "$@"
+  else
+    "$@"
+  fi
+}
+
+# The cases proptest saved in the tree this run (beside an integration test, or under a
+# crate's proptest-regressions/), put back as committed: a test run again alone then meets
+# what a run of its command at the commit meets, the committed cases and the seed's.
+reset_saved_cases() {
+  local f paths=('*.proptest-regressions' '*/proptest-regressions/*')
+  git diff --name-only -- "${paths[@]}" | while IFS= read -r f; do git checkout --quiet -- "$f"; done
+  git ls-files --others -- "${paths[@]}" | while IFS= read -r f; do rm -f -- "$f"; done
+}
+
+# A round's failed tests, sorted, each property failure run again alone at the round's seed
+# (at most most_issues of them), and written as issues (tests/proptest-failures.py). Returns
+# 1 if the round's report can't be read.
+failures() {
+  local xml=$1 this=$2 list properties n=0 kind binary test args left status result
+  list=$(python3 -I "$here/proptest-failures.py" list "$xml") || return 1
+  : >"$out/reruns.tsv"
+  properties=$(awk -F '\t' '$1 == "property" { n++ } END { print n + 0 }' <<<"$list")
+  if [ "$properties" -gt 0 ] && [ "$properties" -le "$most_issues" ]; then
+    reset_saved_cases
+    while IFS=$'\t' read -r -u 3 kind binary test args; do
+      [ "$kind" = property ] || continue
+      n=$((n + 1))
+      left=$((reruns_end - SECONDS))
+      if [ "$left" -le 0 ]; then
+        result=unrun
+      else
+        rm -f "$junit"
+        status=0
+        # $args is "-p <crate> <cargo's flag for the binary>", split as words.
+        # shellcheck disable=SC2086
+        PROPTEST_RNG_SEED=$this within $((left < rerun_most ? left : rerun_most)) \
+          "${nextest[@]}" --retries 0 $args -E "test(=$test)" </dev/null || status=$?
+        if [ "$status" -eq 0 ]; then
+          result=passed
+        elif [ -f "$junit" ] && python3 -I "$here/proptest-failures.py" failed-again "$junit" "$binary" "$test"; then
+          result=again
+        else
+          result=no-input
+        fi
+        if [ -f "$junit" ]; then mv "$junit" "$out/rerun-$n.xml"; fi
+      fi
+      report "Run again alone: $binary $test: $result"
+      printf '%s\t%s\t%s\n' "$binary" "$test" "$result" >>"$out/reruns.tsv"
+    done 3<<<"$list"
+  fi
+  python3 -I "$here/proptest-failures.py" render "$xml" "$this" "$commit" "$out" "$out/reruns.tsv"
+}
 
 echo "proptest-explore: testing $commit"
-"${nextest[@]}" --no-run
+"${nextest[@]}" --workspace --no-run
 printf 'round\tseed\tstatus\tseconds\n' >"$out/rounds.tsv"
-start=$SECONDS
+if [ "$SECONDS" -ge "$last_start" ]; then
+  report "No round: the build ended past $((minutes * 3 / 4)) minutes"
+  echo passed >"$out/outcome"
+  exit 0
+fi
+echo rounds >"$out/outcome"
 longest=0
 round=1
 while :; do
@@ -111,30 +200,37 @@ while :; do
   rm -f "$junit"
   began=$SECONDS
   status=0
-  PROPTEST_RNG_SEED=$this "${nextest[@]}" -E "$filter" || status=$?
+  PROPTEST_RNG_SEED=$this within $((end - SECONDS > 1 ? end - SECONDS : 1)) \
+    "${nextest[@]}" --workspace -E "$filter" || status=$?
   took=$((SECONDS - began))
   printf '%s\t%s\t%s\t%s\n' "$round" "$this" "$status" "$took" >>"$out/rounds.tsv"
   if [ -f "$junit" ]; then mv "$junit" "$out/round-$round.xml"; fi
   if [ "$status" -ne 0 ]; then
+    if [ "$status" -eq 124 ]; then report "Round $round, at seed $this, was cut off at $minutes minutes"; fi
     if [ -f "$out/round-$round.xml" ]; then
-      python3 -I "$here/proptest-failures.py" "$out/round-$round.xml" "$this" "$commit" "$out"
+      failures "$out/round-$round.xml" "$this" || report "Couldn't read round-$round.xml: see the log"
     fi
     if [ -s "$out/failures.md" ]; then
       report "Round $round failed, at seed $this:"
       if [ -n "${GITHUB_STEP_SUMMARY-}" ]; then cat "$out/failures.md" >>"$GITHUB_STEP_SUMMARY"; fi
       cat "$out/failures.md"
-    else
-      report "Round $round failed, at seed $this, with no failed test reported: nextest exited $status (see the log)"
+      echo failed >"$out/outcome"
+      exit 1
     fi
+    # Cut off with nothing failed: the time ran out, which is no failure.
+    if [ "$status" -eq 124 ]; then break; fi
+    report "Round $round failed, at seed $this, with no failed test reported: nextest exited $status (see the log)"
+    echo setup >"$out/outcome"
     exit "$status"
   fi
   report "Round $round passed, in $took s"
   if [ "$took" -gt "$longest" ]; then longest=$took; fi
   if [ "$round" -ge "$rounds" ]; then break; fi
-  if [ $((SECONDS - start + longest)) -gt $((minutes * 60)) ]; then
-    report "Stopped after $round rounds: another as long as the longest wouldn't end within $minutes minutes"
+  if [ "$SECONDS" -ge "$last_start" ] || [ $((SECONDS + longest)) -gt "$end" ]; then
+    report "Stopped after $round rounds: another wouldn't start within $((minutes * 3 / 4)) minutes, or end within $minutes"
     break
   fi
   round=$((round + 1))
 done
-report "Every round passed, at $commit"
+report "Done, at $commit: no test failed"
+echo passed >"$out/outcome"

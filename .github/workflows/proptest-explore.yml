@@ -6,29 +6,34 @@
 # summary (tests/proptest-explore.sh). Each property takes its own case count each round, so
 # four rounds meet four times its cases; not PROPTEST_CASES, which proptest lets override
 # every test's own count, so a property that takes 32 costly cases would take the
-# variable's count, and one that takes 20,000 fewer. A round starts only while one more, as
-# long as the longest yet, would end within an hour; the build doesn't count.
+# variable's count, and one that takes 20,000 fewer. About an hour in all, the build
+# included, as a filler mutants shard: rounds start only in its first 45 minutes, and the
+# last is cut off at its end, which is no failure.
 #
 # What runs: every workspace test but those tests/mutants.sh leaves out for holding to a wall
 # clock or GiBs. No filter picks out a property's tests (they share binaries with the rest),
 # and the rest ignore the seed.
 #
-# A failed test opens an issue titled "Proptest exploration failed: <binary> <test>",
-# assigned to the repository's owner, or comments on the open one: its seed, proptest's
-# shrunk minimal input, the commit, and the command that runs it again
-# (`PROPTEST_RNG_SEED=<seed> pixi run cargo nextest run -p <crate> ...`;
-# tests/proptest-failures.py, .github/proptest-report.sh). A run that failed with no test
-# to name (the build) opens or comments on "... setup", which the next green run closes.
+# A property that fails, giving proptest's shrunk input, is run again alone at its seed; one
+# that fails again opens an issue titled "Proptest exploration failed: <binary> <test>",
+# assigned to the repository's owner, or comments on the open one: its seed, the shrunk
+# input, the commit, and the command that runs it again
+# (`PROPTEST_RNG_SEED=<seed> pixi run cargo nextest run -p <crate> ...`). At most five so a
+# run: every other failed test (a timeout, one giving no input, one that passed alone, or all
+# of them when more than five properties failed, as a starved or broken run would) is a line
+# of one issue, "... unconfirmed" (tests/proptest-failures.py, .github/proptest-report.sh).
+# A run that failed with no test to name (the build) opens or comments on "... setup", which
+# the next green run closes.
 # Only scheduled runs report, as only the oracle sweep's scheduled nights do: a run started
 # by hand reports to whoever started it.
 #
 # It's filler (filler.yml): its title starts "filler", it runs on a runner labelled filler at
 # the idle scheduling class, with filler's Cargo home and build (target-filler/), and real
 # work cancels it (.github/cancel-filler.sh), without a report. A scheduled run starts only
-# while there's room for it (.github/proptest-room.sh: no bench or oracle sweep going, no
-# real mutants run starting or waiting for a runner, a free runner labelled filler, more
-# than a fifth of the VM's CPUs idle); the filler waits for one going before it starts a
-# sweep.
+# while there's room for it (.github/proptest-room.sh: no bench or oracle sweep going or
+# filler's sweep due, no real mutants run starting or waiting for a runner, a free runner
+# labelled filler, more than a fifth of the VM's CPUs idle); the filler waits for one going
+# before it starts a sweep.
 #
 #   gh workflow run proptest-explore.yml --ref main                 (new seeds)
 #   gh workflow run proptest-explore.yml --ref main -f seed=SEED    (one round at SEED, to repeat it)
@@ -77,6 +82,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
         run: bash .github/proptest-room.sh
 
   explore:
@@ -84,9 +90,9 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.room.outputs.go == 'true') }}
     # Only on the runners labelled filler (silico-5 to -12, -22, and -23), which take no gates.
     runs-on: [self-hosted, linux, x64, filler]
-    # The build, which a filler build directory another commit used can make long at the idle
-    # class, and an hour of rounds.
-    timeout-minutes: 150
+    # The exploration's hour (the build in it), a quarter hour for a failure's runs alone,
+    # and a margin past the step's own limit, for the steps after it.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
       - name: Toolchains
@@ -94,6 +100,9 @@ jobs:
       - name: Test scratch
         run: bash .github/scratch.sh start
       - name: Explore
+        # Within the job's limit, so a run past it still uploads what it found, and its report
+        # reads it as cut off mid-round, not as a setup failure (its outcome, below).
+        timeout-minutes: 80
         env:
           # Through the environment, so the input is never read as the script's text.
           SEED: ${{ inputs.seed }}

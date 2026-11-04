@@ -3,8 +3,9 @@
 # run, of the mutants workflow, the oracle sweep, or the proptest exploration, queued or
 # running (each title starts "filler "). A real mutants run, the bench, and the nightly
 # sweep call this first, from a runner labelled control, so filler shards can't keep them
-# waiting. A cancelled filler shard still uploads what it finished. Needs GH_TOKEN (with actions: write) and GH_REPO.
-# Never fails the run that calls it: real work goes on even if GitHub's API doesn't answer.
+# waiting. A cancelled filler shard still uploads what it finished. Needs GH_TOKEN (with
+# actions: write) and GH_REPO. Never fails the run that calls it: real work goes on even if
+# GitHub's API doesn't answer.
 set -uo pipefail
 . "${BASH_SOURCE[0]%/*}/gh.sh" || exit 0
 

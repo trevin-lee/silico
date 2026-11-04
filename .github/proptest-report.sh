@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # A proptest exploration's result as GitHub issues (proptest-explore.yml), as
-# nightly-report.sh reports a night's: each failed test opens an issue titled "Proptest
-# exploration failed: <binary> <test>", assigned to the repository's owner, or comments on the
-# one already open for it, with the body tests/proptest-failures.py wrote (the seed, proptest's
-# shrunk minimal input, the commit, and the command that runs it again). Nothing closes those:
-# a green run's seeds tested other cases. A run that failed with no test to name (the build, or
+# nightly-report.sh reports a night's: each issue tests/proptest-failures.py wrote (at most
+# five of a property that failed again alone, "Proptest exploration failed: <binary> <test>",
+# and one listing every other failed test, "... unconfirmed") is opened, assigned to the
+# repository's owner, or commented on if one of its title is open. Nothing closes those: a
+# green run's seeds tested other cases. A run that failed with no test to name (the build, or
 # nextest itself) opens or comments on "Proptest exploration failed: setup", which the next
 # green run closes, since it tests the same thing every run.
 #
+# A run that failed in its rounds but named no test reports nothing: its step's time limit
+# stopped it mid-round (its outcome file says "rounds"), which is no failure of anything.
+#
 # Run by the workflow's last job, on scheduled runs, with the job's token (GH_TOKEN, GH_REPO,
 # OWNER), the exploration's RESULT (success or failure), RUN_URL, and DIR, the exploration's
-# output (its failures/, if any test failed; missing if it uploaded none).
+# output (its failures/, if any test failed, and its outcome, tests/proptest-explore.sh;
+# missing if it uploaded none).
 set -euo pipefail
 
 # gh, verified.
@@ -52,6 +56,8 @@ if [ "$RESULT" = success ]; then
     gh issue close "$number"
     echo "setup: closed #$number"
   fi
+elif [ "$reported" -eq 0 ] && [ "$(cat "$DIR/outcome" 2>/dev/null)" = rounds ]; then
+  echo "Stopped mid-round from outside (its step's time limit): nothing to report"
 elif [ "$reported" -eq 0 ]; then
   body=$(mktemp)
   trap 'rm -f "$body"' EXIT
