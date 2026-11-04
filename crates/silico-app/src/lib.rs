@@ -7,9 +7,12 @@ pub mod app;
 pub mod dialog;
 pub mod export;
 pub mod missing;
+pub mod navigate;
 mod panes;
+pub mod renderer;
 pub mod sketch;
 pub mod tab;
 pub mod theme;
+pub mod viewport;
 
 pub use app::App;

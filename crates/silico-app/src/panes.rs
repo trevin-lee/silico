@@ -1,6 +1,6 @@
 //! The window's panes, docked with `egui_tiles` as Fusion lays them out (docs/design/m5.0-
 //! app.md, section 8; docs/ux/fusion.md, *The window*): the browser at the canvas's left,
-//! the canvas (the viewport's place, empty until M5.6), the property panel at its right,
+//! the canvas (the viewport, `crate::viewport`), the property panel at its right,
 //! and the timeline across the bottom. Each pane is labelled for the accessibility tree
 //! (`egui_tiles` labels none), which is how the app's tests find it (decision 7).
 
@@ -103,6 +103,8 @@ pub struct Panes<'a, P: Clients + 'static> {
     pub started: &'a mut bool,
     /// The canvas's place in the window, as it was drawn: where sketch mode's panels float.
     pub canvas: &'a mut Option<egui::Rect>,
+    /// What the viewport's renderer holds, and how its frames reach it.
+    pub drawing: &'a mut crate::viewport::Drawing,
 }
 
 impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
@@ -112,14 +114,18 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
             node.set_role(egui::accesskit::Role::Pane);
             node.set_label(label);
         });
+        if *pane == Pane::Viewport {
+            // Where sketch mode's panels float.
+            *self.canvas = Some(ui.max_rect());
+            // The canvas reaches the pane's edges.
+            crate::viewport::show(ui, self.tab.as_deref_mut(), self.sessions, self.drawing);
+            return UiResponse::None;
+        }
         egui::Frame::new()
             .inner_margin(egui::Margin::same(theme::VIEW_PADDING / 2))
             .show(ui, |ui| match pane {
                 Pane::Browser => self.browser(ui),
-                Pane::Viewport => {
-                    *self.canvas = Some(ui.max_rect());
-                    viewport(ui);
-                }
+                Pane::Viewport => {}
                 Pane::Properties => self.properties(ui),
                 Pane::Timeline => self.timeline(ui),
             });
@@ -140,14 +146,6 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
             ..Default::default()
         }
     }
-}
-
-/// The canvas's place: the viewport comes with M5.6.
-fn viewport(ui: &mut Ui) {
-    let rect = ui.available_rect_before_wrap();
-    ui.painter()
-        .rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
-    ui.allocate_rect(rect, Sense::hover());
 }
 
 /// What a pane with no timeline yet says: that it's building, or that its rebuild was

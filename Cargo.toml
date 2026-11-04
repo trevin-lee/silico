@@ -18,6 +18,7 @@ silico-kernel = { path = "crates/silico-kernel" }
 silico-oracle = { path = "crates/silico-oracle" }
 silico-worker = { path = "crates/silico-worker" }
 silico-mcp = { path = "crates/silico-mcp" }
+silico-render = { path = "crates/silico-render" }
 cxx = "1.0"
 cxx-build = "1.0"
 serde = { version = "1.0", features = ["derive"] }
