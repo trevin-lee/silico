@@ -10,12 +10,16 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, RichText, Sense, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType};
 use egui_tiles::{Tile, TileId, Tiles, Tree, UiResponse};
 use silico_core::command::{SessionId, Sessions};
+use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
+use silico_core::document::Units;
 use silico_core::document::json::Node;
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
 
+use crate::dialog::Action;
 use crate::icons::{self, Icon, IconSize};
+use crate::properties;
 use crate::tab::{Edit, Hideable, Tab};
 use crate::theme;
 
@@ -97,6 +101,8 @@ pub struct Panes<'a, P: Clients + 'static> {
     pub started: &'a mut bool,
     /// What the viewport's renderer holds, and how its frames reach it.
     pub drawing: &'a mut crate::viewport::Drawing,
+    /// Enter or Esc pressed this frame, if it's an open dialog's (`App::keys`).
+    pub dialog_key: Option<egui::Key>,
 }
 
 impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
@@ -116,12 +122,8 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
             self.browser(ui);
             return UiResponse::None;
         }
-        egui::Frame::new()
-            .inner_margin(egui::Margin::same(theme::VIEW_PADDING / 2))
-            .show(ui, |ui| match pane {
-                Pane::Browser | Pane::Viewport => {}
-                Pane::Properties => self.properties(ui),
-            });
+        // Its sections' rules and fills reach the pane's edges; each part pads itself.
+        self.properties(ui);
         UiResponse::None
     }
 
@@ -193,23 +195,33 @@ impl<P: Clients + 'static> Panes<'_, P> {
         }
     }
 
-    /// The property panel: the feature selected (its name, editable, which is an edit of
-    /// the document; its type; its mark's text and suggestion), and the document's problems.
+    /// The property panel (DESIGN.md, *Layout*: one right panel, four jobs): the feature
+    /// dialog, if one is open; else the selected feature's properties; else the document's,
+    /// never an empty state. SEAM(M5.7): a selection of faces, edges, or vertices, picking's,
+    /// is its fourth job (`selectionProps`: each element's measures and stable name), shown
+    /// before a feature's once picking names them.
     fn properties(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("PROPERTIES").small().strong());
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
         let Some(tab) = self.tab.as_deref_mut() else {
+            properties::title(ui, None, "Properties");
+            properties::hint(
+                ui,
+                &[(
+                    "Properties of what you select appear here. Feature dialogs dock here too.",
+                    false,
+                )],
+            );
             return;
         };
-        if !tab.document_problems.is_empty() {
-            ui.label(RichText::new("Problems").strong());
-            for said in &tab.document_problems {
-                ui.colored_label(ui.visuals().error_fg_color, &said.message);
-                if let Some(suggestion) = &said.suggestion {
-                    ui.weak(suggestion);
-                }
-            }
-            ui.separator();
+        if tab.dialog.is_some() {
+            self.dialog(ui);
+            return;
         }
+        if self.dialog_key == Some(egui::Key::Escape) && tab.in_dialog() {
+            // A dialog still being read (Edit Feature): Esc cancels it.
+            tab.close_dialog(self.sessions, false);
+        }
+        properties::title(ui, None, "Properties");
         let entry: Option<Entry> = tab.selected.as_ref().and_then(|selected| {
             tab.timeline
                 .as_ref()
@@ -217,74 +229,287 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 .and_then(|features| features.iter().find(|entry| &entry.id == selected))
                 .cloned()
         });
-        let Some(entry) = entry else {
-            ui.weak("Select a feature on the timeline or in the browser");
+        let sessions = self.sessions;
+        let name = &mut *self.name;
+        let started = &mut *self.started;
+        egui::ScrollArea::vertical()
+            .id_salt("properties")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
+                match entry {
+                    Some(entry) => feature(ui, tab, &entry, sessions, name, started),
+                    None => document(ui, tab),
+                }
+            });
+    }
+
+    /// The open dialog, docked in the property panel (open item 27): drawn, what's changed
+    /// in it sent, and its OK or Cancel taken, or the key pressed: Enter is OK, if OK is on;
+    /// Esc goes to the first of these there is (section 3), a dialog's preview rebuilding,
+    /// which it stops, the dialog left open, or the dialog, which it cancels
+    /// ([`Tab::dialog_escape`]).
+    fn dialog(&mut self, ui: &mut Ui) {
+        let sessions = self.sessions;
+        let key = self.dialog_key;
+        let Some(tab) = self.tab.as_deref_mut() else {
             return;
         };
-        // The text typed, kept for this document's feature alone (two documents may hold
-        // features of one ID), and only while it's ahead of the document: the document's
-        // value again once that moves other than by this field's own edits (an undo, a
-        // redo, a revert, a reload). A refusal keeps what was typed, the refusal said.
-        let mut field = match self.name.take() {
-            Some(field)
-                if field.keeps(tab.id, &entry.id, &entry.name, tab.resets, tab.applying()) =>
-            {
-                field
-            }
-            _ => NameField {
-                session: tab.id,
-                feature: entry.id.clone(),
-                text: entry.name.clone(),
-                base: entry.name.clone(),
-                typed: Vec::new(),
-                resets: tab.resets,
-            },
+        let refused: Vec<&'static str> = tab
+            .dialog
+            .iter()
+            .flat_map(|dialog| dialog.inputs.iter().map(|input| input.part.field()))
+            .filter(|field| tab.field_refused(field))
+            .collect();
+        let said = tab.dialog_said();
+        let Some(mut dialog) = tab.dialog.take() else {
+            return;
         };
-        field.base = entry.name.clone();
-        let typed = field.text.clone();
-        let mut text = typed.clone();
-        ui.horizontal(|ui| {
-            let label = ui.label("Name");
-            // An ID of its own, the document's and the feature's, so its cursor and focus
-            // stay put however the panel above it changes.
-            // Off while the tab closes: an edit then would be dropped (#298's review).
-            let edit = egui::TextEdit::singleline(&mut text);
-            let salt = ("name", tab.id.to_string(), entry.id.as_str());
-            let edit = theme::field(ui, edit, salt, theme::FieldKind::Dialog, false);
-            ui.add_enabled(!tab.closing(), edit).labelled_by(label.id);
-        });
-        if text != typed {
-            // Each change an edit, coalesced in the tab (section 3); an empty name too, for
-            // the core to refuse and the tab to say why.
-            if let Ok(value) = name_value(&text) {
-                tab.edit(
-                    self.sessions,
-                    Edit {
-                        feature: entry.id.clone(),
-                        field: "name".to_owned(),
-                        value,
-                    },
-                );
-                *self.started = true;
-            }
+        let enabled = !tab.closing();
+        let title = dialog.kind.title();
+        let rows = &tab.browser.sketches;
+        let named = |id: &FeatureId| {
+            rows.iter()
+                .find(|row| &row.id == id)
+                .map(|row| row.name.clone())
+        };
+        let refused = |field: &str| refused.contains(&field);
+        let mut action = ui
+            .scope_builder(UiBuilder::new().id_salt(("dialog", dialog.serial)), |ui| {
+                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                    node.set_role(egui::accesskit::Role::Dialog);
+                    node.set_label(title);
+                });
+                dialog.ui(ui, &said, &named, &refused, enabled)
+            })
+            .inner;
+        tab.dialog = Some(dialog);
+        *self.started |= tab.dialog_changed(sessions);
+        match key {
+            Some(egui::Key::Enter) if tab.can_ok() => action = Action::Ok,
+            Some(egui::Key::Escape) if tab.dialog_escape(sessions) => action = Action::Cancel,
+            _ => {}
         }
-        if text != typed {
-            field.typed.push(text.clone());
+        match action {
+            Action::None => {}
+            Action::Ok => tab.close_dialog(sessions, true),
+            Action::Cancel => tab.close_dialog(sessions, false),
         }
-        field.text = text;
-        *self.name = Some(field);
-        ui.label(format!("Type: {}", entry.kind));
-        if let Some(said) = tab.said.get(entry.id.as_str()) {
-            let colour = match entry.health {
-                Health::Error => ui.visuals().error_fg_color,
-                _ => ui.visuals().warn_fg_color,
-            };
-            ui.colored_label(colour, &said.message);
-            if let Some(suggestion) = &said.suggestion {
-                ui.weak(suggestion);
-            }
-        }
+        *self.started |= action != Action::None;
     }
+}
+
+/// The selected feature's properties (`featureProps`): its head (its type's icon, its name,
+/// its type and ID), the document's problems and its own (its mark's text and suggestion),
+/// its name, editable, which is an edit of the document, and its health and ID.
+///
+/// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
+/// direction), which need its fields read, as its dialog reads them; and its Edit feature
+/// and Suppress buttons (the timeline's double-click and menu edit it already).
+fn feature<P: Clients + 'static>(
+    ui: &mut Ui,
+    tab: &mut Tab,
+    entry: &Entry,
+    sessions: &Arc<Sessions<P>>,
+    name: &mut Option<NameField>,
+    started: &mut bool,
+) {
+    let mut sub = properties::body(
+        &format!("{} · ", crate::timeline::kind_words(entry.kind)),
+        theme::PROPERTY_HEAD_SUB,
+    );
+    sub.sections.iter_mut().for_each(|section| {
+        section.format.font_id.size = theme::HEADER_SIZE;
+    });
+    sub.append(
+        entry.id.as_str(),
+        0.0,
+        properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_HEAD_SUB, true),
+    );
+    properties::head(ui, Icon::of_kind(entry.kind), &entry.name, sub);
+    problems(ui, tab);
+    if let Some(said) = tab.said.get(entry.id.as_str()) {
+        let warning = entry.health != Health::Error;
+        properties::card(ui, warning, &said.message, said.suggestion.as_deref());
+    }
+    // The text typed, kept for this document's feature alone (two documents may hold
+    // features of one ID), and only while it's ahead of the document: the document's
+    // value again once that moves other than by this field's own edits (an undo, a
+    // redo, a revert, a reload). A refusal keeps what was typed, the refusal said.
+    let mut field = match name.take() {
+        Some(field) if field.keeps(tab.id, &entry.id, &entry.name, tab.resets, tab.applying()) => {
+            field
+        }
+        _ => NameField {
+            session: tab.id,
+            feature: entry.id.clone(),
+            text: entry.name.clone(),
+            base: entry.name.clone(),
+            typed: Vec::new(),
+            resets: tab.resets,
+        },
+    };
+    field.base = entry.name.clone();
+    let typed = field.text.clone();
+    let mut text = typed.clone();
+    properties::row(ui, "Name", |ui, label| {
+        // An ID of its own, the document's and the feature's, so its cursor and focus
+        // stay put however the panel above it changes.
+        // Off while the tab closes: an edit then would be dropped (#298's review).
+        let edit = egui::TextEdit::singleline(&mut text);
+        let salt = ("name", tab.id.to_string(), entry.id.as_str());
+        let edit = theme::field(ui, edit, salt, theme::FieldKind::Dialog, false);
+        let at = properties::field_rect(ui, ui.available_width());
+        ui.add_enabled_ui(!tab.closing(), |ui| ui.put(at, edit))
+            .inner
+            .labelled_by(label);
+    });
+    if text != typed {
+        // Each change an edit, coalesced in the tab (section 3); an empty name too, for
+        // the core to refuse and the tab to say why.
+        if let Ok(value) = name_value(&text) {
+            tab.edit(
+                sessions,
+                Edit {
+                    feature: entry.id.clone(),
+                    field: "name".to_owned(),
+                    value,
+                },
+            );
+            *started = true;
+        }
+        field.typed.push(text.clone());
+    }
+    field.text = text;
+    *name = Some(field);
+    properties::section(ui, "Health");
+    let (state, colour) = match entry.health {
+        Health::Healthy => ("Healthy", theme::SUCCESS),
+        Health::Warning => ("Warning", theme::WARNING),
+        Health::Error => ("Error", theme::ERROR_TEXT),
+        Health::Suppressed => ("Suppressed", theme::PROPERTY_VALUE),
+        Health::Unknown => ("Not built", theme::TEXT_SUBDUED),
+    };
+    properties::text_row(ui, "State", properties::body(state, colour));
+    properties::text_row(
+        ui,
+        "ID",
+        egui::text::LayoutJob::single_section(
+            entry.id.as_str().to_owned(),
+            properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
+        ),
+    );
+    properties::hint(
+        ui,
+        &[(
+            "Hovering a feature in the timeline lights up the faces it made.",
+            false,
+        )],
+    );
+}
+
+/// The document's problems, as the gate found them: a card each.
+fn problems(ui: &mut Ui, tab: &Tab) {
+    for said in &tab.document_problems {
+        properties::card(ui, false, &said.message, said.suggestion.as_deref());
+    }
+}
+
+/// The document's properties, with nothing selected (`docProps`): its head (its file's name
+/// over its path), its problems, its revision, units, features, save state, and file on
+/// disk, and its model.
+///
+/// SEAM: the model's measures (`docProps`' Volume, Area, Size, and Faces), which need a
+/// `mass_properties` read of its bodies the app doesn't make yet; its bodies are counted.
+fn document(ui: &mut Ui, tab: &Tab) {
+    properties::head(
+        ui,
+        Icon::Doc,
+        tab.name(),
+        egui::text::LayoutJob::single_section(
+            tab.path.clone(),
+            properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_HEAD_SUB, true),
+        ),
+    );
+    problems(ui, tab);
+    properties::section(ui, "Document");
+    let mut revision = properties::body(&tab.revision.number().to_string(), theme::PROPERTY_VALUE);
+    if let Some(model) = tab.published.filter(|model| *model != tab.revision) {
+        revision.append(
+            &format!(" · model {}", model.number()),
+            0.0,
+            properties::format(theme::BODY_SIZE, theme::TEXT_SUBDUED, false),
+        );
+    }
+    properties::text_row(ui, "Revision", revision);
+    properties::text_row(
+        ui,
+        "Units",
+        properties::body(&units(), theme::PROPERTY_VALUE),
+    );
+    let features = tab
+        .timeline
+        .as_ref()
+        .and_then(|timeline| timeline.features.as_ref())
+        .map(Vec::len);
+    if let Some(features) = features {
+        properties::text_row(
+            ui,
+            "Features",
+            properties::body(&features.to_string(), theme::PROPERTY_VALUE),
+        );
+    }
+    let saved = if tab.unsaved() {
+        properties::body("Unsaved edits", theme::TEXT_STRONG)
+    } else {
+        properties::body("Yes", theme::PROPERTY_VALUE)
+    };
+    properties::text_row(ui, "Saved", saved);
+    let disk = tab.status.as_ref().and_then(|status| status.disk);
+    let (words, colour) = match disk {
+        None => ("Not compared yet", theme::TEXT_SUBDUED),
+        Some(Disk::Unchanged) => ("Unchanged", theme::PROPERTY_VALUE),
+        Some(Disk::Changed) => ("Changed by another program", theme::WARNING),
+        Some(Disk::Gone) => ("Gone", theme::ERROR_TEXT),
+        Some(Disk::Unreadable) => ("Unreadable", theme::ERROR_TEXT),
+    };
+    properties::text_row(ui, "File on disk", properties::body(words, colour));
+    properties::section(ui, "Model");
+    let bodies = tab
+        .timeline
+        .as_ref()
+        .filter(|timeline| timeline.model.is_some())
+        .map(|timeline| timeline.bodies.len());
+    match (bodies, features) {
+        (Some(bodies), _) => properties::text_row(
+            ui,
+            "Bodies",
+            properties::body(&bodies.to_string(), theme::PROPERTY_VALUE),
+        ),
+        (None, Some(0)) => properties::hint(
+            ui,
+            &[
+                ("An empty part. ", false),
+                ("CREATE", true),
+                (" in the toolbar adds its first feature.", false),
+            ],
+        ),
+        (None, _) => properties::hint(ui, &[("Nothing is built yet.", false)]),
+    }
+    properties::hint(
+        ui,
+        &[("Double-click a feature in the timeline to edit it.", false)],
+    );
+}
+
+/// The document's units, as its header holds them: `mm · 1 nm resolution`.
+fn units() -> String {
+    let resolution = Units::RESOLUTION;
+    let digits = resolution
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(resolution.len());
+    let (number, unit) = resolution.split_at(digits);
+    format!("{} · {number} {unit} resolution", Units::LENGTH)
 }
 
 /// A feature's name as the document reads a string (`set_field`'s value).
@@ -1255,6 +1480,7 @@ mod tests {
                             name: &mut shown.name,
                             started: &mut shown.started,
                             drawing: &mut shown.drawing,
+                            dialog_key: None,
                         }
                         .browser(ui);
                     });
@@ -1927,6 +2153,707 @@ mod tests {
                     top = at.bottom();
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod property_panel_drawn {
+    // ---- The property panel as drawn, against the prototype ----
+    //
+    // Each value below is typed from the approved prototype's stylesheet
+    // (docs/design/m5-ui/styles.css: `:root`'s tokens, `#right`, `.panel-title`, `.prop-head`,
+    // `.section`, `.prop`, `.hint-block`, `.err-card` and its parts, `.field`, `.dlg-footer`,
+    // `.btn`, `.btn-primary`, `.btn-secondary`) and js/app.js's `docProps`, `featureProps`, and
+    // `renderDialog`, never from theme.rs, and compared with what the panel painted: each
+    // rectangle, line, icon, and text from egui's shapes, and each widget's bounds from the
+    // accessibility tree.
+
+    use eframe::egui::epaint::{RectShape, TextShape};
+    use eframe::egui::{CornerRadius, FontFamily, FontId, Pos2, Rect, Shape, Stroke};
+    use egui::accesskit::Role;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use silico_core::command::{Problems, Revision, TimelineAnswer};
+    use silico_core::fake::FakeKernel;
+
+    use super::*;
+    use crate::dialog::{Dialog, Kind};
+    use crate::tab::Said;
+
+    /// The prototype's tokens and geometry.
+    mod css {
+        use eframe::egui::Color32;
+
+        // `:root`'s greys and colours.
+        pub const G100: Color32 = Color32::from_rgb(0x0d, 0x0d, 0x0d);
+        pub const G150: Color32 = Color32::from_rgb(0x17, 0x17, 0x17);
+        pub const G200: Color32 = Color32::from_rgb(0x21, 0x21, 0x21);
+        pub const G250: Color32 = Color32::from_rgb(0x27, 0x26, 0x26);
+        pub const G300: Color32 = Color32::from_rgb(0x2c, 0x2b, 0x2b);
+        pub const G550: Color32 = Color32::from_rgb(0x93, 0x90, 0x90);
+        pub const G750: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcf);
+        pub const G800: Color32 = Color32::from_rgb(0xe0, 0xdf, 0xdf);
+        pub const G1000: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
+        /// `--red` (`.err-text`).
+        pub const RED: Color32 = Color32::from_rgb(0xff, 0x38, 0x65);
+        /// `--alert-red-bg: rgba(236, 0, 79, 0.18)`: an alpha of 255 × .18 = 45.9, 46.
+        pub const ALERT_RED_BG: Color32 = Color32::from_rgba_unmultiplied_const(236, 0, 79, 46);
+        /// `.err-card { border: 1px solid #5c001a }`; `.ec-head { color: #ffd1d6 }`;
+        /// `.ec-fix::before { color: #ff99a6 }`.
+        pub const CARD_BORDER: Color32 = Color32::from_rgb(0x5c, 0x00, 0x1a);
+        pub const CARD_HEAD: Color32 = Color32::from_rgb(0xff, 0xd1, 0xd6);
+        pub const CARD_ACCENT: Color32 = Color32::from_rgb(0xff, 0x99, 0xa6);
+
+        /// `--fs`, `--lh`, `--fs-small`, `.mono`'s size, `--icon`, `--r-sm`, `--r`.
+        pub const FS: f32 = 12.0;
+        pub const LH: f32 = 16.0;
+        pub const FS_SMALL: f32 = 11.0;
+        pub const MONO: f32 = 11.0;
+        pub const ICON: f32 = 14.0;
+        pub const R_SM: u8 = 4;
+        pub const R: u8 = 6;
+        /// `--right-w`, and `#right`'s `border-left: 1px` within it (`border-box`).
+        pub const RIGHT_W: f32 = 296.0;
+        pub const BORDER: f32 = 1.0;
+        /// `.panel-title`: `height: var(--title-h)`, `padding-left: var(--pad)`,
+        /// `letter-spacing: .5px`.
+        pub const TITLE_H: f32 = 24.0;
+        pub const PAD: f32 = 12.0;
+        pub const CAPITALS_SPACING: f32 = 0.5;
+        /// `.prop-head`: `padding: 6px var(--pad) 8px; gap: 8px`; `.ph-icon`: 28 square;
+        /// `.ph-title`: `font-size: 13px`.
+        pub const HEAD_TOP: f32 = 6.0;
+        pub const HEAD_BOTTOM: f32 = 8.0;
+        pub const HEAD_GAP: f32 = 8.0;
+        pub const PH_ICON: f32 = 28.0;
+        pub const PH_TITLE: f32 = 13.0;
+        /// `.section`: `padding: 6px var(--pad) 2px; font-size: 10.5px; gap: 6px`; its
+        /// `::after` 1 high, Gray.200.
+        pub const SECTION_TOP: f32 = 6.0;
+        pub const SECTION_BOTTOM: f32 = 2.0;
+        pub const SECTION_FS: f32 = 10.5;
+        pub const SECTION_GAP: f32 = 6.0;
+        /// `.prop`: `min-height: var(--row-h); grid-template-columns: 96px 1fr; gap: 8px`.
+        pub const ROW_H: f32 = 24.0;
+        pub const KEY_W: f32 = 96.0;
+        pub const ROW_GAP: f32 = 8.0;
+        /// `.hint-block`: `margin: 8px var(--pad); padding: 8px 10px`.
+        pub const HINT_MARGIN: f32 = 8.0;
+        pub const HINT_PADDING_Y: f32 = 8.0;
+        pub const HINT_PADDING_X: f32 = 10.0;
+        /// `.err-card`: `margin: 8px var(--pad)`; `.ec-head`: `padding: 8px 10px 4px; gap:
+        /// 8px`; `.ec-body`: `padding: 0 10px 8px 32px`; `.ec-fix`: `gap: 6px;
+        /// margin-bottom: 8px`.
+        pub const CARD_MARGIN: f32 = 8.0;
+        pub const EC_HEAD_TOP: f32 = 8.0;
+        pub const EC_HEAD_SIDE: f32 = 10.0;
+        pub const EC_HEAD_BOTTOM: f32 = 4.0;
+        pub const EC_HEAD_GAP: f32 = 8.0;
+        pub const EC_BODY_LEFT: f32 = 32.0;
+        pub const EC_BODY_BOTTOM: f32 = 8.0;
+        pub const EC_FIX_GAP: f32 = 6.0;
+        pub const EC_FIX_MARGIN: f32 = 8.0;
+        /// `.field`: `height: 22px`, Gray.200, corners `--r-sm`.
+        pub const FIELD_H: f32 = 22.0;
+        /// `.dlg-footer`: `padding: 8px var(--pad); gap: 6px; border-top: 1px`; its `.btn`
+        /// 26 high.
+        pub const FOOTER_PADDING: f32 = 8.0;
+        pub const FOOTER_GAP: f32 = 6.0;
+        pub const FOOTER_BTN_H: f32 = 26.0;
+    }
+
+    /// The pane's top left in the harness's window, its width (`#right`'s, less its
+    /// border), and its height.
+    const PANE: Pos2 = Pos2::new(40.0, 30.0);
+    const W: f32 = css::RIGHT_W - css::BORDER;
+    const HEIGHT: f32 = 640.0;
+
+    type Fake = Arc<FakeKernel>;
+
+    struct Shown {
+        tab: Option<Tab>,
+        sessions: Arc<Sessions<Fake>>,
+        name: Option<NameField>,
+        started: bool,
+        drawing: crate::viewport::Drawing,
+    }
+
+    fn fid(id: &str) -> FeatureId {
+        FeatureId::new(id).unwrap()
+    }
+
+    fn entry(id: &str, kind: &'static str, name: &str, health: Health) -> Entry {
+        Entry {
+            id: fid(id),
+            kind,
+            name: name.to_owned(),
+            suppressed: false,
+            inputs: Vec::new(),
+            health,
+            problems: u64::from(health == Health::Error),
+            warnings: 0,
+        }
+    }
+
+    /// The tab of `/models/Part.silico` at its first revision, its model built: Block and
+    /// Hole (failed: "The cut removes nothing"), Block the one body.
+    fn part() -> Tab {
+        let none = Problems::from(silico_core::Error::new(
+            silico_core::ErrorCode::Internal,
+            "unused",
+        ));
+        let mut tab = Tab::opened(
+            SessionId::parse("s1").unwrap(),
+            "/models/Part.silico".to_owned(),
+            &none,
+        );
+        tab.document_problems.clear();
+        tab.timeline = Some(TimelineAnswer {
+            revision: Revision::OPENED,
+            model: Some(Revision::OPENED),
+            problems: 0,
+            features: Some(vec![
+                entry("b0000001", "box", "Block", Health::Healthy),
+                entry("c0000001", "cut", "Hole", Health::Error),
+            ]),
+            bodies: vec![fid("b0000001")],
+        });
+        tab.said.insert(
+            "c0000001".to_owned(),
+            Said {
+                message: "The cut removes nothing".to_owned(),
+                suggestion: Some("Move the pin".to_owned()),
+            },
+        );
+        tab
+    }
+
+    fn drawn(tab: Tab) -> Harness<'static, Shown> {
+        let shown = Shown {
+            tab: Some(tab),
+            sessions: Arc::new(Sessions::with_cache_opener(
+                Arc::new(FakeKernel::new(1).unwrap()),
+                |dir| silico_core::cache::Cache::unsealed(dir),
+            )),
+            name: None,
+            started: false,
+            drawing: crate::viewport::Drawing::default(),
+        };
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(PANE.x + W + 40.0, PANE.y + HEIGHT + 40.0))
+            .build_ui_state(
+                |ui, shown: &mut Shown| {
+                    let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
+                    ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
+                        Panes {
+                            tab: shown.tab.as_mut(),
+                            sessions: &shown.sessions,
+                            name: &mut shown.name,
+                            started: &mut shown.started,
+                            drawing: &mut shown.drawing,
+                            dialog_key: None,
+                        }
+                        .properties(ui);
+                    });
+                },
+                shown,
+            );
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        h
+    }
+
+    fn painted<S>(h: &Harness<'_, S>) -> Vec<Shape> {
+        fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
+            match shape {
+                Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+                shape => out.push(shape.clone()),
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &h.output().shapes {
+            flatten(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    fn rects<S>(h: &Harness<'_, S>) -> Vec<RectShape> {
+        painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The one text `text` painted.
+    #[track_caller]
+    fn text<S>(h: &Harness<'_, S>, text: &str) -> TextShape {
+        let mut found: Vec<TextShape> = painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Text(shown) if shown.galley.text() == text => Some(shown),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "{text:?} painted {} times", found.len());
+        found.remove(0)
+    }
+
+    /// The one text `text` painted within `within`.
+    #[track_caller]
+    fn text_in<S>(h: &Harness<'_, S>, text: &str, within: Rect) -> TextShape {
+        let mut found: Vec<TextShape> = painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Text(shown) if shown.galley.text() == text && within.contains(shown.pos) => {
+                    Some(shown)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "{text:?} painted {} times", found.len());
+        found.remove(0)
+    }
+
+    /// A text's colour as painted: its override, else its section's.
+    fn colour(shown: &TextShape, section: usize) -> Color32 {
+        let format = shown.galley.job.sections[section].format.color;
+        shown.override_text_color.unwrap_or(format)
+    }
+
+    fn icon_at<S>(h: &Harness<'_, S>, rect: Rect) -> Option<Color32> {
+        rects(h)
+            .into_iter()
+            .find(|shape| {
+                shape.brush.is_some()
+                    && (shape.rect.min - rect.min).abs().max_elem() <= 0.5
+                    && (shape.rect.max - rect.max).abs().max_elem() <= 0.5
+            })
+            .map(|shape| shape.fill)
+    }
+
+    /// The untextured rectangles painted at `rect`, filled: their fill, corners, and stroke.
+    fn fills_at<S>(h: &Harness<'_, S>, rect: Rect) -> Vec<(Color32, CornerRadius, Stroke)> {
+        rects(h)
+            .into_iter()
+            .filter(|shape| {
+                shape.brush.is_none()
+                    && shape.fill != Color32::TRANSPARENT
+                    && near_rect(shape.rect, rect)
+            })
+            .map(|shape| (shape.fill, shape.corner_radius, shape.stroke))
+            .collect()
+    }
+
+    fn hlines<S>(h: &Harness<'_, S>, y: f32) -> Vec<([Pos2; 2], Stroke)> {
+        painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::LineSegment { points, stroke }
+                    if near(points[0].y, y) && near(points[1].y, y) =>
+                {
+                    Some((points, Stroke::new(stroke.width, stroke.color)))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() <= egui::emath::GUI_ROUNDING
+    }
+
+    fn near_pos(a: Pos2, b: Pos2) -> bool {
+        near(a.x, b.x) && near(a.y, b.y)
+    }
+
+    fn near_rect(a: Rect, b: Rect) -> bool {
+        near_pos(a.min, b.min) && near_pos(a.max, b.max)
+    }
+
+    #[track_caller]
+    fn at(got: Pos2, want: Pos2, what: &str) {
+        assert!(near_pos(got, want), "{what}: {got:?}, not {want:?}");
+    }
+
+    /// `words` drawn from `left`, centred on `middle`, `size` points of `family`, in `ink`
+    /// (its first section's): its right edge.
+    #[track_caller]
+    fn said_at<S>(
+        h: &Harness<'_, S>,
+        words: &str,
+        left: f32,
+        middle: f32,
+        font: FontId,
+        ink: Color32,
+    ) -> f32 {
+        // Of the texts `words` painted (a value may be painted on more than one row), the
+        // one on this line.
+        let all: Vec<TextShape> = painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Text(shown) if shown.galley.text() == words => Some(shown),
+                _ => None,
+            })
+            .collect();
+        let mut found: Vec<&TextShape> = all
+            .iter()
+            .filter(|shown| (shown.pos.y + shown.galley.size().y / 2.0 - middle).abs() < 4.0)
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "{words:?} on the line at {middle}: {:?}",
+            all.iter().map(|shown| shown.pos).collect::<Vec<_>>()
+        );
+        let shown = found.remove(0);
+        let size = shown.galley.size();
+        at(shown.pos, Pos2::new(left, middle - size.y / 2.0), words);
+        assert_eq!(shown.galley.job.sections[0].format.font_id, font, "{words}");
+        assert_eq!(colour(shown, 0), ink, "{words}'s ink");
+        left + size.x
+    }
+
+    fn body(size: f32) -> FontId {
+        FontId::new(size, FontFamily::Proportional)
+    }
+
+    fn mono() -> FontId {
+        FontId::new(css::MONO, FontFamily::Monospace)
+    }
+
+    /// `.panel-title` and `.prop-head` from the pane's top: the head's icon in its box, its
+    /// title and the line under it; the head's bottom.
+    #[track_caller]
+    fn title_and_head<S>(h: &Harness<'_, S>, title: &str, sub: &str, sub_font: FontId) -> f32 {
+        let shown = text(h, "PROPERTIES");
+        at(
+            shown.pos,
+            Pos2::new(
+                PANE.x + css::PAD,
+                PANE.y + css::TITLE_H / 2.0 - shown.galley.size().y / 2.0,
+            ),
+            "the title",
+        );
+        let format = &shown.galley.job.sections[0].format;
+        assert_eq!(format.font_id, body(css::FS_SMALL));
+        assert_eq!(format.extra_letter_spacing, css::CAPITALS_SPACING);
+        assert_eq!(colour(&shown, 0), css::G1000);
+        let head = PANE.y + css::TITLE_H;
+        // Two 16 point lines, the 28 point box centred on them.
+        let words = 2.0 * css::LH;
+        let boxed = Rect::from_min_size(
+            Pos2::new(
+                PANE.x + css::PAD,
+                head + css::HEAD_TOP + (words - css::PH_ICON) / 2.0,
+            ),
+            Vec2::splat(css::PH_ICON),
+        );
+        assert_eq!(
+            fills_at(h, boxed),
+            [(css::G200, CornerRadius::same(css::R_SM), Stroke::NONE)]
+        );
+        let icon = Rect::from_center_size(boxed.center(), Vec2::splat(css::ICON));
+        assert_eq!(icon_at(h, icon), Some(css::G800), "the head's icon");
+        let left = boxed.right() + css::HEAD_GAP;
+        let top = head + css::HEAD_TOP;
+        // The title, the head's (a feature's name is its Name field's too).
+        let shown = text_in(
+            h,
+            title,
+            Rect::from_x_y_ranges(left..=PANE.x + W, top..=top + css::LH),
+        );
+        at(
+            shown.pos,
+            Pos2::new(left, top + css::LH / 2.0 - shown.galley.size().y / 2.0),
+            title,
+        );
+        assert_eq!(
+            shown.galley.job.sections[0].format.font_id,
+            body(css::PH_TITLE)
+        );
+        assert_eq!(colour(&shown, 0), css::G1000);
+        said_at(h, sub, left, top + 1.5 * css::LH, sub_font, css::G550);
+        top + words + css::HEAD_BOTTOM
+    }
+
+    /// `.section` at `top`: its words in capitals, the rule from 6 after them to the
+    /// padding; its bottom.
+    #[track_caller]
+    fn section_at<S>(h: &Harness<'_, S>, words: &str, top: f32) -> f32 {
+        let line = top + css::SECTION_TOP + css::LH / 2.0;
+        let end = said_at(
+            h,
+            words,
+            PANE.x + css::PAD,
+            line,
+            body(css::SECTION_FS),
+            css::G550,
+        );
+        assert_eq!(
+            text(h, words).galley.job.sections[0]
+                .format
+                .extra_letter_spacing,
+            css::CAPITALS_SPACING
+        );
+        assert_eq!(
+            hlines(h, line),
+            [(
+                [
+                    Pos2::new(end + css::SECTION_GAP, line),
+                    Pos2::new(PANE.x + W - css::PAD, line)
+                ],
+                Stroke::new(1.0, css::G200)
+            )],
+            "{words}'s rule"
+        );
+        top + css::SECTION_TOP + css::LH + css::SECTION_BOTTOM
+    }
+
+    /// `.prop` at `top`: `key` in its 96 point column in Gray.550, `value` 8 after it in
+    /// `ink` and `font`; its bottom.
+    #[track_caller]
+    fn row_at<S>(
+        h: &Harness<'_, S>,
+        key: &str,
+        value: &str,
+        top: f32,
+        font: FontId,
+        ink: Color32,
+    ) -> f32 {
+        let middle = top + css::ROW_H / 2.0;
+        said_at(h, key, PANE.x + css::PAD, middle, body(css::FS), css::G550);
+        said_at(
+            h,
+            value,
+            PANE.x + css::PAD + css::KEY_W + css::ROW_GAP,
+            middle,
+            font,
+            ink,
+        );
+        top + css::ROW_H
+    }
+
+    /// `.hint-block` at `top` (its margin's top): its box, and `words` in it; its bottom.
+    #[track_caller]
+    fn hint_at<S>(h: &Harness<'_, S>, words: &str, top: f32) -> f32 {
+        let shown = text(h, words);
+        let height = shown.galley.size().y + 2.0 * css::HINT_PADDING_Y;
+        let boxed = Rect::from_min_max(
+            Pos2::new(PANE.x + css::PAD, top + css::HINT_MARGIN),
+            Pos2::new(PANE.x + W - css::PAD, top + css::HINT_MARGIN + height),
+        );
+        assert_eq!(
+            fills_at(h, boxed),
+            [(css::G150, CornerRadius::same(css::R), Stroke::NONE)],
+            "{words}'s box"
+        );
+        at(
+            shown.pos,
+            boxed.min + Vec2::new(css::HINT_PADDING_X, css::HINT_PADDING_Y),
+            words,
+        );
+        assert_eq!(
+            shown.galley.job.sections[0].format.font_id,
+            body(css::FS_SMALL)
+        );
+        assert_eq!(colour(&shown, 0), css::G550);
+        assert!(near(shown.galley.rows[0].height(), css::LH), "its line");
+        boxed.bottom() + css::HINT_MARGIN
+    }
+
+    #[test]
+    fn the_documents_properties_are_drawn_as_doc_props() {
+        let h = drawn(part());
+        let mut y = title_and_head(&h, "Part.silico", "/models/Part.silico", mono());
+        y = section_at(&h, "DOCUMENT", y);
+        let value = body(css::FS);
+        y = row_at(&h, "Revision", "1", y, value.clone(), css::G800);
+        y = row_at(
+            &h,
+            "Units",
+            "mm · 1 nm resolution",
+            y,
+            value.clone(),
+            css::G800,
+        );
+        y = row_at(&h, "Features", "2", y, value.clone(), css::G800);
+        y = row_at(&h, "Saved", "Yes", y, value.clone(), css::G800);
+        y = row_at(
+            &h,
+            "File on disk",
+            "Not compared yet",
+            y,
+            value.clone(),
+            css::G550,
+        );
+        y = section_at(&h, "MODEL", y);
+        y = row_at(&h, "Bodies", "1", y, value, css::G800);
+        hint_at(&h, "Double-click a feature in the timeline to edit it.", y);
+    }
+
+    #[test]
+    fn a_features_properties_are_drawn_as_feature_props_with_its_error_card_and_name_field() {
+        let mut tab = part();
+        tab.selected = Some(fid("c0000001"));
+        let h = drawn(tab);
+        let mut y = title_and_head(&h, "Hole", "Subtract · c0000001", body(css::FS_SMALL));
+        // The line under the title: the type, then the ID in monospace.
+        let sub = text(&h, "Subtract · c0000001");
+        assert_eq!(sub.galley.job.sections[1].format.font_id, mono());
+        assert_eq!(colour(&sub, 1), css::G550);
+        // `.err-card`: its fill, border, and corners, `--pad` in, 8 below the head.
+        let message = text(&h, "The cut removes nothing");
+        let card_top = y + css::CARD_MARGIN;
+        let inner = Pos2::new(PANE.x + css::PAD + css::BORDER, card_top + css::BORDER);
+        let icon = Rect::from_min_size(
+            inner + Vec2::new(css::EC_HEAD_SIDE, css::EC_HEAD_TOP),
+            Vec2::splat(css::ICON),
+        );
+        assert_eq!(icon_at(&h, icon), Some(css::CARD_HEAD), "the card's icon");
+        // `.ec-head .t`: white, at the top of the head's line (`align-items: flex-start`).
+        at(
+            message.pos,
+            Pos2::new(icon.right() + css::EC_HEAD_GAP, icon.top()),
+            "the message",
+        );
+        assert_eq!(message.galley.job.sections[0].format.font_id, body(css::FS));
+        assert_eq!(colour(&message, 0), css::G1000);
+        // `.ec-body`, 32 in: the arrow, and the suggestion 6 after it, white.
+        let fix = icon.top() + message.galley.size().y + css::EC_HEAD_BOTTOM;
+        let arrow = text(&h, "→");
+        at(arrow.pos, Pos2::new(inner.x + css::EC_BODY_LEFT, fix), "→");
+        assert_eq!(colour(&arrow, 0), css::CARD_ACCENT);
+        let suggestion = text(&h, "Move the pin");
+        at(
+            suggestion.pos,
+            Pos2::new(arrow.pos.x + arrow.galley.size().x + css::EC_FIX_GAP, fix),
+            "the suggestion",
+        );
+        assert_eq!(colour(&suggestion, 0), css::G1000);
+        let card_bottom = fix
+            + suggestion.galley.size().y
+            + css::EC_FIX_MARGIN
+            + css::EC_BODY_BOTTOM
+            + css::BORDER;
+        let card = Rect::from_min_max(
+            Pos2::new(PANE.x + css::PAD, card_top),
+            Pos2::new(PANE.x + W - css::PAD, card_bottom),
+        );
+        assert_eq!(
+            fills_at(&h, card),
+            [(
+                css::ALERT_RED_BG,
+                CornerRadius::same(css::R),
+                Stroke::new(css::BORDER, css::CARD_BORDER)
+            )]
+        );
+        y = card_bottom + css::CARD_MARGIN;
+        // The Name row: its field (`.field`) across the value's column, 22 high, centred.
+        let field = Rect::from_min_max(
+            Pos2::new(
+                PANE.x + css::PAD + css::KEY_W + css::ROW_GAP,
+                y + (css::ROW_H - css::FIELD_H) / 2.0,
+            ),
+            Pos2::new(PANE.x + W - css::PAD, y + (css::ROW_H + css::FIELD_H) / 2.0),
+        );
+        let fills = fills_at(&h, field);
+        assert_eq!(fills.len(), 1, "the name's field");
+        assert_eq!(
+            (fills[0].0, fills[0].1),
+            (css::G200, CornerRadius::same(css::R_SM))
+        );
+        let named = h.get_by_role_and_label(Role::TextInput, "Name").rect();
+        assert!(near_rect(named, field), "{named:?}, not {field:?}");
+        said_at(
+            &h,
+            "Name",
+            PANE.x + css::PAD,
+            y + css::ROW_H / 2.0,
+            body(css::FS),
+            css::G550,
+        );
+        y = section_at(&h, "HEALTH", y + css::ROW_H);
+        y = row_at(&h, "State", "Error", y, body(css::FS), css::RED);
+        y = row_at(&h, "ID", "c0000001", y, mono(), css::G800);
+        hint_at(
+            &h,
+            "Hovering a feature in the timeline lights up the faces it made.",
+            y,
+        );
+    }
+
+    #[test]
+    fn a_dialogs_inputs_and_footer_are_drawn_as_render_dialog() {
+        let dialog = std::cell::RefCell::new(Dialog::new(Kind::Box, None, 1));
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(PANE.x + W + 40.0, PANE.y + HEIGHT + 40.0))
+            .build_ui(move |ui| {
+                let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
+                ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
+                    dialog.borrow_mut().ui(ui, &[], &|_| None, &|_| false, true);
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        // Its title: the kind in capitals after its icon; INPUTS under it; its first row.
+        assert!(h.query_by_label("BOX").is_some());
+        let y = section_at(&h, "INPUTS", PANE.y + css::TITLE_H);
+        let field = h.get_by_role_and_label(Role::TextInput, "X").rect();
+        assert!(near(
+            field.left(),
+            PANE.x + css::PAD + css::KEY_W + css::ROW_GAP
+        ));
+        assert!(near(field.center().y, y + css::ROW_H / 2.0));
+        assert!(near(field.height(), css::FIELD_H));
+        // `.dlg-footer` at the bottom: its 1 px Gray.250 border, on the panel's Gray.100.
+        let bottom = PANE.y + HEIGHT;
+        let footer_top = bottom - (2.0 * css::FOOTER_PADDING + css::FOOTER_BTN_H + css::BORDER);
+        assert_eq!(
+            hlines(&h, footer_top + css::BORDER / 2.0),
+            [(
+                [
+                    Pos2::new(PANE.x, footer_top + css::BORDER / 2.0),
+                    Pos2::new(PANE.x + W, footer_top + css::BORDER / 2.0)
+                ],
+                Stroke::new(css::BORDER, css::G250)
+            )]
+        );
+        let footer =
+            Rect::from_min_max(Pos2::new(PANE.x, footer_top), Pos2::new(PANE.x + W, bottom));
+        assert_eq!(
+            fills_at(&h, footer),
+            [(css::G100, CornerRadius::ZERO, Stroke::NONE)]
+        );
+        // Cancel (`.btn-secondary`) then OK (`.btn-primary`), sharing the width, 6 apart.
+        let width = (W - 2.0 * css::PAD - css::FOOTER_GAP) / 2.0;
+        let cancel = Rect::from_min_size(
+            Pos2::new(
+                PANE.x + css::PAD,
+                footer_top + css::BORDER + css::FOOTER_PADDING,
+            ),
+            Vec2::new(width, css::FOOTER_BTN_H),
+        );
+        let ok = cancel.translate(Vec2::new(width + css::FOOTER_GAP, 0.0));
+        for (label, rect, fill, ink) in [
+            ("Cancel", cancel, css::G300, css::G750),
+            ("OK", ok, css::G800, css::G250),
+        ] {
+            let shown = h.get_by_role_and_label(Role::Button, label).rect();
+            assert!(near_rect(shown, rect), "{label}: {shown:?}, not {rect:?}");
+            assert_eq!(
+                fills_at(&h, rect),
+                [(fill, CornerRadius::same(css::R_SM), Stroke::NONE)],
+                "{label}'s fill"
+            );
+            assert_eq!(colour(&text(&h, label), 0), ink, "{label}'s ink");
+            assert_eq!(
+                text(&h, label).galley.job.sections[0].format.font_id,
+                body(css::FS)
+            );
         }
     }
 }

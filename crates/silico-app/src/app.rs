@@ -12,15 +12,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Ui};
-use silico_core::command::{
-    Opened, RebuildState, Response, Running, RunningCommand, SessionId, Sessions,
-};
+use silico_core::command::{Opened, Response, Running, SessionId, Sessions};
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::kernel::Clients;
 
 use crate::bar;
 use crate::browse::{self, Ask, Browse, Browsing, Pick};
-use crate::dialog::Action;
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::panes::{self, Pane, Panes};
@@ -476,7 +473,6 @@ impl<P: Clients + 'static> App<P> {
             &mut started,
         );
         self.disk_banner(ui, &mut started);
-        self.dialog_panel(ui, &mut started, dialog_key);
         egui::CentralPanel::default().show(ui, |ui| {
             let active = self.active_place();
             let shown = active.and_then(|at| self.tabs.get(at)).map(|tab| tab.id);
@@ -502,6 +498,7 @@ impl<P: Clients + 'static> App<P> {
                 name,
                 started: &mut started,
                 drawing,
+                dialog_key,
             };
             tree.ui(&mut panes, ui);
         });
@@ -826,67 +823,6 @@ impl<P: Clients + 'static> App<P> {
             save || undo || redo || stop || close || enter || rebuild,
             dialog_key,
         )
-    }
-
-    /// The open dialog, docked at the right (open item 27): drawn, what's changed in it sent,
-    /// and its OK or Cancel taken, or `key`: Enter is OK, if OK is on; Esc goes to the first
-    /// of these there is (section 3), a dialog's preview rebuilding, which it stops, the
-    /// dialog left open, or the dialog, which it cancels (one still being read too;
-    /// [`Tab::dialog_escape`]).
-    fn dialog_panel(&mut self, ui: &mut Ui, started: &mut bool, key: Option<Key>) {
-        let sessions = &self.sessions;
-        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
-            return;
-        };
-        if tab.dialog.is_none() {
-            if key == Some(Key::Escape) && tab.in_dialog() {
-                tab.close_dialog(sessions, false);
-            }
-            return;
-        }
-        let refused: Vec<&'static str> = tab
-            .dialog
-            .iter()
-            .flat_map(|dialog| dialog.inputs.iter().map(|input| input.part.field()))
-            .filter(|field| tab.field_refused(field))
-            .collect();
-        let said = tab.dialog_said();
-        let Some(mut dialog) = tab.dialog.take() else {
-            return;
-        };
-        let enabled = !tab.closing();
-        let mut action = Action::None;
-        egui::Panel::right("dialog")
-            .resizable(false)
-            .default_size(280.0)
-            .show(ui, |ui| {
-                let title = dialog.kind.title();
-                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
-                    node.set_role(egui::accesskit::Role::Dialog);
-                    node.set_label(title);
-                });
-                let rows = &tab.browser.sketches;
-                let named = |id: &silico_core::document::FeatureId| {
-                    rows.iter()
-                        .find(|row| &row.id == id)
-                        .map(|row| row.name.clone())
-                };
-                let refused = |field: &str| refused.contains(&field);
-                action = dialog.ui(ui, &said, &named, &refused, enabled);
-            });
-        tab.dialog = Some(dialog);
-        *started |= tab.dialog_changed(sessions);
-        match key {
-            Some(Key::Enter) if tab.can_ok() => action = Action::Ok,
-            Some(Key::Escape) if tab.dialog_escape(sessions) => action = Action::Cancel,
-            _ => {}
-        }
-        match action {
-            Action::None => {}
-            Action::Ok => tab.close_dialog(sessions, true),
-            Action::Cancel => tab.close_dialog(sessions, false),
-        }
-        *started |= action != Action::None;
     }
 
     /// Close the tab of session `id`: asking first if it holds edits (decision 1).
@@ -1328,65 +1264,39 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// The status bar: the rebuild (`status.rebuild`) or the session's own reload, the stop
-    /// button (`cancel` naming the rebuild, on while it runs, whatever command runs: section
-    /// 3, *Stop*), and the last refusal.
+    /// The status bar (`crate::status`): the rebuild (`status.rebuild`) or the session's own
+    /// reload, the stop button (`cancel` naming the rebuild, on while it runs, whatever
+    /// command runs: section 3, *Stop*), Rebuild, the last refusal, the file on disk (its
+    /// chip offering again the choice kept), and whether the document is saved.
     fn status_bar(&mut self, ui: &mut Ui, started: &mut bool) {
         egui::Panel::bottom("status_bar")
-            .exact_size(theme::TITLE_BAR_HEIGHT)
+            .exact_size(theme::STATUS_BAR_HEIGHT)
+            .resizable(false)
+            .frame(egui::Frame::NONE)
             .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    let message = self.message.clone();
-                    let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
-                        // No document: how the warm start stands (decision 10).
-                        if let Some(warm) = &self.warm {
-                            start::warm_status(ui, warm.state());
-                        }
-                        if let Some(message) = message {
-                            ui.colored_label(ui.visuals().error_fg_color, message);
-                        }
-                        return;
-                    };
-                    let status = tab.status.clone();
-                    let running = status.as_ref().and_then(|status| status.running);
-                    let rebuild = status.as_ref().map(|status| &status.rebuild);
-                    let said = match (running, rebuild) {
-                        (Some(RunningCommand::Reload), _) => {
-                            format!("Reloading {} from disk", tab.name())
-                        }
-                        (_, Some(rebuild)) => match (rebuild.state, &rebuild.progress) {
-                            (RebuildState::Running, Some(progress)) => {
-                                format!("Rebuilding: {} of {} steps", progress.done, progress.steps)
-                            }
-                            (RebuildState::Running, None) => "Rebuilding".to_owned(),
-                            (RebuildState::Done, _) => "Rebuilt".to_owned(),
-                            (RebuildState::Faulted, _) => "The kernel faulted".to_owned(),
-                            (RebuildState::Stopped, _) => "Rebuild stopped".to_owned(),
-                            (RebuildState::Idle, _) => String::new(),
-                        },
-                        (_, None) => String::new(),
-                    };
-                    ui.label(said);
-                    let stoppable = tab.stoppable();
-                    if ui
-                        .add_enabled(stoppable, egui::Button::new("Stop"))
-                        .clicked()
-                    {
-                        tab.stop(&self.sessions);
-                        *started = true;
-                    }
-                    // Rebuild (Ctrl+B), on while the tab's revision's rebuild is stopped.
-                    if ui
-                        .add_enabled(tab.can_rebuild(), egui::Button::new("Rebuild"))
-                        .clicked()
-                    {
-                        tab.rebuild(&self.sessions);
-                        *started = true;
-                    }
-                    for message in [message, tab.message.clone()].into_iter().flatten() {
-                        ui.colored_label(ui.visuals().error_fg_color, message);
-                    }
-                });
+                let message = self.message.clone();
+                let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
+                    // No document: how the warm start stands (decision 10).
+                    let warming = self.warm.as_ref().map(Warm::state);
+                    crate::status::bar(ui, &crate::status::unopened(warming, message));
+                    return;
+                };
+                let asked = crate::status::bar(ui, &crate::status::of(tab, message));
+                if asked.stop {
+                    tab.stop(&self.sessions);
+                    *started = true;
+                }
+                if asked.rebuild {
+                    tab.rebuild(&self.sessions);
+                    *started = true;
+                }
+                if asked.disk
+                    && tab.disk_choice == DiskChoice::Kept
+                    && let Some(disk) = tab.status.as_ref().and_then(|status| status.disk)
+                {
+                    // The edits kept over a file changed on disk: the choice offered again.
+                    tab.disk_choice = DiskChoice::Offered(disk);
+                }
             });
     }
 

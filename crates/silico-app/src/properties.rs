@@ -1,0 +1,653 @@
+//! The property panel's parts (docs/design/m5-ui/DESIGN.md, *Layout*: one right panel, four
+//! jobs; its `.panel-title`, `.prop-head`, `.section`, `.prop`, `.hint-block`, `.err-card`,
+//! `.selbox`, `.seg`, and `.dlg-footer` rules, and `renderRight`, `docProps`,
+//! `featureProps`, and `renderDialog`): what [`crate::panes`] draws the selected feature's
+//! properties, the document's, and the docked feature dialog (`crate::dialog`) with.
+//!
+//! Every text is a label, so the accessibility tree has it as it's drawn.
+
+use eframe::egui::text::{LayoutJob, TextFormat, TextWrapping};
+use eframe::egui::{
+    self, Align, Color32, CornerRadius, FontFamily, FontId, Label, Layout, Margin, Rect, Response,
+    Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, pos2, vec2,
+};
+
+use crate::icons::{Icon, IconSize};
+use crate::theme;
+
+/// The panel's padding at its sides (`--pad`).
+fn pad() -> f32 {
+    f32::from(theme::VIEW_PADDING)
+}
+
+/// Text in `size` points, monospace if `mono`, in `colour`.
+pub(crate) fn format(size: f32, colour: Color32, mono: bool) -> TextFormat {
+    TextFormat {
+        font_id: FontId::new(
+            size,
+            if mono {
+                FontFamily::Monospace
+            } else {
+                FontFamily::Proportional
+            },
+        ),
+        color: colour,
+        ..Default::default()
+    }
+}
+
+/// `text` in the body's type (`--fs`), in `colour`.
+pub(crate) fn body(text: &str, colour: Color32) -> LayoutJob {
+    LayoutJob::single_section(text.to_owned(), format(theme::BODY_SIZE, colour, false))
+}
+
+/// `add`, in `rect`, from its left, centred on its height, in a child of `ui` of its own,
+/// named by `salt` among `ui`'s: `ui`'s cursor stays where it is (the caller has allocated
+/// `rect`'s place already).
+fn within<R>(
+    ui: &mut Ui,
+    rect: Rect,
+    salt: impl egui::AsIdSalt,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .id_salt(salt)
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    centring(&mut child, rect);
+    add(&mut child)
+}
+
+/// `ui`, a row from left to right in `rect`, centring what it adds on `rect`'s height: egui
+/// centres a row's widgets on its widgets' height (`interact_size.y`), not its own.
+fn centring(ui: &mut Ui, rect: Rect) {
+    ui.spacing_mut().interact_size.y = rect.height();
+}
+
+/// A field's place (`.field`: [`theme::FIELD_HEIGHT`] high) in `ui`'s row, from where the
+/// row has got to, `width` wide, centred on the row's height: for `Ui::put`.
+pub(crate) fn field_rect(ui: &Ui, width: f32) -> Rect {
+    let row = ui.max_rect();
+    Rect::from_min_size(
+        pos2(
+            ui.cursor().left(),
+            row.center().y - theme::FIELD_HEIGHT / 2.0,
+        ),
+        vec2(width, theme::FIELD_HEIGHT),
+    )
+}
+
+/// A label of `job`, cut short with an ellipsis where it doesn't fit.
+fn truncated(ui: &mut Ui, mut job: LayoutJob) -> Response {
+    job.wrap = TextWrapping::truncate_at_width(ui.available_width());
+    ui.add(Label::new(job).selectable(false))
+}
+
+/// The panel's title (`.panel-title`): `icon`, if it has one (a dialog's), and `text` in
+/// capitals, on a [`theme::TITLE_BAR_HEIGHT`] row.
+pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str) {
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(ui.available_width(), theme::TITLE_BAR_HEIGHT),
+        Sense::hover(),
+    );
+    let inner = Rect::from_min_max(
+        pos2(rect.left() + theme::BROWSER_TITLE_PADDING, rect.top()),
+        pos2(
+            rect.right() - theme::BROWSER_ROW_PADDING_RIGHT,
+            rect.bottom(),
+        ),
+    );
+    within(ui, inner, ("title", text), |ui| {
+        ui.spacing_mut().item_spacing = vec2(theme::STATUS_ITEM_GAP, 0.0);
+        if let Some(icon) = icon {
+            ui.add(icon.image(IconSize::Small).tint(theme::TEXT_STRONG));
+        }
+        let mut job = LayoutJob::single_section(
+            text.to_uppercase(),
+            TextFormat {
+                extra_letter_spacing: theme::CAPITALS_LETTER_SPACING,
+                ..format(theme::HEADER_SIZE, theme::TEXT_STRONG, false)
+            },
+        );
+        job.wrap = TextWrapping::truncate_at_width(ui.available_width());
+        ui.add(Label::new(job).selectable(false));
+    });
+}
+
+/// The head (`.prop-head`): `icon` in its box, `title` over `sub`.
+pub(crate) fn head(ui: &mut Ui, icon: Icon, title: &str, sub: LayoutJob) {
+    let words = 2.0 * theme::BODY_LINE_HEIGHT;
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(
+            ui.available_width(),
+            theme::PROPERTY_HEAD_PADDING_TOP + words + theme::PROPERTY_HEAD_PADDING_BOTTOM,
+        ),
+        Sense::hover(),
+    );
+    let middle = rect.top() + theme::PROPERTY_HEAD_PADDING_TOP + words / 2.0;
+    let side = theme::PROPERTY_HEAD_ICON_SIDE;
+    let boxed = Rect::from_min_size(
+        pos2(rect.left() + pad(), middle - side / 2.0),
+        Vec2::splat(side),
+    );
+    ui.painter().rect_filled(
+        boxed,
+        theme::SMALL_CORNER_RADIUS,
+        theme::PROPERTY_HEAD_ICON_BG,
+    );
+    icon.image(IconSize::Small)
+        .tint(theme::PROPERTY_HEAD_ICON)
+        .paint_at(
+            ui,
+            Rect::from_center_size(boxed.center(), Vec2::splat(IconSize::Small.points())),
+        );
+    let left = boxed.right() + theme::PROPERTY_HEAD_GAP;
+    let right = rect.right() - pad();
+    let top = rect.top() + theme::PROPERTY_HEAD_PADDING_TOP;
+    let line =
+        |at: f32| Rect::from_min_max(pos2(left, at), pos2(right, at + theme::BODY_LINE_HEIGHT));
+    // Painted, not labelled: the document's name is its tab's, and a feature's its Name
+    // field's, so the accessibility tree has each once.
+    for (at, mut job) in [
+        (
+            top,
+            LayoutJob::single_section(
+                title.to_owned(),
+                format(theme::TITLE_SIZE, theme::PROPERTY_HEAD_TITLE, false),
+            ),
+        ),
+        (top + theme::BODY_LINE_HEIGHT, sub),
+    ] {
+        let line = line(at);
+        job.wrap = TextWrapping::truncate_at_width(line.width());
+        let galley = ui.painter().layout_job(job);
+        let at = pos2(line.left(), line.center().y - galley.size().y / 2.0);
+        ui.painter().galley(at, galley, theme::PROPERTY_HEAD_TITLE);
+    }
+}
+
+/// A section's header (`.section`): `text` in capitals, and the rule after it.
+pub(crate) fn section(ui: &mut Ui, text: &str) {
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(
+            ui.available_width(),
+            theme::PROPERTY_SECTION_PADDING_TOP
+                + theme::BODY_LINE_HEIGHT
+                + theme::PROPERTY_SECTION_PADDING_BOTTOM,
+        ),
+        Sense::hover(),
+    );
+    let top = rect.top() + theme::PROPERTY_SECTION_PADDING_TOP;
+    let line = Rect::from_min_max(
+        pos2(rect.left() + pad(), top),
+        pos2(rect.right() - pad(), top + theme::BODY_LINE_HEIGHT),
+    );
+    let job = LayoutJob::single_section(
+        text.to_uppercase(),
+        TextFormat {
+            extra_letter_spacing: theme::CAPITALS_LETTER_SPACING,
+            ..format(
+                theme::PROPERTY_SECTION_SIZE,
+                theme::PROPERTY_SECTION_TEXT,
+                false,
+            )
+        },
+    );
+    let words = within(ui, line, ("section", text), |ui| {
+        ui.add(Label::new(job).selectable(false))
+    })
+    .rect;
+    let from = words.right() + theme::PROPERTY_SECTION_GAP;
+    if from < line.right() {
+        ui.painter().hline(
+            from..=line.right(),
+            line.center().y,
+            Stroke::new(theme::BORDER_WIDTH, theme::PROPERTY_SECTION_RULE),
+        );
+    }
+}
+
+/// A property's row (`.prop`): `key` in its column, and what `value` adds in the rest, given
+/// the key's label's ID (an input's `labelled_by`).
+pub(crate) fn row<R>(ui: &mut Ui, key: &str, value: impl FnOnce(&mut Ui, egui::Id) -> R) -> R {
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(ui.available_width(), theme::PROPERTY_ROW_HEIGHT),
+        Sense::hover(),
+    );
+    let key_rect = Rect::from_min_size(
+        pos2(rect.left() + pad(), rect.top()),
+        vec2(theme::PROPERTY_KEY_WIDTH, rect.height()),
+    );
+    let value_rect = Rect::from_min_max(
+        pos2(key_rect.right() + theme::PROPERTY_ROW_GAP, rect.top()),
+        pos2(rect.right() - pad(), rect.bottom()),
+    );
+    let key_text = key;
+    let key = within(ui, key_rect, ("property-key", key_text), |ui| {
+        truncated(ui, body(key_text, theme::PROPERTY_KEY))
+    });
+    // An ID of the key's own, so a field's focus stays put as the rows above it change.
+    within(ui, value_rect, ("property", key_text), |ui| {
+        value(ui, key.id)
+    })
+}
+
+/// A row whose value is `value`'s text, cut short where it doesn't fit.
+pub(crate) fn text_row(ui: &mut Ui, key: &str, value: LayoutJob) {
+    row(ui, key, |ui, _| truncated(ui, value));
+}
+
+/// A hint (`.hint-block`): each of `parts` in turn, the emphasised ones Gray.800.
+pub(crate) fn hint(ui: &mut Ui, parts: &[(&str, bool)]) {
+    let mut job = LayoutJob::default();
+    for (text, strong) in parts {
+        let colour = if *strong {
+            theme::HINT_STRONG
+        } else {
+            theme::HINT_TEXT
+        };
+        job.append(
+            text,
+            0.0,
+            TextFormat {
+                line_height: Some(theme::BODY_LINE_HEIGHT),
+                ..format(theme::HEADER_SIZE, colour, false)
+            },
+        );
+    }
+    egui::Frame::new()
+        .fill(theme::HINT_BG)
+        .corner_radius(CornerRadius::same(theme::NORMAL_CORNER_RADIUS))
+        .inner_margin(theme::HINT_PADDING)
+        .outer_margin(Margin {
+            left: theme::VIEW_PADDING,
+            right: theme::VIEW_PADDING,
+            top: theme::HINT_MARGIN as i8,
+            bottom: theme::HINT_MARGIN as i8,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(Label::new(job).wrap().selectable(false));
+        });
+}
+
+/// An error card (`.err-card`), a warning's if `warning`: its icon and `message`, and
+/// `suggestion` after an arrow, if it has one.
+pub(crate) fn card(ui: &mut Ui, warning: bool, message: &str, suggestion: Option<&str>) {
+    let (fill, border, head, icon) = if warning {
+        (
+            theme::WARNING_CARD_BG,
+            theme::WARNING_CARD_BORDER,
+            theme::WARNING_CARD_HEAD,
+            Icon::Warn,
+        )
+    } else {
+        (
+            theme::ERROR_CARD_BG,
+            theme::ERROR_CARD_BORDER,
+            theme::ERROR_CARD_HEAD,
+            Icon::Error,
+        )
+    };
+    let words = |text: &str| {
+        let mut job = LayoutJob::single_section(
+            text.to_owned(),
+            TextFormat {
+                line_height: Some(theme::BODY_LINE_HEIGHT),
+                ..format(theme::BODY_SIZE, theme::TEXT_STRONG, false)
+            },
+        );
+        job.wrap.max_width = f32::INFINITY;
+        job
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(theme::BORDER_WIDTH, border))
+        .corner_radius(CornerRadius::same(theme::NORMAL_CORNER_RADIUS))
+        .outer_margin(Margin {
+            left: theme::VIEW_PADDING,
+            right: theme::VIEW_PADDING,
+            top: theme::ERROR_CARD_MARGIN as i8,
+            bottom: theme::ERROR_CARD_MARGIN as i8,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            egui::Frame::new()
+                .inner_margin(theme::ERROR_CARD_HEAD_PADDING)
+                .show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(theme::ERROR_CARD_GAP, 0.0);
+                        // `align-items: flex-start`: the icon at the top of the first line.
+                        let side = IconSize::Small.points();
+                        let (at, _) = ui.allocate_exact_size(
+                            vec2(side, theme::BODY_LINE_HEIGHT),
+                            Sense::hover(),
+                        );
+                        icon.image(IconSize::Small)
+                            .tint(head)
+                            .paint_at(ui, Rect::from_min_size(at.min, Vec2::splat(side)));
+                        ui.add(Label::new(words(message)).wrap().selectable(false));
+                    });
+                });
+            egui::Frame::new()
+                .inner_margin(theme::ERROR_CARD_BODY_PADDING)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let Some(suggestion) = suggestion else {
+                        return;
+                    };
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(theme::ERROR_CARD_FIX_GAP, 0.0);
+                        ui.add(
+                            Label::new(LayoutJob::single_section(
+                                "→".to_owned(),
+                                TextFormat {
+                                    line_height: Some(theme::BODY_LINE_HEIGHT),
+                                    ..format(theme::BODY_SIZE, theme::ERROR_CARD_ACCENT, false)
+                                },
+                            ))
+                            .selectable(false),
+                        );
+                        ui.add(Label::new(words(suggestion)).wrap().selectable(false));
+                    });
+                    ui.add_space(theme::ERROR_CARD_FIX_MARGIN);
+                });
+        });
+}
+
+/// A selection box (`.selbox`), the active one if `active`: a chip of `chosen`'s name with
+/// `icon`, or `empty` in Gray.550 (`.subdued`) if nothing is chosen.
+pub(crate) fn selection_box(
+    ui: &mut Ui,
+    active: bool,
+    icon: Icon,
+    chosen: Option<&str>,
+    empty: &str,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), theme::FIELD_HEIGHT),
+        Sense::hover(),
+    );
+    let (fill, border) = if active {
+        (
+            theme::SELECTION_BOX_ACTIVE_BG,
+            theme::SELECTION_BOX_ACTIVE_BORDER,
+        )
+    } else {
+        (theme::SELECTION_BOX_BG, Color32::TRANSPARENT)
+    };
+    ui.painter()
+        .rect_filled(rect, theme::SMALL_CORNER_RADIUS, fill);
+    if border != Color32::TRANSPARENT {
+        // `border-left: 2px`, inside the box's rounded corner.
+        let edge = Rect::from_min_size(rect.min, vec2(theme::SELECTION_BOX_BORDER, rect.height()));
+        ui.painter().rect_filled(
+            edge,
+            CornerRadius {
+                nw: theme::SMALL_CORNER_RADIUS,
+                sw: theme::SMALL_CORNER_RADIUS,
+                ne: 0,
+                se: 0,
+            },
+            border,
+        );
+    }
+    let inner = Rect::from_min_max(
+        pos2(
+            rect.left() + theme::SELECTION_BOX_BORDER + theme::SELECTION_BOX_PADDING_LEFT,
+            rect.top(),
+        ),
+        pos2(
+            rect.right() - theme::SELECTION_BOX_PADDING_RIGHT,
+            rect.bottom(),
+        ),
+    );
+    within(ui, inner, "selection", |ui| match chosen {
+        Some(name) => chip(ui, icon, name),
+        None => truncated(ui, body(empty, theme::TEXT_SUBDUED)),
+    });
+    response
+}
+
+/// A chip (`.selbox .chip`): `icon` and `name`, labelled `name`.
+fn chip(ui: &mut Ui, icon: Icon, name: &str) -> Response {
+    let side = IconSize::Small.points();
+    let room = ui.available_width() - 2.0 * theme::CHIP_PADDING - side - theme::CHIP_GAP;
+    let mut job = LayoutJob::single_section(
+        name.to_owned(),
+        format(theme::HEADER_SIZE, theme::CHIP_TEXT, false),
+    );
+    job.wrap = TextWrapping::truncate_at_width(room.max(0.0));
+    let galley = ui.painter().layout_job(job);
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(
+            2.0 * theme::CHIP_PADDING + side + theme::CHIP_GAP + galley.size().x,
+            theme::CHIP_HEIGHT,
+        ),
+        Sense::hover(),
+    );
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, name));
+    ui.painter()
+        .rect_filled(rect, theme::CHIP_CORNER_RADIUS, theme::CHIP_BG);
+    let left = rect.left() + theme::CHIP_PADDING;
+    icon.image(IconSize::Small).tint(theme::CHIP_TEXT).paint_at(
+        ui,
+        Rect::from_min_size(pos2(left, rect.center().y - side / 2.0), Vec2::splat(side)),
+    );
+    ui.painter().galley(
+        pos2(
+            left + side + theme::CHIP_GAP,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        theme::CHIP_TEXT,
+    );
+    response
+}
+
+/// A choice of a few (`.seg`): each of `options`, the `chosen` one on, each a selectable
+/// button labelled as it reads, sharing the width; the one clicked, if one was. Off unless
+/// `enabled`.
+pub(crate) fn segmented(
+    ui: &mut Ui,
+    options: &[String],
+    chosen: usize,
+    enabled: bool,
+) -> Option<usize> {
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(
+            ui.available_width(),
+            theme::SEGMENTED_HEIGHT + 2.0 * theme::SEGMENTED_PADDING,
+        ),
+        Sense::hover(),
+    );
+    ui.painter()
+        .rect_filled(rect, theme::SMALL_CORNER_RADIUS, theme::SEGMENTED_BG);
+    let inner = rect.shrink(theme::SEGMENTED_PADDING);
+    let count = options.len().max(1) as f32;
+    let width = (inner.width() - (count - 1.0) * theme::SEGMENTED_PADDING) / count;
+    let mut clicked = None;
+    for (place, shown) in options.iter().enumerate() {
+        let at = Rect::from_min_size(
+            pos2(
+                inner.left() + place as f32 * (width + theme::SEGMENTED_PADDING),
+                inner.top(),
+            ),
+            vec2(width, theme::SEGMENTED_HEIGHT),
+        );
+        let on = place == chosen;
+        let response = ui
+            .scope_builder(UiBuilder::new().max_rect(at), |ui| {
+                ui.add_enabled_ui(enabled, |ui| {
+                    let (rect, response) = ui.allocate_exact_size(at.size(), Sense::click());
+                    let enabled = ui.is_enabled();
+                    response.widget_info(|| {
+                        WidgetInfo::selected(WidgetType::SelectableLabel, enabled, on, shown)
+                    });
+                    let ink = if on {
+                        ui.painter().rect_filled(
+                            rect,
+                            theme::SEGMENTED_CORNER_RADIUS,
+                            theme::SEGMENTED_ON_BG,
+                        );
+                        theme::SEGMENTED_ON_TEXT
+                    } else if response.hovered() {
+                        theme::SEGMENTED_HOVER_TEXT
+                    } else {
+                        theme::SEGMENTED_TEXT
+                    };
+                    theme::focus_ring(
+                        ui,
+                        &response,
+                        rect,
+                        theme::SEGMENTED_CORNER_RADIUS,
+                        StrokeKind::Outside,
+                    );
+                    let galley = ui.painter().layout_job(body(shown, ink));
+                    ui.painter()
+                        .galley(rect.center() - galley.size() / 2.0, galley, ink);
+                    response
+                })
+                .inner
+            })
+            .inner;
+        if response.clicked() {
+            clicked = Some(place);
+        }
+    }
+    clicked
+}
+
+/// Which of the dialog's footer buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Look {
+    /// `.btn-secondary`: Cancel.
+    Secondary,
+    /// `.btn-primary`: OK.
+    Primary,
+}
+
+/// A footer button (`.dlg-footer .btn`) in `rect`: `text`, labelled so, then `cap` as a key
+/// cap (`.btn .kbd`), in `look`; off unless `enabled`.
+pub(crate) fn footer_button(
+    ui: &mut Ui,
+    rect: Rect,
+    text: &str,
+    cap: &str,
+    look: Look,
+    enabled: bool,
+) -> Response {
+    let opacity = ui.opacity();
+    ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.set_opacity(opacity);
+            let (rect, response) = ui.allocate_exact_size(rect.size(), Sense::click());
+            let enabled = ui.is_enabled();
+            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
+            let hovered = response.hovered();
+            let (fill, ink) = match (look, enabled, hovered) {
+                (Look::Primary, false, _) => (
+                    theme::PRIMARY_BUTTON_DISABLED_BG,
+                    theme::PRIMARY_BUTTON_DISABLED_TEXT,
+                ),
+                (Look::Primary, true, false) => {
+                    (theme::PRIMARY_BUTTON_BG, theme::PRIMARY_BUTTON_TEXT)
+                }
+                (Look::Primary, true, true) => (
+                    theme::PRIMARY_BUTTON_HOVER_BG,
+                    theme::PRIMARY_BUTTON_HOVER_TEXT,
+                ),
+                (Look::Secondary, true, true) => (
+                    theme::SECONDARY_BUTTON_HOVER_BG,
+                    theme::SECONDARY_BUTTON_HOVER_TEXT,
+                ),
+                (Look::Secondary, _, _) => {
+                    (theme::SECONDARY_BUTTON_BG, theme::SECONDARY_BUTTON_TEXT)
+                }
+            };
+            ui.painter()
+                .rect_filled(rect, theme::SMALL_CORNER_RADIUS, fill);
+            theme::focus_ring(
+                ui,
+                &response,
+                rect,
+                theme::SMALL_CORNER_RADIUS,
+                StrokeKind::Outside,
+            );
+            let words = ui.painter().layout_job(body(text, ink));
+            let caps = ui.painter().layout_no_wrap(
+                cap.to_owned(),
+                FontId::proportional(theme::KEY_CAP_TEXT_SIZE),
+                ink,
+            );
+            let cap_width = (caps.size().x
+                + 2.0 * (theme::KEY_CAP_PADDING + theme::KEY_CAP_BORDER))
+                .max(theme::KEY_CAP_MIN_WIDTH);
+            let content = words.size().x + theme::BUTTON_GAP + cap_width;
+            let left = rect.center().x - content / 2.0;
+            let middle = rect.center().y;
+            ui.painter()
+                .galley(pos2(left, middle - words.size().y / 2.0), words, ink);
+            let cap_rect = Rect::from_min_size(
+                pos2(
+                    rect.center().x + content / 2.0 - cap_width,
+                    middle - theme::KEY_CAP_HEIGHT / 2.0,
+                ),
+                vec2(cap_width, theme::KEY_CAP_HEIGHT),
+            );
+            let faded = ink.gamma_multiply(theme::BUTTON_KEY_CAP_OPACITY);
+            ui.painter().rect_stroke(
+                cap_rect,
+                theme::KEY_CAP_CORNER_RADIUS,
+                Stroke::new(theme::KEY_CAP_BORDER, faded),
+                StrokeKind::Inside,
+            );
+            ui.painter().galley_with_override_text_color(
+                cap_rect.center() - caps.size() / 2.0,
+                caps,
+                faded,
+            );
+            response
+        })
+        .inner
+    })
+    .inner
+}
+
+/// The footer's place at the bottom of `rect` (`.dlg-footer`): its whole, and its two
+/// buttons', side by side, sharing its width.
+pub(crate) fn footer_places(rect: Rect) -> (Rect, Rect, Rect) {
+    let height =
+        2.0 * theme::DIALOG_FOOTER_PADDING + theme::DIALOG_BUTTON_HEIGHT + theme::BORDER_WIDTH;
+    let footer = Rect::from_min_max(pos2(rect.left(), rect.bottom() - height), rect.max);
+    let top = footer.top() + theme::BORDER_WIDTH + theme::DIALOG_FOOTER_PADDING;
+    let left = footer.left() + pad();
+    let width = (footer.width() - 2.0 * pad() - theme::DIALOG_FOOTER_GAP) / 2.0;
+    let first = Rect::from_min_size(pos2(left, top), vec2(width, theme::DIALOG_BUTTON_HEIGHT));
+    let second = first.translate(vec2(width + theme::DIALOG_FOOTER_GAP, 0.0));
+    (footer, first, second)
+}
+
+/// The footer's fill and its border above it.
+pub(crate) fn footer_paint(ui: &Ui, footer: Rect) {
+    ui.painter().rect_filled(footer, 0, theme::PANEL_BG);
+    ui.painter().hline(
+        footer.x_range(),
+        footer.top() + theme::BORDER_WIDTH / 2.0,
+        Stroke::new(theme::BORDER_WIDTH, theme::DIALOG_FOOTER_BORDER),
+    );
+}
+
+/// A value's unit after its field (`.field .unit`), Gray.550: its width.
+pub(crate) fn unit_width(ui: &Ui, unit: &str) -> f32 {
+    if unit.is_empty() {
+        return 0.0;
+    }
+    ui.painter()
+        .layout_job(body(unit, theme::TEXT_SUBDUED))
+        .size()
+        .x
+}

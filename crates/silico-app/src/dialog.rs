@@ -10,10 +10,12 @@
 
 use std::collections::BTreeMap;
 
-use eframe::egui::{self, RichText, Ui};
+use eframe::egui::{self, Ui};
 use silico_core::document::FeatureId;
 use silico_core::document::json::{self, Node, Value as Json};
 
+use crate::icons::Icon;
+use crate::properties;
 use crate::theme::{self, FieldKind};
 
 /// The features a dialog makes or edits.
@@ -541,10 +543,18 @@ impl Dialog {
         }
     }
 
-    /// The dialog drawn into `ui`: its title, its inputs, `said` (its feature's error, a
-    /// refusal), and OK and Cancel; `named` gives a feature's name by its ID (a selection
-    /// box shows it), `refused` whether an edit of a field was refused (its input red, OK
-    /// off), and `enabled` whether anything can be sent now (off while the tab closes).
+    /// The dialog drawn into `ui`, docked in the property panel as the prototype docks it
+    /// (`renderDialog`): its title, its inputs under INPUTS, `said` (its feature's error, a
+    /// refusal), and Cancel and OK in its footer at the bottom of `ui`; `named` gives a
+    /// feature's name by its ID (a selection box shows it), `refused` whether an edit of a
+    /// field was refused (its input red, OK off), and `enabled` whether anything can be sent
+    /// now (off while the tab closes).
+    ///
+    /// Left out, each for a reason: the Name field (the property panel's renames a feature,
+    /// a dialog's would be one more way), the PREVIEW section's words (the status bar says
+    /// how the rebuild stands, the preview's too), the title's close button (Cancel and Esc
+    /// are it), and each unit inside its field (`.field .unit`: egui's `TextEdit` holds no
+    /// suffix, so the unit stands just after the field).
     pub fn ui(
         &mut self,
         ui: &mut Ui,
@@ -553,9 +563,16 @@ impl Dialog {
         refused: &dyn Fn(&str) -> bool,
         enabled: bool,
     ) -> Action {
-        ui.label(RichText::new(self.kind.title().to_uppercase()).strong());
-        ui.separator();
-        let error = ui.visuals().error_fg_color;
+        let whole = ui.max_rect();
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        properties::title(
+            ui,
+            Some(Icon::of_kind(self.kind.type_name())),
+            self.kind.title(),
+        );
+        let (footer, cancel_at, ok_at) = properties::footer_places(whole);
+        let body =
+            egui::Rect::from_min_max(ui.cursor().min, egui::pos2(whole.right(), footer.top()));
         let shown: Vec<bool> = self.inputs.iter().map(|input| self.shown(input)).collect();
         let readable: Vec<bool> = self
             .inputs
@@ -564,92 +581,121 @@ impl Dialog {
             .collect();
         let mut any_refused = false;
         let active = self.active;
-        egui::Grid::new(("dialog", self.serial))
-            .num_columns(3)
-            .spacing([8.0, 6.0])
-            .show(ui, |ui| {
-                for (at, input) in self.inputs.iter_mut().enumerate() {
-                    if !shown.get(at).copied().unwrap_or(true) {
-                        continue;
+        let inputs = &mut self.inputs;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt(("dialog-body", self.serial))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                    properties::section(ui, "Inputs");
+                    for (at, input) in inputs.iter_mut().enumerate() {
+                        if !shown.get(at).copied().unwrap_or(true) {
+                            continue;
+                        }
+                        let red = red(
+                            readable.get(at).copied().unwrap_or(true),
+                            refused(input.part.field()),
+                        );
+                        any_refused |= refused(input.part.field());
+                        properties::row(ui, input.label, |ui, label| {
+                            input_ui(
+                                ui,
+                                input,
+                                label,
+                                red,
+                                highlighted(active, at),
+                                named,
+                                enabled,
+                            );
+                        });
                     }
-                    let red = red(
-                        readable.get(at).copied().unwrap_or(true),
-                        refused(input.part.field()),
-                    );
-                    any_refused |= refused(input.part.field());
-                    let label = ui.label(input.label);
-                    let unit = match input.value {
-                        Value::Length(_) => "mm",
-                        Value::Angle(_) => "°",
-                        Value::Toggle(_) | Value::Choice { .. } | Value::Selection(_) => "",
-                    };
-                    match &mut input.value {
-                        Value::Length(text) | Value::Angle(text) => {
-                            let edit = egui::TextEdit::singleline(text).desired_width(120.0);
-                            let salt = ("dialog-input", input.label);
-                            let edit = theme::field(ui, edit, salt, FieldKind::Dialog, red);
-                            ui.add_enabled(enabled, edit).labelled_by(label.id);
-                            ui.label(unit);
-                        }
-                        Value::Toggle(on) => {
-                            ui.add_enabled(enabled, egui::Checkbox::without_text(on))
-                                .labelled_by(label.id);
-                            ui.label("");
-                        }
-                        Value::Choice { options, chosen } => {
-                            ui.horizontal(|ui| {
-                                for (place, (_, shown)) in options.iter().enumerate() {
-                                    let button = egui::Button::selectable(*chosen == place, shown);
-                                    if ui.add_enabled(enabled, button).clicked() {
-                                        *chosen = place;
-                                    }
-                                }
-                            });
-                            ui.label("");
-                        }
-                        Value::Selection(picked) => {
-                            let (text, colour) = match picked.as_ref() {
-                                Some(id) => (
-                                    named(id).unwrap_or_else(|| id.as_str().to_owned()),
-                                    ui.visuals().text_color(),
-                                ),
-                                None => ("Select in the browser".to_owned(), error),
-                            };
-                            // The active selection box, highlighted (section 9).
-                            let stroke = if highlighted(active, at) {
-                                ui.visuals().selection.stroke
-                            } else {
-                                ui.visuals().widgets.noninteractive.bg_stroke
-                            };
-                            egui::Frame::new()
-                                .stroke(stroke)
-                                .inner_margin(egui::Margin::symmetric(6, 2))
-                                .show(ui, |ui| ui.colored_label(colour, text));
-                            ui.label("");
-                        }
+                    for said in said {
+                        properties::card(ui, false, said, None);
                     }
-                    ui.end_row();
-                }
-            });
-        for said in said {
-            ui.colored_label(error, said);
-        }
-        ui.separator();
-        let mut action = Action::None;
-        ui.horizontal(|ui| {
-            // Off while its add is unanswered: what's typed meanwhile is sent after it.
-            let ok = enabled && self.valid() && !any_refused && !self.adding;
-            if ui.add_enabled(ok, egui::Button::new("OK")).clicked() {
-                action = Action::Ok;
-            }
-            if ui
-                .add_enabled(enabled, egui::Button::new("Cancel"))
-                .clicked()
-            {
-                action = Action::Cancel;
-            }
+                });
         });
+        properties::footer_paint(ui, footer);
+        // Off while its add is unanswered: what's typed meanwhile is sent after it.
+        let ok = enabled && self.valid() && !any_refused && !self.adding;
+        let mut action = Action::None;
+        let cancel = properties::footer_button(
+            ui,
+            cancel_at,
+            "Cancel",
+            "Esc",
+            properties::Look::Secondary,
+            enabled,
+        );
+        if cancel.clicked() {
+            action = Action::Cancel;
+        }
+        if properties::footer_button(ui, ok_at, "OK", "↵", properties::Look::Primary, ok).clicked()
+        {
+            action = Action::Ok;
+        }
         action
+    }
+}
+
+/// `input`'s value in its row, labelled by `label` (its key's): a field with its unit, a
+/// toggle, a choice of a few, or a selection box (highlighted if it's the active one).
+fn input_ui(
+    ui: &mut Ui,
+    input: &mut Input,
+    label: egui::Id,
+    red: bool,
+    active: bool,
+    named: &dyn Fn(&FeatureId) -> Option<String>,
+    enabled: bool,
+) {
+    let unit = match input.value {
+        Value::Length(_) => "mm",
+        Value::Angle(_) => "°",
+        Value::Toggle(_) | Value::Choice { .. } | Value::Selection(_) => "",
+    };
+    match &mut input.value {
+        Value::Length(text) | Value::Angle(text) => {
+            let unit_width = properties::unit_width(ui, unit);
+            let width = ui.available_width() - unit_width - theme::PROPERTY_ROW_GAP;
+            let salt = ("dialog-input", input.label);
+            let edit = theme::field(
+                ui,
+                egui::TextEdit::singleline(text),
+                salt,
+                FieldKind::Dialog,
+                red,
+            );
+            let at = properties::field_rect(ui, width.max(0.0));
+            ui.add_enabled_ui(enabled, |ui| ui.put(at, edit))
+                .inner
+                .labelled_by(label);
+            ui.add_space(theme::PROPERTY_ROW_GAP);
+            ui.label(properties::body(unit, theme::TEXT_SUBDUED));
+        }
+        Value::Toggle(on) => {
+            ui.add_enabled(enabled, egui::Checkbox::without_text(on))
+                .labelled_by(label);
+        }
+        Value::Choice { options, chosen } => {
+            let shown: Vec<String> = options.iter().map(|(_, shown)| shown.clone()).collect();
+            if let Some(place) = properties::segmented(ui, &shown, *chosen, enabled) {
+                *chosen = place;
+            }
+        }
+        Value::Selection(picked) => {
+            let name = picked
+                .as_ref()
+                .map(|id| named(id).unwrap_or_else(|| id.as_str().to_owned()));
+            // The active selection box, highlighted (section 9).
+            properties::selection_box(
+                ui,
+                active,
+                Icon::Sketch,
+                name.as_deref(),
+                "Select in the browser",
+            );
+        }
     }
 }
 

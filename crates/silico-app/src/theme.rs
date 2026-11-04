@@ -854,6 +854,186 @@ pub const STATE_DOT_SIZE: f32 = 8.0;
 /// The spinner beside work under way (`.spinner`): its side.
 pub const SPINNER_SIZE: f32 = 11.0;
 
+/// The spinner's ring (`.spinner`: `border: 1.5px solid` Gray.350), and its turning quarter
+/// (`border-top-color` Gray.1000), once round every [`SPINNER_TURN_SECONDS`] (`spin .7s`).
+pub const SPINNER_WIDTH: f32 = 1.5;
+pub const SPINNER_TRACK: Color32 = GRAY_350;
+pub const SPINNER_HEAD: Color32 = GRAY_1000;
+pub const SPINNER_TURN_SECONDS: f32 = 0.7;
+
+// ---- The status bar (`#status`, `.st-item`, `.st-sep`, `.st-btn`, `.progress`) ----
+
+/// The bar's fill, its border above it, and its text (`#status`: Gray.150, a 1 px Gray.250
+/// border on top, `--fs-small` in Gray.550).
+pub const STATUS_BAR_BG: Color32 = BOTTOM_BAR_BG;
+pub const STATUS_BAR_BORDER: Color32 = PANEL_BORDER;
+pub const STATUS_TEXT: Color32 = TEXT_SUBDUED;
+
+/// The bar's padding at its left and right, and the gap between its parts (`#status`:
+/// `padding: 0 6px 0 8px; gap: 2px`).
+pub const STATUS_BAR_PADDING_LEFT: f32 = 8.0;
+pub const STATUS_BAR_PADDING_RIGHT: f32 = 6.0;
+pub const STATUS_BAR_GAP: f32 = 2.0;
+
+/// An item (`.st-item`): its height, its padding at each side, and the gap between its
+/// mark and its words; hovered, as a button, its fill and its text.
+pub const STATUS_ITEM_HEIGHT: f32 = 20.0;
+pub const STATUS_ITEM_PADDING: f32 = 8.0;
+pub const STATUS_ITEM_GAP: f32 = 6.0;
+pub const STATUS_ITEM_HOVER_BG: Color32 = WIDGET_BG;
+pub const STATUS_ITEM_HOVER_TEXT: Color32 = TEXT_STRONG;
+
+/// A separator (`.st-sep`: 1 by 12, Gray.250), and the margin at each side of the one after
+/// Stop and Rebuild (`margin: 0 6px`).
+pub const STATUS_SEPARATOR: Color32 = PANEL_BORDER;
+pub const STATUS_SEPARATOR_HEIGHT: f32 = 12.0;
+pub const STATUS_SEPARATOR_MARGIN: f32 = 6.0;
+
+/// A button (`.st-btn`): its height, padding at each side, and the gap after its icon; its
+/// fill and text at rest, hovered, and off.
+pub const STATUS_BUTTON_HEIGHT: f32 = 18.0;
+pub const STATUS_BUTTON_PADDING: f32 = 7.0;
+pub const STATUS_BUTTON_GAP: f32 = 5.0;
+pub const STATUS_BUTTON_BG: Color32 = WIDGET_BG;
+pub const STATUS_BUTTON_TEXT: Color32 = GRAY_800;
+pub const STATUS_BUTTON_HOVER_BG: Color32 = WIDGET_HOVER_BG;
+pub const STATUS_BUTTON_HOVER_TEXT: Color32 = GRAY_1000;
+pub const STATUS_BUTTON_DISABLED_TEXT: Color32 = TEXT_DISABLED;
+
+/// Stop, while it's on (`.st-btn.stop`): its fill and text, and hovered.
+pub const STATUS_STOP_BG: Color32 = DANGER_BUTTON_BG;
+pub const STATUS_STOP_TEXT: Color32 = DANGER_BUTTON_TEXT;
+pub const STATUS_STOP_HOVER_BG: Color32 = hex(0x800027);
+pub const STATUS_STOP_HOVER_TEXT: Color32 = GRAY_1000;
+
+/// The rebuild's progress (`.progress`: 70 by 4, corners 2, Gray.300; its bar Gray.800).
+pub const STATUS_PROGRESS_WIDTH: f32 = 70.0;
+pub const STATUS_PROGRESS_HEIGHT: f32 = 4.0;
+pub const STATUS_PROGRESS_CORNER_RADIUS: u8 = 2;
+pub const STATUS_PROGRESS_BG: Color32 = WIDGET_BG;
+pub const STATUS_PROGRESS_FILL: Color32 = GRAY_800;
+
+// ---- The property panel (`.prop-head`, `.section`, `.prop`, `.hint-block`, `.err-card`) ----
+
+/// The head (`.prop-head`): its padding above and below (`--pad` at its sides), the gap
+/// between its icon and its words; its icon's box (28 square, `--r-sm`, Gray.200) and the
+/// icon's colour (Gray.800); its title (13, white) and the line under it (`--fs-small`,
+/// Gray.550).
+pub const PROPERTY_HEAD_PADDING_TOP: f32 = 6.0;
+pub const PROPERTY_HEAD_PADDING_BOTTOM: f32 = 8.0;
+pub const PROPERTY_HEAD_GAP: f32 = 8.0;
+pub const PROPERTY_HEAD_ICON_SIDE: f32 = 28.0;
+pub const PROPERTY_HEAD_ICON_BG: Color32 = GRAY_200;
+pub const PROPERTY_HEAD_ICON: Color32 = GRAY_800;
+pub const PROPERTY_HEAD_TITLE: Color32 = TEXT_STRONG;
+pub const PROPERTY_HEAD_SUB: Color32 = TEXT_SUBDUED;
+
+/// A section's header (`.section`): its padding above and below, its text (10.5, capitals,
+/// Gray.550), and the rule after it (1 high, Gray.200, 6 after the text).
+pub const PROPERTY_SECTION_PADDING_TOP: f32 = 6.0;
+pub const PROPERTY_SECTION_PADDING_BOTTOM: f32 = 2.0;
+pub const PROPERTY_SECTION_SIZE: f32 = 10.5;
+pub const PROPERTY_SECTION_TEXT: Color32 = TEXT_SUBDUED;
+pub const PROPERTY_SECTION_GAP: f32 = 6.0;
+pub const PROPERTY_SECTION_RULE: Color32 = GRAY_200;
+
+/// A property's row (`.prop`): at least a list item high, its key's column 96 wide, 8 to
+/// its value; its key Gray.550, its value Gray.800.
+pub const PROPERTY_ROW_HEIGHT: f32 = LIST_ITEM_HEIGHT;
+pub const PROPERTY_KEY_WIDTH: f32 = 96.0;
+pub const PROPERTY_ROW_GAP: f32 = 8.0;
+pub const PROPERTY_KEY: Color32 = TEXT_SUBDUED;
+pub const PROPERTY_VALUE: Color32 = GRAY_800;
+
+/// A hint (`.hint-block`): 8 above and below it, `--pad` at its sides; padded 8 by 10,
+/// corners `--r`, Gray.150; its text `--fs-small` in Gray.550, its emphasis Gray.800.
+pub const HINT_MARGIN: f32 = 8.0;
+pub const HINT_PADDING: Margin = Margin::symmetric(10, 8);
+pub const HINT_BG: Color32 = GRAY_150;
+pub const HINT_TEXT: Color32 = TEXT_SUBDUED;
+pub const HINT_STRONG: Color32 = GRAY_800;
+
+/// An error card (`.err-card`): 8 above and below it, `--pad` at its sides, corners `--r`;
+/// its fill, its 1 px border, its head's text and icon (`.ec-head`), and its accent
+/// (`.ec-fix::before`'s arrow); its words are white (`.ec-head .t`, `.ec-fix`).
+pub const ERROR_CARD_MARGIN: f32 = 8.0;
+pub const ERROR_CARD_BG: Color32 = ALERT_ERROR_BG;
+pub const ERROR_CARD_BORDER: Color32 = hex(0x5c001a);
+pub const ERROR_CARD_HEAD: Color32 = hex(0xffd1d6);
+pub const ERROR_CARD_ACCENT: Color32 = hex(0xff99a6);
+/// A warning's card (`.err-card.warn`): its fill, border, and head.
+pub const WARNING_CARD_BG: Color32 = ALERT_WARNING_BG;
+pub const WARNING_CARD_BORDER: Color32 = hex(0x5c3a08);
+pub const WARNING_CARD_HEAD: Color32 = ALERT_WARNING_TEXT;
+/// The head's padding (`8px 10px 4px`) and the gap after its icon; the body's padding
+/// (`0 10px 8px 32px`), and the space under its suggestion (`.ec-fix { margin-bottom: 8px;
+/// gap: 6px }`).
+pub const ERROR_CARD_HEAD_PADDING: Margin = Margin {
+    left: 10,
+    right: 10,
+    top: 8,
+    bottom: 4,
+};
+pub const ERROR_CARD_GAP: f32 = 8.0;
+pub const ERROR_CARD_BODY_PADDING: Margin = Margin {
+    left: 32,
+    right: 10,
+    top: 0,
+    bottom: 8,
+};
+pub const ERROR_CARD_FIX_GAP: f32 = 6.0;
+pub const ERROR_CARD_FIX_MARGIN: f32 = 8.0;
+
+// ---- The docked dialog (`.selbox`, `.chip`, `.seg`, `.dlg-footer`, `.btn-secondary`) ----
+
+/// A selection box (`.selbox`): at least a field high, padded 6 at its left and 4 at its
+/// right, 6 between its parts, a 2 px border at its left; its fill (Gray.200), and while
+/// it's the active box its border Blue.500 and its fill Blue.500 at 18%.
+pub const SELECTION_BOX_PADDING_LEFT: f32 = 6.0;
+pub const SELECTION_BOX_PADDING_RIGHT: f32 = 4.0;
+pub const SELECTION_BOX_BORDER: f32 = 2.0;
+pub const SELECTION_BOX_BG: Color32 = FIELD_BG;
+pub const SELECTION_BOX_ACTIVE_BORDER: Color32 = SELECTION_BG;
+pub const SELECTION_BOX_ACTIVE_BG: Color32 = hex_alpha(0x186add, 46);
+
+/// What a selection box holds (`.selbox .chip`): 16 high, padded 5, 4 after its icon,
+/// corners 3, Gray.300, its text `--fs-small` in Gray.800.
+pub const CHIP_HEIGHT: f32 = 16.0;
+pub const CHIP_PADDING: f32 = 5.0;
+pub const CHIP_GAP: f32 = 4.0;
+pub const CHIP_CORNER_RADIUS: u8 = 3;
+pub const CHIP_BG: Color32 = WIDGET_BG;
+pub const CHIP_TEXT: Color32 = GRAY_800;
+
+/// A choice of a few (`.seg`): its fill (Gray.200), padding and gap 1; each choice 20 high,
+/// corners 3, its text Gray.550 (white hovered), the one chosen Gray.350 with white text.
+pub const SEGMENTED_BG: Color32 = FIELD_BG;
+pub const SEGMENTED_PADDING: f32 = 1.0;
+pub const SEGMENTED_HEIGHT: f32 = 20.0;
+pub const SEGMENTED_CORNER_RADIUS: u8 = 3;
+pub const SEGMENTED_TEXT: Color32 = TEXT_SUBDUED;
+pub const SEGMENTED_HOVER_TEXT: Color32 = TEXT_STRONG;
+pub const SEGMENTED_ON_BG: Color32 = GRAY_350;
+pub const SEGMENTED_ON_TEXT: Color32 = TEXT_STRONG;
+
+/// The dialog's footer (`.dlg-footer`): padded 8 by `--pad`, 6 between its buttons, a 1 px
+/// Gray.250 border above it, on the panel's fill; each button 26 high, sharing its width.
+pub const DIALOG_FOOTER_PADDING: f32 = 8.0;
+pub const DIALOG_FOOTER_GAP: f32 = 6.0;
+pub const DIALOG_FOOTER_BORDER: Color32 = PANEL_BORDER;
+pub const DIALOG_BUTTON_HEIGHT: f32 = 26.0;
+
+/// A secondary button (`.btn-secondary`): Cancel. Its fill and text, and hovered.
+pub const SECONDARY_BUTTON_BG: Color32 = WIDGET_BG;
+pub const SECONDARY_BUTTON_TEXT: Color32 = TEXT_DEFAULT;
+pub const SECONDARY_BUTTON_HOVER_BG: Color32 = WIDGET_HOVER_BG;
+pub const SECONDARY_BUTTON_HOVER_TEXT: Color32 = TEXT_STRONG;
+
+/// The gap between a button's words and its key cap (`.btn { gap: 6px }`), the cap at 55%
+/// (`.btn .kbd`: `opacity: .55`, its border and text the button's).
+pub const BUTTON_GAP: f32 = 6.0;
+pub const BUTTON_KEY_CAP_OPACITY: f32 = 0.55;
+
 // ---- The start page (`.st-*`, `.recent-row`) ----
 
 /// The page's widest, centred in the window.
