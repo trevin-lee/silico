@@ -19,6 +19,8 @@ const TITLE_HEIGHT: f32 = 26.0;
 const HEAD_SIZE: f32 = 10.0;
 const SMALL_SIZE: f32 = 11.0;
 const DOT_RADIUS: f32 = 4.0;
+/// The palette's border's width, inside its width as the prototype's `box-sizing` has it.
+const BORDER: f32 = 1.0;
 
 /// What the sketch bar was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,12 +252,14 @@ fn usage(choice: Choice, trim: TrimMode) -> &'static str {
 }
 
 /// The Sketch Palette (the prototype's `.palette`): its title, then Status, Tool, Show,
-/// and the colours' legend, each a section; Look At off until the viewport's camera.
-pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
+/// and the colours' legend, each a section; Look At off until the viewport's camera. At
+/// most `max_height` tall: its title stays, and its sections scroll beneath it when they
+/// don't fit.
+pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings, max_height: f32) {
     dark(ui);
     egui::Frame::new()
         .fill(FLOATING_BG)
-        .stroke(Stroke::new(1.0, PANEL_BORDER))
+        .stroke(Stroke::new(BORDER, PANEL_BORDER))
         .corner_radius(CornerRadius::same(6))
         .shadow(egui::Shadow {
             offset: [0, 6],
@@ -264,16 +268,15 @@ pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
             color: Color32::from_black_alpha(140),
         })
         .show(ui, |ui| {
-            ui.set_width(SKETCH_PALETTE_WIDTH);
+            // The prototype's width, its border inside it.
+            let width = SKETCH_PALETTE_WIDTH - 2.0 * BORDER;
+            ui.set_width(width);
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Group);
                 node.set_label("Sketch Palette");
             });
             ui.spacing_mut().item_spacing.y = 2.0;
-            let (title, _) = ui.allocate_exact_size(
-                Vec2::new(SKETCH_PALETTE_WIDTH, TITLE_HEIGHT),
-                Sense::hover(),
-            );
+            let (title, _) = ui.allocate_exact_size(Vec2::new(width, TITLE_HEIGHT), Sense::hover());
             ui.put(
                 title.shrink2(Vec2::new(10.0, 0.0)),
                 egui::Label::new(
@@ -282,19 +285,32 @@ pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
                         .color(TEXT_STRONG),
                 ),
             );
-            section(ui, "Status", |ui| status_section(ui, view));
-            section(ui, "Tool", |ui| tool_section(ui, view, settings));
-            section(ui, "Show", |ui| {
-                ui.checkbox(&mut settings.show_profile, "Profile");
-                ui.checkbox(&mut settings.show_points, "Points");
-                ui.checkbox(&mut settings.show_dimensions, "Dimensions");
-                ui.checkbox(&mut settings.show_constraints, "Constraints");
-                ui.add_enabled(
-                    false,
-                    egui::Button::new("Look At").fill(Color32::TRANSPARENT),
-                );
-            });
-            section(ui, "Colours", legend);
+            // What's left beneath the title and the space after it, and inside the border:
+            // at least nothing.
+            let spacing = ui.spacing().item_spacing.y;
+            let body = (max_height - 2.0 * BORDER - TITLE_HEIGHT - spacing).max(0.0);
+            egui::ScrollArea::vertical()
+                .id_salt("sketch_palette_body")
+                .max_height(body)
+                // Its height the cap's whenever its sections pass it, not the area's last
+                // (an area's room is its size the frame before, so it would never grow).
+                .min_scrolled_height(body)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    section(ui, "Status", |ui| status_section(ui, view));
+                    section(ui, "Tool", |ui| tool_section(ui, view, settings));
+                    section(ui, "Show", |ui| {
+                        ui.checkbox(&mut settings.show_profile, "Profile");
+                        ui.checkbox(&mut settings.show_points, "Points");
+                        ui.checkbox(&mut settings.show_dimensions, "Dimensions");
+                        ui.checkbox(&mut settings.show_constraints, "Constraints");
+                        ui.add_enabled(
+                            false,
+                            egui::Button::new("Look At").fill(Color32::TRANSPARENT),
+                        );
+                    });
+                    section(ui, "Colours", legend);
+                });
         });
 }
 

@@ -15109,3 +15109,101 @@ fn the_over_define_prompts_rows_share_their_edges_its_keys_are_16_high_at_their_
     );
     assert_eq!(never_waits::waits(), 0);
 }
+
+/// The app at `size` points with `text` open from `name`, its timeline read.
+fn opened_sized(f: &Fixture, name: &str, text: &str, size: (f32, f32)) -> AppHarness {
+    let path = f.file(name, text);
+    let app = App::new(Arc::clone(&f.sessions));
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size(size)
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(&mut h, "the timeline read", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.timeline.is_some())
+    });
+    h
+}
+
+#[test]
+fn in_a_short_window_the_sketch_palette_stays_inside_the_viewport_and_its_last_section_scrolls_into_it()
+ {
+    let f = fixture();
+    let mut h = opened_sized(&f, "boxed.silico", BOXED, (1280.0, 560.0));
+    // The app's fonts, so the palette's text has its sizes.
+    silico_app::theme::apply(&h.ctx);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let viewport = view(&h).frame().unwrap().rect;
+    let palette = palette_rect(&h);
+    // Inside the viewport, its bottom at most the prototype's 12 above the viewport's.
+    assert!(viewport.contains_rect(palette), "{palette:?} {viewport:?}");
+    // 212 wide, 12 from the viewport's right, and at least 12 from its bottom: to half a
+    // pixel, as egui puts an area's corner on one.
+    let half = 0.5 / h.ctx.pixels_per_point();
+    assert!((palette.width() - 212.0).abs() < 1e-3, "{palette:?}");
+    let right = viewport.right() - 12.0;
+    assert!(
+        (palette.right() - right).abs() <= half,
+        "{palette:?} {viewport:?}"
+    );
+    // Its sections past it: 12 from the viewport's bottom.
+    let bottom = viewport.bottom() - 12.0;
+    assert!(
+        (palette.bottom() - bottom).abs() <= half,
+        "{palette:?} {viewport:?}"
+    );
+    // Its title stays; the legend's last row, Construction, is below it, out of sight.
+    let title = h.get_by_label("SKETCH PALETTE").rect();
+    let last = |h: &AppHarness| h.get_by_label("Construction").rect();
+    assert!(
+        last(&h).bottom() > palette.bottom(),
+        "{:?} {palette:?}",
+        last(&h)
+    );
+    // Scrolled over the palette: the legend's last row comes into it, the title where it was.
+    h.hover_at(palette.center());
+    for _ in 0..10 {
+        h.event(eframe::egui::Event::MouseWheel {
+            unit: eframe::egui::MouseWheelUnit::Point,
+            delta: eframe::egui::vec2(0.0, -200.0),
+            phase: eframe::egui::TouchPhase::Move,
+            modifiers: eframe::egui::Modifiers::NONE,
+        });
+        step(&mut h);
+    }
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    let shown = last(&h);
+    assert!(palette.contains_rect(shown), "{shown:?} {palette:?}");
+    assert_eq!(palette_rect(&h), palette);
+    assert_eq!(h.get_by_label("SKETCH PALETTE").rect(), title);
+    // The window made taller: the palette grows to the new cap, not held at its last size.
+    h.set_size(eframe::egui::vec2(1280.0, 640.0));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let viewport = view(&h).frame().unwrap().rect;
+    let taller = palette_rect(&h);
+    assert!(
+        taller.height() > palette.height() + 40.0,
+        "{taller:?} {palette:?}"
+    );
+    let bottom = viewport.bottom() - 12.0;
+    assert!(
+        (taller.bottom() - bottom).abs() <= half,
+        "{taller:?} {viewport:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}

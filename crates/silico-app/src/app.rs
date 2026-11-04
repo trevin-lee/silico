@@ -102,10 +102,12 @@ const SKETCH_KEYS: [(Key, sketch::tools::Choice); 7] = {
 };
 
 /// Where sketch mode's panels stand in the canvas, as the prototype's: the sketch bar below
-/// its top, centred; the palette at its right, below the ViewCube.
+/// its top, centred; the palette at its right, below the ViewCube, as far from the canvas's
+/// right (and, at most, its bottom) as `PALETTE_MARGIN`.
 const SKETCH_BAR_FROM_TOP: f32 = 10.0;
+const PALETTE_MARGIN: f32 = 12.0;
 const PALETTE_FROM_CORNER: egui::Vec2 =
-    egui::Vec2::new(-12.0 - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
+    egui::Vec2::new(-PALETTE_MARGIN - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
 
 /// What the app is asking the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1152,11 +1154,15 @@ impl<P: Clients + 'static> App<P> {
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
             .pivot(egui::Align2::CENTER_TOP)
             .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar));
-        // Pinned at the canvas's top right, under the ViewCube, as the prototype's is.
+        // Pinned at the canvas's top right, under the ViewCube, as the prototype's is, and
+        // kept above the canvas's bottom by the prototype's margin: its body scrolls if it
+        // doesn't fit.
+        let palette_at = canvas.right_top() + PALETTE_FROM_CORNER;
+        let palette_height = canvas.bottom() - PALETTE_MARGIN - palette_at.y;
         let palette = egui::Area::new(egui::Id::new(("sketch_palette", id.to_string())))
-            .fixed_pos(canvas.right_top() + PALETTE_FROM_CORNER)
+            .fixed_pos(palette_at)
             .show(ui.ctx(), |ui| {
-                sketch::bar::palette(ui, &view, &mut mode.settings)
+                sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
             })
             .response
             .rect;

@@ -2760,7 +2760,9 @@ fn the_bar_and_the_palette_are_drawn_dark_on_a_window_showing_the_light_theme() 
     let mut texts = texts_on_light(|ui| {
         bar::sketch_bar(ui, &bar);
     });
-    texts.extend(texts_on_light(|ui| bar::palette(ui, &view, &mut settings)));
+    texts.extend(texts_on_light(|ui| {
+        bar::palette(ui, &view, &mut settings, f32::INFINITY)
+    }));
     assert!(texts.iter().any(|(words, _)| words == "Cancel"));
     assert!(texts.iter().any(|(words, _)| words == "Profile"));
     // Every text but Look At, which is off (faded on purpose till the viewport's camera),
