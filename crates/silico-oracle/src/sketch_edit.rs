@@ -2125,7 +2125,8 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
     // sketch's before didn't, named.
     if matches!(p.edit, Edit::Merge { .. })
         && r.code == "over_constrained"
-        && r.message.starts_with("after the merge, these ")
+        && r.message
+            .starts_with("after the merge, the constraints named repeat others")
         && !r.elements.is_empty()
         && r.elements
             .iter()

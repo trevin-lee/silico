@@ -16,17 +16,6 @@
 # Run through pixi:  pixi run mutants -- --in-diff /tmp/change.diff -p silico-core --output /tmp
 set -euo pipefail
 
-# shellcheck source=tests/committed-tree.sh
-source "$(dirname "${BASH_SOURCE[0]}")/committed-tree.sh"
-
-pixi run occt
-pixi install -e oracle
-# cargo-mutants' baseline builds and tests only the mutated packages, and their tests start
-# other packages' workers (silico-oracle's start the kernel's): build the whole workspace's
-# tests first, as the gate and each mutant build them, since the build may start cold
-# (committed-tree.sh).
-cargo nextest run --workspace --no-run
-echo "mutants: testing $commit"
 # Without the tests that hold to a wall clock: on a machine the shards saturate they fail
 # the unmutated baseline, and a failing baseline stops cargo-mutants before it tests any
 # mutant. A filter, not a nextest profile, so trees older than this script take it too
@@ -76,6 +65,13 @@ render_scale=(
   adversarial_render::ten_thousand_highlighted_faces_draw_within_half_the_limit
   worker::the_largest_render_is_the_box_from_the_front_too
 )
+# silico-render's proptests too slow for a loaded shard (each minutes alone): with them in a
+# shard's unmutated baseline it passes the test limit and the shard tests nothing. Left out
+# of mutants only: tests/proptest-explore.sh runs them, alone and given longer, so they keep
+# getting fresh seeds, and the gate runs them at its fixed one. Beside each entry, say what it
+# alone tests (as the lists above do), so a render survivor there is checked against it,
+# unloaded, before it's a finding.
+slow_proptests=()
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.
 tests_of() {
   local package=$1 tests="" t
@@ -83,7 +79,30 @@ tests_of() {
   for t in "$@"; do tests="${tests:+$tests | }test(=$t)"; done
   echo "package($package) & ($tests)"
 }
-filter="not ($(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}") | $(tests_of silico-render "${render_scale[@]}"))"
+# Left out of mutants and of the exploration alike: the wall clock's tests and the GiB ones.
+skipped="$(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}") | $(tests_of silico-render "${render_scale[@]}")"
+# The slow proptests, for mutants to leave out too and the exploration to run alone: empty
+# when there are none, as `package(p) & ()` is no filter.
+slow=""
+if [ "${#slow_proptests[@]}" -gt 0 ]; then slow=$(tests_of silico-render "${slow_proptests[@]}"); fi
+filter="not ($skipped${slow:+ | $slow})"
+explore_filter="not ($skipped)"
+
+# tests/proptest-explore.sh sources this file for $explore_filter and $slow alone, and returns
+# here, before the tree's checkout.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
+
+# shellcheck source=tests/committed-tree.sh
+source "$(dirname "${BASH_SOURCE[0]}")/committed-tree.sh"
+
+pixi run occt
+pixi install -e oracle
+# cargo-mutants' baseline builds and tests only the mutated packages, and their tests start
+# other packages' workers (silico-oracle's start the kernel's): build the whole workspace's
+# tests first, as the gate and each mutant build them, since the build may start cold
+# (committed-tree.sh).
+cargo nextest run --workspace --no-run
+echo "mutants: testing $commit"
 # Each test given 5 minutes a try, not the 2 its slow-timeout gives (.config/nextest.toml):
 # the shards run niced, and while gates build and test at full priority a niced test that
 # takes 20 s alone can take minutes. Ended at 2, under retries no longer than a burst of
