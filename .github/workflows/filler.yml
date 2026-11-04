@@ -38,6 +38,10 @@
 # .github/mutants-triaged.txt. Real work (a real mutants run, the bench, the nightly sweep)
 # cancels them first (.github/cancel-filler.sh), from a runner labelled control
 # (silico-13, -14), which runs only short jobs.
+# The proptest exploration (proptest-explore.yml) is filler too, started by its own schedule
+# when there's room (.github/proptest-room.sh, these rules for one run), and cancelled by
+# real work the same way: one starting holds this back as a mutants run starting does, and
+# a sweep due waits for one going to end, as it waits for filler mutants.
 #
 #   gh workflow run filler.yml --ref main -f dry=true   (says what it would start)
 name: filler
@@ -47,7 +51,7 @@ on:
     - cron: "*/15 * * * *"
   # When a run ends, its runners are free.
   workflow_run:
-    workflows: [mutants, oracle-sweep]
+    workflows: [mutants, oracle-sweep, proptest-explore]
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -140,21 +144,22 @@ jobs:
           # progress can still have jobs waiting for runners, which come first if a filler
           # runner could take them (silico-5 to -12 carry mutants-pr and filler, 9 to 12 mutants
           # too).
-          # A mutants run or an oracle sweep with no shard or sweep job yet is starting (its
-          # plan, or its yield, still going): a real one's plan has cancelled filler and its
-          # shards will want filler's runners; a filler one's shards don't show yet as busy
-          # or queued. Either way, wait for it: marked "starting".
+          # A mutants run, an oracle sweep, or a proptest exploration with no shard, sweep, or
+          # explore job yet is starting (its plan, its yield, or its room, still going): a real
+          # one's plan has cancelled filler and its shards will want filler's runners; a filler
+          # one's jobs don't show yet as busy or queued. Either way, wait for it: marked
+          # "starting".
           jobs=$(awk -F '\t' 'NF { print $1, $2 }' <<<"$active" | while read -r run workflow; do
             [ -n "$run" ] || continue
             gh api "repos/$GH_REPO/actions/runs/$run/jobs?per_page=100" --jq "
               (.jobs[] | select(.status != \"completed\")
                 | [.status, (.runner_name // \"\"), (.labels // [] | join(\",\"))] | @tsv),
-              (if (\"$workflow\" == \"mutants.yml\" or \"$workflow\" == \"oracle-sweep.yml\")
-                  and ([.jobs[].name | select(startswith(\"shard\") or startswith(\"sweep\"))] | length) == 0
+              (if (\"$workflow\" == \"mutants.yml\" or \"$workflow\" == \"oracle-sweep.yml\" or \"$workflow\" == \"proptest-explore.yml\")
+                  and ([.jobs[].name | select(startswith(\"shard\") or startswith(\"sweep\") or startswith(\"explore\"))] | length) == 0
                 then \"starting\\t\\t\" else empty end)"
           done)
           if awk -F '\t' '$1 == "starting" { found = 1 } END { exit !found }' <<<"$jobs"; then
-            skip "a mutants run or a sweep is starting"
+            skip "a mutants run, a sweep, or a proptest exploration is starting"
           fi
           # A job waiting for a runner of the mutants lanes (a real run's or a filler run's)
           # comes first only if it could start: a runner it asks for is free, or between jobs
@@ -196,6 +201,7 @@ jobs:
             skip "a filler sweep is going"
           fi
           filler_mutants=$(awk -F '\t' '$2 == "mutants.yml" && $4 ~ /^filler /' <<<"$active" | wc -l)
+          explorations=$(awk -F '\t' '$2 == "proptest-explore.yml"' <<<"$active" | wc -l)
           # The runners labelled filler that are running a job, of any run.
           busy=$(awk -F '\t' '$1 == "in_progress" && $2 ~ /^pve-silico-([5-9]|1[0-2]|2[23])-/' <<<"$jobs" | wc -l)
           # The CPUs idle now, over 15 seconds (this job runs on the VM; the load average lags
@@ -246,10 +252,11 @@ jobs:
             --jq "[.[] | select((.displayTitle | startswith(\"filler \"))
                     and now - (.createdAt | fromdateiso8601) < $oracle_every)] | length")
           # Due while filler mutants go: wait for them to end, so the sweep comes next, rather
-          # than start more, which overlap and would keep it from ever coming.
+          # than start more, which overlap and would keep it from ever coming. And for a
+          # proptest exploration, which shares the CPU at the idle weight as a shard does.
           if [ "$recent" -eq 0 ]; then
-            if [ "$filler_mutants" -gt 0 ]; then
-              skip "the oracle sweep is due, waiting for filler mutants to end"
+            if [ "$filler_mutants" -gt 0 ] || [ "$explorations" -gt 0 ]; then
+              skip "the oracle sweep is due, waiting for filler mutants or a proptest exploration to end"
             fi
             start oracle-sweep.yml -f filler=true
             exit 0

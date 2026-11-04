@@ -777,7 +777,7 @@ fn a_merge_whose_solve_before_failed_with_the_same_redundancy_is_no_worse_and_is
     // identities after ({ka000001}) are all among those before ({ka000001}): no new
     // diagnostic, so the coincidence stands.
     // BREAKS: Silico's `flagged` reads no redundancy from a failed solve (its error carries
-    // none), so ka000001 counts as new and the merge is refused with "these 1 constraints
+    // none), so ka000001 counts as new and the merge is refused with "the constraints named
     // repeat others, as the sketch's solve before it found none of them do", though the
     // solve before found exactly that one.
     let f = opened(&bracket());

@@ -279,7 +279,7 @@ fn a_merge_that_takes_a_conflicting_sketch_past_its_last_freedom_is_refused_as_m
         refused,
         json!([{
             "code": "over_constrained",
-            "message": "after the merge, the sketch's constraints conflict: these 2 can't all hold",
+            "message": "after the merge, the sketch's constraints conflict: the ones named can't all hold",
             "feature": "s0000001",
             "elements": ["ka000009", "ka00000d"],
             "elements_total": 2,
@@ -421,7 +421,7 @@ fn a_merge_of_two_locked_ends_makes_a_lock_redundant_and_is_refused_as_main_roll
         error,
         &json!({
             "code": "over_constrained",
-            "message": "after the merge, these 2 constraints repeat others, as the sketch's solve before it found none of them do",
+            "message": "after the merge, the constraints named repeat others, as the sketch's solve before it found none of them do",
             "feature": "s0000001",
             "elements": elements,
             "elements_total": 2,

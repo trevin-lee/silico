@@ -369,11 +369,10 @@ fn start(
                 .filter_map(|&t| translation.constraint_id(t))
                 .map(|id| id.as_str().to_owned())
                 .collect();
-            let n = ids.len();
             return Err(named(
                 Error::new(
                     ErrorCode::OverConstrained,
-                    format!("the sketch's constraints conflict: these {n} can't all hold"),
+                    "the sketch's constraints conflict: the ones named can't all hold",
                 )
                 .with_elements(ids)
                 .with_cause(
