@@ -6,8 +6,8 @@
 
 use std::collections::BTreeMap;
 
-use silico_core::command::Problems;
 use silico_core::command::wire::{self, Json, Layout};
+use silico_core::command::{Problems, Revision};
 use silico_core::document::json::Plain;
 use silico_core::document::{Change, FeatureId};
 
@@ -211,6 +211,40 @@ pub fn marks(changes: &[Change]) -> BTreeMap<FeatureId, String> {
         .collect()
 }
 
+/// Whether `problems` refuse `from` as a revision the session doesn't hold (`diff`'s
+/// refusal naming `from`, its candidates the revisions it holds, `from` not among them), as
+/// they do once the file changed again before the diff ran.
+pub fn not_held(problems: &Problems, from: Revision) -> bool {
+    let from = from.number().to_string();
+    problems.errors().iter().any(|error| {
+        error.parameter() == Some("from")
+            && !error.candidates().is_empty()
+            && !error.candidates().contains(&from)
+    })
+}
+
+/// The line saying the changes of the earlier reloads `unlisted`, each from and to, weren't
+/// listed: the file changed again before what each changed was read. None if there are
+/// none.
+pub fn unlisted(unlisted: &[(Revision, Revision)]) -> Option<String> {
+    let spans: Vec<String> = unlisted
+        .iter()
+        .map(|(from, to)| format!("{} → {}", from.number(), to.number()))
+        .collect();
+    match spans.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "An earlier change, revision {one}, couldn't be listed: the file changed again \
+             before it was read, so its features aren't marked."
+        )),
+        many => Some(format!(
+            "Earlier changes, revisions {}, couldn't be listed: the file changed again before \
+             they were read, so their features aren't marked.",
+            many.join(", ")
+        )),
+    }
+}
+
 /// A refusal, said: its first error's message, then its candidates, if it has any.
 pub fn refused(problems: &Problems) -> String {
     let Some(error) = problems.errors().first() else {
@@ -402,6 +436,51 @@ mod tests {
             number("10"),
             number("11"),
         )])
+    }
+
+    fn revision(n: u64) -> Revision {
+        Revision::from_number(n).unwrap()
+    }
+
+    /// `diff`'s refusal naming `parameter`, with `candidates`, as the core words it.
+    fn refusal(parameter: &str, candidates: &[&str]) -> Problems {
+        Problems::from(
+            silico_core::Error::new(silico_core::ErrorCode::InvalidInput, "refused")
+                .with_parameter(parameter)
+                .with_candidates(candidates.iter().copied()),
+        )
+    }
+
+    #[test]
+    fn a_from_is_not_held_only_when_its_refusal_names_it_and_lists_others() {
+        // Revision 1 asked, the session holding 2 and 3: the file changed again.
+        assert!(not_held(&refusal("from", &["2", "3"]), revision(1)));
+        // Held after all, or another parameter refused, or no candidates (a text that
+        // doesn't read as a document): not that.
+        assert!(!not_held(&refusal("from", &["1", "3"]), revision(1)));
+        assert!(!not_held(&refusal("to", &["2", "3"]), revision(1)));
+        assert!(!not_held(&refusal("from", &[]), revision(1)));
+        // A candidate that only starts with the revision's number isn't it.
+        assert!(not_held(&refusal("from", &["10", "11"]), revision(1)));
+    }
+
+    #[test]
+    fn earlier_reloads_unlisted_are_said_one_or_several() {
+        assert_eq!(unlisted(&[]), None);
+        assert_eq!(
+            unlisted(&[(revision(1), revision(2))]).as_deref(),
+            Some(
+                "An earlier change, revision 1 → 2, couldn't be listed: the file changed \
+                 again before it was read, so its features aren't marked."
+            )
+        );
+        assert_eq!(
+            unlisted(&[(revision(1), revision(2)), (revision(2), revision(3))]).as_deref(),
+            Some(
+                "Earlier changes, revisions 1 → 2, 2 → 3, couldn't be listed: the file \
+                 changed again before they were read, so their features aren't marked."
+            )
+        );
     }
 
     #[test]

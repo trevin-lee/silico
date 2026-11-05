@@ -302,8 +302,46 @@ pub(crate) fn text_row(ui: &mut Ui, key: &str, value: LayoutJob) {
     row(ui, key, |ui, _| truncated(ui, value));
 }
 
+/// A row of a modal's list (`.prop` with `padding: 0`, as the prototype's "What changed on
+/// disk" lists them): `key` in its column, and `value` in the rest, each cut short where it
+/// doesn't fit; `at`, its place among the list's rows, naming it.
+pub(crate) fn list_row(ui: &mut Ui, at: usize, key: &str, value: &str) {
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(ui.available_width(), theme::PROPERTY_ROW_HEIGHT),
+        Sense::hover(),
+    );
+    let key_rect = Rect::from_min_size(
+        rect.left_top(),
+        vec2(theme::PROPERTY_KEY_WIDTH, rect.height()),
+    );
+    let value_rect = Rect::from_min_max(
+        pos2(key_rect.right() + theme::PROPERTY_ROW_GAP, rect.top()),
+        rect.right_bottom(),
+    );
+    within(ui, key_rect, ("list-key", at), |ui| {
+        truncated(ui, body(key, theme::PROPERTY_KEY))
+    });
+    within(ui, value_rect, ("list-value", at), |ui| {
+        truncated(ui, body(value, theme::PROPERTY_VALUE))
+    });
+}
+
 /// A hint (`.hint-block`): each of `parts` in turn, the emphasised ones Gray.800.
 pub(crate) fn hint(ui: &mut Ui, parts: &[(&str, bool)]) {
+    hint_at(
+        ui,
+        parts,
+        Margin {
+            left: theme::VIEW_PADDING,
+            right: theme::VIEW_PADDING,
+            top: theme::HINT_MARGIN as i8,
+            bottom: theme::HINT_MARGIN as i8,
+        },
+    );
+}
+
+/// [`hint`], `margin` around it: a modal's (`margin: 12px 0 0`), or a panel's.
+pub(crate) fn hint_at(ui: &mut Ui, parts: &[(&str, bool)], margin: Margin) {
     let mut job = LayoutJob::default();
     for (text, strong) in parts {
         let colour = if *strong {
@@ -324,12 +362,7 @@ pub(crate) fn hint(ui: &mut Ui, parts: &[(&str, bool)]) {
         .fill(theme::HINT_BG)
         .corner_radius(CornerRadius::same(theme::NORMAL_CORNER_RADIUS))
         .inner_margin(theme::HINT_PADDING)
-        .outer_margin(Margin {
-            left: theme::VIEW_PADDING,
-            right: theme::VIEW_PADDING,
-            top: theme::HINT_MARGIN as i8,
-            bottom: theme::HINT_MARGIN as i8,
-        })
+        .outer_margin(margin)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.add(Label::new(job).wrap().selectable(false));

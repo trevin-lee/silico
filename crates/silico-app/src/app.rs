@@ -20,11 +20,12 @@ use silico_core::views::NamedView;
 use crate::banner::{self, Banner, Style, Tone};
 use crate::bar;
 use crate::browse::{self, Ask, Browse, Browsing, Pick};
-use crate::changes::Changes;
+use crate::changes::{self, Changes};
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::modal::{self, Button, Kind};
 use crate::panes::{self, Pane, Panes};
+use crate::properties;
 use crate::recent::Recents;
 use crate::sheet::{self, Sheet};
 use crate::shortcuts::{self, Command};
@@ -1097,9 +1098,8 @@ impl<P: Clients + 'static> App<P> {
             (false, true) => Some(Key::Escape),
             (false, false) => None,
         };
-        // Esc, with no dialog open: the selection cleared first, then a rebuild running
-        // stopped, as the stop does (section 3's order); with neither, the reload's banner
-        // dismissed.
+        // Esc, with no dialog open: the reload's banner dismissed first, then the selection
+        // cleared, then a rebuild running stopped, as the stop does (section 3's order).
         if stop && !in_dialog {
             tab.escape(sessions);
         }
@@ -1800,6 +1800,7 @@ impl<P: Clients + 'static> App<P> {
                     sub,
                     list: None,
                     buttons,
+                    tips: &[],
                     dismiss: false,
                 },
             );
@@ -1836,26 +1837,38 @@ impl<P: Clients + 'static> App<P> {
             reloaded.to.number()
         );
         // What changed (`.diff`), as the reload's diff answered: nothing while it's asked;
-        // its refusal, said; and Restore's, if it was refused.
+        // its refusal, said; then the earlier reloads whose changes it replaced unlisted;
+        // and Restore's refusal, if it was refused. A line each.
         let (rows, more): (&[crate::changes::Row], Option<&str>) = match &reloaded.changes {
             Changes::Asking => (&[], None),
             Changes::Listed(listed) => (&listed.rows, listed.more.as_deref()),
             Changes::Refused(said) => (&[], Some(said.as_str())),
         };
-        let after = match (more, reloaded.refused.as_deref()) {
-            (Some(more), Some(refused)) => Some(format!("{more}\n{refused}")),
-            (more, refused) => refused.or(more).map(str::to_owned),
-        };
-        let list = (!rows.is_empty() || after.is_some()).then_some(banner::List {
+        let unlisted = changes::unlisted(&reloaded.unlisted);
+        let after: Vec<&str> = [more, unlisted.as_deref(), reloaded.refused.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        let list = (!rows.is_empty() || !after.is_empty()).then_some(banner::List {
             rows,
-            after: after.as_deref(),
+            after: &after,
         });
         // Named by the revision it puts back (Fable's decision of 2026-11-04, section 2:
         // never "my version", which may be another program's earlier save). Off while a
-        // dialog is open, the tab closes, a Restore is under way, or once it was refused.
+        // dialog is open, the tab closes, a Restore is under way, once it was refused, or
+        // once the session is known not to hold that revision (said, as Restore's read
+        // could only be refused).
         let restore = format!("Restore revision {}", reloaded.from.number());
-        let on =
-            !tab.in_dialog() && !tab.closing() && !tab.restoring() && reloaded.refused.is_none();
+        let gone = format!(
+            "Silico no longer holds revision {}: the file changed again before what changed \
+             was read, so it can't be put back",
+            reloaded.from.number()
+        );
+        let on = !tab.in_dialog()
+            && !tab.closing()
+            && !tab.restoring()
+            && reloaded.refused.is_none()
+            && reloaded.from_held;
         let clicked = banner::show(
             ui,
             canvas,
@@ -1869,6 +1882,7 @@ impl<P: Clients + 'static> App<P> {
                 ],
                 list,
                 buttons: &[(&restore, on)],
+                tips: &[(!reloaded.from_held).then_some(gone.as_str())],
                 dismiss: true,
             },
         );
@@ -2010,14 +2024,19 @@ impl<P: Clients + 'static> App<P> {
                         theme::MODAL_TEXT,
                     );
                     modal::label(ui, "Your unsaved edits");
+                    // The prototype's rows (`.prop`, unpadded): "Edit" in the key column,
+                    // and what the edit changed beside it.
                     match &tab.held_changes {
-                        None | Some(Changes::Asking) => {}
+                        None | Some(Changes::Asking) => {
+                            modal::text(ui, "Reading what changed…", theme::MODAL_TEXT);
+                        }
                         Some(Changes::Listed(listed)) => {
-                            for row in &listed.rows {
-                                modal::text(
+                            for (at, row) in listed.rows.iter().enumerate() {
+                                properties::list_row(
                                     ui,
+                                    at,
+                                    "Edit",
                                     &format!("{} · {} · {}", row.feature, row.field, row.text),
-                                    theme::MODAL_TEXT,
                                 );
                             }
                             if let Some(more) = &listed.more {
@@ -2028,6 +2047,17 @@ impl<P: Clients + 'static> App<P> {
                             modal::text(ui, said, theme::ERROR_TEXT);
                         }
                     }
+                    // `.hint-block`, in Silico's words: the prototype's names `silico
+                    // textconv`, but these rows are the core's `diff`'s.
+                    properties::hint_at(
+                        ui,
+                        &[(
+                            "A feature-level summary of the two documents, as Silico's diff \
+                             reads them.",
+                            false,
+                        )],
+                        theme::MODAL_HINT_MARGIN,
+                    );
                 });
                 let ([], [close, reload, save_as]) = modal::foot(
                     ui,

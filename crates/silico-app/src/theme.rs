@@ -1118,6 +1118,14 @@ pub const HINT_PADDING: Margin = Margin::symmetric(10, 8);
 pub const HINT_BG: Color32 = GRAY_150;
 pub const HINT_TEXT: Color32 = TEXT_SUBDUED;
 pub const HINT_STRONG: Color32 = GRAY_800;
+/// A hint in a modal's body (`.hint-block` with `margin: 12px 0 0`): 12 above it, nothing
+/// at its sides or under it.
+pub const MODAL_HINT_MARGIN: Margin = Margin {
+    left: 0,
+    right: 0,
+    top: 12,
+    bottom: 0,
+};
 
 /// An error card (`.err-card`): 8 above and below it, `--pad` at its sides, corners `--r`;
 /// its fill, its 1 px border, its head's text and icon (`.ec-head`), and its accent

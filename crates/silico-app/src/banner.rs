@@ -72,11 +72,11 @@ pub(crate) enum Style {
 }
 
 /// The list under a banner's words (`.diff`): its rows, each the feature's name, the
-/// field, and what it went from and to; then a line after them (how many more, or a
-/// refusal), if there is one.
+/// field, and what it went from and to; then the lines after them (how many more, a
+/// refusal), each a label of its own.
 pub(crate) struct List<'a> {
     pub rows: &'a [crate::changes::Row],
-    pub after: Option<&'a str>,
+    pub after: &'a [&'a str],
 }
 
 /// What a banner says and offers.
@@ -90,6 +90,9 @@ pub(crate) struct Banner<'a> {
     pub list: Option<List<'a>>,
     /// Its buttons, by their words, each on or not.
     pub buttons: &'a [(&'a str, bool)],
+    /// Why each button, by its place among them, is off, shown as its tooltip while it is:
+    /// none for one with no reason given.
+    pub tips: &'a [Option<&'a str>],
     /// Whether it has a close button, labelled Dismiss (`.ab-btn`).
     pub dismiss: bool,
 }
@@ -286,10 +289,14 @@ pub(crate) fn show(ui: &mut Ui, canvas: Rect, banner: &Banner<'_>) -> Clicked {
     for (action, place) in places {
         match action {
             Action::Button(at) => {
-                if let Some(button) = buttons.get(at)
-                    && modal::paint(ui, place, button).clicked()
-                {
-                    clicked = Clicked::Button(at);
+                if let Some(button) = buttons.get(at) {
+                    let mut response = modal::paint(ui, place, button);
+                    if let Some(tip) = banner.tips.get(at).copied().flatten() {
+                        response = response.on_disabled_hover_text(tip);
+                    }
+                    if response.clicked() {
+                        clicked = Clicked::Button(at);
+                    }
                 }
             }
             Action::Dismiss => {
@@ -307,7 +314,7 @@ pub(crate) fn show(ui: &mut Ui, canvas: Rect, banner: &Banner<'_>) -> Clicked {
 /// all is.
 struct LaidOut {
     rows: Vec<[std::sync::Arc<eframe::egui::Galley>; 3]>,
-    after: Option<std::sync::Arc<eframe::egui::Galley>>,
+    after: Vec<std::sync::Arc<eframe::egui::Galley>>,
     /// The first two columns' widths (`grid-template-columns: auto auto 1fr`).
     columns: [f32; 2],
     height: f32,
@@ -354,16 +361,20 @@ fn laid_out(ui: &Ui, list: &List<'_>, ink: Color32, width: f32) -> LaidOut {
             [feature, field, text]
         })
         .collect();
-    let after = list.after.map(|after| {
-        let galley = ui
-            .painter()
-            .layout_job(modal::wrapped(after, theme::HEADER_SIZE, ink, width));
-        if height > 0.0 {
-            height += theme::BANNER_LIST_ROW_GAP;
-        }
-        height += galley.size().y;
-        galley
-    });
+    let after = list
+        .after
+        .iter()
+        .map(|after| {
+            let galley =
+                ui.painter()
+                    .layout_job(modal::wrapped(after, theme::HEADER_SIZE, ink, width));
+            if height > 0.0 {
+                height += theme::BANNER_LIST_ROW_GAP;
+            }
+            height += galley.size().y;
+            galley
+        })
+        .collect();
     LaidOut {
         rows,
         after,
@@ -393,11 +404,14 @@ impl LaidOut {
             }
             y += height;
         }
-        if let Some(after) = self.after {
+        for after in self.after {
             if !first {
                 y += theme::BANNER_LIST_ROW_GAP;
             }
+            first = false;
+            let height = after.size().y;
             modal::label_at(ui, pos2(at.x, y), after);
+            y += height;
         }
     }
 }
@@ -476,6 +490,7 @@ mod tests {
                         sub: &SUB,
                         list: None,
                         buttons,
+                        tips: &[],
                         dismiss,
                     };
                     let clicked = show(ui, canvas.rect, &banner);

@@ -11,7 +11,7 @@ use silico_core::command::export::{Export, Exported};
 use silico_core::command::{
     Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, DiffAnswer, FieldSet,
     ModelChoice, Moved, Problems, RebuildState, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, Sessions, Status, Stepped, TextAnswer, TimelineAnswer,
+    SessionId, SessionInfo, Sessions, Status, Stepped, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
@@ -260,14 +260,17 @@ enum Under {
         feature: FeatureId,
         running: Running<TextAnswer>,
     },
-    /// Restore's read of the text of `revision`.
+    /// Restore's read of the text of `revision`, sent at the tab's revision `sent_at`.
     Restore {
         revision: Revision,
+        sent_at: Revision,
         running: Running<TextAnswer>,
     },
-    /// Restore's edit, `replace_text` of `revision`'s text, as it was sent.
+    /// Restore's edit, `replace_text` of `revision`'s text, as it was sent, and whether its
+    /// `begin` was sent for it.
     Replace {
         revision: Revision,
+        began: bool,
         sending: Sending,
         running: Running<Replaced>,
     },
@@ -294,6 +297,14 @@ pub struct Reloaded {
     pub to: Revision,
     pub changes: Changes,
     pub refused: Option<String>,
+    /// The earlier reloads this one's banner replaced before their changes were listed
+    /// (their `diff` still asked, or refused, the file having changed again before it ran),
+    /// each from and to: their changes are never listed, nor their features marked.
+    pub unlisted: Vec<(Revision, Revision)>,
+    /// Whether the session still holds `from`'s text, as far as the tab knows: not once
+    /// the reload's `diff` was refused for not holding it (the file changed again), when
+    /// Restore, which reads it, can only be refused too.
+    pub from_held: bool,
 }
 
 /// A row of the browser (section 8, *The browser*): a feature, by its ID and name, with the
@@ -852,25 +863,8 @@ impl Tab {
         if let Some(session) = &status.session {
             // Moved with nothing of the tab's under way: the session's own reload.
             if self.status.is_some() && session.revision != self.revision && self.quiet() {
-                self.resets += 1;
                 reloaded = true;
-                self.reloaded = if std::mem::take(&mut self.reload_asked) {
-                    None
-                } else {
-                    Some(Reloaded {
-                        from: self.revision,
-                        to: session.revision,
-                        changes: Changes::Asking,
-                        refused: None,
-                    })
-                };
-                // What changed, asked as the reload is seen, from the revision the tab had
-                // (the one the reload replaced) to the session's now (Fable's decision of
-                // 2026-11-04, section 1); a diff of an older reload still out let go.
-                self.reload_diff = self
-                    .reloaded
-                    .as_ref()
-                    .map(|reloaded| sessions.diff(&self.id, Some(reloaded.from), None));
+                self.reload_seen(sessions, self.revision, session.revision);
             }
             self.revision = session.revision;
             self.transaction = session.transaction;
@@ -927,6 +921,61 @@ impl Tab {
         self.read_check(sessions);
     }
 
+    /// The session's own reload seen, from `from`, the revision the tab had (the one the
+    /// reload replaced), to `to`: the views read again; the banner saying so in place of
+    /// any before it (none for a reload the person asked for, section 4); and what changed
+    /// asked of `diff`, from `from` to the session's now (Fable's decision of 2026-11-04,
+    /// section 1), its features marked when it answers, the person's reload's too. A diff
+    /// of an older reload still out is let go, so its answer never lands in this banner;
+    /// an older banner whose changes weren't listed (its diff still out, or refused) is
+    /// said in this one, as are those it carried.
+    fn reload_seen<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        from: Revision,
+        to: Revision,
+    ) {
+        self.resets += 1;
+        let unlisted = match self.reloaded.take() {
+            Some(older) => {
+                let mut unlisted = older.unlisted;
+                if matches!(older.changes, Changes::Asking | Changes::Refused(_)) {
+                    unlisted.push((older.from, older.to));
+                }
+                unlisted
+            }
+            None => Vec::new(),
+        };
+        self.reloaded = (!std::mem::take(&mut self.reload_asked)).then_some(Reloaded {
+            from,
+            to,
+            changes: Changes::Asking,
+            refused: None,
+            unlisted,
+            from_held: true,
+        });
+        self.reload_diff = Some(sessions.diff(&self.id, Some(from), None));
+    }
+
+    /// The session's own reload, if `session`, as the answer to a command the tab sent at
+    /// revision `sent_at` that changes nothing itself (or one refused) left it, says one
+    /// came first: it says it reloaded, or its revision isn't `sent_at`. Seen as
+    /// [`poll`](Self::poll) sees one, which it can't while the command is under way.
+    fn reload_in<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        sent_at: Revision,
+        session: Option<&SessionInfo>,
+    ) {
+        let Some(session) = session else {
+            return;
+        };
+        if session.reloaded || session.revision != sent_at {
+            self.reload_seen(sessions, sent_at, session.revision);
+            self.reloaded_under_dialog(sessions);
+        }
+    }
+
     /// The session as `response` left it, if that's no older than what the tab knows.
     fn took_session<T>(&mut self, response: &Response<T>) {
         if let Some(session) = &response.session
@@ -972,7 +1021,7 @@ impl Tab {
         }
         let mut close = false;
         for under in std::mem::take(&mut self.under) {
-            if let Some(under) = self.take(under, &mut close) {
+            if let Some(under) = self.take(sessions, under, &mut close) {
                 self.under.push(under);
             }
         }
@@ -999,7 +1048,12 @@ impl Tab {
                             self.outside.extend(changes::marks(&answer.changes));
                             Changes::Listed(changes::listed(&answer.changes))
                         }
-                        Err(problems) => Changes::Refused(changes::refused(&problems)),
+                        Err(problems) => {
+                            if let Some(reloaded) = &mut self.reloaded {
+                                reloaded.from_held = !changes::not_held(&problems, reloaded.from);
+                            }
+                            Changes::Refused(changes::refused(&problems))
+                        }
                     };
                     if let Some(reloaded) = &mut self.reloaded {
                         reloaded.changes = changes;
@@ -1108,7 +1162,12 @@ impl Tab {
     }
 
     /// `under` polled: none if it answered (what it changed taken), or it back.
-    fn take(&mut self, under: Under, close: &mut bool) -> Option<Under> {
+    fn take<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        under: Under,
+        close: &mut bool,
+    ) -> Option<Under> {
         match under {
             Under::Begin(running) => match running.try_take() {
                 Ok(response) => {
@@ -1187,6 +1246,16 @@ impl Tab {
                 then_close,
             } => match running.try_take() {
                 Ok(response) => {
+                    // Past its revision already: the session's own reload, once the
+                    // transaction ended, seen by `status` before this answer was taken
+                    // (nothing of the tab's runs while a rollback does, so nothing else
+                    // moves it).
+                    if let Some(session) = &response.session
+                        && session.revision < self.revision
+                    {
+                        self.reload_seen(sessions, session.revision, self.revision);
+                        self.reloaded_under_dialog(sessions);
+                    }
                     self.took_session(&response);
                     // Typing queued after it is applied next: the field keeps it.
                     if response.result.is_ok() && self.edits.idle() {
@@ -1344,8 +1413,16 @@ impl Tab {
                     running,
                 }),
             },
-            Under::Restore { revision, running } => match running.try_take() {
+            Under::Restore {
+                revision,
+                sent_at,
+                running,
+            } => match running.try_take() {
                 Ok(response) => {
+                    // Its read reads the file first: a reload there is another program's
+                    // change, said in place of the banner Restore was clicked on.
+                    self.reload_in(sessions, sent_at, response.session.as_ref());
+                    self.took_session(&response);
                     match response.result {
                         // Put back next, before anything queued after it.
                         Ok(answer) => self.edits.queue.push_front(Queued::Replace {
@@ -1356,10 +1433,15 @@ impl Tab {
                     }
                     None
                 }
-                Err(running) => Some(Under::Restore { revision, running }),
+                Err(running) => Some(Under::Restore {
+                    revision,
+                    sent_at,
+                    running,
+                }),
             },
             Under::Replace {
                 revision,
+                began,
                 sending,
                 running,
             } => match running.try_take() {
@@ -1381,12 +1463,22 @@ impl Tab {
                                 self.resets += 1;
                             }
                         }
-                        Err(problems) => self.restore_refused(revision, &problems),
+                        Err(problems) => {
+                            // At another revision than it was sent against: the session
+                            // reloaded first (its `begin`'s read of the file), which no
+                            // answer said while it ran.
+                            self.reload_in(sessions, sending.against, response.session.as_ref());
+                            // Its own transaction, begun for it, ended: it held nothing,
+                            // and, left open, the session would follow the file no more.
+                            self.roll_back |= began;
+                            self.restore_refused(revision, &problems);
+                        }
                     }
                     None
                 }
                 Err(running) => Some(Under::Replace {
                     revision,
+                    began,
                     sending,
                     running,
                 }),
@@ -1571,15 +1663,21 @@ impl Tab {
                 }
                 Queued::Restore { revision } => {
                     let running = sessions.text_at(&self.id, None, Some(revision));
-                    self.under.push(Under::Restore { revision, running });
+                    self.under.push(Under::Restore {
+                        revision,
+                        sent_at: self.revision,
+                        running,
+                    });
                 }
                 Queued::Replace { revision, text } => {
+                    let began = !self.transaction && !self.beginning;
                     self.begin_if_none(sessions);
                     self.supersede_preview();
                     self.record(Sent::Replace);
                     let sending = self.sending();
                     self.under.push(Under::Replace {
                         revision,
+                        began,
                         sending,
                         running: sessions.replace_text(&self.id, self.revision, text),
                     });
@@ -2137,18 +2235,17 @@ impl Tab {
         self.rebuild_stopped() && !self.rebuild_out
     }
 
-    /// Esc with no dialog open (section 3's order): the selection cleared, or, with none, a
-    /// rebuild running stopped quietly ([`stop_quietly`](Self::stop_quietly)); with
-    /// neither, the reload's banner dismissed, if one shows.
+    /// Esc with no dialog open (section 3's order, the prototype's `escChain`): the reload's
+    /// purple banner dismissed, if one shows (DESIGN.md, 6c; an amber or red one in its
+    /// place has let it go already); or else the selection cleared; or else, with neither,
+    /// a rebuild running stopped quietly ([`stop_quietly`](Self::stop_quietly)).
     pub fn escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if !self.selection.is_empty() {
+        if self.reloaded.is_some() {
+            self.reloaded = None;
+        } else if !self.selection.is_empty() {
             self.selection.clear();
         } else if self.stoppable() {
             self.stop_quietly(sessions);
-        } else {
-            // Last, the purple banner dismissed (DESIGN.md, 6c; an amber or red one in its
-            // place has let it go already).
-            self.reloaded = None;
         }
     }
 
