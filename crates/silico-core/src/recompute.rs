@@ -602,6 +602,31 @@ impl Model {
         }
     }
 
+    /// This model with the feature `id`'s elements settled as never named (its solid built,
+    /// but its names couldn't be made: Silico's own bug, which no document reaches on the
+    /// fake), every other feature's as named so far: so a test can read a solid whose names
+    /// couldn't be made, as a client of the published model would find it.
+    #[cfg(any(test, feature = "fake"))]
+    pub fn unnamable(&self, id: &FeatureId) -> Model {
+        let maps = self
+            .features
+            .iter()
+            .zip(self.maps.iter())
+            .map(|((feature, _), map)| {
+                if feature == id {
+                    OnceLock::from(None)
+                } else {
+                    map.clone()
+                }
+            })
+            .collect();
+        Model {
+            maps,
+            entries: (0..self.features.len()).map(|_| OnceLock::new()).collect(),
+            ..self.clone()
+        }
+    }
+
     /// Names every feature's elements not yet named, in timeline order, while `go_on` says
     /// to.
     fn name_all(&self, go_on: impl Fn() -> bool) {
@@ -7497,6 +7522,37 @@ mod tests {
             assert!(unnamed.named_element_map(id).is_some(), "{id}");
             assert!(other.named_so_far(id).is_none(), "{id}");
         }
+    }
+
+    #[test]
+    fn a_models_unnamable_copy_lists_none_of_that_features_elements_whatever_the_model_listed() {
+        // `unnamable` settles one feature's names as never made: its elements can't be
+        // listed, the fault saying why, though the model it's copied from listed them
+        // already; every other feature's are listed as the model's are.
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+        let model = published(engine.start(Arc::new(boxes(2, |_| false))));
+        let ids: Vec<FeatureId> = model.features().iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(ids.len(), 2);
+        for id in &ids {
+            assert!(!model.entries(id).unwrap().unwrap().is_empty(), "{id}");
+        }
+        let unnamable = model.unnamable(&ids[0]);
+        assert_eq!(unnamable.named_so_far(&ids[0]), Some(None));
+        let Some(Err(fault)) = unnamable.entries(&ids[0]) else {
+            panic!("{:?}", unnamable.entries(&ids[0]))
+        };
+        assert_eq!(fault.code(), ErrorCode::Internal);
+        assert_eq!(fault.message(), "b0000000's elements couldn't be listed");
+        assert_eq!(
+            fault.cause(),
+            Some("its solid built, but its elements couldn't be named")
+        );
+        assert_eq!(
+            unnamable.entries(&ids[1]).unwrap().unwrap(),
+            model.entries(&ids[1]).unwrap().unwrap()
+        );
+        // The model's own are as they were.
+        assert!(!model.entries(&ids[0]).unwrap().unwrap().is_empty());
     }
 
     #[test]

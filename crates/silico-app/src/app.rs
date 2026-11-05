@@ -280,6 +280,10 @@ pub struct App<P: Clients + 'static> {
     quitting: bool,
     /// Frames drawn: what the tests watch climb while commands are held.
     frames: u64,
+    /// The values each kind of dialog was last OK'd with in this run, in any tab: a new
+    /// one of that kind opens with them (SolidWorks' PropertyManager remembers its last
+    /// used state for the session).
+    remembered: crate::dialog::Remembered,
     /// Times the core's waker asked for a frame.
     wakes: Arc<AtomicU64>,
     waker_set: bool,
@@ -396,6 +400,7 @@ impl<P: Clients + 'static> App<P> {
             message_from: None,
             quitting: false,
             frames: 0,
+            remembered: crate::dialog::Remembered::default(),
             wakes: Arc::new(AtomicU64::new(0)),
             waker_set: false,
             modal_key: None,
@@ -731,6 +736,12 @@ impl<P: Clients + 'static> App<P> {
     /// a quit has closed every tab, or kept open while one holds edits; and the next frame
     /// asked for.
     fn after_drawing(&mut self, ui: &mut Ui, mut started: bool) {
+        // The dialog OK'd this frame, if one was (one tab's panes draw a frame), remembered.
+        for tab in &mut self.tabs {
+            if let Some(oked) = tab.take_oked() {
+                self.remembered.keep(&oked);
+            }
+        }
         // The sheet under a question asked over it meanwhile (a quit, a replace).
         if let Some(open) = self.sheet.as_mut()
             && sheet::show(ui.ctx(), open)
@@ -1737,7 +1748,7 @@ impl<P: Clients + 'static> App<P> {
         };
         match act {
             Some(toolbar::Act::Dialog(kind)) => {
-                tab.open_dialog(&self.sessions, kind);
+                tab.open_dialog(&self.sessions, kind, &self.remembered);
                 *started = true;
             }
             Some(toolbar::Act::ClearSelection) => tab.selection_mut().clear(),

@@ -41,6 +41,15 @@
 //! after [`CLICK_WAIT`], a backstop. Each let go the person didn't do is said, in its
 //! cause's words, never over what a rebuild left gone from the same model.
 //!
+//! While a dialog's selection box of names is active ([`Selection::take_into`], section 9's
+//! *Feature dialogs*), the canvas picks only what the box takes, every click toggles the
+//! element under it (a click on nothing changes nothing), as SolidWorks' PropertyManager
+//! box takes its items, as does a drag on geometry and a box drawn (`crate::box_select`,
+//! each element it takes toggled), and each toggle is kept for the box
+//! ([`Selection::take_toggled`]);
+//! what a rebuild leaves gone isn't said, as the box, not the selection, holds what it
+//! writes (its own feature's preview may consume it).
+//!
 //! The visuals are behind [`outlines`], which the UI port replaces.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -212,6 +221,89 @@ pub struct Filter {
     pub vertices: bool,
 }
 
+impl Filter {
+    /// What both filters take.
+    pub fn and(self, other: Filter) -> Filter {
+        Filter {
+            faces: self.faces && other.faces,
+            edges: self.edges && other.edges,
+            vertices: self.vertices && other.vertices,
+        }
+    }
+
+    /// Whether it takes an element of `kind`.
+    pub fn takes(self, kind: ElementKind) -> bool {
+        match kind {
+            ElementKind::Face => self.faces,
+            ElementKind::Edge => self.edges,
+            ElementKind::Vertex => self.vertices,
+            ElementKind::Solid => false,
+        }
+    }
+}
+
+/// An element a click toggled in the selection while a dialog's box took the canvas's
+/// picks ([`Selection::take_into`]): whether it was added or let go, the name the
+/// selection holds it by, what a store writes for it or why it can't (as
+/// [`Selection::storable`] says it), the body it's in, and its kind, if it's found.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Toggled {
+    pub added: bool,
+    pub name: String,
+    pub stored: Result<Arc<Name>, Error>,
+    pub body: Option<FeatureId>,
+    pub kind: Option<ElementKind>,
+}
+
+/// A name picked on the published model, read in one feature's solid alone
+/// ([`Selection::read_on`]): found there, what a store writes for it or why it can't (or
+/// why it couldn't be read there); or not there, that solid holding no element by it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OnBase {
+    Found(Result<Arc<Name>, Error>),
+    Missing,
+}
+
+/// What [`Selection::keep_only`] let go of: how many elements of each kind, and how many
+/// features.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LeftOut {
+    pub elements: BTreeMap<ElementKind, usize>,
+    pub features: usize,
+}
+
+impl LeftOut {
+    /// What it says, if anything was left out: "1 face and 2 vertices"; faces first, then
+    /// edges, vertices, and features.
+    pub fn words(&self) -> Option<String> {
+        let mut parts: Vec<String> = [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex]
+            .into_iter()
+            .filter_map(|kind| {
+                let count = *self.elements.get(&kind)?;
+                let word = if count == 1 {
+                    kind.word()
+                } else {
+                    kind.plural()
+                };
+                Some(format!("{count} {word}"))
+            })
+            .collect();
+        if self.features > 0 {
+            let word = if self.features == 1 {
+                "feature"
+            } else {
+                "features"
+            };
+            parts.push(format!("{} {word}", self.features));
+        }
+        match parts.as_slice() {
+            [] => None,
+            [one] => Some(one.clone()),
+            [rest @ .., last] => Some(format!("{} and {last}", rest.join(", "))),
+        }
+    }
+}
+
 impl Default for Filter {
     fn default() -> Self {
         Filter {
@@ -262,6 +354,18 @@ struct Seen {
 /// revision (as [`View::bodies_of`] gives the bodies').
 type Of = (u64, Revision);
 
+/// How long items a dialog's Cancel put back ([`Selection::restore`]) wait to be read: a
+/// model published before the Cancel's undo is the dialog's preview, which may have
+/// consumed them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// Until the tab says the revision they're read from ([`Selection::read_from`]): the
+    /// Cancel's undo isn't sent yet, and edits sent before it may publish previews still.
+    Unsent,
+    /// Until a model of this revision, or a later one, is published.
+    Until(Revision),
+}
+
 /// The tab's selection and hover.
 #[derive(Debug, Default)]
 pub struct Selection {
@@ -278,6 +382,9 @@ pub struct Selection {
     of: Option<Of>,
     /// Whether some names were pending at the last read (asked again each frame).
     again: bool,
+    /// Items a dialog's Cancel put back, not read against a model until it's of the
+    /// revision the Cancel's undo comes to, or later.
+    held: Option<Held>,
     /// The body row the browser scrolls to: a canvas pick's.
     scroll: Option<FeatureId>,
     press: Option<Press>,
@@ -296,6 +403,11 @@ pub struct Selection {
     heard: Option<([u32; 2], Option<Arc<Name>>)>,
     /// The newest picking answer taken, by its frame.
     taken: Option<u64>,
+    /// What a dialog's active box takes from the canvas, while one does: the canvas picks
+    /// only that, and each click toggles.
+    taking: Option<Filter>,
+    /// What clicks toggled while a box took them, in order, until the tab takes them.
+    toggled: Vec<Toggled>,
     /// The version and bodies table the highlights were last worked out for.
     drawn: Option<(u64, u64)>,
 }
@@ -358,26 +470,168 @@ impl Selection {
     pub fn storable(&self) -> Result<Vec<Arc<Name>>, Error> {
         self.elements()
             .enumerate()
-            .map(|(place, picked)| match &picked.state {
-                State::Found(selected) => selected.stored.clone(),
-                State::Waiting { why, .. } => {
-                    let message = match why {
-                        Some(why) => format!(
-                            "{} isn't in the model as it's built now: {why}",
-                            picked.name
-                        ),
-                        None => format!(
-                            "{} isn't answered yet: its body's elements aren't named yet",
-                            picked.name
-                        ),
-                    };
-                    Err(Error::new(ErrorCode::Conflict, message)
-                        .with_element(picked.name.as_str())
-                        .with_parameter(format!("{PARAMETER}.{place}"))
-                        .with_suggestion("select it again once the model has rebuilt"))
-                }
-            })
+            .map(|(place, picked)| stored(place, picked))
             .collect()
+    }
+
+    /// The kinds a dialog's active box takes from the canvas, while one does; none once
+    /// none does. While it does, the canvas picks only those (and what the filter takes),
+    /// and each click toggles one element, kept for the box ([`take_toggled`]
+    /// (Self::take_toggled)).
+    pub fn take_into(&mut self, kinds: Option<Filter>) {
+        if self.taking != kinds {
+            self.taking = kinds;
+            self.toggled.clear();
+        }
+    }
+
+    /// What clicks toggled since this was last asked, in order, while a box took them.
+    pub fn take_toggled(&mut self) -> Vec<Toggled> {
+        std::mem::take(&mut self.toggled)
+    }
+
+    /// What the canvas picks: what the filter takes, and, while a box takes the canvas's
+    /// picks, what the box takes.
+    pub(crate) fn picks(&self) -> Filter {
+        match self.taking {
+            Some(kinds) => self.filter.and(kinds),
+            None => self.filter,
+        }
+    }
+
+    /// How a pick in the canvas changes the selection, picked `how`: while a box takes the
+    /// canvas's picks, it toggles, whatever its modifiers.
+    pub(crate) fn canvas_how(&self, how: How) -> How {
+        if self.taking.is_some() {
+            How::Toggle
+        } else {
+            how
+        }
+    }
+
+    /// The selection cut to what `kinds` takes, as a box of those takes it when its dialog
+    /// opens: each feature let go, and each element found of another kind (one not found
+    /// yet is kept: its kind isn't known, and a store refuses it). What was let go.
+    pub fn keep_only(&mut self, kinds: Filter) -> LeftOut {
+        let mut left = LeftOut::default();
+        let mut items = Vec::with_capacity(self.items.len());
+        for item in &self.items {
+            match item {
+                Item::Feature(_) => left.features += 1,
+                Item::Element(picked) => match picked.found().map(Selected::kind) {
+                    Some(kind) if !kinds.takes(kind) => {
+                        *left.elements.entry(kind).or_default() += 1;
+                    }
+                    _ => items.push(item.clone()),
+                },
+            }
+        }
+        if items.len() != self.items.len() {
+            self.set(items);
+        }
+        left
+    }
+
+    /// `name`, picked on the published model, read in the feature `feature`'s solid alone
+    /// (the core's `resolve_in`), as SolidWorks reads a feature's picks on the model rolled
+    /// back to before it: found there, what a store writes for it (its stable name in that
+    /// solid) or why it can't (unstable there; that solid's elements not named yet, or
+    /// never named; no model; `feature` with no solid; the name's own feature failed); or
+    /// [`OnBase::Missing`], that solid holding no element by it (`reference_broken`). Names
+    /// no element map and waits for none: the UI's thread calls it.
+    pub fn read_on(&self, name: &str, feature: &FeatureId) -> OnBase {
+        let Some(model) = &self.model else {
+            return OnBase::Found(Err(Error::new(
+                ErrorCode::Conflict,
+                format!("{name} isn't answered yet: no model is built yet"),
+            )
+            .with_element(name)
+            .with_suggestion("select it again once the model has rebuilt")));
+        };
+        match rules::resolve_in(model, &[name], PARAMETER, feature) {
+            Err(error) => OnBase::Found(Err(error)),
+            Ok(answer) => match answer.kept.into_iter().next() {
+                Some(found) => OnBase::Found(found.stored),
+                None if !answer.pending.is_empty() => OnBase::Found(Err(Error::new(
+                    ErrorCode::Conflict,
+                    format!("{name} isn't answered yet: {feature}'s elements aren't named yet"),
+                )
+                .with_element(name)
+                .with_suggestion("select it again once the model has rebuilt"))),
+                // Not in that solid only if that's why: any other reason (its elements
+                // never named, the name's feature failed) is said as it is.
+                None => match answer.gone.first() {
+                    Some(gone) => match gone.why.errors().first() {
+                        Some(why)
+                            if gone.failed.is_none()
+                                && why.code() == ErrorCode::ReferenceBroken =>
+                        {
+                            OnBase::Missing
+                        }
+                        Some(why) => OnBase::Found(Err(why.clone())),
+                        None => OnBase::Found(Err(unread(name, feature))),
+                    },
+                    None => OnBase::Found(Err(unread(name, feature))),
+                },
+            },
+        }
+    }
+
+    /// Its items as they are, to put back later ([`restore`](Self::restore)).
+    pub fn saved(&self) -> Vec<Item> {
+        self.items.clone()
+    }
+
+    /// `items`, saved before ([`saved`](Self::saved)), put back as they were (a dialog's
+    /// Cancel, as SolidWorks returns to the selection its command started with), a click
+    /// waiting let go: each as it was found, read against no model published (nor asked
+    /// again of the one published now) until the tab says from which revision
+    /// ([`read_from`](Self::read_from)), and a model of that revision or a later one is
+    /// published. Until then, a model published may be a preview of the dialog's, which
+    /// may have consumed them, its edits' previews landing even after the Cancel; the
+    /// Cancel's undo publishes the model they were found in again.
+    pub fn restore(&mut self, items: Vec<Item>) {
+        if items != self.items {
+            self.set(items);
+        }
+        self.said = None;
+        self.click = None;
+        self.again = false;
+        self.held = Some(Held::Unsent);
+    }
+
+    /// The items a dialog's Cancel put back ([`restore`](Self::restore)) read once a model
+    /// of `revision`, or a later one, is published: the revision the Cancel's undo (or
+    /// rollback) comes to, after every edit of the dialog's; or, if none of its edits
+    /// changed the document, the one it's at. Nothing, if none are held.
+    pub fn read_from(&mut self, revision: Revision) {
+        if self.held.is_some() {
+            self.held = Some(Held::Until(revision));
+        }
+    }
+
+    /// The element held by `name` let go: by the name the selection holds it by, or the
+    /// name a store writes for it (a box's chip removed, or an element a box refused).
+    pub fn let_go(&mut self, name: &str) {
+        let held = |item: &Item| match item {
+            Item::Element(picked) => {
+                picked.name == name
+                    || picked
+                        .found()
+                        .and_then(|selected| selected.stored.as_ref().ok())
+                        .is_some_and(|stored| stored.to_string() == name)
+            }
+            Item::Feature(_) => false,
+        };
+        if self.items.iter().any(held) {
+            let items = self
+                .items
+                .iter()
+                .filter(|item| !held(item))
+                .cloned()
+                .collect();
+            self.set(items);
+        }
     }
 
     /// What the pointer is over in the canvas, if anything.
@@ -450,7 +704,8 @@ impl Selection {
     /// or a name an agent could have written): read at once against the published model,
     /// and selected; or, if the model doesn't find it, the selection kept and why said.
     /// The rest are read again as each came to the model: a name carried into it stays
-    /// carried, its unstable text gone, never re-pointed as a pick would hold it.
+    /// carried, its unstable text gone, never re-pointed as a pick would hold it; but none
+    /// while items a dialog's Cancel put back wait to be read ([`restore`](Self::restore)).
     pub fn pick(&mut self, name: &str, how: How) {
         let _span = tracing::debug_span!("selection_pick", ?how).entered();
         self.said = None;
@@ -499,17 +754,33 @@ impl Selection {
                 index.add(at, each);
             }
         }
+        let boxed = how == How::Toggle && self.taking.is_some();
         match index.find(&picked) {
             Some(at) if how == How::Toggle => {
-                items.remove(at);
+                let place = elements_before(&items, at);
+                if let Item::Element(gone) = items.remove(at)
+                    && boxed
+                {
+                    self.toggled.push(toggled(false, place, &gone));
+                }
                 self.scroll = None;
             }
             // Added, and selected already: kept where it was.
             Some(_) => {}
-            None => items.push(Item::Element(picked)),
+            None => {
+                if boxed {
+                    let place = elements_before(&items, items.len());
+                    self.toggled.push(toggled(true, place, &picked));
+                }
+                items.push(Item::Element(picked));
+            }
         }
         self.set(items);
-        self.read(&model);
+        // Items a Cancel put back aren't read against this model, which may be its
+        // dialog's preview: the pick is read alone, above, till they're read.
+        if self.held.is_none() {
+            self.read(&model);
+        }
     }
 
     /// `names` picked together, `how` (a box's elements, by their names as the element map
@@ -522,8 +793,11 @@ impl Selection {
     /// waiting, as a click's is. The same element named twice is taken once (the core reads
     /// it so). A selection
     /// that would hold more elements than the core reads at once
-    /// ([`rules::MAX_SELECTED`]) isn't made: the selection is kept and that's said.
+    /// ([`rules::MAX_SELECTED`]) isn't made: the selection is kept and that's said. While a
+    /// box takes the canvas's picks, every pick toggles, and each element added or let go
+    /// is kept for the box, in the order named, as a click's toggle is.
     pub fn pick_all(&mut self, names: &[String], how: How) {
+        let how = self.canvas_how(how);
         let _span = tracing::debug_span!("selection_pick_all", ?how, names = names.len()).entered();
         self.said = None;
         if names.is_empty() {
@@ -607,6 +881,8 @@ impl Selection {
         }
         let mut removed: BTreeSet<usize> = BTreeSet::new();
         let mut scroll = None;
+        // Each toggled, in the order named, by its item's index here: added, or let go.
+        let mut toggles: Vec<(bool, usize)> = Vec::new();
         // The core's read gives each name once, and each element once (at its first name):
         // no two of the batch are one item's.
         for picked in each.into_values() {
@@ -614,6 +890,7 @@ impl Selection {
                 Some(at) => {
                     if how == How::Toggle {
                         removed.insert(at);
+                        toggles.push((false, at));
                     }
                 }
                 None => {
@@ -623,9 +900,35 @@ impl Selection {
                         scroll = picked.found().map(|found| found.feature.clone());
                     }
                     items.push(Item::Element(picked));
+                    toggles.push((true, at));
                 }
             }
         }
+        // For the box taking them: each let go at its place in the selection before, each
+        // added at its place in the selection after.
+        let boxed: Vec<Toggled> = if self.taking.is_some() {
+            toggles
+                .iter()
+                .filter_map(|&(added, at)| {
+                    let Some(Item::Element(picked)) = items.get(at) else {
+                        return None;
+                    };
+                    let place = if added {
+                        (0..at)
+                            .filter(|before| {
+                                !removed.contains(before)
+                                    && matches!(items.get(*before), Some(Item::Element(_)))
+                            })
+                            .count()
+                    } else {
+                        elements_before(&items, at)
+                    };
+                    Some(toggled(added, place, picked))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let items: Vec<Item> = items
             .into_iter()
             .enumerate()
@@ -642,11 +945,17 @@ impl Selection {
         }
         if items != self.items {
             self.scroll = scroll;
+            self.toggled.extend(boxed);
             // One revision, whether the read makes the items again (each answer's place
             // is its place in the selection, not in `names`) or not.
             let version = self.version;
             self.items = items;
-            self.read(&model);
+            // Items a Cancel put back aren't read against this model, which may be its
+            // dialog's preview, as a click's pick leaves them: the names picked were read
+            // alone, above, till they're read.
+            if self.held.is_none() {
+                self.read(&model);
+            }
             self.version = version.wrapping_add(1);
         }
     }
@@ -656,13 +965,16 @@ impl Selection {
     /// one (the core's refresh: names kept stay selected, with their stability now; names
     /// gone are dropped, and said, the rest kept; names of a feature that didn't build
     /// wait), each name carried until the next; and names pending asked again of the same,
-    /// each as it came to it.
+    /// each as it came to it. Items a dialog's Cancel put back are read only once a model
+    /// of the revision the tab gave ([`read_from`](Self::read_from)) or a later one is: on
+    /// the first such frame, whether it's a new model or the one published already.
     pub(crate) fn published(&mut self, published: Option<(Arc<Model>, Revision)>, models: u64) {
         let Some((model, revision)) = published else {
             self.model = None;
             return;
         };
-        if self.of != Some((models, revision)) {
+        let fresh = self.of != Some((models, revision));
+        if fresh {
             self.of = Some((models, revision));
             self.model = Some(Arc::clone(&model));
             // A click waiting for the meshes of a model published before this one: they're
@@ -688,6 +1000,16 @@ impl Selection {
                     picked.carry = Carry::Refresh;
                 }
             }
+        }
+        let released = match self.held {
+            Some(Held::Until(from)) if revision >= from => {
+                self.held = None;
+                true
+            }
+            Some(_) => return,
+            None => false,
+        };
+        if fresh || released {
             if self.elements().next().is_some() {
                 self.read(&model);
             }
@@ -787,7 +1109,9 @@ impl Selection {
                 }
             }
         }
-        if let Some((_, first)) = dropped.first() {
+        // While a box takes the canvas's picks, it holds what it writes, which its own
+        // feature's preview may consume: what goes from the selection isn't said.
+        if let Some((_, first)) = dropped.first().filter(|_| self.taking.is_none()) {
             let said = gone_words(&dropped, &before);
             self.gone_said = self.of.map(|of| (of, said.clone()));
             self.said = Some(said);
@@ -821,7 +1145,7 @@ impl Selection {
                 how,
                 after: view.last_asked(),
                 frames: 0,
-                filter: self.filter,
+                filter: self.picks(),
                 at: frame.now,
                 awaits: if current { None } else { self.of },
             });
@@ -871,7 +1195,7 @@ impl Selection {
         let Some(click) = &self.click else {
             return;
         };
-        if click.filter != self.filter {
+        if click.filter != self.picks() {
             tracing::debug!("the filter changed under a click waiting: let go");
             self.click = None;
             return;
@@ -1021,8 +1345,10 @@ impl Selection {
     }
 
     /// A click's pick answered: what's under it selected `how`; nothing there, the
-    /// selection cleared by a plain click, kept by a Ctrl-click.
+    /// selection cleared by a plain click, kept by a Ctrl-click. While a box takes the
+    /// canvas's picks, every click toggles, and one on nothing changes nothing.
     fn clicked(&mut self, picking: &Picking, how: How, bodies: &BTreeMap<u32, ViewBody>) {
+        let how = self.canvas_how(how);
         match self.under(picking, bodies) {
             Some((_, _, name, _)) => self.pick(&name.to_string(), how),
             None if how == How::Replace => self.clear(),
@@ -1063,22 +1389,23 @@ impl Selection {
         });
     }
 
-    /// What a picking found under its centre, as the filter takes it: a vertex at its
-    /// centre pixel (its disc is its tolerance, [`VERTEX_PICK_POINTS`]), first; then an
-    /// edge in its square; else the face at its centre pixel. Its body, element, name, and
-    /// the name's stability, as the bodies' meshes name them.
+    /// What a picking found under its centre, as the canvas picks ([`Self::picks`]): a
+    /// vertex at its centre pixel (its disc is its tolerance, [`VERTEX_PICK_POINTS`]),
+    /// first; then an edge in its square; else the face at its centre pixel. Its body,
+    /// element, name, and the name's stability, as the bodies' meshes name them.
     fn under(
         &self,
         picking: &Picking,
         bodies: &BTreeMap<u32, ViewBody>,
     ) -> Option<(u32, Element, Arc<Name>, bool)> {
         let centre = centre_of(picking.rect);
+        let picks = self.picks();
         let vertex = picking.hit.filter(|hit| {
-            hit.pixel == centre && matches!(hit.hit, Element::Vertex(_)) && self.filter.vertices
+            hit.pixel == centre && matches!(hit.hit, Element::Vertex(_)) && picks.vertices
         });
-        let edge = picking.edge.filter(|_| self.filter.edges);
+        let edge = picking.edge.filter(|_| picks.edges);
         let face = picking.hit.filter(|hit| {
-            hit.pixel == centre && matches!(hit.hit, Element::Face(_)) && self.filter.faces
+            hit.pixel == centre && matches!(hit.hit, Element::Face(_)) && picks.faces
         });
         let pick = vertex.or(edge).or(face)?;
         let named = bodies.get(&pick.body)?.name_of(pick.hit)?;
@@ -1089,7 +1416,7 @@ impl Selection {
     /// when the selection or the bodies table changed (which model the bodies are of
     /// changes only with the table).
     fn draw(&mut self, view: &mut View) {
-        view.vertices = self.filter.vertices.then_some(VERTEX_PICK_POINTS);
+        view.vertices = self.picks().vertices.then_some(VERTEX_PICK_POINTS);
         let key = (self.version, view.table());
         if self.drawn != Some(key) {
             view.highlights = highlights(&self.items, view.bodies(), view.bodies_of());
@@ -1100,6 +1427,63 @@ impl Selection {
             .iter()
             .map(|hovered| (hovered.body, hovered.element))
             .collect();
+    }
+}
+
+/// What a store writes for `picked`, the element at `place` among the selection's: its
+/// stable name, if it's found and has one; or why not: the store's refusal of a name that
+/// isn't stable, or, for one waiting, that it isn't answered yet, or that its feature didn't
+/// build.
+fn stored(place: usize, picked: &Picked) -> Result<Arc<Name>, Error> {
+    match &picked.state {
+        State::Found(selected) => selected.stored.clone(),
+        State::Waiting { why, .. } => {
+            let message = match why {
+                Some(why) => format!(
+                    "{} isn't in the model as it's built now: {why}",
+                    picked.name
+                ),
+                None => format!(
+                    "{} isn't answered yet: its body's elements aren't named yet",
+                    picked.name
+                ),
+            };
+            Err(Error::new(ErrorCode::Conflict, message)
+                .with_element(picked.name.as_str())
+                .with_parameter(format!("{PARAMETER}.{place}"))
+                .with_suggestion("select it again once the model has rebuilt"))
+        }
+    }
+}
+
+/// The refusal of `name`, read in the feature `feature`'s solid, if the read said nothing
+/// of it (neither found, nor waiting, nor gone with a reason): Silico's own bug.
+fn unread(name: &str, feature: &FeatureId) -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        format!("{name} was read in {feature}'s solid, but the read said nothing of it"),
+    )
+    .with_element(name)
+    .with_suggestion(silico_core::worker::SILICO_BUG)
+}
+
+/// How many of `items` before `at` are elements: an element's place among them.
+fn elements_before(items: &[Item], at: usize) -> usize {
+    items
+        .iter()
+        .take(at)
+        .filter(|item| matches!(item, Item::Element(_)))
+        .count()
+}
+
+/// `picked`, at `place` among the selection's elements, toggled: `added`, or let go.
+fn toggled(added: bool, place: usize, picked: &Picked) -> Toggled {
+    Toggled {
+        added,
+        name: picked.name.clone(),
+        stored: stored(place, picked),
+        body: picked.found().map(|selected| selected.feature.clone()),
+        kind: picked.found().map(Selected::kind),
     }
 }
 
@@ -1313,7 +1697,7 @@ pub(crate) fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use silico_core::command::meshes::MeshElement;
     use silico_core::naming::{PrimitiveKind, TypeWord};
@@ -1985,37 +2369,19 @@ mod tests {
             a_box("cccccccc", 0, cube),
             fuse("ssssssss", "rrrrrrrr", "cccccccc"),
         ];
-        let text = format!(
-            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
-            features.join(", ")
-        );
-        let checked = silico_core::document::Checked::new(
-            silico_core::document::read(text.as_bytes()).unwrap(),
-        )
-        .unwrap();
-        let engine =
-            silico_core::recompute::Recompute::new(silico_core::fake::FakeKernel::new(2).unwrap())
-                .with_sketches(silico_core::fake::FakeSketches::new());
-        engine.kernel().answer_instead(|op| match op {
-            Op::Boolean {
-                op: BooleanOp::Fuse,
-                base,
-                tool,
-            } => Some(silico_protocol::Reply::Built(BuiltData {
-                shape: silico_core::fake::FakeKernel::resized(base, 1.0)?,
-                history: fusing(&silico_core::fake::FakeKernel::describe(tool)?),
-            })),
-            _ => None,
+        let model = rebuilt(&features, |kernel| {
+            kernel.answer_instead(|op| match op {
+                Op::Boolean {
+                    op: BooleanOp::Fuse,
+                    base,
+                    tool,
+                } => Some(silico_protocol::Reply::Built(BuiltData {
+                    shape: silico_core::fake::FakeKernel::resized(base, 1.0)?,
+                    history: fusing(&silico_core::fake::FakeKernel::describe(tool)?),
+                })),
+                _ => None,
+            });
         });
-        let Ok(Ok(silico_core::recompute::RunOutcome::Published(model))) = engine
-            .start(Arc::new(checked))
-            .wait_timeout(std::time::Duration::from_secs(120))
-        else {
-            panic!("not published")
-        };
-        for (id, _) in model.features() {
-            model.element_map(id);
-        }
         // An aliasing second fuse (a cube 4 long) gives its Face1 exactly two names: its
         // base's Face1's (the 1 mm cube's, kept whole by a plain first fuse, a tool 2 long;
         // by its number after a renumbering one, a tool 3 long) and the tool's Face1's.
@@ -2041,6 +2407,36 @@ mod tests {
                     "the second fuse's Face1, after a tool {tool} long"
                 );
             }
+        }
+        model
+    }
+
+    /// `features` rebuilt on the fake kernel, as `setup` prepares it, and published, every
+    /// feature's elements named.
+    fn rebuilt(
+        features: &[String],
+        setup: impl FnOnce(&silico_core::fake::FakeKernel),
+    ) -> Arc<Model> {
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+            features.join(", ")
+        );
+        let checked = silico_core::document::Checked::new(
+            silico_core::document::read(text.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        let engine =
+            silico_core::recompute::Recompute::new(silico_core::fake::FakeKernel::new(2).unwrap())
+                .with_sketches(silico_core::fake::FakeSketches::new());
+        setup(engine.kernel());
+        let Ok(Ok(silico_core::recompute::RunOutcome::Published(model))) = engine
+            .start(Arc::new(checked))
+            .wait_timeout(std::time::Duration::from_secs(120))
+        else {
+            panic!("not published")
+        };
+        for (id, _) in model.features() {
+            model.element_map(id);
         }
         model
     }
@@ -2126,6 +2522,252 @@ mod tests {
         assert_eq!(selection.names(), [other]);
         let said = selection.said().unwrap();
         assert!(said.starts_with(CARRIED_GONE), "{said}");
+    }
+
+    #[test]
+    fn while_a_box_takes_the_canvas_only_its_kinds_are_picked_and_each_toggle_is_kept_for_it() {
+        let faces = Filter {
+            faces: true,
+            edges: false,
+            vertices: false,
+        };
+        let mut selection = Selection::default();
+        selection.published(Some((fused(1, 2), Revision::from_number(1).unwrap())), 1);
+        // No box: the filter alone, and no pick kept.
+        assert_eq!(selection.picks(), Filter::default());
+        selection.pick("aaaaaaaa.box.Face3", How::Toggle);
+        assert!(selection.take_toggled().is_empty());
+        selection.clear();
+        // A box of faces: what both take; a filter that's off for faces picks nothing.
+        selection.take_into(Some(faces));
+        assert_eq!(selection.picks(), faces);
+        selection.filter.faces = false;
+        assert_eq!(
+            selection.picks(),
+            Filter {
+                faces: false,
+                edges: false,
+                vertices: false
+            }
+        );
+        selection.filter.faces = true;
+        // A stable face added, an unstable one added, the stable one let go: each kept, in
+        // order, with what a store writes or its refusal (references.rs's words, by hand, at
+        // the place the pick's own read of the name alone gives it), and the body it's in
+        // (the second fuse's).
+        selection.pick("aaaaaaaa.box.Face3", How::Toggle);
+        selection.pick("rrrrrrrr.fuse.Face1", How::Toggle);
+        selection.pick("aaaaaaaa.box.Face3", How::Toggle);
+        let toggled = selection.take_toggled();
+        // Added, its name, what a store writes or its refusal's message, and its body.
+        type Seen<'a> = (bool, &'a str, Result<String, &'a str>, Option<&'a str>);
+        let seen: Vec<Seen<'_>> = toggled
+            .iter()
+            .map(|t| {
+                (
+                    t.added,
+                    t.name.as_str(),
+                    t.stored
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .map_err(Error::message),
+                    t.body.as_ref().map(FeatureId::as_str),
+                )
+            })
+            .collect();
+        let unstable = "selection.0, \"rrrrrrrr.fuse.Face1\", names a face, whose name is \
+                        unstable (it came about as another element did, or is its number): an \
+                        edit could make it another element";
+        assert_eq!(
+            seen,
+            [
+                (
+                    true,
+                    "aaaaaaaa.box.Face3",
+                    Ok("aaaaaaaa.box.Face3".to_owned()),
+                    Some("ssssssss")
+                ),
+                (true, "rrrrrrrr.fuse.Face1", Err(unstable), Some("ssssssss")),
+                (
+                    false,
+                    "aaaaaaaa.box.Face3",
+                    Ok("aaaaaaaa.box.Face3".to_owned()),
+                    Some("ssssssss")
+                ),
+            ]
+        );
+        assert!(selection.take_toggled().is_empty());
+        // A plain pick (not a click's: a box turns those to toggles) isn't kept.
+        selection.pick("aaaaaaaa.box.Face3", How::Replace);
+        assert!(selection.take_toggled().is_empty());
+        // Toggles not taken are let go with the box.
+        selection.pick("rrrrrrrr.fuse.Face1", How::Toggle);
+        selection.take_into(None);
+        assert!(selection.take_toggled().is_empty());
+        assert_eq!(selection.picks(), Filter::default());
+    }
+
+    /// A body numbered 1, of `k7f2qx3m`, its mesh's three faces and three edges named as
+    /// the box's (`k7f2qx3m.box.Face1`, ...), each stable, and no vertices.
+    fn named_body() -> BTreeMap<u32, ViewBody> {
+        let element = |kind, index| silico_core::command::meshes::MeshElement {
+            name: named("k7f2qx3m", ElementRef { kind, index }),
+            stable: true,
+            count: None,
+        };
+        let body = ViewBody {
+            feature: fid("k7f2qx3m"),
+            key: silico_core::recompute::Key::parse(&"01".repeat(32)).unwrap(),
+            level: 0.1,
+            deflection: 0.1,
+            bounds: None,
+            serves: [0.1, 0.2],
+            held: false,
+            mesh: Arc::new(silico_protocol::Mesh {
+                positions: Vec::new(),
+                normals: Vec::new(),
+                triangles: Vec::new(),
+                face_triangles: Vec::new(),
+                valid: None,
+                edge_points: Vec::new(),
+                edge_point_counts: Vec::new(),
+                vertex_points: Vec::new(),
+            }),
+            faces: (1..=3).map(|n| element(ElementKind::Face, n)).collect(),
+            edges: (1..=3).map(|n| element(ElementKind::Edge, n)).collect(),
+            vertices: Vec::new(),
+        };
+        BTreeMap::from([(1, body)])
+    }
+
+    #[test]
+    fn while_a_box_takes_edges_a_face_under_the_pointer_isnt_picked_and_an_edge_is() {
+        let bodies = named_body();
+        let rect = square([50.0, 50.0], [100, 100], 3);
+        let pick = |hit, pixel| crate::renderer::Pick {
+            body: 1,
+            hit,
+            pixel,
+            point: None,
+        };
+        let face = Picking {
+            frame: 1,
+            rect,
+            hit: Some(pick(Element::Face(3), centre_of(rect))),
+            edge: None,
+        };
+        let under = |selection: &Selection, picking: &Picking| {
+            selection
+                .under(picking, &bodies)
+                .map(|(body, element, name, _)| (body, element, name.to_string()))
+        };
+        let mut selection = Selection::default();
+        // No box: the face at the centre.
+        assert_eq!(
+            under(&selection, &face),
+            Some((1, Element::Face(3), "k7f2qx3m.box.Face3".to_owned()))
+        );
+        // A box of edges: nothing, though the filter takes faces.
+        selection.take_into(Some(Filter {
+            faces: false,
+            edges: true,
+            vertices: false,
+        }));
+        assert!(selection.filter.faces);
+        assert_eq!(under(&selection, &face), None);
+        // An edge in the square: picked.
+        let edge = Picking {
+            edge: Some(pick(Element::Edge(2), [49, 50])),
+            ..face
+        };
+        assert_eq!(
+            under(&selection, &edge),
+            Some((1, Element::Edge(2), "k7f2qx3m.box.Edge2".to_owned()))
+        );
+        // The box closed: the face again.
+        selection.take_into(None);
+        assert_eq!(
+            under(&selection, &face),
+            Some((1, Element::Face(3), "k7f2qx3m.box.Face3".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_selection_restored_is_as_it_was_saved_its_waiting_click_let_go() {
+        let mut selection = Selection::default();
+        selection.published(Some((fused(1, 2), Revision::from_number(1).unwrap())), 1);
+        selection.pick("aaaaaaaa.box.Face3", How::Replace);
+        selection.pick("aaaaaaaa.box.Face2", How::Toggle);
+        let saved = selection.saved();
+        let version = selection.version;
+        selection.clear();
+        selection.pick("aaaaaaaa.box.Face4", How::Replace);
+        selection.click = Some(waiting_click(Instant::now(), None));
+        selection.said = Some("said".to_owned());
+        selection.restore(saved.clone());
+        assert_eq!(selection.items(), saved.as_slice());
+        assert_eq!(
+            selection.names(),
+            ["aaaaaaaa.box.Face3", "aaaaaaaa.box.Face2"]
+        );
+        assert!(selection.version != version);
+        assert_eq!(selection.click, None);
+        assert_eq!(selection.said(), None);
+    }
+
+    #[test]
+    fn while_a_box_takes_the_canvas_what_a_rebuild_leaves_gone_is_dropped_unsaid() {
+        let revision = |n| Revision::from_number(n).unwrap();
+        let mut selection = Selection::default();
+        selection.published(Some((fused(1, 2), revision(1))), 1);
+        selection.pick("rrrrrrrr.fuse.Face1", How::Replace);
+        selection.take_into(Some(Filter::default()));
+        // Carried to the next model, the unstable name is gone: dropped, nothing said.
+        selection.published(Some((fused(3, 4), revision(2))), 2);
+        assert!(selection.is_empty());
+        assert_eq!(selection.said(), None);
+    }
+
+    #[test]
+    fn keep_only_lets_go_of_features_and_other_kinds_and_let_go_drops_by_either_name() {
+        let mut selection = Selection::default();
+        selection.published(Some((fused(1, 2), Revision::from_number(1).unwrap())), 1);
+        selection.pick("aaaaaaaa.box.Face3", How::Replace);
+        selection.pick("aaaaaaaa.box.Face2", How::Toggle);
+        selection.items.push(Item::Feature(fid("aaaaaaaa")));
+        selection.items.push(picked("k7f2qx3m.box.Edge9"));
+        let edges = Filter {
+            faces: false,
+            edges: true,
+            vertices: false,
+        };
+        let left = selection.keep_only(edges);
+        assert_eq!(
+            left,
+            LeftOut {
+                elements: BTreeMap::from([(ElementKind::Face, 2)]),
+                features: 1
+            }
+        );
+        assert_eq!(left.words().as_deref(), Some("2 faces and 1 feature"));
+        // One not answered yet is kept: its kind isn't known.
+        assert_eq!(selection.names(), ["k7f2qx3m.box.Edge9"]);
+        selection.let_go("k7f2qx3m.box.Edge9");
+        assert!(selection.is_empty());
+        // By the name a store writes for it.
+        selection.pick("aaaaaaaa.box.Face3", How::Replace);
+        let stored = selection.storable().unwrap()[0].to_string();
+        selection.let_go(&stored);
+        assert!(selection.is_empty());
+        assert_eq!(LeftOut::default().words(), None);
+        let three = LeftOut {
+            elements: BTreeMap::from([(ElementKind::Vertex, 2), (ElementKind::Face, 1)]),
+            features: 2,
+        };
+        assert_eq!(
+            three.words().as_deref(),
+            Some("1 face, 2 vertices and 2 features")
+        );
     }
 
     /// The words the carried `rrrrrrrr.fuse.Face1` is dropped with, gone after the rebuild
@@ -2425,6 +3067,48 @@ mod tests {
     }
 
     #[test]
+    fn a_box_of_edges_picks_no_vertex_and_draws_no_discs_until_it_lets_go() {
+        // A vertex at the centre pixel, an edge 2 pixels off, as the vertex-first test has
+        // them: while a box of edges takes the canvas, the vertex isn't picked (the edge
+        // is), and the frame gets no discs, so none wins an edge's pixels.
+        let bodies = BTreeMap::from([(1, body_of_each("k7f2qx3m"))]);
+        let rect = square([50.0, 50.0], [100, 100], 3);
+        let pick = |hit: Element, pixel: [u32; 2]| crate::renderer::Pick {
+            body: 1,
+            hit,
+            pixel,
+            point: None,
+        };
+        let picking = Picking {
+            frame: 1,
+            rect,
+            hit: Some(pick(Element::Vertex(2), [50, 50])),
+            edge: Some(pick(Element::Edge(1), [52, 50])),
+        };
+        let mut selection = Selection::default();
+        let mut view = View::default();
+        selection.take_into(Some(Filter {
+            faces: false,
+            edges: true,
+            vertices: false,
+        }));
+        assert_eq!(
+            selection.under(&picking, &bodies).map(|u| u.1),
+            Some(Element::Edge(1))
+        );
+        selection.draw(&mut view);
+        assert_eq!(view.vertices, None);
+        // The box lets go: the vertex is picked, and the discs drawn, again.
+        selection.take_into(None);
+        assert_eq!(
+            selection.under(&picking, &bodies).map(|u| u.1),
+            Some(Element::Vertex(2))
+        );
+        selection.draw(&mut view);
+        assert_eq!(view.vertices, Some(VERTEX_PICK_POINTS));
+    }
+
+    #[test]
     fn the_vertex_filter_sets_the_frames_discs_and_a_vertex_selected_is_drawn() {
         let mut selection = Selection::default();
         let mut view = View::default();
@@ -2564,7 +3248,7 @@ mod tests {
     }
 
     /// [`one_box`]'s model.
-    fn box_model() -> Arc<Model> {
+    pub(crate) fn box_model() -> Arc<Model> {
         let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 2, "width": 1, "height": 1}]}"#;
         let checked = silico_core::document::Checked::new(
             silico_core::document::read(text.as_bytes()).unwrap(),
@@ -2759,6 +3443,93 @@ mod tests {
     }
 
     #[test]
+    fn a_boxs_toggles_of_names_waiting_are_placed_among_the_selections_elements_alone() {
+        // The box model, not named yet: every name waits. The selection holds a feature,
+        // then Edge1, Edge2 and Edge3, each waiting. A box takes the canvas, and a box drawn
+        // on Edge3 and Edge4 toggles both: Edge3 let go, Edge4 added. A waiting name's place
+        // is its place among the selection's elements, features not counted (the store's
+        // `selection.N`): Edge3 the third element before, so place 2; Edge4 placed after
+        // Edge1 and Edge2, Edge3 let go, so place 2 too.
+        let model = box_model();
+        let mut selection = Selection::default();
+        selection.published(
+            Some((Arc::new(model.unnamed()), Revision::from_number(1).unwrap())),
+            1,
+        );
+        let edge = |n: u32| format!("aaaaaaaa.box.Edge{n}");
+        selection.set(vec![
+            Item::Feature(fid("aaaaaaaa")),
+            picked(&edge(1)),
+            picked(&edge(2)),
+            picked(&edge(3)),
+        ]);
+        selection.take_into(Some(Filter::default()));
+        selection.pick_all(&[edge(3), edge(4)], How::Toggle);
+        let toggled: Vec<(bool, String, Option<String>)> = selection
+            .take_toggled()
+            .into_iter()
+            .map(|toggled| {
+                let error = toggled.stored.unwrap_err();
+                assert_eq!(error.code(), ErrorCode::Conflict, "{error:?}");
+                (
+                    toggled.added,
+                    toggled.name,
+                    error.parameter().map(str::to_owned),
+                )
+            })
+            .collect();
+        assert_eq!(
+            toggled,
+            [
+                (false, edge(3), Some("selection.2".to_owned())),
+                (true, edge(4), Some("selection.2".to_owned())),
+            ]
+        );
+        assert_eq!(
+            states(&selection),
+            [
+                (edge(1), "pending"),
+                (edge(2), "pending"),
+                (edge(4), "pending")
+            ]
+        );
+        // A click's toggle of a name waiting, let go: its place among the elements alone,
+        // Edge2 the second, so place 1; and one added after the two left, place 2.
+        selection.pick(&edge(2), How::Toggle);
+        selection.pick(&edge(5), How::Toggle);
+        let clicked: Vec<(bool, Option<String>)> = selection
+            .take_toggled()
+            .into_iter()
+            .map(|toggled| {
+                let error = toggled.stored.unwrap_err();
+                (toggled.added, error.parameter().map(str::to_owned))
+            })
+            .collect();
+        assert_eq!(
+            clicked,
+            [
+                (false, Some("selection.1".to_owned())),
+                (true, Some("selection.2".to_owned()))
+            ]
+        );
+        // Read in the box's solid while its elements aren't named yet: waiting, said so,
+        // not Silico's own bug.
+        let read = selection.read_on(&edge(1), &fid("aaaaaaaa"));
+        let OnBase::Found(Err(error)) = &read else {
+            panic!("{read:?}")
+        };
+        assert_eq!(error.code(), ErrorCode::Conflict);
+        assert_eq!(
+            error.message(),
+            "aaaaaaaa.box.Edge1 isn't answered yet: aaaaaaaa's elements aren't named yet"
+        );
+        assert_eq!(
+            error.suggestion(),
+            Some("select it again once the model has rebuilt")
+        );
+    }
+
+    #[test]
     fn picks_together_that_would_overfill_the_selection_with_whats_there_are_refused() {
         // 9,995 names selected already (waiting), and six faces added: 10,001, one past what
         // the core reads at once. Refused whole, said, nothing changed.
@@ -2892,5 +3663,210 @@ mod tests {
             states(&selection),
             [("aaaaaaaa.box.Edge1".to_owned(), "pending")]
         );
+    }
+
+    #[test]
+    fn a_box_after_a_cancel_keeps_what_it_put_back_unread_till_the_undos_model() {
+        // As `a_selection_a_cancel_put_back_is_read_only_from_the_revision_its_undo_comes_to`:
+        // `cccccccc.box.Face1` picked in fused(1, 4), a dialog's preview, fused(1, 2),
+        // consuming it.
+        let revision = |n| Revision::from_number(n).unwrap();
+        let name = "cccccccc.box.Face1";
+        let other = "aaaaaaaa.box.Face3";
+        let (picked_in, preview) = (fused(1, 4), fused(1, 2));
+        let mut selection = Selection::default();
+        selection.published(Some((Arc::clone(&picked_in), revision(1))), 1);
+        selection.pick(name, How::Replace);
+        let saved = selection.saved();
+        selection.take_into(Some(Filter::default()));
+        selection.published(Some((Arc::clone(&preview), revision(2))), 2);
+        assert!(selection.is_empty());
+        // Cancel: put back, the preview still the model published.
+        selection.take_into(None);
+        selection.restore(saved);
+        selection.published(Some((Arc::clone(&preview), revision(2))), 2);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        // A box (Shift) before the undo's model: what it took is added, read on the
+        // preview, and what the Cancel put back is kept, unread against the preview,
+        // nothing said of it.
+        selection.pick_all(&[other.to_owned()], How::Add);
+        assert_eq!(
+            states(&selection),
+            [(name.to_owned(), "found"), (other.to_owned(), "found")]
+        );
+        assert_eq!(selection.said(), None);
+        assert_eq!(selection.held, Some(Held::Unsent));
+        // The undo's model, revision 3: both read on it, and kept.
+        selection.read_from(revision(3));
+        selection.published(Some((picked_in, revision(3))), 3);
+        assert_eq!(selection.held, None);
+        assert_eq!(
+            states(&selection),
+            [(name.to_owned(), "found"), (other.to_owned(), "found")]
+        );
+        assert_eq!(selection.said(), None);
+    }
+
+    #[test]
+    fn a_selection_a_cancel_put_back_is_read_only_from_the_revision_its_undo_comes_to() {
+        // The ssssssss fuse keeps its tool's Face1 as `cccccccc.box.Face1` when the tool is
+        // 4 long (the aliasing fuse), and none of its faces when it's 2 (the plain fuse):
+        // fused(1, 4) is the model the face was picked in, fused(1, 2) a dialog's preview
+        // that consumed it.
+        let revision = |n| Revision::from_number(n).unwrap();
+        let name = "cccccccc.box.Face1";
+        let (picked_in, preview) = (fused(1, 4), fused(1, 2));
+        let mut selection = Selection::default();
+        selection.published(Some((Arc::clone(&picked_in), revision(1))), 1);
+        selection.pick(name, How::Replace);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        let saved = selection.saved();
+        // The dialog's box takes the canvas, and its edit's preview, revision 2, consumes
+        // the face: dropped, unsaid.
+        selection.take_into(Some(Filter::default()));
+        selection.published(Some((Arc::clone(&preview), revision(2))), 2);
+        assert!(selection.is_empty());
+        // A name pending at the last read: asked again each frame, of the same model.
+        selection.again = true;
+        // Cancel, the box taking the canvas still on this frame: put back, and not read
+        // against the preview published now, nor asked again of it.
+        selection.restore(saved.clone());
+        assert!(!selection.again);
+        selection.published(Some((Arc::clone(&preview), revision(2))), 2);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        // Nor against the preview of an edit sent before the Cancel, landing after it,
+        // before the tab has sent the Cancel's undo.
+        selection.take_into(None);
+        selection.published(Some((Arc::clone(&preview), revision(3))), 3);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        // The undo sent against revision 3, so read from 4: revision 3's model published
+        // again (a fresh check's) isn't read either.
+        selection.read_from(revision(4));
+        selection.published(Some((Arc::clone(&preview), revision(3))), 4);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        assert_eq!(selection.said(), None);
+        // The undo's model, revision 4: read, and found, carried to it.
+        selection.published(Some((Arc::clone(&picked_in), revision(4))), 5);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        assert!(selection.elements().next().unwrap().stable());
+        assert_eq!(selection.held, None);
+        assert_eq!(selection.said(), None);
+        // Held no longer: the next model is read, one that consumes the face dropping it,
+        // said.
+        selection.published(Some((Arc::clone(&preview), revision(5))), 6);
+        assert!(selection.is_empty());
+        assert!(selection.said().is_some());
+        // Put back by a Cancel with nothing of its dialog's changed: read from the revision
+        // published already, on its next frame.
+        selection.published(Some((Arc::clone(&picked_in), revision(6))), 7);
+        selection.pick(name, How::Replace);
+        let saved = selection.saved();
+        selection.clear();
+        selection.restore(saved);
+        selection.published(Some((Arc::clone(&picked_in), revision(6))), 7);
+        assert_eq!(selection.held, Some(Held::Unsent));
+        selection.read_from(revision(6));
+        selection.published(Some((picked_in, revision(6))), 7);
+        assert_eq!(selection.held, None);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        // With none held, `read_from` holds nothing.
+        selection.read_from(revision(9));
+        assert_eq!(selection.held, None);
+    }
+
+    #[test]
+    fn a_name_read_on_a_base_is_missing_only_if_that_solid_holds_no_element_by_it() {
+        // Box A, box B, F a fillet of B's Edge3, a fuse of A with F (F its tool), and G a
+        // fillet of box D's Edge99, which D hasn't, so G fails, `reference_broken`. F's
+        // dialog reads a pick on the fuse's body against B.
+        let a_box = |id: &str, x: u32| {
+            format!(
+                r#"{{"id": "{id}", "type": "box", "v": 1, "name": "Block", "position": [{x}, 0, 0], "length": 1, "width": 1, "height": 1}}"#
+            )
+        };
+        let fillet = |id: &str, base: &str, edge: &str| {
+            format!(
+                r#"{{"id": "{id}", "type": "fillet", "v": 1, "name": "Round", "base": "{base}", "edges": ["{edge}"], "radius": 0.1}}"#
+            )
+        };
+        let features = [
+            a_box("aaaaaaaa", 0),
+            a_box("bbbbbbbb", 5),
+            fillet("ffffffff", "bbbbbbbb", "bbbbbbbb.box.Edge3"),
+            r#"{"id": "rrrrrrrr", "type": "fuse", "v": 1, "name": "Op", "base": "aaaaaaaa", "tool": "ffffffff"}"#
+                .to_owned(),
+            a_box("dddddddd", 9),
+            fillet("gggggggg", "dddddddd", "dddddddd.box.Edge99"),
+        ];
+        let model = rebuilt(&features, |_| {});
+        let base = fid("bbbbbbbb");
+        let mut selection = Selection::default();
+        selection.published(Some((Arc::clone(&model), Revision::OPENED)), 1);
+        // B's Edge5, kept by F and the fuse: on B, stored by its name there.
+        assert_eq!(
+            selection.read_on("bbbbbbbb.box.Edge5", &base),
+            OnBase::Found(Ok(named("bbbbbbbb", edge(5))))
+        );
+        // A's Edge1, of the fuse's other side: not on B, refused as not on it, though A
+        // comes before B (it isn't added to the body after B).
+        let a_edge = "aaaaaaaa.box.Edge1";
+        assert_eq!(selection.read_on(a_edge, &base), OnBase::Missing);
+        let node = silico_core::document::json::read(features[2].as_bytes()).unwrap();
+        let mut dialog =
+            crate::dialog::Dialog::load(crate::dialog::Kind::Fillet, fid("ffffffff"), &node, 1)
+                .unwrap();
+        let toggled = Toggled {
+            added: true,
+            name: a_edge.to_owned(),
+            stored: Ok(named("aaaaaaaa", edge(1))),
+            body: Some(fid("rrrrrrrr")),
+            kind: Some(ElementKind::Edge),
+        };
+        let on_base = |at: &FeatureId| selection.read_on(a_edge, at);
+        assert_eq!(
+            dialog.toggled(&toggled, true, &on_base),
+            crate::dialog::Taken::Refused
+        );
+        assert_eq!(
+            dialog.names().unwrap().said,
+            Some(crate::dialog::Says::Refused(
+                "aaaaaaaa.box.Edge1 isn't on bbbbbbbb, which this fillet is built on: select \
+                 one of bbbbbbbb's edges"
+                    .to_owned()
+            ))
+        );
+        // A name of G's, which didn't build for a `reference_broken` of its own: its
+        // failure said, not that it isn't on B.
+        let failed = selection.read_on("gggggggg.fillet.Face1", &base);
+        let OnBase::Found(Err(error)) = &failed else {
+            panic!("{failed:?}")
+        };
+        assert_eq!(error.code(), ErrorCode::ReferenceBroken);
+        assert!(
+            error.message().starts_with(
+                "selection.0, \"gggggggg.fillet.Face1\", is of gggggggg, which didn't build: "
+            ),
+            "{}",
+            error.message()
+        );
+        // B's elements never named (Silico's own bug): said as it is, not that the edge
+        // isn't on B, in the dialog too.
+        let unnamable = Arc::new(model.unnamable(&base));
+        selection.published(Some((unnamable, Revision::OPENED)), 2);
+        let unread = "selection.0, \"aaaaaaaa.box.Edge1\", is of bbbbbbbb's solid, which built, \
+                      but whose elements couldn't be named";
+        let read = selection.read_on(a_edge, &base);
+        let OnBase::Found(Err(error)) = &read else {
+            panic!("{read:?}")
+        };
+        assert_eq!(error.code(), ErrorCode::Internal);
+        assert_eq!(error.message(), unread);
+        let on_base = |at: &FeatureId| selection.read_on(a_edge, at);
+        assert_eq!(
+            dialog.toggled(&toggled, true, &on_base),
+            crate::dialog::Taken::Refused
+        );
+        let said = dialog.names().unwrap().said.clone().unwrap();
+        assert!(said.text().starts_with(unread), "{}", said.text());
     }
 }

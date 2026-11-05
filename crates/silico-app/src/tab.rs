@@ -23,12 +23,64 @@ use silico_core::timeline::{Entry, Health};
 use crate::changes::{self, Changes};
 use crate::dialog::{Dialog, Kind, feature_node};
 
-/// What a feature's mark says: its first problem's (or warning's) message, and its
-/// suggestion, from a `check` of the model the timeline's marks came from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a feature's mark says: its first problem's (or warning's) message, its cause and
+/// the elements it names, if it has them, and how many elements are at fault in all (more
+/// than it names where there are too many to list, ARCHITECTURE.md's invariant 9), and its
+/// suggestion, from a `check` of the model the timeline's marks came from; and whether it's
+/// a warning's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Said {
+    pub warning: bool,
     pub message: String,
+    pub cause: Option<String>,
+    pub elements: Vec<String>,
+    pub elements_total: u64,
     pub suggestion: Option<String>,
+}
+
+impl Said {
+    /// What `error` says.
+    pub fn of(error: &silico_core::Error) -> Self {
+        Said {
+            warning: false,
+            message: error.message().to_owned(),
+            cause: error.cause().map(str::to_owned),
+            elements: error.elements().to_vec(),
+            elements_total: error.elements_total(),
+            suggestion: error.suggestion().map(str::to_owned),
+        }
+    }
+
+    /// What `warning` says.
+    pub fn of_warning(warning: &silico_core::Warning) -> Self {
+        Said {
+            warning: true,
+            message: warning.message().to_owned(),
+            cause: warning.cause().map(str::to_owned),
+            elements: warning.elements().to_vec(),
+            elements_total: warning.elements_total(),
+            suggestion: warning.suggestion().map(str::to_owned),
+        }
+    }
+
+    /// Its elements as the card lists them: each it names, and, where it names fewer than
+    /// are at fault, how many in all ("Edge1, Edge2 (the first 2 of 150)"); none if it
+    /// names none.
+    pub fn elements_line(&self) -> Option<String> {
+        if self.elements.is_empty() {
+            return None;
+        }
+        let listed = self.elements.join(", ");
+        let named = self.elements.len() as u64;
+        Some(if self.elements_total > named {
+            format!(
+                "Elements: {listed} (the first {named} of {})",
+                self.elements_total
+            )
+        } else {
+            format!("Elements: {listed}")
+        })
+    }
 }
 
 /// An edit of one field of one feature (`set_field`), as the person made it.
@@ -505,6 +557,13 @@ pub struct Tab {
     /// and whether no transaction was open then (its own edits begin it).
     dialog_base: Option<Revision>,
     dialog_began: bool,
+    /// The selection as it was before the open dialog's box of names took it, put back if
+    /// the dialog is cancelled, as SolidWorks returns to the selection its command started
+    /// with.
+    before_dialog: Option<Vec<crate::selection::Item>>,
+    /// The last dialog OK'd, for the window to remember its values ([`take_oked`]
+    /// (Self::take_oked), [`crate::dialog::Remembered`]).
+    oked: Option<Dialog>,
     /// The dialogs' edits OK'd in this transaction, each one step for undo and redo.
     groups: Vec<Group>,
     /// Each revision an undo or a redo came to, and the first revision of the state it
@@ -597,14 +656,7 @@ impl Tab {
             nothing_published: false,
             rebuild_out: false,
             said: BTreeMap::new(),
-            document_problems: problems
-                .errors()
-                .iter()
-                .map(|error| Said {
-                    message: error.message().to_owned(),
-                    suggestion: error.suggestion().map(str::to_owned),
-                })
-                .collect(),
+            document_problems: problems.errors().iter().map(Said::of).collect(),
             check_read: None,
             check_superseded: false,
             check_first: false,
@@ -640,6 +692,8 @@ impl Tab {
             loading: None,
             dialog_base: None,
             dialog_began: false,
+            before_dialog: None,
+            oked: None,
             groups: Vec::new(),
             restored: BTreeMap::new(),
             refused: std::collections::BTreeSet::new(),
@@ -709,6 +763,44 @@ impl Tab {
         ) {
             self.toast = Some(toast);
         }
+        if self.box_toggled() {
+            // What the box took is sent from the dialog's pane, maybe drawn already.
+            painter.ctx().request_repaint();
+        }
+    }
+
+    /// What clicks toggled in the selection while the dialog's box of names took the
+    /// canvas's picks, taken into the box (`Dialog::toggled`): a pick on the body the
+    /// dialog's feature is built into read against the box's base (the timeline's chains say
+    /// which bodies are, [`built_through`]); each the box refused, or removed as the click
+    /// added it to the selection, let go from the selection again, so the canvas shows what
+    /// the box holds. Whether any was.
+    fn box_toggled(&mut self) -> bool {
+        use crate::dialog::Taken;
+        let toggled = self.selection.take_toggled();
+        let Some(dialog) = self.dialog.as_mut() else {
+            return false;
+        };
+        let entries = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
+        let own = dialog.feature.clone();
+        for toggled in &toggled {
+            let through_own = match (&own, &toggled.body) {
+                (Some(own), Some(body)) => built_through(entries, body, own),
+                _ => false,
+            };
+            let selection = &self.selection;
+            let on_base = |base: &FeatureId| selection.read_on(&toggled.name, base);
+            match dialog.toggled(toggled, through_own, &on_base) {
+                Taken::Refused => self.selection.let_go(&toggled.name),
+                Taken::Removed if toggled.added => self.selection.let_go(&toggled.name),
+                Taken::Added | Taken::Removed | Taken::Ignored => {}
+            }
+        }
+        !toggled.is_empty()
     }
 
     /// What a toast is to say for the tab, taken once (the app shows it).
@@ -959,6 +1051,9 @@ impl Tab {
             .ok()
             .map(|published| (Arc::clone(&published.model), published.revision));
         self.selection.published(model, self.published_models);
+        self.selection
+            .take_into(self.dialog.as_ref().and_then(Dialog::takes));
+        self.box_toggled();
         self.published = published.result.ok().map(|published| published.revision);
         if self.published.is_some() {
             self.nothing_published = false;
@@ -1371,8 +1466,12 @@ impl Tab {
                                 dialog.adding = false;
                                 dialog.feature = Some(added.feature.id.clone());
                                 // Selected, so its mark's text is read and the property
-                                // panel shows it.
-                                self.selection.select_feature(added.feature.id);
+                                // panel shows it; but not over the elements a box of
+                                // names takes from the selection (its mark's text is read
+                                // for the dialog's feature, `read_check`).
+                                if dialog.takes().is_none() {
+                                    self.selection.select_feature(added.feature.id);
+                                }
                             }
                         }
                         Err(problems) => {
@@ -1463,7 +1562,17 @@ impl Tab {
                                     .map_err(|_| "its text doesn't read as a feature".to_owned())
                             });
                         match node.map(|node| Dialog::load(kind, feature, &node, serial)) {
-                            Ok(Some(dialog)) => self.dialog = Some(dialog),
+                            Ok(Some(dialog)) => {
+                                // Its box of names holds the feature's own: the selection
+                                // (the feature, as Edit Feature selected it) let go, so the
+                                // canvas shows what the box takes from it.
+                                if let Some(kinds) = dialog.takes() {
+                                    self.before_dialog = Some(self.selection.saved());
+                                    self.selection.clear();
+                                    self.selection.take_into(Some(kinds));
+                                }
+                                self.dialog = Some(dialog);
+                            }
                             Ok(None) => {
                                 self.message =
                                     Some(format!("Its dialog doesn't read this {}", kind.title()));
@@ -1753,14 +1862,22 @@ impl Tab {
                     });
                 }
                 Queued::Closed { ok } => {
+                    // Every edit sent before it has answered: what a Cancel put back of the
+                    // selection is read from the revision its undo or rollback comes to,
+                    // past this one, or, if nothing of the dialog's changed the document,
+                    // from this one.
+                    let undone = self.revision.next().unwrap_or(self.revision);
                     let Some(base) = self.dialog_base.take() else {
+                        self.read_restored_from(ok, self.revision);
                         continue;
                     };
                     if !self.transaction {
                         // Nothing of the dialog's changed the document.
+                        self.read_restored_from(ok, self.revision);
                         continue;
                     }
                     if !ok && self.dialog_began {
+                        self.read_restored_from(ok, undone);
                         // Its own edits began the transaction: nothing before it to keep, and
                         // no transaction left open with nothing in it (an outside change is
                         // then reloaded, section 4).
@@ -1772,12 +1889,14 @@ impl Tab {
                         });
                     } else if base == self.revision {
                         // Nothing of the dialog's changed the document.
+                        self.read_restored_from(ok, self.revision);
                     } else if ok {
                         self.groups.push(Group {
                             start: self.state_of(base),
                             end: self.state_of(self.revision),
                         });
                     } else {
+                        self.read_restored_from(ok, undone);
                         self.supersede_preview();
                         self.record(Sent::Undo(Some(base)));
                         self.under.push(Under::Step(sessions.undo(
@@ -1854,6 +1973,21 @@ impl Tab {
                     self.under.push(Under::Step(running));
                 }
             }
+        }
+    }
+
+    /// The selection a dialog's Cancel put back ([`close_dialog`](Self::close_dialog)) read
+    /// once a model of `from` or a later one is published, as that Cancel, `ok` false, is
+    /// sent; unless another Cancel waits behind it, whose undo comes later still (and which
+    /// says when, as it's sent).
+    fn read_restored_from(&mut self, ok: bool, from: Revision) {
+        let another = self
+            .edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::Closed { ok: false }));
+        if !ok && !another {
+            self.selection.read_from(from);
         }
     }
 
@@ -2534,7 +2668,8 @@ impl Tab {
     }
 
     /// Whether a dialog of `kind` can open: none open or loading, the tab not closing, the
-    /// gate taking the document, and, for one that cuts, a body to cut from.
+    /// gate taking the document, and, for one that cuts or dresses edges, a body to cut
+    /// from or whose edges to dress.
     pub fn can_open(&self, kind: Kind) -> bool {
         self.dialog.is_none()
             && self.loading.is_none()
@@ -2543,13 +2678,19 @@ impl Tab {
                 .timeline
                 .as_ref()
                 .is_some_and(|timeline| timeline.problems == 0)
-            && (!kind.cuts() || self.tip().is_some())
+            && (!(kind.cuts() || kind.dresses()) || self.tip().is_some())
     }
 
-    /// A new feature's dialog opened (section 9): its inputs at their defaults, a sweep's
-    /// sketch the one selected if it's one, and its body the tip. Its feature is added as
-    /// soon as its inputs are valid.
-    pub fn open_dialog<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, kind: Kind) {
+    /// A new feature's dialog opened (section 9): its inputs at their defaults, or those its
+    /// kind was last OK'd with, if it remembers them (`remembered`); a sweep's sketch the one
+    /// selected if it's one, and its body the tip. Its feature is added as soon as its
+    /// inputs are valid.
+    pub fn open_dialog<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        kind: Kind,
+        remembered: &crate::dialog::Remembered,
+    ) {
         if !self.can_open(kind) {
             return;
         }
@@ -2559,9 +2700,44 @@ impl Tab {
             .feature()
             .cloned()
             .filter(|id| self.is_sketch(id));
-        self.dialog = Some(Dialog::new(kind, sketch, serial));
+        let mut dialog = Dialog::new(kind, sketch, serial);
+        remembered.apply(&mut dialog);
+        if let Some(kinds) = dialog.takes() {
+            self.before_dialog = Some(self.selection.saved());
+            self.take_selection(&mut dialog, kinds);
+        }
+        self.dialog = Some(dialog);
         self.dialog_changed(sessions);
         self.advance(sessions);
+    }
+
+    /// The selection taken into `dialog`'s box of names, which takes `kinds`, as SolidWorks'
+    /// PropertyManager box takes what's selected when its command starts: what else is
+    /// selected let go and said; the rest's names as a store writes them, or, if one can't
+    /// be stored, or they're on several bodies, none, said and the selection cleared (the
+    /// canvas shows what the box holds); and the canvas's picks the box's from then.
+    fn take_selection(&mut self, dialog: &mut Dialog, kinds: crate::selection::Filter) {
+        let left_out = self.selection.keep_only(kinds).words().and_then(|words| {
+            dialog.names().map(|names| {
+                format!(
+                    "{words} left out: a {} takes {}",
+                    names.of,
+                    names.takes.plural()
+                )
+            })
+        });
+        let stored = self.selection.storable();
+        let mut bodies: Vec<FeatureId> = Vec::new();
+        for selected in self.selection.elements().filter_map(|p| p.found()) {
+            if !bodies.contains(&selected.feature) {
+                bodies.push(selected.feature.clone());
+            }
+        }
+        if stored.is_err() || bodies.len() > 1 {
+            self.selection.clear();
+        }
+        dialog.take_selection(stored, &bodies, left_out);
+        self.selection.take_into(Some(kinds));
     }
 
     /// A dialog opening: numbered, the revision it opens at marked in the queue, and what
@@ -2569,6 +2745,7 @@ impl Tab {
     fn opening(&mut self) -> u64 {
         self.message = None;
         self.refused.clear();
+        self.before_dialog = None;
         self.dialogs += 1;
         self.edits.queue.push_back(Queued::Opened);
         self.dialogs
@@ -2655,6 +2832,10 @@ impl Tab {
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
         };
+        // What its boxes let go of, let go from the selection too.
+        for name in dialog.take_unpicked() {
+            self.selection.let_go(&name);
+        }
         if let Some(members) = dialog.add() {
             let (serial, kind) = (dialog.serial, dialog.kind);
             self.edits.queue.push_back(Queued::Add {
@@ -2688,15 +2869,34 @@ impl Tab {
     /// back to the revision it opened at (`undo` with `to`, so edits made before it stay;
     /// rolled back if its own edits began the transaction). Neither while the tab closes:
     /// what it sent would come after the close.
+    ///
+    /// The selection the dialog's box of names took is put back as it was before by Cancel
+    /// (read again once the Cancel's model is published, never against a preview of the
+    /// dialog's edits, which may still land after it), and left as the box holds it by
+    /// OK. The dialog OK'd is kept for the window to remember its values
+    /// ([`take_oked`](Self::take_oked)).
     pub fn close_dialog<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, ok: bool) {
         if self.closing() {
             return;
         }
-        if self.dialog.take().is_none() && self.loading.take().is_none() {
+        let closed = self.dialog.take();
+        if closed.is_none() && self.loading.take().is_none() {
             return;
+        }
+        let before = self.before_dialog.take();
+        if ok {
+            self.oked = closed;
+        } else if let Some(items) = before {
+            self.selection.restore(items);
         }
         self.edits.queue.push_back(Queued::Closed { ok });
         self.advance(sessions);
+    }
+
+    /// The last dialog OK'd since this was last asked, if one was: the window remembers its
+    /// values for the next of its kind.
+    pub fn take_oked(&mut self) -> Option<Dialog> {
+        self.oked.take()
     }
 
     /// Whether a dialog is open, or its feature is being read for one.
@@ -2750,17 +2950,21 @@ impl Tab {
     }
 
     /// What the dialog says beneath its inputs: its feature's error (or warning), as the
-    /// preview's check gives it, then the tab's last refusal.
-    pub fn dialog_said(&self) -> Vec<String> {
+    /// preview's check gives it (its message, cause, elements, and suggestion), then the
+    /// tab's last refusal.
+    pub fn dialog_said(&self) -> Vec<Said> {
         let feature = self
             .dialog
             .as_ref()
             .and_then(|dialog| dialog.feature.as_ref());
         feature
             .and_then(|feature| self.said.get(feature.as_str()))
-            .map(|said| said.message.clone())
+            .cloned()
             .into_iter()
-            .chain(self.message.clone())
+            .chain(self.message.clone().map(|message| Said {
+                message,
+                ..Said::default()
+            }))
             .collect()
     }
 
@@ -2776,7 +2980,14 @@ impl Tab {
         if self.check_read.is_some() || self.checked == Some(asked) {
             return;
         }
-        let Some((gate, model)) = check_wanted(timeline, self.selection.feature()) else {
+        // The feature selected; or, with none, the open dialog's (a box of names keeps the
+        // selection's elements, not the feature).
+        let wanted = self.selection.feature().or_else(|| {
+            self.dialog
+                .as_ref()
+                .and_then(|dialog| dialog.feature.as_ref())
+        });
+        let Some((gate, model)) = check_wanted(timeline, wanted) else {
             return;
         };
         // Never the current model of a revision whose rebuild was stopped: its check would
@@ -2797,10 +3008,7 @@ impl Tab {
         let mut by_feature = BTreeMap::new();
         let mut document = Vec::new();
         for error in answer.problems.errors() {
-            let said = Said {
-                message: error.message().to_owned(),
-                suggestion: error.suggestion().map(str::to_owned),
-            };
+            let said = Said::of(error);
             if gate || error.feature().is_none() {
                 document.push(said.clone());
             }
@@ -2812,15 +3020,34 @@ impl Tab {
             if let Some(feature) = warning.feature() {
                 by_feature
                     .entry(feature.to_owned())
-                    .or_insert_with(|| Said {
-                        message: warning.message().to_owned(),
-                        suggestion: warning.suggestion().map(str::to_owned),
-                    });
+                    .or_insert_with(|| Said::of_warning(warning));
             }
         }
         self.said = by_feature;
         self.document_problems = document;
     }
+}
+
+/// Whether the solid of `body` is built through the feature `own`'s, as `entries` (the
+/// timeline, in order) chain them: `body` is `own`, or one of its inputs is built through
+/// it, followed back input by input. A fillet whose dialog is open is built into each body
+/// this holds for, so a pick on one is read against the fillet's base.
+fn built_through(entries: &[Entry], body: &FeatureId, own: &FeatureId) -> bool {
+    let inputs: BTreeMap<&FeatureId, &[FeatureId]> = entries
+        .iter()
+        .map(|entry| (&entry.id, entry.inputs.as_slice()))
+        .collect();
+    let mut seen: std::collections::BTreeSet<&FeatureId> = std::collections::BTreeSet::new();
+    let mut stack = vec![body];
+    while let Some(at) = stack.pop() {
+        if at == own {
+            return true;
+        }
+        if seen.insert(at) {
+            stack.extend(inputs.get(at).copied().unwrap_or_default());
+        }
+    }
+    false
 }
 
 /// The body a new sweep builds on, as FreeCAD's PartDesign takes its body's tip, from a
@@ -3035,6 +3262,102 @@ mod tests {
     }
 
     #[test]
+    fn a_check_says_a_warnings_cause_and_elements_and_how_many_an_error_has_past_those_listed() {
+        // An error listing 2 of its 150 elements, and a warning with its cause and 1 of its
+        // 3: each kept whole for its feature's card, the warning marked as one, and each
+        // card's Elements line saying how many there are past those listed (invariant 9).
+        let error = silico_core::Error::new(silico_core::ErrorCode::KernelFailed, "Fillet failed")
+            .with_feature("f0000001")
+            .with_cause("OCCT couldn't fillet Edge1")
+            .with_elements(["Edge1", "Edge2"])
+            .with_elements_total(150)
+            .with_suggestion("try a smaller radius");
+        let warning = silico_core::Warning::new(
+            silico_core::WarningCode::EndsNotJoined,
+            "Two ends aren't joined",
+        )
+        .with_feature("s0000001")
+        .with_cause("the ends are 1e-8 mm apart")
+        .with_elements(["pa000001"])
+        .with_elements_total(3)
+        .with_suggestion("join them");
+        let mut tab = tab();
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(error),
+                warnings: silico_core::warnings::Warnings::of([warning]),
+            },
+            false,
+        );
+        let fillet = Said {
+            warning: false,
+            message: "Fillet failed".to_owned(),
+            cause: Some("OCCT couldn't fillet Edge1".to_owned()),
+            elements: vec!["Edge1".to_owned(), "Edge2".to_owned()],
+            elements_total: 150,
+            suggestion: Some("try a smaller radius".to_owned()),
+        };
+        assert_eq!(tab.said.get("f0000001"), Some(&fillet));
+        assert_eq!(
+            fillet.elements_line().as_deref(),
+            Some("Elements: Edge1, Edge2 (the first 2 of 150)")
+        );
+        let sketch = Said {
+            warning: true,
+            message: "Two ends aren't joined".to_owned(),
+            cause: Some("the ends are 1e-8 mm apart".to_owned()),
+            elements: vec!["pa000001".to_owned()],
+            elements_total: 3,
+            suggestion: Some("join them".to_owned()),
+        };
+        assert_eq!(tab.said.get("s0000001"), Some(&sketch));
+        assert_eq!(
+            sketch.elements_line().as_deref(),
+            Some("Elements: pa000001 (the first 1 of 3)")
+        );
+        // All listed: no count; none: no line.
+        let all = Said {
+            elements_total: 2,
+            ..fillet.clone()
+        };
+        assert_eq!(
+            all.elements_line().as_deref(),
+            Some("Elements: Edge1, Edge2")
+        );
+        assert_eq!(Said::default().elements_line(), None);
+    }
+
+    #[test]
+    fn a_body_is_built_through_a_feature_its_inputs_reach_back_to() {
+        // A box, a fillet of it, a second box, and a fuse of the fillet with the second box;
+        // and a body of its own. The fuse is built through the fillet and both boxes; the
+        // fillet through itself; the lone body through none of them.
+        let id = |id: &str| FeatureId::new(id).unwrap();
+        let with = |at: &str, inputs: &[&str]| Entry {
+            inputs: inputs.iter().map(|input| id(input)).collect(),
+            ..entry(at, 0, 0)
+        };
+        let entries = [
+            with("a0000001", &[]),
+            with("f0000001", &["a0000001"]),
+            with("b0000001", &[]),
+            with("r0000001", &["f0000001", "b0000001"]),
+            with("c0000001", &[]),
+        ];
+        let through = |body: &str, own: &str| built_through(&entries, &id(body), &id(own));
+        assert!(through("r0000001", "f0000001"));
+        assert!(through("r0000001", "a0000001"));
+        assert!(through("r0000001", "b0000001"));
+        assert!(through("f0000001", "f0000001"));
+        assert!(!through("f0000001", "r0000001"));
+        assert!(!through("c0000001", "f0000001"));
+        assert!(!through("b0000001", "f0000001"));
+        // A feature the timeline doesn't list yet (a new one's, before its read): itself.
+        assert!(through("n0000001", "n0000001"));
+        assert!(!through("n0000001", "f0000001"));
+    }
+
+    #[test]
     fn an_answer_newer_than_the_status_keeps_the_tab_unsaved_until_a_status_of_it_is_read() {
         // A status of revision 2 says nothing changed (an edit undone back, say); an answer
         // since brought the tab to revision 3, whose status isn't read yet: unsaved, as a
@@ -3197,7 +3520,7 @@ mod tests {
     fn a_timeline_unmarked_drops_the_features_text_and_one_the_gate_took_the_documents() {
         let said = || Said {
             message: "m".to_owned(),
-            suggestion: None,
+            ..Said::default()
         };
         let mut tab = tab();
         tab.said.insert("a0000001".to_owned(), said());
@@ -3300,6 +3623,82 @@ mod tests {
         tab.ended(Ok(()), false, &mut close);
         assert!(tab.groups.is_empty());
         assert!(tab.restored.is_empty());
+    }
+
+    #[test]
+    fn a_let_go_the_box_takes_isnt_let_go_again_from_a_selection_that_took_it_back() {
+        // A new fillet's box of edges takes the canvas's picks on the 2 by 1 by 1 box. Edge1
+        // clicked: in the box and the selection. Then clicked twice before the box reads
+        // the toggles: let go, then added again. The box lets it go and takes it again; the
+        // let-go, removed from the box, isn't let go from the selection a second time, so
+        // both hold Edge1, as after the first click.
+        use crate::selection::How;
+        let edge = "aaaaaaaa.box.Edge1";
+        let mut tab = tab();
+        let model = crate::selection::tests::box_model();
+        tab.selection
+            .published(Some((model, Revision::from_number(1).unwrap())), 1);
+        let dialog = Dialog::new(Kind::Fillet, None, 1);
+        tab.selection.take_into(dialog.takes());
+        tab.dialog = Some(dialog);
+        let held = |tab: &Tab| {
+            let names = tab.dialog.as_ref().and_then(Dialog::names).unwrap();
+            (tab.selection.names().join(" "), names.names.join(" "))
+        };
+        tab.selection.pick(edge, How::Toggle);
+        assert!(tab.box_toggled());
+        assert_eq!(held(&tab), (edge.to_owned(), edge.to_owned()));
+        tab.selection.pick(edge, How::Toggle);
+        tab.selection.pick(edge, How::Toggle);
+        assert!(tab.box_toggled());
+        assert_eq!(held(&tab), (edge.to_owned(), edge.to_owned()));
+        assert!(!tab.box_toggled(), "nothing toggled since");
+    }
+
+    #[test]
+    fn a_cancels_put_back_selection_is_read_from_its_undo_only_and_only_if_none_waits_behind_it() {
+        // Edge1 picked on the box at revision 1, then put back by a Cancel: held, unread.
+        // Each model published at revision 3 below is the box not named yet, so a read of
+        // the selection against it leaves Edge1 waiting; unread, Edge1 stays found.
+        use crate::selection::How;
+        let edge = "aaaaaaaa.box.Edge1";
+        let three = Revision::from_number(3).unwrap();
+        // Found, by an answer of its own (a name waiting keeps the last it had, unstored).
+        let found = |tab: &Tab| tab.selection.elements().next().unwrap().stable();
+        let put_back = || {
+            let mut tab = tab();
+            let model = crate::selection::tests::box_model();
+            tab.selection
+                .published(Some((model, Revision::from_number(1).unwrap())), 1);
+            tab.selection.pick(edge, How::Replace);
+            let saved = tab.selection.saved();
+            tab.selection.clear();
+            tab.selection.restore(saved);
+            tab
+        };
+        let unnamed = || {
+            Some((
+                Arc::new(crate::selection::tests::box_model().unnamed()),
+                three,
+            ))
+        };
+        // A Cancel, another queued behind it: not read from 3, the later Cancel's undo says
+        // when.
+        let mut tab = put_back();
+        tab.edits.queue.push_back(Queued::Closed { ok: false });
+        tab.read_restored_from(false, three);
+        tab.selection.published(unnamed(), 2);
+        assert!(found(&tab), "read though another Cancel waits");
+        // An OK: nothing put back by it, so nothing read from 3.
+        let mut tab = put_back();
+        tab.read_restored_from(true, three);
+        tab.selection.published(unnamed(), 2);
+        assert!(found(&tab), "read from an OK");
+        // A Cancel alone: read from 3.
+        let mut tab = put_back();
+        tab.read_restored_from(false, three);
+        tab.selection.published(unnamed(), 2);
+        assert!(!found(&tab), "not read from the Cancel's undo");
     }
 
     #[test]

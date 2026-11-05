@@ -1189,6 +1189,18 @@ pub const CHIP_CORNER_RADIUS: u8 = 3;
 pub const CHIP_BG: Color32 = WIDGET_BG;
 pub const CHIP_TEXT: Color32 = GRAY_800;
 
+/// A selection box's clear button (`renderDialog`'s Clear: an `.ab-btn` 18 high and wide),
+/// beside each name a box of names lists.
+pub const SELECTION_BOX_CLEAR_SIDE: f32 = 18.0;
+
+/// What a box of names says under its names (`renderDialog`'s `.err-text` at 11 px): its
+/// refusal, in `--red`.
+pub const SELECTION_BOX_SAID: Color32 = ERROR_TEXT;
+
+/// A box of names' note under its names (what of the selection it left out), nothing
+/// wrong: the prototype's subdued text (`.subdued`, `--g550`).
+pub const SELECTION_BOX_NOTE: Color32 = TEXT_SUBDUED;
+
 /// A choice of a few (`.seg`): its fill (Gray.200), padding and gap 1; each choice 20 high,
 /// corners 3, its text Gray.550 (white hovered), the one chosen Gray.350 with white text.
 pub const SEGMENTED_BG: Color32 = FIELD_BG;

@@ -1605,7 +1605,7 @@ mod tests {
             "c0000001".to_owned(),
             Said {
                 message: "The cut removes nothing".to_owned(),
-                suggestion: None,
+                ..Said::default()
             },
         );
         tab
@@ -1974,7 +1974,7 @@ mod tests {
         tab.timeline.as_mut().unwrap().problems = 1;
         tab.document_problems.push(Said {
             message: "Two features share the ID block".to_owned(),
-            suggestion: None,
+            ..Said::default()
         });
         h.run_steps(2);
         let mark = mark_of(&root);
@@ -2317,7 +2317,7 @@ mod tests {
         let features = [entry("p0000001", "sketch", &[], Health::Healthy)];
         let problem = || Said {
             message: "The pad's sketch is open".to_owned(),
-            suggestion: None,
+            ..Said::default()
         };
         let down = |n: f32| css::TITLE_H + n * css::ROW_H;
         let none_yet = "None yet. A pad or a primitive makes one.";
@@ -2553,6 +2553,7 @@ mod property_panel_drawn {
             Said {
                 message: "The cut removes nothing".to_owned(),
                 suggestion: Some("Move the pin".to_owned()),
+                ..Said::default()
             },
         );
         tab

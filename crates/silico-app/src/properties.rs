@@ -452,11 +452,24 @@ pub(crate) fn outside_card(ui: &mut Ui, text: &str) -> bool {
 /// `suggestion` after an arrow, if it has one.
 ///
 /// SEAM: the rest of the prototype's card (DESIGN.md, *Agents as equal clients*; app.js's
-/// `errCard`): its code chip (`.ec-code`), its Feature, Elements, and Parameter rows
-/// (`.ec-kv`), Copy as JSON, and Edit and Show in timeline. The tab keeps only each
-/// problem's message and suggestion (`tab::Said`); with the structured error kept, each is
-/// a row or a button here.
+/// `errCard`): its code chip (`.ec-code`), its Feature and Parameter rows (`.ec-kv`; a
+/// dialog's card has its cause and Elements as lines, [`card_with`]), Copy as JSON, and Edit
+/// and Show in timeline. The tab keeps each problem's message, cause, elements, and
+/// suggestion (`tab::Said`); with the rest of the structured error kept, each is a row or a
+/// button here.
 pub(crate) fn card(ui: &mut Ui, warning: bool, message: &str, suggestion: Option<&str>) {
+    card_with(ui, warning, message, &[], suggestion);
+}
+
+/// [`card`], with `details` under its message, each a line of its own (`errCard`'s message
+/// and its Elements), before its suggestion.
+pub(crate) fn card_with(
+    ui: &mut Ui,
+    warning: bool,
+    message: &str,
+    details: &[String],
+    suggestion: Option<&str>,
+) {
     let (fill, border, head, icon) = if warning {
         (
             theme::WARNING_CARD_BG,
@@ -517,6 +530,10 @@ pub(crate) fn card(ui: &mut Ui, warning: bool, message: &str, suggestion: Option
                 .inner_margin(theme::ERROR_CARD_BODY_PADDING)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    for detail in details {
+                        ui.add(Label::new(words(detail)).wrap().selectable(false));
+                        ui.add_space(theme::ERROR_CARD_FIX_MARGIN);
+                    }
                     let Some(suggestion) = suggestion else {
                         return;
                     };
@@ -591,6 +608,90 @@ pub(crate) fn selection_box(
         None => truncated(ui, body(empty, theme::TEXT_SUBDUED)),
     });
     response
+}
+
+/// A row under a selection box listing one of its items: `name`'s chip with `icon`, across
+/// the row from the panel's padding (the value's column is too narrow for an element's
+/// name, which a chip would cut short), its whole name its tooltip; and at the row's right
+/// a button that removes it (`renderDialog`'s Clear, an `.ab-btn` 18 points square with a
+/// ×), labelled "Remove `name`": whether it was clicked. Off unless `enabled`. `salt` names
+/// the row among its siblings.
+pub(crate) fn listed(
+    ui: &mut Ui,
+    salt: impl egui::AsIdSalt,
+    icon: Icon,
+    name: &str,
+    enabled: bool,
+) -> bool {
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(ui.available_width(), theme::PROPERTY_ROW_HEIGHT),
+        Sense::hover(),
+    );
+    let id = ui.id().with(salt);
+    let value = Rect::from_min_max(
+        pos2(rect.left() + pad(), rect.top()),
+        pos2(rect.right() - pad(), rect.bottom()),
+    );
+    let side = theme::SELECTION_BOX_CLEAR_SIDE;
+    let button = Rect::from_center_size(
+        pos2(value.right() - side / 2.0, value.center().y),
+        Vec2::splat(side),
+    );
+    let chip_at = Rect::from_min_max(
+        value.min,
+        pos2(button.left() - theme::CHIP_GAP, value.bottom()),
+    );
+    within(ui, chip_at, id.with("chip"), |ui| {
+        chip(ui, icon, name).on_hover_text(name)
+    });
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(button, id.with("remove"), sense);
+    let label = format!("Remove {name}");
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, &label));
+    let ink = if response.hovered() && enabled {
+        ui.painter().rect_filled(
+            button,
+            theme::SMALL_CORNER_RADIUS,
+            theme::APP_BAR_BUTTON_HOVER_BG,
+        );
+        theme::TEXT_STRONG
+    } else {
+        theme::TEXT_DEFAULT
+    };
+    Icon::Close.image(IconSize::Small).tint(ink).paint_at(
+        ui,
+        Rect::from_center_size(button.center(), Vec2::splat(IconSize::Small.points())),
+    );
+    enabled && response.on_hover_text(label).clicked()
+}
+
+/// What a selection box says under it (`renderDialog`'s `.err-text`, 11 px, in a row whose
+/// key is empty): `text`, wrapped, in `ink` ([`theme::SELECTION_BOX_SAID`] for a refusal,
+/// [`theme::SELECTION_BOX_NOTE`] for a note).
+pub(crate) fn said(ui: &mut Ui, text: &str, ink: Color32) {
+    let job = LayoutJob::single_section(
+        text.to_owned(),
+        TextFormat {
+            line_height: Some(theme::BODY_LINE_HEIGHT),
+            ..format(theme::HEADER_SIZE, ink, false)
+        },
+    );
+    let left = pad() + theme::PROPERTY_KEY_WIDTH + theme::PROPERTY_ROW_GAP;
+    egui::Frame::new()
+        .outer_margin(Margin {
+            left: left as i8,
+            right: theme::VIEW_PADDING,
+            top: 0,
+            bottom: theme::HINT_MARGIN as i8,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(Label::new(job).wrap().selectable(false));
+        });
 }
 
 /// A chip (`.selbox .chip`): `icon` and `name`, labelled `name`.
@@ -1000,11 +1101,12 @@ mod tests {
     use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
     use egui::accesskit::Role;
     use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
 
     use super::*;
     use crate::modal::tests::{
         at, at_opacity, cap_border, colour, fills_at, font, icon_at, kbd_border, near, rects,
-        text_shape, widget,
+        sized, text_shape, widget,
     };
 
     /// styles.css: `.dlg-footer .btn { flex: 1; height: 26px }`; `.btn { gap: 6px }`;
@@ -1102,6 +1204,141 @@ mod tests {
         font(&value, FS, "the value");
         assert_eq!(colour(&key), purple);
         assert_eq!(colour(&value), G800);
+    }
+
+    /// `renderDialog`'s Clear: `.ab-btn` 18 square (`style="height:18px;min-width:18px"`),
+    /// `--r-sm` round; `.ab-btn:hover:not(:disabled)` Gray.300 behind Gray.1000.
+    /// `.selbox .chip`: 16 high, Gray.300, `padding: 0 5px; gap: 4px`.
+    const CLEAR: f32 = 18.0;
+    const CHIP_H: f32 = 16.0;
+    const CHIP_GAP: f32 = 4.0;
+    const G300: Color32 = Color32::from_rgb(0x2c, 0x2b, 0x2b);
+    const G1000: Color32 = Color32::WHITE;
+
+    /// A box of names' row listing `name`, `enabled` or not, drawn in `place`, its Remove
+    /// button hovered if `hover`.
+    fn listed_in(place: Rect, name: &'static str, enabled: bool, hover: bool) -> Harness<'static> {
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(300.0, 120.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    listed(ui, "row", Icon::SelEdge, name, enabled);
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        if hover {
+            h.get_by_role_and_label(Role::Button, &format!("Remove {name}"))
+                .hover();
+            h.run_steps(2);
+        }
+        h
+    }
+
+    #[test]
+    fn a_listed_names_row_runs_from_the_pad_its_remove_button_18_square_at_its_right() {
+        // `.prop`'s `padding: 0 var(--pad)`, `--row-h` high: the row's chip from 12 in, the
+        // button 18 square, centred in the row, its right 12 in from the row's; the chip,
+        // a name too long for the row cut short, ends a chip's gap (4) before the button.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(200.0, 60.0));
+        let name = "k7f2qx3m.fillet.Edge111111111111111111111111111111111111";
+        let h = listed_in(place, name, true, false);
+        let button = widget(&h, Role::Button, &format!("Remove {name}"));
+        sized(
+            button,
+            Rect::from_min_size(
+                Pos2::new(
+                    place.right() - PAD - CLEAR,
+                    place.top() + (ROW_H - CLEAR) / 2.0,
+                ),
+                Vec2::splat(CLEAR),
+            ),
+            "the Remove button",
+        );
+        let chip = rects(&h)
+            .into_iter()
+            .find(|shape| shape.fill == G300 && near(shape.rect.height(), CHIP_H))
+            .expect("the chip")
+            .rect;
+        assert!(
+            near(chip.left(), place.left() + PAD),
+            "the chip at {chip:?}"
+        );
+        // Cut to fit, it ends within a narrow digit's width (under 8) of where it may.
+        let end = button.left() - CHIP_GAP;
+        assert!(
+            chip.right() <= end + egui::emath::GUI_ROUNDING && chip.right() > end - 8.0,
+            "the chip at {chip:?}, the button at {button:?}"
+        );
+    }
+
+    #[test]
+    fn a_listed_names_remove_button_is_lit_when_hovered_only_if_its_on() {
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(200.0, 60.0));
+        let name = "k7f2qx3m.box.Edge3";
+        for enabled in [true, false] {
+            let h = listed_in(place, name, enabled, true);
+            let button = Rect::from_min_size(
+                Pos2::new(
+                    place.right() - PAD - CLEAR,
+                    place.top() + (ROW_H - CLEAR) / 2.0,
+                ),
+                Vec2::splat(CLEAR),
+            );
+            let lit: Vec<Color32> = fills_at(&h, button)
+                .into_iter()
+                .map(|(fill, _)| fill)
+                .collect();
+            let tint = icon_at(
+                &h,
+                Rect::from_center_size(button.center(), Vec2::splat(ICON)),
+            );
+            if enabled {
+                assert_eq!(lit, [G300], "hovered, on");
+                assert_eq!(tint, Some(G1000), "hovered, on");
+            } else {
+                assert!(lit.is_empty(), "hovered, off: {lit:?}");
+                assert!(
+                    tint.is_some_and(|tint| tint != G1000),
+                    "hovered, off: {tint:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn what_a_box_of_names_says_is_in_the_value_column_11_px_on_16_px_lines() {
+        // `<div class="prop"><span></span><span class="err-text" style="font-size:11px;
+        // white-space:normal">`: in the value's column, 12 + 96 + 8 in from the panel's
+        // left, wrapped, each line `body`'s 16 high.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(260.0, 200.0));
+        let text = "k7f2qx3m.box.Face1 is a face: a fillet takes edges, so select one of the \
+                    edges of the body it's built on";
+        let red = Color32::from_rgb(0xff, 0x38, 0x65);
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(360.0, 260.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    said(ui, text, red);
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let said = text_shape(&h, text);
+        at(
+            said.pos,
+            Pos2::new(place.left() + PAD + KEY_W + ROW_GAP, place.top()),
+            "what's said",
+        );
+        font(&said, 11.0, "what's said");
+        assert_eq!(colour(&said), red);
+        let lines = said.galley.rows.len();
+        assert!(lines > 1, "what's said didn't wrap");
+        assert!(
+            near(said.galley.size().y, lines as f32 * LH),
+            "{lines} lines {} high",
+            said.galley.size().y
+        );
     }
 
     #[test]
