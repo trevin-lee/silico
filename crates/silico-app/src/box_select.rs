@@ -110,8 +110,8 @@ struct Seen {
     table: u64,
     model: Option<(u64, silico_core::command::Revision)>,
     filter: crate::selection::Filter,
-    /// The bodies the browser hides: hiding one (H) changes what's under a pixel, though
-    /// the bodies table stays.
+    /// The features the browser hides: hiding a body (H) changes what's under a pixel,
+    /// though the bodies table stays.
     hidden: BTreeSet<FeatureId>,
 }
 
@@ -198,7 +198,7 @@ impl BoxSelect {
     /// `painter` and, let go, selected; the pick at the press asked again of `view` while
     /// its answer is awaited. `current` is whether the view's bodies are of the model the
     /// selection is read against (nothing is decided or selected from other bodies);
-    /// `shown`, whether a body is drawn (the browser hides some). What a toast is to say,
+    /// `hidden`, the features the browser hides (their bodies aren't drawn). What a toast is to say,
     /// if anything: how many edges a box took, or why a drag took none.
     pub(crate) fn overlay(
         &mut self,
@@ -207,7 +207,7 @@ impl BoxSelect {
         frame: &ViewFrame,
         painter: &Painter,
         current: bool,
-        shown: &dyn Fn(&FeatureId) -> bool,
+        hidden: &BTreeSet<FeatureId>,
     ) -> Option<String> {
         let ppp = frame.pixels_per_point;
         let click_px = painter
@@ -219,12 +219,7 @@ impl BoxSelect {
             table: view.table(),
             model: selection.model_of(),
             filter: selection.filter,
-            hidden: view
-                .bodies()
-                .values()
-                .filter(|body| !shown(&body.feature))
-                .map(|body| body.feature.clone())
-                .collect(),
+            hidden: hidden.clone(),
         };
         let changed = self.seen.as_ref().is_some_and(|seen| *seen != now);
         self.seen = Some(now);
@@ -263,8 +258,7 @@ impl BoxSelect {
                     let area = PxBox::clamped(from, to, frame.size_px);
                     let names = taken(
                         view.bodies(),
-                        shown,
-                        EDGES,
+                        hidden,
                         &frame.camera,
                         frame.size_px,
                         area,
@@ -510,25 +504,11 @@ impl BoxSelect {
     }
 }
 
-/// What a box takes in a part, as the prototype's `onBox`: edges alone, whatever the
-/// filter (with the edge filter off, nothing, and that's said).
-const EDGES: Kinds = Kinds {
-    faces: false,
-    edges: true,
-};
-
 /// What the toast says of a box that took `count` edges (the prototype's `onBox`).
 fn box_words(crossing: bool, count: usize) -> String {
     let kind = if crossing { "Crossing" } else { "Window" };
     let plural = if count == 1 { "" } else { "s" };
     format!("{kind} selection: {count} edge{plural}")
-}
-
-/// Which kinds of element a box takes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Kinds {
-    faces: bool,
-    edges: bool,
 }
 
 /// A box on the canvas, in physical pixels from its top left: `[x0, x1] × [y0, y1]`, its
@@ -593,34 +573,14 @@ impl PxBox {
 
     /// Whether the segment from `a` to `b` meets the box (its outline or inside): their
     /// boxes overlap, and the box's corners aren't all strictly on one side of its line
-    /// (the separating axes of a segment and a box).
+    /// (the separating axes of a segment and a box). A segment with an end inside meets it
+    /// so, as does one of no length on it (every corner then on its line).
     fn meets_segment(&self, a: [f64; 2], b: [f64; 2]) -> bool {
-        if self.holds(a) || self.holds(b) {
-            return true;
-        }
         if !self.overlaps_bounds(&[a, b]) {
             return false;
         }
         let sides = self.corners().map(|c| orient(a, b, c));
         !(sides.iter().all(|s| *s > 0.0) || sides.iter().all(|s| *s < 0.0))
-    }
-
-    /// Whether the triangle `t` overlaps the box (shares a point with it): their boxes
-    /// overlap, and no side of the triangle has every corner of the box strictly beyond it
-    /// (the separating axes of two convex shapes). A triangle with no area is its sides.
-    fn overlaps_triangle(&self, t: [[f64; 2]; 3]) -> bool {
-        if !self.overlaps_bounds(&t) {
-            return false;
-        }
-        let area = orient(t[0], t[1], t[2]);
-        if area == 0.0 || !area.is_finite() {
-            return (0..3).any(|k| self.meets_segment(t[k], t[(k + 1) % 3]));
-        }
-        (0..3).all(|k| {
-            let (a, b) = (t[k], t[(k + 1) % 3]);
-            // The third vertex's side of this side's line is the inside.
-            !self.corners().iter().all(|c| orient(a, b, *c) * area < 0.0)
-        })
     }
 }
 
@@ -683,52 +643,38 @@ impl<'a> Sight<'a> {
         for nudge in [0.0, 1e-12, 1e-9, 1e-6] {
             let s = t * (1.0 - nudge);
             let p: [f64; 3] = std::array::from_fn(|k| inside[k] + s * (outside[k] - inside[k]));
-            if self.kept(p) && project(self.camera, self.size, p).is_some() {
+            // `project` cuts as the drawing does: a point it places is kept.
+            if project(self.camera, self.size, p).is_some() {
                 return p;
             }
         }
         inside
     }
 
-    /// `points`, a segment or a triangle, as drawn: cut to its part in front of the cut (a
-    /// polygon clipped by the plane), then projected.
-    fn drawn(&self, points: &[Option<[f64; 3]>]) -> Drawn {
+    /// `points`, a segment or one point of an edge, as drawn: cut to its part in front of
+    /// the cut, then projected.
+    fn drawn(&self, points: &[[f64; 3]]) -> Drawn {
         let read: Vec<[f64; 3]> = points
             .iter()
-            .flatten()
             .copied()
             .filter(|p| p.iter().all(|c| c.is_finite()))
             .collect();
         if read.len() < points.len() {
             let beside = read
                 .iter()
-                .filter(|p| self.kept(**p))
                 .filter_map(|p| project(self.camera, self.size, *p))
                 .collect();
             return Drawn::Unread(beside);
         }
-        let mut left = Vec::with_capacity(read.len() + 1);
-        if read.iter().all(|p| self.kept(*p)) {
-            left = read;
-        } else {
-            let closed = read.len() > 2;
-            let sides = if closed { read.len() } else { read.len() - 1 };
-            for k in 0..sides {
-                let (a, b) = (read[k], read[(k + 1) % read.len()]);
-                match (self.kept(a), self.kept(b)) {
-                    (true, true) => left.push(a),
-                    (true, false) => {
-                        left.push(a);
-                        left.push(self.crossing(a, b));
-                    }
-                    (false, true) => left.push(self.crossing(b, a)),
-                    (false, false) => {}
-                }
-                if !closed && self.kept(b) {
-                    left.push(b);
-                }
-            }
-        }
+        let left: Vec<[f64; 3]> = match read.as_slice() {
+            [a, b] => match (self.kept(*a), self.kept(*b)) {
+                (true, true) => vec![*a, *b],
+                (true, false) => vec![*a, self.crossing(*a, *b)],
+                (false, true) => vec![self.crossing(*b, *a), *b],
+                (false, false) => Vec::new(),
+            },
+            points => points.iter().copied().filter(|p| self.kept(*p)).collect(),
+        };
         if left.is_empty() {
             return Drawn::Cut;
         }
@@ -757,12 +703,8 @@ fn decide(pieces: impl Iterator<Item = Drawn>, area: &PxBox, crossing: bool) -> 
         if crossing {
             let meets = if read {
                 match points.as_slice() {
-                    [p] => area.holds(*p),
                     [a, b] => area.meets_segment(*a, *b),
-                    [first, rest @ ..] => rest
-                        .windows(2)
-                        .any(|pair| area.overlaps_triangle([*first, pair[0], pair[1]])),
-                    [] => false,
+                    points => points.iter().any(|p| area.holds(*p)),
                 }
             } else {
                 points.iter().any(|p| area.holds(*p))
@@ -780,14 +722,15 @@ fn decide(pieces: impl Iterator<Item = Drawn>, area: &PxBox, crossing: bool) -> 
     !crossing && any
 }
 
-/// The names of what a box `area` takes of `bodies`, those `shown` alone, of the `kinds`
-/// it takes, seen through `camera` on a canvas `size` pixels: wholly inside, or also
-/// crossing it if `crossing`. By body in its number's order, then faces, then edges, each
-/// by its number: as the element map names them.
+/// The names of the edges a box `area` takes of `bodies`, but those `hidden`, seen through
+/// `camera` on a canvas `size` pixels: wholly inside, or also crossing it if `crossing`. By
+/// body in its number's order, then each edge by its number: as the element map names
+/// them. A box in a part takes edges alone (the prototype's `onBox`); a box that took faces
+/// (a filter for them, M5.7's part 3 or later) would add their triangles here, cut and
+/// tested as the edges' segments are.
 fn taken(
     bodies: &BTreeMap<u32, ViewBody>,
-    shown: &dyn Fn(&FeatureId) -> bool,
-    kinds: Kinds,
+    hidden: &BTreeSet<FeatureId>,
     camera: &Camera,
     size: [u32; 2],
     area: PxBox,
@@ -795,56 +738,28 @@ fn taken(
 ) -> Vec<String> {
     let sight = Sight::new(camera, size);
     let mut names = Vec::new();
-    for body in bodies.values().filter(|body| shown(&body.feature)) {
+    for body in bodies
+        .values()
+        .filter(|body| !hidden.contains(&body.feature))
+    {
         let mesh = &body.mesh;
-        if kinds.faces {
-            let position = |index: u32| -> Option<[f64; 3]> {
-                usize::try_from(index)
-                    .ok()
-                    .and_then(|at| mesh.positions.get(at).copied())
+        let mut first = 0usize;
+        for (count, number) in mesh.edge_point_counts.iter().zip(1u32..) {
+            let count = usize::try_from(*count).unwrap_or(usize::MAX);
+            let end = first.saturating_add(count);
+            let points = mesh.edge_points.get(first..end);
+            first = end;
+            let Some(points) = points.filter(|p| !p.is_empty()) else {
+                continue;
             };
-            let mut first = 0usize;
-            for (count, number) in mesh.face_triangles.iter().zip(1u32..) {
-                let count = usize::try_from(*count).unwrap_or(usize::MAX);
-                let end = first.saturating_add(count);
-                let triangles = mesh.triangles.get(first..end);
-                first = end;
-                let Some(triangles) = triangles.filter(|t| !t.is_empty()) else {
-                    continue;
-                };
-                let pieces = triangles.iter().map(|t| sight.drawn(&t.map(position)));
-                if decide(pieces, &area, crossing)
-                    && let Some(named) = body.name_of(Element::Face(number))
-                {
-                    names.push(named.name.to_string());
-                }
-            }
-        }
-        if kinds.edges {
-            let mut first = 0usize;
-            for (count, number) in mesh.edge_point_counts.iter().zip(1u32..) {
-                let count = usize::try_from(*count).unwrap_or(usize::MAX);
-                let end = first.saturating_add(count);
-                let points = mesh.edge_points.get(first..end);
-                first = end;
-                let Some(points) = points.filter(|p| !p.is_empty()) else {
-                    continue;
-                };
-                let take = if let [point] = points {
-                    decide(
-                        std::iter::once(sight.drawn(&[Some(*point)])),
-                        &area,
-                        crossing,
-                    )
-                } else {
-                    let pieces = points
-                        .windows(2)
-                        .map(|pair| sight.drawn(&[Some(pair[0]), Some(pair[1])]));
-                    decide(pieces, &area, crossing)
-                };
-                if take && let Some(named) = body.name_of(Element::Edge(number)) {
-                    names.push(named.name.to_string());
-                }
+            let take = if let [point] = points {
+                decide(std::iter::once(sight.drawn(&[*point])), &area, crossing)
+            } else {
+                let pieces = points.windows(2).map(|pair| sight.drawn(pair));
+                decide(pieces, &area, crossing)
+            };
+            if take && let Some(named) = body.name_of(Element::Edge(number)) {
+                names.push(named.name.to_string());
             }
         }
     }
@@ -854,15 +769,15 @@ fn taken(
 /// The box from `from` to `to` (physical pixels from the canvas's top left) drawn on
 /// `painter` over `frame`'s canvas: [`theme::BOX_SELECT_FILL`], outlined in
 /// [`theme::BOX_SELECT_STROKE`], solid for a window (dragged left to right) and dashed for a
-/// crossing (right to left). The painter clips it to the canvas.
+/// crossing (right to left). The painter clips it to the canvas. A box of no size, or with
+/// a corner that isn't finite, draws nothing.
 pub(crate) fn draw_box(painter: &Painter, frame: &ViewFrame, from: [f32; 2], to: [f32; 2]) {
+    // egui's pixels per point are above 0; one that isn't leaves a corner that isn't
+    // finite, which draws nothing.
     let ppp = frame.pixels_per_point;
-    if !(ppp.is_finite() && ppp > 0.0) {
-        return;
-    }
     let at = |p: [f32; 2]| frame.rect.min + egui::vec2(p[0] / ppp, p[1] / ppp);
     let (a, b) = (at(from), at(to));
-    if !(a.x.is_finite() && a.y.is_finite() && b.x.is_finite() && b.y.is_finite()) {
+    if !(a.x.is_finite() && a.y.is_finite() && b.x.is_finite() && b.y.is_finite()) || a == b {
         return;
     }
     let rect = Rect::from_two_pos(a, b);
@@ -934,10 +849,9 @@ mod tests {
         }
     }
 
-    /// A body of `edges` (polylines, by their pixels on [`front`]) and `faces` (each a list
-    /// of triangles, by their corners' pixels), each named `k7f2qx3m.box.Edge<n>` and
-    /// `Face<n>` in order.
-    fn body(edges: &[&[[f64; 2]]], faces: &[&[[[f64; 2]; 3]]]) -> ViewBody {
+    /// A body of `edges` (polylines, by their pixels on [`front`]), each named
+    /// `k7f2qx3m.box.Edge<n>` in order.
+    fn body(edges: &[&[[f64; 2]]]) -> ViewBody {
         let mut mesh = Mesh {
             positions: Vec::new(),
             normals: Vec::new(),
@@ -952,16 +866,6 @@ mod tests {
                 .extend(edge.iter().map(|[x, y]| at(*x, *y, 0.0)));
             mesh.edge_point_counts.push(edge.len() as u32);
         }
-        for face in faces {
-            for triangle in *face {
-                let base = mesh.positions.len() as u32;
-                mesh.positions
-                    .extend(triangle.iter().map(|[x, y]| at(*x, *y, 5.0)));
-                mesh.normals.extend([[0.0, -1.0, 0.0]; 3]);
-                mesh.triangles.push([base, base + 1, base + 2]);
-            }
-            mesh.face_triangles.push(face.len() as u32);
-        }
         ViewBody {
             feature: FeatureId::new(BODY).unwrap(),
             key: Key::parse(&"01".repeat(32)).unwrap(),
@@ -970,9 +874,7 @@ mod tests {
             bounds: None,
             serves: [0.0, 1.0],
             held: false,
-            faces: (1..=faces.len() as u32)
-                .map(|n| named(ElementKind::Face, n))
-                .collect(),
+            faces: Vec::new(),
             edges: (1..=edges.len() as u32)
                 .map(|n| named(ElementKind::Edge, n))
                 .collect(),
@@ -984,29 +886,16 @@ mod tests {
         BTreeMap::from([(1, body)])
     }
 
-    const EDGES: Kinds = Kinds {
-        faces: false,
-        edges: true,
-    };
-    const FACES: Kinds = Kinds {
-        faces: true,
-        edges: false,
-    };
-
-    fn every(_: &FeatureId) -> bool {
-        true
+    /// No body hidden.
+    fn none() -> BTreeSet<FeatureId> {
+        BTreeSet::new()
     }
 
     /// What a box from `a` to `b` (pixels) takes of `bodies` on [`front`], window or
     /// crossing as dragged (right to left a crossing), as short names (`Edge1`).
-    fn boxed(
-        bodies: &BTreeMap<u32, ViewBody>,
-        kinds: Kinds,
-        a: [f32; 2],
-        b: [f32; 2],
-    ) -> Vec<String> {
+    fn boxed(bodies: &BTreeMap<u32, ViewBody>, a: [f32; 2], b: [f32; 2]) -> Vec<String> {
         let area = PxBox::clamped(a, b, SIZE);
-        taken(bodies, &every, kinds, &front(), SIZE, area, b[0] < a[0])
+        taken(bodies, &none(), &front(), SIZE, area, b[0] < a[0])
             .into_iter()
             .map(|name| name.trim_start_matches("k7f2qx3m.box.").to_owned())
             .collect()
@@ -1036,17 +925,17 @@ mod tests {
             &[[100.0, 90.0], [120.0, 90.0]],
             &[[100.0, 35.0], [150.0, 35.0]],
         ];
-        let held = bodies(body(&edges, &[]));
+        let held = bodies(body(&edges));
         // Left to right: a window.
-        assert_eq!(boxed(&held, EDGES, [105.0, 25.0], [140.0, 45.0]), ["Edge1"]);
+        assert_eq!(boxed(&held, [105.0, 25.0], [140.0, 45.0]), ["Edge1"]);
         // The same box right to left: a crossing, also Edge2, which is half in, and Edge4,
         // which runs through it (none of its points is inside).
         assert_eq!(
-            boxed(&held, EDGES, [140.0, 25.0], [105.0, 45.0]),
+            boxed(&held, [140.0, 25.0], [105.0, 45.0]),
             ["Edge1", "Edge2", "Edge4"]
         );
         // Up or down doesn't matter, only left or right.
-        assert_eq!(boxed(&held, EDGES, [105.0, 45.0], [140.0, 25.0]), ["Edge1"]);
+        assert_eq!(boxed(&held, [105.0, 45.0], [140.0, 25.0]), ["Edge1"]);
     }
 
     #[test]
@@ -1057,10 +946,10 @@ mod tests {
             &[[110.0, 25.0], [130.0, 25.0]],
             &[[110.0, 24.999], [130.0, 24.999]],
         ];
-        let held = bodies(body(&edges, &[]));
-        assert_eq!(boxed(&held, EDGES, [105.0, 25.0], [140.0, 45.0]), ["Edge1"]);
+        let held = bodies(body(&edges));
+        assert_eq!(boxed(&held, [105.0, 25.0], [140.0, 45.0]), ["Edge1"]);
         // A crossing doesn't reach it either: it's outside, if barely.
-        assert_eq!(boxed(&held, EDGES, [140.0, 25.0], [105.0, 45.0]), ["Edge1"]);
+        assert_eq!(boxed(&held, [140.0, 25.0], [105.0, 45.0]), ["Edge1"]);
     }
 
     #[test]
@@ -1072,49 +961,14 @@ mod tests {
         // To 108.5 it holds neither.
         let x = 100.0 + 5.0 * 3f64.sqrt();
         let edges: [&[[f64; 2]]; 1] = [&[[x, 45.0], [x, 55.0]]];
-        let held = bodies(body(&edges, &[]));
-        assert_eq!(boxed(&held, EDGES, [100.0, 40.0], [109.5, 60.0]), ["Edge1"]);
-        assert!(boxed(&held, EDGES, [100.0, 40.0], [108.5, 60.0]).is_empty());
+        let held = bodies(body(&edges));
+        assert_eq!(boxed(&held, [100.0, 40.0], [109.5, 60.0]), ["Edge1"]);
+        assert!(boxed(&held, [100.0, 40.0], [108.5, 60.0]).is_empty());
     }
 
     #[test]
-    fn a_faces_triangles_decide_it_a_crossing_takes_one_the_box_lies_wholly_inside() {
-        // Face1: the square (110, 20)–(150, 40) as two triangles. Face2: a triangle
-        // (160, 10), (190, 10), (160, 40).
-        let square: &[[[f64; 2]; 3]] = &[
-            [[110.0, 20.0], [150.0, 20.0], [150.0, 40.0]],
-            [[110.0, 20.0], [150.0, 40.0], [110.0, 40.0]],
-        ];
-        let corner: &[[[f64; 2]; 3]] = &[[[160.0, 10.0], [190.0, 10.0], [160.0, 40.0]]];
-        let held = bodies(body(&[], &[square, corner]));
-        // A window round the square alone, then round both.
-        assert_eq!(boxed(&held, FACES, [105.0, 15.0], [155.0, 45.0]), ["Face1"]);
-        assert_eq!(
-            boxed(&held, FACES, [105.0, 5.0], [195.0, 45.0]),
-            ["Face1", "Face2"]
-        );
-        // A crossing inside the square, no vertex of it inside the box: the box overlaps
-        // its triangles, so it's taken.
-        assert_eq!(boxed(&held, FACES, [140.0, 25.0], [120.0, 35.0]), ["Face1"]);
-        // A crossing in the corner's empty half, beyond its long side from (190, 10) to
-        // (160, 40) (x + y = 200): (185, 30)–(195, 38) has every corner past it. Taken by
-        // its box's overlap alone, it would be.
-        assert!(boxed(&held, FACES, [195.0, 30.0], [185.0, 38.0]).is_empty());
-        // Moved to touch the long side at (180, 20): taken.
-        assert_eq!(boxed(&held, FACES, [190.0, 20.0], [180.0, 30.0]), ["Face2"]);
-    }
-
-    #[test]
-    fn a_box_takes_edges_alone_and_its_toast_counts_them_as_the_prototype_words_it() {
-        // The prototype's `onBox`: edges, whatever the filter (its edge filter off, the
-        // overlay takes nothing, `EDGE_FILTER_OFF`); and its toast's words.
-        assert_eq!(
-            super::EDGES,
-            Kinds {
-                faces: false,
-                edges: true
-            }
-        );
+    fn a_boxs_toast_counts_its_edges_as_the_prototype_words_it() {
+        // The prototype's `onBox`.
         assert_eq!(box_words(false, 4), "Window selection: 4 edges");
         assert_eq!(box_words(true, 1), "Crossing selection: 1 edge");
         assert_eq!(box_words(false, 0), "Window selection: 0 edges");
@@ -1132,25 +986,29 @@ mod tests {
             &[[90.0, 20.0], [150.0, 20.0]],
             &[[90.0, 40.0], [150.0, 40.0]],
         ];
-        let held = bodies(body(&edges, &[]));
+        let held = bodies(body(&edges));
         assert_eq!(
-            boxed(&held, EDGES, [140.0, 20.0], [100.0, 40.0]),
+            boxed(&held, [140.0, 20.0], [100.0, 40.0]),
             ["Edge2", "Edge3"]
         );
     }
 
     #[test]
-    fn a_hidden_body_and_an_unmeshed_face_or_edge_are_never_taken() {
-        let square: &[[[f64; 2]; 3]] = &[[[110.0, 20.0], [150.0, 20.0], [150.0, 40.0]]];
+    fn a_hidden_body_and_an_unmeshed_edge_are_never_taken() {
         let edges: [&[[f64; 2]]; 2] = [&[], &[[110.0, 30.0], [130.0, 30.0]]];
-        let held = bodies(body(&edges, &[&[], square]));
-        // Edge1 and Face1 have nothing in the mesh: neither is taken, by a window or a
-        // crossing; Edge2 and Face2 are.
-        assert_eq!(boxed(&held, EDGES, [100.0, 10.0], [160.0, 50.0]), ["Edge2"]);
-        assert_eq!(boxed(&held, FACES, [160.0, 10.0], [100.0, 50.0]), ["Face2"]);
+        let held = bodies(body(&edges));
+        // Edge1 has nothing in the mesh: not taken, by a window or a crossing; Edge2 is.
+        assert_eq!(boxed(&held, [100.0, 10.0], [160.0, 50.0]), ["Edge2"]);
+        assert_eq!(boxed(&held, [160.0, 10.0], [100.0, 50.0]), ["Edge2"]);
+        // Its body hidden: nothing; another feature hidden: as before.
         let area = PxBox::clamped([100.0, 10.0], [160.0, 50.0], SIZE);
-        let hidden = |_: &FeatureId| false;
-        assert!(taken(&held, &hidden, EDGES, &front(), SIZE, area, false).is_empty());
+        let hidden = BTreeSet::from([FeatureId::new(BODY).unwrap()]);
+        assert!(taken(&held, &hidden, &front(), SIZE, area, false).is_empty());
+        let other = BTreeSet::from([FeatureId::new("a91cw0de").unwrap()]);
+        assert_eq!(
+            taken(&held, &other, &front(), SIZE, area, false),
+            ["k7f2qx3m.box.Edge2"]
+        );
     }
 
     /// In perspective from (0, −100, 0) onto the origin, z up, 45° high: depth along the
@@ -1166,27 +1024,17 @@ mod tests {
         }
     }
 
-    /// A body of `edges` and `faces` in the document's coordinates, named in order.
-    fn body_at(edges: &[&[[f64; 3]]], faces: &[[[f64; 3]; 3]]) -> BTreeMap<u32, ViewBody> {
-        let mut held = body(&[], &[]);
+    /// A body of `edges` in the document's coordinates, named in order.
+    fn body_at(edges: &[&[[f64; 3]]]) -> BTreeMap<u32, ViewBody> {
+        let mut held = body(&[]);
         let mut mesh = (*held.mesh).clone();
         for edge in edges {
             mesh.edge_points.extend(edge.iter().copied());
             mesh.edge_point_counts.push(edge.len() as u32);
         }
-        for face in faces {
-            let base = mesh.positions.len() as u32;
-            mesh.positions.extend(face.iter().copied());
-            mesh.normals.extend([[0.0, -1.0, 0.0]; 3]);
-            mesh.triangles.push([base, base + 1, base + 2]);
-            mesh.face_triangles.push(1);
-        }
         held.mesh = Arc::new(mesh);
         held.edges = (1..=edges.len() as u32)
             .map(|n| named(ElementKind::Edge, n))
-            .collect();
-        held.faces = (1..=faces.len() as u32)
-            .map(|n| named(ElementKind::Face, n))
             .collect();
         bodies(held)
     }
@@ -1206,9 +1054,9 @@ mod tests {
             &[[0.0, -200.0, 0.0], [10.0, -150.0, 5.0]],
             &[[0.0, -200.0, 0.0], [0.0, 0.0, 0.0]],
         ];
-        let held = body_at(&edges, &[]);
+        let held = body_at(&edges);
         let names = |area: PxBox, crossing| -> Vec<String> {
-            taken(&held, &every, EDGES, &camera, SIZE, area, crossing)
+            taken(&held, &none(), &camera, SIZE, area, crossing)
                 .into_iter()
                 .map(|name| name.trim_start_matches("k7f2qx3m.box.").to_owned())
                 .collect()
@@ -1225,38 +1073,6 @@ mod tests {
         // Off the middle, left of x 50: nothing drawn there.
         let aside = PxBox::clamped([0.0, 0.0], [40.0, 128.0], SIZE);
         assert!(names(aside, true).is_empty());
-    }
-
-    #[test]
-    fn a_face_partly_behind_the_eye_is_tested_by_what_the_drawing_keeps_of_it() {
-        // Face1: (−50, 0, ∓10), 100 in front, and (50, −150, 0), 50 behind: drawn as the
-        // quadrilateral left of the cut, which reaches far to the right along the middle
-        // row. Face2 lies wholly behind the eye.
-        let camera = from_near();
-        let faces = [
-            [[-50.0, 0.0, -10.0], [-50.0, 0.0, 10.0], [50.0, -150.0, 0.0]],
-            [
-                [0.0, -200.0, -10.0],
-                [0.0, -200.0, 10.0],
-                [10.0, -150.0, 0.0],
-            ],
-        ];
-        let held = body_at(&[], &faces);
-        let right = PxBox::clamped([190.0, 60.0], [150.0, 68.0], SIZE);
-        assert_eq!(
-            taken(&held, &every, FACES, &camera, SIZE, right, true),
-            ["k7f2qx3m.box.Face1"]
-        );
-        let whole = PxBox::clamped([0.0, 0.0], [256.0, 128.0], SIZE);
-        assert!(taken(&held, &every, FACES, &camera, SIZE, whole, false).is_empty());
-        // Above the middle row, right of the near side (x ≈ 51, y 48.5 to 79.5): the quad's
-        // cut corners fan out far up and down (its top side falls about 0.19 a pixel, to
-        // y ≈ 20 at x 200), so it covers (200, 25)–(250, 35) too.
-        let above = PxBox::clamped([250.0, 25.0], [200.0, 35.0], SIZE);
-        assert_eq!(
-            taken(&held, &every, FACES, &camera, SIZE, above, true),
-            ["k7f2qx3m.box.Face1"]
-        );
     }
 
     #[test]
@@ -1288,8 +1104,8 @@ mod tests {
             &[[246.0, 30.0], [266.0, 30.0]],
             &[[150.0, 30.0], [255.0, 30.0]],
         ];
-        let held = bodies(body(&edges, &[]));
-        assert_eq!(boxed(&held, EDGES, [140.0, 10.0], [400.0, 50.0]), ["Edge2"]);
+        let held = bodies(body(&edges));
+        assert_eq!(boxed(&held, [140.0, 10.0], [400.0, 50.0]), ["Edge2"]);
     }
 
     // ---- The press, decided ----
@@ -1400,26 +1216,75 @@ mod tests {
         );
     }
 
-    /// `boxes`' overlay over a fresh view (whose pick asked is the frame's alone) of
-    /// `left`, the view's bodies `current`: the toast, and the pick asked.
+    /// What a frame of the overlay did: its toast, the pick it asked, the shapes it
+    /// painted, and the frame it asked for.
+    struct Overlaid {
+        toast: Option<String>,
+        asked: Option<crate::renderer::PixelRect>,
+        shapes: Vec<Shape>,
+        repaint: std::time::Duration,
+    }
+
+    /// `boxes`' overlay, in a pass of egui's, over a fresh view (whose pick asked is the
+    /// frame's alone) of `left`, at `ppp` pixels a point, the view's bodies `current`.
+    fn overlaid_at(
+        boxes: &mut BoxSelect,
+        selection: &mut Selection,
+        left: Vec<LeftEvent>,
+        current: bool,
+        ppp: f32,
+    ) -> Overlaid {
+        let ctx = egui::Context::default();
+        // A first pass, so the one measured asks for frames of its own alone.
+        pass(&ctx, |_| {});
+        let mut view = View::default();
+        let mut frame = view_frame(None);
+        frame.left = left;
+        frame.now = start();
+        frame.pixels_per_point = ppp;
+        let mut toast = None;
+        let output = pass(&ctx, |ui| {
+            let painter = ui.ctx().layer_painter(egui::LayerId::background());
+            toast = boxes.overlay(selection, &mut view, &frame, &painter, current, &none());
+        });
+        Overlaid {
+            toast,
+            asked: view.asking(),
+            shapes: flat(output.shapes.into_iter().map(|clipped| clipped.shape)),
+            repaint: output
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .map_or(std::time::Duration::MAX, |viewport| viewport.repaint_delay),
+        }
+    }
+
+    /// A pass of egui's running `run`, its textures' changes let go (no renderer takes them).
+    fn pass(ctx: &egui::Context, run: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
+        let mut output = ctx.run_ui(egui::RawInput::default(), run);
+        output.textures_delta.clear();
+        output
+    }
+
+    fn flat(shapes: impl IntoIterator<Item = Shape>) -> Vec<Shape> {
+        let mut out = Vec::new();
+        for shape in shapes {
+            match shape {
+                Shape::Vec(inner) => out.extend(flat(inner)),
+                shape => out.push(shape),
+            }
+        }
+        out
+    }
+
+    /// [`overlaid_at`] at one pixel a point: its toast and the pick it asked.
     fn overlaid(
         boxes: &mut BoxSelect,
         selection: &mut Selection,
         left: Vec<LeftEvent>,
         current: bool,
     ) -> (Option<String>, Option<crate::renderer::PixelRect>) {
-        let ctx = egui::Context::default();
-        let painter = Painter::new(
-            ctx,
-            egui::LayerId::background(),
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(256.0, 128.0)),
-        );
-        let mut view = View::default();
-        let mut frame = view_frame(None);
-        frame.left = left;
-        frame.now = start();
-        let toast = boxes.overlay(selection, &mut view, &frame, &painter, current, &every);
-        (toast, view.asking())
+        let done = overlaid_at(boxes, selection, left, current, 1.0);
+        (done.toast, done.asked)
     }
 
     #[test]
@@ -1870,20 +1735,10 @@ mod tests {
 
     #[test]
     fn a_malformed_mesh_takes_nothing_it_cant_read_and_never_panics() {
-        // Counts past the arrays, an index past the positions, a point that isn't finite: a
-        // face or an edge with a point that can't be read isn't wholly inside; a crossing
-        // tests what it can read.
-        let mut held = body(&[], &[]);
+        // A count past the points, a point that isn't finite: an edge with a point that
+        // can't be read isn't wholly inside; a crossing tests what it can read.
+        let mut held = body(&[]);
         held.mesh = Arc::new(Mesh {
-            positions: vec![
-                at(110.0, 20.0, 0.0),
-                at(150.0, 20.0, 0.0),
-                at(150.0, 40.0, 0.0),
-            ],
-            normals: vec![[0.0, -1.0, 0.0]; 3],
-            triangles: vec![[0, 1, 2], [0, 1, 99]],
-            face_triangles: vec![1, 1, u32::MAX],
-            valid: None,
             edge_points: vec![
                 at(110.0, 30.0, 0.0),
                 [f64::NAN, 0.0, 0.0],
@@ -1891,60 +1746,45 @@ mod tests {
                 at(130.0, 30.0, 0.0),
             ],
             edge_point_counts: vec![2, 2, u32::MAX],
+            ..(*held.mesh).clone()
         });
-        held.faces = (1..=3).map(|n| named(ElementKind::Face, n)).collect();
         held.edges = (1..=3).map(|n| named(ElementKind::Edge, n)).collect();
         let held = bodies(held);
-        let all = Kinds {
-            faces: true,
-            edges: true,
-        };
-        // Face1 whole; Face2's third corner is no position; Face3 runs past the triangles.
         // Edge1 has a point that isn't finite; Edge2 is whole; Edge3 runs past the points.
+        assert_eq!(boxed(&held, [100.0, 10.0], [160.0, 50.0]), ["Edge2"]);
+        // A crossing takes Edge1 by its point that projects.
         assert_eq!(
-            boxed(&held, all, [100.0, 10.0], [160.0, 50.0]),
-            ["Face1", "Edge2"]
+            boxed(&held, [160.0, 10.0], [100.0, 50.0]),
+            ["Edge1", "Edge2"]
         );
-        // A crossing takes Face2 by its corners that are read, and Edge1 by its point that
-        // projects.
-        assert_eq!(
-            boxed(&held, all, [160.0, 10.0], [100.0, 50.0]),
-            ["Face1", "Face2", "Edge1", "Edge2"]
-        );
-        // More names than elements, or fewer: what has no name isn't taken.
+        // Fewer names than edges: what has no name isn't taken.
         let mut fewer = held[&1].clone();
-        fewer.faces.truncate(1);
-        fewer.edges.clear();
+        fewer.edges.truncate(1);
         assert_eq!(
-            boxed(&bodies(fewer), all, [160.0, 10.0], [100.0, 50.0]),
-            ["Face1"]
+            boxed(&bodies(fewer), [160.0, 10.0], [100.0, 50.0]),
+            ["Edge1"]
         );
     }
 
     #[test]
     fn an_empty_scene_a_box_of_no_size_and_a_camera_that_cant_draw_take_nothing() {
         let edges: [&[[f64; 2]]; 1] = [&[[110.0, 30.0], [130.0, 30.0]]];
-        let held = bodies(body(&edges, &[]));
-        assert!(boxed(&BTreeMap::new(), EDGES, [0.0, 0.0], [256.0, 128.0]).is_empty());
+        let held = bodies(body(&edges));
+        assert!(boxed(&BTreeMap::new(), [0.0, 0.0], [256.0, 128.0]).is_empty());
         // A box of no size takes only what's exactly on its point: an edge of one point
         // there, not one through it.
-        assert!(boxed(&held, EDGES, [120.0, 30.0], [120.0, 30.0]).is_empty());
+        assert!(boxed(&held, [120.0, 30.0], [120.0, 30.0]).is_empty());
         let single: [&[[f64; 2]]; 1] = [&[[120.0, 31.0]]];
         assert_eq!(
-            boxed(
-                &bodies(body(&single, &[])),
-                EDGES,
-                [120.0, 31.0],
-                [120.0, 31.0]
-            ),
+            boxed(&bodies(body(&single)), [120.0, 31.0], [120.0, 31.0]),
             ["Edge1"]
         );
         // A camera the renderer refuses, or a canvas of no size: nothing projects.
         let mut camera = front();
         camera.eye = camera.target;
         let area = PxBox::clamped([0.0, 0.0], [256.0, 128.0], SIZE);
-        assert!(taken(&held, &every, EDGES, &camera, SIZE, area, true).is_empty());
-        assert!(taken(&held, &every, EDGES, &front(), [0, 0], area, true).is_empty());
+        assert!(taken(&held, &none(), &camera, SIZE, area, true).is_empty());
+        assert!(taken(&held, &none(), &front(), [0, 0], area, true).is_empty());
     }
 
     #[test]
@@ -1952,7 +1792,7 @@ mod tests {
         // 100,000 edges, each a two-point polyline half a pixel long, in a 200 by 100 grid
         // of pixels a quarter in: a window to x = 99.9 takes those wholly in it, in their
         // order.
-        let mut held = body(&[], &[]);
+        let mut held = body(&[]);
         let count = 100_000u32;
         let mut points = Vec::with_capacity(2 * count as usize);
         for n in 0..count {
@@ -1968,7 +1808,7 @@ mod tests {
         });
         held.edges = (1..=count).map(|n| named(ElementKind::Edge, n)).collect();
         let held = bodies(held);
-        let names = boxed(&held, EDGES, [0.0, 0.0], [99.9, 100.0]);
+        let names = boxed(&held, [0.0, 0.0], [99.9, 100.0]);
         // By hand: x from 0 to 99 (the edge's end at x + 0.75 ≤ 99.9), each of the 100 rows,
         // over the 5 times the grid repeats: 100 × 100 × 5.
         assert_eq!(names.len(), 50_000);
@@ -2005,5 +1845,308 @@ mod tests {
         assert_eq!(phase(&boxes), Some(Phase::Pressed));
         assert!(frame(&mut boxes, &[event(Release, [f32::NAN, 0.0])], None, false).is_empty());
         assert_eq!(phase(&boxes), None);
+    }
+
+    // ---- Each operand, decided (the mutants run's survivors) ----
+
+    #[test]
+    fn a_segment_wholly_on_either_side_of_a_corner_or_beside_a_side_isnt_taken() {
+        // The box (100, 20)–(140, 40), right to left. Edge1, (150, 25) to (135, 10), runs
+        // the other way along x − y = 125 (every corner on its other side). Edge2, (130, 10)
+        // to (150, 30), on x − y = 120, touches the corner (140, 20) exactly: taken. Edge3,
+        // (90, 10) to (150, 10), parallel to its top 10 above it.
+        let edges: [&[[f64; 2]]; 3] = [
+            &[[150.0, 25.0], [135.0, 10.0]],
+            &[[130.0, 10.0], [150.0, 30.0]],
+            &[[90.0, 10.0], [150.0, 10.0]],
+        ];
+        let held = bodies(body(&edges));
+        assert_eq!(boxed(&held, [140.0, 20.0], [100.0, 40.0]), ["Edge2"]);
+    }
+
+    #[test]
+    fn a_segment_is_cut_where_the_eye_cuts_at_its_hand_worked_point() {
+        // From the eye at (0, −100, 0), depth is y + 100. The segment from (−50, 0, 0),
+        // depth 100, to (50, −200, 0), depth −100, meets the cut, depth 1e-6, at t =
+        // (100 − 1e-6) / 200: (−5e-7, −99.999999, 0).
+        let camera = from_near();
+        let sight = Sight::new(&camera, SIZE);
+        let cut = sight.crossing([-50.0, 0.0, 0.0], [50.0, -200.0, 0.0]);
+        let want = [-5e-7, -99.999_999, 0.0];
+        for k in 0..3 {
+            assert!((cut[k] - want[k]).abs() < 1e-9, "{cut:?}");
+        }
+        assert!(project(&camera, SIZE, cut).is_some());
+        // The other way round, from the kept end: the same point.
+        let back = sight.crossing([50.0, 0.0, 0.0], [-50.0, -200.0, 0.0]);
+        assert!((back[0] - 5e-7).abs() < 1e-9 && (back[1] + 99.999_999).abs() < 1e-9);
+        // Drawn, the segment is its start to that point.
+        let Drawn::Shown(points) = sight.drawn(&[[-50.0, 0.0, 0.0], [50.0, -200.0, 0.0]]) else {
+            panic!("not drawn")
+        };
+        assert_eq!(points.len(), 2);
+        assert_eq!(Some(points[0]), project(&camera, SIZE, [-50.0, 0.0, 0.0]));
+        assert_eq!(Some(points[1]), project(&camera, SIZE, cut));
+    }
+
+    #[test]
+    fn a_point_exactly_at_the_cut_is_drawn_and_one_a_hair_nearer_isnt() {
+        // From the eye at the origin along +y, depth is y exactly.
+        let camera = Camera {
+            projection: Projection::Perspective {
+                field_of_view: 45.0,
+            },
+            eye: [0.0, 0.0, 0.0],
+            target: [0.0, 1.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        };
+        let sight = Sight::new(&camera, SIZE);
+        let at_cut = [0.0, MIN_EYE_DISTANCE, 0.0];
+        let short = [0.0, MIN_EYE_DISTANCE * (1.0 - 1e-9), 0.0];
+        assert!(matches!(sight.drawn(&[at_cut]), Drawn::Shown(_)));
+        assert!(matches!(sight.drawn(&[short]), Drawn::Cut));
+        // A segment from the short point to one far in front: drawn from the cut on.
+        let Drawn::Shown(points) = sight.drawn(&[short, [0.0, 10.0, 0.0]]) else {
+            panic!("not drawn")
+        };
+        assert_eq!(points.len(), 2);
+        // Wholly short: cut.
+        assert!(matches!(sight.drawn(&[short, short]), Drawn::Cut));
+    }
+
+    #[test]
+    fn the_click_distance_is_egui_s_in_points_scaled_to_pixels() {
+        // egui's 6 points: at 2 pixels a point, 12 pixels. A move of 10 is still a click's;
+        // one of 12.5 decides, the answer known empty: a box.
+        let empty = Some(([50, 40], None));
+        for (moved, decided) in [(10.0, false), (12.5, true)] {
+            let mut boxes = BoxSelect {
+                heard: empty.clone(),
+                ..BoxSelect::default()
+            };
+            let mut selection = Selection::default();
+            overlaid_at(
+                &mut boxes,
+                &mut selection,
+                vec![event(Press, [50.0, 40.0])],
+                true,
+                2.0,
+            );
+            overlaid_at(
+                &mut boxes,
+                &mut selection,
+                vec![event(Move, [50.0 + moved, 40.0])],
+                true,
+                2.0,
+            );
+            assert_eq!(phase(&boxes) == Some(Phase::Boxing), decided, "{moved}");
+        }
+    }
+
+    #[test]
+    fn a_box_let_go_over_another_models_meshes_takes_nothing_and_says_why() {
+        let mut boxes = BoxSelect {
+            heard: Some(([50, 40], None)),
+            ..BoxSelect::default()
+        };
+        let mut selection = Selection::default();
+        let left = vec![
+            event(Press, [50.0, 40.0]),
+            event(Move, [90.0, 70.0]),
+            event(Release, [90.0, 70.0]),
+        ];
+        let done = overlaid_at(&mut boxes, &mut selection, left, false, 1.0);
+        assert_eq!(done.toast.as_deref(), Some(PRESS_MOVED));
+    }
+
+    #[test]
+    fn a_frame_is_asked_for_at_the_backstop_only_while_a_drag_let_go_waits() {
+        let mut selection = Selection::default();
+        let left = vec![
+            event(Press, [50.0, 40.0]),
+            event(Move, [70.0, 40.0]),
+            event(Release, [90.0, 70.0]),
+        ];
+        // Waiting, its view's bodies of another model (nothing asked): a frame at the
+        // backstop, CLICK_WAIT from its release.
+        let mut boxes = BoxSelect::default();
+        let done = overlaid_at(&mut boxes, &mut selection, left.clone(), false, 1.0);
+        assert_eq!(phase(&boxes), Some(Phase::Held));
+        assert!(done.repaint <= CLICK_WAIT, "{:?}", done.repaint);
+        // Held, not let go: none asked for.
+        let mut boxes = BoxSelect::default();
+        let done = overlaid_at(&mut boxes, &mut selection, left[..2].to_vec(), false, 1.0);
+        assert_eq!(done.repaint, std::time::Duration::MAX);
+    }
+
+    fn fill() -> egui::Color32 {
+        theme::color32(theme::BOX_SELECT_FILL)
+    }
+
+    #[test]
+    fn a_box_is_drawn_while_boxing_and_nothing_before() {
+        let mut selection = Selection::default();
+        let mut boxes = BoxSelect {
+            heard: Some(([50, 40], None)),
+            ..BoxSelect::default()
+        };
+        let pressed = overlaid_at(
+            &mut boxes,
+            &mut selection,
+            vec![event(Press, [50.0, 40.0])],
+            true,
+            1.0,
+        );
+        assert!(pressed.shapes.is_empty(), "{:?}", pressed.shapes);
+        let boxing = overlaid_at(
+            &mut boxes,
+            &mut selection,
+            vec![event(Move, [90.0, 70.0])],
+            true,
+            1.0,
+        );
+        assert!(
+            boxing
+                .shapes
+                .iter()
+                .any(|shape| matches!(shape, Shape::Rect(rect) if rect.fill == fill())),
+            "{:?}",
+            boxing.shapes
+        );
+    }
+
+    /// What [`draw_box`] paints from `from` to `to`, at `ppp`, the canvas at (10, 20).
+    fn drawn_box(from: [f32; 2], to: [f32; 2], ppp: f32) -> Vec<Shape> {
+        let ctx = egui::Context::default();
+        let mut frame = view_frame(None);
+        frame.rect = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(128.0, 64.0));
+        frame.pixels_per_point = ppp;
+        let output = pass(&ctx, |ui| {
+            draw_box(
+                &ui.ctx().layer_painter(egui::LayerId::background()),
+                &frame,
+                from,
+                to,
+            );
+        });
+        flat(output.shapes.into_iter().map(|clipped| clipped.shape))
+    }
+
+    #[test]
+    fn a_window_is_drawn_solid_a_crossing_dashed_and_a_box_of_no_size_not_at_all() {
+        let stroke = Stroke::new(
+            theme::BOX_SELECT_STROKE_WIDTH,
+            theme::color32(theme::BOX_SELECT_STROKE),
+        );
+        // Left to right, at 2 pixels a point: (40, 30)–(100, 90) pixels is (20, 15)–(50, 45)
+        // points from the canvas's corner (10, 20): (30, 35)–(60, 65), filled, its outline
+        // one solid line round it.
+        let window = drawn_box([40.0, 30.0], [100.0, 90.0], 2.0);
+        let want = egui::Rect::from_min_max(egui::pos2(30.0, 35.0), egui::pos2(60.0, 65.0));
+        assert!(
+            matches!(
+                &window[..],
+                [Shape::Rect(rect), Shape::Path(path)]
+                    if rect.rect == want && rect.fill == fill()
+                        && path.points == [want.left_top(), want.right_top(), want.right_bottom(),
+                            want.left_bottom(), want.left_top()]
+                        && path.stroke.width == stroke.width
+            ),
+            "{window:?}"
+        );
+        // Straight down (x unchanged): a window too.
+        let down = drawn_box([40.0, 30.0], [40.0, 90.0], 2.0);
+        assert!(
+            matches!(&down[..], [Shape::Rect(_), Shape::Path(_)]),
+            "{down:?}"
+        );
+        // Right to left: dashed, 4 on and 3 off, so many segments.
+        let crossing = drawn_box([100.0, 30.0], [40.0, 90.0], 2.0);
+        let dashes = crossing
+            .iter()
+            .filter(|shape| matches!(shape, Shape::LineSegment { .. }))
+            .count();
+        assert!(matches!(crossing.first(), Some(Shape::Rect(rect)) if rect.rect == want));
+        assert!(dashes > 4, "{crossing:?}");
+        assert!(!crossing.iter().any(|shape| matches!(shape, Shape::Path(_))));
+        // No size, or a corner that isn't finite, each of the four: nothing.
+        assert!(drawn_box([40.0, 30.0], [40.0, 30.0], 2.0).is_empty());
+        for (from, to) in [
+            ([f32::NAN, 30.0], [100.0, 90.0]),
+            ([40.0, f32::NAN], [100.0, 90.0]),
+            ([40.0, 30.0], [f32::INFINITY, 90.0]),
+            ([40.0, 30.0], [100.0, f32::NAN]),
+        ] {
+            assert!(drawn_box(from, to, 2.0).is_empty(), "{from:?} {to:?}");
+        }
+        // Pixels per point of 0: corners that aren't finite, nothing.
+        assert!(drawn_box([40.0, 30.0], [100.0, 90.0], 0.0).is_empty());
+    }
+
+    #[test]
+    fn a_press_let_go_long_ago_isnt_asked_and_an_answer_in_isnt_asked_over() {
+        // Let go by a view change, unanswered: never asked again.
+        let mut boxes = BoxSelect::default();
+        frame(
+            &mut boxes,
+            &[event(Press, [50.0, 40.0]), event(Move, [70.0, 40.0])],
+            None,
+            false,
+        );
+        frame(&mut boxes, &[], None, true);
+        assert_eq!(phase(&boxes), Some(Phase::LetGo));
+        let mut view = View::default();
+        assert_eq!(boxes.ask(&mut view, &view_frame(None)), None);
+        assert_eq!(view.asking(), None);
+        // The press's own pick asked already, its answer in: not asked again, so the
+        // answer stands (asking again lets it go).
+        let mut boxes = BoxSelect::default();
+        frame(&mut boxes, &[event(Press, [50.0, 40.0])], None, false);
+        let ours = square([50.0, 40.0], SIZE, 3);
+        let mut view = View::default();
+        view.pick(ours);
+        view.answered_as(
+            (1, silico_core::command::Revision::from_number(1).unwrap()),
+            crate::renderer::Picking {
+                frame: 1,
+                rect: ours,
+                hit: None,
+                edge: None,
+            },
+        );
+        let before = view.picked();
+        assert!(before.is_some());
+        assert_eq!(view.asking(), Some(ours));
+        assert_eq!(boxes.ask(&mut view, &view_frame(Some([50.5, 40.5]))), None);
+        assert_eq!(view.picked(), before);
+    }
+
+    #[test]
+    fn a_second_press_over_a_drag_still_held_says_nothing() {
+        // The window lost a release: a press over a drag held (not let go) undecided starts
+        // afresh, unsaid; only one let go and waiting is said superseded.
+        let mut boxes = BoxSelect::default();
+        frame(
+            &mut boxes,
+            &[event(Press, [50.0, 40.0]), event(Move, [70.0, 40.0])],
+            None,
+            false,
+        );
+        assert_eq!(phase(&boxes), Some(Phase::Held));
+        assert!(frame(&mut boxes, &[event(Press, [10.0, 10.0])], None, false).is_empty());
+    }
+
+    #[test]
+    fn a_move_of_exactly_the_click_distance_is_still_a_clicks() {
+        let empty = Some(([50, 40], None));
+        let mut boxes = BoxSelect::default();
+        frame(
+            &mut boxes,
+            &[event(Press, [50.0, 40.0])],
+            empty.clone(),
+            false,
+        );
+        frame(&mut boxes, &[event(Move, [56.0, 40.0])], empty, false);
+        assert_eq!(phase(&boxes), Some(Phase::Pressed));
     }
 }

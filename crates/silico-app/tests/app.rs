@@ -19436,18 +19436,31 @@ fn f5_says_where_the_filters_are_in_a_toast_for_its_time() {
     // F5: the prototype's toast, over the canvas, and nothing else changed; gone after its
     // 3.8 seconds. Not on the shortcut sheet, as the prototype's isn't.
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
-    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
     let time = |h: &AppHarness| h.ctx.input(|input| input.time);
-    // A frame a quarter second, the harness's.
-    let frame = 1.0 / 4.0;
+    // A frame a sixtieth of a second, the harness's.
+    let frame = 1.0 / 60.0;
     assert_eq!(h.state().toast(), None);
     h.key_press(Key::F5);
     step(&mut h);
     step(&mut h);
     let (said, shown) = h.state().toast().unwrap();
     assert_eq!(said, silico_app::app::FILTERS_SAID);
-    assert!(anywhere(&h, silico_app::app::FILTERS_SAID));
+    // Over the canvas's bottom right, 12 in from its right and 58 up from its foot, its
+    // text inside its padding (8 at the right, 7 below) and border.
+    let canvas = the_viewport(&h);
+    let text = h.get_by_label(silico_app::app::FILTERS_SAID).rect();
+    let right = canvas.right() - 12.0 - 8.0 - 1.0;
+    let foot = canvas.bottom() - 58.0 - 7.0 - 1.0;
+    assert!(
+        (text.right() - right).abs() <= 1.0,
+        "{text:?} in {canvas:?}"
+    );
+    assert!(
+        (text.bottom() - foot).abs() <= 2.0,
+        "{text:?} in {canvas:?}"
+    );
     assert_eq!(
         h.state().tabs()[0].selection().filter,
         silico_app::selection::Filter::default()

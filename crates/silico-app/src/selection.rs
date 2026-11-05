@@ -487,7 +487,13 @@ impl Selection {
             How::Replace => Vec::new(),
             How::Toggle | How::Add => self.items.clone(),
         };
-        match items.iter().position(|item| same(item, &picked)) {
+        let mut index = Index::default();
+        for (at, item) in items.iter().enumerate() {
+            if let Item::Element(each) = item {
+                index.add(at, each);
+            }
+        }
+        match index.find(&picked) {
             Some(at) if how == How::Toggle => {
                 items.remove(at);
                 self.scroll = None;
@@ -583,7 +589,7 @@ impl Selection {
             How::Replace => Vec::new(),
             How::Toggle | How::Add => self.items.clone(),
         };
-        // Each picked matched to the item that's its element as [`same`] matches them, by
+        // Each picked matched to the item that's its element, by
         // index, so a box of thousands costs no more than a sort: the items', and those the
         // batch has added so far, so the same element named twice is taken once.
         let mut index = Index::default();
@@ -637,9 +643,7 @@ impl Selection {
             let version = self.version;
             self.items = items;
             self.read(&model);
-            if self.version == version {
-                self.version = version.wrapping_add(1);
-            }
+            self.version = version.wrapping_add(1);
         }
     }
 
@@ -1147,9 +1151,10 @@ fn drawn_as(element: ElementRef) -> Option<Element> {
     }
 }
 
-/// The elements of a list of items by where each stands, to find a pick's as [`same`]
-/// matches them without a scan: a found pick by its element among the found, else by its
-/// name among those not found; one not found by its name among all.
+/// The elements of a list of items by where each stands, to find a pick's without a scan:
+/// a found pick by its element among the found, else by its name among those not found;
+/// one not found by its name among all. A pick is the item's element so (the same element
+/// found, or, either not found, the same name).
 #[derive(Default)]
 struct Index {
     found: BTreeMap<(FeatureId, ElementRef), usize>,
@@ -1183,18 +1188,6 @@ impl Index {
             None => self.named.get(&picked.name),
         }
         .copied()
-    }
-}
-
-/// Whether `item` is `picked`'s element: the same element found, or, either not found, the
-/// same name.
-fn same(item: &Item, picked: &Picked) -> bool {
-    match item {
-        Item::Element(each) => match (each.found(), picked.found()) {
-            (Some(a), Some(b)) => a.feature == b.feature && a.element == b.element,
-            _ => each.name == picked.name,
-        },
-        Item::Feature(_) => false,
     }
 }
 
@@ -2656,5 +2649,56 @@ mod tests {
         selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
         assert!(selection.click.is_none(), "the click's answer not taken");
         assert_eq!(selection.heard(), None);
+    }
+
+    #[test]
+    fn every_change_of_the_items_is_a_new_version_and_the_model_is_told() {
+        let mut selection = one_box();
+        assert_eq!(
+            selection.model_of(),
+            Some((1, Revision::from_number(1).unwrap()))
+        );
+        let mut seen = vec![selection.version()];
+        selection.pick("aaaaaaaa.box.Edge1", How::Replace);
+        seen.push(selection.version());
+        selection.pick("aaaaaaaa.box.Edge2", How::Toggle);
+        seen.push(selection.version());
+        selection.pick_all(&edges(&[3, 4]), How::Replace);
+        seen.push(selection.version());
+        selection.clear();
+        seen.push(selection.version());
+        assert!(seen.windows(2).all(|pair| pair[0] != pair[1]), "{seen:?}");
+        assert_eq!(Selection::default().model_of(), None);
+    }
+
+    #[test]
+    fn exactly_as_many_names_as_the_core_reads_are_read() {
+        // MAX_SELECTED names, the box's twelve edges over and over: read, each taken once.
+        let mut selection = one_box();
+        let many: Vec<String> = (0..silico_core::selection::MAX_SELECTED)
+            .map(|n| format!("aaaaaaaa.box.Edge{}", n % 12 + 1))
+            .collect();
+        selection.pick_all(&many, How::Replace);
+        assert_eq!(selection.said(), None);
+        assert_eq!(selection.names(), edges(&(1..=12).collect::<Vec<_>>()));
+    }
+
+    #[test]
+    fn a_name_waiting_named_twice_in_a_toggle_is_added_once() {
+        // On a model not named yet, both Edge1s wait: the second is the first's element,
+        // taken once, not toggled back out.
+        let mut selection = Selection::default();
+        selection.published(
+            Some((
+                Arc::new(box_model().unnamed()),
+                Revision::from_number(1).unwrap(),
+            )),
+            1,
+        );
+        selection.pick_all(&edges(&[1, 1]), How::Toggle);
+        assert_eq!(
+            states(&selection),
+            [("aaaaaaaa.box.Edge1".to_owned(), "pending")]
+        );
     }
 }

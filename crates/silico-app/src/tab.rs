@@ -584,22 +584,25 @@ impl Tab {
         self.selection.overlay(&mut self.view, frame, painter.ctx());
         // The bodies are of the model the selection is read against: the one published
         // last, as counted.
-        let current = self.published.is_some()
-            && self.view.bodies_of()
-                == self
-                    .published
-                    .map(|revision| (self.published_models, revision));
-        let hidden = &self.hidden;
-        let shown = |id: &silico_core::document::FeatureId| {
-            !hidden.contains(&Hideable::Feature(id.clone()))
-        };
+        let current = matches!(
+            (self.published, self.view.bodies_of()),
+            (Some(revision), Some(of)) if of == (self.published_models, revision)
+        );
+        let hidden: std::collections::BTreeSet<silico_core::document::FeatureId> = self
+            .hidden
+            .iter()
+            .filter_map(|what| match what {
+                Hideable::Feature(id) => Some(id.clone()),
+                Hideable::Origin(_) => None,
+            })
+            .collect();
         if let Some(toast) = self.box_select.overlay(
             &mut self.selection,
             &mut self.view,
             frame,
             painter,
             current,
-            &shown,
+            &hidden,
         ) {
             self.toast = Some(toast);
         }

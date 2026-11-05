@@ -1674,4 +1674,43 @@ mod tests {
             Some((css::FINISH_HOVER, CornerRadius::same(css::R_SM)))
         );
     }
+
+    #[test]
+    fn a_filters_tooltip_names_its_key_and_its_click_toggles_it() {
+        // SELECT's Edges: its tooltip names E, the registry's key (the prototype's
+        // `data-tipk`); a click asks to toggle edges.
+        let mut h = drawn(false);
+        let painted = |h: &Harness<'_, bool>, text: &str| {
+            clipped(h)
+                .into_iter()
+                .filter(|shown| matches!(&shown.shape, Shape::Text(t) if t.galley.text() == text))
+                .count()
+        };
+        assert_eq!(painted(&h, "E"), 0);
+        h.get_by_role_and_label(Role::Button, "Edges").hover();
+        h.run_steps(8);
+        assert_eq!(painted(&h, "E"), 1, "the tooltip's key cap");
+        let act = std::cell::Cell::new(None);
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(WIDTH, 200.0))
+            .build_ui(|ui| {
+                let can_open = |_: Kind| true;
+                let shown = Shown {
+                    in_sketch: false,
+                    create_sketch: Some(true),
+                    can_open: &can_open,
+                    selected: false,
+                    filter: Filter::default(),
+                };
+                let window = UiBuilder::new().max_rect(ui.ctx().content_rect());
+                if let Some(done) = ui.scope_builder(window, |ui| show(ui, &shown)).inner {
+                    act.set(Some(done));
+                }
+            });
+        h.run_steps(2);
+        h.get_by_role_and_label(Role::Button, "Edges").click();
+        h.run_steps(2);
+        drop(h);
+        assert_eq!(act.get(), Some(Act::Filter(FilterKind::Edges)));
+    }
 }
