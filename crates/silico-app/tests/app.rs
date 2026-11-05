@@ -19197,7 +19197,8 @@ fn an_unstable_name_is_selectable_shown_with_its_reason_and_refused_by_a_store()
             ..
         } => Some(silico_protocol::Reply::Built(
             silico_core::kernel::BuiltData {
-                shape: base.clone(),
+                // A box a mm³ larger than the base, so the fuse changes it (S7's rule).
+                shape: FakeKernel::resized(base, 1.0)?,
                 history: numbering_fuse(),
             },
         )),
@@ -19493,7 +19494,8 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
 }
 
 /// The fake answers each fuse with `history` of the tool's description (`box(2, …)` for a
-/// tool 2 long), giving the base back.
+/// tool 2 long), giving a box a mm³ larger than the base back, so the fuse changes its base
+/// as S7's rule asks.
 fn fusing(f: &Fixture, history: fn(&str) -> silico_core::kernel::History) {
     f.kernel.answer_instead(move |op| match op {
         Op::Boolean {
@@ -19502,7 +19504,7 @@ fn fusing(f: &Fixture, history: fn(&str) -> silico_core::kernel::History) {
             tool,
         } => Some(silico_protocol::Reply::Built(
             silico_core::kernel::BuiltData {
-                shape: base.clone(),
+                shape: FakeKernel::resized(base, 1.0)?,
                 history: history(&FakeKernel::describe(tool)?),
             },
         )),
