@@ -1017,15 +1017,16 @@ fn reloaded_sub(from: u64, to: u64) -> String {
 }
 
 /// Two blocks, each with the fingerprint it rebuilds to on the fake kernel: Block, 40 × 20
-/// × 10 (volume 8000, area 2(800 + 400 + 200) = 2800), and Plate, 10 × 10 × 2 from x = 50
-/// (volume 200, area 2(100 + 20 + 20) = 280), so neither is marked with a warning.
+/// × 10 (volume 8000, area 2(800 + 400 + 200) = 2800, centre its middle, (20, 10, 5)), and
+/// Plate, 10 × 10 × 2 from x = 50 (volume 200, area 2(100 + 20 + 20) = 280, centre (55, 5,
+/// 1)), so neither is marked with a warning.
 const BLOCK_AND_PLATE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
   "naming": 5,
   "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}},
-    {"id": "p2t8wn4c", "type": "box", "v": 1, "name": "Plate", "position": [50, 0, 0], "length": 10, "width": 10, "height": 2, "fingerprint": {"volume": 200, "area": 280, "bbox": [50, 0, 0, 60, 10, 2], "faces": 6, "edges": 12, "vertices": 8}}
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}},
+    {"id": "p2t8wn4c", "type": "box", "v": 1, "name": "Plate", "position": [50, 0, 0], "length": 10, "width": 10, "height": 2, "fingerprint": {"volume": 200, "area": 280, "center": [55, 5, 1], "bbox": [50, 0, 0, 60, 10, 2], "faces": 6, "edges": 12, "vertices": 8}}
   ]
 }
 "#;
@@ -1112,8 +1113,9 @@ fn the_changed_features_are_marked_in_purple_until_marked_seen_and_esc_dismisses
 #[test]
 fn a_reload_lists_features_added_removed_and_moved_each_in_its_words() {
     let f = fixture_reading(Some(Arc::new(real)));
-    // The two blocks and a Peg, 4 × 4 × 4 from x = 70 (volume 64, area 6 × 16 = 96).
-    let peg = r#"    {"id": "g5r9x3k1", "type": "box", "v": 1, "name": "Peg", "position": [70, 0, 0], "length": 4, "width": 4, "height": 4, "fingerprint": {"volume": 64, "area": 96, "bbox": [70, 0, 0, 74, 4, 4], "faces": 6, "edges": 12, "vertices": 8}}"#;
+    // The two blocks and a Peg, 4 × 4 × 4 from x = 70 (volume 64, area 6 × 16 = 96, centre
+    // (72, 2, 2)).
+    let peg = r#"    {"id": "g5r9x3k1", "type": "box", "v": 1, "name": "Peg", "position": [70, 0, 0], "length": 4, "width": 4, "height": 4, "fingerprint": {"volume": 64, "area": 96, "center": [72, 2, 2], "bbox": [70, 0, 0, 74, 4, 4], "faces": 6, "edges": 12, "vertices": 8}}"#;
     let lines: Vec<&str> = BLOCK_AND_PLATE.lines().collect();
     let (block, plate) = (lines[5].trim_end_matches(','), lines[6]);
     let document = |features: [&str; 3]| {
@@ -1128,9 +1130,9 @@ fn a_reload_lists_features_added_removed_and_moved_each_in_its_words() {
     let (mut h, path) = f.opened("blocks.silico", &document([block, plate, peg]));
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Peg"));
     // The Plate moved before the Block, the Peg removed, and a Lid added last, 40 × 20 × 2
-    // on the Block (volume 1600, area 2(800 + 80 + 40) = 1840): places by hand, from 1, the
-    // Block 1 → 2, the Plate 2 → 1, the Lid at 3, the Peg from 3.
-    let lid = r#"    {"id": "q4m7d2e9", "type": "box", "v": 1, "name": "Lid", "position": [0, 0, 10], "length": 40, "width": 20, "height": 2, "fingerprint": {"volume": 1600, "area": 1840, "bbox": [0, 0, 10, 40, 20, 12], "faces": 6, "edges": 12, "vertices": 8}}"#;
+    // on the Block (volume 1600, area 2(800 + 80 + 40) = 1840, centre (20, 10, 11)): places
+    // by hand, from 1, the Block 1 → 2, the Plate 2 → 1, the Lid at 3, the Peg from 3.
+    let lid = r#"    {"id": "q4m7d2e9", "type": "box", "v": 1, "name": "Lid", "position": [0, 0, 10], "length": 40, "width": 20, "height": 2, "fingerprint": {"volume": 1600, "area": 1840, "center": [20, 10, 11], "bbox": [0, 0, 10, 40, 20, 12], "faces": 6, "edges": 12, "vertices": 8}}"#;
     std::fs::write(&path, document([plate, block, lid])).unwrap();
     step_until(&mut h, "the changes listed", |h| seen(h, "at place 3"));
     for label in [
@@ -1170,15 +1172,17 @@ fn a_reload_lists_features_added_removed_and_moved_each_in_its_words() {
 }
 
 /// A block, 40 × 20 × 10, in canonical form, with the fingerprint it rebuilds to on the
-/// fake kernel: volume 40 × 20 × 10 = 8000, area 2(800 + 400 + 200) = 2800, to z = 10.
-const BLOCK_10: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+/// fake kernel: volume 40 × 20 × 10 = 8000, area 2(800 + 400 + 200) = 2800, centre its
+/// middle, (20, 10, 5), to z = 10.
+const BLOCK_10: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"center\": [20, 10, 5], \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
 
 /// The agent's change: the block 11 high, its fingerprint volume 40 × 20 × 11 = 8800, area
-/// 2(800 + 440 + 220) = 2920, to z = 11.
-const BLOCK_11: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 11,\n      \"fingerprint\": {\"volume\": 8800, \"area\": 2920, \"bbox\": [0, 0, 0, 40, 20, 11], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+/// 2(800 + 440 + 220) = 2920, centre (20, 10, 5.5), to z = 11.
+const BLOCK_11: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 11,\n      \"fingerprint\": {\"volume\": 8800, \"area\": 2920, \"center\": [20, 10, 5.5], \"bbox\": [0, 0, 0, 40, 20, 11], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
 
 /// [`BLOCK_10`] `height` high, with the fingerprint it rebuilds to on the fake kernel:
-/// volume 40 × 20 × `height`, area 2(800 + 40 `height` + 20 `height`), to z = `height`.
+/// volume 40 × 20 × `height`, area 2(800 + 40 `height` + 20 `height`), centre its middle,
+/// (20, 10, `height` / 2), to z = `height`.
 fn block_high(height: u32) -> String {
     BLOCK_10
         .replace("\"height\": 10", &format!("\"height\": {height}"))
@@ -1186,6 +1190,10 @@ fn block_high(height: u32) -> String {
         .replace(
             "\"area\": 2800",
             &format!("\"area\": {}", 1600 + 120 * height),
+        )
+        .replace(
+            "[20, 10, 5]",
+            &format!("[20, 10, {}]", f64::from(height) / 2.0),
         )
         .replace("40, 20, 10]", &format!("40, 20, {height}]"))
 }

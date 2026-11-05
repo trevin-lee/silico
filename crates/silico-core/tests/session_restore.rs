@@ -21,12 +21,14 @@ use tempfile::TempDir;
 use crate::sessions::{answer, id, refusal};
 
 /// A block, 40 × 20 × 10, in canonical form, with the fingerprint it rebuilds to: volume
-/// 40 × 20 × 10 = 8000, area 2(800 + 400 + 200) = 2800, to z = 10.
-const ORIGINAL: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+/// 40 × 20 × 10 = 8000, area 2(800 + 400 + 200) = 2800, its centre its middle, (20, 10, 5),
+/// to z = 10.
+const ORIGINAL: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"center\": [20, 10, 5], \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
 
 /// The agent's change: the block 11 high, in canonical form, with its fingerprint: volume
-/// 40 × 20 × 11 = 8800, area 2(800 + 440 + 220) = 2920, to z = 11.
-const AGENTS: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 11,\n      \"fingerprint\": {\"volume\": 8800, \"area\": 2920, \"bbox\": [0, 0, 0, 40, 20, 11], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+/// 40 × 20 × 11 = 8800, area 2(800 + 440 + 220) = 2920, its centre its middle, (20, 10,
+/// 5.5), to z = 11.
+const AGENTS: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 11,\n      \"fingerprint\": {\"volume\": 8800, \"area\": 2920, \"center\": [20, 10, 5.5], \"bbox\": [0, 0, 0, 40, 20, 11], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
 
 /// The block's feature alone as canonical form writes it, `height` its height and the
 /// fingerprint `fingerprint`: a member a line, too long for one line with its fingerprint.
@@ -36,8 +38,8 @@ fn block(height: u32, fingerprint: &str) -> String {
     )
 }
 
-const FINGERPRINT_10: &str = r#"{"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
-const FINGERPRINT_11: &str = r#"{"volume": 8800, "area": 2920, "bbox": [0, 0, 0, 40, 20, 11], "faces": 6, "edges": 12, "vertices": 8}"#;
+const FINGERPRINT_10: &str = r#"{"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
+const FINGERPRINT_11: &str = r#"{"volume": 8800, "area": 2920, "center": [20, 10, 5.5], "bbox": [0, 0, 0, 40, 20, 11], "faces": 6, "edges": 12, "vertices": 8}"#;
 
 /// Sessions on a fake kernel of their own, their cache sealed with `dir`'s secret: one
 /// client's (the app's, or an agent's server's).
@@ -249,7 +251,8 @@ fn a_read_of_revisions_by_number_reads_nothing_of_the_file_and_null_reloads_it()
         Some(Named::Revision(rev(2))),
     ));
     // By hand: the height, 10 to 11, then the fingerprint's measures that follow it (the
-    // volume, the area, and the box's top), in the order the document writes them.
+    // volume, the area, the centre's z, 5 to 5.5, and the box's top), in the order the
+    // document writes them.
     let fields: Vec<Option<String>> = diffed
         .result
         .unwrap()
@@ -263,6 +266,7 @@ fn a_read_of_revisions_by_number_reads_nothing_of_the_file_and_null_reloads_it()
             "height",
             "fingerprint.volume",
             "fingerprint.area",
+            "fingerprint.center.2",
             "fingerprint.bbox.5"
         ]
         .map(|f| Some(f.to_owned()))
@@ -568,7 +572,7 @@ fn a_feature_the_revision_hasnt_is_refused_naming_feature() {
 
 /// The agent's change written by hand: on one line, the block's keys in another order than
 /// canonical form's (`type` before `id`, `height` before `position`), the reader taking any.
-const AGENTS_BY_HAND: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"type": "box", "id": "k7f2qx3m", "v": 1, "name": "Block", "height": 11, "position": [0, 0, 0], "length": 40, "width": 20, "fingerprint": {"volume": 8800, "area": 2920, "bbox": [0, 0, 0, 40, 20, 11], "faces": 6, "edges": 12, "vertices": 8}}]}"#;
+const AGENTS_BY_HAND: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"type": "box", "id": "k7f2qx3m", "v": 1, "name": "Block", "height": 11, "position": [0, 0, 0], "length": 40, "width": 20, "fingerprint": {"volume": 8800, "area": 2920, "center": [20, 10, 5.5], "bbox": [0, 0, 0, 40, 20, 11], "faces": 6, "edges": 12, "vertices": 8}}]}"#;
 
 #[test]
 fn text_of_disk_inside_a_transaction_is_the_files_bytes_exactly_and_its_features_canonical() {

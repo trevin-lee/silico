@@ -254,18 +254,25 @@ pub(crate) fn feature_keys(feature: &Feature) -> Vec<&'static str> {
     }
 }
 
-/// A fingerprint's fields, in schema order: an object of scalars and one array, so on one
+/// A fingerprint's fields, in schema order: an object of scalars and two arrays, so on one
 /// line.
 fn fingerprint(fingerprint: &Fingerprint) -> Out<'static> {
     let Fingerprint {
         volume,
         area,
+        center,
         bbox,
         faces,
         edges,
         vertices,
     } = fingerprint;
     let mut members = vec![("volume", measure(*volume)), ("area", measure(*area))];
+    if let Some(center) = center {
+        members.push((
+            "center",
+            Out::Array(center.iter().map(|&l| number(l)).collect()),
+        ));
+    }
     if let Some(bbox) = bbox {
         members.push((
             "bbox",

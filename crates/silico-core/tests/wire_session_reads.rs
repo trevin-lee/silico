@@ -1510,7 +1510,7 @@ fn a_published_check_leaves_out_the_drift_its_own_revisions_edits_reached() {
     // A box whose stored fingerprint is the fake kernel's, by formula: no drift as it is.
     let stored = BOX.replace(
         r#""height": 10}"#,
-        r#""height": 10, "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#""height": 10, "fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
     );
     assert_ne!(stored, BOX);
     let f = opened(&stored);
@@ -1568,7 +1568,7 @@ fn a_published_check_leaves_out_the_drift_its_own_revisions_edits_reached() {
 fn stale() -> String {
     let stale = BOX.replace(
         r#""height": 10}"#,
-        r#""height": 10, "fingerprint": {"volume": 8200, "area": 2860, "bbox": [0, 0, 0, 41, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#""height": 10, "fingerprint": {"volume": 8200, "area": 2860, "center": [20.5, 10, 5], "bbox": [0, 0, 0, 41, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
     );
     assert_ne!(stale, BOX);
     stale
@@ -1664,7 +1664,7 @@ fn a_rebuild_a_published_check_starts_keeps_its_revisions_reach() {
     // as revision 2's edits reached it: the stored fingerprint, the shorter box's, not drift.
     let stored = BOX.replace(
         r#""height": 10}"#,
-        r#""height": 10, "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#""height": 10, "fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
     );
     let f = opened(&stored);
     answer(f.sessions.begin(&s1())).result.unwrap();

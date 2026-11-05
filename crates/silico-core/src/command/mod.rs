@@ -666,8 +666,12 @@ fn values(operation: &Operation) -> String {
     }
 }
 
-/// A fingerprint's measures, as the file writes them.
+/// A fingerprint's measures, as the file writes them, in its order.
 fn measures(f: &Fingerprint) -> String {
+    let center = match &f.center {
+        Some(c) => format!("center ({}, {}, {})", c[0], c[1], c[2]),
+        None => "no center".to_owned(),
+    };
     let bbox = match &f.bbox {
         Some(c) => format!(
             "box ({}, {}, {}) to ({}, {}, {})",
@@ -676,7 +680,7 @@ fn measures(f: &Fingerprint) -> String {
         None => "no box".to_owned(),
     };
     format!(
-        "volume {}, area {}, {bbox}, {} faces, {} edges, {} vertices",
+        "volume {}, area {}, {center}, {bbox}, {} faces, {} edges, {} vertices",
         f.volume, f.area, f.faces, f.edges, f.vertices
     )
 }

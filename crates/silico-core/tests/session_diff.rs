@@ -104,7 +104,7 @@ fn fillet(second: &str) -> String {
 
 fn fingerprinted(volume: &str) -> String {
     format!(
-        r#"{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {{"volume": {volume}, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}}}"#
+        r#"{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {{"volume": {volume}, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}}}"#
     )
 }
 
@@ -189,7 +189,7 @@ fn a_fingerprints_volume_is_a_field_like_any_other() {
     assert_eq!(
         diffed(&[BOX], &[&fingerprinted("8000")]),
         [
-            r#"{"feature": "k7f2qx3m", "name": "Block", "field": "fingerprint", "before": null, "after": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#
+            r#"{"feature": "k7f2qx3m", "name": "Block", "field": "fingerprint", "before": null, "after": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#
         ]
     );
 }
@@ -284,7 +284,7 @@ fn top_level_members_each_side_alone_has_come_in_the_order_the_writer_gives_them
     // fingerprint (`silico fmt` writes id, type, v, name, suppressed, the operation's
     // fields, note, fingerprint), so the note comes first, either way round.
     let noted = BOX.replace("\"height\": 10}", "\"height\": 10, \"note\": \"n\"}");
-    let fingerprint = r#"{"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
+    let fingerprint = r#"{"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
     let block = |field: &str, before: &str, after: &str| {
         format!(
             r#"{{"feature": "k7f2qx3m", "name": "Block", "field": "{field}", "before": {before}, "after": {after}}}"#
