@@ -66,19 +66,21 @@ fn outcome_word(model: &Model, feature: &str) -> String {
     }
 }
 
-/// A 2 mm cube at (4, 4, 4): wholly inside a 10 mm block.
-const CUBE_INSIDE: &str = r#"{"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Cube", "position": [4, 4, 4], "length": 2, "width": 2, "height": 2}"#;
+/// A 2 mm cube at (9, 4, 4): poking 1 mm out of a 10 mm block's x = 10 face.
+const CUBE_POKING: &str = r#"{"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Cube", "position": [9, 4, 4], "length": 2, "width": 2, "height": 2}"#;
 
 #[test]
 fn a_common_made_a_cut_of_its_operands_swapped_never_takes_the_cubes_edge_for_the_voids() {
     // Found by break-it (round 2's R2B1, swapped), closed by N9. The common of a small cube
-    // and the block around it is the cube, every element the common's own, `I`: its Edge1
-    // (along z at x = y = 4, 2 long), kept whole, is `cccccccc.common.Edge(I
-    // bbbbbbbb.box.Edge1)`, convex, a fillet takes material away. The block cut by the cube
-    // (the common made a cut, base and tool swapped) leaves a cubic void whose edge there is
-    // the cut's own, `cccccccc.cut.Edge(I ...)`, concave: the common's name breaks, the cut's
-    // its candidate, and by it the fillet adds what the other took. The cube's own name
-    // finds neither.
+    // and the block it pokes 1 mm out of is the cube's part inside, x 9 to 10, 4 mm³ of its
+    // 8 (so it takes from its base, the cube, as S7's rule asks of M2 booleans), every
+    // element the common's own, `I`: the cube's Edge1 (along z at x = 9, y = 4, 2 long),
+    // kept whole inside the block, is `cccccccc.common.Edge(I bbbbbbbb.box.Edge1)`, convex,
+    // a fillet takes material away. The block cut by the cube (the common made a cut, base
+    // and tool swapped) leaves a notch whose edge there is the cut's own, `cccccccc.cut.Edge(I
+    // ...)`, concave: the common's name breaks, the cut's its candidate, and by it the fillet
+    // adds what the other took. The cube's own name finds neither. Either way the fillet
+    // of a straight right-angled edge 2 long changes the volume by (1 − π/4) r² × 2, by hand.
     let engine = engine();
     let r = 0.2;
     let straight = (1.0 - PI / 4.0) * r * r * 2.0;
@@ -86,7 +88,7 @@ fn a_common_made_a_cut_of_its_operands_swapped_never_takes_the_cubes_edge_for_th
     let common = |edge: &str| {
         boolean(
             BLOCK,
-            CUBE_INSIDE,
+            CUBE_POKING,
             "common",
             "bbbbbbbb",
             "aaaaaaaa",
@@ -94,14 +96,19 @@ fn a_common_made_a_cut_of_its_operands_swapped_never_takes_the_cubes_edge_for_th
             r,
         )
     };
-    let cut = |edge: &str| boolean(BLOCK, CUBE_INSIDE, "cut", "aaaaaaaa", "bbbbbbbb", edge, r);
+    let cut = |edge: &str| boolean(BLOCK, CUBE_POKING, "cut", "aaaaaaaa", "bbbbbbbb", edge, r);
     let model = publish(&engine, &common(&of("common")));
     assert!(
         model.errors().next().is_none(),
         "{:?}",
         model.errors().collect::<Vec<_>>()
     );
-    let taken = volume(&model, "cccccccc") - volume(&model, "ffffffff");
+    let common_volume = volume(&model, "cccccccc");
+    assert!(
+        (common_volume - 4.0).abs() < 1e-9,
+        "the common: {common_volume}"
+    );
+    let taken = common_volume - volume(&model, "ffffffff");
     assert!(
         (taken - straight).abs() < 1e-6,
         "the cube's edge: {taken} against {straight}"

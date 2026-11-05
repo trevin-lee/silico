@@ -689,7 +689,9 @@ mod tests {
             fillet("f0000002", "f0000001", "a0000002.box.Edge2", 0.1),
             a_box("c0000001", 40),
             pad("p0000003", r#""base": "c0000001", "#, 3),
-            a_box("d0000001", 60),
+            // Inside the pad's corner, so the cut removes some of it (S7's rule refuses one
+            // that removes nothing).
+            a_box("d0000001", 0),
             operation("k0000001", "cut", "p0000001", "d0000001"),
             a_box("e0000001", 80),
             fillet("g0000001", "e0000001", "e0000001.box.Edge1", 0.25),

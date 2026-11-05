@@ -22,9 +22,16 @@
 //! formula, where it sits as the kernel makes it) and a move; a boolean's, its own model's
 //! again, is its inputs' together, as if they didn't touch: their volumes and areas added,
 //! their centers weighed by volume, and the box around both. A boolean is one solid (a
-//! fuse's) or its base's (a cut's and a common's), as if they met, and a cut whose tool is a
-//! sweep of faces (a sketch feature's) is its base less the share of its tool inside the
-//! base's box (`Measured::less`), so a pad adds and a pocket removes. Faces made from a profile's
+//! fuse's) or its base's (a cut's and a common's), as if they met; a cut's volume, area, and
+//! moment are its base's less the share of its tool inside the base's box
+//! (`Measured::less`), and a common's that share of its tool (`Measured::within`), so a pad
+//! adds, a pocket and a cut remove, and a cut or common whose tool lies outside its base's
+//! box changes nothing, as the real kernel's booleans of shapes apart do (and S7's rule
+//! refuses them, M2's too). The model's limits: a fuse still adds both inputs' volumes,
+//! however they overlap (so it never adds nothing); a share of a box is exact only for
+//! boxes (a sphere is spread through its box as if it filled it); a cut takes at most all of
+//! its base, leaving no volume, never less; and an M2 cut's and common's box is still both
+//! inputs' together (a pocket's its base's). Faces made from a profile's
 //! regions are numbered and kept as the kernel keeps them (each curve its edge, each point
 //! its vertex), with their area by formula and the box around their curves. A sweep of
 //! faces (a prism, through all or not, or a revolution) reports each element as the kernel
@@ -297,6 +304,24 @@ impl FakeKernel {
     /// it's a fake kernel's shape.
     pub fn describe(shape: &ShapeData) -> Option<String> {
         Symbolic::read(shape).ok().map(|made| made.describe())
+    }
+
+    /// A box the fake makes whose volume is `shape`'s and `change` more (less, below 0), if
+    /// `shape` is a fake kernel's and that's above 0: a boolean's result for a test that
+    /// answers a boolean itself (its history forged) with a box's elements, adding to its
+    /// base or taking from it as a boolean that changes it does, so S7's rule, which refuses
+    /// one whose result is its base, lets it through.
+    pub fn resized(shape: &ShapeData, change: f64) -> Option<ShapeData> {
+        let volume = Symbolic::read(shape).ok()?.summary().volume + change;
+        if volume.is_nan() || volume <= 0.0 {
+            return None;
+        }
+        let resized = Primitive::Box {
+            dx: volume,
+            dy: 1.0,
+            dz: 1.0,
+        };
+        Some(Symbolic::primitive(resized).shape())
     }
 
     /// The faces, edges, vertices, and solids of `shape`, if it's a fake kernel's shape.
@@ -2089,9 +2114,20 @@ impl Symbolic {
                 Step::Translate { input, offset } => of(*input).moved(*offset),
                 Step::Boolean { op, base, tool } => {
                     let swept = matches!(self.0.get(*tool), Some(Step::Sweep { .. }));
+                    // An M2 cut's and common's box is the two's together, as the fake has
+                    // always given it: only their volume, area, and moment are the overlap's.
+                    let together = of(*base).with(of(*tool)).bounds;
                     match op {
                         BooleanOp::Cut if swept => of(*base).less(of(*tool)),
-                        _ => of(*base).with(of(*tool)),
+                        BooleanOp::Cut => Measured {
+                            bounds: together,
+                            ..of(*base).less(of(*tool))
+                        },
+                        BooleanOp::Common => Measured {
+                            bounds: together,
+                            ..of(*base).within(of(*tool))
+                        },
+                        BooleanOp::Fuse => of(*base).with(of(*tool)),
                     }
                 }
                 // Each copy as the boolean of it with what came before would be.
@@ -2420,7 +2456,9 @@ impl Measured {
     /// evenly through its own box and the shape filled its: its volume and moment less the
     /// tool's in proportion to the share of the tool's box inside the shape's, its area
     /// more by that share of the tool's, its box its own. Exact for a prism of a rectangle
-    /// cut square into a box (a pocket); the fake's own model otherwise.
+    /// cut square into a box (a pocket), and for a box in a box; the fake's own model
+    /// otherwise, and never below no volume: a tool whose share outweighs the shape (a sphere
+    /// cut by a box round it) leaves 0, as if it took all of it.
     fn less(self, tool: Measured) -> Self {
         let ([a_low, a_high], [b_low, b_high]) = (self.bounds, tool.bounds);
         let size = |low: [f64; 3], high: [f64; 3]| -> f64 {
@@ -2433,10 +2471,35 @@ impl Measured {
         let whole = size(b_low, b_high);
         let share = if whole > 0.0 { inside / whole } else { 0.0 };
         Measured {
-            volume: self.volume - share * tool.volume,
+            volume: (self.volume - share * tool.volume).max(0.0),
             area: self.area + share * tool.area,
             moment: [0, 1, 2].map(|i| self.moment[i] - share * tool.moment[i]),
             bounds: self.bounds,
+        }
+    }
+
+    /// What of `tool` lies in this shape's box, as [`less`](Self::less) takes it: the tool's
+    /// volume, area, and moment in proportion to the share of the tool's box inside this
+    /// shape's, its box the two boxes' overlap. Exact for a box inside another; the fake's
+    /// own model otherwise.
+    fn within(self, tool: Measured) -> Self {
+        let ([a_low, a_high], [b_low, b_high]) = (self.bounds, tool.bounds);
+        let low = [0, 1, 2].map(|k| a_low[k].max(b_low[k]));
+        let high = [0, 1, 2].map(|k| a_high[k].min(b_high[k]).max(low[k]));
+        let size = |low: [f64; 3], high: [f64; 3]| -> f64 {
+            (0..3).map(|k| (high[k] - low[k]).max(0.0)).product()
+        };
+        let whole = size(b_low, b_high);
+        let share = if whole > 0.0 {
+            size(low, high) / whole
+        } else {
+            0.0
+        };
+        Measured {
+            volume: share * tool.volume,
+            area: share * tool.area,
+            moment: tool.moment.map(|m| share * m),
+            bounds: [low, high],
         }
     }
 
@@ -3104,6 +3167,139 @@ mod tests {
             true,
         );
         assert!(Symbolic::read(&common).is_err());
+    }
+
+    /// Measures with the box from `low` to `high`, worked by hand.
+    fn measures(
+        volume: f64,
+        area: f64,
+        moment: [f64; 3],
+        low: [f64; 3],
+        high: [f64; 3],
+    ) -> Measured {
+        Measured {
+            volume,
+            area,
+            moment,
+            bounds: [low, high],
+        }
+    }
+
+    /// Each of a measure's parts, to compare whole.
+    fn parts(m: Measured) -> (f64, f64, [f64; 3], [[f64; 3]; 2]) {
+        (m.volume, m.area, m.moment, m.bounds)
+    }
+
+    #[test]
+    fn within_takes_the_tools_measures_by_the_share_of_its_box_in_the_shapes() {
+        // A 4 mm cube from the origin, and box tools of their own volume, area, and moment
+        // (a box's moment is its volume times its centre), each share worked by hand.
+        let shape = measures(64.0, 96.0, [128.0; 3], [0.0; 3], [4.0; 3]);
+        // Half inside: the tool from (2, 0, 0) to (6, 4, 4), centre (4, 2, 2); the overlap,
+        // from (2, 0, 0) to (4, 4, 4), is 32 of its 64 mm³, so half of each measure.
+        let half = measures(
+            64.0,
+            96.0,
+            [256.0, 128.0, 128.0],
+            [2.0, 0.0, 0.0],
+            [6.0, 4.0, 4.0],
+        );
+        assert_eq!(
+            parts(shape.within(half)),
+            parts(measures(
+                32.0,
+                48.0,
+                [128.0, 64.0, 64.0],
+                [2.0, 0.0, 0.0],
+                [4.0; 3]
+            ))
+        );
+        // Wholly inside: the 2 mm cube from (1, 1, 1), centre (2, 2, 2): all of it.
+        let inside = measures(8.0, 24.0, [16.0; 3], [1.0; 3], [3.0; 3]);
+        assert_eq!(
+            parts(shape.within(inside)),
+            parts(measures(8.0, 24.0, [16.0; 3], [1.0; 3], [3.0; 3]))
+        );
+        // Outside: the 1 mm cube from (5, 5, 5): none of it, its box shut at (5, 5, 5).
+        let outside = measures(1.0, 6.0, [5.5; 3], [5.0; 3], [6.0; 3]);
+        assert_eq!(
+            parts(shape.within(outside)),
+            parts(measures(0.0, 0.0, [0.0; 3], [5.0; 3], [5.0; 3]))
+        );
+        // Touching at the cube's face x = 4: a box of 64 mm³ with none of it inside.
+        let touching = measures(
+            64.0,
+            96.0,
+            [384.0, 128.0, 128.0],
+            [4.0, 0.0, 0.0],
+            [8.0, 4.0, 4.0],
+        );
+        assert_eq!(
+            parts(shape.within(touching)),
+            parts(measures(
+                0.0,
+                0.0,
+                [0.0; 3],
+                [4.0, 0.0, 0.0],
+                [4.0, 4.0, 4.0]
+            ))
+        );
+        // A flat tool, a 2 mm square of faces at z = 0 with no volume in its box: no share,
+        // not 0 of 0, so none of its 4 mm² of area.
+        let flat = measures(0.0, 4.0, [0.0; 3], [1.0, 1.0, 0.0], [3.0, 3.0, 0.0]);
+        assert_eq!(
+            parts(shape.within(flat)),
+            parts(measures(
+                0.0,
+                0.0,
+                [0.0; 3],
+                [1.0, 1.0, 0.0],
+                [3.0, 3.0, 0.0]
+            ))
+        );
+    }
+
+    #[test]
+    fn a_commons_summary_has_the_two_boxes_together_and_the_overlaps_volume() {
+        // A 4 mm cube from the origin and one moved to (2, 2, 2): the box of both runs from
+        // the origin to (6, 6, 6); the overlap is a 2 mm cube, 8 mm³ of the tool's 64.
+        let cube = || {
+            Symbolic::primitive(Primitive::Box {
+                dx: 4.0,
+                dy: 4.0,
+                dz: 4.0,
+            })
+        };
+        let common = Symbolic::boolean(BooleanOp::Common, cube(), cube().moved([2.0; 3]));
+        let summary = common.summary();
+        assert_eq!(summary.bounds, Some([[0.0; 3], [6.0; 3]]));
+        assert_eq!(summary.volume, 8.0);
+    }
+
+    #[test]
+    fn resized_is_a_box_of_the_new_volume_above_0_and_nothing_else() {
+        // A 2 × 3 × 4 box is 24 mm³.
+        let shape = Symbolic::primitive(Primitive::Box {
+            dx: 2.0,
+            dy: 3.0,
+            dz: 4.0,
+        })
+        .shape();
+        let volume = |shape: &ShapeData| Symbolic::read(shape).unwrap().summary().volume;
+        assert_eq!(
+            FakeKernel::resized(&shape, 6.0).as_ref().map(volume),
+            Some(30.0)
+        );
+        assert_eq!(
+            FakeKernel::resized(&shape, -23.0).as_ref().map(volume),
+            Some(1.0)
+        );
+        for change in [-24.0, -30.0, f64::NAN] {
+            assert!(
+                FakeKernel::resized(&shape, change).is_none(),
+                "24 mm³ by {change}"
+            );
+        }
     }
 
     #[test]

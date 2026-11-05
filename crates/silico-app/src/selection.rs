@@ -1960,8 +1960,13 @@ mod tests {
         }
     }
 
-    /// Two fuses: a 1 mm cube and a box `tool` long, fused, then fused with a cube `cube`
-    /// long, rebuilt on the fake kernel and published, every feature's elements named.
+    /// Two fuses: a 1 mm cube and a box `tool` long, fused, then fused with a box `cube`
+    /// long from the origin (overlapping the 1 mm cube, which every first fuse here keeps,
+    /// and poking out past it, its Face1 on the cube's x = 0 face, the same 1 mm square, so
+    /// an aliasing fuse's premise holds), rebuilt on the fake kernel and published, every
+    /// feature's elements named. Each fuse's shape is a box a mm³ larger than its base
+    /// (`FakeKernel::resized`), so it changes its base as S7's rule asks; its names are its
+    /// history's, `fusing`'s.
     fn fused(tool: u32, cube: u32) -> Arc<Model> {
         let a_box = |id: &str, x: u32, length: u32| {
             format!(
@@ -1977,7 +1982,7 @@ mod tests {
             a_box("aaaaaaaa", 0, 1),
             a_box("bbbbbbbb", 5, tool),
             fuse("rrrrrrrr", "aaaaaaaa", "bbbbbbbb"),
-            a_box("cccccccc", 9, cube),
+            a_box("cccccccc", 0, cube),
             fuse("ssssssss", "rrrrrrrr", "cccccccc"),
         ];
         let text = format!(
@@ -1997,7 +2002,7 @@ mod tests {
                 base,
                 tool,
             } => Some(silico_protocol::Reply::Built(BuiltData {
-                shape: base.clone(),
+                shape: silico_core::fake::FakeKernel::resized(base, 1.0)?,
                 history: fusing(&silico_core::fake::FakeKernel::describe(tool)?),
             })),
             _ => None,
@@ -2010,6 +2015,32 @@ mod tests {
         };
         for (id, _) in model.features() {
             model.element_map(id);
+        }
+        // An aliasing second fuse (a cube 4 long) gives its Face1 exactly two names: its
+        // base's Face1's (the 1 mm cube's, kept whole by a plain first fuse, a tool 2 long;
+        // by its number after a renumbering one, a tool 3 long) and the tool's Face1's.
+        if cube == 4 {
+            let base = match tool {
+                2 => Some("aaaaaaaa.box.Face1"),
+                3 => Some("rrrrrrrr.fuse.Face1"),
+                _ => None,
+            };
+            if let Some(base) = base {
+                let mut names: Vec<String> = model
+                    .element_map(&fid("ssssssss"))
+                    .unwrap()
+                    .names(face(1))
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+                names.sort();
+                let mut want = [base, "cccccccc.box.Face1"];
+                want.sort();
+                assert_eq!(
+                    names, want,
+                    "the second fuse's Face1, after a tool {tool} long"
+                );
+            }
         }
         model
     }

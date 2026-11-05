@@ -711,7 +711,8 @@ mod tests {
         history
     }
 
-    /// A fake whose fuses of a tool `history` picks give the base back with that history.
+    /// A fake whose fuses of a tool `history` picks give a box a mm³ larger than the base
+    /// back with that history.
     fn forging(
         history: impl Fn(&str) -> Option<History> + Send + Sync + 'static,
     ) -> impl FnOnce(&FakeKernel) {
@@ -721,12 +722,11 @@ mod tests {
                     op: BooleanOp::Fuse,
                     base,
                     tool,
-                } => history(&FakeKernel::describe(tool)?).map(|history| {
-                    silico_protocol::Reply::Built(BuiltData {
-                        shape: base.clone(),
-                        history,
-                    })
-                }),
+                } => {
+                    let shape = FakeKernel::resized(base, 1.0)?;
+                    history(&FakeKernel::describe(tool)?)
+                        .map(|history| silico_protocol::Reply::Built(BuiltData { shape, history }))
+                }
                 _ => None,
             })
         }
@@ -1532,11 +1532,13 @@ mod tests {
             operation("qqqqqqqq", "fuse", "xxxxxxxx", "yyyyyyyy"),
             operation("ssssssss", "fuse", "rrrrrrrr", "qqqqqqqq"),
         ];
-        // The second fuse's tool is the first `qqqqqqqq` gives back: the 2 mm cube.
+        // The third fuse's tool is what `qqqqqqqq` gives back: the forged box, made where it
+        // is (`FakeKernel::resized`), where every box the document makes but the first is
+        // moved into place.
         let model = rebuilt(
             &features,
             forging(|tool| {
-                Some(if tool.contains("box(2,") {
+                Some(if tool.starts_with("box(") {
                     aliasing_fuse()
                 } else {
                     numbering_fuse()

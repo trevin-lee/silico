@@ -31,7 +31,9 @@ bodies m3tq8v0z
 const BLOCK: &str =
     "volume 8000, area 2800, box (0, 0, 0) to (40, 20, 10), 6 faces, 12 edges, 8 vertices";
 const PIN: &str = "volume 235.619449, area 227.765467, box (17.5, 7.5, -1) to (22.5, 12.5, 11), 3 faces, 3 edges, 2 vertices";
-const HOLE: &str = "volume 8235.619449, area 3027.765467, box (0, 0, -1) to (40, 20, 11), 9 faces, 15 edges, 10 vertices";
+// The fake's cut: the block less the share of the pin inside its box, 8000 − 62.5π, its
+// area 2800 + (10/12) 72.5π (fingerprint.rs).
+const HOLE: &str = "volume 7803.650459, area 2989.804556, box (0, 0, -1) to (40, 20, 11), 9 faces, 15 edges, 10 vertices";
 
 fn formatted(text: &str) -> Formatted {
     format_bytes(&engine(), text.as_bytes()).unwrap().unwrap()

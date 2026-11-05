@@ -478,7 +478,8 @@ fn an_older_model_under_a_document_whose_fuse_gained_a_consumer_has_no_body_yet(
     let f = opened(&three(Print::Stale, 40));
     current(&f);
     f.begin();
-    // A pin, 5 × 5 × 5 at x = 200, held, and a cut of the fuse by it.
+    // A pin, 5 × 5 × 5 at x = 102, in the lug, held, and a cut of the fuse by it (one that
+    // removes something: S7's rule refuses one that doesn't).
     let hold = f
         .kernel
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx < 6.0));
@@ -486,7 +487,7 @@ fn an_older_model_under_a_document_whose_fuse_gained_a_consumer_has_no_body_yet(
         block_line(40, Print::Stale),
         lug_line(10, true),
         fuse_line(true),
-        r#"{"id": "p0000001", "type": "box", "v": 1, "name": "Pin", "position": [200, 0, 0], "length": 5, "width": 5, "height": 5}"#.to_owned(),
+        r#"{"id": "p0000001", "type": "box", "v": 1, "name": "Pin", "position": [102, 0, 0], "length": 5, "width": 5, "height": 5}"#.to_owned(),
         format!(r#"{{"id": "c0000001", "type": "cut", "v": 1, "name": "Cut", "base": "{FUSE}", "tool": "p0000001"}}"#),
     ]));
     let answer = f.timeline(ModelChoice::Published).result.unwrap();
