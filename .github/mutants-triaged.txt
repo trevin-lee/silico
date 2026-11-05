@@ -72,6 +72,7 @@ crates/silico-core/src/sketch.rs | savable | replace savable -> Result<(), Error
 crates/silico-core/src/sweep.rs | nearest_distances | replace > with >= | #90
 crates/silico-core/src/sweep.rs | significant | replace || with && | #84
 crates/silico-core/src/sweep.rs | significant | replace || with && | #84
+crates/silico-core/src/sweep.rs | judged | replace < with <= | #386
 crates/silico-kernel/src/lib.rs | make_faces | replace > with >= | #44
 crates/silico-oracle/src/features.rs | run | replace || with && | #84
 crates/silico-protocol/src/faces.rs | check_area | replace > with >= | #44

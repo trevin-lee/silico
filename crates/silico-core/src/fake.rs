@@ -3167,6 +3167,139 @@ mod tests {
         assert!(Symbolic::read(&common).is_err());
     }
 
+    /// Measures with the box from `low` to `high`, worked by hand.
+    fn measures(
+        volume: f64,
+        area: f64,
+        moment: [f64; 3],
+        low: [f64; 3],
+        high: [f64; 3],
+    ) -> Measured {
+        Measured {
+            volume,
+            area,
+            moment,
+            bounds: [low, high],
+        }
+    }
+
+    /// Each of a measure's parts, to compare whole.
+    fn parts(m: Measured) -> (f64, f64, [f64; 3], [[f64; 3]; 2]) {
+        (m.volume, m.area, m.moment, m.bounds)
+    }
+
+    #[test]
+    fn within_takes_the_tools_measures_by_the_share_of_its_box_in_the_shapes() {
+        // A 4 mm cube from the origin, and box tools of their own volume, area, and moment
+        // (a box's moment is its volume times its centre), each share worked by hand.
+        let shape = measures(64.0, 96.0, [128.0; 3], [0.0; 3], [4.0; 3]);
+        // Half inside: the tool from (2, 0, 0) to (6, 4, 4), centre (4, 2, 2); the overlap,
+        // from (2, 0, 0) to (4, 4, 4), is 32 of its 64 mm³, so half of each measure.
+        let half = measures(
+            64.0,
+            96.0,
+            [256.0, 128.0, 128.0],
+            [2.0, 0.0, 0.0],
+            [6.0, 4.0, 4.0],
+        );
+        assert_eq!(
+            parts(shape.within(half)),
+            parts(measures(
+                32.0,
+                48.0,
+                [128.0, 64.0, 64.0],
+                [2.0, 0.0, 0.0],
+                [4.0; 3]
+            ))
+        );
+        // Wholly inside: the 2 mm cube from (1, 1, 1), centre (2, 2, 2): all of it.
+        let inside = measures(8.0, 24.0, [16.0; 3], [1.0; 3], [3.0; 3]);
+        assert_eq!(
+            parts(shape.within(inside)),
+            parts(measures(8.0, 24.0, [16.0; 3], [1.0; 3], [3.0; 3]))
+        );
+        // Outside: the 1 mm cube from (5, 5, 5): none of it, its box shut at (5, 5, 5).
+        let outside = measures(1.0, 6.0, [5.5; 3], [5.0; 3], [6.0; 3]);
+        assert_eq!(
+            parts(shape.within(outside)),
+            parts(measures(0.0, 0.0, [0.0; 3], [5.0; 3], [5.0; 3]))
+        );
+        // Touching at the cube's face x = 4: a box of 64 mm³ with none of it inside.
+        let touching = measures(
+            64.0,
+            96.0,
+            [384.0, 128.0, 128.0],
+            [4.0, 0.0, 0.0],
+            [8.0, 4.0, 4.0],
+        );
+        assert_eq!(
+            parts(shape.within(touching)),
+            parts(measures(
+                0.0,
+                0.0,
+                [0.0; 3],
+                [4.0, 0.0, 0.0],
+                [4.0, 4.0, 4.0]
+            ))
+        );
+        // A flat tool, a 2 mm square of faces at z = 0 with no volume in its box: no share,
+        // not 0 of 0, so none of its 4 mm² of area.
+        let flat = measures(0.0, 4.0, [0.0; 3], [1.0, 1.0, 0.0], [3.0, 3.0, 0.0]);
+        assert_eq!(
+            parts(shape.within(flat)),
+            parts(measures(
+                0.0,
+                0.0,
+                [0.0; 3],
+                [1.0, 1.0, 0.0],
+                [3.0, 3.0, 0.0]
+            ))
+        );
+    }
+
+    #[test]
+    fn a_commons_summary_has_the_two_boxes_together_and_the_overlaps_volume() {
+        // A 4 mm cube from the origin and one moved to (2, 2, 2): the box of both runs from
+        // the origin to (6, 6, 6); the overlap is a 2 mm cube, 8 mm³ of the tool's 64.
+        let cube = || {
+            Symbolic::primitive(Primitive::Box {
+                dx: 4.0,
+                dy: 4.0,
+                dz: 4.0,
+            })
+        };
+        let common = Symbolic::boolean(BooleanOp::Common, cube(), cube().moved([2.0; 3]));
+        let summary = common.summary();
+        assert_eq!(summary.bounds, Some([[0.0; 3], [6.0; 3]]));
+        assert_eq!(summary.volume, 8.0);
+    }
+
+    #[test]
+    fn resized_is_a_box_of_the_new_volume_above_0_and_nothing_else() {
+        // A 2 × 3 × 4 box is 24 mm³.
+        let shape = Symbolic::primitive(Primitive::Box {
+            dx: 2.0,
+            dy: 3.0,
+            dz: 4.0,
+        })
+        .shape();
+        let volume = |shape: &ShapeData| Symbolic::read(shape).unwrap().summary().volume;
+        assert_eq!(
+            FakeKernel::resized(&shape, 6.0).as_ref().map(volume),
+            Some(30.0)
+        );
+        assert_eq!(
+            FakeKernel::resized(&shape, -23.0).as_ref().map(volume),
+            Some(1.0)
+        );
+        for change in [-24.0, -30.0, f64::NAN] {
+            assert!(
+                FakeKernel::resized(&shape, change).is_none(),
+                "24 mm³ by {change}"
+            );
+        }
+    }
+
     #[test]
     fn a_deep_chain_of_booleans_is_read_and_described_without_overflowing_the_stack() {
         // Built directly: through the kernel, each boolean's history lists its base's
