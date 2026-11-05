@@ -7525,6 +7525,37 @@ mod tests {
     }
 
     #[test]
+    fn a_models_unnamable_copy_lists_none_of_that_features_elements_whatever_the_model_listed() {
+        // `unnamable` settles one feature's names as never made: its elements can't be
+        // listed, the fault saying why, though the model it's copied from listed them
+        // already; every other feature's are listed as the model's are.
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+        let model = published(engine.start(Arc::new(boxes(2, |_| false))));
+        let ids: Vec<FeatureId> = model.features().iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(ids.len(), 2);
+        for id in &ids {
+            assert!(!model.entries(id).unwrap().unwrap().is_empty(), "{id}");
+        }
+        let unnamable = model.unnamable(&ids[0]);
+        assert_eq!(unnamable.named_so_far(&ids[0]), Some(None));
+        let Some(Err(fault)) = unnamable.entries(&ids[0]) else {
+            panic!("{:?}", unnamable.entries(&ids[0]))
+        };
+        assert_eq!(fault.code(), ErrorCode::Internal);
+        assert_eq!(fault.message(), "b0000000's elements couldn't be listed");
+        assert_eq!(
+            fault.cause(),
+            Some("its solid built, but its elements couldn't be named")
+        );
+        assert_eq!(
+            unnamable.entries(&ids[1]).unwrap().unwrap(),
+            model.entries(&ids[1]).unwrap().unwrap()
+        );
+        // The model's own are as they were.
+        assert!(!model.entries(&ids[0]).unwrap().unwrap().is_empty());
+    }
+
+    #[test]
     fn a_fresh_recompute_makes_its_profiles_and_names_anew_and_they_are_the_engines_after() {
         // `start_fresh` reads nothing kept: not the engine's profiles (made again from the
         // sketch solved again), nor the maps it has named (named again from the histories
