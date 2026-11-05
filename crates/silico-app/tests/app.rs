@@ -104,9 +104,13 @@ impl Fixture {
     fn app(&self) -> AppHarness {
         let app = App::new(Arc::clone(&self.sessions));
         let _marked = never_waits::marked();
-        Harness::builder()
+        let h = Harness::builder()
             .with_size((1280.0, 800.0))
-            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
+        // The app's look, as main.rs gives it: its fonts above all, without which every
+        // text lays out empty and a field's cursor never leaves its start.
+        silico_app::theme::apply(&h.ctx);
+        h
     }
 
     /// The app with `text` open from `name`, its timeline read.
@@ -234,7 +238,7 @@ fn name_field(h: &AppHarness) -> egui_kittest::Node<'_> {
 }
 
 /// Typed into the property panel's Name field, one keystroke a frame: focused, the field's
-/// cursor is at its start, so what's typed comes before the name.
+/// cursor is at its end, so what's typed comes after the name.
 fn type_name(h: &mut AppHarness, text: &str) {
     name_field(h).focus();
     step(h);
@@ -249,6 +253,33 @@ fn is_box(op: &Op) -> bool {
 }
 
 // ---- Opening, and what the panes show ----
+
+/// The harness's app is in the app's own fonts, as main.rs gives them: without them every
+/// text lays out empty, and a field's cursor never leaves its start.
+#[test]
+fn the_harness_draws_in_the_apps_fonts() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    let (inter, proportional) = h.ctx.fonts(|fonts| {
+        let definitions = fonts.definitions();
+        (
+            definitions.font_data.contains_key("Inter"),
+            definitions
+                .families
+                .get(&eframe::egui::FontFamily::Proportional)
+                .cloned(),
+        )
+    });
+    assert!(inter, "Inter isn't loaded");
+    assert_eq!(proportional, Some(vec!["Inter".to_owned()]));
+    // And typed text lands after a field's text, as for a person.
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "12");
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pin12"));
+}
 
 #[test]
 fn every_pane_has_its_label() {
@@ -400,7 +431,7 @@ fn an_edit_marks_the_document_unsaved_and_save_writes_it() {
     step_until(&mut h, "the tab marked unsaved", |h| {
         anywhere(h, "example.silico *")
             && h.state().tabs()[0].transaction
-            && shows(h, "Timeline", "XHole")
+            && shows(h, "Timeline", "HoleX")
     });
     // Nothing written yet: the edit is the transaction's.
     for _ in 0..20 {
@@ -419,11 +450,11 @@ fn an_edit_marks_the_document_unsaved_and_save_writes_it() {
                     timeline
                         .features
                         .as_ref()
-                        .is_some_and(|features| features.iter().any(|f| f.name == "XHole"))
+                        .is_some_and(|features| features.iter().any(|f| f.name == "HoleX"))
                 })
     });
     let saved = std::fs::read_to_string(&path).unwrap();
-    assert!(saved.contains(r#""name": "XHole""#), "{saved}");
+    assert!(saved.contains(r#""name": "HoleX""#), "{saved}");
     assert!(!saved.contains(r#""name": "Hole","#), "{saved}");
     assert_eq!(never_waits::waits(), 0);
 }
@@ -436,7 +467,7 @@ fn revert_restores_the_files_text_byte_for_byte() {
     select(&mut h, "Hole");
     type_name(&mut h, "Y");
     step_until(&mut h, "the tab marked unsaved", |h| {
-        anywhere(h, "example.silico *") && shows(h, "Timeline", "YHole")
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "HoleY")
     });
     h.get_by_label("File").click();
     step(&mut h);
@@ -548,13 +579,13 @@ fn an_agents_commit_reloads_with_no_edits_held_and_is_announced_with_edits_held(
     select(&mut h, "Pin");
     type_name(&mut h, "s");
     step_until(&mut h, "the edit held", |h| {
-        anywhere(h, "example.silico *") && shows(h, "Timeline", "sPin")
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "Pins")
     });
     let theirs = EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#);
     std::fs::write(&path, &theirs).unwrap();
     let said = "example.silico changed on disk while you have unsaved edits.";
     step_until(&mut h, "the change announced", |h| anywhere(h, said));
-    assert!(shows(&h, "Timeline", "sPin"));
+    assert!(shows(&h, "Timeline", "Pins"));
     assert!(shows(&h, "Timeline", "Bore"));
     // Reload: the edits dropped, the agent's file shown, never written over.
     h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
@@ -612,7 +643,7 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
     select(&mut h, "Pin");
     type_name(&mut h, "s");
     step_until(&mut h, "the edit held", |h| {
-        anywhere(h, "example.silico *") && shows(h, "Timeline", "sPin")
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "Pins")
     });
     std::fs::write(
         &path,
@@ -669,7 +700,7 @@ fn the_purple_banner_comes_only_from_the_sessions_own_reload() {
     select(&mut h, "Pin");
     type_name(&mut h, "A");
     step_until(&mut h, "the edit", |h| {
-        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "APin")
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "PinA")
     });
     never_reloaded(&mut h, "an edit");
     h.get_by_role_and_label(Role::Button, "Undo").click();
@@ -677,12 +708,12 @@ fn the_purple_banner_comes_only_from_the_sessions_own_reload() {
     never_reloaded(&mut h, "an undo");
     type_name(&mut h, "B");
     step_until(&mut h, "the second edit", |h| {
-        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "BPin")
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "PinB")
     });
     h.get_by_role_and_label(Role::Button, "Save").click();
     step_until(&mut h, "saved", |h| !anywhere(h, "example.silico *"));
     never_reloaded(&mut h, "a save");
-    assert!(std::fs::read_to_string(&path).unwrap().contains("BPin"));
+    assert!(std::fs::read_to_string(&path).unwrap().contains("PinB"));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -711,7 +742,7 @@ fn a_reload_the_person_asked_for_shows_no_purple_banner() {
     // Keep my edits…, then Revert: the reload is the person's too.
     type_name(&mut h, "t");
     step_until(&mut h, "the edit held again", |h| {
-        h.state().tabs()[0].transaction && shows(h, "Timeline", "tPin")
+        h.state().tabs()[0].transaction && shows(h, "Timeline", "Pint")
     });
     std::fs::write(
         &path,
@@ -914,7 +945,7 @@ fn a_reload_the_person_asked_for_waits_for_the_file_as_the_session_holds_it() {
     // reload comes, and the person's is let go once the session finds the file unchanged.
     type_name(&mut h, "t");
     step_until(&mut h, "the edit held again", |h| {
-        h.state().tabs()[0].transaction && shows(h, "Timeline", "tPin")
+        h.state().tabs()[0].transaction && shows(h, "Timeline", "Pint")
     });
     std::fs::write(&path, named("Bit")).unwrap();
     step_until(&mut h, "the second change announced", |h| {
@@ -981,6 +1012,7 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
                 App::new(Arc::clone(&f.sessions)),
             )
     };
+    silico_app::theme::apply(&h.ctx);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the tab", |h| !h.state().tabs().is_empty());
     assert!(f.kernel.wait_running(1, WAIT));
@@ -1121,14 +1153,14 @@ fn the_close_questions_save_writes_the_edit_then_closes() {
         .unwrap()
         .click_accesskit();
     step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
-    assert_eq!(names_in(&path), ["Block", "Pin", "SHole"]);
+    assert_eq!(names_in(&path), ["Block", "Pin", "HoleS"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
 fn a_save_and_close_saves_every_edit_made_before_it_even_one_still_waiting() {
-    // "Bl", then "Blo" while "Bl" waits behind a held command: the save waits for both, so
-    // the file holds "Blo", and the close comes after.
+    // "Blockxl", then "Blockxlo" while "Blockxl" waits behind a held command: the save waits
+    // for both, so the file holds "Blockxlo", and the close comes after.
     let f = fixture();
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
@@ -1139,13 +1171,11 @@ fn a_save_and_close_saves_every_edit_made_before_it_even_one_still_waiting() {
     });
     let (hold, check) = hold_queue(&f, &h, 0);
     // Two keystrokes while the queue is held: the first's edit in flight, the second's
-    // waiting. (The field's cursor stays at its start in the harness, so each keystroke
-    // goes before the last: the value it held last is what's asserted.)
+    // waiting.
     type_name(&mut h, "l");
-    let first = name_field(&h).value().unwrap();
+    assert_eq!(name_field(&h).value().as_deref(), Some("Blockxl"));
     type_name(&mut h, "o");
-    let last = name_field(&h).value().unwrap();
-    assert_ne!(first, last);
+    assert_eq!(name_field(&h).value().as_deref(), Some("Blockxlo"));
     h.get_by_label("Close example.silico").click();
     step_until(&mut h, "the question", |h| {
         anywhere(h, "Save changes to example.silico before closing?")
@@ -1160,7 +1190,7 @@ fn a_save_and_close_saves_every_edit_made_before_it_even_one_still_waiting() {
     hold.release();
     let _ = check.wait();
     step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
-    assert_eq!(names_in(&path), [last.as_str(), "Pin", "Hole"]);
+    assert_eq!(names_in(&path), ["Blockxlo", "Pin", "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -1205,7 +1235,7 @@ fn quitting_with_two_changed_documents_and_save_all_saves_both_then_closes_the_w
     step_until(&mut h, "the window closing", |h| told(h, true));
     assert!(h.state().tabs().is_empty());
     for path in [&a, &b] {
-        assert_eq!(names_in(path), ["Block", "QPin", "Hole"]);
+        assert_eq!(names_in(path), ["Block", "PinQ", "Hole"]);
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -1252,7 +1282,7 @@ fn a_quit_whose_save_is_a_conflict_keeps_that_document_and_the_window_open() {
     assert_eq!(h.state().tabs()[0].name(), "a.silico");
     assert!(h.state().tabs()[0].transaction, "a.silico's edits dropped");
     assert_eq!(std::fs::read_to_string(&a).unwrap(), theirs);
-    assert_eq!(names_in(&b), ["Block", "QPin", "Hole"]);
+    assert_eq!(names_in(&b), ["Block", "PinQ", "Hole"]);
     // A second close of the window asks again: never closes it silently.
     close_window(&mut h);
     assert!(told(&h, false));
@@ -1320,30 +1350,30 @@ fn undo_restores_the_text_byte_for_byte_and_redo_the_edit() {
     select(&mut h, "Pin");
     type_name(&mut h, "A");
     step_until(&mut h, "one edit", |h| {
-        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "APin")
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "PinA")
     });
     let id = h.state().tabs()[0].id;
     let after_one = f.sessions.text(&id, None).wait().result.unwrap().text;
     type_name(&mut h, "B");
-    step_until(&mut h, "two edits", |h| shows(h, "Timeline", "BAPin"));
+    step_until(&mut h, "two edits", |h| shows(h, "Timeline", "PinAB"));
     h.get_by_role_and_label(Role::Button, "Undo").click();
-    step_until(&mut h, "undone", |h| shows(h, "Timeline", "APin"));
+    step_until(&mut h, "undone", |h| shows(h, "Timeline", "PinA"));
     assert_eq!(
         f.sessions.text(&id, None).wait().result.unwrap().text,
         after_one
     );
     // The field follows the document back (its typed text no longer ahead of it).
     step_until(&mut h, "the field undone", |h| {
-        name_field(h).value().as_deref() == Some("APin")
+        name_field(h).value().as_deref() == Some("PinA")
     });
     h.get_by_role_and_label(Role::Button, "Redo").click();
-    step_until(&mut h, "redone", |h| shows(h, "Timeline", "BAPin"));
+    step_until(&mut h, "redone", |h| shows(h, "Timeline", "PinAB"));
     step_until(&mut h, "the field redone", |h| {
-        name_field(h).value().as_deref() == Some("BAPin")
+        name_field(h).value().as_deref() == Some("PinAB")
     });
-    // The next keystroke goes before the document's name as it is now.
+    // The next keystroke goes after the document's name as it is now.
     type_name(&mut h, "C");
-    step_until(&mut h, "the next edit", |h| shows(h, "Timeline", "CBAPin"));
+    step_until(&mut h, "the next edit", |h| shows(h, "Timeline", "PinABC"));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -1357,7 +1387,7 @@ fn ctrl_s_saves() {
     step_until(&mut h, "unsaved", |h| h.state().tabs()[0].transaction);
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step_until(&mut h, "saved", |h| !anywhere(h, "example.silico *"));
-    assert_eq!(names_in(&path), ["Block", "KPin", "Hole"]);
+    assert_eq!(names_in(&path), ["Block", "PinK", "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -1455,7 +1485,7 @@ fn an_edit_of_another_feature_never_replaces_one_waiting_and_both_land() {
     step_until(&mut h, "all answered", |h| h.state().tabs()[0].edits.idle());
     h.get_by_role_and_label(Role::Button, "Save").click();
     step_until(&mut h, "saved", |h| !anywhere(h, "example.silico *"));
-    assert_eq!(names_in(&path), [block.as_str(), "zPin", "Hole"]);
+    assert_eq!(names_in(&path), [block.as_str(), "Pinz", "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -1657,16 +1687,16 @@ fn stop_says_a_cancel_the_core_refuses() {
 #[test]
 fn a_name_emptied_in_the_field_is_refused_and_the_field_keeps_what_was_typed() {
     // The property panel sends every change of its Name, an empty one too, for the core
-    // to answer (the cursor at its start, Delete takes one character each). The refusal is
+    // to answer (the cursor at its end, Backspace takes one character each). The refusal is
     // said, and the field keeps "", what the person typed (#298's review).
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     empty_name(&mut h);
-    // "in", "n", then "" (a name queued behind one in flight is replaced by the next, so
-    // "n" may never be sent): "" refused by the gate, its words said in the status bar, the
-    // document holding the last name applied before it, "in" or "n".
+    // "Pi", "P", then "" (a name queued behind one in flight is replaced by the next, so
+    // "P" may never be sent): "" refused by the gate, its words said in the status bar, the
+    // document holding the last name applied before it, "Pi" or "P".
     assert_eq!(
         h.state().tabs()[0].message.as_deref(),
         Some("name is empty (give the feature a name)")
@@ -1675,19 +1705,19 @@ fn a_name_emptied_in_the_field_is_refused_and_the_field_keeps_what_was_typed() {
     let id = h.state().tabs()[0].id;
     let text = f.sessions.text(&id, None).wait().result.unwrap().text;
     assert!(
-        text.contains(r#""name": "n""#) || text.contains(r#""name": "in""#),
+        text.contains(r#""name": "P""#) || text.contains(r#""name": "Pi""#),
         "{text}"
     );
     assert_eq!(name_field(&h).value().as_deref(), Some(""));
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// Pin's Name emptied with Delete (the cursor at its start), and "" refused.
+/// Pin's Name emptied with Backspace (the cursor at its end), and "" refused.
 fn empty_name(h: &mut AppHarness) {
     name_field(h).focus();
     step(h);
     for _ in 0.."Pin".len() {
-        h.key_press(eframe::egui::Key::Delete);
+        h.key_press(eframe::egui::Key::Backspace);
         step(h);
     }
     // Answered once nothing is in flight or queued and the refusal of "" is said: how
@@ -1710,7 +1740,7 @@ fn a_name_emptied_then_typed_is_what_was_typed() {
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     empty_name(&mut h);
-    // Typed at once (one text event), so the harness's cursor doesn't reorder it.
+    // Typed at once (one text event).
     name_field(&h).type_text("Bolt");
     step(&mut h);
     step_until(&mut h, "Bolt", |h| {
@@ -1733,6 +1763,9 @@ fn the_window_for_missing_workers_says_each_and_quits() {
         |ui, app: &mut Missing| app.frame(ui),
         Missing::new(lines.clone()),
     );
+    silico_app::theme::apply(&h.ctx);
+    // Laid out again in the app's fonts, so the click lands where Quit is drawn.
+    h.step();
     for line in &lines {
         assert!(h.query_by_label(line).is_some(), "{line}");
     }
@@ -1814,7 +1847,7 @@ fn an_edit_made_while_a_save_runs_is_sent_after_it_in_a_new_transaction() {
     let id = h.state().tabs()[0].id;
     let text = f.sessions.text(&id, None).wait().result.unwrap().text;
     assert!(text.contains(&format!(r#""name": "{typed}""#)), "{text}");
-    assert_eq!(names_in(&path), ["Block", "aPin", "Hole"]);
+    assert_eq!(names_in(&path), ["Block", "Pina", "Hole"]);
     step_until(&mut h, "unsaved", |h| anywhere(h, "example.silico *"));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -1938,7 +1971,7 @@ fn a_second_ctrl_s_while_a_save_runs_is_ignored() {
     }
     assert_eq!(h.state().tabs()[0].saves, 1);
     assert!(h.state().tabs()[0].message.is_none());
-    assert_eq!(names_in(&path), ["Block", "sPin", "Hole"]);
+    assert_eq!(names_in(&path), ["Block", "Pins", "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -2002,7 +2035,7 @@ fn a_quit_while_a_save_runs_closes_once_it_has_saved() {
     hold.release();
     let _ = check.wait();
     step_until_event(&mut h, |h| told(h, true));
-    assert_eq!(names_in(&path), ["Block", "qPin", "Hole"]);
+    assert_eq!(names_in(&path), ["Block", "Pinq", "Hole"]);
     assert!(h.state().tabs().is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
@@ -2067,7 +2100,7 @@ fn the_name_field_is_off_while_its_tab_closes() {
     hold.release();
     let _ = check.wait();
     step_until(&mut h, "closed", |h| h.state().tabs().is_empty());
-    assert_eq!(names_in(&path), ["Block", "cPin", "Hole"]);
+    assert_eq!(names_in(&path), ["Block", "Pinc", "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -2214,29 +2247,29 @@ fn an_edit_held_behind_a_refused_save_lands_in_the_open_transaction() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// Pin renamed "xPin" and saved, then typed again ("yxPin"), the field having typed both
+/// Pin renamed "Pinx" and saved, then typed again ("Pinxy"), the field having typed both
 /// names.
 fn saved_then_typed(h: &mut AppHarness) {
     step_until(h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(h, "Pin");
     type_name(h, "x");
-    step_until(h, "xPin", |h| {
-        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "xPin")
+    step_until(h, "Pinx", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "Pinx")
     });
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step_until(h, "saved", |h| {
         h.state().tabs()[0].saves == 1 && !anywhere(h, "example.silico *")
     });
     type_name(h, "y");
-    step_until(h, "yxPin held", |h| {
-        anywhere(h, "example.silico *") && shows(h, "Timeline", "yxPin")
+    step_until(h, "Pinxy held", |h| {
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "Pinxy")
     });
 }
 
 #[test]
 fn revert_to_a_name_the_field_typed_before_shows_that_name() {
-    // The name reverted to is one the field typed ("xPin", saved), so only the revert's
-    // reset, not the name, says the field's "yxPin" no longer stands.
+    // The name reverted to is one the field typed ("Pinx", saved), so only the revert's
+    // reset, not the name, says the field's "Pinxy" no longer stands.
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     saved_then_typed(&mut h);
@@ -2244,12 +2277,12 @@ fn revert_to_a_name_the_field_typed_before_shows_that_name() {
     step(&mut h);
     h.get_by_role_and_label(Role::Button, "Revert").click();
     step_until(&mut h, "reverted", |h| {
-        !anywhere(h, "example.silico *") && shows(h, "Timeline", "xPin")
+        !anywhere(h, "example.silico *") && shows(h, "Timeline", "Pinx")
     });
     for _ in 0..10 {
         step(&mut h);
     }
-    assert_eq!(name_field(&h).value().as_deref(), Some("xPin"));
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pinx"));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -2261,7 +2294,7 @@ fn reload_to_a_name_the_field_typed_before_shows_that_name() {
     let theirs = std::fs::read_to_string(&path)
         .unwrap()
         .replace(r#""name": "Hole""#, r#""name": "Drill""#);
-    assert!(theirs.contains(r#""name": "xPin""#), "{theirs}");
+    assert!(theirs.contains(r#""name": "Pinx""#), "{theirs}");
     std::fs::write(&path, &theirs).unwrap();
     let said = "example.silico changed on disk while you have unsaved edits.";
     step_until(&mut h, "the change announced", |h| anywhere(h, said));
@@ -2273,7 +2306,7 @@ fn reload_to_a_name_the_field_typed_before_shows_that_name() {
     for _ in 0..10 {
         step(&mut h);
     }
-    assert_eq!(name_field(&h).value().as_deref(), Some("xPin"));
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pinx"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -2341,21 +2374,21 @@ fn dont_save_on_a_quit_while_a_save_runs_closes_once_it_has_saved() {
     let _ = check.wait();
     step_until(&mut h, "the window closing", |h| told(h, true));
     // The save asked before the quit stands.
-    assert_eq!(names_in(&path), ["Block", "qPin", "Hole"]);
+    assert_eq!(names_in(&path), ["Block", "Pinq", "Hole"]);
     assert!(h.state().tabs().is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
 fn the_sessions_own_reload_to_a_name_the_field_typed_before_shows_that_name() {
-    // Two saves, "xPin" then "yxPin", the field having typed both; then an agent writes
-    // "xPin" back with no transaction open: the session reloads it itself, and the field
-    // shows it, not the "yxPin" it last typed.
+    // Two saves, "Pinx" then "Pinxy", the field having typed both; then an agent writes
+    // "Pinx" back with no transaction open: the session reloads it itself, and the field
+    // shows it, not the "Pinxy" it last typed.
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
-    for (key, name, saves) in [("x", "xPin", 1), ("y", "yxPin", 2)] {
+    for (key, name, saves) in [("x", "Pinx", 1), ("y", "Pinxy", 2)] {
         type_name(&mut h, key);
         step_until(&mut h, name, |h| {
             h.state().tabs()[0].edits.idle() && shows(h, "Timeline", name)
@@ -2367,16 +2400,16 @@ fn the_sessions_own_reload_to_a_name_the_field_typed_before_shows_that_name() {
     }
     let theirs = std::fs::read_to_string(&path)
         .unwrap()
-        .replace(r#""name": "yxPin""#, r#""name": "xPin""#);
-    assert!(theirs.contains(r#""name": "xPin""#), "{theirs}");
+        .replace(r#""name": "Pinxy""#, r#""name": "Pinx""#);
+    assert!(theirs.contains(r#""name": "Pinx""#), "{theirs}");
     std::fs::write(&path, &theirs).unwrap();
     step_until(&mut h, "the agent's name shown", |h| {
-        shows(h, "Timeline", "xPin") && !shows(h, "Timeline", "yxPin")
+        shows(h, "Timeline", "Pinx") && !shows(h, "Timeline", "Pinxy")
     });
     for _ in 0..10 {
         step(&mut h);
     }
-    assert_eq!(name_field(&h).value().as_deref(), Some("xPin"));
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pinx"));
     assert!(!anywhere(&h, "example.silico *"));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -2405,7 +2438,7 @@ fn ctrl_s_right_after_the_first_keystroke_saves_it() {
     step_until(&mut h, "saved", |h| {
         h.state().tabs()[0].saves == 1 && !h.state().tabs()[0].unsaved()
     });
-    assert_eq!(names_in(&path), ["Block", "sPin", "Hole"]);
+    assert_eq!(names_in(&path), ["Block", "Pins", "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -2573,7 +2606,7 @@ fn a_close_while_a_redo_waits_asks_first() {
     hold.release();
     let _ = check.wait();
     step_until(&mut h, "the redo shown", |h| {
-        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "xPin")
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "Pinx")
     });
     assert_eq!(h.state().tabs().len(), 1);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
@@ -2646,7 +2679,7 @@ fn ctrl_y_redoes_and_redo_turns_off_once_typing_starts() {
     let before = h.state().tabs()[0].revision.number();
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
     let deadline = Instant::now() + WAIT;
-    while !(anywhere(&h, "example.silico *") && shows(&h, "Timeline", "xPin")) {
+    while !(anywhere(&h, "example.silico *") && shows(&h, "Timeline", "Pinx")) {
         step(&mut h);
         if h.state().tabs()[0].revision.number() > before {
             assert!(!offered(&h, "Redo"), "Redo offered with nothing to redo");
@@ -2717,7 +2750,7 @@ fn ctrl_y_held_down_redoes_once_and_says_nothing() {
     hold.release();
     let _ = check.wait();
     step_until(&mut h, "redone", |h| {
-        anywhere(h, "example.silico *") && shows(h, "Timeline", "xPin")
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "Pinx")
     });
     for _ in 0..20 {
         step(&mut h);
@@ -2826,11 +2859,11 @@ fn a_name_past_the_basic_plane_is_saved_as_typed() {
     select(&mut h, "Pin");
     type_name(&mut h, "\u{1F529}");
     step_until(&mut h, "the edit applied", |h| {
-        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "\u{1F529}Pin")
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "Pin\u{1F529}")
     });
     let id = h.state().tabs()[0].id;
     let text = f.sessions.text(&id, None).wait().result.unwrap().text;
-    assert!(text.contains("\"name\": \"\u{1F529}Pin\""), "{text}");
+    assert!(text.contains("\"name\": \"Pin\u{1F529}\""), "{text}");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -2869,7 +2902,7 @@ fn a_quit_asked_while_a_save_waits_queued_keeps_that_save_and_closes() {
 
 #[test]
 fn a_one_letter_name_emptied_is_refused_and_the_field_keeps_it_empty() {
-    // "P" emptied with one Delete: the only text typed is "", refused; the document's
+    // "P" emptied with one Backspace: the only text typed is "", refused; the document's
     // name, "P", unchanged and never typed, so the field keeps "" because the name it
     // shows from is the one it started from.
     let f = fixture();
@@ -2879,7 +2912,7 @@ fn a_one_letter_name_emptied_is_refused_and_the_field_keeps_it_empty() {
     select(&mut h, "P");
     name_field(&h).focus();
     step(&mut h);
-    h.key_press(eframe::egui::Key::Delete);
+    h.key_press(eframe::egui::Key::Backspace);
     step(&mut h);
     step_until(&mut h, "the empty name refused", |h| {
         h.state().tabs()[0].edits.idle() && h.state().tabs()[0].message.is_some()
@@ -2945,7 +2978,7 @@ fn save_as_writes_the_new_file_and_the_tab_follows_it() {
     let id = h.state().tabs()[0].id;
     let held = f.sessions.text(&id, None).wait().result.unwrap().text;
     assert_eq!(std::fs::read_to_string(&copy).unwrap(), held);
-    assert_eq!(names_in(&copy), ["Block", "xPin", "Hole"]);
+    assert_eq!(names_in(&copy), ["Block", "Pinx", "Hole"]);
     assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
     // A later save goes to the new file.
     type_name(&mut h, "y");
@@ -2984,11 +3017,11 @@ fn save_as_saves_only_on_its_save_and_only_with_a_path() {
     assert_eq!(h.state().tabs()[0].saves, 0);
     assert!(!copy.exists());
     // The path cleared, then Save clicked: nothing either, and the dialog stays.
-    // Focused again (its cursor at its start), each character deleted.
+    // Focused again (its cursor at its end), each character deleted.
     path_field(&h).focus();
     step(&mut h);
     for _ in 0..copy.to_str().unwrap().chars().count() {
-        h.key_press(eframe::egui::Key::Delete);
+        h.key_press(eframe::egui::Key::Backspace);
         step(&mut h);
     }
     assert_eq!(path_field(&h).value().as_deref(), Some(""));
@@ -3062,7 +3095,7 @@ fn save_as_over_a_file_asks_and_cancel_writes_nothing_and_replace_writes() {
     step_until(&mut h, "the tab of the file replaced", |h| {
         anywhere(h, "there.silico") && !anywhere(h, "there.silico *")
     });
-    assert_eq!(names_in(&there), ["Block", "xPin", "Hole"]);
+    assert_eq!(names_in(&there), ["Block", "Pinx", "Hole"]);
     assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -3166,7 +3199,7 @@ fn typing_while_a_save_as_runs_comes_after_it_in_a_new_transaction() {
         anywhere(h, "copy.silico *")
     });
     assert!(h.state().tabs()[0].transaction);
-    assert_eq!(names_in(&copy), ["Block", "xPin", "Hole"]);
+    assert_eq!(names_in(&copy), ["Block", "Pinx", "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -3254,8 +3287,8 @@ fn a_save_as_queued_behind_a_save_begins_again_and_writes() {
     step_until(&mut h, "the tab of the new file", |h| {
         anywhere(h, "copy.silico") && !anywhere(h, "copy.silico *")
     });
-    assert_eq!(names_in(&old), ["Block", "xPin", "Hole"]);
-    assert_eq!(names_in(&copy), ["Block", "xPin", "Hole"]);
+    assert_eq!(names_in(&old), ["Block", "Pinx", "Hole"]);
+    assert_eq!(names_in(&copy), ["Block", "Pinx", "Hole"]);
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -3463,7 +3496,46 @@ fn input<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
     dialog(h).get_by_role_and_label(Role::TextInput, label)
 }
 
-/// Typed into the dialog's input `label`, one keystroke a frame, at its start.
+/// Whether the dialog's choice `key` has `option` chosen: a drop-down's value, or a
+/// segmented control's button toggled, as the panel's width draws it.
+fn chosen(h: &AppHarness, key: &str, option: &str) -> bool {
+    match dialog(h).query_by_role_and_label(Role::ComboBox, key) {
+        Some(select) => select.accesskit_node().value().as_deref() == Some(option),
+        None => {
+            dialog(h)
+                .get_by_role_and_label(Role::Button, option)
+                .accesskit_node()
+                .toggled()
+                == Some(eframe::egui::accesskit::Toggled::True)
+        }
+    }
+}
+
+/// `option` chosen in the dialog's choice `key`: from its drop-down's menu, or its
+/// segmented control's button, as the panel's width draws it.
+fn choose(h: &mut AppHarness, key: &str, option: &str) {
+    if dialog(h)
+        .query_by_role_and_label(Role::ComboBox, key)
+        .is_some()
+    {
+        dialog(h).get_by_role_and_label(Role::ComboBox, key).click();
+        step_until(h, "the drop-down's menu", |h| {
+            h.query_all_by_role_and_label(Role::Button, option).count() == 1
+        });
+        // egui lays a new menu out unseen in its first frame, and places it in its next.
+        step(h);
+        h.get_by_role_and_label(Role::Button, option).click();
+    } else {
+        dialog(h)
+            .get_by_role_and_label(Role::Button, option)
+            .click();
+    }
+    step(h);
+    step(h);
+    assert!(chosen(h, key, option), "{option} not chosen in {key}");
+}
+
+/// Typed into the dialog's input `label`, one keystroke a frame, at its end.
 fn type_into(h: &mut AppHarness, label: &str, text: &str) {
     input(h, label).focus();
     step(h);
@@ -3715,7 +3787,8 @@ fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
             .query_by_role_and_label(Role::TextInput, "Length 2")
             .is_none()
     );
-    dialog(&h).get_by_label("Two sides").click();
+    // Its four options don't fit the panel side by side, so they're a drop-down's.
+    choose(&mut h, "Extent", "Two sides");
     step_until(&mut h, "two sides", |h| {
         dialog(h)
             .query_by_role_and_label(Role::TextInput, "Length 2")
@@ -3728,9 +3801,9 @@ fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
     let extent = pocket.iter().find(|(key, _)| key == "extent").unwrap();
     assert_eq!(
         extent.1,
-        Plain::of(&json::read(br#"{"type": "two_sides", "length": 5, "length2": 15}"#).unwrap())
+        Plain::of(&json::read(br#"{"type": "two_sides", "length": 5, "length2": 51}"#).unwrap())
     );
-    dialog(&h).get_by_label("Through all").click();
+    choose(&mut h, "Extent", "Through all");
     step_until(&mut h, "through all", |h| {
         dialog(h)
             .query_by_role_and_label(Role::TextInput, "Length")
@@ -3776,10 +3849,9 @@ fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
             Sent::Edit("length".to_owned())
         ]
     );
-    // The field's text, three digits and the 10 (the harness places each keystroke's
-    // cursor as it does), is the document's.
+    // The field's text, the 10 and the three digits after it, is the document's.
     let typed = input(&h, "Length").value().unwrap();
-    assert_eq!(typed.len(), 5);
+    assert_eq!(typed, "10123");
     let text = text_of(&f, &h);
     let fields = fields_of(&text, "Box").unwrap();
     assert!(
@@ -3807,7 +3879,7 @@ fn an_unparseable_value_is_red_sends_nothing_and_keeps_ok_off() {
     for _ in 0..10 {
         step(&mut h);
     }
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("x5"));
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("5x"));
     assert!(!ok_enabled(&h));
     assert_eq!(h.state().tabs()[0].edits.sent, sent);
     // Enter is OK only when OK is on.
@@ -3831,7 +3903,13 @@ fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
     });
     settled(&mut h);
     // "-5": a number, sent, and refused by the gate (a radius is above 0).
-    type_into(&mut h, "Radius", "-");
+    // The minus at the field's start, where a person puts it: Home, then "-".
+    input(&h, "Radius").focus();
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Home);
+    step(&mut h);
+    input(&h, "Radius").type_text("-");
+    step(&mut h);
     settled(&mut h);
     // Said in the dialog, as the core words it.
     let said = h.state().tabs()[0].message.clone().unwrap();
@@ -3858,7 +3936,7 @@ fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits(
     type_name(&mut h, "K");
     settled(&mut h);
     let before = text_of(&f, &h);
-    assert!(before.contains(r#""name": "KPin""#));
+    assert!(before.contains(r#""name": "PinK""#));
     let opened_at = h.state().tabs()[0].revision;
     create(&mut h, "Box");
     step_until(&mut h, "its add answered", |h| {
@@ -3869,7 +3947,7 @@ fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits(
     });
     type_into(&mut h, "Height", "2");
     settled(&mut h);
-    assert!(text_of(&f, &h).contains(r#""height": 210"#));
+    assert!(text_of(&f, &h).contains(r#""height": 102"#));
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Cancel")
         .click();
@@ -4299,7 +4377,7 @@ fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() 
     assert!(f.kernel.wait_running(1, WAIT));
     hold.release();
     let text = text_of(&f, &h);
-    assert!(text.contains(r#""width": 310"#), "{text}");
+    assert!(text.contains(r#""width": 103"#), "{text}");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -4385,7 +4463,7 @@ fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back()
     settled(&mut h);
     let after = text_of(&f, &h);
     let ok_at = h.state().tabs()[0].revision;
-    assert!(after.contains(r#""radius": 15"#) && after.contains(r#""height": 210"#));
+    assert!(after.contains(r#""radius": 51"#) && after.contains(r#""height": 102"#));
     step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
     step(&mut h);
@@ -4410,8 +4488,8 @@ fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back()
     step(&mut h);
     settled(&mut h);
     assert_eq!(text_of(&f, &h), before);
-    // KPin, made before the dialog, stays: one more undo takes it back alone.
-    assert!(before.contains(r#""name": "KPin""#));
+    // PinK, made before the dialog, stays: one more undo takes it back alone.
+    assert!(before.contains(r#""name": "PinK""#));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -4448,7 +4526,7 @@ fn edit_feature_from_a_double_click_loads_the_features_values_and_ok_applies_a_c
     assert_eq!(
         fields_of(&text_of(&f, &h), "Pin"),
         Some(expected(
-            r#"{"type": "cylinder", "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 312}"#
+            r#"{"type": "cylinder", "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 123}"#
         ))
     );
     assert_eq!(
@@ -4523,8 +4601,18 @@ fn a_refused_values_mark_goes_with_its_dialog() {
         h.query_by_role_and_label(Role::Dialog, "Cylinder")
             .is_some()
     });
-    type_into(&mut h, "Radius", "-");
+    // The minus at the field's start, where a person puts it: Home, then "-".
+    input(&h, "Radius").focus();
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Home);
+    step(&mut h);
+    input(&h, "Radius").type_text("-");
+    step(&mut h);
     settled(&mut h);
+    // "-2.5": a number, sent, and refused by the gate, said in the dialog as the core words it.
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("-2.5"));
+    let said = h.state().tabs()[0].message.clone().unwrap();
+    assert!(dialog(&h).query_by_label(&said).is_some(), "{said}");
     assert!(!ok_enabled(&h));
     // Nor is Enter OK.
     h.key_press(eframe::egui::Key::Enter);
@@ -4696,19 +4784,37 @@ fn edit_feature_of_a_revolve_about_a_sketch_line_keeps_that_axis() {
     });
     // The line is offered as itself, chosen; the form and angle as written; the sketch's
     // name in its box.
-    let chosen = |h: &AppHarness, label: &str| {
-        dialog(h)
-            .get_by_role_and_label(Role::Button, label)
-            .accesskit_node()
-            .toggled()
-            == Some(eframe::egui::accesskit::Toggled::True)
-    };
-    assert!(chosen(&h, "nc000000"));
-    assert!(!chosen(&h, "Y axis"));
-    assert!(chosen(&h, "Symmetric"));
+    assert!(chosen(&h, "Axis", "nc000000"));
+    assert!(!chosen(&h, "Axis", "Y axis"));
+    // And the Y axis offered beside it: a segmented control's button (`chosen` finds it), or
+    // an entry in the drop-down's menu, opened and closed again.
+    if dialog(&h)
+        .query_by_role_and_label(Role::ComboBox, "Axis")
+        .is_some()
+    {
+        dialog(&h)
+            .get_by_role_and_label(Role::ComboBox, "Axis")
+            .click();
+        step_until(&mut h, "the drop-down's menu", |h| {
+            h.query_all_by_role_and_label(Role::Button, "Y axis")
+                .count()
+                == 1
+        });
+        step(&mut h);
+        dialog(&h)
+            .get_by_role_and_label(Role::ComboBox, "Axis")
+            .click();
+        step_until(&mut h, "the drop-down's menu closed", |h| {
+            h.query_all_by_role_and_label(Role::Button, "Y axis")
+                .count()
+                == 0
+        });
+        assert!(chosen(&h, "Axis", "nc000000"));
+    }
+    assert!(chosen(&h, "Extent", "Symmetric"));
     assert_eq!(input(&h, "Angle").value().as_deref(), Some("90"));
     assert!(dialog(&h).query_by_label("Triangle").is_some());
-    type_into(&mut h, "Angle", "1");
+    type_into(&mut h, "Angle", ".5");
     settled(&mut h);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -4716,7 +4822,7 @@ fn edit_feature_of_a_revolve_about_a_sketch_line_keeps_that_axis() {
     assert_eq!(
         fields_of(&text_of(&f, &h), "Turned"),
         Some(expected(
-            r#"{"type": "revolve", "name": "Turned", "sketch": "s0000001", "axis": "nc000000", "extent": {"type": "symmetric", "angle": 190}}"#
+            r#"{"type": "revolve", "name": "Turned", "sketch": "s0000001", "axis": "nc000000", "extent": {"type": "symmetric", "angle": 90.5}}"#
         ))
     );
     assert_eq!(never_waits::waits(), 0);
@@ -4842,13 +4948,13 @@ fn a_name_typed_after_a_dialog_opened_is_its_cancels_to_undo_never_before_it() {
     });
     let typed = text_of(&f, &h);
     let name = names_of(&typed)[1].clone();
-    assert_eq!(name.len(), "cbaPin".len(), "{name}");
+    assert_eq!(name, "Pinabc");
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     // Undone back to the two letters typed before the dialog.
     let kept = names_of(&text_of(&f, &h))[1].clone();
-    assert_eq!(kept.len(), "baPin".len(), "{kept}");
+    assert_eq!(kept, "Pinab");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -5025,7 +5131,7 @@ fn a_reload_under_edit_feature_reads_the_feature_again_and_cancel_undoes_from_th
     });
     type_into(&mut h, "Height", "1");
     settled(&mut h);
-    assert!(text_of(&f, &h).contains(r#""height": 112"#));
+    assert!(text_of(&f, &h).contains(r#""height": 121"#));
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
@@ -5041,7 +5147,7 @@ fn a_reload_under_a_new_sweeps_dialog_opens_it_at_the_reloaded_revision() {
     let (mut h, path) = f.opened("sketched.silico", SKETCHED);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
     let sketched = text_of(&f, &h);
-    // A KPlate typed first, saved: a transaction with something before the dialog is
+    // A PlateK typed first, saved: a transaction with something before the dialog is
     // then the reload's to make, not the dialog's.
     select(&mut h, "Plate");
     type_name(&mut h, "K");
@@ -5274,7 +5380,7 @@ fn a_digit_typed_in_the_frame_enter_is_pressed_is_in_what_ok_keeps() {
     settled(&mut h);
     let fields = fields_of(&text_of(&f, &h), "Box").unwrap();
     assert!(
-        fields.contains(&("height".to_owned(), Plain::Number("710".to_owned()))),
+        fields.contains(&("height".to_owned(), Plain::Number("107".to_owned()))),
         "{fields:?}"
     );
     assert_eq!(never_waits::waits(), 0);
@@ -5389,7 +5495,7 @@ fn a_dialog_undone_then_a_name_typed_lets_the_name_be_redone() {
     type_name(&mut h, "K");
     settled(&mut h);
     let named = text_of(&f, &h);
-    assert!(named.contains(r#""name": "KPin""#));
+    assert!(named.contains(r#""name": "PinK""#));
     step_key(&mut h, true);
     assert_eq!(text_of(&f, &h), before);
     step_key(&mut h, false);
@@ -5531,7 +5637,7 @@ fn a_refused_edit_after_an_undone_dialog_leaves_its_redo_whole() {
     select(&mut h, "P");
     name_field(&h).focus();
     step(&mut h);
-    h.key_press(eframe::egui::Key::Delete);
+    h.key_press(eframe::egui::Key::Backspace);
     step(&mut h);
     step_until(&mut h, "the empty name refused", |h| {
         h.state().tabs()[0].message.as_deref() == Some("name is empty (give the feature a name)")
@@ -5610,7 +5716,13 @@ fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
         h.query_by_role_and_label(Role::Dialog, "Cylinder")
             .is_some()
     });
-    type_into(&mut h, "Radius", "-");
+    // The minus at the field's start, where a person puts it: Home, then "-".
+    input(&h, "Radius").focus();
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Home);
+    step(&mut h);
+    input(&h, "Radius").type_text("-");
+    step(&mut h);
     settled(&mut h);
     let sent = h.state().tabs()[0].edits.sent;
     h.key_press(eframe::egui::Key::Home);
@@ -5640,8 +5752,8 @@ fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_re
     made(&mut h, "Box", "Length");
     let boxed = text_of(&f, &h);
     step_key(&mut h, true);
-    select(&mut h, "KPin");
-    // The queue held: another client's undo (of KPin), then a name typed here against the
+    select(&mut h, "PinK");
+    // The queue held: another client's undo (of PinK), then a name typed here against the
     // revision before it, refused as stale, the session's revision moved by the undo,
     // which drops no redo branch.
     let id = h.state().tabs()[0].id;
@@ -5656,7 +5768,7 @@ fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_re
     });
     settled(&mut h);
     assert_eq!(text_of(&f, &h), EXAMPLE);
-    // Redo: KPin, then the box's edits whole.
+    // Redo: PinK, then the box's edits whole.
     step_key(&mut h, false);
     step_key(&mut h, false);
     assert_eq!(text_of(&f, &h), boxed);
@@ -6013,6 +6125,7 @@ fn a_stopped_rebuild_with_nothing_published_reads_nothing_more_and_asks_for_no_f
                 App::new(Arc::clone(&f.sessions)),
             )
     };
+    silico_app::theme::apply(&h.ctx);
     let (mut h, hold) = first_rebuild_stopped_in(&f, h);
     quiet_wakes(&mut h);
     let woken = h.state().wakes();
@@ -6182,8 +6295,8 @@ fn open_export(h: &mut AppHarness) {
     });
 }
 
-/// The export dialog's field `label` emptied (its cursor at its start once focused, a
-/// Delete for each character), then `text` typed at once.
+/// The export dialog's field `label` emptied (its cursor at its end once focused, a
+/// Backspace for each character), then `text` typed at once.
 fn set_field(h: &mut AppHarness, label: &str, text: &str) {
     h.get_by_role_and_label(Role::TextInput, label).focus();
     step(h);
@@ -6194,7 +6307,7 @@ fn set_field(h: &mut AppHarness, label: &str, text: &str) {
         .chars()
         .count();
     for _ in 0..length {
-        h.key_press(eframe::egui::Key::Delete);
+        h.key_press(eframe::egui::Key::Backspace);
         step(h);
     }
     h.get_by_role_and_label(Role::TextInput, label)
@@ -7380,6 +7493,7 @@ impl Fixture {
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
+        silico_app::theme::apply(&h.ctx);
         h.state_mut().open(path.to_str().unwrap(), false);
         (h, record)
     }
@@ -8702,6 +8816,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
+            silico_app::theme::apply(&h.ctx);
             // Each frame drawn: egui's paint callbacks prepared and painted, as a window's.
             h.set_render_every_step(true);
             let path = f.file("box.silico", A_BOX);
@@ -8876,6 +8991,7 @@ fn a_viewport_with_no_renderer_says_why_in_its_pane() {
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
+    silico_app::theme::apply(&h.ctx);
     step(&mut h);
     // With no document, the start page shows, and no viewport.
     assert!(h.query_by_role_and_label(Role::Pane, "Viewport").is_none());
@@ -8968,6 +9084,7 @@ impl Fixture {
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
+        silico_app::theme::apply(&h.ctx);
         h.state_mut().open(path.to_str().unwrap(), false);
         meshes_settled(&mut h);
         h.state_mut().tabs_mut()[0].watch = Some(watching(&seen));
@@ -9771,9 +9888,11 @@ impl Fixture {
     fn app_browsing(&self, browser: &FakeBrowser) -> AppHarness {
         let app = App::new(Arc::clone(&self.sessions)).browsing(Box::new(browser.clone()));
         let _marked = never_waits::marked();
-        Harness::builder()
+        let h = Harness::builder()
             .with_size((1280.0, 800.0))
-            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
+        silico_app::theme::apply(&h.ctx);
+        h
     }
 
     /// [`opened`](Self::opened), with `browser` opening its file dialogs.
@@ -11442,9 +11561,11 @@ impl Fixture {
     fn app_made(&self, make: impl FnOnce(App<Fake>) -> App<Fake>) -> AppHarness {
         let app = make(App::new(Arc::clone(&self.sessions)));
         let _marked = never_waits::marked();
-        Harness::builder()
+        let h = Harness::builder()
             .with_size((1280.0, 800.0))
-            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
+        silico_app::theme::apply(&h.ctx);
+        h
     }
 
     /// Where these tests keep the list of recent documents: in a folder not yet made.
@@ -12718,7 +12839,7 @@ fn shift_command_z_redoes_and_command_z_undoes() {
     // DESIGN.md, *Keyboard*: ⇧⌘Z is Redo, beside Ctrl+Y.
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     step_until(&mut h, "redone", |h| {
-        shows(h, "Timeline", "xPin") && !h.state().tabs()[0].redoable()
+        shows(h, "Timeline", "Pinx") && !h.state().tabs()[0].redoable()
     });
     assert_eq!(never_waits::waits(), 0);
 }
@@ -14100,19 +14221,19 @@ fn a_hidden_body_stays_hidden_through_a_rename_and_its_undo_and_redo() {
             .is_some_and(|value| value == "Large")
     });
     let drawn = |record: &Record| record.lock().unwrap().frames.last().unwrap().bodies.clone();
-    // Renamed through the Name field: the cursor at its start, so "x" before the name.
+    // Renamed through the Name field: the cursor at its end, so "x" after the name.
     type_name(&mut h, "x");
     step_until(&mut h, "the renamed row", |h| {
-        shows(h, "Browser", "xLarge") && h.state().tabs()[0].edits.idle()
+        shows(h, "Browser", "Largex") && h.state().tabs()[0].edits.idle()
     });
     meshes_settled(&mut h);
-    assert!(shows(&h, "Browser", "Show xLarge"));
-    assert!(!shows(&h, "Browser", "Hide xLarge"));
+    assert!(shows(&h, "Browser", "Show Largex"));
+    assert!(!shows(&h, "Browser", "Hide Largex"));
     assert_eq!(drawn(&record), [1]);
     // Undone: the old name back, still hidden.
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
     step_until(&mut h, "the rename undone", |h| {
-        shows(h, "Browser", "Large") && !shows(h, "Browser", "xLarge")
+        shows(h, "Browser", "Large") && !shows(h, "Browser", "Largex")
     });
     meshes_settled(&mut h);
     assert!(shows(&h, "Browser", "Show Large"));
@@ -14120,10 +14241,10 @@ fn a_hidden_body_stays_hidden_through_a_rename_and_its_undo_and_redo() {
     // Redone: the new name again, still hidden.
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
     step_until(&mut h, "the rename redone", |h| {
-        shows(h, "Browser", "xLarge")
+        shows(h, "Browser", "Largex")
     });
     meshes_settled(&mut h);
-    assert!(shows(&h, "Browser", "Show xLarge"));
+    assert!(shows(&h, "Browser", "Show Largex"));
     assert_eq!(drawn(&record), [1]);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -15810,18 +15931,18 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                 step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
                 select(&mut h, "Pin");
                 for chord in keys_of(command) {
-                    renamed(&mut h, "K", "KPin");
+                    renamed(&mut h, "K", "PinK");
                     press_chord(&mut h, chord);
                     step_until(&mut h, "saved by its keys", |h| {
                         !anywhere(h, "example.silico *")
                     });
-                    assert_eq!(names_in(&path), ["Block", "KPin", "Hole"]);
-                    renamed(&mut h, "L", "LKPin");
+                    assert_eq!(names_in(&path), ["Block", "PinK", "Hole"]);
+                    renamed(&mut h, "L", "PinKL");
                     h.get_by_role_and_label(Role::Button, entry.label).click();
                     step_until(&mut h, "saved by its button", |h| {
                         !anywhere(h, "example.silico *")
                     });
-                    assert_eq!(names_in(&path), ["Block", "LKPin", "Hole"]);
+                    assert_eq!(names_in(&path), ["Block", "PinKL", "Hole"]);
                 }
             }
             Command::Undo | Command::Redo => {
@@ -15829,15 +15950,15 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                 let (mut h, _) = f.opened("example.silico", EXAMPLE);
                 step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
                 select(&mut h, "Pin");
-                renamed(&mut h, "A", "APin");
+                renamed(&mut h, "A", "PinA");
                 let undo = command == Command::Undo;
                 for chord in keys_of(command) {
-                    // Undo's from APin to Pin, Redo's from Pin to APin: by its keys, then
+                    // Undo's from PinA to Pin, Redo's from Pin to PinA: by its keys, then
                     // by its button, the other's button between.
                     let (from, to, other) = if undo {
-                        ("APin", "Pin", "Redo")
+                        ("PinA", "Pin", "Redo")
                     } else {
-                        ("Pin", "APin", "Undo")
+                        ("Pin", "PinA", "Undo")
                     };
                     if !undo {
                         h.get_by_role_and_label(Role::Button, other).click();
@@ -16242,7 +16363,7 @@ fn ctrl_s_alone_asks_for_the_next_frame_at_once() {
     });
     assert!(asks_at_once_after(&mut h, Modifiers::COMMAND, Key::S));
     step_until(&mut h, "saved", |h| !anywhere(h, "example.silico *"));
-    assert_eq!(names_in(&path), ["Block", "KPin", "Hole"]);
+    assert_eq!(names_in(&path), ["Block", "PinK", "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -16266,7 +16387,7 @@ fn ctrl_y_alone_asks_for_the_next_frame_at_once() {
     let f = fixture();
     let (mut h, _) = undone_back(&f);
     assert!(asks_at_once_after(&mut h, Modifiers::COMMAND, Key::Y));
-    step_until(&mut h, "redone", |h| shows(h, "Timeline", "xPin"));
+    step_until(&mut h, "redone", |h| shows(h, "Timeline", "Pinx"));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -16498,7 +16619,7 @@ fn cancel_of_a_sketch_after_earlier_edits_undoes_to_where_it_opened_byte_for_byt
     type_name(&mut h, "K");
     settled(&mut h);
     let before = text_of(&f, &h);
-    assert!(before.contains(r#""name": "KPin""#));
+    assert!(before.contains(r#""name": "PinK""#));
     let opened_at = h.state().tabs()[0].revision;
     create_sketch(&mut h, "YZ plane");
     settled(&mut h);
@@ -17033,7 +17154,7 @@ fn delete_line(h: &mut AppHarness, member: &str) {
     settled(h);
 }
 
-/// SKETCHED open, with Plate renamed KPlate first if `edited`; then Triangle opened in
+/// SKETCHED open, with Plate renamed PlateK first if `edited`; then Triangle opened in
 /// sketch mode and read. The text before sketch mode opened, and the revision it opened at.
 fn triangle_open(f: &Fixture, edited: bool) -> (AppHarness, String) {
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
@@ -17054,7 +17175,7 @@ fn triangle_open(f: &Fixture, edited: bool) -> (AppHarness, String) {
 fn finish_after_two_deletes_inside_a_transaction_is_one_undo_step_back_to_before_it_opened() {
     let f = fixture();
     let (mut h, before) = triangle_open(&f, true);
-    assert!(before.contains(r#""name": "KPlate""#));
+    assert!(before.contains(r#""name": "PlateK""#));
     delete_line(&mut h, "na000000");
     delete_line(&mut h, "nb000000");
     let text = text_of(&f, &h);
@@ -17358,7 +17479,7 @@ fn redo_inside_sketch_mode_never_gives_back_what_was_undone_before_it_opened() {
     leave_sketch(&mut h, true);
     assert!(h.state().tabs()[0].redoable());
     chord(&mut h, eframe::egui::Key::Y);
-    assert!(text_of(&f, &h).contains(r#""name": "KPlate""#));
+    assert!(text_of(&f, &h).contains(r#""name": "PlateK""#));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -17373,13 +17494,13 @@ fn an_edit_after_a_finish_that_fenced_redo_lets_its_own_undo_be_redone() {
     assert!(!h.state().tabs()[0].redoable());
     // An edit, then its Undo: the redo is the edit's, at Finish's end state once more, and
     // the fence went with the edit.
-    select(&mut h, "KPlate");
+    select(&mut h, "PlateK");
     type_name(&mut h, "Q");
     settled(&mut h);
     chord(&mut h, eframe::egui::Key::Z);
     assert!(h.state().tabs()[0].redoable());
     chord(&mut h, eframe::egui::Key::Y);
-    assert!(text_of(&f, &h).contains(r#""name": "QKPlate""#));
+    assert!(text_of(&f, &h).contains(r#""name": "PlateKQ""#));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -20777,7 +20898,7 @@ fn an_untitled_parts_edit_is_marked_and_command_s_saves_it_through_the_save_pane
     });
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step_until(&mut h, "saved", |h| !anywhere(h, "part.silico *"));
-    assert_eq!(names_in(&part), ["xBox"]);
+    assert_eq!(names_in(&part), ["Boxx"]);
     assert_eq!(browser.asked().len(), 1);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -22156,10 +22277,8 @@ fn the_browser_scrolls_to_a_picked_faces_body_row_and_to_no_other() {
     answering(&record, Some((first, Face(3), centre)), None);
     click_canvas(&mut h, at, false);
     selected_until(&mut h, &["b0000001.box.Face3"]);
-    for _ in 0..10 {
-        step(&mut h);
-    }
-    assert!(row_shown(&h, "Body01"));
+    // Scrolled back as the browser's scroll eases, on state, not a count of frames.
+    step_until(&mut h, "the first row shown", |h| row_shown(h, "Body01"));
     assert!(!row_shown(&h, "Body40"));
     assert_eq!(never_waits::waits(), 0);
 }
