@@ -18759,6 +18759,22 @@ fn selected_until(h: &mut AppHarness, want: &[&str]) {
     });
 }
 
+/// Steps frames until the selection is `want`, each found as a face on the model published
+/// now (not waiting for its body's names): bounded as [`step_until`] is.
+#[track_caller]
+fn found_as_faces_until(h: &mut AppHarness, want: &[&str]) {
+    use silico_app::selection::State;
+    step_until(h, &format!("{want:?} found as faces"), |h| {
+        selected_names(h) == want
+            && h.state().tabs()[0].selection().elements().all(|picked| {
+                matches!(
+                    &picked.state,
+                    State::Found(found) if found.kind() == silico_core::kernel::ElementKind::Face
+                )
+            })
+    });
+}
+
 /// The body whose feature is `id`, by its number.
 fn body_of(h: &AppHarness, id: &str) -> u32 {
     view(h)
@@ -19891,6 +19907,20 @@ fn published_of_with_meshes_held(
     field: &str,
     value: &str,
 ) {
+    published_of_with_meshes_held_once(f, h, id, field, value, |_| true);
+}
+
+/// [`published_of_with_meshes_held`], its frame taken only once the session's published
+/// model is `ready` (its names settled, say): so the app reads the model in that frame as
+/// it is then.
+fn published_of_with_meshes_held_once(
+    f: &Fixture,
+    h: &mut AppHarness,
+    id: &str,
+    field: &str,
+    value: &str,
+    ready: impl Fn(&silico_core::recompute::Model) -> bool,
+) {
     let (models, revision) = models_and_revision(f, h);
     let session = h.state().tabs()[0].id;
     let edited = f
@@ -19911,12 +19941,11 @@ fn published_of_with_meshes_held(
         .published(&session)
         .result
         .ok()
-        .map(|published| published.revision)
-        != Some(after)
+        .is_none_or(|published| published.revision != after || !ready(&published.model))
     {
         assert!(
             Instant::now() < deadline,
-            "the edit's model was never published"
+            "the edit's model was never published, or never ready"
         );
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -20111,9 +20140,17 @@ fn what_a_rebuild_left_gone_is_said_over_a_click_let_go_by_the_same_model() {
         .selection_mut()
         .pick("rrrrrrrr.fuse.Face1", How::Replace);
     assert_eq!(selected_names(&h), ["rrrrrrrr.fuse.Face1"]);
+    // Found as a face on the tool 2 long, once the background has named it: so it's a face
+    // that's gone, not an element the selection never had an answer for.
+    found_as_faces_until(&mut h, &["rrrrrrrr.fuse.Face1"]);
     click_canvas(&mut h, at, true);
-    // The tool 3 long: the click is let go, and the face is gone; what's said is that.
-    published_of_with_meshes_held(&f, &mut h, "bbbbbbbb", "length", "3");
+    // The tool 3 long, its frame taken once the background has named the fuse in it: in
+    // that one frame, the click is let go and the face is gone; what's said is that, the
+    // carry's word said over the click's.
+    let fuse = silico_core::document::FeatureId::new("rrrrrrrr").unwrap();
+    published_of_with_meshes_held_once(&f, &mut h, "bbbbbbbb", "length", "3", |model| {
+        model.named_element_map(&fuse).is_some()
+    });
     assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
     let said = selection_said(&h).unwrap();
     assert!(
