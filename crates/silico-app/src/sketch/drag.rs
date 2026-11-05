@@ -466,4 +466,38 @@ mod tests {
         assert_eq!(drag.frames, 1);
         assert_eq!(radius(&drag, "cb000001"), 8.0);
     }
+
+    #[test]
+    fn an_ended_drag_is_over_at_a_read_of_its_edits_revision_or_a_later_one_alone() {
+        let sketch = Sketch {
+            plane: OriginPlane::Xy.into(),
+            points: vec![point("pc000001", 0.0, 0.0)],
+            lines: Vec::new(),
+            circles: Vec::new(),
+            arcs: Vec::new(),
+            constraints: Vec::new(),
+        };
+        let r1 = Revision::OPENED;
+        let r2 = r1.next().unwrap();
+        let r3 = r2.next().unwrap();
+        // Ended at r2: no read, or one of r1, leaves its last frame drawn; one of r2 or r3
+        // draws its edit, so it's over.
+        for (model, over) in [
+            (None, false),
+            (Some(r1), false),
+            (Some(r2), true),
+            (Some(r3), true),
+        ] {
+            let mut drag = Drag::ended_at(
+                FeatureId::new("s0000001").unwrap(),
+                DragGrab::Point(id("pc000001")),
+                under(sketch.clone()),
+                under(sketch.clone()),
+                r2,
+            );
+            drag.read(model);
+            assert_eq!(drag.shown().is_none(), over, "{model:?}");
+            assert_eq!(drag.over(), over, "{model:?}");
+        }
+    }
 }

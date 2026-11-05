@@ -21575,10 +21575,10 @@ fn a_released_drags_edit_is_undone_though_the_rebuild_after_it_is_stopped_before
     assert_eq!(never_waits::waits(), 0);
 }
 
-#[test]
-fn a_trim_asked_while_the_tab_closes_is_never_queued() {
-    let f = fixture();
-    // The crossed sketch, and a box beside it, whose rebuild the close's save is held behind.
+/// The crossed sketch, and a box beside it, open in sketch mode, its na000001 trimmed (an
+/// edit, so a close asks), and its tab closing: Close's Save chosen, the save held behind a
+/// fresh check of the box's rebuild. The hold, and the check, to let go of and wait on.
+fn closing_in_sketch(f: &Fixture) -> (AppHarness, Hold, Running<CheckAnswer>) {
     let block = r#"    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#;
     let text = CROSSED.replace("\n  ]\n}", &format!(",\n{block}\n  ]\n}}"));
     let (mut h, _) = f.opened("crossed.silico", &text);
@@ -21588,11 +21588,11 @@ fn a_trim_asked_while_the_tab_closes_is_never_queued() {
     h.key_press(eframe::egui::Key::T);
     step(&mut h);
     // A click on na000001 at (30, 0.3) trims it: an edit, so the close asks.
-    sketch_events(&f, &mut h, &clicked(30.0, 0.3));
+    sketch_events(f, &mut h, &clicked(30.0, 0.3));
     settled(&mut h);
     read_with_lines(&mut h, 2);
     // Closing, its save held.
-    let (hold, check) = hold_queue(&f, &h, 0);
+    let (hold, check) = hold_queue(f, &h, 0);
     h.get_by_label("Close crossed.silico").click();
     step_until(&mut h, "the question", |h| {
         anywhere(h, "Save changes to crossed.silico before closing?")
@@ -21604,6 +21604,13 @@ fn a_trim_asked_while_the_tab_closes_is_never_queued() {
     step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
     step(&mut h);
     assert!(h.state().tabs()[0].closing());
+    (h, hold, check)
+}
+
+#[test]
+fn a_trim_asked_while_the_tab_closes_is_never_queued() {
+    let f = fixture();
+    let (mut h, hold, check) = closing_in_sketch(&f);
     // What the tab says, which an edit queued would let go of.
     h.state_mut().tabs_mut()[0].message = Some("kept".to_owned());
     let sent = h.state().tabs()[0].sent.clone();
@@ -21614,6 +21621,465 @@ fn a_trim_asked_while_the_tab_closes_is_never_queued() {
     assert_eq!(h.state().tabs()[0].sent, sent);
     hold.release();
     check.wait();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #364's mutants, the second round: sketch mode's keys, its tool chosen and its chain
+// ended from outside the palette, and what its tool asks ----
+
+/// The sketched part's Triangle open in sketch mode, and read.
+fn triangle_sketch(f: &Fixture) -> AppHarness {
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    h
+}
+
+#[test]
+fn a_segment_drawn_while_the_tab_closes_is_refused_to_its_tool_and_never_queued() {
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let (mut h, hold, check) = closing_in_sketch(&f);
+    h.state_mut().tabs_mut()[0].message = Some("kept".to_owned());
+    let sent = h.state().tabs()[0].sent.clone();
+    h.state_mut().tabs_mut()[0].sketch_tool(Some(ToolKind::Line));
+    // A segment from (5, 20) to (15, 25), clear of both lines: its add asked, but the
+    // closing tab's queue takes no edit, so it's refused to the tool, none is queued, and
+    // what the tab says stays.
+    sketch_events(&f, &mut h, &clicked(5.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(15.0, 25.0));
+    assert_eq!(h.state().tabs()[0].message.as_deref(), Some("kept"));
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(adds_sent(&h), 0);
+    hold.release();
+    check.wait();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_alone_in_sketch_mode_ends_the_chain_and_asks_for_the_next_frame_at_once() {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    h.key_press(Key::L);
+    step(&mut h);
+    // A chain's first click, at (60, 30), clear of the triangle: under way, nothing added.
+    sketch_events(&f, &mut h, &clicked(60.0, 30.0));
+    assert!(sketch_mode(&h).unwrap().tools.busy());
+    // Enter alone ends the chain, the tool kept (section 9, *Line*): a command, so its
+    // frame asks for the next at once.
+    assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Enter));
+    let mode = sketch_mode(&h).unwrap();
+    assert!(!mode.tools.busy());
+    assert_eq!(mode.tools.choice(), Some(Choice::Draw(ToolKind::Line)));
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn command_enter_alone_in_sketch_mode_finishes_it_and_asks_for_the_next_frame_at_once() {
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    settled(&mut h);
+    // ⌘↵ alone, the prototype's Finish Sketch: sketch mode closed, and its frame asks for
+    // the next at once.
+    assert!(asks_at_once_after(&mut h, Modifiers::COMMAND, Key::Enter));
+    assert!(sketch_mode(&h).is_none());
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_tool_chooses_a_drawing_tool_that_then_draws_and_none_leaves_it() {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    let tool = |h: &AppHarness| sketch_mode(h).unwrap().tools.choice();
+    h.state_mut().tabs_mut()[0].sketch_tool(Some(ToolKind::CornerRectangle));
+    assert_eq!(tool(&h), Some(Choice::Draw(ToolKind::CornerRectangle)));
+    h.state_mut().tabs_mut()[0].sketch_tool(Some(ToolKind::Line));
+    assert_eq!(tool(&h), Some(Choice::Draw(ToolKind::Line)));
+    // It draws: a segment from (30, 30) to (40, 35), one add, its two points new.
+    sketch_events(&f, &mut h, &clicked(30.0, 30.0));
+    sketch_events(&f, &mut h, &clicked(40.0, 35.0));
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 1);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let (a, b) = (point_at(&sketch, 30.0, 30.0), point_at(&sketch, 40.0, 35.0));
+    assert!(line_between(&sketch, &a, &b).is_some());
+    // None: the tool left.
+    h.state_mut().tabs_mut()[0].sketch_tool(None);
+    assert_eq!(tool(&h), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_end_chain_ends_the_chain_under_way_and_keeps_the_tool() {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    h.key_press(Key::L);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(60.0, 30.0));
+    assert!(sketch_mode(&h).unwrap().tools.busy());
+    // The canvas menu's End chain, as Enter: the chain ended, the tool kept.
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].sketch_end_chain(&sessions);
+    }
+    let mode = sketch_mode(&h).unwrap();
+    assert!(!mode.tools.busy());
+    assert_eq!(mode.tools.choice(), Some(Choice::Draw(ToolKind::Line)));
+    // So the next click begins a chain, and nothing is added.
+    sketch_events(&f, &mut h, &clicked(70.0, 30.0));
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 0);
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tools_add_lets_go_of_what_was_said_and_of_what_sketch_mode_undid() {
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    h.key_press(Key::L);
+    step(&mut h);
+    // A segment from (30, 30) to (40, 35), its chain ended by Enter; then undone by Ctrl+Z,
+    // one of sketch mode's own steps undone.
+    sketch_events(&f, &mut h, &clicked(30.0, 30.0));
+    sketch_events(&f, &mut h, &clicked(40.0, 35.0));
+    settled(&mut h);
+    read_with_lines(&mut h, 4);
+    h.key_press(Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    read_with_lines(&mut h, 3);
+    assert_eq!(sketch_mode(&h).unwrap().undone, 1);
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    // Something said meanwhile; then a segment from (50, 30) to (60, 35), its one add a new
+    // edit: what was said let go, and what sketch mode undid dropped (section 9, as
+    // Delete's edit drops it).
+    h.state_mut().tabs_mut()[0].message = Some("said before".to_owned());
+    sketch_events(&f, &mut h, &clicked(50.0, 30.0));
+    sketch_events(&f, &mut h, &clicked(60.0, 35.0));
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(sketch_mode(&h).unwrap().undone, 0);
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 2);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #368's mutants, the second round: Finish while closing, a drag's begin and end, and a
+// step's refusal ----
+
+#[test]
+fn finish_and_cancel_while_the_tab_closes_leave_sketch_mode_open() {
+    let f = fixture();
+    let (mut h, hold, check) = closing_in_sketch(&f);
+    let sent = h.state().tabs()[0].sent.clone();
+    // Neither while the tab closes (section 9): sketch mode stays, and nothing is sent.
+    let sessions = Arc::clone(&f.sessions);
+    for ok in [true, false] {
+        {
+            let _marked = never_waits::marked();
+            h.state_mut().tabs_mut()[0].finish_sketch(&sessions, ok);
+        }
+        assert!(sketch_mode(&h).is_some(), "{ok}");
+        step(&mut h);
+        assert!(sketch_mode(&h).is_some(), "{ok}");
+    }
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    hold.release();
+    check.wait();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_press_moved_while_an_edit_is_under_way_begins_no_drag() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    // The bottom, na000001, selected.
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    settled(&mut h);
+    // The session's queue held behind a fresh check, whose solve is held; then Delete: its
+    // removal sent, waiting behind it, so the tab's edit is under way.
+    f.sketches.hold();
+    let id = h.state().tabs()[0].id;
+    let check = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    assert!(f.sketches.wait_held(WAIT));
+    h.key_press(Key::Delete);
+    step(&mut h);
+    assert_eq!(drag_sends(&h, "sketch_remove"), 1);
+    assert!(h.state().tabs()[0].unsettled());
+    // Pressed on the corner pa000003, (50, 30), and moved to (52, 32), past the threshold:
+    // but its begin goes only once nothing of the tab's is under way (section 9,
+    // *Dragging*), so none is sent while the removal waits.
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(drag_sends(&h, "drag_begin"), 0);
+    // Let go: the removal lands, a state after the read the press was on, so the press
+    // drags nothing; released, nothing more is sent.
+    f.sketches.release();
+    assert!(check.wait().result.is_ok());
+    settled(&mut h);
+    sketch_events(&f, &mut h, &[pointer(Release, 52.0, 32.0)]);
+    settled(&mut h);
+    assert_eq!(drag_sends(&h, "drag_begin"), 0);
+    assert!(the_drag(&h).is_none());
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert!(sketch.lines.iter().all(|l| l.id.as_str() != "na000001"));
+    let corner = sketch
+        .points
+        .iter()
+        .find(|p| p.id.as_str() == "pa000003")
+        .unwrap();
+    assert_eq!([corner.x.mm(), corner.y.mm()], [50.0, 30.0]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drag_ended_from_its_begin_after_an_undo_in_sketch_mode_keeps_what_was_undone_to_redo() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    let text = text_of(&f, &h);
+    let pressed_on_newest = |f: &Fixture, h: &mut AppHarness, to: [f64; 2]| {
+        // Pressed on a read of the session's state, as a drag begins only from one.
+        step_until(h, "the read of the session's revision", |h| {
+            let tab = &h.state().tabs()[0];
+            sketch_mode(h)
+                .and_then(|mode| mode.read.as_ref())
+                .and_then(|read| read.model)
+                == Some(tab.revision)
+        });
+        sketch_events(
+            f,
+            h,
+            &[pointer(Press, 50.0, 30.0), pointer(Move, to[0], to[1])],
+        );
+        step_until(h, "the frame", |h| {
+            the_drag(h).is_some_and(|d| d.frames >= 1)
+        });
+    };
+    let undone = |h: &AppHarness| sketch_mode(h).unwrap().undone;
+    // A drag's edit, then undone by Ctrl+Z: one of sketch mode's own edits undone.
+    pressed_on_newest(&f, &mut h, [52.0, 32.0]);
+    sketch_events(&f, &mut h, &[pointer(Release, 52.0, 32.0)]);
+    settled(&mut h);
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    let dragged = text_of(&f, &h);
+    assert_ne!(dragged, text);
+    step(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(undone(&h), 1);
+    assert_eq!(text_of(&f, &h), text);
+    // A second drag, ended by Esc from its begin state: it changed nothing, so it's no new
+    // edit, and what was undone stays sketch mode's to redo.
+    pressed_on_newest(&f, &mut h, [56.0, 36.0]);
+    h.key_press(Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    assert_eq!(drag_sends(&h, "drag_end"), 2);
+    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(undone(&h), 1);
+    // Ctrl+Y gives the first drag's edit back.
+    step(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Y);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), dragged);
+    assert_eq!(undone(&h), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`BOXED`] with a pad of its rectangle, whose rebuild asks the kernel.
+fn boxed_padded() -> String {
+    let pad = r#"    {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}"#;
+    BOXED.replace("]}\n  ]\n}", &format!("]}},\n{pad}\n  ]\n}}"))
+}
+
+#[test]
+fn a_drags_changed_end_is_drawn_from_its_last_frame_until_a_read_of_its_edit() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let text = boxed_padded();
+    let (mut h, _) = f.opened("boxed.silico", &text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "the read of the published revision", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.published == Some(tab.revision)
+            && sketch_mode(h)
+                .and_then(|mode| mode.read.as_ref())
+                .and_then(|read| read.model)
+                == Some(tab.revision)
+    });
+    let before = h.state().tabs()[0].revision;
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    drag_frames(&mut h, 1);
+    // Every kernel request held from now on: the pad's rebuild of the drag's edit waits,
+    // so the model it makes isn't published, and no read of it comes.
+    let hold = f.kernel.hold(|_| true);
+    sketch_events(&f, &mut h, &[pointer(Release, 52.0, 32.0)]);
+    step_until(&mut h, "the end answered", |h| {
+        the_drag(h).is_none_or(|d| !d.in_flight())
+    });
+    assert!(f.kernel.wait_running(1, WAIT));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    // Its edit made a new revision, read only at the one before: the drag is kept, and
+    // what's drawn is its last frame, the corner at (52.05, 32.03) (the fake's).
+    assert!(h.state().tabs()[0].revision > before);
+    assert_eq!(
+        sketch_mode(&h)
+            .and_then(|mode| mode.read.as_ref())
+            .and_then(|read| read.model),
+        Some(before)
+    );
+    let shown = shown_at(&h, "pa000003").unwrap();
+    assert!((shown[0] - 52.05).abs() < 1e-9 && (shown[1] - 32.03).abs() < 1e-9);
+    // Let go: the read of the edit comes, and the drag is over, the read drawing it.
+    hold.release();
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    let read = sketch_mode(&h).and_then(|mode| mode.read.as_ref()).unwrap();
+    assert_eq!(read.model, Some(h.state().tabs()[0].revision));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn delete_waiting_behind_a_drag_is_sent_in_the_frame_its_end_is_answered() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    // One pass a frame, so each step polls the tab once.
+    h.ctx
+        .options_mut(|options| options.max_passes = std::num::NonZeroUsize::MIN);
+    // The bottom, na000001, selected; then the corner pa000003 dragged, and Delete pressed:
+    // nothing sent while the drag lasts.
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    drag_frames(&mut h, 1);
+    h.key_press(Key::Delete);
+    step(&mut h);
+    assert_eq!(drag_sends(&h, "sketch_remove"), 0);
+    // The release, given to sketch mode with no frame of the app's after it; then a frame at
+    // a time until one has taken the end's answer: that one sends the removal behind it.
+    {
+        let _marked = never_waits::marked();
+        let ctx = eframe::egui::Context::default();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        let events = [pointer(Release, 52.0, 32.0)];
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let input = silico_app::sketch::FrameInput {
+                events: &events,
+                pointer: events.last().map(|event| event.at),
+                project: &to_screen,
+                to_plane: &to_sketch,
+            };
+            tab.sketch_frame(&sessions, &painter, &input);
+        });
+        output.textures_delta.clear();
+    }
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    let deadline = Instant::now() + WAIT;
+    while the_drag(&h).is_some_and(|d| d.in_flight()) {
+        assert_eq!(drag_sends(&h, "sketch_remove"), 0);
+        assert!(Instant::now() < deadline, "the end never answered");
+        std::thread::sleep(Duration::from_millis(1));
+        step(&mut h);
+    }
+    assert_eq!(drag_sends(&h, "sketch_remove"), 1);
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert!(sketch.lines.iter().all(|l| l.id.as_str() != "na000001"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_undo_refused_as_a_conflict_says_the_cores_refusal_not_the_prompts_overtaken() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    step_until(&mut h, "Undo offered", |h| {
+        h.state().tabs()[0].edits.idle() && offered(h, "Undo")
+    });
+    let mine = h.state().tabs()[0].revision;
+    let text = text_of(&f, &h);
+    // The session's queue held; another client's edit queued first, then Ctrl+Z, made
+    // against the revision the tab is at, which the other's moves the session past.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let id = h.state().tabs()[0].id;
+    let theirs = f.sessions.replace_text(
+        &id,
+        mine,
+        text.replace(r#""name": "Hole""#, r#""name": "Theirs""#),
+    );
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    step(&mut h);
+    assert!(
+        h.state().tabs()[0]
+            .sent
+            .iter()
+            .any(|sent| matches!(sent, Sent::Undo(_)))
+    );
+    hold.release();
+    check.wait();
+    assert!(theirs.wait().result.is_ok());
+    step_until(&mut h, "the refusal said", |h| {
+        h.state().tabs()[0].message.is_some()
+    });
+    // Said as any refusal is, worked from the core's wording of a stale undo: not the
+    // over-define prompt's word, which is for its own choice alone.
+    let (made, at) = (mine.number(), mine.number() + 1);
+    assert_eq!(
+        h.state().tabs()[0].message.as_deref(),
+        Some(
+            format!(
+                "the undo was made against revision {made}, and the session is at revision {at} (read the document again (text or outline), then undo against revision {at})"
+            )
+            .as_str()
+        )
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
