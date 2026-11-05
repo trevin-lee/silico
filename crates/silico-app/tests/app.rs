@@ -20007,10 +20007,10 @@ fn the_canvas_menus_end_chain_ends_a_chain_under_way_closes_the_menu_and_keeps_s
     assert_eq!(never_waits::waits(), 0);
 }
 
-#[test]
-fn a_trim_asked_while_the_tab_closes_is_never_queued() {
-    let f = fixture();
-    // The crossed sketch, and a box beside it, whose rebuild the close's save is held behind.
+/// The crossed sketch, and a box beside it, open in sketch mode, its na000001 trimmed (an
+/// edit, so a close asks), and its tab closing: Close's Save chosen, the save held behind a
+/// fresh check of the box's rebuild. The hold, and the check, to let go of and wait on.
+fn closing_in_sketch(f: &Fixture) -> (AppHarness, Hold, Running<CheckAnswer>) {
     let block = r#"    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#;
     let text = CROSSED.replace("\n  ]\n}", &format!(",\n{block}\n  ]\n}}"));
     let (mut h, _) = f.opened("crossed.silico", &text);
@@ -20020,11 +20020,11 @@ fn a_trim_asked_while_the_tab_closes_is_never_queued() {
     h.key_press(eframe::egui::Key::T);
     step(&mut h);
     // A click on na000001 at (30, 0.3) trims it: an edit, so the close asks.
-    sketch_events(&f, &mut h, &clicked(30.0, 0.3));
+    sketch_events(f, &mut h, &clicked(30.0, 0.3));
     settled(&mut h);
     read_with_lines(&mut h, 2);
     // Closing, its save held.
-    let (hold, check) = hold_queue(&f, &h, 0);
+    let (hold, check) = hold_queue(f, &h, 0);
     h.get_by_label("Close crossed.silico").click();
     step_until(&mut h, "the question", |h| {
         anywhere(h, "Save changes to crossed.silico before closing?")
@@ -20036,6 +20036,13 @@ fn a_trim_asked_while_the_tab_closes_is_never_queued() {
     step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
     step(&mut h);
     assert!(h.state().tabs()[0].closing());
+    (h, hold, check)
+}
+
+#[test]
+fn a_trim_asked_while_the_tab_closes_is_never_queued() {
+    let f = fixture();
+    let (mut h, hold, check) = closing_in_sketch(&f);
     // What the tab says, which an edit queued would let go of.
     h.state_mut().tabs_mut()[0].message = Some("kept".to_owned());
     let sent = h.state().tabs()[0].sent.clone();
@@ -20046,6 +20053,161 @@ fn a_trim_asked_while_the_tab_closes_is_never_queued() {
     assert_eq!(h.state().tabs()[0].sent, sent);
     hold.release();
     check.wait();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #364's mutants, the second round: sketch mode's keys, its tool chosen and its chain
+// ended from outside the palette, and what its tool asks ----
+
+/// The sketched part's Triangle open in sketch mode, and read.
+fn triangle_sketch(f: &Fixture) -> AppHarness {
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    h
+}
+
+#[test]
+fn a_segment_drawn_while_the_tab_closes_is_refused_to_its_tool_and_never_queued() {
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let (mut h, hold, check) = closing_in_sketch(&f);
+    h.state_mut().tabs_mut()[0].message = Some("kept".to_owned());
+    let sent = h.state().tabs()[0].sent.clone();
+    h.state_mut().tabs_mut()[0].sketch_tool(Some(ToolKind::Line));
+    // A segment from (5, 20) to (15, 25), clear of both lines: its add asked, but the
+    // closing tab's queue takes no edit, so it's refused to the tool, none is queued, and
+    // what the tab says stays.
+    sketch_events(&f, &mut h, &clicked(5.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(15.0, 25.0));
+    assert_eq!(h.state().tabs()[0].message.as_deref(), Some("kept"));
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(adds_sent(&h), 0);
+    hold.release();
+    check.wait();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_alone_in_sketch_mode_ends_the_chain_and_asks_for_the_next_frame_at_once() {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    h.key_press(Key::L);
+    step(&mut h);
+    // A chain's first click, at (60, 30), clear of the triangle: under way, nothing added.
+    sketch_events(&f, &mut h, &clicked(60.0, 30.0));
+    assert!(sketch_mode(&h).unwrap().tools.busy());
+    // Enter alone ends the chain, the tool kept (section 9, *Line*): a command, so its
+    // frame asks for the next at once.
+    assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Enter));
+    let mode = sketch_mode(&h).unwrap();
+    assert!(!mode.tools.busy());
+    assert_eq!(mode.tools.choice(), Some(Choice::Draw(ToolKind::Line)));
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn command_enter_alone_in_sketch_mode_finishes_it_and_asks_for_the_next_frame_at_once() {
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    settled(&mut h);
+    // ⌘↵ alone, the prototype's Finish Sketch: sketch mode closed, and its frame asks for
+    // the next at once.
+    assert!(asks_at_once_after(&mut h, Modifiers::COMMAND, Key::Enter));
+    assert!(sketch_mode(&h).is_none());
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_tool_chooses_a_drawing_tool_that_then_draws_and_none_leaves_it() {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    let tool = |h: &AppHarness| sketch_mode(h).unwrap().tools.choice();
+    h.state_mut().tabs_mut()[0].sketch_tool(Some(ToolKind::CornerRectangle));
+    assert_eq!(tool(&h), Some(Choice::Draw(ToolKind::CornerRectangle)));
+    h.state_mut().tabs_mut()[0].sketch_tool(Some(ToolKind::Line));
+    assert_eq!(tool(&h), Some(Choice::Draw(ToolKind::Line)));
+    // It draws: a segment from (30, 30) to (40, 35), one add, its two points new.
+    sketch_events(&f, &mut h, &clicked(30.0, 30.0));
+    sketch_events(&f, &mut h, &clicked(40.0, 35.0));
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 1);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let (a, b) = (point_at(&sketch, 30.0, 30.0), point_at(&sketch, 40.0, 35.0));
+    assert!(line_between(&sketch, &a, &b).is_some());
+    // None: the tool left.
+    h.state_mut().tabs_mut()[0].sketch_tool(None);
+    assert_eq!(tool(&h), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_end_chain_ends_the_chain_under_way_and_keeps_the_tool() {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    h.key_press(Key::L);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(60.0, 30.0));
+    assert!(sketch_mode(&h).unwrap().tools.busy());
+    // The canvas menu's End chain, as Enter: the chain ended, the tool kept.
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].sketch_end_chain(&sessions);
+    }
+    let mode = sketch_mode(&h).unwrap();
+    assert!(!mode.tools.busy());
+    assert_eq!(mode.tools.choice(), Some(Choice::Draw(ToolKind::Line)));
+    // So the next click begins a chain, and nothing is added.
+    sketch_events(&f, &mut h, &clicked(70.0, 30.0));
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 0);
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tools_add_lets_go_of_what_was_said_and_of_what_sketch_mode_undid() {
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    h.key_press(Key::L);
+    step(&mut h);
+    // A segment from (30, 30) to (40, 35), its chain ended by Enter; then undone by Ctrl+Z,
+    // one of sketch mode's own steps undone.
+    sketch_events(&f, &mut h, &clicked(30.0, 30.0));
+    sketch_events(&f, &mut h, &clicked(40.0, 35.0));
+    settled(&mut h);
+    read_with_lines(&mut h, 4);
+    h.key_press(Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    read_with_lines(&mut h, 3);
+    assert_eq!(sketch_mode(&h).unwrap().undone, 1);
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    // Something said meanwhile; then a segment from (50, 30) to (60, 35), its one add a new
+    // edit: what was said let go, and what sketch mode undid dropped (section 9, as
+    // Delete's edit drops it).
+    h.state_mut().tabs_mut()[0].message = Some("said before".to_owned());
+    sketch_events(&f, &mut h, &clicked(50.0, 30.0));
+    sketch_events(&f, &mut h, &clicked(60.0, 35.0));
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(sketch_mode(&h).unwrap().undone, 0);
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 2);
     assert_eq!(never_waits::waits(), 0);
 }
 
