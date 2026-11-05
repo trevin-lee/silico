@@ -513,7 +513,8 @@ impl Selection {
     /// cleared, as [`clear`](Self::clear) clears it); Add adds each found that isn't
     /// selected; Toggle removes each found that is and adds the rest. A name the model
     /// doesn't find is left out, and the first is said, with how many; one waiting (its body's elements not named yet) is added
-    /// waiting, as a click's is. The same element named twice is taken once. A selection
+    /// waiting, as a click's is. The same element named twice is taken once (the core reads
+    /// it so). A selection
     /// that would hold more elements than the core reads at once
     /// ([`rules::MAX_SELECTED`]) isn't made: the selection is kept and that's said.
     pub fn pick_all(&mut self, names: &[String], how: How) {
@@ -591,7 +592,7 @@ impl Selection {
         };
         // Each picked matched to the item that's its element, by
         // index, so a box of thousands costs no more than a sort: the items', and those the
-        // batch has added so far, so the same element named twice is taken once.
+        // batch has added so far.
         let mut index = Index::default();
         for (at, item) in items.iter().enumerate() {
             if let Item::Element(picked) = item {
@@ -599,22 +600,19 @@ impl Selection {
             }
         }
         let mut removed: BTreeSet<usize> = BTreeSet::new();
-        let mut taken: BTreeSet<usize> = BTreeSet::new();
         let mut scroll = None;
+        // The core's read gives each name once, and each element once (at its first name):
+        // no two of the batch are one item's.
         for picked in each.into_values() {
             match index.find(&picked) {
-                // Named twice in the batch: taken once.
-                Some(at) if taken.contains(&at) => {}
                 Some(at) => {
                     if how == How::Toggle {
                         removed.insert(at);
                     }
-                    taken.insert(at);
                 }
                 None => {
                     let at = items.len();
                     index.add(at, &picked);
-                    taken.insert(at);
                     if scroll.is_none() {
                         scroll = picked.found().map(|found| found.feature.clone());
                     }
@@ -2685,8 +2683,8 @@ mod tests {
 
     #[test]
     fn a_name_waiting_named_twice_in_a_toggle_is_added_once() {
-        // On a model not named yet, both Edge1s wait: the second is the first's element,
-        // taken once, not toggled back out.
+        // On a model not named yet, Edge1 named twice waits once (the core reads a name
+        // once): added, not toggled back out.
         let mut selection = Selection::default();
         selection.published(
             Some((
