@@ -1235,8 +1235,18 @@ mod tests {
         ppp: f32,
     ) -> Overlaid {
         let ctx = egui::Context::default();
-        // A first pass, so the one measured asks for frames of its own alone.
-        pass(&ctx, |_| {});
+        // Passes first until egui asks for no frame of its own (its first frames do), so the
+        // one measured asks for the overlay's alone.
+        for _ in 0..8 {
+            let output = pass(&ctx, |_| {});
+            if output
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .is_none_or(|viewport| viewport.repaint_delay == std::time::Duration::MAX)
+            {
+                break;
+            }
+        }
         let mut view = View::default();
         let mut frame = view_frame(None);
         frame.left = left;
@@ -1945,18 +1955,21 @@ mod tests {
 
     #[test]
     fn a_box_let_go_over_another_models_meshes_takes_nothing_and_says_why() {
+        // Drawn over the selection's model's meshes; let go in a frame whose meshes are of
+        // another: nothing taken (the selection, with no model, would say why it couldn't),
+        // and the toast says the view changed.
         let mut boxes = BoxSelect {
             heard: Some(([50, 40], None)),
             ..BoxSelect::default()
         };
         let mut selection = Selection::default();
-        let left = vec![
-            event(Press, [50.0, 40.0]),
-            event(Move, [90.0, 70.0]),
-            event(Release, [90.0, 70.0]),
-        ];
-        let done = overlaid_at(&mut boxes, &mut selection, left, false, 1.0);
+        let left = vec![event(Press, [50.0, 40.0]), event(Move, [90.0, 70.0])];
+        overlaid_at(&mut boxes, &mut selection, left, true, 1.0);
+        assert_eq!(phase(&boxes), Some(Phase::Boxing));
+        let release = vec![event(Release, [90.0, 70.0])];
+        let done = overlaid_at(&mut boxes, &mut selection, release, false, 1.0);
         assert_eq!(done.toast.as_deref(), Some(PRESS_MOVED));
+        assert_eq!(selection.said(), None);
     }
 
     #[test]
