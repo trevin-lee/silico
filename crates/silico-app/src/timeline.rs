@@ -1417,6 +1417,46 @@ mod tests {
     }
 
     #[test]
+    fn a_feature_another_program_changed_has_the_purple_badge_where_it_has_no_health_mark() {
+        // `.tl-item .badge.outside`: `--purple` (#b780ff), 7 square, 1 in from the item's
+        // top right, in its `--g150` ring 1.5 outside it; labelled with what changed. A
+        // feature with a health mark shows that mark alone.
+        const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+        const OUTSIDE: f32 = 7.0;
+        let mut tab = tab_of(Some(&features()), 0);
+        for id in ["b0000001", "p0000001"] {
+            tab.outside
+                .insert(FeatureId::new(id).unwrap(), "height 10 → 11".to_owned());
+        }
+        let h = drawn(tab);
+        let block = item(0);
+        let centre = Pos2::new(
+            block.right() - css::BADGE_INSET - OUTSIDE / 2.0,
+            block.top() + css::BADGE_INSET + OUTSIDE / 2.0,
+        );
+        let drawn: Vec<(Pos2, f32, Color32)> = circles(&h, block)
+            .into_iter()
+            .map(|circle| (circle.center, circle.radius, circle.fill))
+            .collect();
+        assert_eq!(drawn.len(), 2, "the block's badge: {drawn:?}");
+        let ring = (OUTSIDE / 2.0 + css::BADGE_RING, css::G150);
+        let dot = (OUTSIDE / 2.0, PURPLE);
+        for (got, (radius, colour)) in drawn.iter().zip([ring, dot]) {
+            assert!(
+                near_pos(got.0, centre) && near(got.1, radius) && got.2 == colour,
+                "the block's badge: {drawn:?}, not {radius} at {centre:?} in {colour:?}"
+            );
+        }
+        let said = h.get_by_label("changed on disk: height 10 → 11").rect();
+        assert!(
+            near_pos(said.center(), centre) && near(said.width(), OUTSIDE),
+            "{said:?}"
+        );
+        // The failed pad: its error's badge only.
+        badge(&h, item(2), css::RED_FILL, "the pad");
+    }
+
+    #[test]
     fn the_items_are_drawn_as_tl_item_in_each_state() {
         let mut tab = tab_of(Some(&features()), 0);
         tab.selection_mut()

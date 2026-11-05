@@ -3948,6 +3948,125 @@ mod tests {
         }
     }
 
+    /// How many Restores, and the put-backs of their text, `tab` holds, queued or sent.
+    fn restores(tab: &Tab) -> usize {
+        let queued = tab
+            .edits
+            .queue
+            .iter()
+            .filter(|queued| matches!(queued, Queued::Restore { .. } | Queued::Replace { .. }))
+            .count();
+        let under = tab
+            .under
+            .iter()
+            .filter(|under| matches!(under, Under::Restore { .. } | Under::Replace { .. }))
+            .count();
+        queued + under
+    }
+
+    #[test]
+    fn restore_is_asked_once_never_in_a_dialog_or_a_close_and_its_put_back_resets_the_fields() {
+        // Fable's decision of 2026-11-04, section 2: Restore is never asked while a dialog is
+        // open or the tab closes, and once while one is under way; its text put back, an
+        // edit of the document other than the property panel's own, resets the panel's
+        // fields, as an undo, a redo, a revert, or a reload does.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        let one = Revision::OPENED;
+        // A dialog open, its feature's text still read: nothing asked.
+        tab.loading = Some(1);
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 0, "asked in a dialog");
+        tab.loading = None;
+        // The tab closing: nothing asked.
+        tab.edits.queue.push_back(Queued::Save { then_close: true });
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 0, "asked as the tab closes");
+        tab.edits.queue.clear();
+        // Asked: under way until its text is put back, and asked again meanwhile, nothing
+        // more.
+        let resets = tab.resets;
+        tab.restore(&sessions, one);
+        assert!(tab.restoring(), "the read asked");
+        assert_eq!(restores(&tab), 1);
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 1, "asked twice");
+        // Put back in a transaction begun for it.
+        taken_until(&mut tab, &sessions, |tab| {
+            tab.under
+                .iter()
+                .any(|under| matches!(under, Under::Replace { .. }))
+        });
+        assert!(tab.restoring(), "the text put back");
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 1, "asked while its text is put back");
+        assert!(matches!(
+            tab.under
+                .iter()
+                .find(|under| matches!(under, Under::Replace { .. })),
+            Some(Under::Replace { began: true, .. })
+        ));
+        taken_until(&mut tab, &sessions, |tab| restores(tab) == 0);
+        assert!(!tab.restoring());
+        assert_eq!(tab.sent[tab.sent.len() - 2..], [Sent::Begin, Sent::Replace]);
+        assert_eq!(tab.resets, resets + 1, "the fields reset once");
+        // Asked again, the transaction open: its put-back begins none, so a refusal of it
+        // would leave the transaction as it was.
+        assert!(tab.transaction);
+        tab.restore(&sessions, one);
+        taken_until(&mut tab, &sessions, |tab| {
+            tab.under
+                .iter()
+                .any(|under| matches!(under, Under::Replace { .. }))
+        });
+        assert!(matches!(
+            tab.under
+                .iter()
+                .find(|under| matches!(under, Under::Replace { .. })),
+            Some(Under::Replace { began: false, .. })
+        ));
+        taken_until(&mut tab, &sessions, |tab| restores(tab) == 0);
+        assert_eq!(tab.resets, resets + 2, "the fields reset again");
+    }
+
+    #[test]
+    fn restores_refusal_is_said_in_its_reloads_banner_or_else_in_the_status_bar() {
+        // DESIGN.md, 6c: Restore's refusal is said in the banner of the reload that replaced
+        // the revision it asked for, while that banner shows; a refusal of another
+        // revision's, in the status bar.
+        let (one, two, three) = (
+            Revision::from_number(1).unwrap(),
+            Revision::from_number(2).unwrap(),
+            Revision::from_number(3).unwrap(),
+        );
+        let mut tab = tab();
+        tab.reloaded = Some(Reloaded {
+            from: two,
+            to: three,
+            changes: Changes::Asking,
+            refused: None,
+            unlisted: Vec::new(),
+            from_held: true,
+        });
+        let problems = Problems::from(silico_core::Error::new(
+            silico_core::ErrorCode::Internal,
+            "revision 1 isn't held",
+        ));
+        tab.restore_refused(one, &problems);
+        assert_eq!(tab.message.as_deref(), Some("revision 1 isn't held"));
+        assert_eq!(tab.reloaded.as_ref().unwrap().refused, None);
+        tab.message = None;
+        let problems = Problems::from(silico_core::Error::new(
+            silico_core::ErrorCode::Internal,
+            "revision 2 isn't held",
+        ));
+        tab.restore_refused(two, &problems);
+        assert_eq!(
+            tab.reloaded.as_ref().unwrap().refused.as_deref(),
+            Some("revision 2 isn't held")
+        );
+        assert_eq!(tab.message, None);
+    }
+
     /// `tab`'s document read (its timeline, as `read_timeline` takes it), then Rebuild
     /// everything sent and answered, what the tab said of the document before cleared.
     fn rebuilt_everything(tab: &mut Tab, sessions: &FakeSessions) {

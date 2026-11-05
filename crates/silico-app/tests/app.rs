@@ -1647,6 +1647,27 @@ fn show_changes_lists_what_changed_on_disk_and_the_edits_held_each_in_its_sectio
     step_until(&mut h, "closed", |h| !anywhere(h, "What changed on disk"));
     assert!(anywhere(&h, said));
     assert!(h.state().tabs()[0].held_changes.is_none());
+    // Opened again, its Reload theirs (the prototype's `reloadDiscard`, as the banner's
+    // Reload): the file's text, the edit dropped, the modal and the banner gone.
+    h.get_by_role_and_label(Role::Button, "Show changes")
+        .click();
+    step_until(&mut h, "the modal again", |h| {
+        anywhere(h, "What changed on disk")
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let reload = h.get_by_role_and_label(Role::Button, "Reload theirs");
+    assert!(!reload.accesskit_node().is_disabled(), "Reload theirs off");
+    reload.click();
+    step_until(&mut h, "theirs reloaded", |h| {
+        shows(h, "Timeline", "Drill")
+            && shows(h, "Timeline", "Pin")
+            && !anywhere(h, "example.silico *")
+    });
+    assert!(!shows(&h, "Timeline", "Pins"));
+    assert!(!anywhere(&h, "What changed on disk"));
+    assert!(!anywhere(&h, said));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -2484,6 +2505,15 @@ fn a_file_deleted_with_edits_held_is_announced_as_gone() {
             "example.silico is gone from disk while you have unsaved edits.",
         )
     });
+    // As the prototype's banner for a file gone: no Show changes, there being no file to
+    // compare; the edits kept or dropped.
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Show changes")
+            .is_none()
+    );
+    let buttons = ["Reload, discard my edits", "Keep my edits…"]
+        .map(|label| h.get_by_role_and_label(Role::Button, label).rect().left());
+    assert!(buttons[0] < buttons[1]);
     assert_eq!(never_waits::waits(), 0);
 }
 

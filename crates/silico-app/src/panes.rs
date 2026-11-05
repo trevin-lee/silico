@@ -2061,6 +2061,62 @@ mod tests {
     type Expected<'a> = (&'a str, f32, Color32, Option<(Color32, &'a str)>);
 
     #[test]
+    fn a_row_another_program_changed_has_its_purple_dot_where_it_has_no_health_mark() {
+        // The prototype's row (`o.mark === 'outside'`): a `.state-dot` (8 square, round) in
+        // `--purple` (#b780ff) at the row's right, the name cut 4 (`.row`'s gap) before it;
+        // a row with a health mark shows that mark alone.
+        const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+        const DOT: f32 = 8.0;
+        let mut tab = modelled();
+        // Named long enough to be cut short by the dot.
+        let long = "Block with a name long enough to run past the browser's edge";
+        tab.browser.bodies[0].name = long.to_owned();
+        for id in ["b0000001", "c0000001"] {
+            tab.outside.insert(fid(id), "height 10 → 11".to_owned());
+        }
+        let h = drawn(tab);
+        let down = |n: f32| css::TITLE_H + n * css::ROW_H;
+        let block = parts(down(10.0), 2);
+        let dot = Rect::from_min_size(
+            Pos2::new(block.end - DOT, block.row.center().y - DOT / 2.0),
+            Vec2::splat(DOT),
+        );
+        let circles: Vec<(Pos2, f32, Color32)> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Circle(circle) if block.row.contains(circle.center) => {
+                    Some((circle.center, circle.radius, circle.fill))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(circles[..], [(centre, radius, PURPLE)]
+                if near_pos(centre, dot.center()) && near(radius, DOT / 2.0)),
+            "the block's dot: {circles:?}, not {DOT} across at {:?}",
+            dot.center()
+        );
+        assert!(labelled_at(&h, "changed on disk: height 10 → 11", dot));
+        named(
+            &h,
+            long,
+            &block,
+            block.name,
+            css::G700,
+            dot.left() - css::ROW_GAP,
+        );
+        // The failed cut: its error's mark, no dot.
+        let cut = parts(down(11.0), 2);
+        assert_eq!(icon_at(&h, mark_of(&cut)), Some(css::RED));
+        assert!(
+            !painted(&h).iter().any(
+                |shape| matches!(shape, Shape::Circle(circle) if cut.row.contains(circle.center))
+            ),
+            "the cut's dot"
+        );
+    }
+
+    #[test]
     fn the_rows_are_drawn_as_the_prototypes_rows_with_their_eyes_icons_names_and_marks() {
         let h = drawn(modelled());
         let down = |n: f32| css::TITLE_H + n * css::ROW_H;

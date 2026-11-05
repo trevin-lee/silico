@@ -418,6 +418,7 @@ impl LaidOut {
 
 #[cfg(test)]
 mod tests {
+    use eframe::egui::epaint::TextShape;
     use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Vec2};
     use egui::accesskit::Role;
     use egui_kittest::Harness;
@@ -991,5 +992,170 @@ mod tests {
             under_the_words(&h, banner, rows, what);
             words_wrap_at(&h, WORDS_MIN, what);
         }
+    }
+
+    /// `.canvas-banner .diff`: `margin-top: 6px; grid-template-columns: auto auto 1fr; gap:
+    /// 2px 10px; font-size: var(--fs-small)`, on `body`'s 16 lines; `.diff .k`, the
+    /// feature's name, `--purple` (#b780ff).
+    const DIFF_TOP: f32 = 6.0;
+    const DIFF_ROW_GAP: f32 = 2.0;
+    const DIFF_COLUMN_GAP: f32 = 10.0;
+    const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+
+    /// The purple banner over [`CANVAS`], Dismiss its one action, listing `rows` (each the
+    /// feature, the field, and what it went from and to) and then `after`.
+    fn listing(
+        rows: &[(&str, &str, &str)],
+        after: &'static [&'static str],
+    ) -> Harness<'static, Drawn> {
+        let rows: Vec<crate::changes::Row> = rows
+            .iter()
+            .map(|(feature, field, text)| crate::changes::Row {
+                feature: (*feature).to_owned(),
+                field: (*field).to_owned(),
+                text: (*text).to_owned(),
+            })
+            .collect();
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(CANVAS.right() + 40.0, CANVAS.bottom() + 40.0))
+            .build_ui_state(
+                move |ui, drawn: &mut Drawn| {
+                    let banner = Banner {
+                        tone: Tone::Info,
+                        title: TITLE,
+                        sub: &SUB,
+                        list: Some(List { rows: &rows, after }),
+                        buttons: &[],
+                        tips: &[],
+                        dismiss: true,
+                    };
+                    let clicked = show(ui, CANVAS, &banner);
+                    if clicked != Clicked::None {
+                        drawn.clicked.push(clicked);
+                    }
+                },
+                Drawn::default(),
+            );
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        h
+    }
+
+    #[test]
+    fn the_list_of_changes_is_drawn_as_diff_three_columns_then_its_lines_after() {
+        // Two rows, the second's value too long for its column, so it wraps; then two lines
+        // after them.
+        let long = format!("\"{}\" → \"{}\"", "a".repeat(90), "b".repeat(90));
+        let rows = [
+            ("Block", "height", "10 → 11"),
+            ("Mounting plate", "name", long.as_str()),
+        ];
+        const AFTER: [&str; 2] = [
+            "and 3 more changes: 4 features changed in all",
+            "Silico no longer holds revision 1",
+        ];
+        let h = listing(&rows, &AFTER);
+        let banner = banner_rect(&h, css::INFO.0);
+        let (_, text_left, inner_right) = insides(banner);
+        // The words beside Dismiss: to 10 before it.
+        let words = inner_right - css::AB_BTN_W - css::BANNER_GAP - text_left;
+        let sub = text_shape(&h, &SUB.map(|(part, _)| part).concat());
+        let mut top = sub.pos.y + sub.galley.size().y + DIFF_TOP;
+        // The first two columns as wide as their widest cell, the third what's left.
+        let cells: Vec<[TextShape; 3]> = rows
+            .iter()
+            .map(|(feature, field, text)| {
+                [
+                    text_shape(&h, feature),
+                    text_shape(&h, field),
+                    text_shape(&h, text),
+                ]
+            })
+            .collect();
+        let widest = |column: usize| {
+            cells
+                .iter()
+                .map(|row| row[column].galley.size().x)
+                .fold(0.0, f32::max)
+        };
+        let (names, fields) = (widest(0), widest(1));
+        let lefts = [
+            text_left,
+            text_left + names + DIFF_COLUMN_GAP,
+            text_left + names + fields + 2.0 * DIFF_COLUMN_GAP,
+        ];
+        let third = words - names - fields - 2.0 * DIFF_COLUMN_GAP;
+        for (at, row) in cells.iter().enumerate() {
+            let mut high: f32 = 0.0;
+            for (column, (cell, left)) in row.iter().zip(lefts).enumerate() {
+                let what = format!("row {at}, column {column}");
+                self::at(cell.pos, Pos2::new(left, top), &what);
+                font(cell, css::FS_SMALL, &what);
+                let ink = if column == 0 { PURPLE } else { css::INFO.2 };
+                assert_eq!(colour(cell), ink, "{what}'s ink");
+                let lines = cell.galley.rows.len() as f32;
+                assert!(near(cell.galley.size().y, lines * css::LH), "{what}");
+                high = high.max(cell.galley.size().y);
+            }
+            // The value wraps in the third column; the others never do.
+            // egui rounds a wrap's width to the point as it lays the text out.
+            assert!(
+                (row[2].galley.job.wrap.max_width - third).abs() <= 0.5,
+                "row {at}: wrapped at {}, not {third}",
+                row[2].galley.job.wrap.max_width
+            );
+            assert!(row[0].galley.job.wrap.max_width.is_infinite());
+            assert!(row[1].galley.job.wrap.max_width.is_infinite());
+            top += high + DIFF_ROW_GAP;
+        }
+        assert_eq!(cells[0][2].galley.rows.len(), 1);
+        assert!(
+            cells[1][2].galley.rows.len() > 1,
+            "the long value didn't wrap"
+        );
+        // The lines after: from the words' left, across all three columns, 2 apart.
+        let mut bottom = 0.0;
+        for line in AFTER {
+            let shown = text_shape(&h, line);
+            self::at(shown.pos, Pos2::new(text_left, top), line);
+            font(&shown, css::FS_SMALL, line);
+            assert_eq!(colour(&shown), css::INFO.2, "{line}'s ink");
+            assert!(
+                (shown.galley.job.wrap.max_width - words).abs() <= 0.5,
+                "{line}"
+            );
+            bottom = top + shown.galley.size().y;
+            top = bottom + DIFF_ROW_GAP;
+        }
+        // The banner ends under the last, padded.
+        assert!(
+            near(
+                banner.bottom(),
+                bottom + css::BANNER_PAD_BOTTOM + css::BORDER
+            ),
+            "the banner ends at {}, not under its list at {bottom}",
+            banner.bottom()
+        );
+    }
+
+    #[test]
+    fn a_list_of_only_a_line_after_starts_6_under_the_words() {
+        // No rows (the reload's diff refused, say): the line alone, 6 under the second
+        // line, no row gap above it, and the banner ending under it.
+        const AFTER: [&str; 1] = ["Silico no longer holds revision 1"];
+        let h = listing(&[], &AFTER);
+        let banner = banner_rect(&h, css::INFO.0);
+        let (_, text_left, _) = insides(banner);
+        let sub = text_shape(&h, &SUB.map(|(part, _)| part).concat());
+        let line = text_shape(&h, AFTER[0]);
+        at(
+            line.pos,
+            Pos2::new(text_left, sub.pos.y + sub.galley.size().y + DIFF_TOP),
+            "the line",
+        );
+        assert!(near(
+            banner.bottom(),
+            line.pos.y + line.galley.size().y + css::BANNER_PAD_BOTTOM + css::BORDER
+        ));
     }
 }

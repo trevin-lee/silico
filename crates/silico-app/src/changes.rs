@@ -415,6 +415,16 @@ mod tests {
         assert_eq!(value(&big), "[…]");
         let small = Plain::Array(vec![number("0"), number("0"), number("1")]);
         assert_eq!(value(&small), "[0, 0, 1]");
+        // At the limit: an array of 31 numbers holds 32 values, itself among them, so it's
+        // written (and cut at 60 characters: `[`, then nineteen `0, ` and `0,`); one of 32
+        // holds 33, so it isn't; nor an object of 32 members.
+        let zeros = |n: usize| Plain::Array(vec![number("0"); n]);
+        assert_eq!(value(&zeros(31)), format!("[{}0,…", "0, ".repeat(19)));
+        assert_eq!(value(&zeros(32)), "[…]");
+        let members =
+            |n: usize| Plain::Object((0..n).map(|k| (format!("k{k}"), number("0"))).collect());
+        assert_eq!(value(&members(32)), "{…}");
+        assert!(value(&members(31)).starts_with("{\"k0\": 0, "));
     }
 
     #[test]
