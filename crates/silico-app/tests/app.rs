@@ -879,7 +879,7 @@ fn reloaded_sub(from: u64, to: u64) -> String {
 /// Two blocks, each with the fingerprint it rebuilds to on the fake kernel: Block, 40 × 20
 /// × 10 (volume 8000, area 2(800 + 400 + 200) = 2800), and Plate, 10 × 10 × 2 from x = 50
 /// (volume 200, area 2(100 + 20 + 20) = 280), so neither is marked with a warning.
-const TWO_BLOCKS: &str = r#"{
+const BLOCK_AND_PLATE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
   "naming": 5,
@@ -890,9 +890,9 @@ const TWO_BLOCKS: &str = r#"{
 }
 "#;
 
-/// [`TWO_BLOCKS`] as an agent leaves it: Block named Base, and Plate named Lid.
+/// [`BLOCK_AND_PLATE`] as an agent leaves it: Block named Base, and Plate named Lid.
 fn blocks_renamed() -> String {
-    TWO_BLOCKS
+    BLOCK_AND_PLATE
         .replace(r#""name": "Block""#, r#""name": "Base""#)
         .replace(r#""name": "Plate""#, r#""name": "Lid""#)
 }
@@ -911,7 +911,7 @@ fn outside_marks(h: &AppHarness, pane: &str) -> usize {
 #[test]
 fn the_changed_features_are_marked_in_purple_until_marked_seen_and_esc_dismisses_the_banner() {
     let f = fixture_reading(Some(Arc::new(real)));
-    let (mut h, path) = f.opened("blocks.silico", TWO_BLOCKS);
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
     assert_eq!(outside_marks(&h, "Timeline"), 0);
     std::fs::write(&path, blocks_renamed()).unwrap();
@@ -960,11 +960,11 @@ fn the_changed_features_are_marked_in_purple_until_marked_seen_and_esc_dismisses
     let title = "Reloaded blocks.silico: another program changed it on disk";
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "dismissed", |h| !anywhere(h, title));
-    assert!(h.state().tabs()[0].selected.is_some());
+    assert!(h.state().tabs()[0].selection().feature().is_some());
     assert!(!seen(&h, r#""Plate" → "Lid""#));
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
-    assert!(h.state().tabs()[0].selected.is_none());
+    assert!(h.state().tabs()[0].selection().is_empty());
     assert!(shows(&h, "Timeline", LID_MARK) && shows(&h, "Browser", LID_MARK));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -974,7 +974,7 @@ fn a_reload_lists_features_added_removed_and_moved_each_in_its_words() {
     let f = fixture_reading(Some(Arc::new(real)));
     // The two blocks and a Peg, 4 × 4 × 4 from x = 70 (volume 64, area 6 × 16 = 96).
     let peg = r#"    {"id": "g5r9x3k1", "type": "box", "v": 1, "name": "Peg", "position": [70, 0, 0], "length": 4, "width": 4, "height": 4, "fingerprint": {"volume": 64, "area": 96, "bbox": [70, 0, 0, 74, 4, 4], "faces": 6, "edges": 12, "vertices": 8}}"#;
-    let lines: Vec<&str> = TWO_BLOCKS.lines().collect();
+    let lines: Vec<&str> = BLOCK_AND_PLATE.lines().collect();
     let (block, plate) = (lines[5].trim_end_matches(','), lines[6]);
     let document = |features: [&str; 3]| {
         format!(
@@ -1327,15 +1327,15 @@ fn a_reloads_diff_names_both_revisions_so_a_write_after_the_reload_never_refuses
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// [`TWO_BLOCKS`] with only Block renamed, to Base.
+/// [`BLOCK_AND_PLATE`] with only Block renamed, to Base.
 fn block_renamed() -> String {
-    TWO_BLOCKS.replace(r#""name": "Block""#, r#""name": "Base""#)
+    BLOCK_AND_PLATE.replace(r#""name": "Block""#, r#""name": "Base""#)
 }
 
 #[test]
 fn the_marks_of_each_reload_accumulate_until_each_is_marked_seen() {
     let f = fixture_reading(Some(Arc::new(real)));
-    let (mut h, path) = f.opened("blocks.silico", TWO_BLOCKS);
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
     std::fs::write(&path, block_renamed()).unwrap();
     step_until(&mut h, "the first reload marked", |h| {
@@ -1362,7 +1362,7 @@ fn the_marks_of_each_reload_accumulate_until_each_is_marked_seen() {
 #[test]
 fn a_diff_answered_after_a_newer_reload_marks_its_features_but_is_never_listed_in_its_banner() {
     let f = fixture_reading(Some(Arc::new(real)));
-    let (mut h, path) = f.opened("blocks.silico", TWO_BLOCKS);
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
     let id = h.state().tabs()[0].id;
     // Reloaded with no frame stepped; then one frame, whose poll asks the diff from 1.
@@ -1401,7 +1401,7 @@ fn a_diff_answered_after_a_newer_reload_marks_its_features_but_is_never_listed_i
 #[test]
 fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
     let f = fixture_reading(Some(Arc::new(real)));
-    let (mut h, path) = f.opened("blocks.silico", TWO_BLOCKS);
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
     let changed = "blocks.silico changed on disk while you have unsaved edits.";
     let reloaded = "Reloaded blocks.silico: another program changed it on disk";
@@ -1410,7 +1410,7 @@ fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
     select(&mut h, "Block");
     type_name(&mut h, "s");
     step_until(&mut h, "the edit held", |h| h.state().tabs()[0].transaction);
-    let lid = TWO_BLOCKS.replace(r#""name": "Plate""#, r#""name": "Lid""#);
+    let lid = BLOCK_AND_PLATE.replace(r#""name": "Plate""#, r#""name": "Lid""#);
     std::fs::write(&path, &lid).unwrap();
     step_until(&mut h, "the change announced", |h| anywhere(h, changed));
     h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
@@ -1430,7 +1430,7 @@ fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
     step_until(&mut h, "the edit held again", |h| {
         h.state().tabs()[0].transaction && h.state().tabs()[0].edits.idle()
     });
-    let cap = TWO_BLOCKS.replace(r#""name": "Plate""#, r#""name": "Cap""#);
+    let cap = BLOCK_AND_PLATE.replace(r#""name": "Plate""#, r#""name": "Cap""#);
     std::fs::write(&path, &cap).unwrap();
     step_until(&mut h, "the second change announced", |h| {
         anywhere(h, changed)
@@ -1511,7 +1511,7 @@ fn show_changes_lists_what_changed_on_disk_and_the_edits_held_each_in_its_sectio
     select(&mut h, "Pin");
     type_name(&mut h, "s");
     step_until(&mut h, "the edit held", |h| {
-        anywhere(h, "example.silico *") && shows(h, "Timeline", "sPin")
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "Pins")
     });
     std::fs::write(
         &path,
@@ -1536,7 +1536,7 @@ fn show_changes_lists_what_changed_on_disk_and_the_edits_held_each_in_its_sectio
     // feature's name (as the file names it) in the key's, what changed in the value's; the
     // edits held, "Edit" in the key's, named as the document now names it.
     let theirs = r#"name · "Hole" → "Drill""#;
-    let edit = r#"sPin · name · "Pin" → "sPin""#;
+    let edit = r#"Pins · name · "Pin" → "Pins""#;
     step_until(&mut h, "both listed", |h| {
         anywhere(h, theirs) && anywhere(h, edit)
     });
@@ -1572,8 +1572,8 @@ fn show_changes_lists_their_radius_and_your_height_and_the_revision_never_moves(
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", &pinned());
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    // The person's edit, in the Block's dialog: its height 10 → 12, the "10" deleted from
-    // the field's start, then "2" and "1" typed there, each at the start.
+    // The person's edit, in the Block's dialog: its height 10 → 12, the field focused with
+    // its cursor at the end, the "10" erased with Backspace, then "1" and "2" typed.
     double_click(&mut h, "Timeline", "Block");
     step_until(&mut h, "its dialog, loaded", |h| {
         h.query_by_role_and_label(Role::Dialog, "Box").is_some()
@@ -1586,10 +1586,11 @@ fn show_changes_lists_their_radius_and_your_height_and_the_revision_never_moves(
     input(&h, "Height").focus();
     step(&mut h);
     for _ in 0..2 {
-        h.key_press(eframe::egui::Key::Delete);
+        h.key_press(eframe::egui::Key::Backspace);
         step(&mut h);
     }
-    type_into(&mut h, "Height", "21");
+    assert_eq!(input(&h, "Height").value().as_deref(), Some(""));
+    type_into(&mut h, "Height", "12");
     settled(&mut h);
     assert_eq!(input(&h, "Height").value().as_deref(), Some("12"));
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
@@ -1645,7 +1646,7 @@ fn show_changes_says_the_readers_message_for_a_file_that_doesnt_read_in_its_own_
     select(&mut h, "Pin");
     type_name(&mut h, "s");
     step_until(&mut h, "the edit held", |h| {
-        anywhere(h, "example.silico *") && shows(h, "Timeline", "sPin")
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "Pins")
     });
     // Another program's file, an object begun and never ended.
     std::fs::write(&path, "{").unwrap();
@@ -1660,7 +1661,7 @@ fn show_changes_says_the_readers_message_for_a_file_that_doesnt_read_in_its_own_
     let refused = "to, the file on disk, doesn't read as a document, so it can't be compared";
     let reader = "the document isn't valid JSON: expected a key, found the end of the text, at \
                   line 1, column 2";
-    let edit = r#"sPin · name · "Pin" → "sPin""#;
+    let edit = r#"Pins · name · "Pin" → "Pins""#;
     step_until(&mut h, "both sections answered", |h| {
         anywhere(h, reader) && anywhere(h, edit)
     });
@@ -1700,7 +1701,7 @@ fn the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks() {
             h.set_render_every_step(true);
             // The app's fonts, look, and icons, as main.rs sets them, so the shot has words.
             silico_app::theme::apply(&h.ctx);
-            let path = f.file("blocks.silico", TWO_BLOCKS);
+            let path = f.file("blocks.silico", BLOCK_AND_PLATE);
             h.state_mut().open(path.to_str().unwrap(), false);
             step_until(&mut h, "its features", |h| {
                 h.state()
@@ -19472,7 +19473,14 @@ fn a_model_published_before_its_meshes_are_read_names_no_pick_and_draws_no_eleme
     // another face.
     assert_eq!(highlighted(&record), []);
     // Let go, and a click on the face numbered 2 of the old meshes: named from neither
-    // model, it waits.
+    // model, it waits. The edit above is another client's, announced in the purple banner,
+    // so the first Esc dismisses it, the face staying (the prototype's `escChain`), and the
+    // second lets the face go.
+    assert!(h.state().tabs()[0].reloaded.is_some());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(h.state().tabs()[0].reloaded.is_none());
+    assert_eq!(selected_names(&h), ["aaaaaaaa.box.Face2"]);
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     assert!(selected_names(&h).is_empty());
