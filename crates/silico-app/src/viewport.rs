@@ -70,32 +70,120 @@ pub struct ViewBody {
     /// Whether the answer that gave it said the tab held its mesh (and so sent no arrays).
     pub held: bool,
     pub mesh: Arc<Mesh>,
-    /// Its faces and edges, in the mesh's order, each named (`Face1` is the first).
+    /// Its faces, edges, and vertices, in the mesh's order, each named (`Face1` is the
+    /// first).
     pub faces: Vec<MeshElement>,
     pub edges: Vec<MeshElement>,
+    pub vertices: Vec<MeshElement>,
 }
 
 impl ViewBody {
-    /// Whether `element` is one of its mesh's faces or edges.
+    /// Whether `element` is one of its mesh's faces, edges, or vertices.
     fn has(&self, element: Element) -> bool {
         let (number, count) = match element {
             Element::Face(n) => (n, self.mesh.face_triangles.len()),
             Element::Edge(n) => (n, self.mesh.edge_point_counts.len()),
+            Element::Vertex(n) => (n, self.mesh.vertex_points.len()),
         };
         usize::try_from(number).is_ok_and(|n| (1..=count).contains(&n))
     }
 
     /// `element`'s name and stability, as the element map gives them (M5.7): its face
-    /// `Face(n)` is `faces[n - 1]`, its edge `Edge(n)` `edges[n - 1]`, the map numbering
-    /// them from 1 in the mesh's order; none for a number it hasn't.
+    /// `Face(n)` is `faces[n - 1]`, its edge `Edge(n)` `edges[n - 1]`, its vertex
+    /// `Vertex(n)` `vertices[n - 1]`, the map numbering them from 1 in the mesh's order;
+    /// none for a number it hasn't.
     pub fn name_of(&self, element: Element) -> Option<&MeshElement> {
         let (number, named) = match element {
             Element::Face(n) => (n, &self.faces),
             Element::Edge(n) => (n, &self.edges),
+            Element::Vertex(n) => (n, &self.vertices),
         };
         let at = usize::try_from(number).ok()?.checked_sub(1)?;
         named.get(at)
     }
+
+    /// Vertex `n`'s point (from 1), as its mesh holds it; none for a number it hasn't.
+    fn vertex_point(&self, n: u32) -> Option<[f64; 3]> {
+        let at = usize::try_from(n).ok()?.checked_sub(1)?;
+        self.mesh.vertex_points.get(at).copied()
+    }
+}
+
+/// A vertex drawn over the bodies: its point, and whether it's selected (else hovered).
+type Dot = ([f64; 3], bool);
+
+/// The vertices of `highlights` (selected) and `hovered` among `bodies`, each with its
+/// point: the hovered first, so a selected one is drawn over it, as the prototype draws
+/// them (interact.js, `overlay`'s `dot`).
+fn vertex_dots(
+    bodies: &BTreeMap<u32, ViewBody>,
+    highlights: &[(u32, Element)],
+    hovered: &[(u32, Element)],
+) -> Vec<Dot> {
+    let point = |&(body, element): &(u32, Element)| match element {
+        Element::Vertex(n) => bodies.get(&body)?.vertex_point(n),
+        Element::Face(_) | Element::Edge(_) => None,
+    };
+    let hovered = hovered.iter().filter_map(point).map(|p| (p, false));
+    let selected = highlights.iter().filter_map(point).map(|p| (p, true));
+    hovered.chain(selected).collect()
+}
+
+/// Each of `dots` painted where the renderer draws its point ([`dots_at`]).
+fn paint_vertex_dots(
+    painter: &egui::Painter,
+    rect: Rect,
+    camera: &Camera,
+    size_px: [u32; 2],
+    ppp: f32,
+    dots: &[Dot],
+) {
+    for (at, selected) in dots_at(rect, camera, size_px, ppp, dots) {
+        paint_vertex(painter, at, selected);
+    }
+}
+
+/// Where each of `dots` is drawn, in points, in the viewport `rect`, `size_px` physical
+/// pixels at `ppp` a point, and whether it's selected: where the renderer draws its point
+/// ([`silico_render::render::project`], the renderer's own projection), so the dot sits on
+/// the disc that picks it. None for a point nearer a perspective eye than the renderer
+/// draws, or one whose place in points isn't finite. One far off the viewport is kept, for
+/// the painter to clip.
+fn dots_at(
+    rect: Rect,
+    camera: &Camera,
+    size_px: [u32; 2],
+    ppp: f32,
+    dots: &[Dot],
+) -> Vec<(Pos2, bool)> {
+    dots.iter()
+        .filter_map(|&(point, selected)| {
+            let [x, y] = silico_render::render::project(camera, size_px, point)?;
+            // Physical pixels from the viewport's corner, to points.
+            let at = rect.min + Vec2::new(x as f32, y as f32) / ppp;
+            (at.x.is_finite() && at.y.is_finite()).then_some((at, selected))
+        })
+        .collect()
+}
+
+/// A vertex's dot at `at`, in points: the prototype's (interact.js, `overlay`'s `dot`), a
+/// disc of [`theme::VIEWPORT_VERTEX_RADIUS`] in the selection's or the hover's colour,
+/// ringed in [`theme::VIEWPORT_VERTEX_RING_COLOR`]. The visuals the UI port replaces.
+fn paint_vertex(painter: &egui::Painter, at: Pos2, selected: bool) {
+    let fill = if selected {
+        theme::VIEWPORT_SELECTION_VERTEX
+    } else {
+        theme::VIEWPORT_HOVER_VERTEX
+    };
+    painter.circle(
+        at,
+        theme::VIEWPORT_VERTEX_RADIUS,
+        theme::color32(fill),
+        Stroke::new(
+            theme::VIEWPORT_VERTEX_RING,
+            theme::color32(theme::VIEWPORT_VERTEX_RING_COLOR),
+        ),
+    );
 }
 
 /// What the viewport is this frame, for what draws over it and picks in it (sketch mode,
@@ -398,6 +486,10 @@ pub struct View {
     /// The elements drawn hovered (M5.7's pre-selection), set from outside, passed through
     /// as `highlights` are.
     pub hovered: BTreeSet<(u32, Element)>,
+    /// The radius, in points, within which a pick takes a vertex, if it takes vertices,
+    /// set from outside (the selection's filter, M5.7): the renderer's
+    /// [`crate::renderer::Frame::vertices`]. None picks none.
+    pub vertices: Option<f32>,
     /// The feature hovered in the timeline (DESIGN.md, *Hover linking*): the faces it made,
     /// as each face's name says ([`Name::feature`]), are highlighted with the selection's
     /// while it's hovered.
@@ -461,6 +553,7 @@ impl Default for View {
             tool: None,
             highlights: BTreeSet::new(),
             hovered: BTreeSet::new(),
+            vertices: None,
             linked: None,
             picking: None,
             picked: None,
@@ -822,6 +915,7 @@ impl View {
                     mesh,
                     faces: body.faces,
                     edges: body.edges,
+                    vertices: body.vertices,
                 },
             );
         }
@@ -1678,7 +1772,7 @@ pub fn show<P: Clients + 'static>(
                 .get(number)
                 .is_some_and(|body| body.has(*element))
     };
-    let highlights = view
+    let highlights: Vec<(u32, Element)> = view
         .highlights
         .iter()
         .copied()
@@ -1687,7 +1781,9 @@ pub fn show<P: Clients + 'static>(
         .into_iter()
         .filter(drawn)
         .collect();
-    let hovered = view.hovered.iter().copied().filter(drawn).collect();
+    let hovered: Vec<(u32, Element)> = view.hovered.iter().copied().filter(drawn).collect();
+    // The vertices among them, drawn over the bodies by the pane (the renderer draws none).
+    let dots = vertex_dots(&view.bodies, &highlights, &hovered);
     let picking = view.picking.take();
     let serial = match picking {
         Some(_) => {
@@ -1707,8 +1803,17 @@ pub fn show<P: Clients + 'static>(
         hovered,
         outlines: crate::selection::outlines(),
         picking,
+        vertices: view.vertices,
     };
     drawing.present(ui.painter(), rect, changes, Some(frame));
+    paint_vertex_dots(
+        &ui.painter_at(rect),
+        rect,
+        &view.camera,
+        size_px,
+        ppp,
+        &dots,
+    );
     if drawing.picking() {
         // An idle egui draws no frame, and its answer is taken only in one.
         ui.ctx().request_repaint();
@@ -2050,9 +2155,11 @@ mod tests {
                 valid: None,
                 edge_points: Vec::new(),
                 edge_point_counts: Vec::new(),
+                vertex_points: vec![],
             }),
             faces: Vec::new(),
             edges: Vec::new(),
+            vertices: Vec::new(),
         }
     }
 
@@ -2250,6 +2357,7 @@ mod tests {
             mesh,
             faces: Vec::new(),
             edges: Vec::new(),
+            vertices: Vec::new(),
         }
     }
 
@@ -2750,6 +2858,156 @@ mod tests {
         assert!(held.has(Element::Face(1)) && held.has(Element::Face(2)));
         assert!(!held.has(Element::Face(0)) && !held.has(Element::Face(3)));
         assert!(held.has(Element::Edge(3)) && !held.has(Element::Edge(4)));
+        // A vertex by its point's number: two points, Vertex1 and Vertex2.
+        held.mesh = Arc::new(Mesh {
+            vertex_points: vec![[0.0; 3], [1.0; 3]],
+            ..(*held.mesh).clone()
+        });
+        assert!(held.has(Element::Vertex(1)) && held.has(Element::Vertex(2)));
+        assert!(!held.has(Element::Vertex(0)) && !held.has(Element::Vertex(3)));
+        assert!(!held.has(Element::Vertex(u32::MAX)));
+        assert_eq!(held.vertex_point(2), Some([1.0; 3]));
+        assert_eq!(held.vertex_point(0), None);
+        assert_eq!(held.vertex_point(3), None);
+    }
+
+    #[test]
+    fn a_vertex_is_named_by_its_place_among_the_bodys_vertices() {
+        use silico_core::naming::{Name, PrimitiveKind, TypeWord};
+        use silico_protocol::{ElementKind, ElementRef};
+        let element = |kind, index| MeshElement {
+            name: Arc::new(Name::Element {
+                feature: FeatureId::new("m3tq8v0z").unwrap(),
+                made: TypeWord::Primitive(PrimitiveKind::Box),
+                element: ElementRef { kind, index },
+            }),
+            stable: true,
+            count: None,
+        };
+        let mut body = body(0.03125, [0.03125, 0.0625], CUT);
+        body.faces = vec![element(ElementKind::Face, 1)];
+        body.edges = vec![element(ElementKind::Edge, 1)];
+        body.vertices = vec![
+            element(ElementKind::Vertex, 1),
+            element(ElementKind::Vertex, 2),
+        ];
+        let named = |e: Element| body.name_of(e).map(|m| m.name.to_string());
+        assert_eq!(
+            named(Element::Vertex(2)).as_deref(),
+            Some("m3tq8v0z.box.Vertex2")
+        );
+        assert_eq!(
+            named(Element::Vertex(1)).as_deref(),
+            Some("m3tq8v0z.box.Vertex1")
+        );
+        // Each kind its own list: Vertex1 isn't Face1 or Edge1.
+        assert_eq!(
+            named(Element::Face(1)).as_deref(),
+            Some("m3tq8v0z.box.Face1")
+        );
+        assert_eq!(
+            named(Element::Edge(1)).as_deref(),
+            Some("m3tq8v0z.box.Edge1")
+        );
+        for missing in [0, 3, u32::MAX] {
+            assert_eq!(named(Element::Vertex(missing)), None, "{missing}");
+        }
+    }
+
+    /// The corner's view (M5.7 part 3, §4): orthographic about (10, 10, 10) from along
+    /// (1, 1, 1), z up, 80 mm high.
+    fn corner_camera(projection: Projection) -> Camera {
+        Camera {
+            projection,
+            eye: [110.0, 110.0, 110.0],
+            target: [10.0, 10.0, 10.0],
+            up: [0.0, 0.0, 1.0],
+        }
+    }
+
+    #[test]
+    fn a_vertexs_dot_sits_where_the_renderer_draws_its_point_and_none_nearer_the_eye_than_that() {
+        // A viewport 400 points square from (10, 20), at two pixels a point: 800 pixels. The
+        // corner (20, 0, 20) lands at pixel (400 − 200/√2, 400 − 200/√6), by hand, so at
+        // (10 + 129.289, 20 + 159.175) points.
+        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::splat(400.0));
+        let camera = corner_camera(Projection::Orthographic { view_height: 80.0 });
+        let corner = [20.0, 0.0, 20.0];
+        let target = [10.0, 10.0, 10.0];
+        let got = dots_at(
+            rect,
+            &camera,
+            [800, 800],
+            2.0,
+            &[(corner, false), (target, true)],
+        );
+        let want = [
+            (
+                10.0 + (400.0 - 200.0 / 2f64.sqrt()) / 2.0,
+                20.0 + (400.0 - 200.0 / 6f64.sqrt()) / 2.0,
+                false,
+            ),
+            (210.0, 220.0, true),
+        ];
+        assert_eq!(got.len(), 2);
+        for ((at, selected), (x, y, want_selected)) in got.iter().zip(want) {
+            assert!(
+                (f64::from(at.x) - x).abs() < 1e-3 && (f64::from(at.y) - y).abs() < 1e-3,
+                "{at:?} against ({x}, {y})"
+            );
+            assert_eq!(*selected, want_selected);
+        }
+        // In perspective, a point nearer the eye than the renderer draws (0.75 nm along the
+        // view, under its 1 nm) has no dot, as it has no disc; 2 nm, it has.
+        let u = [1.0, -1.0, 1.0].map(|c: f64| c / 3f64.sqrt());
+        let looking = |off: f64| Camera {
+            projection: Projection::Perspective {
+                field_of_view: 60.0,
+            },
+            eye: std::array::from_fn(|k| corner[k] + u[k] * off),
+            target: std::array::from_fn(|k| corner[k] - u[k]),
+            up: [0.0, 0.0, 1.0],
+        };
+        let near = looking(0.75 * silico_protocol::MIN_EYE_DISTANCE);
+        assert!(dots_at(rect, &near, [800, 800], 2.0, &[(corner, true)]).is_empty());
+        let far = looking(2.0 * silico_protocol::MIN_EYE_DISTANCE);
+        let got = dots_at(rect, &far, [800, 800], 2.0, &[(corner, true)]);
+        assert_eq!(got.len(), 1);
+        assert!(
+            (got[0].0 - Pos2::new(210.0, 220.0)).length() < 1e-3,
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn the_dots_are_the_hovered_vertex_then_the_selected_ones_of_bodies_held() {
+        let mut held = body(0.03125, [0.03125, 0.0625], CUT);
+        held.mesh = Arc::new(Mesh {
+            vertex_points: vec![[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+            ..(*held.mesh).clone()
+        });
+        let bodies = BTreeMap::from([(1, held)]);
+        let dots = vertex_dots(
+            &bodies,
+            &[
+                (1, Element::Vertex(3)),
+                (1, Element::Face(1)),
+                (2, Element::Vertex(1)),
+                (1, Element::Vertex(4)),
+                (1, Element::Vertex(1)),
+            ],
+            &[(1, Element::Edge(1)), (1, Element::Vertex(2))],
+        );
+        // The hover first, so a selected dot is drawn over it; faces, edges, a body not held
+        // and a vertex its mesh hasn't, none.
+        assert_eq!(
+            dots,
+            [
+                ([2.0, 0.0, 0.0], false),
+                ([3.0, 0.0, 0.0], true),
+                ([1.0, 0.0, 0.0], true),
+            ]
+        );
     }
 
     #[test]

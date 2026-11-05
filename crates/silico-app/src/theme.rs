@@ -520,6 +520,16 @@ pub const VIEWPORT_SELECTION_EDGE_WIDTH: f32 = 3.5;
 pub const VIEWPORT_FEATURE_HOVER_TINT: Rgba8 = rgba8(0xd4dbff);
 /// How much of [`VIEWPORT_FEATURE_HOVER_TINT`] those faces take.
 pub const VIEWPORT_FEATURE_HOVER_TINT_AMOUNT: f32 = 0.4;
+/// A hovered vertex's dot (interact.js, `overlay`'s `dot`).
+pub const VIEWPORT_HOVER_VERTEX: Rgba8 = rgba8(0xffffff);
+/// A selected vertex's dot.
+pub const VIEWPORT_SELECTION_VERTEX: Rgba8 = rgba8(0x4676ff);
+/// A vertex's dot's radius, in points.
+pub const VIEWPORT_VERTEX_RADIUS: f32 = 4.5;
+/// The width of the ring about a vertex's dot, in points.
+pub const VIEWPORT_VERTEX_RING: f32 = 1.0;
+/// The ring's colour.
+pub const VIEWPORT_VERTEX_RING_COLOR: Rgba8 = rgba8(0x000000);
 /// A broken reference's candidates ([`WARNING`], `warn_fg_color`).
 pub const VIEWPORT_CANDIDATE: Rgba8 = rgba8_of(WARNING, 0xff);
 /// A candidate edge's width.
@@ -1979,9 +1989,28 @@ mod tests {
                 [0xff, 0x7a, 0x0c, 0xff],
             ),
             ("VIEWPORT_BG", VIEWPORT_BG, [0, 0, 0, 0xff]),
+            // interact.js:473-475, `overlay`'s `dot`: a hovered vertex white, a selected one
+            // #4676ff, each ringed `stroke="#000"`.
+            (
+                "VIEWPORT_HOVER_VERTEX",
+                VIEWPORT_HOVER_VERTEX,
+                [0xff, 0xff, 0xff, 0xff],
+            ),
+            (
+                "VIEWPORT_SELECTION_VERTEX",
+                VIEWPORT_SELECTION_VERTEX,
+                [0x46, 0x76, 0xff, 0xff],
+            ),
+            (
+                "VIEWPORT_VERTEX_RING_COLOR",
+                VIEWPORT_VERTEX_RING_COLOR,
+                [0, 0, 0, 0xff],
+            ),
         ] {
             assert_eq!(color, rgba, "{name}");
         }
+        // The dot's `r="4.5"` and its ring's `stroke-width="1"`.
+        assert_eq!((VIEWPORT_VERTEX_RADIUS, VIEWPORT_VERTEX_RING), (4.5, 1.0));
     }
 
     /// The app bar's and its tabs' values, typed from styles.css's `#appbar`, `.traffic`,
