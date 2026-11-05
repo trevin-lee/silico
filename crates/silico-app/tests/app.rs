@@ -378,6 +378,67 @@ fn the_panes_are_the_prototypes_columns_the_browser_248_the_properties_296_and_t
     }
 }
 
+/// The prototype's columns are fixed (`#main`'s `grid-template-columns`, no splitter): either
+/// border, the browser's (247 to 248) or the properties' (984 to 985 at 1280), hovered shows
+/// no resize cursor (`#browser` and `#right` set none), and a drag along it moves neither,
+/// by hand the same 247, 736, and 295 wide after as before.
+#[test]
+fn a_drag_on_a_panes_border_resizes_no_column() {
+    use eframe::egui::{Event, Modifiers, PointerButton, pos2, vec2};
+    const MARGIN: f32 = 8.0;
+    let f = fixture();
+    let path = f.file("example.silico", EXAMPLE);
+    let app = App::new(Arc::clone(&f.sessions));
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0 + 2.0 * MARGIN, 800.0 + 2.0 * MARGIN))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(&mut h, "the panes", |h| {
+        h.query_by_role_and_label(Role::Pane, "Viewport").is_some()
+    });
+    step(&mut h);
+    let widths = |h: &Harness<'_, App<Fake>>| {
+        ["Browser", "Viewport", "Properties"]
+            .map(|label| h.get_by_role_and_label(Role::Pane, label).rect().width())
+    };
+    assert_eq!(widths(&h), [247.0, 736.0, 295.0]);
+    let middle = MARGIN + 30.0 + 24.0 + 52.0 + 1.0 + 200.0;
+    for border in [247.5, 984.5] {
+        let from = pos2(MARGIN + border, middle);
+        h.hover_at(from);
+        step(&mut h);
+        assert_ne!(
+            h.output().platform_output.cursor_icon,
+            eframe::egui::CursorIcon::ResizeHorizontal,
+            "the border at {border}"
+        );
+        h.event(Event::PointerButton {
+            pos: from,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        step(&mut h);
+        for i in 1..=8u8 {
+            h.hover_at(from + vec2(10.0 * f32::from(i), 0.0));
+            step(&mut h);
+        }
+        h.event(Event::PointerButton {
+            pos: from + vec2(80.0, 0.0),
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+        step(&mut h);
+        step(&mut h);
+        assert_eq!(widths(&h), [247.0, 736.0, 295.0], "the border at {border}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn opening_the_m2_1_example_shows_its_three_features_in_order_and_its_body() {
     let f = fixture();
