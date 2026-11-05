@@ -113,17 +113,18 @@ use super::logs::{LogBuffer, LogQuery, Logs};
 use super::{Cancellable, Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
 use crate::cache::{Cache, Cleared};
 use crate::disk::{DISK_CHECK_INTERVAL, Disk, DiskWatch};
+use crate::document::FeatureId;
 use crate::document::json::Node;
-use crate::document::{self, FeatureId};
-#[cfg(doc)]
-use crate::file;
 use crate::file::{Workspace, shown_path};
 use crate::kernel::{Clients, Kernel};
 use crate::recompute::{self, SketchSolvers};
 use crate::sketch::SketchSolver;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
+#[cfg(doc)]
+use crate::{document, file};
 
+use super::wire::Named;
 use cancel::{Interrupt, Ticket, Why, not_running};
 use clearing::{partly_cleared_problems, shown_cache_directory};
 use edits::{as_committed, not_given_back};
@@ -1038,30 +1039,38 @@ impl<P: Clients + 'static> Sessions<P> {
     /// The text `session`'s document is: the file's bytes exactly, until an edit; or, given
     /// a `feature`, that feature's canonical text ([`document::write_feature`]). Refused if
     /// the text isn't UTF-8 (the reader refused it), or, for a feature, if the text doesn't
-    /// read as a document or hasn't one feature of that ID.
+    /// read as a document or hasn't one feature of that ID: [`text_at`](Self::text_at) at
+    /// the revision now.
     pub fn text(&self, session: &SessionId, feature: Option<FeatureId>) -> Running<TextAnswer> {
-        self.queued(session, SessionCommand::Text, move |session, _, _| {
-            let (text, gated) = session.document();
-            let text = match feature {
-                None => String::from_utf8(text.to_vec()).map_err(|e| {
-                    Problems::from(
-                        Error::new(
-                            ErrorCode::InvalidInput,
-                            format!(
-                                "the document's text isn't UTF-8 (at byte {}), so it can't be given as text",
-                                e.utf8_error().valid_up_to()
-                            ),
-                        )
-                        .with_suggestion("mend the file: a document is UTF-8 text"),
-                    )
-                }),
-                Some(id) => {
-                    let document = gated.document().map_err(Clone::clone)?;
-                    Ok(document::write_feature(document.feature(&id)?)?)
-                }
-            }?;
-            Ok(TextAnswer { text })
-        })
+        self.text_at(session, feature, None)
+    }
+
+    /// [`text`](Self::text), of the text `revision` names (`None` for the session's
+    /// revision now: Fable's decision of 2026-11-04, the three core gaps, section 2): the
+    /// text the session holds at its revision now, at the one its last reload replaced, or,
+    /// inside a transaction, at the one `begin` saw; or the session's file as this command
+    /// reads it (`"disk"`, Fable's of the same day, *6d's other half*: inside a transaction
+    /// too, as `commit` reads it, reloading nothing there); or that text's feature's.
+    /// Refused, naming `revision`, for a revision it doesn't hold, the ones it does as
+    /// candidates, and for a file it can't read. A revision by number reads nothing of the
+    /// file, whatever it holds now. "Restore" is this read, then `begin` and `replace_text`
+    /// of the text: an edit like any other.
+    pub fn text_at(
+        &self,
+        session: &SessionId,
+        feature: Option<FeatureId>,
+        revision: Option<Named>,
+    ) -> Running<TextAnswer> {
+        self.queued_reading(
+            session,
+            SessionCommand::Text,
+            &[(revision, "revision")],
+            move |session, _, _, reload| {
+                session
+                    .text(feature, revision, &reload)
+                    .map(|text| TextAnswer { text })
+            },
+        )
     }
 
     /// `session`'s document's problems ([`super::check`]) from the model `model` names
@@ -1437,23 +1446,31 @@ impl<P: Clients + 'static> Sessions<P> {
         })
     }
 
-    /// The changes from the revision `from` names to the one `to` names, each `None` for the
-    /// session's revision now (Fable's decision of 2026-11-04, section 1): each feature
-    /// added, removed, or moved, and each field that changed, with its value before and
-    /// after ([`document::diff`]). A read of texts the session holds, needing no model and
-    /// rebuilding nothing: its current revision's, the one its last reload replaced, and,
-    /// inside a transaction, the one `begin` saw. Refused, naming `from` or `to`, for a
-    /// revision it doesn't hold (the ones it does as candidates), and for a text that
-    /// doesn't read as a document (the reader's message as the cause).
+    /// The changes from the text `from` names to the one `to` names, each `None` for the
+    /// session's revision now (Fable's decision of 2026-11-04, the three core gaps, section
+    /// 1): each feature added, removed, or moved, and each field that changed, with its value
+    /// before and after ([`document::diff`]). A read needing no model and rebuilding nothing,
+    /// of texts the session holds (its current revision's, the one its last reload replaced,
+    /// and, inside a transaction, the one `begin` saw), or of its file, `"disk"`, as this
+    /// command reads it (Fable's of the same day, *6d's other half*): inside a transaction
+    /// too, as `commit` reads it, reloading nothing there, so what changed on disk since a
+    /// transaction began is `diff` from its base to `"disk"`. The file is read as the sides
+    /// need: revisions by number alone read nothing of it. Refused, naming `from` or `to`,
+    /// for a revision it doesn't hold (the ones it does as candidates), for a file it can't
+    /// read, and for a text that doesn't read as a document (the reader's message as the
+    /// cause).
     pub fn diff(
         &self,
         session: &SessionId,
-        from: Option<Revision>,
-        to: Option<Revision>,
+        from: Option<Named>,
+        to: Option<Named>,
     ) -> Running<DiffAnswer> {
-        self.queued(session, SessionCommand::Diff, move |session, stop, _| {
-            session.diff(stop, from, to)
-        })
+        self.queued_reading(
+            session,
+            SessionCommand::Diff,
+            &[(from, "from"), (to, "to")],
+            move |session, stop, _, reload| session.diff(stop, from, to, &reload),
+        )
     }
 
     /// Begins a transaction in `session` (the design's section 4): its state kept (its text,
@@ -2022,6 +2039,33 @@ impl<P: Clients + 'static> Sessions<P> {
         )
     }
 
+    /// A read of the texts `sides` name, each with the request's field naming it, queued as
+    /// [`queued_with`](Self::queued_with) queues it: the file read as the sides need
+    /// ([`Rereads::needed`]), and `work` given what the session found of it. A refusal of
+    /// the read that names the file (`path`) names the first side that's `"disk"` instead,
+    /// if one is: the field that asked for the file.
+    fn queued_reading<T: Send + 'static>(
+        &self,
+        session: &SessionId,
+        command: SessionCommand,
+        sides: &[(Option<Named>, &'static str)],
+        work: impl FnOnce(
+            &Arc<Session<P::Client>>,
+            &Ticket,
+            &mut Option<ModelRead>,
+            Reload,
+        ) -> Result<T, Problems>
+        + Send
+        + 'static,
+    ) -> Running<T> {
+        let rereads = Rereads::needed(sides.iter().map(|(side, _)| *side));
+        let disk = sides
+            .iter()
+            .find(|(side, _)| *side == Some(Named::Disk))
+            .map(|(_, parameter)| *parameter);
+        self.queued_then(session, command, rereads, disk, work)
+    }
+
     /// [`queued`](Self::queued), the file read again as `rereads` says, and `work` given
     /// what the session found of it.
     fn queued_with<T: Send + 'static>(
@@ -2029,6 +2073,26 @@ impl<P: Clients + 'static> Sessions<P> {
         session: &SessionId,
         command: SessionCommand,
         rereads: Rereads,
+        work: impl FnOnce(
+            &Arc<Session<P::Client>>,
+            &Ticket,
+            &mut Option<ModelRead>,
+            Reload,
+        ) -> Result<T, Problems>
+        + Send
+        + 'static,
+    ) -> Running<T> {
+        self.queued_then(session, command, rereads, None, work)
+    }
+
+    /// [`queued_with`](Self::queued_with), a refusal of the read naming the file (`path`)
+    /// naming `disk` instead, if it's given: the request's field that named the file.
+    fn queued_then<T: Send + 'static>(
+        &self,
+        session: &SessionId,
+        command: SessionCommand,
+        rereads: Rereads,
+        disk: Option<&'static str>,
         work: impl FnOnce(
             &Arc<Session<P::Client>>,
             &Ticket,
@@ -2085,7 +2149,7 @@ impl<P: Clients + 'static> Sessions<P> {
                                 Ok(reload) => {
                                     (reload.reloaded(), work(session, &stop, &mut model, reload))
                                 }
-                                Err(problems) => (false, Err(problems)),
+                                Err(problems) => (false, Err(named_disk(problems, disk))),
                             };
                             Response {
                                 session: Some(session.info(reloaded)),
@@ -2527,6 +2591,22 @@ impl<P: Clients + 'static> Drop for Sessions<P> {
         let released = std::mem::replace(&mut lock(&self.registry.book).released, Threads::new());
         released.join();
     }
+}
+
+/// `problems`, a refusal of the read a command made of its session's file, each naming the
+/// file (`path`) naming `disk` instead, if it's given: the request's field that asked for
+/// the file (`"disk"`), as the read before every command refuses it.
+fn named_disk(problems: Problems, disk: Option<&'static str>) -> Problems {
+    let Some(disk) = disk else {
+        return problems;
+    };
+    problems.map(|error| {
+        if error.parameter() == Some("path") {
+            error.with_parameter(disk)
+        } else {
+            error
+        }
+    })
 }
 
 /// A refusal, of no session.

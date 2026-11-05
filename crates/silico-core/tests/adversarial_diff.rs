@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::wire::{Layout, MAX_RESPONSE_LEN, ToWire, response_text, write};
+use silico_core::command::wire::{Layout, MAX_RESPONSE_LEN, Named, ToWire, response_text, write};
 use silico_core::command::{Call, DiffAnswer, Response, Revision, SessionId, Sessions};
 use silico_core::document::json::MAX_DOCUMENT_LEN;
 use silico_core::document::{self, Change};
@@ -22,6 +22,20 @@ use silico_core::fake::FakeKernel;
 use tempfile::TempDir;
 
 use crate::sessions::answer;
+
+/// Revision `n`, named.
+fn at(n: u64) -> Named {
+    Named::Revision(Revision::from_number(n).unwrap())
+}
+
+/// The number of `named`, a revision.
+#[track_caller]
+fn number(named: Named) -> u64 {
+    match named {
+        Named::Revision(revision) => revision.number(),
+        Named::Disk => panic!("disk, not a revision"),
+    }
+}
 
 struct Fixture {
     dir: TempDir,
@@ -54,12 +68,19 @@ impl Fixture {
             .id
     }
 
+    /// `diff` of revisions by number, each `None` for the document now.
     fn diff(&self, s: &SessionId, from: Option<u64>, to: Option<u64>) -> Response<DiffAnswer> {
-        answer(self.sessions.diff(
-            s,
-            from.map(|n| Revision::from_number(n).unwrap()),
-            to.map(|n| Revision::from_number(n).unwrap()),
-        ))
+        self.diff_of(s, from.map(at), to.map(at))
+    }
+
+    /// `diff` of the sides named, a revision or `"disk"`.
+    fn diff_of(
+        &self,
+        s: &SessionId,
+        from: Option<Named>,
+        to: Option<Named>,
+    ) -> Response<DiffAnswer> {
+        answer(self.sessions.diff(s, from, to))
     }
 
     /// The text written outside, then `diff(from, null)`, whose own reread reloads it.
@@ -206,7 +227,7 @@ fn a_side_of_just_under_sixteen_mib_against_one_changed_value_is_one_change() {
     let s = f.open(from.as_bytes());
     let diffed = f.reloaded_diff(&s, near_the_limit(1000, Some(617)).as_bytes(), 1);
     let result = diffed.result.unwrap();
-    assert_eq!((result.from.number(), result.to.number()), (1, 2));
+    assert_eq!((number(result.from), number(result.to)), (1, 2));
     assert_eq!(result.changes.len(), 1);
     let change = &result.changes[0];
     assert_eq!(change.feature.as_str(), feature_id(617));
@@ -386,7 +407,7 @@ fn line_ends_and_spacing_the_reader_takes_change_nothing() {
     let s = f.open(canonical.as_bytes());
     let crlf = canonical.replace('\n', "\r\n").replace(": ", ":\t ");
     let result = f.reloaded_diff(&s, crlf.as_bytes(), 1).result.unwrap();
-    assert_eq!((result.from.number(), result.to.number()), (1, 2));
+    assert_eq!((number(result.from), number(result.to)), (1, 2));
     assert_eq!(result.changes, []);
 }
 
@@ -573,7 +594,7 @@ fn a_diff_cancelled_answers_cancelled_and_the_next_runs() {
     let f = sessions();
     let s = f.open(header(&from.join(", ")).as_bytes());
     f.write(header(&to.join(", ")).as_bytes());
-    let running = f.sessions.diff(&s, Revision::from_number(1), None);
+    let running = f.sessions.diff(&s, Some(at(1)), None);
     running.cancel();
     let response = running
         .wait_timeout(Duration::from_secs(120))
@@ -584,4 +605,172 @@ fn a_diff_cancelled_answers_cancelled_and_the_next_runs() {
     }
     let next = f.diff(&s, None, None).result.unwrap();
     assert_eq!(next.changes, []);
+}
+
+// --- The file on disk as a side (Fable's decision of 2026-11-04, 6d's other half). ---
+
+#[test]
+fn a_disk_side_misspelled_or_of_another_type_is_refused_by_the_reader_naming_the_field() {
+    let f = sessions();
+    let s = f.open(header(&a_box(0, "B", 4)).as_bytes());
+    let call = |arguments: &str| -> serde_json::Value {
+        match f.sessions.call("diff", arguments) {
+            Call::Running(calling) => serde_json::from_str(&calling.wait().text).unwrap(),
+            Call::Unknown => panic!("diff is a command"),
+        }
+    };
+    // Each value as the refusal says it, by hand: a string quoted, a number as written,
+    // `true` by its kind.
+    for (value, said) in [
+        (r#""Disk""#, r#""Disk""#),
+        (r#""disk ""#, r#""disk ""#),
+        (r#""""#, r#""""#),
+        (r#""1""#, r#""1""#),
+        ("0", "0"),
+        ("-1", "-1"),
+    ] {
+        for side in ["from", "to"] {
+            let other = if side == "from" { "to" } else { "from" };
+            let answer = call(&format!(
+                r#"{{"session": "{s}", "{side}": {value}, "{other}": null}}"#
+            ));
+            assert_eq!(answer["ok"], false, "{value}");
+            assert_eq!(answer["errors"].as_array().unwrap().len(), 1, "{answer}");
+            let e = &answer["errors"][0];
+            assert_eq!(e["code"], "invalid_input", "{value}");
+            assert_eq!(e["parameter"], side, "{value}");
+            assert_eq!(
+                e["message"],
+                format!(r#"{side} must be an integer from 1, "disk", or null, got {said}"#),
+                "{value}"
+            );
+            // Nothing ran: the session as it was.
+            assert!(
+                answer["session"].is_null() || answer["session"]["revision"] == 1,
+                "{answer}"
+            );
+        }
+    }
+    let answer = call(&format!(
+        r#"{{"session": "{s}", "from": true, "to": null}}"#
+    ));
+    assert_eq!(answer["errors"][0]["parameter"], "from");
+    let message = answer["errors"][0]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with(r#"from must be an integer from 1, "disk", or null, got "#),
+        "{message}"
+    );
+    // The word itself reads, both sides, and the session runs on; spelled with an escape,
+    // it's the same string, so the same word.
+    for from in [r#""disk""#, r#""\u0064isk""#] {
+        let answer = call(&format!(
+            r#"{{"session": "{s}", "from": {from}, "to": "disk"}}"#
+        ));
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(
+            answer["result"],
+            serde_json::json!({"from": "disk", "to": "disk", "changes": []})
+        );
+    }
+}
+
+impl Fixture {
+    fn diff_disk(&self, s: &SessionId, from: Option<Named>) -> Response<DiffAnswer> {
+        self.diff_of(s, from, Some(Named::Disk))
+    }
+}
+
+#[test]
+fn a_disk_side_past_what_silico_reads_is_refused_too_long_naming_it() {
+    let f = sessions();
+    let good = header(&a_box(0, "B", 4));
+    let s = f.open(good.as_bytes());
+    let past = vec![b' '; silico_core::document::json::MAX_INPUT_LEN + 1];
+    let shown = silico_core::command::quoted(f.path().to_str().unwrap());
+    let too_long = format!(
+        "{shown} is more than the {} bytes Silico reads of a document",
+        silico_core::document::json::MAX_INPUT_LEN
+    );
+    // Inside a transaction: the read finds it too long, refused naming `to`, nothing held
+    // moved.
+    answer(f.sessions.begin(&s)).result.unwrap();
+    f.write(&past);
+    let refused = f.diff_disk(&s, Some(at(1)));
+    assert_eq!(refused.session.as_ref().unwrap().revision.number(), 1);
+    let problems = refused.result.unwrap_err();
+    assert_eq!(problems.total(), 1);
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter(), e.message()),
+        (ErrorCode::InvalidInput, Some("to"), too_long.as_str())
+    );
+    // Rolled back, outside a transaction: the read before the command refuses it, naming
+    // `to` too.
+    answer(f.sessions.rollback(&s)).result.unwrap();
+    let refused = f.diff_disk(&s, Some(at(1))).result.unwrap_err();
+    let e = &refused.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter(), e.message()),
+        (ErrorCode::InvalidInput, Some("to"), too_long.as_str())
+    );
+    // Exactly what Silico reads of a file: read, inside a transaction, and refused as a side
+    // that doesn't read as a document, the reader's message the cause.
+    let most = vec![b' '; silico_core::document::json::MAX_INPUT_LEN];
+    let reader = document::read(&most).unwrap_err();
+    // Begun on the file put back (`begin` reads it first, outside a transaction).
+    f.write(good.as_bytes());
+    answer(f.sessions.begin(&s)).result.unwrap();
+    f.write(&most);
+    let refused = f.diff_disk(&s, None).result.unwrap_err();
+    assert_eq!(refused.total(), 1);
+    let e = &refused.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter(), e.cause()),
+        (ErrorCode::InvalidInput, Some("to"), Some(reader.message()))
+    );
+    answer(f.sessions.rollback(&s)).result.unwrap();
+    // Put back: read again.
+    f.write(good.as_bytes());
+    assert_eq!(f.diff_disk(&s, None).result.unwrap().changes, []);
+}
+
+#[test]
+fn a_disk_side_of_just_under_sixteen_mib_is_diffed_inside_a_transaction() {
+    let f = sessions();
+    let s = f.open(near_the_limit(1000, None).as_bytes());
+    answer(f.sessions.begin(&s)).result.unwrap();
+    f.write(near_the_limit(1000, Some(617)).as_bytes());
+    let diffed = f.diff_disk(&s, Some(at(1)));
+    assert!(!diffed.session.as_ref().unwrap().reloaded);
+    let result = diffed.result.unwrap();
+    assert_eq!((result.from, result.to), (at(1), Named::Disk));
+    assert_eq!(result.changes.len(), 1);
+    let change = &result.changes[0];
+    assert_eq!(change.feature.as_str(), feature_id(617));
+    assert_eq!(change.field.as_deref(), Some("length"));
+}
+
+#[test]
+fn a_disk_side_that_isnt_a_regular_file_is_refused_naming_it() {
+    // A directory put at the file's path, inside a transaction: the read's `io_failed`,
+    // naming `to`, advising a regular file; the session goes on once the file's back.
+    let f = sessions();
+    let good = header(&a_box(0, "B", 4));
+    let s = f.open(good.as_bytes());
+    answer(f.sessions.begin(&s)).result.unwrap();
+    std::fs::remove_file(f.path()).unwrap();
+    std::fs::create_dir(f.path()).unwrap();
+    let refused = f.diff_disk(&s, Some(at(1))).result.unwrap_err();
+    assert_eq!(refused.total(), 1);
+    let e = &refused.errors()[0];
+    assert_eq!((e.code(), e.parameter()), (ErrorCode::IoFailed, Some("to")));
+    let suggestion = e.suggestion().unwrap();
+    assert!(
+        suggestion.starts_with("make the file at ")
+            && suggestion.ends_with(" a regular file this user may read, then read \"disk\" again"),
+        "{suggestion}"
+    );
+    std::fs::remove_dir(f.path()).unwrap();
+    f.write(good.as_bytes());
+    assert_eq!(f.diff_disk(&s, Some(at(1))).result.unwrap().changes, []);
 }

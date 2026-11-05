@@ -14,8 +14,9 @@ use std::time::{Duration, Instant};
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::wire::reads::DiffRequest;
-use silico_core::command::wire::{Layout, ToWire, response_text, write};
+use silico_core::command::wire::{Layout, Named, ToWire, response_text, write};
 use silico_core::command::{DiffAnswer, Response, Revision, SessionId, Sessions};
+use silico_core::disk::Disk;
 use silico_core::document::json::{self, Node};
 use silico_core::document::{self, Change, Document};
 use silico_core::fake::{FakeKernel, FakeSketches};
@@ -23,6 +24,20 @@ use silico_core::sketch::SketchSolver;
 use tempfile::TempDir;
 
 use crate::sessions::{answer, id};
+
+/// Revision `n`, named.
+fn at(n: u64) -> Named {
+    Named::Revision(Revision::from_number(n).unwrap())
+}
+
+/// The number of `named`, a revision.
+#[track_caller]
+fn number(named: Named) -> u64 {
+    match named {
+        Named::Revision(revision) => revision.number(),
+        Named::Disk => panic!("disk, not a revision"),
+    }
+}
 
 /// A document's header and its features, given as JSON objects, on one line.
 fn doc_text(features: &[&str]) -> String {
@@ -539,12 +554,19 @@ impl Fixture {
         }
     }
 
+    /// `diff` of revisions by number, each `None` for the document now.
     fn diff(&self, s: &SessionId, from: Option<u64>, to: Option<u64>) -> Response<DiffAnswer> {
-        answer(self.sessions.diff(
-            s,
-            from.map(|n| Revision::from_number(n).unwrap()),
-            to.map(|n| Revision::from_number(n).unwrap()),
-        ))
+        self.diff_of(s, from.map(at), to.map(at))
+    }
+
+    /// `diff` of the sides named, a revision or `"disk"`.
+    fn diff_of(
+        &self,
+        s: &SessionId,
+        from: Option<Named>,
+        to: Option<Named>,
+    ) -> Response<DiffAnswer> {
+        answer(self.sessions.diff(s, from, to))
     }
 }
 
@@ -843,8 +865,15 @@ fn bracket_changed() -> String {
 #[test]
 fn the_examples_are_the_designs_text_and_the_sessions_answers() {
     let blocks = design("### `diff` (M5", "## 8. Versioning");
-    assert_eq!(blocks.len(), 3);
-    for (block, name) in blocks.iter().zip(["request", "result", "refused-not-held"]) {
+    let names = [
+        "request",
+        "result",
+        "request-disk",
+        "result-disk",
+        "refused-not-held",
+    ];
+    assert_eq!(blocks.len(), names.len());
+    for (block, name) in blocks.iter().zip(names) {
         assert_eq!(
             format!("{block}\n"),
             example(&format!("diff/{name}")),
@@ -858,7 +887,13 @@ fn the_examples_are_the_designs_text_and_the_sessions_answers() {
     files.sort();
     assert_eq!(
         files,
-        ["refused-not-held.json", "request.json", "result.json"]
+        [
+            "refused-not-held.json",
+            "request-disk.json",
+            "request.json",
+            "result-disk.json",
+            "result.json"
+        ]
     );
 
     // The request, read and written back.
@@ -868,7 +903,7 @@ fn the_examples_are_the_designs_text_and_the_sessions_answers() {
         request,
         DiffRequest {
             session: SessionId::parse("s1").unwrap(),
-            from: Revision::from_number(1),
+            from: Some(at(1)),
             to: None,
         }
     );
@@ -901,19 +936,53 @@ fn the_examples_are_the_designs_text_and_the_sessions_answers() {
         example("diff/refused-not-held")
     );
     assert_eq!(problems.errors()[0].candidates(), ["2", "3"]);
+    // To 2 as well (revisions by number, reading nothing of the file): `from` refused alone,
+    // the same refusal.
+    let refused = f.diff(&s, Some(1), Some(2));
+    assert!(!refused.session.as_ref().unwrap().reloaded);
+    let problems = refused.result.unwrap_err();
+    assert_eq!(problems.total(), 1);
+    assert_eq!(
+        written(&problems.errors()[0]),
+        example("diff/refused-not-held")
+    );
     // And from 2: the second change alone.
     let second = f.diff(&s, Some(2), None).result.unwrap();
-    assert_eq!((second.from.number(), second.to.number()), (2, 3));
+    assert_eq!((number(second.from), number(second.to)), (2, 3));
     assert_eq!(
         lines(&second.changes),
         [r#"{"feature": "a91cw0de", "name": "Pin", "field": "radius", "before": 3, "after": 4}"#]
     );
     // Its reverse, `to` the replaced one.
     let back = f.diff(&s, None, Some(2)).result.unwrap();
-    assert_eq!((back.from.number(), back.to.number()), (3, 2));
+    assert_eq!((number(back.from), number(back.to)), (3, 2));
     assert_eq!(
         lines(&back.changes),
         [r#"{"feature": "a91cw0de", "name": "Pin", "field": "radius", "before": 4, "after": 3}"#]
+    );
+
+    // The file on disk (Fable's 6d decision): the request, read and written back.
+    let text = example("diff/request-disk");
+    let request = DiffRequest::read(&json::read(text.as_bytes()).unwrap()).unwrap();
+    assert_eq!(
+        request,
+        DiffRequest {
+            session: SessionId::parse("s1").unwrap(),
+            from: Some(at(1)),
+            to: Some(Named::Disk),
+        }
+    );
+    assert_eq!(written(&request), text);
+    // Inside a transaction begun at revision 1, the block's height set from 10 to 12, and
+    // the pin's radius written 2.5 to 3 to the file outside: the design's result.
+    let f = sessions();
+    let s = f.editing();
+    f.write(agents_radius().as_bytes());
+    let diffed = answer(f.sessions.diff(&s, request.from, request.to));
+    assert!(!diffed.session.as_ref().unwrap().reloaded);
+    assert_eq!(
+        written(&diffed.result.unwrap()),
+        example("diff/result-disk")
     );
 }
 
@@ -929,7 +998,7 @@ fn a_diff_sent_after_a_change_outside_reloads_first_and_reads_the_text_replaced(
     assert!(session.reloaded);
     assert_eq!(session.revision.number(), 2);
     let result = diffed.result.unwrap();
-    assert_eq!((result.from.number(), result.to.number()), (1, 2));
+    assert_eq!((number(result.from), number(result.to)), (1, 2));
     assert_eq!(result.changes.len(), 3);
 }
 
@@ -946,7 +1015,7 @@ fn a_hand_written_file_reloaded_as_its_canonical_text_diffs_empty() {
     let diffed = f.diff(&s, Some(1), None);
     assert!(diffed.session.unwrap().reloaded);
     let result = diffed.result.unwrap();
-    assert_eq!((result.from.number(), result.to.number()), (1, 2));
+    assert_eq!((number(result.from), number(result.to)), (1, 2));
     assert_eq!(result.changes, []);
 }
 
@@ -957,7 +1026,7 @@ fn inside_a_transaction_its_base_is_held_until_it_ends() {
     // Nothing to compare yet: the document now with itself.
     let same = f.diff(&s, None, None).result.unwrap();
     assert_eq!(
-        (same.from.number(), same.to.number(), same.changes.len()),
+        (number(same.from), number(same.to), same.changes.len()),
         (1, 1, 0)
     );
     answer(f.sessions.begin(&s)).result.unwrap();
@@ -971,7 +1040,7 @@ fn inside_a_transaction_its_base_is_held_until_it_ends() {
     let now = set.session.unwrap().revision;
     assert_eq!(now.number(), 2);
     let base = f.diff(&s, Some(1), None).result.unwrap();
-    assert_eq!((base.from.number(), base.to.number()), (1, 2));
+    assert_eq!((number(base.from), number(base.to)), (1, 2));
     assert_eq!(
         lines(&base.changes),
         [
@@ -1040,7 +1109,7 @@ fn an_untitled_session_and_one_never_reloaded_hold_their_revision_alone() {
     let s = answer(f.sessions.open_untitled()).session.unwrap().id;
     let same = f.diff(&s, Some(1), None).result.unwrap();
     assert_eq!(
-        (same.from.number(), same.to.number(), same.changes.len()),
+        (number(same.from), number(same.to), same.changes.len()),
         (1, 1, 0)
     );
     for (from, to, parameter) in [(Some(2), None, "from"), (None, Some(7), "to")] {
@@ -1071,6 +1140,15 @@ fn a_side_that_doesnt_read_as_a_document_is_refused_with_the_readers_message() {
             e.message(),
             format!("{side}, revision 1, doesn't read as a document, so it can't be compared")
         );
+        assert_eq!(
+            e.suggestion(),
+            Some(
+                format!(
+                    "give {side} a revision whose text reads as a document; text gives a revision's text"
+                )
+                .as_str()
+            )
+        );
     }
     // Mended outside: the side now reads, the one replaced still doesn't.
     f.write(doc_text(&[BOX]).as_bytes());
@@ -1092,6 +1170,414 @@ fn the_sessions_answer_is_the_same_bytes_every_time() {
     for _ in 0..3 {
         assert_eq!(
             response_text(&f.diff(&s, Some(1), None), Layout::OneLine),
+            first
+        );
+    }
+}
+
+// --- The file on disk as a side (Fable's decision of 2026-11-04, 6d's other half). ---
+
+/// The bracket as an agent wrote it to the file: the pin's radius 2.5 to 3, nothing else.
+fn agents_radius() -> String {
+    bracket().replace("\"radius\": 2.5,", "\"radius\": 3,")
+}
+
+/// The pin's radius changed, 2.5 to 3, as the API writes it on one line.
+const PIN_RADIUS: &str =
+    r#"{"feature": "a91cw0de", "name": "Pin", "field": "radius", "before": 2.5, "after": 3}"#;
+
+impl Fixture {
+    /// `status`'s transaction and disk finding.
+    fn held(&self, s: &SessionId) -> (Option<silico_core::command::Transaction>, Option<Disk>) {
+        let status = self.sessions.status(s).result.unwrap();
+        (status.transaction, status.disk)
+    }
+
+    /// `status` asked until its disk finding is `want`: as the app's frames ask it.
+    #[track_caller]
+    fn finds(&self, s: &SessionId, want: Disk) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if self.held(s).1 == Some(want) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "never found {want:?}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// The bracket opened, a transaction begun at revision 1, and the block's height set
+    /// from 10 to 12 (revision 2): the person's edit, held.
+    fn editing(&self) -> SessionId {
+        let s = self.open(bracket().as_bytes());
+        answer(self.sessions.begin(&s)).result.unwrap();
+        let set = answer(self.sessions.set_field(
+            &s,
+            Revision::OPENED,
+            id("k7f2qx3m"),
+            "height".to_owned(),
+            json::read(b"12").unwrap(),
+        ));
+        assert_eq!(set.session.unwrap().revision.number(), 2);
+        s
+    }
+}
+
+#[test]
+fn inside_a_transaction_disk_is_the_file_changed_outside_and_nothing_held_moves() {
+    let f = sessions();
+    let s = f.open(bracket().as_bytes());
+    answer(f.sessions.begin(&s)).result.unwrap();
+    f.write(agents_radius().as_bytes());
+    // The watch finds the change, and, inside a transaction, reloads nothing.
+    f.finds(&s, Disk::Changed);
+    let before = f.held(&s).0.unwrap();
+    let diffed = f.diff_of(&s, Some(at(1)), Some(Named::Disk));
+    let session = diffed.session.unwrap();
+    assert_eq!((session.revision.number(), session.reloaded), (1, false));
+    let result = diffed.result.unwrap();
+    assert_eq!((result.from, result.to), (at(1), Named::Disk));
+    assert_eq!(lines(&result.changes), [PIN_RADIUS]);
+    // Nothing held moved: the revision, the transaction's stack, the watch's finding.
+    assert_eq!(f.revision(&s).number(), 1);
+    let (after, disk) = f.held(&s);
+    let after = after.unwrap();
+    assert_eq!(
+        (
+            after.base,
+            after.undo,
+            after.redo,
+            after.bytes,
+            after.changed
+        ),
+        (
+            before.base,
+            before.undo,
+            before.redo,
+            before.bytes,
+            before.changed
+        )
+    );
+    assert_eq!(disk, Some(Disk::Changed));
+    // The text the session holds is its own still.
+    assert_eq!(
+        answer(f.sessions.text(&s, None)).result.unwrap().text,
+        bracket()
+    );
+}
+
+#[test]
+fn with_the_persons_edit_held_the_two_lists_are_theirs_and_mine() {
+    let f = sessions();
+    let s = f.editing();
+    f.write(agents_radius().as_bytes());
+    // From the document now to the file: the person's edit undone, then the agent's change.
+    let now_to_disk = f.diff_of(&s, None, Some(Named::Disk));
+    assert!(!now_to_disk.session.unwrap().reloaded);
+    let now_to_disk = now_to_disk.result.unwrap();
+    assert_eq!((now_to_disk.from, now_to_disk.to), (at(2), Named::Disk));
+    assert_eq!(
+        lines(&now_to_disk.changes),
+        [
+            r#"{"feature": "k7f2qx3m", "name": "Block", "field": "height", "before": 12, "after": 10}"#,
+            PIN_RADIUS,
+        ]
+    );
+    // 6d's two lists: theirs, from the base to the file; mine, from the base to now.
+    let theirs = f
+        .diff_of(&s, Some(at(1)), Some(Named::Disk))
+        .result
+        .unwrap();
+    assert_eq!(lines(&theirs.changes), [PIN_RADIUS]);
+    let mine = f.diff(&s, Some(1), Some(2)).result.unwrap();
+    assert_eq!((mine.from, mine.to), (at(1), at(2)));
+    assert_eq!(
+        lines(&mine.changes),
+        [
+            r#"{"feature": "k7f2qx3m", "name": "Block", "field": "height", "before": 10, "after": 12}"#
+        ]
+    );
+    assert_eq!(f.revision(&s).number(), 2);
+}
+
+#[test]
+fn outside_a_transaction_disk_reloads_first_and_is_the_file_reloaded() {
+    let f = sessions();
+    let s = f.open(bracket().as_bytes());
+    f.write(agents_radius().as_bytes());
+    // The document now reads the file first, as every command does: reloaded at 2, and the
+    // file is what it reloaded, so nothing differs.
+    let diffed = f.diff_of(&s, None, Some(Named::Disk));
+    let session = diffed.session.unwrap();
+    assert_eq!((session.revision.number(), session.reloaded), (2, true));
+    let result = diffed.result.unwrap();
+    assert_eq!((result.from, result.to), (at(2), Named::Disk));
+    assert_eq!(result.changes, []);
+    // From the revision the reload replaced: the change.
+    let replaced = f.diff_of(&s, Some(at(1)), Some(Named::Disk));
+    assert!(!replaced.session.unwrap().reloaded);
+    let replaced = replaced.result.unwrap();
+    assert_eq!((replaced.from, replaced.to), (at(1), Named::Disk));
+    assert_eq!(lines(&replaced.changes), [PIN_RADIUS]);
+    // And `"disk"` alone reloads too: written again, read with revision 1 on the other side.
+    f.write(
+        agents_radius()
+            .replace("\"radius\": 3,", "\"radius\": 4,")
+            .as_bytes(),
+    );
+    let again = f.diff_of(&s, Some(Named::Disk), Some(at(2)));
+    let session = again.session.unwrap();
+    assert_eq!((session.revision.number(), session.reloaded), (3, true));
+    let again = again.result.unwrap();
+    assert_eq!((again.from, again.to), (Named::Disk, at(2)));
+    assert_eq!(
+        lines(&again.changes),
+        [r#"{"feature": "a91cw0de", "name": "Pin", "field": "radius", "before": 4, "after": 3}"#]
+    );
+}
+
+#[test]
+fn the_file_unchanged_inside_a_transaction_is_the_bytes_held() {
+    let f = sessions();
+    let s = f.editing();
+    // Nothing written outside: the file is as the session holds it.
+    let base = f
+        .diff_of(&s, Some(at(1)), Some(Named::Disk))
+        .result
+        .unwrap();
+    assert_eq!((base.from, base.to), (at(1), Named::Disk));
+    assert_eq!(base.changes, []);
+    let both = f
+        .diff_of(&s, Some(Named::Disk), Some(Named::Disk))
+        .result
+        .unwrap();
+    assert_eq!((both.from, both.to), (Named::Disk, Named::Disk));
+    assert_eq!(both.changes, []);
+    // From the file to the document now: the person's edit alone.
+    let mine = f.diff_of(&s, Some(Named::Disk), None).result.unwrap();
+    assert_eq!(
+        lines(&mine.changes),
+        [
+            r#"{"feature": "k7f2qx3m", "name": "Block", "field": "height", "before": 10, "after": 12}"#
+        ]
+    );
+    // Two `"disk"` sides of a changed file are one read: the same bytes, nothing between.
+    f.write(agents_radius().as_bytes());
+    let both = f
+        .diff_of(&s, Some(Named::Disk), Some(Named::Disk))
+        .result
+        .unwrap();
+    assert_eq!(both.changes, []);
+}
+
+/// The one refusal `response` gives: its code, parameter, and cause.
+#[track_caller]
+fn refused_side(response: &Response<DiffAnswer>) -> (ErrorCode, Option<String>, Option<String>) {
+    let problems = response.result.as_ref().unwrap_err();
+    assert_eq!(problems.total(), 1, "{problems:?}");
+    let e = &problems.errors()[0];
+    (
+        e.code(),
+        e.parameter().map(str::to_owned),
+        e.cause().map(str::to_owned),
+    )
+}
+
+/// The cause of a `"disk"` side refused inside a transaction.
+const DISK_READ: &str =
+    "\"disk\" is the session's file as this command reads it, inside a transaction too";
+
+#[test]
+fn a_disk_side_the_file_cant_give_is_refused_naming_the_side_the_transaction_left_open() {
+    let f = sessions();
+    let s = f.editing();
+    let open = || {
+        let t = f.held(&s).0.unwrap();
+        assert_eq!((t.base.number(), t.changed), (1, true));
+        assert_eq!(f.revision(&s).number(), 2);
+    };
+    // Gone: `io_failed`, naming each side that's `"disk"`, the first only where both are.
+    std::fs::remove_file(f.path()).unwrap();
+    for (from, to, side) in [
+        (Some(at(1)), Some(Named::Disk), "to"),
+        (Some(Named::Disk), None, "from"),
+    ] {
+        let refused = f.diff_of(&s, from, to);
+        let problems = refused.result.as_ref().unwrap_err();
+        let e = &problems.errors()[0];
+        assert_eq!(
+            refused_side(&refused),
+            (
+                ErrorCode::IoFailed,
+                Some(side.to_owned()),
+                Some(DISK_READ.to_owned())
+            )
+        );
+        let suggestion = e.suggestion().unwrap();
+        assert!(
+            suggestion.starts_with("put the file back at ")
+                && suggestion.ends_with(", then read \"disk\" again"),
+            "{suggestion}"
+        );
+        open();
+    }
+    // Both `"disk"`: each refused, the one read's finding.
+    let both = f
+        .diff_of(&s, Some(Named::Disk), Some(Named::Disk))
+        .result
+        .unwrap_err();
+    let named: Vec<_> = both.errors().iter().map(|e| e.parameter()).collect();
+    assert_eq!(named, [Some("from"), Some("to")]);
+    // Revisions by number answer while it's gone.
+    assert_eq!(
+        lines(&f.diff(&s, Some(1), Some(2)).result.unwrap().changes).len(),
+        1
+    );
+    // Not a document: the reader's message the cause, naming the side.
+    f.write(b"{");
+    let reader = document::read(b"{").unwrap_err();
+    let refused = f.diff_of(&s, Some(at(1)), Some(Named::Disk));
+    assert_eq!(
+        refused_side(&refused),
+        (
+            ErrorCode::InvalidInput,
+            Some("to".to_owned()),
+            Some(reader.message().to_owned())
+        )
+    );
+    let e = &refused.result.as_ref().unwrap_err().errors()[0];
+    assert_eq!(
+        e.message(),
+        "to, the file on disk, doesn't read as a document, so it can't be compared"
+    );
+    // The file to mend, not a revision to choose.
+    assert_eq!(
+        e.suggestion(),
+        Some("mend the file on disk, or give to a revision the session holds")
+    );
+    open();
+    // And mended outside, it reads again: nothing reloaded, the edit still held.
+    f.write(agents_radius().as_bytes());
+    let mended = f
+        .diff_of(&s, Some(at(1)), Some(Named::Disk))
+        .result
+        .unwrap();
+    assert_eq!(lines(&mended.changes), [PIN_RADIUS]);
+    open();
+}
+
+#[test]
+fn outside_a_transaction_a_disk_side_the_read_refuses_names_the_side() {
+    // The read every command makes before it runs refuses the file gone, as for any
+    // command, but naming the `"disk"` side, which asked for the file, rather than `path`.
+    let f = sessions();
+    let s = f.open(bracket().as_bytes());
+    std::fs::remove_file(f.path()).unwrap();
+    let refused = f.diff_of(&s, Some(at(1)), Some(Named::Disk));
+    let (code, parameter, cause) = refused_side(&refused);
+    assert_eq!(code, ErrorCode::IoFailed);
+    assert_eq!(parameter.as_deref(), Some("to"));
+    assert_eq!(cause.as_deref(), Some(silico_core::command::NOT_RELOADED));
+    // A `null` side alone names `path`, as every command does.
+    let refused = f.diff(&s, Some(1), None);
+    assert_eq!(refused_side(&refused).1.as_deref(), Some("path"));
+    // Revisions by number alone answer.
+    assert_eq!(f.diff(&s, Some(1), Some(1)).result.unwrap().changes, []);
+}
+
+#[test]
+fn an_untitled_session_has_no_disk_and_says_so() {
+    let f = sessions();
+    let s = answer(f.sessions.open_untitled()).session.unwrap().id;
+    // Its first save is a commit given a path: outside a transaction, where `commit` is
+    // refused, one begun first, as an edit's refusal there says.
+    for (transaction, save) in [
+        (
+            false,
+            "begin a transaction first; its commit, given a path, saves it (Save As)",
+        ),
+        (true, "commit it given a path, which saves it (Save As)"),
+    ] {
+        if transaction {
+            answer(f.sessions.begin(&s)).result.unwrap();
+        }
+        let suggestion = |parameter: &str| {
+            format!(
+                "{save}; until then, give {parameter} a revision the session holds, or null for the document now"
+            )
+        };
+        let refused = f.diff_of(&s, None, Some(Named::Disk));
+        assert_eq!(
+            refused_side(&refused),
+            (
+                ErrorCode::InvalidInput,
+                Some("to".to_owned()),
+                Some("the session is untitled: nothing is on disk until its first save".to_owned())
+            )
+        );
+        assert_eq!(
+            refused.result.as_ref().unwrap_err().errors()[0].suggestion(),
+            Some(suggestion("to").as_str())
+        );
+        let text = answer(f.sessions.text_at(&s, None, Some(Named::Disk)));
+        let e = &text.result.as_ref().unwrap_err().errors()[0];
+        assert_eq!(e.parameter(), Some("revision"));
+        assert_eq!(
+            e.cause(),
+            Some("the session is untitled: nothing is on disk until its first save")
+        );
+        assert_eq!(e.suggestion(), Some(suggestion("revision").as_str()));
+    }
+}
+
+#[test]
+fn undo_after_disk_reads_steps_back_as_without_them() {
+    let f = sessions();
+    let s = f.editing();
+    let set = answer(f.sessions.set_field(
+        &s,
+        Revision::from_number(2).unwrap(),
+        id("k7f2qx3m"),
+        "width".to_owned(),
+        json::read(b"30").unwrap(),
+    ));
+    let three = set.session.unwrap().revision;
+    assert_eq!(three.number(), 3);
+    f.write(agents_radius().as_bytes());
+    f.diff_of(&s, Some(at(1)), Some(Named::Disk))
+        .result
+        .unwrap();
+    answer(f.sessions.text_at(&s, None, Some(Named::Disk)))
+        .result
+        .unwrap();
+    // Undone: the state before the last edit, the height 12 and the width 20.
+    let undone = answer(f.sessions.undo(&s, three, None)).result.unwrap();
+    assert_eq!(undone.restored.number(), 2);
+    let now = f.diff(&s, Some(1), None).result.unwrap();
+    assert_eq!(
+        lines(&now.changes),
+        [
+            r#"{"feature": "k7f2qx3m", "name": "Block", "field": "height", "before": 10, "after": 12}"#
+        ]
+    );
+}
+
+#[test]
+fn the_same_disk_diff_is_the_same_bytes_every_time() {
+    let f = sessions();
+    let s = f.editing();
+    f.write(agents_radius().as_bytes());
+    let first = response_text(
+        &f.diff_of(&s, Some(at(1)), Some(Named::Disk)),
+        Layout::OneLine,
+    );
+    assert!(first.contains("\"to\": \"disk\""), "{first}");
+    for _ in 0..3 {
+        assert_eq!(
+            response_text(
+                &f.diff_of(&s, Some(at(1)), Some(Named::Disk)),
+                Layout::OneLine
+            ),
             first
         );
     }

@@ -331,7 +331,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Text => (
             "Document text",
-            "The document's text as the session holds it, or one feature's.",
+            "The document's text as the session holds it, or one feature's: of the document now, of a revision the session holds, or of the file on disk (`revision` `\"disk\"`). Taking the file's text into a transaction with `replace_text` doesn't make the file the transaction's own: its `commit` is still refused as a `conflict`; roll back, or save elsewhere with `path`.",
         ),
         Command::Outline => (
             "Outline",
@@ -339,7 +339,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Diff => (
             "Changes between revisions",
-            "What changed between two revisions the session holds (`null` for the document now): each feature added, removed, or moved (`field` null, `before` and `after` its place in the timeline), and each field that changed, by the path `set_field` names it by, with its value before and after. A change set_field accepts is applied by set_field with its feature, field, and after; set_field doesn't accept fingerprint fields; `type`, `id`, or `v` (or, with a feature's `type`, a field its new type brings or takes away); a member only one side has below the feature's top level (a sketch member added or removed, an item added to or removed from a list by place), but for a sketch angle's `reversed`; or an extent's or a constraint's `type` changed to one that takes other fields. The session holds its revision now, the one its last reload replaced, and inside a transaction the one it began at: after a response that says `reloaded`, diff from the revision you last saw to `null` to learn what changed outside the session.",
+            "What changed between two revisions the session holds (`null` for the document now): each feature added, removed, or moved (`field` null, `before` and `after` its place in the timeline), and each field that changed, by the path `set_field` names it by, with its value before and after. A change set_field accepts is applied by set_field with its feature, field, and after; set_field doesn't accept fingerprint fields; `type`, `id`, or `v` (or, with a feature's `type`, a field its new type brings or takes away); a member only one side has below the feature's top level (a sketch member added or removed, an item added to or removed from a list by place), but for a sketch angle's `reversed`; or an extent's or a constraint's `type` changed to one that takes other fields. The session holds its revision now, the one its last reload replaced, and inside a transaction the one it began at: after a response that says `reloaded`, diff from the revision you last saw to `null` to learn what changed outside the session. A side may also be `\"disk\"`, the session's file as this call reads it, inside a transaction too, where nothing is reloaded: before a `commit` refused as a `conflict`, diff from the transaction's base to `\"disk\"` to see what changed on disk, and from its base to `null` to see your own edits. Revisions by number read nothing of the file.",
         ),
         Command::Timeline => (
             "Timeline",

@@ -679,7 +679,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 self.replace_text(&r.session, r.revision, r.text)
             }),
             Command::Text => typed(named, TextRequest::read(request), |r| {
-                self.text(&r.session, r.feature)
+                self.text_at(&r.session, r.feature, r.revision)
             }),
             Command::Outline => typed(named, SessionRequest::read(request), |r| {
                 self.outline(&r.session)
