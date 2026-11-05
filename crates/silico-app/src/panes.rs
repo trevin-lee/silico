@@ -271,13 +271,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
         if tab.renaming.is_none() {
             tab.renaming = renaming;
         }
-        if let Some((feature, name)) = asked.renamed
-            && tab
-                .entry(feature.as_str())
-                .is_some_and(|entry| entry.name != name)
-        {
-            tab.rename(self.sessions, feature, &name);
-            *self.started = true;
+        if let Some((feature, typed)) = asked.renamed {
+            *self.started |= tab.finish_rename(self.sessions, feature, &typed);
         }
         for what in asked.toggled {
             tab.toggle_shown(what);
@@ -287,6 +282,14 @@ impl<P: Clients + 'static> Panes<'_, P> {
         {
             // A sketch chosen here fills an open dialog's selection box (section 9).
             tab.pick(&id);
+            tab.selected_in = crate::feature_menu::Place::Browser;
+            tab.selection_mut().select_feature(id);
+        }
+        if let Some(id) = asked.menu_selected
+            && tab.selection().feature() != Some(&id)
+        {
+            // Selected as its menu opens, as the timeline's right-click selects: never an
+            // open dialog's pick, which a click alone makes.
             tab.selected_in = crate::feature_menu::Place::Browser;
             tab.selection_mut().select_feature(id);
         }
@@ -766,12 +769,14 @@ fn units() -> String {
 }
 
 /// What the browser's rows asked for this frame, done once they're drawn: eyes clicked, a
-/// row selected, a sketch's Edit Sketch, the document's row clicked, what a row's menu
-/// asked, and a rename field's name sent.
+/// row selected (by a click, or by its menu's opening), a sketch's Edit Sketch, the
+/// document's row clicked, what a row's menu asked, and a rename field's name sent.
 #[derive(Default)]
 struct Asked {
     toggled: Vec<Hideable>,
     selected: Option<FeatureId>,
+    /// A row right-clicked, selected as its menu opens.
+    menu_selected: Option<FeatureId>,
     edit: Option<FeatureId>,
     root: bool,
     act: Option<crate::feature_menu::Act>,
@@ -970,7 +975,7 @@ fn tree(
                     answer.row.context_menu(|ui| {
                         // Selected as it's opened, as the prototype's `contextmenu` selects it.
                         if tab.selection().feature() != Some(&each.id) {
-                            asked.selected = Some(each.id.clone());
+                            asked.menu_selected = Some(each.id.clone());
                         }
                         let place = crate::feature_menu::Place::Browser;
                         if let Some(act) = crate::feature_menu::menu(ui, tab, entry, place) {

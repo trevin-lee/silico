@@ -368,8 +368,9 @@ enum Under {
         sending: Sending,
         running: Running<Suppressed>,
     },
-    /// A deletion, as it was sent.
+    /// A deletion of `feature`, as it was sent.
     Remove {
+        feature: FeatureId,
         sending: Sending,
         running: Running<Removed>,
     },
@@ -1664,7 +1665,11 @@ impl Tab {
                 }
                 Err(running) => Some(Under::Suppress { sending, running }),
             },
-            Under::Remove { sending, running } => match running.try_take() {
+            Under::Remove {
+                feature,
+                sending,
+                running,
+            } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
                     self.applied(sending, &response);
@@ -1682,7 +1687,11 @@ impl Tab {
                     }
                     None
                 }
-                Err(running) => Some(Under::Remove { sending, running }),
+                Err(running) => Some(Under::Remove {
+                    feature,
+                    sending,
+                    running,
+                }),
             },
             Under::Base {
                 serial,
@@ -2027,6 +2036,7 @@ impl Tab {
                     self.record(Sent::Remove(feature.clone()));
                     let sending = self.sending();
                     self.under.push(Under::Remove {
+                        feature: feature.clone(),
                         sending,
                         running: sessions.remove_feature(&self.id, self.revision, feature),
                     });
@@ -2352,12 +2362,24 @@ impl Tab {
             self.message = Some("Close the dialog before deleting a feature".to_owned());
             return;
         }
-        if self.closing() {
+        if self.closing() || self.removing(&feature) {
+            // A second Del before the first answers: it's going already.
             return;
         }
         self.hush();
         self.edits.queue.push_back(Queued::Remove { feature });
         self.advance(sessions);
+    }
+
+    /// Whether a deletion of `feature` is queued or running.
+    fn removing(&self, feature: &FeatureId) -> bool {
+        self.edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::Remove { feature: queued } if queued == feature))
+            || self.under.iter().any(
+                |under| matches!(under, Under::Remove { feature: under, .. } if under == feature),
+            )
     }
 
     /// The feature `feature` renamed `name` (`set_field` of `name`), as the property panel's
@@ -2381,9 +2403,32 @@ impl Tab {
         }
     }
 
+    /// The name typed in the feature `feature`'s own field, finished (Enter, or a click
+    /// away): sent trimmed, unless that leaves nothing (dropped, as Esc drops it) or the
+    /// name it has, or the timeline doesn't list it. Whether it was sent.
+    pub fn finish_rename<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        feature: FeatureId,
+        typed: &str,
+    ) -> bool {
+        let Some(name) = crate::feature_menu::finished(typed) else {
+            return false;
+        };
+        if self
+            .entry(feature.as_str())
+            .is_none_or(|entry| entry.name == name)
+        {
+            return false;
+        }
+        self.rename(sessions, feature, name);
+        true
+    }
+
     /// The feature `feature`'s name typed in its own field, at `place`: its timeline item's
-    /// or, if it has one, its browser row's (else its item's). Never while a dialog is open
-    /// or the tab closes, nor for a feature the timeline doesn't list.
+    /// (the timeline scrolled to it, so the field over it is in view) or, if it has one, its
+    /// browser row's (else its item's). Never while a dialog is open or the tab closes, nor
+    /// for a feature the timeline doesn't list.
     pub fn start_rename(&mut self, feature: FeatureId, place: crate::feature_menu::Place) {
         if self.in_dialog() || self.closing() {
             return;
@@ -2399,6 +2444,9 @@ impl Tab {
             place => place,
         };
         self.selection.select_feature(feature.clone());
+        if place == crate::feature_menu::Place::Timeline {
+            self.timeline_scroll = Some(feature.clone());
+        }
         self.renaming = Some(crate::feature_menu::Renaming::new(feature, place, text));
     }
 

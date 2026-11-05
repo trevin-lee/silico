@@ -424,13 +424,8 @@ fn features<P: Clients + 'static>(
     if tab.renaming.is_none() {
         tab.renaming = renaming;
     }
-    if let Some((feature, name)) = asked.renamed
-        && tab
-            .entry(feature.as_str())
-            .is_some_and(|entry| entry.name != name)
-    {
-        tab.rename(sessions, feature, &name);
-        *started = true;
+    if let Some((feature, typed)) = asked.renamed {
+        *started |= tab.finish_rename(sessions, feature, &typed);
     }
     if let Some(id) = asked.selected {
         tab.selected_in = feature_menu::Place::Timeline;

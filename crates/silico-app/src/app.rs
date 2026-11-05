@@ -609,7 +609,11 @@ impl<P: Clients + 'static> App<P> {
             self.waker_set = true;
         }
         self.poll();
+        // A name being typed, clicked away from: sent before any control the click lands on
+        // acts, so it comes first in the tab's queue.
+        let renamed = self.rename_clicked_away(ui.ctx());
         let (mut started, dialog_key) = self.keys(ui);
+        started |= renamed;
         started |= self.take_browsed();
         self.app_bar(ui, &mut started);
         if self.start_shown() {
@@ -700,6 +704,27 @@ impl<P: Clients + 'static> App<P> {
             ui.ctx().request_repaint();
         }
         self.after_drawing(ui, started);
+    }
+
+    /// The active tab's rename field, if a press of the pointer this frame lands away from
+    /// it: its name finished there and then, before the window's controls are drawn, so
+    /// what the click does (a dialog opened, a save, an undo) comes after it. Whether the
+    /// name was sent.
+    fn rename_clicked_away(&mut self, ctx: &egui::Context) -> bool {
+        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
+            return false;
+        };
+        if !tab
+            .renaming
+            .as_ref()
+            .is_some_and(|renaming| crate::feature_menu::clicked_away(ctx, renaming))
+        {
+            return false;
+        }
+        let Some(renaming) = tab.renaming.take() else {
+            return false;
+        };
+        tab.finish_rename(&self.sessions, renaming.feature, &renaming.text)
     }
 
     /// What the start page's `act` asks: a new untitled part, Open's panel, a recent
@@ -1113,7 +1138,9 @@ impl<P: Clients + 'static> App<P> {
         );
         let rebuild_all = shortcuts::take(ui, Command::RebuildAll) && !typing;
         let rebuild = shortcuts::take(ui, Command::Rebuild);
-        let stop = shortcuts::take(ui, Command::Stop);
+        // Esc with a menu open (a feature's right-click menu, a drop-down) closes the menu
+        // alone, as the prototype's `keydown` has it: left for the menu to take.
+        let stop = !egui::Popup::is_any_open(ui.ctx()) && shortcuts::take(ui, Command::Stop);
         // H hides or shows the selection (DESIGN.md, *Keyboard*), never a letter typed.
         let hide = !typing && shortcuts::take(ui, Command::Hide);
         // F2 renames the selected feature, and Del (or ⌫) deletes it: never a field's keys.
@@ -1171,13 +1198,30 @@ impl<P: Clients + 'static> App<P> {
             self.toast = Some((FILTERS_SAID.to_owned(), ui.input(|input| input.time)));
         }
         let selected = tab.selection().feature().cloned();
+        // Each only where its menu item would be on: else its reason is said, as the item's
+        // hover says it.
+        let place = tab.selected_in;
+        let can = |tab: &Tab, id: &silico_core::document::FeatureId, item| {
+            let entry = tab.entry(id.as_str())?;
+            Some(crate::feature_menu::off(tab, entry, item, place))
+        };
         if rename && let Some(id) = selected.clone() {
-            let place = tab.selected_in;
-            tab.start_rename(id, place);
+            match can(tab, &id, crate::feature_menu::Item::Rename) {
+                Some(None) => tab.start_rename(id, place),
+                Some(Some(why)) => tab.message = Some(why),
+                None => {}
+            }
         }
-        let deleted = delete && selected.is_some();
-        if deleted && let Some(id) = selected {
-            tab.remove_feature(&self.sessions, id);
+        let mut deleted = false;
+        if delete && let Some(id) = selected {
+            match can(tab, &id, crate::feature_menu::Item::Delete) {
+                Some(None) => {
+                    tab.remove_feature(&self.sessions, id);
+                    deleted = true;
+                }
+                Some(Some(why)) => tab.message = Some(why),
+                None => {}
+            }
         }
         // Esc with a feature's name being typed: the name dropped, nothing sent, and nothing
         // further down Esc's chain done (the field lost its focus to the Esc already).

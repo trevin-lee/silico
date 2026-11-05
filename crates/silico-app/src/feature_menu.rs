@@ -19,12 +19,15 @@
 //! rollback bar is out of M5, DESIGN.md's Proposal 5); the item goes between Find in… and
 //! Delete once it has one.
 
-use eframe::egui::{self, RichText, Ui};
+use eframe::egui::{
+    self, Color32, FontId, Pos2, Rect, Sense, Ui, Vec2, WidgetInfo, WidgetType, vec2,
+};
 use silico_core::command::{Removed, Suppressed};
 use silico_core::document::FeatureId;
 use silico_core::document::chain::Rewired;
 use silico_core::timeline::{Entry, Health};
 
+use crate::icons::{ICON_SIZE, Icon, IconSize};
 use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::theme;
@@ -38,7 +41,7 @@ pub enum Place {
 
 /// A feature's name being typed in its own field (F2, or Rename in a menu): the feature,
 /// where its field is, and the text so far.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Renaming {
     pub feature: FeatureId,
     pub place: Place,
@@ -49,6 +52,9 @@ pub struct Renaming {
     /// Whether it's typed over whole still: until the person first types, deletes, or moves
     /// in it.
     whole: bool,
+    /// Where the field was last drawn: a press of the pointer outside it finishes the name
+    /// before anything else the press does ([`clicked_away`]).
+    rect: Option<Rect>,
 }
 
 impl Renaming {
@@ -60,8 +66,28 @@ impl Renaming {
             text,
             focused: false,
             whole: true,
+            rect: None,
         }
     }
+}
+
+/// Whether this frame's input presses the pointer away from `renaming`'s field, which has
+/// had the focus: a click away, which finishes the name (SolidWorks keeps a name typed in
+/// its tree when the focus leaves it). The window asks this before any of its controls is
+/// drawn, so the name is sent before whatever the click does: a dialog the click opens
+/// starts after it (its Cancel keeps the name), and a save the click asks saves it.
+pub fn clicked_away(ctx: &egui::Context, renaming: &Renaming) -> bool {
+    let Some(rect) = renaming.rect.filter(|_| renaming.focused) else {
+        return false;
+    };
+    ctx.input(|input| {
+        input.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::PointerButton { pos, pressed: true, .. } if !rect.contains(*pos)
+            )
+        })
+    })
 }
 
 /// What a menu asked, done once its pane is drawn.
@@ -100,14 +126,40 @@ pub const ITEMS: [Item; 5] = [
     Item::Delete,
 ];
 
-/// An item as the menu shows it: its words, the keys or gesture beside them, and why it's
-/// off, if it is.
+/// An item as the menu shows it: its words, the gesture in dim words after them, its keys'
+/// caps, and why it's off, if it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shown {
     pub item: Item,
     pub label: String,
-    pub keys: Option<String>,
+    /// Edit feature's "double-click" (the prototype's `sub`).
+    pub sub: Option<&'static str>,
+    /// Its keys' caps, as the platform names them: none for an item with no keys.
+    pub caps: Vec<String>,
     pub off: Option<String>,
+}
+
+/// Edit feature's gesture, in dim words after it.
+const DOUBLE_CLICK: &str = "double-click";
+
+/// `item`'s icon (the prototype's: Edit's pencil and Suppress's struck circle), if it has
+/// one; the others keep its place.
+fn icon(item: Item) -> Option<Icon> {
+    match item {
+        Item::Edit => Some(Icon::Edit),
+        Item::Suppress => Some(Icon::Suppress),
+        Item::Rename | Item::Find | Item::Delete => None,
+    }
+}
+
+/// `item`'s gesture, and its keys' caps on `ctx`'s platform.
+fn keys(item: Item, ctx: &egui::Context) -> (Option<&'static str>, Vec<String>) {
+    match item {
+        Item::Edit => (Some(DOUBLE_CLICK), Vec::new()),
+        Item::Rename => (None, Command::Rename.caps(ctx)),
+        Item::Delete => (None, Command::Delete.caps(ctx)),
+        Item::Suppress | Item::Find => (None, Vec::new()),
+    }
 }
 
 /// The words of `item` for `entry`, shown at `place` (the prototype's: "Edit Sketch" for a
@@ -201,44 +253,217 @@ fn no_row(tab: &Tab, entry: &Entry) -> String {
 pub fn items(tab: &Tab, entry: &Entry, place: Place, ctx: &egui::Context) -> Vec<Shown> {
     ITEMS
         .iter()
-        .map(|&item| Shown {
-            item,
-            label: label(item, entry, place).to_owned(),
-            keys: match item {
-                Item::Edit => Some("double-click".to_owned()),
-                Item::Rename => Some(Command::Rename.keys_text(ctx)),
-                Item::Delete => Some(Command::Delete.keys_text(ctx)),
-                Item::Suppress | Item::Find => None,
-            },
-            off: off(tab, entry, item, place),
+        .map(|&item| {
+            let (sub, caps) = keys(item, ctx);
+            Shown {
+                item,
+                label: label(item, entry, place).to_owned(),
+                sub,
+                caps,
+                off: off(tab, entry, item, place),
+            }
         })
         .collect()
 }
 
-/// The menu's head (`.menu .mh`): the feature's name, in capitals.
-fn head(ui: &mut Ui, name: &str) {
-    ui.label(
-        RichText::new(name.to_uppercase())
-            .size(theme::TOOLBAR_LABEL_SIZE)
-            .color(theme::TOOLBAR_LABEL_TEXT)
-            .extra_letter_spacing(theme::CAPITALS_LETTER_SPACING),
-    );
+/// What a menu's lines take: the widest of its head's and its items', and the least
+/// `.menu` gives (`min-width: 200px`, less its border and its padding).
+fn width(ui: &Ui, head: &egui::Galley, shown: &[(Shown, Lines)]) -> f32 {
+    let least =
+        theme::MENU_MIN_WIDTH - 2.0 * (f32::from(theme::MENU_PADDING) + theme::BORDER_WIDTH);
+    shown
+        .iter()
+        .map(|(shown, lines)| {
+            let sub = lines.sub.as_ref().map_or(0.0, |sub| {
+                theme::MENU_ITEM_GAP + theme::MENU_ITEM_SUB_MARGIN + sub.size().x
+            });
+            // `.sc`, at the right, is there with no keys too: its gap and its padding.
+            2.0 * theme::MENU_ITEM_PADDING
+                + ICON_SIZE
+                + theme::MENU_ITEM_GAP
+                + lines.label.size().x
+                + sub
+                + theme::MENU_ITEM_GAP
+                + theme::MENU_KEYS_PADDING
+                + crate::start::key_caps_width_spaced(ui, &shown.caps, MENU_KEY_CAP_GAP)
+        })
+        .fold(
+            least.max(head.size().x + 2.0 * theme::MENU_ITEM_PADDING),
+            f32::max,
+        )
 }
 
-/// One item (`.menu .mi`, Delete's `.danger` red), on or off: off, its reason its hover
-/// text and its description for a screen reader. Whether it was clicked.
-fn item(ui: &mut Ui, label: &str, keys: Option<&str>, off: Option<&str>, danger: bool) -> bool {
-    let text = if danger {
-        RichText::new(label).color(theme::ERROR_TEXT)
-    } else {
-        RichText::new(label)
-    };
-    let mut button = egui::Button::new(text);
-    if let Some(keys) = keys {
-        button = button.shortcut_text(keys);
+/// The gap between an item's caps: none (the prototype's caps sit side by side in one
+/// `.keys` span, the only child of `.sc`).
+const MENU_KEY_CAP_GAP: f32 = 0.0;
+
+/// An item's words laid out: its label's and its dim gesture's.
+struct Lines {
+    label: std::sync::Arc<egui::Galley>,
+    sub: Option<std::sync::Arc<egui::Galley>>,
+}
+
+fn lines(ui: &Ui, shown: &Shown) -> Lines {
+    let painter = ui.painter();
+    Lines {
+        label: painter.layout_no_wrap(
+            shown.label.clone(),
+            FontId::proportional(theme::BODY_SIZE),
+            theme::MENU_ITEM_TEXT,
+        ),
+        sub: shown.sub.map(|sub| {
+            painter.layout_no_wrap(
+                sub.to_owned(),
+                FontId::proportional(theme::MENU_ITEM_SUB_SIZE),
+                theme::MENU_ITEM_SUB_TEXT,
+            )
+        }),
     }
-    let response = ui.add_enabled(off.is_none(), button);
-    if let Some(off) = off {
+}
+
+/// The menu's head (`.menu .mh`): the feature's name, in capitals, laid out.
+fn head_galley(ui: &Ui, name: &str) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &name.to_uppercase(),
+        0.0,
+        egui::TextFormat {
+            font_id: FontId::proportional(theme::TOOLBAR_LABEL_SIZE),
+            color: theme::TOOLBAR_LABEL_TEXT,
+            extra_letter_spacing: theme::CAPITALS_LETTER_SPACING,
+            ..Default::default()
+        },
+    );
+    ui.painter().layout_job(job)
+}
+
+/// The head, `width` wide: 6 above its line and 2 under it, 8 in from the left.
+fn head(ui: &mut Ui, galley: std::sync::Arc<egui::Galley>, width: f32) {
+    let height = theme::MENU_HEAD_TOP + theme::MENU_LINE_HEIGHT + theme::MENU_HEAD_BOTTOM;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let text = galley.text().to_owned();
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
+    let line = rect.top() + theme::MENU_HEAD_TOP;
+    let at = Pos2::new(
+        rect.left() + theme::MENU_ITEM_PADDING,
+        line + (theme::MENU_LINE_HEIGHT - galley.size().y) / 2.0,
+    );
+    ui.painter().galley(at, galley, theme::TOOLBAR_LABEL_TEXT);
+}
+
+/// The separator before Delete (`.menu .msep`), `width` wide.
+fn separator(ui: &mut Ui, width: f32) {
+    let height = theme::BORDER_WIDTH + 2.0 * theme::MENU_SEPARATOR_MARGIN;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let line = Rect::from_min_size(
+        Pos2::new(rect.left(), rect.top() + theme::MENU_SEPARATOR_MARGIN),
+        vec2(width, theme::BORDER_WIDTH),
+    );
+    ui.painter().rect_filled(line, 0.0, theme::MENU_SEPARATOR);
+}
+
+/// What a screen reader is told an item is: its words, then its gesture or its keys.
+fn said(ctx: &egui::Context, shown: &Shown) -> String {
+    match (shown.sub, shown.caps.is_empty()) {
+        (Some(sub), _) => format!("{} {sub}", shown.label),
+        (None, false) => format!(
+            "{} {}",
+            shown.label,
+            crate::shortcuts::joined(ctx, &shown.caps)
+        ),
+        (None, true) => shown.label.clone(),
+    }
+}
+
+/// One item (`.menu .mi`), `width` wide, on or off: its icon or its spacer, its words, its
+/// gesture dim after them, and its caps at its right. Hovered (or focused, the prototype's
+/// `.kfocus`) it's filled blue; off, its words are Gray.400 and its reason is its hover text
+/// and its description for a screen reader; Delete's words are red (`.danger`). Whether it
+/// was clicked.
+fn item(ui: &mut Ui, shown: &Shown, lines: Lines, width: f32) -> bool {
+    let said = said(ui.ctx(), shown);
+    // Painted at the menu's opacity, not faded further when off: `.menu .mi:disabled` is
+    // Gray.400 itself.
+    let opacity = ui.opacity();
+    let response = ui.add_enabled(shown.off.is_none(), |ui: &mut Ui| {
+        ui.set_opacity(opacity);
+        let (rect, response) =
+            ui.allocate_exact_size(vec2(width, theme::MENU_ITEM_HEIGHT), Sense::click());
+        let enabled = ui.is_enabled();
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, &said));
+        if !ui.is_rect_visible(rect) {
+            return response;
+        }
+        let lit = enabled && (response.hovered() || response.has_focus());
+        // `.menu .mi:hover:not(:disabled)` outweighs `.danger` (a class and two
+        // pseudo-classes to two classes), so a hovered Delete is lit as the others are.
+        let ink = if lit {
+            theme::MENU_ITEM_HOVER_TEXT
+        } else if !enabled {
+            theme::TEXT_DISABLED
+        } else if shown.item == Item::Delete {
+            theme::ERROR_TEXT
+        } else {
+            theme::MENU_ITEM_TEXT
+        };
+        if lit {
+            ui.painter()
+                .rect_filled(rect, theme::SMALL_CORNER_RADIUS, theme::MENU_ITEM_HOVER_BG);
+        }
+        let middle = rect.center().y;
+        let icon_rect = Rect::from_min_size(
+            Pos2::new(
+                rect.left() + theme::MENU_ITEM_PADDING,
+                middle - ICON_SIZE / 2.0,
+            ),
+            Vec2::splat(ICON_SIZE),
+        );
+        if let Some(icon) = icon(shown.item) {
+            icon.image(IconSize::Small)
+                .tint(ink)
+                .paint_at(ui, icon_rect);
+        }
+        let label_at = Pos2::new(
+            icon_rect.right() + theme::MENU_ITEM_GAP,
+            middle - lines.label.size().y / 2.0,
+        );
+        let label_right = label_at.x + lines.label.size().x;
+        ui.painter()
+            .galley_with_override_text_color(label_at, lines.label, ink);
+        if let Some(sub) = lines.sub {
+            let at = Pos2::new(
+                label_right + theme::MENU_ITEM_GAP + theme::MENU_ITEM_SUB_MARGIN,
+                middle - sub.size().y / 2.0,
+            );
+            ui.painter().galley(at, sub, theme::MENU_ITEM_SUB_TEXT);
+        }
+        if !shown.caps.is_empty() {
+            // `.menu .mi:hover .kbd`: no fill, a faint white outline, the item's words'
+            // colour; else `.kbd`'s own, off or on.
+            let colours = if lit {
+                (
+                    Color32::TRANSPARENT,
+                    theme::MENU_KEY_CAP_HOVER_STROKE,
+                    theme::MENU_ITEM_HOVER_TEXT,
+                )
+            } else {
+                (
+                    theme::KEY_CAP_BG,
+                    theme::KEY_CAP_STROKE,
+                    theme::KEY_CAP_TEXT,
+                )
+            };
+            crate::start::key_caps_coloured(
+                ui,
+                Pos2::new(rect.right() - theme::MENU_ITEM_PADDING, middle),
+                &shown.caps,
+                colours,
+                MENU_KEY_CAP_GAP,
+            );
+        }
+        response
+    });
+    if let Some(off) = &shown.off {
         ui.ctx().accesskit_node_builder(response.id, |node| {
             node.set_description(off.to_owned());
         });
@@ -247,66 +472,78 @@ fn item(ui: &mut Ui, label: &str, keys: Option<&str>, off: Option<&str>, danger:
     response.clicked()
 }
 
+/// A menu headed `name`, of `shown`'s items, in order, Delete after a separator: which was
+/// clicked, the menu closed.
+fn draw(ui: &mut Ui, name: &str, shown: Vec<Shown>) -> Option<Item> {
+    // `.menu`'s lines stacked, none apart.
+    ui.spacing_mut().item_spacing = Vec2::ZERO;
+    let head_text = head_galley(ui, name);
+    let laid: Vec<(Shown, Lines)> = shown
+        .into_iter()
+        .map(|shown| {
+            let lines = lines(ui, &shown);
+            (shown, lines)
+        })
+        .collect();
+    let width = width(ui, &head_text, &laid);
+    head(ui, head_text, width);
+    let mut clicked = None;
+    for (shown, lines) in laid {
+        if shown.item == Item::Delete {
+            separator(ui, width);
+        }
+        if item(ui, &shown, lines, width) {
+            clicked = Some(shown.item);
+            ui.close();
+        }
+    }
+    clicked
+}
+
 /// The right-click menu of the feature `entry`, at `place` (the prototype's, in its order:
 /// the name, Edit feature, Rename, Suppress or Unsuppress, Find in…, a separator, Delete):
 /// what was clicked, the menu closed.
 pub fn menu(ui: &mut Ui, tab: &Tab, entry: &Entry, place: Place) -> Option<Act> {
-    head(ui, &entry.name);
-    let mut asked = None;
-    for shown in items(tab, entry, place, ui.ctx()) {
-        if shown.item == Item::Delete {
-            ui.separator();
-        }
-        let clicked = item(
-            ui,
-            &shown.label,
-            shown.keys.as_deref(),
-            shown.off.as_deref(),
-            shown.item == Item::Delete,
-        );
-        if clicked {
-            let id = entry.id.clone();
-            asked = Some(match shown.item {
-                Item::Edit => Act::Edit(id),
-                Item::Rename => Act::Rename(id, place),
-                Item::Suppress => Act::Suppress(id, !entry.suppressed),
-                Item::Find => match place {
-                    Place::Timeline => Act::FindInBrowser(id),
-                    Place::Browser => Act::FindInTimeline(id),
-                },
-                Item::Delete => Act::Delete(id),
-            });
-            ui.close();
-        }
-    }
-    asked
+    let shown = items(tab, entry, place, ui.ctx());
+    let id = entry.id.clone();
+    Some(match draw(ui, &entry.name, shown)? {
+        Item::Edit => Act::Edit(id),
+        Item::Rename => Act::Rename(id, place),
+        Item::Suppress => Act::Suppress(id, !entry.suppressed),
+        Item::Find => match place {
+            Place::Timeline => Act::FindInBrowser(id),
+            Place::Browser => Act::FindInTimeline(id),
+        },
+        Item::Delete => Act::Delete(id),
+    })
 }
 
 /// The menu of the origin's row `name` (its point, an axis, or a plane): the browser's
 /// items, each off, for none is a feature.
 pub fn origin_menu(ui: &mut Ui, name: &str) {
-    head(ui, name);
     let off = format!("{name} is the origin's, not a feature");
     let ctx = ui.ctx().clone();
-    for (label, keys) in [
-        ("Edit feature", Some("double-click".to_owned())),
-        (
-            Command::Rename.label(),
-            Some(Command::Rename.keys_text(&ctx)),
-        ),
-        (Command::Suppress.label(), None),
-        (Command::FindInTimeline.label(), None),
-        (
-            Command::Delete.label(),
-            Some(Command::Delete.keys_text(&ctx)),
-        ),
-    ] {
-        let danger = label == Command::Delete.label();
-        if danger {
-            ui.separator();
-        }
-        item(ui, label, keys.as_deref(), Some(&off), danger);
-    }
+    let shown = ITEMS
+        .iter()
+        .map(|&item| {
+            let (sub, caps) = keys(item, &ctx);
+            Shown {
+                item,
+                label: match item {
+                    Item::Edit => "Edit feature",
+                    Item::Rename => Command::Rename.label(),
+                    Item::Suppress => Command::Suppress.label(),
+                    Item::Find => Command::FindInTimeline.label(),
+                    Item::Delete => Command::Delete.label(),
+                }
+                .to_owned(),
+                sub,
+                caps,
+                off: Some(off.clone()),
+            }
+        })
+        .collect();
+    draw(ui, name, shown);
 }
 
 /// What a menu asked, done to `tab` through `sessions`: whether a command was started.
@@ -353,7 +590,7 @@ pub enum Field {
     /// Still being typed in.
     Typing,
     /// Enter, or a click away (SolidWorks keeps a name typed in its tree when the focus
-    /// leaves it): the name typed, to send.
+    /// leaves it): the name typed, to send ([`finished`]).
     Done(String),
 }
 
@@ -375,26 +612,17 @@ pub fn field(ui: &mut Ui, renaming: &mut Renaming, rect: egui::Rect, name: &str)
     }
     if renaming.whole && focused {
         // Typed over whole, as a name selected whole is (the prototype's `prompt`): until
-        // the person first types, deletes, or moves in it, what's typed (or pasted)
-        // replaces the name, and Del or ⌫ clears it. Its text is shown selected too, as
-        // egui's DragValue selects its own.
-        let first = ui.input(|input| {
-            input.events.iter().find_map(|event| match event {
-                egui::Event::Text(_) | egui::Event::Paste(_) => Some(true),
-                egui::Event::Key {
-                    key: egui::Key::Backspace | egui::Key::Delete,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } if modifiers.is_none() => Some(true),
-                egui::Event::Key { pressed: true, .. } => Some(false),
-                egui::Event::PointerButton { pressed: true, .. } => Some(false),
-                _ => None,
-            })
-        });
+        // the person first types, deletes, or moves in it, what's typed (or pasted, or
+        // composed in an input method) replaces the name, and Del or ⌫ clears it. Its text
+        // is shown selected too, as egui's DragValue selects its own.
+        let first = ui.input(|input| first_edit(&input.events));
         match first {
             Some(replaces) => {
                 if replaces {
+                    // The selection stored for it covers the name only from the frame
+                    // after the field first has the focus, and is kept only where its text
+                    // is laid out in glyphs: the name is let go here, so it's replaced
+                    // whole either way.
                     renaming.text.clear();
                 }
                 renaming.whole = false;
@@ -416,6 +644,7 @@ pub fn field(ui: &mut Ui, renaming: &mut Renaming, rect: egui::Rect, name: &str)
     let edit = egui::TextEdit::singleline(&mut renaming.text);
     let edit = theme::field(ui, edit, salt, kind, false);
     let response = ui.put(rect, edit);
+    renaming.rect = Some(response.rect);
     let label = format!("Rename {name}");
     ui.ctx().accesskit_node_builder(response.id, |node| {
         node.set_label(label);
@@ -426,6 +655,37 @@ pub fn field(ui: &mut Ui, renaming: &mut Renaming, rect: egui::Rect, name: &str)
         return Field::Done(renaming.text.clone());
     }
     Field::Typing
+}
+
+/// Whether `events` hold the person's first edit of a name typed over whole: `Some(true)`
+/// for one that replaces it (a letter typed, a paste, an input method's text composed or
+/// committed, or Del or ⌫), `Some(false)` for one that keeps it (a key that moves, a
+/// click in it), or none yet.
+fn first_edit(events: &[egui::Event]) -> Option<bool> {
+    events.iter().find_map(|event| match event {
+        egui::Event::Text(_) | egui::Event::Paste(_) => Some(true),
+        egui::Event::Ime(egui::ImeEvent::Preedit { text, .. } | egui::ImeEvent::Commit(text))
+            if !text.is_empty() =>
+        {
+            Some(true)
+        }
+        egui::Event::Key {
+            key: egui::Key::Backspace | egui::Key::Delete,
+            pressed: true,
+            modifiers,
+            ..
+        } if modifiers.is_none() => Some(true),
+        egui::Event::Key { pressed: true, .. } => Some(false),
+        egui::Event::PointerButton { pressed: true, .. } => Some(false),
+        _ => None,
+    })
+}
+
+/// The name typed, finished (Enter, or a click away), as it's sent: trimmed, and none if
+/// that leaves nothing, which drops it as Esc does (the prototype's `renameSelected`, its
+/// `n.trim()`).
+pub fn finished(typed: &str) -> Option<&str> {
+    Some(typed.trim()).filter(|name| !name.is_empty())
 }
 
 /// `names` as a list in words: "A", "A and B", "A, B, and C".
@@ -490,6 +750,312 @@ fn rewired_words(rewired: &Rewired, name: impl Fn(&FeatureId) -> String) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod drawn {
+        use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
+        use egui::accesskit::Role;
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+
+        use super::super::{Item, Shown, draw};
+        use crate::modal::tests::{
+            colour, css, fills_at, font, icon_at, near, rects, rgba, same_colour, sized,
+            text_shape, widget,
+        };
+        use crate::theme;
+
+        /// The prototype's `.menu` (styles.css): `min-width: 200px; padding: 4px`, its
+        /// border `1px`, all inside its width (`box-sizing: border-box`).
+        const MENU_MIN_W: f32 = 200.0;
+        const MENU_PAD: f32 = 4.0;
+        /// `.menu .mi`: `height: 24px; gap: 8px; padding: 0 8px`; Gray.750, hovered
+        /// `--blue` and `--blue-text`, off Gray.400, `.danger` `--red`.
+        const MI_H: f32 = 24.0;
+        const MI_PAD: f32 = 8.0;
+        const MI_GAP: f32 = 8.0;
+        const BLUE: Color32 = Color32::from_rgb(0x18, 0x6a, 0xdd);
+        const BLUE_TEXT: Color32 = Color32::from_rgb(0xf0, 0xf2, 0xff);
+        /// The `subdued` span: `margin-left: 8px; font-size: 11px`, Gray.550.
+        const SUB_MARGIN: f32 = 8.0;
+        const SUB_FS: f32 = 11.0;
+        /// `.menu .mi .sc`: `padding-left: 24px`, at the item's right.
+        const SC_PAD: f32 = 24.0;
+        /// `.kbd`: 16 high; `.menu .mi:hover .kbd`: `border-color: rgba(255,255,255,.35)`,
+        /// no fill.
+        const KBD_H: f32 = 16.0;
+        const KBD_HOVER_BORDER: [u8; 4] = [255, 255, 255, 89];
+        /// `.menu .mh`: `padding: 6px 8px 2px; font-size: 10px`, Gray.550, on the body's 16
+        /// line; `.menu .msep`: `height: 1px; margin: 4px 0`, Gray.250.
+        const MH_TOP: f32 = 6.0;
+        const MH_BOTTOM: f32 = 2.0;
+        const MH_FS: f32 = 10.0;
+        const MSEP_MARGIN: f32 = 4.0;
+
+        fn shown(item: Item, label: &str, sub: Option<&'static str>, caps: &[&str]) -> Shown {
+            Shown {
+                item,
+                label: label.to_owned(),
+                sub,
+                caps: caps.iter().map(|cap| (*cap).to_owned()).collect(),
+                off: None,
+            }
+        }
+
+        /// The menu of a feature named Block, as the timeline shows it, Suppress off.
+        fn block() -> Harness<'static> {
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(600.0, 400.0))
+                .build_ui(|ui| {
+                    let mut items = vec![
+                        shown(Item::Edit, "Edit feature", Some("double-click"), &[]),
+                        shown(Item::Rename, "Rename", None, &["F2"]),
+                        shown(Item::Suppress, "Suppress", None, &[]),
+                        shown(Item::Find, "Find in browser", None, &[]),
+                        shown(Item::Delete, "Delete", None, &["Del"]),
+                    ];
+                    items[2].off = Some("Close the open dialog first".to_owned());
+                    draw(ui, "Block", items);
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(4);
+            h
+        }
+
+        #[test]
+        fn the_menu_is_drawn_as_the_prototypes_menu_css_lays_it_out() {
+            let mut h = block();
+            let items: Vec<Rect> = [
+                "Edit feature double-click",
+                "Rename F2",
+                "Suppress",
+                "Find in browser",
+                "Delete Del",
+            ]
+            .into_iter()
+            .map(|label| widget(&h, Role::Button, label))
+            .collect();
+            // Each 24 high, all one width, the widest's (`white-space: nowrap`, in a menu
+            // `.menu`'s least wide less its border and its padding at least): here Edit
+            // feature's, its words, its gesture, and `.sc`'s padding with no caps in it.
+            let advance = |text: &str| text_shape(&h, text).galley.size().x;
+            let width = (MI_PAD
+                + css::ICON
+                + MI_GAP
+                + advance("Edit feature")
+                + MI_GAP
+                + SUB_MARGIN
+                + advance("double-click")
+                + MI_GAP
+                + SC_PAD
+                + MI_PAD)
+                .max(MENU_MIN_W - 2.0 * (MENU_PAD + css::BORDER));
+            assert!(width > MENU_MIN_W - 2.0 * (MENU_PAD + css::BORDER));
+            for rect in &items {
+                assert!(near(rect.height(), MI_H), "{rect:?}");
+                assert!(near(rect.width(), width), "{rect:?}, not {width} wide");
+                assert!(near(rect.left(), items[0].left()));
+            }
+            for pair in items[..4].windows(2) {
+                assert!(near(pair[1].top(), pair[0].bottom()), "{pair:?}");
+            }
+            assert!(near(
+                items[4].top(),
+                items[3].bottom() + 2.0 * MSEP_MARGIN + css::BORDER
+            ));
+            let line = Rect::from_min_size(
+                Pos2::new(items[3].left(), items[3].bottom() + MSEP_MARGIN),
+                Vec2::new(width, css::BORDER),
+            );
+            assert_eq!(
+                fills_at(&h, line),
+                [(css::G250, egui::CornerRadius::ZERO)],
+                "the separator"
+            );
+            // The head: the name in capitals, 10, Gray.550, 8 in and on a 16 line 6 down,
+            // 2 above the first item.
+            let head = text_shape(&h, "BLOCK");
+            font(&head, MH_FS, "the head");
+            same_colour(colour(&head), css::G550, "the head");
+            assert!(near(head.pos.x, items[0].left() + MI_PAD), "{:?}", head.pos);
+            let head_line = items[0].top() - MH_BOTTOM - css::LH;
+            assert!(near(
+                head.pos.y + head.galley.size().y / 2.0,
+                head_line + css::LH / 2.0
+            ));
+            let head_rect = widget(&h, Role::Label, "BLOCK");
+            assert!(near(head_rect.top(), head_line - MH_TOP), "{head_rect:?}");
+            assert!(near(head_rect.bottom(), items[0].top()), "{head_rect:?}");
+            assert!(near(head_rect.width(), width), "{head_rect:?}");
+            for (at, rect) in items.iter().enumerate() {
+                // The icon (or its 14 wide spacer) 8 in, the words 8 after it, in the
+                // item's middle; Edit's and Suppress's icons drawn, the others' none.
+                let icon = Rect::from_min_size(
+                    Pos2::new(rect.left() + MI_PAD, rect.center().y - css::ICON / 2.0),
+                    Vec2::splat(css::ICON),
+                );
+                let drawn = icon_at(&h, icon);
+                assert_eq!(drawn.is_some(), at == 0 || at == 2, "item {at}'s icon");
+                let words = [
+                    "Edit feature",
+                    "Rename",
+                    "Suppress",
+                    "Find in browser",
+                    "Delete",
+                ][at];
+                let label = text_shape(&h, words);
+                font(&label, css::FS, words);
+                assert!(
+                    near(label.pos.x, icon.right() + MI_GAP),
+                    "{words}: {:?}",
+                    label.pos
+                );
+                assert!(near(
+                    label.pos.y + label.galley.size().y / 2.0,
+                    rect.center().y
+                ));
+                // Gray.750; off, Gray.400; Delete red. The icon in the words' colour.
+                let ink = match at {
+                    2 => css::G400,
+                    4 => css::RED,
+                    _ => css::G750,
+                };
+                same_colour(colour(&label), ink, words);
+                if let Some(tint) = drawn {
+                    same_colour(tint, ink, &format!("{words}'s icon"));
+                }
+            }
+            // "double-click": 11, Gray.550, 8 after the words and 8 more.
+            let edit = text_shape(&h, "Edit feature");
+            let sub = text_shape(&h, "double-click");
+            font(&sub, SUB_FS, "double-click");
+            same_colour(colour(&sub), css::G550, "double-click");
+            assert!(near(
+                sub.pos.x,
+                edit.pos.x + edit.galley.size().x + MI_GAP + SUB_MARGIN
+            ));
+            // The keys as caps, 16 high, at the item's right less its padding.
+            for (rect, key) in [(items[1], "F2"), (items[4], "Del")] {
+                let cap = rects(&h)
+                    .into_iter()
+                    .find(|shape| {
+                        shape.stroke.width == css::BORDER
+                            && rect.contains_rect(shape.rect)
+                            && near(shape.rect.height(), KBD_H)
+                    })
+                    .unwrap_or_else(|| panic!("{key}'s cap"));
+                assert!(near(cap.rect.right(), rect.right() - MI_PAD), "{key}");
+                assert!(near(cap.rect.center().y, rect.center().y), "{key}");
+                same_colour(cap.fill, css::G250, &format!("{key}'s cap"));
+                same_colour(cap.stroke.color, css::G350, &format!("{key}'s cap"));
+                same_colour(colour(&text_shape(&h, key)), css::G800, key);
+            }
+            // Hovered: filled blue at `--r-sm`, its words, icon, and caps `--blue-text`, the
+            // caps unfilled with a faint white outline.
+            h.get_by_role_and_label(Role::Button, "Rename F2").hover();
+            h.run_steps(2);
+            assert_eq!(
+                fills_at(&h, items[1]),
+                [(BLUE, egui::CornerRadius::same(css::R_SM))]
+            );
+            same_colour(colour(&text_shape(&h, "Rename")), BLUE_TEXT, "hovered");
+            same_colour(colour(&text_shape(&h, "F2")), BLUE_TEXT, "hovered F2");
+            let cap = rects(&h)
+                .into_iter()
+                .find(|shape| {
+                    shape.stroke.width == css::BORDER && items[1].contains_rect(shape.rect)
+                })
+                .expect("F2's cap");
+            assert_eq!(cap.fill, Color32::TRANSPARENT);
+            same_colour(cap.stroke.color, rgba(KBD_HOVER_BORDER), "the hovered cap");
+            // Delete hovered is lit as the others are (`:hover` outweighs `.danger`); the
+            // off Suppress, hovered, isn't.
+            h.get_by_role_and_label(Role::Button, "Delete Del").hover();
+            h.run_steps(2);
+            same_colour(
+                colour(&text_shape(&h, "Delete")),
+                BLUE_TEXT,
+                "hovered Delete",
+            );
+            h.get_by_role_and_label(Role::Button, "Suppress").hover();
+            h.run_steps(2);
+            assert!(fills_at(&h, items[2]).is_empty());
+            same_colour(
+                colour(&text_shape(&h, "Suppress")),
+                css::G400,
+                "hovered off",
+            );
+        }
+
+        #[test]
+        fn a_menu_of_short_items_is_as_wide_as_the_menus_least_and_an_off_delete_is_grey() {
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(600.0, 400.0))
+                .build_ui(|ui| {
+                    let mut delete = shown(Item::Delete, "Delete", None, &["Del"]);
+                    delete.off = Some("B is the origin's, not a feature".to_owned());
+                    draw(
+                        ui,
+                        "B",
+                        vec![shown(Item::Rename, "Rename", None, &["F2"]), delete],
+                    );
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(4);
+            let rename = widget(&h, Role::Button, "Rename F2");
+            assert!(near(
+                rename.width(),
+                MENU_MIN_W - 2.0 * (MENU_PAD + css::BORDER)
+            ));
+            // `.menu .mi:disabled`'s Gray.400, not `.danger`'s red: the prototype never
+            // shows Delete off, and an off item must read as off.
+            same_colour(
+                colour(&text_shape(&h, "Delete")),
+                css::G400,
+                "an off Delete",
+            );
+        }
+
+        #[test]
+        fn a_wide_item_widens_every_item_and_keeps_its_caps_24_from_its_words() {
+            let name = "Find in browser, a long way along the track";
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(800.0, 400.0))
+                .build_ui(|ui| {
+                    draw(
+                        ui,
+                        "Block",
+                        vec![
+                            shown(Item::Rename, "Rename", None, &["F2"]),
+                            shown(Item::Find, name, None, &[]),
+                            shown(Item::Delete, name, None, &["Del"]),
+                        ],
+                    );
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(4);
+            let painted: Vec<_> = crate::modal::tests::painted(&h)
+                .into_iter()
+                .filter_map(|shape| match shape {
+                    egui::Shape::Text(text) if text.galley.text() == name => Some(text),
+                    _ => None,
+                })
+                .collect();
+            let words = painted[0].galley.size().x;
+            let cap = text_shape(&h, "Del").galley.size().x;
+            // `.kbd`: its words, 4 of padding and 1 of border at each side, 16 at least.
+            let cap = (cap + 2.0 * (4.0 + css::BORDER)).max(16.0);
+            let want = MI_PAD + css::ICON + MI_GAP + words + MI_GAP + SC_PAD + cap + MI_PAD;
+            assert!(want > MENU_MIN_W);
+            let rename = widget(&h, Role::Button, "Rename F2");
+            let delete = widget(&h, Role::Button, &format!("{name} Del"));
+            sized(
+                rename,
+                Rect::from_min_size(rename.min, Vec2::new(want, MI_H)),
+                "Rename, as wide as the widest",
+            );
+            assert!(near(delete.width(), want));
+        }
+    }
 
     fn fid(id: &str) -> FeatureId {
         FeatureId::new(id).unwrap()
