@@ -1,5 +1,6 @@
-//! What changed between two revisions a session holds, in words (DESIGN.md's 6c and 6d; the
-//! prototype's `AGENT` lists in `js/interact.js`, drawn by `renderBanner` in `js/app.js`):
+//! What changed between two texts a session names (two revisions it holds, or one and its
+//! file on disk), in words (DESIGN.md's 6c and 6d; the prototype's `AGENT` lists in
+//! `js/interact.js`, drawn by `renderBanner` and the `diff` modal in `js/app.js`):
 //! each of `diff`'s changes as a row of the banner's list (the feature's name, its field,
 //! and what the field went from and to, each value as the file writes it), and as the text
 //! of the feature's purple mark. Worked out once, when `diff` answers, never each frame.
@@ -48,13 +49,32 @@ pub struct Listed {
 }
 
 /// What a `diff` the tab asked answered: nothing yet, its changes in words and the marks
-/// they give, or its refusal, said.
+/// they give, or its refusal: said ([`refused`]), and its cause, if it gives one (the
+/// reader's message, for a side that doesn't read as a document).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Changes {
     #[default]
     Asking,
     Listed(Listed),
-    Refused(String),
+    Refused {
+        said: String,
+        cause: Option<String>,
+    },
+}
+
+impl Changes {
+    /// `problems`, a diff's refusal, said: its first error's message and candidates, and
+    /// its cause.
+    pub fn refused(problems: &Problems) -> Self {
+        Changes::Refused {
+            said: refused(problems),
+            cause: problems
+                .errors()
+                .first()
+                .and_then(|error| error.cause())
+                .map(str::to_owned),
+        }
+    }
 }
 
 /// `text` cut short at [`SHOWN_CHARS`] characters, with an ellipsis.
@@ -462,6 +482,41 @@ mod tests {
         assert!(!not_held(&refusal("from", &[]), revision(1)));
         // A candidate that only starts with the revision's number isn't it.
         assert!(not_held(&refusal("from", &["10", "11"]), revision(1)));
+    }
+
+    #[test]
+    fn a_refusal_is_said_with_its_candidates_and_its_cause_apart() {
+        // A side of a diff that doesn't read, as the core refuses it: the reader's message
+        // its cause.
+        let unread = Problems::from(
+            silico_core::Error::new(
+                silico_core::ErrorCode::InvalidInput,
+                "to, the file on disk, doesn't read as a document, so it can't be compared",
+            )
+            .with_parameter("to")
+            .with_cause(
+                "the document isn't valid JSON: expected a value, found `x`, at line 1, column 1",
+            ),
+        );
+        assert_eq!(
+            Changes::refused(&unread),
+            Changes::Refused {
+                said: "to, the file on disk, doesn't read as a document, so it can't be compared"
+                    .to_owned(),
+                cause: Some(
+                    "the document isn't valid JSON: expected a value, found `x`, at line 1, column 1"
+                        .to_owned()
+                ),
+            }
+        );
+        // No cause: none; candidates after the message.
+        assert_eq!(
+            Changes::refused(&refusal("from", &["2", "3"])),
+            Changes::Refused {
+                said: "refused (candidates: 2, 3)".to_owned(),
+                cause: None,
+            }
+        );
     }
 
     #[test]

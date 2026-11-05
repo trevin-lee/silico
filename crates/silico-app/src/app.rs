@@ -317,6 +317,62 @@ pub struct App<P: Clients + 'static> {
     toast: Option<(String, f64)>,
 }
 
+/// A row of Show changes' "Their change (on disk)": the changed feature's name in the key
+/// column, purple (`.k`, `var(--purple)`), and the field and its values beside it.
+fn theirs_row(row: &changes::Row) -> (String, egui::Color32, String) {
+    (
+        row.feature.clone(),
+        theme::CHANGED_OUTSIDE,
+        format!("{} · {}", row.field, row.text),
+    )
+}
+
+/// A row of Show changes' "Your unsaved edits": "Edit" in the key column, and the feature,
+/// the field, and its values beside it.
+fn mine_row(row: &changes::Row) -> (String, egui::Color32, String) {
+    (
+        "Edit".to_owned(),
+        theme::PROPERTY_KEY,
+        format!("{} · {} · {}", row.feature, row.field, row.text),
+    )
+}
+
+/// One of Show changes' lists (DESIGN.md, 6d), as its own diff answered: "Reading what
+/// changed…" while it's asked; its rows (`.prop`, unpadded), each `row` giving its key, the
+/// key's colour, and its value, then how many more; or its refusal, said, with its cause
+/// under it (the reader's message, for a file on disk that doesn't read as a document).
+/// `list` names its rows apart from the other list's.
+fn held_list(
+    ui: &mut egui::Ui,
+    list: &str,
+    changes: Option<&Changes>,
+    row: fn(&changes::Row) -> (String, egui::Color32, String),
+) {
+    match changes {
+        None | Some(Changes::Asking) => {
+            modal::text(ui, "Reading what changed…", theme::MODAL_TEXT);
+        }
+        Some(Changes::Listed(listed)) => {
+            if listed.rows.is_empty() {
+                modal::text(ui, "No feature changed.", theme::MODAL_TEXT);
+            }
+            for (at, change) in listed.rows.iter().enumerate() {
+                let (key, colour, value) = row(change);
+                properties::list_row(ui, (list, at), &key, colour, &value);
+            }
+            if let Some(more) = &listed.more {
+                modal::text(ui, more, theme::MODAL_TEXT);
+            }
+        }
+        Some(Changes::Refused { said, cause }) => {
+            modal::text(ui, said, theme::ERROR_TEXT);
+            if let Some(cause) = cause {
+                modal::text(ui, cause, theme::ERROR_TEXT);
+            }
+        }
+    }
+}
+
 impl<P: Clients + 'static> App<P> {
     /// An app on `sessions`, with no document open.
     pub fn new(sessions: Arc<Sessions<P>>) -> Self {
@@ -1842,7 +1898,7 @@ impl<P: Clients + 'static> App<P> {
         let (rows, more): (&[crate::changes::Row], Option<&str>) = match &reloaded.changes {
             Changes::Asking => (&[], None),
             Changes::Listed(listed) => (&listed.rows, listed.more.as_deref()),
-            Changes::Refused(said) => (&[], Some(said.as_str())),
+            Changes::Refused { said, .. } => (&[], Some(said.as_str())),
         };
         let unlisted = changes::unlisted(&reloaded.unlisted);
         let after: Vec<&str> = [more, unlisted.as_deref(), reloaded.refused.as_deref()]
@@ -2013,40 +2069,13 @@ impl<P: Clients + 'static> App<P> {
                     return;
                 };
                 modal::head(ui, Some(Icon::Diff), "What changed on disk");
+                let held = tab.held_changes.as_ref();
                 modal::body(ui, |ui| {
+                    // The prototype's rows (`.prop`, unpadded), each list from its own diff.
                     modal::label(ui, "Their change (on disk)");
-                    // SEAM: the file's new text isn't a revision the session holds until it
-                    // reloads it, which drops the edits held: `diff` can't name it yet.
-                    modal::text(
-                        ui,
-                        "Silico hasn't read the new file yet: it reads it only when it \
-                         reloads, which drops your edits.",
-                        theme::MODAL_TEXT,
-                    );
+                    held_list(ui, "theirs", held.map(|held| &held.theirs), theirs_row);
                     modal::label(ui, "Your unsaved edits");
-                    // The prototype's rows (`.prop`, unpadded): "Edit" in the key column,
-                    // and what the edit changed beside it.
-                    match &tab.held_changes {
-                        None | Some(Changes::Asking) => {
-                            modal::text(ui, "Reading what changed…", theme::MODAL_TEXT);
-                        }
-                        Some(Changes::Listed(listed)) => {
-                            for (at, row) in listed.rows.iter().enumerate() {
-                                properties::list_row(
-                                    ui,
-                                    at,
-                                    "Edit",
-                                    &format!("{} · {} · {}", row.feature, row.field, row.text),
-                                );
-                            }
-                            if let Some(more) = &listed.more {
-                                modal::text(ui, more, theme::MODAL_TEXT);
-                            }
-                        }
-                        Some(Changes::Refused(said)) => {
-                            modal::text(ui, said, theme::ERROR_TEXT);
-                        }
-                    }
+                    held_list(ui, "mine", held.map(|held| &held.mine), mine_row);
                     // `.hint-block`, in Silico's words: the prototype's names `silico
                     // textconv`, but these rows are the core's `diff`'s.
                     properties::hint_at(
@@ -2327,8 +2356,10 @@ mod tests {
     use silico_core::sketch::SketchSolver;
     use tempfile::TempDir;
 
-    use super::{Answered, App, Opening, Part, split_answered};
+    use super::{Answered, App, Opening, Part, held_list, mine_row, split_answered, theirs_row};
+    use crate::changes::{Changes, Listed, Row};
     use crate::tab::said;
+    use crate::theme;
 
     /// A block: any document the gate takes.
     const BLOCK: &str = r#"{
@@ -2672,5 +2703,119 @@ mod tests {
             assert!(press(&mut h, key, Modifiers::NONE).0.is_empty(), "{key:?}");
         }
         assert_eq!(press(&mut h, Key::X, Modifiers::NONE), (Vec::new(), true));
+    }
+
+    /// What [`held_list`] paints for `changes`, as Show changes draws its list `list` with
+    /// `row`: each text, and its colour.
+    fn held_list_painted(
+        list: &'static str,
+        changes: Option<Changes>,
+        row: fn(&Row) -> (String, eframe::egui::Color32, String),
+    ) -> Vec<(String, eframe::egui::Color32)> {
+        use eframe::egui::Shape;
+        fn flatten(shape: &Shape, out: &mut Vec<(String, eframe::egui::Color32)>) {
+            match shape {
+                Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+                Shape::Text(shown) => {
+                    let colour = shown
+                        .override_text_color
+                        .unwrap_or(shown.galley.job.sections[0].format.color);
+                    out.push((shown.galley.text().to_owned(), colour));
+                }
+                _ => {}
+            }
+        }
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(eframe::egui::Vec2::new(520.0, 300.0))
+            .build_ui(move |ui| held_list(ui, list, changes.as_ref(), row));
+        h.run_steps(2);
+        let mut out = Vec::new();
+        for clipped in &h.output().shapes {
+            flatten(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// The colour `text` was painted in, painted once.
+    #[track_caller]
+    fn painted_in(
+        painted: &[(String, eframe::egui::Color32)],
+        text: &str,
+    ) -> eframe::egui::Color32 {
+        let found: Vec<_> = painted.iter().filter(|(shown, _)| shown == text).collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "{text:?} painted {} times: {painted:?}",
+            found.len()
+        );
+        found[0].1
+    }
+
+    fn one_row(feature: &str, field: &str, text: &str) -> Option<Changes> {
+        Some(Changes::Listed(Listed {
+            rows: vec![Row {
+                feature: feature.to_owned(),
+                field: field.to_owned(),
+                text: text.to_owned(),
+            }],
+            more: None,
+            changes: 1,
+            features: 1,
+        }))
+    }
+
+    #[test]
+    fn show_changes_lists_their_features_purple_and_your_edits_as_edits() {
+        // The prototype's 6d rows: under "Their change (on disk)", the feature's name in
+        // the key column in purple (`.k`, `var(--purple)`, #b780ff), the field and its
+        // values beside it; under "Your unsaved edits", "Edit" in the key's grey.
+        let theirs = held_list_painted("theirs", one_row("Pin", "radius", "5 → 3"), theirs_row);
+        assert_eq!(
+            painted_in(&theirs, "Pin"),
+            eframe::egui::Color32::from_rgb(0xb7, 0x80, 0xff)
+        );
+        assert_eq!(painted_in(&theirs, "radius · 5 → 3"), theme::PROPERTY_VALUE);
+        let mine = held_list_painted("mine", one_row("Block", "height", "10 → 12"), mine_row);
+        assert_eq!(painted_in(&mine, "Edit"), theme::PROPERTY_KEY);
+        assert_eq!(
+            painted_in(&mine, "Block · height · 10 → 12"),
+            theme::PROPERTY_VALUE
+        );
+        assert_ne!(theme::PROPERTY_KEY, theme::CHANGED_OUTSIDE);
+    }
+
+    #[test]
+    fn a_list_says_it_is_reading_has_nothing_or_was_refused_with_its_cause() {
+        for asking in [None, Some(Changes::Asking)] {
+            let painted = held_list_painted("theirs", asking, theirs_row);
+            painted_in(&painted, "Reading what changed…");
+        }
+        let empty = Some(Changes::Listed(Listed {
+            rows: Vec::new(),
+            more: None,
+            changes: 0,
+            features: 0,
+        }));
+        painted_in(
+            &held_list_painted("mine", empty, mine_row),
+            "No feature changed.",
+        );
+        // A refusal, red: what the core said, and under it its cause, the reader's message.
+        let refused = Some(Changes::Refused {
+            said: "to, the file on disk, doesn't read as a document".to_owned(),
+            cause: Some("expected a key".to_owned()),
+        });
+        let painted = held_list_painted("theirs", refused, theirs_row);
+        assert_eq!(
+            painted_in(&painted, "to, the file on disk, doesn't read as a document"),
+            theme::ERROR_TEXT
+        );
+        assert_eq!(painted_in(&painted, "expected a key"), theme::ERROR_TEXT);
+        assert!(
+            !painted
+                .iter()
+                .any(|(text, _)| text == "Reading what changed…")
+        );
     }
 }

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use silico_core::ErrorCode;
 use silico_core::command::export::{Export, Exported};
+use silico_core::command::wire::Named;
 use silico_core::command::{
     Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, DiffAnswer, FieldSet,
     ModelChoice, Moved, Problems, RebuildState, Replaced, Response, Revision, RolledBack, Running,
@@ -302,9 +303,35 @@ pub struct Reloaded {
     /// each from and to: their changes are never listed, nor their features marked.
     pub unlisted: Vec<(Revision, Revision)>,
     /// Whether the session still holds `from`'s text, as far as the tab knows: not once
-    /// the reload's `diff` was refused for not holding it (the file changed again), when
-    /// Restore, which reads it, can only be refused too.
+    /// the reload's `diff` was refused for not holding it (the file changed again, and a
+    /// reload queued ahead of the diff, the disk watch's own or another client's read,
+    /// replaced it), when Restore, which reads it, can only be refused too.
     pub from_held: bool,
+}
+
+/// Show changes' two lists (DESIGN.md, 6d), each from its own `diff`, answered or refused
+/// on its own: "Their change (on disk)", from the transaction's base to the file; and "Your
+/// unsaved edits", from the base to the document then.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HeldChanges {
+    pub theirs: Changes,
+    pub mine: Changes,
+}
+
+/// What `read`, a diff asked for a list, answered, if it has: its changes listed, or its
+/// refusal said; `read` let go once it answers.
+fn took(read: &mut Option<Running<DiffAnswer>>) -> Option<Changes> {
+    let running = read.take()?;
+    match running.try_take() {
+        Ok(response) => Some(match response.result {
+            Ok(answer) => Changes::Listed(changes::listed(&answer.changes)),
+            Err(problems) => Changes::refused(&problems),
+        }),
+        Err(running) => {
+            *read = Some(running);
+            None
+        }
+    }
 }
 
 /// A row of the browser (section 8, *The browser*): a feature, by its ID and name, with the
@@ -443,11 +470,13 @@ pub struct Tab {
     /// the reloads' diffs answered (`d.outside`): marked purple in the timeline and the
     /// browser until the person marks it seen in its properties (DESIGN.md, 6c).
     pub outside: BTreeMap<FeatureId, String>,
-    /// Show changes (DESIGN.md, 6d): what changed from the revision the transaction began
-    /// at to the session's now, the edits held, as `diff` answers; none until it's asked,
-    /// and again once its modal closes.
-    pub held_changes: Option<Changes>,
-    held_diff: Option<Running<DiffAnswer>>,
+    /// Show changes (DESIGN.md, 6d): what another program wrote to the file and what the
+    /// edits held changed, each as its own `diff` answers ([`HeldChanges`]); none until
+    /// it's asked, and again once its modal closes.
+    pub held_changes: Option<HeldChanges>,
+    /// Show changes' two diffs, the file's and the edits', each until it answers.
+    theirs_diff: Option<Running<DiffAnswer>>,
+    mine_diff: Option<Running<DiffAnswer>>,
     /// What the browser's eyes hide: the tab's state, never saved (open item 29).
     pub hidden: std::collections::BTreeSet<Hideable>,
     /// The last refusal a command of the tab's answered, as said to the person, until
@@ -584,7 +613,8 @@ impl Tab {
             reload_diff: None,
             outside: BTreeMap::new(),
             held_changes: None,
-            held_diff: None,
+            theirs_diff: None,
+            mine_diff: None,
             hidden: std::collections::BTreeSet::new(),
             message: None,
             close_refused: false,
@@ -924,11 +954,15 @@ impl Tab {
     /// The session's own reload seen, from `from`, the revision the tab had (the one the
     /// reload replaced), to `to`: the views read again; the banner saying so in place of
     /// any before it (none for a reload the person asked for, section 4); and what changed
-    /// asked of `diff`, from `from` to the session's now (Fable's decision of 2026-11-04,
-    /// section 1), its features marked when it answers, the person's reload's too. A diff
-    /// of an older reload still out is let go, so its answer never lands in this banner;
-    /// an older banner whose changes weren't listed (its diff still out, or refused) is
-    /// said in this one, as are those it carried.
+    /// asked of `diff`, from `from` to `to`, both by number (Fable's decisions of
+    /// 2026-11-04, *the three core gaps*, section 1, and *6d's other half*, section 2), so
+    /// it reads nothing of the file and a write landing after the reload never refuses it;
+    /// its features marked when it answers, the person's reload's too. An older reload's
+    /// diff that has answered is taken first, into its own banner; one still out is let
+    /// go, so its answer never lands in this banner. An older banner whose changes weren't
+    /// listed (its diff still out, or refused: the session no longer held its `from`, a
+    /// reload queued ahead of the diff having replaced it) is said in this one, as are
+    /// those it carried.
     fn reload_seen<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -936,10 +970,11 @@ impl Tab {
         to: Revision,
     ) {
         self.resets += 1;
+        self.take_diffs();
         let unlisted = match self.reloaded.take() {
             Some(older) => {
                 let mut unlisted = older.unlisted;
-                if matches!(older.changes, Changes::Asking | Changes::Refused(_)) {
+                if matches!(older.changes, Changes::Asking | Changes::Refused { .. }) {
                     unlisted.push((older.from, older.to));
                 }
                 unlisted
@@ -954,7 +989,11 @@ impl Tab {
             unlisted,
             from_held: true,
         });
-        self.reload_diff = Some(sessions.diff(&self.id, Some(from), None));
+        self.reload_diff = Some(sessions.diff(
+            &self.id,
+            Some(Named::Revision(from)),
+            Some(Named::Revision(to)),
+        ));
     }
 
     /// The session's own reload, if `session`, as the answer to a command the tab sent at
@@ -1037,8 +1076,9 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// The reload's diff and Show changes', if they've answered: the reload's listed in its
-    /// banner, each feature it changed marked; Show changes' listed in its modal.
+    /// The reload's diff and Show changes' two, if they've answered: the reload's listed in
+    /// its banner, each feature it changed marked; Show changes' each listed in its section
+    /// of the modal, or its refusal said there, each on its own.
     fn take_diffs(&mut self) {
         if let Some(read) = self.reload_diff.take() {
             match read.try_take() {
@@ -1052,7 +1092,7 @@ impl Tab {
                             if let Some(reloaded) = &mut self.reloaded {
                                 reloaded.from_held = !changes::not_held(&problems, reloaded.from);
                             }
-                            Changes::Refused(changes::refused(&problems))
+                            Changes::refused(&problems)
                         }
                     };
                     if let Some(reloaded) = &mut self.reloaded {
@@ -1062,37 +1102,45 @@ impl Tab {
                 Err(read) => self.reload_diff = Some(read),
             }
         }
-        if let Some(read) = self.held_diff.take() {
-            match read.try_take() {
-                Ok(response) => {
-                    let changes = match response.result {
-                        Ok(answer) => Changes::Listed(changes::listed(&answer.changes)),
-                        Err(problems) => Changes::Refused(changes::refused(&problems)),
-                    };
-                    if self.held_changes.is_some() {
-                        self.held_changes = Some(changes);
-                    }
-                }
-                Err(read) => self.held_diff = Some(read),
-            }
+        if let Some(changes) = took(&mut self.theirs_diff)
+            && let Some(held) = &mut self.held_changes
+        {
+            held.theirs = changes;
+        }
+        if let Some(changes) = took(&mut self.mine_diff)
+            && let Some(held) = &mut self.held_changes
+        {
+            held.mine = changes;
         }
     }
 
-    /// Show changes (DESIGN.md, 6d): what changed from the revision the open transaction
-    /// began at to the session's now, the edits held, asked of `diff`, for its modal. Nothing
-    /// with no transaction open.
+    /// Show changes (DESIGN.md, 6d; Fable's decision of 2026-11-04, *6d's other half*,
+    /// section 2): two diffs asked for its modal, each from the revision the open
+    /// transaction began at: to `"disk"`, the file as the core reads it then (inside the
+    /// transaction, reloading nothing and touching no edit), what another program wrote;
+    /// and to the document now, what the edits held changed. Neither moves the session's
+    /// revision. Nothing with no transaction open.
     pub fn show_changes<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         let Some(base) = self.transaction().map(|transaction| transaction.base) else {
             return;
         };
-        self.held_changes = Some(Changes::Asking);
-        self.held_diff = Some(sessions.diff(&self.id, Some(base), None));
+        let base = Some(Named::Revision(base));
+        self.held_changes = Some(HeldChanges::default());
+        self.theirs_diff = Some(sessions.diff(&self.id, base, Some(Named::Disk)));
+        // The edits' side is the document now (`null`), not the tab's newest revision by
+        // number: Show changes is offered only inside a transaction, where a `null` side
+        // reads no file and reloads nothing, and it names the document as it is when the
+        // diff runs, so an edit still in flight can't leave a number no longer held and the
+        // list refused (a departure from Fable's `<revision now>`: the same meaning, no
+        // race).
+        self.mine_diff = Some(sessions.diff(&self.id, base, None));
     }
 
-    /// Show changes' modal closed: its diff let go.
+    /// Show changes' modal closed: its diffs let go.
     pub fn hide_changes(&mut self) {
         self.held_changes = None;
-        self.held_diff = None;
+        self.theirs_diff = None;
+        self.mine_diff = None;
     }
 
     /// Restore (Fable's decision of 2026-11-04, section 2; DESIGN.md, 6c): the text of
@@ -1419,8 +1467,11 @@ impl Tab {
                 running,
             } => match running.try_take() {
                 Ok(response) => {
-                    // Its read reads the file first: a reload there is another program's
-                    // change, said in place of the banner Restore was clicked on.
+                    // Its read names a revision, so it reads nothing of the file; but a
+                    // reload queued ahead of it (the disk watch's own, or another client's
+                    // read) may have run first, which no answer said while it waited:
+                    // another program's change, said in place of the banner Restore was
+                    // clicked on.
                     self.reload_in(sessions, sent_at, response.session.as_ref());
                     self.took_session(&response);
                     match response.result {
@@ -1662,7 +1713,7 @@ impl Tab {
                     }
                 }
                 Queued::Restore { revision } => {
-                    let running = sessions.text_at(&self.id, None, Some(revision));
+                    let running = sessions.text_at(&self.id, None, Some(Named::Revision(revision)));
                     self.under.push(Under::Restore {
                         revision,
                         sent_at: self.revision,

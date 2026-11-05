@@ -303,9 +303,17 @@ pub(crate) fn text_row(ui: &mut Ui, key: &str, value: LayoutJob) {
 }
 
 /// A row of a modal's list (`.prop` with `padding: 0`, as the prototype's "What changed on
-/// disk" lists them): `key` in its column, and `value` in the rest, each cut short where it
-/// doesn't fit; `at`, its place among the list's rows, naming it.
-pub(crate) fn list_row(ui: &mut Ui, at: usize, key: &str, value: &str) {
+/// disk" lists them): `key` in its column, in `key_colour` (the property key's, or purple
+/// for a feature another program changed), and `value` in the rest, each cut short where
+/// it doesn't fit; `list`, naming the list among the modal's, and `at`, its place among
+/// the list's rows, naming it.
+pub(crate) fn list_row(
+    ui: &mut Ui,
+    (list, at): (&str, usize),
+    key: &str,
+    key_colour: Color32,
+    value: &str,
+) {
     let (rect, _) = ui.allocate_exact_size(
         vec2(ui.available_width(), theme::PROPERTY_ROW_HEIGHT),
         Sense::hover(),
@@ -318,10 +326,10 @@ pub(crate) fn list_row(ui: &mut Ui, at: usize, key: &str, value: &str) {
         pos2(key_rect.right() + theme::PROPERTY_ROW_GAP, rect.top()),
         rect.right_bottom(),
     );
-    within(ui, key_rect, ("list-key", at), |ui| {
-        truncated(ui, body(key, theme::PROPERTY_KEY))
+    within(ui, key_rect, ("list-key", list, at), |ui| {
+        truncated(ui, body(key, key_colour))
     });
-    within(ui, value_rect, ("list-value", at), |ui| {
+    within(ui, value_rect, ("list-value", list, at), |ui| {
         truncated(ui, body(value, theme::PROPERTY_VALUE))
     });
 }
