@@ -1,8 +1,9 @@
 //! The banner over the canvas (docs/design/m5-ui: its `styles.css`'s `.canvas-banner`
 //! rules and `js/app.js`'s `renderBanner`; DESIGN.md's *Disk changed* rows, 6c and 6d): at
 //! the canvas's top, clear of the ViewCube, its icon, its title over a line that says more,
-//! and its buttons at its right, in its tone's colours. What the file on disk did is told
-//! here: reloaded (purple), changed while edits are held (amber), or gone (red).
+//! and its buttons at its right, in its tone's colours, and under its words, if it has one,
+//! its list of what changed (`.diff`). What the file on disk did is told here: reloaded
+//! (purple), changed while edits are held (amber), or gone (red).
 //!
 //! Its words are labels, so the accessibility tree has them as they're drawn. It takes the
 //! pointer over all of it, so a click or a drag on it never reaches the viewport under it.
@@ -61,13 +62,31 @@ impl Tone {
     }
 }
 
+/// How a part of a banner's second line is written: in its words' type, or monospace
+/// (`.mono`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Style {
+    Plain,
+    Mono,
+}
+
+/// The list under a banner's words (`.diff`): its rows, each the feature's name, the
+/// field, and what it went from and to; then a line after them (how many more, or a
+/// refusal), if there is one.
+pub(crate) struct List<'a> {
+    pub rows: &'a [crate::changes::Row],
+    pub after: Option<&'a str>,
+}
+
 /// What a banner says and offers.
 pub(crate) struct Banner<'a> {
     pub tone: Tone,
     /// Its title (`.b-text .t`), Gray.1000.
     pub title: &'a str,
-    /// Its second line (`.b-text .s`), in parts, each monospace (`.mono`) or not.
-    pub sub: &'a [(&'a str, bool)],
+    /// Its second line (`.b-text .s`), in parts, each in its style.
+    pub sub: &'a [(&'a str, Style)],
+    /// What changed, listed under its words, if it lists anything.
+    pub list: Option<List<'a>>,
     /// Its buttons, by their words, each on or not.
     pub buttons: &'a [(&'a str, bool)],
     /// Whether it has a close button, labelled Dismiss (`.ab-btn`).
@@ -167,16 +186,28 @@ pub(crate) fn show(ui: &mut Ui, canvas: Rect, banner: &Banner<'_>) -> Clicked {
     ));
     let sub_ink = ink.gamma_multiply(theme::BANNER_SUB_OPACITY);
     let mut sub = LayoutJob::default();
-    for (part, mono) in banner.sub {
+    for (part, style) in banner.sub {
         let mut format = modal::format(theme::BODY_SIZE, sub_ink);
-        if *mono {
-            format.font_id = FontId::new(theme::MONOSPACE_SIZE, FontFamily::Monospace);
+        match style {
+            Style::Plain => {}
+            Style::Mono => {
+                format.font_id = FontId::new(theme::MONOSPACE_SIZE, FontFamily::Monospace);
+            }
         }
         sub.append(part, 0.0, format);
     }
     sub.wrap.max_width = text_width;
     let sub = ui.painter().layout_job(sub);
-    let words = title.size().y + theme::BANNER_SUB_MARGIN_TOP + sub.size().y;
+    let list = banner
+        .list
+        .as_ref()
+        .map(|list| laid_out(ui, list, ink, text_width));
+    let words = title.size().y
+        + theme::BANNER_SUB_MARGIN_TOP
+        + sub.size().y
+        + list
+            .as_ref()
+            .map_or(0.0, |list| theme::BANNER_LIST_MARGIN_TOP + list.height);
     // The actions' places: in a row at the right, at the words' top; or under the words,
     // from their left, a row after another as they fit (one alone in a row whatever its
     // width).
@@ -237,14 +268,18 @@ pub(crate) fn show(ui: &mut Ui, canvas: Rect, banner: &Banner<'_>) -> Clicked {
         );
     let title_height = title.size().y;
     modal::label_at(ui, pos2(text_left, inner_top), title);
-    modal::label_at(
-        ui,
-        pos2(
-            text_left,
-            inner_top + title_height + theme::BANNER_SUB_MARGIN_TOP,
-        ),
-        sub,
-    );
+    let sub_top = inner_top + title_height + theme::BANNER_SUB_MARGIN_TOP;
+    let sub_height = sub.size().y;
+    modal::label_at(ui, pos2(text_left, sub_top), sub);
+    if let Some(list) = list {
+        list.paint(
+            ui,
+            pos2(
+                text_left,
+                sub_top + sub_height + theme::BANNER_LIST_MARGIN_TOP,
+            ),
+        );
+    }
     let mut clicked = Clicked::None;
     for (action, place) in places {
         match action {
@@ -266,6 +301,105 @@ pub(crate) fn show(ui: &mut Ui, canvas: Rect, banner: &Banner<'_>) -> Clicked {
     clicked
 }
 
+/// A banner's list laid out: each row's three cells, the line after them, and how high it
+/// all is.
+struct LaidOut {
+    rows: Vec<[std::sync::Arc<eframe::egui::Galley>; 3]>,
+    after: Option<std::sync::Arc<eframe::egui::Galley>>,
+    /// The first two columns' widths (`grid-template-columns: auto auto 1fr`).
+    columns: [f32; 2],
+    height: f32,
+}
+
+/// `list` laid out in `width`, in the small size: the names in [`theme::CHANGED_OUTSIDE`],
+/// the rest in `ink`; the first two columns as wide as their widest cell, the third
+/// wrapping in what's left.
+fn laid_out(ui: &Ui, list: &List<'_>, ink: Color32, width: f32) -> LaidOut {
+    let one_line = |text: &str, colour| {
+        let mut job =
+            LayoutJob::single_section(text.to_owned(), modal::format(theme::HEADER_SIZE, colour));
+        job.wrap.max_width = f32::INFINITY;
+        ui.painter().layout_job(job)
+    };
+    let cells: Vec<_> = list
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                one_line(&row.feature, theme::CHANGED_OUTSIDE),
+                one_line(&row.field, ink),
+            )
+        })
+        .collect();
+    let columns = cells
+        .iter()
+        .fold([0.0_f32; 2], |[names, fields], (name, field)| {
+            [names.max(name.size().x), fields.max(field.size().x)]
+        });
+    let third = (width - columns[0] - columns[1] - 2.0 * theme::BANNER_LIST_COLUMN_GAP).max(0.0);
+    let mut height = 0.0;
+    let rows: Vec<_> = cells
+        .into_iter()
+        .zip(list.rows)
+        .map(|((feature, field), row)| {
+            let text =
+                ui.painter()
+                    .layout_job(modal::wrapped(&row.text, theme::HEADER_SIZE, ink, third));
+            if height > 0.0 {
+                height += theme::BANNER_LIST_ROW_GAP;
+            }
+            height += feature.size().y.max(field.size().y).max(text.size().y);
+            [feature, field, text]
+        })
+        .collect();
+    let after = list.after.map(|after| {
+        let galley = ui
+            .painter()
+            .layout_job(modal::wrapped(after, theme::HEADER_SIZE, ink, width));
+        if height > 0.0 {
+            height += theme::BANNER_LIST_ROW_GAP;
+        }
+        height += galley.size().y;
+        galley
+    });
+    LaidOut {
+        rows,
+        after,
+        columns,
+        height,
+    }
+}
+
+impl LaidOut {
+    /// Drawn from `at`, each cell a label, so the accessibility tree reads it.
+    fn paint(self, ui: &mut Ui, at: eframe::egui::Pos2) {
+        let mut y = at.y;
+        let lefts = [
+            at.x,
+            at.x + self.columns[0] + theme::BANNER_LIST_COLUMN_GAP,
+            at.x + self.columns[0] + self.columns[1] + 2.0 * theme::BANNER_LIST_COLUMN_GAP,
+        ];
+        let mut first = true;
+        for cells in self.rows {
+            if !first {
+                y += theme::BANNER_LIST_ROW_GAP;
+            }
+            first = false;
+            let height = cells.iter().map(|cell| cell.size().y).fold(0.0, f32::max);
+            for (cell, left) in cells.into_iter().zip(lefts) {
+                modal::label_at(ui, pos2(left, y), cell);
+            }
+            y += height;
+        }
+        if let Some(after) = self.after {
+            if !first {
+                y += theme::BANNER_LIST_ROW_GAP;
+            }
+            modal::label_at(ui, pos2(at.x, y), after);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Vec2};
@@ -283,10 +417,13 @@ mod tests {
     const CANVAS: Rect = Rect::from_min_max(Pos2::new(40.0, 30.0), Pos2::new(1000.0, 600.0));
 
     const TITLE: &str = "a.silico changed on disk while you have unsaved edits.";
-    const SUB: [(&str, bool); 3] = [
-        ("Another program wrote the file: an agent through ", false),
-        ("silico serve", true),
-        (", git, or an editor.", false),
+    const SUB: [(&str, Style); 3] = [
+        (
+            "Another program wrote the file: an agent through ",
+            Style::Plain,
+        ),
+        ("silico serve", Style::Mono),
+        (", git, or an editor.", Style::Plain),
     ];
 
     /// What the harness keeps: what was clicked on the banner, and how many clicks reached
@@ -335,6 +472,7 @@ mod tests {
                         tone,
                         title: TITLE,
                         sub: &SUB,
+                        list: None,
                         buttons,
                         dismiss,
                     };

@@ -9,9 +9,9 @@ use std::sync::Arc;
 use silico_core::ErrorCode;
 use silico_core::command::export::{Export, Exported};
 use silico_core::command::{
-    Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, FieldSet, ModelChoice,
-    Moved, Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId, Sessions,
-    Status, Stepped, TextAnswer, TimelineAnswer,
+    Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, DiffAnswer, FieldSet,
+    ModelChoice, Moved, Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId,
+    Sessions, Status, Stepped, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
@@ -19,6 +19,7 @@ use silico_core::document::json::Node;
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
 
+use crate::changes::{self, Changes};
 use crate::dialog::{Dialog, Kind, feature_node};
 
 /// What a feature's mark says: its first problem's (or warning's) message, and its
@@ -258,11 +259,12 @@ pub enum DiskChoice {
 }
 
 /// A reload of the session's own (section 4): the revision the tab had, and the one the
-/// file read gave.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// file read gave; and what changed between them, as `diff` answers (DESIGN.md, 6c).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reloaded {
     pub from: Revision,
     pub to: Revision,
+    pub changes: Changes,
 }
 
 /// A row of the browser (section 8, *The browser*): a feature, by its ID and name, with the
@@ -394,6 +396,9 @@ pub struct Tab {
     /// What a toast is to say for the tab (a box's count, or why it took nothing), until
     /// the app takes it.
     toast: Option<String>,
+    /// The `diff` of the reload [`reloaded`](Self::reloaded) shows, asked as the reload was
+    /// seen, from the revision the tab had to the session's now, until it answers.
+    reload_diff: Option<Running<DiffAnswer>>,
     /// What the browser's eyes hide: the tab's state, never saved (open item 29).
     pub hidden: std::collections::BTreeSet<Hideable>,
     /// The last refusal a command of the tab's answered, as said to the person, until
@@ -527,6 +532,7 @@ impl Tab {
             selection: crate::selection::Selection::default(),
             box_select: crate::box_select::BoxSelect::default(),
             toast: None,
+            reload_diff: None,
             hidden: std::collections::BTreeSet::new(),
             message: None,
             close_refused: false,
@@ -810,8 +816,16 @@ impl Tab {
                     Some(Reloaded {
                         from: self.revision,
                         to: session.revision,
+                        changes: Changes::Asking,
                     })
                 };
+                // What changed, asked as the reload is seen, from the revision the tab had
+                // (the one the reload replaced) to the session's now (Fable's decision of
+                // 2026-11-04, section 1); a diff of an older reload still out let go.
+                self.reload_diff = self
+                    .reloaded
+                    .as_ref()
+                    .map(|reloaded| sessions.diff(&self.id, Some(reloaded.from), None));
             }
             self.revision = session.revision;
             self.transaction = session.transaction;
@@ -880,6 +894,7 @@ impl Tab {
 
     fn take_answers<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         self.take_export();
+        self.take_diffs();
         if let Some(read) = self.timeline_read.take() {
             match read.try_take() {
                 Ok(response) => {
@@ -926,6 +941,24 @@ impl Tab {
             });
         }
         self.advance(sessions);
+    }
+
+    /// The reload's diff, if it has answered: listed in its banner.
+    fn take_diffs(&mut self) {
+        if let Some(read) = self.reload_diff.take() {
+            match read.try_take() {
+                Ok(response) => {
+                    let changes = match response.result {
+                        Ok(answer) => Changes::Listed(changes::listed(&answer.changes)),
+                        Err(problems) => Changes::Refused(changes::refused(&problems)),
+                    };
+                    if let Some(reloaded) = &mut self.reloaded {
+                        reloaded.changes = changes;
+                    }
+                }
+                Err(read) => self.reload_diff = Some(read),
+            }
+        }
     }
 
     /// A timeline read refused: what it says of the published model kept, and asked again

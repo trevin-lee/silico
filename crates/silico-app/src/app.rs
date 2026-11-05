@@ -17,9 +17,10 @@ use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::kernel::Clients;
 use silico_core::views::NamedView;
 
-use crate::banner::{self, Banner, Tone};
+use crate::banner::{self, Banner, Style, Tone};
 use crate::bar;
 use crate::browse::{self, Ask, Browse, Browsing, Pick};
+use crate::changes::Changes;
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::modal::{self, Button, Kind};
@@ -1754,26 +1755,28 @@ impl<P: Clients + 'static> App<P> {
                     &[(
                         "The part is still open here, with your edits: keep them, or reload, \
                          which drops them.",
-                        false,
+                        Style::Plain,
                     )][..],
                 ),
                 _ => (
                     Tone::Warning,
                     "changed on disk",
                     &[
-                        ("Another program wrote the file: an agent through ", false),
-                        ("silico serve", true),
+                        (
+                            "Another program wrote the file: an agent through ",
+                            Style::Plain,
+                        ),
+                        ("silico serve", Style::Mono),
                         (
                             ", git, or an editor. Your edits are safe here, and Save won't \
                              write over the change.",
-                            false,
+                            Style::Plain,
                         ),
                     ][..],
                 ),
             };
             let title = format!("{} {what} while you have unsaved edits.", tab.name());
-            // The prototype's Show changes goes first, once the core can say what changed
-            // between two revisions (DESIGN.md, open item 1): it has no diff to show yet.
+            // The prototype's Show changes goes first, once its modal lists what changed.
             let clicked = banner::show(
                 ui,
                 canvas,
@@ -1781,6 +1784,7 @@ impl<P: Clients + 'static> App<P> {
                     tone,
                     title: &title,
                     sub,
+                    list: None,
                     // Reload is off while the tab closes: its close drops the edits already.
                     buttons: &[
                         ("Reload, discard my edits", !tab.closing()),
@@ -1799,7 +1803,7 @@ impl<P: Clients + 'static> App<P> {
             }
             return;
         }
-        let Some(reloaded) = tab.reloaded else {
+        let Some(reloaded) = tab.reloaded.clone() else {
             return;
         };
         let title = format!(
@@ -1811,15 +1815,22 @@ impl<P: Clients + 'static> App<P> {
             reloaded.from.number(),
             reloaded.to.number()
         );
-        // The prototype's list of what changed, its marks on the changed features, and its
-        // Restore my version wait on the core's diff (DESIGN.md, open item 1).
+        // What changed (`.diff`), as the reload's diff answered: nothing while it's asked;
+        // its refusal, said.
+        let (rows, after): (&[crate::changes::Row], Option<&str>) = match &reloaded.changes {
+            Changes::Asking => (&[], None),
+            Changes::Listed(listed) => (&listed.rows, listed.more.as_deref()),
+            Changes::Refused(said) => (&[], Some(said.as_str())),
+        };
+        let list = (!rows.is_empty() || after.is_some()).then_some(banner::List { rows, after });
         let clicked = banner::show(
             ui,
             canvas,
             &Banner {
                 tone: Tone::Info,
                 title: &title,
-                sub: &[(&sub, false)],
+                sub: &[(&sub, Style::Plain)],
+                list,
                 buttons: &[],
                 dismiss: true,
             },

@@ -1379,6 +1379,12 @@ pub const BANNER_ERROR_TEXT: Color32 = DANGER_BUTTON_TEXT;
 pub const BANNER_BUTTON_BG: Color32 = with_alpha(GRAY_1000, 20);
 pub const BANNER_BUTTON_HOVER_BG: Color32 = with_alpha(GRAY_1000, 41);
 pub const BANNER_BUTTON_HOVER_TEXT: Color32 = GRAY_1000;
+/// The list of what changed under a banner's words (`.canvas-banner .diff`): 6 under them,
+/// in the small size, on rows 2 apart, its three columns 10 apart; the feature's name in
+/// [`CHANGED_OUTSIDE`] (`.k`), the rest in the banner's words' colour.
+pub const BANNER_LIST_MARGIN_TOP: f32 = 6.0;
+pub const BANNER_LIST_ROW_GAP: f32 = 2.0;
+pub const BANNER_LIST_COLUMN_GAP: f32 = 10.0;
 
 // ---- The start page (`.st-*`, `.recent-row`) ----
 

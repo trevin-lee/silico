@@ -794,6 +794,44 @@ fn esc_dismisses_the_purple_banner_once_nothing_else_takes_it() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The example with its Pin's radius 5, as an agent's edits start from it.
+fn pinned() -> String {
+    EXAMPLE.replace(r#""radius": 2.5"#, r#""radius": 5"#)
+}
+
+/// [`pinned`] as an agent leaves it: the Pin's radius 3, and the Hole's note for an M6 bolt.
+fn agents_pin() -> String {
+    pinned()
+        .replace(r#""radius": 5"#, r#""radius": 3"#)
+        .replace("an M5 bolt", "an M6 bolt")
+}
+
+/// The note's change, as the banner lists it and the marks say it: each value as the file
+/// writes it, quoted.
+const NOTE_CHANGE: &str = r#""Clearance for an M5 bolt" → "Clearance for an M6 bolt""#;
+
+#[test]
+fn a_reload_lists_what_changed_by_feature_and_field_each_value_as_the_file_writes_it() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", &pinned());
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    std::fs::write(&path, agents_pin()).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "5 → 3"));
+    assert!(anywhere(&h, RELOADED));
+    // Each row: the feature's name, the field, and its values as the file writes them.
+    for label in ["Pin", "radius", "5 → 3", "Hole", "note", NOTE_CHANGE] {
+        assert!(seen(&h, label), "{label}");
+    }
+    assert_eq!(h.query_all_by_label("5 → 3").count(), 1);
+    assert_eq!(h.query_all_by_label(NOTE_CHANGE).count(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether any node is labelled `label`, however many are.
+fn seen(h: &AppHarness, label: &str) -> bool {
+    h.query_all_by_label(label).next().is_some()
+}
+
 /// The session's own read of its file, as `silico_core::disk` reads it, for a test that
 /// compares with no interval.
 fn real(path: &Path) -> Found {
