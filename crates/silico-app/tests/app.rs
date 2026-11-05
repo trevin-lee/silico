@@ -23831,7 +23831,8 @@ fn swallowing_edge5_meshed(f: &Fixture, real: bool) {
 /// the block's edges `swallowed` (Edge5, say), which the cut no longer keeps (its history
 /// says so: every other element of the block kept, by its own number; the pin's none; the
 /// cut's Edge5 made of nothing, so named by its number alone, unstable). The cut's shape
-/// is the block's, so it's meshed and described as the block is. With a narrower pin, the
+/// is a box a mm³ smaller than the block (a cut that left its base unchanged would be
+/// refused), so it's meshed and described as a box is. With a narrower pin, the
 /// fake's own cut. If `real`, each body meshed as a real 40 × 20 × 10 box, as
 /// [`meshes_a_real_box`] meshes it (for a frame drawn on lavapipe).
 fn swallowing(f: &Fixture, swallowed: &'static [u32], real: bool) {
@@ -23902,7 +23903,8 @@ fn swallowing(f: &Fixture, swallowed: &'static [u32], real: bool) {
                 },
             };
             Some(silico_protocol::Reply::Built(BuiltData {
-                shape: base.clone(),
+                // A box a mm³ smaller than the block, so the cut takes from it (S7's rule).
+                shape: FakeKernel::resized(base, -1.0)?,
                 history,
             }))
         }
