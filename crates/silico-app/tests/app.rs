@@ -21287,6 +21287,15 @@ fn a_fillet_dialogs_cancel_after_earlier_unsaved_edits_leaves_the_text_as_before
             .all(|p| p.stable())
     );
     assert_eq!(h.state().tabs()[0].selection().said(), None);
+    // Read again in the model the undo published, not held as put back: drawn on its
+    // meshes.
+    meshes_settled(&mut h);
+    step(&mut h);
+    let block = body_of(&h, "k7f2qx3m");
+    assert_eq!(
+        highlighted(&record),
+        [(block, silico_app::renderer::Element::Edge(3))]
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21585,10 +21594,9 @@ fn edit_feature_on_a_fillet_a_later_feature_builds_on_takes_its_bases_edges_from
         Some(plain(r#""k7f2qx3m""#))
     );
     // Tool's Edge1, Joined's Edge13 (the fake's fuse numbers the tool's edges after the
-    // base's 12): added to the body after the box, so refused, said, and let go from the
-    // selection again.
-    let after = "a91cw0de.box.Edge1 is added to the body after k7f2qx3m, which this fillet is \
-                 built on: select one of k7f2qx3m's edges";
+    // base's 12): not on the box, so refused, said, and let go from the selection again.
+    let after = "a91cw0de.box.Edge1 isn't on k7f2qx3m, which this fillet is built on: select \
+                 one of k7f2qx3m's edges";
     click_edge(&mut h, &record, body, 13, true);
     step_until(&mut h, "the refusal in the dialog", |h| {
         dialog(h).query_by_label(after).is_some()

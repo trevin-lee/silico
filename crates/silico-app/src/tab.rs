@@ -1862,14 +1862,22 @@ impl Tab {
                     });
                 }
                 Queued::Closed { ok } => {
+                    // Every edit sent before it has answered: what a Cancel put back of the
+                    // selection is read from the revision its undo or rollback comes to,
+                    // past this one, or, if nothing of the dialog's changed the document,
+                    // from this one.
+                    let undone = self.revision.next().unwrap_or(self.revision);
                     let Some(base) = self.dialog_base.take() else {
+                        self.read_restored_from(ok, self.revision);
                         continue;
                     };
                     if !self.transaction {
                         // Nothing of the dialog's changed the document.
+                        self.read_restored_from(ok, self.revision);
                         continue;
                     }
                     if !ok && self.dialog_began {
+                        self.read_restored_from(ok, undone);
                         // Its own edits began the transaction: nothing before it to keep, and
                         // no transaction left open with nothing in it (an outside change is
                         // then reloaded, section 4).
@@ -1881,12 +1889,14 @@ impl Tab {
                         });
                     } else if base == self.revision {
                         // Nothing of the dialog's changed the document.
+                        self.read_restored_from(ok, self.revision);
                     } else if ok {
                         self.groups.push(Group {
                             start: self.state_of(base),
                             end: self.state_of(self.revision),
                         });
                     } else {
+                        self.read_restored_from(ok, undone);
                         self.supersede_preview();
                         self.record(Sent::Undo(Some(base)));
                         self.under.push(Under::Step(sessions.undo(
@@ -1963,6 +1973,21 @@ impl Tab {
                     self.under.push(Under::Step(running));
                 }
             }
+        }
+    }
+
+    /// The selection a dialog's Cancel put back ([`close_dialog`](Self::close_dialog)) read
+    /// once a model of `from` or a later one is published, as that Cancel, `ok` false, is
+    /// sent; unless another Cancel waits behind it, whose undo comes later still (and which
+    /// says when, as it's sent).
+    fn read_restored_from(&mut self, ok: bool, from: Revision) {
+        let another = self
+            .edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::Closed { ok: false }));
+        if !ok && !another {
+            self.selection.read_from(from);
         }
     }
 
@@ -2846,7 +2871,8 @@ impl Tab {
     /// what it sent would come after the close.
     ///
     /// The selection the dialog's box of names took is put back as it was before by Cancel
-    /// (read again once the Cancel's model is published), and left as the box holds it by
+    /// (read again once the Cancel's model is published, never against a preview of the
+    /// dialog's edits, which may still land after it), and left as the box holds it by
     /// OK. The dialog OK'd is kept for the window to remember its values
     /// ([`take_oked`](Self::take_oked)).
     pub fn close_dialog<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, ok: bool) {

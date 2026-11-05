@@ -602,6 +602,31 @@ impl Model {
         }
     }
 
+    /// This model with the feature `id`'s elements settled as never named (its solid built,
+    /// but its names couldn't be made: Silico's own bug, which no document reaches on the
+    /// fake), every other feature's as named so far: so a test can read a solid whose names
+    /// couldn't be made, as a client of the published model would find it.
+    #[cfg(any(test, feature = "fake"))]
+    pub fn unnamable(&self, id: &FeatureId) -> Model {
+        let maps = self
+            .features
+            .iter()
+            .zip(&self.maps)
+            .map(|((feature, _), map)| {
+                if feature == id {
+                    OnceLock::from(None)
+                } else {
+                    map.clone()
+                }
+            })
+            .collect();
+        Model {
+            maps,
+            entries: (0..self.features.len()).map(|_| OnceLock::new()).collect(),
+            ..self.clone()
+        }
+    }
+
     /// Names every feature's elements not yet named, in timeline order, while `go_on` says
     /// to.
     fn name_all(&self, go_on: impl Fn() -> bool) {

@@ -872,9 +872,10 @@ impl Dialog {
     /// feature's own body, or one built on it, as the tab's timeline chains them) is read
     /// against the box's base, as SolidWorks reads a feature's picks on the model rolled back
     /// to before it (`on_base`, [`Selection::read_on`](crate::selection::Selection::read_on)):
-    /// found there, it's the base's, stored by its name there; not there, it was added to the
-    /// body after the base (by the feature or a later one), refused, saying so. The base
-    /// stays the base, however many of the box's names are let go.
+    /// found there, it's the base's, stored by its name there; not there (made by the
+    /// feature or a later one, or of another body a boolean joined, on either side), refused,
+    /// saying it isn't on the base; not read there for another reason, refused with it. The
+    /// base stays the base, however many of the box's names are let go.
     ///
     /// SEAM: SolidWorks also draws the model rolled back while the dialog is open, so what
     /// can't be picked isn't shown. Here the canvas draws the published model, the feature
@@ -943,8 +944,8 @@ impl Dialog {
             Some((base, OnBase::Found(stored))) => (stored, Some(base)),
             Some((base, OnBase::Missing)) => {
                 names.said = Some(Says::Refused(format!(
-                    "{shown} is added to the body after {base}, which this {} is built on: \
-                     select one of {base}'s {}",
+                    "{shown} isn't on {base}, which this {} is built on: select one of \
+                     {base}'s {}",
                     names.of,
                     names.takes.plural()
                 )));
@@ -1816,8 +1817,8 @@ mod tests {
         assert_eq!(
             dialog.names().unwrap().said,
             Some(Says::Refused(
-                "r0000001.box.Edge2 is added to the body after k7f2qx3m, which this fillet is \
-                 built on: select one of k7f2qx3m's edges"
+                "r0000001.box.Edge2 isn't on k7f2qx3m, which this fillet is built on: select \
+                 one of k7f2qx3m's edges"
                     .to_owned()
             ))
         );

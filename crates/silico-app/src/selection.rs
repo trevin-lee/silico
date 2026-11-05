@@ -254,8 +254,8 @@ pub struct Toggled {
 }
 
 /// A name picked on the published model, read in one feature's solid alone
-/// ([`Selection::read_on`]): found there, what a store writes for it or why it can't; or
-/// not there.
+/// ([`Selection::read_on`]): found there, what a store writes for it or why it can't (or
+/// why it couldn't be read there); or not there, that solid holding no element by it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OnBase {
     Found(Result<Arc<Name>, Error>),
@@ -352,6 +352,18 @@ struct Seen {
 /// revision (as [`View::bodies_of`] gives the bodies').
 type Of = (u64, Revision);
 
+/// How long items a dialog's Cancel put back ([`Selection::restore`]) wait to be read: a
+/// model published before the Cancel's undo is the dialog's preview, which may have
+/// consumed them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// Until the tab says the revision they're read from ([`Selection::read_from`]): the
+    /// Cancel's undo isn't sent yet, and edits sent before it may publish previews still.
+    Unsent,
+    /// Until a model of this revision, or a later one, is published.
+    Until(Revision),
+}
+
 /// The tab's selection and hover.
 #[derive(Debug, Default)]
 pub struct Selection {
@@ -368,6 +380,9 @@ pub struct Selection {
     of: Option<Of>,
     /// Whether some names were pending at the last read (asked again each frame).
     again: bool,
+    /// Items a dialog's Cancel put back, not read against a model until it's of the
+    /// revision the Cancel's undo comes to, or later.
+    held: Option<Held>,
     /// The body row the browser scrolls to: a canvas pick's.
     scroll: Option<FeatureId>,
     press: Option<Press>,
@@ -508,9 +523,10 @@ impl Selection {
     /// `name`, picked on the published model, read in the feature `feature`'s solid alone
     /// (the core's `resolve_in`), as SolidWorks reads a feature's picks on the model rolled
     /// back to before it: found there, what a store writes for it (its stable name in that
-    /// solid) or why it can't (unstable there; that solid's elements not named yet; no
-    /// model; `feature` with no solid); or [`OnBase::Missing`], not in that solid. Names no
-    /// element map and waits for none: the UI's thread calls it.
+    /// solid) or why it can't (unstable there; that solid's elements not named yet, or
+    /// never named; no model; `feature` with no solid; the name's own feature failed); or
+    /// [`OnBase::Missing`], that solid holding no element by it (`reference_broken`). Names
+    /// no element map and waits for none: the UI's thread calls it.
     pub fn read_on(&self, name: &str, feature: &FeatureId) -> OnBase {
         let Some(model) = &self.model else {
             return OnBase::Found(Err(Error::new(
@@ -530,7 +546,21 @@ impl Selection {
                 )
                 .with_element(name)
                 .with_suggestion("select it again once the model has rebuilt"))),
-                None => OnBase::Missing,
+                // Not in that solid only if that's why: any other reason (its elements
+                // never named, the name's feature failed) is said as it is.
+                None => match answer.gone.first() {
+                    Some(gone) => match gone.why.errors().first() {
+                        Some(why)
+                            if gone.failed.is_none()
+                                && why.code() == ErrorCode::ReferenceBroken =>
+                        {
+                            OnBase::Missing
+                        }
+                        Some(why) => OnBase::Found(Err(why.clone())),
+                        None => OnBase::Found(Err(unread(name, feature))),
+                    },
+                    None => OnBase::Found(Err(unread(name, feature))),
+                },
             },
         }
     }
@@ -542,15 +572,30 @@ impl Selection {
 
     /// `items`, saved before ([`saved`](Self::saved)), put back as they were (a dialog's
     /// Cancel, as SolidWorks returns to the selection its command started with), a click
-    /// waiting let go: each as it was found, read again once the next model is published,
-    /// not against the one published now (a dialog's preview, which may have consumed
-    /// them; the Cancel's undo publishes the model they were found in again).
+    /// waiting let go: each as it was found, read against no model published (nor asked
+    /// again of the one published now) until the tab says from which revision
+    /// ([`read_from`](Self::read_from)), and a model of that revision or a later one is
+    /// published. Until then, a model published may be a preview of the dialog's, which
+    /// may have consumed them, its edits' previews landing even after the Cancel; the
+    /// Cancel's undo publishes the model they were found in again.
     pub fn restore(&mut self, items: Vec<Item>) {
         if items != self.items {
             self.set(items);
         }
         self.said = None;
         self.click = None;
+        self.again = false;
+        self.held = Some(Held::Unsent);
+    }
+
+    /// The items a dialog's Cancel put back ([`restore`](Self::restore)) read once a model
+    /// of `revision`, or a later one, is published: the revision the Cancel's undo (or
+    /// rollback) comes to, after every edit of the dialog's; or, if none of its edits
+    /// changed the document, the one it's at. Nothing, if none are held.
+    pub fn read_from(&mut self, revision: Revision) {
+        if self.held.is_some() {
+            self.held = Some(Held::Until(revision));
+        }
     }
 
     /// The element held by `name` let go: by the name the selection holds it by, or the
@@ -647,7 +692,8 @@ impl Selection {
     /// or a name an agent could have written): read at once against the published model,
     /// and selected; or, if the model doesn't find it, the selection kept and why said.
     /// The rest are read again as each came to the model: a name carried into it stays
-    /// carried, its unstable text gone, never re-pointed as a pick would hold it.
+    /// carried, its unstable text gone, never re-pointed as a pick would hold it; but none
+    /// while items a dialog's Cancel put back wait to be read ([`restore`](Self::restore)).
     pub fn pick(&mut self, name: &str, how: How) {
         let _span = tracing::debug_span!("selection_pick", ?how).entered();
         self.said = None;
@@ -718,7 +764,11 @@ impl Selection {
             }
         }
         self.set(items);
-        self.read(&model);
+        // Items a Cancel put back aren't read against this model, which may be its
+        // dialog's preview: the pick is read alone, above, till they're read.
+        if self.held.is_none() {
+            self.read(&model);
+        }
     }
 
     /// `names` picked together, `how` (a box's elements, by their names as the element map
@@ -865,13 +915,16 @@ impl Selection {
     /// one (the core's refresh: names kept stay selected, with their stability now; names
     /// gone are dropped, and said, the rest kept; names of a feature that didn't build
     /// wait), each name carried until the next; and names pending asked again of the same,
-    /// each as it came to it.
+    /// each as it came to it. Items a dialog's Cancel put back are read only once a model
+    /// of the revision the tab gave ([`read_from`](Self::read_from)) or a later one is: on
+    /// the first such frame, whether it's a new model or the one published already.
     pub(crate) fn published(&mut self, published: Option<(Arc<Model>, Revision)>, models: u64) {
         let Some((model, revision)) = published else {
             self.model = None;
             return;
         };
-        if self.of != Some((models, revision)) {
+        let fresh = self.of != Some((models, revision));
+        if fresh {
             self.of = Some((models, revision));
             self.model = Some(Arc::clone(&model));
             // A click waiting for the meshes of a model published before this one: they're
@@ -897,6 +950,16 @@ impl Selection {
                     picked.carry = Carry::Refresh;
                 }
             }
+        }
+        let released = match self.held {
+            Some(Held::Until(from)) if revision >= from => {
+                self.held = None;
+                true
+            }
+            Some(_) => return,
+            None => false,
+        };
+        if fresh || released {
             if self.elements().next().is_some() {
                 self.read(&model);
             }
@@ -1345,6 +1408,17 @@ fn stored(place: usize, picked: &Picked) -> Result<Arc<Name>, Error> {
                 .with_suggestion("select it again once the model has rebuilt"))
         }
     }
+}
+
+/// The refusal of `name`, read in the feature `feature`'s solid, if the read said nothing
+/// of it (neither found, nor waiting, nor gone with a reason): Silico's own bug.
+fn unread(name: &str, feature: &FeatureId) -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        format!("{name} was read in {feature}'s solid, but the read said nothing of it"),
+    )
+    .with_element(name)
+    .with_suggestion(silico_core::worker::SILICO_BUG)
 }
 
 /// How many of `items` before `at` are elements: an element's place among them.
@@ -2249,37 +2323,19 @@ mod tests {
             a_box("cccccccc", 0, cube),
             fuse("ssssssss", "rrrrrrrr", "cccccccc"),
         ];
-        let text = format!(
-            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
-            features.join(", ")
-        );
-        let checked = silico_core::document::Checked::new(
-            silico_core::document::read(text.as_bytes()).unwrap(),
-        )
-        .unwrap();
-        let engine =
-            silico_core::recompute::Recompute::new(silico_core::fake::FakeKernel::new(2).unwrap())
-                .with_sketches(silico_core::fake::FakeSketches::new());
-        engine.kernel().answer_instead(|op| match op {
-            Op::Boolean {
-                op: BooleanOp::Fuse,
-                base,
-                tool,
-            } => Some(silico_protocol::Reply::Built(BuiltData {
-                shape: silico_core::fake::FakeKernel::resized(base, 1.0)?,
-                history: fusing(&silico_core::fake::FakeKernel::describe(tool)?),
-            })),
-            _ => None,
+        let model = rebuilt(&features, |kernel| {
+            kernel.answer_instead(|op| match op {
+                Op::Boolean {
+                    op: BooleanOp::Fuse,
+                    base,
+                    tool,
+                } => Some(silico_protocol::Reply::Built(BuiltData {
+                    shape: silico_core::fake::FakeKernel::resized(base, 1.0)?,
+                    history: fusing(&silico_core::fake::FakeKernel::describe(tool)?),
+                })),
+                _ => None,
+            });
         });
-        let Ok(Ok(silico_core::recompute::RunOutcome::Published(model))) = engine
-            .start(Arc::new(checked))
-            .wait_timeout(std::time::Duration::from_secs(120))
-        else {
-            panic!("not published")
-        };
-        for (id, _) in model.features() {
-            model.element_map(id);
-        }
         // An aliasing second fuse (a cube 4 long) gives its Face1 exactly two names: its
         // base's Face1's (the 1 mm cube's, kept whole by a plain first fuse, a tool 2 long;
         // by its number after a renumbering one, a tool 3 long) and the tool's Face1's.
@@ -2305,6 +2361,36 @@ mod tests {
                     "the second fuse's Face1, after a tool {tool} long"
                 );
             }
+        }
+        model
+    }
+
+    /// `features` rebuilt on the fake kernel, as `setup` prepares it, and published, every
+    /// feature's elements named.
+    fn rebuilt(
+        features: &[String],
+        setup: impl FnOnce(&silico_core::fake::FakeKernel),
+    ) -> Arc<Model> {
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+            features.join(", ")
+        );
+        let checked = silico_core::document::Checked::new(
+            silico_core::document::read(text.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        let engine =
+            silico_core::recompute::Recompute::new(silico_core::fake::FakeKernel::new(2).unwrap())
+                .with_sketches(silico_core::fake::FakeSketches::new());
+        setup(engine.kernel());
+        let Ok(Ok(silico_core::recompute::RunOutcome::Published(model))) = engine
+            .start(Arc::new(checked))
+            .wait_timeout(std::time::Duration::from_secs(120))
+        else {
+            panic!("not published")
+        };
+        for (id, _) in model.features() {
+            model.element_map(id);
         }
         model
     }
@@ -3400,5 +3486,168 @@ mod tests {
             states(&selection),
             [("aaaaaaaa.box.Edge1".to_owned(), "pending")]
         );
+    }
+
+    #[test]
+    fn a_selection_a_cancel_put_back_is_read_only_from_the_revision_its_undo_comes_to() {
+        // The ssssssss fuse keeps its tool's Face1 as `cccccccc.box.Face1` when the tool is
+        // 4 long (the aliasing fuse), and none of its faces when it's 2 (the plain fuse):
+        // fused(1, 4) is the model the face was picked in, fused(1, 2) a dialog's preview
+        // that consumed it.
+        let revision = |n| Revision::from_number(n).unwrap();
+        let name = "cccccccc.box.Face1";
+        let (picked_in, preview) = (fused(1, 4), fused(1, 2));
+        let mut selection = Selection::default();
+        selection.published(Some((Arc::clone(&picked_in), revision(1))), 1);
+        selection.pick(name, How::Replace);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        let saved = selection.saved();
+        // The dialog's box takes the canvas, and its edit's preview, revision 2, consumes
+        // the face: dropped, unsaid.
+        selection.take_into(Some(Filter::default()));
+        selection.published(Some((Arc::clone(&preview), revision(2))), 2);
+        assert!(selection.is_empty());
+        // A name pending at the last read: asked again each frame, of the same model.
+        selection.again = true;
+        // Cancel, the box taking the canvas still on this frame: put back, and not read
+        // against the preview published now, nor asked again of it.
+        selection.restore(saved.clone());
+        assert!(!selection.again);
+        selection.published(Some((Arc::clone(&preview), revision(2))), 2);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        // Nor against the preview of an edit sent before the Cancel, landing after it,
+        // before the tab has sent the Cancel's undo.
+        selection.take_into(None);
+        selection.published(Some((Arc::clone(&preview), revision(3))), 3);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        // The undo sent against revision 3, so read from 4: revision 3's model published
+        // again (a fresh check's) isn't read either.
+        selection.read_from(revision(4));
+        selection.published(Some((Arc::clone(&preview), revision(3))), 4);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        assert_eq!(selection.said(), None);
+        // The undo's model, revision 4: read, and found, carried to it.
+        selection.published(Some((Arc::clone(&picked_in), revision(4))), 5);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        assert!(selection.elements().next().unwrap().stable());
+        assert_eq!(selection.held, None);
+        assert_eq!(selection.said(), None);
+        // Held no longer: the next model is read, one that consumes the face dropping it,
+        // said.
+        selection.published(Some((Arc::clone(&preview), revision(5))), 6);
+        assert!(selection.is_empty());
+        assert!(selection.said().is_some());
+        // Put back by a Cancel with nothing of its dialog's changed: read from the revision
+        // published already, on its next frame.
+        selection.published(Some((Arc::clone(&picked_in), revision(6))), 7);
+        selection.pick(name, How::Replace);
+        let saved = selection.saved();
+        selection.clear();
+        selection.restore(saved);
+        selection.published(Some((Arc::clone(&picked_in), revision(6))), 7);
+        assert_eq!(selection.held, Some(Held::Unsent));
+        selection.read_from(revision(6));
+        selection.published(Some((picked_in, revision(6))), 7);
+        assert_eq!(selection.held, None);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        // With none held, `read_from` holds nothing.
+        selection.read_from(revision(9));
+        assert_eq!(selection.held, None);
+    }
+
+    #[test]
+    fn a_name_read_on_a_base_is_missing_only_if_that_solid_holds_no_element_by_it() {
+        // Box A, box B, F a fillet of B's Edge3, a fuse of A with F (F its tool), and G a
+        // fillet of box D's Edge99, which D hasn't, so G fails, `reference_broken`. F's
+        // dialog reads a pick on the fuse's body against B.
+        let a_box = |id: &str, x: u32| {
+            format!(
+                r#"{{"id": "{id}", "type": "box", "v": 1, "name": "Block", "position": [{x}, 0, 0], "length": 1, "width": 1, "height": 1}}"#
+            )
+        };
+        let fillet = |id: &str, base: &str, edge: &str| {
+            format!(
+                r#"{{"id": "{id}", "type": "fillet", "v": 1, "name": "Round", "base": "{base}", "edges": ["{edge}"], "radius": 0.1}}"#
+            )
+        };
+        let features = [
+            a_box("aaaaaaaa", 0),
+            a_box("bbbbbbbb", 5),
+            fillet("ffffffff", "bbbbbbbb", "bbbbbbbb.box.Edge3"),
+            r#"{"id": "rrrrrrrr", "type": "fuse", "v": 1, "name": "Op", "base": "aaaaaaaa", "tool": "ffffffff"}"#
+                .to_owned(),
+            a_box("dddddddd", 9),
+            fillet("gggggggg", "dddddddd", "dddddddd.box.Edge99"),
+        ];
+        let model = rebuilt(&features, |_| {});
+        let base = fid("bbbbbbbb");
+        let mut selection = Selection::default();
+        selection.published(Some((Arc::clone(&model), Revision::OPENED)), 1);
+        // B's Edge5, kept by F and the fuse: on B, stored by its name there.
+        assert_eq!(
+            selection.read_on("bbbbbbbb.box.Edge5", &base),
+            OnBase::Found(Ok(named("bbbbbbbb", edge(5))))
+        );
+        // A's Edge1, of the fuse's other side: not on B, refused as not on it, though A
+        // comes before B (it isn't added to the body after B).
+        let a_edge = "aaaaaaaa.box.Edge1";
+        assert_eq!(selection.read_on(a_edge, &base), OnBase::Missing);
+        let node = silico_core::document::json::read(features[2].as_bytes()).unwrap();
+        let mut dialog =
+            crate::dialog::Dialog::load(crate::dialog::Kind::Fillet, fid("ffffffff"), &node, 1)
+                .unwrap();
+        let toggled = Toggled {
+            added: true,
+            name: a_edge.to_owned(),
+            stored: Ok(named("aaaaaaaa", edge(1))),
+            body: Some(fid("rrrrrrrr")),
+            kind: Some(ElementKind::Edge),
+        };
+        let on_base = |at: &FeatureId| selection.read_on(a_edge, at);
+        assert_eq!(
+            dialog.toggled(&toggled, true, &on_base),
+            crate::dialog::Taken::Refused
+        );
+        assert_eq!(
+            dialog.names().unwrap().said,
+            Some(crate::dialog::Says::Refused(
+                "aaaaaaaa.box.Edge1 isn't on bbbbbbbb, which this fillet is built on: select \
+                 one of bbbbbbbb's edges"
+                    .to_owned()
+            ))
+        );
+        // A name of G's, which didn't build for a `reference_broken` of its own: its
+        // failure said, not that it isn't on B.
+        let failed = selection.read_on("gggggggg.fillet.Face1", &base);
+        let OnBase::Found(Err(error)) = &failed else {
+            panic!("{failed:?}")
+        };
+        assert_eq!(error.code(), ErrorCode::ReferenceBroken);
+        assert!(
+            error.message().starts_with(
+                "selection.0, \"gggggggg.fillet.Face1\", is of gggggggg, which didn't build: "
+            ),
+            "{}",
+            error.message()
+        );
+        // B's elements never named (Silico's own bug): said as it is, not that the edge
+        // isn't on B, in the dialog too.
+        let unnamable = Arc::new(model.unnamable(&base));
+        selection.published(Some((unnamable, Revision::OPENED)), 2);
+        let unread = "selection.0, \"aaaaaaaa.box.Edge1\", is of bbbbbbbb's solid, which built, \
+                      but whose elements couldn't be named";
+        let read = selection.read_on(a_edge, &base);
+        let OnBase::Found(Err(error)) = &read else {
+            panic!("{read:?}")
+        };
+        assert_eq!(error.code(), ErrorCode::Internal);
+        assert_eq!(error.message(), unread);
+        let on_base = |at: &FeatureId| selection.read_on(a_edge, at);
+        assert_eq!(
+            dialog.toggled(&toggled, true, &on_base),
+            crate::dialog::Taken::Refused
+        );
+        let said = dialog.names().unwrap().said.clone().unwrap();
+        assert!(said.text().starts_with(unread), "{}", said.text());
     }
 }
