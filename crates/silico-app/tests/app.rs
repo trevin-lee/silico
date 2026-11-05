@@ -17704,6 +17704,22 @@ fn selected_until(h: &mut AppHarness, want: &[&str]) {
     });
 }
 
+/// Steps frames until the selection is `want`, each found as a face on the model published
+/// now (not waiting for its body's names): bounded as [`step_until`] is.
+#[track_caller]
+fn found_as_faces_until(h: &mut AppHarness, want: &[&str]) {
+    use silico_app::selection::State;
+    step_until(h, &format!("{want:?} found as faces"), |h| {
+        selected_names(h) == want
+            && h.state().tabs()[0].selection().elements().all(|picked| {
+                matches!(
+                    &picked.state,
+                    State::Found(found) if found.kind() == silico_core::kernel::ElementKind::Face
+                )
+            })
+    });
+}
+
 /// The body whose feature is `id`, by its number.
 fn body_of(h: &AppHarness, id: &str) -> u32 {
     view(h)
@@ -19049,9 +19065,16 @@ fn what_a_rebuild_left_gone_is_said_over_a_click_let_go_by_the_same_model() {
         .selection_mut()
         .pick("rrrrrrrr.fuse.Face1", How::Replace);
     assert_eq!(selected_names(&h), ["rrrrrrrr.fuse.Face1"]);
+    // Found as a face on the tool 2 long, once the background has named it: so it's a face
+    // that's gone, not an element the selection never had an answer for.
+    found_as_faces_until(&mut h, &["rrrrrrrr.fuse.Face1"]);
     click_canvas(&mut h, at, true);
-    // The tool 3 long: the click is let go, and the face is gone; what's said is that.
+    // The tool 3 long: the click is let go, and the face is gone; what's said is that, once
+    // the background has named the new model (till then, the selection waits on it).
     published_of_with_meshes_held(&f, &mut h, "bbbbbbbb", "length", "3");
+    step_until(&mut h, "the selection answered on the new model", |h| {
+        selected_names(h).is_empty()
+    });
     assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
     let said = selection_said(&h).unwrap();
     assert!(
