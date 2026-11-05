@@ -13,7 +13,8 @@
 //! - the edits' count (`Unsaved · 2 edits`): the core's undo stack counts edits, but the
 //!   app's Undo steps over a dialog's edits as one, so neither count is the person's. SEAM:
 //!   the tab's count of its own undo steps.
-//! - the hover and the selection in the middle: SEAM(M5.7), picking's (see [`middle`]).
+//! - the hovered face's surface type and feature in the middle (`Face6 · Planar · Pad`):
+//!   SEAM, an `elements` read of it.
 //! - What's Wrong, which `Rebuilt with 2 errors` opens in the prototype: not built yet.
 
 use eframe::egui::text::{LayoutJob, TextFormat};
@@ -105,6 +106,9 @@ pub struct Bar {
     pub buttons: Option<(bool, bool)>,
     /// Refusals said to the person (the window's, then the tab's).
     pub messages: Vec<String>,
+    /// What the selection says (M5.7): what the pointer is over in the canvas, or how many
+    /// elements are selected; and what the last change to it dropped, and why.
+    pub selection: Vec<String>,
     /// The last comparison of the file on disk, as `status.disk` gives it.
     pub disk: Option<Disk>,
     /// Whether the document is saved; none with no document.
@@ -160,6 +164,7 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
         said,
         buttons: Some((tab.stoppable(), tab.can_rebuild())),
         messages: message.into_iter().chain(tab.message.clone()).collect(),
+        selection: selection_words(tab.selection()),
         disk: status.and_then(|status| status.disk),
         saved: Some(saved),
         sketch: tab
@@ -175,10 +180,43 @@ pub fn unopened(warming: Option<Warming>, message: Option<String>) -> Bar {
         said: warming.map_or(Said::Nothing, Said::Warm),
         buttons: None,
         messages: message.into_iter().collect(),
+        selection: Vec::new(),
         disk: None,
         saved: None,
         sketch: None,
     }
+}
+
+/// What the status bar says of `selection`: what the pointer is over (its name, as an agent
+/// writes it, and Unstable if a store wouldn't take it), or else how many elements are
+/// selected; then what its last change said (a name a rebuild left gone, and why).
+pub fn selection_words(selection: &crate::selection::Selection) -> Vec<String> {
+    let pointed = match selection.hovered() {
+        Some(hovered) => {
+            let stable = hovered
+                .found
+                .as_ref()
+                .map_or(hovered.stable, silico_core::selection::Selected::stable);
+            let name = hovered
+                .found
+                .as_ref()
+                .map_or_else(|| hovered.name.to_string(), |found| found.name.to_string());
+            Some(if stable {
+                name
+            } else {
+                format!("{name} · Unstable")
+            })
+        }
+        None => match selection.elements().count() {
+            0 => None,
+            1 => Some("1 selected".to_owned()),
+            n => Some(format!("{n} selected")),
+        },
+    };
+    pointed
+        .into_iter()
+        .chain(selection.said().map(str::to_owned))
+        .collect()
 }
 
 /// The bar drawn across `ui`'s whole rectangle: what the person asked of it.
@@ -277,14 +315,19 @@ fn left_parts(ui: &mut Ui, bar: &Bar, asked: &mut Asked) {
 
 /// The middle: in sketch mode, the sketch's line; then the refusals said.
 ///
-/// SEAM(M5.7): outside sketch mode, what's hovered in the canvas (`Face6 · Planar · Pad`),
-/// or how many elements are selected, once picking names them.
+/// Outside sketch mode, the selection's words ([`selection_words`]) after them: a sketch's
+/// line says what's being edited in their place.
 fn middle(ui: &mut Ui, bar: &Bar) {
     if let Some(line) = &bar.sketch {
         sketch_line(ui, line);
     }
     for message in &bar.messages {
         item(ui, None, message, theme::ERROR_TEXT);
+    }
+    if bar.sketch.is_none() {
+        for words in &bar.selection {
+            item(ui, None, words, theme::STATUS_TEXT);
+        }
     }
 }
 
@@ -734,7 +777,8 @@ mod tests {
         pub const PROGRESS_R: u8 = 2;
         /// `.state-dot`: 8 by 8, round.
         pub const DOT: f32 = 8.0;
-        /// `.kbd`: `min-width: 16px; height: 16px; border-radius: 3px`, Gray.250 on Gray.350.
+        /// `.kbd`: `min-width: 16px; height: 16px; border-radius: 3px`, Gray.250 on Gray.350,
+        /// its border 1 and 2 at its bottom (`border-bottom-width: 2px`).
         pub const KBD_H: f32 = 16.0;
         pub const KBD_MIN_W: f32 = 16.0;
         pub const KBD_R: u8 = 3;
@@ -949,6 +993,7 @@ mod tests {
             said,
             buttons: Some(buttons),
             messages: Vec::new(),
+            selection: Vec::new(),
             disk,
             saved: Some(saved),
             sketch: None,
@@ -972,6 +1017,8 @@ mod tests {
             None,
         );
         shown.messages = vec!["The sketch couldn't be written".to_owned()];
+        // The model's selection, which the sketch's line stands in place of.
+        shown.selection = vec!["2 selected".to_owned()];
         shown.sketch = Some(StatusLine {
             editing: "Editing Sketch1".to_owned(),
             coordinates: Some("x 12.500 · y -3.000 mm".to_owned()),
@@ -1012,6 +1059,12 @@ mod tests {
             state_words + css::ITEM_PADDING + css::GAP + css::ITEM_PADDING,
             css::RED,
         );
+        // The selection's words aren't said while the sketch's line is.
+        assert!(
+            !painted(&h)
+                .into_iter()
+                .any(|shape| matches!(shape, Shape::Text(shown) if shown.galley.text() == "2 selected"))
+        );
         // Off the canvas, a dash in the same 150; before the sketch is read, no state and
         // no separator for it.
         if let Some(line) = h.state_mut().sketch.as_mut() {
@@ -1039,11 +1092,18 @@ mod tests {
         };
         assert!(!painted_text(&h, "Editing Sketch1"));
         assert!(!painted_text(&h, "—"));
-        said_at(
+        let refusal = said_at(
             &h,
             "The sketch couldn't be written",
             after_buttons(&h) + css::ITEM_PADDING,
             css::RED,
+        );
+        // And the selection's words after the refusals, as they are with no sketch open.
+        said_at(
+            &h,
+            "2 selected",
+            refusal + css::ITEM_PADDING + css::GAP + css::ITEM_PADDING,
+            css::G550,
         );
     }
 
@@ -1135,8 +1195,15 @@ mod tests {
             shortcuts.right() - css::ITEM_PADDING
         ));
         assert_eq!(
-            (caps[0].fill, caps[0].stroke.color, caps[0].corner_radius),
-            (css::G250, css::G350, CornerRadius::same(css::KBD_R))
+            (caps[0].fill, caps[0].corner_radius),
+            (css::G250, CornerRadius::same(css::KBD_R))
+        );
+        assert!(caps[0].stroke.is_empty(), "the ? cap: {:?}", caps[0].stroke);
+        crate::modal::tests::kbd_border(
+            &crate::modal::tests::cap_border(&h, caps[0].rect),
+            caps[0].rect,
+            css::G350,
+            "the ? cap",
         );
         let sep = shortcuts.left() - css::GAP - css::BORDER;
         separator_at(&h, sep, 0.0);

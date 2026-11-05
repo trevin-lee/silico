@@ -710,7 +710,7 @@ impl Fixture {
     fn text(&self, session: &str) -> String {
         let text = self.call(
             "text",
-            &json!({"session": session, "feature": null}).to_string(),
+            &json!({"session": session, "feature": null, "revision": null}).to_string(),
         );
         text["result"]["text"].as_str().unwrap().to_owned()
     }

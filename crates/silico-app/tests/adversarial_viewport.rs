@@ -88,6 +88,9 @@ struct Told {
     frames: Vec<FrameData>,
     /// Frames presented with no tab shown.
     empty: usize,
+    /// The last frame's picking, answered the frame after as a renderer answers it: the
+    /// background's (the hover the selection asks as the pointer moves, M5.7).
+    picking: Option<Picking>,
 }
 
 type Record = Arc<Mutex<Told>>;
@@ -146,13 +149,21 @@ impl Present for Recorder {
         match frame {
             Some(frame) => {
                 assert!(frame.bodies.windows(2).all(|pair| pair[0] < pair[1]));
+                if let Some(rect) = frame.picking {
+                    told.picking = Some(Picking {
+                        frame: frame.serial,
+                        rect,
+                        hit: None,
+                        edge: None,
+                    });
+                }
                 told.frames.push(frame);
             }
             None => told.empty += 1,
         }
     }
     fn picked(&mut self) -> Option<Picking> {
-        None
+        self.0.0.lock().unwrap().picking.take()
     }
     fn refused(&mut self) -> std::collections::BTreeSet<u32> {
         std::collections::BTreeSet::new()
@@ -1161,6 +1172,7 @@ impl Present for LaggingPicks {
                     frame: frame.serial,
                     rect,
                     hit: None,
+                    edge: None,
                 },
             ));
         }

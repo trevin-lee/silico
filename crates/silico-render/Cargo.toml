@@ -59,6 +59,10 @@ required-features = ["test_ops"]
 name = "views"
 harness = false
 
+[[bench]]
+name = "picking"
+harness = false
+
 [[test]]
 name = "all_render"
 path = "tests/all_render.rs"

@@ -752,7 +752,7 @@ fn esc_dismisses_the_purple_banner_once_nothing_else_takes_it() {
     });
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
-    assert!(h.state().tabs()[0].selected.is_none());
+    assert!(h.state().tabs()[0].selection().is_empty());
     for _ in 0..5 {
         step(&mut h);
     }
@@ -1625,9 +1625,10 @@ fn stop_says_a_cancel_the_core_refuses() {
     assert_eq!(tab.message, None);
     tab.escape(&f.sessions);
     assert_eq!(tab.message, None);
-    tab.selected = Some(silico_core::document::FeatureId::new("a91cw0de").unwrap());
+    tab.selection_mut()
+        .select_feature(silico_core::document::FeatureId::new("a91cw0de").unwrap());
     tab.escape(&f.sessions);
-    assert_eq!(tab.selected, None);
+    assert!(tab.selection().is_empty());
     assert_eq!(tab.message, None);
     // No rebuild running: the stop off, whatever command runs (a command with no rebuild
     // is its own dialog's to stop), and the session's own reload among them; in every
@@ -4094,7 +4095,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
             .find(|entry| entry.problems > 0 || entry.warnings > 0)
             .map(|entry| entry.id.clone());
         assert!(marked.is_some(), "no feature of the example is marked");
-        tab.selected = marked;
+        tab.selection_mut().select_feature(marked.unwrap());
     }
     step_until(&mut h, "the check sent", |h| h.state().tabs()[0].checking());
     // Queued: the read still waits on the rebuild, which the fake holds at the new box. The
@@ -6086,12 +6087,13 @@ fn esc_clears_the_selection_before_it_stops_the_rebuild() {
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     let hold = edit_the_block_held(&f, &mut h);
-    h.state_mut().tabs_mut()[0].selected =
-        Some(silico_core::document::FeatureId::new("a91cw0de").unwrap());
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .select_feature(silico_core::document::FeatureId::new("a91cw0de").unwrap());
     step(&mut h);
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
-    assert_eq!(h.state().tabs()[0].selected, None);
+    assert!(h.state().tabs()[0].selection().is_empty());
     for _ in 0..5 {
         step(&mut h);
     }
@@ -7249,8 +7251,24 @@ struct Told {
     forgets: Vec<u32>,
     frames: Vec<silico_app::renderer::FrameData>,
     pick: Option<silico_app::renderer::Pick>,
+    /// The edge the picking answer gives beside it ([`silico_app::renderer::Picking::edge`]).
+    edge: Option<silico_app::renderer::Pick>,
+    /// How many of the next frames that ask a pick are to be taken as egui passes that
+    /// were discarded: their requests never reach the renderer, and are never answered.
+    discard: u32,
     /// The pick asked, and the number of the frame that asked it.
     picking: Option<(u64, silico_app::renderer::PixelRect)>,
+    /// If set, what the answer to a pick of the square given finds, in place of `pick`: a
+    /// renderer whose answers differ by the pick they're of (a hover's and a click's at
+    /// other pixels), however many egui passes a step runs.
+    by_rect: Option<
+        Box<dyn Fn(silico_app::renderer::PixelRect) -> Option<silico_app::renderer::Pick> + Send>,
+    >,
+    /// Whether no pick is answered: a renderer that never answers.
+    silent: bool,
+    /// Whether answers are held back: none is given, and the pick held is the first asked
+    /// since, those after it dropped, as a renderer would drop them, until it's let go.
+    hold: bool,
 }
 
 type Record = Arc<Mutex<Told>>;
@@ -7280,11 +7298,19 @@ impl silico_app::renderer::ViewRenderer for FakeRenderer {
     fn composite(&self, _: &mut eframe::wgpu::RenderPass<'_>) {}
     fn take_picking(&mut self) -> Option<silico_app::renderer::Picking> {
         let mut told = self.0.lock().unwrap();
+        if told.hold {
+            return None;
+        }
         let (frame, rect) = told.picking.take()?;
+        let hit = match &told.by_rect {
+            Some(by_rect) => by_rect(rect),
+            None => told.pick,
+        };
         Some(silico_app::renderer::Picking {
             frame,
             rect,
-            hit: told.pick,
+            hit,
+            edge: told.edge,
         })
     }
 }
@@ -7307,7 +7333,11 @@ impl silico_app::renderer::Present for Recorder {
             // The renderer takes bodies ascending, each once.
             assert!(frame.bodies.windows(2).all(|pair| pair[0] < pair[1]));
             if let Some(rect) = frame.picking {
-                told.picking = Some((frame.serial, rect));
+                if told.discard > 0 {
+                    told.discard -= 1;
+                } else if !told.silent && !(told.hold && told.picking.is_some()) {
+                    told.picking = Some((frame.serial, rect));
+                }
             }
             told.frames.push(frame);
         }
@@ -7324,10 +7354,23 @@ impl silico_app::renderer::Present for Recorder {
 impl Fixture {
     /// The app with `text` open from `name`, drawn through the fake renderer.
     fn drawn(&self, name: &str, text: &str) -> (AppHarness, Record) {
+        self.drawn_on(name, text, None)
+    }
+
+    /// [`Fixture::drawn`], its viewport's time `clock`'s.
+    fn drawn_clocked(&self, name: &str, text: &str, clock: Clock) -> (AppHarness, Record) {
+        self.drawn_on(name, text, Some(clock))
+    }
+
+    fn drawn_on(&self, name: &str, text: &str, clock: Option<Clock>) -> (AppHarness, Record) {
         let path = self.file(name, text);
         let record = Record::default();
-        let app = App::new(Arc::clone(&self.sessions))
-            .presenting(Box::new(Recorder(FakeRenderer(Arc::clone(&record)))));
+        let recorder = Box::new(Recorder(FakeRenderer(Arc::clone(&record))));
+        let app = App::new(Arc::clone(&self.sessions));
+        let app = match clock {
+            None => app.presenting(recorder),
+            Some(clock) => app.presenting_clocked(recorder, clock),
+        };
         // A sixtieth of a second a frame, as a display's: a double-click's two clicks are
         // two frames apart.
         let mut h = {
@@ -7755,7 +7798,8 @@ fn each_frame_gives_the_camera_its_size_scale_pointer_highlights_and_picking_a_f
         Some(silico_app::renderer::Picking {
             frame: serial,
             rect: rect_px,
-            hit: Some(pick)
+            hit: Some(pick),
+            edge: None,
         })
     );
     assert_eq!(record.lock().unwrap().frames.last().unwrap().picking, None);
@@ -8807,6 +8851,8 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     pixels_per_point: 1.0,
                     bodies: vec![1],
                     highlights: Vec::new(),
+                    hovered: Vec::new(),
+                    outlines: silico_app::renderer::Outlines::DEFAULT,
                     picking: None,
                 };
                 assert!(ViewRenderer::prepare(renderer, &data.frame()).is_ok());
@@ -13053,8 +13099,17 @@ fn the_toolbar_holds_solids_panels_their_buttons_in_the_prototypes_order_and_siz
     let mut on: Vec<&str> = CREATE_ROW.to_vec();
     on.push("CREATE");
     assert_eq!(on_of(&panel("CREATE")), on);
-    for label in ["MODIFY", "INSPECT", "SELECT"] {
+    for label in ["MODIFY", "INSPECT"] {
         assert_eq!(on_of(&panel(label)), [label]);
+    }
+    // SELECT's filters toggle the selection's filter (M5.7), each pressed while its kind is
+    // taken: all three at first.
+    assert_eq!(
+        on_of(&panel("SELECT")),
+        ["Faces", "Edges", "Vertices", "SELECT"]
+    );
+    for label in ["Faces", "Edges", "Vertices"] {
+        assert_eq!(toggled(&panel("SELECT").get_by_label(label)), Some(true));
     }
     // Sizes (`--toolbar-tabs-h: 24px`, `--toolbar-h: 52px`, `.tb-btn` 30 square 1 apart
     // with `.tb-panel`'s 4 above), from the toolbar's top left: DESIGN's top (`.tb-ws`, the
@@ -13144,7 +13199,7 @@ fn each_toolbar_button_names_its_command_and_says_what_it_does_or_that_it_isnt_b
         (
             "SELECT",
             "Edges",
-            vec!["Toggles whether edges can be selected. Not built yet"],
+            vec!["Toggles whether edges can be selected"],
         ),
     ] {
         pointer_away(&mut h);
@@ -13176,19 +13231,19 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         step(h);
         step(h);
     };
-    // interact.js:172: the filters under a heading, all of them, and Clear selection (Esc),
-    // which the app has: off with nothing selected.
+    // interact.js:172: the filters under a heading, all of them, each with its key, and
+    // Clear selection (Esc), which the app has: off with nothing selected.
     open(&mut h, "SELECT");
     let menu = h.get_by_role_and_label(Role::Menu, "SELECT");
     let entries = buttons_of(&menu);
-    assert_eq!(
-        entries[..4],
-        ["Faces", "Edges", "Vertices", "Select all filters"]
-    );
     assert_eq!(entries.len(), 5, "{entries:?}");
+    for (entry, label) in entries.iter().zip(["Faces", "Edges", "Vertices"]) {
+        assert!(entry.starts_with(label), "{entries:?}");
+    }
+    assert_eq!(entries[3], "Select all filters");
     assert!(entries[4].starts_with("Clear selection"), "{entries:?}");
     assert!(menu.query_by_label("SELECTION FILTERS").is_some());
-    assert!(on_of(&menu).is_empty());
+    assert_eq!(on_of(&menu), entries[..4]);
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     // interact.js:170: Create Sketch, the sweeps, and the primitives under a heading.
@@ -13271,14 +13326,14 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
     clear.click();
     step(&mut h);
     step(&mut h);
-    assert_eq!(h.state().tabs()[0].selected, None);
+    assert!(h.state().tabs()[0].selection().is_empty());
     assert!(h.query_by_role_and_label(Role::Menu, "SELECT").is_none());
     // With a feature selected and a dialog open, Clear selection is off: the dialog's
     // Cancel (Esc) comes first.
     select(&mut h, "Pin");
     create(&mut h, "Box");
     settled(&mut h);
-    assert!(h.state().tabs()[0].selected.is_some());
+    assert!(h.state().tabs()[0].selection().feature().is_some());
     open(&mut h, "SELECT");
     let clear = h
         .get_by_role_and_label(Role::Menu, "SELECT")
@@ -13301,6 +13356,7 @@ struct ToolbarStub {
     selected: bool,
     tool: Option<silico_app::sketch::tools::Choice>,
     construction: bool,
+    filter: silico_app::selection::Filter,
     acts: Vec<silico_app::toolbar::Act>,
 }
 
@@ -13313,6 +13369,7 @@ impl ToolbarStub {
             selected: false,
             tool: None,
             construction: false,
+            filter: silico_app::selection::Filter::default(),
             acts: Vec::new(),
         }
     }
@@ -13339,6 +13396,7 @@ fn toolbar_with(
                     selected: stub.selected,
                     tool: stub.tool,
                     construction: stub.construction,
+                    filter: stub.filter,
                 };
                 // The whole window, as the app's frame has it, not the harness's panel inside
                 // its margin.
@@ -16050,7 +16108,7 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                     pointer_away(&mut h);
                     press_chord(&mut h, chord);
                     step(&mut h);
-                    assert_eq!(h.state().tabs()[0].selected, None, "by its keys");
+                    assert!(h.state().tabs()[0].selection().is_empty(), "by its keys");
                     select(&mut h, "Pin");
                     pointer_away(&mut h);
                     h.get_by_role_and_label(Role::Toolbar, "SELECT")
@@ -16071,7 +16129,7 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                         .click();
                     step(&mut h);
                     step(&mut h);
-                    assert_eq!(h.state().tabs()[0].selected, None, "by SELECT's");
+                    assert!(h.state().tabs()[0].selection().is_empty(), "by SELECT's");
                 }
             }
             Command::Hide => {
@@ -16107,6 +16165,56 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                     step(&mut h);
                     step(&mut h);
                     assert!(hidden(&h).is_empty());
+                }
+            }
+            Command::FilterFace | Command::FilterEdge | Command::FilterVertex => {
+                // Its key toggles its kind in the filter, the others kept, and back again;
+                // so does SELECT's button, pressed while the kind is taken (M5.0, open item
+                // 24: each a toggle in the set).
+                let f = fixture();
+                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+                let filter = |h: &AppHarness| h.state().tabs()[0].selection().filter;
+                let kinds = |h: &AppHarness| {
+                    let f = filter(h);
+                    (f.faces, f.edges, f.vertices)
+                };
+                let off = match command {
+                    Command::FilterFace => (false, true, true),
+                    Command::FilterEdge => (true, false, true),
+                    _ => (true, true, false),
+                };
+                let pressed = |h: &AppHarness| {
+                    toggled(
+                        &h.get_by_role_and_label(Role::Toolbar, "SELECT")
+                            .get_by_label(entry.label),
+                    )
+                };
+                for chord in keys_of(command) {
+                    assert_eq!(kinds(&h), (true, true, true));
+                    pointer_away(&mut h);
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(kinds(&h), off, "{command:?} by its key");
+                    assert_eq!(pressed(&h), Some(false));
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(kinds(&h), (true, true, true), "and back");
+                    assert_eq!(pressed(&h), Some(true));
+                    h.get_by_role_and_label(Role::Toolbar, "SELECT")
+                        .get_by_label(entry.label)
+                        .click();
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(kinds(&h), off, "{command:?} by SELECT's button");
+                    h.get_by_role_and_label(Role::Toolbar, "SELECT")
+                        .get_by_label(entry.label)
+                        .click();
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(kinds(&h), (true, true, true));
                 }
             }
             Command::Ok | Command::Cancel => {
@@ -16424,9 +16532,9 @@ fn esc_alone_asks_for_the_next_frame_at_once() {
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
-    assert!(h.state().tabs()[0].selected.is_some());
+    assert!(h.state().tabs()[0].selection().feature().is_some());
     assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Escape));
-    assert_eq!(h.state().tabs()[0].selected, None);
+    assert!(h.state().tabs()[0].selection().is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -16823,11 +16931,14 @@ fn esc_in_sketch_mode_clears_the_selection_and_leaves_the_sketch_open() {
     let mode = sketch_mode(&h).unwrap();
     assert!(mode.selection.is_empty());
     // The sketch's own selection first; the browser's stays until the next Esc.
-    assert_eq!(h.state().tabs()[0].selected, Some(sketch_id("s0000001")));
+    assert_eq!(
+        h.state().tabs()[0].selection().feature(),
+        Some(&sketch_id("s0000001"))
+    );
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     assert!(sketch_mode(&h).is_some());
-    assert_eq!(h.state().tabs()[0].selected, None);
+    assert!(h.state().tabs()[0].selection().is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -23335,5 +23446,2125 @@ fn a_right_click_pressed_away_from_its_release_in_one_frame_opens_the_sketch_men
     }
     assert!(sketch_menu(&h).is_some());
     assert_eq!(sketch_mode(&h).unwrap().menu_at, Some(at));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Picking and selection (M5.7; docs/design/m5.0-app.md, section 9's *Selection*) ----
+
+/// A box, and a second 80 mm along x: two bodies, each named by the element map as a box
+/// names its elements, `<id>.box.Face<n>` and `<id>.box.Edge<n>`, its numbers OCCT's (M2.7).
+const TWO_BLOCKS: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "box", "v": 1, "name": "Other", "position": [80, 0, 0], "length": 10, "width": 10, "height": 10}
+  ]
+}
+"#;
+
+/// The canvas's pixel under `at`, in points: physical pixels from the viewport's top left,
+/// floored, as the selection's picking square centres on it.
+fn pixel_at(h: &AppHarness, at: eframe::egui::Pos2) -> [u32; 2] {
+    let frame = view(h).frame().unwrap();
+    let d = (at - frame.rect.min) * frame.pixels_per_point;
+    [d.x.floor() as u32, d.y.floor() as u32]
+}
+
+/// A left click on the canvas at `at`, Ctrl (Cmd) held if `ctrl`: its press one frame, its
+/// release the next.
+fn click_canvas(h: &mut AppHarness, at: eframe::egui::Pos2, ctrl: bool) {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let held = if ctrl {
+        Modifiers::COMMAND
+    } else {
+        Modifiers::NONE
+    };
+    h.event(Event::ModifiersChanged(held));
+    h.hover_at(at);
+    button_event(h, at, PointerButton::Primary, true, held);
+    step(h);
+    button_event(h, at, PointerButton::Primary, false, held);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    step(h);
+}
+
+/// What the fake renderer finds at every pick from now on: `hit` (the body, the element,
+/// and its pixel), and an edge in the square.
+fn answering(
+    record: &Record,
+    hit: Option<(u32, silico_app::renderer::Element, [u32; 2])>,
+    edge: Option<(u32, silico_app::renderer::Element, [u32; 2])>,
+) {
+    let pick = |(body, hit, pixel)| silico_app::renderer::Pick {
+        body,
+        hit,
+        pixel,
+        point: None,
+    };
+    let mut told = record.lock().unwrap();
+    told.pick = hit.map(pick);
+    told.edge = edge.map(pick);
+}
+
+fn selected_names(h: &AppHarness) -> Vec<String> {
+    h.state().tabs()[0]
+        .selection()
+        .names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[track_caller]
+fn selected_until(h: &mut AppHarness, want: &[&str]) {
+    step_until(h, &format!("{want:?} selected"), |h| {
+        selected_names(h) == want
+    });
+}
+
+/// The body whose feature is `id`, by its number.
+fn body_of(h: &AppHarness, id: &str) -> u32 {
+    view(h)
+        .bodies()
+        .iter()
+        .find(|(_, body)| body.feature.as_str() == id)
+        .map(|(number, _)| *number)
+        .unwrap()
+}
+
+/// What the last frame given to the renderer highlighted.
+fn highlighted(record: &Record) -> Vec<(u32, silico_app::renderer::Element)> {
+    record
+        .lock()
+        .unwrap()
+        .frames
+        .last()
+        .unwrap()
+        .highlights
+        .clone()
+}
+
+#[test]
+fn a_click_selects_the_element_under_it_by_name_ctrl_adds_and_removes_and_empty_and_esc_clear() {
+    use silico_app::renderer::Element::{Edge, Face};
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    let centre = pixel_at(&h, at);
+    // The box's front face under the pointer: selected by its name, highlighted.
+    answering(&record, Some((1, Face(3), centre)), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    step(&mut h);
+    assert_eq!(highlighted(&record), [(1, Face(3))]);
+    // Ctrl, an edge two pixels above in the square: added, in the order picked, the edge
+    // taken before the face under the pointer.
+    answering(
+        &record,
+        Some((1, Face(3), centre)),
+        Some((1, Edge(5), [centre[0], centre[1] - 2])),
+    );
+    click_canvas(&mut h, at, true);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3", "k7f2qx3m.box.Edge5"]);
+    step(&mut h);
+    assert_eq!(highlighted(&record), [(1, Face(3)), (1, Edge(5))]);
+    // Ctrl on the face again: removed.
+    answering(&record, Some((1, Face(3), centre)), None);
+    click_canvas(&mut h, at, true);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge5"]);
+    // Ctrl on nothing: nothing changes. A face found beside the pointer, not under it, is
+    // nothing too: only an edge is taken from the square around it.
+    answering(
+        &record,
+        Some((1, Face(3), [centre[0] + 2, centre[1]])),
+        None,
+    );
+    click_canvas(&mut h, at, true);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Edge5"]);
+    // A plain click on it: cleared.
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &[]);
+    step(&mut h);
+    assert!(highlighted(&record).is_empty());
+    // A plain click replaces: the face alone; Esc clears it.
+    answering(&record, Some((1, Face(3), centre)), None);
+    click_canvas(&mut h, at, true);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    answering(&record, Some((1, Face(1), centre)), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face1"]);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_clicks_pick_is_asked_again_until_answered_after_passes_that_were_discarded() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    let centre = pixel_at(&h, at);
+    answering(&record, Some((1, Face(3), centre)), None);
+    // The pointer there first, its hover answered, so the click's pick is the next asked.
+    h.hover_at(at);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    // The next three passes that ask are discarded: their requests reach no renderer.
+    record.lock().unwrap().discard = 3;
+    let frames = record.lock().unwrap().frames.len();
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    // Asked in each frame from the click's until one was answered: the three discarded,
+    // then the one answered, each of the same square about the pointer's pixel.
+    let told = record.lock().unwrap();
+    assert_eq!(told.discard, 0);
+    let asked: Vec<_> = told.frames[frames..]
+        .iter()
+        .filter_map(|frame| frame.picking)
+        .collect();
+    let square = silico_app::renderer::PixelRect {
+        min: [centre[0] as i32 - 3, centre[1] as i32 - 3],
+        size: [7, 7],
+    };
+    assert!(asked.len() >= 4, "{asked:?}");
+    assert!(asked.iter().all(|rect| *rect == square), "{asked:?}");
+    drop(told);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_hovered_element_is_named_drawn_and_said_and_let_go_off_the_canvas() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the hover", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    let selection = h.state().tabs()[0].selection();
+    let hovered = selection.hovered().unwrap();
+    assert_eq!(hovered.name.to_string(), "k7f2qx3m.box.Face3");
+    assert!(hovered.stable);
+    assert_eq!(
+        hovered.found.as_ref().map(|found| found.name.to_string()),
+        Some("k7f2qx3m.box.Face3".to_owned())
+    );
+    assert_eq!(
+        selection.hovered_feature().map(|id| id.as_str()),
+        Some("k7f2qx3m")
+    );
+    // Drawn hovered, not selected; said in the status bar.
+    step(&mut h);
+    let last = record.lock().unwrap().frames.last().unwrap().clone();
+    assert_eq!(last.hovered, [(1, Face(3))]);
+    assert!(last.highlights.is_empty());
+    assert!(anywhere(&h, "k7f2qx3m.box.Face3"));
+    // Off the canvas: let go.
+    h.hover_at(eframe::egui::pos2(5.0, 5.0));
+    step(&mut h);
+    step(&mut h);
+    assert!(h.state().tabs()[0].selection().hovered().is_none());
+    assert!(
+        record
+            .lock()
+            .unwrap()
+            .frames
+            .last()
+            .unwrap()
+            .hovered
+            .is_empty()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_face_picked_marks_and_opens_its_bodys_row_and_a_row_selected_lights_its_bodys_faces() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its row", |h| {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .query_by_label("Block")
+            .is_some()
+    });
+    let toggled = |h: &AppHarness, pane: &str| {
+        h.get_by_role_and_label(Role::Pane, pane)
+            .query_by_label("Block")
+            .and_then(|node| node.accesskit_node().toggled())
+            .map(|toggled| toggled == eframe::egui::accesskit::Toggled::True)
+    };
+    // The Bodies group closed: no row.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Collapse Bodies")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(toggled(&h, "Browser"), None);
+    // A face picked in the canvas: the group opened, its body's row there and marked;
+    // the timeline's item isn't (the selection is a face, not the feature).
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    step_until(&mut h, "its row marked", |h| {
+        toggled(h, "Browser") == Some(true)
+    });
+    assert_eq!(toggled(&h, "Timeline"), Some(false));
+    // Its row clicked: the body selected, the face let go, and the canvas lights each of
+    // its six faces.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Block")
+        .click();
+    step_until(&mut h, "the body selected", |h| {
+        h.state().tabs()[0]
+            .selection()
+            .feature()
+            .is_some_and(|id| id.as_str() == "k7f2qx3m")
+    });
+    assert!(selected_names(&h).is_empty());
+    step(&mut h);
+    step(&mut h);
+    let faces: Vec<_> = (1..=6).map(|n| (1, Face(n))).collect();
+    assert_eq!(highlighted(&record), faces);
+    assert_eq!(toggled(&h, "Timeline"), Some(true));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Forty boxes, `b0000001` to `b0000040`, named `Body01` to `Body40`: forty rows of 24
+/// points, more than the browser shows.
+fn forty_blocks() -> String {
+    let features: Vec<String> = (1..=40)
+        .map(|n| {
+            format!(
+                r#"{{"id": "b{n:07}", "type": "box", "v": 1, "name": "Body{n:02}", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}}"#
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    )
+}
+
+/// Whether the browser's row `name` is drawn within the band the browser shows, top to
+/// bottom: the canvas's, which the browser stands beside (its pane's node has no bounds).
+fn row_shown(h: &AppHarness, name: &str) -> bool {
+    let band = the_viewport(h);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .query_all_by_label(name)
+        .filter(|row| row.accesskit_node().bounding_box().is_some())
+        .any(|row| {
+            let row = row.rect();
+            row.top() >= band.top() && row.bottom() <= band.bottom()
+        })
+}
+
+#[test]
+fn the_browser_scrolls_to_a_picked_faces_body_row_and_to_no_other() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("blocks.silico", &forty_blocks());
+    meshes_settled(&mut h);
+    step_until(&mut h, "its rows", |h| {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .query_by_label("Body40")
+            .is_some()
+    });
+    // Nothing picked: the browser stays at its top, its first row shown, its last not.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(row_shown(&h, "Body01"));
+    assert!(!row_shown(&h, "Body40"));
+    // A face of the last body picked: its row scrolled to.
+    let at = the_viewport(&h).center();
+    let centre = pixel_at(&h, at);
+    let last = body_of(&h, "b0000040");
+    answering(&record, Some((last, Face(3), centre)), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["b0000040.box.Face3"]);
+    step_until(&mut h, "the last row shown", |h| row_shown(h, "Body40"));
+    assert!(!row_shown(&h, "Body01"));
+    // Then a face of the first: its row, and not another, scrolled to.
+    let first = body_of(&h, "b0000001");
+    answering(&record, Some((first, Face(3), centre)), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["b0000001.box.Face3"]);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(row_shown(&h, "Body01"));
+    assert!(!row_shown(&h, "Body40"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_picked_faces_row_is_scrolled_to_once_so_its_group_closed_after_stays_closed() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    step(&mut h);
+    step(&mut h);
+    // Scrolled to, and the scroll's target let go.
+    assert!(row_shown(&h, "Block"));
+    assert_eq!(h.state().tabs()[0].selection().scroll_target(), None);
+    // The Bodies group closed with the face still selected: it stays closed.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Collapse Bodies")
+        .click();
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .query_by_label("Block")
+            .is_none()
+    );
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_properties_of_a_selected_face_edge_and_vertex_are_under_its_kind() {
+    // The selection view's section names each element's kind (`selectionProps`'s heading):
+    // FACE, EDGE, VERTEX, each in capitals as a section is.
+    use silico_app::selection::How;
+    let f = fixture();
+    let (mut h, _) = f.opened("box.silico", A_BOX);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step(&mut h);
+    let section = |h: &AppHarness, kind: &str| {
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .query_by_label(kind)
+            .is_some()
+    };
+    for (name, kind) in [
+        ("k7f2qx3m.box.Face3", "FACE"),
+        ("k7f2qx3m.box.Edge5", "EDGE"),
+        ("k7f2qx3m.box.Vertex2", "VERTEX"),
+    ] {
+        h.state_mut().tabs_mut()[0]
+            .selection_mut()
+            .pick(name, How::Replace);
+        assert_eq!(selected_names(&h), [name]);
+        step(&mut h);
+        step(&mut h);
+        assert!(section(&h, kind), "{name}: no {kind}");
+        assert!(!section(&h, "ELEMENT"), "{name}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A fuse's history in which its base, a 1 mm cube, is the result, its Face1 and Edge1
+/// reported by nothing (Edge1 bounding Face1 alone), so both are named by their numbers,
+/// unstable (N3); the rest kept; the tool reported by nothing. By hand, as the core's
+/// selection tests make it (`numbering_fuse`).
+fn numbering_fuse() -> silico_core::kernel::History {
+    use silico_core::kernel::{ElementCounts, ElementFate, History, InputHistory, Topology};
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        ..ElementFate::default()
+    };
+    let none = |n: usize| vec![ElementFate::default(); n];
+    let face1 = |rest: Vec<Vec<u32>>| -> Vec<Vec<u32>> {
+        std::iter::once(vec![1, 2]).chain(rest).collect()
+    };
+    History {
+        inputs: vec![
+            InputHistory {
+                faces: none(1).into_iter().chain((2..=6).map(kept)).collect(),
+                edges: none(1).into_iter().chain((2..=12).map(kept)).collect(),
+                vertices: (1..=8).map(kept).collect(),
+            },
+            InputHistory {
+                faces: none(6),
+                edges: none(12),
+                vertices: none(8),
+            },
+        ],
+        result: ElementCounts {
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: face1(vec![vec![]; 5]),
+            outer_edges: face1(vec![vec![]; 5]),
+            edge_vertices: vec![vec![]; 12],
+            solid_faces: vec![(1..=6).collect()],
+        },
+    }
+}
+
+const FUSED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "aaaaaaaa", "type": "box", "v": 1, "name": "Base", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1},
+    {"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Tool", "position": [5, 0, 0], "length": 1, "width": 1, "height": 1},
+    {"id": "rrrrrrrr", "type": "fuse", "v": 1, "name": "Fused", "base": "aaaaaaaa", "tool": "bbbbbbbb"}
+  ]
+}
+"#;
+
+#[test]
+fn an_unstable_name_is_selectable_shown_with_its_reason_and_refused_by_a_store() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    f.kernel.answer_instead(|op| match op {
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                shape: base.clone(),
+                history: numbering_fuse(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, record) = f.drawn("fused.silico", FUSED);
+    meshes_settled(&mut h);
+    let body = body_of(&h, "rrrrrrrr");
+    let at = the_viewport(&h).center();
+    let centre = pixel_at(&h, at);
+    // Its Face1, named by its number: selected, as an agent would name it, and drawn.
+    answering(&record, Some((body, Face(1), centre)), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["rrrrrrrr.fuse.Face1"]);
+    step(&mut h);
+    assert_eq!(highlighted(&record), [(body, Face(1))]);
+    // Shown with why a store refuses it, in a reference's words (by hand from
+    // references.rs's message, N3), at its place in the selection.
+    let why = "selection.0, \"rrrrrrrr.fuse.Face1\", names a face, whose name is unstable \
+               (it came about as another element did, or is its number): an edit could make \
+               it another element";
+    step(&mut h);
+    assert!(shows(&h, "Properties", "1 element selected"));
+    assert!(shows(&h, "Properties", "rrrrrrrr.fuse.Face1"));
+    assert!(shows(&h, "Properties", "Unstable"));
+    assert!(
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .query_all_by_label_contains(why)
+            .next()
+            .is_some(),
+        "{:?}",
+        labels(&h, "Properties", Role::Label)
+    );
+    let refusal = h.state().tabs()[0].selection().storable().unwrap_err();
+    assert_eq!(refusal.code(), ErrorCode::ReferenceBroken);
+    assert_eq!(refusal.message(), why);
+    assert_eq!(refusal.parameter(), Some("selection.0"));
+    // Its Face2, kept from the base and stable, added: the store still refuses, for the
+    // first; alone, the store takes it.
+    answering(&record, Some((body, Face(2), centre)), None);
+    click_canvas(&mut h, at, true);
+    selected_until(&mut h, &["rrrrrrrr.fuse.Face1", "aaaaaaaa.box.Face2"]);
+    assert_eq!(
+        h.state().tabs()[0]
+            .selection()
+            .storable()
+            .unwrap_err()
+            .message(),
+        why
+    );
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["aaaaaaaa.box.Face2"]);
+    let stored: Vec<String> = h.state().tabs()[0]
+        .selection()
+        .storable()
+        .unwrap()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(stored, ["aaaaaaaa.box.Face2"]);
+    step(&mut h);
+    assert!(shows(&h, "Properties", "Stable"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// `id`'s `field` set to `value` through the core, as an agent would, and frames stepped
+/// until the tab has read the model it publishes.
+fn set_through_the_core(f: &Fixture, h: &mut AppHarness, id: &str, field: &str, value: &str) {
+    let session = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&session).session.unwrap().revision;
+    let models = h.state().tabs()[0].published_models;
+    f.sessions
+        .set_field(
+            &session,
+            revision,
+            silico_core::document::FeatureId::new(id).unwrap(),
+            field.to_owned(),
+            json::read(value.as_bytes()).unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(h, "the new model", |h| {
+        h.state().tabs()[0].published_models != models
+    });
+    meshes_settled(h);
+}
+
+/// Each element selected, and what the selection says of it: found, or waiting (and why).
+fn element_states(h: &AppHarness) -> Vec<(String, Option<String>)> {
+    h.state().tabs()[0]
+        .selection()
+        .elements()
+        .map(|picked| {
+            let state = match &picked.state {
+                silico_app::selection::State::Found(_) => None,
+                silico_app::selection::State::Waiting { why, .. } => {
+                    Some(why.clone().unwrap_or_else(|| "pending".to_owned()))
+                }
+            };
+            (picked.name.clone(), state)
+        })
+        .collect()
+}
+
+#[test]
+fn the_selection_survives_a_rebuild_that_keeps_its_names_waits_on_a_failure_and_says_whats_gone() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    // The block 41 long fails to build.
+    f.kernel.refuse(|op| match op {
+        Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx == 41.0 => {
+            Some(Error::new(ErrorCode::KernelFailed, "the block came apart"))
+        }
+        _ => None,
+    });
+    let (mut h, record) = f.drawn("blocks.silico", TWO_BLOCKS);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    let centre = pixel_at(&h, at);
+    let other = "a91cw0de.box.Face3";
+    let block = "k7f2qx3m.box.Face1";
+    answering(
+        &record,
+        Some((body_of(&h, "a91cw0de"), Face(3), centre)),
+        None,
+    );
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &[other]);
+    answering(
+        &record,
+        Some((body_of(&h, "k7f2qx3m"), Face(1), centre)),
+        None,
+    );
+    click_canvas(&mut h, at, true);
+    selected_until(&mut h, &[other, block]);
+    // A rebuild that keeps their names (the other box 12 long): both kept, found, nothing
+    // said.
+    set_through_the_core(&f, &mut h, "a91cw0de", "length", "12");
+    assert_eq!(
+        element_states(&h),
+        [(other.to_owned(), None), (block.to_owned(), None)]
+    );
+    assert_eq!(h.state().tabs()[0].selection().said(), None);
+    // The block failing: its face waits, saying why (the core's words), kept selected; a
+    // store refuses it, at its place.
+    set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "41");
+    let states = element_states(&h);
+    assert_eq!(states[0], (other.to_owned(), None));
+    assert_eq!(states[1].0, block);
+    let why = states[1].1.clone().unwrap();
+    assert!(why.contains("k7f2qx3m"), "{why}");
+    let refusal = h.state().tabs()[0].selection().storable().unwrap_err();
+    assert_eq!(refusal.parameter(), Some("selection.1"));
+    assert_eq!(
+        refusal.message(),
+        format!("{block} isn't in the model as it's built now: {why}")
+    );
+    // Built again: found again.
+    set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "40");
+    assert_eq!(
+        element_states(&h),
+        [(other.to_owned(), None), (block.to_owned(), None)]
+    );
+    // The other box removed: its face is gone, dropped, and said, how many of the faces
+    // selected went and, for one, why, in the core's words (by hand from its lookup's
+    // message for a name of no feature); the block's stays, as SolidWorks' selection box
+    // keeps its valid items.
+    let session = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&session).session.unwrap().revision;
+    let models = h.state().tabs()[0].published_models;
+    f.sessions
+        .remove_feature(
+            &session,
+            revision,
+            silico_core::document::FeatureId::new("a91cw0de").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the new model", |h| {
+        h.state().tabs()[0].published_models != models
+    });
+    selected_until(&mut h, &[block]);
+    let said = h.state().tabs()[0].selection().said().unwrap().to_owned();
+    let gone = format!(
+        "1 of 2 selected faces is gone after the rebuild: selection.0, \"{other}\", isn't a \
+         name: no feature a91cw0de in the model, at column 1"
+    );
+    assert!(said.starts_with(&gone), "{said}");
+    step(&mut h);
+    assert!(anywhere(&h, &said), "the status bar doesn't say {said}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_taken_within_its_band()
+ {
+    on_lavapipe(
+        "on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_taken_within_its_band",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            h.set_render_every_step(true);
+            // In the theme, its fonts and icons, as main.rs applies them: for the screenshot.
+            silico_app::theme::apply(&h.ctx);
+            let path = f.file("box.silico", A_BOX);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            // From the front (−y), onto the box's centre (20, 10, 5), 20 mm high: a point
+            // (x, 0, z) of the front face (Face3, y = 0, x 0 to 40, z 0 to 10) is seen
+            // (x − 20) mm right of the pane's centre and (z − 5) mm above it, a mm being
+            // the pane's height over 20.
+            view_mut(&mut h).set_camera(silico_protocol::Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 20.0 },
+                eye: [20.0, -100.0, 5.0],
+                target: [20.0, 10.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            });
+            meshes_settled(&mut h);
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            let rect = the_viewport(&h);
+            let mm = rect.height() / 20.0;
+            let seen = |x: f32, z: f32| {
+                rect.center() + eframe::egui::vec2((x - 20.0) * mm, -(z - 5.0) * mm)
+            };
+            let select_at = |h: &mut AppHarness, at, ctrl, want: &[&str]| {
+                click_canvas(h, at, ctrl);
+                for _ in 0..12 {
+                    if selected_names(h) == want {
+                        break;
+                    }
+                    step(h);
+                }
+                assert_eq!(selected_names(h), want, "at {at:?}");
+            };
+            // The face at (30, 0, 3): Face3, by the name the element map gives it.
+            select_at(&mut h, seen(30.0, 3.0), false, &["k7f2qx3m.box.Face3"]);
+            // Its top edge, z = 10 (drawn 2 points wide about its line), from the face 2
+            // points below its line: inside the 3-point band, the edge, not the face. It's
+            // Edge3 in the fixture's numbering (`silico_render::bench::box_mesh`: the front
+            // face's bottom, right, top, left first), which the fake kernel meshes every box
+            // with, so the element map names it so; OCCT's box numbers the top front edge
+            // Edge10. The name is the fixture's, not OCCT's.
+            let edge = seen(30.0, 10.0);
+            let below = |points: f32| edge + eframe::egui::vec2(0.0, points);
+            select_at(&mut h, below(2.0), false, &["k7f2qx3m.box.Edge3"]);
+            // 6 points below it, past the band: the face under the pointer.
+            select_at(&mut h, below(6.0), false, &["k7f2qx3m.box.Face3"]);
+            // Above the box (z = 14, clear of the ViewCube at the top right), the
+            // background: a click there clears.
+            select_at(&mut h, seen(10.0, 14.0), false, &[]);
+            // The face and the edge, for the screenshot, with the properties panel's view.
+            select_at(&mut h, seen(30.0, 3.0), false, &["k7f2qx3m.box.Face3"]);
+            select_at(
+                &mut h,
+                below(2.0),
+                true,
+                &["k7f2qx3m.box.Face3", "k7f2qx3m.box.Edge3"],
+            );
+            // The pointer on the face, hovered: its answer a few frames on, on lavapipe.
+            h.hover_at(seen(10.0, 5.0));
+            step_until(&mut h, "the face hovered", |h| {
+                h.state().tabs()[0]
+                    .selection()
+                    .hovered()
+                    .is_some_and(|hovered| hovered.name.to_string() == "k7f2qx3m.box.Face3")
+            });
+            step(&mut h);
+            assert!(shows(&h, "Properties", "2 elements selected"));
+            if let Some(shot) = std::env::var_os("SILICO_APP_SELECTION_SHOT") {
+                h.render().unwrap().save(shot).unwrap();
+            }
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
+}
+
+/// The fake answers each fuse with `history` of the tool's description (`box(2, …)` for a
+/// tool 2 long), giving the base back.
+fn fusing(f: &Fixture, history: fn(&str) -> silico_core::kernel::History) {
+    f.kernel.answer_instead(move |op| match op {
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Fuse,
+            base,
+            tool,
+        } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                shape: base.clone(),
+                history: history(&FakeKernel::describe(tool)?),
+            },
+        )),
+        _ => None,
+    });
+}
+
+/// The numbering fuse after its tool is made 2 long: the base's Face2 kept as the result's
+/// Face3, and its Face3 as the result's Face2, so each of their stable names finds another
+/// number than before.
+fn swapping_fuse() -> silico_core::kernel::History {
+    use silico_core::kernel::ElementFate;
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        ..ElementFate::default()
+    };
+    let mut history = numbering_fuse();
+    history.inputs[0].faces = vec![
+        ElementFate::default(),
+        kept(3),
+        kept(2),
+        kept(4),
+        kept(5),
+        kept(6),
+    ];
+    history
+}
+
+/// The tab's published model's count, and the session's revision.
+fn models_and_revision(f: &Fixture, h: &AppHarness) -> (u64, silico_core::command::Revision) {
+    let session = h.state().tabs()[0].id;
+    (
+        h.state().tabs()[0].published_models,
+        f.sessions.status(&session).session.unwrap().revision,
+    )
+}
+
+#[test]
+fn a_model_published_before_its_meshes_are_read_names_no_pick_and_draws_no_element_till_they_are() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    fusing(&f, |tool| {
+        if tool.contains("box(2,") {
+            swapping_fuse()
+        } else {
+            numbering_fuse()
+        }
+    });
+    // The viewport's clock stopped: the click's wait never reaches its backstop
+    // (CLICK_WAIT), however slow the machine.
+    let (_time, clock) = hand_clock();
+    let (mut h, record) = f.drawn_clocked("fused.silico", FUSED, clock);
+    meshes_settled(&mut h);
+    let body = body_of(&h, "rrrrrrrr");
+    let at = the_viewport(&h).center();
+    // The face numbered 2 under the pointer, in these meshes and in the next model's: the
+    // base's Face2 now, its Face3 once the tool is 2 long.
+    answering(&record, Some((body, Face(2), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["aaaaaaaa.box.Face2"]);
+    step(&mut h);
+    assert_eq!(highlighted(&record), [(body, Face(2))]);
+    // The tool made 2 long, the new model's meshes held: it's published, and the view
+    // still holds the old model's meshes.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    let (models, revision) = models_and_revision(&f, &h);
+    let session = h.state().tabs()[0].id;
+    f.sessions
+        .set_field(
+            &session,
+            revision,
+            silico_core::document::FeatureId::new("bbbbbbbb").unwrap(),
+            "length".to_owned(),
+            json::read(b"2").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the new model", |h| {
+        h.state().tabs()[0].published_models != models
+    });
+    // Carried to it, the face selected is the new model's Face3.
+    let number = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .selection()
+            .elements()
+            .next()
+            .and_then(|picked| picked.found())
+            .map(|found| found.element.index)
+    };
+    step_until(&mut h, "the face carried", |h| number(h) == Some(3));
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(view(&h).reading(), "the new model's meshes weren't held");
+    // Its number in the new model isn't drawn on the old model's meshes, whose Face3 is
+    // another face.
+    assert_eq!(highlighted(&record), []);
+    // Let go, and a click on the face numbered 2 of the old meshes: named from neither
+    // model, it waits.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(selected_names(&h).is_empty());
+    click_canvas(&mut h, at, false);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+    }
+    // The meshes read: the click picks again, of them, and the face numbered 2 is the new
+    // model's, the base's Face3, drawn where it is.
+    hold.release();
+    step_until(&mut h, "the new model's meshes", meshes_current);
+    selected_until(&mut h, &["aaaaaaaa.box.Face3"]);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(highlighted(&record), [(body_of(&h, "rrrrrrrr"), Face(2))]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_unstable_name_picked_is_dropped_by_a_rebuild_saying_why_in_a_references_words() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    fusing(&f, |_| numbering_fuse());
+    let (mut h, record) = f.drawn("fused.silico", FUSED);
+    meshes_settled(&mut h);
+    let body = body_of(&h, "rrrrrrrr");
+    let at = the_viewport(&h).center();
+    answering(&record, Some((body, Face(1), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["rrrrrrrr.fuse.Face1"]);
+    // A rebuild through the core, the fuse's history the same: the text may name another
+    // face now, so carried, it's gone, said in a reference's words (references.rs's, N3,
+    // by hand), never kept.
+    set_through_the_core(&f, &mut h, "bbbbbbbb", "length", "2");
+    selected_until(&mut h, &[]);
+    let said = h.state().tabs()[0].selection().said().unwrap().to_owned();
+    let gone = "The selected face is gone after the rebuild: selection.0, \
+                \"rrrrrrrr.fuse.Face1\", names a face, whose name is unstable (it came about as \
+                another element did, or is its number): an edit could make it another element";
+    assert!(said.starts_with(gone), "{said}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A picking square's centre pixel (its sides are odd).
+fn square_centre(rect: silico_app::renderer::PixelRect) -> [i32; 2] {
+    [0, 1].map(|k| rect.min[k] + i32::try_from(rect.size[k] / 2).unwrap())
+}
+
+/// The serial of the last frame the renderer was given, and whether it asked a pick.
+fn last_frame(record: &Record) -> (u64, bool) {
+    let told = record.lock().unwrap();
+    let frame = told.frames.last().unwrap();
+    (frame.serial, frame.picking.is_some())
+}
+
+#[test]
+fn a_hover_answer_to_a_frame_before_a_click_is_not_the_clicks() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let click = the_viewport(&h).center();
+    let hover = click - eframe::egui::vec2(40.0, 0.0);
+    let (click_px, hover_px) = (pixel_at(&h, click), pixel_at(&h, hover));
+    // A renderer that finds Face1 under the hover's pixel and Face3 under the click's,
+    // each at its square's centre.
+    record.lock().unwrap().by_rect = Some(Box::new(move |rect| {
+        let centre = square_centre(rect).map(|c| u32::try_from(c).unwrap());
+        let hit = if centre == hover_px {
+            Face(1)
+        } else if centre == click_px {
+            Face(3)
+        } else {
+            return None;
+        };
+        Some(silico_app::renderer::Pick {
+            body: 1,
+            hit,
+            pixel: centre,
+            point: None,
+        })
+    }));
+    h.hover_at(click + eframe::egui::vec2(0.0, 60.0));
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    // Answers held back: the pointer onto the hover's pixel, its pick asked and held; then a
+    // click at another pixel, asking its own pick each frame (dropped while one is held).
+    record.lock().unwrap().hold = true;
+    let before = record.lock().unwrap().frames.len();
+    h.hover_at(hover);
+    step(&mut h);
+    click_canvas(&mut h, click, false);
+    step(&mut h);
+    let centres = |record: &Record| -> Vec<[u32; 2]> {
+        record.lock().unwrap().frames[before..]
+            .iter()
+            .filter_map(|frame| frame.picking)
+            .map(|rect| square_centre(rect).map(|c| u32::try_from(c).unwrap()))
+            .collect()
+    };
+    let asked = centres(&record);
+    assert_eq!(asked.first(), Some(&hover_px), "{asked:?}");
+    assert!(
+        asked[1..].iter().filter(|c| **c == click_px).count() >= 2,
+        "the click isn't asking: {asked:?}"
+    );
+    assert!(selected_names(&h).is_empty());
+    // Let go: the hover's answer comes first, to a frame before the click's. Not the
+    // click's, which takes the answer to its own pick, Face3, never the hover's Face1.
+    record.lock().unwrap().hold = false;
+    for _ in 0..8 {
+        step(&mut h);
+        assert_ne!(selected_names(&h), ["k7f2qx3m.box.Face1"]);
+    }
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_hover_answer_to_a_frame_before_the_camera_moved_is_passed_over() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    h.hover_at(eframe::egui::pos2(5.0, 5.0));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let hovered = |h: &AppHarness| h.state().tabs()[0].selection().hovered().is_some();
+    assert!(!hovered(&h));
+    // The pointer onto the face: its hover's pick asked, carried by the next frame, in
+    // which the view is panned a millimetre (its meshes serve it as they are: nothing is
+    // read again).
+    h.hover_at(at);
+    step(&mut h);
+    let mut camera = view(&h).camera().clone();
+    camera.eye[0] += 1.0;
+    camera.target[0] += 1.0;
+    let reads = view(&h).reads();
+    view_mut(&mut h).set_camera(camera);
+    step(&mut h);
+    assert!(last_frame(&record).1, "the hover's pick");
+    // Its answer, of the view before the pan: what's under the pointer now may be another
+    // face, so it isn't taken.
+    for _ in 0..6 {
+        step(&mut h);
+        assert!(!hovered(&h));
+    }
+    assert_eq!(view(&h).reads(), reads, "the pan read the meshes again");
+    // The pointer moved: asked again, and taken.
+    let moved = at + eframe::egui::vec2(1.0, 0.0);
+    answering(&record, Some((1, Face(3), pixel_at(&h, moved))), None);
+    h.hover_at(moved);
+    step_until(&mut h, "the hover", hovered);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn no_hover_is_asked_while_a_drag_navigates_and_it_is_after() {
+    use eframe::egui::{Modifiers, PointerButton};
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the hover", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    // The middle button dragged 60 points, 10 a frame: the view pans, and no hover is asked
+    // while it does, though the pointer moves to another pixel each frame, and none is
+    // held.
+    button_event(&h, at, PointerButton::Middle, true, Modifiers::NONE);
+    step(&mut h);
+    let mut asked = Vec::new();
+    for i in 1..=6u8 {
+        h.hover_at(at + eframe::egui::vec2(10.0 * f32::from(i), 0.0));
+        step(&mut h);
+        asked.push(last_frame(&record).1);
+        if i > 1 {
+            assert!(view(&h).navigating());
+            assert!(h.state().tabs()[0].selection().hovered().is_none());
+        }
+    }
+    // The press's pixel was asked before it, and the drag is under way from the first
+    // move's frame: no frame of the drag carries a pick.
+    assert_eq!(asked, [false; 6]);
+    let end = at + eframe::egui::vec2(60.0, 0.0);
+    button_event(&h, end, PointerButton::Middle, false, Modifiers::NONE);
+    step(&mut h);
+    // Let go: asked again where the pointer is, and taken.
+    answering(&record, Some((1, Face(3), pixel_at(&h, end))), None);
+    step_until(&mut h, "the hover again", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_a_renderer_never_answers_is_let_go_after_its_frames() {
+    use silico_app::renderer::Element::Face;
+    use silico_app::selection::CLICK_FRAMES;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    h.hover_at(at);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    record.lock().unwrap().silent = true;
+    let pressed = record.lock().unwrap().frames.len();
+    click_canvas(&mut h, at, false);
+    for _ in 0..CLICK_FRAMES + 20 {
+        step(&mut h);
+    }
+    // Asked in each of CLICK_FRAMES frames from the click's, then let go, the hover asked
+    // once more where the pointer is (the click's asks took its place); then nothing. (The
+    // pointer's pixel was asked before: nothing else asks from the press on.)
+    let asks: Vec<bool> = record.lock().unwrap().frames[pressed..]
+        .iter()
+        .map(|frame| frame.picking.is_some())
+        .collect();
+    let first = asks.iter().position(|asked| *asked).unwrap();
+    let n = usize::try_from(CLICK_FRAMES).unwrap() + 1;
+    assert!(
+        asks[first..first + n].iter().all(|asked| *asked),
+        "{asks:?}"
+    );
+    assert!(!asks[first + n..].iter().any(|asked| *asked), "{asks:?}");
+    // The renderer answering now: the click's gone, so nothing is selected.
+    {
+        let mut told = record.lock().unwrap();
+        told.silent = false;
+    }
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    h.hover_at(at + eframe::egui::vec2(1.0, 0.0));
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert!(selected_names(&h).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_before_a_clicks_answer_lets_the_click_go_with_the_selection() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    let centre = pixel_at(&h, at);
+    answering(&record, Some((1, Face(1), centre)), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face1"]);
+    // Another click, its pick asked as it's let go; Esc the next frame, before the answer
+    // comes: the selection cleared, and the answer selects nothing after it.
+    answering(&record, Some((1, Face(3), centre)), None);
+    click_canvas(&mut h, at, false);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    for _ in 0..6 {
+        step(&mut h);
+        assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The box's `field` set to `value` through the core, its meshes held by `hold`'s caller
+/// ([`published_of_with_meshes_held`]).
+fn published_with_meshes_held(f: &Fixture, h: &mut AppHarness, field: &str, value: &str) {
+    published_of_with_meshes_held(f, h, "k7f2qx3m", field, value);
+}
+
+/// Feature `id`'s `field` set to `value` through the core, its meshes held by `hold`'s
+/// caller: the model it publishes waited for in the core, no frame stepped meanwhile, then
+/// one frame, in which the tab takes it and starts its read, held. The view still holds the
+/// model before's meshes. One frame, so a pick asked before it is still answered after
+/// (the viewport waits eight frames for a pick's answer).
+fn published_of_with_meshes_held(
+    f: &Fixture,
+    h: &mut AppHarness,
+    id: &str,
+    field: &str,
+    value: &str,
+) {
+    let (models, revision) = models_and_revision(f, h);
+    let session = h.state().tabs()[0].id;
+    let edited = f
+        .sessions
+        .set_field(
+            &session,
+            revision,
+            silico_core::document::FeatureId::new(id).unwrap(),
+            field.to_owned(),
+            json::read(value.as_bytes()).unwrap(),
+        )
+        .wait();
+    edited.result.unwrap();
+    let after = edited.session.unwrap().revision;
+    let deadline = Instant::now() + WAIT;
+    while f
+        .sessions
+        .published(&session)
+        .result
+        .ok()
+        .map(|published| published.revision)
+        != Some(after)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the edit's model was never published"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    step(h);
+    assert_ne!(h.state().tabs()[0].published_models, models);
+    assert!(view(h).reading(), "the new model's read wasn't started");
+    assert_ne!(
+        view(h).bodies_of().map(|(models, _)| models),
+        Some(h.state().tabs()[0].published_models),
+        "the new model's meshes weren't held"
+    );
+}
+
+/// A clock that says what the test sets, from now: frozen until [`advance`]d.
+fn hand_clock() -> (Arc<Mutex<Instant>>, Clock) {
+    let time = Arc::new(Mutex::new(Instant::now()));
+    let read = Arc::clone(&time);
+    (time, Arc::new(move || *read.lock().unwrap()))
+}
+
+fn advance(time: &Mutex<Instant>, by: Duration) {
+    *time.lock().unwrap() += by;
+}
+
+/// The delay the last frame asked for the next one at.
+fn repaint_delay(h: &AppHarness) -> Option<Duration> {
+    h.output()
+        .viewport_output
+        .get(&eframe::egui::ViewportId::ROOT)
+        .map(|viewport| viewport.repaint_delay)
+}
+
+/// Whether the view's meshes are of the model the tab has published (the selection's).
+fn meshes_current(h: &AppHarness) -> bool {
+    let tab = &h.state().tabs()[0];
+    tab.published.is_some()
+        && view(h).bodies_of()
+            == tab
+                .published
+                .map(|revision| (tab.published_models, revision))
+}
+
+/// What the selection says in the status bar.
+fn selection_said(h: &AppHarness) -> Option<String> {
+    h.state().tabs()[0].selection().said().map(str::to_owned)
+}
+
+/// Frames stepped until the view's meshes are the published model's, then until the
+/// hover's pick is answered on them: a click waiting would have asked first, and been
+/// answered by then.
+fn hovered_on_current_meshes(h: &mut AppHarness) {
+    step_until(h, "the new model's meshes", meshes_current);
+    step_until(h, "the hover on them", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+}
+
+/// The camera panned a millimetre along x, as a control of the person's pans it.
+fn pan(h: &mut AppHarness) {
+    let mut camera = view(h).camera().clone();
+    camera.eye[0] += 1.0;
+    camera.target[0] += 1.0;
+    view_mut(h).set_camera(camera);
+}
+
+#[test]
+fn a_click_waiting_for_a_new_models_meshes_is_let_go_by_a_pan_and_the_selection_kept() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    // The viewport's clock stopped: the click's wait never reaches its backstop
+    // (CLICK_WAIT), however slow the machine.
+    let (_time, clock) = hand_clock();
+    let (mut h, record) = f.drawn_clocked("box.silico", A_BOX, clock);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    // The box made 50 long, its meshes held: published, the view still holds the 40 mm
+    // box's. A click on what the renderer now calls Face1 waits for the new meshes.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    published_with_meshes_held(&f, &mut h, "length", "50");
+    answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    for _ in 0..4 {
+        step(&mut h);
+        assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face3"]);
+    }
+    // Panned while it waits: its pixel was of the view before, so it's let go. The meshes
+    // read: nothing is picked, and the selection is as it was.
+    pan(&mut h);
+    step(&mut h);
+    hold.release();
+    meshes_settled(&mut h);
+    for _ in 0..8 {
+        step(&mut h);
+        assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face3"]);
+    }
+    assert_eq!(h.state().tabs()[0].selection().said(), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_waiting_for_a_slow_read_of_a_new_models_meshes_is_picked_on_them_however_many_frames_go_by()
+ {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    // The viewport's clock stopped: the click's wait never reaches its backstop
+    // (CLICK_WAIT), however slow the machine.
+    let (_time, clock) = hand_clock();
+    let (mut h, record) = f.drawn_clocked("box.silico", A_BOX, clock);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    published_with_meshes_held(&f, &mut h, "length", "50");
+    click_canvas(&mut h, at, false);
+    // A slow read on a busy machine: 200 frames, its answer still held. Nothing the click
+    // was aimed at changed, so it waits, asking for no frame of its own (the read's answer
+    // wakes the app).
+    for _ in 0..200 {
+        step(&mut h);
+    }
+    assert!(
+        view(&h).reading(),
+        "the meshes came before the frames went by"
+    );
+    assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+    assert_eq!(selection_said(&h), None);
+    for _ in 0..10 {
+        let woken = h.state().wakes();
+        step(&mut h);
+        assert!(!asked_at_once(&h) || h.state().wakes() != woken);
+    }
+    // The meshes read: the click is picked on them.
+    hold.release();
+    selected_until(&mut h, &["k7f2qx3m.box.Face1"]);
+    assert_eq!(selection_said(&h), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_waiting_for_a_models_meshes_is_let_go_and_said_once_another_model_is_published() {
+    use silico_app::renderer::Element::Face;
+    use silico_app::selection::CLICK_REPUBLISHED;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    // The viewport's clock stopped: the click's wait never reaches its backstop
+    // (CLICK_WAIT), however slow the machine.
+    let (_time, clock) = hand_clock();
+    let (mut h, record) = f.drawn_clocked("box.silico", A_BOX, clock);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    // The box made 50 long, its meshes held; a click waits for them.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    published_with_meshes_held(&f, &mut h, "length", "50");
+    answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    assert_eq!(selection_said(&h), None);
+    // Made 60 long before they come: what it would be picked on isn't what it waited for.
+    published_with_meshes_held(&f, &mut h, "length", "60");
+    assert_eq!(selection_said(&h).as_deref(), Some(CLICK_REPUBLISHED));
+    // The 60 mm box's meshes read and picked on: the click is gone, the selection kept.
+    hold.release();
+    hovered_on_current_meshes(&mut h);
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face3"]);
+    assert_eq!(selection_said(&h).as_deref(), Some(CLICK_REPUBLISHED));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn what_a_rebuild_left_gone_is_said_over_a_click_let_go_by_the_same_model() {
+    use silico_app::selection::How;
+    let f = fixture();
+    fusing(&f, |_| numbering_fuse());
+    // The viewport's clock stopped: the click's wait never reaches its backstop
+    // (CLICK_WAIT), however slow the machine.
+    let (_time, clock) = hand_clock();
+    let (mut h, _record) = f.drawn_clocked("fused.silico", FUSED, clock);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    // The tool 2 long, its meshes held; the fuse's Face1 (unstable: its number) selected
+    // in that model, and a click waiting for its meshes.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    published_of_with_meshes_held(&f, &mut h, "bbbbbbbb", "length", "2");
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .pick("rrrrrrrr.fuse.Face1", How::Replace);
+    assert_eq!(selected_names(&h), ["rrrrrrrr.fuse.Face1"]);
+    click_canvas(&mut h, at, true);
+    // The tool 3 long: the click is let go, and the face is gone; what's said is that.
+    published_of_with_meshes_held(&f, &mut h, "bbbbbbbb", "length", "3");
+    assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+    let said = selection_said(&h).unwrap();
+    assert!(
+        said.starts_with("The selected face is gone after the rebuild: selection.0, "),
+        "{said}"
+    );
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_waiting_for_a_new_models_meshes_is_let_go_by_a_filter_change() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    // The viewport's clock stopped: the click's wait never reaches its backstop
+    // (CLICK_WAIT), however slow the machine.
+    let (_time, clock) = hand_clock();
+    let (mut h, record) = f.drawn_clocked("box.silico", A_BOX, clock);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    published_with_meshes_held(&f, &mut h, "length", "50");
+    answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    // Edges no longer picked while it waits (it would pick Face1 still, but by another
+    // filter than the one it was made under): let go, the person's own change, unsaid.
+    h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
+    step(&mut h);
+    hold.release();
+    hovered_on_current_meshes(&mut h);
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face3"]);
+    assert_eq!(selection_said(&h), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_on_meshes_whose_read_was_refused_is_let_go_at_once_and_said() {
+    use silico_app::renderer::Element::Face;
+    use silico_app::selection::CLICK_UNREAD;
+    use silico_app::viewport::RETRY_MOST;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let failing = Arc::new(AtomicBool::new(false));
+    let refusing = Arc::clone(&failing);
+    f.kernel.refuse(move |op| {
+        (matches!(op, Op::Tessellate { .. }) && refusing.load(Ordering::SeqCst))
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the worker crashed meshing"))
+    });
+    // The viewport's clock stopped: the retry its refusal sets can't come due between
+    // the click's frames, however slow the machine.
+    let (time, clock) = hand_clock();
+    let (mut h, record) = f.drawn_clocked("box.silico", A_BOX, clock);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    // The box made 50 long, its meshes refused: none are coming (till a retry).
+    failing.store(true, Ordering::SeqCst);
+    let (_, revision) = models_and_revision(&f, &h);
+    let session = h.state().tabs()[0].id;
+    f.sessions
+        .set_field(
+            &session,
+            revision,
+            silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+            "length".to_owned(),
+            json::read(b"50").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the new model's read refused", |h| {
+        h.state().tabs()[0]
+            .published
+            .is_some_and(|published| published != revision && view(h).refused_of(published))
+    });
+    assert!(!meshes_current(&h));
+    // A click on the old meshes: let go at once, and said.
+    answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    assert_eq!(selection_said(&h).as_deref(), Some(CLICK_UNREAD));
+    // Read once the kernel meshes again and the retry is due: the click is gone, the
+    // selection kept.
+    failing.store(false, Ordering::SeqCst);
+    advance(&time, RETRY_MOST);
+    hovered_on_current_meshes(&mut h);
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_waiting_on_a_read_that_never_answers_is_let_go_at_its_backstop_and_said() {
+    use silico_app::renderer::Element::Face;
+    use silico_app::selection::{CLICK_STALE, CLICK_WAIT};
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (time, clock) = hand_clock();
+    let (mut h, record) = f.drawn_clocked("box.silico", A_BOX, clock);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    published_with_meshes_held(&f, &mut h, "length", "50");
+    click_canvas(&mut h, at, false);
+    // Its clock frozen, nothing's let go however many frames go by; a frame is asked for
+    // at the backstop, not before.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    let short = Duration::from_millis(300);
+    advance(&time, CLICK_WAIT - short);
+    step(&mut h);
+    assert_eq!(selection_said(&h), None);
+    // About 300 ms: egui takes a frame off what's asked.
+    let delay = repaint_delay(&h).unwrap();
+    assert!(
+        delay <= short && delay > short - Duration::from_millis(20),
+        "{delay:?}"
+    );
+    // At it: let go, and said, and no frame asked for it any more.
+    advance(&time, short);
+    step(&mut h);
+    assert_eq!(selection_said(&h).as_deref(), Some(CLICK_STALE));
+    assert!(view(&h).reading(), "the meshes came before the backstop");
+    step(&mut h);
+    let delay = repaint_delay(&h).unwrap();
+    assert!(delay > Duration::from_secs(1), "{delay:?}");
+    // The meshes read and picked on: nothing is selected.
+    hold.release();
+    hovered_on_current_meshes(&mut h);
+    assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_clicks_answer_that_comes_once_a_new_model_is_published_names_nothing_till_its_meshes_come() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    // The viewport's clock stopped: the click's wait never reaches its backstop
+    // (CLICK_WAIT), however slow the machine.
+    let (_time, clock) = hand_clock();
+    let (mut h, record) = f.drawn_clocked("box.silico", A_BOX, clock);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    // The pointer's pixel asked by the hover and answered first, so the next pick asked
+    // there is the click's. Then answers held back: a click on the meshes of the model the
+    // selection is read against, its pick asked and held, the renderer finding Face3 under
+    // it.
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the hover", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    record.lock().unwrap().hold = true;
+    let before = record.lock().unwrap().frames.len();
+    click_canvas(&mut h, at, false);
+    step(&mut h);
+    let held = record.lock().unwrap().picking.map(|(serial, _)| serial);
+    let asked: Vec<u64> = record.lock().unwrap().frames[before..]
+        .iter()
+        .filter(|frame| frame.picking.is_some())
+        .map(|frame| frame.serial)
+        .collect();
+    // The held pick is the click's: the first asked since the press, by the release's frame.
+    assert_eq!(held, asked.first().copied(), "{asked:?}");
+    assert!(!asked.is_empty());
+    // A new model published, its meshes held; then the click's answer comes, of the old
+    // meshes: named from neither model, it isn't taken.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    published_with_meshes_held(&f, &mut h, "length", "50");
+    record.lock().unwrap().hold = false;
+    for _ in 0..6 {
+        step(&mut h);
+        assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+    }
+    assert!(
+        record.lock().unwrap().picking.is_none(),
+        "the held answer wasn't given"
+    );
+    // Taken by the view (within its frames for a pick's answer), not dropped unseen.
+    assert_eq!(view(&h).picked().map(|picking| picking.frame), held);
+    // The new meshes read: the click is asked again, of them (the camera unmoved), and the
+    // renderer's answer now, Face1, selected.
+    answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
+    hold.release();
+    step_until(&mut h, "the new model's meshes", meshes_current);
+    selected_until(&mut h, &["k7f2qx3m.box.Face1"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Box and crossing selection (M5.7; docs/design/m5.0-app.md, section 9's *Box
+// selection*) ----
+
+/// The real box, 40 by 20 by 10 mm from the origin (`meshes_a_real_box`), from the front
+/// (−y), orthographic, 40 mm high about (20, 10, 5), its meshes read for that view.
+fn box_from_the_front(f: &Fixture) -> (AppHarness, Record) {
+    meshes_a_real_box(f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 40.0 },
+        eye: [20.0, -100.0, 5.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    });
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    step_until(&mut h, "the meshes read", |h| {
+        !view(h).reading() && meshes_current(h)
+    });
+    (h, record)
+}
+
+/// Where the box's point `(x, z)` (any y) lands on the canvas, in points: by hand, the
+/// canvas's middle is (20, 5), and its height in pixels is 40 mm, so a millimetre is the
+/// height over 40, x right and z up.
+fn on_canvas(h: &AppHarness, x: f64, z: f64) -> eframe::egui::Pos2 {
+    let frame = view(h).frame().unwrap();
+    let [w, height] = frame.size_px.map(f64::from);
+    let mm = height / 40.0;
+    let px = w / 2.0 + (x - 20.0) * mm;
+    let py = height / 2.0 - (z - 5.0) * mm;
+    let ppp = f64::from(frame.pixels_per_point);
+    frame.rect.min + eframe::egui::vec2((px / ppp) as f32, (py / ppp) as f32)
+}
+
+/// A left drag on the canvas from `from` to `to` (points), `held` throughout: the pointer
+/// there first, its hover answered, then the press, four moves a frame apart, and the
+/// release.
+fn box_drag(
+    h: &mut AppHarness,
+    from: eframe::egui::Pos2,
+    to: eframe::egui::Pos2,
+    held: eframe::egui::Modifiers,
+) {
+    box_press(h, from, to, held);
+    box_release(h, to, held);
+}
+
+/// [`box_drag`]'s press and moves, still held.
+fn box_press(
+    h: &mut AppHarness,
+    from: eframe::egui::Pos2,
+    to: eframe::egui::Pos2,
+    held: eframe::egui::Modifiers,
+) {
+    use eframe::egui::{Event, PointerButton};
+    h.event(Event::ModifiersChanged(held));
+    h.hover_at(from);
+    for _ in 0..3 {
+        step(h);
+    }
+    button_event(h, from, PointerButton::Primary, true, held);
+    step(h);
+    for i in 1..=4u8 {
+        h.hover_at(from + (to - from) * f32::from(i) / 4.0);
+        step(h);
+    }
+}
+
+/// [`box_drag`]'s release.
+fn box_release(h: &mut AppHarness, to: eframe::egui::Pos2, held: eframe::egui::Modifiers) {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    button_event(h, to, PointerButton::Primary, false, held);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    step(h);
+    step(h);
+}
+
+fn box_edges(numbers: &[u32]) -> Vec<String> {
+    numbers
+        .iter()
+        .map(|n| format!("k7f2qx3m.box.Edge{n}"))
+        .collect()
+}
+
+#[test]
+fn a_box_from_empty_space_takes_the_edges_wholly_inside_and_dragged_back_those_it_crosses() {
+    use eframe::egui::Modifiers;
+    let f = fixture();
+    let (mut h, _record) = box_from_the_front(&f);
+    // Nothing under the pointer (the fake renderer finds nothing): a box. From (−2, −2) to
+    // (42, 2) mm round the box's foot, left to right: a window, so the edges wholly inside,
+    // by hand from `box_mesh`'s order: the front and back feet (1, 5), and the two along y
+    // at the foot's ends (9, 10), each a point here. Not the uprights (2, 4, 6, 8), which
+    // leave it.
+    let low = on_canvas(&h, -2.0, -2.0);
+    let high = on_canvas(&h, 42.0, 2.0);
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    assert_eq!(selected_names(&h), box_edges(&[1, 5, 9, 10]));
+    // A toast counts them, as the prototype's `onBox` words it.
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Window selection: 4 edges")
+    );
+    // The same box, right to left: a crossing, so the uprights it crosses too.
+    let (right_low, left_high) = (on_canvas(&h, 42.0, -2.0), on_canvas(&h, -2.0, 2.0));
+    box_drag(&mut h, right_low, left_high, Modifiers::NONE);
+    assert_eq!(selected_names(&h), box_edges(&[1, 2, 4, 5, 6, 8, 9, 10]));
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Crossing selection: 8 edges")
+    );
+    // Shift adds the window round the top (8 to 12 mm up): the top edges (3, 7) and those
+    // along y at its ends (11, 12), after what was selected.
+    let (top_low, top_high) = (on_canvas(&h, -2.0, 8.0), on_canvas(&h, 42.0, 12.0));
+    box_drag(&mut h, top_low, top_high, Modifiers::SHIFT);
+    assert_eq!(
+        selected_names(&h),
+        box_edges(&[1, 2, 4, 5, 6, 8, 9, 10, 3, 7, 11, 12])
+    );
+    // Ctrl inverts inside a window round the right side (38 to 42 mm): its uprights (2, 6)
+    // and the ends along y (10, 11), all selected, so removed; the rest kept.
+    let (side_low, side_high) = (on_canvas(&h, 38.0, -2.0), on_canvas(&h, 42.0, 12.0));
+    box_drag(&mut h, side_low, side_high, Modifiers::COMMAND);
+    assert_eq!(selected_names(&h), box_edges(&[1, 4, 5, 8, 9, 3, 7, 12]));
+    // And again: added back, at the end.
+    box_drag(&mut h, side_low, side_high, Modifiers::COMMAND);
+    assert_eq!(
+        selected_names(&h),
+        box_edges(&[1, 4, 5, 8, 9, 3, 7, 12, 2, 6, 10, 11])
+    );
+    // A plain box round nothing, over the box (15 to 20 mm up), replaces with nothing:
+    // cleared.
+    let (empty_low, empty_high) = (on_canvas(&h, 10.0, 15.0), on_canvas(&h, 30.0, 20.0));
+    box_drag(&mut h, empty_low, empty_high, Modifiers::NONE);
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Window selection: 0 edges")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drag_starting_on_geometry_selects_it_and_boxes_nothing() {
+    use eframe::egui::Modifiers;
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    // Pressed on the front face, Face3 under the press: dragged across the whole box, the
+    // face is selected, and none of the edges a box there would take.
+    let from = on_canvas(&h, 20.0, 5.0);
+    answering(&record, Some((1, Face(3), pixel_at(&h, from))), None);
+    let to = on_canvas(&h, 45.0, -5.0);
+    box_drag(&mut h, from, to, Modifiers::NONE);
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drag_whose_press_the_hover_hasnt_answered_waits_for_it_then_boxes() {
+    use eframe::egui::Modifiers;
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    // The renderer holds its answers: the press's pixel isn't answered through the drag,
+    // so nothing is decided.
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 2.0));
+    record.lock().unwrap().hold = true;
+    box_press(&mut h, low, high, Modifiers::NONE);
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    assert!(selected_names(&h).is_empty());
+    // Let go still unanswered: it waits, its corners kept, as a click waits.
+    box_release(&mut h, high, Modifiers::NONE);
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    assert!(selected_names(&h).is_empty());
+    // Answered (nothing under the press): the box it was, taking the window's edges.
+    record.lock().unwrap().hold = false;
+    step_until(&mut h, "the box decided", |h| {
+        selected_names(h) == box_edges(&[1, 5, 9, 10])
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_box_cancelled_by_the_focus_going_selects_nothing() {
+    use eframe::egui::{Event, Modifiers};
+    let f = fixture();
+    let (mut h, _record) = box_from_the_front(&f);
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 2.0));
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    let before = selected_names(&h);
+    assert_eq!(before, box_edges(&[1, 5, 9, 10]));
+    // A crossing dragged, then the window loses the focus: a Cancel, and nothing changes.
+    let (right_low, left_high) = (on_canvas(&h, 42.0, -2.0), on_canvas(&h, -2.0, 12.0));
+    box_press(&mut h, right_low, left_high, Modifiers::NONE);
+    h.event(Event::WindowFocused(false));
+    step(&mut h);
+    h.event(Event::WindowFocused(true));
+    box_release(&mut h, left_high, Modifiers::NONE);
+    assert_eq!(selected_names(&h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_the_edge_filter_off_a_box_takes_nothing_and_says_so_and_the_others_leave_it_be() {
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _record) = box_from_the_front(&f);
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 12.0));
+    let every: Vec<String> = box_edges(&(1..=12).collect::<Vec<_>>());
+    // X and V off (faces and vertices): a box in a part takes edges all the same, as the
+    // prototype's `onBox` always does.
+    h.key_press(Key::X);
+    h.key_press(Key::V);
+    step(&mut h);
+    let filter = h.state().tabs()[0].selection().filter;
+    assert_eq!(
+        (filter.faces, filter.edges, filter.vertices),
+        (false, true, false)
+    );
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    assert_eq!(selected_names(&h), every);
+    // E: edges off too. A box takes nothing, the selection is kept, and the toast says why
+    // (the prototype's words).
+    h.key_press(Key::E);
+    step(&mut h);
+    let (inner_low, inner_high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 2.0));
+    box_drag(&mut h, inner_low, inner_high, Modifiers::NONE);
+    assert_eq!(selected_names(&h), every);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("The edge filter is off, and a box selects edges in a part.")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_flick_of_a_box_while_the_pointer_moves_every_frame_is_decided_and_selects() {
+    use eframe::egui::{Modifiers, PointerButton};
+    let f = fixture();
+    let (mut h, _record) = box_from_the_front(&f);
+    // The pointer arrives and presses in one frame, moves every frame after, and lets go in
+    // the frame after its last move: no frame at rest for the hover to answer the press's
+    // pixel before the drag goes on.
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 2.0));
+    h.hover_at(low);
+    button_event(&h, low, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    for i in 1..=3u8 {
+        h.hover_at(low + (high - low) * f32::from(i) / 3.0);
+        step(&mut h);
+    }
+    button_event(&h, high, PointerButton::Primary, false, Modifiers::NONE);
+    h.hover_at(high + eframe::egui::vec2(5.0, 5.0));
+    step(&mut h);
+    for i in 1..=4u8 {
+        h.hover_at(high + eframe::egui::vec2(5.0 + f32::from(i), 5.0));
+        step(&mut h);
+    }
+    step_until(&mut h, "the box decided", |h| {
+        selected_names(h) == box_edges(&[1, 5, 9, 10])
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn x_e_and_v_typed_into_a_field_leave_the_filter_be() {
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's bodies", |h| {
+        shows(h, "Browser", "Large")
+    });
+    browser(&h).get_by_label("Large").click();
+    step_until(&mut h, "Large selected", |h| {
+        toggled(&browser(h).get_by_label("Large")) == Some(true)
+    });
+    name_field(&h).focus();
+    step(&mut h);
+    for key in [Key::X, Key::E, Key::V] {
+        h.key_press(key);
+        step(&mut h);
+    }
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].selection().filter,
+        silico_app::selection::Filter::default()
+    );
+    // F5 in the field is the field's too: no toast.
+    h.key_press(Key::F5);
+    step(&mut h);
+    assert_eq!(h.state().toast(), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn f5_says_where_the_filters_are_in_a_toast_for_its_time() {
+    use eframe::egui::Key;
+    // F5: the prototype's toast, over the canvas, and nothing else changed; gone after its
+    // 3.8 seconds. Not on the shortcut sheet, as the prototype's isn't.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let time = |h: &AppHarness| h.ctx.input(|input| input.time);
+    // A frame a sixtieth of a second, the harness's.
+    let frame = 1.0 / 60.0;
+    assert_eq!(h.state().toast(), None);
+    h.key_press(Key::F5);
+    step(&mut h);
+    step(&mut h);
+    let (said, shown) = h.state().toast().unwrap();
+    assert_eq!(said, silico_app::app::FILTERS_SAID);
+    // Over the canvas's bottom right, 12 in from its right and 58 up from its foot, its
+    // text inside its padding (8 at the right, 7 below) and border.
+    let canvas = the_viewport(&h);
+    let text = h.get_by_label(silico_app::app::FILTERS_SAID).rect();
+    let right = canvas.right() - 12.0 - 8.0 - 1.0;
+    let foot = canvas.bottom() - 58.0 - 7.0 - 1.0;
+    assert!(
+        (text.right() - right).abs() <= 1.0,
+        "{text:?} in {canvas:?}"
+    );
+    assert!(
+        (text.bottom() - foot).abs() <= 2.0,
+        "{text:?} in {canvas:?}"
+    );
+    assert_eq!(
+        h.state().tabs()[0].selection().filter,
+        silico_app::selection::Filter::default()
+    );
+    // Up for 3.8 seconds by egui's clock, taken down in the first frame after.
+    let mut frames = 0;
+    while h.state().toast().is_some() {
+        assert!(time(&h) - shown < 3.8, "up past its time");
+        step(&mut h);
+        frames += 1;
+        assert!(frames < 100_000, "never taken down");
+    }
+    let up = time(&h) - shown;
+    assert!((3.8..3.8 + frame).contains(&up), "{up}");
+    step(&mut h);
+    assert!(!anywhere(&h, silico_app::app::FILTERS_SAID));
+    assert!(
+        !REGISTRY.iter().flat_map(|entry| entry.keys).any(
+            |chord| matches!(chord, Chord::Key(k) | Chord::Exact(k) if k.logical_key == Key::F5)
+        )
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drag_on_geometry_picks_nothing_once_another_model_is_published_or_the_filter_changes() {
+    use eframe::egui::{Key, Modifiers, PointerButton};
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    let from = on_canvas(&h, 20.0, 5.0);
+    let to = on_canvas(&h, 45.0, -5.0);
+    answering(&record, Some((1, Face(3), pixel_at(&h, from))), None);
+    let drag_after = |h: &mut AppHarness, change: &dyn Fn(&mut AppHarness)| {
+        // Pressed on Face3, its hover answered; then the change, then the drag on.
+        h.hover_at(from);
+        for _ in 0..3 {
+            step(h);
+        }
+        button_event(h, from, PointerButton::Primary, true, Modifiers::NONE);
+        step(h);
+        change(h);
+        box_drag_on(h, from, to);
+    };
+    // Another model published, its meshes not read yet: Face3's name was read from the
+    // model before's, so nothing is picked, and the toast says why.
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, silico_core::kernel::Op::Tessellate { .. }));
+    drag_after(&mut h, &|h| {
+        published_with_meshes_held(&f, h, "length", "50")
+    });
+    assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some(silico_app::box_select::PRESS_MOVED)
+    );
+    hold.release();
+    step_until(&mut h, "the new model's meshes", meshes_current);
+    // The filter changed under the press (V): let go too.
+    answering(&record, Some((1, Face(3), pixel_at(&h, from))), None);
+    drag_after(&mut h, &|h| {
+        h.key_press(Key::V);
+        step(h);
+    });
+    assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some(silico_app::box_select::PRESS_MOVED)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A press already down at `from` dragged to `to` in four frames and let go.
+fn box_drag_on(h: &mut AppHarness, from: eframe::egui::Pos2, to: eframe::egui::Pos2) {
+    use eframe::egui::{Modifiers, PointerButton};
+    for i in 1..=4u8 {
+        h.hover_at(from + (to - from) * f32::from(i) / 4.0);
+        step(h);
+    }
+    button_event(h, to, PointerButton::Primary, false, Modifiers::NONE);
+    step(h);
+    step(h);
+}
+
+#[test]
+fn a_press_on_a_body_hidden_since_its_hover_answered_picks_none_of_its_faces() {
+    use eframe::egui::{Key, Modifiers};
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    step_until(&mut h, "the browser's body", |h| {
+        shows(h, "Browser", "Block")
+    });
+    browser(&h).get_by_label("Block").click();
+    step_until(&mut h, "Block selected", |h| {
+        toggled(&browser(h).get_by_label("Block")) == Some(true)
+    });
+    // The hover answers Face3 at P; then H hides the body, the pointer still: the renderer
+    // finds nothing at P now, and the hover isn't asked again (the pointer didn't move).
+    let at = on_canvas(&h, 20.0, 5.0);
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the hover", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    answering(&record, None, None);
+    h.key_press(Key::H);
+    step(&mut h);
+    step(&mut h);
+    assert!(!h.state().tabs()[0].hidden.is_empty());
+    // A press-drag at P: not the hidden face; a box, which takes nothing hidden.
+    let to = on_canvas(&h, 45.0, -5.0);
+    box_drag(&mut h, at, to, Modifiers::NONE);
+    assert!(
+        !selected_names(&h).iter().any(|name| name.contains("Face")),
+        "{:?}",
+        selected_names(&h)
+    );
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Window selection: 0 edges")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_press_after_the_camera_moved_under_a_still_pointer_isnt_decided_by_the_hover_before() {
+    use eframe::egui::Modifiers;
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    // The hover answers Face3 at P; then the camera moves (a view key's), the pointer
+    // still, so P shows nothing now and the hover isn't asked again.
+    let at = on_canvas(&h, 20.0, 5.0);
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the hover", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    answering(&record, None, None);
+    let mut camera = view(&h).camera().clone();
+    camera.eye[2] += 30.0;
+    camera.target[2] += 30.0;
+    view_mut(&mut h).set_camera(camera);
+    step(&mut h);
+    step(&mut h);
+    // A press-drag at P: decided by an answer of the moved view (nothing there), a box,
+    // never Face3.
+    let to = at + eframe::egui::vec2(60.0, 40.0);
+    box_drag(&mut h, at, to, Modifiers::NONE);
+    assert!(
+        !selected_names(&h).iter().any(|name| name.contains("Face")),
+        "{:?}",
+        selected_names(&h)
+    );
+    assert!(
+        h.state()
+            .toast()
+            .is_some_and(|(said, _)| said.starts_with("Window selection: ")),
+        "{:?}",
+        h.state().toast()
+    );
     assert_eq!(never_waits::waits(), 0);
 }

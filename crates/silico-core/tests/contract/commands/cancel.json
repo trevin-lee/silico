@@ -42,6 +42,7 @@
           "sketch_join",
           "undo",
           "redo",
+          "diff",
           "rebuild"
         ],
         "type": "string"
@@ -111,6 +112,7 @@
           "sketch_join",
           "undo",
           "redo",
+          "diff",
           "rebuild"
         ],
         "type": "string"

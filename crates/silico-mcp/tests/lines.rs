@@ -251,7 +251,11 @@ fn an_answer_being_written_as_the_input_ends_is_written_whole_before_serve_ends(
     // The document's text, answered, its write held by a client that's stopped reading;
     // then the input ends.
     c.stall_output();
-    c.send_call(2, "text", r#"{"session": "s1", "feature": null}"#);
+    c.send_call(
+        2,
+        "text",
+        r#"{"session": "s1", "feature": null, "revision": null}"#,
+    );
     c.wait_stalled();
     c.close_input();
     // `serve` waits for it, however long the client takes to read (a while, here).
@@ -273,7 +277,11 @@ fn a_stop_ends_serve_at_once_though_an_answer_is_being_written() {
     c.file("part.silico", BOX);
     c.open(1, "part.silico");
     c.stall_output();
-    c.send_call(2, "text", r#"{"session": "s1", "feature": null}"#);
+    c.send_call(
+        2,
+        "text",
+        r#"{"session": "s1", "feature": null, "revision": null}"#,
+    );
     c.wait_stalled();
     c.close_input();
     // From the review (round 2): stopped at once, the stop reached serve before the reader

@@ -212,8 +212,15 @@ pub struct Frame<'a> {
     pub bodies: &'a [u32],
     /// What's highlighted: a body drawn in this frame, and one of its faces or edges by its
     /// number from 1, in any order (a repeat is the same highlight). Highlights change no
-    /// picking ID.
+    /// picking ID. Outlined in [`Outlines::selected`].
     pub highlights: &'a [(u32, Element)],
+    /// What's hovered (the app's pre-selection, M5.7), as `highlights` are given, checked as
+    /// they are: outlined in [`Outlines::hovered`], on the outline's second layer, so an
+    /// element both highlighted and hovered shows both. Hovers change no picking ID either.
+    pub hovered: &'a [(u32, Element)],
+    /// The colours the highlights and the hover are outlined in: the caller's values (the
+    /// app's theme), never read from it here.
+    pub outlines: Outlines,
     /// The pixels to read back for picking, if any: [`Renderer::take_picking`] gives what
     /// they found, a frame or two later.
     pub picking: Option<PixelRect>,
@@ -221,6 +228,36 @@ pub struct Frame<'a> {
     /// its viewport's (`VIEWPORT_BG`): opaque, its alpha 255, since the frame is composited
     /// opaque. A render's is its own ([`BACKGROUND`]).
     pub background: [u8; 4],
+}
+
+/// The colours a frame's outlines are drawn in, sRGB: its highlights' (a selection's) and
+/// its hover's. Both are drawn [`OUTLINE_WIDTH`] wide: re_renderer's outline has one radius
+/// for both its layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outlines {
+    pub selected: [u8; 3],
+    pub hovered: [u8; 3],
+}
+
+/// The colours [`Renderer::build`] draws a view in: its outlines', and the one behind it.
+#[derive(Clone, Copy)]
+struct Colours {
+    outlines: Outlines,
+    background: Rgba,
+}
+
+impl Outlines {
+    /// The highlight's blue, and a hover in white.
+    pub const DEFAULT: Outlines = Outlines {
+        selected: HIGHLIGHT,
+        hovered: [255, 255, 255],
+    };
+}
+
+impl Default for Outlines {
+    fn default() -> Self {
+        Outlines::DEFAULT
+    }
 }
 
 /// What a picking rectangle found nearest its centre.
@@ -254,6 +291,11 @@ pub struct Picking {
     pub frame: u64,
     pub rect: PixelRect,
     pub hit: Option<Pick>,
+    /// Of the same pixels, the edge's nearest the rectangle's centre (the first in rows of
+    /// those as near), if an edge was drawn in any: an edge is a line a few pixels wide, so a
+    /// pick that takes one within a tolerance band (M5.7) reads the band's square and
+    /// prefers it to the face under the centre. The same rules as `hit`'s otherwise.
+    pub edge: Option<Pick>,
 }
 
 /// A render context on one device, kept between renders and frames, with the bodies it
@@ -427,8 +469,9 @@ impl Renderer {
     /// the command buffer to submit (egui_wgpu's `prepare` returns it), which
     /// [`Renderer::composite`] then composites. Each body's faces are moved into the view
     /// and its edges placed in it in f64, as [`Renderer::render`] draws them; each
-    /// highlighted face's and edge's instance is outlined in the highlight's blue, its mesh
-    /// and colour as uploaded, so a highlight uploads nothing ([`Highlight::Outline`]); the picking
+    /// highlighted face's and edge's instance is outlined in [`Outlines::selected`], and each
+    /// hovered one in [`Outlines::hovered`], its mesh and colour as uploaded, so neither
+    /// uploads anything ([`Highlight::Outline`]); the picking
     /// rectangle, if any, is read back for [`Renderer::take_picking`]. One frame for each of
     /// egui's frames: it begins `re_renderer`'s frame.
     ///
@@ -501,10 +544,13 @@ impl Renderer {
         let built = self.build(
             &view,
             frame.pixels_per_point,
+            Colours {
+                outlines: frame.outlines,
+                background: srgb([red, green, blue]),
+            },
             &drawn,
             picking,
             None,
-            srgb([red, green, blue]),
         );
         #[cfg(test)]
         let built = match self.fail_frames {
@@ -576,18 +622,20 @@ impl Renderer {
                 .map(|&(_, generation)| generation);
             drawn.is_some() && drawn == self.bodies.get(&body).map(|u| u.generation)
         };
-        let hit = request.nearest(&ids, extent, current).map(|(i, mut pick)| {
+        let [any, edge] = request.nearest(&ids, extent, current);
+        let with_point = |(i, mut pick): (u32, Pick)| {
             if depths.len() == ids.len()
                 && let Some(&depth) = usize::try_from(i).ok().and_then(|i| depths.get(i))
             {
                 pick.point = request.point_at(pick.pixel, depth);
             }
             pick
-        });
+        };
         Some(Picking {
             frame: request.serial,
             rect: request.rect,
-            hit,
+            hit: any.map(with_point),
+            edge: edge.map(with_point),
         })
     }
 
@@ -638,39 +686,55 @@ impl Renderer {
             last = body;
         }
         let mut lit: BTreeMap<u32, Lit> = BTreeMap::new();
-        for (i, &(body, element)) in frame.highlights.iter().enumerate() {
-            let Some(uploaded) = frame
-                .bodies
-                .binary_search(&body)
-                .ok()
-                .and_then(|_| self.bodies.get(&body))
-            else {
-                return Err(InvalidParameter {
-                    parameter: "highlights",
-                    message: format!("highlights[{i}]'s body {body} isn't drawn in the frame"),
-                });
-            };
-            let mesh = &uploaded.mesh;
-            let (number, count, what) = match element {
-                Element::Face(n) => (n, mesh.face_triangles.len(), "faces"),
-                Element::Edge(n) => (n, mesh.edge_point_counts.len(), "edges"),
-            };
-            if !usize::try_from(number).is_ok_and(|n| (1..=count).contains(&n)) {
-                return Err(InvalidParameter {
-                    parameter: "highlights",
-                    message: format!(
-                        "highlights[{i}], {element:?} of body {body}, isn't one of its {count} {what} (numbered from 1)"
-                    ),
-                });
-            }
-            let entry = lit.entry(body).or_default();
-            match element {
-                Element::Face(n) => entry.faces.push(n),
-                Element::Edge(n) => entry.edges.push(n),
+        let lists = [
+            ("highlights", frame.highlights, false),
+            ("hovered", frame.hovered, true),
+        ];
+        for (parameter, list, hovered) in lists {
+            for (i, &(body, element)) in list.iter().enumerate() {
+                let Some(uploaded) = frame
+                    .bodies
+                    .binary_search(&body)
+                    .ok()
+                    .and_then(|_| self.bodies.get(&body))
+                else {
+                    return Err(InvalidParameter {
+                        parameter,
+                        message: format!("{parameter}[{i}]'s body {body} isn't drawn in the frame"),
+                    });
+                };
+                let mesh = &uploaded.mesh;
+                let (number, count, what) = match element {
+                    Element::Face(n) => (n, mesh.face_triangles.len(), "faces"),
+                    Element::Edge(n) => (n, mesh.edge_point_counts.len(), "edges"),
+                };
+                if !usize::try_from(number).is_ok_and(|n| (1..=count).contains(&n)) {
+                    return Err(InvalidParameter {
+                        parameter,
+                        message: format!(
+                            "{parameter}[{i}], {element:?} of body {body}, isn't one of its {count} {what} (numbered from 1)"
+                        ),
+                    });
+                }
+                let entry = lit.entry(body).or_default();
+                let (faces, edges) = if hovered {
+                    (&mut entry.hovered_faces, &mut entry.hovered_edges)
+                } else {
+                    (&mut entry.faces, &mut entry.edges)
+                };
+                match element {
+                    Element::Face(n) => faces.push(n),
+                    Element::Edge(n) => edges.push(n),
+                }
             }
         }
         for entry in lit.values_mut() {
-            for numbers in [&mut entry.faces, &mut entry.edges] {
+            for numbers in [
+                &mut entry.faces,
+                &mut entry.edges,
+                &mut entry.hovered_faces,
+                &mut entry.hovered_edges,
+            ] {
                 numbers.sort_unstable();
                 numbers.dedup();
             }
@@ -812,10 +876,13 @@ impl Renderer {
         let built = self.build(
             &view,
             1.0,
+            Colours {
+                outlines: Outlines::DEFAULT,
+                background: srgb(BACKGROUND),
+            },
             &drawn,
             scene.ids.then_some((whole, picking)),
             Some(screenshot),
-            srgb(BACKGROUND),
         );
         self.ctx.before_submit();
         let (commands, _view) = built?;
@@ -826,18 +893,23 @@ impl Renderer {
     /// The view `view` of the bodies `drawn` (each uploaded, with its highlights), in a
     /// frame `re_renderer`'s already begun: each face an instance moved into the view, its
     /// mesh uploaded where it has none; each edge a strip placed in the view; highlights
-    /// drawn in each body's [`Lit::style`]; the picking rectangle and its readback's identifier, and
-    /// the image's, if asked; behind it all, `background`. The command buffer that draws it
-    /// into the view's target, and the view, to composite.
+    /// drawn in each body's [`Lit::style`], and outlined in `colours`' outlines; the picking
+    /// rectangle and its readback's identifier, and the image's, if asked; behind it all,
+    /// `colours`' background. The command buffer that draws it into the view's target, and
+    /// the view, to composite.
     fn build(
         &mut self,
         view: &View,
         pixels_per_point: f32,
+        colours: Colours,
         drawn: &[(u32, &Lit)],
         picking: Option<(RectInt, u64)>,
         screenshot: Option<u64>,
-        background: Rgba,
     ) -> Result<(wgpu::CommandBuffer, ViewBuilder), String> {
+        let Colours {
+            outlines,
+            background,
+        } = colours;
         let Renderer {
             ctx,
             bodies,
@@ -875,9 +947,7 @@ impl Renderer {
             edges(&mut lines, number, uploaded, lit, view, &strokes);
         }
         *placed = placing.elapsed();
-        let highlighted = drawn
-            .iter()
-            .any(|(_, lit)| !lit.faces.is_empty() || !lit.edges.is_empty());
+        let highlighted = drawn.iter().any(|(_, lit)| lit.any());
         let config = TargetConfiguration {
             // Its name is only GPU objects' labels: the default's ("default view").
             resolution_in_pixel: [view.width, view.height],
@@ -889,8 +959,8 @@ impl Renderer {
             pixels_per_point,
             outline_config: highlighted.then(|| OutlineConfig {
                 outline_radius_pixel: OUTLINE_WIDTH * pixels_per_point,
-                color_layer_a: srgb(HIGHLIGHT),
-                color_layer_b: Rgba::TRANSPARENT,
+                color_layer_a: srgb(outlines.selected),
+                color_layer_b: srgb(outlines.hovered),
             }),
             picking_config: picking.map(|(picking_rect, readback_identifier)| {
                 ViewPickingConfiguration {
@@ -977,9 +1047,14 @@ enum Highlight {
     Outline,
 }
 
-/// The outline mask a highlighted instance is drawn with: the outline config's first layer.
-fn outlined() -> OutlineMaskPreference {
-    OutlineMaskPreference::some(1, 0)
+/// The outline mask of an instance highlighted or not, hovered or not: the first layer for
+/// a highlight, the second for a hover, both for both; none for neither.
+fn outlined_as(highlighted: bool, hovered: bool) -> OutlineMaskPreference {
+    if highlighted || hovered {
+        OutlineMaskPreference::some(u8::from(highlighted), u8::from(hovered))
+    } else {
+        OutlineMaskPreference::NONE
+    }
 }
 
 /// A picking request answered: the request, and its readback's IDs and depths, `extent` in
@@ -1010,21 +1085,22 @@ impl PendingPick {
     /// Of the readback's pixels `ids`, `extent` in size: of the frame's own (outside the
     /// frame, re_renderer draws on as if it were larger, which isn't shown), the one with a
     /// body nearest the rectangle's centre, the first in rows of those as near, of the
-    /// bodies `current` takes (those not, the background's); its index in `ids`, and
-    /// what's there, without its point.
+    /// bodies `current` takes (those not, the background's); and, the same way, the one
+    /// with an edge. Each its index in `ids`, and what's there, without its point.
     fn nearest(
         &self,
         ids: &[PickingLayerId],
         extent: glam::UVec2,
         current: impl Fn(u32) -> bool,
-    ) -> Option<(u32, Pick)> {
+    ) -> [Option<(u32, Pick)>; 2] {
         let width = extent.x;
         let pixels = u64::from(width) * u64::from(extent.y);
         if ids.len() as u64 != pixels || width == 0 {
-            return None;
+            return [None, None];
         }
         let centre = self.rect.size.map(|s| f64::from(s) / 2.0);
         let mut nearest: Option<(f64, u32, Pick)> = None;
+        let mut edge: Option<(f64, u32, Pick)> = None;
         for (i, id) in ids.iter().enumerate() {
             let Ok(body) = u32::try_from(id.object.0) else {
                 continue;
@@ -1051,17 +1127,20 @@ impl PendingPick {
             let dx = f64::from(x) + 0.5 - centre[0];
             let dy = f64::from(y) + 0.5 - centre[1];
             let d2 = dx * dx + dy * dy;
+            let pick = Pick {
+                body,
+                hit,
+                pixel: [px, py],
+                point: None,
+            };
             if nearest.is_none_or(|(best, ..)| d2 < best) {
-                let pick = Pick {
-                    body,
-                    hit,
-                    pixel: [px, py],
-                    point: None,
-                };
                 nearest = Some((d2, i, pick));
             }
+            if matches!(hit, Element::Edge(_)) && edge.is_none_or(|(best, ..)| d2 < best) {
+                edge = Some((d2, i, pick));
+            }
         }
-        nearest.map(|(_, i, pick)| (i, pick))
+        [nearest, edge].map(|found| found.map(|(_, i, pick)| (i, pick)))
     }
 
     /// The point seen at the centre of the frame's pixel `pixel`, at the picking layer's
@@ -1616,12 +1695,14 @@ struct Uploaded {
     faces: Vec<UploadedFace>,
 }
 
-/// What of a body is highlighted: its faces' and edges' numbers from 1, ascending, each
-/// once; and how.
+/// What of a body is highlighted, and what hovered: its faces' and edges' numbers from 1,
+/// ascending, each once; and how it's highlighted (a hover is always outlined).
 #[derive(Default)]
 struct Lit {
     faces: Vec<u32>,
     edges: Vec<u32>,
+    hovered_faces: Vec<u32>,
+    hovered_edges: Vec<u32>,
     style: Highlight,
 }
 
@@ -1632,6 +1713,8 @@ impl Lit {
         Lit {
             faces: numbers(&body.highlight_faces),
             edges: numbers(&body.highlight_edges),
+            hovered_faces: Vec::new(),
+            hovered_edges: Vec::new(),
             style: Highlight::Tint,
         }
     }
@@ -1642,6 +1725,26 @@ impl Lit {
 
     fn edge(&self, number: u32) -> bool {
         self.edges.binary_search(&number).is_ok()
+    }
+
+    fn hovered_face(&self, number: u32) -> bool {
+        self.hovered_faces.binary_search(&number).is_ok()
+    }
+
+    fn hovered_edge(&self, number: u32) -> bool {
+        self.hovered_edges.binary_search(&number).is_ok()
+    }
+
+    /// Whether anything of the body is highlighted or hovered.
+    fn any(&self) -> bool {
+        [
+            &self.faces,
+            &self.edges,
+            &self.hovered_faces,
+            &self.hovered_edges,
+        ]
+        .iter()
+        .any(|numbers| !numbers.is_empty())
     }
 }
 
@@ -1813,11 +1916,7 @@ impl Uploaded {
                 // Opaque black: re_renderer adds the tint's colour and multiplies by its
                 // alpha, so this leaves the face's own colour.
                 additive_tint: Color32::BLACK,
-                outline_mask_ids: if highlighted {
-                    outlined()
-                } else {
-                    OutlineMaskPreference::NONE
-                },
+                outline_mask_ids: outlined_as(highlighted, lit.hovered_face(number)),
                 picking_layer_id: PickingLayerId {
                     object: PickingLayerObjectId(u64::from(body)),
                     instance: PickingLayerInstanceId(u64::from(number)),
@@ -1879,14 +1978,11 @@ fn edges(
             continue;
         }
         let highlighted = lit.edge(number);
+        let hovered = outlined_as(false, lit.hovered_edge(number));
         let (width, colour, outline) = match (highlighted, lit.style) {
-            (true, Highlight::Tint) => (
-                HIGHLIGHTED_EDGE_WIDTH,
-                HIGHLIGHT,
-                OutlineMaskPreference::NONE,
-            ),
-            (true, Highlight::Outline) => (EDGE_WIDTH, EDGE, outlined()),
-            (false, _) => (EDGE_WIDTH, EDGE, OutlineMaskPreference::NONE),
+            (true, Highlight::Tint) => (HIGHLIGHTED_EDGE_WIDTH, HIGHLIGHT, hovered),
+            (true, Highlight::Outline) => (EDGE_WIDTH, EDGE, outlined_as(true, hovered.is_some())),
+            (false, _) => (EDGE_WIDTH, EDGE, hovered),
         };
         // By the frustum its stroke reaches the image from, not its line's alone.
         let stroke = if width > EDGE_WIDTH {

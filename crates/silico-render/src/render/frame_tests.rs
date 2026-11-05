@@ -16,8 +16,8 @@ use super::tests::on_lavapipe;
 use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjection};
 
 use super::{
-    BACKGROUND, Element, Frame, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, PendingPick,
-    Pick, Picking, PixelRect, RenderFailure, Renderer, project, ray,
+    BACKGROUND, Element, Frame, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines,
+    PendingPick, Pick, Picking, PixelRect, RenderFailure, Renderer, project, ray,
 };
 use crate::bench::{box_mesh, front_of_a_box};
 
@@ -48,6 +48,8 @@ fn frame<'a>(
         pixels_per_point: 1.0,
         bodies,
         highlights,
+        hovered: &[],
+        outlines: Outlines::DEFAULT,
         picking,
         background: VIEWPORT_BG,
     }
@@ -1747,9 +1749,138 @@ fn nearest_of(
     ids: &[re_renderer::PickingLayerId],
     extent: [u32; 2],
 ) -> Option<(Element, [u32; 2])> {
-    request
-        .nearest(ids, glam::UVec2::from(extent), |_| true)
-        .map(|(_, pick)| (pick.hit, pick.pixel))
+    let [any, _] = request.nearest(ids, glam::UVec2::from(extent), |_| true);
+    any.map(|(_, pick)| (pick.hit, pick.pixel))
+}
+
+/// Body 1's edge `n`'s picking ID.
+fn edge_id(n: u64) -> re_renderer::PickingLayerId {
+    re_renderer::PickingLayerId {
+        object: re_renderer::PickingLayerObjectId(1),
+        instance: re_renderer::PickingLayerInstanceId(u64::from(silico_protocol::EDGE_BIT) | n),
+    }
+}
+
+#[test]
+fn the_edge_nearest_the_centre_is_found_beside_the_nearest_of_anything() {
+    let size = [WIDTH, HEIGHT];
+    let empty = re_renderer::PickingLayerId::default();
+    // A 5 by 1 row from column 10: the centre (2.5, 0.5) is the middle pixel's, a face's;
+    // Edge4 two pixels left of it and Edge7 one right of it. The nearest of anything is
+    // the face, at (12, 10); the nearest edge Edge7, at (13, 10), one from the centre, not
+    // Edge4, two from it.
+    let row = request(rect([10, 10], [5, 1]), size);
+    let ids = [empty, empty, face_id(2), edge_id(7), empty];
+    let ids_far = [edge_id(4), empty, face_id(2), empty, empty];
+    let [any, edge] = row.nearest(&ids, glam::UVec2::new(5, 1), |_| true);
+    let seen = |found: Option<(u32, Pick)>| found.map(|(i, pick)| (i, pick.hit, pick.pixel));
+    assert_eq!(seen(any), Some((2, Element::Face(2), [12, 10])));
+    assert_eq!(seen(edge), Some((3, Element::Edge(7), [13, 10])));
+    let [_, edge] = row.nearest(&ids_far, glam::UVec2::new(5, 1), |_| true);
+    assert_eq!(seen(edge), Some((0, Element::Edge(4), [10, 10])));
+    // No edge in it: none; and an edge of a body not current is passed over, as `hit`'s
+    // are.
+    let [any, edge] = row.nearest(
+        &[empty, empty, face_id(2), empty, empty],
+        glam::UVec2::new(5, 1),
+        |_| true,
+    );
+    assert_eq!(seen(any), Some((2, Element::Face(2), [12, 10])));
+    assert_eq!(seen(edge), None);
+    let [any, edge] = row.nearest(&ids, glam::UVec2::new(5, 1), |_| false);
+    assert_eq!((seen(any), seen(edge)), (None, None));
+}
+
+#[test]
+fn a_picking_answers_the_edge_in_its_band_beside_the_face_under_its_centre() {
+    on_lavapipe(
+        "render::frame_tests::a_picking_answers_the_edge_in_its_band_beside_the_face_under_its_centre",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            // Centred on (32, 23), on the front face (rows 20.73 to 31.64), 2.5 rows under
+            // its top edge's line (row 20.73): a 7 by 7 square, rows 20 to 26, reaches row
+            // 20, where Edge3 is drawn (1 point either side of its line). Its hit is the
+            // face under the centre; its edge, Edge3, at row 20 or 21, column 32.
+            let band = rect([29, 20], [7, 7]);
+            let picking = pick(r, &frame(&camera, &[1], &[], Some(band)));
+            let hit = picking.hit.expect("the face under the centre");
+            assert_eq!((hit.hit, hit.pixel), (Element::Face(3), [32, 23]));
+            let edge = picking.edge.expect("the top edge in the band");
+            assert_eq!(edge.hit, Element::Edge(3));
+            assert_eq!(edge.pixel[0], 32);
+            assert!((20..=21).contains(&edge.pixel[1]), "{:?}", edge.pixel);
+            // Its point at its pixel's centre: on the front, y = 0 (to the edges' depth offset
+            // and f32's depth), and within the row's 11/12 mm of the edge's z = 10.
+            let point = edge.point.expect("its point");
+            assert!(
+                point[1].abs() < 0.05 && (point[2] - 10.0).abs() < 1.0,
+                "{point:?}"
+            );
+            // A 3 by 3 square on the same centre, rows 22 to 24, doesn't reach it: no edge.
+            let narrow = pick(r, &frame(&camera, &[1], &[], Some(rect([31, 22], [3, 3]))));
+            assert_eq!(narrow.edge, None);
+            assert_eq!(narrow.hit.map(|h| h.hit), Some(Element::Face(3)));
+        },
+    );
+}
+
+#[test]
+fn a_hover_is_checked_as_highlights_are_and_changes_no_picking_id_and_uploads_nothing() {
+    on_lavapipe(
+        "render::frame_tests::a_hover_is_checked_as_highlights_are_and_changes_no_picking_id_and_uploads_nothing",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            draw(r, &frame(&camera, &[1], &[], None));
+            let uploaded = r.uploads();
+            // The front face and its top edge hovered, one of them highlighted too: what
+            // each pick finds is what it finds of the plain frame, and nothing is uploaded.
+            let hovered = [(1, Element::Face(3)), (1, Element::Edge(3))];
+            let lit = [(1, Element::Face(3))];
+            for picking in [ON_THE_FACE, ON_THE_TOP_EDGE] {
+                let plain = hit(r, &frame(&camera, &[1], &[], Some(picking)));
+                let both = Frame {
+                    hovered: &hovered,
+                    outlines: Outlines {
+                        selected: [1, 2, 3],
+                        hovered: [4, 5, 6],
+                    },
+                    ..frame(&camera, &[1], &lit, Some(picking))
+                };
+                assert!(plain.is_some());
+                assert_eq!(hit(r, &both), plain);
+            }
+            assert_eq!(r.uploads(), uploaded);
+            // Refused as a highlight is: a body not drawn, an element its mesh hasn't.
+            let not_drawn = [(2, Element::Face(1))];
+            let mut refused_by = |hovered: &[(u32, Element)]| {
+                let frame = Frame {
+                    hovered,
+                    ..frame(&camera, &[1], &[], None)
+                };
+                match r.prepare(&frame) {
+                    Err(RenderFailure::Invalid(invalid)) => (invalid.parameter, invalid.message),
+                    other => panic!("not refused: {:?}", other.err()),
+                }
+            };
+            assert_eq!(
+                refused_by(&not_drawn),
+                (
+                    "hovered",
+                    "hovered[0]'s body 2 isn't drawn in the frame".to_owned()
+                )
+            );
+            assert_eq!(
+                refused_by(&[(1, Element::Face(1)), (1, Element::Edge(13))]),
+                (
+                    "hovered",
+                    "hovered[1], Edge(13) of body 1, isn't one of its 12 edges (numbered from 1)"
+                        .to_owned()
+                )
+            );
+        },
+    );
 }
 
 #[test]
@@ -1785,6 +1916,23 @@ fn of_pixels_as_near_the_first_in_rows_is_taken_and_one_past_the_frames_edge_nev
     // nothing.
     assert_eq!(nearest_of(&across, &[face_id(1)], [2, 1]), None);
     assert_eq!(nearest_of(&across, &[], [0, 1]), None);
+}
+
+#[test]
+fn of_edges_as_near_the_first_in_rows_is_the_edge_taken() {
+    // A 3 by 1 row from column 10, its centre (1.5, 0.5): Edge4 at its first pixel and
+    // Edge7 at its last, each 1 from the centre, a face between them. The edge is Edge4,
+    // the first; so for a 1 by 3 column, the first row's.
+    let size = [WIDTH, HEIGHT];
+    let seen = |found: Option<(u32, Pick)>| found.map(|(i, pick)| (i, pick.hit, pick.pixel));
+    let row = request(rect([10, 10], [3, 1]), size);
+    let ids = [edge_id(4), face_id(2), edge_id(7)];
+    let [any, edge] = row.nearest(&ids, glam::UVec2::new(3, 1), |_| true);
+    assert_eq!(seen(any), Some((1, Element::Face(2), [11, 10])));
+    assert_eq!(seen(edge), Some((0, Element::Edge(4), [10, 10])));
+    let column = request(rect([10, 10], [1, 3]), size);
+    let [_, edge] = column.nearest(&ids, glam::UVec2::new(1, 3), |_| true);
+    assert_eq!(seen(edge), Some((0, Element::Edge(4), [10, 10])));
 }
 
 #[test]
@@ -2224,6 +2372,149 @@ fn edges_and_outlines_are_as_wide_as_their_points_at_the_frames_pixels_per_point
             };
             let (one, two) = (changed(1.0), changed(2.0));
             assert!(two * 2 > one * 3, "{one} pixels changed at 1, {two} at 2");
+        },
+    );
+}
+
+#[test]
+fn a_hover_and_a_highlight_are_outlined_each_in_the_callers_colour() {
+    // The front face (Face3, columns 9.09 to 52.73, rows 20.73 to 31.64) hovered, then
+    // highlighted, outlined in colours picked by hand, unlike the defaults (white for the
+    // hover, the highlight's blue): magenta for the hover, green for the selection. Just
+    // outside the face, (8, 26) left of its left side and (32, 20) above its top, within
+    // the outline's 1.5 points, the plain frame draws the edges' dark line; outlined,
+    // each pixel is the outline's colour, the caller's for that layer, and the face's
+    // inside, (32, 26), is as uploaded.
+    on_lavapipe(
+        "render::frame_tests::a_hover_and_a_highlight_are_outlined_each_in_the_callers_colour",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            const MAGENTA: [u8; 3] = [255, 0, 255];
+            const GREEN: [u8; 3] = [0, 255, 0];
+            assert_ne!(Outlines::DEFAULT.hovered, MAGENTA);
+            assert_ne!(Outlines::DEFAULT.selected, GREEN);
+            let outlines = Outlines {
+                selected: GREEN,
+                hovered: MAGENTA,
+            };
+            let face = [(1, Element::Face(3))];
+            let mut image = |lit: &[(u32, Element)], hovered: &[(u32, Element)]| {
+                let commands = r
+                    .prepare(&Frame {
+                        hovered,
+                        outlines,
+                        ..frame(&camera, &[1], lit, None)
+                    })
+                    .unwrap();
+                composited(r, Some(commands))
+            };
+            let at = |pixels: &[[u8; 4]], x: u32, y: u32| pixels[(y * WIDTH + x) as usize];
+            let near = |got: [u8; 4], [r, g, b]: [u8; 3]| {
+                got.iter()
+                    .zip([r, g, b, 255])
+                    .all(|(got, want)| got.abs_diff(want) <= 2)
+            };
+            let plain = image(&[], &[]);
+            let hovered = image(&[], &face);
+            let lit = image(&face, &[]);
+            for (x, y) in [(8, 26), (32, 20)] {
+                let [r, g, b, _] = at(&plain, x, y);
+                assert!(
+                    r < 64 && g < 64 && b < 64,
+                    "plain ({x}, {y}): {:?}",
+                    at(&plain, x, y)
+                );
+                assert!(
+                    near(at(&hovered, x, y), MAGENTA),
+                    "hovered ({x}, {y}): {:?}",
+                    at(&hovered, x, y)
+                );
+                assert!(
+                    near(at(&lit, x, y), GREEN),
+                    "lit ({x}, {y}): {:?}",
+                    at(&lit, x, y)
+                );
+            }
+            assert_eq!(at(&hovered, 32, 26), at(&plain, 32, 26));
+            assert_eq!(at(&lit, 32, 26), at(&plain, 32, 26));
+            // Nothing hovered or lit: no pixel of either colour anywhere.
+            assert!(!plain.iter().any(|&p| near(p, MAGENTA) || near(p, GREEN)));
+            assert!(!hovered.iter().any(|&p| near(p, GREEN)));
+            assert!(!lit.iter().any(|&p| near(p, MAGENTA)));
+        },
+    );
+}
+
+/// The composited image of the box from the front, `lit` highlighted and `hovered` hovered,
+/// outlined in `outlines`.
+fn outlined(
+    r: &mut Renderer,
+    lit: &[(u32, Element)],
+    hovered: &[(u32, Element)],
+    outlines: Outlines,
+) -> Vec<[u8; 4]> {
+    let camera = front();
+    let commands = r
+        .prepare(&Frame {
+            hovered,
+            outlines,
+            ..frame(&camera, &[1], lit, None)
+        })
+        .unwrap();
+    composited(r, Some(commands))
+}
+
+#[test]
+fn a_hovered_edge_alone_is_outlined_and_a_frame_with_nothing_lit_makes_no_outline_pass() {
+    // The front's top edge (Edge3, row 20.73) hovered alone: outlined in the hover's colour,
+    // magenta, picked by hand unlike the defaults; nothing lit, no pixel of it. The outline
+    // pass is made only for a frame with something to outline: its jump-flooding pipelines
+    // (re_renderer's `OutlineMaskProcessor`) are first made for the hovered frame, none for
+    // the plain one before it. And a body with every list lit (faces and edges, highlighted
+    // and hovered) is outlined too: the selection's green round the front face.
+    on_lavapipe(
+        "render::frame_tests::a_hovered_edge_alone_is_outlined_and_a_frame_with_nothing_lit_makes_no_outline_pass",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            const MAGENTA: [u8; 3] = [255, 0, 255];
+            const GREEN: [u8; 3] = [0, 255, 0];
+            let outlines = Outlines {
+                selected: GREEN,
+                hovered: MAGENTA,
+            };
+            let near = |got: &[u8; 4], [r, g, b]: [u8; 3]| {
+                got.iter()
+                    .zip([r, g, b, 255])
+                    .all(|(got, want)| got.abs_diff(want) <= 2)
+            };
+            let count =
+                |pixels: &[[u8; 4]], colour| pixels.iter().filter(|p| near(p, colour)).count();
+            let pipelines = |r: &Renderer| r.ctx.gpu_resources.statistics().num_render_pipelines;
+            let plain = outlined(r, &[], &[], outlines);
+            let before = pipelines(r);
+            assert_eq!(count(&plain, MAGENTA), 0);
+            let hovered = outlined(r, &[], &[(1, Element::Edge(3))], outlines);
+            assert!(
+                pipelines(r) > before,
+                "no outline pass made for the hovered frame: {before} pipelines before it, {} after",
+                pipelines(r)
+            );
+            assert!(
+                count(&hovered, MAGENTA) > 0,
+                "the hovered edge isn't outlined"
+            );
+            assert_eq!(count(&hovered, GREEN), 0);
+            let every = outlined(
+                r,
+                &[(1, Element::Face(3)), (1, Element::Edge(3))],
+                &[(1, Element::Face(4)), (1, Element::Edge(9))],
+                outlines,
+            );
+            assert!(
+                count(&every, GREEN) > 0,
+                "the highlighted face isn't outlined"
+            );
         },
     );
 }

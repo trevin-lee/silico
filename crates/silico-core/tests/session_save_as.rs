@@ -342,7 +342,10 @@ fn the_session_watches_its_new_file_on_disk_and_reloads_an_agents_change_to_it()
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let text = f.call("text", r#"{"session": "s1", "feature": null}"#);
+    let text = f.call(
+        "text",
+        r#"{"session": "s1", "feature": null, "revision": null}"#,
+    );
     assert_eq!(envelope(&text)["result"]["text"], OUTSIDE);
     assert_eq!(f.read("part.silico"), BOX);
 }

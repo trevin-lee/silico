@@ -5,9 +5,10 @@
 //! blue; under it the tab's panels, each a row of icon buttons over its capital label, a
 //! drop-down; and, in SKETCH, a blue Finish Sketch at the row's right end.
 //!
-//! Only what the app can do is on: the feature dialogs (M5.8), clearing the selection, and,
-//! in SKETCH, sketch mode's tools (the drawing tools, trim, split, and Smart Dimension, the
-//! one on drawn on, `.tb-btn.on`) and Construction (drawn pressed while on, `.toggle-on`).
+//! Only what the app can do is on: the feature dialogs (M5.8), SELECT's filters and
+//! clearing the selection (M5.7), and, in SKETCH, sketch mode's tools (the drawing tools,
+//! trim, split, and Smart Dimension, the one on drawn on, `.tb-btn.on`) and Construction
+//! (drawn pressed while on, `.toggle-on`, as the filters are).
 //! The prototype's other commands keep their places, drawn off, their tooltips saying they
 //! aren't built yet. What the toolbar shows comes in a [`Shown`], and what was clicked goes
 //! back as an [`Act`], so a test drives it with a stub, and sketch mode's state (whether a
@@ -27,6 +28,7 @@ use silico_core::sketch_tools::ToolKind;
 use crate::bar;
 use crate::dialog::Kind;
 use crate::icons::{self, ICON_SIZE, Icon, IconSize, TOOLBAR_ICON_SIZE};
+use crate::selection::Filter;
 use crate::shortcuts;
 use crate::sketch::tools::Choice;
 use crate::theme;
@@ -46,6 +48,37 @@ pub struct Shown<'a> {
     pub tool: Option<Choice>,
     /// In a sketch, whether Construction is on.
     pub construction: bool,
+    /// The selection's filter, which SELECT's buttons show and toggle.
+    pub filter: Filter,
+}
+
+/// A kind of element the selection's filter takes or leaves (SELECT's buttons; X, E, V).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterKind {
+    Faces,
+    Edges,
+    Vertices,
+}
+
+impl FilterKind {
+    /// Whether `filter` takes it.
+    pub fn on(self, filter: Filter) -> bool {
+        match self {
+            FilterKind::Faces => filter.faces,
+            FilterKind::Edges => filter.edges,
+            FilterKind::Vertices => filter.vertices,
+        }
+    }
+
+    /// `filter` with it toggled (M5.0, open item 24: each toggles its kind in the set).
+    pub fn toggled(self, mut filter: Filter) -> Filter {
+        match self {
+            FilterKind::Faces => filter.faces = !filter.faces,
+            FilterKind::Edges => filter.edges = !filter.edges,
+            FilterKind::Vertices => filter.vertices = !filter.vertices,
+        }
+        filter
+    }
 }
 
 /// What was clicked.
@@ -63,6 +96,10 @@ pub enum Act {
     Construction,
     /// SELECT's Clear selection.
     ClearSelection,
+    /// One of SELECT's filters, toggled.
+    Filter(FilterKind),
+    /// SELECT's Select all filters: every kind taken again.
+    AllFilters,
 }
 
 /// The toolbar (`#toolbar`) as a panel at the top of `ui`, showing `shown`: its tabs, its
@@ -108,6 +145,8 @@ enum Does {
     Tool(Choice),
     /// Turns Construction on or off.
     Construction,
+    /// Toggles a kind in the selection's filter, shown pressed while it's taken.
+    Filter(FilterKind),
     /// Nothing yet: drawn off.
     NotBuilt,
 }
@@ -217,19 +256,19 @@ const FACES: Command = command(
     "Faces",
     Icon::SelFace,
     Some("Toggles whether faces can be selected"),
-    Does::NotBuilt,
+    Does::Filter(FilterKind::Faces),
 );
 const EDGES: Command = command(
     "Edges",
     Icon::SelEdge,
     Some("Toggles whether edges can be selected"),
-    Does::NotBuilt,
+    Does::Filter(FilterKind::Edges),
 );
 const VERTICES: Command = command(
     "Vertices",
     Icon::SelVertex,
     Some("Toggles whether vertices can be selected"),
-    Does::NotBuilt,
+    Does::Filter(FilterKind::Vertices),
 );
 const LINE: Command = keyed(
     command(
@@ -453,6 +492,7 @@ impl Command {
             Does::Dialog(kind) => (shown.can_open)(kind),
             Does::CreateSketch => shown.create_sketch == Some(true),
             Does::Tool(_) | Does::Construction => shown.in_sketch,
+            Does::Filter(_) => true,
             Does::NotBuilt => false,
         }
     }
@@ -462,6 +502,7 @@ impl Command {
         match self.does {
             Does::Tool(choice) => Some((Pressed::Tool, shown.tool == Some(choice))),
             Does::Construction => Some((Pressed::Toggle, shown.construction)),
+            Does::Filter(kind) => Some((Pressed::Toggle, kind.on(shown.filter))),
             Does::Dialog(_) | Does::CreateSketch | Does::NotBuilt => None,
         }
     }
@@ -472,6 +513,7 @@ impl Command {
             Does::Dialog(kind) => Some(Act::Dialog(kind)),
             Does::Tool(choice) => Some(Act::SketchTool(choice)),
             Does::Construction => Some(Act::Construction),
+            Does::Filter(kind) => Some(Act::Filter(kind)),
             Does::CreateSketch | Does::NotBuilt => None,
         }
     }
@@ -481,6 +523,7 @@ impl Command {
         match self.does {
             Does::Dialog(_) | Does::Tool(_) | Does::Construction => true,
             Does::CreateSketch => shown.create_sketch.is_some(),
+            Does::Filter(_) => true,
             Does::NotBuilt => false,
         }
     }
@@ -734,7 +777,11 @@ fn row_button(ui: &mut Ui, command: &Command, shown: &Shown<'_>, act: &mut Optio
         command.pressed(shown),
     );
     let said = command.said(shown);
-    let keys = command.key.and_then(|key| key.shown(ui.ctx()));
+    let keys = match command.does {
+        Does::Filter(kind) => Some(filter_command(kind)),
+        _ => command.key,
+    }
+    .and_then(|key| key.shown(ui.ctx()));
     let response = bar::tooltip(response, command.label, keys, said.as_deref());
     if command.does == Does::CreateSketch {
         bar::menu(&response, |ui| {
@@ -793,8 +840,8 @@ fn tool_button(
                 theme::TOOLBAR_BUTTON_ON_ICON,
             ),
             (true, false, Some((Pressed::Toggle, true))) => (
-                Some(theme::TOOLBAR_BUTTON_TOGGLE_BG),
-                theme::TOOLBAR_BUTTON_TOGGLE_ICON,
+                Some(theme::TOOLBAR_BUTTON_TOGGLED_BG),
+                theme::TOOLBAR_BUTTON_TOGGLED_ICON,
             ),
             (true, false, Some((_, false)) | None) => (None, theme::TOOLBAR_BUTTON_ICON),
         };
@@ -802,13 +849,7 @@ fn tool_button(
             ui.painter().rect_filled(rect, corners, fill);
         }
         if pressed == Some((Pressed::Toggle, true)) {
-            // `box-shadow: inset 0 -2px 0`: the bottom of the button's own shape.
-            let line = rect.with_min_y(rect.bottom() - theme::TOOLBAR_BUTTON_TOGGLE_LINE);
-            ui.painter().with_clip_rect(line).rect_filled(
-                rect,
-                corners,
-                theme::TOOLBAR_BUTTON_TOGGLE_LINE_COLOR,
-            );
+            toggled_mark(ui, rect);
         }
         theme::focus_ring(
             ui,
@@ -823,6 +864,20 @@ fn tool_button(
         );
         response
     })
+}
+
+/// A toggle button's mark while it's on (`.tb-btn.toggle-on`'s `box-shadow: inset 0 -2px 0
+/// var(--blue)`), hovered or not: a blue line along its foot.
+fn toggled_mark(ui: &Ui, rect: Rect) {
+    let foot = rect.bottom() - theme::TOOLBAR_BUTTON_TOGGLED_MARK_WIDTH / 2.0;
+    ui.painter().hline(
+        rect.x_range(),
+        foot,
+        Stroke::new(
+            theme::TOOLBAR_BUTTON_TOGGLED_MARK_WIDTH,
+            theme::TOOLBAR_BUTTON_TOGGLED_MARK,
+        ),
+    );
 }
 
 /// A panel's label (`.tb-label`), its text `galley` and the arrow after it, labelled
@@ -891,8 +946,10 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
             );
         }
         Entry::AllFilters => {
-            ui.add_enabled(false, egui::Button::new("Select all filters"))
-                .on_disabled_hover_text(NOT_BUILT);
+            if ui.button("Select all filters").clicked() {
+                *act = Some(Act::AllFilters);
+                ui.close();
+            }
         }
         Entry::ClearSelection => {
             let command = crate::shortcuts::Command::ClearSelection;
@@ -931,6 +988,15 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                         ui.close();
                     }
                 }
+                Does::Filter(kind) => {
+                    // Checked while its kind is taken (the prototype's `✓`), its key beside it.
+                    let key = filter_command(kind).keys_text(ui.ctx());
+                    let item = item.selected(kind.on(shown.filter)).shortcut_text(key);
+                    if ui.add(item).clicked() {
+                        *act = Some(Act::Filter(kind));
+                        ui.close();
+                    }
+                }
                 Does::NotBuilt => {
                     let item = ui.add_enabled(false, item);
                     if let Some(said) = command.said(shown) {
@@ -939,6 +1005,15 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                 }
             }
         }
+    }
+}
+
+/// The registry's command for a filter's kind, whose keys its menu item names.
+fn filter_command(kind: FilterKind) -> crate::shortcuts::Command {
+    match kind {
+        FilterKind::Faces => crate::shortcuts::Command::FilterFace,
+        FilterKind::Edges => crate::shortcuts::Command::FilterEdge,
+        FilterKind::Vertices => crate::shortcuts::Command::FilterVertex,
     }
 }
 
@@ -1168,6 +1243,7 @@ mod tests {
                         selected: false,
                         tool: tool.get(),
                         construction: construction.get(),
+                        filter: Filter::default(),
                     };
                     let window = UiBuilder::new().max_rect(ui.ctx().content_rect());
                     if let Some(act) = ui.scope_builder(window, |ui| show(ui, &shown)).inner {
@@ -1592,11 +1668,33 @@ mod tests {
         panels_placed(&h, &laid);
         // Each button 30 square, 1 apart, centred under the panel's 4; its 20 point icon
         // (`svg.i.lg`) centred, Gray.750 (`.tb-btn`), or Gray.400 off (`:disabled`): Pocket,
-        // whose dialog can't open, and what isn't built.
+        // whose dialog can't open, and what isn't built. SELECT's filters, each on (every
+        // kind taken, as the filter starts), are `.tb-btn.toggle-on`: white on Gray.250, a
+        // 2 point blue line inside its foot (`box-shadow: inset 0 -2px 0 var(--blue)`).
         let on = ["Create Sketch", "Pad", "Revolve", "Groove"];
+        let toggles = ["Faces", "Edges", "Vertices"];
         let icon = |rect: Rect| Rect::from_center_size(rect.center(), Vec2::splat(css::ICON_LG));
         for (label, rect) in laid.iter().flat_map(|panel| panel.buttons.iter()) {
             sized(widget(&h, Role::Button, label), *rect, label);
+            if toggles.contains(label) {
+                assert_eq!(icon_at(&h, icon(*rect)), Some(css::G1000), "{label}'s icon");
+                assert_eq!(
+                    fill_at(&h, *rect),
+                    Some((css::G250, CornerRadius::same(css::R_SM))),
+                    "{label}'s fill"
+                );
+                let foot = rect.bottom() - 1.0;
+                assert_eq!(
+                    lines(
+                        &h,
+                        Pos2::new(rect.left(), foot),
+                        Pos2::new(rect.right(), foot)
+                    ),
+                    [Stroke::new(2.0, css::BLUE)],
+                    "{label}'s foot"
+                );
+                continue;
+            }
             let ink = if on.contains(label) {
                 css::G750
             } else {
@@ -1848,32 +1946,23 @@ mod tests {
             );
             assert_eq!(toggled(&h, label), Some(Toggled::False), "{label}");
         }
-        // `.tb-btn.toggle-on`: `--g250` behind white, and `inset 0 -2px 0 var(--blue)`: the
-        // button's own shape in blue, seen only in its last 2.
+        // `.tb-btn.toggle-on`: `--g250` behind white, and `inset 0 -2px 0 var(--blue)`: a
+        // 2 point blue line inside its foot, as SELECT's filters draw it.
         let construction = rect_of("Construction");
         assert_eq!(
             fill_at(&h, construction),
             Some((css::G250, CornerRadius::same(css::R_SM)))
         );
         assert_eq!(icon_at(&h, icon(construction)), Some(css::G1000));
-        let line = Rect::from_min_max(
-            Pos2::new(construction.left(), construction.bottom() - 2.0),
-            construction.max,
-        );
-        // Where the button's blue shape is painted, by its clip.
-        let inset = |h: &Harness<'_, bool>| -> Vec<Rect> {
-            clipped(h)
-                .into_iter()
-                .filter(|shown| {
-                    matches!(&shown.shape, Shape::Rect(rect)
-                        if near_rect(rect.rect, construction) && rect.fill == css::BLUE)
-                })
-                .map(|shown| shown.clip_rect)
-                .collect()
+        let foot = construction.bottom() - 1.0;
+        let inset = |h: &Harness<'_, bool>| {
+            lines(
+                h,
+                Pos2::new(construction.left(), foot),
+                Pos2::new(construction.right(), foot),
+            )
         };
-        let clips = inset(&h);
-        assert_eq!(clips.len(), 1);
-        sized(clips[0], line, "the inset line's clip");
+        assert_eq!(inset(&h), [Stroke::new(2.0, css::BLUE)]);
         assert_eq!(toggled(&h, "Construction"), Some(Toggled::True));
         // Hovered while on: `.tb-btn:hover` sets only the background and the colour,
         // Gray.300 behind white, and `.toggle-on`'s box-shadow stays.
@@ -1883,9 +1972,7 @@ mod tests {
             Some((css::G300, CornerRadius::same(css::R_SM)))
         );
         assert_eq!(icon_at(&h, icon(construction)), Some(css::G1000));
-        let clips = inset(&h);
-        assert_eq!(clips.len(), 1);
-        sized(clips[0], line, "the inset line's clip, hovered");
+        assert_eq!(inset(&h), [Stroke::new(2.0, css::BLUE)], "hovered");
         // Construction off: at rest, saying so, and no inset line.
         sketching.construction.set(false);
         hover(&mut h, Role::Button, "Line");
@@ -1948,5 +2035,46 @@ mod tests {
         for (label, key) in keyed {
             assert_eq!(key.label(), label);
         }
+    }
+
+    #[test]
+    fn a_filters_tooltip_names_its_key_and_its_click_toggles_it() {
+        // SELECT's Edges: its tooltip names E, the registry's key (the prototype's
+        // `data-tipk`); a click asks to toggle edges.
+        let mut h = drawn(false);
+        let painted = |h: &Harness<'_, bool>, text: &str| {
+            clipped(h)
+                .into_iter()
+                .filter(|shown| matches!(&shown.shape, Shape::Text(t) if t.galley.text() == text))
+                .count()
+        };
+        assert_eq!(painted(&h, "E"), 0);
+        h.get_by_role_and_label(Role::Button, "Edges").hover();
+        h.run_steps(8);
+        assert_eq!(painted(&h, "E"), 1, "the tooltip's key cap");
+        let act = std::cell::Cell::new(None);
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(WIDTH, 200.0))
+            .build_ui(|ui| {
+                let can_open = |_: Kind| true;
+                let shown = Shown {
+                    in_sketch: false,
+                    create_sketch: Some(true),
+                    can_open: &can_open,
+                    selected: false,
+                    filter: Filter::default(),
+                    tool: None,
+                    construction: false,
+                };
+                let window = UiBuilder::new().max_rect(ui.ctx().content_rect());
+                if let Some(done) = ui.scope_builder(window, |ui| show(ui, &shown)).inner {
+                    act.set(Some(done));
+                }
+            });
+        h.run_steps(2);
+        h.get_by_role_and_label(Role::Button, "Edges").click();
+        h.run_steps(2);
+        drop(h);
+        assert_eq!(act.get(), Some(Act::Filter(FilterKind::Edges)));
     }
 }

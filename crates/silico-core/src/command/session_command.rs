@@ -49,11 +49,13 @@ pub enum SessionCommand {
     SketchJoin,
     Undo,
     Redo,
+    Diff,
 }
 
 impl SessionCommand {
-    /// Every command that runs in a session, in the design's order (M4.1's, then M5.0's).
-    pub const ALL: [SessionCommand; 38] = [
+    /// Every command that runs in a session, in the design's order (M4.1's, then M5.0's, then
+    /// `diff`, Fable's of 2026-11-04).
+    pub const ALL: [SessionCommand; 39] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -92,6 +94,7 @@ impl SessionCommand {
         SessionCommand::SketchJoin,
         SessionCommand::Undo,
         SessionCommand::Redo,
+        SessionCommand::Diff,
     ];
 
     /// The command it is, of every command ([`Command`]).
@@ -135,6 +138,7 @@ impl SessionCommand {
             SessionCommand::SketchJoin => Command::SketchJoin,
             SessionCommand::Undo => Command::Undo,
             SessionCommand::Redo => Command::Redo,
+            SessionCommand::Diff => Command::Diff,
         }
     }
 

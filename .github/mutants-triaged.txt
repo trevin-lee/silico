@@ -567,10 +567,6 @@ crates/silico-app/src/banner.rs | show | replace + with - | #381
 # The banner takes clicks and drags (#381): `Sense::CLICK` and `Sense::DRAG` are egui's
 # bits 0 and 1, apart, so their `^` is their `|`.
 crates/silico-app/src/banner.rs | show | replace | with ^ | #381
-# A modal's border, at each side (#381): `theme::BORDER_WIDTH` is 1, so `2.0 / 1.0` is
-# `2.0 * 1.0`, in the tallest the window allows and in the width inside the border.
-crates/silico-app/src/modal.rs | show | replace * with / | #381
-crates/silico-app/src/modal.rs | show | replace * with / | #381
 # A modal's border, at each side (#382, as #381's for `show`, which became `show_sized`):
 # `theme::BORDER_WIDTH` is 1, so `2.0 / 1.0` is `2.0 * 1.0`, in the tallest the window
 # allows and in the width inside the border.
@@ -612,3 +608,33 @@ crates/silico-app/src/sketch/screen.rs | Placed::on_plane | replace || with && |
 # `add_space(0.0)` moves nothing; it only stretches the left parts' bounds to the gap past
 # the coordinates, which nothing draws or reads (the status bar's panel is its own size).
 crates/silico-app/src/status.rs | sketch_line | replace > with >= | #379
+# A key cap's inner corner (#392) takes the ellipse's gradient for its normal only when both
+# its radii are more than none; `rx >= 0.0` for `rx > 0.0` differs only where rx is 0 and ry
+# more. Each corner's ry is the radius less its top or bottom border, rx the radius less its
+# side's, and no side is wider than the top or bottom (1 against 1 and 2), so ry > 0 makes
+# rx > 0: every cap's normal is the same.
+crates/silico-app/src/theme.rs | key_cap_border | replace > with >= | #392
+# diff (#390): `top_level_order`'s test that each side has a member the other hasn't only
+# spares `union`'s clone and write. Where it fails, one side's members include the other's,
+# each side in the writer's order, so `merged` gives the larger side's order, which sorting
+# by the writer's order leaves as it is: the same changes, in the same order, either way.
+crates/silico-core/src/document/diff.rs | top_level_order | delete ! | #390
+crates/silico-core/src/document/diff.rs | top_level_order | replace && with || | #390
+# diff's written length (#390): a name the change before shares is the same string, so its
+# length measured again is the length kept; the guard only spares measuring a megabyte
+# name once for each of thousands of changes.
+crates/silico-core/src/command/wire/reads.rs | written_length | replace match guard std::sync::Arc::ptr_eq(name, &c.name) with false | #390
+# A pick's toggle (#385): a plain click's items start empty (`How::Replace => Vec::new()`),
+# so no item is found to remove and the guard `how == How::Toggle` is never reached but
+# for a Ctrl-click, where it holds.
+crates/silico-app/src/selection.rs | Selection::pick | replace match guard how == How::Toggle with true | #385
+# A click waiting for a model's meshes, as another is published (#385): `published` reaches
+# the guard only for a model other than the one it holds (`self.of != Some((models,
+# revision))`), and a click's `awaits` is only ever none or the model held (set from
+# `self.of` when it's made, and to the new model here as `self.of` is), so `awaited` is
+# the model held before, never the new one, and the guard always holds.
+crates/silico-app/src/selection.rs | Selection::published | replace match guard awaited != (models, revision) with true | #385
+# An item made again from a read (#385): `Picked { name: picked.name, ..picked }` without
+# its `name` takes `picked.name` from `..picked`, the same value.
+crates/silico-app/src/selection.rs | Selection::took | delete field name from struct Picked expression | #385
+crates/silico-app/src/selection.rs | Selection::took | delete field name from struct Picked expression | #385

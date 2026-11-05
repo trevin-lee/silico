@@ -239,9 +239,10 @@ impl ToWire for Closed {
 }
 
 impl ToWire for Rebuild {
-    /// The revision, what's become of its rebuild, and its steps done and steps (each
-    /// `null` if no rebuild of the revision has started), not the step running, which the
-    /// design's `status` doesn't give.
+    /// The revision, what's become of its rebuild, its steps done and steps, and each
+    /// unsuppressed feature's state, `{"feature", "state"}` in timeline order (each `null` if
+    /// no rebuild of the revision has started); not the step running, which the design's
+    /// `status` doesn't give.
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("revision", self.revision.to_wire()),
@@ -256,6 +257,17 @@ impl ToWire for Rebuild {
                 "steps",
                 Json::or_null(self.progress.as_ref(), |progress| {
                     Json::count(progress.steps)
+                }),
+            ),
+            (
+                "features",
+                Json::or_null(self.progress.as_ref(), |progress| {
+                    Json::array(progress.features.iter().map(|(feature, state)| {
+                        Json::object([
+                            ("feature", feature.to_wire()),
+                            ("state", Json::str(state.as_str())),
+                        ])
+                    }))
                 }),
             ),
         ])
@@ -578,6 +590,44 @@ pub struct RebuildSchema {
     /// The steps in the rebuild's plan, none until it's made: progress, a diagnostic. Null
     /// if no rebuild of the revision has started.
     pub steps: Option<u64>,
+    /// Each unsuppressed feature's state in the rebuild, in timeline order, listed from its
+    /// start and kept once it ends: progress, a diagnostic, not a result (which feature runs
+    /// first depends on scheduling). A stopped rebuild leaves what it hadn't settled
+    /// `queued`. Null if no rebuild of the revision has started.
+    pub features: Option<Vec<FeatureStepSchema>>,
+}
+
+/// A feature's state in a rebuild.
+#[derive(JsonSchema)]
+#[schemars(rename = "FeatureStep", transform = wire_shape)]
+pub struct FeatureStepSchema {
+    /// The feature's ID.
+    pub feature: FeatureId,
+    pub state: StepStateSchema,
+}
+
+/// What's become of a feature's steps in a rebuild.
+#[derive(JsonSchema)]
+#[schemars(rename = "StepState", rename_all = "lowercase")]
+pub enum StepStateSchema {
+    /// Not settled yet: none of its steps running, or the rebuild stopped first (the next
+    /// rebuild resumes it).
+    Queued,
+    /// A step of its is running; a sketch, its solve; a sketch on a face reads queued until
+    /// the round that places it, its solve included, then its outcome: its result is the
+    /// sketch placed on its face.
+    Running,
+    /// Built: its solid made, or kept from before; a sketch, solved.
+    Built,
+    /// Failed on its own: a step the kernel refused, a check its result failed, a sketch
+    /// that didn't solve, a pad, pocket, revolve, or groove whose sketch makes no profile,
+    /// broken references.
+    Failed,
+    /// Not built, since a feature it uses failed, faulted, or was blocked.
+    Blocked,
+    /// Stopped by a kernel fault (a worker that crashed, hung, or couldn't be had); what
+    /// uses it is blocked.
+    Faulted,
 }
 
 /// `status`'s result. What's running is a diagnostic, not a result: it depends on when it's

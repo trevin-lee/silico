@@ -563,7 +563,7 @@ mod tests {
                 near(shape.rect.top(), top)
                     && near(shape.rect.height(), css::KBD_H)
                     && within.contains_rect(shape.rect)
-                    && shape.stroke.width > 0.0
+                    && shape.corner_radius == CornerRadius::same(css::KBD_R)
             })
             .collect();
         found.sort_by(|a, b| a.rect.left().total_cmp(&b.rect.left()));
@@ -654,11 +654,11 @@ mod tests {
         let height =
             |rows: f32| css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN + rows * css::ROW_H;
         // By hand: File 5 rows (135), Edit 2 (69), Rebuild 3 (91), View 12 (289),
-        // Selection 2 (69), Dialogs 2 (69), Sketch 9 (223), Help 1 (47). The least height
-        // that takes three columns, filled in order, is 372: at 323 (File, Edit, and
-        // Rebuild's 135 + 14 + 69 + 14 + 91), View, then Selection to Help (69 + 14 + 69 +
-        // 14 + 223 + 14 + 47 = 450) take four. At 372, File, Edit, and Rebuild (323); View
-        // and Selection (289 + 14 + 69 = 372); Dialogs, Sketch, and Help (367).
+        // Selection 5 (135), Dialogs 2 (69), Sketch 9 (223), Help 1 (47). The least height
+        // that takes three columns, filled in order, is 438: below it View can't take
+        // Selection (289 + 14 + 135 = 438), and Selection to Help (135 + 14 + 69 + 14 + 223 +
+        // 14 + 47 = 516) take two more. At 438, File, Edit, and Rebuild (323); View and
+        // Selection (438); Dialogs, Sketch, and Help (69 + 14 + 223 + 14 + 47 = 367).
         let placed = [
             ("FILE", 0, 0.0),
             ("EDIT", 0, height(5.0) + css::GROUP_GAP),
@@ -750,9 +750,13 @@ mod tests {
             }
             for cap in &drawn {
                 assert!(cap.rect.width() >= css::KBD_MIN_W);
-                assert_eq!(
-                    (cap.fill, cap.stroke.color, cap.corner_radius),
-                    (css::G250, css::G350, CornerRadius::same(css::KBD_R))
+                assert_eq!(cap.fill, css::G250);
+                assert!(cap.stroke.is_empty(), "{name}'s cap: {:?}", cap.stroke);
+                modal::tests::kbd_border(
+                    &modal::tests::cap_border(&h, cap.rect),
+                    cap.rect,
+                    css::G350,
+                    name,
                 );
             }
             for cap in caps.iter() {
@@ -974,7 +978,7 @@ mod tests {
             ("EDIT", 2.0),
             ("REBUILD", 3.0),
             ("VIEW", 12.0),
-            ("SELECTION", 2.0),
+            ("SELECTION", 5.0),
             ("DIALOGS", 2.0),
             ("SKETCH", 9.0),
             ("HELP", 1.0),
@@ -1013,7 +1017,10 @@ mod tests {
     fn row_names<S>(h: &Harness<'_, S>) -> Vec<(TextShape, f32)> {
         let caps: Vec<Rect> = rects(h)
             .into_iter()
-            .filter(|shape| near(shape.rect.height(), css::KBD_H) && shape.stroke.width > 0.0)
+            .filter(|shape| {
+                near(shape.rect.height(), css::KBD_H)
+                    && shape.corner_radius == CornerRadius::same(css::KBD_R)
+            })
             .map(|shape| shape.rect)
             .collect();
         painted(h)

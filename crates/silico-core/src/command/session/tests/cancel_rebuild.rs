@@ -68,9 +68,13 @@ fn longer_by_field(f: &Fixture, at: Revision) -> Running<FieldSet> {
 
 /// Waits, without polling, until the rebuild `progress` counts has ended.
 fn until_ended(progress: &crate::recompute::StepCounter) {
-    let mut seen = crate::recompute::StepCount::default();
-    while !seen.ended {
-        seen = progress.changed_since(&seen);
+    let mut seen = 0;
+    loop {
+        let (count, changes) = progress.changed_since(seen);
+        if count.ended {
+            return;
+        }
+        seen = changes;
     }
 }
 
@@ -962,6 +966,7 @@ fn a_candidate_rebuilding_for_a_document_the_gate_refused_is_reported_running_an
                     done: 0,
                     steps: 1,
                     running: Some("k7f2qx3m box".to_owned()),
+                    features: states(&[("k7f2qx3m", StepState::Running)]),
                 }),
             }
         )
