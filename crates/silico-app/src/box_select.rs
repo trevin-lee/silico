@@ -23,7 +23,9 @@
 //! since the press's pixel no longer shows what it did; a drag let go so selects nothing,
 //! and a toast says why ([`PRESS_MOVED`]), as one does if the next press comes first
 //! ([`PRESS_UNREAD`]: a renderer that never answers, backing off or not installed, ends
-//! there). Nothing is picked from meshes of another model than the selection's. A Cancel
+//! there, or once its pick has been asked [`CLICK_FRAMES`] frames after its release
+//! unanswered, as the selection's click is). Nothing is picked from meshes of another
+//! model than the selection's. A Cancel
 //! ends the press and changes nothing.
 //!
 //! **The box.** Dragged left to right it's a window, drawn solid: it takes what's wholly
@@ -66,7 +68,7 @@ use silico_protocol::{Camera, MIN_EYE_DISTANCE, Projection};
 use silico_render::render::project;
 
 use crate::renderer::Element;
-use crate::selection::{How, Selection, band_px, centre_of, distance, square};
+use crate::selection::{CLICK_FRAMES, How, Selection, band_px, centre_of, distance, square};
 use crate::theme;
 use crate::viewport::{LeftEvent, LeftKind, View, ViewBody, ViewFrame};
 
@@ -125,6 +127,8 @@ struct Press {
     /// let go (what's under its pixel isn't what it was pressed on); let go within it, it
     /// was a click, the selection's alone.
     stale: bool,
+    /// The frames its pick has been asked in since it was let go unanswered.
+    asked: u32,
     /// The modifiers of its newest event.
     ctrl: bool,
     shift: bool,
@@ -254,8 +258,8 @@ impl BoxSelect {
                 }
             }
         }
-        if current {
-            self.ask(view, frame);
+        if current && let Some(said) = self.ask(view, frame) {
+            toast = Some(said.to_owned());
         }
         if let Some(press) = &self.press
             && press.phase == Phase::Boxing
@@ -268,15 +272,26 @@ impl BoxSelect {
     /// The press's pick asked again, while its answer is awaited, unless a click waiting
     /// for its own pick asked this frame: what the selection asked is replaced only if it's
     /// the hover's (its square about the pointer's pixel), or nothing was.
-    fn ask(&mut self, view: &mut View, frame: &ViewFrame) {
-        let Some(press) = &self.press else {
-            return;
-        };
+    ///
+    /// Let go and still unanswered, it's asked as the selection's click is after its
+    /// release: in at most [`CLICK_FRAMES`] frames (a renderer that answers none, backing
+    /// off or not installed, would otherwise have a frame asked for without end), and then
+    /// let go, which is said ([`PRESS_UNREAD`]): what's returned, once.
+    fn ask(&mut self, view: &mut View, frame: &ViewFrame) -> Option<&'static str> {
+        let press = self.press.as_mut()?;
         if press.under.is_some()
             || press.stale
             || !matches!(press.phase, Phase::Pressed | Phase::Held)
         {
-            return;
+            return None;
+        }
+        if press.released {
+            press.asked += 1;
+            if press.asked > CLICK_FRAMES {
+                tracing::debug!("a drag let go, its press never answered: let go");
+                self.press = None;
+                return Some(PRESS_UNREAD);
+            }
         }
         let band = band_px(frame.pixels_per_point);
         let hover = frame
@@ -290,6 +305,7 @@ impl BoxSelect {
                 view.pick(ours);
             }
         }
+        None
     }
 
     /// The frame `told` taken: each left event in turn, the press's answer learnt once it's
@@ -331,6 +347,7 @@ impl BoxSelect {
                         phase: Phase::Pressed,
                         released: false,
                         stale: false,
+                        asked: 0,
                         ctrl: event.ctrl,
                         shift: event.shift,
                     });
@@ -1548,6 +1565,42 @@ mod tests {
             left: Vec::new(),
             secondary: Vec::new(),
             now: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn a_drag_let_go_unanswered_is_asked_as_a_click_is_then_let_go_and_said_once() {
+        // Let go before its press is answered, with a renderer that answers none: asked in
+        // CLICK_FRAMES frames, as the selection's click is after its release, so frames
+        // aren't asked for without end; then let go, said once, and nothing more asked.
+        let mut boxes = BoxSelect::default();
+        let left = [
+            event(Press, [50.0, 40.0]),
+            event(Move, [70.0, 40.0]),
+            event(Release, [90.0, 70.0]),
+        ];
+        assert!(frame(&mut boxes, &left, None, false).is_empty());
+        let ours = square([50.0, 40.0], SIZE, 3);
+        for n in 1..=CLICK_FRAMES {
+            let mut view = View::default();
+            assert_eq!(boxes.ask(&mut view, &view_frame(None)), None, "frame {n}");
+            assert_eq!(view.asking(), Some(ours), "frame {n}");
+        }
+        let mut view = View::default();
+        assert_eq!(boxes.ask(&mut view, &view_frame(None)), Some(PRESS_UNREAD));
+        assert_eq!(view.asking(), None);
+        assert_eq!(phase(&boxes), None);
+        for _ in 0..10 {
+            assert_eq!(boxes.ask(&mut view, &view_frame(None)), None);
+            assert_eq!(view.asking(), None);
+        }
+        // Held, not let go: asked for as long as the button is (the person holds it).
+        let mut boxes = BoxSelect::default();
+        frame(&mut boxes, &left[..2], None, false);
+        for _ in 0..2 * CLICK_FRAMES {
+            let mut view = View::default();
+            assert_eq!(boxes.ask(&mut view, &view_frame(None)), None);
+            assert_eq!(view.asking(), Some(ours));
         }
     }
 
