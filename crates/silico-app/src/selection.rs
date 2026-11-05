@@ -10,8 +10,8 @@
 //! unstable text gone, until the next model.
 //!
 //! A selection is a list of items in the order picked: features (a row of the browser or
-//! the timeline, by ID) and elements (a face or an edge of the canvas, by name, as an agent
-//! writes them: the stable name the core holds for each, [`Selected::name`]). Each
+//! the timeline, by ID) and elements (a face, an edge, or a vertex of the canvas, by name,
+//! as an agent writes them: the stable name the core holds for each, [`Selected::name`]). Each
 //! element is found (the core's answer, which the canvas draws) or waiting: its body's
 //! elements aren't named yet (the core's pending, asked again each frame), or its feature
 //! didn't build (asked again of the next model published).
@@ -68,6 +68,12 @@ pub const PARAMETER: &str = "selection";
 /// picking rectangle is a square this far out on each side of the pointer's pixel.
 pub const EDGE_BAND_POINTS: f32 = 3.0;
 
+/// How far from a vertex the pointer takes it, in points: the radius of the disc the
+/// renderer picks it by ([`crate::renderer::Frame::vertices`]), the prototype's (viewport.js,
+/// `d < 7`). The disc wins the pixels it shares with the faces and edges under it, so a
+/// vertex is taken before an edge, and an edge before a face.
+pub const VERTEX_PICK_POINTS: f32 = 7.0;
+
 /// How many frames a click waits for its pick's answer, asking again each frame: past
 /// this (a second at 60 Hz: a renderer that answers none, or none installed), it's let go,
 /// so the frames asked for while it waits stop. A frame is the unit: each frame drawn is
@@ -116,7 +122,7 @@ pub fn outlines() -> Outlines {
 pub enum Item {
     /// A feature: a row of the browser or an item of the timeline.
     Feature(FeatureId),
-    /// A face or an edge, by name.
+    /// A face, an edge, or a vertex, by name.
     Element(Picked),
 }
 
@@ -197,8 +203,8 @@ pub enum How {
 }
 
 /// Which kinds of element the canvas picks (SolidWorks' selection filters: SELECT's
-/// buttons, and X, E, and V, `crate::shortcuts`), and a box takes (`crate::box_select`).
-/// Vertices aren't drawn yet, so none is picked.
+/// buttons, and X, E, and V, `crate::shortcuts`), and a box takes (`crate::box_select`,
+/// which takes edges alone).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Filter {
     pub faces: bool,
@@ -1057,20 +1063,24 @@ impl Selection {
         });
     }
 
-    /// What a picking found under its centre, as the filter takes it: an edge in its
-    /// square, first; else the face at its centre pixel. Its body, element, name, and the
-    /// name's stability, as the bodies' meshes name them.
+    /// What a picking found under its centre, as the filter takes it: a vertex at its
+    /// centre pixel (its disc is its tolerance, [`VERTEX_PICK_POINTS`]), first; then an
+    /// edge in its square; else the face at its centre pixel. Its body, element, name, and
+    /// the name's stability, as the bodies' meshes name them.
     fn under(
         &self,
         picking: &Picking,
         bodies: &BTreeMap<u32, ViewBody>,
     ) -> Option<(u32, Element, Arc<Name>, bool)> {
         let centre = centre_of(picking.rect);
+        let vertex = picking.hit.filter(|hit| {
+            hit.pixel == centre && matches!(hit.hit, Element::Vertex(_)) && self.filter.vertices
+        });
         let edge = picking.edge.filter(|_| self.filter.edges);
         let face = picking.hit.filter(|hit| {
             hit.pixel == centre && matches!(hit.hit, Element::Face(_)) && self.filter.faces
         });
-        let pick = edge.or(face)?;
+        let pick = vertex.or(edge).or(face)?;
         let named = bodies.get(&pick.body)?.name_of(pick.hit)?;
         Some((pick.body, pick.hit, Arc::clone(&named.name), named.stable))
     }
@@ -1079,6 +1089,7 @@ impl Selection {
     /// when the selection or the bodies table changed (which model the bodies are of
     /// changes only with the table).
     fn draw(&mut self, view: &mut View) {
+        view.vertices = self.filter.vertices.then_some(VERTEX_PICK_POINTS);
         let key = (self.version, view.table());
         if self.drawn != Some(key) {
             view.highlights = highlights(&self.items, view.bodies(), view.bodies_of());
@@ -1093,7 +1104,7 @@ impl Selection {
 }
 
 /// What the canvas highlights of `items` among `bodies`, read from the model `of`: each
-/// element found, in the body it's in (a vertex isn't drawn), if the answer it's drawn by
+/// element found, in the body it's in (a vertex as the viewport's dot), if the answer it's drawn by
 /// is of that model (an element's number in another model may be another element of these
 /// meshes); each feature's faces, a body's whole (its browser row), else those it made, as
 /// each face's name says (as `View::linked` lights a feature hovered in the timeline).
@@ -1139,13 +1150,14 @@ fn highlights(
     lit
 }
 
-/// An element as the renderer numbers it: a face or an edge by its number from 1; none for
-/// a vertex or a solid, which it doesn't draw.
+/// An element as the renderer numbers it: a face, an edge, or a vertex (the viewport's
+/// dot) by its number from 1; none for a solid, which it doesn't draw.
 fn drawn_as(element: ElementRef) -> Option<Element> {
     match element.kind {
         ElementKind::Face => Some(Element::Face(element.index)),
         ElementKind::Edge => Some(Element::Edge(element.index)),
-        ElementKind::Vertex | ElementKind::Solid => None,
+        ElementKind::Vertex => Some(Element::Vertex(element.index)),
+        ElementKind::Solid => None,
     }
 }
 
@@ -2254,9 +2266,11 @@ mod tests {
                 valid: None,
                 edge_points: Vec::new(),
                 edge_point_counts: Vec::new(),
+                vertex_points: vec![],
             }),
             faces: faces.iter().cloned().map(mesh_element).collect(),
             edges: Vec::new(),
+            vertices: Vec::new(),
         }
     }
 
@@ -2298,6 +2312,155 @@ mod tests {
             hovered(&selection),
             Some((1, Element::Face(2), "k7f2qx3m.box.Face2".to_owned()))
         );
+    }
+
+    fn vertex(index: u32) -> ElementRef {
+        ElementRef {
+            kind: ElementKind::Vertex,
+            index,
+        }
+    }
+
+    /// Box `feature`'s body with one face, one edge, and two vertices, each named.
+    fn body_of_each(feature: &str) -> ViewBody {
+        let mut body = view_body(feature, &[named(feature, face(1))]);
+        body.edges = vec![mesh_element(named(feature, edge(1)))];
+        body.vertices = [1, 2]
+            .map(|n| mesh_element(named(feature, vertex(n))))
+            .to_vec();
+        body
+    }
+
+    #[test]
+    fn a_vertex_at_the_pointer_comes_before_an_edge_in_the_band_and_the_face() {
+        let bodies = BTreeMap::from([(1, body_of_each("k7f2qx3m"))]);
+        let rect = square([50.0, 50.0], [100, 100], 3);
+        let pick = |hit: Element, pixel: [u32; 2]| crate::renderer::Pick {
+            body: 1,
+            hit,
+            pixel,
+            point: None,
+        };
+        // The nearest hit to the centre a vertex at the centre pixel, an edge 2 pixels off.
+        let picking = |hit: Option<crate::renderer::Pick>| Picking {
+            frame: 1,
+            rect,
+            hit,
+            edge: Some(pick(Element::Edge(1), [52, 50])),
+        };
+        let under = |selection: &Selection, picking: &Picking| {
+            selection
+                .under(picking, &bodies)
+                .map(|(body, element, name, stable)| (body, element, name.to_string(), stable))
+        };
+        let mut selection = Selection::default();
+        let at_centre = picking(Some(pick(Element::Vertex(2), [50, 50])));
+        assert_eq!(
+            under(&selection, &at_centre),
+            Some((
+                1,
+                Element::Vertex(2),
+                "k7f2qx3m.box.Vertex2".to_owned(),
+                true
+            ))
+        );
+        // A vertex not at the centre pixel isn't under the pointer (its disc is its band):
+        // the edge in the band is.
+        let beside = picking(Some(pick(Element::Vertex(2), [51, 50])));
+        assert_eq!(
+            under(&selection, &beside).map(|u| u.1),
+            Some(Element::Edge(1))
+        );
+        // Vertices filtered off: never a vertex, the edge.
+        selection.filter.vertices = false;
+        assert_eq!(
+            under(&selection, &at_centre).map(|u| u.1),
+            Some(Element::Edge(1))
+        );
+        // Only vertices: the vertex; and with no vertex there, nothing (not the edge).
+        selection.filter = Filter {
+            faces: false,
+            edges: false,
+            vertices: true,
+        };
+        assert_eq!(
+            under(&selection, &at_centre).map(|u| u.1),
+            Some(Element::Vertex(2))
+        );
+        assert_eq!(under(&selection, &beside), None);
+        // A vertex the body's names haven't: nothing named.
+        let unnamed = picking(Some(pick(Element::Vertex(3), [50, 50])));
+        assert_eq!(under(&selection, &unnamed), None);
+    }
+
+    #[test]
+    fn the_vertex_filter_sets_the_frames_discs_and_a_vertex_selected_is_drawn() {
+        let mut selection = Selection::default();
+        let mut view = View::default();
+        selection.draw(&mut view);
+        assert_eq!(view.vertices, Some(VERTEX_PICK_POINTS));
+        assert_eq!(VERTEX_PICK_POINTS, 7.0);
+        selection.filter.vertices = false;
+        selection.draw(&mut view);
+        assert_eq!(view.vertices, None);
+        selection.filter.vertices = true;
+        selection.draw(&mut view);
+        assert_eq!(view.vertices, Some(7.0));
+        // A vertex found is highlighted as the body's vertex, for the viewport's dot.
+        let bodies = BTreeMap::from([(1, body_of_each("cccccccc"))]);
+        let of = (3, Revision::from_number(3).unwrap());
+        let item = Item::Element(Picked {
+            name: "cccccccc.box.Vertex2".to_owned(),
+            state: State::Found(found("cccccccc", vertex(2), 0)),
+            carry: Carry::Pick,
+            found_in: Some(of),
+        });
+        assert_eq!(
+            highlights(&[item], &bodies, Some(of)),
+            BTreeSet::from([(1, Element::Vertex(2))])
+        );
+        assert_eq!(drawn_as(vertex(8)), Some(Element::Vertex(8)));
+        assert_eq!(
+            drawn_as(ElementRef {
+                kind: ElementKind::Solid,
+                index: 1
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_vertex_selects_it_by_its_name_as_the_model_finds_it() {
+        // The fake's box aaaaaaaa: its Vertex5 picked, found as its fifth vertex, stable.
+        let mut selection = one_box();
+        let mut body = view_body("aaaaaaaa", &[]);
+        body.vertices = (1..=8)
+            .map(|n| mesh_element(named("aaaaaaaa", vertex(n))))
+            .collect();
+        let bodies = BTreeMap::from([(1, body)]);
+        let rect = square([50.0, 50.0], [100, 100], 3);
+        let picking = Picking {
+            frame: 1,
+            rect,
+            hit: Some(crate::renderer::Pick {
+                body: 1,
+                hit: Element::Vertex(5),
+                pixel: [50, 50],
+                point: None,
+            }),
+            edge: None,
+        };
+        selection.clicked(&picking, How::Replace, &bodies);
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Vertex5"]);
+        let picked: Vec<_> = selection.elements().collect();
+        assert_eq!(picked.len(), 1);
+        assert!(picked[0].stable());
+        assert_eq!(picked[0].found().unwrap().element, vertex(5));
+        // Hovered, it's the hover's, its element a vertex.
+        selection.hover_answered(&picking, &bodies);
+        let hovered = selection.hovered().unwrap();
+        assert_eq!((hovered.body, hovered.element), (1, Element::Vertex(5)));
+        assert!(hovered.found.is_some());
     }
 
     #[test]

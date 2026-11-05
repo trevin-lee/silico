@@ -31,6 +31,12 @@ fn square() -> Mesh {
             [0.0, 0.0, 0.0],
         ],
         edge_point_counts: vec![2, 1, 1, 1],
+        vertex_points: vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
         valid: None,
     }
 }
@@ -389,6 +395,20 @@ fn a_mesh_the_worker_couldnt_index_or_draw_is_refused_naming_what_breaks() {
             |m| m.edge_point_counts = vec![2, 1, 1],
             "its edges count 4 points, and it has 5",
         ),
+        // A vertex's point, as an edge's: finite, and within 1e12 mm (the bound itself
+        // taken).
+        (
+            |m| m.vertex_points[2][0] = f64::NAN,
+            "vertex point 2 must be finite",
+        ),
+        (
+            |m| m.vertex_points[3][1] = f64::NEG_INFINITY,
+            "vertex point 3 must be finite",
+        ),
+        (
+            |m| m.vertex_points[0][2] = 1e12f64.next_up(),
+            "vertex point 0 must be finite and within 1000000000000 mm",
+        ),
     ];
     for (break_it, says) in cases {
         let mut s = scene();
@@ -529,6 +549,7 @@ fn triangle(body: u32, points: [[f64; 3]; 3]) -> RenderBody {
             face_triangles: vec![1],
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
             valid: None,
         },
         highlight_faces: vec![],

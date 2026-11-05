@@ -37,6 +37,7 @@ pub struct FrameData {
     pub hovered: Vec<(u32, Element)>,
     pub outlines: Outlines,
     pub picking: Option<PixelRect>,
+    pub vertices: Option<f32>,
 }
 
 impl FrameData {
@@ -52,6 +53,7 @@ impl FrameData {
             hovered: &self.hovered,
             outlines: self.outlines,
             picking: self.picking,
+            vertices: self.vertices,
             background: crate::theme::VIEWPORT_BG,
         }
     }
@@ -462,6 +464,7 @@ mod tests {
             valid: None,
             edge_points: Vec::new(),
             edge_point_counts: Vec::new(),
+            vertex_points: vec![],
         })
     }
 
@@ -533,6 +536,7 @@ mod tests {
             hovered: Vec::new(),
             outlines: Outlines::DEFAULT,
             picking: None,
+            vertices: None,
         }
     }
 

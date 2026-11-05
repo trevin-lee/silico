@@ -809,9 +809,9 @@ pub fn check_bodies_in_view<'a>(
 }
 
 /// Whether `mesh` can be drawn without the renderer trusting anything about it: its
-/// positions and normals finite, its positions within [`MAX_RENDER_COORDINATE`], one normal
-/// each, every index in range, the faces' and edges' counts adding up, and every number
-/// fitting the ID buffer. What [`RenderScene::check`] asks of each body's mesh, and what the
+/// positions and normals finite, its positions (and its edges' and vertices' points) within
+/// [`MAX_RENDER_COORDINATE`], one normal each, every index in range, the faces' and edges'
+/// counts adding up, and every number fitting the ID buffer. What [`RenderScene::check`] asks of each body's mesh, and what the
 /// app's renderer asks of a mesh it uploads; the message says what isn't so.
 pub fn check_render_mesh(mesh: &Mesh) -> Result<(), String> {
     if mesh.normals.len() != mesh.positions.len() {
@@ -860,6 +860,11 @@ pub fn check_render_mesh(mesh: &Mesh) -> Result<(), String> {
         return Err(format!(
             "its edges count {counted} points, and it has {}",
             mesh.edge_points.len()
+        ));
+    }
+    if let Some(v) = mesh.vertex_points.iter().position(|p| !within(p)) {
+        return Err(format!(
+            "vertex point {v} must be finite and within {MAX_RENDER_COORDINATE} mm of the origin"
         ));
     }
     // Every face's and edge's number from 1 must fit under the edge bit.

@@ -860,6 +860,7 @@ mod tests {
             valid: None,
             edge_points: Vec::new(),
             edge_point_counts: Vec::new(),
+            vertex_points: vec![],
         };
         for edge in edges {
             mesh.edge_points
@@ -879,6 +880,7 @@ mod tests {
                 .map(|n| named(ElementKind::Edge, n))
                 .collect(),
             mesh: Arc::new(mesh),
+            vertices: Vec::new(),
         }
     }
 

@@ -1720,6 +1720,7 @@ fn a_triangle_reaching_the_pyramids_side_is_drawn_within_an_eighth_of_a_pixel() 
             face_triangles: vec![1],
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
             valid: None,
         };
         let scene = RenderScene {
@@ -1900,6 +1901,7 @@ fn a_room_a_curved_face_beside_the_eye_and_part_of_a_body_draw_as_the_cast_sees_
         face_triangles: vec![24],
         edge_points: vec![],
         edge_point_counts: vec![],
+        vertex_points: vec![],
         valid: None,
     };
     for k in 0..=12u32 {

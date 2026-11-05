@@ -8969,6 +8969,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     hovered: Vec::new(),
                     outlines: silico_app::renderer::Outlines::DEFAULT,
                     picking: None,
+                    vertices: None,
                 };
                 assert!(ViewRenderer::prepare(renderer, &data.frame()).is_ok());
                 ViewRenderer::forget(renderer, 1);
