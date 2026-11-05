@@ -158,6 +158,9 @@ enum Asking {
     },
     /// What to export of session's document, and where (M5.12): the form is `export`.
     Export(SessionId),
+    /// What changed on disk while `session`'s edits are held (DESIGN.md, 6d's Show
+    /// changes): the tab's `held_changes`.
+    Changes(SessionId),
 }
 
 /// What a native dialog's answer goes to.
@@ -1233,7 +1236,7 @@ impl<P: Clients + 'static> App<P> {
                     form.browsed(path);
                 }
             }
-            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } => {}
+            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } | Asking::Changes(_) => {}
         }
         false
     }
@@ -1425,7 +1428,9 @@ impl<P: Clients + 'static> App<P> {
                     file_name: browse::file_name_of(&form.path),
                 }
             }
-            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } => return None,
+            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } | Asking::Changes(_) => {
+                return None;
+            }
         };
         Some(ask)
     }
@@ -1776,7 +1781,16 @@ impl<P: Clients + 'static> App<P> {
                 ),
             };
             let title = format!("{} {what} while you have unsaved edits.", tab.name());
-            // The prototype's Show changes goes first, once its modal lists what changed.
+            // Reload is off while the tab closes: its close drops the edits already. Show
+            // changes goes first, as the prototype has it, for a file changed, not gone.
+            let reload = ("Reload, discard my edits", !tab.closing());
+            let keep = ("Keep my edits…", true);
+            let changed = [("Show changes", tab.transaction().is_some()), reload, keep];
+            let gone = [reload, keep];
+            let buttons: &[(&str, bool)] = match disk {
+                Disk::Gone => &gone,
+                _ => &changed,
+            };
             let clicked = banner::show(
                 ui,
                 canvas,
@@ -1785,21 +1799,26 @@ impl<P: Clients + 'static> App<P> {
                     title: &title,
                     sub,
                     list: None,
-                    // Reload is off while the tab closes: its close drops the edits already.
-                    buttons: &[
-                        ("Reload, discard my edits", !tab.closing()),
-                        ("Keep my edits…", true),
-                    ],
+                    buttons,
                     dismiss: false,
                 },
             );
+            let clicked = match clicked {
+                banner::Clicked::Button(at) => buttons.get(at).map(|(words, _)| *words),
+                banner::Clicked::None | banner::Clicked::Dismiss => None,
+            };
             match clicked {
-                banner::Clicked::Button(0) => {
+                Some("Show changes") => {
+                    tab.show_changes(&self.sessions);
+                    self.asking = Some(Asking::Changes(tab.id));
+                    *started = true;
+                }
+                Some("Reload, discard my edits") => {
                     tab.revert(&self.sessions, false);
                     *started = true;
                 }
-                banner::Clicked::Button(_) => tab.disk_choice = DiskChoice::Kept,
-                banner::Clicked::None | banner::Clicked::Dismiss => {}
+                Some(_) => tab.disk_choice = DiskChoice::Kept,
+                None => {}
             }
             return;
         }
@@ -1876,6 +1895,8 @@ impl<P: Clients + 'static> App<P> {
         let enter_cap = Command::Ok.keys_text(ui.ctx());
         let mut done = false;
         let mut browse = false;
+        // Show changes' Save mine as…: a Save As of the edits held, once the modal has gone.
+        let mut save_mine = None;
         // An untitled part's Save, asked by Close or Quit, through its Save panel once the
         // question has gone; and a close refused (a typed Save As cancelled that was to close).
         let mut save_panel = None;
@@ -1969,6 +1990,65 @@ impl<P: Clients + 'static> App<P> {
                     if then_close {
                         refused = Some(id);
                     }
+                }
+            }
+            Asking::Changes(id) => {
+                let sessions = &self.sessions;
+                let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+                    done = true;
+                    return;
+                };
+                modal::head(ui, Some(Icon::Diff), "What changed on disk");
+                modal::body(ui, |ui| {
+                    modal::label(ui, "Their change (on disk)");
+                    // SEAM: the file's new text isn't a revision the session holds until it
+                    // reloads it, which drops the edits held: `diff` can't name it yet.
+                    modal::text(
+                        ui,
+                        "Silico hasn't read the new file yet: it reads it only when it \
+                         reloads, which drops your edits.",
+                        theme::MODAL_TEXT,
+                    );
+                    modal::label(ui, "Your unsaved edits");
+                    match &tab.held_changes {
+                        None | Some(Changes::Asking) => {}
+                        Some(Changes::Listed(listed)) => {
+                            for row in &listed.rows {
+                                modal::text(
+                                    ui,
+                                    &format!("{} · {} · {}", row.feature, row.field, row.text),
+                                    theme::MODAL_TEXT,
+                                );
+                            }
+                            if let Some(more) = &listed.more {
+                                modal::text(ui, more, theme::MODAL_TEXT);
+                            }
+                        }
+                        Some(Changes::Refused(said)) => {
+                            modal::text(ui, said, theme::ERROR_TEXT);
+                        }
+                    }
+                });
+                let ([], [close, reload, save_as]) = modal::foot(
+                    ui,
+                    [],
+                    [
+                        Button::new("Close", Kind::Secondary),
+                        Button::new("Reload theirs", Kind::Secondary).enabled(!tab.closing()),
+                        Button::new("Save mine as…", Kind::Primary),
+                    ],
+                );
+                if reload {
+                    tab.revert(sessions, false);
+                    *started = true;
+                    done = true;
+                }
+                if save_as {
+                    save_mine = Some(id);
+                    done = true;
+                }
+                if close || escape {
+                    done = true;
                 }
             }
             Asking::Export(id) => {
@@ -2178,10 +2258,19 @@ impl<P: Clients + 'static> App<P> {
             self.browse(asking, ui.ctx());
         }
         if done {
-            if matches!(self.asking, Some(Asking::Export(_))) {
-                self.export = None;
+            match self.asking {
+                Some(Asking::Export(_)) => self.export = None,
+                Some(Asking::Changes(id)) => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                        tab.hide_changes();
+                    }
+                }
+                _ => {}
             }
             self.asking = None;
+        }
+        if let Some(id) = save_mine {
+            self.ask_save_as(id, false, ui.ctx());
         }
         if let Some(id) = refused {
             self.save_panel_refused(id);

@@ -1091,6 +1091,43 @@ fn restore_of_a_revision_no_longer_held_says_the_cores_refusal_and_its_candidate
 }
 
 #[test]
+fn show_changes_lists_the_edits_held_over_a_file_changed_on_disk() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "sPin")
+    });
+    std::fs::write(
+        &path,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#),
+    )
+    .unwrap();
+    let said = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, said));
+    // The prototype's order: Show changes, Reload, Keep.
+    let buttons = ["Show changes", "Reload, discard my edits", "Keep my edits…"]
+        .map(|label| h.get_by_role_and_label(Role::Button, label).rect().left());
+    assert!(buttons[0] < buttons[1] && buttons[1] < buttons[2]);
+    h.get_by_role_and_label(Role::Button, "Show changes")
+        .click();
+    // Named as the document now names it.
+    let edit = r#"sPin · name · "Pin" → "sPin""#;
+    step_until(&mut h, "the edits listed", |h| anywhere(h, edit));
+    assert!(anywhere(&h, "What changed on disk"));
+    assert!(anywhere(&h, "Their change (on disk)"));
+    assert!(anywhere(&h, "Your unsaved edits"));
+    // Closed: the banner still offers the choice.
+    h.get_by_role_and_label(Role::Button, "Close").click();
+    step_until(&mut h, "closed", |h| !anywhere(h, "What changed on disk"));
+    assert!(anywhere(&h, said));
+    assert!(h.state().tabs()[0].held_changes.is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks() {
     on_lavapipe(
         "the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks",

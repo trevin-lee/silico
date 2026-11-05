@@ -432,6 +432,11 @@ pub struct Tab {
     /// the reloads' diffs answered (`d.outside`): marked purple in the timeline and the
     /// browser until the person marks it seen in its properties (DESIGN.md, 6c).
     pub outside: BTreeMap<FeatureId, String>,
+    /// Show changes (DESIGN.md, 6d): what changed from the revision the transaction began
+    /// at to the session's now, the edits held, as `diff` answers; none until it's asked,
+    /// and again once its modal closes.
+    pub held_changes: Option<Changes>,
+    held_diff: Option<Running<DiffAnswer>>,
     /// What the browser's eyes hide: the tab's state, never saved (open item 29).
     pub hidden: std::collections::BTreeSet<Hideable>,
     /// The last refusal a command of the tab's answered, as said to the person, until
@@ -567,6 +572,8 @@ impl Tab {
             toast: None,
             reload_diff: None,
             outside: BTreeMap::new(),
+            held_changes: None,
+            held_diff: None,
             hidden: std::collections::BTreeSet::new(),
             message: None,
             close_refused: false,
@@ -981,8 +988,8 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// The reload's diff, if it has answered: listed in its banner, each feature it changed
-    /// marked.
+    /// The reload's diff and Show changes', if they've answered: the reload's listed in its
+    /// banner, each feature it changed marked; Show changes' listed in its modal.
     fn take_diffs(&mut self) {
         if let Some(read) = self.reload_diff.take() {
             match read.try_take() {
@@ -1001,6 +1008,37 @@ impl Tab {
                 Err(read) => self.reload_diff = Some(read),
             }
         }
+        if let Some(read) = self.held_diff.take() {
+            match read.try_take() {
+                Ok(response) => {
+                    let changes = match response.result {
+                        Ok(answer) => Changes::Listed(changes::listed(&answer.changes)),
+                        Err(problems) => Changes::Refused(changes::refused(&problems)),
+                    };
+                    if self.held_changes.is_some() {
+                        self.held_changes = Some(changes);
+                    }
+                }
+                Err(read) => self.held_diff = Some(read),
+            }
+        }
+    }
+
+    /// Show changes (DESIGN.md, 6d): what changed from the revision the open transaction
+    /// began at to the session's now, the edits held, asked of `diff`, for its modal. Nothing
+    /// with no transaction open.
+    pub fn show_changes<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let Some(base) = self.transaction().map(|transaction| transaction.base) else {
+            return;
+        };
+        self.held_changes = Some(Changes::Asking);
+        self.held_diff = Some(sessions.diff(&self.id, Some(base), None));
+    }
+
+    /// Show changes' modal closed: its diff let go.
+    pub fn hide_changes(&mut self) {
+        self.held_changes = None;
+        self.held_diff = None;
     }
 
     /// Restore (Fable's decision of 2026-11-04, section 2; DESIGN.md, 6c): the text of
