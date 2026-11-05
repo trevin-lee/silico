@@ -19532,3 +19532,84 @@ fn box_drag_on(h: &mut AppHarness, from: eframe::egui::Pos2, to: eframe::egui::P
     step(h);
     step(h);
 }
+
+#[test]
+fn a_press_on_a_body_hidden_since_its_hover_answered_picks_none_of_its_faces() {
+    use eframe::egui::{Key, Modifiers};
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    step_until(&mut h, "the browser's body", |h| {
+        shows(h, "Browser", "Block")
+    });
+    browser(&h).get_by_label("Block").click();
+    step_until(&mut h, "Block selected", |h| {
+        toggled(&browser(h).get_by_label("Block")) == Some(true)
+    });
+    // The hover answers Face3 at P; then H hides the body, the pointer still: the renderer
+    // finds nothing at P now, and the hover isn't asked again (the pointer didn't move).
+    let at = on_canvas(&h, 20.0, 5.0);
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the hover", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    answering(&record, None, None);
+    h.key_press(Key::H);
+    step(&mut h);
+    step(&mut h);
+    assert!(!h.state().tabs()[0].hidden.is_empty());
+    // A press-drag at P: not the hidden face; a box, which takes nothing hidden.
+    let to = on_canvas(&h, 45.0, -5.0);
+    box_drag(&mut h, at, to, Modifiers::NONE);
+    assert!(
+        !selected_names(&h).iter().any(|name| name.contains("Face")),
+        "{:?}",
+        selected_names(&h)
+    );
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Window selection: 0 edges")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_press_after_the_camera_moved_under_a_still_pointer_isnt_decided_by_the_hover_before() {
+    use eframe::egui::Modifiers;
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    // The hover answers Face3 at P; then the camera moves (a view key's), the pointer
+    // still, so P shows nothing now and the hover isn't asked again.
+    let at = on_canvas(&h, 20.0, 5.0);
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the hover", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    answering(&record, None, None);
+    let mut camera = view(&h).camera().clone();
+    camera.eye[2] += 30.0;
+    camera.target[2] += 30.0;
+    view_mut(&mut h).set_camera(camera);
+    step(&mut h);
+    step(&mut h);
+    // A press-drag at P: decided by an answer of the moved view (nothing there), a box,
+    // never Face3.
+    let to = at + eframe::egui::vec2(60.0, 40.0);
+    box_drag(&mut h, at, to, Modifiers::NONE);
+    assert!(
+        !selected_names(&h).iter().any(|name| name.contains("Face")),
+        "{:?}",
+        selected_names(&h)
+    );
+    assert!(
+        h.state()
+            .toast()
+            .is_some_and(|(said, _)| said.starts_with("Window selection: ")),
+        "{:?}",
+        h.state().toast()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}

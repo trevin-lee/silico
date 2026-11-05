@@ -606,12 +606,18 @@ impl<P: Clients + 'static> App<P> {
             self.disk_banner(ui, canvas, &mut started);
             self.show_toast(ui, canvas);
         });
-        // A toast the tab shown asked for this frame (a box's), drawn from the next.
-        if let Some(text) = self
-            .active_place()
-            .and_then(|at| self.tabs.get_mut(at))
-            .and_then(Tab::take_toast)
-        {
+        // A toast the tab shown asked for this frame (a box's), drawn from the next; one a tab
+        // not shown asked for (its drag ended as it was left) dropped, never shown later out
+        // of its context.
+        let active = self.active_place();
+        let mut asked = None;
+        for (at, tab) in self.tabs.iter_mut().enumerate() {
+            let toast = tab.take_toast();
+            if Some(at) == active {
+                asked = toast;
+            }
+        }
+        if let Some(text) = asked {
             self.toast = Some((text, ui.input(|input| input.time)));
             ui.ctx().request_repaint();
         }

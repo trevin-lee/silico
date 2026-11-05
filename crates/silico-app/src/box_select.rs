@@ -23,9 +23,11 @@
 //! since the press's pixel no longer shows what it did; a drag let go so selects nothing,
 //! and a toast says why ([`PRESS_MOVED`]), as one does if the next press comes first
 //! ([`PRESS_UNREAD`]: a renderer that never answers, backing off or not installed, ends
-//! there, or once its pick has been asked [`CLICK_FRAMES`] frames after its release
-//! unanswered, as the selection's click is). Nothing is picked from meshes of another
-//! model than the selection's. A Cancel
+//! there, or, as the selection's click is after its release, once its pick has been asked
+//! [`CLICK_FRAMES`] frames unanswered or [`CLICK_WAIT`] has passed; and it's let go
+//! unsaid if the selection is changed elsewhere meanwhile, as a waiting click is). Hiding a
+//! body lets a press go too. Nothing is picked from meshes of another model than the
+//! selection's. A Cancel
 //! ends the press and changes nothing.
 //!
 //! **The box.** Dragged left to right it's a window, drawn solid: it takes what's wholly
@@ -57,8 +59,9 @@
 //!
 //! The visuals are behind [`draw_box`], which the UI port may replace.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use eframe::egui::{self, Painter, Rect, Shape, Stroke};
 use silico_core::document::FeatureId;
@@ -68,7 +71,9 @@ use silico_protocol::{Camera, MIN_EYE_DISTANCE, Projection};
 use silico_render::render::project;
 
 use crate::renderer::Element;
-use crate::selection::{CLICK_FRAMES, How, Selection, band_px, centre_of, distance, square};
+use crate::selection::{
+    CLICK_FRAMES, CLICK_WAIT, How, Selection, band_px, centre_of, distance, square,
+};
 use crate::theme;
 use crate::viewport::{LeftEvent, LeftKind, View, ViewBody, ViewFrame};
 
@@ -105,6 +110,9 @@ struct Seen {
     table: u64,
     model: Option<(u64, silico_core::command::Revision)>,
     filter: crate::selection::Filter,
+    /// The bodies the browser hides: hiding one (H) changes what's under a pixel, though
+    /// the bodies table stays.
+    hidden: BTreeSet<FeatureId>,
 }
 
 /// A left press on the canvas.
@@ -129,6 +137,8 @@ struct Press {
     stale: bool,
     /// The frames its pick has been asked in since it was let go unanswered.
     asked: u32,
+    /// When it was let go, by the viewport's clock, and the selection's version then.
+    let_go: Option<(Instant, u64)>,
     /// The modifiers of its newest event.
     ctrl: bool,
     shift: bool,
@@ -176,6 +186,10 @@ struct Told<'a> {
     changed: bool,
     click_px: f32,
     size_px: [u32; 2],
+    /// The frame's time, by the viewport's clock, and the selection's version (one more
+    /// each time its items change).
+    now: Instant,
+    version: u64,
 }
 
 impl BoxSelect {
@@ -205,6 +219,12 @@ impl BoxSelect {
             table: view.table(),
             model: selection.model_of(),
             filter: selection.filter,
+            hidden: view
+                .bodies()
+                .values()
+                .filter(|body| !shown(&body.feature))
+                .map(|body| body.feature.clone())
+                .collect(),
         };
         let changed = self.seen.as_ref().is_some_and(|seen| *seen != now);
         self.seen = Some(now);
@@ -220,6 +240,8 @@ impl BoxSelect {
             changed,
             click_px,
             size_px: frame.size_px,
+            now: frame.now,
+            version: selection.version(),
         });
         let mut toast = None;
         for effect in effects {
@@ -260,6 +282,16 @@ impl BoxSelect {
         }
         if current && let Some(said) = self.ask(view, frame) {
             toast = Some(said.to_owned());
+        }
+        if let Some(press) = &self.press
+            && press.phase == Phase::Held
+            && let Some((at, _)) = press.let_go
+        {
+            // A frame at the backstop, as the click asks one, if nothing else draws.
+            let waited = frame.now.saturating_duration_since(at);
+            painter
+                .ctx()
+                .request_repaint_after(CLICK_WAIT.saturating_sub(waited));
         }
         if let Some(press) = &self.press
             && press.phase == Phase::Boxing
@@ -312,6 +344,23 @@ impl BoxSelect {
     /// heard, and what that decides.
     fn step(&mut self, told: &Told<'_>) -> Vec<Effect> {
         let mut effects = Vec::new();
+        // Let go and waiting, as the selection's click waits after its release: let go at
+        // [`CLICK_WAIT`] by the clock (said), or once the selection is changed elsewhere
+        // (Esc, a row of the browser: as a click waiting is), so a late answer never
+        // replaces it.
+        if let Some(press) = &self.press
+            && press.phase == Phase::Held
+            && let Some((at, version)) = press.let_go
+        {
+            if told.now.saturating_duration_since(at) >= CLICK_WAIT {
+                tracing::debug!("a drag let go waited its backstop: let go");
+                effects.push(Effect::Said(PRESS_UNREAD));
+                self.press = None;
+            } else if told.version != version {
+                tracing::debug!("the selection changed under a drag let go: let go");
+                self.press = None;
+            }
+        }
         if told.changed
             && let Some(press) = &mut self.press
         {
@@ -348,6 +397,7 @@ impl BoxSelect {
                         released: false,
                         stale: false,
                         asked: 0,
+                        let_go: None,
                         ctrl: event.ctrl,
                         shift: event.shift,
                     });
@@ -379,6 +429,7 @@ impl BoxSelect {
                     press.ctrl = event.ctrl;
                     press.shift = event.shift;
                     press.released = true;
+                    press.let_go = Some((told.now, told.version));
                     // Let go past the click distance with no move there between: decided
                     // now, as a move there would have.
                     if press.phase == Phase::Pressed
@@ -1279,11 +1330,157 @@ mod tests {
             changed,
             click_px: 6.0,
             size_px: SIZE,
+            now: start(),
+            version: 0,
         })
     }
 
     fn phase(boxes: &BoxSelect) -> Option<Phase> {
         boxes.press.as_ref().map(|press| press.phase)
+    }
+
+    /// The tests' clock's start: one instant, so every frame of a test is at it unless
+    /// it says otherwise.
+    fn start() -> Instant {
+        static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        *START.get_or_init(Instant::now)
+    }
+
+    /// [`frame`] at `now`, the selection at `version`.
+    fn frame_at(
+        boxes: &mut BoxSelect,
+        left: &[LeftEvent],
+        heard: Option<([u32; 2], Option<Arc<Name>>)>,
+        now: Instant,
+        version: u64,
+    ) -> Vec<Effect> {
+        boxes.step(&Told {
+            left,
+            heard,
+            changed: false,
+            click_px: 6.0,
+            size_px: SIZE,
+            now,
+            version,
+        })
+    }
+
+    #[test]
+    fn a_drag_let_go_waits_at_most_click_wait_and_not_past_a_selection_set_elsewhere() {
+        let left = [
+            event(Press, [50.0, 40.0]),
+            event(Move, [70.0, 40.0]),
+            event(Release, [90.0, 70.0]),
+        ];
+        let mut boxes = BoxSelect::default();
+        assert!(frame_at(&mut boxes, &left, None, start(), 0).is_empty());
+        // Just short of the click's backstop: still waiting.
+        let short = start() + CLICK_WAIT - std::time::Duration::from_millis(1);
+        assert!(frame_at(&mut boxes, &[], None, short, 0).is_empty());
+        assert_eq!(phase(&boxes), Some(Phase::Held));
+        // At it: let go, and said.
+        assert_eq!(
+            frame_at(&mut boxes, &[], None, start() + CLICK_WAIT, 0),
+            [Effect::Said(PRESS_UNREAD)]
+        );
+        assert_eq!(phase(&boxes), None);
+        // The selection changed elsewhere meanwhile (Esc, a row of the browser): let go,
+        // unsaid, and its answer after decides nothing.
+        let mut boxes = BoxSelect::default();
+        frame_at(&mut boxes, &left, None, start(), 7);
+        assert!(frame_at(&mut boxes, &[], None, start(), 8).is_empty());
+        assert_eq!(phase(&boxes), None);
+        assert!(frame_at(&mut boxes, &[], Some(([50, 40], None)), start(), 8).is_empty());
+        // Unchanged, the answer decides it.
+        let mut boxes = BoxSelect::default();
+        frame_at(&mut boxes, &left, None, start(), 7);
+        assert_eq!(
+            frame_at(&mut boxes, &[], Some(([50, 40], None)), start(), 7).len(),
+            1
+        );
+    }
+
+    /// `boxes`' overlay over a fresh view (whose pick asked is the frame's alone) of
+    /// `left`, the view's bodies `current`: the toast, and the pick asked.
+    fn overlaid(
+        boxes: &mut BoxSelect,
+        selection: &mut Selection,
+        left: Vec<LeftEvent>,
+        current: bool,
+    ) -> (Option<String>, Option<crate::renderer::PixelRect>) {
+        let ctx = egui::Context::default();
+        let painter = Painter::new(
+            ctx,
+            egui::LayerId::background(),
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(256.0, 128.0)),
+        );
+        let mut view = View::default();
+        let mut frame = view_frame(None);
+        frame.left = left;
+        frame.now = start();
+        let toast = boxes.overlay(selection, &mut view, &frame, &painter, current, &every);
+        (toast, view.asking())
+    }
+
+    #[test]
+    fn through_the_overlay_a_drag_let_go_unanswered_stops_asking_and_says_so_once() {
+        // A renderer that answers none: after its release, the press's pick is asked in
+        // CLICK_FRAMES frames (each asked frame is one the viewport asks to draw), then
+        // never again, and the toast says so once.
+        let mut boxes = BoxSelect::default();
+        let mut selection = Selection::default();
+        let (toast, asked) = overlaid(
+            &mut boxes,
+            &mut selection,
+            vec![
+                event(Press, [50.0, 40.0]),
+                event(Move, [70.0, 40.0]),
+                event(Release, [90.0, 70.0]),
+            ],
+            true,
+        );
+        assert_eq!((toast, asked.is_some()), (None, true));
+        let mut asking = 1;
+        let mut toasts = Vec::new();
+        for _ in 0..3 * CLICK_FRAMES {
+            let (toast, asked) = overlaid(&mut boxes, &mut selection, Vec::new(), true);
+            asking += u32::from(asked.is_some());
+            toasts.extend(toast);
+        }
+        assert_eq!(asking, CLICK_FRAMES);
+        assert_eq!(toasts, [PRESS_UNREAD]);
+    }
+
+    #[test]
+    fn a_drag_decided_on_geometry_over_another_models_meshes_picks_nothing() {
+        // A press that knew Face3 under it, decided in a frame whose bodies aren't of the
+        // selection's model: nothing picked (the selection, with no model, would say why
+        // it couldn't), and the toast says the view changed.
+        let mut boxes = BoxSelect::default();
+        let mut selection = Selection::default();
+        overlaid(&mut boxes, &mut selection, Vec::new(), false);
+        boxes.press = Some(super::Press {
+            at_px: [50.0, 40.0],
+            corner: [50.0, 40.0],
+            pixel: [50, 40],
+            under: Some(Some(name(ElementKind::Face, 3))),
+            phase: Phase::Pressed,
+            released: false,
+            stale: false,
+            asked: 0,
+            let_go: None,
+            ctrl: false,
+            shift: false,
+        });
+        let (toast, _) = overlaid(
+            &mut boxes,
+            &mut selection,
+            vec![event(Move, [70.0, 40.0])],
+            false,
+        );
+        assert_eq!(toast.as_deref(), Some(PRESS_MOVED));
+        assert_eq!(selection.said(), None);
+        assert!(selection.is_empty());
     }
 
     use LeftKind::{Cancel, Move, Press, Release};

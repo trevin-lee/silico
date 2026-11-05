@@ -392,6 +392,12 @@ impl Selection {
         self.heard.as_ref()
     }
 
+    /// One more each time its items change (M5.7's box select lets a drag waiting go when
+    /// it does, as a click waiting is let go).
+    pub(crate) fn version(&self) -> u64 {
+        self.version
+    }
+
     /// Which published model the selection is read against: the tab's count of them and
     /// its revision (M5.7's box select lets a press go when it changes).
     pub(crate) fn model_of(&self) -> Option<(u64, Revision)> {
