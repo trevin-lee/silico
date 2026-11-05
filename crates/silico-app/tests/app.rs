@@ -19340,8 +19340,11 @@ fn closing_the_tab_mid_drag_asks_first_though_the_drags_transaction_hasnt_answer
     assert!(!h.state().tabs()[0].transaction);
     // What Close asks on: the drag holds an edit under way.
     assert!(h.state().tabs()[0].unsaved());
-    // And the window's Close asks.
-    h.get_by_label("Close boxed.silico").click();
+    // And the window's Close asks. Its tab, unsaved since the drag began, is drawn in the
+    // next frame with its " *", which moves its close button right by the asterisk's
+    // width; so the close button is pressed as itself (a keyboard's or a screen reader's
+    // press), wherever that frame draws it, not at the last frame's place.
+    h.get_by_label("Close boxed.silico").click_accesskit();
     let question = "Save changes to boxed.silico before closing?";
     step_until(&mut h, "the question, or the tab closed", |h| {
         anywhere(h, question) || h.state().tabs().is_empty()
