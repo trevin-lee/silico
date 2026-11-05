@@ -1975,7 +1975,8 @@ fn from_text_that_didnt_read_a_commit_reaches_only_features_with_new_ids() {
     // reached: the rest keep their stored fingerprints, and their drift is said.
     let markers = STORED.replace(
         r#""length": 10, "width": 10"#,
-        "\n    );
+        "\n<<<<<<< ours\n\"length\": 10, \"width\": 10\n=======\n\"length\": 20, \"width\": 10\n>>>>>>> theirs\n",
+    );
     let f = opened(&markers);
     assert!(matches!(*f.session().held.read().gated, Gated::Unread(_)));
     f.begin();
