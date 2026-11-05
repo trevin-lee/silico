@@ -61,8 +61,8 @@ fn serve_initializes_lists_its_tools_makes_a_document_and_ends_with_its_input() 
     // M4.1's 26 commands, M5.1's move_feature, suppress_feature, and timeline, M5.3's
     // drag_begin, drag_move, and drag_end, M5.5's meshes, M5.10's sketch, sketch_add,
     // sketch_remove, sketch_split, sketch_trim, sketch_unjoin, sketch_merge, sketch_extend,
-    // and sketch_join, and M5.2's undo and redo.
-    assert_eq!(tools.len(), 44);
+    // and sketch_join, M5.2's undo and redo, and diff (Fable's decision of 2026-11-04).
+    assert_eq!(tools.len(), 45);
     assert_eq!(tools[1]["name"], "open");
     let opened = ask(
         &mut stdin,

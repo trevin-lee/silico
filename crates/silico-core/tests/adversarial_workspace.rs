@@ -172,7 +172,10 @@ fn a_fifo_or_a_device_is_refused_at_once_never_waited_on() {
     std::fs::remove_file(f.work.join("part.silico")).unwrap();
     mkfifo(&f.work.join("part.silico"));
     for (name, arguments) in [
-        ("text", format!(r#"{{"session": "{s}", "feature": null}}"#)),
+        (
+            "text",
+            format!(r#"{{"session": "{s}", "feature": null, "revision": null}}"#),
+        ),
         (
             "check",
             format!(r#"{{"session": "{s}", "model": "current", "fresh": false}}"#),
@@ -519,7 +522,10 @@ fn the_root_swapped_for_a_link_out_mid_session_is_refused_as_the_file_is_read_ag
     std::fs::rename(&f.work, f.root.join("work.real")).unwrap();
     std::os::unix::fs::symlink(&f.outside, &f.work).unwrap();
     for (name, arguments) in [
-        ("text", r#"{"session": "s1", "feature": null}"#),
+        (
+            "text",
+            r#"{"session": "s1", "feature": null, "revision": null}"#,
+        ),
         (
             "set_field",
             r#"{"session": "s1", "revision": 1, "feature": "k7f2qx3m", "field": "length", "value": 41}"#,

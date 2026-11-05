@@ -1011,10 +1011,11 @@ fn stopped_unpublished(id: SessionId) -> Error {
 /// said what it came to ([`Rebuilds::said_later`]); and, if it's still the rebuild running,
 /// as running no more (one stopped and started again, or another's since, is left running).
 ///
-/// While it runs, the client is woken as each of its steps settles (its count's `done` or
-/// `steps` changes: `status`'s progress), counted from the rebuild's start, so what moved
-/// before the watcher first looks is told by that look, and once more as its end is
-/// recorded, with no lock held.
+/// While it runs, the client is woken once for each change to its count (a plan made, a
+/// step or a sketch's solve started or settled, a check refused: `status`'s progress and
+/// its features' states), counted from the rebuild's start, so what changed before the
+/// watcher first looks is told by that look, and once more as its end is recorded, with no
+/// lock held. Changes that come while the client is being woken are told by one wake.
 pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Label, run: Run) {
     #[cfg(test)]
     if let Some(session) = session.upgrade() {
@@ -1022,19 +1023,22 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
     }
     let waker = session.upgrade().map(|session| Arc::clone(&session.waker));
     let progress = run.progress();
-    // From the rebuild's start (no plan, nothing settled), not what the first look finds:
-    // a plan made or a step settled before the watcher looks is told by its first look.
-    let mut seen = crate::recompute::StepCount::default();
-    while !seen.ended {
-        let next = progress.changed_since(&seen);
-        // Told as `done` or `steps` moves, a last step's settling with the end too; the end
-        // alone is told once it's recorded, below.
-        if (next.done, next.steps) != (seen.done, seen.steps)
+    // From the rebuild's start (no change yet), not what the first look finds: a change
+    // before the watcher looks is told by its first look.
+    let mut seen = 0;
+    loop {
+        let (count, changes) = progress.changed_since(seen);
+        // Told as the count changes, a last step's settling with the end too; the end alone
+        // is told once it's recorded, below.
+        if changes != seen
             && let Some(waker) = &waker
         {
             waker.wake();
         }
-        seen = next;
+        if count.ended {
+            break;
+        }
+        seen = changes;
     }
     let outcome = run.wait();
     let Some(session) = session.upgrade() else {

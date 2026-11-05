@@ -122,7 +122,10 @@ impl Opened {
     }
 
     fn text(&self) -> String {
-        let text = self.call("text", &json!({"session": "s1", "feature": null}));
+        let text = self.call(
+            "text",
+            &json!({"session": "s1", "feature": null, "revision": null}),
+        );
         text["result"]["text"].as_str().unwrap().to_owned()
     }
 

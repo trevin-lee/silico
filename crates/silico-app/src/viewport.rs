@@ -84,13 +84,26 @@ impl ViewBody {
         };
         usize::try_from(number).is_ok_and(|n| (1..=count).contains(&n))
     }
+
+    /// `element`'s name and stability, as the element map gives them (M5.7): its face
+    /// `Face(n)` is `faces[n - 1]`, its edge `Edge(n)` `edges[n - 1]`, the map numbering
+    /// them from 1 in the mesh's order; none for a number it hasn't.
+    pub fn name_of(&self, element: Element) -> Option<&MeshElement> {
+        let (number, named) = match element {
+            Element::Face(n) => (n, &self.faces),
+            Element::Edge(n) => (n, &self.edges),
+        };
+        let at = usize::try_from(number).ok()?.checked_sub(1)?;
+        named.get(at)
+    }
 }
 
 /// What the viewport is this frame, for what draws over it and picks in it (sketch mode,
 /// M5.7): the tab's session; where it is in the window, in points; the camera; the size in
 /// physical pixels; the display's scale; the pointer, in physical pixels from the
-/// viewport's top left, if it's over the viewport; and the left button's events and the
-/// right button's clicks the pane didn't take itself.
+/// viewport's top left, if it's over the viewport; the left button's events and the
+/// right button's clicks the pane didn't take itself; and the time, as the drawing's clock
+/// says it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewFrame {
     pub session: SessionId,
@@ -120,6 +133,9 @@ pub struct ViewFrame {
     /// A click's `seq` places it among the frame's left events: a slow frame's left click
     /// and the right click after it (the Line tool's click, then End chain) are told apart.
     pub secondary: Vec<SecondaryClick>,
+    /// When the frame was drawn, by the clock the viewport's reads wait on (a test's, moved
+    /// by hand, through [`crate::App::presenting_clocked`]).
+    pub now: Instant,
 }
 
 /// What a left-button event was. A Press begins a stream, which ends in exactly one Release
@@ -379,6 +395,9 @@ pub struct View {
     /// The elements drawn highlighted, set from outside (M5.7's selection): passed through,
     /// but for one of a body the frame doesn't draw, or that its mesh hasn't.
     pub highlights: BTreeSet<(u32, Element)>,
+    /// The elements drawn hovered (M5.7's pre-selection), set from outside, passed through
+    /// as `highlights` are.
+    pub hovered: BTreeSet<(u32, Element)>,
     /// The feature hovered in the timeline (DESIGN.md, *Hover linking*): the faces it made,
     /// as each face's name says ([`Name::feature`]), are highlighted with the selection's
     /// while it's hovered.
@@ -391,6 +410,9 @@ pub struct View {
     pub linked: Option<FeatureId>,
     picking: Option<PixelRect>,
     picked: Option<Picking>,
+    /// The serial of the newest frame that carried a pick of this view's: an answer to a
+    /// frame after it is to a pick asked since.
+    last_asked: Option<u64>,
     frame: Option<ViewFrame>,
     /// The pane's height in pixels, as its last frame had it: an orthographic view's least
     /// is the renderer's at that height (`views::least_view_height`). 1 before the first
@@ -438,9 +460,11 @@ impl Default for View {
             drag: None,
             tool: None,
             highlights: BTreeSet::new(),
+            hovered: BTreeSet::new(),
             linked: None,
             picking: None,
             picked: None,
+            last_asked: None,
             frame: None,
             rows: 1,
             asked: None,
@@ -565,6 +589,18 @@ impl View {
         self.model
     }
 
+    /// Which published model the bodies were read from, once a read has answered: the
+    /// tab's count of published models when it was asked, and the revision it read. What
+    /// the selection names a pick from and draws its highlights on only when it's the
+    /// model the selection is read against (M5.7): a pick of these bodies named, or an
+    /// element's number drawn on them, as another model has it would be another element.
+    /// A read asked under one count and answered from a model published since gives that
+    /// model's revision beside the older count: it matches no model the tab holds, and is
+    /// read again.
+    pub fn bodies_of(&self) -> Option<(u64, Revision)> {
+        self.model.map(|revision| (self.read_published, revision))
+    }
+
     /// How many `meshes` reads the tab has started.
     pub fn reads(&self) -> u64 {
         self.reads
@@ -573,6 +609,22 @@ impl View {
     /// Whether a `meshes` read is in flight.
     pub fn reading(&self) -> bool {
         self.reading.is_some()
+    }
+
+    /// Whether the meshes of `revision` are neither being read nor coming by themselves: no
+    /// read is in flight, and the last of that revision was refused, for what it asked (not
+    /// asked again until the view differs) or for the moment (asked again only after a
+    /// delay, and maybe refused again). What waits for them (M5.7's click) waits in vain.
+    pub fn refused_of(&self, revision: Revision) -> bool {
+        self.reading.is_none()
+            && (self
+                .refused
+                .as_ref()
+                .is_some_and(|refused| refused.revision == revision)
+                || self
+                    .retry
+                    .as_ref()
+                    .is_some_and(|retry| retry.asked.revision == revision))
     }
 
     /// Whether the view is perspective.
@@ -599,10 +651,46 @@ impl View {
         takes
     }
 
+    /// The pick asked for the next frame, if one is (M5.7: the box select's press, which
+    /// asks its own only in place of the hover's).
+    pub fn asking(&self) -> Option<PixelRect> {
+        self.picking
+    }
+
     /// The answer to the last pick asked, once it has come, if it's of the bodies the tab
     /// holds now.
     pub fn picked(&self) -> Option<Picking> {
         self.picked
+    }
+
+    /// The serial of the newest frame that carried one of its picks ([`Picking::frame`]
+    /// answers it), if one has: what asks a pick again (M5.7's click, whose request a
+    /// discarded egui pass consumes without painting) tells its own answers by, those to a
+    /// frame after the newest before it asked.
+    pub fn last_asked(&self) -> Option<u64> {
+        self.last_asked
+    }
+
+    /// Whether a drag navigates the view (the middle button's, a navigation tool's, the
+    /// ViewCube's): the hover isn't asked meanwhile.
+    pub fn navigating(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// Which bodies table it holds: one more each time the table is made again (a new
+    /// read's bodies), so what's worked out from the bodies is worked out again.
+    pub fn table(&self) -> u64 {
+        self.generation
+    }
+
+    /// As if bodies read from `of` had come, and the answer to the pick of frame `picking`
+    /// had: a selection's unit tests' view.
+    #[cfg(test)]
+    pub(crate) fn answered_as(&mut self, of: (u64, Revision), picking: Picking) {
+        self.read_published = of.0;
+        self.model = Some(of.1);
+        self.last_asked = Some(picking.frame);
+        self.picked = Some(picking);
     }
 
     /// The read in flight polled: its answer taken if it has come.
@@ -1571,6 +1659,7 @@ pub fn show<P: Clients + 'static>(
         pointer_px,
         left,
         secondary,
+        now,
     });
     // Ascending, each once, as the renderer takes them: the table's order.
     let bodies: Vec<u32> = view
@@ -1582,6 +1671,13 @@ pub fn show<P: Clients + 'static>(
     // A highlight of a body not drawn, or of an element its mesh hasn't, would have the
     // renderer refuse the whole frame.
     let linked = view.linked_faces();
+    let drawn = |(number, element): &(u32, Element)| {
+        bodies.binary_search(number).is_ok()
+            && view
+                .bodies
+                .get(number)
+                .is_some_and(|body| body.has(*element))
+    };
     let highlights = view
         .highlights
         .iter()
@@ -1589,17 +1685,16 @@ pub fn show<P: Clients + 'static>(
         .chain(linked)
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .filter(|(number, element)| {
-            bodies.binary_search(number).is_ok()
-                && view
-                    .bodies
-                    .get(number)
-                    .is_some_and(|body| body.has(*element))
-        })
+        .filter(drawn)
         .collect();
+    let hovered = view.hovered.iter().copied().filter(drawn).collect();
     let picking = view.picking.take();
     let serial = match picking {
-        Some(_) => drawing.asked(tab.id, view.generation),
+        Some(_) => {
+            let serial = drawing.asked(tab.id, view.generation);
+            view.last_asked = Some(serial);
+            serial
+        }
         None => drawing.frames,
     };
     let frame = FrameData {
@@ -1609,6 +1704,8 @@ pub fn show<P: Clients + 'static>(
         pixels_per_point: ppp,
         bodies,
         highlights,
+        hovered,
+        outlines: crate::selection::outlines(),
         picking,
     };
     drawing.present(ui.painter(), rect, changes, Some(frame));
@@ -2436,6 +2533,7 @@ mod tests {
                 size: [3, 3],
             },
             hit: None,
+            edge: None,
         }
     }
 
@@ -2591,6 +2689,57 @@ mod tests {
     }
 
     #[test]
+    fn a_new_bodies_table_has_the_selections_highlights_worked_out_again() {
+        // Body m3tq8v0z, two faces, selected by its row: both its faces lit, as body 1. A
+        // read's answer then numbers it 2 (a body before it, new): the table is made again,
+        // and the same selection lights body 2's faces, not body 1's.
+        use silico_core::naming::{Name, PrimitiveKind, TypeWord};
+        use silico_protocol::{ElementKind, ElementRef};
+        let id = FeatureId::new("m3tq8v0z").unwrap();
+        let faces: Vec<MeshElement> = (1..=2)
+            .map(|index| MeshElement {
+                name: Arc::new(Name::Element {
+                    feature: id.clone(),
+                    made: TypeWord::Primitive(PrimitiveKind::Box),
+                    element: ElementRef {
+                        kind: ElementKind::Face,
+                        index,
+                    },
+                }),
+                stable: true,
+                count: None,
+            })
+            .collect();
+        let mut first = body(0.03125, [0.03125, 0.0625], CUT);
+        first.faces = faces.clone();
+        let mut view = view_with(&[(1, first)], 3);
+        let mut selection = crate::selection::Selection::default();
+        selection.select_feature(id);
+        let frame = ViewFrame {
+            session: SessionId::parse("s1").unwrap(),
+            rect: Rect::from_min_size(Pos2::ZERO, egui::vec2(100.0, 100.0)),
+            camera: front(80.0),
+            size_px: [100, 100],
+            pixels_per_point: 1.0,
+            pointer_px: None,
+            left: Vec::new(),
+            secondary: Vec::new(),
+            now: now(),
+        };
+        let ctx = egui::Context::default();
+        selection.overlay(&mut view, &frame, &ctx);
+        let lit = |body: u32| BTreeSet::from([(body, Element::Face(1)), (body, Element::Face(2))]);
+        assert_eq!(view.highlights, lit(1));
+        let mesh = Arc::clone(&view.bodies[&1].mesh);
+        view.take_bodies(vec![MeshedBody {
+            faces,
+            ..meshed(2, 1, 0.03125, Some(mesh))
+        }]);
+        selection.overlay(&mut view, &frame, &ctx);
+        assert_eq!(view.highlights, lit(2));
+    }
+
+    #[test]
     fn a_highlight_is_of_an_element_the_bodys_mesh_has() {
         let mut held = body(0.03125, [0.03125, 0.0625], CUT);
         held.mesh = Arc::new(Mesh {
@@ -2701,6 +2850,40 @@ mod tests {
         let request = asked(&view, 4);
         view.took(request, false, refusal(ErrorCode::WorkerCrashed, None), at);
         assert!(matches!(view.notice.take(), Some(Notice::Refused(_))));
+    }
+
+    #[test]
+    fn a_revisions_meshes_are_refused_while_its_last_read_was_refused_and_none_is_in_flight() {
+        let at = now();
+        let four = Revision::from_number(4).unwrap();
+        let five = Revision::from_number(5).unwrap();
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        // Refused for what it asked (its width): of 4, kept, not to be asked again.
+        let request = asked(&view, 4);
+        view.took(
+            request,
+            false,
+            refusal(ErrorCode::InvalidInput, Some("width")),
+            at,
+        );
+        assert!(view.retry.is_none());
+        assert!(view.refused_of(four));
+        assert!(!view.refused_of(five));
+        assert!(!view.refused_of(Revision::from_number(3).unwrap()));
+        // Refused for the moment: of 5, asked again later; 4's refusal stands.
+        let request = asked(&view, 5);
+        view.took(request, false, refusal(ErrorCode::WorkerCrashed, None), at);
+        assert!(view.refused_of(five));
+        assert!(view.refused_of(four));
+        // A read in flight (here of 4, its answer unread): it may yet answer, so neither is.
+        let sessions = Arc::new(Sessions::new(Arc::new(
+            silico_core::fake::FakeKernel::new(1).unwrap(),
+        )));
+        let request = asked(&view, 4);
+        view.start(&sessions, &SessionId::parse("s1").unwrap(), request);
+        assert!(view.reading());
+        assert!(!view.refused_of(four));
+        assert!(!view.refused_of(five));
     }
 
     #[test]

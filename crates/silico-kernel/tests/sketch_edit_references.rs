@@ -375,7 +375,7 @@ fn a_split_lists_the_fillet_whose_name_its_line_reaches_and_the_name_then_finds_
 fn text_of(f: &Fixture, session: &str) -> String {
     f.ran(
         "text",
-        &json!({"session": session, "feature": null}).to_string(),
+        &json!({"session": session, "feature": null, "revision": null}).to_string(),
     )["text"]
         .as_str()
         .unwrap()

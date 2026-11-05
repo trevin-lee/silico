@@ -9,6 +9,7 @@
 pub mod app;
 mod banner;
 pub mod bar;
+pub mod box_select;
 pub mod browse;
 pub mod dialog;
 pub mod export;
@@ -20,6 +21,7 @@ mod panes;
 mod properties;
 pub mod recent;
 pub mod renderer;
+pub mod selection;
 mod sheet;
 pub mod shortcuts;
 pub mod sketch;

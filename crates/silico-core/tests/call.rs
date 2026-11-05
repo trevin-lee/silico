@@ -57,7 +57,8 @@ fn the_commands_are_one_list_in_one_order() {
     let listed: Vec<&str> = COMMANDS.iter().map(|(name, _)| *name).collect();
     assert_eq!(names, listed);
     // The design's section 7, in its order, written out by hand (read_logs comes with its
-    // command), then M5.0's section 7's, in its order (M5.1's, M5.3's, M5.5's, then M5.10's).
+    // command), then M5.0's section 7's, in its order (M5.1's, M5.3's, M5.5's, then M5.10's), then
+    // `diff` (Fable's decision of 2026-11-04).
     assert_eq!(
         names,
         [
@@ -105,6 +106,7 @@ fn the_commands_are_one_list_in_one_order() {
             "sketch_join",
             "undo",
             "redo",
+            "diff",
         ]
     );
     for command in Command::ALL {
@@ -204,12 +206,12 @@ fn a_call_answers_as_its_typed_method_does_written_on_one_line() {
         ("status", r#"{"session": "s1"}"#, as_written(&t.status(&s1))),
         (
             "text",
-            r#"{"session": "s1", "feature": null}"#,
+            r#"{"session": "s1", "feature": null, "revision": null}"#,
             as_written(&answer(t.text(&s1, None))),
         ),
         (
             "text",
-            r#"{"session": "s1", "feature": "a91cw0de"}"#,
+            r#"{"session": "s1", "feature": "a91cw0de", "revision": null}"#,
             as_written(&answer(t.text(&s1, Some(id("a91cw0de"))))),
         ),
         (
@@ -831,7 +833,10 @@ fn calls_to_one_session_run_in_the_order_sent_and_opens_take_ids_in_that_order()
             "check",
             r#"{"session": "s1", "model": "current", "fresh": false}"#,
         );
-        let text = f.calling("text", r#"{"session": "s1", "feature": "k7f2qx3m"}"#);
+        let text = f.calling(
+            "text",
+            r#"{"session": "s1", "feature": "k7f2qx3m", "revision": null}"#,
+        );
         let (text, check, edit) = (answered(text), answered(check), answered(edit));
         assert!(edit.ok, "{}", edit.text);
         let check = envelope(&check);
@@ -968,7 +973,10 @@ fn a_command_called_as_one_answers_as_it_does_called_by_its_name() {
         (Command::Version, "{}"),
         (Command::Outline, r#"{"session": "s1"}"#),
         (Command::Check, "{}"),
-        (Command::Text, r#"{"session": "s9", "feature": null}"#),
+        (
+            Command::Text,
+            r#"{"session": "s9", "feature": null, "revision": null}"#,
+        ),
     ] {
         let by_name = answered(f.calling(command.as_str(), arguments));
         let typed = answered(f.sessions.call_command(command, arguments));
@@ -1497,7 +1505,10 @@ fn the_timeline_commands_answer_by_name_as_their_typed_methods_do() {
         moved["result"],
         serde_json::json!({"feature": "b0000002", "from": 0, "to": 0, "rewired": [], "changed": false, "commit": null})
     );
-    let text = envelope(&by_name.call("text", r#"{"session": "s1", "feature": null}"#));
+    let text = envelope(&by_name.call(
+        "text",
+        r#"{"session": "s1", "feature": null, "revision": null}"#,
+    ));
     let document =
         silico_core::document::read(text["result"]["text"].as_str().unwrap().as_bytes()).unwrap();
     let ids: Vec<&str> = document.features.iter().map(|f| f.id.as_str()).collect();
