@@ -386,8 +386,9 @@ pub struct Tab {
     /// program's, so it shows no [`reloaded`](Self::reloaded) banner. Let go once the file
     /// is as the session holds it again.
     reload_asked: bool,
-    /// The feature selected in the timeline or the browser.
-    pub selected: Option<FeatureId>,
+    /// What's selected (M5.7): features of the timeline or the browser, faces and edges of
+    /// the canvas, by name; and what the pointer is over.
+    selection: crate::selection::Selection,
     /// What the browser's eyes hide: the tab's state, never saved (open item 29).
     pub hidden: std::collections::BTreeSet<Hideable>,
     /// The last refusal a command of the tab's answered, as said to the person, until
@@ -518,7 +519,7 @@ impl Tab {
             disk_choice: DiskChoice::None,
             reloaded: None,
             reload_asked: false,
-            selected: None,
+            selection: crate::selection::Selection::default(),
             hidden: std::collections::BTreeSet::new(),
             message: None,
             close_refused: false,
@@ -554,13 +555,34 @@ impl Tab {
     /// navigation bar. The end of a drag in a tab no longer shown comes here too, its
     /// painter drawing nothing. A mode sends its commands from here through `sessions`, on
     /// the tab's own queue and its `Running` handles, polled with `try_take`, never waiting:
-    /// a drag's move goes out in the frame it happened. No mode draws or acts yet.
+    /// a drag's move goes out in the frame it happened.
+    ///
+    /// With no sketch open, the left button and the pointer are the selection's (M5.7):
+    /// a click picks what's under it, the hover what the pointer is over, each read against
+    /// the published model the tab last polled, which asks the session nothing more.
+    /// SEAM(#351): sketch mode claims them first, while a sketch is open
+    /// (`if self.in_sketch() { self.selection.canvas_claimed(); return
+    /// self.sketch.overlay(sessions, painter, frame) }`, a click of the selection's waiting
+    /// let go), its face pick for Create Sketch reading [`selection`](Self::selection)'s
+    /// hover and pick.
     pub fn overlay<P: Clients + 'static>(
         &mut self,
         _sessions: &Arc<Sessions<P>>,
-        _painter: &eframe::egui::Painter,
-        _frame: &crate::viewport::ViewFrame,
+        painter: &eframe::egui::Painter,
+        frame: &crate::viewport::ViewFrame,
     ) {
+        self.selection.overlay(&mut self.view, frame, painter.ctx());
+    }
+
+    /// What's selected (M5.7), and what the pointer is over in the canvas: one selection,
+    /// the browser's, the timeline's, and the canvas's.
+    pub fn selection(&self) -> &crate::selection::Selection {
+        &self.selection
+    }
+
+    /// The selection, to change: a pick by name, a feature, a clear, its filter.
+    pub fn selection_mut(&mut self) -> &mut crate::selection::Selection {
+        &mut self.selection
     }
 
     /// The errors its timeline counts: the gate's, and each feature's problems (the
@@ -791,6 +813,12 @@ impl Tab {
             self.published_models = self.published_models.wrapping_add(1);
             self.published_model = model;
         }
+        let model = published
+            .result
+            .as_ref()
+            .ok()
+            .map(|published| (Arc::clone(&published.model), published.revision));
+        self.selection.published(model, self.published_models);
         self.published = published.result.ok().map(|published| published.revision);
         if self.published.is_some() {
             self.nothing_published = false;
@@ -1012,7 +1040,7 @@ impl Tab {
                                 dialog.feature = Some(added.feature.id.clone());
                                 // Selected, so its mark's text is read and the property
                                 // panel shows it.
-                                self.selected = Some(added.feature.id);
+                                self.selection.select_feature(added.feature.id);
                             }
                         }
                         Err(problems) => {
@@ -1853,8 +1881,8 @@ impl Tab {
     /// rebuild running stopped quietly ([`stop_quietly`](Self::stop_quietly)); with
     /// neither, the reload's banner dismissed, if one shows.
     pub fn escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if self.selected.is_some() {
-            self.selected = None;
+        if !self.selection.is_empty() {
+            self.selection.clear();
         } else if self.stoppable() {
             self.stop_quietly(sessions);
         } else {
@@ -2053,7 +2081,7 @@ impl Tab {
     /// H (DESIGN.md, *Keyboard*: Fusion's V, moved to H): the selected feature hidden or
     /// shown, if the browser lists it (a body or a sketch); nothing otherwise.
     pub fn toggle_selected_shown(&mut self) {
-        let Some(id) = self.selected.clone() else {
+        let Some(id) = self.selection.feature().cloned() else {
             return;
         };
         let listed = self
@@ -2088,7 +2116,11 @@ impl Tab {
             return;
         }
         let serial = self.opening();
-        let sketch = self.selected.clone().filter(|id| self.is_sketch(id));
+        let sketch = self
+            .selection
+            .feature()
+            .cloned()
+            .filter(|id| self.is_sketch(id));
         self.dialog = Some(Dialog::new(kind, sketch, serial));
         self.dialog_changed(sessions);
         self.advance(sessions);
@@ -2117,7 +2149,7 @@ impl Tab {
         if !self.can_open(kind) {
             return;
         }
-        self.selected = Some(id.clone());
+        self.selection.select_feature(id.clone());
         self.load(sessions, kind, id.clone());
     }
 
@@ -2306,7 +2338,7 @@ impl Tab {
         if self.check_read.is_some() || self.checked == Some(asked) {
             return;
         }
-        let Some((gate, model)) = check_wanted(timeline, self.selected.as_ref()) else {
+        let Some((gate, model)) = check_wanted(timeline, self.selection.feature()) else {
             return;
         };
         // Never the current model of a revision whose rebuild was stopped: its check would
@@ -2995,7 +3027,8 @@ mod tests {
             Some(Revision::OPENED),
             vec![entry("a0000001", 0, 1)],
         ));
-        tab.selected = Some(FeatureId::new("a0000001").unwrap());
+        tab.selection_mut()
+            .select_feature(FeatureId::new("a0000001").unwrap());
         tab.read_check(&sessions);
         assert!(tab.check_read.is_some());
         // Answered and taken.
@@ -3028,7 +3061,8 @@ mod tests {
             status.rebuild.state = state;
             tab.status = Some(status);
             tab.timeline = Some(timeline(0, model, vec![entry("a0000001", 0, 1)]));
-            tab.selected = Some(FeatureId::new("a0000001").unwrap());
+            tab.selection_mut()
+                .select_feature(FeatureId::new("a0000001").unwrap());
             tab.read_check(&sessions);
             tab.check_read.is_some()
         };
@@ -3092,7 +3126,8 @@ mod tests {
         );
         assert!(kernel.wait_running(1, std::time::Duration::from_secs(60)));
         tab.timeline = Some(timeline(0, None, vec![entry("k7f2qx3m", 0, 1)]));
-        tab.selected = Some(FeatureId::new("k7f2qx3m").unwrap());
+        tab.selection_mut()
+            .select_feature(FeatureId::new("k7f2qx3m").unwrap());
         tab.read_check(&sessions);
         assert!(tab.check_read.is_some());
         // The stop: no rebuild running, so refused, but the check cancelled.
@@ -3234,7 +3269,9 @@ mod tests {
         /// selected either way.
         fn send_check(&mut self, model: Option<Revision>) {
             self.tab.timeline = Some(timeline(0, model, vec![entry("k7f2qx3m", 0, 1)]));
-            self.tab.selected = Some(FeatureId::new("k7f2qx3m").unwrap());
+            self.tab
+                .selection_mut()
+                .select_feature(FeatureId::new("k7f2qx3m").unwrap());
             self.tab.read_check(&self.sessions);
             assert!(self.tab.check_read.is_some());
         }
