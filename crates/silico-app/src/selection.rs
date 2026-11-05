@@ -950,7 +950,12 @@ impl Selection {
             // is its place in the selection, not in `names`) or not.
             let version = self.version;
             self.items = items;
-            self.read(&model);
+            // Items a Cancel put back aren't read against this model, which may be its
+            // dialog's preview, as a click's pick leaves them: the names picked were read
+            // alone, above, till they're read.
+            if self.held.is_none() {
+                self.read(&model);
+            }
             self.version = version.wrapping_add(1);
         }
     }
@@ -3527,6 +3532,48 @@ mod tests {
             states(&selection),
             [("aaaaaaaa.box.Edge1".to_owned(), "pending")]
         );
+    }
+
+    #[test]
+    fn a_box_after_a_cancel_keeps_what_it_put_back_unread_till_the_undos_model() {
+        // As `a_selection_a_cancel_put_back_is_read_only_from_the_revision_its_undo_comes_to`:
+        // `cccccccc.box.Face1` picked in fused(1, 4), a dialog's preview, fused(1, 2),
+        // consuming it.
+        let revision = |n| Revision::from_number(n).unwrap();
+        let name = "cccccccc.box.Face1";
+        let other = "aaaaaaaa.box.Face3";
+        let (picked_in, preview) = (fused(1, 4), fused(1, 2));
+        let mut selection = Selection::default();
+        selection.published(Some((Arc::clone(&picked_in), revision(1))), 1);
+        selection.pick(name, How::Replace);
+        let saved = selection.saved();
+        selection.take_into(Some(Filter::default()));
+        selection.published(Some((Arc::clone(&preview), revision(2))), 2);
+        assert!(selection.is_empty());
+        // Cancel: put back, the preview still the model published.
+        selection.take_into(None);
+        selection.restore(saved);
+        selection.published(Some((Arc::clone(&preview), revision(2))), 2);
+        assert_eq!(states(&selection), [(name.to_owned(), "found")]);
+        // A box (Shift) before the undo's model: what it took is added, read on the
+        // preview, and what the Cancel put back is kept, unread against the preview,
+        // nothing said of it.
+        selection.pick_all(&[other.to_owned()], How::Add);
+        assert_eq!(
+            states(&selection),
+            [(name.to_owned(), "found"), (other.to_owned(), "found")]
+        );
+        assert_eq!(selection.said(), None);
+        assert_eq!(selection.held, Some(Held::Unsent));
+        // The undo's model, revision 3: both read on it, and kept.
+        selection.read_from(revision(3));
+        selection.published(Some((picked_in, revision(3))), 3);
+        assert_eq!(selection.held, None);
+        assert_eq!(
+            states(&selection),
+            [(name.to_owned(), "found"), (other.to_owned(), "found")]
+        );
+        assert_eq!(selection.said(), None);
     }
 
     #[test]
