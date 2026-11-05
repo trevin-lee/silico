@@ -474,24 +474,29 @@ pub(crate) enum CardAct {
 }
 
 /// What a broken reference's card offers to mend it (flow 6b): its candidates, each with
-/// Use, and Remove the edge, on, or off and why.
+/// Use, and Remove the edge, on, or off and why; and the candidate the canvas's pointer is
+/// over, if it's one, its row marked as a hover marks it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Repair {
     pub broken: Broken,
     pub remove: Result<(), String>,
+    pub marked: Option<String>,
 }
 
-/// What a card's drawing gave: what its buttons asked.
+/// What a card's drawing gave: what its buttons asked, and the candidate whose row the
+/// pointer is over, which the canvas lights.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CardOut {
     pub asked: Option<CardAct>,
+    pub hovered: Option<String>,
 }
 
 impl CardOut {
-    /// `other`'s, after this one's: the first asked.
+    /// `other`'s, after this one's: the first asked, and the first hovered.
     pub(crate) fn or(self, other: CardOut) -> CardOut {
         CardOut {
             asked: self.asked.or(other.asked),
+            hovered: self.hovered.or(other.hovered),
         }
     }
 }
@@ -539,7 +544,7 @@ impl CardLook {
 /// words alone is its message and suggestion. What a button asked, if one was.
 ///
 /// A broken reference's card, given `repair`, offers each candidate's Use and Remove the
-/// edge (flow 6b).
+/// edge (flow 6b), and says which candidate's row the pointer is over.
 ///
 /// SEAM: each candidate's why (`.cand .why`), which the core doesn't give: the first's
 /// row says only "Closest · ".
@@ -971,8 +976,10 @@ fn element_chips(
 /// candidates): a heading in capitals, then each name in a row of its own (`.cand`), its
 /// name in the monospace font, cut short with an ellipsis where it doesn't fit, the first's
 /// "Closest · " under it (`.why`); and, given `repair`, each row's Use (`.btn-secondary`)
-/// at its right, the row lit as `.cand:hover` lights it while the pointer is over it.
-/// What a Use asked.
+/// at its right, the row lit as `.cand:hover` lights it while the pointer is over it, or
+/// while the canvas's pointer is over its edge (`repair`'s `marked`, the row selected in
+/// the accessibility tree). What a Use asked, and the candidate whose row the pointer is
+/// over, given `repair`.
 fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut {
     let mut out = CardOut::default();
     if names.is_empty() {
@@ -1034,7 +1041,8 @@ fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut
         let (rect, response) =
             ui.allocate_exact_size(vec2(width, inner + pad.sum().y), Sense::hover());
         let hovered = ui.rect_contains_pointer(rect);
-        let fill = if hovered {
+        let marked = repair.and_then(|repair| repair.marked.as_deref()) == Some(name.as_str());
+        let fill = if hovered || marked {
             theme::ERROR_CARD_CANDIDATE_HOVER_BG
         } else {
             theme::ERROR_CARD_CANDIDATE_BG
@@ -1056,7 +1064,9 @@ fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut
             name.clone()
         };
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
-        response.on_hover_text(name.as_str());
+        ui.ctx()
+            .accesskit_node_builder(response.id, |node| node.set_selected(marked));
+        let response = response.on_hover_text(name.as_str());
         if let (Some(repair), Some(button)) = (repair, button) {
             let place = Rect::from_min_size(
                 pos2(
@@ -1076,6 +1086,9 @@ fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut
                     broken: repair.broken.clone(),
                     candidate: name.clone(),
                 });
+            }
+            if hovered || response.hovered() {
+                out.hovered = Some(name.clone());
             }
         }
         ui.add_space(theme::ERROR_CARD_CANDIDATE_MARGIN);

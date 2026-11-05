@@ -609,6 +609,12 @@ impl<P: Clients + 'static> App<P> {
             self.waker_set = true;
         }
         self.poll();
+        // The candidate a card's row was hovered on last frame, lit in the canvas from now.
+        for tab in &mut self.tabs {
+            if tab.take_candidate_hover() {
+                ui.ctx().request_repaint();
+            }
+        }
         // A name being typed, clicked away from: sent before any control the click lands on
         // acts, so it comes first in the tab's queue.
         let renamed = self.rename_clicked_away(ui.ctx());

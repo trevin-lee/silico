@@ -366,6 +366,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 }
             })
             .inner;
+        tab.hover_candidate(out.hovered);
         if let Some(asked) = out.asked {
             *self.started |= tab.card_asked(sessions, asked);
         }

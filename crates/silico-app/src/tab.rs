@@ -708,6 +708,11 @@ pub struct Tab {
     exported: bool,
     /// The export out was sent from a dialog since cancelled, not the one open now.
     export_disowned: bool,
+    /// The broken reference's candidate whose card row the pointer is over (flow 6b), as
+    /// the frame before had it, which the canvas lights; and this frame's, as the cards
+    /// drawn so far have said it ([`hover_candidate`](Self::hover_candidate)).
+    candidate_hot: Option<String>,
+    candidate_next: Option<String>,
     /// The viewport's camera, meshes, and `meshes` read (M5.6).
     pub view: crate::viewport::View,
     /// A test's watch on what [`overlay`](Self::overlay) is given: called after it each
@@ -837,6 +842,8 @@ impl Tab {
             export_replacing: None,
             exported: false,
             export_disowned: false,
+            candidate_hot: None,
+            candidate_next: None,
             view: crate::viewport::View::default(),
             watch: None,
             after_status: None,
@@ -894,6 +901,15 @@ impl Tab {
             &hidden,
         ) {
             self.toast = Some(toast);
+        }
+        let candidate = self
+            .candidate_hot
+            .as_deref()
+            .and_then(|name| self.selection.lit(name, &self.view));
+        if candidate != self.view.candidate {
+            // Drawn in the next frame: asked for, the pointer maybe still.
+            self.view.candidate = candidate;
+            painter.ctx().request_repaint();
         }
         if self.box_toggled() {
             // What the box took is sent from the dialog's pane, maybe drawn already.
@@ -3272,7 +3288,8 @@ impl Tab {
 
     /// What a card of `said` offers to mend a broken reference (flow 6b), if it's one with
     /// candidates (`errCard` offers Use and Remove the edge only then): Remove the edge off
-    /// for the feature's last edge, saying why.
+    /// for the feature's last edge, saying why; and the candidate whose edge the canvas's
+    /// pointer is over.
     pub(crate) fn repair(&self, said: &Said) -> Option<crate::properties::Repair> {
         let broken = crate::repair::Broken::of(said)?;
         if broken.candidates.is_empty() {
@@ -3281,7 +3298,43 @@ impl Tab {
         let remove = self.dressing(&broken.feature).map_or(Ok(()), |dressing| {
             dressing.removable(&self.named(&broken.feature))
         });
-        Some(crate::properties::Repair { broken, remove })
+        let marked = self.selection.hovered().and_then(|hovered| {
+            broken
+                .candidates
+                .iter()
+                .find(|name| {
+                    self.selection.lit(name, &self.view) == Some((hovered.body, hovered.element))
+                })
+                .cloned()
+        });
+        Some(crate::properties::Repair {
+            broken,
+            remove,
+            marked,
+        })
+    }
+
+    /// The candidate whose card row the pointer is over this frame, said by a card drawn.
+    pub(crate) fn hover_candidate(&mut self, name: Option<String>) {
+        if self.candidate_next.is_none() {
+            self.candidate_next = name;
+        }
+    }
+
+    /// A new frame: the candidate the cards said last frame is the one the canvas lights.
+    /// Whether that changed, so a frame is asked for to light it.
+    pub(crate) fn take_candidate_hover(&mut self) -> bool {
+        let next = self.candidate_next.take();
+        if next == self.candidate_hot {
+            return false;
+        }
+        self.candidate_hot = next;
+        true
+    }
+
+    /// The candidate whose card row the pointer is over, as the canvas lights it.
+    pub fn candidate_hovered(&self) -> Option<&str> {
+        self.candidate_hot.as_deref()
     }
 
     /// A broken reference's `candidate` used in its place (`useCand`): read in the

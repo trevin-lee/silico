@@ -24068,3 +24068,70 @@ fn remove_clicked_anyway(h: &mut AppHarness) {
         .center();
     click_at(h, at);
 }
+
+#[test]
+fn hovering_a_candidates_row_lights_its_edge_and_hovering_its_edge_marks_the_row() {
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    let (mut h, record) = corner_broken(&f, CORNER);
+    // The broken fillet builds nothing: the cut's body is drawn, its edges numbered as the
+    // block's (the fake's cut keeps them by number), so Edge4 is its Edge(4).
+    let body = body_of(&h, "m3tq8v0z");
+    assert_eq!(view(&h).candidate, None);
+    // The pointer over Edge4's row: lit in the next frames, on the hover's layer in the
+    // candidates' orange (DESIGN.md: `#ff7a0c`).
+    let at = candidate_row(&h, &format!("Closest · {EDGE4}")).0.center();
+    h.hover_at(at);
+    step_until(&mut h, "Edge4 lit", |_| {
+        let told = record.lock().unwrap();
+        told.frames
+            .last()
+            .is_some_and(|frame| frame.hovered == [(body, Edge(4))])
+    });
+    assert_eq!(view(&h).candidate, Some((body, Edge(4))));
+    assert_eq!(h.state().tabs()[0].candidate_hovered(), Some(EDGE4));
+    let outlines = record.lock().unwrap().frames.last().unwrap().outlines;
+    assert_eq!(outlines.hovered, [0xff, 0x7a, 0x0c]);
+    // Edge6's row next: Edge6 lit alone.
+    let at = candidate_row(&h, EDGE6).0.center();
+    h.hover_at(at);
+    step_until(&mut h, "Edge6 lit", |h| {
+        view(h).candidate == Some((body, Edge(6)))
+    });
+    // Off the rows, onto the canvas over Edge6: nothing lit from a row, the canvas's hover
+    // drawn in white again, and Edge6's row marked.
+    let canvas = the_viewport(&h).center();
+    answering(&record, None, Some((body, Edge(6), pixel_at(&h, canvas))));
+    h.hover_at(canvas);
+    step_until(&mut h, "Edge6's row marked", |h| {
+        candidate_row(h, EDGE6).1 == Some(true)
+    });
+    assert_eq!(
+        candidate_row(&h, &format!("Closest · {EDGE4}")).1,
+        Some(false)
+    );
+    step_until(&mut h, "nothing lit from a row", |h| {
+        view(h).candidate.is_none()
+    });
+    step(&mut h);
+    let last = record.lock().unwrap().frames.last().unwrap().clone();
+    assert_eq!(last.hovered, [(body, Edge(6))]);
+    assert_eq!(last.outlines.hovered, [255, 255, 255]);
+    // Over Edge4 in the canvas: Edge4's row marked, Edge6's not.
+    answering(&record, None, Some((body, Edge(4), pixel_at(&h, canvas))));
+    h.hover_at(canvas + eframe::egui::vec2(1.0, 0.0));
+    step_until(&mut h, "Edge4's row marked", |h| {
+        candidate_row(h, &format!("Closest · {EDGE4}")).1 == Some(true)
+    });
+    assert_eq!(candidate_row(&h, EDGE6).1, Some(false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The candidate row in the property panel whose words are `words`: where it is, and
+/// whether it's marked (selected, in the accessibility tree).
+fn candidate_row(h: &AppHarness, words: &str) -> (eframe::egui::Rect, Option<bool>) {
+    let row = h
+        .get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_label(words);
+    (row.rect(), row.accesskit_node().is_selected())
+}
