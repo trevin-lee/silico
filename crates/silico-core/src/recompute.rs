@@ -611,7 +611,7 @@ impl Model {
         let maps = self
             .features
             .iter()
-            .zip(&self.maps)
+            .zip(self.maps.iter())
             .map(|((feature, _), map)| {
                 if feature == id {
                     OnceLock::from(None)
