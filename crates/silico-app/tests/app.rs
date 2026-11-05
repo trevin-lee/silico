@@ -1041,7 +1041,8 @@ const BLOCK_10: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \
 const BLOCK_11: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 11,\n      \"fingerprint\": {\"volume\": 8800, \"area\": 2920, \"center\": [20, 10, 5.5], \"bbox\": [0, 0, 0, 40, 20, 11], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
 
 /// [`BLOCK_10`] `height` high, with the fingerprint it rebuilds to on the fake kernel:
-/// volume 40 × 20 × `height`, area 2(800 + 40 `height` + 20 `height`), to z = `height`.
+/// volume 40 × 20 × `height`, area 2(800 + 40 `height` + 20 `height`), centre its middle,
+/// (20, 10, `height` / 2), to z = `height`.
 fn block_high(height: u32) -> String {
     BLOCK_10
         .replace("\"height\": 10", &format!("\"height\": {height}"))
@@ -1049,6 +1050,10 @@ fn block_high(height: u32) -> String {
         .replace(
             "\"area\": 2800",
             &format!("\"area\": {}", 1600 + 120 * height),
+        )
+        .replace(
+            "[20, 10, 5]",
+            &format!("[20, 10, {}]", f64::from(height) / 2.0),
         )
         .replace("40, 20, 10]", &format!("40, 20, {height}]"))
 }
