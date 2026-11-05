@@ -314,6 +314,23 @@ fn top_level_members_each_side_alone_has_come_in_the_order_the_writer_gives_them
             of_pad("base", "null", r#""b0000001""#),
         ]
     );
+    // `suppressed` on the from side alone, with the name changed too: the writer puts the
+    // name before `suppressed`, so the name's change comes first, then `suppressed`, then
+    // `base` (a member only the to side has).
+    let renamed = based.replace(r#""name": "Pad""#, r#""name": "Boss""#);
+    let named = |field: &str, before: &str, after: &str| {
+        format!(
+            r#"{{"feature": "p0000001", "name": "Boss", "field": "{field}", "before": {before}, "after": {after}}}"#
+        )
+    };
+    assert_eq!(
+        diffed(&[&suppressed], &[&renamed]),
+        [
+            named("name", r#""Pad""#, r#""Boss""#),
+            named("suppressed", "true", "null"),
+            named("base", "null", r#""b0000001""#),
+        ]
+    );
     // That is the writer's order: a feature holding both members of each pair, written.
     let both = [
         (
