@@ -14,23 +14,44 @@
 //! [`Selection::read_on`]: crate::selection::Selection::read_on
 
 use silico_core::Error;
-use silico_core::command::Problems;
+use silico_core::command::{Problems, Revision};
 use silico_core::document::json::{self, Node};
 use silico_core::document::{Document, FeatureId, Operation};
 
 use crate::selection::OnBase;
 use crate::tab::{Edit, Said};
 
+/// Where a repair was made, which says how it's taken back: on the document, by Undo; or
+/// in the feature's open dialog, by its Cancel (Undo is off while a dialog is open, and
+/// after its OK one Undo takes back all of the dialog's edits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Made {
+    Document,
+    Dialog,
+}
+
+impl Made {
+    /// How the broken reference is put back.
+    fn back(self) -> &'static str {
+        match self {
+            Made::Document => "Undo puts the broken reference back.",
+            Made::Dialog => {
+                "Cancel puts the broken reference back, as Undo does once the dialog is OK'd."
+            }
+        }
+    }
+}
+
 /// What the status bar says once a candidate is used (`useCand`'s toast), of the feature
 /// `name`: a fillet "rounds" its edges, a chamfer "bevels" them.
-pub fn used_words(name: &str, chamfer: bool) -> String {
+pub fn used_words(name: &str, chamfer: bool, made: Made) -> String {
     let verb = if chamfer { "bevels" } else { "rounds" };
-    format!("{name} now {verb} the edge you picked. Undo puts the broken reference back.")
+    format!("{name} now {verb} the edge you picked. {}", made.back())
 }
 
 /// What the status bar says once the broken name is removed.
-pub fn removed_words(name: &str) -> String {
-    format!("{name} no longer names the broken edge. Undo puts the broken reference back.")
+pub fn removed_words(name: &str, made: Made) -> String {
+    format!("{name} no longer names the broken edge. {}", made.back())
 }
 
 /// Why Remove the edge is off for the feature `name`'s last edge.
@@ -42,24 +63,28 @@ pub fn last_edge_words(name: &str, chamfer: bool) -> String {
     )
 }
 
-/// What's said when the card is of an older document than the session's.
+/// What's said when the card is of an older document than the session's, or its broken
+/// name is found now.
 pub const STALE: &str =
     "The model has changed since this card was read: try again once it has rebuilt";
 
 /// A `reference_broken` error on a fillet's or chamfer's edge: the feature, the edge's place
 /// in its `edges`, the name as the error gives it (cut short with `…` where it's long), and
-/// the names offered in its place, closest first.
+/// the names offered in its place, closest first; and the session's revision the card was
+/// read at (its `check`'s timeline's), which a repair is made at or not at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Broken {
     pub feature: FeatureId,
     pub place: usize,
     pub name: String,
     pub candidates: Vec<String>,
+    pub read: Revision,
 }
 
 impl Broken {
-    /// The broken edge `said` is of, if it's a `reference_broken` error at `edges.N`.
-    pub fn of(said: &Said) -> Option<Broken> {
+    /// The broken edge `said` is of, if it's a `reference_broken` error at `edges.N`, read
+    /// at the revision `read`.
+    pub fn of(said: &Said, read: Revision) -> Option<Broken> {
         if said.code() != Some("reference_broken") || said.warning {
             return None;
         }
@@ -75,6 +100,7 @@ impl Broken {
             place,
             name,
             candidates: said.candidates().to_vec(),
+            read,
         })
     }
 
@@ -124,11 +150,29 @@ impl Dressing {
         })
     }
 
-    /// Whether `broken`'s place in its edges holds the broken name still.
-    fn holds(&self, broken: &Broken) -> bool {
-        self.edges
+    /// Whether `broken` is broken still, `read` reading a name in the feature's base as
+    /// its dialog reads a pick there ([`Selection::read_on`]): its place in the edges holds
+    /// the broken name, and that name, as the edges hold it in full, finds no edge a store
+    /// could take there now. Or [`STALE`]: whatever was read when, the card is of another
+    /// document than this, and a repair would write over a name that isn't broken.
+    ///
+    /// [`Selection::read_on`]: crate::selection::Selection::read_on
+    fn still_broken(
+        &self,
+        broken: &Broken,
+        read: &dyn Fn(&str, &FeatureId) -> OnBase,
+    ) -> Result<(), String> {
+        let Some(stored) = self
+            .edges
             .get(broken.place)
-            .is_some_and(|stored| broken.is(stored))
+            .filter(|stored| broken.is(stored))
+        else {
+            return Err(STALE.to_owned());
+        };
+        match read(stored, &self.base) {
+            OnBase::Found(Ok(_)) => Err(STALE.to_owned()),
+            OnBase::Found(Err(_)) | OnBase::Missing => Ok(()),
+        }
     }
 
     /// Whether Remove the edge can drop `broken`, or why not: the feature `name`'s last edge.
@@ -141,21 +185,20 @@ impl Dressing {
     }
 }
 
-/// `candidate` used in `broken`'s place in `dressing` (the feature `name`, as the model
-/// the card was read from holds it), `read` being what reading it in the feature's base
-/// gave: the edit that writes the name a store writes for it there at the broken name's
-/// place, and what the status bar says of it; or why not, as the dialogs say a refusal.
+/// `candidate` used in `broken`'s place in `dressing` (the feature `name`, as the current
+/// model's document holds it), `read` reading a name in the feature's base: the edit that
+/// writes the name a store writes for the candidate there at the broken name's place, and
+/// what the status bar says of it; or why not, as the dialogs say a refusal (the name not
+/// broken now among them).
 pub fn used(
     broken: &Broken,
     candidate: &str,
     dressing: &Dressing,
-    read: OnBase,
+    read: &dyn Fn(&str, &FeatureId) -> OnBase,
     name: &str,
 ) -> Result<(Edit, String), String> {
-    if !dressing.holds(broken) {
-        return Err(STALE.to_owned());
-    }
-    let stored = match read {
+    dressing.still_broken(broken, read)?;
+    let stored = match read(candidate, &dressing.base) {
         OnBase::Found(Ok(stored)) => stored,
         OnBase::Found(Err(refusal)) => return Err(words(&refusal)),
         OnBase::Missing => {
@@ -172,17 +215,20 @@ pub fn used(
             field: broken.field(),
             value,
         },
-        used_words(name, dressing.chamfer),
+        used_words(name, dressing.chamfer, Made::Document),
     ))
 }
 
-/// `broken` removed from `dressing`'s edges (the feature `name`): the edit that sets
-/// `edges` without it, and what the status bar says of it; or why not (its last edge, or
-/// the card older than the model).
-pub fn removed(broken: &Broken, dressing: &Dressing, name: &str) -> Result<(Edit, String), String> {
-    if !dressing.holds(broken) {
-        return Err(STALE.to_owned());
-    }
+/// `broken` removed from `dressing`'s edges (the feature `name`), `read` reading a name in
+/// its base: the edit that sets `edges` without it, and what the status bar says of it; or
+/// why not (its last edge, or the card of another document, its name not broken now).
+pub fn removed(
+    broken: &Broken,
+    dressing: &Dressing,
+    read: &dyn Fn(&str, &FeatureId) -> OnBase,
+    name: &str,
+) -> Result<(Edit, String), String> {
+    dressing.still_broken(broken, read)?;
     dressing.removable(name)?;
     let kept: Vec<String> = dressing
         .edges
@@ -199,7 +245,7 @@ pub fn removed(broken: &Broken, dressing: &Dressing, name: &str) -> Result<(Edit
             field: "edges".to_owned(),
             value,
         },
-        removed_words(name),
+        removed_words(name, Made::Document),
     ))
 }
 
@@ -225,12 +271,16 @@ mod tests {
         FeatureId::new(text).unwrap()
     }
 
+    /// The revision a card in these tests was read at.
+    const READ: Revision = Revision::OPENED;
+
     fn broken(place: usize, name: &str) -> Broken {
         Broken {
             feature: id("f0000001"),
             place,
             name: name.to_owned(),
             candidates: vec!["k7f2qx3m.box.Edge4".to_owned()],
+            read: READ,
         }
     }
 
@@ -254,6 +304,27 @@ mod tests {
         })
     }
 
+    /// The names a [`reading`] was asked, in order.
+    type Asked = Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// A read of names in the base `m3tq8v0z`: each of `answers` by its name, the rest
+    /// missing (broken), as the base no longer holds them. Every name read is recorded.
+    fn reading(
+        answers: Vec<(&'static str, OnBase)>,
+    ) -> (impl Fn(&str, &FeatureId) -> OnBase, Asked) {
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&asked);
+        let read = move |name: &str, base: &FeatureId| {
+            assert_eq!(base, &id("m3tq8v0z"), "read in the feature's base");
+            record.lock().unwrap().push(name.to_owned());
+            answers
+                .iter()
+                .find(|(known, _)| *known == name)
+                .map_or(OnBase::Missing, |(_, answer)| answer.clone())
+        };
+        (read, asked)
+    }
+
     #[test]
     fn a_broken_reference_is_read_from_its_error_at_its_place_in_edges() {
         let error = Error::new(ErrorCode::ReferenceBroken, "edges.1 is gone")
@@ -264,7 +335,8 @@ mod tests {
                 "k7f2qx3m.box.Edge4".to_owned(),
                 "k7f2qx3m.box.Edge6".to_owned(),
             ]);
-        let found = Broken::of(&Said::of(&error)).unwrap();
+        let at = Revision::from_number(7).unwrap();
+        let found = Broken::of(&Said::of(&error), at).unwrap();
         assert_eq!(found.feature, id("f0000001"));
         assert_eq!(found.place, 1);
         assert_eq!(found.name, "k7f2qx3m.box.Edge5");
@@ -272,18 +344,19 @@ mod tests {
             found.candidates,
             ["k7f2qx3m.box.Edge4", "k7f2qx3m.box.Edge6"]
         );
+        assert_eq!(found.read, at);
         assert_eq!(found.field(), "edges.1");
         // Another code, or a selection's refusal (not at `edges.N`), isn't one.
         let selection = Error::new(ErrorCode::ReferenceBroken, "unstable")
             .with_feature("f0000001")
             .with_parameter("selection.0")
             .with_element("k7f2qx3m.box.Edge5");
-        assert_eq!(Broken::of(&Said::of(&selection)), None);
+        assert_eq!(Broken::of(&Said::of(&selection), at), None);
         let other = Error::new(ErrorCode::KernelFailed, "no")
             .with_feature("f0000001")
             .with_parameter("edges.0")
             .with_element("k7f2qx3m.box.Edge5");
-        assert_eq!(Broken::of(&Said::of(&other)), None);
+        assert_eq!(Broken::of(&Said::of(&other), at), None);
     }
 
     #[test]
@@ -298,13 +371,15 @@ mod tests {
 
     #[test]
     fn use_writes_the_name_stored_on_the_base_at_the_broken_names_place() {
+        // The candidate as the cut names the edge it keeps from the block; a store writes
+        // the block's own name for it, which is what's written, not the candidate's text.
         let dressing = fillet(&["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]);
-        let read = OnBase::Found(Ok(edge(4)));
+        let (read, asked) = reading(vec![("m3tq8v0z.cut.Edge4", OnBase::Found(Ok(edge(4))))]);
         let (edit, told) = used(
             &broken(1, "k7f2qx3m.box.Edge5"),
-            "k7f2qx3m.box.Edge4",
+            "m3tq8v0z.cut.Edge4",
             &dressing,
-            read,
+            &read,
             "Inside corner",
         )
         .unwrap();
@@ -314,6 +389,11 @@ mod tests {
         assert_eq!(
             told,
             "Inside corner now rounds the edge you picked. Undo puts the broken reference back."
+        );
+        // The broken name read first, as the edges hold it, then the candidate.
+        assert_eq!(
+            *asked.lock().unwrap(),
+            ["k7f2qx3m.box.Edge5", "m3tq8v0z.cut.Edge4"]
         );
     }
 
@@ -325,11 +405,12 @@ mod tests {
             "edges.0, \"m3tq8v0z.cut.Edge5\", names an edge, whose name is unstable",
         )
         .with_suggestion("name the edge as its feature now names it");
+        let (read, _) = reading(vec![("m3tq8v0z.cut.Edge5", OnBase::Found(Err(unstable)))]);
         let refused = used(
             &broken(0, "k7f2qx3m.box.Edge5"),
             "m3tq8v0z.cut.Edge5",
             &dressing,
-            OnBase::Found(Err(unstable)),
+            &read,
             "Inside corner",
         )
         .unwrap_err();
@@ -342,7 +423,7 @@ mod tests {
             &broken(0, "k7f2qx3m.box.Edge5"),
             "a91cw0de.cylinder.Edge1",
             &dressing,
-            OnBase::Missing,
+            &read,
             "Inside corner",
         )
         .unwrap_err();
@@ -358,17 +439,52 @@ mod tests {
         // The place holds another name now: neither Use nor Remove writes over it.
         let dressing = fillet(&["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge4"]);
         let stale = broken(1, "k7f2qx3m.box.Edge5");
-        let read = OnBase::Found(Ok(edge(6)));
+        let (read, _) = reading(vec![("k7f2qx3m.box.Edge6", OnBase::Found(Ok(edge(6))))]);
         assert_eq!(
-            used(&stale, "k7f2qx3m.box.Edge6", &dressing, read, "F").unwrap_err(),
+            used(&stale, "k7f2qx3m.box.Edge6", &dressing, &read, "F").unwrap_err(),
             STALE
         );
-        assert_eq!(removed(&stale, &dressing, "F").unwrap_err(), STALE);
+        assert_eq!(removed(&stale, &dressing, &read, "F").unwrap_err(), STALE);
         // Its place past the edges, the same.
         assert_eq!(
-            removed(&broken(2, "k7f2qx3m.box.Edge5"), &dressing, "F").unwrap_err(),
+            removed(&broken(2, "k7f2qx3m.box.Edge5"), &dressing, &read, "F").unwrap_err(),
             STALE
         );
+    }
+
+    #[test]
+    fn a_card_whose_broken_name_is_found_now_changes_nothing() {
+        // The place holds the broken name still, but the base finds it now (an undo of the
+        // edit that broke it, read before the card was): neither Use nor Remove writes over
+        // a name that isn't broken. A name the base refuses (unstable there) is broken still.
+        let dressing = fillet(&["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]);
+        let card = broken(1, "k7f2qx3m.box.Edge5");
+        let (mended, _) = reading(vec![
+            ("k7f2qx3m.box.Edge5", OnBase::Found(Ok(edge(5)))),
+            ("k7f2qx3m.box.Edge4", OnBase::Found(Ok(edge(4)))),
+        ]);
+        assert_eq!(
+            used(&card, "k7f2qx3m.box.Edge4", &dressing, &mended, "F").unwrap_err(),
+            STALE
+        );
+        assert_eq!(removed(&card, &dressing, &mended, "F").unwrap_err(), STALE);
+        let unstable = Error::new(ErrorCode::ReferenceBroken, "unstable");
+        let (refused, _) = reading(vec![
+            ("k7f2qx3m.box.Edge5", OnBase::Found(Err(unstable))),
+            ("k7f2qx3m.box.Edge4", OnBase::Found(Ok(edge(4)))),
+        ]);
+        assert!(used(&card, "k7f2qx3m.box.Edge4", &dressing, &refused, "F").is_ok());
+        assert!(removed(&card, &dressing, &refused, "F").is_ok());
+        // A long name, cut short in the card, is read as the edges hold it, in full.
+        let long = format!("k7f2qx3m.box.Edge5{}", "x".repeat(300));
+        let cut: String = long.chars().take(200).collect();
+        let long_dressing = Dressing {
+            edges: vec!["k7f2qx3m.box.Edge1".to_owned(), long.clone()],
+            ..dressing
+        };
+        let (read, asked) = reading(vec![]);
+        let _ = removed(&broken(1, &format!("{cut}…")), &long_dressing, &read, "F");
+        assert_eq!(*asked.lock().unwrap(), [long]);
     }
 
     #[test]
@@ -378,8 +494,14 @@ mod tests {
             "k7f2qx3m.box.Edge5",
             "k7f2qx3m.box.Edge9",
         ]);
-        let (edit, told) =
-            removed(&broken(1, "k7f2qx3m.box.Edge5"), &dressing, "Inside corner").unwrap();
+        let (read, _) = reading(vec![]);
+        let (edit, told) = removed(
+            &broken(1, "k7f2qx3m.box.Edge5"),
+            &dressing,
+            &read,
+            "Inside corner",
+        )
+        .unwrap();
         assert_eq!(edit.field, "edges");
         assert_eq!(
             edit.value,
@@ -391,7 +513,13 @@ mod tests {
         );
         let last = fillet(&["k7f2qx3m.box.Edge5"]);
         assert_eq!(
-            removed(&broken(0, "k7f2qx3m.box.Edge5"), &last, "Inside corner").unwrap_err(),
+            removed(
+                &broken(0, "k7f2qx3m.box.Edge5"),
+                &last,
+                &read,
+                "Inside corner"
+            )
+            .unwrap_err(),
             "Inside corner names no other edge, and a fillet names at least one: use a \
              candidate in its place, or suppress or delete Inside corner"
         );
@@ -403,6 +531,26 @@ mod tests {
             chamfer.removable("Bevel").unwrap_err(),
             "Bevel names no other edge, and a chamfer names at least one: use a candidate in \
              its place, or suppress or delete Bevel"
+        );
+    }
+
+    #[test]
+    fn what_a_repair_says_tells_how_its_taken_back_where_it_was_made() {
+        // On the document, Undo; in the feature's dialog, where Undo is off, its Cancel, and
+        // after its OK one Undo for all of the dialog's edits.
+        assert_eq!(
+            used_words("Edge break", true, Made::Document),
+            "Edge break now bevels the edge you picked. Undo puts the broken reference back."
+        );
+        assert_eq!(
+            used_words("Inside corner", false, Made::Dialog),
+            "Inside corner now rounds the edge you picked. Cancel puts the broken reference \
+             back, as Undo does once the dialog is OK'd."
+        );
+        assert_eq!(
+            removed_words("Inside corner", Made::Dialog),
+            "Inside corner no longer names the broken edge. Cancel puts the broken reference \
+             back, as Undo does once the dialog is OK'd."
         );
     }
 }

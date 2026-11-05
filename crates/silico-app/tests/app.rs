@@ -23821,18 +23821,20 @@ fn corner_alone() -> String {
     )
 }
 
-/// The upstream edit that breaks Inside corner's name: a pin of radius 30 swallows the
-/// block's Edge5, which the cut no longer keeps (its history says so: every other element
-/// of the block kept, by its own number; the pin's none; the cut's Edge5 made of nothing,
-/// so named by its number alone, unstable). The cut's shape is the block's, so it's meshed
-/// and described as the block is. With a narrower pin, the fake's own cut.
-fn swallowing_edge5(f: &Fixture) {
-    swallowing_edge5_meshed(f, false);
+/// [`swallowing`] the block's Edge5, each body meshed as a real 40 × 20 × 10 box if
+/// `real`.
+fn swallowing_edge5_meshed(f: &Fixture, real: bool) {
+    swallowing(f, &[5], real);
 }
 
-/// [`swallowing_edge5`], and, if `real`, each body meshed as a real 40 × 20 × 10 box, as
+/// The upstream edit that breaks Inside corner's names: a pin of radius 30 swallows each of
+/// the block's edges `swallowed` (Edge5, say), which the cut no longer keeps (its history
+/// says so: every other element of the block kept, by its own number; the pin's none; the
+/// cut's Edge5 made of nothing, so named by its number alone, unstable). The cut's shape
+/// is the block's, so it's meshed and described as the block is. With a narrower pin, the
+/// fake's own cut. If `real`, each body meshed as a real 40 × 20 × 10 box, as
 /// [`meshes_a_real_box`] meshes it (for a frame drawn on lavapipe).
-fn swallowing_edge5_meshed(f: &Fixture, real: bool) {
+fn swallowing(f: &Fixture, swallowed: &'static [u32], real: bool) {
     use silico_core::kernel::{
         BooleanOp, BuiltData, ElementCounts, ElementFate, History, InputHistory, Topology,
     };
@@ -23865,7 +23867,7 @@ fn swallowing_edge5_meshed(f: &Fixture, real: bool) {
             let none = |n: u32| vec![ElementFate::default(); n as usize];
             let edges = (1..=12)
                 .map(|n| {
-                    if n == 5 {
+                    if swallowed.contains(&n) {
                         ElementFate::default()
                     } else {
                         kept(n)
@@ -23909,8 +23911,8 @@ fn swallowing_edge5_meshed(f: &Fixture, real: bool) {
 }
 
 /// The pin made radius 30 through the tab (one undoable edit), and frames stepped until
-/// the model it publishes has Inside corner's error.
-fn pin_widened(f: &Fixture, h: &mut AppHarness) {
+/// the model it publishes has Inside corner's `errors` (one for each name broken).
+fn pin_widened(f: &Fixture, h: &mut AppHarness, errors: u64) {
     {
         let sessions = Arc::clone(&f.sessions);
         let tab = &mut h.state_mut().tabs_mut()[0];
@@ -23925,7 +23927,7 @@ fn pin_widened(f: &Fixture, h: &mut AppHarness) {
     }
     settled(h);
     step_until(h, "Inside corner broken", |h| {
-        h.state().tabs()[0].errors() == 1
+        h.state().tabs()[0].errors() == errors
     });
     meshes_settled(h);
 }
@@ -23945,12 +23947,21 @@ fn candidate_rows(h: &AppHarness, pane: &str) -> Vec<String> {
 /// [`CORNER`] (or `text`) open and drawn, Inside corner built; then its Edge5 broken by the
 /// pin widened, and Inside corner selected, its card read with its candidates.
 fn corner_broken(f: &Fixture, text: &str) -> (AppHarness, Record) {
-    swallowing_edge5(f);
+    corner_broken_swallowing(f, text, &[5])
+}
+
+/// [`corner_broken`], the pin widened swallowing each of the block's edges `swallowed`.
+fn corner_broken_swallowing(
+    f: &Fixture,
+    text: &str,
+    swallowed: &'static [u32],
+) -> (AppHarness, Record) {
+    swallowing(f, swallowed, false);
     let (mut h, record) = f.drawn("corner.silico", text);
     meshes_settled(&mut h);
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].errors(), 0, "Inside corner built");
-    pin_widened(f, &mut h);
+    pin_widened(f, &mut h, swallowed.len() as u64);
     select(&mut h, "Inside corner");
     step_until(&mut h, "its candidates", |h| {
         !candidate_rows(h, "Properties").is_empty()
@@ -24181,9 +24192,11 @@ fn the_fillets_own_dialog_shows_its_candidates_and_use_puts_one_in_its_box_in_th
         written(&f, &h, "Inside corner", "edges"),
         Some(plain(&format!(r#"["k7f2qx3m.box.Edge1", "{EDGE4}"]"#)))
     );
+    // In the dialog, Undo is off: its Cancel puts the broken name back, and after OK one
+    // Undo does.
     assert_eq!(
         status_said(&h, "Inside corner now").as_deref(),
-        Some("Inside corner now rounds the edge you picked. Undo puts the broken reference back.")
+        Some(IN_THE_DIALOG_USED)
     );
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -24212,12 +24225,17 @@ fn in_the_fillets_dialog_remove_the_edge_empties_its_box_and_ok_waits_for_an_edg
             .query_by_role_and_label(Role::Button, "Remove the edge")
             .is_some_and(|button| !button.accesskit_node().is_disabled())
     });
+    let sent = h.state().tabs()[0].sent.clone();
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Remove the edge")
         .click();
     boxed_until(&mut h, &[]);
     settled(&mut h);
     assert!(!ok_enabled(&h));
+    // The box emptied sends nothing (`edges` names at least one): nothing is said done.
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(h.state().tabs()[0].told, None);
+    assert_eq!(status_said(&h, "Inside corner no longer"), None);
     cancel_dialog(&mut h);
     assert_eq!(text_of(&f, &h), before);
     assert_eq!(never_waits::waits(), 0);
@@ -24255,6 +24273,193 @@ fn whats_wrong_lists_the_candidates_and_use_there_writes_one_and_leaves_it_open(
     // Open still, as `useCand` leaves it, listing the block's warning alone now.
     step_until(&mut h, "Inside corner's card gone", |h| {
         whats_wrong(h).is_some() && in_whats_wrong(h, "Feature: ") == ["Feature: Block k7f2qx3m"]
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// What the status bar says once a candidate is used in Inside corner's own dialog.
+const IN_THE_DIALOG_USED: &str = "Inside corner now rounds the edge you picked. Cancel puts \
+                                  the broken reference back, as Undo does once the dialog is \
+                                  OK'd.";
+
+#[test]
+fn use_in_the_fillets_dialog_then_cancel_puts_the_text_back_byte_for_byte() {
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    let before = text_of(&f, &h);
+    edit_from_the_timeline(&mut h, "Inside corner");
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]);
+    step_until(&mut h, "the candidates in the dialog", |h| {
+        dialog(h)
+            .query_by_role_and_label(Role::Button, &format!("Use {EDGE6}"))
+            .is_some()
+    });
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE6}"))
+        .click();
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge1", EDGE6]);
+    settled(&mut h);
+    // Sent as the dialog's edit, said done, and how it's taken back.
+    assert_eq!(
+        written(&f, &h, "Inside corner", "edges"),
+        Some(plain(&format!(r#"["k7f2qx3m.box.Edge1", "{EDGE6}"]"#)))
+    );
+    assert_eq!(
+        status_said(&h, "Inside corner now").as_deref(),
+        Some(IN_THE_DIALOG_USED)
+    );
+    cancel_dialog(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    step_until(&mut h, "broken again", |h| {
+        h.state().tabs()[0].errors() == 1
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn two_broken_edges_each_take_the_candidate_used_at_their_own_place() {
+    // The pin swallows the block's Edge5 and Edge7; Inside corner rounds Edge1, Edge5, and
+    // Edge7. Its card is its first error's, Edge5's at `edges.1`, whose candidates are the
+    // block's edges the cut keeps nearest by number, Edge4 and Edge6; once it's mended, the
+    // card is Edge7's at `edges.2`, nearest Edge6 and Edge8.
+    let f = fixture();
+    let three = CORNER.replace(
+        r#""edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]"#,
+        r#""edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5", "k7f2qx3m.box.Edge7"]"#,
+    );
+    let (mut h, _record) = corner_broken_swallowing(&f, &three, &[5, 7]);
+    let before = text_of(&f, &h);
+    assert_eq!(
+        h.state().tabs()[0]
+            .said
+            .get("f0000001")
+            .and_then(|said| said.parameter()),
+        Some("edges.1")
+    );
+    assert_eq!(
+        candidate_rows(&h, "Properties"),
+        [format!("Closest · {EDGE4}"), EDGE6.to_owned()]
+    );
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE4}"))
+        .click();
+    step(&mut h);
+    settled(&mut h);
+    let first = before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE4}""#));
+    assert_ne!(first, before);
+    assert_eq!(text_of(&f, &h), first);
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit("edges.1".to_owned()))
+    );
+    // Edge7's card next, read of the revision Use made.
+    const EDGE8: &str = "k7f2qx3m.box.Edge8";
+    step_until(&mut h, "Edge7's card", |h| {
+        h.state().tabs()[0]
+            .said
+            .get("f0000001")
+            .and_then(|said| said.parameter())
+            == Some("edges.2")
+            && candidate_rows(h, "Properties") == [format!("Closest · {EDGE6}"), EDGE8.to_owned()]
+    });
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE8}"))
+        .click();
+    step(&mut h);
+    settled(&mut h);
+    let second = first.replace(r#""k7f2qx3m.box.Edge7""#, &format!(r#""{EDGE8}""#));
+    assert_ne!(second, first);
+    assert_eq!(text_of(&f, &h), second);
+    assert_eq!(
+        written(&f, &h, "Inside corner", "edges"),
+        Some(plain(&format!(
+            r#"["k7f2qx3m.box.Edge1", "{EDGE4}", "{EDGE8}"]"#
+        )))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit("edges.2".to_owned()))
+    );
+    step_until(&mut h, "Inside corner built", |h| {
+        h.state().tabs()[0].errors() == 0 && !h.state().tabs()[0].applying()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn use_on_a_card_read_before_an_undo_mended_its_name_writes_nothing_and_says_why() {
+    // The card is the check's of the revision the pin widened made. Undo takes the pin
+    // back, so Edge5 is found again; the undo's model is published before the tab reads
+    // its timeline and check again (no frame is drawn till then: the reads held), so the
+    // card still offers Edge4. Use then writes nothing over the Edge5 that is whole again.
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    let id = h.state().tabs()[0].id;
+    step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
+    let card_read = h.state().tabs()[0].revision;
+    assert_eq!(
+        h.state().tabs()[0].timeline.as_ref().map(|t| t.revision),
+        Some(card_read)
+    );
+    // Undo, as Ctrl+Z sends it, sent with no frame drawn: a frame would read the timeline
+    // again as soon as the undo answers.
+    h.state_mut().tabs_mut()[0].step(&f.sessions, true);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let revision = f
+            .sessions
+            .status(&id)
+            .session
+            .map(|session| session.revision);
+        let published = f.sessions.published(&id).result.ok().map(|p| p.revision);
+        if revision.is_some_and(|revision| revision > card_read) && published == revision {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the undo's model never published"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mended = text_of(&f, &h);
+    assert_eq!(mended.matches(r#""k7f2qx3m.box.Edge5""#).count(), 1);
+    // The tab's card is the one read before the undo.
+    assert_eq!(
+        h.state().tabs()[0].timeline.as_ref().map(|t| t.revision),
+        Some(card_read)
+    );
+    let sent = h.state().tabs()[0].sent.clone();
+    // The click in one frame, the pointer's move, press, and release together: the frame
+    // that takes the undo's answer, before the next takes the timeline's.
+    let at = h
+        .get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE4}"))
+        .rect()
+        .center();
+    {
+        use eframe::egui::{Event, Modifiers, PointerButton};
+        let events = &mut h.input_mut().events;
+        events.push(Event::PointerMoved(at));
+        for pressed in [true, false] {
+            events.push(Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+    }
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].message.as_deref(),
+        Some("The model has changed since this card was read: try again once it has rebuilt")
+    );
+    assert_eq!(h.state().tabs()[0].told, None);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(text_of(&f, &h), mended);
+    step_until(&mut h, "Inside corner built", |h| {
+        h.state().tabs()[0].errors() == 0 && !h.state().tabs()[0].applying()
     });
     assert_eq!(never_waits::waits(), 0);
 }
@@ -24308,6 +24513,38 @@ fn on_lavapipe_a_hovered_candidate_lights_its_edge_beside_the_broken_fillets_car
             step_until(&mut h, "its candidates", |h| {
                 !candidate_rows(h, "Properties").is_empty()
             });
+            // Edge4, the block's front left edge (x = 0, y = 0, z from 0 to 10), seen by
+            // hand: the camera looks along d = target − eye = (60, 110, −45); its right is
+            // d × up = (110, −60, 0), of length √15700 = 125.300, and its up right × d =
+            // (2700, 4950, 15700), of length √278282500 = 16681.8. A point p is seen
+            // (p − target)·right / 125.300 mm right of the pane's centre and
+            // (p − target)·up / 16681.8 mm above it, the pane 50 mm high. Edge4's points less
+            // the target are (−20, −10, z − 5): −1600 / 125.300 = −12.769 mm right, and
+            // (−103500 + 15700 (z − 5)) / 16681.8 mm up, −8.557 at z = 2.5 to −3.851 at
+            // z = 7.5. So its middle half is seen 12.769 mm left of the centre, from 3.851 to
+            // 8.557 mm below it: a band 3 points either side of that line is searched for
+            // the candidates' orange (`#ff7a0c`).
+            let rect = the_viewport(&h);
+            let mm = rect.height() / 50.0;
+            let ppp = h.ctx.pixels_per_point();
+            let x = rect.center().x - 12.769 * mm;
+            let (top, bottom) = (rect.center().y + 3.851 * mm, rect.center().y + 8.557 * mm);
+            let orange = [0xff, 0x7a, 0x0c];
+            let lit = |pixel: &dyn Fn(u32, u32) -> [u8; 4]| -> usize {
+                let near = |rgba: [u8; 4]| (0..3).all(|c| rgba[c].abs_diff(orange[c]) <= 3);
+                let (x0, x1) = (((x - 3.0) * ppp) as u32, ((x + 3.0) * ppp) as u32);
+                let (y0, y1) = ((top * ppp) as u32, (bottom * ppp) as u32);
+                (y0..y1)
+                    .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+                    .filter(|&(x, y)| near(pixel(x, y)))
+                    .count()
+            };
+            let unlit = h.render().unwrap();
+            assert_eq!(
+                lit(&|x, y| unlit.get_pixel(x, y).0),
+                0,
+                "orange along Edge4 before any hover"
+            );
             let at = candidate_row(&h, &format!("Closest · {EDGE4}")).0.center();
             h.hover_at(at);
             let body = body_of(&h, "m3tq8v0z");
@@ -24317,9 +24554,16 @@ fn on_lavapipe_a_hovered_candidate_lights_its_edge_beside_the_broken_fillets_car
             for _ in 0..3 {
                 step(&mut h);
             }
+            let image = h.render().unwrap();
             if let Some(shot) = std::env::var_os("SILICO_APP_CANDIDATES_SHOT") {
-                h.render().unwrap().save(shot).unwrap();
+                image.save(shot).unwrap();
             }
+            // Down most of the band's 4.7 mm: lit along the edge, not at a point.
+            let along = lit(&|x, y| image.get_pixel(x, y).0);
+            assert!(
+                along as f32 >= 3.0 * mm * ppp,
+                "{along} orange pixels along Edge4, x {x}, y {top} to {bottom}"
+            );
             assert_eq!(never_waits::waits(), 0);
         },
     );

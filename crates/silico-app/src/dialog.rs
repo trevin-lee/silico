@@ -809,7 +809,9 @@ impl Dialog {
     /// Use, the name a store writes for it on the box's base) in its place, or, for none,
     /// the name let go (Remove the edge), as the box's own remove button lets one go, so the
     /// box may empty, its OK off until an edge is picked (SolidWorks' Fillet
-    /// PropertyManager, its missing references cleared). Whether the box held the name.
+    /// PropertyManager, its missing references cleared). The name is found at the broken
+    /// one's place in the box, if that holds it, and only otherwise by its name (two long
+    /// names may share the part an error gives of them). Whether the box held the name.
     pub fn repair(&mut self, broken: &crate::repair::Broken, stored: Option<String>) -> bool {
         let Some(names) = self
             .inputs
@@ -821,7 +823,13 @@ impl Dialog {
         else {
             return false;
         };
-        let Some(at) = names.names.iter().position(|name| broken.is(name)) else {
+        let at_place = names
+            .names
+            .get(broken.place)
+            .is_some_and(|name| broken.is(name))
+            .then_some(broken.place);
+        let Some(at) = at_place.or_else(|| names.names.iter().position(|name| broken.is(name)))
+        else {
             return false;
         };
         names.said = None;
@@ -1728,6 +1736,44 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn a_repair_acts_on_the_broken_names_place_where_two_long_names_share_what_its_error_gives() {
+        // Two names of more than 200 characters, alike in their first 200: the error gives
+        // the second's cut short there, so its words fit either. The second's place is
+        // mended, the first left as it is.
+        let read = |text: &str| json::read(text.as_bytes()).unwrap();
+        let prefix = format!("k7f2qx3m.box.Edge5{}", "x".repeat(200));
+        let (first, second) = (format!("{prefix}a"), format!("{prefix}b"));
+        let fillet = read(&format!(
+            r#"{{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["{first}", "{second}"], "radius": 2.5}}"#
+        ));
+        let broken = |place: usize| crate::repair::Broken {
+            feature: FeatureId::new("f0000001").unwrap(),
+            place,
+            name: format!("{}…", prefix.chars().take(200).collect::<String>()),
+            candidates: vec!["k7f2qx3m.box.Edge4".to_owned()],
+            read: silico_core::command::Revision::OPENED,
+        };
+        let id = FeatureId::new("f0000001").unwrap();
+        let mut used = Dialog::load(Kind::Fillet, id.clone(), &fillet, 1).unwrap();
+        assert!(used.repair(&broken(1), Some("k7f2qx3m.box.Edge4".to_owned())));
+        assert_eq!(
+            used.names().unwrap().names,
+            [first.clone(), "k7f2qx3m.box.Edge4".to_owned()]
+        );
+        let mut removed = Dialog::load(Kind::Fillet, id.clone(), &fillet, 1).unwrap();
+        assert!(removed.repair(&broken(1), None));
+        assert_eq!(removed.names().unwrap().names, std::slice::from_ref(&first));
+        assert_eq!(removed.take_unpicked(), std::slice::from_ref(&second));
+        // Its place holding another name (an edit since moved it): found by its name.
+        let mut moved = Dialog::load(Kind::Fillet, id, &fillet, 1).unwrap();
+        assert!(moved.repair(&broken(5), Some("k7f2qx3m.box.Edge4".to_owned())));
+        assert_eq!(
+            moved.names().unwrap().names,
+            ["k7f2qx3m.box.Edge4".to_owned(), second]
+        );
     }
 
     #[test]
