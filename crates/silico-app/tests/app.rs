@@ -23252,3 +23252,88 @@ fn an_export_form_opened_while_untitled_takes_a_relative_path_in_the_folder_of_i
     assert!(!f.dir.path().join("out.step").exists());
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- #379's mutants: Enter with Shift or Alt in sketch mode, and the canvas menu opened
+// by a right-click pressed away from where it's let go ----
+
+#[test]
+fn enter_with_shift_or_alt_held_in_sketch_mode_leaves_the_chain_under_way() {
+    use eframe::egui::Event;
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    h.key_press(Key::L);
+    step(&mut h);
+    // A chain's first click, at (60, 30), clear of the triangle: under way.
+    sketch_events(&f, &mut h, &clicked(60.0, 30.0));
+    assert!(sketch_mode(&h).unwrap().tools.busy());
+    // Enter with Shift, or with Alt, each held across its own frames as a window tells
+    // them: another key's, not the plain Enter that ends a chain (section 9, *Line*).
+    for held in [Modifiers::SHIFT, Modifiers::ALT] {
+        let enter = |pressed| Event::Key {
+            key: Key::Enter,
+            pressed,
+            modifiers: held,
+            repeat: false,
+            physical_key: None,
+        };
+        h.event(Event::ModifiersChanged(held));
+        step(&mut h);
+        h.event(enter(true));
+        step(&mut h);
+        h.event(enter(false));
+        step(&mut h);
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+        step(&mut h);
+        assert!(sketch_mode(&h).unwrap().tools.busy(), "{held:?}");
+    }
+    // Enter alone then ends it.
+    h.key_press(Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    assert!(!sketch_mode(&h).unwrap().tools.busy());
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_click_pressed_away_from_its_release_in_one_frame_opens_the_sketch_menu_and_leaves_it_open()
+ {
+    let f = fixture();
+    let (mut h, _) = f.overlaid(EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    top_view(&mut h);
+    let right = eframe::egui::PointerButton::Secondary;
+    let none = eframe::egui::Modifiers::NONE;
+    // Pressed 3 points up and left of where it's let go, within egui's click distance, and
+    // both in one frame: the click, handed on at its release, opens the menu there, so its
+    // press is off the menu; but it came before the menu was there, and closes nothing.
+    // (Put in the frame's input directly: the harness's queue gives a button's each event
+    // a frame of its own.)
+    let at = top_screen(&h, [30.0, 15.0]);
+    let from = at - eframe::egui::vec2(3.0, 3.0);
+    for (pos, pressed) in [(from, true), (at, false)] {
+        h.input_mut()
+            .events
+            .push(eframe::egui::Event::PointerMoved(pos));
+        h.input_mut()
+            .events
+            .push(eframe::egui::Event::PointerButton {
+                pos,
+                button: right,
+                pressed,
+                modifiers: none,
+            });
+    }
+    step(&mut h);
+    assert_eq!(sketch_mode(&h).unwrap().menu_at, Some(at));
+    assert!(sketch_menu(&h).is_some());
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(sketch_menu(&h).is_some());
+    assert_eq!(sketch_mode(&h).unwrap().menu_at, Some(at));
+    assert_eq!(never_waits::waits(), 0);
+}

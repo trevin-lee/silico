@@ -595,3 +595,20 @@ crates/silico-app/src/sketch/tools.rs | trim_event | replace - with / | #364
 # `past_end`'s press past an arc's end, `from > sweep` as `>=`: at `from == sweep` the
 # nearer end is its end, `sweep`, which `from` already is.
 crates/silico-app/src/sketch/tools.rs | past_end | replace > with >= | #364
+# The Sketch Palette's border, at each side (#379): `BORDER` is 1, so `2.0 / 1.0` is
+# `2.0 * 1.0`, in its width and in the height its body may take.
+crates/silico-app/src/sketch/bar.rs | palette | replace * with / | #379
+crates/silico-app/src/sketch/bar.rs | palette | replace * with / | #379
+# The canvas menu's opening frame (#379): `place < released` as `<=` adds only the place of
+# the last right release itself, and the arm it's in matches presses alone, never that
+# release.
+crates/silico-app/src/sketch/bar.rs | pressed_off_menu | replace < with <= | #379
+# A pixel's ray met with the sketch's plane (#379): `across == 0` makes `t` a division by
+# zero, never finite, so `across == 0 && !finite` is `across == 0`; and a non-finite `t`
+# with `across` not 0 makes every coordinate of the point met infinite or NaN, so the
+# place on the plane isn't finite, and `finite(at)` gives none, as the guard does.
+crates/silico-app/src/sketch/screen.rs | Placed::on_plane | replace || with && | #379
+# The sketch's coordinates held to 150 wide (#379): at a shortfall of exactly 0,
+# `add_space(0.0)` moves nothing; it only stretches the left parts' bounds to the gap past
+# the coordinates, which nothing draws or reads (the status bar's panel is its own size).
+crates/silico-app/src/status.rs | sketch_line | replace > with >= | #379

@@ -4718,3 +4718,110 @@ fn the_palette_says_how_the_tool_on_is_used_and_how_trim_trims_each_way() {
         "{said:?}"
     );
 }
+
+// ---- #379's mutants: the over-define prompt's key badges, against `.kbd` ----
+
+/// Every shape the over-define prompt paints once it has settled (its modal faded in, at
+/// the app's fonts), in the order painted, nested lists opened in place.
+fn offer_prompt_shapes(view: &dimension::OfferView) -> Vec<egui::Shape> {
+    fn open(shape: egui::Shape, into: &mut Vec<egui::Shape>) {
+        match shape {
+            egui::Shape::Vec(inner) => inner.into_iter().for_each(|shape| open(shape, into)),
+            shape => into.push(shape),
+        }
+    }
+    let ctx = egui::Context::default();
+    ctx.set_fonts(crate::theme::fonts());
+    let mut shapes = Vec::new();
+    for second in 0..5 {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(f64::from(second)),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            dimension::offer_prompt(ui.ctx(), view);
+        });
+        output.textures_delta.clear();
+        shapes.clear();
+        for clipped in output.shapes {
+            open(clipped.shape, &mut shapes);
+        }
+    }
+    shapes
+}
+
+#[test]
+fn the_over_define_prompts_key_badges_are_sized_and_placed_as_the_prototypes_kbd() {
+    use egui::epaint::{RectShape, TextShape};
+    // The prototype's `.kbd` (styles.css), `* { box-sizing: border-box }`: `min-width:
+    // 16px; padding: 0 4px; height: 16px; border-radius: 3px; background: var(--g250);
+    // border: 1px solid var(--g350); border-bottom-width: 2px; color: var(--g800);
+    // font-size: 10.5px; text-align: center`.
+    let g250 = egui::Color32::from_rgb(0x27, 0x26, 0x26);
+    let g350 = egui::Color32::from_rgb(0x52, 0x51, 0x51);
+    let g800 = egui::Color32::from_rgb(0xe0, 0xdf, 0xdf);
+    let view = dimension::OfferView {
+        sketch: "Sketch1".to_owned(),
+        value: Some("20 mm".to_owned()),
+        flagged: vec!["ka000002".to_owned()],
+    };
+    let shapes = offer_prompt_shapes(&view);
+    // Each badge: its border's colour under the whole of it, then its fill, then its key.
+    let badges: Vec<(&RectShape, &RectShape, &TextShape)> = shapes
+        .windows(3)
+        .filter_map(|three| match three {
+            [
+                egui::Shape::Rect(outer),
+                egui::Shape::Rect(inner),
+                egui::Shape::Text(key),
+            ] if outer.fill == g350 && inner.fill == g250 => Some((outer, inner, key)),
+            _ => None,
+        })
+        .collect();
+    let keys: Vec<&str> = badges.iter().map(|(_, _, key)| key.galley.text()).collect();
+    assert_eq!(keys, ["1", "2", "Esc"]);
+    let near = |a: f32, b: f32| (a - b).abs() <= egui::emath::GUI_ROUNDING;
+    for (outer, inner, key) in badges {
+        let words = key.galley.text();
+        let text = key.galley.size();
+        // Border-box: as wide as its text, 4 of padding and 1 of border each side, but no
+        // narrower than 16; 16 high.
+        let width = (text.x + 2.0 * 4.0 + 2.0 * 1.0).max(16.0);
+        // Esc's three letters are wider than 6, so its badge is its text's width, not the
+        // least.
+        if words == "Esc" {
+            assert!(text.x + 2.0 * 4.0 + 2.0 * 1.0 > 16.0, "{text:?}");
+        }
+        assert!(
+            near(outer.rect.width(), width),
+            "{words}: {outer:?}, {text:?}"
+        );
+        assert!(near(outer.rect.height(), 16.0), "{words}: {outer:?}");
+        assert_eq!(outer.corner_radius, egui::CornerRadius::same(3), "{words}");
+        // Inside the border: 1 in at the top and the sides, 2 at the foot, its corners the
+        // radius less the border.
+        let inside = egui::Rect::from_min_max(
+            outer.rect.min + vec2(1.0, 1.0),
+            outer.rect.max - vec2(1.0, 2.0),
+        );
+        assert!(
+            near(inner.rect.min.x, inside.min.x)
+                && near(inner.rect.min.y, inside.min.y)
+                && near(inner.rect.max.x, inside.max.x)
+                && near(inner.rect.max.y, inside.max.y),
+            "{words}: {inner:?} against {inside:?}"
+        );
+        assert_eq!(inner.corner_radius, egui::CornerRadius::same(2), "{words}");
+        // The key centred in what's inside the border, at 10.5, in Gray.800.
+        let centre = key.pos + text / 2.0;
+        assert!(
+            near(centre.x, inside.center().x) && near(centre.y, inside.center().y),
+            "{words}: {centre:?} against {:?}",
+            inside.center()
+        );
+        let section = &key.galley.job.sections[0];
+        assert_eq!(section.format.font_id.size, 10.5, "{words}");
+        assert_eq!(section.format.color, g800, "{words}");
+    }
+}
