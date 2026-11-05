@@ -4642,7 +4642,6 @@ fn asked_without_pause_through_many_commits_the_sessions_own_saves_never_read_as
 mod cancel_rebuild;
 mod disk_reload;
 mod drag;
-<<<<<<< HEAD
 mod rebuild_features;
 #[test]
 fn a_diff_cancelled_as_it_compares_a_feature_stops_there_and_answers_cancelled() {
