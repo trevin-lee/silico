@@ -10,8 +10,8 @@ use silico_core::ErrorCode;
 use silico_core::command::export::{Export, Exported};
 use silico_core::command::{
     Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, DiffAnswer, FieldSet,
-    ModelChoice, Moved, Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId,
-    Sessions, Status, Stepped, TextAnswer, TimelineAnswer,
+    ModelChoice, Moved, Problems, RebuildState, Replaced, Response, Revision, RolledBack, Running,
+    SessionId, Sessions, Status, Stepped, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
@@ -96,6 +96,17 @@ enum Queued {
     Closed {
         ok: bool,
     },
+    /// Restore (Fable's decision of 2026-11-04, section 2): the text of `revision`, the one
+    /// a reload replaced, read (`text` with `revision`), then put back as an edit.
+    Restore {
+        revision: Revision,
+    },
+    /// Restore's text read, put back: `begin` if no transaction is open, then `replace_text`
+    /// of it, an edit like any other.
+    Replace {
+        revision: Revision,
+        text: String,
+    },
 }
 
 /// A new sweep's body: not yet read, or read from the document at a revision (its tip,
@@ -129,6 +140,8 @@ pub enum Sent {
     Edit(String),
     /// `move_feature`, of the feature, before the feature (none: to the end).
     Move(FeatureId, Option<FeatureId>),
+    /// `replace_text`: Restore's edit.
+    Replace,
     Undo(Option<Revision>),
     Redo(Option<Revision>),
     Commit,
@@ -186,7 +199,9 @@ impl Edits {
                 | Queued::Add { .. }
                 | Queued::Opened
                 | Queued::Load { .. }
-                | Queued::Closed { .. } => break,
+                | Queued::Closed { .. }
+                | Queued::Restore { .. }
+                | Queued::Replace { .. } => break,
             }
         }
         self.queue.push_back(Queued::Edit(edit));
@@ -245,6 +260,17 @@ enum Under {
         feature: FeatureId,
         running: Running<TextAnswer>,
     },
+    /// Restore's read of the text of `revision`.
+    Restore {
+        revision: Revision,
+        running: Running<TextAnswer>,
+    },
+    /// Restore's edit, `replace_text` of `revision`'s text, as it was sent.
+    Replace {
+        revision: Revision,
+        sending: Sending,
+        running: Running<Replaced>,
+    },
 }
 
 /// The choice offered for a file changed on disk while edits are held (section 4).
@@ -259,12 +285,15 @@ pub enum DiskChoice {
 }
 
 /// A reload of the session's own (section 4): the revision the tab had, and the one the
-/// file read gave; and what changed between them, as `diff` answers (DESIGN.md, 6c).
+/// file read gave; what changed between them, as `diff` answers (DESIGN.md, 6c); and
+/// Restore's refusal, said, if it was refused (the revision no longer held, after another
+/// reload).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reloaded {
     pub from: Revision,
     pub to: Revision,
     pub changes: Changes,
+    pub refused: Option<String>,
 }
 
 /// A row of the browser (section 8, *The browser*): a feature, by its ID and name, with the
@@ -743,19 +772,22 @@ impl Tab {
             || (self.transaction && !self.quiet())
     }
 
-    /// Whether a move or a dialog's add is queued or running: each changes the document,
-    /// and may be under way before the transaction its `begin` opens is.
+    /// Whether a move, a dialog's add, or Restore's edit is queued or running: each changes
+    /// the document, and may be under way before the transaction its `begin` opens is.
+    /// Restore's read of the text it puts back changes nothing: until it answers, a file
+    /// changed on disk is no reason to offer to keep edits.
     fn changing(&self) -> bool {
-        self.edits
-            .queue
-            .iter()
-            .any(|queued| matches!(queued, Queued::Move { .. } | Queued::Add { .. }))
-            || self.under.iter().any(|under| {
-                matches!(
-                    under,
-                    Under::Move { .. } | Under::Add { .. } | Under::Base { .. }
-                )
-            })
+        self.edits.queue.iter().any(|queued| {
+            matches!(
+                queued,
+                Queued::Move { .. } | Queued::Add { .. } | Queued::Replace { .. }
+            )
+        }) || self.under.iter().any(|under| {
+            matches!(
+                under,
+                Under::Move { .. } | Under::Add { .. } | Under::Base { .. } | Under::Replace { .. }
+            )
+        })
     }
 
     /// Save As (`commit` with a path, docs/design/m5.0-app.md §4): once everything asked
@@ -822,6 +854,7 @@ impl Tab {
                         from: self.revision,
                         to: session.revision,
                         changes: Changes::Asking,
+                        refused: None,
                     })
                 };
                 // What changed, asked as the reload is seen, from the revision the tab had
@@ -967,6 +1000,50 @@ impl Tab {
                 }
                 Err(read) => self.reload_diff = Some(read),
             }
+        }
+    }
+
+    /// Restore (Fable's decision of 2026-11-04, section 2; DESIGN.md, 6c): the text of
+    /// `revision`, the one the reload replaced, read through `text`, then put back by
+    /// `replace_text`, inside the tab's transaction, begun first if none is open: an edit
+    /// like any other, which Undo takes back and Save writes. Sent once everything asked
+    /// before it has answered. Never while a dialog is open or the tab closes. A refusal
+    /// (the revision no longer held) is said in the reload's banner.
+    pub fn restore<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        revision: Revision,
+    ) {
+        if self.in_dialog() || self.closing() || self.restoring() {
+            return;
+        }
+        self.message = None;
+        if let Some(reloaded) = &mut self.reloaded {
+            reloaded.refused = None;
+        }
+        self.edits.queue.push_back(Queued::Restore { revision });
+        self.advance(sessions);
+    }
+
+    /// Whether a Restore is queued or running.
+    pub fn restoring(&self) -> bool {
+        self.edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::Restore { .. } | Queued::Replace { .. }))
+            || self
+                .under
+                .iter()
+                .any(|under| matches!(under, Under::Restore { .. } | Under::Replace { .. }))
+    }
+
+    /// Restore of `revision` refused: said in the banner of the reload that replaced it, if
+    /// it still shows, or else in the status bar.
+    fn restore_refused(&mut self, revision: Revision, problems: &Problems) {
+        let said = changes::refused(problems);
+        match &mut self.reloaded {
+            Some(reloaded) if reloaded.from == revision => reloaded.refused = Some(said),
+            _ => self.message = Some(said),
         }
     }
 
@@ -1229,6 +1306,53 @@ impl Tab {
                     running,
                 }),
             },
+            Under::Restore { revision, running } => match running.try_take() {
+                Ok(response) => {
+                    match response.result {
+                        // Put back next, before anything queued after it.
+                        Ok(answer) => self.edits.queue.push_front(Queued::Replace {
+                            revision,
+                            text: answer.text,
+                        }),
+                        Err(problems) => self.restore_refused(revision, &problems),
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Restore { revision, running }),
+            },
+            Under::Replace {
+                revision,
+                sending,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    match response.result {
+                        Ok(_) => {
+                            // The banner's done (the prototype's `undoReload`); the property
+                            // panel's field shows the document's value again.
+                            if self
+                                .reloaded
+                                .as_ref()
+                                .is_some_and(|reloaded| reloaded.from == revision)
+                            {
+                                self.reloaded = None;
+                            }
+                            if self.edits.idle() {
+                                self.resets += 1;
+                            }
+                        }
+                        Err(problems) => self.restore_refused(revision, &problems),
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Replace {
+                    revision,
+                    sending,
+                    running,
+                }),
+            },
             Under::Close(running) => match running.try_take() {
                 Ok(response) => {
                     match response.result {
@@ -1407,6 +1531,21 @@ impl Tab {
                         });
                     }
                 }
+                Queued::Restore { revision } => {
+                    let running = sessions.text_at(&self.id, None, Some(revision));
+                    self.under.push(Under::Restore { revision, running });
+                }
+                Queued::Replace { revision, text } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::Replace);
+                    let sending = self.sending();
+                    self.under.push(Under::Replace {
+                        revision,
+                        sending,
+                        running: sessions.replace_text(&self.id, self.revision, text),
+                    });
+                }
                 Queued::Closed { ok } => {
                     let Some(base) = self.dialog_base.take() else {
                         continue;
@@ -1526,6 +1665,8 @@ impl Tab {
                         | Under::Move { .. }
                         | Under::Add { .. }
                         | Under::Base { .. }
+                        | Under::Restore { .. }
+                        | Under::Replace { .. }
                 )
             })
     }

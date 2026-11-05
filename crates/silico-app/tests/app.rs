@@ -825,6 +825,12 @@ fn a_reload_lists_what_changed_by_feature_and_field_each_value_as_the_file_write
     }
     assert_eq!(h.query_all_by_label("5 → 3").count(), 1);
     assert_eq!(h.query_all_by_label(NOTE_CHANGE).count(), 1);
+    // Named by the revision it puts back, never "my version".
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Restore revision 1")
+            .is_some()
+    );
+    assert!(h.query_by_label_contains("my version").is_none());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -976,6 +982,111 @@ fn a_reload_lists_features_added_removed_and_moved_each_in_its_words() {
         marks.iter().all(|mark| shows(h, "Timeline", mark))
     });
     assert_eq!(outside_marks(&h, "Timeline"), 3);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A block, 40 × 20 × 10, in canonical form, with the fingerprint it rebuilds to on the
+/// fake kernel: volume 40 × 20 × 10 = 8000, area 2(800 + 400 + 200) = 2800, to z = 10.
+const BLOCK_10: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+
+/// The agent's change: the block 11 high, its fingerprint volume 40 × 20 × 11 = 8800, area
+/// 2(800 + 440 + 220) = 2920, to z = 11.
+const BLOCK_11: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 11,\n      \"fingerprint\": {\"volume\": 8800, \"area\": 2920, \"bbox\": [0, 0, 0, 40, 20, 11], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+
+/// Whether the session's transaction holds a document other than the one `begin` saw.
+fn changed(f: &Fixture, h: &AppHarness) -> bool {
+    let id = h.state().tabs()[0].id;
+    f.sessions
+        .status(&id)
+        .result
+        .unwrap()
+        .transaction
+        .is_some_and(|transaction| transaction.changed)
+}
+
+#[test]
+fn restore_puts_the_replaced_revision_back_as_an_edit_that_undo_takes_and_save_writes() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    std::fs::write(&path, BLOCK_11).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "height"));
+    assert!(!changed(&f, &h));
+    h.get_by_role_and_label(Role::Button, "Restore revision 1")
+        .click();
+    step_until(&mut h, "restored", |h| {
+        anywhere(h, "block.silico *") && h.state().tabs()[0].edits.idle()
+    });
+    // The text the reload replaced, byte for byte, as an edit inside a transaction begun
+    // for it: unsaved, the banner gone, the file still the agent's.
+    assert_eq!(text_of(&f, &h), BLOCK_10);
+    assert!(changed(&f, &h));
+    let sent = &h.state().tabs()[0].sent;
+    assert_eq!(&sent[sent.len() - 2..], [Sent::Begin, Sent::Replace]);
+    step_until(&mut h, "unsaved shown", |h| {
+        status_said(h, "Unsaved").as_deref() == Some("Unsaved")
+    });
+    assert!(!anywhere(
+        &h,
+        "Reloaded block.silico: another program changed it on disk"
+    ));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), BLOCK_11);
+    // Ctrl+Z: the reloaded text back, nothing changed from it.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step_until(&mut h, "undone", |h| text_of(&f, h) == BLOCK_11);
+    step_until(&mut h, "unchanged", |h| !changed(&f, h));
+    // Redone, then saved: the file is the restored bytes.
+    step_until(&mut h, "Redo on", |h| {
+        !h.get_by_role_and_label(Role::Button, "Redo")
+            .accesskit_node()
+            .is_disabled()
+    });
+    h.get_by_role_and_label(Role::Button, "Redo").click();
+    step_until(&mut h, "redone", |h| text_of(&f, h) == BLOCK_10);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "saved", |h| !anywhere(h, "block.silico *"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), BLOCK_10);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn restore_of_a_revision_no_longer_held_says_the_cores_refusal_and_its_candidates() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    std::fs::write(&path, BLOCK_11).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "height"));
+    let id = h.state().tabs()[0].id;
+    // The session's queue held, so the banner still offers revision 1, and the file written
+    // again: Restore's read of revision 1 reads the file first (as every command does,
+    // if its own reload hasn't), reloading it at revision 3.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let third = BLOCK_11.replace("\"height\": 11", "\"height\": 12");
+    std::fs::write(&path, &third).unwrap();
+    step_until(&mut h, "the change found", |h| {
+        disk(h) == Some(silico_core::disk::Disk::Changed)
+    });
+    h.get_by_role_and_label(Role::Button, "Restore revision 1")
+        .click();
+    step(&mut h);
+    hold.release();
+    let _ = check.wait();
+    // The core's refusal in the banner: revision 1 replaced by the second reload, the
+    // session holding 2 (what that reload replaced) and 3 (now).
+    let refused = format!(
+        "session {id} doesn't hold the text of revision 1: it holds revisions 2 and 3 \
+         (candidates: 2, 3)"
+    );
+    step_until(&mut h, "the refusal said", |h| anywhere(h, &refused));
+    assert!(anywhere(&h, RELOADED.replace("example", "block").as_str()));
+    // Nothing restored: the third text, no transaction, Restore off.
+    assert_eq!(text_of(&f, &h), third);
+    assert!(!h.state().tabs()[0].transaction);
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Restore revision 1")
+            .accesskit_node()
+            .is_disabled()
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 

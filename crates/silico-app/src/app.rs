@@ -1817,13 +1817,26 @@ impl<P: Clients + 'static> App<P> {
             reloaded.to.number()
         );
         // What changed (`.diff`), as the reload's diff answered: nothing while it's asked;
-        // its refusal, said.
-        let (rows, after): (&[crate::changes::Row], Option<&str>) = match &reloaded.changes {
+        // its refusal, said; and Restore's, if it was refused.
+        let (rows, more): (&[crate::changes::Row], Option<&str>) = match &reloaded.changes {
             Changes::Asking => (&[], None),
             Changes::Listed(listed) => (&listed.rows, listed.more.as_deref()),
             Changes::Refused(said) => (&[], Some(said.as_str())),
         };
-        let list = (!rows.is_empty() || after.is_some()).then_some(banner::List { rows, after });
+        let after = match (more, reloaded.refused.as_deref()) {
+            (Some(more), Some(refused)) => Some(format!("{more}\n{refused}")),
+            (more, refused) => refused.or(more).map(str::to_owned),
+        };
+        let list = (!rows.is_empty() || after.is_some()).then_some(banner::List {
+            rows,
+            after: after.as_deref(),
+        });
+        // Named by the revision it puts back (Fable's decision of 2026-11-04, section 2:
+        // never "my version", which may be another program's earlier save). Off while a
+        // dialog is open, the tab closes, a Restore is under way, or once it was refused.
+        let restore = format!("Restore revision {}", reloaded.from.number());
+        let on =
+            !tab.in_dialog() && !tab.closing() && !tab.restoring() && reloaded.refused.is_none();
         let clicked = banner::show(
             ui,
             canvas,
@@ -1836,12 +1849,17 @@ impl<P: Clients + 'static> App<P> {
                     (" until you look at them.", Style::Plain),
                 ],
                 list,
-                buttons: &[],
+                buttons: &[(&restore, on)],
                 dismiss: true,
             },
         );
-        if clicked == banner::Clicked::Dismiss {
-            tab.reloaded = None;
+        match clicked {
+            banner::Clicked::Dismiss => tab.reloaded = None,
+            banner::Clicked::Button(_) => {
+                tab.restore(&self.sessions, reloaded.from);
+                *started = true;
+            }
+            banner::Clicked::None => {}
         }
     }
 
