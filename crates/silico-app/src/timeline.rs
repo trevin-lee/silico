@@ -12,7 +12,8 @@
 //! is out of M5, DESIGN.md flags Onshape's as a proposal), the gear's timeline options (none
 //! exist), a click on the errors opening What's Wrong (not built yet), and the reverse of
 //! the hover linking, a face hovered outlining its feature here (`.hovered-from-canvas`):
-//! SEAM(M5.7), picking's, once it names the face under the pointer and its feature.
+//! SEAM, the outline's look, from `tab.selection().hovered_feature()` (M5.7: the feature
+//! that made what the pointer is over in the canvas).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -380,7 +381,7 @@ fn features<P: Clients + 'static>(
     }
     tab.view.linked = asked.hovered;
     if let Some(id) = asked.selected {
-        tab.selected = Some(id);
+        tab.selection_mut().select_feature(id);
     }
     if let Some((feature, before)) = asked.moved {
         tab.move_feature(sessions, feature, before);
@@ -492,7 +493,7 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
         rects.push(rect);
         let id = egui::Id::new(("timeline-item", entry.id.as_str()));
         let response = ui.interact(rect, id, Sense::click_and_drag());
-        let selected = tab.selected.as_ref() == Some(&entry.id);
+        let selected = tab.selection().has_feature(&entry.id);
         let description = format!("{} · {}", kind_words(entry.kind), step.words());
         response.widget_info(|| {
             WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, &entry.name)
@@ -528,6 +529,20 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
                 said.map(|said| said.message.as_str()),
                 MarkLook::Badge,
             );
+        } else if let Some(text) = tab.outside.get(&entry.id) {
+            // Changed by another program, with no health mark (`.badge.outside`).
+            let side = theme::TIMELINE_BADGE_OUTSIDE_SIZE;
+            let corner = pos2(
+                rect.right() - theme::TIMELINE_BADGE_INSET - side,
+                rect.top() + theme::TIMELINE_BADGE_INSET,
+            );
+            panes::outside_mark(
+                ui,
+                id.with("outside"),
+                Rect::from_min_size(corner, Vec2::splat(side)),
+                text,
+                Some(theme::TIMELINE_BADGE_RING),
+            );
         }
         if response.dragged() {
             dragged = Some(at);
@@ -555,6 +570,9 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
         let mut tip = description;
         if let Some(said) = said {
             tip = format!("{tip} — {}", said.message);
+        }
+        if let Some(text) = tab.outside.get(&entry.id) {
+            tip = format!("{tip} — changed on disk: {text}");
         }
         if editable {
             tip.push_str(". Double-click to edit.");
@@ -666,7 +684,7 @@ fn spinner(ui: &Ui, rect: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use silico_core::command::Progress;
+    use silico_core::command::{FeatureStates, Progress};
 
     fn entry(id: &str, kind: &'static str, inputs: &[&str], health: Health) -> Entry {
         Entry {
@@ -689,6 +707,7 @@ mod tests {
                 done: 0,
                 steps: 0,
                 running: running.map(str::to_owned),
+                features: FeatureStates::default(),
             }),
         }
     }
@@ -1398,9 +1417,50 @@ mod tests {
     }
 
     #[test]
+    fn a_feature_another_program_changed_has_the_purple_badge_where_it_has_no_health_mark() {
+        // `.tl-item .badge.outside`: `--purple` (#b780ff), 7 square, 1 in from the item's
+        // top right, in its `--g150` ring 1.5 outside it; labelled with what changed. A
+        // feature with a health mark shows that mark alone.
+        const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+        const OUTSIDE: f32 = 7.0;
+        let mut tab = tab_of(Some(&features()), 0);
+        for id in ["b0000001", "p0000001"] {
+            tab.outside
+                .insert(FeatureId::new(id).unwrap(), "height 10 → 11".to_owned());
+        }
+        let h = drawn(tab);
+        let block = item(0);
+        let centre = Pos2::new(
+            block.right() - css::BADGE_INSET - OUTSIDE / 2.0,
+            block.top() + css::BADGE_INSET + OUTSIDE / 2.0,
+        );
+        let drawn: Vec<(Pos2, f32, Color32)> = circles(&h, block)
+            .into_iter()
+            .map(|circle| (circle.center, circle.radius, circle.fill))
+            .collect();
+        assert_eq!(drawn.len(), 2, "the block's badge: {drawn:?}");
+        let ring = (OUTSIDE / 2.0 + css::BADGE_RING, css::G150);
+        let dot = (OUTSIDE / 2.0, PURPLE);
+        for (got, (radius, colour)) in drawn.iter().zip([ring, dot]) {
+            assert!(
+                near_pos(got.0, centre) && near(got.1, radius) && got.2 == colour,
+                "the block's badge: {drawn:?}, not {radius} at {centre:?} in {colour:?}"
+            );
+        }
+        let said = h.get_by_label("changed on disk: height 10 → 11").rect();
+        assert!(
+            near_pos(said.center(), centre) && near(said.width(), OUTSIDE),
+            "{said:?}"
+        );
+        // The failed pad: its error's badge only.
+        badge(&h, item(2), css::RED_FILL, "the pad");
+    }
+
+    #[test]
     fn the_items_are_drawn_as_tl_item_in_each_state() {
         let mut tab = tab_of(Some(&features()), 0);
-        tab.selected = Some(FeatureId::new("p0000001").unwrap());
+        tab.selection_mut()
+            .select_feature(FeatureId::new("p0000001").unwrap());
         let mut h = drawn(tab);
         // `:hover`: the block hovered.
         h.input_mut()
@@ -1489,6 +1549,7 @@ mod tests {
                     done: 2,
                     steps: 4,
                     running: Some("p0000001 pad".to_owned()),
+                    features: FeatureStates::default(),
                 }),
             },
         );

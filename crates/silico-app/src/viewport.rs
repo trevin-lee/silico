@@ -70,27 +70,128 @@ pub struct ViewBody {
     /// Whether the answer that gave it said the tab held its mesh (and so sent no arrays).
     pub held: bool,
     pub mesh: Arc<Mesh>,
-    /// Its faces and edges, in the mesh's order, each named (`Face1` is the first).
+    /// Its faces, edges, and vertices, in the mesh's order, each named (`Face1` is the
+    /// first).
     pub faces: Vec<MeshElement>,
     pub edges: Vec<MeshElement>,
+    pub vertices: Vec<MeshElement>,
 }
 
 impl ViewBody {
-    /// Whether `element` is one of its mesh's faces or edges.
+    /// Whether `element` is one of its mesh's faces, edges, or vertices.
     fn has(&self, element: Element) -> bool {
         let (number, count) = match element {
             Element::Face(n) => (n, self.mesh.face_triangles.len()),
             Element::Edge(n) => (n, self.mesh.edge_point_counts.len()),
+            Element::Vertex(n) => (n, self.mesh.vertex_points.len()),
         };
         usize::try_from(number).is_ok_and(|n| (1..=count).contains(&n))
     }
+
+    /// `element`'s name and stability, as the element map gives them (M5.7): its face
+    /// `Face(n)` is `faces[n - 1]`, its edge `Edge(n)` `edges[n - 1]`, its vertex
+    /// `Vertex(n)` `vertices[n - 1]`, the map numbering them from 1 in the mesh's order;
+    /// none for a number it hasn't.
+    pub fn name_of(&self, element: Element) -> Option<&MeshElement> {
+        let (number, named) = match element {
+            Element::Face(n) => (n, &self.faces),
+            Element::Edge(n) => (n, &self.edges),
+            Element::Vertex(n) => (n, &self.vertices),
+        };
+        let at = usize::try_from(number).ok()?.checked_sub(1)?;
+        named.get(at)
+    }
+
+    /// Vertex `n`'s point (from 1), as its mesh holds it; none for a number it hasn't.
+    fn vertex_point(&self, n: u32) -> Option<[f64; 3]> {
+        let at = usize::try_from(n).ok()?.checked_sub(1)?;
+        self.mesh.vertex_points.get(at).copied()
+    }
+}
+
+/// A vertex drawn over the bodies: its point, and whether it's selected (else hovered).
+type Dot = ([f64; 3], bool);
+
+/// The vertices of `highlights` (selected) and `hovered` among `bodies`, each with its
+/// point: the hovered first, so a selected one is drawn over it, as the prototype draws
+/// them (interact.js, `overlay`'s `dot`).
+fn vertex_dots(
+    bodies: &BTreeMap<u32, ViewBody>,
+    highlights: &[(u32, Element)],
+    hovered: &[(u32, Element)],
+) -> Vec<Dot> {
+    let point = |&(body, element): &(u32, Element)| match element {
+        Element::Vertex(n) => bodies.get(&body)?.vertex_point(n),
+        Element::Face(_) | Element::Edge(_) => None,
+    };
+    let hovered = hovered.iter().filter_map(point).map(|p| (p, false));
+    let selected = highlights.iter().filter_map(point).map(|p| (p, true));
+    hovered.chain(selected).collect()
+}
+
+/// Each of `dots` painted where the renderer draws its point ([`dots_at`]).
+fn paint_vertex_dots(
+    painter: &egui::Painter,
+    rect: Rect,
+    camera: &Camera,
+    size_px: [u32; 2],
+    ppp: f32,
+    dots: &[Dot],
+) {
+    for (at, selected) in dots_at(rect, camera, size_px, ppp, dots) {
+        paint_vertex(painter, at, selected);
+    }
+}
+
+/// Where each of `dots` is drawn, in points, in the viewport `rect`, `size_px` physical
+/// pixels at `ppp` a point, and whether it's selected: where the renderer draws its point
+/// ([`silico_render::render::project`], the renderer's own projection), so the dot sits on
+/// the disc that picks it. None for a point nearer a perspective eye than the renderer
+/// draws, or one whose place in points isn't finite. One far off the viewport is kept, for
+/// the painter to clip.
+fn dots_at(
+    rect: Rect,
+    camera: &Camera,
+    size_px: [u32; 2],
+    ppp: f32,
+    dots: &[Dot],
+) -> Vec<(Pos2, bool)> {
+    dots.iter()
+        .filter_map(|&(point, selected)| {
+            let [x, y] = silico_render::render::project(camera, size_px, point)?;
+            // Physical pixels from the viewport's corner, to points.
+            let at = rect.min + Vec2::new(x as f32, y as f32) / ppp;
+            (at.x.is_finite() && at.y.is_finite()).then_some((at, selected))
+        })
+        .collect()
+}
+
+/// A vertex's dot at `at`, in points: the prototype's (interact.js, `overlay`'s `dot`), a
+/// disc of [`theme::VIEWPORT_VERTEX_RADIUS`] in the selection's or the hover's colour,
+/// ringed in [`theme::VIEWPORT_VERTEX_RING_COLOR`]. The visuals the UI port replaces.
+fn paint_vertex(painter: &egui::Painter, at: Pos2, selected: bool) {
+    let fill = if selected {
+        theme::VIEWPORT_SELECTION_VERTEX
+    } else {
+        theme::VIEWPORT_HOVER_VERTEX
+    };
+    painter.circle(
+        at,
+        theme::VIEWPORT_VERTEX_RADIUS,
+        theme::color32(fill),
+        Stroke::new(
+            theme::VIEWPORT_VERTEX_RING,
+            theme::color32(theme::VIEWPORT_VERTEX_RING_COLOR),
+        ),
+    );
 }
 
 /// What the viewport is this frame, for what draws over it and picks in it (sketch mode,
 /// M5.7): the tab's session; where it is in the window, in points; the camera; the size in
 /// physical pixels; the display's scale; the pointer, in physical pixels from the
-/// viewport's top left, if it's over the viewport; and the left button's events and the
-/// right button's clicks the pane didn't take itself.
+/// viewport's top left, if it's over the viewport; the left button's events and the
+/// right button's clicks the pane didn't take itself; and the time, as the drawing's clock
+/// says it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewFrame {
     pub session: SessionId,
@@ -120,6 +221,9 @@ pub struct ViewFrame {
     /// A click's `seq` places it among the frame's left events: a slow frame's left click
     /// and the right click after it (the Line tool's click, then End chain) are told apart.
     pub secondary: Vec<SecondaryClick>,
+    /// When the frame was drawn, by the clock the viewport's reads wait on (a test's, moved
+    /// by hand, through [`crate::App::presenting_clocked`]).
+    pub now: Instant,
 }
 
 /// What a left-button event was. A Press begins a stream, which ends in exactly one Release
@@ -379,6 +483,13 @@ pub struct View {
     /// The elements drawn highlighted, set from outside (M5.7's selection): passed through,
     /// but for one of a body the frame doesn't draw, or that its mesh hasn't.
     pub highlights: BTreeSet<(u32, Element)>,
+    /// The elements drawn hovered (M5.7's pre-selection), set from outside, passed through
+    /// as `highlights` are.
+    pub hovered: BTreeSet<(u32, Element)>,
+    /// The radius, in points, within which a pick takes a vertex, if it takes vertices,
+    /// set from outside (the selection's filter, M5.7): the renderer's
+    /// [`crate::renderer::Frame::vertices`]. None picks none.
+    pub vertices: Option<f32>,
     /// The feature hovered in the timeline (DESIGN.md, *Hover linking*): the faces it made,
     /// as each face's name says ([`Name::feature`]), are highlighted with the selection's
     /// while it's hovered.
@@ -391,7 +502,14 @@ pub struct View {
     pub linked: Option<FeatureId>,
     picking: Option<PixelRect>,
     picked: Option<Picking>,
+    /// The serial of the newest frame that carried a pick of this view's: an answer to a
+    /// frame after it is to a pick asked since.
+    last_asked: Option<u64>,
     frame: Option<ViewFrame>,
+    /// The pane's height in pixels, as its last frame had it: an orthographic view's least
+    /// is the renderer's at that height (`views::least_view_height`). 1 before the first
+    /// frame, so a camera clamped then takes the 1-row floor until that frame re-clamps it.
+    rows: u32,
     /// A view a shortcut asked for (F6, Home, Ctrl+1 to Ctrl+7: `crate::shortcuts`), given
     /// at the pane's next navigation, which knows the canvas's size.
     asked: Option<ViewAsk>,
@@ -434,10 +552,14 @@ impl Default for View {
             drag: None,
             tool: None,
             highlights: BTreeSet::new(),
+            hovered: BTreeSet::new(),
+            vertices: None,
             linked: None,
             picking: None,
             picked: None,
+            last_asked: None,
             frame: None,
+            rows: 1,
             asked: None,
             published: 0,
             read_published: 0,
@@ -560,6 +682,18 @@ impl View {
         self.model
     }
 
+    /// Which published model the bodies were read from, once a read has answered: the
+    /// tab's count of published models when it was asked, and the revision it read. What
+    /// the selection names a pick from and draws its highlights on only when it's the
+    /// model the selection is read against (M5.7): a pick of these bodies named, or an
+    /// element's number drawn on them, as another model has it would be another element.
+    /// A read asked under one count and answered from a model published since gives that
+    /// model's revision beside the older count: it matches no model the tab holds, and is
+    /// read again.
+    pub fn bodies_of(&self) -> Option<(u64, Revision)> {
+        self.model.map(|revision| (self.read_published, revision))
+    }
+
     /// How many `meshes` reads the tab has started.
     pub fn reads(&self) -> u64 {
         self.reads
@@ -568,6 +702,22 @@ impl View {
     /// Whether a `meshes` read is in flight.
     pub fn reading(&self) -> bool {
         self.reading.is_some()
+    }
+
+    /// Whether the meshes of `revision` are neither being read nor coming by themselves: no
+    /// read is in flight, and the last of that revision was refused, for what it asked (not
+    /// asked again until the view differs) or for the moment (asked again only after a
+    /// delay, and maybe refused again). What waits for them (M5.7's click) waits in vain.
+    pub fn refused_of(&self, revision: Revision) -> bool {
+        self.reading.is_none()
+            && (self
+                .refused
+                .as_ref()
+                .is_some_and(|refused| refused.revision == revision)
+                || self
+                    .retry
+                    .as_ref()
+                    .is_some_and(|retry| retry.asked.revision == revision))
     }
 
     /// Whether the view is perspective.
@@ -594,10 +744,46 @@ impl View {
         takes
     }
 
+    /// The pick asked for the next frame, if one is (M5.7: the box select's press, which
+    /// asks its own only in place of the hover's).
+    pub fn asking(&self) -> Option<PixelRect> {
+        self.picking
+    }
+
     /// The answer to the last pick asked, once it has come, if it's of the bodies the tab
     /// holds now.
     pub fn picked(&self) -> Option<Picking> {
         self.picked
+    }
+
+    /// The serial of the newest frame that carried one of its picks ([`Picking::frame`]
+    /// answers it), if one has: what asks a pick again (M5.7's click, whose request a
+    /// discarded egui pass consumes without painting) tells its own answers by, those to a
+    /// frame after the newest before it asked.
+    pub fn last_asked(&self) -> Option<u64> {
+        self.last_asked
+    }
+
+    /// Whether a drag navigates the view (the middle button's, a navigation tool's, the
+    /// ViewCube's): the hover isn't asked meanwhile.
+    pub fn navigating(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// Which bodies table it holds: one more each time the table is made again (a new
+    /// read's bodies), so what's worked out from the bodies is worked out again.
+    pub fn table(&self) -> u64 {
+        self.generation
+    }
+
+    /// As if bodies read from `of` had come, and the answer to the pick of frame `picking`
+    /// had: a selection's unit tests' view.
+    #[cfg(test)]
+    pub(crate) fn answered_as(&mut self, of: (u64, Revision), picking: Picking) {
+        self.read_published = of.0;
+        self.model = Some(of.1);
+        self.last_asked = Some(picking.frame);
+        self.picked = Some(picking);
     }
 
     /// The read in flight polled: its answer taken if it has come.
@@ -729,6 +915,7 @@ impl View {
                     mesh,
                     faces: body.faces,
                     edges: body.edges,
+                    vertices: body.vertices,
                 },
             );
         }
@@ -736,7 +923,7 @@ impl View {
         self.generation = self.generation.wrapping_add(1);
         // A view zoomed in before these bodies came (or as close as smaller ones allowed)
         // raised to the least they allow, so every control can move it on.
-        self.camera = navigate::clamped(self.camera.clone(), self.drawn_boxes());
+        self.camera = navigate::clamped(self.camera.clone(), self.rows, self.drawn_boxes());
     }
 
     /// Every body's box.
@@ -867,7 +1054,7 @@ impl View {
         let Some(camera) = camera else {
             return false;
         };
-        self.camera = navigate::clamped(camera, self.drawn_boxes());
+        self.camera = navigate::clamped(camera, self.rows, self.drawn_boxes());
         self.placed = true;
         true
     }
@@ -878,10 +1065,12 @@ impl View {
     fn zoom(&mut self, scroll: f64, cursor: [f64; 2], height: f64) {
         let mut scroll = scroll;
         if let Projection::Orthographic { view_height } = self.camera.projection {
-            let least = silico_core::views::least_view_height(silico_core::views::reach(
-                self.camera.target,
-                self.drawn_boxes(),
-            ));
+            // The last frame's rows, not `height` (points): for the one frame after a resize
+            // the floor is the old pane's, and the next frame's clamp raises it.
+            let least = silico_core::views::least_view_height(
+                self.rows,
+                silico_core::views::reach(self.camera.target, self.drawn_boxes()),
+            );
             // The most it may zoom in: to the least, at 200 points an octave.
             let most = -navigate::ZOOM_POINTS_PER_OCTAVE * libm::log2(least / view_height);
             if scroll > 0.0 && least > 0.0 {
@@ -1331,6 +1520,13 @@ impl Drawing {
         }
     }
 
+    /// Whether the renderer refused the last frame backing off ([`Present::backing_off`]).
+    fn backing_off(&mut self) -> bool {
+        self.present
+            .as_mut()
+            .is_some_and(|present| present.backing_off())
+    }
+
     /// The changes that make the renderer hold `bodies` of session `session`'s tab (none for
     /// no tab): a body uploaded when its key or its deflection differs from what was
     /// uploaded for it, or it's another tab's; a body not among them forgotten. So each body
@@ -1477,7 +1673,12 @@ pub fn show<P: Clients + 'static>(
     if now_hidden != view.hidden {
         view.hidden = now_hidden;
         // A body shown again may reach farther than the view's least allowed.
-        view.camera = navigate::clamped(view.camera.clone(), view.drawn_boxes());
+        view.camera = navigate::clamped(view.camera.clone(), view.rows, view.drawn_boxes());
+    }
+    if size_px[1].max(1) != view.rows {
+        // A taller pane's least is more: the view raised to it.
+        view.rows = size_px[1].max(1);
+        view.camera = navigate::clamped(view.camera.clone(), view.rows, view.drawn_boxes());
     }
     view.poll(now);
     match view.notice.take() {
@@ -1495,6 +1696,11 @@ pub fn show<P: Clients + 'static>(
         view.picked = Some(picking);
     }
     drawing.take_refused();
+    if drawing.backing_off() {
+        // The renderer counts its backoff in frames: asked for at once, it lasts a second
+        // at most, not 64 idle frames.
+        ui.ctx().request_repaint();
+    }
     view.navigate(ui, &response, size_px);
     let left = view.left_events(
         &mut drawing.left,
@@ -1547,6 +1753,7 @@ pub fn show<P: Clients + 'static>(
         pointer_px,
         left,
         secondary,
+        now,
     });
     // Ascending, each once, as the renderer takes them: the table's order.
     let bodies: Vec<u32> = view
@@ -1558,24 +1765,32 @@ pub fn show<P: Clients + 'static>(
     // A highlight of a body not drawn, or of an element its mesh hasn't, would have the
     // renderer refuse the whole frame.
     let linked = view.linked_faces();
-    let highlights = view
+    let drawn = |(number, element): &(u32, Element)| {
+        bodies.binary_search(number).is_ok()
+            && view
+                .bodies
+                .get(number)
+                .is_some_and(|body| body.has(*element))
+    };
+    let highlights: Vec<(u32, Element)> = view
         .highlights
         .iter()
         .copied()
         .chain(linked)
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .filter(|(number, element)| {
-            bodies.binary_search(number).is_ok()
-                && view
-                    .bodies
-                    .get(number)
-                    .is_some_and(|body| body.has(*element))
-        })
+        .filter(drawn)
         .collect();
+    let hovered: Vec<(u32, Element)> = view.hovered.iter().copied().filter(drawn).collect();
+    // The vertices among them, drawn over the bodies by the pane (the renderer draws none).
+    let dots = vertex_dots(&view.bodies, &highlights, &hovered);
     let picking = view.picking.take();
     let serial = match picking {
-        Some(_) => drawing.asked(tab.id, view.generation),
+        Some(_) => {
+            let serial = drawing.asked(tab.id, view.generation);
+            view.last_asked = Some(serial);
+            serial
+        }
         None => drawing.frames,
     };
     let frame = FrameData {
@@ -1585,9 +1800,20 @@ pub fn show<P: Clients + 'static>(
         pixels_per_point: ppp,
         bodies,
         highlights,
+        hovered,
+        outlines: crate::selection::outlines(),
         picking,
+        vertices: view.vertices,
     };
     drawing.present(ui.painter(), rect, changes, Some(frame));
+    paint_vertex_dots(
+        &ui.painter_at(rect),
+        rect,
+        &view.camera,
+        size_px,
+        ppp,
+        &dots,
+    );
     if drawing.picking() {
         // An idle egui draws no frame, and its answer is taken only in one.
         ui.ctx().request_repaint();
@@ -1929,9 +2155,11 @@ mod tests {
                 valid: None,
                 edge_points: Vec::new(),
                 edge_point_counts: Vec::new(),
+                vertex_points: vec![],
             }),
             faces: Vec::new(),
             edges: Vec::new(),
+            vertices: Vec::new(),
         }
     }
 
@@ -2019,6 +2247,7 @@ mod tests {
             placed: true,
             bodies: bodies.iter().cloned().collect(),
             model: Revision::from_number(model),
+            rows: 400,
             ..View::default()
         }
     }
@@ -2128,6 +2357,7 @@ mod tests {
             mesh,
             faces: Vec::new(),
             edges: Vec::new(),
+            vertices: Vec::new(),
         }
     }
 
@@ -2411,6 +2641,7 @@ mod tests {
                 size: [3, 3],
             },
             hit: None,
+            edge: None,
         }
     }
 
@@ -2527,10 +2758,14 @@ mod tests {
 
     #[test]
     fn a_view_under_the_least_a_new_table_allows_is_raised_to_it() {
-        // Zoomed to 1e-5 mm onto (20, 10, 5) before any body came: the cut's box (0, 0, −1)
-        // to (40, 20, 11) reaches √(20² + 10² + 6²) = 23.152 mm from there, so the least is
-        // 23.152 · 1e-5 · 1.01 = 2.3384e-4 mm, which the view is raised to.
-        let mut view = View::default();
+        // Zoomed to 1e-5 mm onto (20, 10, 5) before any body came, in a pane 400 pixels
+        // high: the cut's box (0, 0, −1) to (40, 20, 11) reaches √(20² + 10² + 6²) = 23.152 mm
+        // from there, so the least is 400 · 23.152 / 2^19 · 1.01 = 0.017838 mm, which the
+        // view is raised to.
+        let mut view = View {
+            rows: 400,
+            ..View::default()
+        };
         view.set_camera(front(1e-5));
         view.take_bodies(vec![meshed(
             1,
@@ -2538,7 +2773,7 @@ mod tests {
             0.03125,
             Some(Arc::clone(&body(0.03125, [0.03125, 0.0625], CUT).mesh)),
         )]);
-        let least = 536f64.sqrt() * 1e-5 * 1.01;
+        let least = 536f64.sqrt() * 400.0 / 524_288.0 * 1.01;
         let Projection::Orthographic { view_height } = view.camera.projection else {
             panic!("orthographic")
         };
@@ -2562,6 +2797,57 @@ mod tests {
     }
 
     #[test]
+    fn a_new_bodies_table_has_the_selections_highlights_worked_out_again() {
+        // Body m3tq8v0z, two faces, selected by its row: both its faces lit, as body 1. A
+        // read's answer then numbers it 2 (a body before it, new): the table is made again,
+        // and the same selection lights body 2's faces, not body 1's.
+        use silico_core::naming::{Name, PrimitiveKind, TypeWord};
+        use silico_protocol::{ElementKind, ElementRef};
+        let id = FeatureId::new("m3tq8v0z").unwrap();
+        let faces: Vec<MeshElement> = (1..=2)
+            .map(|index| MeshElement {
+                name: Arc::new(Name::Element {
+                    feature: id.clone(),
+                    made: TypeWord::Primitive(PrimitiveKind::Box),
+                    element: ElementRef {
+                        kind: ElementKind::Face,
+                        index,
+                    },
+                }),
+                stable: true,
+                count: None,
+            })
+            .collect();
+        let mut first = body(0.03125, [0.03125, 0.0625], CUT);
+        first.faces = faces.clone();
+        let mut view = view_with(&[(1, first)], 3);
+        let mut selection = crate::selection::Selection::default();
+        selection.select_feature(id);
+        let frame = ViewFrame {
+            session: SessionId::parse("s1").unwrap(),
+            rect: Rect::from_min_size(Pos2::ZERO, egui::vec2(100.0, 100.0)),
+            camera: front(80.0),
+            size_px: [100, 100],
+            pixels_per_point: 1.0,
+            pointer_px: None,
+            left: Vec::new(),
+            secondary: Vec::new(),
+            now: now(),
+        };
+        let ctx = egui::Context::default();
+        selection.overlay(&mut view, &frame, &ctx);
+        let lit = |body: u32| BTreeSet::from([(body, Element::Face(1)), (body, Element::Face(2))]);
+        assert_eq!(view.highlights, lit(1));
+        let mesh = Arc::clone(&view.bodies[&1].mesh);
+        view.take_bodies(vec![MeshedBody {
+            faces,
+            ..meshed(2, 1, 0.03125, Some(mesh))
+        }]);
+        selection.overlay(&mut view, &frame, &ctx);
+        assert_eq!(view.highlights, lit(2));
+    }
+
+    #[test]
     fn a_highlight_is_of_an_element_the_bodys_mesh_has() {
         let mut held = body(0.03125, [0.03125, 0.0625], CUT);
         held.mesh = Arc::new(Mesh {
@@ -2572,6 +2858,225 @@ mod tests {
         assert!(held.has(Element::Face(1)) && held.has(Element::Face(2)));
         assert!(!held.has(Element::Face(0)) && !held.has(Element::Face(3)));
         assert!(held.has(Element::Edge(3)) && !held.has(Element::Edge(4)));
+        // A vertex by its point's number: two points, Vertex1 and Vertex2.
+        held.mesh = Arc::new(Mesh {
+            vertex_points: vec![[0.0; 3], [1.0; 3]],
+            ..(*held.mesh).clone()
+        });
+        assert!(held.has(Element::Vertex(1)) && held.has(Element::Vertex(2)));
+        assert!(!held.has(Element::Vertex(0)) && !held.has(Element::Vertex(3)));
+        assert!(!held.has(Element::Vertex(u32::MAX)));
+        assert_eq!(held.vertex_point(2), Some([1.0; 3]));
+        assert_eq!(held.vertex_point(0), None);
+        assert_eq!(held.vertex_point(3), None);
+    }
+
+    #[test]
+    fn a_vertex_is_named_by_its_place_among_the_bodys_vertices() {
+        use silico_core::naming::{Name, PrimitiveKind, TypeWord};
+        use silico_protocol::{ElementKind, ElementRef};
+        let element = |kind, index| MeshElement {
+            name: Arc::new(Name::Element {
+                feature: FeatureId::new("m3tq8v0z").unwrap(),
+                made: TypeWord::Primitive(PrimitiveKind::Box),
+                element: ElementRef { kind, index },
+            }),
+            stable: true,
+            count: None,
+        };
+        let mut body = body(0.03125, [0.03125, 0.0625], CUT);
+        body.faces = vec![element(ElementKind::Face, 1)];
+        body.edges = vec![element(ElementKind::Edge, 1)];
+        body.vertices = vec![
+            element(ElementKind::Vertex, 1),
+            element(ElementKind::Vertex, 2),
+        ];
+        let named = |e: Element| body.name_of(e).map(|m| m.name.to_string());
+        assert_eq!(
+            named(Element::Vertex(2)).as_deref(),
+            Some("m3tq8v0z.box.Vertex2")
+        );
+        assert_eq!(
+            named(Element::Vertex(1)).as_deref(),
+            Some("m3tq8v0z.box.Vertex1")
+        );
+        // Each kind its own list: Vertex1 isn't Face1 or Edge1.
+        assert_eq!(
+            named(Element::Face(1)).as_deref(),
+            Some("m3tq8v0z.box.Face1")
+        );
+        assert_eq!(
+            named(Element::Edge(1)).as_deref(),
+            Some("m3tq8v0z.box.Edge1")
+        );
+        for missing in [0, 3, u32::MAX] {
+            assert_eq!(named(Element::Vertex(missing)), None, "{missing}");
+        }
+    }
+
+    /// The corner's view (M5.7 part 3, §4): orthographic about (10, 10, 10) from along
+    /// (1, 1, 1), z up, 80 mm high.
+    fn corner_camera(projection: Projection) -> Camera {
+        Camera {
+            projection,
+            eye: [110.0, 110.0, 110.0],
+            target: [10.0, 10.0, 10.0],
+            up: [0.0, 0.0, 1.0],
+        }
+    }
+
+    #[test]
+    fn a_vertexs_dot_sits_where_the_renderer_draws_its_point_and_none_nearer_the_eye_than_that() {
+        // A viewport 400 points square from (10, 20), at two pixels a point: 800 pixels. The
+        // corner (20, 0, 20) lands at pixel (400 − 200/√2, 400 − 200/√6), by hand, so at
+        // (10 + 129.289, 20 + 159.175) points.
+        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::splat(400.0));
+        let camera = corner_camera(Projection::Orthographic { view_height: 80.0 });
+        let corner = [20.0, 0.0, 20.0];
+        let target = [10.0, 10.0, 10.0];
+        let got = dots_at(
+            rect,
+            &camera,
+            [800, 800],
+            2.0,
+            &[(corner, false), (target, true)],
+        );
+        let want = [
+            (
+                10.0 + (400.0 - 200.0 / 2f64.sqrt()) / 2.0,
+                20.0 + (400.0 - 200.0 / 6f64.sqrt()) / 2.0,
+                false,
+            ),
+            (210.0, 220.0, true),
+        ];
+        assert_eq!(got.len(), 2);
+        for ((at, selected), (x, y, want_selected)) in got.iter().zip(want) {
+            assert!(
+                (f64::from(at.x) - x).abs() < 1e-3 && (f64::from(at.y) - y).abs() < 1e-3,
+                "{at:?} against ({x}, {y})"
+            );
+            assert_eq!(*selected, want_selected);
+        }
+        // In perspective, a point nearer the eye than the renderer draws (0.75 nm along the
+        // view, under its 1 nm) has no dot, as it has no disc; 2 nm, it has.
+        let u = [1.0, -1.0, 1.0].map(|c: f64| c / 3f64.sqrt());
+        let looking = |off: f64| Camera {
+            projection: Projection::Perspective {
+                field_of_view: 60.0,
+            },
+            eye: std::array::from_fn(|k| corner[k] + u[k] * off),
+            target: std::array::from_fn(|k| corner[k] - u[k]),
+            up: [0.0, 0.0, 1.0],
+        };
+        let near = looking(0.75 * silico_protocol::MIN_EYE_DISTANCE);
+        assert!(dots_at(rect, &near, [800, 800], 2.0, &[(corner, true)]).is_empty());
+        let far = looking(2.0 * silico_protocol::MIN_EYE_DISTANCE);
+        let got = dots_at(rect, &far, [800, 800], 2.0, &[(corner, true)]);
+        assert_eq!(got.len(), 1);
+        assert!(
+            (got[0].0 - Pos2::new(210.0, 220.0)).length() < 1e-3,
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_dot_whose_place_in_points_overflows_on_either_side_has_none() {
+        // The corner camera's right is (−1, 1, 0)/√2 and its up (−1, −1, 2)/√6, at 10 pixels
+        // a mm: a point 10³⁸ mm along either from the target lands 10³⁹ pixels out on that
+        // side alone, past f32's 3.4 × 10³⁸ in points (at two pixels a point, 5 × 10³⁸);
+        // its other side is the centre, finite. Neither has a dot.
+        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::splat(400.0));
+        let camera = corner_camera(Projection::Orthographic { view_height: 80.0 });
+        let far = 1e38;
+        let right = [10.0 - far / 2f64.sqrt(), 10.0 + far / 2f64.sqrt(), 10.0];
+        let up = [
+            10.0 - far / 6f64.sqrt(),
+            10.0 - far / 6f64.sqrt(),
+            10.0 + 2.0 * far / 6f64.sqrt(),
+        ];
+        for point in [right, up] {
+            let pixel = silico_render::render::project(&camera, [800, 800], point).unwrap();
+            assert!(pixel.iter().all(|c| c.is_finite()), "{pixel:?}");
+            assert!(pixel.iter().any(|c| c.abs() > 1e39 * 0.99), "{pixel:?}");
+            assert!(dots_at(rect, &camera, [800, 800], 2.0, &[(point, true)]).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_hovered_dot_is_white_and_a_selected_one_blue_each_4_5_points_ringed_in_black() {
+        // The prototype's (DESIGN.md's *Viewport*, interact.js `overlay`'s `dot`): radius
+        // 4.5 points, a 1-point #000 ring, hover #ffffff, selected #4676ff; at the corner's
+        // place in points (by hand, above) and the target's, the viewport's centre.
+        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::splat(400.0));
+        let camera = corner_camera(Projection::Orthographic { view_height: 80.0 });
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            paint_vertex_dots(
+                ui.painter(),
+                rect,
+                &camera,
+                [800, 800],
+                2.0,
+                &[([20.0, 0.0, 20.0], false), ([10.0, 10.0, 10.0], true)],
+            );
+        });
+        output.textures_delta.clear();
+        let circles: Vec<_> = output
+            .shapes
+            .into_iter()
+            .filter_map(|clipped| match clipped.shape {
+                egui::Shape::Circle(circle) => Some(circle),
+                _ => None,
+            })
+            .collect();
+        let corner = Pos2::new(
+            (10.0 + (400.0 - 200.0 / 2f64.sqrt()) / 2.0) as f32,
+            (20.0 + (400.0 - 200.0 / 6f64.sqrt()) / 2.0) as f32,
+        );
+        let want = [
+            (corner, egui::Color32::from_rgb(0xff, 0xff, 0xff)),
+            (
+                Pos2::new(210.0, 220.0),
+                egui::Color32::from_rgb(0x46, 0x76, 0xff),
+            ),
+        ];
+        assert_eq!(circles.len(), 2, "{circles:?}");
+        for (circle, (at, fill)) in circles.iter().zip(want) {
+            assert!((circle.center - at).length() < 1e-3, "{circle:?}");
+            assert_eq!((circle.radius, circle.fill), (4.5, fill));
+            assert_eq!(circle.stroke, Stroke::new(1.0, egui::Color32::BLACK));
+        }
+    }
+
+    #[test]
+    fn the_dots_are_the_hovered_vertex_then_the_selected_ones_of_bodies_held() {
+        let mut held = body(0.03125, [0.03125, 0.0625], CUT);
+        held.mesh = Arc::new(Mesh {
+            vertex_points: vec![[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+            ..(*held.mesh).clone()
+        });
+        let bodies = BTreeMap::from([(1, held)]);
+        let dots = vertex_dots(
+            &bodies,
+            &[
+                (1, Element::Vertex(3)),
+                (1, Element::Face(1)),
+                (2, Element::Vertex(1)),
+                (1, Element::Vertex(4)),
+                (1, Element::Vertex(1)),
+            ],
+            &[(1, Element::Edge(1)), (1, Element::Vertex(2))],
+        );
+        // The hover first, so a selected dot is drawn over it; faces, edges, a body not held
+        // and a vertex its mesh hasn't, none.
+        assert_eq!(
+            dots,
+            [
+                ([2.0, 0.0, 0.0], false),
+                ([3.0, 0.0, 0.0], true),
+                ([1.0, 0.0, 0.0], true),
+            ]
+        );
     }
 
     #[test]
@@ -2586,7 +3091,7 @@ mod tests {
             up: [0.0, 0.0, 1.0],
         };
         assert!(view.moved(Some(far)));
-        let least = (1020.0f64 * 1020.0 + 100.0 + 36.0).sqrt() * 1e-5 * 1.01;
+        let least = (1020.0f64 * 1020.0 + 100.0 + 36.0).sqrt() * 400.0 / 524_288.0 * 1.01;
         let Projection::Orthographic { view_height } = view.camera.projection else {
             panic!("orthographic")
         };
@@ -2675,6 +3180,40 @@ mod tests {
     }
 
     #[test]
+    fn a_revisions_meshes_are_refused_while_its_last_read_was_refused_and_none_is_in_flight() {
+        let at = now();
+        let four = Revision::from_number(4).unwrap();
+        let five = Revision::from_number(5).unwrap();
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        // Refused for what it asked (its width): of 4, kept, not to be asked again.
+        let request = asked(&view, 4);
+        view.took(
+            request,
+            false,
+            refusal(ErrorCode::InvalidInput, Some("width")),
+            at,
+        );
+        assert!(view.retry.is_none());
+        assert!(view.refused_of(four));
+        assert!(!view.refused_of(five));
+        assert!(!view.refused_of(Revision::from_number(3).unwrap()));
+        // Refused for the moment: of 5, asked again later; 4's refusal stands.
+        let request = asked(&view, 5);
+        view.took(request, false, refusal(ErrorCode::WorkerCrashed, None), at);
+        assert!(view.refused_of(five));
+        assert!(view.refused_of(four));
+        // A read in flight (here of 4, its answer unread): it may yet answer, so neither is.
+        let sessions = Arc::new(Sessions::new(Arc::new(
+            silico_core::fake::FakeKernel::new(1).unwrap(),
+        )));
+        let request = asked(&view, 4);
+        view.start(&sessions, &SessionId::parse("s1").unwrap(), request);
+        assert!(view.reading());
+        assert!(!view.refused_of(four));
+        assert!(!view.refused_of(five));
+    }
+
+    #[test]
     fn a_read_answered_of_a_newer_revision_than_asked_is_not_asked_again() {
         // A published read takes the newest model as its thread starts, not as it's sent:
         // asked at revision 4 (the bodies of 3), it may answer of 5, published meanwhile.
@@ -2758,7 +3297,7 @@ mod tests {
             Projection::Perspective { .. } => panic!("orthographic"),
         };
         view.moved(Some(tiny.clone()));
-        assert!((height(&view) - 536f64.sqrt() * 1e-5 * 1.01).abs() < 1e-15);
+        assert!((height(&view) - 536f64.sqrt() * 400.0 / 524_288.0 * 1.01).abs() < 1e-15);
         let mut unmeasured = body(0.03125, [0.03125, 0.0625], None);
         unmeasured.mesh = Arc::new(Mesh {
             positions: vec![[20.0, 10.0, 5.0], [100.0, 10.0, 5.0]],
@@ -2768,7 +3307,7 @@ mod tests {
         let mut view = view_with(&[(1, unmeasured)], 3);
         view.moved(Some(tiny));
         // Its edge's point at (200, 10, 5) is the farthest: 180 mm.
-        assert!((height(&view) - 180.0 * 1e-5 * 1.01).abs() < 1e-15);
+        assert!((height(&view) - 180.0 * 400.0 / 524_288.0 * 1.01).abs() < 1e-15);
     }
 
     fn hidden_far() -> (ViewBody, FeatureId) {
@@ -2786,7 +3325,7 @@ mod tests {
     fn a_new_tables_clamp_and_a_zooms_stop_are_by_the_bodies_drawn() {
         // The cut, and a body 10 m off that the browser hides: the least from (20, 10, 5) is
         // the cut's alone, √536 · 1e-5 · 1.01, both as a table comes and as a zoom stops.
-        let least = 536f64.sqrt() * 1e-5 * 1.01;
+        let least = 536f64.sqrt() * 400.0 / 524_288.0 * 1.01;
         let height = |view: &View| match view.camera.projection {
             Projection::Orthographic { view_height } => view_height,
             Projection::Perspective { .. } => panic!("orthographic"),
@@ -2794,6 +3333,7 @@ mod tests {
         let (far, id) = hidden_far();
         let mut view = View {
             hidden: [id.clone()].into_iter().collect(),
+            rows: 400,
             ..View::default()
         };
         view.set_camera(front(1e-6));

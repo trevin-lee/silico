@@ -170,6 +170,13 @@ impl<P: Clients + 'static> Panes<'_, P> {
             return;
         };
         let mut asked = Asked::default();
+        if tab.selection().scroll_target().is_some() {
+            // A body picked in the canvas: its row shown, its group opened (section 9,
+            // *Browser and canvas*: the browser expands and scrolls to it).
+            for key in ["root", "Bodies"] {
+                Openness::load(ui.ctx(), key).opened(ui.ctx());
+            }
+        }
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -177,15 +184,17 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 tree(ui, tab, &mut asked);
                 ui.add_space(theme::BROWSER_PADDING_BOTTOM);
             });
+        // Scrolled to once, whether its row was there or not.
+        tab.selection_mut().scrolled();
         for what in asked.toggled {
             tab.toggle_shown(what);
         }
         if let Some(id) = asked.selected
-            && tab.selected.as_ref() != Some(&id)
+            && tab.selection().feature() != Some(&id)
         {
             // A sketch chosen here fills an open dialog's selection box (section 9).
             tab.pick(&id);
-            tab.selected = Some(id);
+            tab.selection_mut().select_feature(id);
         }
         if let Some(id) = asked.edit {
             // SEAM(#351): `tab.edit_sketch_or_feature(self.sessions, &id)`, Edit Sketch for a
@@ -196,10 +205,9 @@ impl<P: Clients + 'static> Panes<'_, P> {
     }
 
     /// The property panel (DESIGN.md, *Layout*: one right panel, four jobs): the feature
-    /// dialog, if one is open; else the selected feature's properties; else the document's,
-    /// never an empty state. SEAM(M5.7): a selection of faces, edges, or vertices, picking's,
-    /// is its fourth job (`selectionProps`: each element's measures and stable name), shown
-    /// before a feature's once picking names them.
+    /// dialog, if one is open; else the selection's faces and edges, if it has any
+    /// (`selectionProps`, [`selected_elements`]); else the selected feature's properties;
+    /// else the document's, never an empty state.
     fn properties(&mut self, ui: &mut Ui) {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         let Some(tab) = self.tab.as_deref_mut() else {
@@ -222,7 +230,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             tab.close_dialog(self.sessions, false);
         }
         properties::title(ui, None, "Properties", None);
-        let entry: Option<Entry> = tab.selected.as_ref().and_then(|selected| {
+        let entry: Option<Entry> = tab.selection().feature().and_then(|selected| {
             tab.timeline
                 .as_ref()
                 .and_then(|timeline| timeline.features.as_ref())
@@ -232,12 +240,14 @@ impl<P: Clients + 'static> Panes<'_, P> {
         let sessions = self.sessions;
         let name = &mut *self.name;
         let started = &mut *self.started;
+        let elements = tab.selection().elements().next().is_some();
         egui::ScrollArea::vertical()
             .id_salt("properties")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 match entry {
+                    _ if elements => selected_elements(ui, tab),
                     Some(entry) => feature(ui, tab, &entry, sessions, name, started),
                     None => document(ui, tab),
                 }
@@ -327,15 +337,15 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
 
 /// The selected feature's properties (`featureProps`): its head (its type's icon, its name,
 /// its type and ID), the document's problems and its own (its mark's text and suggestion),
-/// its name, editable, which is an edit of the document, and its health and ID.
+/// its name, editable, which is an edit of the document, and its health and ID; and, if
+/// another program changed it, what changed (the purple Changed on disk card, with Mark as
+/// seen).
 ///
 /// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
 /// direction), which need its fields read, as its dialog reads them; and its Edit feature
 /// and Suppress buttons (the timeline's double-click and menu edit it already).
 /// SEAM: the ID row's copy button (`.prop .v .copy`), once the app has a clipboard command
-/// of its own; and the purple Changed on disk card (`d.outside`: what an agent's edit
-/// changed in this feature, with Mark as seen), which needs the reload's changes by feature
-/// and field, which the core doesn't give yet.
+/// of its own.
 fn feature<P: Clients + 'static>(
     ui: &mut Ui,
     tab: &mut Tab,
@@ -361,6 +371,12 @@ fn feature<P: Clients + 'static>(
     if let Some(said) = tab.said.get(entry.id.as_str()) {
         let warning = entry.health != Health::Error;
         properties::card(ui, warning, &said.message, said.suggestion.as_deref());
+    }
+    // Changed by another program (`d.outside`): what changed, until it's marked seen.
+    if let Some(text) = tab.outside.get(&entry.id).cloned()
+        && properties::outside_card(ui, &text)
+    {
+        tab.outside.remove(&entry.id);
     }
     // The text typed, kept for this document's feature alone (two documents may hold
     // features of one ID), and only while it's ahead of the document: the document's
@@ -438,6 +454,78 @@ fn feature<P: Clients + 'static>(
     );
 }
 
+/// The selection's faces and edges (`selectionProps`, M5.7), each under its kind: its name
+/// as an agent writes it, and whether a store takes it, Stable; or, Unstable, the refusal
+/// a store gives it, with its suggestion (what a fillet's edges would say); or, Waiting,
+/// why it isn't answered (its feature didn't build, or its body isn't named yet).
+///
+/// SEAM: the prototype's look for it (`selectionProps`: each element's measures, its
+/// surface type, and its feature), which needs an `elements` read of each; and a vertex's
+/// row, once vertices are picked.
+fn selected_elements(ui: &mut Ui, tab: &Tab) {
+    let elements: Vec<_> = tab.selection().elements().collect();
+    let sub = properties::body("Selection", theme::PROPERTY_HEAD_SUB);
+    let title = match elements.len() {
+        1 => "1 element selected".to_owned(),
+        n => format!("{n} elements selected"),
+    };
+    properties::head(ui, Icon::SelFace, &title, sub);
+    // The head is painted, not labelled: the count said again where it reads.
+    properties::text_row(
+        ui,
+        "Selected",
+        properties::body(&title, theme::PROPERTY_VALUE),
+    );
+    for (place, picked) in elements.into_iter().enumerate() {
+        // Each element's rows under an ID of its own: they're keyed alike.
+        ui.push_id(("selected", place), |ui| selected_element(ui, picked));
+    }
+}
+
+/// A selected element's rows ([`selected_elements`]).
+fn selected_element(ui: &mut Ui, picked: &crate::selection::Picked) {
+    use crate::selection::State;
+    let kind = match picked.found().map(silico_core::selection::Selected::kind) {
+        Some(silico_protocol::ElementKind::Face) => "Face",
+        Some(silico_protocol::ElementKind::Edge) => "Edge",
+        Some(silico_protocol::ElementKind::Vertex) => "Vertex",
+        _ => "Element",
+    };
+    properties::section(ui, kind);
+    properties::text_row(
+        ui,
+        "Name",
+        egui::text::LayoutJob::single_section(
+            picked.name.clone(),
+            properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
+        ),
+    );
+    let (state, colour, said) = match &picked.state {
+        State::Found(selected) => match &selected.stored {
+            Ok(_) => ("Stable", theme::SUCCESS, None),
+            Err(refusal) => (
+                "Unstable",
+                theme::WARNING,
+                Some((refusal.message().to_owned(), refusal.suggestion())),
+            ),
+        },
+        State::Waiting { why, .. } => (
+            "Waiting",
+            theme::TEXT_SUBDUED,
+            Some((
+                why.clone().unwrap_or_else(|| {
+                    "Not answered yet: its body's elements aren't named yet".to_owned()
+                }),
+                None,
+            )),
+        ),
+    };
+    properties::text_row(ui, "Stability", properties::body(state, colour));
+    if let Some((message, suggestion)) = said {
+        properties::card(ui, true, &message, suggestion);
+    }
+}
+
 /// The document's problems, as the gate found them: a card each.
 fn problems(ui: &mut Ui, tab: &Tab) {
     for said in &tab.document_problems {
@@ -446,8 +534,8 @@ fn problems(ui: &mut Ui, tab: &Tab) {
 }
 
 /// The document's properties, with nothing selected (`docProps`): its head (its file's name
-/// over its path), its problems, its revision, units, features, save state, and file on
-/// disk, and its model.
+/// over its path, or an untitled part's name over its having no file yet), its problems,
+/// its revision, units, features, save state, and file on disk, and its model.
 ///
 /// SEAM: the model's measures (`docProps`' Volume, Area, Size, and Faces), which need a
 /// `mass_properties` read of its bodies the app doesn't make yet; its bodies are counted.
@@ -457,7 +545,9 @@ fn document(ui: &mut Ui, tab: &Tab) {
         Icon::Doc,
         tab.name(),
         egui::text::LayoutJob::single_section(
-            tab.path.clone(),
+            tab.path
+                .clone()
+                .unwrap_or_else(|| crate::bar::NOT_SAVED_YET.to_owned()),
             properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_HEAD_SUB, true),
         ),
     );
@@ -620,6 +710,7 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
             meta: tab.unsaved().then_some("unsaved"),
             mark: failed.then_some((Health::Error, root_text)),
             failed: false,
+            outside: None,
         },
     );
     root.take(&ctx, &answer);
@@ -646,6 +737,7 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                         meta: None,
                         mark: None,
                         failed: false,
+                        outside: None,
                     },
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
@@ -710,18 +802,24 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                             None
                         },
                         name: &each.name,
-                        selected: Some(tab.selected.as_ref() == Some(&each.id)),
+                        selected: Some(tab.selection().marks_body(&each.id)),
                         meta: None,
                         mark: marked.then_some((each.health, text)),
                         // A sketch's own failure reddens its name (`.row.err`); a body's
                         // mark is its chain's.
                         failed: sketches && each.health == Health::Error,
+                        // Changed by another program (`d.outside`), its purple dot where it
+                        // has no health mark.
+                        outside: tab.outside.get(&each.id).map(String::as_str),
                     },
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
                     asked.toggled.push(what);
                 } else if answer.row.clicked() {
                     asked.selected = Some(each.id.clone());
+                }
+                if tab.selection().scroll_target() == Some(&each.id) {
+                    answer.row.scroll_to_me(None);
                 }
                 if sketches && sketch_edit_asked(tab, &answer.row) {
                     asked.edit = Some(each.id.clone());
@@ -744,6 +842,15 @@ impl Openness {
         let state = egui::collapsing_header::CollapsingState::load_with_default_open(ctx, id, true);
         let open = state.is_open();
         Openness { state, open }
+    }
+
+    /// Opened, and kept so.
+    fn opened(mut self, ctx: &egui::Context) {
+        if !self.open {
+            self.open = true;
+            self.state.set_open(true);
+            self.state.store(ctx);
+        }
     }
 
     /// Its caret's state taken from the row: opened or closed, and kept.
@@ -776,6 +883,7 @@ fn header(ui: &mut Ui, name: &str, meta: Option<&str>) -> bool {
             meta,
             mark: None,
             failed: false,
+            outside: None,
         },
     );
     openness.take(&ctx, &answer);
@@ -843,6 +951,9 @@ struct Line<'a> {
     mark: Option<(Health, Option<&'a str>)>,
     /// Whether its name is the error's red (`.row.err`).
     failed: bool,
+    /// What another program changed in it, if it did (`d.outside`): a purple dot at its
+    /// right where it has no mark (`.state-dot`).
+    outside: Option<&'a str>,
 }
 
 /// What a row answered: the row's response, its caret's state, and its eye's response.
@@ -1039,6 +1150,10 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         let at = place(right - icons::ICON_SIZE, icons::ICON_SIZE);
         health_mark(ui, id.with("mark"), at, health, text, MarkLook::Glyph);
         right -= icons::ICON_SIZE + gap;
+    } else if let Some(text) = line.outside {
+        let at = place(right - theme::STATE_DOT_SIZE, theme::STATE_DOT_SIZE);
+        outside_mark(ui, id.with("outside"), at, text, None);
+        right -= theme::STATE_DOT_SIZE + gap;
     }
     if let Some(meta) = line.meta {
         let colour = if selected {
@@ -1077,6 +1192,34 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         open: caret.map(|(_, open)| open),
         eye: eye.map(|(eye, _)| eye),
     }
+}
+
+/// The mark of a feature another program changed (`d.outside`), the browser's and the
+/// timeline's alike: a purple dot filling `rect` (`.state-dot`, or the timeline's
+/// `.badge.outside`, in a ring of `ring`'s colour 1.5 outside it), labelled with what
+/// changed (`changed on disk: radius 5 → 3`) for the accessibility tree, and with the
+/// prototype's words as its hover text.
+pub(crate) fn outside_mark(
+    ui: &mut Ui,
+    id: egui::Id,
+    rect: egui::Rect,
+    text: &str,
+    ring: Option<Color32>,
+) {
+    let radius = rect.width().min(rect.height()) / 2.0;
+    let painter = ui.painter();
+    if let Some(ring) = ring {
+        painter.circle_filled(
+            rect.center(),
+            radius + theme::TIMELINE_BADGE_RING_WIDTH,
+            ring,
+        );
+    }
+    painter.circle_filled(rect.center(), radius, theme::CHANGED_OUTSIDE);
+    let response = ui.interact(rect, id, Sense::hover());
+    let said = format!("changed on disk: {text}");
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
+    response.on_hover_text("Changed on disk since you opened it");
 }
 
 /// How a health mark is drawn: the browser's, the error's or the warning's icon at a row's
@@ -1918,6 +2061,62 @@ mod tests {
     type Expected<'a> = (&'a str, f32, Color32, Option<(Color32, &'a str)>);
 
     #[test]
+    fn a_row_another_program_changed_has_its_purple_dot_where_it_has_no_health_mark() {
+        // The prototype's row (`o.mark === 'outside'`): a `.state-dot` (8 square, round) in
+        // `--purple` (#b780ff) at the row's right, the name cut 4 (`.row`'s gap) before it;
+        // a row with a health mark shows that mark alone.
+        const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+        const DOT: f32 = 8.0;
+        let mut tab = modelled();
+        // Named long enough to be cut short by the dot.
+        let long = "Block with a name long enough to run past the browser's edge";
+        tab.browser.bodies[0].name = long.to_owned();
+        for id in ["b0000001", "c0000001"] {
+            tab.outside.insert(fid(id), "height 10 → 11".to_owned());
+        }
+        let h = drawn(tab);
+        let down = |n: f32| css::TITLE_H + n * css::ROW_H;
+        let block = parts(down(10.0), 2);
+        let dot = Rect::from_min_size(
+            Pos2::new(block.end - DOT, block.row.center().y - DOT / 2.0),
+            Vec2::splat(DOT),
+        );
+        let circles: Vec<(Pos2, f32, Color32)> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Circle(circle) if block.row.contains(circle.center) => {
+                    Some((circle.center, circle.radius, circle.fill))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(circles[..], [(centre, radius, PURPLE)]
+                if near_pos(centre, dot.center()) && near(radius, DOT / 2.0)),
+            "the block's dot: {circles:?}, not {DOT} across at {:?}",
+            dot.center()
+        );
+        assert!(labelled_at(&h, "changed on disk: height 10 → 11", dot));
+        named(
+            &h,
+            long,
+            &block,
+            block.name,
+            css::G700,
+            dot.left() - css::ROW_GAP,
+        );
+        // The failed cut: its error's mark, no dot.
+        let cut = parts(down(11.0), 2);
+        assert_eq!(icon_at(&h, mark_of(&cut)), Some(css::RED));
+        assert!(
+            !painted(&h).iter().any(
+                |shape| matches!(shape, Shape::Circle(circle) if cut.row.contains(circle.center))
+            ),
+            "the cut's dot"
+        );
+    }
+
+    #[test]
     fn the_rows_are_drawn_as_the_prototypes_rows_with_their_eyes_icons_names_and_marks() {
         let h = drawn(modelled());
         let down = |n: f32| css::TITLE_H + n * css::ROW_H;
@@ -2004,6 +2203,7 @@ mod tests {
                             meta: Some("XY"),
                             mark: Some((Health::Warning, None)),
                             failed: false,
+                            outside: None,
                         },
                     );
                 });
@@ -2061,7 +2261,9 @@ mod tests {
         assert_eq!(icon_at(&h, block.glyph), Some(css::G1000));
         // Selected (`.row.selected`): `--blue` across it, its name and icon `--blue-text`;
         // hovered, the same.
-        tab_of(&mut h).selected = Some(fid("c0000001"));
+        tab_of(&mut h)
+            .selection_mut()
+            .select_feature(fid("c0000001"));
         h.remove_cursor();
         h.run_steps(2);
         assert_eq!(fills_at(&h, cut.row), [(css::BLUE, CornerRadius::ZERO)]);
@@ -2725,7 +2927,7 @@ mod property_panel_drawn {
     #[test]
     fn a_features_properties_are_drawn_as_feature_props_with_its_error_card_and_name_field() {
         let mut tab = part();
-        tab.selected = Some(fid("c0000001"));
+        tab.selection_mut().select_feature(fid("c0000001"));
         let h = drawn(tab);
         let mut y = title_and_head(&h, "Hole", "Subtract · c0000001", body(css::FS_SMALL));
         // The line under the title: the type, then the ID in monospace.

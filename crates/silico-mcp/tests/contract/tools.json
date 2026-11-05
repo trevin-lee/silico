@@ -1429,6 +1429,24 @@
             "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
             "type": "string"
           },
+          "FeatureStep": {
+            "additionalProperties": false,
+            "description": "A feature's state in a rebuild.",
+            "properties": {
+              "feature": {
+                "$ref": "#/$defs/FeatureId",
+                "description": "The feature's ID."
+              },
+              "state": {
+                "$ref": "#/$defs/StepState"
+              }
+            },
+            "required": [
+              "feature",
+              "state"
+            ],
+            "type": "object"
+          },
           "Model": {
             "additionalProperties": false,
             "description": "The model the command read.",
@@ -1496,6 +1514,16 @@
                   "null"
                 ]
               },
+              "features": {
+                "description": "Each unsuppressed feature's state in the rebuild, in timeline order, listed from its\nstart and kept once it ends: progress, a diagnostic, not a result (which feature runs\nfirst depends on scheduling). A stopped rebuild leaves what it hadn't settled\n`queued`. Null if no rebuild of the revision has started.",
+                "items": {
+                  "$ref": "#/$defs/FeatureStep"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
               "revision": {
                 "description": "The revision it's of: the session's current one.",
                 "minimum": 1,
@@ -1515,6 +1543,7 @@
             },
             "required": [
               "done",
+              "features",
               "revision",
               "state",
               "steps"
@@ -1645,6 +1674,7 @@
               "sketch_join",
               "undo",
               "redo",
+              "diff",
               "reload"
             ],
             "type": "string"
@@ -1686,6 +1716,41 @@
               "transaction"
             ],
             "type": "object"
+          },
+          "StepState": {
+            "description": "What's become of a feature's steps in a rebuild.",
+            "oneOf": [
+              {
+                "const": "queued",
+                "description": "Not settled yet: none of its steps running, or the rebuild stopped first (the next\nrebuild resumes it).",
+                "type": "string"
+              },
+              {
+                "const": "running",
+                "description": "A step of its is running; a sketch, its solve; a sketch on a face reads queued until\nthe round that places it, its solve included, then its outcome: its result is the\nsketch placed on its face.",
+                "type": "string"
+              },
+              {
+                "const": "built",
+                "description": "Built: its solid made, or kept from before; a sketch, solved.",
+                "type": "string"
+              },
+              {
+                "const": "failed",
+                "description": "Failed on its own: a step the kernel refused, a check its result failed, a sketch\nthat didn't solve, a pad, pocket, revolve, or groove whose sketch makes no profile,\nbroken references.",
+                "type": "string"
+              },
+              {
+                "const": "blocked",
+                "description": "Not built, since a feature it uses failed, faulted, or was blocked.",
+                "type": "string"
+              },
+              {
+                "const": "faulted",
+                "description": "Stopped by a kernel fault (a worker that crashed, hung, or couldn't be had); what\nuses it is blocked.",
+                "type": "string"
+              }
+            ]
           },
           "Transaction": {
             "additionalProperties": false,
@@ -1915,6 +1980,7 @@
               "sketch_join",
               "undo",
               "redo",
+              "diff",
               "rebuild"
             ],
             "type": "string"
@@ -2221,6 +2287,7 @@
               "sketch_join",
               "undo",
               "redo",
+              "diff",
               "rebuild"
             ],
             "type": "string"
@@ -10042,7 +10109,7 @@
         "readOnlyHint": true,
         "title": "Document text"
       },
-      "description": "The document's text as the session holds it, or one feature's.",
+      "description": "The document's text as the session holds it, or one feature's: of the document now, of a revision the session holds, or of the file on disk (`revision` `\"disk\"`). Taking the file's text into a transaction with `replace_text` doesn't make the file the transaction's own: its `commit` is still refused as a `conflict`; roll back, or save elsewhere with `path`.",
       "inputSchema": {
         "$defs": {
           "FeatureId": {
@@ -10066,6 +10133,24 @@
             ],
             "description": "The feature whose text to give alone, by ID, or null for the whole document. For a\ndocument too large to give in one response, read it a feature at a time."
           },
+          "revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "enum": [
+                  "disk"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The revision whose text to give, \"disk\" for the session's file as this command reads\nit (inside a transaction too, reloading nothing there), or null for the document now.\nA session holds the text of its revision now, of the one its last reload replaced\n(after a response that says `reloaded`), and, inside a transaction, of the one it\nbegan at; any other is refused, the revisions it holds its candidates. A revision by\nnumber reads nothing of the file. To put back the text a reload replaced, `begin`,\nthen `replace_text` with it: an edit like any other, which `undo` takes back and\n`commit` saves."
+          },
           "session": {
             "description": "The session's ID, as `open` gave it.",
             "pattern": "^s[1-9][0-9]*$",
@@ -10074,6 +10159,7 @@
         },
         "required": [
           "feature",
+          "revision",
           "session"
         ],
         "title": "TextRequest",
@@ -14869,7 +14955,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "A perspective camera's vertical angle, in degrees, from 0.001 to 179.999; null for\nan orthographic camera."
+                "description": "A perspective camera's vertical angle, in degrees, its range by the image's size: see\nthe error; null for an orthographic camera."
               },
               "projection": {
                 "$ref": "#/$defs/Projection"
@@ -14901,7 +14987,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "An orthographic camera's view's height, in mm, from 1e-6 to 1e12; null for a\nperspective camera."
+                "description": "An orthographic camera's view's height, in mm, up to 1e12, its least by the image's\nsize: see the error; null for a perspective camera."
               }
             },
             "required": [
@@ -15071,7 +15157,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "A perspective camera's vertical angle, in degrees, from 0.001 to 179.999; null for\nan orthographic camera."
+                "description": "A perspective camera's vertical angle, in degrees, its range by the image's size: see\nthe error; null for an orthographic camera."
               },
               "projection": {
                 "$ref": "#/$defs/Projection"
@@ -15103,7 +15189,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "An orthographic camera's view's height, in mm, from 1e-6 to 1e12; null for a\nperspective camera."
+                "description": "An orthographic camera's view's height, in mm, up to 1e12, its least by the image's\nsize: see the error; null for a perspective camera."
               }
             },
             "required": [
@@ -19114,7 +19200,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "A perspective camera's vertical angle, in degrees, from 0.001 to 179.999; null for\nan orthographic camera."
+                "description": "A perspective camera's vertical angle, in degrees, its range by the image's size: see\nthe error; null for an orthographic camera."
               },
               "projection": {
                 "$ref": "#/$defs/Projection"
@@ -19146,7 +19232,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "An orthographic camera's view's height, in mm, from 1e-6 to 1e12; null for a\nperspective camera."
+                "description": "An orthographic camera's view's height, in mm, up to 1e12, its least by the image's\nsize: see the error; null for a perspective camera."
               }
             },
             "required": [
@@ -19339,7 +19425,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "A perspective camera's vertical angle, in degrees, from 0.001 to 179.999; null for\nan orthographic camera."
+                "description": "A perspective camera's vertical angle, in degrees, its range by the image's size: see\nthe error; null for an orthographic camera."
               },
               "projection": {
                 "$ref": "#/$defs/Projection"
@@ -19371,7 +19457,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "An orthographic camera's view's height, in mm, from 1e-6 to 1e12; null for a\nperspective camera."
+                "description": "An orthographic camera's view's height, in mm, up to 1e12, its least by the image's\nsize: see the error; null for a perspective camera."
               }
             },
             "required": [
@@ -19555,6 +19641,25 @@
             ],
             "type": "object"
           },
+          "MeshVertex": {
+            "additionalProperties": false,
+            "description": "A vertex of a body's mesh.",
+            "properties": {
+              "name": {
+                "description": "Its name, by the element map.",
+                "type": "string"
+              },
+              "stable": {
+                "description": "Whether `name` is stable.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "stable"
+            ],
+            "type": "object"
+          },
           "MeshedBody": {
             "additionalProperties": false,
             "description": "A body's display mesh.",
@@ -19676,6 +19781,25 @@
                   "type": "array"
                 },
                 "type": "array"
+              },
+              "vertex_points": {
+                "description": "Each vertex's point, exact (the solid's, not a mesh's), in `vertices`' order; empty\nwhen the body is held.",
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              "vertices": {
+                "description": "Each vertex, in the solid's own order (`Vertex1` first), given whether or not the\nbody is held.",
+                "items": {
+                  "$ref": "#/$defs/MeshVertex"
+                },
+                "type": "array"
               }
             },
             "required": [
@@ -19692,7 +19816,9 @@
               "normals",
               "positions",
               "serves",
-              "triangles"
+              "triangles",
+              "vertex_points",
+              "vertices"
             ],
             "type": "object"
           },
@@ -26678,6 +26804,449 @@
         "type": "object"
       },
       "title": "Redo"
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Changes between revisions"
+      },
+      "description": "What changed between two revisions the session holds (`null` for the document now): each feature added, removed, or moved (`field` null, `before` and `after` its place in the timeline), and each field that changed, by the path `set_field` names it by, with its value before and after. A change set_field accepts is applied by set_field with its feature, field, and after; set_field doesn't accept fingerprint fields; `type`, `id`, or `v` (or, with a feature's `type`, a field its new type brings or takes away); a member only one side has below the feature's top level (a sketch member added or removed, an item added to or removed from a list by place), but for a sketch angle's `reversed`; or an extent's or a constraint's `type` changed to one that takes other fields. The session holds its revision now, the one its last reload replaced, and inside a transaction the one it began at: after a response that says `reloaded`, diff from the revision you last saw to `null` to learn what changed outside the session. A side may also be `\"disk\"`, the session's file as this call reads it, inside a transaction too, where nothing is reloaded: before a `commit` refused as a `conflict`, diff from the transaction's base to `\"disk\"` to see what changed on disk, and from its base to `null` to see your own edits. Revisions by number read nothing of the file.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`diff`'s request: what changed between two revisions the session holds.",
+        "properties": {
+          "from": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "enum": [
+                  "disk"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The revision to compare from, \"disk\" for the session's file as this command reads it\n(inside a transaction too, reloading nothing there: what changed on disk since the\ntransaction began, from its base), or null for the document now. A session holds the\ntext of its revision now, of the one its last reload replaced (after a response that\nsays `reloaded`), and, inside a transaction, of the one it began at; any other is\nrefused, the revisions it holds its candidates. Revisions by number read nothing of\nthe file."
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "enum": [
+                  "disk"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The revision to compare to, \"disk\", or null for the document now, as `from` is."
+          }
+        },
+        "required": [
+          "from",
+          "session",
+          "to"
+        ],
+        "title": "DiffRequest",
+        "type": "object"
+      },
+      "name": "diff",
+      "outputSchema": {
+        "$defs": {
+          "DiffChange": {
+            "additionalProperties": false,
+            "description": "One change between two revisions: a feature's place in the timeline, or one of its\nfields.",
+            "properties": {
+              "after": {
+                "$ref": "#/$defs/DiffValue"
+              },
+              "before": {
+                "$ref": "#/$defs/DiffValue"
+              },
+              "feature": {
+                "$ref": "#/$defs/FeatureId",
+                "description": "The feature, by ID."
+              },
+              "field": {
+                "description": "The path to the field that changed, as `set_field` names one (a sketch's members by\nID, other lists by place, from 0), down to the first value that's a number, a string,\ntrue or false, or absent on one side. A change set_field accepts is applied by\nset_field with its feature, field, and after. set_field doesn't accept: fingerprint\nfields; `type`, `id`, and `v` (and, with a feature's `type`, each field its new type\nbrings or takes away); a member only one side has below the feature's top level (a\nsketch member added or removed, an item added to or removed from a list by place),\nbut for a sketch angle's `reversed`; and an extent's or a constraint's `type` changed\nto one that takes other fields. Null for a change of the feature's place: added,\nremoved, or moved (its order among the features both revisions hold changed: one\nremoved or added moves none of the others).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "description": "Its name: as `to` has it, or, for a feature removed, as `from` had it.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "after",
+              "before",
+              "feature",
+              "field",
+              "name"
+            ],
+            "type": "object"
+          },
+          "DiffValue": {
+            "description": "With a field, its value on that side, as the document writes that field: a number, a string, true or false, a list, an object, or null where the feature hasn't the field (or isn't there). With field null, the feature's place in that side's timeline, from 0, as remove_feature gives a place: null where it isn't there."
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "advice",
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`diff`'s result.",
+                "properties": {
+                  "changes": {
+                    "description": "Each change from `from` to `to`, in `to`'s timeline order (a feature's change of\nplace first, then its fields in the order the document writes them), then each\nfeature removed, in `from`'s order. Empty if the two documents are the same.",
+                    "items": {
+                      "$ref": "#/$defs/DiffChange"
+                    },
+                    "type": "array"
+                  },
+                  "from": {
+                    "anyOf": [
+                      {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      {
+                        "enum": [
+                          "disk"
+                        ],
+                        "type": "string"
+                      }
+                    ],
+                    "description": "The revision compared from: the request's, or, for null, the session's then; or\n\"disk\", the session's file as the command read it."
+                  },
+                  "to": {
+                    "anyOf": [
+                      {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      {
+                        "enum": [
+                          "disk"
+                        ],
+                        "type": "string"
+                      }
+                    ],
+                    "description": "The revision compared to, or \"disk\", likewise."
+                  }
+                },
+                "required": [
+                  "changes",
+                  "from",
+                  "to"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Changes between revisions"
     }
   ]
 }

@@ -302,8 +302,54 @@ pub(crate) fn text_row(ui: &mut Ui, key: &str, value: LayoutJob) {
     row(ui, key, |ui, _| truncated(ui, value));
 }
 
+/// A row of a modal's list (`.prop` with `padding: 0`, as the prototype's "What changed on
+/// disk" lists them): `key` in its column, in `key_colour` (the property key's, or purple
+/// for a feature another program changed), and `value` in the rest, each cut short where
+/// it doesn't fit; `list`, naming the list among the modal's, and `at`, its place among
+/// the list's rows, naming it.
+pub(crate) fn list_row(
+    ui: &mut Ui,
+    (list, at): (&str, usize),
+    key: &str,
+    key_colour: Color32,
+    value: &str,
+) {
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(ui.available_width(), theme::PROPERTY_ROW_HEIGHT),
+        Sense::hover(),
+    );
+    let key_rect = Rect::from_min_size(
+        rect.left_top(),
+        vec2(theme::PROPERTY_KEY_WIDTH, rect.height()),
+    );
+    let value_rect = Rect::from_min_max(
+        pos2(key_rect.right() + theme::PROPERTY_ROW_GAP, rect.top()),
+        rect.right_bottom(),
+    );
+    within(ui, key_rect, ("list-key", list, at), |ui| {
+        truncated(ui, body(key, key_colour))
+    });
+    within(ui, value_rect, ("list-value", list, at), |ui| {
+        truncated(ui, body(value, theme::PROPERTY_VALUE))
+    });
+}
+
 /// A hint (`.hint-block`): each of `parts` in turn, the emphasised ones Gray.800.
 pub(crate) fn hint(ui: &mut Ui, parts: &[(&str, bool)]) {
+    hint_at(
+        ui,
+        parts,
+        Margin {
+            left: theme::VIEW_PADDING,
+            right: theme::VIEW_PADDING,
+            top: theme::HINT_MARGIN as i8,
+            bottom: theme::HINT_MARGIN as i8,
+        },
+    );
+}
+
+/// [`hint`], `margin` around it: a modal's (`margin: 12px 0 0`), or a panel's.
+pub(crate) fn hint_at(ui: &mut Ui, parts: &[(&str, bool)], margin: Margin) {
     let mut job = LayoutJob::default();
     for (text, strong) in parts {
         let colour = if *strong {
@@ -324,16 +370,82 @@ pub(crate) fn hint(ui: &mut Ui, parts: &[(&str, bool)]) {
         .fill(theme::HINT_BG)
         .corner_radius(CornerRadius::same(theme::NORMAL_CORNER_RADIUS))
         .inner_margin(theme::HINT_PADDING)
-        .outer_margin(Margin {
-            left: theme::VIEW_PADDING,
-            right: theme::VIEW_PADDING,
-            top: theme::HINT_MARGIN as i8,
-            bottom: theme::HINT_MARGIN as i8,
-        })
+        .outer_margin(margin)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.add(Label::new(job).wrap().selectable(false));
         });
+}
+
+/// The card saying another program changed the selected feature (`featureProps`' purple
+/// `.err-card.warn`): its head, the diff icon and "Changed on disk"; what changed, `text`;
+/// and Mark as seen (`.btn-ghost`), which takes its mark away. Whether that was clicked.
+pub(crate) fn outside_card(ui: &mut Ui, text: &str) -> bool {
+    let words = |text: &str, colour| {
+        let mut job = LayoutJob::single_section(
+            text.to_owned(),
+            TextFormat {
+                line_height: Some(theme::BODY_LINE_HEIGHT),
+                ..format(theme::BODY_SIZE, colour, false)
+            },
+        );
+        job.wrap.max_width = f32::INFINITY;
+        job
+    };
+    let mut seen = false;
+    egui::Frame::new()
+        .fill(theme::OUTSIDE_CARD_BG)
+        .stroke(Stroke::new(theme::BORDER_WIDTH, theme::OUTSIDE_CARD_BORDER))
+        .corner_radius(CornerRadius::same(theme::NORMAL_CORNER_RADIUS))
+        .outer_margin(Margin {
+            left: theme::VIEW_PADDING,
+            right: theme::VIEW_PADDING,
+            top: theme::ERROR_CARD_MARGIN as i8,
+            bottom: theme::ERROR_CARD_MARGIN as i8,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            egui::Frame::new()
+                .inner_margin(theme::ERROR_CARD_HEAD_PADDING)
+                .show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(theme::ERROR_CARD_GAP, 0.0);
+                        let side = IconSize::Small.points();
+                        let (at, _) = ui.allocate_exact_size(
+                            vec2(side, theme::BODY_LINE_HEIGHT),
+                            Sense::hover(),
+                        );
+                        Icon::Diff
+                            .image(IconSize::Small)
+                            .tint(theme::OUTSIDE_CARD_TEXT)
+                            .paint_at(ui, Rect::from_min_size(at.min, Vec2::splat(side)));
+                        ui.add(
+                            Label::new(words("Changed on disk", theme::TEXT_STRONG))
+                                .selectable(false),
+                        );
+                    });
+                });
+            egui::Frame::new()
+                .inner_margin(theme::ERROR_CARD_BODY_PADDING)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(
+                        Label::new(words(text, theme::OUTSIDE_CARD_TEXT))
+                            .wrap()
+                            .selectable(false),
+                    );
+                    // `.ec-body p { margin: 0 0 6px }`, then the actions.
+                    ui.add_space(theme::ERROR_CARD_FIX_GAP);
+                    let button = modal::Button::new("Mark as seen", Kind::Ghost);
+                    let (at, _) = ui.allocate_exact_size(
+                        vec2(modal::natural_width(ui, &button), theme::BUTTON_HEIGHT),
+                        Sense::hover(),
+                    );
+                    seen = modal::paint(ui, at, &button).clicked();
+                });
+        });
+    seen
 }
 
 /// An error card (`.err-card`), a warning's if `warning`: its icon and `message`, and
@@ -881,4 +993,176 @@ pub(crate) fn unit_width(ui: &Ui, unit: &str) -> f32 {
         .layout_job(body(unit, theme::TEXT_SUBDUED))
         .size()
         .x
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
+    use egui::accesskit::Role;
+    use egui_kittest::Harness;
+
+    use super::*;
+    use crate::modal::tests::{
+        at, at_opacity, cap_border, colour, fills_at, font, icon_at, kbd_border, near, rects,
+        text_shape, widget,
+    };
+
+    /// styles.css: `.dlg-footer .btn { flex: 1; height: 26px }`; `.btn { gap: 6px }`;
+    /// `.btn .kbd { margin-left: 2px; opacity: .55 }`, its border and words the button's
+    /// (`.btn-secondary`'s Gray.750); `.kbd { height: 16px }`.
+    const BTN_GAP: f32 = 6.0;
+    const KBD_MARGIN: f32 = 2.0;
+    const KBD_H: f32 = 16.0;
+    const KBD_OPACITY: f32 = 0.55;
+    const G750: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcf);
+
+    #[test]
+    fn a_footer_buttons_key_cap_is_8_after_its_words_and_bordered_2_at_its_bottom() {
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(150.0, 26.0));
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(240.0, 90.0))
+            .build_ui(move |ui| {
+                footer_button(ui, place, "Cancel", "Esc", Kind::Secondary, true);
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let button = widget(&h, Role::Button, "Cancel");
+        let words = text_shape(&h, "Cancel");
+        let boxed = rects(&h)
+            .into_iter()
+            .find(|shape| {
+                shape.fill == Color32::TRANSPARENT
+                    && near(shape.rect.height(), KBD_H)
+                    && button.contains_rect(shape.rect)
+            })
+            .expect("Esc's box");
+        assert!(boxed.stroke.is_empty(), "Esc's box: {:?}", boxed.stroke);
+        assert!(
+            near(
+                boxed.rect.left(),
+                words.pos.x + words.galley.size().x + BTN_GAP + KBD_MARGIN
+            ),
+            "Esc at {:?}, Cancel's words at {:?}, {:?} wide",
+            boxed.rect,
+            words.pos,
+            words.galley.size()
+        );
+        assert!(near(boxed.rect.center().y, button.center().y));
+        kbd_border(
+            &cap_border(&h, boxed.rect),
+            boxed.rect,
+            at_opacity(G750, KBD_OPACITY),
+            "Esc",
+        );
+    }
+
+    /// `body`: `font: 12px/16px`; `--icon`; `--r`; `--pad`; `.btn`'s 22.
+    const FS: f32 = 12.0;
+    const LH: f32 = 16.0;
+    const ICON: f32 = 14.0;
+    const PAD: f32 = 12.0;
+    const BTN_H: f32 = 22.0;
+    /// `.prop`: `grid-template-columns: 96px 1fr; gap: 8px`, `--row-h` high, unpadded in a
+    /// modal's list; `.prop .k` Gray.550, `.prop .v` Gray.800.
+    const KEY_W: f32 = 96.0;
+    const ROW_GAP: f32 = 8.0;
+    const ROW_H: f32 = 24.0;
+    const G800: Color32 = Color32::from_rgb(0xe0, 0xdf, 0xdf);
+
+    #[test]
+    fn a_modals_list_row_is_drawn_as_prop_its_value_8_after_the_keys_96() {
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(300.0, 100.0));
+        let purple = Color32::from_rgb(0xb7, 0x80, 0xff);
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 160.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    list_row(ui, ("theirs", 0), "Drill", purple, "name · 5 → 3");
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let key = text_shape(&h, "Drill");
+        let value = text_shape(&h, "name · 5 → 3");
+        let middle = place.top() + ROW_H / 2.0;
+        at(
+            key.pos,
+            Pos2::new(place.left(), middle - key.galley.size().y / 2.0),
+            "the key",
+        );
+        at(
+            value.pos,
+            Pos2::new(
+                place.left() + KEY_W + ROW_GAP,
+                middle - value.galley.size().y / 2.0,
+            ),
+            "the value",
+        );
+        font(&key, FS, "the key");
+        font(&value, FS, "the value");
+        assert_eq!(colour(&key), purple);
+        assert_eq!(colour(&value), G800);
+    }
+
+    #[test]
+    fn the_changed_on_disk_card_is_drawn_as_feature_props_purple_err_card() {
+        // `featureProps`' card: `.err-card` (`margin: 8px var(--pad)`, 1 border, `--r`) in
+        // `rgba(183,128,255,.12)` bordered #463375; `.ec-head` (`padding: 8px 10px 4px;
+        // gap: 8px`): the diff icon in #e4d6ff, "Changed on disk" white; `.ec-body`
+        // (`padding: 0 10px 8px 32px`), #e4d6ff: what changed (`p`, `margin: 0 0 6px`), then
+        // Mark as seen (`.btn.btn-ghost`). Every line 16 high.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(295.0, 300.0));
+        let text = "Block · height · 10 → 11, and the radius of its fillet too, which wraps";
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 360.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    outside_card(ui, text);
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let ink = Color32::from_rgb(0xe4, 0xd6, 0xff);
+        let top = place.top() + 8.0;
+        let inner = Pos2::new(place.left() + PAD + 1.0, top + 1.0);
+        let icon = Rect::from_min_size(inner + Vec2::new(10.0, 8.0), Vec2::splat(ICON));
+        assert_eq!(icon_at(&h, icon), Some(ink), "the card's icon");
+        let head = text_shape(&h, "Changed on disk");
+        at(
+            head.pos,
+            Pos2::new(icon.right() + 8.0, icon.top()),
+            "the head",
+        );
+        font(&head, FS, "the head");
+        assert_eq!(colour(&head), Color32::WHITE);
+        assert!(near(head.galley.size().y, LH), "the head's line");
+        let said = text_shape(&h, text);
+        at(
+            said.pos,
+            Pos2::new(inner.x + 32.0, icon.top() + LH + 4.0),
+            "what changed",
+        );
+        font(&said, FS, "what changed");
+        assert_eq!(colour(&said), ink);
+        let lines = said.galley.rows.len();
+        assert!(lines > 1, "what changed didn't wrap");
+        assert!(near(said.galley.size().y, lines as f32 * LH), "its lines");
+        let seen = widget(&h, Role::Button, "Mark as seen");
+        assert!(near(seen.left(), said.pos.x), "{seen:?}");
+        assert!(near(seen.top(), said.pos.y + said.galley.size().y + 6.0));
+        assert!(near(seen.height(), BTN_H));
+        let card = Rect::from_min_max(
+            Pos2::new(place.left() + PAD, top),
+            Pos2::new(place.right() - PAD, seen.bottom() + 8.0 + 1.0),
+        );
+        let fills = fills_at(&h, card);
+        assert_eq!(
+            fills,
+            [(
+                Color32::from_rgba_unmultiplied(183, 128, 255, 31),
+                egui::CornerRadius::same(6)
+            )],
+            "the card"
+        );
+    }
 }

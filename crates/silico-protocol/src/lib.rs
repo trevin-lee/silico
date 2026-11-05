@@ -70,10 +70,13 @@ pub use refusal::{
     OUT_OF_MEMORY, Operation, Refusal, Returned, Role, Trouble,
 };
 pub use render::{
-    Camera, EDGE_BIT, Frame, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,
-    MAX_RENDER_FACES, MAX_RENDER_SIDE, MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW,
-    MIN_UP_ACROSS_VIEW, MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId, Projection,
-    RenderAdapter, RenderBody, RenderScene, check_render_mesh,
+    Camera, Class, EDGE_BIT, F32_ROUNDING, Frame, HalfSpace, InView, InViewBody,
+    MAX_RENDER_COORDINATE, MAX_RENDER_EDGES, MAX_RENDER_FACES, MAX_RENDER_SIDE,
+    MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE, MIN_UP_ACROSS_VIEW, MIN_VIEW_HEIGHT,
+    PRECISION_OF_PIXEL, PixelId, PointBox, Projection, RenderAdapter, RenderBody, RenderScene,
+    ViewRegion, box_corners, box_of, check_bodies_in_view, check_render_mesh, corner_sec2,
+    field_of_view_range, least_view_height, points_box, pyramid_slope, reach_of_box,
+    reach_of_points,
 };
 pub use sketch::{
     Algorithm, DragBegin, Dragged, Follow, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,
@@ -661,6 +664,10 @@ pub struct Mesh {
     /// How many of `edge_points` belong to each edge: the first count is `Edge1`'s, as
     /// [`Op::Fillet`] numbers them.
     pub edge_point_counts: Vec<u32>,
+    /// Each vertex's point, exact (OCCT's `BRep_Tool::Pnt`, not a mesh's): the first is
+    /// `Vertex1`'s, in `TopExp::MapShapes` order, as naming and `describe` number them. What
+    /// the app picks a vertex by (M5.7).
+    pub vertex_points: Vec<[f64; 3]>,
 }
 
 impl Mesh {
@@ -718,8 +725,8 @@ impl Mesh {
     }
 
     /// Checks that the mesh is consistent: every index names a vertex, every vertex has a
-    /// normal, the per-face counts and per-edge counts add up, every coordinate is finite,
-    /// and every normal is a unit vector (to [`NORMAL_LENGTH_TOLERANCE`]). Run it before
+    /// normal, the per-face counts and per-edge counts add up, every coordinate (a vertex's
+    /// point's too) is finite, and every normal is a unit vector (to [`NORMAL_LENGTH_TOLERANCE`]). Run it before
     /// indexing a mesh that came from another process.
     pub fn validate(&self) -> Result<(), String> {
         match (self.face_triangles.contains(&0), self.valid) {
@@ -764,6 +771,9 @@ impl Mesh {
         let finite = |p: &[f64; 3]| p.iter().all(|c| c.is_finite());
         if !self.positions.iter().chain(&self.edge_points).all(finite) {
             return Err("a coordinate isn't finite".to_owned());
+        }
+        if let Some(v) = self.vertex_points.iter().position(|p| !finite(p)) {
+            return Err(format!("Vertex{}'s point isn't finite", v + 1));
         }
         if !self.normals.iter().flatten().all(|c| c.is_finite()) {
             return Err("a normal isn't finite".to_owned());

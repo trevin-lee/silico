@@ -1062,8 +1062,9 @@ fn a_mesh_the_kernel_fails_names_its_body_and_poisons_nothing() {
     assert_eq!(read.bodies[0].faces.len(), 9);
 }
 
-/// A mesh of `faces` faces of a triangle each and `edges` edges of two points each, as a
-/// worker could send it whatever the shape is: it holds together.
+/// A mesh of `faces` faces of a triangle each and `edges` edges of two points each, and the
+/// example cut's ten vertices, as a worker could send it whatever the shape is: it holds
+/// together.
 fn faces_and_edges(faces: usize, edges: usize) -> Mesh {
     Mesh {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
@@ -1072,6 +1073,7 @@ fn faces_and_edges(faces: usize, edges: usize) -> Mesh {
         face_triangles: vec![1; faces],
         edge_points: vec![[0.0, 0.0, 0.0]; 2 * edges],
         edge_point_counts: vec![2; edges],
+        vertex_points: vec![[0.0; 3]; 10],
         valid: None,
     }
 }
@@ -1152,6 +1154,40 @@ fn a_worker_mesh_of_fewer_faces_than_the_solid_is_refused_as_the_workers_fault()
         (ErrorCode::ProtocolError, Some("m3tq8v0z")),
         "{e:?}"
     );
+}
+
+// A worker's mesh of the solid's faces and edges but another number of vertices (9 or 11
+// for the cut's 10) isn't the solid's either: refused as the worker's fault, naming each
+// count, and dropped from the cache, so the next read on a well kernel recovers.
+#[test]
+fn a_worker_mesh_of_another_number_of_vertices_is_refused_and_the_next_read_recovers() {
+    for vertices in [9, 11, 0] {
+        let mut mesh = faces_and_edges(9, 15);
+        mesh.vertex_points = vec![[0.0; 3]; vertices];
+        let wrong = Arc::new(AtomicBool::new(true));
+        let bench = meshing_to(mesh, Arc::clone(&wrong));
+        let e = refused(bench.read(&of(front(80.0), 1000, 1000)));
+        assert_eq!(
+            (e.code(), e.feature(), e.cause()),
+            (
+                ErrorCode::ProtocolError,
+                Some("m3tq8v0z"),
+                Some(
+                    format!(
+                        "a mesh of 9 faces, 15 edges, and {vertices} vertices, for a solid of 9, 15, and 10"
+                    )
+                    .as_str()
+                )
+            ),
+            "{e:?}"
+        );
+        wrong.store(false, Ordering::SeqCst);
+        let again = bench
+            .read(&of(front(80.0), 1000, 1000))
+            .unwrap_or_else(|p| panic!("the kernel well, still refused: {p:?}"));
+        assert_eq!(again.bodies[0].vertices.len(), 10, "{vertices}");
+        assert_eq!(bench.meshed(), [0.03125, 0.03125], "{vertices}");
+    }
 }
 
 #[test]

@@ -343,7 +343,7 @@ fn the_examples_are_the_designs_own_text() {
         ),
         (
             "### `replace_text` (M4.2)",
-            "### `text` (M4.2)",
+            "### `text` (M4.2; `revision` in M5)",
             "replace_text",
             &[
                 Some("request"),
@@ -353,10 +353,10 @@ fn the_examples_are_the_designs_own_text() {
             ],
         ),
         (
-            "### `text` (M4.2)",
+            "### `text` (M4.2; `revision` in M5)",
             "### `outline` (M4.2)",
             "text",
-            &[Some("request"), Some("result")],
+            &[Some("request"), Some("result"), Some("request-revision")],
         ),
         (
             "### `outline` (M4.2)",
@@ -649,7 +649,7 @@ const REQUESTS: [(&str, &[&str]); 15] = [
     ),
     ("remove_feature", &["session", "revision", "feature"]),
     ("replace_text", &["session", "revision", "text"]),
-    ("text", &["session", "feature"]),
+    ("text", &["session", "feature", "revision"]),
     ("outline", &["session"]),
     ("check", &["session", "model", "fresh"]),
     ("cache_clear", &["session"]),

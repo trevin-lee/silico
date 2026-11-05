@@ -443,8 +443,10 @@ crates/silico-core/src/sketch_tools/dimension.rs | inside | replace > with >= | 
 crates/silico-core/src/sketch_tools/dimension.rs | lines | replace > with >= | #345
 crates/silico-core/src/sketch_tools/dimension.rs | SmartDimension::step | replace > with >= | #345
 # The viewport's zoom stop (#341). `View::zoom` caps an orthographic zoom in at `most`, the
-# octaves down to `least`, the least view height the drawn bodies' reach allows: `reach` is
-# a max over finite boxes from a finite target, so `least` is finite and never below 0, and
+# octaves down to `least`, the least view height the drawn bodies' reach allows in the pane
+# (`views::least_view_height(rows, reach)`, rows × reach / 2^19 × 1.01, the pane's rows at
+# least 1): `reach` is a max over finite boxes from a finite target, so `least` is finite
+# and never below 0 (0 for no box), and
 # the camera's view height is positive and finite. `scroll > 0.0` as `>= 0.0`: at a scroll of
 # 0 (or −0) the cap gives 0 (or −0) again, and `scroll != 0.0` zooms by neither. `least > 0.0`
 # as `>= 0.0`: at a least of 0, `most` is −200 · log2(0) = +∞, which caps nothing. `&&` as
@@ -491,6 +493,57 @@ crates/silico-app/src/browse.rs | Native::on | replace && with || | #363
 crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace <impl Browse for Native>::browse -> Option<Answer> with None | #363
 crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace && with || | #363
 crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace != with == | #363
+# The render limits' box corners (#353). `box_corners` gives a box's eight corners, each axis
+# `k`'s coordinate chosen by bit `k` of `i`, `low` for 0 and `high` for 1: `== 0` as `!= 0`
+# swaps `low` and `high` on every axis for every `i`, so the array holds the same eight
+# corners in another order. Its one caller, `ViewRegion::class_of_box`, passes them to
+# `ViewRegion::class`, whose answer is an all or an any over the points (every point in
+# every side; every point outside one same side), which no order changes.
+crates/silico-protocol/src/render.rs | box_corners | replace == with != | #353
+# The edges' cut (#353). `View::cut_strip` builds a strip from each segment's kept part: it
+# pushes the part's start and end (two points) when a strip begins, and one more point for
+# each segment that carries it on, and takes the strip away (leaving it empty) whenever it's
+# ended. So at the top of each segment the strip holds no point or at least two, never one:
+# `strip.len() > 1` as `>= 1` in the branch of a segment wholly outside ends the same strips.
+# And `leave < 1.0` as `leave > 1.0` (never so: `leave` is at most 1) never ends a strip
+# where a segment leaves the pyramid; the strip is ended all the same where it would be next,
+# with nothing pushed between: the next segment starts at that end, outside the half-space
+# it left by (its form there below 0), so the next segment is wholly outside (the branch
+# above ends the strip), or enters at a fraction above 0 (`fa / (fa - fb)` with `fa` below 0
+# and `fb` at least 0), which ends it before it begins another; or there's no next segment,
+# and the strip is ended after the loop. Each gives the same strips.
+crates/silico-render/src/render.rs | View::cut_strip | replace > with >= | #353
+crates/silico-render/src/render.rs | View::cut_strip | replace < with > | #353
+# The render limits' rerun (#353). `check_bodies_in_view` keeps the farthest reach its rule
+# refuses by its points: `points > f` as `points >= f` differs only where a later body's
+# reach equals the one kept, and then keeps a value equal to it, so the refusal's reach and
+# least are the same.
+crates/silico-protocol/src/render.rs | check_bodies_in_view | replace > with >= | #353
+# `View::cut_strip`'s strip holds no point or at least two wherever its length is asked
+# (each strip begins with two, its start and its end, and grows by one; it's taken away
+# whole when ended), so `strip.len() > 1` as `>= 1` where a re-entering segment ends it, and
+# after the loop, ends the same strips.
+crates/silico-render/src/render.rs | View::cut_strip | replace > with >= | #353
+crates/silico-render/src/render.rs | View::cut_strip | replace > with >= | #353
+# `edges` chooses the frustum an edge is placed by from its stroke: a highlighted one's (4
+# points) where it's wider than the plain 2. `width > EDGE_WIDTH` as `>=` places a plain
+# edge by the highlighted stroke's frustum, wider than its own: it places, besides those
+# its own frustum places, only edges whose every point is past its own stroke's reach of the
+# image (the plain frustum is the image's widened by exactly that reach, on every side; its
+# floor, depth above 0, the same in both), which draw no pixel and pick nothing. The image
+# and the picking are the same.
+crates/silico-render/src/render.rs | edges | replace > with >= | #353
+# `ray`'s guard on the size and the pixel, `width == 0 || height == 0 || !finite`, is a fast
+# path ahead of what would answer none anyway: with a side of 0 or a pixel not finite, the
+# pixel's device coordinate on that axis, `pixel / side * 2 - 1` (and `1 - ...`), is ±inf or
+# NaN (a finite over 0 is ±inf, 0 over 0 NaN; an infinite or NaN pixel stays so), and the
+# view point is the inverse matrix times it, each of its components a sum with that one
+# times its column's entry (±inf or NaN whether the entry is 0 or not, 0 × inf being NaN),
+# then over w, likewise not finite; `unproject` gives none for a point not finite. So either
+# `||` as `&&` lets a case through to the same none (the tests' sizes of 0 and NaN pixels
+# each alone, a_ray_is_none_for_a_camera_or_size_the_checks_refuse).
+crates/silico-render/src/render.rs | ray | replace || with && | #355
+crates/silico-render/src/render.rs | ray | replace || with && | #355
 # The timeline's track (#369) turns off egui's drag-to-scroll, which egui's default turns on
 # only on a touch screen, and only for a press its hit test gives the track's background.
 # The track scrolls only once its items overflow it, and then every point of it is within
@@ -515,12 +568,45 @@ crates/silico-app/src/banner.rs | show | replace + with - | #381
 # The banner takes clicks and drags (#381): `Sense::CLICK` and `Sense::DRAG` are egui's
 # bits 0 and 1, apart, so their `^` is their `|`.
 crates/silico-app/src/banner.rs | show | replace | with ^ | #381
-# A modal's border, at each side (#381): `theme::BORDER_WIDTH` is 1, so `2.0 / 1.0` is
-# `2.0 * 1.0`, in the tallest the window allows and in the width inside the border.
-crates/silico-app/src/modal.rs | show | replace * with / | #381
-crates/silico-app/src/modal.rs | show | replace * with / | #381
 # A modal's border, at each side (#382, as #381's for `show`, which became `show_sized`):
 # `theme::BORDER_WIDTH` is 1, so `2.0 / 1.0` is `2.0 * 1.0`, in the tallest the window
 # allows and in the width inside the border.
 crates/silico-app/src/modal.rs | show_sized | replace * with / | #382
 crates/silico-app/src/modal.rs | show_sized | replace * with / | #382
+# A key cap's inner corner (#392) takes the ellipse's gradient for its normal only when both
+# its radii are more than none; `rx >= 0.0` for `rx > 0.0` differs only where rx is 0 and ry
+# more. Each corner's ry is the radius less its top or bottom border, rx the radius less its
+# side's, and no side is wider than the top or bottom (1 against 1 and 2), so ry > 0 makes
+# rx > 0: every cap's normal is the same.
+crates/silico-app/src/theme.rs | key_cap_border | replace > with >= | #392
+# diff (#390): `top_level_order`'s test that each side has a member the other hasn't only
+# spares `union`'s clone and write. Where it fails, one side's members include the other's,
+# each side in the writer's order, so `merged` gives the larger side's order, which sorting
+# by the writer's order leaves as it is: the same changes, in the same order, either way.
+crates/silico-core/src/document/diff.rs | top_level_order | delete ! | #390
+crates/silico-core/src/document/diff.rs | top_level_order | replace && with || | #390
+# diff's written length (#390): a name the change before shares is the same string, so its
+# length measured again is the length kept; the guard only spares measuring a megabyte
+# name once for each of thousands of changes.
+crates/silico-core/src/command/wire/reads.rs | written_length | replace match guard std::sync::Arc::ptr_eq(name, &c.name) with false | #390
+# A pick's toggle (#385): a plain click's items start empty (`How::Replace => Vec::new()`),
+# so no item is found to remove and the guard `how == How::Toggle` is never reached but
+# for a Ctrl-click, where it holds.
+crates/silico-app/src/selection.rs | Selection::pick | replace match guard how == How::Toggle with true | #385
+# A click waiting for a model's meshes, as another is published (#385): `published` reaches
+# the guard only for a model other than the one it holds (`self.of != Some((models,
+# revision))`), and a click's `awaits` is only ever none or the model held (set from
+# `self.of` when it's made, and to the new model here as `self.of` is), so `awaited` is
+# the model held before, never the new one, and the guard always holds.
+crates/silico-app/src/selection.rs | Selection::published | replace match guard awaited != (models, revision) with true | #385
+# An item made again from a read (#385): `Picked { name: picked.name, ..picked }` without
+# its `name` takes `picked.name` from `..picked`, the same value.
+crates/silico-app/src/selection.rs | Selection::took | delete field name from struct Picked expression | #385
+crates/silico-app/src/selection.rs | Selection::took | delete field name from struct Picked expression | #385
+# A closed export dialog's form (#395, whose `match` of what was asked replaced an `if
+# matches!` of the same arm): left in `App::export` once its dialog goes, it's never read.
+# Every read of it is the dialog's own, while `asking` is `Export` of its session (drawn,
+# its Browse… asked and answered, an answer landing only while that's still asked), or a
+# Save As moving its folder (`saved_as`), which changes nothing read; and Export… makes a
+# new form each time it opens the dialog. The arm only lets the form go sooner.
+crates/silico-app/src/app.rs | App<P>::ask | delete match arm Some(Asking::Export(_)) | #395

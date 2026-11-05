@@ -701,6 +701,15 @@ std::unique_ptr<Tessellation> tessellate(const Shape &shape, double deflection) 
     }
     out->edge_points_per_edge_.push_back(static_cast<uint32_t>(points.NbPoints()));
   }
+
+  // Each vertex's own point, of the shape as given (the copy's are the same vertices'), in
+  // the order describe numbers them.
+  ShapeMap vertices;
+  TopExp::MapShapes(shape.shape, TopAbs_VERTEX, vertices);
+  for (int i = 1; i <= vertices.Extent(); ++i) {
+    const gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(vertices(i)));
+    out->vertex_points_.insert(out->vertex_points_.end(), {p.X(), p.Y(), p.Z()});
+  }
   return out;
 }
 

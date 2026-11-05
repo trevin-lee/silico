@@ -27,7 +27,7 @@
                 "type": "null"
               }
             ],
-            "description": "A perspective camera's vertical angle, in degrees, from 0.001 to 179.999; null for\nan orthographic camera."
+            "description": "A perspective camera's vertical angle, in degrees, its range by the image's size: see\nthe error; null for an orthographic camera."
           },
           "projection": {
             "$ref": "#/$defs/Projection"
@@ -59,7 +59,7 @@
                 "type": "null"
               }
             ],
-            "description": "An orthographic camera's view's height, in mm, from 1e-6 to 1e12; null for a\nperspective camera."
+            "description": "An orthographic camera's view's height, in mm, up to 1e12, its least by the image's\nsize: see the error; null for a perspective camera."
           }
         },
         "required": [
@@ -251,7 +251,7 @@
                 "type": "null"
               }
             ],
-            "description": "A perspective camera's vertical angle, in degrees, from 0.001 to 179.999; null for\nan orthographic camera."
+            "description": "A perspective camera's vertical angle, in degrees, its range by the image's size: see\nthe error; null for an orthographic camera."
           },
           "projection": {
             "$ref": "#/$defs/Projection"
@@ -283,7 +283,7 @@
                 "type": "null"
               }
             ],
-            "description": "An orthographic camera's view's height, in mm, from 1e-6 to 1e12; null for a\nperspective camera."
+            "description": "An orthographic camera's view's height, in mm, up to 1e12, its least by the image's\nsize: see the error; null for a perspective camera."
           }
         },
         "required": [
@@ -358,6 +358,25 @@
           "name",
           "stable",
           "triangles"
+        ],
+        "type": "object"
+      },
+      "MeshVertex": {
+        "additionalProperties": false,
+        "description": "A vertex of a body's mesh.",
+        "properties": {
+          "name": {
+            "description": "Its name, by the element map.",
+            "type": "string"
+          },
+          "stable": {
+            "description": "Whether `name` is stable.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "stable"
         ],
         "type": "object"
       },
@@ -482,6 +501,25 @@
               "type": "array"
             },
             "type": "array"
+          },
+          "vertex_points": {
+            "description": "Each vertex's point, exact (the solid's, not a mesh's), in `vertices`' order; empty\nwhen the body is held.",
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "vertices": {
+            "description": "Each vertex, in the solid's own order (`Vertex1` first), given whether or not the\nbody is held.",
+            "items": {
+              "$ref": "#/$defs/MeshVertex"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -498,7 +536,9 @@
           "normals",
           "positions",
           "serves",
-          "triangles"
+          "triangles",
+          "vertex_points",
+          "vertices"
         ],
         "type": "object"
       },

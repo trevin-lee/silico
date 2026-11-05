@@ -32,6 +32,8 @@ pub(crate) enum Kind {
     Danger,
     /// `.canvas-banner .btn-secondary`: a button on a banner whose words are this colour.
     Banner(Color32),
+    /// `.btn-ghost`: no fill until hovered (Mark as seen).
+    Ghost,
 }
 
 /// A button: its words (its label), its kind, its key cap if it shows one, and whether it's
@@ -299,7 +301,7 @@ fn cap_width(galley: &Galley) -> f32 {
 }
 
 /// The width `button` takes where nothing widens it (`.btn`): its words and its key cap,
-/// [`theme::BUTTON_GAP`] apart, padded at each side.
+/// [`cap_space`] apart, padded at each side.
 pub(crate) fn natural_width(ui: &Ui, button: &Button<'_>) -> f32 {
     let words = ui
         .painter()
@@ -307,9 +309,15 @@ pub(crate) fn natural_width(ui: &Ui, button: &Button<'_>) -> f32 {
         .size()
         .x;
     let cap = button.cap.map_or(0.0, |cap| {
-        theme::BUTTON_GAP + cap_width(&cap_galley(ui, cap, Color32::WHITE))
+        cap_space() + cap_width(&cap_galley(ui, cap, Color32::WHITE))
     });
     words + cap + 2.0 * theme::BUTTON_PADDING
+}
+
+/// The space between a button's words and its key cap: the button's gap and the cap's margin
+/// (`.btn { gap: 6px }`, `.btn .kbd { margin-left: 2px }`).
+fn cap_space() -> f32 {
+    theme::BUTTON_GAP + theme::BUTTON_KEY_CAP_MARGIN
 }
 
 /// A button's fill and words, as the prototype colours `kind`: on or off, hovered or not.
@@ -342,6 +350,9 @@ pub(crate) fn colours(kind: Kind, enabled: bool, hovered: bool) -> (Color32, Col
             theme::BANNER_BUTTON_HOVER_TEXT,
         ),
         (Kind::Banner(ink), true, false) => (theme::BANNER_BUTTON_BG, ink),
+        (Kind::Ghost, false, _) => (Color32::TRANSPARENT, theme::TEXT_DISABLED),
+        (Kind::Ghost, true, true) => (theme::GHOST_BUTTON_HOVER_BG, theme::GHOST_BUTTON_HOVER_TEXT),
+        (Kind::Ghost, true, false) => (Color32::TRANSPARENT, theme::GHOST_BUTTON_TEXT),
     }
 }
 
@@ -368,9 +379,7 @@ pub(crate) fn paint(ui: &mut Ui, rect: Rect, button: &Button<'_>) -> Response {
             );
             let words = ui.painter().layout_job(properties::body(button.text, ink));
             let cap = button.cap.map(|cap| cap_galley(ui, cap, ink));
-            let cap_room = cap
-                .as_ref()
-                .map_or(0.0, |cap| theme::BUTTON_GAP + cap_width(cap));
+            let cap_room = cap.as_ref().map_or(0.0, |cap| cap_space() + cap_width(cap));
             let content = words.size().x + cap_room;
             let left = rect.center().x - content / 2.0;
             let middle = rect.center().y;
@@ -384,14 +393,9 @@ pub(crate) fn paint(ui: &mut Ui, rect: Rect, button: &Button<'_>) -> Response {
                 );
                 // `.btn .kbd`: no fill, its border and words the button's, at 55%.
                 let faded = ink.gamma_multiply(theme::BUTTON_KEY_CAP_OPACITY);
-                ui.painter().rect_stroke(
-                    cap_rect,
-                    theme::KEY_CAP_CORNER_RADIUS,
-                    Stroke::new(theme::KEY_CAP_BORDER, faded),
-                    StrokeKind::Inside,
-                );
+                theme::key_cap_box(ui, cap_rect, Color32::TRANSPARENT, faded);
                 ui.painter().galley_with_override_text_color(
-                    cap_rect.center() - cap.size() / 2.0,
+                    theme::key_cap_text_centre(cap_rect) - cap.size() / 2.0,
                     cap,
                     faded,
                 );
@@ -405,7 +409,7 @@ pub(crate) fn paint(ui: &mut Ui, rect: Rect, button: &Button<'_>) -> Response {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use eframe::egui::epaint::{RectShape, TextShape};
+    use eframe::egui::epaint::{self, RectShape, TextShape};
     use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Shape, Vec2};
     use egui::accesskit::Role;
     use egui_kittest::Harness;
@@ -472,12 +476,15 @@ pub(crate) mod tests {
         pub const LBL_BOTTOM: f32 = 4.0;
         pub const FIELD_H: f32 = 26.0;
 
-        /// `.btn`: `height: 22px; padding: 0 10px; gap: 6px`; `.btn .kbd`: 16 high, `opacity:
-        /// .55`.
+        /// `.btn`: `height: 22px; padding: 0 10px; gap: 6px`; `.btn .kbd`: `margin-left: 2px;
+        /// opacity: .55`, `.kbd`'s 16 high, its words on its 16 line under its 1 top border.
         pub const BTN_H: f32 = 22.0;
         pub const BTN_PADDING: f32 = 10.0;
         pub const BTN_GAP: f32 = 6.0;
+        pub const KBD_MARGIN: f32 = 2.0;
         pub const KBD_H: f32 = 16.0;
+        pub const KBD_LH: f32 = 16.0;
+        pub const KBD_BORDER: f32 = 1.0;
         pub const KBD_OPACITY: f32 = 0.55;
         /// `.btn-primary`: Gray.800 on Gray.250; hovered `--g850` and `#000`; off Gray.300 and
         /// Gray.500.
@@ -626,6 +633,215 @@ pub(crate) mod tests {
             })
             .map(|shape| (shape.fill, shape.corner_radius))
             .collect()
+    }
+
+    /// A key cap's border as painted: its colour, where its outer edge is, each side's width
+    /// (top, right, bottom, left); at each corner, how much it covers of the corner's pixel
+    /// and of the point 3 in from the corner on its diagonal, and where its outer and inner
+    /// edges cross that diagonal, as how far in from the corner on each axis; and the stroke
+    /// of every rectangle painted about the cap.
+    #[derive(Debug)]
+    pub(crate) struct CapBorder {
+        pub colour: Color32,
+        pub outer: Rect,
+        pub widths: [f32; 4],
+        pub corners: [(f32, f32); 4],
+        pub diagonals: [(f32, f32); 4],
+        pub strokes: Vec<egui::Stroke>,
+    }
+
+    /// `mesh`'s most opaque colour: a border's, its feathers fading it to nothing.
+    pub(crate) fn solid(mesh: &epaint::Mesh) -> Color32 {
+        mesh.vertices
+            .iter()
+            .map(|vertex| vertex.color)
+            .max_by_key(|colour| colour.a())
+            .unwrap_or(Color32::TRANSPARENT)
+    }
+
+    /// How much of `mesh`'s [`solid`] colour covers `at`, from 0 to 1: its alpha there,
+    /// interpolated across the triangle it lies in (the most, where triangles overlap), over
+    /// the solid colour's.
+    pub(crate) fn cover(mesh: &epaint::Mesh, at: Pos2) -> f32 {
+        mesh.indices
+            .chunks_exact(3)
+            .filter_map(|triangle| {
+                let [a, b, c] = [0, 1, 2].map(|k| &mesh.vertices[triangle[k] as usize]);
+                let (ab, ac, ap) = (b.pos - a.pos, c.pos - a.pos, at - a.pos);
+                let area = ab.x * ac.y - ab.y * ac.x;
+                if area.abs() < 1e-9 {
+                    return None;
+                }
+                let u = (ap.x * ac.y - ap.y * ac.x) / area;
+                let v = (ab.x * ap.y - ab.y * ap.x) / area;
+                let inside = u >= -1e-6 && v >= -1e-6 && u + v <= 1.0 + 1e-6;
+                inside.then(|| {
+                    let alpha = |colour: Color32| f32::from(colour.a());
+                    (1.0 - u - v) * alpha(a.color) + u * alpha(b.color) + v * alpha(c.color)
+                })
+            })
+            .fold(0.0, f32::max)
+            / f32::from(solid(mesh).a())
+    }
+
+    /// The border painted round the key cap whose box is `rect`, read from its mesh, the one
+    /// mesh painted about it: each edge where its cover crosses a half, along the lines
+    /// through the box's middle and along each corner's diagonal, read in steps of 1/256
+    /// point and between them in a line; at each corner, its cover half a point in from it
+    /// across and down, and 3 in on its diagonal less 2.5 along it.
+    #[track_caller]
+    pub(crate) fn cap_border<S>(h: &Harness<'_, S>, rect: Rect) -> CapBorder {
+        let found: Vec<epaint::Mesh> = painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Mesh(mesh) => Some((*mesh).clone()),
+                _ => None,
+            })
+            .filter(|mesh| {
+                let bounds = mesh.calc_bounds();
+                bounds.contains(rect.center()) && rect.expand(1.0).contains_rect(bounds)
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "the border round {rect:?}");
+        let mesh = &found[0];
+        // From `from` towards `to`: where the cover first reaches a half, and where it next
+        // falls below one, as distances from `from`.
+        let crossings = |from: Pos2, to: Pos2| -> (f32, f32) {
+            const STEP: f32 = 1.0 / 256.0;
+            let way = (to - from).normalized();
+            let length = (to - from).length();
+            let mut found = Vec::new();
+            let mut last = cover(mesh, from);
+            let mut at = STEP;
+            while at <= length && found.len() < 2 {
+                let now = cover(mesh, from + way * at);
+                let crossed = if found.is_empty() {
+                    last < 0.5 && now >= 0.5
+                } else {
+                    last >= 0.5 && now < 0.5
+                };
+                if crossed {
+                    found.push(at - STEP + STEP * (0.5 - last) / (now - last));
+                }
+                last = now;
+                at += STEP;
+            }
+            assert_eq!(found.len(), 2, "the border's edges from {from:?} to {to:?}");
+            (found[0], found[1])
+        };
+        let bounds = mesh.calc_bounds();
+        let middle = rect.center();
+        let top = crossings(Pos2::new(middle.x, bounds.top() - 1.0), middle);
+        let right = crossings(Pos2::new(bounds.right() + 1.0, middle.y), middle);
+        let bottom = crossings(Pos2::new(middle.x, bounds.bottom() + 1.0), middle);
+        let left = crossings(Pos2::new(bounds.left() - 1.0, middle.y), middle);
+        let outer = Rect::from_min_max(
+            Pos2::new(bounds.left() - 1.0 + left.0, bounds.top() - 1.0 + top.0),
+            Pos2::new(
+                bounds.right() + 1.0 - right.0,
+                bounds.bottom() + 1.0 - bottom.0,
+            ),
+        );
+        let widths = [top, right, bottom, left].map(|(outer, inner)| inner - outer);
+        // The ring's middle 2.5 from a corner's centre, 3 in from it, on the diagonal.
+        let ring = 3.0 - 2.5 * std::f32::consts::FRAC_1_SQRT_2;
+        let ways = [
+            (outer.left_top(), Vec2::new(1.0, 1.0)),
+            (outer.right_top(), Vec2::new(-1.0, 1.0)),
+            (outer.right_bottom(), Vec2::new(-1.0, -1.0)),
+            (outer.left_bottom(), Vec2::new(1.0, -1.0)),
+        ];
+        let corners = ways.map(|(corner, inward)| {
+            (
+                cover(mesh, corner + inward * 0.5),
+                cover(mesh, corner + inward * ring),
+            )
+        });
+        // From each corner 4.5 in on each axis, past where its inner edge crosses the
+        // diagonal; a distance along the diagonal is √2 times one on each axis.
+        let diagonals = ways.map(|(corner, inward)| {
+            let (outer, inner) = crossings(corner, corner + inward * 4.5);
+            (
+                outer * std::f32::consts::FRAC_1_SQRT_2,
+                inner * std::f32::consts::FRAC_1_SQRT_2,
+            )
+        });
+        let strokes = rects(h)
+            .into_iter()
+            .filter(|shape| {
+                shape.rect.contains(rect.center()) && rect.expand(1.0).contains_rect(shape.rect)
+            })
+            .map(|shape| shape.stroke)
+            .collect();
+        CapBorder {
+            colour: solid(mesh),
+            outer,
+            widths,
+            corners,
+            diagonals,
+            strokes,
+        }
+    }
+
+    /// `border` as `.kbd`'s, round the box `rect` as egui puts it on the pixel grid (the
+    /// harness's point a pixel): `colour`; 1 at its top and sides and 2 at its bottom
+    /// (`border: 1px solid; border-bottom-width: 2px`); and its corners 3 round
+    /// (`border-radius: 3px`): the pixel in each corner bare, its middle 2.5 across and down
+    /// from the corner's centre, so 3.54 from it, outside the radius and its half a pixel of
+    /// feathering (a square corner covers it, a radius under 2.9 reaches it); and the point
+    /// 2.5 from the centre on the diagonal covered, the ring's middle there (an outer radius
+    /// of 4 covers it 0.59; of 2, about 0.6). On each corner's diagonal, `border-box`'s
+    /// outer edge is a circle of 3 about the point 3 in on each axis, crossing it
+    /// 3 − 3/√2 = 0.879 in; its inner edge, the outer radius less the widths at the corner
+    /// about the same centre (1 + 2 and 1 + 2 in at the top, 1 + 2 and 2 + 1 at the bottom):
+    /// at the top a circle of 2, crossing it 3 − 2/√2 = 1.586 in, and at the bottom an
+    /// ellipse 2 across and 1 down, crossing it where (3 − t)²(1/4 + 1) = 1, at
+    /// 3 − 1/√1.25 = 2.106 in. No rectangle about the cap is stroked: its border is drawn
+    /// once.
+    #[track_caller]
+    pub(crate) fn kbd_border(border: &CapBorder, rect: Rect, colour: Color32, what: &str) {
+        use egui::emath::GuiRounding as _;
+        same_colour(border.colour, colour, &format!("{what}'s border"));
+        sized(
+            border.outer,
+            rect.round_to_pixels(1.0),
+            &format!("{what}'s border"),
+        );
+        for (got, want) in border.widths.into_iter().zip([1.0, 1.0, 2.0, 1.0]) {
+            assert!(
+                (got - want).abs() <= 1.0 / 64.0,
+                "{what}'s border: {:?}, not 1, 1, 2, 1",
+                border.widths
+            );
+        }
+        assert!(
+            border
+                .corners
+                .iter()
+                .all(|(corner, ring)| *corner < 0.01 && *ring > 0.9),
+            "{what}'s corners: {:?}",
+            border.corners
+        );
+        let top = (
+            3.0 - 3.0 * std::f32::consts::FRAC_1_SQRT_2,
+            3.0 - std::f32::consts::SQRT_2,
+        );
+        let bottom = (
+            3.0 - 3.0 * std::f32::consts::FRAC_1_SQRT_2,
+            3.0 - 1.0 / 1.25_f32.sqrt(),
+        );
+        for (got, want) in border.diagonals.into_iter().zip([top, top, bottom, bottom]) {
+            assert!(
+                (got.0 - want.0).abs() <= 1.0 / 16.0 && (got.1 - want.1).abs() <= 1.0 / 16.0,
+                "{what}'s border on its corners' diagonals: {:?}, not {want:?}",
+                border.diagonals
+            );
+        }
+        assert!(
+            border.strokes.iter().all(|stroke| stroke.is_empty()),
+            "{what}'s rectangles' strokes: {:?}",
+            border.strokes
+        );
     }
 
     pub(crate) fn near(a: f32, b: f32) -> bool {
@@ -819,8 +1035,9 @@ pub(crate) mod tests {
             font(&words, css::FS, label);
             assert_eq!(colour(&words), ink, "{label}'s words");
         }
-        // `.btn .kbd`: Save's ↵, 6 after its words, 16 high, in its words' colour at 55%;
-        // the two centred in the button together.
+        // `.btn .kbd`: Save's ↵, 6 + 2 = 8 after its words (`.btn`'s gap and the cap's
+        // margin), 16 high, no fill, its words and its border (1, and 2 at its bottom) in its
+        // words' colour at 55%; the two centred in the button together.
         let save = widget(&h, Role::Button, "Save");
         let words = text_shape(&h, "Save");
         let cap = text_shape(&h, "↵");
@@ -829,29 +1046,30 @@ pub(crate) mod tests {
             at_opacity(css::PRIMARY.1, css::KBD_OPACITY),
             "the cap's words",
         );
-        let outline = rects(&h)
+        let boxed = rects(&h)
             .into_iter()
             .find(|shape| {
                 shape.fill == Color32::TRANSPARENT
-                    && shape.stroke.width > 0.0
                     && save.contains_rect(shape.rect)
                     && near(shape.rect.height(), css::KBD_H)
             })
-            .expect("the cap's outline");
-        same_colour(
-            outline.stroke.color,
-            at_opacity(css::PRIMARY.1, css::KBD_OPACITY),
-            "the cap's outline",
-        );
-        assert!(near(outline.rect.center().y, save.center().y));
+            .expect("the cap's box");
+        assert!(boxed.stroke.is_empty(), "Save's cap: {:?}", boxed.stroke);
+        assert!(near(boxed.rect.center().y, save.center().y));
         assert!(near(
-            outline.rect.left(),
-            words.pos.x + words.galley.size().x + css::BTN_GAP
+            boxed.rect.left(),
+            words.pos.x + words.galley.size().x + css::BTN_GAP + css::KBD_MARGIN
         ));
         assert!(near(
-            outline.rect.right() - save.center().x,
+            boxed.rect.right() - save.center().x,
             save.center().x - words.pos.x
         ));
+        kbd_border(
+            &cap_border(&h, boxed.rect),
+            boxed.rect,
+            at_opacity(css::PRIMARY.1, css::KBD_OPACITY),
+            "Save's cap",
+        );
         // Hovered, each takes its hovered colours.
         for (label, (fill, ink)) in [
             ("Save", css::PRIMARY_HOVER),
@@ -1107,8 +1325,10 @@ pub(crate) mod tests {
 
     #[test]
     fn a_key_cap_is_its_words_padded_and_bordered_16_at_least_and_widens_its_button() {
-        // `.m-foot .btn`s with key caps: `.btn`'s words, its gap, and its cap, centred in it,
-        // 10 at each side, 76 wide at least; the cap's words in its middle.
+        // `.m-foot .btn`s with key caps: `.btn`'s words, its gap and the cap's margin, and its
+        // cap, centred in it, 10 at each side, 76 wide at least; the cap's words in its
+        // middle across, and down in the middle of its 16 line under its 1 top border, 1
+        // below its middle; its border 1, and 2 at its bottom, 3 round.
         const BUTTONS: [(&str, &str); 3] =
             [("Drop", "."), ("Cancel", "Esc"), ("Export", "Ctrl+Shift+E")];
         let mut h = Harness::builder().with_size(WINDOW).build_ui(|ui| {
@@ -1131,17 +1351,22 @@ pub(crate) mod tests {
             let words = text_shape(&h, label);
             let cap_words = text_shape(&h, key);
             let advance = cap_words.galley.size().x;
-            let cap = (advance + 2.0 * (KBD_PADDING + css::BORDER)).max(KBD_MIN_W);
+            let cap = (advance + 2.0 * (KBD_PADDING + css::KBD_BORDER)).max(KBD_MIN_W);
             clamped[usize::from(cap == KBD_MIN_W)] = true;
             let outline = rects(&h)
                 .into_iter()
                 .find(|shape| {
                     shape.fill == Color32::TRANSPARENT
-                        && shape.stroke.width == css::BORDER
+                        && near(shape.rect.height(), css::KBD_H)
                         && button.contains_rect(shape.rect)
                 })
-                .expect("the cap's outline");
-            let content = words.galley.size().x + css::BTN_GAP + cap;
+                .expect("the cap's box");
+            assert!(
+                outline.stroke.is_empty(),
+                "{label}'s cap: {:?}",
+                outline.stroke
+            );
+            let content = words.galley.size().x + css::BTN_GAP + css::KBD_MARGIN + cap;
             let width = (content + 2.0 * css::BTN_PADDING).max(css::FOOT_BTN_MIN_W);
             assert!(
                 near(button.width(), width),
@@ -1158,19 +1383,33 @@ pub(crate) mod tests {
                 outline.rect,
                 Rect::from_min_size(
                     Pos2::new(
-                        left + words.galley.size().x + css::BTN_GAP,
+                        left + words.galley.size().x + css::BTN_GAP + css::KBD_MARGIN,
                         button.center().y - css::KBD_H / 2.0,
                     ),
                     Vec2::new(cap, css::KBD_H),
                 ),
                 &format!("{label}'s cap"),
             );
-            // `text-align: center`: the cap's words in its middle.
-            assert!(
-                near(cap_words.pos.x + advance / 2.0, outline.rect.center().x),
-                "{key}: {:?} in {:?}",
-                cap_words.pos,
-                outline.rect
+            // `text-align: center`: the cap's words in its middle; `line-height: 16px`: down,
+            // in its line's, which starts under its top border.
+            at(
+                cap_words.pos + cap_words.galley.size() / 2.0,
+                Pos2::new(
+                    outline.rect.center().x,
+                    outline.rect.top() + css::KBD_BORDER + css::KBD_LH / 2.0,
+                ),
+                &format!("{key}'s middle"),
+            );
+            let ink = match label {
+                "Drop" => css::DANGER.1,
+                "Cancel" => css::SECONDARY.1,
+                _ => css::PRIMARY.1,
+            };
+            kbd_border(
+                &cap_border(&h, outline.rect),
+                outline.rect,
+                at_opacity(ink, css::KBD_OPACITY),
+                &format!("{label}'s cap"),
             );
         }
         // One cap at its least, one wider; Export with its cap wider than 76.

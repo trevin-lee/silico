@@ -4,13 +4,15 @@ use super::rebuilds::*;
 use super::transaction::*;
 use super::types::*;
 use super::*;
+use crate::command::wire::Named;
+use crate::document;
 use crate::document::Checked;
 use crate::document::Measure;
 use crate::fake::{FakeClient, FakeKernel};
 use crate::file;
 use crate::kernel::{Kernel, KernelRequest, Op, Primitive};
 use crate::pool::Outcome;
-use crate::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
+use crate::recompute::{FeatureOutcome, Model, Recompute, RunOutcome, StepState};
 use std::collections::BTreeSet;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
@@ -51,6 +53,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             carried: Arc::new(BTreeSet::new()),
             transaction: None,
             last_reload: None,
+            reloaded_over: None,
         }),
         queue: Mutex::new(Some(sender)),
         rebuilds: Mutex::new(Rebuilds {
@@ -853,6 +856,14 @@ fn id(text: &str) -> FeatureId {
     FeatureId::new(text).unwrap()
 }
 
+/// Each feature's state in a rebuild, as `status` lists them: `pairs`, by ID, in order.
+fn states(pairs: &[(&str, StepState)]) -> crate::recompute::FeatureStates {
+    pairs
+        .iter()
+        .map(|(feature, state)| (id(feature), *state))
+        .collect()
+}
+
 fn is_box(op: &Op) -> bool {
     matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
 }
@@ -913,6 +924,72 @@ fn the_blocks_drift(problems: &Problems) {
         Some(
             "if this feature or one it uses was edited by hand or in a merge since it was saved, run format (or silico fmt) to accept its new fingerprint; if not, this is a determinism bug or a change in the kernel: find which before accepting it"
         )
+    );
+}
+
+#[test]
+fn an_edits_saved_model_is_named_by_the_background_with_no_client_asking() {
+    // An edit outside a transaction saves, and publishes its rebuild's model rebound to the
+    // saved document: a copy, not the model the engine published and the background names.
+    // Its names settle all the same, with no client asking: read as the app's selection
+    // reads them, never naming anything (`named_element_map`, `selection::resolve`), a
+    // pick of the block's face by name is found once the background has named the engine's
+    // model, and is pending till then.
+    let f = opened(BOX);
+    let session = f.session();
+    lock(&session.rebuilds).engine.hold_naming();
+    let revision = session.held.read().revision;
+    let set = f
+        .sessions
+        .set_field(
+            &f.id,
+            revision,
+            id("k7f2qx3m"),
+            "length".to_owned(),
+            crate::document::json::read(b"41").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    assert!(set.commit.unwrap().written);
+    let published = f.sessions.published(&f.id).result.unwrap();
+    assert_eq!(published.revision.number(), 2);
+    let saved = published.model;
+    let built = lock(&session.rebuilds).engine.published().unwrap();
+    // The saved revision's model is the edit's, rebound: another model, of the saved text.
+    assert!(!Arc::ptr_eq(&saved, &built));
+    assert_eq!(saved.generation(), built.generation());
+    assert_eq!(
+        saved.document().features[0].fingerprint.unwrap().volume,
+        Measure::from_millionths(8_200_000_000)
+    );
+    let block = id("k7f2qx3m");
+    let pick = ["k7f2qx3m.box.Face1"];
+    assert!(saved.named_element_map(&block).is_none());
+    assert!(saved.named_so_far(&block).is_none());
+    let resolved = crate::selection::resolve(&saved, &pick, "selection").unwrap();
+    assert_eq!(resolved.pending.len(), 1, "{resolved:?}");
+    assert!(resolved.kept.is_empty(), "{resolved:?}");
+    lock(&session.rebuilds).engine.release_naming();
+    // Waited for on the engine's model, the one it names; never on the saved copy. (The
+    // background's naming takes no lock of the session's.)
+    assert!(
+        lock(&session.rebuilds)
+            .engine
+            .wait_naming_ended(&built, WAIT)
+    );
+    assert!(std::ptr::eq(
+        saved.named_element_map(&block).unwrap(),
+        built.named_element_map(&block).unwrap()
+    ));
+    let resolved = crate::selection::resolve(&saved, &pick, "selection").unwrap();
+    assert!(resolved.pending.is_empty(), "{resolved:?}");
+    assert!(resolved.gone.is_empty(), "{resolved:?}");
+    assert_eq!(resolved.kept.len(), 1, "{resolved:?}");
+    assert_eq!(resolved.kept[0].feature, block);
+    assert_eq!(
+        resolved.kept[0].element,
+        silico_protocol::ElementRef::face(1)
     );
 }
 
@@ -1823,6 +1900,11 @@ fn a_one_edit_commits_fault_is_the_saved_revisions_and_never_met_again() {
                 done: 4,
                 steps: 4,
                 running: None,
+                features: states(&[
+                    ("k7f2qx3m", StepState::Built),
+                    ("b0000001", StepState::Faulted),
+                    ("f0000001", StepState::Blocked)
+                ]),
             }),
         }
     );
@@ -2417,6 +2499,79 @@ fn a_file_this_sessions_own_save_left_part_written_isnt_reloaded() {
         part_written(f.path.to_str().unwrap(), &old)
     );
     assert_eq!(f.file(), "part written");
+}
+
+#[test]
+fn a_read_needs_the_strongest_of_its_sides() {
+    // Fable's 6d decision, by hand: a revision by number reads nothing; null, outside a
+    // transaction; "disk", inside one too; and a read of several sides, the strongest.
+    assert!(Rereads::Never < Rereads::OutsideTransaction);
+    assert!(Rereads::OutsideTransaction < Rereads::Always);
+    let one = Some(Named::Revision(Revision::OPENED));
+    let disk = Some(Named::Disk);
+    for (sides, need) in [
+        (vec![], Rereads::Never),
+        (vec![one], Rereads::Never),
+        (vec![one, one], Rereads::Never),
+        (vec![None], Rereads::OutsideTransaction),
+        (vec![one, None], Rereads::OutsideTransaction),
+        (vec![None, one], Rereads::OutsideTransaction),
+        (vec![disk], Rereads::Always),
+        (vec![one, disk], Rereads::Always),
+        (vec![disk, None], Rereads::Always),
+        (vec![None, disk], Rereads::Always),
+        (vec![disk, disk], Rereads::Always),
+    ] {
+        assert_eq!(Rereads::needed(sides.clone()), need, "{sides:?}");
+    }
+}
+
+#[test]
+fn a_disk_side_of_a_file_left_part_written_is_refused_as_the_next_save_would_be() {
+    // Fable's 6d decision: the session knows the file isn't what it holds, so its held
+    // bytes never stand in for it; the refusal is the one the next save gives, naming the
+    // side, outside a transaction and inside one alike.
+    let f = opened(STORED);
+    let old = f.path.with_file_name(".a.silico.fmt-1");
+    *f.session().held.session_changing().part_written_mut() = Some(old.clone());
+    std::fs::write(&f.path, "part written").unwrap();
+    let path = f.path.to_str().unwrap();
+    let one = Some(Named::Revision(Revision::OPENED));
+    for transaction in [false, true] {
+        if transaction {
+            f.sessions.begin(&f.id).wait().result.unwrap();
+        }
+        let response = f.sessions.diff(&f.id, one, Some(Named::Disk)).wait();
+        let session = response.session.unwrap();
+        assert_eq!(
+            (session.revision, session.reloaded),
+            (Revision::OPENED, false)
+        );
+        assert_eq!(
+            response.result.unwrap_err().errors(),
+            [part_written(path, &old).with_parameter("to")]
+        );
+        let text = f.sessions.text_at(&f.id, None, Some(Named::Disk)).wait();
+        assert_eq!(
+            text.result.unwrap_err().errors(),
+            [part_written(path, &old).with_parameter("revision")]
+        );
+        // A revision by number answers, the file unread.
+        assert_eq!(
+            f.sessions
+                .diff(&f.id, one, one)
+                .wait()
+                .result
+                .unwrap()
+                .changes,
+            []
+        );
+    }
+    // The old text put back: the read clears the mark, and `"disk"` is the file.
+    std::fs::write(&f.path, STORED).unwrap();
+    let response = f.sessions.diff(&f.id, one, Some(Named::Disk)).wait();
+    assert_eq!(response.result.unwrap().changes, []);
+    assert_eq!(f.session().held.read().part_written(), None);
 }
 
 /// Makes `dir` read-only until dropped: a save there can't make its file beside.
@@ -3676,6 +3831,11 @@ fn a_held_rebuild_shows_its_steps_done_below_its_steps_then_all_of_them() {
         done: 1,
         steps: 4,
         running: Some("b0000001 box".to_owned()),
+        features: states(&[
+            ("k7f2qx3m", StepState::Built),
+            ("b0000001", StepState::Running),
+            ("f0000001", StepState::Queued),
+        ]),
     });
     until_progress(|| check.progress(), one_of_four.clone());
     assert_eq!(
@@ -3697,6 +3857,11 @@ fn a_held_rebuild_shows_its_steps_done_below_its_steps_then_all_of_them() {
                 done: 4,
                 steps: 4,
                 running: None,
+                features: states(&[
+                    ("k7f2qx3m", StepState::Built),
+                    ("b0000001", StepState::Built),
+                    ("f0000001", StepState::Built)
+                ]),
             }),
         }
     );
@@ -3731,6 +3896,11 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
             done: 1,
             steps: 4,
             running: Some("b0000001 box".to_owned()),
+            features: states(&[
+                ("k7f2qx3m", StepState::Built),
+                ("b0000001", StepState::Running),
+                ("f0000001", StepState::Queued),
+            ]),
         }),
     );
     // A step counts as running as its job starts, before its request reaches the kernel
@@ -3770,6 +3940,11 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
                 done: 1,
                 steps: 4,
                 running: Some("b0000001 box".to_owned()),
+                features: states(&[
+                    ("k7f2qx3m", StepState::Built),
+                    ("b0000001", StepState::Running),
+                    ("f0000001", StepState::Queued)
+                ]),
             }),
         }
     );
@@ -3798,6 +3973,11 @@ fn a_published_reads_handle_reports_no_rebuilds_progress() {
         done: 1,
         steps: 4,
         running: Some("b0000001 box".to_owned()),
+        features: states(&[
+            ("k7f2qx3m", StepState::Built),
+            ("b0000001", StepState::Running),
+            ("f0000001", StepState::Queued),
+        ]),
     });
     until_progress(|| check.progress(), lug_held.clone());
     let (go, held) = mpsc::channel::<()>();
@@ -4163,6 +4343,11 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
     queued.push((
         SessionCommand::Redo,
         Box::new(|| erased(s.redo(at, Revision::OPENED, None))),
+    ));
+    // `diff`, Fable's of 2026-11-04, last.
+    queued.push((
+        SessionCommand::Diff,
+        Box::new(|| erased(s.diff(at, None, None))),
     ));
     // M5.3's queued drag commands, after `timeline`, as the design lists them: `drag_move`
     // runs beside the queue, on the drag, and its cancel is the drag's tests'.
@@ -4599,6 +4784,41 @@ fn asked_without_pause_through_many_commits_the_sessions_own_saves_never_read_as
 mod cancel_rebuild;
 mod disk_reload;
 mod drag;
+mod rebuild_features;
+#[test]
+fn a_diff_cancelled_as_it_compares_a_feature_stops_there_and_answers_cancelled() {
+    // Held at the gate as it starts, let through, and held again as it comes to compare its
+    // first feature (`diff`'s stop is asked there, the gate first): cancelled there, it
+    // compares no other. Of two features, so a diff that went on past its stop would come
+    // to the second, saying so on `started`.
+    let f = opened(BOX_AND_PIN);
+    let (started, was_started) = mpsc::channel();
+    let (through, wait) = mpsc::channel();
+    f.session().gate.shut(started, wait);
+    let running = f.sessions.diff(&f.id, None, None);
+    // The command's start, then its first feature.
+    was_started.recv_timeout(WAIT).unwrap();
+    through.send(()).unwrap();
+    was_started.recv_timeout(WAIT).unwrap();
+    assert!(
+        f.sessions
+            .cancel(&f.id, SessionCommand::Diff)
+            .result
+            .unwrap()
+            .stopped
+    );
+    // Every wait at the gate from here let through at once.
+    drop(through);
+    let response = running.wait();
+    assert_eq!(response.result.unwrap_err().errors(), [cancelled("diff")]);
+    // Answered once its work ended: nothing came to the gate after the first feature.
+    assert_eq!(was_started.try_iter().count(), 0);
+    // And the next diff runs whole.
+    *lock(&f.session().gate.0) = None;
+    let next = f.sessions.diff(&f.id, None, None).wait().result.unwrap();
+    assert_eq!(next.changes, []);
+}
+
 mod timeline;
 mod undo;
 mod undo_adversarial;

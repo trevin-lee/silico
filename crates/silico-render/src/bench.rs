@@ -8,7 +8,7 @@ use silico_protocol::{Camera, Mesh, Projection, RenderBody, RenderScene};
 /// y low, y high, z low, z high), two triangles each, counterclockwise from outside, each
 /// face's vertices its own with its normal. Its edges are 2-point polylines, the front
 /// face's (y low) four first: bottom, right, top, left; then the back face's, then the four
-/// along y.
+/// along y. Its vertices' points are in OCCT's box order.
 pub fn box_mesh(low: [f64; 3], size: [f64; 3]) -> Mesh {
     let [x0, y0, z0] = low;
     let [x1, y1, z1] = [low[0] + size[0], low[1] + size[1], low[2] + size[2]];
@@ -45,6 +45,7 @@ pub fn box_mesh(low: [f64; 3], size: [f64; 3]) -> Mesh {
         face_triangles: vec![],
         edge_points: vec![],
         edge_point_counts: vec![],
+        vertex_points: vec![],
         valid: None,
     };
     for (base, (normal, corners)) in (0u32..).step_by(4).zip(faces) {
@@ -72,6 +73,19 @@ pub fn box_mesh(low: [f64; 3], size: [f64; 3]) -> Mesh {
         mesh.edge_points.extend([a, b]);
         mesh.edge_point_counts.push(2);
     }
+    // Its corners in FreeCAD's (OCCT's) box order: x low then high, y low then high within
+    // it, z high then low within that, as `Vertex1` (x0, y0, z1) to `Vertex8` (x1, y1, z0)
+    // are numbered on a Part box.
+    mesh.vertex_points = vec![
+        [x0, y0, z1],
+        [x0, y0, z0],
+        [x0, y1, z1],
+        [x0, y1, z0],
+        [x1, y0, z1],
+        [x1, y0, z0],
+        [x1, y1, z1],
+        [x1, y1, z0],
+    ];
     mesh
 }
 

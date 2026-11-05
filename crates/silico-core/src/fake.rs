@@ -970,8 +970,8 @@ fn step_file(export: &silico_protocol::ExportStep) -> Result<Reply, Error> {
     })))
 }
 
-/// The fake's display mesh of `made`, as the kernel's is checked: a triangle for each face
-/// and a two-point polyline for each edge, all on its box's corners (a mesh that holds
+/// The fake's display mesh of `made`, as the kernel's is checked: a triangle for each face,
+/// a two-point polyline for each edge, and a point for each vertex, all on its box's corners (a mesh that holds
 /// together, for the core's render, not one of the shape), at `deflection`. Its floor is
 /// the kernel's rule, `mesh_floor`, on the fake's box.
 /// Under it, refused as the kernel refuses, or with `at_least_the_floor` meshed at it and
@@ -1007,6 +1007,7 @@ fn fake_mesh(made: &Symbolic, deflection: f64, at_least_the_floor: bool) -> Resu
     let corners = [low, [high[0], low[1], low[2]], [low[0], high[1], high[2]]];
     let faces = usize::try_from(summary.faces).unwrap_or(0);
     let edges = usize::try_from(summary.edges).unwrap_or(0);
+    let vertices = usize::try_from(summary.vertices).unwrap_or(0);
     let mesh = silico_protocol::Mesh {
         positions: corners.to_vec(),
         normals: vec![[0.0, 0.0, 1.0]; 3],
@@ -1014,6 +1015,7 @@ fn fake_mesh(made: &Symbolic, deflection: f64, at_least_the_floor: bool) -> Resu
         face_triangles: vec![1; faces],
         edge_points: (0..edges).flat_map(|_| [low, high]).collect(),
         edge_point_counts: vec![2; edges],
+        vertex_points: vec![high; vertices],
         valid: None,
     };
     Ok(match at_least_the_floor {

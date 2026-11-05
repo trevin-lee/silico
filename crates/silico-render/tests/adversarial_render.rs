@@ -454,6 +454,7 @@ fn a_scene_of_no_bodies_and_a_body_of_no_mesh_are_the_background() {
         face_triangles: vec![],
         edge_points: vec![],
         edge_point_counts: vec![],
+        vertex_points: vec![],
         valid: None,
     };
     for bodies in [vec![], vec![body(1, empty)]] {
@@ -732,6 +733,7 @@ fn ctc_scale(faces: u32, per: u32) -> Mesh {
         face_triangles: vec![],
         edge_points: vec![],
         edge_point_counts: vec![],
+        vertex_points: vec![],
         valid: None,
     };
     let columns = per / 2;
@@ -874,12 +876,12 @@ fn an_eye_nearer_the_target_than_a_nanometre_is_refused_and_one_a_nanometre_away
 
 #[test]
 fn an_orthographic_view_at_its_least_is_all_the_face_it_looks_at_and_smaller_is_refused() {
-    // A view 1e-50 mm high is 0 in f32, and one under 1e-5 of how far the box reaches from
-    // the target (21, −10, 7) (its farthest corner, (0, 20, 0), is sqrt(21² + 30² + 7²) =
-    // 37.28 mm away, so 3.728e-4 at the least) would lose pixels past where f32 clips: each
-    // refused,
-    // naming it, rather than drawn wrong. At the least it may be, the view is inside the
-    // front face (the target's ray meets it at (21, 0, 7)), so every pixel is the face.
+    // A view 1e-50 mm high is 0 in f32, and one under 30 rows times how far the box reaches
+    // from the target (21, −10, 7) over 2^19 (its farthest corner, (0, 20, 0), is √1390 =
+    // 37.28 mm away, so 0.0021333334 at the least, by hand) would be drawn coarser than an
+    // eighth of a pixel by f32: each refused, naming it, rather than drawn wrong. At the
+    // least it may be, the view is inside the front face (the target's ray meets it at (21,
+    // 0, 7)), so every pixel is the face.
     let mut w = worker();
     let mut scene = front_from(60.0, 40, 30);
     scene.camera.projection = Projection::Orthographic { view_height: 1e-50 };
@@ -890,16 +892,16 @@ fn an_orthographic_view_at_its_least_is_all_the_face_it_looks_at_and_smaller_is_
         "camera.view_height 1e-50 must be from",
     );
     scene.camera.projection = Projection::Orthographic {
-        view_height: 3.72e-4,
+        view_height: 0.002_133_333,
     };
     refused(
         &mut w,
         &scene,
         "camera.view_height",
-        "is too small to draw the bodies in view",
+        "is too small for an image 30 pixels high of bodies that reach 37.28",
     );
     scene.camera.projection = Projection::Orthographic {
-        view_height: 3.73e-4,
+        view_height: 0.002_133_334,
     };
     let got = ids(&mut w, &scene);
     let off = got.iter().filter(|id| **id != FRONT_FACE).count();
@@ -909,7 +911,8 @@ fn an_orthographic_view_at_its_least_is_all_the_face_it_looks_at_and_smaller_is_
 #[test]
 fn a_perspective_view_at_its_narrowest_is_all_the_face_it_looks_at_and_narrower_is_refused() {
     // As above, a field of view of 1e-40 degrees (under f32's smallest normal in radians),
-    // refused, and 0.001, the narrowest it may be, all face.
+    // refused, and the narrowest it may be at 40 by 30, 0.0032785° (by hand, the root of
+    // 30 (1 + (4/3)²) t² − 2^20 t + 30 = 0, as 2 atan(t)), all face.
     let mut w = worker();
     let mut scene = front_from(60.0, 40, 30);
     scene.camera.projection = Projection::Perspective {
@@ -919,10 +922,15 @@ fn a_perspective_view_at_its_narrowest_is_all_the_face_it_looks_at_and_narrower_
         &mut w,
         &scene,
         "camera.field_of_view",
-        "camera.field_of_view 1e-40 must be from 0.001 to 179.999",
+        "camera.field_of_view 1e-40 must be from 0.003279 to 179.990893 degrees for an image 40 by 30 pixels",
+    );
+    let (narrowest, _) = silico_protocol::field_of_view_range(40, 30);
+    assert!(
+        (narrowest - 0.003_278_490_808_166_014).abs() < 1e-15,
+        "{narrowest}"
     );
     scene.camera.projection = Projection::Perspective {
-        field_of_view: 1e-3,
+        field_of_view: narrowest,
     };
     let got = ids(&mut w, &scene);
     let off = got.iter().filter(|id| **id != FRONT_FACE).count();
@@ -932,15 +940,25 @@ fn a_perspective_view_at_its_narrowest_is_all_the_face_it_looks_at_and_narrower_
 #[test]
 fn a_field_of_view_at_its_widest_is_not_drawn_upside_down_and_wider_is_refused() {
     // 179.999999 degrees rounds past π in f32 radians, its half past π/2, and the tangent's
-    // sign flips: refused, rather than drawn turned half a turn. 179.999, the widest it may
-    // be, is drawn the right way up.
+    // sign flips: refused, rather than drawn turned half a turn (at 100 by 100, f32 draws
+    // to an eighth of a pixel only to 179.978143°, by hand). That widest is drawn the right
+    // way up.
     //
     // By hand: from (0, −1, 0) toward +y, up +z (right +x), a wall at y = 0 over x and z
-    // from 0 to 1e5 (a box 1 deep behind it) is the upper right quadrant: tan(89.9995°) is
-    // 114591.56, so its far side is 0.8727 of the way to the image's edge.
+    // from 0 to 4575.46 (a box 1 deep behind it) is the upper right quadrant: the tangent of
+    // half the widest is 5242.88 (the quadratic's larger root), so its far side is 0.8727 of
+    // the way to the image's edge.
     let mut w = worker();
+    let (_, widest) = silico_protocol::field_of_view_range(100, 100);
+    assert!((widest - 179.978_143_394_523_44).abs() < 1e-12, "{widest}");
     let scene = |fov: f64| RenderScene {
-        bodies: vec![body(1, box_mesh([0.0; 3], [1e5, 1.0, 1e5]))],
+        bodies: vec![body(
+            1,
+            box_mesh(
+                [0.0; 3],
+                [4_575.461_292_772_841, 1.0, 4_575.461_292_772_841],
+            ),
+        )],
         camera: Camera {
             projection: Projection::Perspective { field_of_view: fov },
             eye: [0.0, -1.0, 0.0],
@@ -957,9 +975,15 @@ fn a_field_of_view_at_its_widest_is_not_drawn_upside_down_and_wider_is_refused()
         "camera.field_of_view",
         "camera.field_of_view 179.999999",
     );
-    let scene = scene(179.999);
+    refused(
+        &mut w,
+        &scene(widest.next_up()),
+        "camera.field_of_view",
+        "must be from 0.010929 to 179.978143 degrees for an image 100 by 100 pixels",
+    );
+    let scene = scene(widest);
     let p = Projector::of(&scene);
-    let (col, row) = p.pixel([1e5, 0.0, 1e5]);
+    let (col, row) = p.pixel([4_575.461_292_772_841, 0.0, 4_575.461_292_772_841]);
     assert!(
         (col - 93.6).abs() < 0.1 && (row - 6.4).abs() < 0.1,
         "{col} {row}"
@@ -1287,6 +1311,7 @@ fn mesh(wide: bool) -> impl Strategy<Value = Mesh> {
                     face_triangles,
                     edge_points,
                     edge_point_counts,
+                    vertex_points: vec![],
                     valid: None,
                 }
             },
@@ -1720,12 +1745,14 @@ fn a_highlight_on_a_face_with_no_triangles_or_a_body_of_one_point_draws_without_
         face_triangles: vec![1],
         edge_points: vec![point; 2],
         edge_point_counts: vec![2],
+        vertex_points: vec![],
         valid: None,
     };
+    // Orthographic, at least 48 × 1.73e12 / 2^19 = 1.59e8 high for its reach (by hand).
     let scene = RenderScene {
         bodies: vec![body(1, the_box()), body(2, one_point)],
         camera: Camera {
-            projection: Projection::Orthographic { view_height: 1e8 },
+            projection: Projection::Orthographic { view_height: 2e8 },
             ..front_of_a_box(64, 48).camera
         },
         ..front_of_a_box(64, 48)
