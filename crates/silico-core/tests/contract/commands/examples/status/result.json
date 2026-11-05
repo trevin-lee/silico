@@ -4,7 +4,21 @@
   "transaction": {"base": 4, "changed": true, "undo": 3, "redo": 0, "dropped": 0, "bytes": 61530},
   "running": "check",
   "reads": ["distance"],
-  "rebuild": {"revision": 6, "state": "running", "done": 3, "steps": 9},
+  "rebuild": {
+    "revision": 6,
+    "state": "running",
+    "done": 3,
+    "steps": 9,
+    "features": [
+      {"feature": "s0000001", "state": "built"},
+      {"feature": "p0000001", "state": "running"},
+      {"feature": "s0000002", "state": "built"},
+      {"feature": "h0000001", "state": "queued"},
+      {"feature": "s0000003", "state": "built"},
+      {"feature": "h0000002", "state": "queued"},
+      {"feature": "f0000001", "state": "queued"}
+    ]
+  },
   "drag": null,
   "disk": "unchanged"
 }

@@ -40,7 +40,10 @@ const CALLS: [(&str, &str); 7] = [
         "set_field",
         r#"{"session": "s1", "revision": 2, "feature": "k7f2qx3m", "field": "width", "value": 0.000001}"#,
     ),
-    ("text", r#"{"session": "s1", "feature": null}"#),
+    (
+        "text",
+        r#"{"session": "s1", "feature": null, "revision": null}"#,
+    ),
     (
         "check",
         r#"{"session": "s1", "model": "current", "fresh": false}"#,

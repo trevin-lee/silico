@@ -101,7 +101,11 @@ fn an_add_and_a_remove_at_one_revision_sent_together_are_one_edit_and_one_confli
     assert_eq!(added["ok"], true, "{added}");
     assert_eq!(removed["ok"], false, "{removed}");
     assert_eq!(removed["errors"][0]["code"], "conflict", "{removed}");
-    let text = c.envelope(5, "text", r#"{"session": "s1", "feature": null}"#);
+    let text = c.envelope(
+        5,
+        "text",
+        r#"{"session": "s1", "feature": null, "revision": null}"#,
+    );
     let document: Value = serde_json::from_str(text["result"]["text"].as_str().unwrap()).unwrap();
     assert_eq!(
         document["features"][0]["lines"][0]["id"], "n0000001",

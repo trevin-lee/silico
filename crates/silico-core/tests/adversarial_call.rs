@@ -59,7 +59,10 @@ fn requests(session: &str) -> Vec<(&'static str, String)> {
                 serde_json::to_string(BOX).unwrap()
             ),
         ),
-        ("text", format!(r#"{{"session": "{s}", "feature": null}}"#)),
+        (
+            "text",
+            format!(r#"{{"session": "{s}", "feature": null, "revision": null}}"#),
+        ),
         ("outline", format!(r#"{{"session": "{s}"}}"#)),
         (
             "check",
@@ -377,7 +380,7 @@ fn a_command_called_right_after_the_open_of_its_session_answers_as_one_called_la
 fn after_open() -> Vec<(&'static str, String)> {
     let s1 = r#"{"session": "s1"}"#.to_owned();
     vec![
-        ("text", r#"{"session": "s1", "feature": null}"#.to_owned()),
+        ("text", r#"{"session": "s1", "feature": null, "revision": null}"#.to_owned()),
         ("outline", s1.clone()),
         (
             "check",
@@ -409,7 +412,7 @@ fn after_open() -> Vec<(&'static str, String)> {
             r#"{"session": "s1", "model": "current", "fresh": false}"#.to_owned(),
         ),
         ("close", s1.clone()),
-        ("text", r#"{"session": "s1", "feature": null}"#.to_owned()),
+        ("text", r#"{"session": "s1", "feature": null, "revision": null}"#.to_owned()),
     ]
 }
 
@@ -620,7 +623,10 @@ fn held_open() -> (
 /// The commands sent to s1 while its open is held, in order.
 fn sent_while_held() -> [(&'static str, &'static str); 6] {
     [
-        ("text", r#"{"session": "s1", "feature": null}"#),
+        (
+            "text",
+            r#"{"session": "s1", "feature": null, "revision": null}"#,
+        ),
         (
             "check",
             r#"{"session": "s1", "model": "current", "fresh": false}"#,
@@ -631,7 +637,10 @@ fn sent_while_held() -> [(&'static str, &'static str); 6] {
         ),
         ("outline", r#"{"session": "s1"}"#),
         ("close", r#"{"session": "s1"}"#),
-        ("text", r#"{"session": "s1", "feature": null}"#),
+        (
+            "text",
+            r#"{"session": "s1", "feature": null, "revision": null}"#,
+        ),
     ]
 }
 
@@ -746,7 +755,10 @@ fn a_command_queued_behind_an_open_gives_its_progress_and_is_stopped_by_its_stop
         "check",
         r#"{"session": "s1", "model": "current", "fresh": false}"#,
     );
-    let text = f.calling("text", r#"{"session": "s1", "feature": null}"#);
+    let text = f.calling(
+        "text",
+        r#"{"session": "s1", "feature": null, "revision": null}"#,
+    );
     let read = f.calling(
         "mass_properties",
         r#"{"session": "s1", "model": "published", "feature": null}"#,
@@ -1051,7 +1063,10 @@ fn a_queued_call_cancelled_by_its_stopper_answers_cancelled_and_leaves_no_trace(
     let status = envelope(&f.call("status", r#"{"session": "s1"}"#));
     assert_eq!(status["session"]["revision"], 1, "{status}");
     // A stopper used after its call answered stops nothing.
-    let done = f.calling("text", r#"{"session": "s1", "feature": null}"#);
+    let done = f.calling(
+        "text",
+        r#"{"session": "s1", "feature": null, "revision": null}"#,
+    );
     let late = done.stopper();
     assert!(answered(done).ok);
     assert!(!late.cancel());

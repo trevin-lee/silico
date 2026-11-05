@@ -564,6 +564,7 @@ fn held(id: SessionId, file: Option<HeldFile>, text: Vec<u8>, create: bool) -> (
         carried: Arc::new(BTreeSet::new()),
         transaction: None,
         last_reload: None,
+        reloaded_over: None,
     };
     (held, opened)
 }

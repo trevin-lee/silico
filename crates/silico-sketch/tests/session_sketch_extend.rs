@@ -116,7 +116,10 @@ impl Fixture {
     }
 
     fn text(&self) -> String {
-        self.ran("text", r#"{"session": "s1", "feature": null}"#)["text"]
+        self.ran(
+            "text",
+            r#"{"session": "s1", "feature": null, "revision": null}"#,
+        )["text"]
             .as_str()
             .unwrap()
             .to_owned()

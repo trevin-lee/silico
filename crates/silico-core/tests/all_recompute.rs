@@ -36,6 +36,8 @@ mod adversarial_described;
 mod adversarial_entries;
 #[path = "adversarial_measure_refusal.rs"]
 mod adversarial_measure_refusal;
+#[path = "adversarial_rebuild_features.rs"]
+mod adversarial_rebuild_features;
 #[path = "adversarial_recompute.rs"]
 mod adversarial_recompute;
 #[path = "adversarial_selection.rs"]
