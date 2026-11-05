@@ -577,6 +577,11 @@ impl Selection {
         }
     }
 
+    /// The published model the selection was last carried to, and its revision.
+    pub(crate) fn model(&self) -> Option<(&Arc<Model>, Revision)> {
+        Some((self.model.as_ref()?, self.of?.1))
+    }
+
     /// Its items as they are, to put back later ([`restore`](Self::restore)).
     pub fn saved(&self) -> Vec<Item> {
         self.items.clone()

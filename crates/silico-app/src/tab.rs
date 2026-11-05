@@ -1911,6 +1911,8 @@ impl Tab {
                         }
                         Err(problems) => {
                             self.message = Some(said(&problems));
+                            // What a repair said it did, it didn't.
+                            self.told = None;
                             self.refused.insert(field);
                         }
                     }
@@ -3239,6 +3241,80 @@ impl Tab {
             }
             crate::properties::CardAct::Show(id) => {
                 self.show_in_timeline(id);
+                false
+            }
+            crate::properties::CardAct::Use { broken, candidate } => {
+                self.use_candidate(sessions, &broken, &candidate)
+            }
+        }
+    }
+
+    /// The fillet or chamfer `id` as the published model's document holds it, if that's
+    /// the document the session is at and nothing of the tab's is under way: what a broken
+    /// reference's card mends. None otherwise.
+    fn dressing(&self, id: &FeatureId) -> Option<crate::repair::Dressing> {
+        if !self.quiet() {
+            return None;
+        }
+        let (model, revision) = self.selection.model()?;
+        if revision != self.revision {
+            return None;
+        }
+        crate::repair::Dressing::of(model.document(), id)
+    }
+
+    /// The name the timeline gives the feature `id`, or its ID.
+    fn named(&self, id: &FeatureId) -> String {
+        self.entry(id.as_str())
+            .map_or_else(|| id.to_string(), |entry| entry.name.clone())
+    }
+
+    /// What a card of `said` offers to mend a broken reference (flow 6b), if it's one with
+    /// candidates.
+    pub(crate) fn repair(&self, said: &Said) -> Option<crate::properties::Repair> {
+        let broken = crate::repair::Broken::of(said)?;
+        if broken.candidates.is_empty() {
+            return None;
+        }
+        Some(crate::properties::Repair { broken })
+    }
+
+    /// A broken reference's `candidate` used in its place (`useCand`): read in the
+    /// feature's base as its dialog reads a pick (the core's `resolve_in`), and written at
+    /// the broken name's place in `edges` (`set_field` of `edges.N`, one undoable edit), the
+    /// status bar saying so. Refused, saying why, for a candidate that can't be stored
+    /// there (unstable, or not on the base), or a card older than the document. Whether a
+    /// command was started.
+    pub(crate) fn use_candidate<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        broken: &crate::repair::Broken,
+        candidate: &str,
+    ) -> bool {
+        if self.closing() {
+            return false;
+        }
+        let name = self.named(&broken.feature);
+        if self.in_dialog() {
+            self.hush();
+            self.message = Some("Close the dialog before mending a feature".to_owned());
+            return false;
+        }
+        let Some(dressing) = self.dressing(&broken.feature) else {
+            self.hush();
+            self.message = Some(crate::repair::STALE.to_owned());
+            return false;
+        };
+        let read = self.selection.read_on(candidate, &dressing.base);
+        match crate::repair::used(broken, candidate, &dressing, read, &name) {
+            Ok((edit, told)) => {
+                self.edit(sessions, edit);
+                self.told = Some(told);
+                true
+            }
+            Err(why) => {
+                self.hush();
+                self.message = Some(why);
                 false
             }
         }

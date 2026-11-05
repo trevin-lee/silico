@@ -23,6 +23,7 @@ mod panes;
 mod properties;
 pub mod recent;
 pub mod renderer;
+mod repair;
 pub mod selection;
 mod sheet;
 pub mod shortcuts;

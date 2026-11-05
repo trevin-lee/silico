@@ -147,7 +147,7 @@ fn cards(ui: &mut Ui, tab: &Tab) -> Option<CardAct> {
         properties::hint(ui, &[(NOTHING_WRONG, false)]);
         return None;
     }
-    let asked = properties::document_cards(ui, tab, listed, "whats-wrong");
+    let asked = properties::document_cards(ui, tab, listed, "whats-wrong").asked;
     let unlisted = tab.unlisted();
     for (count, one, many) in [
         (unlisted.errors, "error", "errors"),

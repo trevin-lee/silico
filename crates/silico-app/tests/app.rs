@@ -23794,3 +23794,190 @@ fn a_browser_rename_scrolled_out_of_view_then_clicked_away_to_a_dialog_comes_bef
     assert!(shows(&h, "Browser", "Dowel"));
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- A broken reference's candidates (flow 6b) ----
+
+/// The M2.1 example with Inside corner, a fillet of the cut's two edges kept from the
+/// block, Edge1 and Edge5 (each named as the block names it: the fake's cut keeps every
+/// edge of its base, so the cut's Edge N is the block's Edge N).
+const CORNER: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"},
+    {"id": "f0000001", "type": "fillet", "v": 1, "name": "Inside corner", "base": "m3tq8v0z", "edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"], "radius": 1}
+  ]
+}
+"#;
+
+/// The upstream edit that breaks Inside corner's name: a pin of radius 30 swallows the
+/// block's Edge5, which the cut no longer keeps (its history says so: every other element
+/// of the block kept, by its own number; the pin's none; the cut's Edge5 made of nothing,
+/// so named by its number alone, unstable). The cut's shape is the block's, so it's meshed
+/// and described as the block is. With a narrower pin, the fake's own cut.
+fn swallowing_edge5(f: &Fixture) {
+    use silico_core::kernel::{
+        BooleanOp, BuiltData, ElementCounts, ElementFate, History, InputHistory, Topology,
+    };
+    f.kernel.answer_instead(|op| match op {
+        Op::Boolean {
+            op: BooleanOp::Cut,
+            base,
+            tool,
+        } if FakeKernel::describe(tool).is_some_and(|tool| tool.contains("30")) => {
+            let tool = FakeKernel::counts(tool).unwrap();
+            let kept = |n: u32| ElementFate {
+                kept: Some(n),
+                ..ElementFate::default()
+            };
+            let none = |n: u32| vec![ElementFate::default(); n as usize];
+            let edges = (1..=12)
+                .map(|n| {
+                    if n == 5 {
+                        ElementFate::default()
+                    } else {
+                        kept(n)
+                    }
+                })
+                .collect();
+            let history = History {
+                inputs: vec![
+                    InputHistory {
+                        faces: (1..=6).map(kept).collect(),
+                        edges,
+                        vertices: (1..=8).map(kept).collect(),
+                    },
+                    InputHistory {
+                        faces: none(tool.faces),
+                        edges: none(tool.edges),
+                        vertices: none(tool.vertices),
+                    },
+                ],
+                result: ElementCounts {
+                    faces: 6,
+                    edges: 12,
+                    vertices: 8,
+                    solids: 1,
+                },
+                ends: Default::default(),
+                topology: Topology {
+                    face_edges: vec![vec![]; 6],
+                    outer_edges: vec![vec![]; 6],
+                    edge_vertices: vec![vec![]; 12],
+                    solid_faces: vec![(1..=6).collect()],
+                },
+            };
+            Some(silico_protocol::Reply::Built(BuiltData {
+                shape: base.clone(),
+                history,
+            }))
+        }
+        _ => None,
+    });
+}
+
+/// The pin made radius 30 through the tab (one undoable edit), and frames stepped until
+/// the model it publishes has Inside corner's error.
+fn pin_widened(f: &Fixture, h: &mut AppHarness) {
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.edit(
+            &sessions,
+            silico_app::tab::Edit {
+                feature: silico_core::document::FeatureId::new("a91cw0de").unwrap(),
+                field: "radius".to_owned(),
+                value: json::read(b"30").unwrap(),
+            },
+        );
+    }
+    settled(h);
+    step_until(h, "Inside corner broken", |h| {
+        h.state().tabs()[0].errors() == 1
+    });
+    meshes_settled(h);
+}
+
+/// The candidate rows a card in `pane` lists, in order: each row's words ("Closest · " and
+/// the name, or the name).
+fn candidate_rows(h: &AppHarness, pane: &str) -> Vec<String> {
+    labels(h, pane, Role::Label)
+        .into_iter()
+        .filter(|label| {
+            let name = label.strip_prefix("Closest · ").unwrap_or(label);
+            name.starts_with("k7f2qx3m.") && !name.contains(' ')
+        })
+        .collect()
+}
+
+/// [`CORNER`] (or `text`) open and drawn, Inside corner built; then its Edge5 broken by the
+/// pin widened, and Inside corner selected, its card read with its candidates.
+fn corner_broken(f: &Fixture, text: &str) -> (AppHarness, Record) {
+    swallowing_edge5(f);
+    let (mut h, record) = f.drawn("corner.silico", text);
+    meshes_settled(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].errors(), 0, "Inside corner built");
+    pin_widened(f, &mut h);
+    select(&mut h, "Inside corner");
+    step_until(&mut h, "its candidates", |h| {
+        !candidate_rows(h, "Properties").is_empty()
+    });
+    (h, record)
+}
+
+/// The core's candidates for the broken Edge5, closest first, by hand: no stable edge of
+/// the cut shares what Edge5's name is made from (the block's Edge5 itself), so the nearest
+/// by number of the block's own edges the cut still has, Edge4 and Edge6, each 1 away, by
+/// name (references.rs's `Index::nearest`).
+const EDGE4: &str = "k7f2qx3m.box.Edge4";
+const EDGE6: &str = "k7f2qx3m.box.Edge6";
+
+#[test]
+fn a_broken_edges_card_lists_the_cores_candidates_closest_first_and_use_writes_one_in_its_place() {
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    assert_eq!(
+        candidate_rows(&h, "Properties"),
+        [format!("Closest · {EDGE4}"), EDGE6.to_owned()]
+    );
+    // The core's own candidates, as it says them: the same, in the same order.
+    let said = h.state().tabs()[0].said.get("f0000001").unwrap().clone();
+    assert_eq!(said.candidates(), [EDGE4, EDGE6]);
+    assert_eq!(said.parameter(), Some("edges.1"));
+    let before = text_of(&f, &h);
+    assert_eq!(before.matches(r#""k7f2qx3m.box.Edge5""#).count(), 1);
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE4}"))
+        .click();
+    step(&mut h);
+    settled(&mut h);
+    // Edge4's name at Edge5's place, nothing else changed: by hand.
+    let used = text_of(&f, &h);
+    assert_eq!(
+        used,
+        before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE4}""#))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit("edges.1".to_owned()))
+    );
+    // It builds, and the status bar says what changed (`useCand`'s toast).
+    step_until(&mut h, "Inside corner built", |h| {
+        h.state().tabs()[0].errors() == 0 && !h.state().tabs()[0].applying()
+    });
+    assert_eq!(
+        status_said(&h, "Inside corner now").as_deref(),
+        Some("Inside corner now rounds the edge you picked. Undo puts the broken reference back.")
+    );
+    // Undo puts the broken name back, byte for byte, and its error with it.
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    step_until(&mut h, "broken again", |h| {
+        h.state().tabs()[0].errors() == 1
+    });
+    assert_eq!(never_waits::waits(), 0);
+}

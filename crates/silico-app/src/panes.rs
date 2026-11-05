@@ -351,7 +351,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
         let name = &mut *self.name;
         let started = &mut *self.started;
         let elements = tab.selection().elements().next().is_some();
-        let asked = egui::ScrollArea::vertical()
+        let out = egui::ScrollArea::vertical()
             .id_salt("properties")
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -359,14 +359,14 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 match entry {
                     _ if elements => {
                         selected_elements(ui, tab);
-                        None
+                        properties::CardOut::default()
                     }
                     Some(entry) => feature(ui, tab, &entry, sessions, name, started),
                     None => document(ui, tab),
                 }
             })
             .inner;
-        if let Some(asked) = asked {
+        if let Some(asked) = out.asked {
             *self.started |= tab.card_asked(sessions, asked);
         }
     }
@@ -481,7 +481,7 @@ fn feature<P: Clients + 'static>(
     sessions: &Arc<Sessions<P>>,
     name: &mut Option<NameField>,
     started: &mut bool,
-) -> Option<properties::CardAct> {
+) -> properties::CardOut {
     let mut sub = properties::body(
         &format!("{} · ", crate::timeline::kind_words(entry.kind)),
         theme::PROPERTY_HEAD_SUB,
@@ -503,9 +503,10 @@ fn feature<P: Clients + 'static>(
             edit: Some(tab.can_edit(&entry.id)),
             show: false,
         };
+        let repair = tab.repair(&said);
         asked = asked.or(ui
             .push_id("feature-card", |ui| {
-                properties::card(ui, &said, Some(&entry.name), offer)
+                properties::repair_card(ui, &said, Some(&entry.name), offer, repair.as_ref())
             })
             .inner);
     }
@@ -664,7 +665,7 @@ fn selected_element(ui: &mut Ui, picked: &crate::selection::Picked) {
 /// The document's problems, as the gate found them: a card each (`docProps`' `errCard(e)`,
 /// with Edit and Show in timeline for a feature it names). What a card's button asked, if
 /// one was.
-fn problems(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
+fn problems(ui: &mut Ui, tab: &Tab) -> properties::CardOut {
     properties::document_cards(ui, tab, &tab.document_problems, "document-problem")
 }
 
@@ -674,7 +675,7 @@ fn problems(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
 ///
 /// SEAM: the model's measures (`docProps`' Volume, Area, Size, and Faces), which need a
 /// `mass_properties` read of its bodies the app doesn't make yet; its bodies are counted.
-fn document(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
+fn document(ui: &mut Ui, tab: &Tab) -> properties::CardOut {
     properties::head(
         ui,
         Icon::Doc,
@@ -3794,7 +3795,7 @@ mod property_panel_drawn {
             "Parameter: edges",
             "Pick the edges again",
             "CANDIDATES, CLOSEST FIRST",
-            "Edge2",
+            "Closest · Edge2",
             "Edge4",
         ];
         let tops: Vec<f32> = lines
@@ -4153,13 +4154,18 @@ mod property_panel_drawn {
             css::CAPITALS_SPACING
         );
         assert_eq!(colour(&heading, 0), css::CARD_ACCENT);
-        // `.cand`s: across the body, a line and its padding high, 4 apart.
+        // `.cand`s: across the body, its lines and its padding high, 4 apart: the first
+        // two lines, its name and, under it, `.why`'s "Closest · " (10.5, in the accent, on
+        // the body's 16 px line); the second its name alone.
         let body_right = inner_right - css::EC_HEAD_SIDE;
         let mut top = heading_top + css::LH + css::CANDS_MARGIN;
-        for name in ["Edge2", "Edge4"] {
+        for (name, lines) in [("Edge2", 2.0), ("Edge4", 1.0)] {
             let row = Rect::from_min_max(
                 Pos2::new(body_left, top),
-                Pos2::new(body_right, top + 2.0 * css::CAND_PADDING_Y + css::LH),
+                Pos2::new(
+                    body_right,
+                    top + 2.0 * css::CAND_PADDING_Y + lines * css::LH,
+                ),
             );
             assert_eq!(
                 fills_at(&h, row),
@@ -4174,6 +4180,22 @@ mod property_panel_drawn {
             );
             assert_eq!(shown.galley.job.sections[0].format.font_id, mono());
             assert_eq!(colour(&shown, 0), css::CAND_TEXT);
+            if lines > 1.0 {
+                let why = text(&h, "Closest · ");
+                at(
+                    why.pos,
+                    Pos2::new(
+                        body_left + css::CAND_PADDING_X,
+                        top + css::CAND_PADDING_Y + css::LH,
+                    ),
+                    "Closest · ",
+                );
+                assert_eq!(
+                    why.galley.job.sections[0].format.font_id,
+                    body(css::CANDS_FS)
+                );
+                assert_eq!(colour(&why, 0), css::CARD_ACCENT);
+            }
             top = row.bottom() + css::CAND_MARGIN;
         }
         // `.ec-actions`: Edit Hole (`.btn-secondary`, Gray.300, off: its words Gray.750),
