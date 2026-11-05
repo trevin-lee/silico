@@ -610,3 +610,9 @@ crates/silico-app/src/selection.rs | Selection::took | delete field name from st
 # Save As moving its folder (`saved_as`), which changes nothing read; and Export… makes a
 # new form each time it opens the dialog. The arm only lets the form go sooner.
 crates/silico-app/src/app.rs | App<P>::ask | delete match arm Some(Asking::Export(_)) | #395
+# A name's Remove clicked in a dialog's box of names (#393): `unpicked` holds the place
+# the click came from, set while the box's names are listed, in that frame, from their
+# own enumeration, so it's always below their count when it's read after the list: no
+# frame changes the names between. `<=` differs only at a place equal to the count,
+# which never comes; the guard only keeps `remove` from a place that isn't there.
+crates/silico-app/src/dialog.rs | Dialog::ui | replace < with <= | #393
