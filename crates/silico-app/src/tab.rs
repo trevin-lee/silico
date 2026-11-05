@@ -455,6 +455,9 @@ pub struct Tab {
     /// program's, so it shows no [`reloaded`](Self::reloaded) banner. Let go once the file
     /// is as the session holds it again.
     reload_asked: bool,
+    /// The revision the newest reload the tab saw came to. A `status` of an older revision
+    /// compared the file with the bytes that reload replaced.
+    reloaded_to: Option<Revision>,
     /// What's selected (M5.7): features of the timeline or the browser, faces and edges of
     /// the canvas, by name; and what the pointer is over.
     selection: crate::selection::Selection,
@@ -533,12 +536,22 @@ pub struct Tab {
     /// frame with the same painter and frame. For the crate's tests only; None otherwise.
     #[doc(hidden)]
     pub watch: Option<Watch>,
+    /// A test's hook in [`poll`](Self::poll), called once the session's `status` is read
+    /// and before any answer is taken: so a test can have commands answer between the two,
+    /// as they may in any frame. For the crate's tests only; None otherwise.
+    #[doc(hidden)]
+    pub after_status: Option<AfterStatus>,
 }
 
 /// What a test sees of each frame a tab's overlay is given, and draws with its painter:
 /// for the crate's tests only.
 #[doc(hidden)]
 pub type Watch = Box<dyn FnMut(&eframe::egui::Painter, &crate::viewport::ViewFrame)>;
+
+/// What a test does in a tab's [`poll`](Tab::poll) between its `status` read and the
+/// answers it takes: for the crate's tests only.
+#[doc(hidden)]
+pub type AfterStatus = Box<dyn FnMut()>;
 
 /// What a refusal says to the person: its first error's message and suggestion.
 pub fn said(problems: &Problems) -> String {
@@ -607,6 +620,7 @@ impl Tab {
             disk_choice: DiskChoice::None,
             reloaded: None,
             reload_asked: false,
+            reloaded_to: None,
             selection: crate::selection::Selection::default(),
             box_select: crate::box_select::BoxSelect::default(),
             toast: None,
@@ -639,6 +653,7 @@ impl Tab {
             export_disowned: false,
             view: crate::viewport::View::default(),
             watch: None,
+            after_status: None,
         }
     }
 
@@ -888,6 +903,9 @@ impl Tab {
     /// once), every command under way polled, and the reads a change needs started.
     pub fn poll<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         let status = sessions.status(&self.id);
+        if let Some(after_status) = &mut self.after_status {
+            after_status();
+        }
         // Answered at once, of the session as it is: its revision and transaction are now.
         let mut reloaded = false;
         if let Some(session) = &status.session {
@@ -970,6 +988,7 @@ impl Tab {
         to: Revision,
     ) {
         self.resets += 1;
+        self.reloaded_to = Some(to);
         self.take_diffs();
         let unlisted = match self.reloaded.take() {
             Some(older) => {
@@ -2327,7 +2346,18 @@ impl Tab {
     /// The choice section 4 offers once the file changed on disk while unsaved edits are
     /// held.
     fn offer_disk_choice(&mut self) {
-        let disk = self.status.as_ref().and_then(|status| status.disk);
+        // A status read before a reload the tab saw since, in an answer taken after it in
+        // the same frame (Restore's `begin`, which read the file, answering as the frame
+        // read the status), compared the file with the bytes that reload replaced: what it
+        // found says nothing of the file now, and offers no choice over the reload's banner.
+        let stale = self
+            .reloaded_to
+            .is_some_and(|reloaded_to| self.status_revision < reloaded_to);
+        let disk = self
+            .status
+            .as_ref()
+            .and_then(|status| status.disk)
+            .filter(|_| !stale);
         let changed = matches!(disk, Some(Disk::Changed | Disk::Gone));
         self.disk_choice = match (self.disk_choice, changed, self.unsaved(), disk) {
             (_, false, _, _) | (_, _, false, _) => DiskChoice::None,
@@ -3041,6 +3071,35 @@ mod tests {
         tab.status = Some(counted(three, true, 1, 1));
         tab.status_revision = three;
         assert!(tab.undoable() && tab.redoable());
+    }
+
+    #[test]
+    fn a_disk_finding_read_before_a_reload_seen_since_offers_no_choice() {
+        // A status of revision 2 found the file changed with edits held: the choice offered.
+        // An answer since said the session reloaded the file at 3 (Restore's `begin`, in the
+        // frame that read that status): the finding compared the file with the bytes that
+        // reload replaced, so nothing is offered until a status of 3 is read; one that finds
+        // the file changed again offers it.
+        let two = Revision::from_number(2).unwrap();
+        let three = Revision::from_number(3).unwrap();
+        let mut tab = tab();
+        let mut found = status(two, true);
+        found.disk = Some(Disk::Changed);
+        tab.status = Some(found);
+        tab.status_revision = two;
+        tab.revision = two;
+        tab.offer_disk_choice();
+        assert_eq!(tab.disk_choice, DiskChoice::Offered(Disk::Changed));
+        tab.reloaded_to = Some(three);
+        tab.revision = three;
+        tab.offer_disk_choice();
+        assert_eq!(tab.disk_choice, DiskChoice::None);
+        let mut again = status(three, true);
+        again.disk = Some(Disk::Changed);
+        tab.status = Some(again);
+        tab.status_revision = three;
+        tab.offer_disk_choice();
+        assert_eq!(tab.disk_choice, DiskChoice::Offered(Disk::Changed));
     }
 
     fn entry(id: &str, problems: u64, warnings: u64) -> Entry {

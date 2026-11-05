@@ -1163,9 +1163,29 @@ fn restore_of_a_revision_no_longer_held_says_the_cores_refusal_and_its_candidate
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// When the frame that takes Restore's refusal read the session's `status`, the two orders
+/// a frame may see: before the `begin` sent for Restore's edit ran (revision 2, no
+/// transaction open, the file found changed), `begin` and `replace_text` then answering
+/// before that frame takes its answers; or after `replace_text` had answered (revision 3,
+/// the transaction `begin` opened, the file as the session holds it).
+#[derive(Debug, Clone, Copy)]
+enum StatusRead {
+    BeforeBegin,
+    AfterReplace,
+}
+
 #[test]
 fn restore_refused_by_a_reload_before_its_begin_leaves_no_transaction_and_follows_the_file() {
+    // Each order forced, so both run every time: the first is the one the frame's status
+    // read races `begin` into, which once left no banner.
+    for read in [StatusRead::BeforeBegin, StatusRead::AfterReplace] {
+        restore_refused_by_a_reload_before_its_begin(read);
+    }
+}
+
+fn restore_refused_by_a_reload_before_its_begin(read: StatusRead) {
     use silico_core::command::{RunningCommand, SessionCommand};
+    let at = format!("{read:?}");
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("block.silico", BLOCK_10);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
@@ -1192,6 +1212,9 @@ fn restore_refused_by_a_reload_before_its_begin_leaves_no_transaction_and_follow
             .sent
             .ends_with(&[Sent::Begin, Sent::Replace])
     });
+    // A read queued behind them: once it answers, `begin` and `replace_text` have. Inside
+    // the transaction `begin` opens, it reads nothing of the file.
+    let behind = f.sessions.text(&id, None);
     // The file written again before `begin` runs: its read reloads it, at revision 3, so
     // the edit, sent against 2, is refused.
     let third = block_high(12);
@@ -1199,28 +1222,88 @@ fn restore_refused_by_a_reload_before_its_begin_leaves_no_transaction_and_follow
     step_until(&mut h, "the change found", |h| {
         disk(h) == Some(silico_core::disk::Disk::Changed)
     });
-    second.release();
-    let _ = held.wait();
+    let session = |f: &Fixture| {
+        let status = f.sessions.status(&id);
+        (
+            status.session.unwrap().revision.number(),
+            status.result.unwrap().transaction.is_some(),
+        )
+    };
+    match read {
+        StatusRead::BeforeBegin => {
+            // The next frame's status read, then, before it takes any answer, the second
+            // check let go and every command behind it answered.
+            let sessions = Arc::clone(&f.sessions);
+            let ran = Arc::new(AtomicBool::new(false));
+            let told = Arc::clone(&ran);
+            let mut gate = Some((second, held, behind));
+            h.state_mut().tabs_mut()[0].after_status = Some(Box::new(move || {
+                let Some((second, held, mut behind)) = gate.take() else {
+                    return;
+                };
+                let status = sessions.status(&id);
+                assert_eq!(status.session.unwrap().revision.number(), 2);
+                assert!(status.result.unwrap().transaction.is_none());
+                second.release();
+                // Polled, not waited on: this is the frame's thread.
+                let deadline = Instant::now() + WAIT;
+                loop {
+                    match behind.try_take() {
+                        Ok(_) => break,
+                        Err(running) => behind = running,
+                    }
+                    assert!(Instant::now() < deadline, "never answered behind the edit");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                drop(held);
+                told.store(true, Ordering::SeqCst);
+            }));
+            step(&mut h);
+            assert!(ran.load(Ordering::SeqCst), "{at}: the hook never ran");
+            h.state_mut().tabs_mut()[0].after_status = None;
+            // The status that frame read found the file changed: read before `begin`'s
+            // read of the file, after which it's as the session holds it.
+            assert_eq!(disk(&h), Some(silico_core::disk::Disk::Changed), "{at}");
+        }
+        StatusRead::AfterReplace => {
+            second.release();
+            let _ = held.wait();
+            let _ = behind.wait();
+            // Before any frame: the reload `begin` read, and its transaction open.
+            assert_eq!(session(&f), (3, true), "{at}");
+            step(&mut h);
+            assert_eq!(disk(&h), Some(silico_core::disk::Disk::Unchanged), "{at}");
+        }
+    }
+    // Either way, that frame took the refusal: the reload it came after announced, 2 to 3.
+    let banner = h.state().tabs()[0]
+        .reloaded
+        .as_ref()
+        .map(|reloaded| (reloaded.from.number(), reloaded.to.number()));
+    assert_eq!(banner, Some((2, 3)), "{at}");
     // The reload announced in the first's place, with what it changed.
     step_until(&mut h, "the second reload listed", |h| seen(h, "11 → 12"));
-    assert!(anywhere(&h, &reloaded_sub(2, 3)));
+    assert!(anywhere(&h, &reloaded_sub(2, 3)), "{at}");
     // The transaction `begin` opened for the edit rolled back: nothing held, and the
     // session follows the file again.
     step_until(&mut h, "settled", |h| {
         let tab = &h.state().tabs()[0];
         tab.edits.idle() && !tab.unsettled() && !tab.transaction
     });
-    assert!(f.sessions.status(&id).result.unwrap().transaction.is_none());
-    assert_eq!(text_of(&f, &h), third);
-    assert!(!anywhere(&h, "block.silico *"));
+    assert!(
+        f.sessions.status(&id).result.unwrap().transaction.is_none(),
+        "{at}"
+    );
+    assert_eq!(text_of(&f, &h), third, "{at}");
+    assert!(!anywhere(&h, "block.silico *"), "{at}");
     // Another program's next write: reloaded, and announced, from the rollback's revision,
     // 4, to 5.
     let fourth = block_high(13);
     std::fs::write(&path, &fourth).unwrap();
     step_until(&mut h, "the third reload listed", |h| seen(h, "12 → 13"));
-    assert!(anywhere(&h, &reloaded_sub(4, 5)));
-    assert_eq!(text_of(&f, &h), fourth);
-    assert_eq!(never_waits::waits(), 0);
+    assert!(anywhere(&h, &reloaded_sub(4, 5)), "{at}");
+    assert_eq!(text_of(&f, &h), fourth, "{at}");
+    assert_eq!(never_waits::waits(), 0, "{at}");
 }
 
 /// The session's revision now, as `status` gives it (its file compared on disk as it's
