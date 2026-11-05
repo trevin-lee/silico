@@ -2980,6 +2980,75 @@ mod tests {
     }
 
     #[test]
+    fn a_dot_whose_place_in_points_overflows_on_either_side_has_none() {
+        // The corner camera's right is (−1, 1, 0)/√2 and its up (−1, −1, 2)/√6, at 10 pixels
+        // a mm: a point 10³⁸ mm along either from the target lands 10³⁹ pixels out on that
+        // side alone, past f32's 3.4 × 10³⁸ in points (at two pixels a point, 5 × 10³⁸);
+        // its other side is the centre, finite. Neither has a dot.
+        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::splat(400.0));
+        let camera = corner_camera(Projection::Orthographic { view_height: 80.0 });
+        let far = 1e38;
+        let right = [10.0 - far / 2f64.sqrt(), 10.0 + far / 2f64.sqrt(), 10.0];
+        let up = [
+            10.0 - far / 6f64.sqrt(),
+            10.0 - far / 6f64.sqrt(),
+            10.0 + 2.0 * far / 6f64.sqrt(),
+        ];
+        for point in [right, up] {
+            let pixel = silico_render::render::project(&camera, [800, 800], point).unwrap();
+            assert!(pixel.iter().all(|c| c.is_finite()), "{pixel:?}");
+            assert!(pixel.iter().any(|c| c.abs() > 1e39 * 0.99), "{pixel:?}");
+            assert!(dots_at(rect, &camera, [800, 800], 2.0, &[(point, true)]).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_hovered_dot_is_white_and_a_selected_one_blue_each_4_5_points_ringed_in_black() {
+        // The prototype's (DESIGN.md's *Viewport*, interact.js `overlay`'s `dot`): radius
+        // 4.5 points, a 1-point #000 ring, hover #ffffff, selected #4676ff; at the corner's
+        // place in points (by hand, above) and the target's, the viewport's centre.
+        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::splat(400.0));
+        let camera = corner_camera(Projection::Orthographic { view_height: 80.0 });
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            paint_vertex_dots(
+                ui.painter(),
+                rect,
+                &camera,
+                [800, 800],
+                2.0,
+                &[([20.0, 0.0, 20.0], false), ([10.0, 10.0, 10.0], true)],
+            );
+        });
+        output.textures_delta.clear();
+        let circles: Vec<_> = output
+            .shapes
+            .into_iter()
+            .filter_map(|clipped| match clipped.shape {
+                egui::Shape::Circle(circle) => Some(circle),
+                _ => None,
+            })
+            .collect();
+        let corner = Pos2::new(
+            (10.0 + (400.0 - 200.0 / 2f64.sqrt()) / 2.0) as f32,
+            (20.0 + (400.0 - 200.0 / 6f64.sqrt()) / 2.0) as f32,
+        );
+        let want = [
+            (corner, egui::Color32::from_rgb(0xff, 0xff, 0xff)),
+            (
+                Pos2::new(210.0, 220.0),
+                egui::Color32::from_rgb(0x46, 0x76, 0xff),
+            ),
+        ];
+        assert_eq!(circles.len(), 2, "{circles:?}");
+        for (circle, (at, fill)) in circles.iter().zip(want) {
+            assert!((circle.center - at).length() < 1e-3, "{circle:?}");
+            assert_eq!((circle.radius, circle.fill), (4.5, fill));
+            assert_eq!(circle.stroke, Stroke::new(1.0, egui::Color32::BLACK));
+        }
+    }
+
+    #[test]
     fn the_dots_are_the_hovered_vertex_then_the_selected_ones_of_bodies_held() {
         let mut held = body(0.03125, [0.03125, 0.0625], CUT);
         held.mesh = Arc::new(Mesh {

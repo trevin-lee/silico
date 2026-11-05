@@ -2629,6 +2629,19 @@ fn a_corner_is_picked_within_its_disc_before_the_top_face_and_past_it_the_face_i
                 ),
                 Some((1, corner, [264, 318]))
             );
+            // Its reach is the radius in points times the pixels a point, 5 × 2 = 10 pixels,
+            // the discs near the picking taken within that and a pixel more; not 5 + 2 = 7,
+            // within 8: the pixel 9 along, 8.92 from the corner, is the corner's.
+            assert_eq!(
+                hit(
+                    r,
+                    &Frame {
+                        pixels_per_point: 2.0,
+                        ..corner_frame(&camera, [267, 318], Some(5.0))
+                    }
+                ),
+                Some((1, corner, [267, 318]))
+            );
         },
     );
 }
@@ -2831,6 +2844,48 @@ fn a_vertex_behind_a_face_is_picked_within_the_reach_toward_the_eye_and_not_past
             assert_eq!(hit(r, &at(20)), Some((1, Element::Vertex(1), [20, 26])));
             assert_eq!(hit(r, &at(41)), Some((1, Element::Face(3), [41, 26])));
             assert_eq!(hit(r, &at(32)), Some((1, Element::Face(3), [32, 26])));
+        },
+    );
+}
+
+#[test]
+fn a_vertex_behind_a_face_in_perspective_is_picked_within_its_reach_along_its_line_and_not_past_it()
+{
+    on_lavapipe(
+        "render::frame_tests::a_vertex_behind_a_face_in_perspective_is_picked_within_its_reach_along_its_line_and_not_past_it",
+        |r| {
+            // The front face (y = 0) seen square on from (20, −100, 5), 60° high: a vertex at
+            // (20, y, 5) lands on the image's centre, (32, 24), 100 + y along the view. Its
+            // disc goes toward the eye by 0.012 × 2 tan 30° = 0.013856 of that, so it lies
+            // before the face, 100 along, while (100 + y)(1 − 0.013856) < 100: y < 1.405 mm.
+            // 1.2 behind is picked; 1.6 behind, the face is.
+            let camera = Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 60.0,
+                },
+                eye: [20.0, -100.0, 5.0],
+                target: [20.0, 0.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            assert_pixel(
+                project(&camera, [WIDTH, HEIGHT], [20.0, 1.2, 5.0]),
+                [32.0, 24.0],
+                1e-9,
+            );
+            for (behind, want) in [(1.2, Element::Vertex(1)), (1.6, Element::Face(3))] {
+                let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+                mesh.vertex_points = vec![[20.0, behind, 5.0]];
+                r.upload(1, &Arc::new(mesh)).unwrap();
+                let asking = Frame {
+                    vertices: Some(7.0),
+                    ..frame(&camera, &[1], &[], Some(rect([32, 24], [1, 1])))
+                };
+                assert_eq!(
+                    hit(r, &asking),
+                    Some((1, want, [32, 24])),
+                    "{behind} behind"
+                );
+            }
         },
     );
 }
