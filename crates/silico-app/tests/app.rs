@@ -21,7 +21,8 @@ use silico_app::recent::Recents;
 use silico_app::start::Warm;
 use silico_app::tab::Sent;
 use silico_core::cache::Cache;
-use silico_core::command::{CheckAnswer, CheckModel, ModelChoice, Running, Sessions};
+use silico_core::command::wire::Named;
+use silico_core::command::{CheckAnswer, CheckModel, ModelChoice, Revision, Running, Sessions};
 use silico_core::disk::{Clock, Found, Reader};
 use silico_core::document::json::{self, Plain};
 use silico_core::fake::never_waits;
@@ -621,7 +622,8 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
     });
     assert!(anywhere(
         &h,
-        "Revision 1 → 2. You had no unsaved edits, so nothing of yours was lost."
+        "Revision 1 → 2. You had no unsaved edits, so nothing of yours was lost. Changed \
+         features are marked ● until you look at them."
     ));
     // It stays until it's dismissed.
     for _ in 0..10 {
@@ -662,6 +664,30 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
         assert!(!anywhere(&h, reloaded), "the purple banner came back");
     }
     assert_eq!(never_waits::waits(), 0);
+}
+
+/// The first cell of the row (a banner's, or a modal's list) one of whose later cells
+/// reads `text`: the label at its top, leftmost, left of it, outside the side panes.
+fn row_feature(h: &AppHarness, text: &str) -> String {
+    let cell = h.get_by_label(text).rect();
+    h.root()
+        .query_all(egui_kittest::kittest::by().recursive(true))
+        .filter(|node| {
+            ["Timeline", "Browser", "Properties"]
+                .iter()
+                .all(|pane| !in_pane(node, pane))
+        })
+        .filter_map(|node| {
+            let node = node.accesskit_node();
+            let label = node.label().or_else(|| node.value())?;
+            let rect = node.bounding_box()?;
+            ((rect.y0 - f64::from(cell.top())).abs() < 0.5
+                && rect.x0 < f64::from(cell.left()) - 0.5)
+                .then_some((rect.x0, label))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, label)| label)
+        .unwrap_or_else(|| panic!("no row reads {text}"))
 }
 
 /// The purple banner's title for the example's reload.
@@ -769,29 +795,1049 @@ fn a_reload_the_person_asked_for_shows_no_purple_banner() {
 }
 
 #[test]
-fn esc_dismisses_the_purple_banner_once_nothing_else_takes_it() {
+fn esc_dismisses_the_purple_banner_before_it_clears_the_selection() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     written_outside(&mut h, &path, "Bore");
     step_until(&mut h, "the reload announced", |h| anywhere(h, RELOADED));
-    // A feature selected: the first Esc clears the selection, the banner staying.
+    // A feature selected: the first Esc dismisses the banner, the selection staying (the
+    // prototype's `escChain`: the reloaded banner before the selection).
     select(&mut h, "Pin");
     step_until(&mut h, "settled", |h| {
         let tab = &h.state().tabs()[0];
         tab.edits.idle() && !tab.stoppable()
     });
     h.key_press(eframe::egui::Key::Escape);
-    step(&mut h);
-    assert!(h.state().tabs()[0].selection().is_empty());
+    step_until(&mut h, "dismissed", |h| !anywhere(h, RELOADED));
     for _ in 0..5 {
         step(&mut h);
     }
-    assert!(anywhere(&h, RELOADED));
-    // Nothing else to take it: the next dismisses the banner.
+    let selected = h.state().tabs()[0].selection().feature().cloned();
+    assert!(selected.is_some(), "the first Esc cleared the selection");
+    assert!(!anywhere(&h, RELOADED));
+    // The next clears the selection.
     h.key_press(eframe::egui::Key::Escape);
-    step_until(&mut h, "dismissed", |h| !anywhere(h, RELOADED));
+    step(&mut h);
+    assert!(h.state().tabs()[0].selection().is_empty());
     assert_eq!(never_waits::waits(), 0);
+}
+
+/// The example with its Pin's radius 5, as an agent's edits start from it.
+fn pinned() -> String {
+    EXAMPLE.replace(r#""radius": 2.5"#, r#""radius": 5"#)
+}
+
+/// [`pinned`] as an agent leaves it: the Pin's radius 3, and the Hole's note for an M6 bolt.
+fn agents_pin() -> String {
+    pinned()
+        .replace(r#""radius": 5"#, r#""radius": 3"#)
+        .replace("an M5 bolt", "an M6 bolt")
+}
+
+/// The note's change, as the banner lists it and the marks say it: each value as the file
+/// writes it, quoted.
+const NOTE_CHANGE: &str = r#""Clearance for an M5 bolt" → "Clearance for an M6 bolt""#;
+
+#[test]
+fn a_reload_lists_what_changed_by_feature_and_field_each_value_as_the_file_writes_it() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", &pinned());
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    std::fs::write(&path, agents_pin()).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "5 → 3"));
+    assert!(anywhere(&h, RELOADED));
+    // Each row: the feature's name, the field, and its values as the file writes them.
+    for label in ["Pin", "radius", "5 → 3", "Hole", "note", NOTE_CHANGE] {
+        assert!(seen(&h, label), "{label}");
+    }
+    assert_eq!(h.query_all_by_label("5 → 3").count(), 1);
+    assert_eq!(h.query_all_by_label(NOTE_CHANGE).count(), 1);
+    // Named by the revision it puts back, never "my version".
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Restore revision 1")
+            .is_some()
+    );
+    assert!(h.query_by_label_contains("my version").is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether any node is labelled `label`, however many are.
+fn seen(h: &AppHarness, label: &str) -> bool {
+    h.query_all_by_label(label).next().is_some()
+}
+
+/// The reload's second line, from revision `from` to `to`, its dot written as the
+/// prototype's `.state-dot` is drawn here.
+fn reloaded_sub(from: u64, to: u64) -> String {
+    format!(
+        "Revision {from} → {to}. You had no unsaved edits, so nothing of yours was lost. \
+         Changed features are marked ● until you look at them."
+    )
+}
+
+/// Two blocks, each with the fingerprint it rebuilds to on the fake kernel: Block, 40 × 20
+/// × 10 (volume 8000, area 2(800 + 400 + 200) = 2800), and Plate, 10 × 10 × 2 from x = 50
+/// (volume 200, area 2(100 + 20 + 20) = 280), so neither is marked with a warning.
+const BLOCK_AND_PLATE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}},
+    {"id": "p2t8wn4c", "type": "box", "v": 1, "name": "Plate", "position": [50, 0, 0], "length": 10, "width": 10, "height": 2, "fingerprint": {"volume": 200, "area": 280, "bbox": [50, 0, 0, 60, 10, 2], "faces": 6, "edges": 12, "vertices": 8}}
+  ]
+}
+"#;
+
+/// [`BLOCK_AND_PLATE`] as an agent leaves it: Block named Base, and Plate named Lid.
+fn blocks_renamed() -> String {
+    BLOCK_AND_PLATE
+        .replace(r#""name": "Block""#, r#""name": "Base""#)
+        .replace(r#""name": "Plate""#, r#""name": "Lid""#)
+}
+
+/// The marks of the two renames, as the accessibility tree reads them.
+const BASE_MARK: &str = r#"changed on disk: name "Block" → "Base""#;
+const LID_MARK: &str = r#"changed on disk: name "Plate" → "Lid""#;
+
+/// How many of `pane`'s features are marked changed on disk.
+fn outside_marks(h: &AppHarness, pane: &str) -> usize {
+    h.get_by_role_and_label(Role::Pane, pane)
+        .query_all_by_label_contains("changed on disk:")
+        .count()
+}
+
+#[test]
+fn the_changed_features_are_marked_in_purple_until_marked_seen_and_esc_dismisses_the_banner() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
+    assert_eq!(outside_marks(&h, "Timeline"), 0);
+    std::fs::write(&path, blocks_renamed()).unwrap();
+    step_until(&mut h, "the marks", |h| {
+        shows(h, "Timeline", BASE_MARK) && shows(h, "Timeline", LID_MARK)
+    });
+    assert!(anywhere(&h, &reloaded_sub(1, 2)));
+    // Both bodies, so the browser marks both too, and nothing else.
+    step_until(&mut h, "the browser's marks", |h| {
+        shows(h, "Browser", BASE_MARK) && shows(h, "Browser", LID_MARK)
+    });
+    assert_eq!(outside_marks(&h, "Timeline"), 2);
+    assert_eq!(outside_marks(&h, "Browser"), 2);
+    assert!(seen(&h, r#""Block" → "Base""#) && seen(&h, r#""Plate" → "Lid""#));
+    // Selected, and hovered: its properties say what changed, and the mark stays (the
+    // prototype's `selectFeature`: seen on select, cleared by the button).
+    select(&mut h, "Base");
+    assert!(shows(&h, "Properties", "Changed on disk"));
+    assert!(shows(&h, "Properties", r#"name "Block" → "Base""#));
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label("Base")
+        .hover();
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(
+        shows(&h, "Timeline", BASE_MARK),
+        "the mark went on a look alone"
+    );
+    // Mark as seen: its marks gone, the Lid's kept.
+    h.get_by_role_and_label(Role::Button, "Mark as seen")
+        .click();
+    step_until(&mut h, "Base's marks gone", |h| {
+        !shows(h, "Timeline", BASE_MARK) && !shows(h, "Browser", BASE_MARK)
+    });
+    assert!(!shows(&h, "Properties", "Changed on disk"));
+    assert_eq!(outside_marks(&h, "Timeline"), 1);
+    assert!(shows(&h, "Browser", LID_MARK));
+    // Esc: the banner first, then the selection (the prototype's `escChain`); nothing
+    // modal, and the marks stay. Once nothing of the tab's is under way, so no rebuild
+    // still running takes the Esc first.
+    step_until(&mut h, "settled", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.edits.idle() && !tab.stoppable()
+    });
+    let title = "Reloaded blocks.silico: another program changed it on disk";
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "dismissed", |h| !anywhere(h, title));
+    assert!(h.state().tabs()[0].selection().feature().is_some());
+    assert!(!seen(&h, r#""Plate" → "Lid""#));
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert!(shows(&h, "Timeline", LID_MARK) && shows(&h, "Browser", LID_MARK));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_reload_lists_features_added_removed_and_moved_each_in_its_words() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    // The two blocks and a Peg, 4 × 4 × 4 from x = 70 (volume 64, area 6 × 16 = 96).
+    let peg = r#"    {"id": "g5r9x3k1", "type": "box", "v": 1, "name": "Peg", "position": [70, 0, 0], "length": 4, "width": 4, "height": 4, "fingerprint": {"volume": 64, "area": 96, "bbox": [70, 0, 0, 74, 4, 4], "faces": 6, "edges": 12, "vertices": 8}}"#;
+    let lines: Vec<&str> = BLOCK_AND_PLATE.lines().collect();
+    let (block, plate) = (lines[5].trim_end_matches(','), lines[6]);
+    let document = |features: [&str; 3]| {
+        format!(
+            "{}\n{}\n  ]\n}}\n",
+            lines[..5].join("\n"),
+            features
+                .map(|feature| feature.trim_end_matches(','))
+                .join(",\n")
+        )
+    };
+    let (mut h, path) = f.opened("blocks.silico", &document([block, plate, peg]));
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Peg"));
+    // The Plate moved before the Block, the Peg removed, and a Lid added last, 40 × 20 × 2
+    // on the Block (volume 1600, area 2(800 + 80 + 40) = 1840): places by hand, from 1, the
+    // Block 1 → 2, the Plate 2 → 1, the Lid at 3, the Peg from 3.
+    let lid = r#"    {"id": "q4m7d2e9", "type": "box", "v": 1, "name": "Lid", "position": [0, 0, 10], "length": 40, "width": 20, "height": 2, "fingerprint": {"volume": 1600, "area": 1840, "bbox": [0, 0, 10, 40, 20, 12], "faces": 6, "edges": 12, "vertices": 8}}"#;
+    std::fs::write(&path, document([plate, block, lid])).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "at place 3"));
+    for label in [
+        "moved",
+        "place 2 → 1",
+        "place 1 → 2",
+        "added",
+        "at place 3",
+        "removed",
+        "from place 3",
+        "Peg",
+    ] {
+        assert!(seen(&h, label), "{label}");
+    }
+    assert_eq!(h.query_all_by_label("moved").count(), 2);
+    // Each row its own feature's: the Plate moved up, the Block down, the Lid added, the
+    // Peg removed.
+    for (text, feature) in [
+        ("place 2 → 1", "Plate"),
+        ("place 1 → 2", "Block"),
+        ("at place 3", "Lid"),
+        ("from place 3", "Peg"),
+    ] {
+        assert_eq!(row_feature(&h, text), feature, "{text}");
+    }
+    // Each feature still there marked with its words; the Peg, gone, has nothing to mark.
+    let marks = [
+        "changed on disk: moved place 2 → 1",
+        "changed on disk: moved place 1 → 2",
+        "changed on disk: added at place 3",
+    ];
+    step_until(&mut h, "the marks", |h| {
+        marks.iter().all(|mark| shows(h, "Timeline", mark))
+    });
+    assert_eq!(outside_marks(&h, "Timeline"), 3);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A block, 40 × 20 × 10, in canonical form, with the fingerprint it rebuilds to on the
+/// fake kernel: volume 40 × 20 × 10 = 8000, area 2(800 + 400 + 200) = 2800, to z = 10.
+const BLOCK_10: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+
+/// The agent's change: the block 11 high, its fingerprint volume 40 × 20 × 11 = 8800, area
+/// 2(800 + 440 + 220) = 2920, to z = 11.
+const BLOCK_11: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 11,\n      \"fingerprint\": {\"volume\": 8800, \"area\": 2920, \"bbox\": [0, 0, 0, 40, 20, 11], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+
+/// [`BLOCK_10`] `height` high, with the fingerprint it rebuilds to on the fake kernel:
+/// volume 40 × 20 × `height`, area 2(800 + 40 `height` + 20 `height`), to z = `height`.
+fn block_high(height: u32) -> String {
+    BLOCK_10
+        .replace("\"height\": 10", &format!("\"height\": {height}"))
+        .replace("\"volume\": 8000", &format!("\"volume\": {}", 800 * height))
+        .replace(
+            "\"area\": 2800",
+            &format!("\"area\": {}", 1600 + 120 * height),
+        )
+        .replace("40, 20, 10]", &format!("40, 20, {height}]"))
+}
+
+/// Whether the session's transaction holds a document other than the one `begin` saw.
+fn changed(f: &Fixture, h: &AppHarness) -> bool {
+    let id = h.state().tabs()[0].id;
+    f.sessions
+        .status(&id)
+        .result
+        .unwrap()
+        .transaction
+        .is_some_and(|transaction| transaction.changed)
+}
+
+#[test]
+fn restore_puts_the_replaced_revision_back_as_an_edit_that_undo_takes_and_save_writes() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    std::fs::write(&path, BLOCK_11).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "height"));
+    assert!(!changed(&f, &h));
+    h.get_by_role_and_label(Role::Button, "Restore revision 1")
+        .click();
+    step_until(&mut h, "restored", |h| {
+        anywhere(h, "block.silico *") && h.state().tabs()[0].edits.idle()
+    });
+    // The text the reload replaced, byte for byte, as an edit inside a transaction begun
+    // for it: unsaved, the banner gone, the file still the agent's.
+    assert_eq!(text_of(&f, &h), BLOCK_10);
+    assert!(changed(&f, &h));
+    let sent = &h.state().tabs()[0].sent;
+    assert_eq!(&sent[sent.len() - 2..], [Sent::Begin, Sent::Replace]);
+    step_until(&mut h, "unsaved shown", |h| {
+        status_said(h, "Unsaved").as_deref() == Some("Unsaved")
+    });
+    assert!(!anywhere(
+        &h,
+        "Reloaded block.silico: another program changed it on disk"
+    ));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), BLOCK_11);
+    // Ctrl+Z: the reloaded text back, nothing changed from it.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step_until(&mut h, "undone", |h| text_of(&f, h) == BLOCK_11);
+    step_until(&mut h, "unchanged", |h| !changed(&f, h));
+    // Redone, then saved: the file is the restored bytes.
+    step_until(&mut h, "Redo on", |h| {
+        !h.get_by_role_and_label(Role::Button, "Redo")
+            .accesskit_node()
+            .is_disabled()
+    });
+    h.get_by_role_and_label(Role::Button, "Redo").click();
+    step_until(&mut h, "redone", |h| text_of(&f, h) == BLOCK_10);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "saved", |h| !anywhere(h, "block.silico *"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), BLOCK_10);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn restore_of_a_revision_no_longer_held_says_the_cores_refusal_and_its_candidates() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    std::fs::write(&path, BLOCK_11).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "height"));
+    let id = h.state().tabs()[0].id;
+    // The session's queue held, so the banner still offers revision 1, and the file written
+    // again, with a read of the document now queued ahead of Restore's (as the disk watch's
+    // own reload, or another client's read, would be): it reads the file first, reloading
+    // it at revision 3. Restore's read of revision 1 names a revision, so it reads nothing
+    // of the file itself.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let third = BLOCK_11.replace("\"height\": 11", "\"height\": 12");
+    std::fs::write(&path, &third).unwrap();
+    let ahead = f.sessions.text(&id, None);
+    step_until(&mut h, "the change found", |h| {
+        disk(h) == Some(silico_core::disk::Disk::Changed)
+    });
+    h.get_by_role_and_label(Role::Button, "Restore revision 1")
+        .click();
+    step(&mut h);
+    hold.release();
+    let _ = check.wait();
+    let ahead = ahead.wait();
+    assert_eq!(ahead.session.unwrap().revision.number(), 3);
+    // The core's refusal said: revision 1 replaced by the second reload, the session
+    // holding 2 (what that reload replaced) and 3 (now).
+    let refused = format!(
+        "session {id} doesn't hold the text of revision 1: it holds revisions 2 and 3 \
+         (candidates: 2, 3)"
+    );
+    step_until(&mut h, "the refusal said", |h| anywhere(h, &refused));
+    // The second reload, which Restore's read came after, announced in the first's place,
+    // with what it changed: the height, 11 then 12.
+    step_until(&mut h, "the second reload listed", |h| seen(h, "11 → 12"));
+    assert!(anywhere(&h, RELOADED.replace("example", "block").as_str()));
+    assert!(anywhere(&h, &reloaded_sub(2, 3)));
+    assert!(!anywhere(&h, &reloaded_sub(1, 2)));
+    assert_eq!(row_feature(&h, "11 → 12"), "Block");
+    assert!(!seen(&h, "10 → 11"));
+    // Nothing restored: the third text, no transaction; the banner offers revision 2 now.
+    assert_eq!(text_of(&f, &h), third);
+    assert!(!h.state().tabs()[0].transaction);
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Restore revision 1")
+            .is_none()
+    );
+    assert!(
+        !h.get_by_role_and_label(Role::Button, "Restore revision 2")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// When the frame that takes Restore's refusal read the session's `status`, the two orders
+/// a frame may see: before the `begin` sent for Restore's edit ran (revision 2, no
+/// transaction open, the file found changed), `begin` and `replace_text` then answering
+/// before that frame takes its answers; or after `replace_text` had answered (revision 3,
+/// the transaction `begin` opened, the file as the session holds it).
+#[derive(Debug, Clone, Copy)]
+enum StatusRead {
+    BeforeBegin,
+    AfterReplace,
+}
+
+#[test]
+fn restore_refused_by_a_reload_before_its_begin_leaves_no_transaction_and_follows_the_file() {
+    // Each order forced, so both run every time: the first is the one the frame's status
+    // read races `begin` into, which once left no banner.
+    for read in [StatusRead::BeforeBegin, StatusRead::AfterReplace] {
+        restore_refused_by_a_reload_before_its_begin(read);
+    }
+}
+
+fn restore_refused_by_a_reload_before_its_begin(read: StatusRead) {
+    use silico_core::command::{RunningCommand, SessionCommand};
+    let at = format!("{read:?}");
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    std::fs::write(&path, BLOCK_11).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "10 → 11"));
+    let id = h.state().tabs()[0].id;
+    // Restore's read held behind a check, then let run alone: a second check queued
+    // behind it is held, so once that one runs, the read has answered, and the `begin`
+    // and `replace_text` the tab sends for it wait behind the second.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_role_and_label(Role::Button, "Restore revision 1")
+        .click();
+    step(&mut h);
+    hold.release();
+    let _ = check.wait();
+    let second = f.kernel.hold(|_| true);
+    let held = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    until("the second check running", || {
+        f.sessions.status(&id).result.unwrap().running
+            == Some(RunningCommand::Command(SessionCommand::Check))
+    });
+    step_until(&mut h, "the begin sent", |h| {
+        h.state().tabs()[0]
+            .sent
+            .ends_with(&[Sent::Begin, Sent::Replace])
+    });
+    // A read queued behind them: once it answers, `begin` and `replace_text` have. Inside
+    // the transaction `begin` opens, it reads nothing of the file.
+    let behind = f.sessions.text(&id, None);
+    // The file written again before `begin` runs: its read reloads it, at revision 3, so
+    // the edit, sent against 2, is refused.
+    let third = block_high(12);
+    std::fs::write(&path, &third).unwrap();
+    step_until(&mut h, "the change found", |h| {
+        disk(h) == Some(silico_core::disk::Disk::Changed)
+    });
+    let session = |f: &Fixture| {
+        let status = f.sessions.status(&id);
+        (
+            status.session.unwrap().revision.number(),
+            status.result.unwrap().transaction.is_some(),
+        )
+    };
+    match read {
+        StatusRead::BeforeBegin => {
+            // The next frame's status read, then, before it takes any answer, the second
+            // check let go and every command behind it answered.
+            let sessions = Arc::clone(&f.sessions);
+            let ran = Arc::new(AtomicBool::new(false));
+            let told = Arc::clone(&ran);
+            let mut gate = Some((second, held, behind));
+            h.state_mut().tabs_mut()[0].after_status = Some(Box::new(move || {
+                let Some((second, held, mut behind)) = gate.take() else {
+                    return;
+                };
+                let status = sessions.status(&id);
+                assert_eq!(status.session.unwrap().revision.number(), 2);
+                assert!(status.result.unwrap().transaction.is_none());
+                second.release();
+                // Polled, not waited on: this is the frame's thread.
+                let deadline = Instant::now() + WAIT;
+                loop {
+                    match behind.try_take() {
+                        Ok(_) => break,
+                        Err(running) => behind = running,
+                    }
+                    assert!(Instant::now() < deadline, "never answered behind the edit");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                drop(held);
+                told.store(true, Ordering::SeqCst);
+            }));
+            step(&mut h);
+            assert!(ran.load(Ordering::SeqCst), "{at}: the hook never ran");
+            h.state_mut().tabs_mut()[0].after_status = None;
+            // The status that frame read found the file changed: read before `begin`'s
+            // read of the file, after which it's as the session holds it.
+            assert_eq!(disk(&h), Some(silico_core::disk::Disk::Changed), "{at}");
+        }
+        StatusRead::AfterReplace => {
+            second.release();
+            let _ = held.wait();
+            let _ = behind.wait();
+            // Before any frame: the reload `begin` read, and its transaction open.
+            assert_eq!(session(&f), (3, true), "{at}");
+            step(&mut h);
+            assert_eq!(disk(&h), Some(silico_core::disk::Disk::Unchanged), "{at}");
+        }
+    }
+    // Either way, that frame took the refusal: the reload it came after announced, 2 to 3.
+    let banner = h.state().tabs()[0]
+        .reloaded
+        .as_ref()
+        .map(|reloaded| (reloaded.from.number(), reloaded.to.number()));
+    assert_eq!(banner, Some((2, 3)), "{at}");
+    // The reload announced in the first's place, with what it changed.
+    step_until(&mut h, "the second reload listed", |h| seen(h, "11 → 12"));
+    assert!(anywhere(&h, &reloaded_sub(2, 3)), "{at}");
+    // The transaction `begin` opened for the edit rolled back: nothing held, and the
+    // session follows the file again.
+    step_until(&mut h, "settled", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.edits.idle() && !tab.unsettled() && !tab.transaction
+    });
+    assert!(
+        f.sessions.status(&id).result.unwrap().transaction.is_none(),
+        "{at}"
+    );
+    assert_eq!(text_of(&f, &h), third, "{at}");
+    assert!(!anywhere(&h, "block.silico *"), "{at}");
+    // Another program's next write: reloaded, and announced, from the rollback's revision,
+    // 4, to 5.
+    let fourth = block_high(13);
+    std::fs::write(&path, &fourth).unwrap();
+    step_until(&mut h, "the third reload listed", |h| seen(h, "12 → 13"));
+    assert!(anywhere(&h, &reloaded_sub(4, 5)), "{at}");
+    assert_eq!(text_of(&f, &h), fourth, "{at}");
+    assert_eq!(never_waits::waits(), 0, "{at}");
+}
+
+/// The session's revision now, as `status` gives it (its file compared on disk as it's
+/// asked, so a change found is reloaded), with no frame stepped.
+fn revision_now(f: &Fixture, h: &AppHarness) -> u64 {
+    let id = h.state().tabs()[0].id;
+    f.sessions.status(&id).session.unwrap().revision.number()
+}
+
+#[test]
+fn a_reload_overtaken_before_its_changes_were_read_is_said_in_the_next_banner() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let id = h.state().tabs()[0].id;
+    // Reloaded by the session with no frame stepped; then its queue held, the file written
+    // again, and a read of the document now queued, as the disk watch's own reload would be
+    // (Fable's residual, *6d's other half*, section 5). Then frames: the tab sees the
+    // first reload and asks its diff, 1 → 2, which waits behind that read.
+    std::fs::write(&path, BLOCK_11).unwrap();
+    until("the first reload", || revision_now(&f, &h) == 2);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let third = block_high(12);
+    std::fs::write(&path, &third).unwrap();
+    let ahead = f.sessions.text(&id, None);
+    step_until(&mut h, "the first reload announced", |h| {
+        anywhere(h, &reloaded_sub(1, 2))
+    });
+    // The read ahead reloads the file at 3, so revision 1 is no longer held, and the diff
+    // from it is refused, though it reads nothing of the file itself.
+    hold.release();
+    let _ = check.wait();
+    assert_eq!(ahead.wait().session.unwrap().revision.number(), 3);
+    step_until(&mut h, "the second reload listed", |h| seen(h, "11 → 12"));
+    assert!(anywhere(&h, &reloaded_sub(2, 3)));
+    // The first one's changes, never read, said so; its features unmarked.
+    assert!(anywhere(
+        &h,
+        "An earlier change, revision 1 → 2, couldn't be listed: the file changed again \
+         before it was read, so its features aren't marked."
+    ));
+    assert!(!seen(&h, "10 → 11"));
+    step_until(&mut h, "the mark", |h| outside_marks(h, "Timeline") == 1);
+    let mark = showing(&h, "Timeline", "changed on disk:").unwrap();
+    assert!(
+        mark.starts_with("changed on disk: height 11 → 12"),
+        "{mark}"
+    );
+    assert!(!mark.contains("10 → 11"), "{mark}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_reloads_diff_names_both_revisions_so_a_write_after_the_reload_never_refuses_it() {
+    let reader = Arc::new(HeldReader::default());
+    let f = fixture_reading(Some(reader.reader()));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let id = h.state().tabs()[0].id;
+    // Reloaded by the session with no frame stepped; then its queue held, and frames: the
+    // tab sees the reload, 1 → 2, and asks its diff, which waits behind the hold.
+    std::fs::write(&path, BLOCK_11).unwrap();
+    until("the first reload", || revision_now(&f, &h) == 2);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    step_until(&mut h, "the first reload announced", |h| {
+        anywhere(h, &reloaded_sub(1, 2))
+    });
+    // The disk watch held, so nothing finds the next write and queues a reload until it's
+    // let go; then the file written again, before the diff runs. Asked from 1 to 2 by
+    // number, the diff reads nothing of the file; asked to the document now, it would read
+    // it first, reload it at 3, and be refused, revision 1 no longer held.
+    reader.hold(&mut h);
+    std::fs::write(&path, block_high(12)).unwrap();
+    hold.release();
+    let _ = check.wait();
+    // A read queued behind the diff, of a revision too: answered, the diff has, and the
+    // session is still at 2.
+    let two = Revision::from_number(2).unwrap();
+    let behind = f
+        .sessions
+        .text_at(&id, None, Some(Named::Revision(two)))
+        .wait();
+    assert_eq!(behind.session.unwrap().revision, two, "the diff reloaded");
+    // The first reload's banner lists what it changed, the height 10 then 11, and Restore
+    // of revision 1 is on.
+    step_until(&mut h, "the first reload listed", |h| seen(h, "10 → 11"));
+    // Its rows, the height and the fingerprint written with it: volume 40 × 20 × 10 = 8000
+    // then 40 × 20 × 11 = 8800 (and the box's top, z 10 then 11, as the height's).
+    assert!(anywhere(&h, &reloaded_sub(1, 2)));
+    assert_eq!(h.query_all_by_label("10 → 11").count(), 2);
+    assert_eq!(row_feature(&h, "8000 → 8800"), "Block");
+    assert!(
+        !h.get_by_role_and_label(Role::Button, "Restore revision 1")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // The watch let go: it finds the second write, and the session's own reload follows,
+    // announced 2 → 3 with what it changed, the first listed, so nothing said unlisted.
+    reader.open();
+    step_until(&mut h, "the second reload listed", |h| seen(h, "11 → 12"));
+    assert!(anywhere(&h, &reloaded_sub(2, 3)));
+    assert!(h.query_by_label_contains("couldn't be listed").is_none());
+    assert_eq!(text_of(&f, &h), block_high(12));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`BLOCK_AND_PLATE`] with only Block renamed, to Base.
+fn block_renamed() -> String {
+    BLOCK_AND_PLATE.replace(r#""name": "Block""#, r#""name": "Base""#)
+}
+
+#[test]
+fn the_marks_of_each_reload_accumulate_until_each_is_marked_seen() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
+    std::fs::write(&path, block_renamed()).unwrap();
+    step_until(&mut h, "the first reload marked", |h| {
+        anywhere(h, &reloaded_sub(1, 2)) && shows(h, "Timeline", BASE_MARK)
+    });
+    assert_eq!(outside_marks(&h, "Timeline"), 1);
+    // The second reload changes only the Plate: its banner lists that alone, and the
+    // Base's mark, from the first, stays beside the Lid's (the prototype's
+    // `Object.assign(d.outside, c.marks)`).
+    std::fs::write(&path, blocks_renamed()).unwrap();
+    step_until(&mut h, "the second reload marked", |h| {
+        anywhere(h, &reloaded_sub(2, 3)) && shows(h, "Timeline", LID_MARK)
+    });
+    assert!(seen(&h, r#""Plate" → "Lid""#));
+    assert!(!seen(&h, r#""Block" → "Base""#));
+    assert!(shows(&h, "Timeline", BASE_MARK));
+    assert_eq!(outside_marks(&h, "Timeline"), 2);
+    step_until(&mut h, "the browser's marks", |h| {
+        outside_marks(h, "Browser") == 2
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_diff_answered_after_a_newer_reload_marks_its_features_but_is_never_listed_in_its_banner() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
+    let id = h.state().tabs()[0].id;
+    // Reloaded with no frame stepped; then one frame, whose poll asks the diff from 1.
+    std::fs::write(&path, block_renamed()).unwrap();
+    until("the first reload", || revision_now(&f, &h) == 2);
+    step(&mut h);
+    assert!(anywhere(&h, &reloaded_sub(1, 2)));
+    // A read queued behind that diff, waited on off any frame: the diff has answered, its
+    // answer there for the tab to take.
+    let _ = f.sessions.text(&id, None).wait();
+    // Reloaded again, still with no frame stepped: the next frame sees the newer reload
+    // with the older diff's answer waiting.
+    std::fs::write(&path, blocks_renamed()).unwrap();
+    until("the second reload", || revision_now(&f, &h) == 3);
+    step_until(&mut h, "the second reload listed", |h| {
+        seen(h, r#""Plate" → "Lid""#)
+    });
+    assert!(anywhere(&h, &reloaded_sub(2, 3)));
+    // The older answer, the Block's rename, isn't this banner's.
+    assert!(!seen(&h, r#""Block" → "Base""#));
+    assert_eq!(row_feature(&h, r#""Plate" → "Lid""#), "Lid");
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(!seen(&h, r#""Block" → "Base""#));
+    // But it isn't lost: taken into its own banner before the newer one replaced it, its
+    // feature is marked beside the newer one's, and nothing says it couldn't be listed.
+    step_until(&mut h, "both marks", |h| {
+        shows(h, "Timeline", BASE_MARK) && shows(h, "Timeline", LID_MARK)
+    });
+    assert_eq!(outside_marks(&h, "Timeline"), 2);
+    assert!(h.query_by_label_contains("couldn't be listed").is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
+    let changed = "blocks.silico changed on disk while you have unsaved edits.";
+    let reloaded = "Reloaded blocks.silico: another program changed it on disk";
+    // An edit held, the Plate renamed on disk, and Reload: the person's reload shows no
+    // banner (#381), but what came in is marked.
+    select(&mut h, "Block");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| h.state().tabs()[0].transaction);
+    let lid = BLOCK_AND_PLATE.replace(r#""name": "Plate""#, r#""name": "Lid""#);
+    std::fs::write(&path, &lid).unwrap();
+    step_until(&mut h, "the change announced", |h| anywhere(h, changed));
+    h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
+        .click();
+    step_until(&mut h, "reloaded and marked", |h| {
+        shows(h, "Timeline", LID_MARK) && !anywhere(h, "blocks.silico *")
+    });
+    assert_eq!(outside_marks(&h, "Timeline"), 1);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(!anywhere(&h, reloaded), "the purple banner after Reload");
+    }
+    // Again, the reload landing before the tab takes the rollback's answer: no frame
+    // stepped from the click's until the session has rolled back and reloaded.
+    select(&mut h, "Block");
+    type_name(&mut h, "t");
+    step_until(&mut h, "the edit held again", |h| {
+        h.state().tabs()[0].transaction && h.state().tabs()[0].edits.idle()
+    });
+    let cap = BLOCK_AND_PLATE.replace(r#""name": "Plate""#, r#""name": "Cap""#);
+    std::fs::write(&path, &cap).unwrap();
+    step_until(&mut h, "the second change announced", |h| {
+        anywhere(h, changed)
+    });
+    let before = revision_now(&f, &h);
+    h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
+        .click();
+    step(&mut h);
+    until("rolled back and reloaded", || {
+        revision_now(&f, &h) == before + 2
+    });
+    let capped = r#"changed on disk: name "Lid" → "Cap""#;
+    step_until(&mut h, "marked again", |h| shows(h, "Timeline", capped));
+    assert_eq!(outside_marks(&h, "Timeline"), 1);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(
+            !anywhere(&h, reloaded),
+            "the purple banner after the second Reload"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn restore_is_off_and_says_why_once_the_reloads_diff_finds_its_revision_gone() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let id = h.state().tabs()[0].id;
+    // The first reload seen, its diff held behind a check, and behind a read of the
+    // document now queued after the file was written again, as the disk watch's own
+    // reload would be.
+    std::fs::write(&path, BLOCK_11).unwrap();
+    until("the first reload", || revision_now(&f, &h) == 2);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    std::fs::write(&path, block_high(12)).unwrap();
+    let ahead = f.sessions.text(&id, None);
+    step_until(&mut h, "the first reload announced", |h| {
+        anywhere(h, &reloaded_sub(1, 2))
+    });
+    // The Block's dialog opened, its read of the feature waiting behind the hold too: the
+    // read ahead reloads the file, so the diff from 1 is refused, while the tab's read is
+    // under way, so no newer banner takes this one's place.
+    double_click(&mut h, "Timeline", "Block");
+    hold.release();
+    let _ = check.wait();
+    assert_eq!(ahead.wait().session.unwrap().revision.number(), 3);
+    let refused = format!(
+        "session {id} doesn't hold the text of revision 1: it holds revisions 2 and 3 \
+         (candidates: 2, 3)"
+    );
+    step_until(&mut h, "the diff's refusal said, the dialog open", |h| {
+        anywhere(h, &refused) && dialog_open(h)
+    });
+    // The dialog cancelled, having changed nothing: the banner still the first reload's.
+    settled(&mut h);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].transaction);
+    assert!(anywhere(&h, &reloaded_sub(1, 2)));
+    // Restore of revision 1 could only be refused: off, saying why.
+    let restore = h.get_by_role_and_label(Role::Button, "Restore revision 1");
+    assert!(restore.accesskit_node().is_disabled());
+    restore.hover();
+    let why = "Silico no longer holds revision 1: the file changed again before what \
+               changed was read, so it can't be put back";
+    step_until(&mut h, "its tooltip", |h| anywhere(h, why));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn show_changes_lists_what_changed_on_disk_and_the_edits_held_each_in_its_section() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "Pins")
+    });
+    std::fs::write(
+        &path,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#),
+    )
+    .unwrap();
+    let said = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, said));
+    // The prototype's order: Show changes, Reload, Keep.
+    let buttons = ["Show changes", "Reload, discard my edits", "Keep my edits…"]
+        .map(|label| h.get_by_role_and_label(Role::Button, label).rect().left());
+    assert!(buttons[0] < buttons[1] && buttons[1] < buttons[2]);
+    // Its two diffs held behind a check: each section says it's reading, then lists them.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_role_and_label(Role::Button, "Show changes")
+        .click();
+    step_until(&mut h, "the modal", |h| anywhere(h, "What changed on disk"));
+    assert_eq!(h.query_all_by_label("Reading what changed…").count(), 2);
+    hold.release();
+    let _ = check.wait();
+    // In the prototype's two columns, each change on one row: the other program's, its
+    // feature's name (as the file names it) in the key's, what changed in the value's; the
+    // edits held, "Edit" in the key's, named as the document now names it.
+    let theirs = r#"name · "Hole" → "Drill""#;
+    let edit = r#"Pins · name · "Pin" → "Pins""#;
+    step_until(&mut h, "both listed", |h| {
+        anywhere(h, theirs) && anywhere(h, edit)
+    });
+    assert!(!seen(&h, "Reading what changed…"));
+    assert_eq!(row_feature(&h, theirs), "Drill");
+    assert_eq!(row_feature(&h, edit), "Edit");
+    let (key, value) = (h.get_by_label("Edit").rect(), h.get_by_label(edit).rect());
+    assert!(key.right() < value.left());
+    let (key, value) = (
+        h.get_by_label("Drill").rect(),
+        h.get_by_label(theirs).rect(),
+    );
+    assert!(key.right() < value.left());
+    let top = |label: &str| h.get_by_label(label).rect().top();
+    assert!(top("Their change (on disk)") < top(theirs));
+    assert!(top(theirs) < top("Your unsaved edits"));
+    assert!(top("Your unsaved edits") < top(edit));
+    // Its hint, in words true of Silico: the core's diff, not textconv.
+    assert!(anywhere(
+        &h,
+        "A feature-level summary of the two documents, as Silico's diff reads them."
+    ));
+    // Closed: the banner still offers the choice.
+    h.get_by_role_and_label(Role::Button, "Close").click();
+    step_until(&mut h, "closed", |h| !anywhere(h, "What changed on disk"));
+    assert!(anywhere(&h, said));
+    assert!(h.state().tabs()[0].held_changes.is_none());
+    // Opened again, its Reload theirs (the prototype's `reloadDiscard`, as the banner's
+    // Reload): the file's text, the edit dropped, the modal and the banner gone.
+    h.get_by_role_and_label(Role::Button, "Show changes")
+        .click();
+    step_until(&mut h, "the modal again", |h| {
+        anywhere(h, "What changed on disk")
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let reload = h.get_by_role_and_label(Role::Button, "Reload theirs");
+    assert!(!reload.accesskit_node().is_disabled(), "Reload theirs off");
+    reload.click();
+    step_until(&mut h, "theirs reloaded", |h| {
+        shows(h, "Timeline", "Drill")
+            && shows(h, "Timeline", "Pin")
+            && !anywhere(h, "example.silico *")
+    });
+    assert!(!shows(&h, "Timeline", "Pins"));
+    assert!(!anywhere(&h, "What changed on disk"));
+    assert!(!anywhere(&h, said));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn show_changes_lists_their_radius_and_your_height_and_the_revision_never_moves() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", &pinned());
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    // The person's edit, in the Block's dialog: its height 10 → 12, the field focused with
+    // its cursor at the end, the "10" erased with Backspace, then "1" and "2" typed.
+    double_click(&mut h, "Timeline", "Block");
+    step_until(&mut h, "its dialog, loaded", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Box").is_some()
+            && input(h, "Height").value().as_deref() == Some("10")
+    });
+    settled(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    input(&h, "Height").focus();
+    step(&mut h);
+    for _ in 0..2 {
+        h.key_press(eframe::egui::Key::Backspace);
+        step(&mut h);
+    }
+    assert_eq!(input(&h, "Height").value().as_deref(), Some(""));
+    type_into(&mut h, "Height", "12");
+    settled(&mut h);
+    assert_eq!(input(&h, "Height").value().as_deref(), Some("12"));
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // An agent's change on disk: the Pin's radius 5 → 3.
+    std::fs::write(&path, pinned().replace(r#""radius": 5"#, r#""radius": 3"#)).unwrap();
+    let said = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, said));
+    let id = h.state().tabs()[0].id;
+    let before = f.sessions.status(&id);
+    let revision = before.session.unwrap().revision;
+    let transaction = before.result.unwrap().transaction;
+    assert!(transaction.is_some());
+    h.get_by_role_and_label(Role::Button, "Show changes")
+        .click();
+    // Fable's two lists (*6d's other half*, section 2): the file's change from the base,
+    // and the edits' from the base, each its one change.
+    let theirs = "radius · 5 → 3";
+    let mine = "Block · height · 10 → 12";
+    step_until(&mut h, "both lists", |h| {
+        anywhere(h, theirs) && anywhere(h, mine)
+    });
+    assert_eq!(row_feature(&h, theirs), "Pin");
+    assert_eq!(row_feature(&h, mine), "Edit");
+    // Each half alone in its list: the edit isn't theirs, nor their change the edits'.
+    assert!(!seen(&h, "height · 10 → 12"));
+    assert!(!seen(&h, "Pin · radius · 5 → 3"));
+    let top = |label: &str| h.get_by_label(label).rect().top();
+    assert!(top("Their change (on disk)") < top(theirs));
+    assert!(top(theirs) < top("Your unsaved edits"));
+    assert!(top("Your unsaved edits") < top(mine));
+    // Neither read moved the session: its revision, its transaction's counts, and its
+    // finding on disk as they were, the modal still open.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, "What changed on disk"));
+    let after = f.sessions.status(&id);
+    assert_eq!(after.session.unwrap().revision, revision);
+    let after = after.result.unwrap();
+    assert_eq!(after.transaction, transaction);
+    assert_eq!(after.disk, Some(silico_core::disk::Disk::Changed));
+    assert_eq!(h.state().tabs()[0].revision, revision);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn show_changes_says_the_readers_message_for_a_file_that_doesnt_read_in_its_own_section() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "Pins")
+    });
+    // Another program's file, an object begun and never ended.
+    std::fs::write(&path, "{").unwrap();
+    let said = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, said));
+    let revision = h.state().tabs()[0].revision;
+    h.get_by_role_and_label(Role::Button, "Show changes")
+        .click();
+    // Their section: the core's refusal of the side, and under it the reader's message,
+    // worked by hand: past the `{`, at line 1, column 2, a key is looked for, and the text
+    // has ended. The edits' section answered on its own.
+    let refused = "to, the file on disk, doesn't read as a document, so it can't be compared";
+    let reader = "the document isn't valid JSON: expected a key, found the end of the text, at \
+                  line 1, column 2";
+    let edit = r#"Pins · name · "Pin" → "Pins""#;
+    step_until(&mut h, "both sections answered", |h| {
+        anywhere(h, reader) && anywhere(h, edit)
+    });
+    assert!(anywhere(&h, refused));
+    assert!(!seen(&h, "Reading what changed…"));
+    let top = |label: &str| h.get_by_label(label).rect().top();
+    assert!(top("Their change (on disk)") < top(refused));
+    assert!(top(refused) < top(reader));
+    assert!(top(reader) < top("Your unsaved edits"));
+    assert!(top("Your unsaved edits") < top(edit));
+    // Nothing reloaded: the edit still held.
+    assert_eq!(h.state().tabs()[0].revision, revision);
+    assert!(anywhere(&h, "example.silico *"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks() {
+    on_lavapipe(
+        "the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks",
+        || {
+            let f = fixture_reading(Some(Arc::new(real)));
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            h.set_render_every_step(true);
+            // The app's fonts, look, and icons, as main.rs sets them, so the shot has words.
+            silico_app::theme::apply(&h.ctx);
+            let path = f.file("blocks.silico", BLOCK_AND_PLATE);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            step_until(&mut h, "its features", |h| {
+                h.state()
+                    .tabs()
+                    .first()
+                    .is_some_and(|tab| tab.timeline.is_some())
+                    && shows(h, "Timeline", "Plate")
+            });
+            std::fs::write(&path, blocks_renamed()).unwrap();
+            step_until(&mut h, "the changes listed and marked", |h| {
+                seen(h, r#""Plate" → "Lid""#)
+                    && shows(h, "Timeline", BASE_MARK)
+                    && shows(h, "Browser", LID_MARK)
+            });
+            meshes_settled(&mut h);
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            // The two rows under the words, and the marks in the timeline and the browser.
+            let words = h.get_by_label(&reloaded_sub(1, 2)).rect();
+            let base = h.get_by_label(r#""Block" → "Base""#).rect();
+            let lid = h.get_by_label(r#""Plate" → "Lid""#).rect();
+            assert!(words.bottom() < base.top() && base.bottom() < lid.top());
+            assert_eq!(outside_marks(&h, "Timeline"), 2);
+            assert_eq!(outside_marks(&h, "Browser"), 2);
+            let image = h.render().unwrap();
+            if let Some(shot) = std::env::var_os("SILICO_APP_RELOAD_SHOT") {
+                image.save(shot).unwrap();
+            }
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
 }
 
 /// The session's own read of its file, as `silico_core::disk` reads it, for a test that
@@ -1459,6 +2505,15 @@ fn a_file_deleted_with_edits_held_is_announced_as_gone() {
             "example.silico is gone from disk while you have unsaved edits.",
         )
     });
+    // As the prototype's banner for a file gone: no Show changes, there being no file to
+    // compare; the edits kept or dropped.
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Show changes")
+            .is_none()
+    );
+    let buttons = ["Reload, discard my edits", "Keep my edits…"]
+        .map(|label| h.get_by_role_and_label(Role::Button, label).rect().left());
+    assert!(buttons[0] < buttons[1]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -18532,7 +19587,14 @@ fn a_model_published_before_its_meshes_are_read_names_no_pick_and_draws_no_eleme
     // another face.
     assert_eq!(highlighted(&record), []);
     // Let go, and a click on the face numbered 2 of the old meshes: named from neither
-    // model, it waits.
+    // model, it waits. The edit above is another client's, announced in the purple banner,
+    // so the first Esc dismisses it, the face staying (the prototype's `escChain`), and the
+    // second lets the face go.
+    assert!(h.state().tabs()[0].reloaded.is_some());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(h.state().tabs()[0].reloaded.is_none());
+    assert_eq!(selected_names(&h), ["aaaaaaaa.box.Face2"]);
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     assert!(selected_names(&h).is_empty());

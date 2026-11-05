@@ -602,3 +602,10 @@ crates/silico-app/src/selection.rs | Selection::published | replace match guard 
 # its `name` takes `picked.name` from `..picked`, the same value.
 crates/silico-app/src/selection.rs | Selection::took | delete field name from struct Picked expression | #385
 crates/silico-app/src/selection.rs | Selection::took | delete field name from struct Picked expression | #385
+# A closed export dialog's form (#395, whose `match` of what was asked replaced an `if
+# matches!` of the same arm): left in `App::export` once its dialog goes, it's never read.
+# Every read of it is the dialog's own, while `asking` is `Export` of its session (drawn,
+# its Browse… asked and answered, an answer landing only while that's still asked), or a
+# Save As moving its folder (`saved_as`), which changes nothing read; and Export… makes a
+# new form each time it opens the dialog. The arm only lets the form go sooner.
+crates/silico-app/src/app.rs | App<P>::ask | delete match arm Some(Asking::Export(_)) | #395

@@ -337,15 +337,15 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
 
 /// The selected feature's properties (`featureProps`): its head (its type's icon, its name,
 /// its type and ID), the document's problems and its own (its mark's text and suggestion),
-/// its name, editable, which is an edit of the document, and its health and ID.
+/// its name, editable, which is an edit of the document, and its health and ID; and, if
+/// another program changed it, what changed (the purple Changed on disk card, with Mark as
+/// seen).
 ///
 /// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
 /// direction), which need its fields read, as its dialog reads them; and its Edit feature
 /// and Suppress buttons (the timeline's double-click and menu edit it already).
 /// SEAM: the ID row's copy button (`.prop .v .copy`), once the app has a clipboard command
-/// of its own; and the purple Changed on disk card (`d.outside`: what an agent's edit
-/// changed in this feature, with Mark as seen), which needs the reload's changes by feature
-/// and field, which the core doesn't give yet.
+/// of its own.
 fn feature<P: Clients + 'static>(
     ui: &mut Ui,
     tab: &mut Tab,
@@ -371,6 +371,12 @@ fn feature<P: Clients + 'static>(
     if let Some(said) = tab.said.get(entry.id.as_str()) {
         let warning = entry.health != Health::Error;
         properties::card(ui, warning, &said.message, said.suggestion.as_deref());
+    }
+    // Changed by another program (`d.outside`): what changed, until it's marked seen.
+    if let Some(text) = tab.outside.get(&entry.id).cloned()
+        && properties::outside_card(ui, &text)
+    {
+        tab.outside.remove(&entry.id);
     }
     // The text typed, kept for this document's feature alone (two documents may hold
     // features of one ID), and only while it's ahead of the document: the document's
@@ -704,6 +710,7 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
             meta: tab.unsaved().then_some("unsaved"),
             mark: failed.then_some((Health::Error, root_text)),
             failed: false,
+            outside: None,
         },
     );
     root.take(&ctx, &answer);
@@ -730,6 +737,7 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                         meta: None,
                         mark: None,
                         failed: false,
+                        outside: None,
                     },
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
@@ -800,6 +808,9 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                         // A sketch's own failure reddens its name (`.row.err`); a body's
                         // mark is its chain's.
                         failed: sketches && each.health == Health::Error,
+                        // Changed by another program (`d.outside`), its purple dot where it
+                        // has no health mark.
+                        outside: tab.outside.get(&each.id).map(String::as_str),
                     },
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
@@ -872,6 +883,7 @@ fn header(ui: &mut Ui, name: &str, meta: Option<&str>) -> bool {
             meta,
             mark: None,
             failed: false,
+            outside: None,
         },
     );
     openness.take(&ctx, &answer);
@@ -939,6 +951,9 @@ struct Line<'a> {
     mark: Option<(Health, Option<&'a str>)>,
     /// Whether its name is the error's red (`.row.err`).
     failed: bool,
+    /// What another program changed in it, if it did (`d.outside`): a purple dot at its
+    /// right where it has no mark (`.state-dot`).
+    outside: Option<&'a str>,
 }
 
 /// What a row answered: the row's response, its caret's state, and its eye's response.
@@ -1135,6 +1150,10 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         let at = place(right - icons::ICON_SIZE, icons::ICON_SIZE);
         health_mark(ui, id.with("mark"), at, health, text, MarkLook::Glyph);
         right -= icons::ICON_SIZE + gap;
+    } else if let Some(text) = line.outside {
+        let at = place(right - theme::STATE_DOT_SIZE, theme::STATE_DOT_SIZE);
+        outside_mark(ui, id.with("outside"), at, text, None);
+        right -= theme::STATE_DOT_SIZE + gap;
     }
     if let Some(meta) = line.meta {
         let colour = if selected {
@@ -1173,6 +1192,34 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         open: caret.map(|(_, open)| open),
         eye: eye.map(|(eye, _)| eye),
     }
+}
+
+/// The mark of a feature another program changed (`d.outside`), the browser's and the
+/// timeline's alike: a purple dot filling `rect` (`.state-dot`, or the timeline's
+/// `.badge.outside`, in a ring of `ring`'s colour 1.5 outside it), labelled with what
+/// changed (`changed on disk: radius 5 → 3`) for the accessibility tree, and with the
+/// prototype's words as its hover text.
+pub(crate) fn outside_mark(
+    ui: &mut Ui,
+    id: egui::Id,
+    rect: egui::Rect,
+    text: &str,
+    ring: Option<Color32>,
+) {
+    let radius = rect.width().min(rect.height()) / 2.0;
+    let painter = ui.painter();
+    if let Some(ring) = ring {
+        painter.circle_filled(
+            rect.center(),
+            radius + theme::TIMELINE_BADGE_RING_WIDTH,
+            ring,
+        );
+    }
+    painter.circle_filled(rect.center(), radius, theme::CHANGED_OUTSIDE);
+    let response = ui.interact(rect, id, Sense::hover());
+    let said = format!("changed on disk: {text}");
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
+    response.on_hover_text("Changed on disk since you opened it");
 }
 
 /// How a health mark is drawn: the browser's, the error's or the warning's icon at a row's
@@ -2014,6 +2061,62 @@ mod tests {
     type Expected<'a> = (&'a str, f32, Color32, Option<(Color32, &'a str)>);
 
     #[test]
+    fn a_row_another_program_changed_has_its_purple_dot_where_it_has_no_health_mark() {
+        // The prototype's row (`o.mark === 'outside'`): a `.state-dot` (8 square, round) in
+        // `--purple` (#b780ff) at the row's right, the name cut 4 (`.row`'s gap) before it;
+        // a row with a health mark shows that mark alone.
+        const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+        const DOT: f32 = 8.0;
+        let mut tab = modelled();
+        // Named long enough to be cut short by the dot.
+        let long = "Block with a name long enough to run past the browser's edge";
+        tab.browser.bodies[0].name = long.to_owned();
+        for id in ["b0000001", "c0000001"] {
+            tab.outside.insert(fid(id), "height 10 → 11".to_owned());
+        }
+        let h = drawn(tab);
+        let down = |n: f32| css::TITLE_H + n * css::ROW_H;
+        let block = parts(down(10.0), 2);
+        let dot = Rect::from_min_size(
+            Pos2::new(block.end - DOT, block.row.center().y - DOT / 2.0),
+            Vec2::splat(DOT),
+        );
+        let circles: Vec<(Pos2, f32, Color32)> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Circle(circle) if block.row.contains(circle.center) => {
+                    Some((circle.center, circle.radius, circle.fill))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(circles[..], [(centre, radius, PURPLE)]
+                if near_pos(centre, dot.center()) && near(radius, DOT / 2.0)),
+            "the block's dot: {circles:?}, not {DOT} across at {:?}",
+            dot.center()
+        );
+        assert!(labelled_at(&h, "changed on disk: height 10 → 11", dot));
+        named(
+            &h,
+            long,
+            &block,
+            block.name,
+            css::G700,
+            dot.left() - css::ROW_GAP,
+        );
+        // The failed cut: its error's mark, no dot.
+        let cut = parts(down(11.0), 2);
+        assert_eq!(icon_at(&h, mark_of(&cut)), Some(css::RED));
+        assert!(
+            !painted(&h).iter().any(
+                |shape| matches!(shape, Shape::Circle(circle) if cut.row.contains(circle.center))
+            ),
+            "the cut's dot"
+        );
+    }
+
+    #[test]
     fn the_rows_are_drawn_as_the_prototypes_rows_with_their_eyes_icons_names_and_marks() {
         let h = drawn(modelled());
         let down = |n: f32| css::TITLE_H + n * css::ROW_H;
@@ -2100,6 +2203,7 @@ mod tests {
                             meta: Some("XY"),
                             mark: Some((Health::Warning, None)),
                             failed: false,
+                            outside: None,
                         },
                     );
                 });

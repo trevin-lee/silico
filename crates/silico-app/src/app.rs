@@ -17,13 +17,15 @@ use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::kernel::Clients;
 use silico_core::views::NamedView;
 
-use crate::banner::{self, Banner, Tone};
+use crate::banner::{self, Banner, Style, Tone};
 use crate::bar;
 use crate::browse::{self, Ask, Browse, Browsing, Pick};
+use crate::changes::{self, Changes};
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::modal::{self, Button, Kind};
 use crate::panes::{self, Pane, Panes};
+use crate::properties;
 use crate::recent::Recents;
 use crate::sheet::{self, Sheet};
 use crate::shortcuts::{self, Command};
@@ -157,6 +159,9 @@ enum Asking {
     },
     /// What to export of session's document, and where (M5.12): the form is `export`.
     Export(SessionId),
+    /// What changed on disk while `session`'s edits are held (DESIGN.md, 6d's Show
+    /// changes): the tab's `held_changes`.
+    Changes(SessionId),
 }
 
 /// What a native dialog's answer goes to.
@@ -310,6 +315,62 @@ pub struct App<P: Clients + 'static> {
     /// The toast shown over the canvas's bottom right (DESIGN.md's *Toasts*), and when it
     /// was shown, by egui's clock: F5's word on where the filters are, or a box's.
     toast: Option<(String, f64)>,
+}
+
+/// A row of Show changes' "Their change (on disk)": the changed feature's name in the key
+/// column, purple (`.k`, `var(--purple)`), and the field and its values beside it.
+fn theirs_row(row: &changes::Row) -> (String, egui::Color32, String) {
+    (
+        row.feature.clone(),
+        theme::CHANGED_OUTSIDE,
+        format!("{} · {}", row.field, row.text),
+    )
+}
+
+/// A row of Show changes' "Your unsaved edits": "Edit" in the key column, and the feature,
+/// the field, and its values beside it.
+fn mine_row(row: &changes::Row) -> (String, egui::Color32, String) {
+    (
+        "Edit".to_owned(),
+        theme::PROPERTY_KEY,
+        format!("{} · {} · {}", row.feature, row.field, row.text),
+    )
+}
+
+/// One of Show changes' lists (DESIGN.md, 6d), as its own diff answered: "Reading what
+/// changed…" while it's asked; its rows (`.prop`, unpadded), each `row` giving its key, the
+/// key's colour, and its value, then how many more; or its refusal, said, with its cause
+/// under it (the reader's message, for a file on disk that doesn't read as a document).
+/// `list` names its rows apart from the other list's.
+fn held_list(
+    ui: &mut egui::Ui,
+    list: &str,
+    changes: Option<&Changes>,
+    row: fn(&changes::Row) -> (String, egui::Color32, String),
+) {
+    match changes {
+        None | Some(Changes::Asking) => {
+            modal::text(ui, "Reading what changed…", theme::MODAL_TEXT);
+        }
+        Some(Changes::Listed(listed)) => {
+            if listed.rows.is_empty() {
+                modal::text(ui, "No feature changed.", theme::MODAL_TEXT);
+            }
+            for (at, change) in listed.rows.iter().enumerate() {
+                let (key, colour, value) = row(change);
+                properties::list_row(ui, (list, at), &key, colour, &value);
+            }
+            if let Some(more) = &listed.more {
+                modal::text(ui, more, theme::MODAL_TEXT);
+            }
+        }
+        Some(Changes::Refused { said, cause }) => {
+            modal::text(ui, said, theme::ERROR_TEXT);
+            if let Some(cause) = cause {
+                modal::text(ui, cause, theme::ERROR_TEXT);
+            }
+        }
+    }
 }
 
 impl<P: Clients + 'static> App<P> {
@@ -1093,9 +1154,8 @@ impl<P: Clients + 'static> App<P> {
             (false, true) => Some(Key::Escape),
             (false, false) => None,
         };
-        // Esc, with no dialog open: the selection cleared first, then a rebuild running
-        // stopped, as the stop does (section 3's order); with neither, the reload's banner
-        // dismissed.
+        // Esc, with no dialog open: the reload's banner dismissed first, then the selection
+        // cleared, then a rebuild running stopped, as the stop does (section 3's order).
         if stop && !in_dialog {
             tab.escape(sessions);
         }
@@ -1232,7 +1292,7 @@ impl<P: Clients + 'static> App<P> {
                     form.browsed(path);
                 }
             }
-            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } => {}
+            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } | Asking::Changes(_) => {}
         }
         false
     }
@@ -1424,7 +1484,9 @@ impl<P: Clients + 'static> App<P> {
                     file_name: browse::file_name_of(&form.path),
                 }
             }
-            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } => return None,
+            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } | Asking::Changes(_) => {
+                return None;
+            }
         };
         Some(ask)
     }
@@ -1754,26 +1816,37 @@ impl<P: Clients + 'static> App<P> {
                     &[(
                         "The part is still open here, with your edits: keep them, or reload, \
                          which drops them.",
-                        false,
+                        Style::Plain,
                     )][..],
                 ),
                 _ => (
                     Tone::Warning,
                     "changed on disk",
                     &[
-                        ("Another program wrote the file: an agent through ", false),
-                        ("silico serve", true),
+                        (
+                            "Another program wrote the file: an agent through ",
+                            Style::Plain,
+                        ),
+                        ("silico serve", Style::Mono),
                         (
                             ", git, or an editor. Your edits are safe here, and Save won't \
                              write over the change.",
-                            false,
+                            Style::Plain,
                         ),
                     ][..],
                 ),
             };
             let title = format!("{} {what} while you have unsaved edits.", tab.name());
-            // The prototype's Show changes goes first, once the core can say what changed
-            // between two revisions (DESIGN.md, open item 1): it has no diff to show yet.
+            // Reload is off while the tab closes: its close drops the edits already. Show
+            // changes goes first, as the prototype has it, for a file changed, not gone.
+            let reload = ("Reload, discard my edits", !tab.closing());
+            let keep = ("Keep my edits…", true);
+            let changed = [("Show changes", tab.transaction().is_some()), reload, keep];
+            let gone = [reload, keep];
+            let buttons: &[(&str, bool)] = match disk {
+                Disk::Gone => &gone,
+                _ => &changed,
+            };
             let clicked = banner::show(
                 ui,
                 canvas,
@@ -1781,25 +1854,32 @@ impl<P: Clients + 'static> App<P> {
                     tone,
                     title: &title,
                     sub,
-                    // Reload is off while the tab closes: its close drops the edits already.
-                    buttons: &[
-                        ("Reload, discard my edits", !tab.closing()),
-                        ("Keep my edits…", true),
-                    ],
+                    list: None,
+                    buttons,
+                    tips: &[],
                     dismiss: false,
                 },
             );
+            let clicked = match clicked {
+                banner::Clicked::Button(at) => buttons.get(at).map(|(words, _)| *words),
+                banner::Clicked::None | banner::Clicked::Dismiss => None,
+            };
             match clicked {
-                banner::Clicked::Button(0) => {
+                Some("Show changes") => {
+                    tab.show_changes(&self.sessions);
+                    self.asking = Some(Asking::Changes(tab.id));
+                    *started = true;
+                }
+                Some("Reload, discard my edits") => {
                     tab.revert(&self.sessions, false);
                     *started = true;
                 }
-                banner::Clicked::Button(_) => tab.disk_choice = DiskChoice::Kept,
-                banner::Clicked::None | banner::Clicked::Dismiss => {}
+                Some(_) => tab.disk_choice = DiskChoice::Kept,
+                None => {}
             }
             return;
         }
-        let Some(reloaded) = tab.reloaded else {
+        let Some(reloaded) = tab.reloaded.clone() else {
             return;
         };
         let title = format!(
@@ -1807,25 +1887,68 @@ impl<P: Clients + 'static> App<P> {
             tab.name()
         );
         let sub = format!(
-            "Revision {} → {}. You had no unsaved edits, so nothing of yours was lost.",
+            "Revision {} → {}. You had no unsaved edits, so nothing of yours was lost. \
+             Changed features are marked ",
             reloaded.from.number(),
             reloaded.to.number()
         );
-        // The prototype's list of what changed, its marks on the changed features, and its
-        // Restore my version wait on the core's diff (DESIGN.md, open item 1).
+        // What changed (`.diff`), as the reload's diff answered: nothing while it's asked;
+        // its refusal, said; then the earlier reloads whose changes it replaced unlisted;
+        // and Restore's refusal, if it was refused. A line each.
+        let (rows, more): (&[crate::changes::Row], Option<&str>) = match &reloaded.changes {
+            Changes::Asking => (&[], None),
+            Changes::Listed(listed) => (&listed.rows, listed.more.as_deref()),
+            Changes::Refused { said, .. } => (&[], Some(said.as_str())),
+        };
+        let unlisted = changes::unlisted(&reloaded.unlisted);
+        let after: Vec<&str> = [more, unlisted.as_deref(), reloaded.refused.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        let list = (!rows.is_empty() || !after.is_empty()).then_some(banner::List {
+            rows,
+            after: &after,
+        });
+        // Named by the revision it puts back (Fable's decision of 2026-11-04, section 2:
+        // never "my version", which may be another program's earlier save). Off while a
+        // dialog is open, the tab closes, a Restore is under way, once it was refused, or
+        // once the session is known not to hold that revision (said, as Restore's read
+        // could only be refused).
+        let restore = format!("Restore revision {}", reloaded.from.number());
+        let gone = format!(
+            "Silico no longer holds revision {}: the file changed again before what changed \
+             was read, so it can't be put back",
+            reloaded.from.number()
+        );
+        let on = !tab.in_dialog()
+            && !tab.closing()
+            && !tab.restoring()
+            && reloaded.refused.is_none()
+            && reloaded.from_held;
         let clicked = banner::show(
             ui,
             canvas,
             &Banner {
                 tone: Tone::Info,
                 title: &title,
-                sub: &[(&sub, false)],
-                buttons: &[],
+                sub: &[
+                    (&sub, Style::Plain),
+                    ("●", Style::Dot(theme::CHANGED_OUTSIDE)),
+                    (" until you look at them.", Style::Plain),
+                ],
+                list,
+                buttons: &[(&restore, on)],
+                tips: &[(!reloaded.from_held).then_some(gone.as_str())],
                 dismiss: true,
             },
         );
-        if clicked == banner::Clicked::Dismiss {
-            tab.reloaded = None;
+        match clicked {
+            banner::Clicked::Dismiss => tab.reloaded = None,
+            banner::Clicked::Button(_) => {
+                tab.restore(&self.sessions, reloaded.from);
+                *started = true;
+            }
+            banner::Clicked::None => {}
         }
     }
 
@@ -1842,6 +1965,8 @@ impl<P: Clients + 'static> App<P> {
         let enter_cap = Command::Ok.keys_text(ui.ctx());
         let mut done = false;
         let mut browse = false;
+        // Show changes' Save mine as…: a Save As of the edits held, once the modal has gone.
+        let mut save_mine = None;
         // An untitled part's Save, asked by Close or Quit, through its Save panel once the
         // question has gone; and a close refused (a typed Save As cancelled that was to close).
         let mut save_panel = None;
@@ -1935,6 +2060,54 @@ impl<P: Clients + 'static> App<P> {
                     if then_close {
                         refused = Some(id);
                     }
+                }
+            }
+            Asking::Changes(id) => {
+                let sessions = &self.sessions;
+                let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+                    done = true;
+                    return;
+                };
+                modal::head(ui, Some(Icon::Diff), "What changed on disk");
+                let held = tab.held_changes.as_ref();
+                modal::body(ui, |ui| {
+                    // The prototype's rows (`.prop`, unpadded), each list from its own diff.
+                    modal::label(ui, "Their change (on disk)");
+                    held_list(ui, "theirs", held.map(|held| &held.theirs), theirs_row);
+                    modal::label(ui, "Your unsaved edits");
+                    held_list(ui, "mine", held.map(|held| &held.mine), mine_row);
+                    // `.hint-block`, in Silico's words: the prototype's names `silico
+                    // textconv`, but these rows are the core's `diff`'s.
+                    properties::hint_at(
+                        ui,
+                        &[(
+                            "A feature-level summary of the two documents, as Silico's diff \
+                             reads them.",
+                            false,
+                        )],
+                        theme::MODAL_HINT_MARGIN,
+                    );
+                });
+                let ([], [close, reload, save_as]) = modal::foot(
+                    ui,
+                    [],
+                    [
+                        Button::new("Close", Kind::Secondary),
+                        Button::new("Reload theirs", Kind::Secondary).enabled(!tab.closing()),
+                        Button::new("Save mine as…", Kind::Primary),
+                    ],
+                );
+                if reload {
+                    tab.revert(sessions, false);
+                    *started = true;
+                    done = true;
+                }
+                if save_as {
+                    save_mine = Some(id);
+                    done = true;
+                }
+                if close || escape {
+                    done = true;
                 }
             }
             Asking::Export(id) => {
@@ -2144,10 +2317,19 @@ impl<P: Clients + 'static> App<P> {
             self.browse(asking, ui.ctx());
         }
         if done {
-            if matches!(self.asking, Some(Asking::Export(_))) {
-                self.export = None;
+            match self.asking {
+                Some(Asking::Export(_)) => self.export = None,
+                Some(Asking::Changes(id)) => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                        tab.hide_changes();
+                    }
+                }
+                _ => {}
             }
             self.asking = None;
+        }
+        if let Some(id) = save_mine {
+            self.ask_save_as(id, false, ui.ctx());
         }
         if let Some(id) = refused {
             self.save_panel_refused(id);
@@ -2174,8 +2356,10 @@ mod tests {
     use silico_core::sketch::SketchSolver;
     use tempfile::TempDir;
 
-    use super::{Answered, App, Opening, Part, split_answered};
+    use super::{Answered, App, Opening, Part, held_list, mine_row, split_answered, theirs_row};
+    use crate::changes::{Changes, Listed, Row};
     use crate::tab::said;
+    use crate::theme;
 
     /// A block: any document the gate takes.
     const BLOCK: &str = r#"{
@@ -2519,5 +2703,119 @@ mod tests {
             assert!(press(&mut h, key, Modifiers::NONE).0.is_empty(), "{key:?}");
         }
         assert_eq!(press(&mut h, Key::X, Modifiers::NONE), (Vec::new(), true));
+    }
+
+    /// What [`held_list`] paints for `changes`, as Show changes draws its list `list` with
+    /// `row`: each text, and its colour.
+    fn held_list_painted(
+        list: &'static str,
+        changes: Option<Changes>,
+        row: fn(&Row) -> (String, eframe::egui::Color32, String),
+    ) -> Vec<(String, eframe::egui::Color32)> {
+        use eframe::egui::Shape;
+        fn flatten(shape: &Shape, out: &mut Vec<(String, eframe::egui::Color32)>) {
+            match shape {
+                Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+                Shape::Text(shown) => {
+                    let colour = shown
+                        .override_text_color
+                        .unwrap_or(shown.galley.job.sections[0].format.color);
+                    out.push((shown.galley.text().to_owned(), colour));
+                }
+                _ => {}
+            }
+        }
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(eframe::egui::Vec2::new(520.0, 300.0))
+            .build_ui(move |ui| held_list(ui, list, changes.as_ref(), row));
+        h.run_steps(2);
+        let mut out = Vec::new();
+        for clipped in &h.output().shapes {
+            flatten(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// The colour `text` was painted in, painted once.
+    #[track_caller]
+    fn painted_in(
+        painted: &[(String, eframe::egui::Color32)],
+        text: &str,
+    ) -> eframe::egui::Color32 {
+        let found: Vec<_> = painted.iter().filter(|(shown, _)| shown == text).collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "{text:?} painted {} times: {painted:?}",
+            found.len()
+        );
+        found[0].1
+    }
+
+    fn one_row(feature: &str, field: &str, text: &str) -> Option<Changes> {
+        Some(Changes::Listed(Listed {
+            rows: vec![Row {
+                feature: feature.to_owned(),
+                field: field.to_owned(),
+                text: text.to_owned(),
+            }],
+            more: None,
+            changes: 1,
+            features: 1,
+        }))
+    }
+
+    #[test]
+    fn show_changes_lists_their_features_purple_and_your_edits_as_edits() {
+        // The prototype's 6d rows: under "Their change (on disk)", the feature's name in
+        // the key column in purple (`.k`, `var(--purple)`, #b780ff), the field and its
+        // values beside it; under "Your unsaved edits", "Edit" in the key's grey.
+        let theirs = held_list_painted("theirs", one_row("Pin", "radius", "5 → 3"), theirs_row);
+        assert_eq!(
+            painted_in(&theirs, "Pin"),
+            eframe::egui::Color32::from_rgb(0xb7, 0x80, 0xff)
+        );
+        assert_eq!(painted_in(&theirs, "radius · 5 → 3"), theme::PROPERTY_VALUE);
+        let mine = held_list_painted("mine", one_row("Block", "height", "10 → 12"), mine_row);
+        assert_eq!(painted_in(&mine, "Edit"), theme::PROPERTY_KEY);
+        assert_eq!(
+            painted_in(&mine, "Block · height · 10 → 12"),
+            theme::PROPERTY_VALUE
+        );
+        assert_ne!(theme::PROPERTY_KEY, theme::CHANGED_OUTSIDE);
+    }
+
+    #[test]
+    fn a_list_says_it_is_reading_has_nothing_or_was_refused_with_its_cause() {
+        for asking in [None, Some(Changes::Asking)] {
+            let painted = held_list_painted("theirs", asking, theirs_row);
+            painted_in(&painted, "Reading what changed…");
+        }
+        let empty = Some(Changes::Listed(Listed {
+            rows: Vec::new(),
+            more: None,
+            changes: 0,
+            features: 0,
+        }));
+        painted_in(
+            &held_list_painted("mine", empty, mine_row),
+            "No feature changed.",
+        );
+        // A refusal, red: what the core said, and under it its cause, the reader's message.
+        let refused = Some(Changes::Refused {
+            said: "to, the file on disk, doesn't read as a document".to_owned(),
+            cause: Some("expected a key".to_owned()),
+        });
+        let painted = held_list_painted("theirs", refused, theirs_row);
+        assert_eq!(
+            painted_in(&painted, "to, the file on disk, doesn't read as a document"),
+            theme::ERROR_TEXT
+        );
+        assert_eq!(painted_in(&painted, "expected a key"), theme::ERROR_TEXT);
+        assert!(
+            !painted
+                .iter()
+                .any(|(text, _)| text == "Reading what changed…")
+        );
     }
 }

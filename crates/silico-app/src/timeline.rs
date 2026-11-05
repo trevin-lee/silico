@@ -529,6 +529,20 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
                 said.map(|said| said.message.as_str()),
                 MarkLook::Badge,
             );
+        } else if let Some(text) = tab.outside.get(&entry.id) {
+            // Changed by another program, with no health mark (`.badge.outside`).
+            let side = theme::TIMELINE_BADGE_OUTSIDE_SIZE;
+            let corner = pos2(
+                rect.right() - theme::TIMELINE_BADGE_INSET - side,
+                rect.top() + theme::TIMELINE_BADGE_INSET,
+            );
+            panes::outside_mark(
+                ui,
+                id.with("outside"),
+                Rect::from_min_size(corner, Vec2::splat(side)),
+                text,
+                Some(theme::TIMELINE_BADGE_RING),
+            );
         }
         if response.dragged() {
             dragged = Some(at);
@@ -556,6 +570,9 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
         let mut tip = description;
         if let Some(said) = said {
             tip = format!("{tip} — {}", said.message);
+        }
+        if let Some(text) = tab.outside.get(&entry.id) {
+            tip = format!("{tip} — changed on disk: {text}");
         }
         if editable {
             tip.push_str(". Double-click to edit.");
@@ -1397,6 +1414,46 @@ mod tests {
                 "{what}'s badge: {drawn:?}, not {radius} at {centre:?} in {colour:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_feature_another_program_changed_has_the_purple_badge_where_it_has_no_health_mark() {
+        // `.tl-item .badge.outside`: `--purple` (#b780ff), 7 square, 1 in from the item's
+        // top right, in its `--g150` ring 1.5 outside it; labelled with what changed. A
+        // feature with a health mark shows that mark alone.
+        const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+        const OUTSIDE: f32 = 7.0;
+        let mut tab = tab_of(Some(&features()), 0);
+        for id in ["b0000001", "p0000001"] {
+            tab.outside
+                .insert(FeatureId::new(id).unwrap(), "height 10 → 11".to_owned());
+        }
+        let h = drawn(tab);
+        let block = item(0);
+        let centre = Pos2::new(
+            block.right() - css::BADGE_INSET - OUTSIDE / 2.0,
+            block.top() + css::BADGE_INSET + OUTSIDE / 2.0,
+        );
+        let drawn: Vec<(Pos2, f32, Color32)> = circles(&h, block)
+            .into_iter()
+            .map(|circle| (circle.center, circle.radius, circle.fill))
+            .collect();
+        assert_eq!(drawn.len(), 2, "the block's badge: {drawn:?}");
+        let ring = (OUTSIDE / 2.0 + css::BADGE_RING, css::G150);
+        let dot = (OUTSIDE / 2.0, PURPLE);
+        for (got, (radius, colour)) in drawn.iter().zip([ring, dot]) {
+            assert!(
+                near_pos(got.0, centre) && near(got.1, radius) && got.2 == colour,
+                "the block's badge: {drawn:?}, not {radius} at {centre:?} in {colour:?}"
+            );
+        }
+        let said = h.get_by_label("changed on disk: height 10 → 11").rect();
+        assert!(
+            near_pos(said.center(), centre) && near(said.width(), OUTSIDE),
+            "{said:?}"
+        );
+        // The failed pad: its error's badge only.
+        badge(&h, item(2), css::RED_FILL, "the pad");
     }
 
     #[test]

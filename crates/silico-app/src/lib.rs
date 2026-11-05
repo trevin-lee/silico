@@ -11,6 +11,7 @@ mod banner;
 pub mod bar;
 pub mod box_select;
 pub mod browse;
+pub mod changes;
 pub mod dialog;
 pub mod export;
 pub mod icons;
