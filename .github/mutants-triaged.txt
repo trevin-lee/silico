@@ -309,6 +309,8 @@ crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, 
 crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::pane_ui | replace / with * | #298
 crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width -> f32 with -1.0 | #298
 crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width -> f32 with 0.0 | #298
+# Equivalent: gap_width returns BORDER, which is 1.0 (panes.rs), so returning 1.0 changes nothing.
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width -> f32 with 1.0 | #403
 crates/silico-app/src/panes.rs | viewport | replace viewport with () | #298
 crates/silico-app/src/panes.rs | mark | replace - with + | #298
 crates/silico-app/src/panes.rs | mark | replace - with / | #298
