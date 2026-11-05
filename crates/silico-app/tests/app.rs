@@ -23000,7 +23000,7 @@ fn del_and_backspace_in_a_text_field_never_delete_the_feature() {
 /// A sketch, forty blocks, and another sketch: the first sketch's item is the timeline's
 /// first and its row is under forty bodies' in the browser, and the last's item is past
 /// the timeline's end.
-fn forty_blocks() -> String {
+fn sketches_around_forty_blocks() -> String {
     let sketch = |id: &str, name: &str, p: char| {
         format!(
             r#"    {{"id": "{id}", "type": "sketch", "v": 1, "name": "{name}", "plane": "xy", "points": [{{"id": "p{p}a00000", "x": 0, "y": 0, "construction": false}}, {{"id": "p{p}b00000", "x": 20, "y": 0, "construction": false}}, {{"id": "p{p}c00000", "x": 0, "y": 10, "construction": false}}], "lines": [{{"id": "n{p}a00000", "from": "p{p}a00000", "to": "p{p}b00000", "construction": false}}, {{"id": "n{p}b00000", "from": "p{p}b00000", "to": "p{p}c00000", "construction": false}}, {{"id": "n{p}c00000", "from": "p{p}c00000", "to": "p{p}a00000", "construction": false}}], "circles": [], "arcs": [], "constraints": []}}"#
@@ -23051,7 +23051,7 @@ fn item_in_view(h: &AppHarness, name: &str, features: &str) -> bool {
 
 #[test]
 fn find_in_browser_and_find_in_timeline_select_the_feature_and_scroll_to_it() {
-    let text = forty_blocks();
+    let text = sketches_around_forty_blocks();
     // Find in browser, from the first sketch's item: its row, under the bodies, is scrolled
     // into the browser's view, selected.
     {
@@ -23539,7 +23539,7 @@ fn a_second_del_before_the_first_answers_deletes_once_and_says_nothing_wrong() {
 #[test]
 fn f2_brings_the_selected_item_into_the_timelines_view_under_its_field() {
     let f = fixture();
-    let (mut h, _) = f.opened("forty.silico", &forty_blocks());
+    let (mut h, _) = f.opened("forty.silico", &sketches_around_forty_blocks());
     step_until(&mut h, "its rows", |h| shows(h, "Browser", "Block 40"));
     browser(&h).get_by_label("Collapse Bodies").click();
     step_until(&mut h, "the bodies folded", |h| {
@@ -23709,7 +23709,7 @@ fn a_letters_key_then_its_text_in_the_fields_first_focused_frame_replaces_the_na
 #[test]
 fn f2_in_the_browser_brings_the_selected_row_into_view_under_its_field() {
     let f = fixture();
-    let mut h = opened_themed(&f, "forty.silico", &forty_blocks());
+    let mut h = opened_themed(&f, "forty.silico", &sketches_around_forty_blocks());
     step_until(&mut h, "its rows", |h| shows(h, "Browser", "Block 40"));
     assert!(!row_in_view(&h, "Sketches", "Back"));
     let back = silico_core::document::FeatureId::new("s0000002").unwrap();
@@ -23729,7 +23729,7 @@ fn f2_in_the_browser_brings_the_selected_row_into_view_under_its_field() {
 #[test]
 fn a_browser_rename_scrolled_out_of_view_then_clicked_away_to_a_dialog_comes_before_it() {
     let f = fixture();
-    let mut h = opened_themed(&f, "forty.silico", &forty_blocks());
+    let mut h = opened_themed(&f, "forty.silico", &sketches_around_forty_blocks());
     step_until(&mut h, "its rows", |h| shows(h, "Browser", "Block 40"));
     browser(&h)
         .get_by_role_and_label(Role::Group, "Bodies")
