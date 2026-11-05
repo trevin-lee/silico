@@ -16619,7 +16619,7 @@ fn cancel_of_a_sketch_after_earlier_edits_undoes_to_where_it_opened_byte_for_byt
     type_name(&mut h, "K");
     settled(&mut h);
     let before = text_of(&f, &h);
-    assert!(before.contains(r#""name": "KPin""#));
+    assert!(before.contains(r#""name": "PinK""#));
     let opened_at = h.state().tabs()[0].revision;
     create_sketch(&mut h, "YZ plane");
     settled(&mut h);
@@ -17154,7 +17154,7 @@ fn delete_line(h: &mut AppHarness, member: &str) {
     settled(h);
 }
 
-/// SKETCHED open, with Plate renamed KPlate first if `edited`; then Triangle opened in
+/// SKETCHED open, with Plate renamed PlateK first if `edited`; then Triangle opened in
 /// sketch mode and read. The text before sketch mode opened, and the revision it opened at.
 fn triangle_open(f: &Fixture, edited: bool) -> (AppHarness, String) {
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
@@ -17175,7 +17175,7 @@ fn triangle_open(f: &Fixture, edited: bool) -> (AppHarness, String) {
 fn finish_after_two_deletes_inside_a_transaction_is_one_undo_step_back_to_before_it_opened() {
     let f = fixture();
     let (mut h, before) = triangle_open(&f, true);
-    assert!(before.contains(r#""name": "KPlate""#));
+    assert!(before.contains(r#""name": "PlateK""#));
     delete_line(&mut h, "na000000");
     delete_line(&mut h, "nb000000");
     let text = text_of(&f, &h);
@@ -17479,7 +17479,7 @@ fn redo_inside_sketch_mode_never_gives_back_what_was_undone_before_it_opened() {
     leave_sketch(&mut h, true);
     assert!(h.state().tabs()[0].redoable());
     chord(&mut h, eframe::egui::Key::Y);
-    assert!(text_of(&f, &h).contains(r#""name": "KPlate""#));
+    assert!(text_of(&f, &h).contains(r#""name": "PlateK""#));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -17494,13 +17494,13 @@ fn an_edit_after_a_finish_that_fenced_redo_lets_its_own_undo_be_redone() {
     assert!(!h.state().tabs()[0].redoable());
     // An edit, then its Undo: the redo is the edit's, at Finish's end state once more, and
     // the fence went with the edit.
-    select(&mut h, "KPlate");
+    select(&mut h, "PlateK");
     type_name(&mut h, "Q");
     settled(&mut h);
     chord(&mut h, eframe::egui::Key::Z);
     assert!(h.state().tabs()[0].redoable());
     chord(&mut h, eframe::egui::Key::Y);
-    assert!(text_of(&f, &h).contains(r#""name": "QKPlate""#));
+    assert!(text_of(&f, &h).contains(r#""name": "PlateKQ""#));
     assert_eq!(never_waits::waits(), 0);
 }
 
