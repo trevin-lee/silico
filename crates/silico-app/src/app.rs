@@ -455,6 +455,15 @@ impl<P: Clients + 'static> App<P> {
         self.home || self.tabs.is_empty()
     }
 
+    /// The tab shown, if What's Wrong is open over it (not under the start page).
+    fn whats_wrong_shown(&mut self) -> Option<&mut Tab> {
+        if self.start_shown() {
+            return None;
+        }
+        let at = self.active_place()?;
+        self.tabs.get_mut(at).filter(|tab| tab.whats_wrong)
+    }
+
     /// The documents opened lately, if the app keeps a list.
     pub fn recents(&self) -> Option<&Recents> {
         self.recents.as_ref()
@@ -751,6 +760,19 @@ impl<P: Clients + 'static> App<P> {
         {
             self.sheet = None;
         }
+        // What's Wrong, the shown tab's, the same.
+        let sessions = Arc::clone(&self.sessions);
+        if let Some(tab) = self.whats_wrong_shown() {
+            match crate::whats_wrong::show(ui.ctx(), tab) {
+                crate::whats_wrong::Asked::None => {}
+                crate::whats_wrong::Asked::Close => tab.whats_wrong = false,
+                crate::whats_wrong::Asked::Card(asked) => {
+                    // Edit and Show in timeline each close it, as the prototype's do.
+                    tab.whats_wrong = false;
+                    started |= tab.card_asked(&sessions, asked);
+                }
+            }
+        }
         self.ask(ui, &mut started);
         started |= self.next_quit_save(ui.ctx());
         if self.quitting && self.tabs.is_empty() {
@@ -1023,6 +1045,13 @@ impl<P: Clients + 'static> App<P> {
             // The sheet is a modal too: Esc closes it, and no other command acts under it.
             if shortcuts::take(ui, Command::Cancel) {
                 self.sheet = None;
+            }
+            return (false, None);
+        }
+        if let Some(tab) = self.whats_wrong_shown() {
+            // What's Wrong too: Esc closes it, and no other command acts under it.
+            if shortcuts::take(ui, Command::Cancel) {
+                tab.whats_wrong = false;
             }
             return (false, None);
         }
@@ -1795,6 +1824,9 @@ impl<P: Clients + 'static> App<P> {
                 if asked.rebuild {
                     tab.rebuild(&self.sessions);
                     *started = true;
+                }
+                if asked.whats_wrong {
+                    tab.whats_wrong = true;
                 }
                 if asked.disk
                     && tab.disk_choice == DiskChoice::Kept

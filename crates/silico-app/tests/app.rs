@@ -15576,9 +15576,13 @@ fn item_state(h: &AppHarness, name: &str) -> Option<String> {
         .and_then(|node| node.accesskit_node().description())
 }
 
-/// The timeline's items' names, in order.
+/// The timeline's items' names, in order: the track's, not the summary's errors.
 fn items(h: &AppHarness) -> Vec<String> {
-    labels(h, "Timeline", Role::Button)
+    timeline(h)
+        .get_by_role_and_label(Role::Group, silico_app::timeline::TRACK_LABEL)
+        .query_all_by_role(Role::Button)
+        .filter_map(|node| node.accesskit_node().label())
+        .collect()
 }
 
 /// The kernel refuses the pocket's cut.
@@ -17223,6 +17227,16 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
             }),
             // The pointer's: the viewport takes them, no key (their own tests: the middle
             // button's pan and orbit, the wheel's zoom).
+            Command::WhatsWrong => {
+                // No keys: the status bar's errors open it, a button whose tooltip is the
+                // registry's (What's Wrong's own test covers the timeline and the browser).
+                assert!(entry.keys.is_empty());
+                let f = fixture();
+                let mut h = three_blocks(&f);
+                h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+                    .click();
+                step_until(&mut h, "What's Wrong open", |h| whats_wrong(h).is_some());
+            }
             Command::Orbit | Command::Pan | Command::Zoom => assert!(
                 entry
                     .keys
@@ -21993,4 +22007,254 @@ fn a_chamfer_dialog_fed_the_selection_of_an_edge_writes_a_chamfer_of_its_distanc
         [Sent::Begin, Sent::Add, Sent::Edit("size".to_owned())]
     );
     assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- What's Wrong ----
+
+/// Three blocks side by side: the first and the third short enough for the kernel to refuse
+/// ([`refuses_the_short_blocks`]), the second built, warned only of its missing fingerprint
+/// (the document stores none: `fingerprint_missing`).
+const THREE_BLOCKS: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "a0000001", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Second", "position": [20, 0, 0], "length": 20, "width": 10, "height": 10},
+    {"id": "c0000001", "type": "box", "v": 1, "name": "Third", "position": [50, 0, 0], "length": 10, "width": 10, "height": 10}
+  ]
+}
+"#;
+
+/// The kernel refuses every block under 15 mm long: THREE_BLOCKS' first and third.
+fn refuses_the_short_blocks(f: &Fixture) {
+    f.kernel.refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx < 15.0)
+            .then(|| Error::new(ErrorCode::KernelFailed, "the block came apart"))
+    });
+}
+
+/// THREE_BLOCKS open, rebuilt with its two errors.
+fn three_blocks(f: &Fixture) -> AppHarness {
+    refuses_the_short_blocks(f);
+    let (mut h, _) = f.opened("blocks.silico", THREE_BLOCKS);
+    step_until(&mut h, "rebuilt with its two errors", |h| {
+        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt with 2 errors")
+    });
+    h
+}
+
+/// What's Wrong, if it's open.
+fn whats_wrong(h: &AppHarness) -> Option<egui_kittest::Node<'_>> {
+    h.query_by_role_and_label(Role::Dialog, "What's wrong")
+}
+
+/// The labels in What's Wrong that hold `part`, in its order: none if it's closed.
+fn in_whats_wrong(h: &AppHarness, part: &str) -> Vec<String> {
+    whats_wrong(h)
+        .map(|open| {
+            open.query_all_by_label_contains(part)
+                .filter_map(|node| {
+                    let node = node.accesskit_node();
+                    node.value().or_else(|| node.label())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn whats_wrong_lists_two_failures_and_a_warning_in_the_documents_order_each_its_card() {
+    let f = fixture();
+    let mut h = three_blocks(&f);
+    assert!(whats_wrong(&h).is_none());
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+        .click();
+    step_until(&mut h, "three listed", |h| {
+        in_whats_wrong(h, "Feature: ").len() == 3
+    });
+    step(&mut h);
+    // Its head names the document; each card names its feature, by name and ID, in the
+    // document's order: First's error, Second's warning, Third's error.
+    assert!(
+        whats_wrong(&h)
+            .unwrap()
+            .query_by_label("What's wrong in blocks.silico")
+            .is_some()
+    );
+    assert_eq!(
+        in_whats_wrong(&h, "Feature: "),
+        [
+            "Feature: First a0000001",
+            "Feature: Second b0000001",
+            "Feature: Third c0000001"
+        ]
+    );
+    // Each with its code, as the fake was told and the core warns, and its message, as the
+    // core's own check says it.
+    let open = whats_wrong(&h).unwrap();
+    let top = |label: &str| -> Vec<f32> {
+        open.query_all_by_label(label)
+            .map(|node| node.rect().top())
+            .collect()
+    };
+    let failed = top("kernel_failed");
+    let warned = top("fingerprint_missing");
+    assert_eq!((failed.len(), warned.len()), (2, 1));
+    assert!(
+        failed[0] < warned[0] && warned[0] < failed[1],
+        "{failed:?}, {warned:?}"
+    );
+    for (feature, said) in [
+        ("a0000001", "First"),
+        ("b0000001", "Second"),
+        ("c0000001", "Third"),
+    ] {
+        let message = core_says(&f, THREE_BLOCKS, feature);
+        assert!(
+            open.query_all_by_label(&message).count() >= 1,
+            "{said}'s {message:?}"
+        );
+    }
+    // Every card offers Edit, Show in timeline, and Copy as JSON (`errCard(p)`).
+    for button in ["Edit First", "Edit Second", "Edit Third"] {
+        assert!(
+            open.query_by_role_and_label(Role::Button, button).is_some(),
+            "{button}"
+        );
+    }
+    for button in ["Show in timeline", "Copy as JSON"] {
+        assert_eq!(
+            open.query_all_by_role_and_label(Role::Button, button)
+                .count(),
+            3,
+            "{button}"
+        );
+    }
+    // Show in timeline closes it and selects Third.
+    open.query_all_by_role_and_label(Role::Button, "Show in timeline")
+        .nth(2)
+        .unwrap()
+        .click();
+    step_until(&mut h, "Third selected", |h| {
+        whats_wrong(h).is_none()
+            && timeline(h).get_by_label("Third").accesskit_node().toggled()
+                == Some(eframe::egui::accesskit::Toggled::True)
+    });
+    // Edit closes it and opens First's dialog, as Edit Feature does.
+    timeline(&h)
+        .get_by_role_and_label(Role::Button, "2 errors")
+        .click();
+    step_until(&mut h, "listed again", |h| {
+        in_whats_wrong(h, "Feature: ").len() == 3
+    });
+    step(&mut h);
+    whats_wrong(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Edit First")
+        .click();
+    step_until(&mut h, "First's dialog", |h| {
+        whats_wrong(h).is_none() && dialog_open(h) && dialog(h).query_by_label("BOX").is_some()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn whats_wrong_opens_from_the_status_bar_the_timeline_and_the_documents_row_and_esc_or_close_shut_it()
+ {
+    let f = fixture();
+    let mut h = three_blocks(&f);
+    let shut = |h: &mut AppHarness, by: &str| {
+        step_until(h, &format!("shut by {by}"), |h| whats_wrong(h).is_none());
+        assert_eq!(h.state().tabs().len(), 1, "{by} shut only What's Wrong");
+    };
+    // The status bar's "Rebuilt with 2 errors"; Esc.
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+        .click();
+    step_until(&mut h, "opened from the status bar", |h| {
+        whats_wrong(h).is_some()
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    shut(&mut h, "Esc");
+    // The timeline's "2 errors"; its Close.
+    timeline(&h)
+        .get_by_role_and_label(Role::Button, "2 errors")
+        .click();
+    // Listed, so it's done growing: a modal is centred on its size.
+    step_until(&mut h, "opened from the timeline, its three listed", |h| {
+        in_whats_wrong(h, "Feature: ").len() == 3
+    });
+    step(&mut h);
+    whats_wrong(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Close")
+        .click();
+    shut(&mut h, "Close");
+    // A click on the browser's document row; Esc.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("blocks")
+        .click();
+    step_until(&mut h, "opened from the document's row", |h| {
+        whats_wrong(h).is_some()
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    shut(&mut h, "Esc");
+    // The registry's What's wrong, which they open: its tooltip's title.
+    assert_eq!(
+        silico_app::shortcuts::Command::WhatsWrong.label(),
+        "What's wrong"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_lavapipe_whats_wrong_shows_two_error_cards_and_a_warnings() {
+    on_lavapipe(
+        "on_lavapipe_whats_wrong_shows_two_error_cards_and_a_warnings",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            refuses_the_short_blocks(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            h.set_render_every_step(true);
+            silico_app::theme::apply(&h.ctx);
+            let path = f.file("blocks.silico", THREE_BLOCKS);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            step_until(&mut h, "rebuilt with its two errors", |h| {
+                status_said(h, "Rebuilt").as_deref() == Some("Rebuilt with 2 errors")
+            });
+            meshes_settled(&mut h);
+            h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+                .click();
+            step_until(&mut h, "three listed", |h| {
+                in_whats_wrong(h, "Feature: ").len() == 3
+            });
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            assert_eq!(
+                whats_wrong(&h)
+                    .unwrap()
+                    .query_all_by_label("kernel_failed")
+                    .count(),
+                2
+            );
+            if let Some(shot) = std::env::var_os("SILICO_APP_WHATS_WRONG_SHOT") {
+                h.render().unwrap().save(shot).unwrap();
+            }
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
 }

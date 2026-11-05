@@ -1360,6 +1360,20 @@ pub const MODAL_FOOT_GAP: f32 = 6.0;
 pub const MODAL_BUTTON_HEIGHT: f32 = DIALOG_BUTTON_HEIGHT;
 pub const MODAL_BUTTON_MIN_WIDTH: f32 = 76.0;
 
+// ---- What's Wrong (`renderModal`'s `whatswrong`) ----
+
+/// What's Wrong's width (`.modal`, `style="width:560px"`), no wider than the window but 40
+/// (`max-width: calc(100vw - 40px)`), and its body's padding (`.m-body`,
+/// `style="padding:0 4px 8px"`), its cards each `--pad` in from that.
+pub const WHATS_WRONG_WIDTH: f32 = 560.0;
+pub const WHATS_WRONG_WINDOW_MARGIN: f32 = 40.0;
+pub const WHATS_WRONG_BODY_PADDING: Margin = Margin {
+    left: 4,
+    right: 4,
+    top: 0,
+    bottom: 8,
+};
+
 // ---- The shortcut sheet (`.sheet`) ----
 
 /// The sheet's width, its border in it (`.sheet { width: 920px }`), at most the window's

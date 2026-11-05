@@ -261,6 +261,16 @@ impl<P: Clients + 'static> Panes<'_, P> {
             tab.edit_feature(self.sessions, &id);
             *self.started = true;
         }
+        if asked.root {
+            // The document's row (§5: "a click on the tree's top node lists them all"):
+            // What's Wrong if anything is, else the document's own properties, as the
+            // prototype's `rootRow`.
+            if tab.anything_wrong() {
+                tab.whats_wrong = true;
+            } else {
+                tab.selection_mut().clear();
+            }
+        }
     }
 
     /// The property panel (DESIGN.md, *Layout*: one right panel, four jobs): the feature
@@ -749,12 +759,13 @@ fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxErr
 }
 
 /// What the browser's rows asked for this frame, done once they're drawn: eyes clicked, a
-/// row selected, and a sketch's Edit Sketch.
+/// row selected, a sketch's Edit Sketch, and the document's row clicked.
 #[derive(Default)]
 struct Asked {
     toggled: Vec<Hideable>,
     selected: Option<FeatureId>,
     edit: Option<FeatureId>,
+    root: bool,
 }
 
 /// The origin's rows, each by its name with its icon (Fusion's Origin folder: its point,
@@ -822,8 +833,10 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
             mark: failed.then_some((Health::Error, root_text)),
             failed: false,
             outside: None,
+            clicks: true,
         },
     );
+    asked.root |= answer.row.clicked();
     root.take(&ctx, &answer);
     if !root.open {
         return;
@@ -849,6 +862,7 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                         mark: None,
                         failed: false,
                         outside: None,
+                        clicks: false,
                     },
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
@@ -922,6 +936,7 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                         // Changed by another program (`d.outside`), its purple dot where it
                         // has no health mark.
                         outside: tab.outside.get(&each.id).map(String::as_str),
+                        clicks: false,
                     },
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
@@ -995,6 +1010,7 @@ fn header(ui: &mut Ui, name: &str, meta: Option<&str>) -> bool {
             mark: None,
             failed: false,
             outside: None,
+            clicks: false,
         },
     );
     openness.take(&ctx, &answer);
@@ -1065,6 +1081,9 @@ struct Line<'a> {
     /// What another program changed in it, if it did (`d.outside`): a purple dot at its
     /// right where it has no mark (`.state-dot`).
     outside: Option<&'a str>,
+    /// Whether it takes a click though it isn't selectable (the document's row, whose click
+    /// opens What's Wrong).
+    clicks: bool,
 }
 
 /// What a row answered: the row's response, its caret's state, and its eye's response.
@@ -1121,7 +1140,7 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         Sense::hover(),
     );
     let id = line.id;
-    let sense = if line.selected.is_some() {
+    let sense = if line.selected.is_some() || line.clicks {
         Sense::click()
     } else {
         Sense::hover()
@@ -2047,6 +2066,40 @@ mod tests {
     }
 
     #[test]
+    fn a_click_on_the_documents_row_opens_whats_wrong_if_anything_is() {
+        // The prototype's `rootRow`: the cut failed and the shell warned, so What's Wrong.
+        let mut h = drawn(modelled());
+        assert!(!tab_of(&mut h).whats_wrong);
+        h.get_by_label("Part").click();
+        h.run_steps(2);
+        assert!(tab_of(&mut h).whats_wrong);
+        // A warning alone is wrong enough.
+        let features = [
+            entry("b0000001", "box", &[], Health::Healthy),
+            entry("s0000001", "box", &[], Health::Warning),
+        ];
+        let mut h = drawn(part(&features, 0, Vec::new(), Vec::new()));
+        h.get_by_label("Part").click();
+        h.run_steps(2);
+        assert!(tab_of(&mut h).whats_wrong);
+        // Nothing wrong: the document's own properties, the selection let go.
+        let features = [entry("b0000001", "box", &[], Health::Healthy)];
+        let mut tab = part(&features, 0, Vec::new(), Vec::new());
+        tab.selection_mut().select_feature(fid("b0000001"));
+        let mut h = drawn(tab);
+        h.get_by_label("Part").click();
+        h.run_steps(2);
+        let tab = tab_of(&mut h);
+        assert!(!tab.whats_wrong);
+        assert!(tab.selection().is_empty());
+        // Its caret still only opens and closes it.
+        h.get_by_label("Collapse Part").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Expand Part").is_some());
+        assert!(!tab_of(&mut h).whats_wrong);
+    }
+
+    #[test]
     fn the_documents_row_is_drawn_as_the_prototypes_root_row() {
         let features = [
             entry("b0000001", "box", &[], Health::Healthy),
@@ -2315,6 +2368,7 @@ mod tests {
                             mark: Some((Health::Warning, None)),
                             failed: false,
                             outside: None,
+                            clicks: false,
                         },
                     );
                 });
