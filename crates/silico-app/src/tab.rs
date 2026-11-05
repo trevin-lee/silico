@@ -12,7 +12,7 @@ use silico_core::command::wire::Named;
 use silico_core::command::{
     Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, DiffAnswer, FieldSet,
     ModelChoice, Moved, Problems, RebuildState, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, SessionInfo, Sessions, Status, Stepped, TextAnswer, TimelineAnswer,
+    SessionId, SessionInfo, Sessions, Status, Stepped, Suppressed, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
@@ -189,6 +189,12 @@ enum Queued {
         feature: FeatureId,
         before: Option<FeatureId>,
     },
+    /// A feature suppressed, or unsuppressed for `suppressed` false (`suppress_feature`),
+    /// from the timeline's or the browser's menu.
+    Suppress {
+        feature: FeatureId,
+        suppressed: bool,
+    },
     /// A dialog's new feature (`add_feature`), of `kind`, of the dialog numbered `serial`:
     /// the members its dialog gave ([`Dialog::add`]), and, for a sweep, the body it builds
     /// on, read from the document when the add comes up ([`Body`]).
@@ -260,6 +266,8 @@ pub enum Sent {
     Edit(String),
     /// `move_feature`, of the feature, before the feature (none: to the end).
     Move(FeatureId, Option<FeatureId>),
+    /// `suppress_feature`, of the feature, suppressed or (false) unsuppressed.
+    Suppress(FeatureId, bool),
     /// `replace_text`: Restore's edit.
     Replace,
     Undo(Option<Revision>),
@@ -316,6 +324,7 @@ impl Edits {
                 | Queued::Revert { .. }
                 | Queued::Step { .. }
                 | Queued::Move { .. }
+                | Queued::Suppress { .. }
                 | Queued::Add { .. }
                 | Queued::Opened
                 | Queued::Load { .. }
@@ -344,6 +353,11 @@ enum Under {
     Move {
         sending: Sending,
         running: Running<Moved>,
+    },
+    /// A suppression or an unsuppression, as it was sent.
+    Suppress {
+        sending: Sending,
+        running: Running<Suppressed>,
     },
     /// A Save As, the path it was given, which the tab asks to replace if a file is
     /// there, whether the tab began the transaction it commits (rolled back if it's
@@ -618,6 +632,10 @@ pub struct Tab {
     /// The last refusal a command of the tab's answered, as said to the person, until
     /// their next action (an edit, a save, a revert, a step).
     pub message: Option<String>,
+    /// What the last suppression did, as said to the person (the prototype's toast, in the
+    /// status bar): what it suppressed with the feature. Until their next action, as
+    /// [`message`](Self::message) is.
+    pub told: Option<String>,
     /// A save or a revert that was to close the tab was refused: the tab stays, and a quit
     /// waiting on it stops ([`take_close_refused`](Self::take_close_refused)).
     close_refused: bool,
@@ -769,6 +787,7 @@ impl Tab {
             mine_diff: None,
             hidden: std::collections::BTreeSet::new(),
             message: None,
+            told: None,
             close_refused: false,
             replace_asked: None,
             roll_back: false,
@@ -1027,12 +1046,19 @@ impl Tab {
         self.edits.queue.iter().any(|queued| {
             matches!(
                 queued,
-                Queued::Move { .. } | Queued::Add { .. } | Queued::Replace { .. }
+                Queued::Move { .. }
+                    | Queued::Suppress { .. }
+                    | Queued::Add { .. }
+                    | Queued::Replace { .. }
             )
         }) || self.under.iter().any(|under| {
             matches!(
                 under,
-                Under::Move { .. } | Under::Add { .. } | Under::Base { .. } | Under::Replace { .. }
+                Under::Move { .. }
+                    | Under::Suppress { .. }
+                    | Under::Add { .. }
+                    | Under::Base { .. }
+                    | Under::Replace { .. }
             )
         })
     }
@@ -1050,7 +1076,7 @@ impl Tab {
         replace: bool,
         then_close: bool,
     ) {
-        self.message = None;
+        self.hush();
         self.edits.queue.push_back(Queued::SaveAs {
             path,
             replace,
@@ -1363,7 +1389,7 @@ impl Tab {
         if self.in_dialog() || self.closing() || self.restoring() {
             return;
         }
-        self.message = None;
+        self.hush();
         if let Some(reloaded) = &mut self.reloaded {
             reloaded.refused = None;
         }
@@ -1594,6 +1620,21 @@ impl Tab {
                     None
                 }
                 Err(running) => Some(Under::Move { sending, running }),
+            },
+            Under::Suppress { sending, running } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    match response.result {
+                        Ok(done) => {
+                            self.told =
+                                crate::feature_menu::suppressed_words(&done, |id| self.name_of(id));
+                        }
+                        Err(problems) => self.message = Some(said(&problems)),
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Suppress { sending, running }),
             },
             Under::Base {
                 serial,
@@ -1914,6 +1955,24 @@ impl Tab {
                         running: sessions.move_feature(&self.id, self.revision, feature, before),
                     });
                 }
+                Queued::Suppress {
+                    feature,
+                    suppressed,
+                } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::Suppress(feature.clone(), suppressed));
+                    let sending = self.sending();
+                    self.under.push(Under::Suppress {
+                        sending,
+                        running: sessions.suppress_feature(
+                            &self.id,
+                            self.revision,
+                            feature,
+                            suppressed,
+                        ),
+                    });
+                }
                 Queued::Opened => {
                     self.dialog_base = Some(self.revision);
                     self.dialog_began = !self.transaction && !self.beginning;
@@ -2097,6 +2156,7 @@ impl Tab {
                         | Under::Rollback { .. }
                         | Under::Step(_)
                         | Under::Move { .. }
+                        | Under::Suppress { .. }
                         | Under::Add { .. }
                         | Under::Base { .. }
                         | Under::Restore { .. }
@@ -2166,7 +2226,7 @@ impl Tab {
     /// `edit` made by the person: inside the tab's transaction, begun first if none is open
     /// (decision 1), and sent now if no edit is in flight, or else waiting (section 3).
     pub fn edit<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, edit: Edit) {
-        self.message = None;
+        self.hush();
         self.edits.push(edit);
         self.advance(sessions);
     }
@@ -2189,8 +2249,34 @@ impl Tab {
         if self.closing() {
             return;
         }
-        self.message = None;
+        self.hush();
         self.edits.queue.push_back(Queued::Move { feature, before });
+        self.advance(sessions);
+    }
+
+    /// The feature `feature` suppressed, or unsuppressed for `suppressed` false
+    /// (`suppress_feature`), as a move is: inside the tab's transaction, so one undo takes it
+    /// back, and sent once everything asked before it has answered; never while a dialog is
+    /// open or the tab closes (the menus' item is off then). What it suppressed or
+    /// unsuppressed with it is said in the status bar, a refusal too.
+    pub fn suppress_feature<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        feature: FeatureId,
+        suppressed: bool,
+    ) {
+        if self.in_dialog() {
+            self.message = Some("Close the dialog before suppressing a feature".to_owned());
+            return;
+        }
+        if self.closing() {
+            return;
+        }
+        self.hush();
+        self.edits.queue.push_back(Queued::Suppress {
+            feature,
+            suppressed,
+        });
         self.advance(sessions);
     }
 
@@ -2203,11 +2289,24 @@ impl Tab {
             .any(|row| &row.id == id)
     }
 
+    /// The feature `id`'s name, as the timeline last listed it: its ID if it doesn't.
+    fn name_of(&self, id: &FeatureId) -> String {
+        self.entry(id.as_str())
+            .map_or_else(|| id.as_str().to_owned(), |entry| entry.name.clone())
+    }
+
+    /// The person's next action: the last refusal said, and what the last suppression did,
+    /// let go.
+    fn hush(&mut self) {
+        self.message = None;
+        self.told = None;
+    }
+
     /// Save (`commit`), then, if `then_close`, close: once everything asked before it has
     /// answered, so the commit saves every edit made before it. One queued last already takes
     /// `then_close` too. A save that comes up with nothing to save does nothing (or closes).
     pub fn save<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
-        self.message = None;
+        self.hush();
         match self.edits.queue.back_mut() {
             Some(Queued::Save { then_close: last }) => *last |= then_close,
             _ => self.edits.queue.push_back(Queued::Save { then_close }),
@@ -2223,7 +2322,7 @@ impl Tab {
     /// reloaded with edits held: the session reloads it once the transaction has ended
     /// (section 4).
     pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
-        self.message = None;
+        self.hush();
         // The session reloads the file changed on disk once the edits are gone: at the
         // person's asking.
         if self
@@ -2270,7 +2369,7 @@ impl Tab {
     /// Undo or redo one edit of the transaction, once the edits made before it have
     /// answered.
     pub fn step<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, undo: bool) {
-        self.message = None;
+        self.hush();
         self.edits.queue.push_back(Queued::Step { undo });
         self.advance(sessions);
     }
@@ -2318,7 +2417,7 @@ impl Tab {
     pub fn export_opened(&mut self) {
         self.export_said = None;
         self.export_replacing = None;
-        self.message = None;
+        self.hush();
         // An export still out (its dialog cancelled, its answer not in yet) isn't this
         // dialog's: its answer neither closes it nor asks it anything.
         self.export_disowned = self.exporting.is_some();
@@ -2562,7 +2661,7 @@ impl Tab {
     pub fn stop_quietly<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
         let stopped = self.halt(sessions).is_ok();
         if stopped {
-            self.message = None;
+            self.hush();
         }
         stopped
     }
@@ -2846,7 +2945,7 @@ impl Tab {
     /// A dialog opening: numbered, the revision it opens at marked in the queue, and what
     /// the last one left (a refusal said, its refused fields) let go. Its number.
     fn opening(&mut self) -> u64 {
-        self.message = None;
+        self.hush();
         self.refused.clear();
         self.before_dialog = None;
         self.dialogs += 1;

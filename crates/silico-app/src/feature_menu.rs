@@ -2,16 +2,19 @@
 //! 8, *The timeline*: "Right-click also gives Rename, Suppress or Unsuppress, and Find in
 //! Browser"; the approved prototype's `contextmenu` handler in js/interact.js): the right-click
 //! menu each draws for a feature, its items in the prototype's order and words, each off
-//! with its reason where it can't apply.
+//! with its reason where it can't apply; and what the status bar says a suppression did
+//! (the prototype's toast).
 //!
 //! Every item goes through the core's commands (invariant 3): Edit feature opens the
-//! feature's dialog as a double-click does.
+//! feature's dialog as a double-click does, and Suppress and Unsuppress are
+//! `suppress_feature`, an edit in the tab's transaction, so one undo takes it back.
 //!
 //! Left out: the prototype's "Roll back to here". SEAM: the core has no rollback (the
 //! rollback bar is out of M5, DESIGN.md's Proposal 5); the item goes after Find in… once
 //! it has one.
 
 use eframe::egui::{self, RichText, Ui};
+use silico_core::command::Suppressed;
 use silico_core::document::FeatureId;
 use silico_core::timeline::{Entry, Health};
 
@@ -30,6 +33,8 @@ pub enum Place {
 pub enum Act {
     /// Edit feature: the feature's dialog, as a double-click opens it.
     Edit(FeatureId),
+    /// Suppress (true) or Unsuppress (false).
+    Suppress(FeatureId, bool),
     /// Find in browser: the feature selected, its row scrolled to.
     FindInBrowser(FeatureId),
     /// Find in timeline: the feature selected, its item scrolled to.
@@ -40,11 +45,12 @@ pub enum Act {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
     Edit,
+    Suppress,
     Find,
 }
 
-/// The items, in order (the prototype's: Edit, then Find in…).
-pub const ITEMS: [Item; 2] = [Item::Edit, Item::Find];
+/// The items, in order (the prototype's: Edit, Suppress, Find in…).
+pub const ITEMS: [Item; 3] = [Item::Edit, Item::Suppress, Item::Find];
 
 /// An item as the menu shows it: its words, the keys or gesture beside them, and why it's
 /// off, if it is.
@@ -57,12 +63,14 @@ pub struct Shown {
 }
 
 /// The words of `item` for `entry`, shown at `place` (the prototype's: "Edit Sketch" for a
-/// sketch, else "Edit feature"; "Find in browser" from the timeline, "Find in timeline"
-/// from the browser).
+/// sketch, else "Edit feature"; "Unsuppress" for a suppressed feature; "Find in browser"
+/// from the timeline, "Find in timeline" from the browser).
 pub fn label(item: Item, entry: &Entry, place: Place) -> &'static str {
     match item {
         Item::Edit if entry.kind == "sketch" => "Edit Sketch",
         Item::Edit => "Edit feature",
+        Item::Suppress if entry.suppressed => "Unsuppress",
+        Item::Suppress => "Suppress",
         Item::Find => match place {
             Place::Timeline => "Find in browser",
             Place::Browser => "Find in timeline",
@@ -113,6 +121,7 @@ pub fn off(tab: &Tab, entry: &Entry, item: Item, place: Place) -> Option<String>
                 Some(unchangeable(tab).unwrap_or_else(|| "Its dialog can't open now".to_owned()))
             }
         }
+        Item::Suppress => unchangeable(tab),
         Item::Find => match place {
             Place::Browser => None,
             Place::Timeline if tab.in_browser(&entry.id) => None,
@@ -147,7 +156,7 @@ pub fn items(tab: &Tab, entry: &Entry, place: Place) -> Vec<Shown> {
             label: label(item, entry, place).to_owned(),
             keys: match item {
                 Item::Edit => Some("double-click".to_owned()),
-                Item::Find => None,
+                Item::Suppress | Item::Find => None,
             },
             off: off(tab, entry, item, place),
         })
@@ -182,7 +191,8 @@ fn item(ui: &mut Ui, label: &str, keys: Option<&str>, off: Option<&str>) -> bool
 }
 
 /// The right-click menu of the feature `entry`, at `place` (the prototype's, in its order:
-/// the name, Edit feature, Find in…): what was clicked, the menu closed.
+/// the name, Edit feature, Suppress or Unsuppress, Find in…): what was clicked, the menu
+/// closed.
 pub fn menu(ui: &mut Ui, tab: &Tab, entry: &Entry, place: Place) -> Option<Act> {
     head(ui, &entry.name);
     let mut asked = None;
@@ -197,6 +207,7 @@ pub fn menu(ui: &mut Ui, tab: &Tab, entry: &Entry, place: Place) -> Option<Act> 
             let id = entry.id.clone();
             asked = Some(match shown.item {
                 Item::Edit => Act::Edit(id),
+                Item::Suppress => Act::Suppress(id, !entry.suppressed),
                 Item::Find => match place {
                     Place::Timeline => Act::FindInBrowser(id),
                     Place::Browser => Act::FindInTimeline(id),
@@ -215,6 +226,7 @@ pub fn origin_menu(ui: &mut Ui, name: &str) {
     let off = format!("{name} is the origin's, not a feature");
     for (label, keys) in [
         ("Edit feature", Some("double-click")),
+        ("Suppress", None),
         ("Find in timeline", None),
     ] {
         item(ui, label, keys, Some(&off));
@@ -234,6 +246,10 @@ pub fn act<P: silico_core::kernel::Clients + 'static>(
             tab.edit_feature(sessions, &id);
             true
         }
+        Act::Suppress(id, suppressed) => {
+            tab.suppress_feature(sessions, id, suppressed);
+            true
+        }
         Act::FindInBrowser(id) => {
             tab.selection_mut().find_in_browser(id);
             false
@@ -242,5 +258,112 @@ pub fn act<P: silico_core::kernel::Clients + 'static>(
             tab.show_in_timeline(id);
             false
         }
+    }
+}
+
+/// `names` as a list in words: "A", "A and B", "A, B, and C".
+fn listed(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [one, two] => format!("{one} and {two}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
+/// What the status bar says a suppression did, each feature by `name`: the feature, then
+/// what went with it (its dependents, suppressed; what it needs, unsuppressed). Nothing
+/// for one that changed nothing.
+pub fn suppressed_words(done: &Suppressed, name: impl Fn(&FeatureId) -> String) -> Option<String> {
+    let (word, changed, dependents) = if done.suppressed.is_empty() {
+        ("Unsuppressed", &done.unsuppressed, false)
+    } else {
+        ("Suppressed", &done.suppressed, true)
+    };
+    if changed.is_empty() {
+        return None;
+    }
+    let others: Vec<String> = changed
+        .iter()
+        .filter(|id| **id != done.feature)
+        .map(&name)
+        .collect();
+    let feature = name(&done.feature);
+    let with = match (dependents, others.len()) {
+        (_, 0) => return Some(format!("{word} {feature}")),
+        (true, 1) => "which depends on it",
+        (true, _) => "which depend on it",
+        (false, _) => "which it needs",
+    };
+    Some(format!("{word} {feature}, and {}, {with}", listed(&others)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fid(id: &str) -> FeatureId {
+        FeatureId::new(id).unwrap()
+    }
+
+    fn named(id: &FeatureId) -> String {
+        match id.as_str() {
+            "a0000001" => "Block".to_owned(),
+            "b0000001" => "Pin".to_owned(),
+            "c0000001" => "Hole".to_owned(),
+            "d0000001" => "Bore".to_owned(),
+            other => other.to_owned(),
+        }
+    }
+
+    fn suppressed(feature: &str, suppressed: &[&str], unsuppressed: &[&str]) -> Suppressed {
+        Suppressed {
+            feature: fid(feature),
+            suppressed: suppressed.iter().map(|id| fid(id)).collect(),
+            unsuppressed: unsuppressed.iter().map(|id| fid(id)).collect(),
+            changed: !(suppressed.is_empty() && unsuppressed.is_empty()),
+            commit: None,
+        }
+    }
+
+    #[test]
+    fn a_suppression_says_the_feature_then_what_went_with_it() {
+        let said = |done: &Suppressed| suppressed_words(done, named);
+        assert_eq!(
+            said(&suppressed("b0000001", &["b0000001"], &[])).as_deref(),
+            Some("Suppressed Pin")
+        );
+        assert_eq!(
+            said(&suppressed("b0000001", &["b0000001", "c0000001"], &[])).as_deref(),
+            Some("Suppressed Pin, and Hole, which depends on it")
+        );
+        assert_eq!(
+            said(&suppressed(
+                "a0000001",
+                &["a0000001", "c0000001", "d0000001"],
+                &[]
+            ))
+            .as_deref(),
+            Some("Suppressed Block, and Hole and Bore, which depend on it")
+        );
+        assert_eq!(
+            said(&suppressed("c0000001", &[], &["b0000001", "c0000001"])).as_deref(),
+            Some("Unsuppressed Hole, and Pin, which it needs")
+        );
+        assert_eq!(
+            said(&suppressed("c0000001", &[], &["c0000001"])).as_deref(),
+            Some("Unsuppressed Hole")
+        );
+        // Changing nothing says nothing.
+        assert_eq!(said(&suppressed("c0000001", &[], &[])), None);
+    }
+
+    #[test]
+    fn a_list_in_words_has_its_and_and_its_commas() {
+        let names = |n: &[&str]| n.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(listed(&names(&[])), "");
+        assert_eq!(listed(&names(&["A"])), "A");
+        assert_eq!(listed(&names(&["A", "B"])), "A and B");
+        assert_eq!(listed(&names(&["A", "B", "C"])), "A, B, and C");
     }
 }

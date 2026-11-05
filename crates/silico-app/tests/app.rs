@@ -22467,6 +22467,27 @@ fn item_said(h: &AppHarness, name: &str) -> Option<String> {
         .description()
 }
 
+/// What the status bar says of the last suppression or deletion: its words that begin
+/// with `start`.
+fn said_done(h: &AppHarness, start: &str) -> Option<String> {
+    status_said(h, start)
+}
+
+/// EXAMPLE with its pin suppressed, and the hole that cuts with it: `"suppressed": true`
+/// right after each one's name (docs/design/m5.0-app.md, `suppress_feature`), written by
+/// hand.
+const EXAMPLE_PIN_SUPPRESSED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "suppressed": true, "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "suppressed": true, "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"}
+  ]
+}
+"#;
+
 #[test]
 fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
     let f = fixture();
@@ -22475,7 +22496,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
     let on = |label: &str| (label.to_owned(), None);
     let off = |label: &str, why: &str| (label.to_owned(), Some(why.to_owned()));
     // The timeline's, on the block (js/interact.js's `contextmenu`: Edit feature with
-    // "double-click", then Find in browser).
+    // "double-click", Suppress, then Find in browser).
     // The block is inside the hole's body, which the browser lists by the hole: it has no
     // row there.
     menu_on(&mut h, "Timeline", "Block");
@@ -22483,6 +22504,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "BLOCK"),
         [
             on("Edit feature double-click"),
+            on("Suppress"),
             off(
                 "Find in browser",
                 "It's inside a body: the browser lists bodies and sketches"
@@ -22505,6 +22527,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "HOLE"),
         [
             off("Edit feature double-click", "Subtract has no dialog yet"),
+            on("Suppress"),
             on("Find in browser"),
         ]
     );
@@ -22516,6 +22539,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "HOLE"),
         [
             off("Edit feature double-click", "Subtract has no dialog yet"),
+            on("Suppress"),
             on("Find in timeline"),
         ]
     );
@@ -22528,6 +22552,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "XY"),
         [
             off("Edit feature double-click", origin),
+            off("Suppress", origin),
             off("Find in timeline", origin),
         ]
     );
@@ -22543,11 +22568,18 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "BLOCK"),
         [
             off("Edit feature double-click", dialog),
+            off("Suppress", dialog),
             off(
                 "Find in browser",
                 "It's inside a body: the browser lists bodies and sketches"
             ),
         ]
+    );
+    assert!(
+        !h.state().tabs()[0]
+            .sent
+            .iter()
+            .any(|sent| matches!(sent, Sent::Suppress(..)))
     );
     assert_eq!(never_waits::waits(), 0);
 }
@@ -22571,6 +22603,7 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
                 "Edit feature double-click".to_owned(),
                 Some("Subtract has no dialog yet".to_owned())
             ),
+            ("Suppress".to_owned(), None),
             (
                 "Find in browser".to_owned(),
                 Some("It built no body, so the browser has no row for it".to_owned())
@@ -22582,9 +22615,77 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
     step(&mut h);
     menu_on(&mut h, "Timeline", "Block");
     assert_eq!(
-        menu_items(&h, "BLOCK")[1],
+        menu_items(&h, "BLOCK")[2],
         ("Find in browser".to_owned(), None)
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn suppress_then_unsuppress_writes_and_drops_suppressed_and_undo_restores_each_text() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    // The pin suppressed: the hole, which cuts with it and has nothing else up its tool's
+    // chain, goes with it (SolidWorks' children, docs/ux/solidworks.md, §5).
+    menu_on(&mut h, "Timeline", "Pin");
+    menu_click(&mut h, "PIN", "Suppress");
+    step_until(&mut h, "suppressed", |h| {
+        said_done(h, "Suppressed").as_deref()
+            == Some("Suppressed Pin, and Hole, which depends on it")
+    });
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), EXAMPLE_PIN_SUPPRESSED);
+    step_until(&mut h, "both shown suppressed", |h| {
+        item_said(h, "Pin").as_deref() == Some("Cylinder · Suppressed")
+            && item_said(h, "Hole").as_deref() == Some("Subtract · Suppressed")
+    });
+    // The block stands, as it was (warned of only for the fingerprint EXAMPLE doesn't store).
+    assert_eq!(item_said(&h, "Block").as_deref(), Some("Box · Warning"));
+    // The hole unsuppressed: its tool, which it needs, comes back with it.
+    menu_on(&mut h, "Timeline", "Hole");
+    assert_eq!(menu_items(&h, "HOLE")[1], ("Unsuppress".to_owned(), None));
+    menu_click(&mut h, "HOLE", "Unsuppress");
+    step_until(&mut h, "unsuppressed", |h| {
+        said_done(h, "Unsuppressed").as_deref()
+            == Some("Unsuppressed Hole, and Pin, which it needs")
+    });
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(
+        h.state().tabs()[0]
+            .sent
+            .iter()
+            .filter(|sent| matches!(sent, Sent::Suppress(..)))
+            .cloned()
+            .collect::<Vec<_>>(),
+        [
+            Sent::Suppress(
+                silico_core::document::FeatureId::new("a91cw0de").unwrap(),
+                true
+            ),
+            Sent::Suppress(
+                silico_core::document::FeatureId::new("m3tq8v0z").unwrap(),
+                false
+            ),
+        ]
+    );
+    // Each undone, one step each, byte for byte.
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    step_until(&mut h, "the unsuppress undone", |h| {
+        h.state().tabs()[0].edits.idle() && !h.state().tabs()[0].unsettled()
+    });
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), EXAMPLE_PIN_SUPPRESSED);
+    // The next action lets the last one's words go.
+    assert_eq!(said_done(&h, "Unsuppressed"), None);
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    step_until(&mut h, "the suppress undone", |h| {
+        !h.state().tabs()[0].unsettled()
+    });
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -22749,7 +22850,7 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
                 .into_iter()
                 .map(|(label, _)| label)
                 .collect::<Vec<_>>(),
-            ["Edit feature double-click", "Find in browser",]
+            ["Edit feature double-click", "Suppress", "Find in browser",]
         );
         if let Some(shot) = std::env::var_os("SILICO_APP_FEATURE_MENU_SHOT") {
             h.render().unwrap().save(shot).unwrap();
