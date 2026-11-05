@@ -21297,18 +21297,18 @@ fn a_fillet_dialogs_cancel_after_earlier_unsaved_edits_leaves_the_text_as_before
     type_name(&mut h, "K");
     settled(&mut h);
     let before = text_of(&f, &h);
-    assert!(before.contains(r#""name": "KBlock""#));
+    assert!(before.contains(r#""name": "BlockK""#));
     let opened_at = h.state().tabs()[0].revision;
     click_edge(&mut h, &record, 1, 3, false);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
     modify(&mut h, "Fillet");
     added(&mut h);
-    // Its radius typed (a 2 before the 1: 21), and a second edge taken: both written.
+    // Its radius typed (a 2 after the 1: 12), and a second edge taken: both written.
     type_into(&mut h, "Radius", "2");
     click_edge(&mut h, &record, 1, 5, true);
     boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
     settled(&mut h);
-    assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("21")));
+    assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("12")));
     assert_eq!(
         written(&f, &h, "Fillet", "edges"),
         Some(plain(r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]"#))
@@ -21381,7 +21381,7 @@ fn a_fillet_too_large_shows_the_kernels_refusal_naming_its_edge_and_the_rest_sti
     settled(&mut h);
     // 1 mm builds.
     assert_eq!(h.state().tabs()[0].errors(), 0);
-    // 31 mm (a 3 before the 1) doesn't: the kernel's refusal in the dialog, as the core
+    // 13 mm (a 3 after the 1) doesn't: the kernel's refusal in the dialog, as the core
     // gives it, its message, its cause naming the edge, the edge among its elements, and
     // its suggestion (refusal.rs's and worker.rs's words, by hand). The fake kernel's
     // errors name an edge by its number in the base (`Edge3`), as FreeCAD does; a worker's
@@ -21411,7 +21411,7 @@ fn a_fillet_too_large_shows_the_kernels_refusal_naming_its_edge_and_the_rest_sti
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("31")));
+    assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("13")));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21511,13 +21511,13 @@ fn on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_s
     );
 }
 
-/// The dialog's input `label` emptied of `old` (the cursor at its start, Delete takes one
+/// The dialog's input `label` emptied of `old` (the cursor at its end, Backspace takes one
 /// character each) and `new` typed in, one keystroke a frame.
 fn retype(h: &mut AppHarness, label: &str, old: &str, new: &str) {
     input(h, label).focus();
     step(h);
     for _ in 0..old.len() {
-        h.key_press(eframe::egui::Key::Delete);
+        h.key_press(eframe::egui::Key::Backspace);
         step(h);
     }
     input(h, label).type_text(new);
@@ -21835,7 +21835,7 @@ fn a_chamfer_dialog_fed_the_selection_of_an_edge_writes_a_chamfer_of_its_distanc
     assert_eq!(
         fields_of(&text, "Chamfer"),
         Some(expected(
-            r#"{"type": "chamfer", "name": "Chamfer", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": 21}}"#
+            r#"{"type": "chamfer", "name": "Chamfer", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": 12}}"#
         ))
     );
     assert!(text.contains(&format!(r#""id": "{id}""#)));
