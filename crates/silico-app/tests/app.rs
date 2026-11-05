@@ -18480,7 +18480,7 @@ fn prompt(h: &AppHarness) -> Option<egui_kittest::Node<'_>> {
 
 /// The over-define prompt's choice labelled `label` clicked, once the prompt is laid out
 /// (a modal is centred, so it moves as it's first sized).
-fn choose(h: &mut AppHarness, label: &str) {
+fn choose_in_prompt(h: &mut AppHarness, label: &str) {
     step_until(h, "the prompt", |h| prompt(h).is_some());
     let place = |h: &AppHarness| {
         prompt(h)
@@ -18567,7 +18567,7 @@ fn a_conflicting_dimension_is_placed_reads_over_defined_naming_them_and_driven_c
         );
     }
     // Driven: `set_field` of its `driving` to false, which solves the sketch again.
-    choose(&mut h, "Make it driven");
+    choose_in_prompt(&mut h, "Make it driven");
     settled(&mut h);
     let field = format!("constraints.{third}.driving");
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Edit(field)));
@@ -18603,7 +18603,7 @@ fn a_conflicting_dimension_is_placed_reads_over_defined_naming_them_and_driven_c
             .count()
     };
     let before = asked(&h);
-    choose(&mut h, "Leave it driving");
+    choose_in_prompt(&mut h, "Leave it driving");
     for _ in 0..10 {
         step(&mut h);
     }
@@ -18945,7 +18945,7 @@ fn a_placed_dimension_double_clicked_is_set_as_typed_and_an_over_defining_edit_o
             .map(|o| o.constraint.as_str().to_owned()),
         Some(length.clone())
     );
-    choose(&mut h, "Make it driven");
+    choose_in_prompt(&mut h, "Make it driven");
     settled(&mut h);
     assert_eq!(
         h.state().tabs()[0].sent.last(),
