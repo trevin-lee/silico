@@ -720,6 +720,12 @@ fn a_hostile_upload_is_refused_and_the_body_keeps_its_mesh() {
             let mut miscounted = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
             miscounted.face_triangles[0] = 3;
             hostile.push(miscounted);
+            // A vertex's point as an edge's: not finite, or past the coordinates' bound.
+            for bad in [f64::NAN, f64::INFINITY, -2e12] {
+                let mut vertex = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+                vertex.vertex_points[7][2] = bad;
+                hostile.push(vertex);
+            }
             for mesh in hostile {
                 let Err(RenderFailure::Invalid(invalid)) = r.upload(1, &Arc::new(mesh)) else {
                     panic!("a hostile mesh uploaded");
@@ -2789,6 +2795,74 @@ fn a_vertex_behind_a_face_is_picked_within_the_reach_toward_the_eye_and_not_past
             assert_eq!(hit(r, &at(20)), Some((1, Element::Vertex(1), [20, 26])));
             assert_eq!(hit(r, &at(41)), Some((1, Element::Face(3), [41, 26])));
             assert_eq!(hit(r, &at(32)), Some((1, Element::Face(3), [32, 26])));
+        },
+    );
+}
+
+// ---- Hostile vertices ----
+
+#[test]
+fn a_crowd_of_vertices_on_one_pixel_picks_one_of_them_and_the_frame_still_draws() {
+    on_lavapipe(
+        "render::frame_tests::a_crowd_of_vertices_on_one_pixel_picks_one_of_them_and_the_frame_still_draws",
+        |r| {
+            // 200,000 vertices on the front face's centre, (21, 0, 7), and one more off the
+            // frame: the picking draws a disc for each near its square, and picks a vertex
+            // there (whichever the GPU drew last of those at one depth); the frames after,
+            // with no picking, draw none.
+            let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+            mesh.vertex_points = vec![[21.0, 0.0, 7.0]; 200_000];
+            mesh.vertex_points.push([1e9, 0.0, 7.0]);
+            r.upload(1, &Arc::new(mesh)).unwrap();
+            let camera = front();
+            let asking = Frame {
+                vertices: Some(7.0),
+                ..frame(&camera, &[1], &[], Some(rect([32, 24], [1, 1])))
+            };
+            let found = hit(r, &asking);
+            assert!(
+                matches!(found, Some((1, Element::Vertex(1..=200_000), [32, 24]))),
+                "{found:?}"
+            );
+            assert_eq!(
+                hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE))),
+                Some((1, Element::Face(3), [32, 26]))
+            );
+        },
+    );
+}
+
+#[test]
+fn a_perspective_as_wide_as_170_degrees_draws_a_disc_toward_the_eye_a_quarter_of_its_depth_at_most()
+{
+    on_lavapipe(
+        "render::frame_tests::a_perspective_as_wide_as_170_degrees_draws_a_disc_toward_the_eye_a_quarter_of_its_depth_at_most",
+        |r| {
+            // From (20, −10, 5), looking along +y at the front face's middle (y = 0, 10 mm
+            // off), 170° wide: the view's height at a depth d is 2 tan 85° d = 22.86 d, so
+            // 1.2% of it is 0.274 d, past the most, a quarter. A vertex 3.5 mm behind the
+            // face, 13.5 mm off, has its disc 10.125 mm off, behind the face (0.274 d would
+            // put it at 9.80, ahead of it): the face is picked. One 2.6 behind, 12.6 off, has
+            // its disc at 9.45: picked.
+            let camera = Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 170.0,
+                },
+                eye: [20.0, -10.0, 5.0],
+                target: [20.0, 0.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            let centre = Some(rect([32, 24], [1, 1]));
+            for (behind, want) in [(3.5, Element::Face(3)), (2.6, Element::Vertex(1))] {
+                let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+                mesh.vertex_points = vec![[20.0, behind, 5.0]];
+                r.upload(1, &Arc::new(mesh)).unwrap();
+                let asking = Frame {
+                    vertices: Some(7.0),
+                    ..frame(&camera, &[1], &[], centre)
+                };
+                assert_eq!(hit(r, &asking), Some((1, want, [32, 24])), "{behind}");
+            }
         },
     );
 }
