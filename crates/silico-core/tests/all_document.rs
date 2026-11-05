@@ -60,6 +60,8 @@ mod adversarial_call;
 mod adversarial_center_to_element;
 #[path = "adversarial_command.rs"]
 mod adversarial_command;
+#[path = "adversarial_diff.rs"]
+mod adversarial_diff;
 #[path = "adversarial_disk.rs"]
 mod adversarial_disk;
 #[path = "adversarial_document.rs"]
@@ -150,6 +152,8 @@ mod render_command;
 mod session;
 #[path = "session_cancel.rs"]
 mod session_cancel;
+#[path = "session_diff.rs"]
+mod session_diff;
 #[path = "session_edits.rs"]
 mod session_edits;
 #[path = "session_elements.rs"]

@@ -1,0 +1,113 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`diff`'s request: what changed between two revisions the session holds.",
+    "properties": {
+      "from": {
+        "description": "The revision to compare from, or null for the document now. A session holds the\ntext of its revision now, of the one its last reload replaced (after a response that\nsays `reloaded`), and, inside a transaction, of the one it began at; any other is\nrefused, the revisions it holds its candidates.",
+        "minimum": 1,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      },
+      "to": {
+        "description": "The revision to compare to, or null for the document now, held as `from` is.",
+        "minimum": 1,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "from",
+      "session",
+      "to"
+    ],
+    "title": "DiffRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "DiffChange": {
+        "additionalProperties": false,
+        "description": "One change between two revisions: a feature's place in the timeline, or one of its\nfields.",
+        "properties": {
+          "after": {
+            "$ref": "#/$defs/DiffValue"
+          },
+          "before": {
+            "$ref": "#/$defs/DiffValue"
+          },
+          "feature": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The feature, by ID."
+          },
+          "field": {
+            "description": "The path to the field that changed, as `set_field` names one (a sketch's members by\nID, other lists by place, from 0), down to the first value that's a number, a string,\ntrue or false, or absent on one side. A change set_field accepts is applied by\nset_field with its feature, field, and after. set_field doesn't accept: fingerprint\nfields; `type`, `id`, and `v` (and, with a feature's `type`, each field its new type\nbrings or takes away); a member only one side has below the feature's top level (a\nsketch member added or removed, an item added to or removed from a list by place),\nbut for a sketch angle's `reversed`; and an extent's or a constraint's `type` changed\nto one that takes other fields. Null for a change of the feature's place: added,\nremoved, or moved (its order among the features both revisions hold changed: one\nremoved or added moves none of the others).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Its name: as `to` has it, or, for a feature removed, as `from` had it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "after",
+          "before",
+          "feature",
+          "field",
+          "name"
+        ],
+        "type": "object"
+      },
+      "DiffValue": {
+        "description": "With a field, its value on that side, as the document writes that field: a number, a string, true or false, a list, an object, or null where the feature hasn't the field (or isn't there). With field null, the feature's place in that side's timeline, from 0, as remove_feature gives a place: null where it isn't there."
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`diff`'s result.",
+    "properties": {
+      "changes": {
+        "description": "Each change from `from` to `to`, in `to`'s timeline order (a feature's change of\nplace first, then its fields in the order the document writes them), then each\nfeature removed, in `from`'s order. Empty if the two documents are the same.",
+        "items": {
+          "$ref": "#/$defs/DiffChange"
+        },
+        "type": "array"
+      },
+      "from": {
+        "description": "The revision compared from: the request's, or, for null, the session's then.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "to": {
+        "description": "The revision compared to, likewise.",
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "changes",
+      "from",
+      "to"
+    ],
+    "title": "DiffResult",
+    "type": "object"
+  }
+}

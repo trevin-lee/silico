@@ -39,7 +39,7 @@ use super::wire::export::ExportRequest;
 use super::wire::logs::ReadLogsRequest;
 use super::wire::measure::{MassPropertiesRequest, PairRequest};
 use super::wire::meshes::MeshesRequest;
-use super::wire::reads::{CheckRequest, TextRequest, TimelineRequest};
+use super::wire::reads::{CheckRequest, DiffRequest, TextRequest, TimelineRequest};
 use super::wire::render::RenderRequest;
 use super::wire::schema::SchemaRequest;
 use super::wire::session::{CancelRequest, OpenRequest, VersionRequest};
@@ -51,7 +51,8 @@ use super::wire::sketch_edits::{
 use super::wire::transaction::{CommitRequest, FormatRequest, SessionRequest, StepRequest};
 use super::wire::{self, Json, Layout, ToWire};
 use super::{
-    Problems, Progress, Response, Running, SessionId, SessionInfo, Sessions, Stopper, VERSION,
+    DiffAnswer, Problems, Progress, Response, Running, SessionId, SessionInfo, Sessions, Stopper,
+    VERSION,
 };
 use crate::document::json::{self, Cause, MAX_INPUT_LEN, Node, SyntaxError, Value};
 use crate::kernel::Clients;
@@ -105,12 +106,13 @@ pub enum Command {
     SketchJoin,
     Undo,
     Redo,
+    Diff,
 }
 
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
-    /// 7).
-    pub const ALL: [Command; 44] = [
+    /// 7), then `diff` (Fable's decision of 2026-11-04).
+    pub const ALL: [Command; 45] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -155,6 +157,7 @@ impl Command {
         Command::SketchJoin,
         Command::Undo,
         Command::Redo,
+        Command::Diff,
     ];
 
     /// The command's name, as requests and tools give it.
@@ -204,6 +207,7 @@ impl Command {
             Command::SketchJoin => "sketch_join",
             Command::Undo => "undo",
             Command::Redo => "redo",
+            Command::Diff => "diff",
         }
     }
 
@@ -264,7 +268,8 @@ impl Command {
             | Command::SketchExtend
             | Command::SketchJoin
             | Command::Undo
-            | Command::Redo => false,
+            | Command::Redo
+            | Command::Diff => false,
         }
     }
 }
@@ -487,6 +492,17 @@ fn rendered(response: Response<Rendering>) -> Answered {
 /// its refusal naming the field that makes it (`wire::meshes`).
 fn meshed(response: Response<MeshesRead>) -> Answered {
     let (ok, text) = wire::meshes::answer_text(&response, Layout::OneLine);
+    Answered {
+        ok,
+        text,
+        png: None,
+    }
+}
+
+/// `diff`'s response as [`Answered`]: its envelope, or, past the bytes a response may be,
+/// its refusal saying the limit and the size (`wire::reads`).
+fn diffed(response: Response<DiffAnswer>) -> Answered {
+    let (ok, text) = wire::reads::diff_answer_text(&response, Layout::OneLine);
     Answered {
         ok,
         text,
@@ -762,6 +778,10 @@ impl<P: Clients + 'static> Sessions<P> {
             Command::Redo => typed(named, StepRequest::read(request), |r| {
                 self.redo(&r.session, r.revision, r.to)
             }),
+            Command::Diff => match DiffRequest::read(request) {
+                Ok(r) => Calling::waiting(self.diff(&r.session, r.from, r.to), diffed),
+                Err(problems) => Calling::refused(named, problems),
+            },
         }
     }
 }

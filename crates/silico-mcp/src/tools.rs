@@ -152,6 +152,7 @@ fn effect(command: Command) -> Effect {
         | Command::ReadLogs
         | Command::Text
         | Command::Outline
+        | Command::Diff
         | Command::Check
         | Command::Elements
         | Command::Query
@@ -336,6 +337,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Outline",
             "The document's outline, one line a feature with its values, as `silico show` prints it.",
         ),
+        Command::Diff => (
+            "Changes between revisions",
+            "What changed between two revisions the session holds (`null` for the document now): each feature added, removed, or moved (`field` null, `before` and `after` its place in the timeline), and each field that changed, by the path `set_field` names it by, with its value before and after. A change set_field accepts is applied by set_field with its feature, field, and after; set_field doesn't accept fingerprint fields; `type`, `id`, or `v` (or, with a feature's `type`, a field its new type brings or takes away); a member only one side has below the feature's top level (a sketch member added or removed, an item added to or removed from a list by place), but for a sketch angle's `reversed`; or an extent's or a constraint's `type` changed to one that takes other fields. The session holds its revision now, the one its last reload replaced, and inside a transaction the one it began at: after a response that says `reloaded`, diff from the revision you last saw to `null` to learn what changed outside the session.",
+        ),
         Command::Timeline => (
             "Timeline",
             "The document's features in timeline order, structured: each one's ID, type, name, inputs, and health (healthy, warning, error, suppressed, or unknown) from the model named, with how many problems and warnings it has (`check` gives their text); and the bodies. A document the gate refuses is listed too, every health unknown.",
@@ -428,6 +433,7 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::Format
         | Command::Text
         | Command::Outline
+        | Command::Diff
         | Command::Schema
         | Command::CacheClear
         | Command::Export

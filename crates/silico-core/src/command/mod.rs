@@ -37,13 +37,13 @@ pub mod wire;
 
 pub use call::{Answered, Call, Calling, Command};
 pub use session::{
-    Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, DragBegun,
-    DragEnded, DragFrame, DragGrab, DragOpen, ExtendBy, FieldSet, FrameEnd, MAX_PUBLISHED_READS,
-    MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, NewMembers, Opened, OutlineAnswer,
-    Progress, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced,
-    Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, SketchCut,
-    SketchEdited, SketchJoined, Status, Stepped, Stopper, Suppressed, TOO_LONG, TextAnswer,
-    TimelineAnswer, Transaction, TryAgainBy, fault_suggestion,
+    Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, DiffAnswer,
+    DragBegun, DragEnded, DragFrame, DragGrab, DragOpen, ExtendBy, FieldSet, FrameEnd,
+    MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, NewMembers,
+    Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
+    Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
+    SessionInfo, Sessions, SketchCut, SketchEdited, SketchJoined, Status, Stepped, Stopper,
+    Suppressed, TOO_LONG, TextAnswer, TimelineAnswer, Transaction, TryAgainBy, fault_suggestion,
 };
 pub use session_command::{Cancellable, ReadCommand, RunningCommand, SessionCommand};
 

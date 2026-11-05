@@ -51,6 +51,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             carried: Arc::new(BTreeSet::new()),
             transaction: None,
             last_reload: None,
+            reloaded_over: None,
         }),
         queue: Mutex::new(Some(sender)),
         rebuilds: Mutex::new(Rebuilds {
@@ -4202,6 +4203,11 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         SessionCommand::Redo,
         Box::new(|| erased(s.redo(at, Revision::OPENED, None))),
     ));
+    // `diff`, Fable's of 2026-11-04, last.
+    queued.push((
+        SessionCommand::Diff,
+        Box::new(|| erased(s.diff(at, None, None))),
+    ));
     // M5.3's queued drag commands, after `timeline`, as the design lists them: `drag_move`
     // runs beside the queue, on the drag, and its cancel is the drag's tests'.
     let after_timeline = queued
@@ -4638,6 +4644,40 @@ mod cancel_rebuild;
 mod disk_reload;
 mod drag;
 mod rebuild_features;
+#[test]
+fn a_diff_cancelled_as_it_compares_a_feature_stops_there_and_answers_cancelled() {
+    // Held at the gate as it starts, let through, and held again as it comes to compare its
+    // first feature (`diff`'s stop is asked there, the gate first): cancelled there, it
+    // compares no other. Of two features, so a diff that went on past its stop would come
+    // to the second, saying so on `started`.
+    let f = opened(BOX_AND_PIN);
+    let (started, was_started) = mpsc::channel();
+    let (through, wait) = mpsc::channel();
+    f.session().gate.shut(started, wait);
+    let running = f.sessions.diff(&f.id, None, None);
+    // The command's start, then its first feature.
+    was_started.recv_timeout(WAIT).unwrap();
+    through.send(()).unwrap();
+    was_started.recv_timeout(WAIT).unwrap();
+    assert!(
+        f.sessions
+            .cancel(&f.id, SessionCommand::Diff)
+            .result
+            .unwrap()
+            .stopped
+    );
+    // Every wait at the gate from here let through at once.
+    drop(through);
+    let response = running.wait();
+    assert_eq!(response.result.unwrap_err().errors(), [cancelled("diff")]);
+    // Answered once its work ended: nothing came to the gate after the first feature.
+    assert_eq!(was_started.try_iter().count(), 0);
+    // And the next diff runs whole.
+    *lock(&f.session().gate.0) = None;
+    let next = f.sessions.diff(&f.id, None, None).wait().result.unwrap();
+    assert_eq!(next.changes, []);
+}
+
 mod timeline;
 mod undo;
 mod undo_adversarial;

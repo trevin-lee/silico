@@ -261,6 +261,7 @@
           "sketch_join",
           "undo",
           "redo",
+          "diff",
           "reload"
         ],
         "type": "string"
