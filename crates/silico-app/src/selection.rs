@@ -2608,7 +2608,7 @@ mod tests {
     }
 
     /// A body numbered 1, of `k7f2qx3m`, its mesh's three faces and three edges named as
-    /// the box's (`k7f2qx3m.box.Face1`, ...), each stable.
+    /// the box's (`k7f2qx3m.box.Face1`, ...), each stable, and no vertices.
     fn named_body() -> BTreeMap<u32, ViewBody> {
         let element = |kind, index| silico_core::command::meshes::MeshElement {
             name: named("k7f2qx3m", ElementRef { kind, index }),
@@ -2631,9 +2631,11 @@ mod tests {
                 valid: None,
                 edge_points: Vec::new(),
                 edge_point_counts: Vec::new(),
+                vertex_points: Vec::new(),
             }),
             faces: (1..=3).map(|n| element(ElementKind::Face, n)).collect(),
             edges: (1..=3).map(|n| element(ElementKind::Edge, n)).collect(),
+            vertices: Vec::new(),
         };
         BTreeMap::from([(1, body)])
     }
