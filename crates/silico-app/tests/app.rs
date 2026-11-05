@@ -21159,7 +21159,8 @@ fn a_fillet_dialog_refuses_an_unstable_selected_name_saying_why_and_writes_nothi
             ..
         } => Some(silico_protocol::Reply::Built(
             silico_core::kernel::BuiltData {
-                shape: base.clone(),
+                // A box a mm³ larger than the base, so the fuse changes it (S7's rule).
+                shape: FakeKernel::resized(base, 1.0)?,
                 history: numbering_fuse(),
             },
         )),
