@@ -17926,10 +17926,8 @@ fn the_browser_scrolls_to_a_picked_faces_body_row_and_to_no_other() {
     answering(&record, Some((first, Face(3), centre)), None);
     click_canvas(&mut h, at, false);
     selected_until(&mut h, &["b0000001.box.Face3"]);
-    for _ in 0..10 {
-        step(&mut h);
-    }
-    assert!(row_shown(&h, "Body01"));
+    // Scrolled back as the browser's scroll eases, on state, not a count of frames.
+    step_until(&mut h, "the first row shown", |h| row_shown(h, "Body01"));
     assert!(!row_shown(&h, "Body40"));
     assert_eq!(never_waits::waits(), 0);
 }
