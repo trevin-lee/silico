@@ -1159,8 +1159,8 @@ fn the_close_questions_save_writes_the_edit_then_closes() {
 
 #[test]
 fn a_save_and_close_saves_every_edit_made_before_it_even_one_still_waiting() {
-    // "Bl", then "Blo" while "Bl" waits behind a held command: the save waits for both, so
-    // the file holds "Blo", and the close comes after.
+    // "Blockxl", then "Blockxlo" while "Blockxl" waits behind a held command: the save waits
+    // for both, so the file holds "Blockxlo", and the close comes after.
     let f = fixture();
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
@@ -1171,13 +1171,11 @@ fn a_save_and_close_saves_every_edit_made_before_it_even_one_still_waiting() {
     });
     let (hold, check) = hold_queue(&f, &h, 0);
     // Two keystrokes while the queue is held: the first's edit in flight, the second's
-    // waiting. (Each keystroke goes after the last, "Blockxl" then "Blockxlo": the value
-    // it held last is what's asserted.)
+    // waiting.
     type_name(&mut h, "l");
-    let first = name_field(&h).value().unwrap();
+    assert_eq!(name_field(&h).value().as_deref(), Some("Blockxl"));
     type_name(&mut h, "o");
-    let last = name_field(&h).value().unwrap();
-    assert_ne!(first, last);
+    assert_eq!(name_field(&h).value().as_deref(), Some("Blockxlo"));
     h.get_by_label("Close example.silico").click();
     step_until(&mut h, "the question", |h| {
         anywhere(h, "Save changes to example.silico before closing?")
@@ -1192,7 +1190,7 @@ fn a_save_and_close_saves_every_edit_made_before_it_even_one_still_waiting() {
     hold.release();
     let _ = check.wait();
     step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
-    assert_eq!(names_in(&path), [last.as_str(), "Pin", "Hole"]);
+    assert_eq!(names_in(&path), ["Blockxlo", "Pin", "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -4611,6 +4609,10 @@ fn a_refused_values_mark_goes_with_its_dialog() {
     input(&h, "Radius").type_text("-");
     step(&mut h);
     settled(&mut h);
+    // "-2.5": a number, sent, and refused by the gate, said in the dialog as the core words it.
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("-2.5"));
+    let said = h.state().tabs()[0].message.clone().unwrap();
+    assert!(dialog(&h).query_by_label(&said).is_some(), "{said}");
     assert!(!ok_enabled(&h));
     // Nor is Enter OK.
     h.key_press(eframe::egui::Key::Enter);
@@ -4784,6 +4786,31 @@ fn edit_feature_of_a_revolve_about_a_sketch_line_keeps_that_axis() {
     // name in its box.
     assert!(chosen(&h, "Axis", "nc000000"));
     assert!(!chosen(&h, "Axis", "Y axis"));
+    // And the Y axis offered beside it: a segmented control's button (`chosen` finds it), or
+    // an entry in the drop-down's menu, opened and closed again.
+    if dialog(&h)
+        .query_by_role_and_label(Role::ComboBox, "Axis")
+        .is_some()
+    {
+        dialog(&h)
+            .get_by_role_and_label(Role::ComboBox, "Axis")
+            .click();
+        step_until(&mut h, "the drop-down's menu", |h| {
+            h.query_all_by_role_and_label(Role::Button, "Y axis")
+                .count()
+                == 1
+        });
+        step(&mut h);
+        dialog(&h)
+            .get_by_role_and_label(Role::ComboBox, "Axis")
+            .click();
+        step_until(&mut h, "the drop-down's menu closed", |h| {
+            h.query_all_by_role_and_label(Role::Button, "Y axis")
+                .count()
+                == 0
+        });
+        assert!(chosen(&h, "Axis", "nc000000"));
+    }
     assert!(chosen(&h, "Extent", "Symmetric"));
     assert_eq!(input(&h, "Angle").value().as_deref(), Some("90"));
     assert!(dialog(&h).query_by_label("Triangle").is_some());
@@ -4921,13 +4948,13 @@ fn a_name_typed_after_a_dialog_opened_is_its_cancels_to_undo_never_before_it() {
     });
     let typed = text_of(&f, &h);
     let name = names_of(&typed)[1].clone();
-    assert_eq!(name.len(), "Pinabc".len(), "{name}");
+    assert_eq!(name, "Pinabc");
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     // Undone back to the two letters typed before the dialog.
     let kept = names_of(&text_of(&f, &h))[1].clone();
-    assert_eq!(kept.len(), "Pinab".len(), "{kept}");
+    assert_eq!(kept, "Pinab");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -5120,7 +5147,7 @@ fn a_reload_under_a_new_sweeps_dialog_opens_it_at_the_reloaded_revision() {
     let (mut h, path) = f.opened("sketched.silico", SKETCHED);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
     let sketched = text_of(&f, &h);
-    // A KPlate typed first, saved: a transaction with something before the dialog is
+    // A PlateK typed first, saved: a transaction with something before the dialog is
     // then the reload's to make, not the dialog's.
     select(&mut h, "Plate");
     type_name(&mut h, "K");
