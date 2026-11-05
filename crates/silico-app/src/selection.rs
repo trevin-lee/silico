@@ -243,13 +243,23 @@ impl Filter {
 /// An element a click toggled in the selection while a dialog's box took the canvas's
 /// picks ([`Selection::take_into`]): whether it was added or let go, the name the
 /// selection holds it by, what a store writes for it or why it can't (as
-/// [`Selection::storable`] says it), and the body it's in, if it's found.
+/// [`Selection::storable`] says it), the body it's in, and its kind, if it's found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Toggled {
     pub added: bool,
     pub name: String,
     pub stored: Result<Arc<Name>, Error>,
     pub body: Option<FeatureId>,
+    pub kind: Option<ElementKind>,
+}
+
+/// A name picked on the published model, read in one feature's solid alone
+/// ([`Selection::read_on`]): found there, what a store writes for it or why it can't; or
+/// not there.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OnBase {
+    Found(Result<Arc<Name>, Error>),
+    Missing,
 }
 
 /// What [`Selection::keep_only`] let go of: how many elements of each kind, and how many
@@ -493,6 +503,54 @@ impl Selection {
             self.set(items);
         }
         left
+    }
+
+    /// `name`, picked on the published model, read in the feature `feature`'s solid alone
+    /// (the core's `resolve_in`), as SolidWorks reads a feature's picks on the model rolled
+    /// back to before it: found there, what a store writes for it (its stable name in that
+    /// solid) or why it can't (unstable there; that solid's elements not named yet; no
+    /// model; `feature` with no solid); or [`OnBase::Missing`], not in that solid. Names no
+    /// element map and waits for none: the UI's thread calls it.
+    pub fn read_on(&self, name: &str, feature: &FeatureId) -> OnBase {
+        let Some(model) = &self.model else {
+            return OnBase::Found(Err(Error::new(
+                ErrorCode::Conflict,
+                format!("{name} isn't answered yet: no model is built yet"),
+            )
+            .with_element(name)
+            .with_suggestion("select it again once the model has rebuilt")));
+        };
+        match rules::resolve_in(model, &[name], PARAMETER, feature) {
+            Err(error) => OnBase::Found(Err(error)),
+            Ok(answer) => match answer.kept.into_iter().next() {
+                Some(found) => OnBase::Found(found.stored),
+                None if !answer.pending.is_empty() => OnBase::Found(Err(Error::new(
+                    ErrorCode::Conflict,
+                    format!("{name} isn't answered yet: {feature}'s elements aren't named yet"),
+                )
+                .with_element(name)
+                .with_suggestion("select it again once the model has rebuilt"))),
+                None => OnBase::Missing,
+            },
+        }
+    }
+
+    /// Its items as they are, to put back later ([`restore`](Self::restore)).
+    pub fn saved(&self) -> Vec<Item> {
+        self.items.clone()
+    }
+
+    /// `items`, saved before ([`saved`](Self::saved)), put back as they were (a dialog's
+    /// Cancel, as SolidWorks returns to the selection its command started with), a click
+    /// waiting let go: each as it was found, read again once the next model is published,
+    /// not against the one published now (a dialog's preview, which may have consumed
+    /// them; the Cancel's undo publishes the model they were found in again).
+    pub fn restore(&mut self, items: Vec<Item>) {
+        if items != self.items {
+            self.set(items);
+        }
+        self.said = None;
+        self.click = None;
     }
 
     /// The element held by `name` let go: by the name the selection holds it by, or the
@@ -1305,6 +1363,7 @@ fn toggled(added: bool, place: usize, picked: &Picked) -> Toggled {
         name: picked.name.clone(),
         stored: stored(place, picked),
         body: picked.found().map(|selected| selected.feature.clone()),
+        kind: picked.found().map(Selected::kind),
     }
 }
 
@@ -2414,6 +2473,112 @@ mod tests {
         selection.take_into(None);
         assert!(selection.take_toggled().is_empty());
         assert_eq!(selection.picks(), Filter::default());
+    }
+
+    /// A body numbered 1, of `k7f2qx3m`, its mesh's three faces and three edges named as
+    /// the box's (`k7f2qx3m.box.Face1`, ...), each stable.
+    fn named_body() -> BTreeMap<u32, ViewBody> {
+        let element = |kind, index| silico_core::command::meshes::MeshElement {
+            name: named("k7f2qx3m", ElementRef { kind, index }),
+            stable: true,
+            count: None,
+        };
+        let body = ViewBody {
+            feature: fid("k7f2qx3m"),
+            key: silico_core::recompute::Key::parse(&"01".repeat(32)).unwrap(),
+            level: 0.1,
+            deflection: 0.1,
+            bounds: None,
+            serves: [0.1, 0.2],
+            held: false,
+            mesh: Arc::new(silico_protocol::Mesh {
+                positions: Vec::new(),
+                normals: Vec::new(),
+                triangles: Vec::new(),
+                face_triangles: Vec::new(),
+                valid: None,
+                edge_points: Vec::new(),
+                edge_point_counts: Vec::new(),
+            }),
+            faces: (1..=3).map(|n| element(ElementKind::Face, n)).collect(),
+            edges: (1..=3).map(|n| element(ElementKind::Edge, n)).collect(),
+        };
+        BTreeMap::from([(1, body)])
+    }
+
+    #[test]
+    fn while_a_box_takes_edges_a_face_under_the_pointer_isnt_picked_and_an_edge_is() {
+        let bodies = named_body();
+        let rect = square([50.0, 50.0], [100, 100], 3);
+        let pick = |hit, pixel| crate::renderer::Pick {
+            body: 1,
+            hit,
+            pixel,
+            point: None,
+        };
+        let face = Picking {
+            frame: 1,
+            rect,
+            hit: Some(pick(Element::Face(3), centre_of(rect))),
+            edge: None,
+        };
+        let under = |selection: &Selection, picking: &Picking| {
+            selection
+                .under(picking, &bodies)
+                .map(|(body, element, name, _)| (body, element, name.to_string()))
+        };
+        let mut selection = Selection::default();
+        // No box: the face at the centre.
+        assert_eq!(
+            under(&selection, &face),
+            Some((1, Element::Face(3), "k7f2qx3m.box.Face3".to_owned()))
+        );
+        // A box of edges: nothing, though the filter takes faces.
+        selection.take_into(Some(Filter {
+            faces: false,
+            edges: true,
+            vertices: false,
+        }));
+        assert!(selection.filter.faces);
+        assert_eq!(under(&selection, &face), None);
+        // An edge in the square: picked.
+        let edge = Picking {
+            edge: Some(pick(Element::Edge(2), [49, 50])),
+            ..face
+        };
+        assert_eq!(
+            under(&selection, &edge),
+            Some((1, Element::Edge(2), "k7f2qx3m.box.Edge2".to_owned()))
+        );
+        // The box closed: the face again.
+        selection.take_into(None);
+        assert_eq!(
+            under(&selection, &face),
+            Some((1, Element::Face(3), "k7f2qx3m.box.Face3".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_selection_restored_is_as_it_was_saved_its_waiting_click_let_go() {
+        let mut selection = Selection::default();
+        selection.published(Some((fused(1, 2), Revision::from_number(1).unwrap())), 1);
+        selection.pick("aaaaaaaa.box.Face3", How::Replace);
+        selection.pick("aaaaaaaa.box.Face2", How::Toggle);
+        let saved = selection.saved();
+        let version = selection.version;
+        selection.clear();
+        selection.pick("aaaaaaaa.box.Face4", How::Replace);
+        selection.click = Some(waiting_click(Instant::now(), None));
+        selection.said = Some("said".to_owned());
+        selection.restore(saved.clone());
+        assert_eq!(selection.items(), saved.as_slice());
+        assert_eq!(
+            selection.names(),
+            ["aaaaaaaa.box.Face3", "aaaaaaaa.box.Face2"]
+        );
+        assert!(selection.version != version);
+        assert_eq!(selection.click, None);
+        assert_eq!(selection.said(), None);
     }
 
     #[test]

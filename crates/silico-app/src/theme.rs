@@ -1197,6 +1197,10 @@ pub const SELECTION_BOX_CLEAR_SIDE: f32 = 18.0;
 /// refusal, in `--red`.
 pub const SELECTION_BOX_SAID: Color32 = ERROR_TEXT;
 
+/// A box of names' note under its names (what of the selection it left out), nothing
+/// wrong: the prototype's subdued text (`.subdued`, `--g550`).
+pub const SELECTION_BOX_NOTE: Color32 = TEXT_SUBDUED;
+
 /// A choice of a few (`.seg`): its fill (Gray.200), padding and gap 1; each choice 20 high,
 /// corners 3, its text Gray.550 (white hovered), the one chosen Gray.350 with white text.
 pub const SEGMENTED_BG: Color32 = FIELD_BG;

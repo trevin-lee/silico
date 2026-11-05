@@ -670,13 +670,14 @@ pub(crate) fn listed(
 }
 
 /// What a selection box says under it (`renderDialog`'s `.err-text`, 11 px, in a row whose
-/// key is empty): `text`, wrapped, in [`theme::SELECTION_BOX_SAID`].
-pub(crate) fn said(ui: &mut Ui, text: &str) {
+/// key is empty): `text`, wrapped, in `ink` ([`theme::SELECTION_BOX_SAID`] for a refusal,
+/// [`theme::SELECTION_BOX_NOTE`] for a note).
+pub(crate) fn said(ui: &mut Ui, text: &str, ink: Color32) {
     let job = LayoutJob::single_section(
         text.to_owned(),
         TextFormat {
             line_height: Some(theme::BODY_LINE_HEIGHT),
-            ..format(theme::HEADER_SIZE, theme::SELECTION_BOX_SAID, false)
+            ..format(theme::HEADER_SIZE, ink, false)
         },
     );
     let left = pad() + theme::PROPERTY_KEY_WIDTH + theme::PROPERTY_ROW_GAP;

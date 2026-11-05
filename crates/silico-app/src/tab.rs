@@ -24,13 +24,17 @@ use crate::changes::{self, Changes};
 use crate::dialog::{Dialog, Kind, feature_node};
 
 /// What a feature's mark says: its first problem's (or warning's) message, its cause and
-/// the elements it names, if it has them, and its suggestion, from a `check` of the model
-/// the timeline's marks came from.
+/// the elements it names, if it has them, and how many elements are at fault in all (more
+/// than it names where there are too many to list, ARCHITECTURE.md's invariant 9), and its
+/// suggestion, from a `check` of the model the timeline's marks came from; and whether it's
+/// a warning's.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Said {
+    pub warning: bool,
     pub message: String,
     pub cause: Option<String>,
     pub elements: Vec<String>,
+    pub elements_total: u64,
     pub suggestion: Option<String>,
 }
 
@@ -38,11 +42,44 @@ impl Said {
     /// What `error` says.
     pub fn of(error: &silico_core::Error) -> Self {
         Said {
+            warning: false,
             message: error.message().to_owned(),
             cause: error.cause().map(str::to_owned),
             elements: error.elements().to_vec(),
+            elements_total: error.elements_total(),
             suggestion: error.suggestion().map(str::to_owned),
         }
+    }
+
+    /// What `warning` says.
+    pub fn of_warning(warning: &silico_core::Warning) -> Self {
+        Said {
+            warning: true,
+            message: warning.message().to_owned(),
+            cause: warning.cause().map(str::to_owned),
+            elements: warning.elements().to_vec(),
+            elements_total: warning.elements_total(),
+            suggestion: warning.suggestion().map(str::to_owned),
+        }
+    }
+
+    /// Its elements as the card lists them: each it names, and, where it names fewer than
+    /// are at fault, how many in all ("Edge1, Edge2 (the first 2 of 150)"); none if it
+    /// names none.
+    pub fn elements_line(&self) -> Option<String> {
+        if self.elements.is_empty() {
+            return None;
+        }
+        let listed = self.elements.join(", ");
+        let named = self.elements.len() as u64;
+        Some(if self.elements_total > named {
+            format!(
+                "Elements: {listed} (the first {named} of {})",
+                self.elements_total
+            )
+        } else {
+            format!("Elements: {listed}")
+        })
     }
 }
 
@@ -520,6 +557,13 @@ pub struct Tab {
     /// and whether no transaction was open then (its own edits begin it).
     dialog_base: Option<Revision>,
     dialog_began: bool,
+    /// The selection as it was before the open dialog's box of names took it, put back if
+    /// the dialog is cancelled, as SolidWorks returns to the selection its command started
+    /// with.
+    before_dialog: Option<Vec<crate::selection::Item>>,
+    /// The last dialog OK'd, for the window to remember its values ([`take_oked`]
+    /// (Self::take_oked), [`crate::dialog::Remembered`]).
+    oked: Option<Dialog>,
     /// The dialogs' edits OK'd in this transaction, each one step for undo and redo.
     groups: Vec<Group>,
     /// Each revision an undo or a redo came to, and the first revision of the state it
@@ -648,6 +692,8 @@ impl Tab {
             loading: None,
             dialog_base: None,
             dialog_began: false,
+            before_dialog: None,
+            oked: None,
             groups: Vec::new(),
             restored: BTreeMap::new(),
             refused: std::collections::BTreeSet::new(),
@@ -724,16 +770,34 @@ impl Tab {
     }
 
     /// What clicks toggled in the selection while the dialog's box of names took the
-    /// canvas's picks, taken into the box (`Dialog::toggled`); each it refused let go from
-    /// the selection again, so the canvas shows what the box holds. Whether any was.
+    /// canvas's picks, taken into the box (`Dialog::toggled`): a pick on the body the
+    /// dialog's feature is built into read against the box's base (the timeline's chains say
+    /// which bodies are, [`built_through`]); each the box refused, or removed as the click
+    /// added it to the selection, let go from the selection again, so the canvas shows what
+    /// the box holds. Whether any was.
     fn box_toggled(&mut self) -> bool {
+        use crate::dialog::Taken;
         let toggled = self.selection.take_toggled();
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
         };
+        let entries = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
+        let own = dialog.feature.clone();
         for toggled in &toggled {
-            if dialog.toggled(toggled) == crate::dialog::Taken::Refused {
-                self.selection.let_go(&toggled.name);
+            let through_own = match (&own, &toggled.body) {
+                (Some(own), Some(body)) => built_through(entries, body, own),
+                _ => false,
+            };
+            let selection = &self.selection;
+            let on_base = |base: &FeatureId| selection.read_on(&toggled.name, base);
+            match dialog.toggled(toggled, through_own, &on_base) {
+                Taken::Refused => self.selection.let_go(&toggled.name),
+                Taken::Removed if toggled.added => self.selection.let_go(&toggled.name),
+                Taken::Added | Taken::Removed | Taken::Ignored => {}
             }
         }
         !toggled.is_empty()
@@ -1503,6 +1567,7 @@ impl Tab {
                                 // (the feature, as Edit Feature selected it) let go, so the
                                 // canvas shows what the box takes from it.
                                 if let Some(kinds) = dialog.takes() {
+                                    self.before_dialog = Some(self.selection.saved());
                                     self.selection.clear();
                                     self.selection.take_into(Some(kinds));
                                 }
@@ -2591,10 +2656,16 @@ impl Tab {
             && (!(kind.cuts() || kind.dresses()) || self.tip().is_some())
     }
 
-    /// A new feature's dialog opened (section 9): its inputs at their defaults, a sweep's
-    /// sketch the one selected if it's one, and its body the tip. Its feature is added as
-    /// soon as its inputs are valid.
-    pub fn open_dialog<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, kind: Kind) {
+    /// A new feature's dialog opened (section 9): its inputs at their defaults, or those its
+    /// kind was last OK'd with, if it remembers them (`remembered`); a sweep's sketch the one
+    /// selected if it's one, and its body the tip. Its feature is added as soon as its
+    /// inputs are valid.
+    pub fn open_dialog<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        kind: Kind,
+        remembered: &crate::dialog::Remembered,
+    ) {
         if !self.can_open(kind) {
             return;
         }
@@ -2605,7 +2676,9 @@ impl Tab {
             .cloned()
             .filter(|id| self.is_sketch(id));
         let mut dialog = Dialog::new(kind, sketch, serial);
+        remembered.apply(&mut dialog);
         if let Some(kinds) = dialog.takes() {
+            self.before_dialog = Some(self.selection.saved());
             self.take_selection(&mut dialog, kinds);
         }
         self.dialog = Some(dialog);
@@ -2647,6 +2720,7 @@ impl Tab {
     fn opening(&mut self) -> u64 {
         self.message = None;
         self.refused.clear();
+        self.before_dialog = None;
         self.dialogs += 1;
         self.edits.queue.push_back(Queued::Opened);
         self.dialogs
@@ -2770,15 +2844,33 @@ impl Tab {
     /// back to the revision it opened at (`undo` with `to`, so edits made before it stay;
     /// rolled back if its own edits began the transaction). Neither while the tab closes:
     /// what it sent would come after the close.
+    ///
+    /// The selection the dialog's box of names took is put back as it was before by Cancel
+    /// (read again once the Cancel's model is published), and left as the box holds it by
+    /// OK. The dialog OK'd is kept for the window to remember its values
+    /// ([`take_oked`](Self::take_oked)).
     pub fn close_dialog<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, ok: bool) {
         if self.closing() {
             return;
         }
-        if self.dialog.take().is_none() && self.loading.take().is_none() {
+        let closed = self.dialog.take();
+        if closed.is_none() && self.loading.take().is_none() {
             return;
+        }
+        let before = self.before_dialog.take();
+        if ok {
+            self.oked = closed;
+        } else if let Some(items) = before {
+            self.selection.restore(items);
         }
         self.edits.queue.push_back(Queued::Closed { ok });
         self.advance(sessions);
+    }
+
+    /// The last dialog OK'd since this was last asked, if one was: the window remembers its
+    /// values for the next of its kind.
+    pub fn take_oked(&mut self) -> Option<Dialog> {
+        self.oked.take()
     }
 
     /// Whether a dialog is open, or its feature is being read for one.
@@ -2902,16 +2994,34 @@ impl Tab {
             if let Some(feature) = warning.feature() {
                 by_feature
                     .entry(feature.to_owned())
-                    .or_insert_with(|| Said {
-                        message: warning.message().to_owned(),
-                        suggestion: warning.suggestion().map(str::to_owned),
-                        ..Said::default()
-                    });
+                    .or_insert_with(|| Said::of_warning(warning));
             }
         }
         self.said = by_feature;
         self.document_problems = document;
     }
+}
+
+/// Whether the solid of `body` is built through the feature `own`'s, as `entries` (the
+/// timeline, in order) chain them: `body` is `own`, or one of its inputs is built through
+/// it, followed back input by input. A fillet whose dialog is open is built into each body
+/// this holds for, so a pick on one is read against the fillet's base.
+fn built_through(entries: &[Entry], body: &FeatureId, own: &FeatureId) -> bool {
+    let inputs: BTreeMap<&FeatureId, &[FeatureId]> = entries
+        .iter()
+        .map(|entry| (&entry.id, entry.inputs.as_slice()))
+        .collect();
+    let mut seen: std::collections::BTreeSet<&FeatureId> = std::collections::BTreeSet::new();
+    let mut stack = vec![body];
+    while let Some(at) = stack.pop() {
+        if at == own {
+            return true;
+        }
+        if seen.insert(at) {
+            stack.extend(inputs.get(at).copied().unwrap_or_default());
+        }
+    }
+    false
 }
 
 /// The body a new sweep builds on, as FreeCAD's PartDesign takes its body's tip, from a
@@ -3123,6 +3233,102 @@ mod tests {
         );
         tab.transaction = true;
         tab
+    }
+
+    #[test]
+    fn a_check_says_a_warnings_cause_and_elements_and_how_many_an_error_has_past_those_listed() {
+        // An error listing 2 of its 150 elements, and a warning with its cause and 1 of its
+        // 3: each kept whole for its feature's card, the warning marked as one, and each
+        // card's Elements line saying how many there are past those listed (invariant 9).
+        let error = silico_core::Error::new(silico_core::ErrorCode::KernelFailed, "Fillet failed")
+            .with_feature("f0000001")
+            .with_cause("OCCT couldn't fillet Edge1")
+            .with_elements(["Edge1", "Edge2"])
+            .with_elements_total(150)
+            .with_suggestion("try a smaller radius");
+        let warning = silico_core::Warning::new(
+            silico_core::WarningCode::EndsNotJoined,
+            "Two ends aren't joined",
+        )
+        .with_feature("s0000001")
+        .with_cause("the ends are 1e-8 mm apart")
+        .with_elements(["pa000001"])
+        .with_elements_total(3)
+        .with_suggestion("join them");
+        let mut tab = tab();
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(error),
+                warnings: silico_core::warnings::Warnings::of([warning]),
+            },
+            false,
+        );
+        let fillet = Said {
+            warning: false,
+            message: "Fillet failed".to_owned(),
+            cause: Some("OCCT couldn't fillet Edge1".to_owned()),
+            elements: vec!["Edge1".to_owned(), "Edge2".to_owned()],
+            elements_total: 150,
+            suggestion: Some("try a smaller radius".to_owned()),
+        };
+        assert_eq!(tab.said.get("f0000001"), Some(&fillet));
+        assert_eq!(
+            fillet.elements_line().as_deref(),
+            Some("Elements: Edge1, Edge2 (the first 2 of 150)")
+        );
+        let sketch = Said {
+            warning: true,
+            message: "Two ends aren't joined".to_owned(),
+            cause: Some("the ends are 1e-8 mm apart".to_owned()),
+            elements: vec!["pa000001".to_owned()],
+            elements_total: 3,
+            suggestion: Some("join them".to_owned()),
+        };
+        assert_eq!(tab.said.get("s0000001"), Some(&sketch));
+        assert_eq!(
+            sketch.elements_line().as_deref(),
+            Some("Elements: pa000001 (the first 1 of 3)")
+        );
+        // All listed: no count; none: no line.
+        let all = Said {
+            elements_total: 2,
+            ..fillet.clone()
+        };
+        assert_eq!(
+            all.elements_line().as_deref(),
+            Some("Elements: Edge1, Edge2")
+        );
+        assert_eq!(Said::default().elements_line(), None);
+    }
+
+    #[test]
+    fn a_body_is_built_through_a_feature_its_inputs_reach_back_to() {
+        // A box, a fillet of it, a second box, and a fuse of the fillet with the second box;
+        // and a body of its own. The fuse is built through the fillet and both boxes; the
+        // fillet through itself; the lone body through none of them.
+        let id = |id: &str| FeatureId::new(id).unwrap();
+        let with = |at: &str, inputs: &[&str]| Entry {
+            inputs: inputs.iter().map(|input| id(input)).collect(),
+            ..entry(at, 0, 0)
+        };
+        let entries = [
+            with("a0000001", &[]),
+            with("f0000001", &["a0000001"]),
+            with("b0000001", &[]),
+            with("r0000001", &["f0000001", "b0000001"]),
+            with("c0000001", &[]),
+        ];
+        let through = |body: &str, own: &str| built_through(&entries, &id(body), &id(own));
+        assert!(through("r0000001", "f0000001"));
+        assert!(through("r0000001", "a0000001"));
+        assert!(through("r0000001", "b0000001"));
+        assert!(through("f0000001", "f0000001"));
+        assert!(!through("f0000001", "r0000001"));
+        assert!(!through("c0000001", "f0000001"));
+        assert!(!through("b0000001", "f0000001"));
+        // A feature the timeline doesn't list yet (a new one's, before its read): itself.
+        assert!(through("n0000001", "n0000001"));
+        assert!(!through("n0000001", "f0000001"));
     }
 
     #[test]

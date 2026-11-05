@@ -25,12 +25,12 @@ use silico_protocol::ElementKind;
 
 use crate::icons::Icon;
 use crate::properties;
-use crate::selection::{Filter, Toggled};
+use crate::selection::{Filter, OnBase, Toggled};
 use crate::shortcuts::Command;
 use crate::theme::{self, FieldKind};
 
 /// The features a dialog makes or edits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
     Box,
     Cylinder,
@@ -119,6 +119,55 @@ impl Kind {
     pub fn dresses(self) -> bool {
         matches!(self, Kind::Fillet | Kind::Chamfer)
     }
+
+    /// Whether a new one's dialog opens with the values the last of its kind was OK'd with
+    /// ([`Remembered`]): the dressings', as SolidWorks' Fillet PropertyManager "remembers
+    /// its last used state" (docs/ux/solidworks.md, §5).
+    pub fn remembers(self) -> bool {
+        self.dresses()
+    }
+}
+
+/// The values each kind of dialog that remembers ([`Kind::remembers`]) was last OK'd with
+/// in the app's run, as SolidWorks' PropertyManager remembers its last used state for the
+/// session: each number its inputs held (a fillet's radius, a chamfer's distance), by the
+/// part of the feature it sets, as the document writes it. A new dialog of that kind opens
+/// with them ([`apply`](Self::apply)); Cancel leaves them, and Edit Feature shows the
+/// feature's own. Its elements aren't remembered: they're of the model they were picked on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Remembered(BTreeMap<Kind, Vec<(Part, String)>>);
+
+impl Remembered {
+    /// `dialog`'s numbers kept as its kind's, if its kind remembers: each that reads as one.
+    pub fn keep(&mut self, dialog: &Dialog) {
+        if !dialog.kind.remembers() {
+            return;
+        }
+        let values: Vec<(Part, String)> = dialog
+            .inputs
+            .iter()
+            .filter_map(|input| match &input.value {
+                Value::Length(text) | Value::Angle(text) => Some((input.part, number(text)?)),
+                _ => None,
+            })
+            .collect();
+        self.0.insert(dialog.kind, values);
+    }
+
+    /// A new `dialog`'s numbers set to those its kind was last OK'd with, if it was.
+    pub fn apply(&self, dialog: &mut Dialog) {
+        let Some(values) = self.0.get(&dialog.kind) else {
+            return;
+        };
+        for input in &mut dialog.inputs {
+            let Some((_, kept)) = values.iter().find(|(part, _)| *part == input.part) else {
+                continue;
+            };
+            if let Value::Length(text) | Value::Angle(text) = &mut input.value {
+                kept.clone_into(text);
+            }
+        }
+    }
 }
 
 /// The part of the feature an input sets: the field `set_field` sets, and where in it.
@@ -197,7 +246,32 @@ pub struct Names {
     pub of: &'static str,
     pub names: Vec<String>,
     pub body: Option<FeatureId>,
-    pub said: Option<String>,
+    pub said: Option<Says>,
+}
+
+/// What a box of names says under it: why it refused an element, in the error's red
+/// (`renderDialog`'s `.err-text`); or a note, what of the selection it opened with it left
+/// out, in the panel's subdued text (`.subdued`), since nothing is wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Says {
+    Refused(String),
+    Noted(String),
+}
+
+impl Says {
+    pub fn text(&self) -> &str {
+        match self {
+            Says::Refused(text) | Says::Noted(text) => text,
+        }
+    }
+
+    /// The colour it's said in.
+    pub fn ink(&self) -> egui::Color32 {
+        match self {
+            Says::Refused(_) => theme::SELECTION_BOX_SAID,
+            Says::Noted(_) => theme::SELECTION_BOX_NOTE,
+        }
+    }
 }
 
 impl Names {
@@ -399,8 +473,9 @@ impl Dialog {
                 ]
             }
             // Its edges, from the selection (a fillet in the core rounds edges alone: its
-            // `edges` are edges' names, `references`), and FreeCAD's PartDesign Fillet's
-            // radius, 1 mm (FeatureFillet.cpp).
+            // `edges` are edges' names, `references`), and its radius: the last OK'd
+            // ([`Remembered`]), or at first 1 mm, Silico's own choice (SolidWorks' help gives
+            // no first value, docs/ux/solidworks.md, §5).
             Kind::Fillet => vec![
                 Input {
                     label: "Edges",
@@ -411,8 +486,8 @@ impl Dialog {
             ],
             // Its edges, as a fillet's, and its size, as the document's chamfer takes it:
             // `{"distance": d}`, alike along both faces (`ChamferSize`; the protocol's two
-            // uneven forms need a reference face the document doesn't name yet). FreeCAD's
-            // PartDesign Chamfer's size, 1 mm (FeatureChamfer.cpp).
+            // uneven forms need a reference face the document doesn't name yet): the last
+            // OK'd, or at first 1 mm, as a fillet's radius.
             Kind::Chamfer => vec![
                 Input {
                     label: "Edges",
@@ -761,7 +836,7 @@ impl Dialog {
         let stored = match stored {
             Ok(stored) => stored,
             Err(refusal) => {
-                names.said = Some(words(&refusal));
+                names.said = Some(Says::Refused(words(&refusal)));
                 return;
             }
         };
@@ -772,88 +847,139 @@ impl Dialog {
             } else {
                 ""
             };
-            names.said = Some(format!(
+            names.said = Some(Says::Refused(format!(
                 "The selected {plural} are on {} bodies, {first} and {second}{others}: a {of} \
                  takes one body's {plural}",
                 bodies.len(),
-            ));
+            )));
             return;
         }
         names.names = stored.iter().map(ToString::to_string).collect();
         names.body = bodies.first().cloned();
-        names.said = left_out;
+        names.said = left_out.map(Says::Noted);
     }
 
     /// An element a click toggled in the selection while the dialog's box of names is
-    /// active, taken into the box: one the selection let go, let go of; one it added,
-    /// added, unless it can't be stored (its name unstable, or not answered yet: why, as a
-    /// store refuses it), it's made by the dialog's own feature (as its preview built it),
-    /// or it's on another body than the box's names (a feature builds on one); each refusal
-    /// said. An element of the dialog's own feature's body is of its base, as the preview
-    /// built it from there.
+    /// active, taken into the box: one the selection let go, let go of; one it added and the
+    /// box holds, let go of too (a click on a listed element removes it, whatever the
+    /// selection held, as SolidWorks' box takes a click); one it added, added, unless it's
+    /// of another kind than the box takes, it's made by the dialog's own feature, it can't
+    /// be stored (its name unstable, or not answered yet: why, as a store refuses it), or
+    /// it's on another body than the box's names (a feature builds on one); each refusal
+    /// said.
     ///
-    /// SEAM: SolidWorks rolls the model back to before the feature while its dialog is open,
-    /// so its edges are picked on its base. Here picks are read against the published model,
-    /// the feature built (an existing one's, under Edit Feature, or a new one's preview):
-    /// an edge the feature itself made is refused, as above, and one a later feature made is
-    /// left to the core's refusal, until the app can show the model rolled back.
-    pub fn toggled(&mut self, toggled: &Toggled) -> Taken {
+    /// A pick on the body the dialog's own feature is built into (`through_own`: that
+    /// feature's own body, or one built on it, as the tab's timeline chains them) is read
+    /// against the box's base, as SolidWorks reads a feature's picks on the model rolled back
+    /// to before it (`on_base`, [`Selection::read_on`](crate::selection::Selection::read_on)):
+    /// found there, it's the base's, stored by its name there; not there, it was added to the
+    /// body after the base (by the feature or a later one), refused, saying so. The base
+    /// stays the base, however many of the box's names are let go.
+    ///
+    /// SEAM: SolidWorks also draws the model rolled back while the dialog is open, so what
+    /// can't be picked isn't shown. Here the canvas draws the published model, the feature
+    /// built, and a pick of what the base hasn't is refused, until the app can show the
+    /// model rolled back.
+    pub fn toggled(
+        &mut self,
+        toggled: &Toggled,
+        through_own: bool,
+        on_base: &dyn Fn(&FeatureId) -> OnBase,
+    ) -> Taken {
         let own = self.feature.clone();
         let Some(names) = self.names_mut() else {
             return Taken::Ignored;
         };
+        // Read against the base, if it's a pick on the body the feature is built into.
+        let base = names.body.clone().filter(|_| through_own);
         if !toggled.added {
             let stored = toggled.stored.as_ref().ok().map(ToString::to_string);
+            let on_base = match base.as_ref().map(on_base) {
+                Some(OnBase::Found(Ok(stored))) => Some(stored.to_string()),
+                _ => None,
+            };
             let before = names.names.len();
-            names
-                .names
-                .retain(|name| *name != toggled.name && Some(name) != stored.as_ref());
+            names.names.retain(|name| {
+                *name != toggled.name
+                    && Some(name) != stored.as_ref()
+                    && Some(name) != on_base.as_ref()
+            });
             if names.names.len() == before {
                 return Taken::Ignored;
             }
             names.said = None;
             return Taken::Removed;
         }
-        let stored = match &toggled.stored {
-            Ok(stored) => stored,
-            Err(refusal) => {
-                names.said = Some(words(refusal));
-                return Taken::Refused;
-            }
+        let shown = match &toggled.stored {
+            Ok(stored) => stored.to_string(),
+            Err(_) => toggled.name.clone(),
         };
-        if let Some(own) = &own
+        if let Some(kind) = toggled.kind
+            && kind != names.takes
+        {
+            names.said = Some(Says::Refused(format!(
+                "{shown} is {}: a {} takes {}",
+                kind.a_word(),
+                names.of,
+                names.takes.plural()
+            )));
+            return Taken::Refused;
+        }
+        if let (Some(own), Ok(stored)) = (&own, &toggled.stored)
             && stored.features().contains(&own)
         {
-            names.said = Some(format!(
+            names.said = Some(Says::Refused(format!(
                 "{stored} is made by this {} itself: select one of the {} it's built on",
                 names.of,
                 names.takes.plural()
-            ));
+            )));
             return Taken::Refused;
         }
-        if let Some(body) = toggled
-            .body
-            .as_ref()
-            .filter(|body| Some(*body) != own.as_ref())
-        {
+        let read = base.map(|base| {
+            let read = on_base(&base);
+            (base, read)
+        });
+        let (stored, body) = match read {
+            Some((base, OnBase::Found(stored))) => (stored, Some(base)),
+            Some((base, OnBase::Missing)) => {
+                names.said = Some(Says::Refused(format!(
+                    "{shown} is added to the body after {base}, which this {} is built on: \
+                     select one of {base}'s {}",
+                    names.of,
+                    names.takes.plural()
+                )));
+                return Taken::Refused;
+            }
+            None => (toggled.stored.clone(), toggled.body.clone()),
+        };
+        let stored = match stored {
+            Ok(stored) => stored,
+            Err(refusal) => {
+                names.said = Some(Says::Refused(words(&refusal)));
+                return Taken::Refused;
+            }
+        };
+        let name = stored.to_string();
+        if names.names.contains(&name) {
+            names.names.retain(|held| *held != name);
+            names.said = None;
+            return Taken::Removed;
+        }
+        if let Some(body) = body.filter(|body| Some(body) != own.as_ref()) {
             match &names.body {
-                Some(held) if held != body && !names.names.is_empty() => {
-                    names.said = Some(format!(
+                Some(held) if *held != body && !names.names.is_empty() => {
+                    names.said = Some(Says::Refused(format!(
                         "{stored} is on {body}, and the {}'s other {} on {held}: a {} takes \
                          one body's {}",
                         names.of,
                         names.takes.plural(),
                         names.of,
                         names.takes.plural()
-                    ));
+                    )));
                     return Taken::Refused;
                 }
-                _ => names.body = Some(body.clone()),
+                _ => names.body = Some(body),
             }
-        }
-        let name = stored.to_string();
-        if names.names.contains(&name) {
-            return Taken::Ignored;
         }
         names.names.push(name);
         names.said = None;
@@ -946,7 +1072,7 @@ impl Dialog {
                                 }
                             }
                             if let Some(said) = &names.said {
-                                properties::said(ui, said);
+                                properties::said(ui, said.text(), said.ink());
                             }
                         }
                     }
@@ -956,14 +1082,17 @@ impl Dialog {
                     }
                     for said in said {
                         // Its cause and the elements it names under its message, as the
-                        // prototype's card has them (`errCard`'s message and Elements).
-                        let mut details: Vec<String> = said.cause.iter().cloned().collect();
-                        if !said.elements.is_empty() {
-                            details.push(format!("Elements: {}", said.elements.join(", ")));
-                        }
+                        // prototype's card has them (`errCard`'s message and Elements), a
+                        // warning's as an error's.
+                        let details: Vec<String> = said
+                            .cause
+                            .iter()
+                            .cloned()
+                            .chain(said.elements_line())
+                            .collect();
                         properties::card_with(
                             ui,
-                            false,
+                            said.warning,
                             &said.message,
                             &details,
                             said.suggestion.as_deref(),
@@ -1281,13 +1410,21 @@ mod tests {
         })
     }
 
-    /// A click's toggle of `name`, in `body`.
+    /// A click's toggle of `name`, an edge, in `body`.
     fn toggle(added: bool, name: &Arc<Name>, body: &str) -> Toggled {
         Toggled {
             added,
             name: name.to_string(),
             stored: Ok(Arc::clone(name)),
             body: Some(FeatureId::new(body).unwrap()),
+            kind: Some(ElementKind::Edge),
+        }
+    }
+
+    impl Dialog {
+        /// A toggle taken as one on a body the dialog's feature isn't built into.
+        fn take(&mut self, toggled: &Toggled) -> Taken {
+            self.toggled(toggled, false, &|_| panic!("read against the base"))
         }
     }
 
@@ -1323,11 +1460,11 @@ mod tests {
         assert_eq!(field(&dialog, "base"), None);
         assert!(!dialog.valid());
         assert_eq!(
-            dialog.toggled(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")),
+            dialog.take(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")),
             Taken::Added
         );
         assert_eq!(
-            dialog.toggled(&toggle(true, &edge("k7f2qx3m", 5), "k7f2qx3m")),
+            dialog.take(&toggle(true, &edge("k7f2qx3m", 5), "k7f2qx3m")),
             Taken::Added
         );
         assert_eq!(
@@ -1337,18 +1474,32 @@ mod tests {
         assert_eq!(field(&dialog, "base").as_deref(), Some(r#""k7f2qx3m""#));
         assert!(dialog.valid());
         assert_eq!(dialog.names().unwrap().count(), "2 edges");
-        // Again: held already.
+        // Clicked again while the box holds it, whatever the selection held (the browser
+        // replaced it, so the click added it there): removed, as SolidWorks' box takes a
+        // click on an item it lists; and clicked once more, taken again, after the rest.
         assert_eq!(
-            dialog.toggled(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")),
-            Taken::Ignored
-        );
-        // Let go: removed; let go of one it doesn't hold: nothing.
-        assert_eq!(
-            dialog.toggled(&toggle(false, &edge("k7f2qx3m", 3), "k7f2qx3m")),
+            dialog.take(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")),
             Taken::Removed
         );
         assert_eq!(
-            dialog.toggled(&toggle(false, &edge("k7f2qx3m", 9), "k7f2qx3m")),
+            field(&dialog, "edges").as_deref(),
+            Some(r#"["k7f2qx3m.box.Edge5"]"#)
+        );
+        assert_eq!(
+            dialog.take(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")),
+            Taken::Added
+        );
+        assert_eq!(
+            field(&dialog, "edges").as_deref(),
+            Some(r#"["k7f2qx3m.box.Edge5", "k7f2qx3m.box.Edge3"]"#)
+        );
+        // Let go: removed; let go of one it doesn't hold: nothing.
+        assert_eq!(
+            dialog.take(&toggle(false, &edge("k7f2qx3m", 3), "k7f2qx3m")),
+            Taken::Removed
+        );
+        assert_eq!(
+            dialog.take(&toggle(false, &edge("k7f2qx3m", 9), "k7f2qx3m")),
             Taken::Ignored
         );
         assert_eq!(
@@ -1360,7 +1511,7 @@ mod tests {
         let mut cube = Dialog::new(Kind::Box, None, 2);
         assert_eq!(cube.takes(), None);
         assert_eq!(
-            cube.toggled(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")),
+            cube.take(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")),
             Taken::Ignored
         );
     }
@@ -1368,7 +1519,7 @@ mod tests {
     #[test]
     fn a_box_of_names_refuses_an_unstorable_name_another_bodys_and_its_own_features_saying_why() {
         let mut dialog = edges_dialog();
-        dialog.toggled(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m"));
+        dialog.take(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m"));
         let unstable = Toggled {
             stored: Err(Error::new(
                 silico_core::ErrorCode::ReferenceBroken,
@@ -1377,15 +1528,22 @@ mod tests {
             .with_suggestion("select another")),
             ..toggle(true, &edge("k7f2qx3m", 4), "k7f2qx3m")
         };
-        assert_eq!(dialog.toggled(&unstable), Taken::Refused);
-        let said = |dialog: &Dialog| dialog.names().unwrap().said.clone();
+        assert_eq!(dialog.take(&unstable), Taken::Refused);
+        let said = |dialog: &Dialog| {
+            dialog
+                .names()
+                .unwrap()
+                .said
+                .as_ref()
+                .map(|said| said.text().to_owned())
+        };
         assert_eq!(
             said(&dialog).as_deref(),
             Some("selection.1 names an edge whose name is unstable (select another)")
         );
         // Another body's edge, while it holds one: refused, said.
         assert_eq!(
-            dialog.toggled(&toggle(true, &edge("a91cw0de", 1), "a91cw0de")),
+            dialog.take(&toggle(true, &edge("a91cw0de", 1), "a91cw0de")),
             Taken::Refused
         );
         assert_eq!(
@@ -1407,7 +1565,7 @@ mod tests {
             },
         });
         assert_eq!(
-            dialog.toggled(&toggle(true, &made, "f0000001")),
+            dialog.take(&toggle(true, &made, "f0000001")),
             Taken::Refused
         );
         assert_eq!(
@@ -1418,7 +1576,7 @@ mod tests {
             )
         );
         assert_eq!(
-            dialog.toggled(&toggle(true, &edge("k7f2qx3m", 7), "f0000001")),
+            dialog.take(&toggle(true, &edge("k7f2qx3m", 7), "f0000001")),
             Taken::Added
         );
         assert_eq!(said(&dialog), None);
@@ -1428,10 +1586,10 @@ mod tests {
         );
         assert_eq!(field(&dialog, "base").as_deref(), Some(r#""k7f2qx3m""#));
         // Emptied, another body's is taken, and its body is the base.
-        dialog.toggled(&toggle(false, &edge("k7f2qx3m", 3), "k7f2qx3m"));
-        dialog.toggled(&toggle(false, &edge("k7f2qx3m", 7), "k7f2qx3m"));
+        dialog.take(&toggle(false, &edge("k7f2qx3m", 3), "k7f2qx3m"));
+        dialog.take(&toggle(false, &edge("k7f2qx3m", 7), "k7f2qx3m"));
         assert_eq!(
-            dialog.toggled(&toggle(true, &edge("a91cw0de", 1), "a91cw0de")),
+            dialog.take(&toggle(true, &edge("a91cw0de", 1), "a91cw0de")),
             Taken::Added
         );
         assert_eq!(field(&dialog, "base").as_deref(), Some(r#""a91cw0de""#));
@@ -1451,10 +1609,15 @@ mod tests {
         let names = dialog.names().unwrap();
         assert_eq!(names.names, ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
         assert_eq!(names.body, Some(FeatureId::new("k7f2qx3m").unwrap()));
+        // A note, not a refusal: said in the panel's subdued text, not the error's red.
         assert_eq!(
-            names.said.as_deref(),
-            Some("1 face left out: a fillet takes edges")
+            names.said,
+            Some(Says::Noted(
+                "1 face left out: a fillet takes edges".to_owned()
+            ))
         );
+        assert_eq!(names.said.as_ref().unwrap().ink(), theme::TEXT_SUBDUED);
+        assert_ne!(theme::TEXT_SUBDUED, theme::ERROR_TEXT);
         // Refused: nothing taken, why said.
         let mut dialog = edges_dialog();
         dialog.take_selection(
@@ -1466,10 +1629,9 @@ mod tests {
             None,
         );
         assert!(dialog.names().unwrap().names.is_empty());
-        assert_eq!(
-            dialog.names().unwrap().said.as_deref(),
-            Some("Edge3 isn't answered yet")
-        );
+        let said = dialog.names().unwrap().said.as_ref().unwrap();
+        assert_eq!(said, &Says::Refused("Edge3 isn't answered yet".to_owned()));
+        assert_eq!(said.ink(), theme::ERROR_TEXT);
         assert!(!dialog.valid());
         // On three bodies: nothing taken.
         let mut dialog = edges_dialog();
@@ -1484,11 +1646,12 @@ mod tests {
         );
         assert!(dialog.names().unwrap().names.is_empty());
         assert_eq!(
-            dialog.names().unwrap().said.as_deref(),
-            Some(
+            dialog.names().unwrap().said,
+            Some(Says::Refused(
                 "The selected edges are on 3 bodies, k7f2qx3m and a91cw0de, among others: a \
                  fillet takes one body's edges"
-            )
+                    .to_owned()
+            ))
         );
     }
 
@@ -1524,7 +1687,7 @@ mod tests {
         let mut fillet = Dialog::new(Kind::Fillet, None, 1);
         // No edges: nothing to add.
         assert!(fillet.add().is_none());
-        fillet.toggled(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m"));
+        fillet.take(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m"));
         let members = fillet.add().unwrap();
         let node = feature_node(Kind::Fillet, &members, None).unwrap();
         assert_eq!(
@@ -1541,7 +1704,7 @@ mod tests {
     #[test]
     fn a_chamfers_dialog_writes_its_distance_as_its_size_and_loads_it_back() {
         let mut chamfer = Dialog::new(Kind::Chamfer, None, 1);
-        chamfer.toggled(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m"));
+        chamfer.take(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m"));
         let members = chamfer.add().unwrap();
         let node = feature_node(Kind::Chamfer, &members, None).unwrap();
         let written = br#"{"type": "chamfer", "name": "Chamfer", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": 1}}"#;
@@ -1573,6 +1736,169 @@ mod tests {
         )
         .unwrap();
         assert!(Dialog::load(Kind::Chamfer, id, &uneven, 3).is_none());
+    }
+
+    #[test]
+    fn a_box_of_edges_refuses_a_face_whatever_the_canvas_picked() {
+        // The canvas picks only what the box takes; a face that reached it all the same is
+        // refused, said, and nothing written.
+        let mut dialog = edges_dialog();
+        let face = Toggled {
+            kind: Some(ElementKind::Face),
+            ..toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")
+        };
+        let face = Toggled {
+            name: "k7f2qx3m.box.Face3".to_owned(),
+            stored: Ok(Arc::new(Name::Element {
+                feature: FeatureId::new("k7f2qx3m").unwrap(),
+                made: silico_core::naming::TypeWord::Primitive(
+                    silico_core::naming::PrimitiveKind::Box,
+                ),
+                element: silico_protocol::ElementRef {
+                    kind: ElementKind::Face,
+                    index: 3,
+                },
+            })),
+            ..face
+        };
+        assert_eq!(dialog.take(&face), Taken::Refused);
+        assert_eq!(
+            dialog.names().unwrap().said,
+            Some(Says::Refused(
+                "k7f2qx3m.box.Face3 is a face: a fillet takes edges".to_owned()
+            ))
+        );
+        assert!(dialog.names().unwrap().names.is_empty());
+        assert_eq!(dialog.names().unwrap().body, None);
+        assert_eq!(field(&dialog, "edges"), None);
+        // An edge is taken.
+        assert_eq!(
+            dialog.take(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")),
+            Taken::Added
+        );
+    }
+
+    #[test]
+    fn a_pick_on_the_body_its_feature_is_built_into_is_read_against_its_base() {
+        // A fillet f0000001 on k7f2qx3m, open under Edit Feature, a later feature's body
+        // r0000001 built through it. A pick there is read against the base: found, it's the
+        // base's, by its name there, and the base stays; not there, it's refused, said; the
+        // fillet's own edge is refused as its own, before any read.
+        let fillet = json::read(
+            br#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "radius": 1}"#,
+        )
+        .unwrap();
+        let id = FeatureId::new("f0000001").unwrap();
+        let mut dialog = Dialog::load(Kind::Fillet, id, &fillet, 1).unwrap();
+        let base = FeatureId::new("k7f2qx3m").unwrap();
+        let read = std::cell::RefCell::new(Vec::new());
+        let found = |at: &FeatureId| {
+            read.borrow_mut().push(at.clone());
+            OnBase::Found(Ok(edge("k7f2qx3m", 5)))
+        };
+        let on_later = toggle(true, &edge("k7f2qx3m", 5), "r0000001");
+        assert_eq!(dialog.toggled(&on_later, true, &found), Taken::Added);
+        assert_eq!(*read.borrow(), std::slice::from_ref(&base));
+        assert_eq!(
+            field(&dialog, "edges").as_deref(),
+            Some(r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]"#)
+        );
+        assert_eq!(field(&dialog, "base").as_deref(), Some(r#""k7f2qx3m""#));
+        // Clicked again: the box holds it by its name on the base, so it's let go.
+        let let_go = toggle(false, &edge("k7f2qx3m", 5), "r0000001");
+        assert_eq!(dialog.toggled(&let_go, true, &found), Taken::Removed);
+        // An edge the later feature added: not on the base, refused.
+        let added = toggle(true, &edge("r0000001", 2), "r0000001");
+        assert_eq!(
+            dialog.toggled(&added, true, &|_| OnBase::Missing),
+            Taken::Refused
+        );
+        assert_eq!(
+            dialog.names().unwrap().said,
+            Some(Says::Refused(
+                "r0000001.box.Edge2 is added to the body after k7f2qx3m, which this fillet is \
+                 built on: select one of k7f2qx3m's edges"
+                    .to_owned()
+            ))
+        );
+        // Unstable on the base: the base's refusal said.
+        let unstable = OnBase::Found(Err(Error::new(
+            silico_core::ErrorCode::ReferenceBroken,
+            "unstable there",
+        )));
+        assert_eq!(
+            dialog.toggled(&on_later, true, &|_| unstable.clone()),
+            Taken::Refused
+        );
+        assert_eq!(
+            dialog.names().unwrap().said,
+            Some(Says::Refused("unstable there".to_owned()))
+        );
+        // The fillet's own edge: its own, said so, no read made.
+        let own = toggle(true, &edge("f0000001", 1), "r0000001");
+        assert_eq!(
+            dialog.toggled(&own, true, &|_| panic!("read against the base")),
+            Taken::Refused
+        );
+        // Every name let go, then one picked on the later body: the base stays.
+        let first = toggle(false, &edge("k7f2qx3m", 3), "r0000001");
+        assert_eq!(
+            dialog.toggled(&first, true, &|_| OnBase::Found(Ok(edge("k7f2qx3m", 3)))),
+            Taken::Removed
+        );
+        assert!(dialog.names().unwrap().names.is_empty());
+        assert_eq!(dialog.toggled(&on_later, true, &found), Taken::Added);
+        assert_eq!(field(&dialog, "base").as_deref(), Some(r#""k7f2qx3m""#));
+        assert_eq!(
+            field(&dialog, "edges").as_deref(),
+            Some(r#"["k7f2qx3m.box.Edge5"]"#)
+        );
+        // Not through the feature (another body, the box emptied): that body's, as before.
+        let mut other = dialog.clone();
+        other.toggled(&let_go, true, &found);
+        let elsewhere = toggle(true, &edge("a91cw0de", 1), "a91cw0de");
+        assert_eq!(
+            other.toggled(&elsewhere, false, &|_| panic!("read against the base")),
+            Taken::Added
+        );
+        assert_eq!(field(&other, "base").as_deref(), Some(r#""a91cw0de""#));
+    }
+
+    #[test]
+    fn a_dressings_numbers_are_remembered_from_its_last_ok_and_others_are_not() {
+        let mut remembered = Remembered::default();
+        // Nothing OK'd yet: the first values, 1 mm.
+        let mut fillet = Dialog::new(Kind::Fillet, None, 1);
+        remembered.apply(&mut fillet);
+        assert_eq!(fillet.inputs[1].value, Value::Length("1".to_owned()));
+        // A fillet OK'd at 2.5 (typed with space about it), its edges held: a new fillet
+        // opens at 2.5, with no edges; a chamfer at its own first value.
+        fillet.inputs[1].value = Value::Length(" 2.5 ".to_owned());
+        fillet.take(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m"));
+        remembered.keep(&fillet);
+        let mut again = Dialog::new(Kind::Fillet, None, 2);
+        remembered.apply(&mut again);
+        assert_eq!(again.inputs[1].value, Value::Length("2.5".to_owned()));
+        assert!(again.names().unwrap().names.is_empty());
+        let mut chamfer = Dialog::new(Kind::Chamfer, None, 3);
+        remembered.apply(&mut chamfer);
+        assert_eq!(chamfer.inputs[1].value, Value::Length("1".to_owned()));
+        // A chamfer OK'd at 0.5: its own, the fillet's kept.
+        chamfer.inputs[1].value = Value::Length("0.5".to_owned());
+        remembered.keep(&chamfer);
+        let mut chamfer = Dialog::new(Kind::Chamfer, None, 4);
+        remembered.apply(&mut chamfer);
+        assert_eq!(chamfer.inputs[1].value, Value::Length("0.5".to_owned()));
+        let mut fillet = Dialog::new(Kind::Fillet, None, 5);
+        remembered.apply(&mut fillet);
+        assert_eq!(fillet.inputs[1].value, Value::Length("2.5".to_owned()));
+        // A box doesn't remember.
+        let mut cube = Dialog::new(Kind::Box, None, 7);
+        cube.inputs[3].value = Value::Length("25".to_owned());
+        remembered.keep(&cube);
+        let mut cube = Dialog::new(Kind::Box, None, 8);
+        remembered.apply(&mut cube);
+        assert_eq!(cube.inputs[3].value, Value::Length("10".to_owned()));
     }
 
     #[test]
