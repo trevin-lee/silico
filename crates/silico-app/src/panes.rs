@@ -229,10 +229,16 @@ impl<P: Clients + 'static> Panes<'_, P> {
             return;
         };
         let mut asked = Asked::default();
-        if tab.selection().scroll_target().is_some() {
-            // A body picked in the canvas: its row shown, its group opened (section 9,
-            // *Browser and canvas*: the browser expands and scrolls to it).
-            for key in ["root", "Bodies"] {
+        if let Some(shown) = tab.selection().scroll_target().cloned() {
+            // A body picked in the canvas, or a row found from the timeline: its row shown,
+            // its group opened (section 9, *Browser and canvas*: the browser expands and
+            // scrolls to it).
+            let group = if tab.browser.sketches.iter().any(|row| row.id == shown) {
+                "Sketches"
+            } else {
+                "Bodies"
+            };
+            for key in ["root", group] {
                 Openness::load(ui.ctx(), key).opened(ui.ctx());
             }
         }
@@ -254,6 +260,9 @@ impl<P: Clients + 'static> Panes<'_, P> {
             // A sketch chosen here fills an open dialog's selection box (section 9).
             tab.pick(&id);
             tab.selection_mut().select_feature(id);
+        }
+        if let Some(act) = asked.act {
+            *self.started |= crate::feature_menu::act(tab, self.sessions, act);
         }
         if let Some(id) = asked.edit {
             // SEAM(#351): `tab.edit_sketch_or_feature(self.sessions, &id)`, Edit Sketch for a
@@ -742,13 +751,15 @@ fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxErr
 }
 
 /// What the browser's rows asked for this frame, done once they're drawn: eyes clicked, a
-/// row selected, a sketch's Edit Sketch, and the document's row clicked.
+/// row selected, a sketch's Edit Sketch, the document's row clicked, and what a row's menu
+/// asked.
 #[derive(Default)]
 struct Asked {
     toggled: Vec<Hideable>,
     selected: Option<FeatureId>,
     edit: Option<FeatureId>,
     root: bool,
+    act: Option<crate::feature_menu::Act>,
 }
 
 /// The origin's rows, each by its name with its icon (Fusion's Origin folder: its point,
@@ -845,12 +856,16 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                         mark: None,
                         failed: false,
                         outside: None,
-                        clicks: false,
+                        // Its menu's right-click: every item off, for it isn't a feature.
+                        clicks: true,
                     },
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
                     asked.toggled.push(what);
                 }
+                answer
+                    .row
+                    .context_menu(|ui| crate::feature_menu::origin_menu(ui, name));
             }
         });
     }
@@ -926,6 +941,18 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                     asked.toggled.push(what);
                 } else if answer.row.clicked() {
                     asked.selected = Some(each.id.clone());
+                }
+                if let Some(entry) = tab.entry(each.id.as_str()) {
+                    answer.row.context_menu(|ui| {
+                        // Selected as it's opened, as the prototype's `contextmenu` selects it.
+                        if tab.selection().feature() != Some(&each.id) {
+                            asked.selected = Some(each.id.clone());
+                        }
+                        let place = crate::feature_menu::Place::Browser;
+                        if let Some(act) = crate::feature_menu::menu(ui, tab, entry, place) {
+                            asked.act = Some(act);
+                        }
+                    });
                 }
                 if tab.selection().scroll_target() == Some(&each.id) {
                     answer.row.scroll_to_me(None);

@@ -6,8 +6,9 @@
 //! (`crate::whats_wrong`). The rebuild runs visibly along it: the running
 //! step's item spins, the items not yet known built are dimmed, and once it ends each item
 //! shows its health, a failed one red ([`step_of_each`]). A click selects a feature, a
-//! double-click (or Edit Feature in its menu) opens its dialog, a drag moves it
+//! double-click (or Edit feature in its menu) opens its dialog, a drag moves it
 //! (`move_feature`), and hovering it tints the faces it made in the viewport (`View::linked`).
+//! Its right-click menu is the feature's commands (`crate::feature_menu`).
 //!
 //! Left out, each for a reason: the rollback bar (the core has no rollback; Fusion's marker
 //! is out of M5, DESIGN.md flags Onshape's as a proposal), the gear's timeline options (none
@@ -28,6 +29,7 @@ use silico_core::document::FeatureId;
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
 
+use crate::feature_menu;
 use crate::icons::{Icon, IconSize};
 use crate::panes::{self, MarkLook};
 use crate::tab::Tab;
@@ -328,6 +330,8 @@ struct Asked {
     edit: Option<FeatureId>,
     hovered: Option<FeatureId>,
     moved: Option<(FeatureId, Option<FeatureId>)>,
+    /// What a feature's menu asked.
+    act: Option<feature_menu::Act>,
 }
 
 /// The track and the summary, in `rect`, for `tab`.
@@ -402,6 +406,9 @@ fn features<P: Clients + 'static>(
     tab.view.linked = asked.hovered;
     if let Some(id) = asked.selected {
         tab.selection_mut().select_feature(id);
+    }
+    if let Some(act) = asked.act {
+        *started |= feature_menu::act(tab, sessions, act);
     }
     if let Some((feature, before)) = asked.moved {
         tab.move_feature(sessions, feature, before);
@@ -614,12 +621,12 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
             asked.edit = Some(entry.id.clone());
         }
         response.context_menu(|ui| {
-            if ui
-                .add_enabled(editable, egui::Button::new("Edit Feature"))
-                .clicked()
-            {
-                asked.edit = Some(entry.id.clone());
-                ui.close();
+            // Selected as it's opened, as the prototype's `contextmenu` selects it.
+            if !selected {
+                asked.selected = Some(entry.id.clone());
+            }
+            if let Some(act) = feature_menu::menu(ui, tab, entry, feature_menu::Place::Timeline) {
+                asked.act = Some(act);
             }
         });
         let said = tab.said.get(entry.id.as_str());

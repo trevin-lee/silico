@@ -5749,7 +5749,7 @@ fn edit_feature_from_the_context_menu_opens_the_same_dialog() {
         .click_secondary();
     step(&mut h);
     step(&mut h);
-    h.get_by_label("Edit Feature").click();
+    menu_click(&mut h, "BLOCK", "Edit feature");
     step_until(&mut h, "its dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, "Box").is_some()
     });
@@ -5764,10 +5764,12 @@ fn edit_feature_from_the_context_menu_opens_the_same_dialog() {
         .click_secondary();
     step(&mut h);
     step(&mut h);
-    assert!(
-        h.get_by_label("Edit Feature")
-            .accesskit_node()
-            .is_disabled()
+    assert_eq!(
+        menu_items(&h, "HOLE")[0],
+        (
+            "Edit feature double-click".to_owned(),
+            Some("Subtract has no dialog yet".to_owned())
+        )
     );
     assert!(h.state().tabs()[0].sent.is_empty());
     assert_eq!(never_waits::waits(), 0);
@@ -21716,7 +21718,7 @@ fn edit_from_the_timeline(h: &mut AppHarness, name: &str) {
         .click_secondary();
     step(h);
     step(h);
-    h.get_by_label("Edit Feature").click();
+    menu_click(h, &name.to_uppercase(), "Edit feature");
 }
 
 /// The dialog's Cancel clicked, and the dialog closed.
@@ -22398,4 +22400,360 @@ fn on_lavapipe_whats_wrong_shows_two_error_cards_and_a_warnings() {
             assert_eq!(never_waits::waits(), 0);
         },
     );
+}
+
+// ---- A feature's commands: the timeline's and the browser's menus ----
+
+/// The feature `name` right-clicked in `pane` ("Timeline" or "Browser"), its menu opened.
+fn menu_on(h: &mut AppHarness, pane: &str, name: &str) {
+    h.get_by_role_and_label(Role::Pane, pane)
+        .get_by_label(name)
+        .click_secondary();
+    step(h);
+    step(h);
+}
+
+/// The head of the open menu, `head`: the one label so named outside the panes (an origin
+/// row's name is in capitals too).
+fn menu_head<'a>(h: &'a AppHarness, head: &'a str) -> egui_kittest::Node<'a> {
+    let mut found = h
+        .query_all_by_label(head)
+        .filter(|node| !in_pane(node, "Browser") && !in_pane(node, "Timeline"));
+    let node = found
+        .next()
+        .unwrap_or_else(|| panic!("no menu headed {head}"));
+    assert!(found.next().is_none(), "two menus headed {head}");
+    node
+}
+
+/// The open menu headed `head` (the name it's of, in capitals): each item's label (its
+/// words, then its keys), and why it's off, if it is, in order.
+fn menu_items(h: &AppHarness, head: &str) -> Vec<(String, Option<String>)> {
+    let heading = menu_head(h, head);
+    let menu = heading.parent().unwrap();
+    menu.query_all_by_role(Role::Button)
+        .map(|node| {
+            let node = node.accesskit_node();
+            let off = node
+                .is_disabled()
+                .then(|| node.description().unwrap_or_default());
+            (node.label().unwrap_or_default(), off)
+        })
+        .collect()
+}
+
+/// The item of the open menu headed `head` whose words are `label` (its keys after them)
+/// clicked.
+fn menu_click(h: &mut AppHarness, head: &str, label: &str) {
+    let heading = menu_head(h, head);
+    let menu = heading.parent().unwrap();
+    menu.query_all_by_role(Role::Button)
+        .find(|node| {
+            node.accesskit_node()
+                .label()
+                .is_some_and(|said| said == label || said.starts_with(&format!("{label} ")))
+        })
+        .unwrap_or_else(|| panic!("no {label} in {head}'s menu"))
+        .click();
+    step(h);
+    step(h);
+}
+
+/// What the timeline's item of `name` says of it (its type and its state).
+fn item_said(h: &AppHarness, name: &str) -> Option<String> {
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label(name)
+        .accesskit_node()
+        .description()
+}
+
+#[test]
+fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its body", |h| shows(h, "Browser", "Hole"));
+    let on = |label: &str| (label.to_owned(), None);
+    let off = |label: &str, why: &str| (label.to_owned(), Some(why.to_owned()));
+    // The timeline's, on the block (js/interact.js's `contextmenu`: Edit feature with
+    // "double-click", then Find in browser).
+    // The block is inside the hole's body, which the browser lists by the hole: it has no
+    // row there.
+    menu_on(&mut h, "Timeline", "Block");
+    assert_eq!(
+        menu_items(&h, "BLOCK"),
+        [
+            on("Edit feature double-click"),
+            off(
+                "Find in browser",
+                "It's inside a body: the browser lists bodies and sketches"
+            ),
+        ]
+    );
+    // The prototype's right-click selects the feature it's on.
+    assert_eq!(
+        h.state().tabs()[0]
+            .selection()
+            .feature()
+            .map(|id| id.as_str()),
+        Some("k7f2qx3m")
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    // The hole has no dialog yet; its row is the body's.
+    menu_on(&mut h, "Timeline", "Hole");
+    assert_eq!(
+        menu_items(&h, "HOLE"),
+        [
+            off("Edit feature double-click", "Subtract has no dialog yet"),
+            on("Find in browser"),
+        ]
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    // The browser's, on the hole's body: Find in timeline in Find in browser's place.
+    menu_on(&mut h, "Browser", "Hole");
+    assert_eq!(
+        menu_items(&h, "HOLE"),
+        [
+            off("Edit feature double-click", "Subtract has no dialog yet"),
+            on("Find in timeline"),
+        ]
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    // An origin row: none is a feature, so every item is off.
+    menu_on(&mut h, "Browser", "XY");
+    let origin = "XY is the origin's, not a feature";
+    assert_eq!(
+        menu_items(&h, "XY"),
+        [
+            off("Edit feature double-click", origin),
+            off("Find in timeline", origin),
+        ]
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    // A dialog open: nothing changes a feature under it (its Cancel undoes to where it
+    // opened), so only Find is on.
+    create(&mut h, "Box");
+    added(&mut h);
+    menu_on(&mut h, "Timeline", "Block");
+    let dialog = "Close the open dialog first";
+    assert_eq!(
+        menu_items(&h, "BLOCK"),
+        [
+            off("Edit feature double-click", dialog),
+            off(
+                "Find in browser",
+                "It's inside a body: the browser lists bodies and sketches"
+            ),
+        ]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, Op::Boolean { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "the cut came apart"))
+    });
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "the cut's mark", |h| {
+        item_said(h, "Hole").as_deref() == Some("Subtract · Error")
+    });
+    menu_on(&mut h, "Timeline", "Hole");
+    assert_eq!(
+        menu_items(&h, "HOLE"),
+        [
+            (
+                "Edit feature double-click".to_owned(),
+                Some("Subtract has no dialog yet".to_owned())
+            ),
+            (
+                "Find in browser".to_owned(),
+                Some("It built no body, so the browser has no row for it".to_owned())
+            ),
+        ]
+    );
+    // Its block, whose consumer failed, is a body of its own now: found.
+    h.key_press(Key::Escape);
+    step(&mut h);
+    menu_on(&mut h, "Timeline", "Block");
+    assert_eq!(
+        menu_items(&h, "BLOCK")[1],
+        ("Find in browser".to_owned(), None)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A sketch, forty blocks, and another sketch: the first sketch's item is the timeline's
+/// first and its row is under forty bodies' in the browser, and the last's item is past
+/// the timeline's end.
+fn forty_blocks() -> String {
+    let sketch = |id: &str, name: &str, p: char| {
+        format!(
+            r#"    {{"id": "{id}", "type": "sketch", "v": 1, "name": "{name}", "plane": "xy", "points": [{{"id": "p{p}a00000", "x": 0, "y": 0, "construction": false}}, {{"id": "p{p}b00000", "x": 20, "y": 0, "construction": false}}, {{"id": "p{p}c00000", "x": 0, "y": 10, "construction": false}}], "lines": [{{"id": "n{p}a00000", "from": "p{p}a00000", "to": "p{p}b00000", "construction": false}}, {{"id": "n{p}b00000", "from": "p{p}b00000", "to": "p{p}c00000", "construction": false}}, {{"id": "n{p}c00000", "from": "p{p}c00000", "to": "p{p}a00000", "construction": false}}], "circles": [], "arcs": [], "constraints": []}}"#
+        )
+    };
+    let mut features = vec![sketch("s0000001", "Front", 'a')];
+    for at in 1..=40 {
+        features.push(format!(
+            r#"    {{"id": "b{at:07}", "type": "box", "v": 1, "name": "Block {at}", "position": [{}, 0, 0], "length": 5, "width": 5, "height": 5}}"#,
+            at * 10
+        ));
+    }
+    features.push(sketch("s0000002", "Back", 'b'));
+    format!(
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n{}\n  ]\n}}\n",
+        features.join(",\n")
+    )
+}
+
+/// Whether the browser's row `name`, in `group`, is in the browser's view: above the
+/// timeline (its items' tops) and under the window's top.
+fn row_in_view(h: &AppHarness, group: &str, name: &str) -> bool {
+    let row = browser(h)
+        .get_by_role_and_label(Role::Group, group)
+        .get_by_label(name)
+        .rect();
+    let timeline = h
+        .get_by_role_and_label(Role::Group, "Features in order")
+        .query_all_by_role(Role::Button)
+        .map(|item| item.rect().top())
+        .fold(f32::INFINITY, f32::min);
+    row.top() >= 0.0 && row.bottom() <= timeline
+}
+
+/// Whether the timeline's item `name` is in the track's view: right of the window's left,
+/// and left of the summary (`features`, its words).
+fn item_in_view(h: &AppHarness, name: &str, features: &str) -> bool {
+    let item = h
+        .get_by_role_and_label(Role::Group, "Features in order")
+        .get_by_label(name)
+        .rect();
+    let summary = h
+        .get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label(features)
+        .rect();
+    item.left() >= 0.0 && item.right() <= summary.left()
+}
+
+#[test]
+fn find_in_browser_and_find_in_timeline_select_the_feature_and_scroll_to_it() {
+    let text = forty_blocks();
+    // Find in browser, from the first sketch's item: its row, under the bodies, is scrolled
+    // into the browser's view, selected.
+    {
+        let f = fixture();
+        let (mut h, _) = f.opened("forty.silico", &text);
+        step_until(&mut h, "its rows", |h| shows(h, "Browser", "Block 40"));
+        assert!(
+            !row_in_view(&h, "Sketches", "Front"),
+            "the row in view before it was found"
+        );
+        menu_on(&mut h, "Timeline", "Front");
+        menu_click(&mut h, "FRONT", "Find in browser");
+        step_until(&mut h, "its row in view", |h| {
+            row_in_view(h, "Sketches", "Front")
+        });
+        assert_eq!(
+            toggled(
+                &browser(&h)
+                    .get_by_role_and_label(Role::Group, "Sketches")
+                    .get_by_label("Front")
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            h.state().tabs()[0]
+                .selection()
+                .feature()
+                .map(|id| id.as_str()),
+            Some("s0000001")
+        );
+    }
+    // Find in timeline, from the last sketch's row (the bodies folded so it shows): its
+    // item, past the track's end, scrolled into view, selected.
+    let f = fixture();
+    let (mut h, _) = f.opened("forty.silico", &text);
+    step_until(&mut h, "its rows", |h| shows(h, "Browser", "Block 40"));
+    browser(&h).get_by_label("Collapse Bodies").click();
+    step_until(&mut h, "the bodies folded", |h| {
+        !shows(h, "Browser", "Block 40")
+    });
+    assert!(
+        !item_in_view(&h, "Back", "42 features"),
+        "the item in view before it was found"
+    );
+    menu_on(&mut h, "Browser", "Back");
+    menu_click(&mut h, "BACK", "Find in timeline");
+    step_until(&mut h, "its item in view", |h| {
+        item_in_view(h, "Back", "42 features")
+    });
+    assert_eq!(
+        h.state().tabs()[0]
+            .selection()
+            .feature()
+            .map(|id| id.as_str()),
+        Some("s0000002")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A block, as the fake meshes it for the canvas, and a sketch after it.
+const BLOCK_AND_SKETCH: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
+    on_lavapipe("on_lavapipe_the_timelines_menu_opens_on_a_feature", || {
+        let f = fixture();
+        meshes_a_real_box(&f);
+        let state = lavapipe_render_state();
+        let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+        let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+        let mut h = {
+            let _marked = never_waits::marked();
+            Harness::builder()
+                .with_size((1280.0, 800.0))
+                .with_step_dt(1.0 / 60.0)
+                .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                    state.clone(),
+                ))
+                .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+        };
+        h.set_render_every_step(true);
+        silico_app::theme::apply(&h.ctx);
+        let path = f.file("block.silico", BLOCK_AND_SKETCH);
+        h.state_mut().open(path.to_str().unwrap(), false);
+        step_until(&mut h, "rebuilt", |h| status_said(h, "Rebuilt").is_some());
+        step_until(&mut h, "its body", |h| shows(h, "Browser", "Block"));
+        meshes_settled(&mut h);
+        menu_on(&mut h, "Timeline", "Block");
+        // Its fade-in over, at a sixtieth of a second a frame.
+        for _ in 0..30 {
+            step(&mut h);
+        }
+        assert_eq!(
+            menu_items(&h, "BLOCK")
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect::<Vec<_>>(),
+            ["Edit feature double-click", "Find in browser",]
+        );
+        if let Some(shot) = std::env::var_os("SILICO_APP_FEATURE_MENU_SHOT") {
+            h.render().unwrap().save(shot).unwrap();
+        }
+        assert_eq!(never_waits::waits(), 0);
+    });
 }

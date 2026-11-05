@@ -2194,6 +2194,15 @@ impl Tab {
         self.advance(sessions);
     }
 
+    /// Whether the browser has a row for the feature `id`: a body's or a sketch's.
+    pub fn in_browser(&self, id: &FeatureId) -> bool {
+        self.browser
+            .bodies
+            .iter()
+            .chain(&self.browser.sketches)
+            .any(|row| &row.id == id)
+    }
+
     /// Save (`commit`), then, if `then_close`, close: once everything asked before it has
     /// answered, so the commit saves every edit made before it. One queued last already takes
     /// `then_close` too. A save that comes up with nothing to save does nothing (or closes).
