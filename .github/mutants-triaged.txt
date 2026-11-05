@@ -588,3 +588,17 @@ crates/silico-core/src/document/diff.rs | top_level_order | replace && with || |
 # length measured again is the length kept; the guard only spares measuring a megabyte
 # name once for each of thousands of changes.
 crates/silico-core/src/command/wire/reads.rs | written_length | replace match guard std::sync::Arc::ptr_eq(name, &c.name) with false | #390
+# A pick's toggle (#385): a plain click's items start empty (`How::Replace => Vec::new()`),
+# so no item is found to remove and the guard `how == How::Toggle` is never reached but
+# for a Ctrl-click, where it holds.
+crates/silico-app/src/selection.rs | Selection::pick | replace match guard how == How::Toggle with true | #385
+# A click waiting for a model's meshes, as another is published (#385): `published` reaches
+# the guard only for a model other than the one it holds (`self.of != Some((models,
+# revision))`), and a click's `awaits` is only ever none or the model held (set from
+# `self.of` when it's made, and to the new model here as `self.of` is), so `awaited` is
+# the model held before, never the new one, and the guard always holds.
+crates/silico-app/src/selection.rs | Selection::published | replace match guard awaited != (models, revision) with true | #385
+# An item made again from a read (#385): `Picked { name: picked.name, ..picked }` without
+# its `name` takes `picked.name` from `..picked`, the same value.
+crates/silico-app/src/selection.rs | Selection::took | delete field name from struct Picked expression | #385
+crates/silico-app/src/selection.rs | Selection::took | delete field name from struct Picked expression | #385

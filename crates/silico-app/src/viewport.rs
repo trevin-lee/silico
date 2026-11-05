@@ -2683,6 +2683,57 @@ mod tests {
     }
 
     #[test]
+    fn a_new_bodies_table_has_the_selections_highlights_worked_out_again() {
+        // Body m3tq8v0z, two faces, selected by its row: both its faces lit, as body 1. A
+        // read's answer then numbers it 2 (a body before it, new): the table is made again,
+        // and the same selection lights body 2's faces, not body 1's.
+        use silico_core::naming::{Name, PrimitiveKind, TypeWord};
+        use silico_protocol::{ElementKind, ElementRef};
+        let id = FeatureId::new("m3tq8v0z").unwrap();
+        let faces: Vec<MeshElement> = (1..=2)
+            .map(|index| MeshElement {
+                name: Arc::new(Name::Element {
+                    feature: id.clone(),
+                    made: TypeWord::Primitive(PrimitiveKind::Box),
+                    element: ElementRef {
+                        kind: ElementKind::Face,
+                        index,
+                    },
+                }),
+                stable: true,
+                count: None,
+            })
+            .collect();
+        let mut first = body(0.03125, [0.03125, 0.0625], CUT);
+        first.faces = faces.clone();
+        let mut view = view_with(&[(1, first)], 3);
+        let mut selection = crate::selection::Selection::default();
+        selection.select_feature(id);
+        let frame = ViewFrame {
+            session: SessionId::parse("s1").unwrap(),
+            rect: Rect::from_min_size(Pos2::ZERO, egui::vec2(100.0, 100.0)),
+            camera: front(80.0),
+            size_px: [100, 100],
+            pixels_per_point: 1.0,
+            pointer_px: None,
+            left: Vec::new(),
+            secondary: Vec::new(),
+            now: now(),
+        };
+        let ctx = egui::Context::default();
+        selection.overlay(&mut view, &frame, &ctx);
+        let lit = |body: u32| BTreeSet::from([(body, Element::Face(1)), (body, Element::Face(2))]);
+        assert_eq!(view.highlights, lit(1));
+        let mesh = Arc::clone(&view.bodies[&1].mesh);
+        view.take_bodies(vec![MeshedBody {
+            faces,
+            ..meshed(2, 1, 0.03125, Some(mesh))
+        }]);
+        selection.overlay(&mut view, &frame, &ctx);
+        assert_eq!(view.highlights, lit(2));
+    }
+
+    #[test]
     fn a_highlight_is_of_an_element_the_bodys_mesh_has() {
         let mut held = body(0.03125, [0.03125, 0.0625], CUT);
         held.mesh = Arc::new(Mesh {

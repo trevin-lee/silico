@@ -1919,6 +1919,23 @@ fn of_pixels_as_near_the_first_in_rows_is_taken_and_one_past_the_frames_edge_nev
 }
 
 #[test]
+fn of_edges_as_near_the_first_in_rows_is_the_edge_taken() {
+    // A 3 by 1 row from column 10, its centre (1.5, 0.5): Edge4 at its first pixel and
+    // Edge7 at its last, each 1 from the centre, a face between them. The edge is Edge4,
+    // the first; so for a 1 by 3 column, the first row's.
+    let size = [WIDTH, HEIGHT];
+    let seen = |found: Option<(u32, Pick)>| found.map(|(i, pick)| (i, pick.hit, pick.pixel));
+    let row = request(rect([10, 10], [3, 1]), size);
+    let ids = [edge_id(4), face_id(2), edge_id(7)];
+    let [any, edge] = row.nearest(&ids, glam::UVec2::new(3, 1), |_| true);
+    assert_eq!(seen(any), Some((1, Element::Face(2), [11, 10])));
+    assert_eq!(seen(edge), Some((0, Element::Edge(4), [10, 10])));
+    let column = request(rect([10, 10], [1, 3]), size);
+    let [_, edge] = column.nearest(&ids, glam::UVec2::new(1, 3), |_| true);
+    assert_eq!(seen(edge), Some((0, Element::Edge(4), [10, 10])));
+}
+
+#[test]
 fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bodies() {
     on_lavapipe(
         "render::frame_tests::a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bodies",
@@ -2425,6 +2442,79 @@ fn a_hover_and_a_highlight_are_outlined_each_in_the_callers_colour() {
             assert!(!plain.iter().any(|&p| near(p, MAGENTA) || near(p, GREEN)));
             assert!(!hovered.iter().any(|&p| near(p, GREEN)));
             assert!(!lit.iter().any(|&p| near(p, MAGENTA)));
+        },
+    );
+}
+
+/// The composited image of the box from the front, `lit` highlighted and `hovered` hovered,
+/// outlined in `outlines`.
+fn outlined(
+    r: &mut Renderer,
+    lit: &[(u32, Element)],
+    hovered: &[(u32, Element)],
+    outlines: Outlines,
+) -> Vec<[u8; 4]> {
+    let camera = front();
+    let commands = r
+        .prepare(&Frame {
+            hovered,
+            outlines,
+            ..frame(&camera, &[1], lit, None)
+        })
+        .unwrap();
+    composited(r, Some(commands))
+}
+
+#[test]
+fn a_hovered_edge_alone_is_outlined_and_a_frame_with_nothing_lit_makes_no_outline_pass() {
+    // The front's top edge (Edge3, row 20.73) hovered alone: outlined in the hover's colour,
+    // magenta, picked by hand unlike the defaults; nothing lit, no pixel of it. The outline
+    // pass is made only for a frame with something to outline: its jump-flooding pipelines
+    // (re_renderer's `OutlineMaskProcessor`) are first made for the hovered frame, none for
+    // the plain one before it. And a body with every list lit (faces and edges, highlighted
+    // and hovered) is outlined too: the selection's green round the front face.
+    on_lavapipe(
+        "render::frame_tests::a_hovered_edge_alone_is_outlined_and_a_frame_with_nothing_lit_makes_no_outline_pass",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            const MAGENTA: [u8; 3] = [255, 0, 255];
+            const GREEN: [u8; 3] = [0, 255, 0];
+            let outlines = Outlines {
+                selected: GREEN,
+                hovered: MAGENTA,
+            };
+            let near = |got: &[u8; 4], [r, g, b]: [u8; 3]| {
+                got.iter()
+                    .zip([r, g, b, 255])
+                    .all(|(got, want)| got.abs_diff(want) <= 2)
+            };
+            let count =
+                |pixels: &[[u8; 4]], colour| pixels.iter().filter(|p| near(p, colour)).count();
+            let pipelines = |r: &Renderer| r.ctx.gpu_resources.statistics().num_render_pipelines;
+            let plain = outlined(r, &[], &[], outlines);
+            let before = pipelines(r);
+            assert_eq!(count(&plain, MAGENTA), 0);
+            let hovered = outlined(r, &[], &[(1, Element::Edge(3))], outlines);
+            assert!(
+                pipelines(r) > before,
+                "no outline pass made for the hovered frame: {before} pipelines before it, {} after",
+                pipelines(r)
+            );
+            assert!(
+                count(&hovered, MAGENTA) > 0,
+                "the hovered edge isn't outlined"
+            );
+            assert_eq!(count(&hovered, GREEN), 0);
+            let every = outlined(
+                r,
+                &[(1, Element::Face(3)), (1, Element::Edge(3))],
+                &[(1, Element::Face(4)), (1, Element::Edge(9))],
+                outlines,
+            );
+            assert!(
+                count(&every, GREEN) > 0,
+                "the highlighted face isn't outlined"
+            );
         },
     );
 }

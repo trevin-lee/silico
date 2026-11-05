@@ -17744,6 +17744,140 @@ fn a_face_picked_marks_and_opens_its_bodys_row_and_a_row_selected_lights_its_bod
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// Forty boxes, `b0000001` to `b0000040`, named `Body01` to `Body40`: forty rows of 24
+/// points, more than the browser shows.
+fn forty_blocks() -> String {
+    let features: Vec<String> = (1..=40)
+        .map(|n| {
+            format!(
+                r#"{{"id": "b{n:07}", "type": "box", "v": 1, "name": "Body{n:02}", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}}"#
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    )
+}
+
+/// Whether the browser's row `name` is drawn within the band the browser shows, top to
+/// bottom: the canvas's, which the browser stands beside (its pane's node has no bounds).
+fn row_shown(h: &AppHarness, name: &str) -> bool {
+    let band = the_viewport(h);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .query_all_by_label(name)
+        .filter(|row| row.accesskit_node().bounding_box().is_some())
+        .any(|row| {
+            let row = row.rect();
+            row.top() >= band.top() && row.bottom() <= band.bottom()
+        })
+}
+
+#[test]
+fn the_browser_scrolls_to_a_picked_faces_body_row_and_to_no_other() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("blocks.silico", &forty_blocks());
+    meshes_settled(&mut h);
+    step_until(&mut h, "its rows", |h| {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .query_by_label("Body40")
+            .is_some()
+    });
+    // Nothing picked: the browser stays at its top, its first row shown, its last not.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(row_shown(&h, "Body01"));
+    assert!(!row_shown(&h, "Body40"));
+    // A face of the last body picked: its row scrolled to.
+    let at = the_viewport(&h).center();
+    let centre = pixel_at(&h, at);
+    let last = body_of(&h, "b0000040");
+    answering(&record, Some((last, Face(3), centre)), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["b0000040.box.Face3"]);
+    step_until(&mut h, "the last row shown", |h| row_shown(h, "Body40"));
+    assert!(!row_shown(&h, "Body01"));
+    // Then a face of the first: its row, and not another, scrolled to.
+    let first = body_of(&h, "b0000001");
+    answering(&record, Some((first, Face(3), centre)), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["b0000001.box.Face3"]);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(row_shown(&h, "Body01"));
+    assert!(!row_shown(&h, "Body40"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_picked_faces_row_is_scrolled_to_once_so_its_group_closed_after_stays_closed() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    step(&mut h);
+    step(&mut h);
+    // Scrolled to, and the scroll's target let go.
+    assert!(row_shown(&h, "Block"));
+    assert_eq!(h.state().tabs()[0].selection().scroll_target(), None);
+    // The Bodies group closed with the face still selected: it stays closed.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Collapse Bodies")
+        .click();
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .query_by_label("Block")
+            .is_none()
+    );
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_properties_of_a_selected_face_edge_and_vertex_are_under_its_kind() {
+    // The selection view's section names each element's kind (`selectionProps`'s heading):
+    // FACE, EDGE, VERTEX, each in capitals as a section is.
+    use silico_app::selection::How;
+    let f = fixture();
+    let (mut h, _) = f.opened("box.silico", A_BOX);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step(&mut h);
+    let section = |h: &AppHarness, kind: &str| {
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .query_by_label(kind)
+            .is_some()
+    };
+    for (name, kind) in [
+        ("k7f2qx3m.box.Face3", "FACE"),
+        ("k7f2qx3m.box.Edge5", "EDGE"),
+        ("k7f2qx3m.box.Vertex2", "VERTEX"),
+    ] {
+        h.state_mut().tabs_mut()[0]
+            .selection_mut()
+            .pick(name, How::Replace);
+        assert_eq!(selected_names(&h), [name]);
+        step(&mut h);
+        step(&mut h);
+        assert!(section(&h, kind), "{name}: no {kind}");
+        assert!(!section(&h, "ELEMENT"), "{name}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// A fuse's history in which its base, a 1 mm cube, is the result, its Face1 and Edge1
 /// reported by nothing (Edge1 bounding Face1 alone), so both are named by their numbers,
 /// unstable (N3); the rest kept; the tool reported by nothing. By hand, as the core's

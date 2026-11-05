@@ -1073,7 +1073,9 @@ fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use silico_core::command::meshes::MeshElement;
     use silico_core::naming::{PrimitiveKind, TypeWord};
+    use silico_core::recompute::Key;
     use silico_core::selection::Pending;
 
     fn fid(id: &str) -> FeatureId {
@@ -1919,5 +1921,211 @@ mod tests {
         assert_eq!(states(&selection), [(alias.to_owned(), "found")]);
         let said = selection.said().unwrap();
         assert!(said.starts_with(CARRIED_GONE), "{said}");
+    }
+
+    #[test]
+    fn a_ctrl_click_of_a_selected_elements_other_stable_name_removes_it() {
+        // Fused plainly with a 2 mm tool, the first fuse keeps its base whole, so the second
+        // fuse's base Face1 is `aaaaaaaa.box.Face1`; that fuse aliases its 4 mm cube's Face1
+        // onto it (the core's `aliasing_fuse`), so the face has a second stable name,
+        // `cccccccc.box.Face1`. Each pick of a stable name is held as picked: two names, one
+        // element. A Ctrl-click of the second is of the element selected, and removes it.
+        let model = fused(2, 4);
+        let mut selection = Selection::default();
+        selection.published(Some((model, Revision::from_number(1).unwrap())), 1);
+        selection.pick("aaaaaaaa.box.Face1", How::Replace);
+        assert_eq!(
+            states(&selection),
+            [("aaaaaaaa.box.Face1".to_owned(), "found")]
+        );
+        let first = selection
+            .elements()
+            .next()
+            .unwrap()
+            .found()
+            .unwrap()
+            .clone();
+        assert!(first.stable());
+        assert_eq!(
+            (first.feature.as_str(), first.element),
+            ("ssssssss", face(1))
+        );
+        selection.pick("cccccccc.box.Face1", How::Toggle);
+        assert!(selection.is_empty(), "{:?}", selection.names());
+        assert_eq!(selection.said(), None);
+        // Picked again by it, it's held by the name picked this time.
+        selection.pick("cccccccc.box.Face1", How::Toggle);
+        assert_eq!(selection.names(), ["cccccccc.box.Face1"]);
+    }
+
+    #[test]
+    fn the_outlines_are_the_prototypes_selected_edge_blue_and_hovered_edge_white() {
+        // DESIGN.md's *Viewport*: "hover: … 3 pt white edges; selection: … 3.5 pt `#5b95ff`
+        // edges".
+        assert_eq!(
+            outlines(),
+            Outlines {
+                selected: [0x5b, 0x95, 0xff],
+                hovered: [0xff, 0xff, 0xff],
+            }
+        );
+    }
+
+    #[test]
+    fn the_click_distance_is_eguis_in_points_taken_to_pixels_at_two_pixels_a_point() {
+        // egui's click distance is 6 points: 12 pixels at 2 pixels a point. With no model
+        // built, a click is let go at once and said (CLICK_NO_MODEL), so what's said tells
+        // whether the press and release were taken for a click.
+        use LeftKind::{Press, Release};
+        let ctx = egui::Context::default();
+        assert_eq!(
+            ctx.options(|options| options.input_options.max_click_dist),
+            6.0
+        );
+        let clicked = |apart: f32| {
+            let mut selection = Selection::default();
+            let mut frame = frame_of(vec![
+                event(Press, [50.0, 50.0], false),
+                event(Release, [50.0 + apart, 50.0], false),
+            ]);
+            frame.pixels_per_point = 2.0;
+            selection.overlay(&mut View::default(), &frame, &ctx);
+            selection.said() == Some(CLICK_NO_MODEL)
+        };
+        assert!(clicked(0.0));
+        assert!(clicked(12.0));
+        assert!(!clicked(12.5));
+    }
+
+    fn mesh_element(name: Arc<Name>) -> MeshElement {
+        MeshElement {
+            name,
+            stable: true,
+            count: None,
+        }
+    }
+
+    /// Feature `feature`'s body, its faces named `faces` in its mesh's order (no edges): what
+    /// highlights and picks read of it.
+    fn view_body(feature: &str, faces: &[Arc<Name>]) -> ViewBody {
+        ViewBody {
+            feature: fid(feature),
+            key: Key::parse(&"01".repeat(32)).unwrap(),
+            level: 0.1,
+            deflection: 0.1,
+            bounds: None,
+            serves: [0.1, 0.2],
+            held: false,
+            mesh: Arc::new(silico_protocol::Mesh {
+                positions: Vec::new(),
+                normals: Vec::new(),
+                triangles: Vec::new(),
+                face_triangles: Vec::new(),
+                valid: None,
+                edge_points: Vec::new(),
+                edge_point_counts: Vec::new(),
+            }),
+            faces: faces.iter().cloned().map(mesh_element).collect(),
+            edges: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_hover_moving_onto_another_element_is_of_that_element() {
+        // Body 1's two faces; the pointer over Face1, then over Face2: the hover is Face2's.
+        let bodies = BTreeMap::from([(
+            1,
+            view_body(
+                "k7f2qx3m",
+                &[named("k7f2qx3m", face(1)), named("k7f2qx3m", face(2))],
+            ),
+        )]);
+        let rect = square([50.0, 50.0], [100, 100], 3);
+        let over = |n: u32| Picking {
+            frame: 1,
+            rect,
+            hit: Some(crate::renderer::Pick {
+                body: 1,
+                hit: Element::Face(n),
+                pixel: [50, 50],
+                point: None,
+            }),
+            edge: None,
+        };
+        let hovered = |selection: &Selection| {
+            selection
+                .hovered()
+                .map(|hovered| (hovered.body, hovered.element, hovered.name.to_string()))
+        };
+        let mut selection = Selection::default();
+        selection.hover_answered(&over(1), &bodies);
+        assert_eq!(
+            hovered(&selection),
+            Some((1, Element::Face(1), "k7f2qx3m.box.Face1".to_owned()))
+        );
+        selection.hover_answered(&over(2), &bodies);
+        assert_eq!(
+            hovered(&selection),
+            Some((1, Element::Face(2), "k7f2qx3m.box.Face2".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_feature_lights_its_bodys_every_face_or_else_the_faces_named_as_its_own() {
+        // Body 1, the fuse rrrrrrrr: its Face1 named as aaaaaaaa's, its Face2 as its own,
+        // its Face3 as bbbbbbbb's. Body 2, the box cccccccc: both faces its own.
+        use Element::Face;
+        let bodies = BTreeMap::from([
+            (
+                1,
+                view_body(
+                    "rrrrrrrr",
+                    &[
+                        named("aaaaaaaa", face(1)),
+                        named("rrrrrrrr", face(2)),
+                        named("bbbbbbbb", face(3)),
+                    ],
+                ),
+            ),
+            (
+                2,
+                view_body(
+                    "cccccccc",
+                    &[named("cccccccc", face(1)), named("cccccccc", face(2))],
+                ),
+            ),
+        ]);
+        let lit = |id: &str| highlights(&[Item::Feature(fid(id))], &bodies, None);
+        let set = |lit: &[(u32, Element)]| lit.iter().copied().collect::<BTreeSet<_>>();
+        // A body: its whole, and no other body's faces.
+        assert_eq!(
+            lit("rrrrrrrr"),
+            set(&[(1, Face(1)), (1, Face(2)), (1, Face(3))])
+        );
+        assert_eq!(lit("cccccccc"), set(&[(2, Face(1)), (2, Face(2))]));
+        // A feature consumed: the faces named as its own, in the body they're in.
+        assert_eq!(lit("aaaaaaaa"), set(&[(1, Face(1))]));
+        assert_eq!(lit("bbbbbbbb"), set(&[(1, Face(3))]));
+        assert_eq!(lit("zzzzzzzz"), set(&[]));
+        // An element is drawn only if the answer it's drawn by is of the bodies' model.
+        let of = (3, Revision::from_number(3).unwrap());
+        let element = |found_in| {
+            Item::Element(Picked {
+                name: "cccccccc.box.Face2".to_owned(),
+                state: State::Found(found("cccccccc", face(2), 0)),
+                carry: Carry::Pick,
+                found_in,
+            })
+        };
+        assert_eq!(
+            highlights(&[element(Some(of))], &bodies, Some(of)),
+            set(&[(2, Face(2))])
+        );
+        let older = (2, Revision::from_number(2).unwrap());
+        assert_eq!(
+            highlights(&[element(Some(older))], &bodies, Some(of)),
+            set(&[])
+        );
+        assert_eq!(highlights(&[element(Some(of))], &bodies, None), set(&[]));
     }
 }
