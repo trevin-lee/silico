@@ -700,22 +700,50 @@ mod tests {
         );
     }
 
+    /// Each pair of commands in `registry` that share a key, but Esc's (the nearest thing
+    /// first) and a key in Selection and in Sketch, groups that never apply at once:
+    /// Selection's keys are taken only with no sketch open, Sketch's only with one.
+    fn shared_keys(registry: &[Entry]) -> Vec<(Command, Command)> {
+        let mut keys: Vec<(KeyboardShortcut, &Entry)> = Vec::new();
+        for entry in registry {
+            for chord in entry.keys {
+                if let Chord::Key(shortcut) | Chord::Exact(shortcut) = chord {
+                    keys.push((*shortcut, entry));
+                }
+            }
+        }
+        let apart = |a: Group, b: Group| {
+            matches!(
+                (a, b),
+                (Group::Selection, Group::Sketch) | (Group::Sketch, Group::Selection)
+            )
+        };
+        let mut shared = Vec::new();
+        for (at, (shortcut, entry)) in keys.iter().enumerate() {
+            for (other, by) in &keys[at + 1..] {
+                if shortcut == other
+                    && shortcut.logical_key != Key::Escape
+                    && !apart(entry.group, by.group)
+                {
+                    shared.push((entry.command, by.command));
+                }
+            }
+        }
+        shared
+    }
+
     #[test]
     fn no_two_commands_share_a_key_but_escs_nearest_thing_first() {
         // DESIGN.md, *Keyboard*: Esc stops a dialog's preview, then cancels the dialog, then
-        // clears the selection, then stops the rebuild: one key, its order the app's.
+        // clears the selection, then stops the rebuild: one key, its order the app's. And X,
+        // Faces in Selection (outside sketches) and Construction in Sketch (while a sketch is
+        // open), groups that never apply at once.
+        assert_eq!(shared_keys(&REGISTRY), []);
         let mut keys: Vec<(KeyboardShortcut, Command)> = Vec::new();
         for entry in &REGISTRY {
             for chord in entry.keys {
                 if let Chord::Key(shortcut) | Chord::Exact(shortcut) = chord {
                     keys.push((*shortcut, entry.command));
-                }
-            }
-        }
-        for (at, (shortcut, command)) in keys.iter().enumerate() {
-            for (other, by) in &keys[at + 1..] {
-                if shortcut == other {
-                    assert_eq!(shortcut.logical_key, Key::Escape, "{command:?} and {by:?}");
                 }
             }
         }
@@ -727,6 +755,67 @@ mod tests {
         assert_eq!(
             escape,
             [Command::Stop, Command::ClearSelection, Command::Cancel]
+        );
+        let x: Vec<Command> = keys
+            .iter()
+            .filter(|(shortcut, _)| *shortcut == KeyboardShortcut::new(Modifiers::NONE, Key::X))
+            .map(|(_, command)| *command)
+            .collect();
+        assert_eq!(x, [Command::FilterFace, Command::Construction]);
+    }
+
+    #[test]
+    fn a_key_in_two_groups_is_refused_but_in_selection_and_sketch() {
+        static X: [Chord; 1] = [letter(Key::X)];
+        static ESC: [Chord; 1] = [ESCAPE];
+        let x_in = |command, group| entry(command, "X", group, &X, None);
+        // Selection's X and Sketch's, either way round: never at once.
+        for (a, b) in [
+            (Group::Selection, Group::Sketch),
+            (Group::Sketch, Group::Selection),
+        ] {
+            assert_eq!(
+                shared_keys(&[x_in(Command::FilterFace, a), x_in(Command::Construction, b)]),
+                [],
+                "{a:?} and {b:?}"
+            );
+        }
+        // Any other two groups, or two in one of them, refused: either of the pair with a
+        // group that applies at the same time, or two of Selection's, or two of Sketch's.
+        for (a, b) in [
+            (Group::Selection, Group::View),
+            (Group::Edit, Group::Selection),
+            (Group::Sketch, Group::Dialogs),
+            (Group::Help, Group::Sketch),
+            (Group::Selection, Group::Selection),
+            (Group::Sketch, Group::Sketch),
+            (Group::File, Group::Rebuild),
+        ] {
+            assert_eq!(
+                shared_keys(&[x_in(Command::FilterFace, a), x_in(Command::Construction, b)]),
+                [(Command::FilterFace, Command::Construction)],
+                "{a:?} and {b:?}"
+            );
+        }
+        // A third with the key, in View, refused against each of the pair the groups let be.
+        assert_eq!(
+            shared_keys(&[
+                x_in(Command::FilterFace, Group::Selection),
+                x_in(Command::Construction, Group::Sketch),
+                x_in(Command::Hide, Group::View),
+            ]),
+            [
+                (Command::FilterFace, Command::Hide),
+                (Command::Construction, Command::Hide)
+            ]
+        );
+        // Esc, the nearest thing first, shared in any groups.
+        assert_eq!(
+            shared_keys(&[
+                entry(Command::Stop, "Stop", Group::Rebuild, &ESC, None),
+                entry(Command::Cancel, "Cancel", Group::Dialogs, &ESC, None),
+            ]),
+            []
         );
     }
 

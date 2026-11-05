@@ -1060,11 +1060,9 @@ mod tests {
             css::RED,
         );
         // The selection's words aren't said while the sketch's line is.
-        assert!(
-            !painted(&h)
-                .into_iter()
-                .any(|shape| matches!(shape, Shape::Text(shown) if shown.galley.text() == "2 selected"))
-        );
+        assert!(!painted(&h).into_iter().any(
+            |shape| matches!(shape, Shape::Text(shown) if shown.galley.text() == "2 selected")
+        ));
         // Off the canvas, a dash in the same 150; before the sketch is read, no state and
         // no separator for it.
         if let Some(line) = h.state_mut().sketch.as_mut() {

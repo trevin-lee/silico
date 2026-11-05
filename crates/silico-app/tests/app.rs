@@ -25568,3 +25568,73 @@ fn a_press_after_the_camera_moved_under_a_still_pointer_isnt_decided_by_the_hove
     );
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- #394's filter keys with sketch mode: X, E, and V filter only with no sketch open ----
+
+#[test]
+fn x_with_a_sketch_open_is_construction_and_e_and_v_leave_the_filter_be() {
+    use eframe::egui::Key;
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    let filter = |h: &AppHarness| h.state().tabs()[0].selection().filter;
+    let every = silico_app::selection::Filter::default();
+    assert_eq!(filter(&h), every);
+    assert!(!sketch_mode(&h).unwrap().settings.construction);
+    // X: Construction on, the filter as it was; again, off.
+    h.key_press(Key::X);
+    step(&mut h);
+    assert!(sketch_mode(&h).unwrap().settings.construction);
+    assert_eq!(filter(&h), every);
+    h.key_press(Key::X);
+    step(&mut h);
+    assert!(!sketch_mode(&h).unwrap().settings.construction);
+    assert_eq!(filter(&h), every);
+    // E and V: nothing of the filter's, nor of Construction's.
+    for key in [Key::E, Key::V] {
+        h.key_press(key);
+        step(&mut h);
+        assert_eq!(filter(&h), every, "{key:?}");
+        assert!(!sketch_mode(&h).unwrap().settings.construction, "{key:?}");
+    }
+    // A filter set before the sketch opened is kept through its X, E, and V too.
+    let faces_off = silico_app::selection::Filter {
+        faces: false,
+        ..every
+    };
+    h.state_mut().tabs_mut()[0].selection_mut().filter = faces_off;
+    for key in [Key::X, Key::E, Key::V] {
+        h.key_press(key);
+        step(&mut h);
+    }
+    assert_eq!(filter(&h), faces_off);
+    assert!(sketch_mode(&h).unwrap().settings.construction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn x_e_and_v_filter_the_selection_once_the_sketch_is_left() {
+    use eframe::egui::Key;
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    leave_sketch(&mut h, false);
+    let kinds = |h: &AppHarness| {
+        let filter = h.state().tabs()[0].selection().filter;
+        (filter.faces, filter.edges, filter.vertices)
+    };
+    assert_eq!(kinds(&h), (true, true, true));
+    // No sketch open: X faces, E edges, V vertices, each toggled in turn; no sketch opened.
+    h.key_press(Key::X);
+    step(&mut h);
+    assert_eq!(kinds(&h), (false, true, true));
+    h.key_press(Key::E);
+    step(&mut h);
+    assert_eq!(kinds(&h), (false, false, true));
+    h.key_press(Key::V);
+    step(&mut h);
+    assert_eq!(kinds(&h), (false, false, false));
+    h.key_press(Key::X);
+    step(&mut h);
+    assert_eq!(kinds(&h), (true, false, false));
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}

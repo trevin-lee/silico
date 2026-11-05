@@ -819,11 +819,11 @@ mod tests {
         let h = sheet("");
         let inside = frame_of(&h).shrink(css::BORDER);
         let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
-        // The tallest column: View's and Selection's, their 14 rows and a gap (372, by hand;
+        // The tallest column: View's and Selection's, their 17 rows and a gap (438, by hand;
         // File's, Edit's, and Rebuild's are 323, and Dialogs', Sketch's, and Help's 367).
         let title = css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN;
-        let tallest = top + 2.0 * title + 14.0 * css::ROW_H + css::GROUP_GAP;
-        assert!(near(tallest - top, 372.0));
+        let tallest = top + 2.0 * title + 17.0 * css::ROW_H + css::GROUP_GAP;
+        assert!(near(tallest - top, 438.0));
         let rule = tallest + css::NOTE_TOP;
         let ruled = painted(&h).into_iter().any(|shape| match shape {
             egui::Shape::LineSegment { points, stroke } => {
@@ -1138,6 +1138,47 @@ mod tests {
             font(&note, css::TITLE_FS, words);
             assert_eq!(colour(&note), css::G550);
             assert_eq!(note.galley.job.sections[0].format.extra_letter_spacing, 0.0);
+        }
+    }
+
+    #[test]
+    fn x_is_listed_under_selection_as_faces_and_under_sketch_as_construction() {
+        // One key in two groups that never apply at once (the registry's one exception):
+        // the sheet lists each row with its own X, Faces in Selection's column (the second,
+        // under View) and Construction in Sketch's (the third, under Dialogs, above Help).
+        let h = sheet("");
+        let one = |text: &str| {
+            let mut found = texts(&h, text);
+            assert_eq!(found.len(), 1, "{text}");
+            found.remove(0)
+        };
+        let middle = |shown: &TextShape| shown.pos.y + shown.galley.size().y / 2.0;
+        let (selection, sketch, help) = (one("SELECTION"), one("SKETCH"), one("HELP"));
+        let (faces, construction) = (one("Faces"), one("Construction"));
+        assert!(near(faces.pos.x, selection.pos.x), "{:?}", faces.pos);
+        assert!(faces.pos.y > selection.pos.y, "{:?}", faces.pos);
+        assert!(
+            near(construction.pos.x, sketch.pos.x),
+            "{:?}",
+            construction.pos
+        );
+        assert!(
+            sketch.pos.y < construction.pos.y && construction.pos.y < help.pos.y,
+            "{:?}",
+            construction.pos
+        );
+        assert!(selection.pos.x < sketch.pos.x);
+        // Two X caps, one on each row's line (within its 22), right of its name.
+        let caps = texts(&h, "X");
+        assert_eq!(caps.len(), 2);
+        for row in [&faces, &construction] {
+            let on_line: Vec<&TextShape> = caps
+                .iter()
+                .filter(|cap| {
+                    (middle(cap) - middle(row)).abs() < css::ROW_H / 2.0 && cap.pos.x > row.pos.x
+                })
+                .collect();
+            assert_eq!(on_line.len(), 1, "{:?}", row.galley.text());
         }
     }
 }

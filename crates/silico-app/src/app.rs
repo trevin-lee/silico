@@ -1098,12 +1098,12 @@ impl<P: Clients + 'static> App<P> {
         let sketch_enter = sketch_keys
             && ui.input(|input| !input.modifiers.shift && !input.modifiers.alt)
             && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
-        // SEAM(#351): `in_sketch` once the sketch's own keys are in (the wiring's X is
-        // Construction); until then the filters are taken in a sketch too.
+        // The selection filters' X, E, and V, only with no sketch open: a sketch's X is
+        // Construction, taken above, and its picking is its own.
         let filters = if typing {
             Vec::new()
         } else {
-            filter_keys(ui, false)
+            filter_keys(ui, in_sketch)
         };
         // F5: where the filters are (the prototype's, no command of the registry's).
         let filters_said =
