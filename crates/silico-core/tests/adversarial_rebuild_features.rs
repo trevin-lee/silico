@@ -837,6 +837,81 @@ fn a_pad_refused_by_its_plan_waits_queued_until_its_bases_check_is_decided() {
     }
 }
 
+/// Which of two jobs ready at once reaches the kernel first: the pad's measure, or the cut's
+/// step. The recompute queues a feature's measure as its solid is made, and makes a step
+/// ready once its last input is: so the cut is ready after the measure if the pin is made
+/// after the pad, and with it if before, its own thread then racing the measure's to the
+/// kernel. Either can come first.
+#[derive(Debug, Clone, Copy)]
+enum First {
+    Measure,
+    Cut,
+}
+
+/// A fake kernel that holds back each request named `held_back` from the kernel, on the
+/// recompute's thread that submits it, until a request `after` picks has started: so two
+/// jobs reach the kernel in the order a test sets, not in the order the recompute's
+/// threads happen to take them. Given up after [`WAIT`], so a wrong order is told by the
+/// calls' order, not a hang.
+struct InOrder {
+    fake: FakeKernel,
+    held_back: &'static str,
+    after: fn(&Op) -> bool,
+}
+
+impl InOrder {
+    /// `fake`, with `first`'s job brought to it before the other's: the cut's step held
+    /// back until the pad's measure has started, or every measure until the cut's step
+    /// has (a request's operation isn't readable here, only its name, and no step measures
+    /// anything).
+    fn new(fake: FakeKernel, first: First) -> Self {
+        let (held_back, after): (_, fn(&Op) -> bool) = match first {
+            First::Measure => ("Cut", measures_the_pad),
+            First::Cut => ("Summarize", is_cut),
+        };
+        Self {
+            fake,
+            held_back,
+            after,
+        }
+    }
+}
+
+impl silico_core::kernel::Kernel for InOrder {
+    fn identity(&self) -> &str {
+        self.fake.identity()
+    }
+
+    fn generation(&self) -> silico_core::kernel::Generation {
+        self.fake.generation()
+    }
+
+    fn advance(&self, generation: silico_core::kernel::Generation) {
+        self.fake.advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: silico_core::kernel::Generation,
+        request: silico_core::kernel::KernelRequest<T>,
+    ) -> silico_core::pool::Pending<T> {
+        if request.name() == self.held_back {
+            let deadline = std::time::Instant::now() + WAIT;
+            while std::time::Instant::now() < deadline
+                && !self.fake.calls().iter().any(|call| (self.after)(&call.op))
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        self.fake.submit(generation, request)
+    }
+}
+
+/// Where the first request `picks` picks started among `fake`'s calls.
+fn started_at(fake: &FakeKernel, picks: impl Fn(&Op) -> bool) -> Option<usize> {
+    fake.calls().iter().position(|call| picks(&call.op))
+}
+
 #[test]
 fn a_cut_whose_own_step_fails_waits_queued_until_its_bases_check_is_decided() {
     // The square padded onto the block (p1), its measure held, and a pin cut from p1, the
@@ -847,85 +922,104 @@ fn a_cut_whose_own_step_fails_waits_queued_until_its_bases_check_is_decided() {
     // refused, p1 fails and the cut is blocked, never failed on the way; or p1's measure let
     // go, the cut fails. Before, the cut read failed, and was failed until the model said
     // blocked at the end. A ball on its own branch, held, keeps the rebuild running while
-    // the outcome is read.
+    // the outcome is read. Both orders the cut and p1's measure may reach the kernel in are
+    // each forced ([`InOrder`]).
+    //
+    // Three workers: the ball's and p1's measure each hold one, and the cut needs its own
+    // while they're held. On two, a cut reaching the kernel after p1's measure waited
+    // behind both holds until p1's measure was let go, so its step never settled with the
+    // measure held (CI run 42015885433).
     let pin = r#"{"id": "c0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 20}"#;
     let hole = r#"{"id": "m0000001", "type": "cut", "v": 1, "name": "Hole", "base": "p0000001", "tool": "c0000001"}"#;
-    for check_fails in [true, false] {
-        let engine = faked();
-        engine.kernel().refuse(move |op| {
-            if check_fails && measures_the_pad(op) {
-                return Some(Error::new(
-                    ErrorCode::KernelFailed,
-                    "the pad's Summarize failed",
-                ));
-            }
-            matches!(
-                op,
-                Op::Boolean {
-                    op: silico_core::kernel::BooleanOp::Cut,
-                    ..
+    for first in [First::Measure, First::Cut] {
+        for check_fails in [true, false] {
+            let at = format!("{first:?} first, the check failing: {check_fails}");
+            let engine = Recompute::new(InOrder::new(FakeKernel::new(3).unwrap(), first))
+                .with_sketches(FakeSketches::new());
+            let fake = &engine.kernel().fake;
+            fake.refuse(move |op| {
+                if check_fails && measures_the_pad(op) {
+                    return Some(Error::new(
+                        ErrorCode::KernelFailed,
+                        "the pad's Summarize failed",
+                    ));
                 }
-            )
-            .then(|| Error::new(ErrorCode::KernelFailed, "the cut failed"))
-        });
-        let measure = engine.kernel().hold(measures_the_pad);
-        let ball = engine
-            .kernel()
-            .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
-        let run = engine.start(document(&[SQUARE, BLOCK, ON_BLOCK, pin, hole, BALL]));
-        let progress = run.progress();
-        let copies = copied_until_ended(&progress);
-        // Every step settled but the ball's, the cut's refused among them; the pad's measure
-        // held.
-        until(&progress, |count| {
-            count.steps > 0 && count.done + 1 == count.steps
-        });
-        until_the_pad_is_measured(&engine);
-        assert_eq!(
-            states_of(&progress.now().features),
-            [Built, Built, Built, Built, Queued, Running]
-        );
-        measure.release();
-        // Said while the rebuild runs, not only by its model at the end.
-        let mid = if check_fails {
-            [Built, Built, Failed, Built, Blocked, Running]
-        } else {
-            [Built, Built, Built, Built, Failed, Running]
-        };
-        until(&progress, |count| states_of(&count.features) == mid);
-        assert!(!progress.now().ended);
-        ball.release();
-        let Ok(RunOutcome::Published(model)) = run.wait() else {
-            panic!("not published");
-        };
-        let copies = copies.join().unwrap();
-        never_back(&copies).unwrap();
-        let id = silico_core::document::FeatureId::new("m0000001").unwrap();
-        let said = model.outcome(&id);
-        let want = if check_fails {
-            assert!(
-                matches!(
-                    said,
-                    Some(silico_core::recompute::FeatureOutcome::Blocked { .. })
-                ),
-                "{said:?}"
+                is_cut(op).then(|| Error::new(ErrorCode::KernelFailed, "the cut failed"))
+            });
+            let measure = fake.hold(measures_the_pad);
+            let ball = fake.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
+            let run = engine.start(document(&[SQUARE, BLOCK, ON_BLOCK, pin, hole, BALL]));
+            let progress = run.progress();
+            let copies = copied_until_ended(&progress);
+            // Every step settled but the ball's, the cut's refused among them; the pad's
+            // measure held.
+            until(&progress, |count| {
+                count.steps > 0 && count.done + 1 == count.steps
+            });
+            let deadline = std::time::Instant::now() + WAIT;
+            while started_at(fake, measures_the_pad).is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{at}: the pad's measure never started"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // In the order forced.
+            let (measured, cut) = (
+                started_at(fake, measures_the_pad).unwrap(),
+                started_at(fake, is_cut).unwrap(),
             );
-            assert!(
-                copies.iter().all(|c| c.features.get(&id) != Some(Failed)),
-                "the cut read failed on its way to blocked"
+            match first {
+                First::Measure => assert!(measured < cut, "{at}: {measured} {cut}"),
+                First::Cut => assert!(cut < measured, "{at}: {cut} {measured}"),
+            }
+            assert_eq!(
+                states_of(&progress.now().features),
+                [Built, Built, Built, Built, Queued, Running],
+                "{at}"
             );
-            [Built, Built, Failed, Built, Blocked, Built]
-        } else {
-            assert!(
-                matches!(
-                    said,
-                    Some(silico_core::recompute::FeatureOutcome::Failed(_))
-                ),
-                "{said:?}"
-            );
-            [Built, Built, Built, Built, Failed, Built]
-        };
-        assert_eq!(states_of(&progress.now().features), want);
+            measure.release();
+            // Said while the rebuild runs, not only by its model at the end.
+            let mid = if check_fails {
+                [Built, Built, Failed, Built, Blocked, Running]
+            } else {
+                [Built, Built, Built, Built, Failed, Running]
+            };
+            until(&progress, |count| states_of(&count.features) == mid);
+            assert!(!progress.now().ended, "{at}");
+            ball.release();
+            let Ok(RunOutcome::Published(model)) = run.wait() else {
+                panic!("{at}: not published");
+            };
+            let copies = copies.join().unwrap();
+            never_back(&copies).unwrap();
+            let id = silico_core::document::FeatureId::new("m0000001").unwrap();
+            let said = model.outcome(&id);
+            let want = if check_fails {
+                assert!(
+                    matches!(
+                        said,
+                        Some(silico_core::recompute::FeatureOutcome::Blocked { .. })
+                    ),
+                    "{at}: {said:?}"
+                );
+                assert!(
+                    copies.iter().all(|c| c.features.get(&id) != Some(Failed)),
+                    "{at}: the cut read failed on its way to blocked"
+                );
+                [Built, Built, Failed, Built, Blocked, Built]
+            } else {
+                assert!(
+                    matches!(
+                        said,
+                        Some(silico_core::recompute::FeatureOutcome::Failed(_))
+                    ),
+                    "{at}: {said:?}"
+                );
+                [Built, Built, Built, Built, Failed, Built]
+            };
+            assert_eq!(states_of(&progress.now().features), want, "{at}");
+        }
     }
 }
 
