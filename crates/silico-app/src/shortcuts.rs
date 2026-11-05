@@ -764,6 +764,12 @@ mod tests {
         assert_eq!(Command::Front.keys_text(&nix), "Ctrl+1");
         assert_eq!(Command::Redo.shown(&nix), Some(command(Key::Y)));
         assert_eq!(Command::Redo.shown(&mac), Some(key(SHIFT_COMMAND, Key::Z)));
+        // `KEYNAME.Del`: ⌫ on macOS (its Backspace), Del elsewhere (Delete); F2 as it is.
+        assert_eq!(Command::Delete.caps(&mac), ["⌫"]);
+        assert_eq!(Command::Delete.caps(&nix), ["Del"]);
+        assert_eq!(Command::Delete.caps(&windows), ["Del"]);
+        assert_eq!(Command::Rename.caps(&mac), ["F2"]);
+        assert_eq!(Command::Rename.caps(&nix), ["F2"]);
     }
 
     #[test]
