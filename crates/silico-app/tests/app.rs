@@ -18845,6 +18845,20 @@ fn published_of_with_meshes_held(
     field: &str,
     value: &str,
 ) {
+    published_of_with_meshes_held_once(f, h, id, field, value, |_| true);
+}
+
+/// [`published_of_with_meshes_held`], its frame taken only once the session's published
+/// model is `ready` (its names settled, say): so the app reads the model in that frame as
+/// it is then.
+fn published_of_with_meshes_held_once(
+    f: &Fixture,
+    h: &mut AppHarness,
+    id: &str,
+    field: &str,
+    value: &str,
+    ready: impl Fn(&silico_core::recompute::Model) -> bool,
+) {
     let (models, revision) = models_and_revision(f, h);
     let session = h.state().tabs()[0].id;
     let edited = f
@@ -18865,12 +18879,11 @@ fn published_of_with_meshes_held(
         .published(&session)
         .result
         .ok()
-        .map(|published| published.revision)
-        != Some(after)
+        .is_none_or(|published| published.revision != after || !ready(&published.model))
     {
         assert!(
             Instant::now() < deadline,
-            "the edit's model was never published"
+            "the edit's model was never published, or never ready"
         );
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -19069,11 +19082,12 @@ fn what_a_rebuild_left_gone_is_said_over_a_click_let_go_by_the_same_model() {
     // that's gone, not an element the selection never had an answer for.
     found_as_faces_until(&mut h, &["rrrrrrrr.fuse.Face1"]);
     click_canvas(&mut h, at, true);
-    // The tool 3 long: the click is let go, and the face is gone; what's said is that, once
-    // the background has named the new model (till then, the selection waits on it).
-    published_of_with_meshes_held(&f, &mut h, "bbbbbbbb", "length", "3");
-    step_until(&mut h, "the selection answered on the new model", |h| {
-        selected_names(h).is_empty()
+    // The tool 3 long, its frame taken once the background has named the fuse in it: in
+    // that one frame, the click is let go and the face is gone; what's said is that, the
+    // carry's word said over the click's.
+    let fuse = silico_core::document::FeatureId::new("rrrrrrrr").unwrap();
+    published_of_with_meshes_held_once(&f, &mut h, "bbbbbbbb", "length", "3", |model| {
+        model.named_element_map(&fuse).is_some()
     });
     assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
     let said = selection_said(&h).unwrap();
