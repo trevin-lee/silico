@@ -606,6 +606,39 @@ pub fn take(ui: &mut Ui, command: Command) -> bool {
     taken
 }
 
+/// Whether `command` was pressed this frame by any of its chords, as [`take`] would find
+/// it, taking nothing.
+pub fn pressed(ctx: &egui::Context, command: Command) -> bool {
+    ctx.input(|input| {
+        command.entry().keys.iter().any(|chord| {
+            input.events.iter().any(|event| match (chord, event) {
+                (
+                    Chord::Key(shortcut),
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    },
+                ) => {
+                    *key == shortcut.logical_key && modifiers.matches_logically(shortcut.modifiers)
+                }
+                (
+                    Chord::Exact(shortcut),
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    },
+                ) => *key == shortcut.logical_key && *modifiers == shortcut.modifiers,
+                _ => false,
+            })
+        })
+    })
+}
+
 /// Whether `chord` was pressed this frame, taking it if so.
 fn take_chord(ui: &mut Ui, chord: Chord) -> bool {
     match chord {

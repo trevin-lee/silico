@@ -52,8 +52,8 @@ pub struct Renaming {
     /// Whether it's typed over whole still: until the person first types, deletes, or moves
     /// in it.
     whole: bool,
-    /// Where the field was last drawn: a press of the pointer outside it finishes the name
-    /// before anything else the press does ([`clicked_away`]).
+    /// Where the field was last drawn, clipped to what shows of it: a press of the pointer
+    /// outside it finishes the name before anything else the press does ([`clicked_away`]).
     rect: Option<Rect>,
 }
 
@@ -68,6 +68,12 @@ impl Renaming {
             whole: true,
             rect: None,
         }
+    }
+
+    /// Whether its field has had the focus: from then on, the name typed in it is sent
+    /// when it's left (Enter, a click away, or a command's shortcut).
+    pub fn focused(&self) -> bool {
+        self.focused
     }
 }
 
@@ -277,7 +283,8 @@ fn width(ui: &Ui, head: &egui::Galley, shown: &[(Shown, Lines)]) -> f32 {
             let sub = lines.sub.as_ref().map_or(0.0, |sub| {
                 theme::MENU_ITEM_GAP + theme::MENU_ITEM_SUB_MARGIN + sub.size().x
             });
-            // `.sc`, at the right, is there with no keys too: its gap and its padding.
+            // `.sc`, at the right, is there with no keys too: its gap and its padding. Its
+            // caps sit in one `.keys` span, 2 apart (`.keys { gap: 2px }`).
             2.0 * theme::MENU_ITEM_PADDING
                 + ICON_SIZE
                 + theme::MENU_ITEM_GAP
@@ -285,17 +292,13 @@ fn width(ui: &Ui, head: &egui::Galley, shown: &[(Shown, Lines)]) -> f32 {
                 + sub
                 + theme::MENU_ITEM_GAP
                 + theme::MENU_KEYS_PADDING
-                + crate::start::key_caps_width_spaced(ui, &shown.caps, MENU_KEY_CAP_GAP)
+                + crate::start::key_caps_width_spaced(ui, &shown.caps, theme::KEY_CAP_GAP)
         })
         .fold(
             least.max(head.size().x + 2.0 * theme::MENU_ITEM_PADDING),
             f32::max,
         )
 }
-
-/// The gap between an item's caps: none (the prototype's caps sit side by side in one
-/// `.keys` span, the only child of `.sc`).
-const MENU_KEY_CAP_GAP: f32 = 0.0;
 
 /// An item's words laid out: its label's and its dim gesture's.
 struct Lines {
@@ -378,8 +381,8 @@ fn said(ctx: &egui::Context, shown: &Shown) -> String {
 /// One item (`.menu .mi`), `width` wide, on or off: its icon or its spacer, its words, its
 /// gesture dim after them, and its caps at its right. Hovered (or focused, the prototype's
 /// `.kfocus`) it's filled blue; off, its words are Gray.400 and its reason is its hover text
-/// and its description for a screen reader; Delete's words are red (`.danger`). Whether it
-/// was clicked.
+/// and its description for a screen reader; Delete's words are red (`.danger`), off too.
+/// Whether it was clicked.
 fn item(ui: &mut Ui, shown: &Shown, lines: Lines, width: f32) -> bool {
     let said = said(ui.ctx(), shown);
     // Painted at the menu's opacity, not faded further when off: `.menu .mi:disabled` is
@@ -396,13 +399,15 @@ fn item(ui: &mut Ui, shown: &Shown, lines: Lines, width: f32) -> bool {
         }
         let lit = enabled && (response.hovered() || response.has_focus());
         // `.menu .mi:hover:not(:disabled)` outweighs `.danger` (a class and two
-        // pseudo-classes to two classes), so a hovered Delete is lit as the others are.
+        // pseudo-classes to two classes), so a hovered Delete is lit as the others are;
+        // `.danger` comes after `.menu .mi:disabled`, of the same weight, so an off Delete
+        // is red still.
         let ink = if lit {
             theme::MENU_ITEM_HOVER_TEXT
-        } else if !enabled {
-            theme::TEXT_DISABLED
         } else if shown.item == Item::Delete {
             theme::ERROR_TEXT
+        } else if !enabled {
+            theme::TEXT_DISABLED
         } else {
             theme::MENU_ITEM_TEXT
         };
@@ -439,7 +444,7 @@ fn item(ui: &mut Ui, shown: &Shown, lines: Lines, width: f32) -> bool {
         }
         if !shown.caps.is_empty() {
             // `.menu .mi:hover .kbd`: no fill, a faint white outline, the item's words'
-            // colour; else `.kbd`'s own, off or on.
+            // colour; else `.kbd`'s own, off or on. 2 apart, as `.keys` sets them.
             let colours = if lit {
                 (
                     Color32::TRANSPARENT,
@@ -458,7 +463,7 @@ fn item(ui: &mut Ui, shown: &Shown, lines: Lines, width: f32) -> bool {
                 Pos2::new(rect.right() - theme::MENU_ITEM_PADDING, middle),
                 &shown.caps,
                 colours,
-                MENU_KEY_CAP_GAP,
+                theme::KEY_CAP_GAP,
             );
         }
         response
@@ -644,7 +649,9 @@ pub fn field(ui: &mut Ui, renaming: &mut Renaming, rect: egui::Rect, name: &str)
     let edit = egui::TextEdit::singleline(&mut renaming.text);
     let edit = theme::field(ui, edit, salt, kind, false);
     let response = ui.put(rect, edit);
-    renaming.rect = Some(response.rect);
+    // Where it shows, clipped to its pane (the browser's scrolled rows): a field scrolled
+    // out of view is clipped to nothing, so any press is away from it.
+    renaming.rect = Some(response.interact_rect);
     let label = format!("Rename {name}");
     ui.ctx().accesskit_node_builder(response.id, |node| {
         node.set_label(label);
@@ -659,8 +666,9 @@ pub fn field(ui: &mut Ui, renaming: &mut Renaming, rect: egui::Rect, name: &str)
 
 /// Whether `events` hold the person's first edit of a name typed over whole: `Some(true)`
 /// for one that replaces it (a letter typed, a paste, an input method's text composed or
-/// committed, or Del or ⌫), `Some(false)` for one that keeps it (a key that moves, a
-/// click in it), or none yet.
+/// committed, or Del or ⌫), `Some(false)` for one that keeps it (a key that moves the
+/// cursor, a click in it), or none yet. A letter's key comes before its text, and its text
+/// decides.
 fn first_edit(events: &[egui::Event]) -> Option<bool> {
     events.iter().find_map(|event| match event {
         egui::Event::Text(_) | egui::Event::Paste(_) => Some(true),
@@ -675,7 +683,19 @@ fn first_edit(events: &[egui::Event]) -> Option<bool> {
             modifiers,
             ..
         } if modifiers.is_none() => Some(true),
-        egui::Event::Key { pressed: true, .. } => Some(false),
+        egui::Event::Key {
+            key:
+                egui::Key::ArrowLeft
+                | egui::Key::ArrowRight
+                | egui::Key::ArrowUp
+                | egui::Key::ArrowDown
+                | egui::Key::Home
+                | egui::Key::End
+                | egui::Key::PageUp
+                | egui::Key::PageDown,
+            pressed: true,
+            ..
+        } => Some(false),
         egui::Event::PointerButton { pressed: true, .. } => Some(false),
         _ => None,
     })
@@ -783,6 +803,8 @@ mod tests {
         /// `.kbd`: 16 high; `.menu .mi:hover .kbd`: `border-color: rgba(255,255,255,.35)`,
         /// no fill.
         const KBD_H: f32 = 16.0;
+        /// `.keys`: `gap: 2px` between one shortcut's caps.
+        const KEYS_GAP: f32 = 2.0;
         const KBD_HOVER_BORDER: [u8; 4] = [255, 255, 255, 89];
         /// `.menu .mh`: `padding: 6px 8px 2px; font-size: 10px`, Gray.550, on the body's 16
         /// line; `.menu .msep`: `height: 1px; margin: 4px 0`, Gray.250.
@@ -987,7 +1009,7 @@ mod tests {
         }
 
         #[test]
-        fn a_menu_of_short_items_is_as_wide_as_the_menus_least_and_an_off_delete_is_grey() {
+        fn a_menu_of_short_items_is_as_wide_as_the_menus_least_and_an_off_delete_is_red() {
             let mut h = Harness::builder()
                 .with_size(Vec2::new(600.0, 400.0))
                 .build_ui(|ui| {
@@ -1006,13 +1028,39 @@ mod tests {
                 rename.width(),
                 MENU_MIN_W - 2.0 * (MENU_PAD + css::BORDER)
             ));
-            // `.menu .mi:disabled`'s Gray.400, not `.danger`'s red: the prototype never
-            // shows Delete off, and an off item must read as off.
-            same_colour(
-                colour(&text_shape(&h, "Delete")),
-                css::G400,
-                "an off Delete",
-            );
+            // `.danger`'s red, not `.menu .mi:disabled`'s Gray.400: of the same weight,
+            // `.danger` comes after it in styles.css.
+            same_colour(colour(&text_shape(&h, "Delete")), css::RED, "an off Delete");
+        }
+
+        #[test]
+        fn an_items_caps_are_2_apart_as_keys_sets_them() {
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(600.0, 400.0))
+                .build_ui(|ui| {
+                    draw(
+                        ui,
+                        "Block",
+                        vec![shown(Item::Rename, "Rename", None, &["Shift", "F2"])],
+                    );
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(4);
+            let item = widget(&h, Role::Button, "Rename Shift+F2");
+            let mut caps: Vec<Rect> = rects(&h)
+                .into_iter()
+                .filter(|shape| {
+                    shape.stroke.width == css::BORDER
+                        && item.contains_rect(shape.rect)
+                        && near(shape.rect.height(), KBD_H)
+                })
+                .map(|shape| shape.rect)
+                .collect();
+            caps.sort_by(|a, b| a.left().total_cmp(&b.left()));
+            assert_eq!(caps.len(), 2, "{caps:?}");
+            // `.keys { gap: 2px }`, the last cap at the item's right less its padding.
+            assert!(near(caps[1].left() - caps[0].right(), KEYS_GAP), "{caps:?}");
+            assert!(near(caps[1].right(), item.right() - MI_PAD), "{caps:?}");
         }
 
         #[test]
@@ -1054,6 +1102,44 @@ mod tests {
                 "Rename, as wide as the widest",
             );
             assert!(near(delete.width(), want));
+        }
+    }
+
+    #[test]
+    fn a_letters_key_leaves_its_text_to_decide_and_only_a_key_that_moves_keeps_the_name() {
+        use egui::{Event, Key, Modifiers};
+        let key = |key| Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        // A real keystroke: the letter's key, then its text, which replaces the name.
+        assert_eq!(
+            first_edit(&[key(Key::D), Event::Text("D".to_owned())]),
+            Some(true)
+        );
+        assert_eq!(first_edit(&[key(Key::D)]), None);
+        assert_eq!(first_edit(&[key(Key::Enter)]), None);
+        for moves in [
+            Key::ArrowLeft,
+            Key::ArrowRight,
+            Key::ArrowUp,
+            Key::ArrowDown,
+            Key::Home,
+            Key::End,
+            Key::PageUp,
+            Key::PageDown,
+        ] {
+            assert_eq!(
+                first_edit(&[key(moves), Event::Text("D".to_owned())]),
+                Some(false),
+                "{moves:?}"
+            );
+        }
+        for deletes in [Key::Backspace, Key::Delete] {
+            assert_eq!(first_edit(&[key(deletes)]), Some(true), "{deletes:?}");
         }
     }
 

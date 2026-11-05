@@ -23626,3 +23626,168 @@ fn a_name_typed_in_the_frame_its_field_first_has_the_focus_replaces_it_whole() {
     );
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn ctrl_s_with_a_name_being_typed_sends_it_first_and_saves_it() {
+    let f = fixture();
+    let mut h = opened_themed(&f, "example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let path = PathBuf::from(h.state().tabs()[0].path.clone().unwrap());
+    // The document as it was opened, nothing to save but the name being typed: Ctrl+S
+    // sends the name, as Enter would, then saves it.
+    f2_typed(&mut h, "Pin", "Dowel");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    step_until(&mut h, "saved", |h| {
+        h.state().tabs()[0].saves == 1 && !h.state().tabs()[0].unsettled()
+    });
+    settled(&mut h);
+    assert!(rename_field(&h, "Pin").is_none(), "the field closed");
+    assert_eq!(names_in(&path), ["Block", "Dowel", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_w_with_a_name_being_typed_sends_it_first_so_closing_asks_to_save_it() {
+    let f = fixture();
+    let mut h = opened_themed(&f, "example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    // A document with no edits but the name being typed: Ctrl+W sends the name first, so
+    // the tab holds an edit, and its close asks, as × does.
+    f2_typed(&mut h, "Pin", "Dowel");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    step_until(&mut h, "the close question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(
+        h.state().tabs()[0]
+            .sent
+            .contains(&Sent::Edit("name".to_owned())),
+        "{:?}",
+        h.state().tabs()[0].sent
+    );
+    h.key_press(Key::Escape);
+    step_until(&mut h, "no question", |h| {
+        !anywhere(h, "Save changes to example.silico before closing?")
+    });
+    settled(&mut h);
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(shows(&h, "Timeline", "Dowel"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_letters_key_then_its_text_in_the_fields_first_focused_frame_replaces_the_name_whole() {
+    use eframe::egui::Event;
+    let f = fixture();
+    let mut h = opened_themed(&f, "example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    // F2's frame draws the field and asks the focus for it; the next, its first with the
+    // focus, takes a real keystroke: the letter's key, then its text.
+    h.key_press(Key::F2);
+    step(&mut h);
+    let key = |pressed| Event::Key {
+        key: Key::D,
+        physical_key: Some(Key::D),
+        pressed,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    h.event(key(true));
+    h.event(Event::Text("D".to_owned()));
+    h.event(key(false));
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        rename_field(&h, "Pin").unwrap().value().as_deref(),
+        Some("D")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn f2_in_the_browser_brings_the_selected_row_into_view_under_its_field() {
+    let f = fixture();
+    let mut h = opened_themed(&f, "forty.silico", &forty_blocks());
+    step_until(&mut h, "its rows", |h| shows(h, "Browser", "Block 40"));
+    assert!(!row_in_view(&h, "Sketches", "Back"));
+    let back = silico_core::document::FeatureId::new("s0000002").unwrap();
+    let tab = &mut h.state_mut().tabs_mut()[0];
+    tab.selection_mut().select_feature(back);
+    tab.selected_in = silico_app::feature_menu::Place::Browser;
+    step(&mut h);
+    assert!(!row_in_view(&h, "Sketches", "Back"));
+    h.key_press(Key::F2);
+    step_until(&mut h, "its row in view, the field over it", |h| {
+        row_in_view(h, "Sketches", "Back")
+            && rename_field(h, "Back").is_some_and(|field| in_pane(&field, "Browser"))
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_browser_rename_scrolled_out_of_view_then_clicked_away_to_a_dialog_comes_before_it() {
+    let f = fixture();
+    let mut h = opened_themed(&f, "forty.silico", &forty_blocks());
+    step_until(&mut h, "its rows", |h| shows(h, "Browser", "Block 40"));
+    browser(&h)
+        .get_by_role_and_label(Role::Group, "Bodies")
+        .get_by_label("Block 1")
+        .click();
+    step(&mut h);
+    h.key_press(Key::F2);
+    step_until(&mut h, "the browser's field", |h| {
+        rename_field(h, "Block 1")
+            .is_some_and(|field| in_pane(&field, "Browser") && field.is_focused())
+    });
+    step(&mut h);
+    rename_field(&h, "Block 1").unwrap().type_text("Dowel");
+    step(&mut h);
+    // The browser scrolled so the field's row is out of its view, above it, where the
+    // field unclipped would lie over Revolve on the toolbar.
+    let revolve = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Revolve")
+            .rect()
+    };
+    let over = browser(&h)
+        .get_by_role_and_label(Role::Group, "Bodies")
+        .get_by_label("Block 2")
+        .rect()
+        .center();
+    for _ in 0..20 {
+        let gap = rename_field(&h, "Block 1").unwrap().rect().center().y - revolve(&h).center().y;
+        if gap.abs() < 2.0 {
+            break;
+        }
+        wheel(&mut h, over, eframe::egui::MouseWheelUnit::Point, -gap);
+        for _ in 0..5 {
+            step(&mut h);
+        }
+    }
+    let field = rename_field(&h, "Block 1").unwrap();
+    assert!(field.is_focused());
+    assert!(
+        field.rect().contains(revolve(&h).center()),
+        "{:?}, {:?}",
+        field.rect(),
+        revolve(&h)
+    );
+    // Revolve clicked: a click away from the field, which shows nowhere, so its name lands
+    // first, and the dialog's Cancel undoes to after it.
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Revolve")
+        .click();
+    step_until(&mut h, "the dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Revolve").is_some()
+    });
+    assert!(rename_field(&h, "Block 1").is_none(), "the field closed");
+    settled(&mut h);
+    cancel_dialog(&mut h);
+    let names = names_of(&text_of(&f, &h));
+    assert_eq!(names.len(), 42, "{names:?}");
+    assert_eq!(names[..3], ["Front", "Dowel", "Block 2"]);
+    assert!(shows(&h, "Browser", "Dowel"));
+    assert_eq!(never_waits::waits(), 0);
+}

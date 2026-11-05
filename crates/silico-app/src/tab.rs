@@ -2427,7 +2427,7 @@ impl Tab {
 
     /// The feature `feature`'s name typed in its own field, at `place`: its timeline item's
     /// (the timeline scrolled to it, so the field over it is in view) or, if it has one, its
-    /// browser row's (else its item's). Never while a dialog is open or the tab closes, nor
+    /// browser row's (the browser scrolled to it, its group opened; else its item's). Never while a dialog is open or the tab closes, nor
     /// for a feature the timeline doesn't list.
     pub fn start_rename(&mut self, feature: FeatureId, place: crate::feature_menu::Place) {
         if self.in_dialog() || self.closing() {
@@ -2443,9 +2443,14 @@ impl Tab {
             }
             place => place,
         };
-        self.selection.select_feature(feature.clone());
-        if place == crate::feature_menu::Place::Timeline {
-            self.timeline_scroll = Some(feature.clone());
+        match place {
+            crate::feature_menu::Place::Timeline => {
+                self.selection.select_feature(feature.clone());
+                self.timeline_scroll = Some(feature.clone());
+            }
+            crate::feature_menu::Place::Browser => {
+                self.selection.find_in_browser(feature.clone());
+            }
         }
         self.renaming = Some(crate::feature_menu::Renaming::new(feature, place, text));
     }

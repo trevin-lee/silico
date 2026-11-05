@@ -711,14 +711,16 @@ impl<P: Clients + 'static> App<P> {
     /// what the click does (a dialog opened, a save, an undo) comes after it. Whether the
     /// name was sent.
     fn rename_clicked_away(&mut self, ctx: &egui::Context) -> bool {
+        self.send_rename_if(|renaming| crate::feature_menu::clicked_away(ctx, renaming))
+    }
+
+    /// The active tab's name being typed in its own field, if `now` says so of it: sent as
+    /// Enter sends it ([`Tab::finish_rename`]), its field closed. Whether it was sent.
+    fn send_rename_if(&mut self, now: impl FnOnce(&crate::feature_menu::Renaming) -> bool) -> bool {
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return false;
         };
-        if !tab
-            .renaming
-            .as_ref()
-            .is_some_and(|renaming| crate::feature_menu::clicked_away(ctx, renaming))
-        {
+        if !tab.renaming.as_ref().is_some_and(now) {
             return false;
         }
         let Some(renaming) = tab.renaming.take() else {
@@ -1047,7 +1049,8 @@ impl<P: Clients + 'static> App<P> {
     /// tab's view, Home gives its home view, and Ctrl+1 to Ctrl+7 its standard views
     /// (SolidWorks' numbering); Ctrl+Shift+B rebuilds everything, ignoring the cache; and,
     /// with a feature selected, F2 types its name over in its own field and Del (or ⌫)
-    /// deletes it (the prototype's `keydown`), Esc dropping a name being typed.
+    /// deletes it (the prototype's `keydown`), Esc dropping a name being typed and the
+    /// document's commands (Save, Close, Undo, and the rest) sending it before they act.
     /// With a modal open (the sheet too), none acts: Esc is the modal's Cancel (the sheet's
     /// close), and Enter its OK. With a dialog open, Enter and Esc are the dialog's, taken
     /// here and given to it once its inputs have taken this frame's typing (`Panes::dialog`,
@@ -1082,6 +1085,41 @@ impl<P: Clients + 'static> App<P> {
             }
             return (false, None);
         }
+        let renamed = self.rename_before_command(ui.ctx());
+        let (started, dialog_key) = self.command_keys(ui);
+        (started || renamed, dialog_key)
+    }
+
+    /// The commands' shortcuts that act on a document, which send a name being typed in
+    /// its own field first, as a click away does (SolidWorks commits a name typed in place
+    /// when another command is invoked): Esc drops it instead, and the rest never act
+    /// while it's typed.
+    const COMMANDS_AFTER_RENAME: [Command; 9] = [
+        Command::New,
+        Command::Open,
+        Command::Save,
+        Command::SaveAs,
+        Command::Close,
+        Command::Undo,
+        Command::Redo,
+        Command::Rebuild,
+        Command::RebuildAll,
+    ];
+
+    /// The active tab's rename field, which has had the focus, if a shortcut of
+    /// [`COMMANDS_AFTER_RENAME`](Self::COMMANDS_AFTER_RENAME) was pressed this frame: its
+    /// name sent there and then, through the path Enter takes, so the command acts on the
+    /// renamed document. Whether the name was sent.
+    fn rename_before_command(&mut self, ctx: &egui::Context) -> bool {
+        let asked = Self::COMMANDS_AFTER_RENAME
+            .iter()
+            .any(|&command| shortcuts::pressed(ctx, command));
+        asked && self.send_rename_if(crate::feature_menu::Renaming::focused)
+    }
+
+    /// The keyboard's commands with no modal open: [`keys`](Self::keys)'s, a name being
+    /// typed already sent where one asks it.
+    fn command_keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
         // Never a letter typed, nor a key a text field moves its cursor with (Home).
         let typing = ui.ctx().text_edit_focused();
         if !typing && shortcuts::take(ui, Command::Shortcuts) {
