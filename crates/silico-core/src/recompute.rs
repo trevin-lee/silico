@@ -6167,6 +6167,9 @@ mod tests {
         };
         let stopped = StepCounter::default();
         stopped.listing(&document);
+        // Listed, the two boxes are there: neither none, nor any other count.
+        assert!(!stopped.now().features.is_empty());
+        assert_eq!(stopped.now().features.len(), 2);
         stopped.sketch_settled(Some(0), StepState::Built);
         stopped.sketch_started(Some(1));
         assert_eq!(of(&stopped), [StepState::Built, StepState::Running]);

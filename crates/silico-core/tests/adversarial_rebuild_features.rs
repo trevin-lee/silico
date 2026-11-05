@@ -981,3 +981,232 @@ fn a_step_that_panics_on_a_base_whose_check_is_undecided_is_faulted_at_once() {
     assert_eq!(error.code(), ErrorCode::Internal, "{error}");
     assert_eq!(states_of(&progress.now().features)[4], Faulted);
 }
+
+/// Whether `op` is a boolean cut.
+fn is_cut(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Cut,
+            ..
+        }
+    )
+}
+
+/// How many of `engine`'s kernel's requests so far `picks` picks.
+fn asked(engine: &Recompute<FakeKernel>, picks: impl Fn(&Op) -> bool) -> usize {
+    engine
+        .kernel()
+        .calls()
+        .iter()
+        .filter(|call| picks(&call.op))
+        .count()
+}
+
+/// Waits until `engine`'s kernel has been asked more than `before` requests `picks` picks.
+#[track_caller]
+fn until_asked(engine: &Recompute<FakeKernel>, before: usize, picks: impl Fn(&Op) -> bool) {
+    let deadline = std::time::Instant::now() + WAIT;
+    while asked(engine, &picks) <= before {
+        assert!(std::time::Instant::now() < deadline, "never asked");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn a_failure_kept_from_the_last_rebuild_on_firm_inputs_is_said_at_the_plan() {
+    // The block fused with a pin (the fuse's check, one solid, decided by its result), and
+    // a second pin cut from the fuse, the kernel refusing every cut. Rebuilt once: the cut
+    // failed, its failure kept (a kernel refusal follows from its values). Rebuilt again
+    // with a ball on its own branch, held: everything else is kept, so the plan finds every
+    // state at once. By hand: the block and both pins built, with nothing they use, so
+    // firm; the fuse built, its check passed by its kept result (one solid), all it uses
+    // firm, so firm; the cut's own failure, all it uses firm, is said at the plan: failed,
+    // not queued (it can't be blocked: nothing it uses can fail now), while the ball runs.
+    let pin = r#"{"id": "c0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 20}"#;
+    let fuse = r#"{"id": "f0000001", "type": "fuse", "v": 1, "name": "Fused", "base": "k7f2qx3m", "tool": "c0000001"}"#;
+    let pin2 = r#"{"id": "c0000002", "type": "cylinder", "v": 1, "name": "Pin2", "position": [5, 5, -1], "radius": 1, "height": 20}"#;
+    let hole = r#"{"id": "m0000001", "type": "cut", "v": 1, "name": "Hole", "base": "f0000001", "tool": "c0000002"}"#;
+    let engine = Recompute::new(FakeKernel::new(4).unwrap()).with_sketches(FakeSketches::new());
+    engine
+        .kernel()
+        .refuse(|op| is_cut(op).then(|| Error::new(ErrorCode::KernelFailed, "the cut failed")));
+    let first = engine.start(document(&[BLOCK, pin, fuse, pin2, hole]));
+    let first_progress = first.progress();
+    assert!(matches!(first.wait(), Ok(RunOutcome::Published(_))));
+    assert_eq!(
+        states_of(&first_progress.now().features),
+        [Built, Built, Built, Built, Failed]
+    );
+    assert_eq!(asked(&engine, is_cut), 1);
+    let ball = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
+    let run = engine.start(document(&[BLOCK, pin, fuse, pin2, hole, BALL]));
+    let progress = run.progress();
+    let copies = copied_until_ended(&progress);
+    until(&progress, |count| states_of(&count.features)[5] == Running);
+    assert_eq!(
+        states_of(&progress.now().features),
+        [Built, Built, Built, Built, Failed, Running]
+    );
+    assert!(!progress.now().ended);
+    ball.release();
+    let Ok(RunOutcome::Published(model)) = run.wait() else {
+        panic!("not published");
+    };
+    never_back(&copies.join().unwrap()).unwrap();
+    // The cut's failure was kept, not asked again.
+    assert_eq!(asked(&engine, is_cut), 1);
+    let id = silico_core::document::FeatureId::new("m0000001").unwrap();
+    assert!(
+        matches!(
+            model.outcome(&id),
+            Some(silico_core::recompute::FeatureOutcome::Failed(_))
+        ),
+        "{:?}",
+        model.outcome(&id)
+    );
+    assert_eq!(
+        states_of(&progress.now().features),
+        [Built, Built, Built, Built, Failed, Built]
+    );
+}
+
+#[test]
+fn a_refused_pad_on_a_cut_waits_queued_while_what_the_cut_uses_is_unchecked() {
+    // The square padded onto the block (p1), its measure held; a pin cut from p1 (m1),
+    // which the kernel makes; and a segment, which makes no profile, padded onto m1 (p2):
+    // refused by its plan. The model says p2 is blocked if anything it's made from fails
+    // its check, failed if not. m1's step and its own check (one solid) pass while p1's
+    // check waits on p1's measure: m1 is built, but not firm, since what it uses isn't,
+    // so p2 is queued, not failed. Then p1's measure let go, p1's check passes, m1 is
+    // firm, and p2 fails, while a ball on its own branch, held, keeps the rebuild running.
+    let pin = r#"{"id": "c0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 20}"#;
+    let hole = r#"{"id": "m0000001", "type": "cut", "v": 1, "name": "Hole", "base": "p0000001", "tool": "c0000001"}"#;
+    let segment = r#"{"id": "s0000002", "type": "sketch", "v": 1, "name": "Segment", "plane": "xy", "points": [{"id": "pb000001", "x": 0, "y": 0, "construction": false}, {"id": "pb000002", "x": 10, "y": 0, "construction": false}], "lines": [{"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
+    let refused = r#"{"id": "p0000002", "type": "pad", "v": 1, "name": "Refused", "base": "m0000001", "sketch": "s0000002", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+    // Four workers: the ball and p1's measure each hold one, and the rest need theirs.
+    let engine = Recompute::new(FakeKernel::new(4).unwrap()).with_sketches(FakeSketches::new());
+    let measure = engine.kernel().hold(measures_the_pad);
+    let ball = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
+    let run = engine.start(document(&[
+        SQUARE, BLOCK, ON_BLOCK, pin, hole, segment, refused, BALL,
+    ]));
+    let progress = run.progress();
+    let copies = copied_until_ended(&progress);
+    // m1's own measure is asked once its check is judged: by then, all m1 says is said.
+    let measures_the_cut = |op: &Op| match op {
+        Op::Summarize { shape } => {
+            FakeKernel::describe(shape).is_some_and(|d| d.starts_with("cut("))
+        }
+        _ => false,
+    };
+    until_asked(&engine, 0, measures_the_cut);
+    until_the_pad_is_measured(&engine);
+    assert_eq!(
+        states_of(&progress.now().features),
+        [Built, Built, Built, Built, Built, Built, Queued, Running]
+    );
+    measure.release();
+    until(&progress, |count| {
+        states_of(&count.features) == [Built, Built, Built, Built, Built, Built, Failed, Running]
+    });
+    assert!(!progress.now().ended);
+    ball.release();
+    let Ok(RunOutcome::Published(model)) = run.wait() else {
+        panic!("not published");
+    };
+    let copies = copies.join().unwrap();
+    never_back(&copies).unwrap();
+    let id = silico_core::document::FeatureId::new("p0000002").unwrap();
+    assert!(
+        matches!(
+            model.outcome(&id),
+            Some(silico_core::recompute::FeatureOutcome::Failed(_))
+        ),
+        "{:?}",
+        model.outcome(&id)
+    );
+    assert_eq!(
+        states_of(&progress.now().features),
+        [Built, Built, Built, Built, Built, Built, Failed, Built]
+    );
+}
+
+#[test]
+fn a_step_doomed_by_a_kept_failure_still_held_is_blocked_at_the_plan() {
+    // The square padded onto the block (p1); a pin cut from p1 (m1), the kernel refusing
+    // every cut; and a second pin cut from m1 (m2). Rebuilt once with p1's measure crashing
+    // its worker: m1's failure is kept (a kernel refusal follows from its values), m2 never
+    // ran, and p1's solid is kept unmeasured (a crash doesn't follow from them). Rebuilt
+    // again, p1's measure held: the plan finds p1 built but its check undecided, so m1's
+    // kept failure is held, m1 queued (the model would say blocked if p1 failed its check).
+    // m2's step can't run, since m1's failed: by hand, m2 is blocked at the plan, whatever
+    // m1 comes to, and never queued. Let go, p1's check passes, m1 fails, m2 stays blocked.
+    let pin = r#"{"id": "c0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 20}"#;
+    let hole = r#"{"id": "m0000001", "type": "cut", "v": 1, "name": "Hole", "base": "p0000001", "tool": "c0000001"}"#;
+    let pin2 = r#"{"id": "c0000002", "type": "cylinder", "v": 1, "name": "Pin2", "position": [5, 5, -1], "radius": 1, "height": 20}"#;
+    let second = r#"{"id": "m0000002", "type": "cut", "v": 1, "name": "Second", "base": "m0000001", "tool": "c0000002"}"#;
+    let features = [SQUARE, BLOCK, ON_BLOCK, pin, hole, pin2, second];
+    let crashing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let engine = Recompute::new(FakeKernel::new(4).unwrap()).with_sketches(FakeSketches::new());
+    let crashes = Arc::clone(&crashing);
+    engine.kernel().refuse(move |op| {
+        if measures_the_pad(op) && crashes.load(Ordering::SeqCst) {
+            return Some(Error::new(
+                ErrorCode::WorkerCrashed,
+                "the pad's Summarize crashed",
+            ));
+        }
+        is_cut(op).then(|| Error::new(ErrorCode::KernelFailed, "the cut failed"))
+    });
+    let first = engine.start(document(&features));
+    assert!(matches!(first.wait(), Ok(RunOutcome::Published(_))));
+    assert_eq!(asked(&engine, is_cut), 1);
+    crashing.store(false, Ordering::SeqCst);
+    let measured_before = asked(&engine, measures_the_pad);
+    let measure = engine.kernel().hold(measures_the_pad);
+    let run = engine.start(document(&features));
+    let progress = run.progress();
+    let copies = copied_until_ended(&progress);
+    until_asked(&engine, measured_before, measures_the_pad);
+    assert_eq!(
+        states_of(&progress.now().features),
+        [Built, Built, Built, Built, Queued, Built, Blocked]
+    );
+    assert!(!progress.now().ended);
+    measure.release();
+    let Ok(RunOutcome::Published(model)) = run.wait() else {
+        panic!("not published");
+    };
+    never_back(&copies.join().unwrap()).unwrap();
+    // m1's failure was kept, not asked again; m2's step never ran.
+    assert_eq!(asked(&engine, is_cut), 1);
+    let (m1, m2) = (
+        silico_core::document::FeatureId::new("m0000001").unwrap(),
+        silico_core::document::FeatureId::new("m0000002").unwrap(),
+    );
+    assert!(
+        matches!(
+            model.outcome(&m1),
+            Some(silico_core::recompute::FeatureOutcome::Failed(_))
+        ),
+        "{:?}",
+        model.outcome(&m1)
+    );
+    assert!(
+        matches!(
+            model.outcome(&m2),
+            Some(silico_core::recompute::FeatureOutcome::Blocked { on }) if *on == m1
+        ),
+        "{:?}",
+        model.outcome(&m2)
+    );
+    assert_eq!(
+        states_of(&progress.now().features),
+        [Built, Built, Built, Built, Failed, Built, Blocked]
+    );
+}
