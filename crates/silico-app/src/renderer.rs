@@ -21,7 +21,7 @@ use eframe::egui_wgpu;
 use eframe::wgpu;
 use silico_protocol::{Camera, Mesh};
 pub use silico_render::render::{
-    Element, Frame, Pick, Picking, PixelRect, RenderFailure, Renderer,
+    Element, Frame, Outlines, Pick, Picking, PixelRect, RenderFailure, Renderer,
 };
 
 /// A [`Frame`] whose values it holds: what the pane hands on, to be drawn once the paint
@@ -34,6 +34,8 @@ pub struct FrameData {
     pub pixels_per_point: f32,
     pub bodies: Vec<u32>,
     pub highlights: Vec<(u32, Element)>,
+    pub hovered: Vec<(u32, Element)>,
+    pub outlines: Outlines,
     pub picking: Option<PixelRect>,
 }
 
@@ -47,8 +49,10 @@ impl FrameData {
             pixels_per_point: self.pixels_per_point,
             bodies: &self.bodies,
             highlights: &self.highlights,
+            hovered: &self.hovered,
+            outlines: self.outlines,
             picking: self.picking,
-            background: [0x00, 0x00, 0x00, 0xff],
+            background: crate::theme::VIEWPORT_BG,
         }
     }
 }
@@ -316,16 +320,19 @@ fn prepared<R: ViewRenderer>(
         .copied()
         .filter(|body| !refused.contains(body))
         .collect();
-    let highlights: Vec<(u32, Element)> = data
-        .highlights
-        .iter()
-        .copied()
-        .filter(|(body, _)| bodies.binary_search(body).is_ok())
-        .collect();
+    let drawn = |list: &[(u32, Element)]| -> Vec<(u32, Element)> {
+        list.iter()
+            .copied()
+            .filter(|(body, _)| bodies.binary_search(body).is_ok())
+            .collect()
+    };
+    let highlights = drawn(&data.highlights);
+    let hovered = drawn(&data.hovered);
     locked(shared).refused.extend(refused);
     let frame = Frame {
         bodies: &bodies,
         highlights: &highlights,
+        hovered: &hovered,
         ..data.frame()
     };
     let prepared = renderer.prepare(&frame);
@@ -401,8 +408,8 @@ impl<R: ViewRenderer> egui_wgpu::CallbackTrait for Callback<R> {
 mod tests {
     use super::*;
 
-    /// A frame as the renderer was given it: its bodies and highlights.
-    type Drawn = (Vec<u32>, Vec<(u32, Element)>);
+    /// A frame as the renderer was given it: its bodies, highlights, and hover.
+    type Drawn = (Vec<u32>, Vec<(u32, Element)>, Vec<(u32, Element)>);
 
     #[derive(Default)]
     struct Counting {
@@ -427,8 +434,11 @@ mod tests {
             self.calls.push(format!("forget {body}"));
         }
         fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, String> {
-            self.frames
-                .push((frame.bodies.to_vec(), frame.highlights.to_vec()));
+            self.frames.push((
+                frame.bodies.to_vec(),
+                frame.highlights.to_vec(),
+                frame.hovered.to_vec(),
+            ));
             if self.backing_off {
                 return Err(format!("backing off, {} frame(s)", self.frames.len()));
             }
@@ -520,6 +530,8 @@ mod tests {
             pixels_per_point: 1.0,
             bodies: bodies.to_vec(),
             highlights: highlights.to_vec(),
+            hovered: Vec::new(),
+            outlines: Outlines::DEFAULT,
             picking: None,
         }
     }
@@ -583,7 +595,8 @@ mod tests {
     #[test]
     fn a_frame_leaves_out_bodies_refused_now_and_their_highlights_and_keeps_its_picking() {
         // Body 2's mesh is refused as it's uploaded: the frame draws body 1 alone, with
-        // only body 1's highlight; the renderer's picking answer is kept for the pane.
+        // only body 1's highlight and hover; the renderer's picking answer is kept for the
+        // pane.
         let shared = Mutex::new(Shared::default());
         locked(&shared).queue(vec![
             Change::Upload(1, mesh(3)),
@@ -596,6 +609,7 @@ mod tests {
                 size: [3, 3],
             },
             hit: None,
+            edge: None,
         };
         let mut renderer = Counting {
             picking: Some(pick),
@@ -603,9 +617,13 @@ mod tests {
         };
         let face = (1, Element::Face(1));
         let edge = (2, Element::Edge(4));
-        let made = prepared(Some(&mut renderer), &shared, &data(&[1, 2], &[face, edge]));
+        let frame = FrameData {
+            hovered: vec![edge, face],
+            ..data(&[1, 2], &[face, edge])
+        };
+        let made = prepared(Some(&mut renderer), &shared, &frame);
         assert!(made.is_empty());
-        assert_eq!(renderer.frames, [(vec![1], vec![face])]);
+        assert_eq!(renderer.frames, [(vec![1], vec![face], vec![face])]);
         assert_eq!(
             locked(&shared).refused.iter().copied().collect::<Vec<_>>(),
             [2]

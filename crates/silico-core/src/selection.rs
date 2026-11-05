@@ -44,9 +44,10 @@ const SELECTED: Kinds = Kinds {
 pub const MAX_SELECTED: usize = 10_000;
 
 /// A selection read against a model: the names found, those gone, and those not answered
-/// yet, each list in the selection's order. A name given more than once is read once, at its
-/// first place; a name of an element an earlier name found already is dropped (an element is
-/// selected or not, however many of its names are given).
+/// yet, each list in the selection's order. A name given more than once (the same way, in
+/// [`read_each`]) is read once, at its first place; a name of an element an earlier name
+/// found already is dropped (an element is selected or not, however many of its names are
+/// given).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Resolved {
     pub kept: Vec<Selected>,
@@ -128,7 +129,7 @@ pub struct Pending {
 /// give. Each name is looked for in the model's bodies, as `distance`, `angle`, and
 /// `render`'s highlights look ([`Lookup`]). Each error is at `<parameter>.<place>` (the
 /// app's `selection.2`, a dialog's `edges.0`). Refused, at `parameter`, past
-/// [`MAX_SELECTED`] names.
+/// [`MAX_SELECTED`] names. [`read_each`] with every name [`Carry::Pick`].
 ///
 /// Any thread may call it, the UI's too: it names no element map and waits for none, reading
 /// only those the model's background has named ([`Resolved::pending`] for the rest), and asks
@@ -139,7 +140,11 @@ pub fn resolve<S: AsRef<str>>(
     parameter: &str,
 ) -> Result<Resolved, Error> {
     let _span = tracing::info_span!("selection_resolve", names = names.len()).entered();
-    read(model, names, parameter, Carry::Unstable)
+    read(
+        model,
+        names.iter().map(|name| (name.as_ref(), Carry::Pick)),
+        parameter,
+    )
 }
 
 /// `names`, a selection carried to `model`, newly published after a rebuild: what's kept,
@@ -150,28 +155,58 @@ pub fn resolve<S: AsRef<str>>(
 /// lost by it: [`resolve`] holds an element picked by an unstable name by its stable alias,
 /// if it had one then. Several unstable names of one element are each gone, each reported
 /// on its own: the check for an element already taken comes after. The same threads may
-/// call it.
+/// call it. [`read_each`] with every name [`Carry::Refresh`].
 pub fn refresh<S: AsRef<str>>(
     model: &Model,
     names: &[S],
     parameter: &str,
 ) -> Result<Resolved, Error> {
     let _span = tracing::info_span!("selection_refresh", names = names.len()).entered();
-    read(model, names, parameter, Carry::StableOnly)
+    read(
+        model,
+        names.iter().map(|name| (name.as_ref(), Carry::Refresh)),
+        parameter,
+    )
 }
 
-/// Whether a read keeps an element with no stable name.
-#[derive(Clone, Copy, PartialEq)]
-enum Carry {
-    Unstable,
-    StableOnly,
-}
-
-fn read<S: AsRef<str>>(
+/// `names`, a selection read against `model` in one read, each name as it came to the
+/// model ([`Carry`]): one picked on it read as [`resolve`] reads it, one carried to it from
+/// an older model as [`refresh`] does. One read, so an element is taken once, at the first
+/// name that finds it, whichever way each came (a later name of it, an alias or the same
+/// text, is in none of the lists); and a name given more than once the same way is read
+/// once, at its first place. The same text given both ways is read each way: carried, it
+/// may be gone (unstable), while a pick of it on this model is held. As [`resolve`], each
+/// error at `<parameter>.<place>`, refused past [`MAX_SELECTED`] names, and the same threads
+/// may call it.
+pub fn read_each<S: AsRef<str>>(
     model: &Model,
-    names: &[S],
+    names: &[(S, Carry)],
     parameter: &str,
-    carry: Carry,
+) -> Result<Resolved, Error> {
+    let _span = tracing::info_span!("selection_read_each", names = names.len()).entered();
+    read(
+        model,
+        names.iter().map(|(name, carry)| (name.as_ref(), *carry)),
+        parameter,
+    )
+}
+
+/// How a name came to the model a selection is read against, and so whether an element
+/// it finds with no stable name is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Carry {
+    /// Picked on this model ([`resolve`]): an element found with no stable name is held,
+    /// by a stable alias if it has one, else flagged with the store's refusal.
+    Pick,
+    /// Carried to this model from an older one ([`refresh`]): unstable text is gone,
+    /// whatever the element it finds now.
+    Refresh,
+}
+
+fn read<'a>(
+    model: &Model,
+    names: impl ExactSizeIterator<Item = (&'a str, Carry)>,
+    parameter: &str,
 ) -> Result<Resolved, Error> {
     if names.len() > MAX_SELECTED {
         return Err(Error::new(
@@ -191,13 +226,13 @@ fn read<S: AsRef<str>>(
         pending: Vec::new(),
         failures: BTreeMap::new(),
     };
-    let mut read: BTreeSet<&str> = BTreeSet::new();
+    let mut read: BTreeSet<(&str, Carry)> = BTreeSet::new();
     let mut found: BTreeSet<(&FeatureId, ElementRef)> = BTreeSet::new();
     // Each solid's candidates of each kind, built once, the first time a name of it needs
     // them, as a reference's are.
     let mut candidates: BTreeMap<(&FeatureId, ElementKind), Candidates> = BTreeMap::new();
-    for (place, text) in names.iter().map(AsRef::as_ref).enumerate() {
-        if !read.insert(text) {
+    for (place, (text, carry)) in names.enumerate() {
+        if !read.insert((text, carry)) {
             continue;
         }
         let at = format!("{parameter}.{place}");
@@ -234,7 +269,7 @@ fn read<S: AsRef<str>>(
             // Carried, unstable text is gone whatever the element it finds now: that may be
             // another element than the one picked, and an alias it has now would be held as
             // if it were the one picked. A pick holds the stable alias it had then.
-            (true, Carry::StableOnly) => {
+            (true, Carry::Refresh) => {
                 resolved.gone.push(Gone {
                     name: text.to_owned(),
                     place,
@@ -243,7 +278,7 @@ fn read<S: AsRef<str>>(
                 });
                 continue;
             }
-            (true, Carry::Unstable) => stable_name(map, element).ok_or_else(refusal),
+            (true, Carry::Pick) => stable_name(map, element).ok_or_else(refusal),
         };
         // An element found again by a later name: taken once, at the first.
         if !found.insert((feature, element)) {
@@ -982,6 +1017,104 @@ mod tests {
             [(alias.to_owned(), "ssssssss", face1, Some(alias.to_owned()))]
         );
         assert_eq!(carried.kept[0].place, 1);
+    }
+
+    #[test]
+    fn a_read_of_names_picked_and_carried_reads_each_its_own_way_taking_each_element_once() {
+        // The face of two names, its own `rrrrrrrr.fuse.Face1` (unstable) and the alias
+        // `cccccccc.box.Face1` (stable), as the alias test builds it. One read, each name as
+        // it came: carried, the unstable text is gone, in the store's words, and holds no
+        // place for its element, so a pick after it of the alias, or of the same text (held
+        // by the alias), is kept at its own place. Read the other way round, the pick takes
+        // the face first, and the carried text is gone all the same; a stable alias carried
+        // takes it first, and a pick of the face's own name after it is in no list.
+        let features = [
+            a_box("aaaaaaaa", 0, 1),
+            a_box("bbbbbbbb", 5, 1),
+            operation("rrrrrrrr", "fuse", "aaaaaaaa", "bbbbbbbb"),
+            a_box("cccccccc", 9, 2),
+            operation("ssssssss", "fuse", "rrrrrrrr", "cccccccc"),
+        ];
+        let model = rebuilt(
+            &features,
+            forging(|tool| {
+                if tool.contains("box(2,") {
+                    Some(aliasing_fuse())
+                } else {
+                    Some(numbering_fuse())
+                }
+            }),
+        );
+        let own = "rrrrrrrr.fuse.Face1";
+        let alias = "cccccccc.box.Face1";
+        let face1 = element(ElementKind::Face, 1);
+        let held = (alias.to_owned(), "ssssssss", face1, Some(alias.to_owned()));
+        let gone_at = |resolved: &Resolved| -> Vec<(String, usize, String)> {
+            resolved
+                .gone
+                .iter()
+                .map(|g| {
+                    (
+                        g.name.clone(),
+                        g.place,
+                        g.why.errors()[0].message().to_owned(),
+                    )
+                })
+                .collect()
+        };
+        let unstable_at = |place: usize| format!(r#"selection.{place}, "{own}", {UNSTABLE_FACE}"#);
+        let places =
+            |resolved: &Resolved| -> Vec<usize> { resolved.kept.iter().map(|s| s.place).collect() };
+        for picked in [alias, own] {
+            let read = read_each(
+                &model,
+                &[(own, Carry::Refresh), (picked, Carry::Pick)],
+                "selection",
+            )
+            .unwrap();
+            assert_eq!(kept(&read), std::slice::from_ref(&held), "{picked}");
+            assert_eq!(places(&read), [1], "{picked}");
+            assert_eq!(gone_at(&read), [(own.to_owned(), 0, unstable_at(0))]);
+            assert!(read.pending.is_empty());
+        }
+        let read = read_each(
+            &model,
+            &[(own, Carry::Pick), (own, Carry::Refresh)],
+            "selection",
+        )
+        .unwrap();
+        assert_eq!(kept(&read), std::slice::from_ref(&held));
+        assert_eq!(places(&read), [0]);
+        assert_eq!(gone_at(&read), [(own.to_owned(), 1, unstable_at(1))]);
+        let read = read_each(
+            &model,
+            &[(alias, Carry::Refresh), (own, Carry::Pick)],
+            "selection",
+        )
+        .unwrap();
+        assert_eq!(kept(&read), std::slice::from_ref(&held));
+        assert_eq!(places(&read), [0]);
+        assert!(read.gone.is_empty() && read.pending.is_empty(), "{read:?}");
+        // The same text the same way twice: read once.
+        let read = read_each(
+            &model,
+            &[(own, Carry::Refresh), (own, Carry::Refresh)],
+            "selection",
+        )
+        .unwrap();
+        assert_eq!(gone_at(&read), [(own.to_owned(), 0, unstable_at(0))]);
+        assert!(read.kept.is_empty());
+        // Every name one way: as `resolve` and `refresh` read them.
+        let names = [own, alias];
+        let each = |carry| -> Vec<(&str, Carry)> { names.iter().map(|n| (*n, carry)).collect() };
+        assert_eq!(
+            read_each(&model, &each(Carry::Pick), "selection").unwrap(),
+            resolve(&model, &names, "selection").unwrap()
+        );
+        assert_eq!(
+            read_each(&model, &each(Carry::Refresh), "selection").unwrap(),
+            refresh(&model, &names, "selection").unwrap()
+        );
     }
 
     /// A second fuse's history, of the numbering fuse (base) and a cube (tool): the base

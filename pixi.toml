@@ -31,6 +31,8 @@ libboost-headers = "==1.86.0"
 # paths in, so nothing here sets a loader variable for other programs.
 mesa-lavapipe = "==26.2.5"
 libvulkan-loader = "1.4.*"
+# The filler's decisions' tests (tests/filler-decisions.sh) answer GitHub's API through jq.
+jq = ">=1.8.2,<2"
 
 # mesa-lavapipe's macOS builds (the render worker's rasterizer) need macOS 15 or later. The
 # table pixi 0.81 calls deprecated, kept: its replacement renames the platform every feature
@@ -51,6 +53,7 @@ occt = { cmd = "bash third_party/occt/build.sh", description = "Fetch, verify, p
 stress = { cmd = "bash third_party/occt/scripts/stress.sh", depends-on = ["occt"], description = "Run the 605-case stress test 10 times; each run must match the reference byte for byte" }
 test-guards = { cmd = "bash third_party/occt/scripts/test-guards.sh", depends-on = ["occt"], description = "Prove every OCCT build guard rejects bad input" }
 test-cache = { cmd = "bash third_party/occt/scripts/test-cache.sh", description = "Prove the shared OCCT build cache keeps, replaces, and removes entries as documented" }
+test-ci-decisions = { cmd = "bash tests/filler-decisions.sh", description = "Prove the filler's decisions (filler.yml, proptest-room.sh) against made-up states of the CI" }
 # The libm shim is outside the workspace (its own profile), so it gets its own Cargo
 # target dir, target/libm-shim, for tests and lint. The OCCT build compiles it in a
 # temporary directory inside the shared build cache.
@@ -71,7 +74,7 @@ planegcs-verify = { cmd = "bash third_party/planegcs/scripts/verify.sh", descrip
 # failure in a block that fixes its own can be run again at the gate's. New seeds are
 # explored on idle runners (.github/workflows/proptest-explore.yml, `pixi run
 # proptest-explore`).
-test = { cmd = "echo \"test: PROPTEST_RNG_SEED=$PROPTEST_RNG_SEED\" && cargo nextest run --workspace", depends-on = ["occt", "install-oracle", "shim-test", "test-guards", "test-cache", "planegcs-verify"], env = { PROPTEST_RNG_SEED = "20261021" } }
+test = { cmd = "echo \"test: PROPTEST_RNG_SEED=$PROPTEST_RNG_SEED\" && cargo nextest run --workspace", depends-on = ["occt", "install-oracle", "shim-test", "test-guards", "test-cache", "test-ci-decisions", "planegcs-verify"], env = { PROPTEST_RNG_SEED = "20261021" } }
 oracle = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker --bin silico-step-worker && cargo build -p silico-sketch --bin silico-sketch-worker && cargo run -p silico-oracle -- run tests/oracle", depends-on = ["occt", "install-oracle"], description = "Compare every case in tests/oracle with FreeCAD" }
 oracle-sweep = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker && cargo run -p silico-oracle -- sweep --count 500", depends-on = ["occt", "install-oracle"], description = "Compare 500 generated cases with FreeCAD (pass --seed S to vary them)" }
 oracle-sketch-edit-sweep = { cmd = "cargo build -p silico-sketch --bin silico-sketch-worker && cargo run -p silico-oracle -- sketch-edit-sweep --count 500", depends-on = ["occt", "install-oracle"], description = "Compare 500 generated sketch edits with FreeCAD's (pass --seed S to vary them)" }

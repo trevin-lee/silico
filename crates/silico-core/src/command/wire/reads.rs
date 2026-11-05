@@ -1,11 +1,12 @@
-//! `text`, `outline`, `check`, and `timeline`'s wire types (docs/design/m4.1-command-api.md,
-//! section 7; docs/design/m5.0-app.md, section 7, for `timeline`): their requests, read
-//! strictly ([`TextRequest`], [`CheckRequest`], [`TimelineRequest`], and the
+//! `text`, `outline`, `check`, `timeline`, and `diff`'s wire types
+//! (docs/design/m4.1-command-api.md, section 7; docs/design/m5.0-app.md, section 7, for
+//! `timeline`; Fable's decision of 2026-11-04, section 1, for `diff`): their requests, read
+//! strictly ([`TextRequest`], [`CheckRequest`], [`TimelineRequest`], [`DiffRequest`], and the
 //! [`SessionRequest`](super::transaction::SessionRequest) `outline` takes); their results,
 //! written field for field ([`ToWire`]: [`TextAnswer`], [`OutlineAnswer`], [`CheckAnswer`],
-//! and [`TimelineAnswer`], what the session's commands give); and the mirrors their
-//! snapshots, `commands/text.json`, `outline.json`, `check.json`, and `timeline.json`, are
-//! generated from. A timeline entry's health is written as [`Health::word`] gives it, and its
+//! [`TimelineAnswer`], and [`DiffAnswer`], what the session's commands give); and the
+//! mirrors their snapshots, `commands/text.json`, `outline.json`, `check.json`,
+//! `timeline.json`, and `diff.json`, are generated from. A timeline entry's health is written as [`Health::word`] gives it, and its
 //! snapshot's words are [`Health::ALL`]'s.
 //!
 //! `check`'s `fresh` (M4.3: the current revision rebuilt with every step built anew) is
@@ -17,23 +18,30 @@ use std::borrow::Cow;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 use super::elements::ModelChoiceSchema;
-use super::{ErrorSchema, Json, RequestFields, ToWire, WarningSchema, problems, wire_shape, words};
+use super::{
+    DISK, ErrorSchema, Json, Layout, MAX_RESPONSE_LEN, Named, RequestFields, ToWire, WarningSchema,
+    answer_within_or, problems, wire_shape, words,
+};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
-    CheckAnswer, CheckModel, ModelChoice, OutlineAnswer, Problems, SessionId, TextAnswer,
-    TimelineAnswer,
+    CheckAnswer, CheckModel, DiffAnswer, ModelChoice, OutlineAnswer, Problems, Response, SessionId,
+    TextAnswer, TimelineAnswer,
 };
 use crate::document::json::Node;
-use crate::document::{FeatureId, PROBLEMS_LISTED};
+use crate::document::write::{Out, length};
+use crate::document::{Change, FeatureId, PROBLEMS_LISTED};
 use crate::timeline::{Entry, Health};
 use crate::{Error, ErrorCode};
 
-/// A `text` request: the session, and the feature to read alone (`None` for the whole
-/// document).
+/// A `text` request: the session, the feature to read alone (`None` for the whole
+/// document), and the text to read: a revision's, or the file's on disk (`None` for the
+/// document now: Fable's decisions of 2026-11-04, the three core gaps' section 2 and 6d's
+/// other half).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextRequest {
     pub session: SessionId,
     pub feature: Option<FeatureId>,
+    pub revision: Option<Named>,
 }
 
 impl TextRequest {
@@ -42,9 +50,11 @@ impl TextRequest {
         RequestFields::read(node, |f| {
             let session = f.session();
             let feature = f.nullable_feature("feature");
+            let revision = f.nullable_named("revision");
             Some(TextRequest {
                 session: session?,
                 feature: feature?,
+                revision: revision?,
             })
         })
     }
@@ -58,6 +68,10 @@ impl ToWire for TextRequest {
             (
                 "feature",
                 Json::or_null(self.feature.as_ref(), ToWire::to_wire),
+            ),
+            (
+                "revision",
+                Json::or_null(self.revision.as_ref(), ToWire::to_wire),
             ),
         ])
     }
@@ -209,6 +223,172 @@ impl ToWire for OutlineAnswer {
     }
 }
 
+/// A `diff` request: the session, and the two texts to compare, each a revision the
+/// session holds or its file on disk ([`Named`]), or `None` for the session's revision now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffRequest {
+    pub session: SessionId,
+    pub from: Option<Named>,
+    pub to: Option<Named>,
+}
+
+impl DiffRequest {
+    /// The request `node` holds, or every reason its shape is refused.
+    pub fn read(node: &Node) -> Result<Self, Problems> {
+        RequestFields::read(node, |f| {
+            let session = f.session();
+            let from = f.nullable_named("from");
+            let to = f.nullable_named("to");
+            Some(DiffRequest {
+                session: session?,
+                from: from?,
+                to: to?,
+            })
+        })
+    }
+}
+
+impl ToWire for DiffRequest {
+    /// The request as a client writes it, every field in the shape's order.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("session", self.session.to_wire()),
+            ("from", Json::or_null(self.from.as_ref(), ToWire::to_wire)),
+            ("to", Json::or_null(self.to.as_ref(), ToWire::to_wire)),
+        ])
+    }
+}
+
+impl ToWire for Change {
+    /// A change: the feature and its name, the field's path (`null` for its place), and
+    /// the values before and after, a field's laid out as the document lays it out.
+    fn to_wire(&self) -> Json<'_> {
+        change(self, &self.name)
+    }
+}
+
+/// `change` written with `name` as its feature's name.
+fn change<'a>(change: &'a Change, name: &'a str) -> Json<'a> {
+    let value = |value| match &change.field {
+        Some(field) => Json::field(field, value),
+        None => Json::plain(value),
+    };
+    Json::object([
+        ("feature", change.feature.to_wire()),
+        ("name", Json::str(name)),
+        ("field", Json::or_null(change.field.as_deref(), Json::str)),
+        ("before", value(&change.before)),
+        ("after", value(&change.after)),
+    ])
+}
+
+impl ToWire for DiffAnswer {
+    /// The revisions compared, and each change, in order.
+    fn to_wire(&self) -> Json<'_> {
+        diff_answer(self, false)
+    }
+}
+
+/// `answer` written, each change's name left empty if `nameless`.
+fn diff_answer(answer: &DiffAnswer, nameless: bool) -> Json<'_> {
+    Json::object([
+        ("from", answer.from.to_wire()),
+        ("to", answer.to.to_wire()),
+        (
+            "changes",
+            Json::array(
+                answer
+                    .changes
+                    .iter()
+                    .map(|c| change(c, if nameless { "" } else { &c.name })),
+            ),
+        ),
+    ])
+}
+
+/// A `diff` answer written with every change's name empty: what [`written_length`]
+/// counts, the names added by their own lengths.
+struct Nameless<'a>(&'a DiffAnswer);
+
+impl ToWire for Nameless<'_> {
+    fn to_wire(&self) -> Json<'_> {
+        diff_answer(self.0, true)
+    }
+}
+
+/// `diff`'s response as text, in `layout`, and whether it ran: its envelope; or, past the
+/// [`MAX_RESPONSE_LEN`] a response may be, its refusal saying the limit and the size.
+pub(crate) fn diff_answer_text(response: &Response<DiffAnswer>, layout: Layout) -> (bool, String) {
+    diff_answer_within(response, layout, MAX_RESPONSE_LEN)
+}
+
+/// [`diff_answer_text`], against `limit`.
+pub(crate) fn diff_answer_within(
+    response: &Response<DiffAnswer>,
+    layout: Layout,
+    limit: usize,
+) -> (bool, String) {
+    answer_within_or(response, layout, limit, |response| {
+        let answer = response.result.as_ref().ok()?;
+        Some(diff_too_long(
+            answer,
+            written_length(response, answer, layout),
+            limit,
+        ))
+    })
+}
+
+/// How many bytes `response`, whose answer is `answer`, is written in, in `layout`, counted
+/// and never held: its envelope with each change's name empty, then each name's own length,
+/// each feature's name counted once for all its changes (they share it: a name of a
+/// megabyte on a sketch's thousands of changes would take gigabytes to write).
+fn written_length(response: &Response<DiffAnswer>, answer: &DiffAnswer, layout: Layout) -> u64 {
+    let nameless = Response {
+        session: response.session.clone(),
+        model: response.model.clone(),
+        result: Ok(Nameless(answer)),
+    };
+    let base = length(&super::response(&nameless).0, layout);
+    let mut total = u64::try_from(base).unwrap_or(u64::MAX);
+    let mut last: Option<(&std::sync::Arc<str>, u64)> = None;
+    for c in &answer.changes {
+        let own = match last {
+            Some((name, n)) if std::sync::Arc::ptr_eq(name, &c.name) => n,
+            _ => {
+                // The name quoted, less the two quotes the empty name already wrote.
+                let quoted = length(&Out::Str(&c.name), layout).saturating_sub(2);
+                u64::try_from(quoted).unwrap_or(u64::MAX)
+            }
+        };
+        last = Some((&c.name, own));
+        total = total.saturating_add(own);
+    }
+    total
+}
+
+/// The refusal of a `diff` answer of `size` bytes, past `limit`: saying both, and what to
+/// ask instead (with a side the file on disk, a revision nearer it, or the file's text).
+fn diff_too_long(answer: &DiffAnswer, size: u64, limit: usize) -> Error {
+    let suggestion = if answer.from == Named::Disk || answer.to == Named::Disk {
+        "compare the file with a nearer revision, or read the file with text and revision \"disk\""
+    } else {
+        "diff revisions nearer each other, or read the text of each side with text instead"
+    };
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!(
+            "the diff from {} to {} would be {size} bytes, more than the {limit} bytes a \
+             response may be",
+            answer.from, answer.to
+        ),
+    )
+    .with_cause(format!(
+        "it has {} changes, each written with its feature's name",
+        answer.changes.len()
+    ))
+    .with_suggestion(suggestion)
+}
+
 impl ToWire for CheckAnswer {
     /// The problems, the first 100 and how many, and the warnings, likewise.
     fn to_wire(&self) -> Json<'_> {
@@ -233,6 +413,16 @@ pub struct TextRequestSchema {
     /// The feature whose text to give alone, by ID, or null for the whole document. For a
     /// document too large to give in one response, read it a feature at a time.
     pub feature: Option<FeatureId>,
+    /// The revision whose text to give, "disk" for the session's file as this command reads
+    /// it (inside a transaction too, reloading nothing there), or null for the document now.
+    /// A session holds the text of its revision now, of the one its last reload replaced
+    /// (after a response that says `reloaded`), and, inside a transaction, of the one it
+    /// began at; any other is refused, the revisions it holds its candidates. A revision by
+    /// number reads nothing of the file. To put back the text a reload replaced, `begin`,
+    /// then `replace_text` with it: an edit like any other, which `undo` takes back and
+    /// `commit` saves.
+    #[schemars(schema_with = "nullable_named_schema")]
+    pub revision: Option<u64>,
 }
 
 /// `text`'s result.
@@ -360,6 +550,110 @@ pub struct TimelineEntrySchema {
     pub warnings: u64,
 }
 
+/// `diff`'s request: what changed between two revisions the session holds.
+#[derive(JsonSchema)]
+#[schemars(rename = "DiffRequest", transform = wire_shape)]
+pub struct DiffRequestSchema {
+    /// The session's ID, as `open` gave it.
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
+    pub session: String,
+    /// The revision to compare from, "disk" for the session's file as this command reads it
+    /// (inside a transaction too, reloading nothing there: what changed on disk since the
+    /// transaction began, from its base), or null for the document now. A session holds the
+    /// text of its revision now, of the one its last reload replaced (after a response that
+    /// says `reloaded`), and, inside a transaction, of the one it began at; any other is
+    /// refused, the revisions it holds its candidates. Revisions by number read nothing of
+    /// the file.
+    #[schemars(schema_with = "nullable_named_schema")]
+    pub from: Option<u64>,
+    /// The revision to compare to, "disk", or null for the document now, as `from` is.
+    #[schemars(schema_with = "nullable_named_schema")]
+    pub to: Option<u64>,
+}
+
+/// `diff`'s result.
+#[derive(JsonSchema)]
+#[schemars(rename = "DiffResult", transform = wire_shape)]
+pub struct DiffResultSchema {
+    /// The revision compared from: the request's, or, for null, the session's then; or
+    /// "disk", the session's file as the command read it.
+    #[schemars(schema_with = "named_schema")]
+    pub from: u64,
+    /// The revision compared to, or "disk", likewise.
+    #[schemars(schema_with = "named_schema")]
+    pub to: u64,
+    /// Each change from `from` to `to`, in `to`'s timeline order (a feature's change of
+    /// place first, then its fields in the order the document writes them), then each
+    /// feature removed, in `from`'s order. Empty if the two documents are the same.
+    pub changes: Vec<DiffChangeSchema>,
+}
+
+/// One change between two revisions: a feature's place in the timeline, or one of its
+/// fields.
+#[derive(JsonSchema)]
+#[schemars(rename = "DiffChange", transform = wire_shape)]
+pub struct DiffChangeSchema {
+    /// The feature, by ID.
+    pub feature: FeatureId,
+    /// Its name: as `to` has it, or, for a feature removed, as `from` had it.
+    pub name: String,
+    /// The path to the field that changed, as `set_field` names one (a sketch's members by
+    /// ID, other lists by place, from 0), down to the first value that's a number, a string,
+    /// true or false, or absent on one side. A change set_field accepts is applied by
+    /// set_field with its feature, field, and after. set_field doesn't accept: fingerprint
+    /// fields; `type`, `id`, and `v` (and, with a feature's `type`, each field its new type
+    /// brings or takes away); a member only one side has below the feature's top level (a
+    /// sketch member added or removed, an item added to or removed from a list by place),
+    /// but for a sketch angle's `reversed`; and an extent's or a constraint's `type` changed
+    /// to one that takes other fields. Null for a change of the feature's place: added,
+    /// removed, or moved (its order among the features both revisions hold changed: one
+    /// removed or added moves none of the others).
+    pub field: Option<String>,
+    pub before: DiffValueSchema,
+    pub after: DiffValueSchema,
+}
+
+/// A side a read names, as its result says it: a revision, from 1, or the word `"disk"`.
+fn named_schema(_: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({
+        "anyOf": [
+            {"type": "integer", "minimum": 1},
+            {"type": "string", "enum": [DISK]},
+        ],
+    })
+}
+
+/// A side a read names, as its request gives it: a revision, from 1, the word `"disk"`, or
+/// null.
+fn nullable_named_schema(_: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({
+        "anyOf": [
+            {"type": "integer", "minimum": 1},
+            {"type": "string", "enum": [DISK]},
+            {"type": "null"},
+        ],
+    })
+}
+
+/// A change's value on one side.
+pub struct DiffValueSchema;
+
+impl JsonSchema for DiffValueSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "DiffValue".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "description": "With a field, its value on that side, as the document writes \
+                            that field: a number, a string, true or false, a list, an object, \
+                            or null where the feature hasn't the field (or isn't there). With \
+                            field null, the feature's place in that side's timeline, from 0, \
+                            as remove_feature gives a place: null where it isn't there."
+        })
+    }
+}
+
 /// A feature's health, in Fusion's states ([`Health::ALL`], each as [`Health::word`] writes
 /// it).
 pub struct HealthSchema;
@@ -378,5 +672,135 @@ impl JsonSchema for HealthSchema {
              since, or using one that was; stopped by a kernel fault; or no model at all).",
             Health::ALL.map(Health::word),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{diff_answer_within, written_length};
+    use crate::command::wire::{Layout, Named};
+    use crate::command::{DiffAnswer, Response, Revision, SessionId, SessionInfo};
+    use crate::document::json::Plain;
+    use crate::document::write::text;
+    use crate::document::{Change, FeatureId};
+
+    /// Two features' changes: one name shared by three changes (a place, a scalar, and a
+    /// whole object, which the canonical layout writes over lines), one with characters
+    /// written as escapes (a quote, a newline, a right-to-left override, an é); from
+    /// `from` to `to`.
+    fn answer(from: Named, to: Named) -> Response<DiffAnswer> {
+        let shared: Arc<str> = Arc::from("Sketch \"one\"\n");
+        let other: Arc<str> = Arc::from("\u{202e}é");
+        let id = |s: &str| FeatureId::new(s).unwrap();
+        let number = |n: &str| Plain::Number(n.to_owned());
+        let point = Plain::Object(vec![
+            ("id".to_owned(), Plain::String("pa000003".to_owned())),
+            ("x".to_owned(), number("1")),
+        ]);
+        let change = |feature: &str, name: &Arc<str>, field: Option<&str>, before, after| Change {
+            feature: id(feature),
+            name: Arc::clone(name),
+            field: field.map(str::to_owned),
+            before,
+            after,
+        };
+        let changes = vec![
+            change("s0000001", &shared, None, number("2"), number("0")),
+            change(
+                "s0000001",
+                &shared,
+                Some("plane"),
+                Plain::String("xy".to_owned()),
+                Plain::String("xz".to_owned()),
+            ),
+            change(
+                "s0000001",
+                &shared,
+                Some("points.pa000003"),
+                Plain::Null,
+                point,
+            ),
+            change(
+                "k7f2qx3m",
+                &other,
+                Some("length"),
+                number("40"),
+                number("41"),
+            ),
+        ];
+        let two = Revision::OPENED.next().unwrap();
+        Response {
+            session: Some(SessionInfo {
+                id: SessionId::parse("s1").unwrap(),
+                path: Some("a \"b\".silico".to_owned()),
+                revision: two,
+                transaction: false,
+                reloaded: true,
+            }),
+            model: None,
+            result: Ok(DiffAnswer { from, to, changes }),
+        }
+    }
+
+    #[test]
+    fn the_length_counted_is_the_texts_in_either_layout_and_past_it_the_refusal_says_both() {
+        // Revision 1 to revision 2; and to and from the file on disk, which the refusal names
+        // as such, its advice the file's: a nearer revision, or the file's own text.
+        let one = Named::Revision(Revision::OPENED);
+        let two = Named::Revision(Revision::OPENED.next().unwrap());
+        // As the envelope writes it, its quotes escaped.
+        let the_files = r#"compare the file with a nearer revision, or read the file with text and revision \"disk\""#;
+        for (from, to, said, advice) in [
+            (
+                one,
+                two,
+                "revision 1 to revision 2",
+                "diff revisions nearer each other, or read the text of each side with text instead",
+            ),
+            (
+                one,
+                Named::Disk,
+                "revision 1 to the file on disk",
+                the_files,
+            ),
+            (
+                Named::Disk,
+                two,
+                "the file on disk to revision 2",
+                the_files,
+            ),
+        ] {
+            let response = answer(from, to);
+            let Ok(diffed) = &response.result else {
+                panic!("an answer");
+            };
+            for layout in [Layout::OneLine, Layout::Canonical] {
+                // The text itself, written whole: the length the count must give.
+                let whole = text(&super::super::response(&response).0, layout, usize::MAX).unwrap();
+                let size = whole.len();
+                assert_eq!(
+                    written_length(&response, diffed, layout),
+                    size as u64,
+                    "{layout:?}"
+                );
+                // At the size, written; a byte short, refused, saying the size and the limit.
+                assert_eq!(diff_answer_within(&response, layout, size), (true, whole));
+                let (ok, refusal) = diff_answer_within(&response, layout, size - 1);
+                assert!(!ok);
+                let said = format!(
+                    "the diff from {said} would be {size} bytes, more than the {} bytes a response may be",
+                    size - 1
+                );
+                assert!(refusal.contains(&said), "{refusal}");
+                assert!(refusal.contains("it has 4 changes"), "{refusal}");
+                // The suggestion whole.
+                assert!(
+                    refusal.contains(&format!(r#""suggestion": "{advice}""#)),
+                    "{refusal}"
+                );
+            }
+        }
     }
 }
