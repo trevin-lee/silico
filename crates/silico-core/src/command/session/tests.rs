@@ -928,6 +928,72 @@ fn the_blocks_drift(problems: &Problems) {
 }
 
 #[test]
+fn an_edits_saved_model_is_named_by_the_background_with_no_client_asking() {
+    // An edit outside a transaction saves, and publishes its rebuild's model rebound to the
+    // saved document: a copy, not the model the engine published and the background names.
+    // Its names settle all the same, with no client asking: read as the app's selection
+    // reads them, never naming anything (`named_element_map`, `selection::resolve`), a
+    // pick of the block's face by name is found once the background has named the engine's
+    // model, and is pending till then.
+    let f = opened(BOX);
+    let session = f.session();
+    lock(&session.rebuilds).engine.hold_naming();
+    let revision = session.held.read().revision;
+    let set = f
+        .sessions
+        .set_field(
+            &f.id,
+            revision,
+            id("k7f2qx3m"),
+            "length".to_owned(),
+            crate::document::json::read(b"41").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    assert!(set.commit.unwrap().written);
+    let published = f.sessions.published(&f.id).result.unwrap();
+    assert_eq!(published.revision.number(), 2);
+    let saved = published.model;
+    let built = lock(&session.rebuilds).engine.published().unwrap();
+    // The saved revision's model is the edit's, rebound: another model, of the saved text.
+    assert!(!Arc::ptr_eq(&saved, &built));
+    assert_eq!(saved.generation(), built.generation());
+    assert_eq!(
+        saved.document().features[0].fingerprint.unwrap().volume,
+        Measure::from_millionths(8_200_000_000)
+    );
+    let block = id("k7f2qx3m");
+    let pick = ["k7f2qx3m.box.Face1"];
+    assert!(saved.named_element_map(&block).is_none());
+    assert!(saved.named_so_far(&block).is_none());
+    let resolved = crate::selection::resolve(&saved, &pick, "selection").unwrap();
+    assert_eq!(resolved.pending.len(), 1, "{resolved:?}");
+    assert!(resolved.kept.is_empty(), "{resolved:?}");
+    lock(&session.rebuilds).engine.release_naming();
+    // Waited for on the engine's model, the one it names; never on the saved copy. (The
+    // background's naming takes no lock of the session's.)
+    assert!(
+        lock(&session.rebuilds)
+            .engine
+            .wait_naming_ended(&built, WAIT)
+    );
+    assert!(std::ptr::eq(
+        saved.named_element_map(&block).unwrap(),
+        built.named_element_map(&block).unwrap()
+    ));
+    let resolved = crate::selection::resolve(&saved, &pick, "selection").unwrap();
+    assert!(resolved.pending.is_empty(), "{resolved:?}");
+    assert!(resolved.gone.is_empty(), "{resolved:?}");
+    assert_eq!(resolved.kept.len(), 1, "{resolved:?}");
+    assert_eq!(resolved.kept[0].feature, block);
+    assert_eq!(
+        resolved.kept[0].element,
+        silico_protocol::ElementRef::face(1)
+    );
+}
+
+#[test]
 fn a_commit_writes_new_fingerprints_only_for_what_edits_reached_and_keeps_drift_as_stored() {
     let f = opened(STORED);
     assert_eq!(

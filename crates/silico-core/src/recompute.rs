@@ -329,16 +329,21 @@ pub struct Model {
     /// element of every feature before replying doubled the cost of a long timeline on the
     /// fake), or, asked for sooner, then, with those of the features it's made from. They're
     /// a function of the model's own data alone, so they're the same whenever they're
-    /// named.
-    maps: Vec<OnceLock<Option<Arc<ElementMap>>>>,
+    /// named. Shared, as `entries` and `live` are, with every copy of the model, a clone or
+    /// one [`rebound`](Self::rebound) to its saved document: each has the same steps and
+    /// outcomes, so the same names, and the background's naming of the model it publishes
+    /// reaches the copy a save publishes too, which no one else names. A copy whose
+    /// outcomes differ is given slots of its own ([`unnamed`](Self::unnamed)).
+    maps: Arc<[OnceLock<Option<Arc<ElementMap>>>]>,
     /// Each feature's solid's elements as entries (`elements` and `query`'s), built from its
     /// description and its names the first time they're read, once for the model, so paging
     /// through a large solid costs one build and a copy of each page, not a build a page.
-    entries: Vec<OnceLock<Result<Arc<[Entry]>, Error>>>,
+    /// Of its outcomes and names alone, never its document, so shared as `maps` is.
+    entries: Arc<[OnceLock<Entries>]>,
     /// Each feature's live body, by index ([`Model::live_body`]): built the first time a
     /// name is looked for in every body, once for the model, from `bodies` and `naming`,
-    /// which nothing changes once it's built.
-    live: OnceLock<Vec<Option<usize>>>,
+    /// which nothing changes once it's built; shared as `maps` is.
+    live: Arc<OnceLock<Vec<Option<usize>>>>,
     /// The engine's maps named so far.
     known: NamedMaps,
     /// Each sketch's diagnosis, paired with its solve's outcome, by its ID, from the answer
@@ -372,6 +377,10 @@ thread_local! {
     /// What [`live_visits`] says.
     static LIVE_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
+
+/// A feature's solid's elements as entries, or why they couldn't be built
+/// ([`Model::entries`]).
+type Entries = Result<Arc<[Entry]>, Error>;
 
 /// Element maps named so far, by naming key: shared by the engine and the models it
 /// publishes, so a feature named alike in an earlier model isn't named again.
@@ -581,12 +590,14 @@ impl Model {
     /// This model with none of its elements named yet, as it is when it's published and
     /// before the background has named any: so a test can read it as a client that asks
     /// at once does, with no race against that naming (the app's tests read it as its
-    /// selection does a model published a moment ago).
+    /// selection does a model published a moment ago). Its slots are its own, shared with
+    /// no other model, so naming either names nothing of the other.
     #[cfg(any(test, feature = "fake"))]
     pub fn unnamed(&self) -> Model {
         Model {
             maps: (0..self.features.len()).map(|_| OnceLock::new()).collect(),
             entries: (0..self.features.len()).map(|_| OnceLock::new()).collect(),
+            live: Arc::default(),
             ..self.clone()
         }
     }
@@ -724,7 +735,10 @@ impl Model {
     /// document that differs from the one it was built from only in what a save writes from
     /// it (its fingerprints, with no sketch's solve written), whose rebuild would take every
     /// step from those this one took: a session's save (a commit, an edit's, `format`'s),
-    /// whose model is the saved revision's (the design's section 4).
+    /// whose model is the saved revision's (the design's section 4). Its names, entries, and
+    /// live bodies are this model's, shared (its `maps`, `entries`, and `live`): of the
+    /// same steps and outcomes, never the document, so the same; named in the background as
+    /// this one is, though only this one is the engine's.
     pub(crate) fn rebound(&self, source: Arc<Checked>) -> Model {
         Model {
             source,
@@ -1696,6 +1710,48 @@ struct Engine<K> {
     /// which other engines may share. Taken only by the
     /// recompute whose turn it is.
     solvers: Mutex<SketchSolvers>,
+    /// A test's hold on the background's naming of each model the engine publishes.
+    #[cfg(test)]
+    naming_hold: NamingHold,
+}
+
+/// A test's hold on an engine's background naming ([`Recompute::hold_naming`]): while
+/// it's held, the background waits before naming the model it published; and the models
+/// whose naming has ended, so a test can wait for one, with no sleep.
+#[cfg(test)]
+#[derive(Default)]
+struct NamingHold {
+    state: Mutex<NamingHeld>,
+    /// Told as the hold is released, and as a model's naming ends.
+    changed: Condvar,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct NamingHeld {
+    held: bool,
+    /// Each model whose background naming has ended, in the order they ended.
+    ended: Vec<Arc<Model>>,
+}
+
+#[cfg(test)]
+impl NamingHold {
+    /// Waits while the hold is held.
+    fn wait_released(&self) {
+        let mut state = lock(&self.state);
+        while state.held {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// `model`'s naming has ended.
+    fn ended(&self, model: &Arc<Model>) {
+        lock(&self.state).ended.push(Arc::clone(model));
+        self.changed.notify_all();
+    }
 }
 
 /// Starts a sketch solver.
@@ -2117,6 +2173,8 @@ impl<K: Kernel + 'static> Recompute<K> {
                 cache: cache.map_or_else(OnceLock::new, OnceLock::from),
                 sketch_turn: Condvar::new(),
                 solvers: Mutex::new(SketchSolvers::workers()),
+                #[cfg(test)]
+                naming_hold: NamingHold::default(),
                 state: Mutex::new(EngineState {
                     generation,
                     newest_started: generation,
@@ -2159,6 +2217,34 @@ impl<K: Kernel + 'static> Recompute<K> {
     /// The model the newest finished recompute published, if any has.
     pub fn published(&self) -> Option<Arc<Model>> {
         lock(&self.engine.state).published.clone()
+    }
+
+    /// Holds the background's naming of each model published from now on until
+    /// [`release_naming`](Self::release_naming): a test's way to read a model, and the
+    /// copies made of it, before the background has named any of its elements.
+    #[cfg(test)]
+    pub(crate) fn hold_naming(&self) {
+        lock(&self.engine.naming_hold.state).held = true;
+    }
+
+    /// Lets the background's naming held by [`hold_naming`](Self::hold_naming) go on.
+    #[cfg(test)]
+    pub(crate) fn release_naming(&self) {
+        lock(&self.engine.naming_hold.state).held = false;
+        self.engine.naming_hold.changed.notify_all();
+    }
+
+    /// Waits up to `timeout` for the background's naming of `model`, one this engine
+    /// published, to end: whether it has.
+    #[cfg(test)]
+    pub(crate) fn wait_naming_ended(&self, model: &Arc<Model>, timeout: Duration) -> bool {
+        let hold = &self.engine.naming_hold;
+        let state = lock(&hold.state);
+        hold.changed
+            .wait_timeout_while(state, timeout, |state| {
+                !state.ended.iter().any(|ended| Arc::ptr_eq(ended, model))
+            })
+            .is_ok_and(|(_, waited)| !waited.timed_out())
     }
 
     /// Starts rebuilding `document` in the background, superseding the recompute running,
@@ -2241,6 +2327,8 @@ impl<K: Kernel + 'static> Recompute<K> {
                 // name) or the engine is dropped, but not for a cancel or a newer recompute
                 // that publishes nothing, which leave this model the one clients have.
                 if let Some(model) = published {
+                    #[cfg(test)]
+                    engine.naming_hold.wait_released();
                     let _naming = tracing::debug_span!("name_elements").entered();
                     model.name_all(|| {
                         let state = lock(&engine.state);
@@ -2250,6 +2338,8 @@ impl<K: Kernel + 'static> Recompute<K> {
                                 .as_ref()
                                 .is_some_and(|newest| Arc::ptr_eq(newest, &model))
                     });
+                    #[cfg(test)]
+                    engine.naming_hold.ended(&model);
                 }
             });
         if let Err(e) = started {
@@ -5648,7 +5738,7 @@ fn model(
         naming,
         maps,
         entries,
-        live: OnceLock::new(),
+        live: Arc::default(),
         known,
         diagnoses: Arc::new(diagnoses),
         frames: Arc::new(frames),
@@ -5943,8 +6033,9 @@ fn feature_outcome(
 impl Model {
     /// This model with feature `id`'s outcome replaced by `outcome`: a test's stand-in for
     /// outcomes no document reaches on the fake (Silico's own bug naming a base's elements).
+    /// Its slots its own ([`Model::unnamed`]): its outcomes aren't this model's.
     pub(crate) fn with_outcome(&self, id: &FeatureId, outcome: FeatureOutcome) -> Model {
-        let mut model = self.clone();
+        let mut model = self.unnamed();
         for (feature, held) in &mut model.features {
             if feature == id {
                 *held = outcome.clone();
@@ -5956,8 +6047,9 @@ impl Model {
     /// This model with feature `id`'s solid measured as `summary` says, if it built: a
     /// test's stand-in for measures past what a fingerprint holds, which no solid the gate
     /// admits has (a kilometre each way is 1e18 mm³, and a volume holds to 1.7e32).
+    /// Its slots its own ([`Model::unnamed`]): its outcomes aren't this model's.
     pub(crate) fn measured_as(&self, id: &FeatureId, summary: ShapeSummary) -> Model {
-        let mut model = self.clone();
+        let mut model = self.unnamed();
         for (feature, outcome) in &mut model.features {
             if feature == id
                 && let FeatureOutcome::Built { built, .. } = outcome
@@ -7286,6 +7378,75 @@ mod tests {
                 &saved.document().features[place]
             ));
             assert_eq!(rebound.element_map(id), model.element_map(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_models_saved_copy_made_before_it_was_named_is_named_by_the_background_with_it() {
+        // An edit's save publishes the model rebound to its saved document: a copy made as
+        // the model is published, before the background has named any of its elements. The
+        // background names the model the engine published, never the copy; a copy that
+        // kept slots of its own read "not named yet" for good, and a pick on it by name
+        // stayed pending (the app's, of a face, then dropped by the next rebuild as an
+        // element gone). The copy is read only as a client that mustn't wait reads it,
+        // never naming anything itself.
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+        engine.hold_naming();
+        let model = published(engine.start(Arc::new(boxes(2, |_| false))));
+        let saved = Arc::new(Checked::new(model.saved()).unwrap());
+        let copy = model.rebound(saved);
+        let ids: Vec<FeatureId> = copy.features().iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(ids.len(), 2);
+        let pick = ["b0000001.box.Face1"];
+        // Held: nothing named yet, of the model or its copy, and the pick pending.
+        for id in &ids {
+            assert!(model.named_so_far(id).is_none(), "{id}");
+            assert!(copy.named_so_far(id).is_none(), "{id}");
+            assert!(copy.named_element_map(id).is_none(), "{id}");
+        }
+        let resolved = crate::selection::resolve(&copy, &pick, "selection").unwrap();
+        assert!(resolved.kept.is_empty(), "{resolved:?}");
+        assert_eq!(resolved.pending.len(), 1, "{resolved:?}");
+        // Released, the background names the model it published; the copy reads the same
+        // maps, the very ones, without naming them itself.
+        engine.release_naming();
+        assert!(engine.wait_naming_ended(&model, Duration::from_secs(60)));
+        for id in &ids {
+            let named = model.named_element_map(id).unwrap();
+            let read = copy.named_element_map(id).unwrap();
+            assert!(std::ptr::eq(named, read), "{id}");
+            assert!(std::ptr::eq(copy.named_so_far(id).unwrap().unwrap(), named));
+        }
+        // And the pick finds the face: the second box's own Face1.
+        let resolved = crate::selection::resolve(&copy, &pick, "selection").unwrap();
+        assert!(resolved.pending.is_empty(), "{resolved:?}");
+        assert!(resolved.gone.is_empty(), "{resolved:?}");
+        assert_eq!(resolved.kept.len(), 1, "{resolved:?}");
+        let kept = &resolved.kept[0];
+        assert_eq!(kept.feature, FeatureId::new("b0000001").unwrap());
+        assert_eq!(kept.element, silico_protocol::ElementRef::face(1));
+        assert_eq!(kept.kind(), silico_protocol::ElementKind::Face);
+        assert_eq!(kept.name.to_string(), pick[0]);
+    }
+
+    #[test]
+    fn a_models_unnamed_copy_shares_nothing_named_with_it() {
+        // `unnamed` (and the test models made from it) gives a copy slots of its own: the
+        // model named, the copy still has nothing named, and naming the copy names nothing
+        // of a fresh copy of the model's.
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+        let model = published(engine.start(Arc::new(boxes(2, |_| false))));
+        model.name_all(|| true);
+        let unnamed = model.unnamed();
+        let other = model.unnamed();
+        for (id, _) in model.features() {
+            assert!(model.named_element_map(id).is_some(), "{id}");
+            assert!(unnamed.named_so_far(id).is_none(), "{id}");
+        }
+        unnamed.name_all(|| true);
+        for (id, _) in model.features() {
+            assert!(unnamed.named_element_map(id).is_some(), "{id}");
+            assert!(other.named_so_far(id).is_none(), "{id}");
         }
     }
 
