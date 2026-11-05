@@ -1,0 +1,9 @@
+{
+  "from": 1,
+  "to": 2,
+  "changes": [
+    {"feature": "a91cw0de", "name": "Pin", "field": "radius", "before": 2.5, "after": 3},
+    {"feature": "m3tq8v0z", "name": "Bolt hole", "field": "name", "before": "Hole", "after": "Bolt hole"},
+    {"feature": "b0000001", "name": "Boss", "field": null, "before": null, "after": 3}
+  ]
+}

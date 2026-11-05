@@ -14,7 +14,7 @@ use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{
     Cancelled, CheckModel, ModelChoice, Progress, ReadCommand, Rebuild, RebuildState, Response,
-    Revision, RunningCommand, SessionCommand, SessionId, Sessions,
+    Revision, RunningCommand, SessionCommand, SessionId, Sessions, StepState,
 };
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Op, Primitive};
@@ -142,6 +142,7 @@ fn cancel_naming_the_running_check_stops_its_rebuild_and_the_check_answers_cance
                 done: 0,
                 steps: 1,
                 running: Some("k7f2qx3m box".to_owned()),
+                features: [(id("k7f2qx3m"), StepState::Running)].into_iter().collect(),
             }),
         }
     );
@@ -246,6 +247,7 @@ fn cancel_naming_another_command_is_refused_with_whats_running_as_the_candidate(
             done: 0,
             steps: 1,
             running: Some("k7f2qx3m box".to_owned()),
+            features: [(id("k7f2qx3m"), StepState::Running)].into_iter().collect(),
         })
     );
     assert!(

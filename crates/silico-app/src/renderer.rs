@@ -21,7 +21,7 @@ use eframe::egui_wgpu;
 use eframe::wgpu;
 use silico_protocol::{Camera, Mesh};
 pub use silico_render::render::{
-    Element, Frame, Pick, Picking, PixelRect, RenderFailure, Renderer,
+    Element, Frame, Outlines, Pick, Picking, PixelRect, RenderFailure, Renderer,
 };
 
 /// A [`Frame`] whose values it holds: what the pane hands on, to be drawn once the paint
@@ -34,7 +34,10 @@ pub struct FrameData {
     pub pixels_per_point: f32,
     pub bodies: Vec<u32>,
     pub highlights: Vec<(u32, Element)>,
+    pub hovered: Vec<(u32, Element)>,
+    pub outlines: Outlines,
     pub picking: Option<PixelRect>,
+    pub vertices: Option<f32>,
 }
 
 impl FrameData {
@@ -47,7 +50,11 @@ impl FrameData {
             pixels_per_point: self.pixels_per_point,
             bodies: &self.bodies,
             highlights: &self.highlights,
+            hovered: &self.hovered,
+            outlines: self.outlines,
             picking: self.picking,
+            vertices: self.vertices,
+            background: crate::theme::VIEWPORT_BG,
         }
     }
 }
@@ -65,6 +72,14 @@ pub trait ViewRenderer: Send + Sync + 'static {
     /// Prepares `frame`'s drawing, once an egui frame: its bodies placed from its camera,
     /// its highlights, and its picking. A frame refused draws nothing until one succeeds.
     fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, Self::Failure>;
+    /// Whether `failure` is a frame refused for the moment, to be tried again by a later
+    /// frame (the renderer backing off after the GPU failed one), not a failure to say.
+    /// While a renderer backs off the pane asks for frames at once ([`Present::backing_off`]),
+    /// so a backoff counted in frames runs at the display's rate, about a second at most,
+    /// not at the idle rate.
+    fn retry_later(_failure: &Self::Failure) -> bool {
+        false
+    }
     /// Draws what [`prepare`](Self::prepare) made into egui's render pass, its viewport
     /// already the pane's.
     fn composite(&self, pass: &mut wgpu::RenderPass<'_>);
@@ -83,6 +98,9 @@ impl ViewRenderer for Renderer {
     }
     fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, RenderFailure> {
         Renderer::prepare(self, frame)
+    }
+    fn retry_later(failure: &RenderFailure) -> bool {
+        matches!(failure, RenderFailure::BackingOff { .. })
     }
     fn composite(&self, pass: &mut wgpu::RenderPass<'_>) {
         Renderer::composite(self, pass);
@@ -164,19 +182,26 @@ pub trait Present {
     /// The bodies whose uploads the renderer refused since the last call: the pane draws
     /// them no more until their mesh changes.
     fn refused(&mut self) -> BTreeSet<u32>;
+    /// Whether the renderer refused the last frame backing off
+    /// ([`ViewRenderer::retry_later`]): the pane then asks for the next frame at once.
+    fn backing_off(&mut self) -> bool {
+        false
+    }
 }
 
 /// What the pane and the paint callbacks share: the changes not yet made, one for each body
 /// (the last asked: an upload replaces an earlier upload or forget of its body, and a forget
 /// an earlier upload, so frames that are never painted, a window minimized, hold no more
-/// than one mesh a body); the newest picking answer; the bodies refused; and the last
-/// failure said, so a renderer refusing every frame is said once, not each frame.
+/// than one mesh a body); the newest picking answer; the bodies refused; the last failure
+/// said, so a renderer refusing every frame is said once, not each frame; and whether the
+/// last frame was refused backing off.
 #[derive(Default)]
 struct Shared {
     changes: BTreeMap<u32, Change>,
     picked: Option<Picking>,
     refused: BTreeSet<u32>,
     failure: Option<String>,
+    backing_off: bool,
 }
 
 impl Shared {
@@ -256,6 +281,10 @@ impl<R: ViewRenderer> Present for OnGpu<R> {
     fn refused(&mut self) -> BTreeSet<u32> {
         std::mem::take(&mut locked(&self.shared).refused)
     }
+
+    fn backing_off(&mut self) -> bool {
+        locked(&self.shared).backing_off
+    }
 }
 
 /// One frame's paint callback.
@@ -293,22 +322,32 @@ fn prepared<R: ViewRenderer>(
         .copied()
         .filter(|body| !refused.contains(body))
         .collect();
-    let highlights: Vec<(u32, Element)> = data
-        .highlights
-        .iter()
-        .copied()
-        .filter(|(body, _)| bodies.binary_search(body).is_ok())
-        .collect();
+    let drawn = |list: &[(u32, Element)]| -> Vec<(u32, Element)> {
+        list.iter()
+            .copied()
+            .filter(|(body, _)| bodies.binary_search(body).is_ok())
+            .collect()
+    };
+    let highlights = drawn(&data.highlights);
+    let hovered = drawn(&data.hovered);
     locked(shared).refused.extend(refused);
     let frame = Frame {
         bodies: &bodies,
         highlights: &highlights,
+        hovered: &hovered,
         ..data.frame()
     };
-    let buffers = match renderer.prepare(&frame) {
+    let prepared = renderer.prepare(&frame);
+    // Set by a frame refused backing off; cleared by one drawn, or refused otherwise.
+    locked(shared).backing_off = matches!(&prepared, Err(failure) if R::retry_later(failure));
+    let buffers = match prepared {
         Ok(buffer) => {
             locked(shared).failure = None;
             vec![buffer]
+        }
+        Err(failure) if R::retry_later(&failure) => {
+            tracing::debug!("the viewport's renderer is backing off: {failure}");
+            Vec::new()
         }
         Err(failure) => {
             let said = failure.to_string();
@@ -371,14 +410,16 @@ impl<R: ViewRenderer> egui_wgpu::CallbackTrait for Callback<R> {
 mod tests {
     use super::*;
 
-    /// A frame as the renderer was given it: its bodies and highlights.
-    type Drawn = (Vec<u32>, Vec<(u32, Element)>);
+    /// A frame as the renderer was given it: its bodies, highlights, and hover.
+    type Drawn = (Vec<u32>, Vec<(u32, Element)>, Vec<(u32, Element)>);
 
     #[derive(Default)]
     struct Counting {
         calls: Vec<String>,
         frames: Vec<Drawn>,
         picking: Option<Picking>,
+        /// Refusing each frame as backing off, rather than as having no GPU.
+        backing_off: bool,
     }
 
     impl ViewRenderer for Counting {
@@ -395,9 +436,18 @@ mod tests {
             self.calls.push(format!("forget {body}"));
         }
         fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, String> {
-            self.frames
-                .push((frame.bodies.to_vec(), frame.highlights.to_vec()));
+            self.frames.push((
+                frame.bodies.to_vec(),
+                frame.highlights.to_vec(),
+                frame.hovered.to_vec(),
+            ));
+            if self.backing_off {
+                return Err(format!("backing off, {} frame(s)", self.frames.len()));
+            }
             Err("no GPU here".to_owned())
+        }
+        fn retry_later(failure: &String) -> bool {
+            failure.starts_with("backing off")
         }
         fn composite(&self, _: &mut wgpu::RenderPass<'_>) {}
         fn take_picking(&mut self) -> Option<Picking> {
@@ -414,6 +464,7 @@ mod tests {
             valid: None,
             edge_points: Vec::new(),
             edge_point_counts: Vec::new(),
+            vertex_points: vec![],
         })
     }
 
@@ -482,7 +533,10 @@ mod tests {
             pixels_per_point: 1.0,
             bodies: bodies.to_vec(),
             highlights: highlights.to_vec(),
+            hovered: Vec::new(),
+            outlines: Outlines::DEFAULT,
             picking: None,
+            vertices: None,
         }
     }
 
@@ -545,7 +599,8 @@ mod tests {
     #[test]
     fn a_frame_leaves_out_bodies_refused_now_and_their_highlights_and_keeps_its_picking() {
         // Body 2's mesh is refused as it's uploaded: the frame draws body 1 alone, with
-        // only body 1's highlight; the renderer's picking answer is kept for the pane.
+        // only body 1's highlight and hover; the renderer's picking answer is kept for the
+        // pane.
         let shared = Mutex::new(Shared::default());
         locked(&shared).queue(vec![
             Change::Upload(1, mesh(3)),
@@ -558,6 +613,7 @@ mod tests {
                 size: [3, 3],
             },
             hit: None,
+            edge: None,
         };
         let mut renderer = Counting {
             picking: Some(pick),
@@ -565,9 +621,13 @@ mod tests {
         };
         let face = (1, Element::Face(1));
         let edge = (2, Element::Edge(4));
-        let made = prepared(Some(&mut renderer), &shared, &data(&[1, 2], &[face, edge]));
+        let frame = FrameData {
+            hovered: vec![edge, face],
+            ..data(&[1, 2], &[face, edge])
+        };
+        let made = prepared(Some(&mut renderer), &shared, &frame);
         assert!(made.is_empty());
-        assert_eq!(renderer.frames, [(vec![1], vec![face])]);
+        assert_eq!(renderer.frames, [(vec![1], vec![face], vec![face])]);
         assert_eq!(
             locked(&shared).refused.iter().copied().collect::<Vec<_>>(),
             [2]
@@ -608,6 +668,72 @@ mod tests {
         assert_eq!(renderer.frames.len(), 100);
         assert_eq!(renderer.calls.len(), 100);
         assert_eq!(locked(&shared).failure.as_deref(), Some("no GPU here"));
+    }
+
+    #[test]
+    fn a_renderer_backing_off_is_neither_said_nor_taken_for_the_failure_said() {
+        // A failure said, then frames refused backing off, each worded otherwise: the
+        // failure said stays the GPU's, and the frames are still asked for and draw nothing.
+        let shared = Mutex::new(Shared::default());
+        let mut renderer = Counting::default();
+        assert!(prepared(Some(&mut renderer), &shared, &data(&[1], &[])).is_empty());
+        renderer.backing_off = true;
+        for _ in 0..10 {
+            assert!(prepared(Some(&mut renderer), &shared, &data(&[1], &[])).is_empty());
+        }
+        assert_eq!(renderer.frames.len(), 11);
+        assert_eq!(locked(&shared).failure.as_deref(), Some("no GPU here"));
+        // The pane is told it backs off, until a frame is refused otherwise.
+        let mut gpu = OnGpu::<Counting>::new();
+        gpu.shared = Arc::new(shared);
+        assert!(gpu.backing_off());
+        assert!(
+            gpu.backing_off(),
+            "until a frame is drawn or refused otherwise"
+        );
+        renderer.backing_off = false;
+        assert!(prepared(Some(&mut renderer), &gpu.shared, &data(&[1], &[])).is_empty());
+        assert!(!gpu.backing_off());
+        // The real renderer's backing off is the one retried; its other failures aren't.
+        assert!(<Renderer as ViewRenderer>::retry_later(
+            &RenderFailure::BackingOff { frames: 2 }
+        ));
+        assert!(!<Renderer as ViewRenderer>::retry_later(
+            &RenderFailure::OutOfMemory("4 GiB".to_owned())
+        ));
+    }
+
+    /// A renderer that fails every frame, saying nothing of backing off: `retry_later` its
+    /// trait's own.
+    struct Failing;
+
+    impl ViewRenderer for Failing {
+        type Failure = String;
+        fn upload(&mut self, _: u32, _: &Arc<Mesh>) -> Result<(), String> {
+            Ok(())
+        }
+        fn forget(&mut self, _: u32) {}
+        fn prepare(&mut self, _: &Frame<'_>) -> Result<wgpu::CommandBuffer, String> {
+            Err("the device was lost".to_owned())
+        }
+        fn composite(&self, _: &mut wgpu::RenderPass<'_>) {}
+        fn take_picking(&mut self) -> Option<Picking> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_renderers_failure_is_said_unless_it_says_to_retry_later() {
+        // A renderer that doesn't say a failure is for the moment: each is a failure, kept
+        // as said, and the pane isn't told the renderer backs off.
+        assert!(!Failing::retry_later(&"backing off".to_owned()));
+        let mut gpu = OnGpu::<Failing>::new();
+        assert!(prepared(Some(&mut Failing), &gpu.shared, &data(&[], &[])).is_empty());
+        assert_eq!(
+            locked(&gpu.shared).failure.as_deref(),
+            Some("the device was lost")
+        );
+        assert!(!gpu.backing_off());
     }
 
     #[test]

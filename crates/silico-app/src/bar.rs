@@ -10,11 +10,12 @@
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, FontId, KeyboardShortcut, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui,
-    Vec2, ViewportCommand, WidgetInfo, WidgetType, text::LayoutJob, text::TextWrapping,
+    self, FontId, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
+    ViewportCommand, WidgetInfo, WidgetType, text::LayoutJob, text::TextWrapping,
 };
 
 use crate::icons::{ICON_SIZE, Icon, IconSize};
+use crate::shortcuts::Chord;
 use crate::theme;
 
 /// Whether the window's content runs under its title bar, the app bar drawn there (macOS,
@@ -173,23 +174,19 @@ pub(crate) fn separator(ui: &mut Ui) {
 }
 
 /// `response` with a tooltip (`.tooltip`), on or off: `title`, the caps of `shortcut` after
-/// it if given, and `description` under it if given.
+/// it if given (as the registry names them: `crate::shortcuts::caps`), and `description`
+/// under it if given.
 pub(crate) fn tooltip(
     response: Response,
     title: &str,
-    shortcut: Option<KeyboardShortcut>,
+    shortcut: Option<Chord>,
     description: Option<&str>,
 ) -> Response {
     let show = |ui: &mut Ui| tooltip_ui(ui, title, shortcut, description);
     response.on_hover_ui(show).on_disabled_hover_ui(show)
 }
 
-fn tooltip_ui(
-    ui: &mut Ui,
-    title: &str,
-    shortcut: Option<KeyboardShortcut>,
-    description: Option<&str>,
-) {
+fn tooltip_ui(ui: &mut Ui, title: &str, shortcut: Option<Chord>, description: Option<&str>) {
     ui.spacing_mut().item_spacing.y = theme::TOOLTIP_DESCRIPTION_GAP;
     // As high as its text and its caps, not the height egui's `horizontal` assumes for a
     // row of controls.
@@ -199,7 +196,7 @@ fn tooltip_ui(
         ui.spacing_mut().item_spacing.x = theme::TOOLTIP_TITLE_GAP;
         ui.label(RichText::new(title).color(theme::TEXT_STRONG));
         if let Some(shortcut) = shortcut {
-            let caps = crate::start::caps(ui.ctx(), shortcut.modifiers, shortcut.logical_key);
+            let caps = crate::shortcuts::caps(ui.ctx(), shortcut);
             let width = crate::start::key_caps_width(ui, &caps);
             let (rect, _) =
                 ui.allocate_exact_size(Vec2::new(width, theme::KEY_CAP_HEIGHT), Sense::hover());
@@ -215,12 +212,16 @@ fn tooltip_ui(
     }
 }
 
+/// What an untitled part's tab says when hovered, with no edits: it has no file yet.
+pub(crate) const NOT_SAVED_YET: &str = "Not saved to a file yet";
+
 /// An open document's tab, as [`doc_tab`] draws it.
 pub(crate) struct DocTab<'a> {
     /// The document's file name.
     pub name: &'a str,
-    /// Its path, which the tab's tooltip gives.
-    pub path: &'a str,
+    /// Its path, which the tab's tooltip gives: none for an untitled part, whose tooltip
+    /// gives its name and that it has no file yet.
+    pub path: Option<&'a str>,
     /// Whether it holds edits not yet saved: an asterisk after its name.
     pub unsaved: bool,
     /// Whether it's the document shown (not while Home is).
@@ -318,12 +319,12 @@ pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
     if ui.is_rect_visible(rect) {
         paint_tab(ui, tab, &area, &response, &close, name, dirty);
     }
-    let response = tooltip(
-        response,
-        tab.path,
-        None,
-        tab.unsaved.then_some("Unsaved edits"),
-    );
+    let description = match (tab.unsaved, tab.path) {
+        (true, _) => Some("Unsaved edits"),
+        (false, None) => Some(NOT_SAVED_YET),
+        (false, Some(_)) => None,
+    };
+    let response = tooltip(response, tab.path.unwrap_or(tab.name), None, description);
     DocTabResponse {
         tab: response,
         close,
@@ -494,7 +495,7 @@ mod tests {
         pub const X: f32 = 16.0;
         pub const X_RADIUS: u8 = 3;
         /// `.tt-title`'s `gap: 8px`; `.tt-desc`'s `margin-top: 2px`; `.kbd`: `height: 16px;
-        /// border-radius: 3px`; `.keys`' `gap: 2px`.
+        /// border-radius: 3px`, Gray.350 1 round and 2 at its bottom; `.keys`' `gap: 2px`.
         pub const TT_TITLE_GAP: f32 = 8.0;
         pub const TT_DESC_MARGIN: f32 = 2.0;
         pub const KBD_HEIGHT: f32 = 16.0;
@@ -839,14 +840,14 @@ mod tests {
                     for tab in [
                         DocTab {
                             name: "bracket.silico",
-                            path: "/parts/bracket.silico",
+                            path: Some("/parts/bracket.silico"),
                             unsaved: true,
                             active: true,
                             first: true,
                         },
                         DocTab {
                             name: "vise-jaw.silico",
-                            path: "/parts/vise-jaw.silico",
+                            path: Some("/parts/vise-jaw.silico"),
                             unsaved: false,
                             active: false,
                             first: false,
@@ -1034,10 +1035,10 @@ mod tests {
             tooltip_ui(
                 ui,
                 "Redo",
-                Some(KeyboardShortcut::new(
+                Some(Chord::Key(egui::KeyboardShortcut::new(
                     Modifiers::COMMAND | Modifiers::SHIFT,
                     Key::Z,
-                )),
+                ))),
                 Some("Unsaved edits"),
             );
         });
@@ -1057,11 +1058,15 @@ mod tests {
         // Its caps 8 beyond it (`.tt-title`'s `gap`, the caps' `margin-left: auto` taking
         // no more in a tooltip as wide as its content), 16 high on its middle, left to
         // right.
-        let mut caps: Vec<Rect> = rects(&h)
+        let shapes: Vec<RectShape> = rects(&h)
             .into_iter()
             .filter(|(_, shape)| shape.corner_radius == CornerRadius::same(css::KBD_RADIUS))
-            .map(|(_, shape)| shape.rect)
+            .map(|(_, shape)| shape)
             .collect();
+        for shape in &shapes {
+            assert!(shape.stroke.is_empty(), "{shape:?}");
+        }
+        let mut caps: Vec<Rect> = shapes.iter().map(|shape| shape.rect).collect();
         caps.sort_by(|a, b| a.left().total_cmp(&b.left()));
         assert_eq!(caps.len(), 3, "{caps:?}");
         assert!(
@@ -1077,6 +1082,12 @@ mod tests {
         for cap in &caps {
             assert!(near(cap.height(), css::KBD_HEIGHT), "{cap:?}");
             assert!(near(cap.center().y, title_middle), "{cap:?}");
+            crate::modal::tests::kbd_border(
+                &crate::modal::tests::cap_border(&h, *cap),
+                *cap,
+                css::G350,
+                "the tooltip's cap",
+            );
         }
         // Each 2 beyond the one before it (`.keys`' `gap`).
         for pair in caps.windows(2) {

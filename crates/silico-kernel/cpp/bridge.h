@@ -132,9 +132,10 @@ DistanceOut distance(const Shape &first_shape, Kind first_kind, uint32_t first,
 // the second; if `index` isn't an element's, `found` is false and only the totals are set.
 DistanceOut point_distance(const Shape &shape, Kind kind, uint32_t index, const Point3 &point);
 
-// A triangle mesh of a shape's faces and polylines along its edges, for display. Faces
-// and edges are in TopExp::MapShapes order (edges numbered as edge_facts's). Built whole in
-// C++ and read from Rust as slices, so each array crosses the bridge in one copy.
+// A triangle mesh of a shape's faces and polylines along its edges, for display, and each
+// vertex's point. Faces, edges, and vertices are in TopExp::MapShapes order (edges numbered
+// as edge_facts's, vertices as describe's). Built whole in C++ and read from Rust as
+// slices, so each array crosses the bridge in one copy.
 class Tessellation {
 public:
   std::vector<double> positions_;        // x, y, z per vertex
@@ -144,6 +145,7 @@ public:
   std::vector<uint32_t> face_triangles_; // triangles per face
   std::vector<double> edge_points_;      // x, y, z per polyline point, edge after edge
   std::vector<uint32_t> edge_points_per_edge_;
+  std::vector<double> vertex_points_;    // x, y, z per vertex: BRep_Tool::Pnt, exact
 
   rust::Slice<const double> positions() const { return {positions_.data(), positions_.size()}; }
   rust::Slice<const float> normals() const { return {normals_.data(), normals_.size()}; }
@@ -156,6 +158,9 @@ public:
   }
   rust::Slice<const uint32_t> edge_points_per_edge() const {
     return {edge_points_per_edge_.data(), edge_points_per_edge_.size()};
+  }
+  rust::Slice<const double> vertex_points() const {
+    return {vertex_points_.data(), vertex_points_.size()};
   }
 };
 

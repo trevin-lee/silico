@@ -637,7 +637,7 @@ fn the_examples_are_the_designs_own_text() {
         ),
         (
             "### `export` (M4.8)",
-            "## 8. Versioning",
+            "### `diff` (M5",
             "export",
             &[
                 "request",
@@ -1009,7 +1009,8 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "sketch_extend",
                 "sketch_join",
                 "undo",
-                "redo"
+                "redo",
+                "diff"
             ]
         );
     }

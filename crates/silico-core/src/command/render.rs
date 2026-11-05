@@ -112,11 +112,13 @@ impl AnsweredCamera {
     /// The camera a result answers for `camera`, as the render draws with it: rounded as
     /// a result writes it, then its up made perpendicular to the view the rounded eye and
     /// target give, so given back, rounding changes nothing and up is already its frame's.
-    /// None if a number doesn't fit, or the rounded camera fails its check.
+    /// None if a number doesn't fit, or the rounded camera makes no frame ([`Camera::frame`]:
+    /// its check but for its angle's range at an image's size, which the view's own size
+    /// checks).
     pub fn of(camera: &Camera) -> Option<Self> {
         let rounded = Self::rounded(camera)?;
         let drawn = rounded.camera();
-        drawn.check().ok()?;
+        drawn.frame().ok()?;
         Some(AnsweredCamera {
             up: perpendicular(&drawn).up,
             ..rounded
@@ -444,7 +446,7 @@ pub(crate) fn camera_for(
                 ));
             };
             let (camera, side) = view.fit(bounds, width, height);
-            if let Err(invalid) = camera.check() {
+            if let Err(invalid) = camera.check(width, height) {
                 return Err(Problems::from(
                     Error::new(
                         ErrorCode::InvalidInput,
@@ -462,8 +464,8 @@ pub(crate) fn camera_for(
         }
     };
     // The camera answered is the one drawn, as the wire writes it (lengths to the nanometre,
-    // the angle to the nanodegree), so it passes back unchanged; checked again, as rounding
-    // a camera at its limits could move it past one.
+    // the angle to the nanodegree), so it passes back unchanged; checked again at this size,
+    // as rounding a camera at its limits could move it past one.
     let answered = match AnsweredCamera::of(&camera) {
         Some(answered) => answered,
         _ => {
@@ -478,6 +480,24 @@ pub(crate) fn camera_for(
             ));
         }
     };
+    if let Err(invalid) = answered.camera().check(width, height) {
+        let parameter = if fit_side.is_some() {
+            "view"
+        } else {
+            invalid.parameter
+        };
+        return Err(Problems::from(
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "the camera, its lengths to the nanometre and its angle to the nanodegree as a result writes it, can't make a view at this size: {}",
+                    invalid.message
+                ),
+            )
+            .with_parameter(parameter)
+            .with_suggestion("change the value the message names"),
+        ));
+    }
     Ok((answered.camera(), answered, fit_side))
 }
 
@@ -496,6 +516,7 @@ pub(crate) fn asked_view(
             .with_parameter(parameter)
             .with_suggestion(suggestion)
     };
+    let sized = |side: u32| (1..=MAX_RENDER_SIDE).contains(&side);
     let mut asked = None;
     match (view, camera) {
         (Some(_), Some(_)) => errors.push(invalid(
@@ -509,8 +530,14 @@ pub(crate) fn asked_view(
             "give a view, such as top_front_right, or a camera",
         )),
         (Some(view), None) => asked = Some(Asked::Named(*view)),
-        (None, Some(camera)) => match camera.check() {
-            Ok(()) => asked = Some(Asked::Given(camera.clone())),
+        // At the image's size, a perspective angle's range being the size's; of a size
+        // that's refused below, all but that.
+        (None, Some(camera)) => match if sized(width) && sized(height) {
+            camera.check(width, height)
+        } else {
+            camera.frame()
+        } {
+            Ok(_) => asked = Some(Asked::Given(camera.clone())),
             Err(e) => errors.push(invalid(
                 e.parameter,
                 e.message,
@@ -519,7 +546,7 @@ pub(crate) fn asked_view(
         },
     }
     for (parameter, side) in [("width", width), ("height", height)] {
-        if !(1..=MAX_RENDER_SIDE).contains(&side) {
+        if !sized(side) {
             errors.push(invalid(
                 parameter,
                 format!("{parameter} must be from 1 to {MAX_RENDER_SIDE} pixels, got {side}"),
@@ -986,6 +1013,7 @@ mod tests {
                     face_triangles: vec![1],
                     edge_points: vec![],
                     edge_point_counts: vec![],
+                    vertex_points: vec![],
                     valid: None,
                 },
                 highlight_faces: vec![0],

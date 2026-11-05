@@ -26,6 +26,7 @@ fn main() -> std::process::ExitCode {
                 face_triangles: vec![1],
                 edge_points: vec![],
                 edge_point_counts: vec![],
+                vertex_points: vec![],
                 valid: None,
             }))
         }

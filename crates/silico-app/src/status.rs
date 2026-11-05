@@ -2,7 +2,8 @@
 //! line*, *Layout*, and *egui mapping*; its `#status` and `.st-*` rules and `renderStatus`):
 //! the rebuild in words, with a dot or a spinner in its state's colour, and Stop and Rebuild
 //! beside it; then what the person points at; then, at the right, the file changed on disk,
-//! whether the document is saved, its units, and the shortcut sheet. With no document open,
+//! whether the document is saved, its units, and the shortcut sheet's button (`crate::sheet`).
+//! With no document open,
 //! how the warm start stands (decision 10) in the rebuild's place.
 //!
 //! Left out, each for a reason, each a seam:
@@ -11,10 +12,9 @@
 //! - the edits' count (`Unsaved · 2 edits`): the core's undo stack counts edits, but the
 //!   app's Undo steps over a dialog's edits as one, so neither count is the person's. SEAM:
 //!   the tab's count of its own undo steps.
-//! - the hover, the selection, and the pointer's coordinates in the middle: SEAM(M5.7),
-//!   picking's, and SEAM(#351), sketch mode's (see [`middle`]).
-//! - the shortcut sheet the Shortcuts button opens: SEAM, the sheet is a later PR's; the
-//!   button is off until then, saying so.
+//! - the pointer's coordinates in the middle: SEAM(#351), sketch mode's (see [`middle`]);
+//!   and the hovered face's surface type and feature (`Face6 · Planar · Pad`): SEAM, an
+//!   `elements` read of it.
 //! - What's Wrong, which `Rebuilt with 2 errors` opens in the prototype: not built yet.
 
 use eframe::egui::text::{LayoutJob, TextFormat};
@@ -27,6 +27,7 @@ use silico_core::disk::Disk;
 use silico_core::document::Units;
 
 use crate::icons::{Icon, IconSize};
+use crate::shortcuts::Command;
 use crate::start::{self, Warming};
 use crate::tab::Tab;
 use crate::theme;
@@ -104,6 +105,9 @@ pub struct Bar {
     pub buttons: Option<(bool, bool)>,
     /// Refusals said to the person (the window's, then the tab's).
     pub messages: Vec<String>,
+    /// What the selection says (M5.7): what the pointer is over in the canvas, or how many
+    /// elements are selected; and what the last change to it dropped, and why.
+    pub selection: Vec<String>,
     /// The last comparison of the file on disk, as `status.disk` gives it.
     pub disk: Option<Disk>,
     /// Whether the document is saved; none with no document.
@@ -117,6 +121,8 @@ pub struct Asked {
     pub rebuild: bool,
     /// The Changed on disk chip: the choice it stands for offered again.
     pub disk: bool,
+    /// Shortcuts: the shortcut sheet opened.
+    pub shortcuts: bool,
 }
 
 /// The bar for `tab`, the tab shown, and `message`, the window's refusal, if it has one.
@@ -155,6 +161,7 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
         said,
         buttons: Some((tab.stoppable(), tab.can_rebuild())),
         messages: message.into_iter().chain(tab.message.clone()).collect(),
+        selection: selection_words(tab.selection()),
         disk: status.and_then(|status| status.disk),
         saved: Some(saved),
     }
@@ -166,9 +173,42 @@ pub fn unopened(warming: Option<Warming>, message: Option<String>) -> Bar {
         said: warming.map_or(Said::Nothing, Said::Warm),
         buttons: None,
         messages: message.into_iter().collect(),
+        selection: Vec::new(),
         disk: None,
         saved: None,
     }
+}
+
+/// What the status bar says of `selection`: what the pointer is over (its name, as an agent
+/// writes it, and Unstable if a store wouldn't take it), or else how many elements are
+/// selected; then what its last change said (a name a rebuild left gone, and why).
+pub fn selection_words(selection: &crate::selection::Selection) -> Vec<String> {
+    let pointed = match selection.hovered() {
+        Some(hovered) => {
+            let stable = hovered
+                .found
+                .as_ref()
+                .map_or(hovered.stable, silico_core::selection::Selected::stable);
+            let name = hovered
+                .found
+                .as_ref()
+                .map_or_else(|| hovered.name.to_string(), |found| found.name.to_string());
+            Some(if stable {
+                name
+            } else {
+                format!("{name} · Unstable")
+            })
+        }
+        None => match selection.elements().count() {
+            0 => None,
+            1 => Some("1 selected".to_owned()),
+            n => Some(format!("{n} selected")),
+        },
+    };
+    pointed
+        .into_iter()
+        .chain(selection.said().map(str::to_owned))
+        .collect()
 }
 
 /// The bar drawn across `ui`'s whole rectangle: what the person asked of it.
@@ -270,19 +310,20 @@ fn left_parts(ui: &mut Ui, bar: &Bar, asked: &mut Asked) {
 /// SEAM(#351): in sketch mode, the pointer's coordinates and the sketch's state, as
 /// `if tab.in_sketch() { crate::sketch::bar::status_ui(ui, &mode.status(&tab.sketch_name())) }`
 /// draws them, in place of what follows.
-/// SEAM(M5.7): what's hovered in the canvas (`Face6 · Planar · Pad`), or how many elements
-/// are selected, once picking names them.
+/// Then the selection's words ([`selection_words`]).
 fn middle(ui: &mut Ui, bar: &Bar) {
     for message in &bar.messages {
         item(ui, None, message, theme::ERROR_TEXT);
+    }
+    for words in &bar.selection {
+        item(ui, None, words, theme::STATUS_TEXT);
     }
 }
 
 /// The right's parts, from the right: the shortcut sheet, the units, whether it's saved,
 /// and the file on disk.
 fn right_parts(ui: &mut Ui, bar: &Bar, asked: &mut Asked) {
-    // SEAM: the shortcut sheet (DESIGN.md, state 7), a later PR's; off until then.
-    shortcuts(ui);
+    asked.shortcuts = shortcuts(ui).clicked();
     let Some(saved) = bar.saved else {
         return;
     };
@@ -620,21 +661,18 @@ fn chip(ui: &mut Ui) -> Response {
     )
 }
 
-/// What the Shortcuts button says while there's no sheet for it to open.
-pub const SHORTCUTS_LATER: &str = "The shortcut sheet comes later";
-
-/// The shortcut sheet's button (`button.st-item`): `?` in a key cap after its words. Off,
-/// saying so, until the sheet exists (SEAM: DESIGN.md's state 7, a later PR's).
+/// The shortcut sheet's button (`button.st-item`): the sheet's key (`?`, from the
+/// registry) in a key cap after its words.
 fn shortcuts(ui: &mut Ui) -> Response {
+    let caps = Command::Shortcuts.caps(ui.ctx());
     item_button(
         ui,
         Mark::Icon(Icon::Help),
         "Shortcuts",
         theme::STATUS_TEXT,
-        &["?".to_owned()],
-        false,
+        &caps,
+        true,
     )
-    .on_disabled_hover_text(SHORTCUTS_LATER)
 }
 
 #[cfg(test)]
@@ -706,7 +744,8 @@ mod tests {
         pub const PROGRESS_R: u8 = 2;
         /// `.state-dot`: 8 by 8, round.
         pub const DOT: f32 = 8.0;
-        /// `.kbd`: `min-width: 16px; height: 16px; border-radius: 3px`, Gray.250 on Gray.350.
+        /// `.kbd`: `min-width: 16px; height: 16px; border-radius: 3px`, Gray.250 on Gray.350,
+        /// its border 1 and 2 at its bottom (`border-bottom-width: 2px`).
         pub const KBD_H: f32 = 16.0;
         pub const KBD_MIN_W: f32 = 16.0;
         pub const KBD_R: u8 = 3;
@@ -921,6 +960,7 @@ mod tests {
             said,
             buttons: Some(buttons),
             messages: Vec::new(),
+            selection: Vec::new(),
             disk,
             saved: Some(saved),
         }
@@ -987,19 +1027,19 @@ mod tests {
         let rebuild = button_at(&h, "Rebuild", stop + css::GAP, css::G400, None);
         separator_at(&h, rebuild + css::GAP, css::SEP_MARGIN);
         // From the right, 6 in: Shortcuts (`button.st-item`: help, its words, `?` in a key
-        // cap 6 after; off until the sheet exists, Gray.400 as `.st-btn:disabled`), a
-        // separator, mm, a separator, Saved, a separator, and the chip.
+        // cap 6 after; on, in the bar's Gray.550), a separator, mm, a separator, Saved, a
+        // separator, and the chip.
         let shortcuts = widget(&h, Role::Button, "Shortcuts");
         assert!(
-            h.get_by_role_and_label(Role::Button, "Shortcuts")
+            !h.get_by_role_and_label(Role::Button, "Shortcuts")
                 .accesskit_node()
                 .is_disabled()
         );
         assert!(near(shortcuts.right(), BAR.right() - css::PADDING_RIGHT));
         assert!(near(shortcuts.height(), css::ITEM_H));
         let help = centred(shortcuts.left() + css::ITEM_PADDING, css::ICON, css::ICON);
-        assert_eq!(icon_at(&h, help), Some(css::G400));
-        let words = said_at(&h, "Shortcuts", help.right() + css::ITEM_GAP, css::G400);
+        assert_eq!(icon_at(&h, help), Some(css::G550));
+        let words = said_at(&h, "Shortcuts", help.right() + css::ITEM_GAP, css::G550);
         let caps: Vec<RectShape> = rects(&h)
             .into_iter()
             .filter(|shape| {
@@ -1014,8 +1054,15 @@ mod tests {
             shortcuts.right() - css::ITEM_PADDING
         ));
         assert_eq!(
-            (caps[0].fill, caps[0].stroke.color, caps[0].corner_radius),
-            (css::G250, css::G350, CornerRadius::same(css::KBD_R))
+            (caps[0].fill, caps[0].corner_radius),
+            (css::G250, CornerRadius::same(css::KBD_R))
+        );
+        assert!(caps[0].stroke.is_empty(), "the ? cap: {:?}", caps[0].stroke);
+        crate::modal::tests::kbd_border(
+            &crate::modal::tests::cap_border(&h, caps[0].rect),
+            caps[0].rect,
+            css::G350,
+            "the ? cap",
         );
         let sep = shortcuts.left() - css::GAP - css::BORDER;
         separator_at(&h, sep, 0.0);

@@ -27,7 +27,8 @@
 # Run through pixi:  pixi run proptest-explore -- /tmp/explore          (new seeds)
 #                    pixi run proptest-explore -- /tmp/explore SEED     (one round at SEED)
 # PROPTEST_EXPLORE_ROUNDS (4) and PROPTEST_EXPLORE_MINUTES (60) bound it; the minutes are kept
-# where `timeout` is (Linux), and only between rounds elsewhere. To run one failing
+# where `timeout` is (Linux), and only between rounds elsewhere. PROPTEST_EXPLORE_SLOW_ALONE,
+# set and not empty, runs each slow proptest alone (below). To run one failing
 # test again, `PROPTEST_RNG_SEED=SEED pixi run cargo nextest run -p ...`, which each failure's
 # body gives in full; not `pixi run test`, whose task fixes the seed.
 set -euo pipefail
@@ -119,6 +120,14 @@ trap 'rm -f "$nextest_config"' EXIT
     printf '\n[[profile.silico-explore.overrides]]\nfilter = "%s"\n' "$slow"
     printf 'retries = 0\n'
     printf 'slow-timeout = { period = "120s", terminate-after = 10 }\n'
+    # Alone, nothing else of this run beside it, when the exploration was overdue
+    # (.github/proptest-room.sh) and may have started on a busy VM: its runner at the idle
+    # weight then gets about an equal share with each busy runner's (2 or 3 CPUs of 30), and a
+    # slow proptest (some 357 s alone, 3 threads with lavapipe's) beside six other tests
+    # gets a third of that, past its 20 minutes. Alone, it has the share to itself.
+    if [ -n "${PROPTEST_EXPLORE_SLOW_ALONE-}" ]; then
+      printf 'threads-required = "num-test-threads"\n'
+    fi
   fi
 } >"$nextest_config"
 nextest=(cargo nextest run --config-file "$nextest_config" --profile silico-explore)
@@ -202,6 +211,9 @@ failures() {
 echo "proptest-explore: testing $commit"
 "${nextest[@]}" --workspace --no-run
 printf 'round\tseed\tstatus\tseconds\n' >"$out/rounds.tsv"
+# No time left for a round passes, but explores nothing: the rounds.tsv it leaves, its header
+# alone, keeps an overdue exploration overdue (proptest-explore.yml's "Rounds ran",
+# .github/proptest-room.sh).
 if [ "$SECONDS" -ge "$last_start" ]; then
   report "No round: the build ended past $((minutes * 3 / 4)) minutes"
   echo passed >"$out/outcome"

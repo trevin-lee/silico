@@ -245,6 +245,15 @@ pub(crate) fn feature(feature: &Feature) -> Out<'_> {
     Out::Object(members)
 }
 
+/// The keys of `feature`'s members, in the order canonical form writes them ([`feature`]):
+/// what `diff` orders two features' members by where neither's own order says.
+pub(crate) fn feature_keys(feature: &Feature) -> Vec<&'static str> {
+    match self::feature(feature) {
+        Out::Object(members) => members.into_iter().map(|(key, _)| key).collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// A fingerprint's fields, in schema order: an object of scalars and two arrays, so on one
 /// line.
 fn fingerprint(fingerprint: &Fingerprint) -> Out<'static> {
@@ -758,6 +767,16 @@ pub(crate) fn text(value: &Out<'_>, layout: Layout, limit: usize) -> Result<Stri
     writer.one_line = layout == Layout::OneLine;
     writer.put(value, 0)?;
     Ok(writer.out)
+}
+
+/// How many bytes `value` is written in, in `layout`, as [`text`] would write it with no
+/// limit: counted, never kept, so a value too long to hold is measured all the same.
+pub(crate) fn length(value: &Out<'_>, layout: Layout) -> usize {
+    let mut writer = Writer::new(usize::MAX, false);
+    writer.one_line = layout == Layout::OneLine;
+    // Unbounded, it can't run out.
+    let _ = writer.put(value, 0);
+    writer.len
 }
 
 /// Canonical text, written (or only counted) up to a limit.

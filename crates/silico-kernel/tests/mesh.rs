@@ -13,9 +13,10 @@ use numbers::relative_error;
 use std::collections::BTreeMap;
 
 use silico_kernel::{
-    BooleanOp, KernelErrorKind, Mesh, Primitive, Shape, boolean, fillet, make, make_box,
+    BooleanOp, KernelErrorKind, Mesh, Primitive, Shape, boolean, describe, fillet, make, make_box,
     tessellate, translate,
 };
+use silico_protocol::ElementKind;
 use silico_protocol::Refusal;
 
 /// The volume a closed mesh encloses (divergence theorem), taken about `o`, a point inside
@@ -86,6 +87,60 @@ fn edges_are_numbered_as_the_fillet_numbers_them() {
         ends.contains(&[0.0, 0.0, 30.0]) && ends.contains(&[0.0, 0.0, 0.0]),
         "{ends:?}"
     );
+}
+
+#[test]
+fn a_boxs_vertex_points_are_its_corners_in_freecads_order() {
+    // A Part box's vertices, as FreeCAD numbers them: Vertex1 (0, 0, H), Vertex2 the origin,
+    // then (0, W, H), (0, W, 0), (L, 0, H), (L, 0, 0), (L, W, H), (L, W, 0): x low then high,
+    // y low then high within it, z high then low within that. Exact: a box's vertices are
+    // its corners.
+    let mesh = tessellate(&make_box(10.0, 20.0, 30.0).unwrap(), 0.1).unwrap();
+    assert_eq!(
+        mesh.vertex_points,
+        [
+            [0.0, 0.0, 30.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 20.0, 30.0],
+            [0.0, 20.0, 0.0],
+            [10.0, 0.0, 30.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 20.0, 30.0],
+            [10.0, 20.0, 0.0],
+        ]
+    );
+    // Moved, they move with it, exactly (a location, applied to each point).
+    let moved = translate(&make_box(10.0, 20.0, 30.0).unwrap(), [100.0, -50.0, 0.5])
+        .unwrap()
+        .shape;
+    let mesh = tessellate(&moved, 0.1).unwrap();
+    assert_eq!(mesh.vertex_points[0], [100.0, -50.0, 30.5]);
+    assert_eq!(mesh.vertex_points[7], [110.0, -30.0, 0.5]);
+}
+
+#[test]
+fn a_meshs_vertex_points_are_the_described_vertices_in_their_order() {
+    // The order naming numbers VertexN in is describe's (TopExp::MapShapes): a filleted
+    // box's twelve vertices, each the point describe gives that number, bit for bit, and
+    // each an end of some edge's polyline (to the edge's mesh).
+    let rounded = fillet(&make_box(10.0, 20.0, 30.0).unwrap(), &[1], 2.0)
+        .unwrap()
+        .shape;
+    let mesh = tessellate(&rounded, 0.01).unwrap();
+    let (total, described) = describe(&rounded, ElementKind::Vertex, 1, 100).unwrap();
+    assert_eq!(total, 10);
+    assert_eq!(mesh.vertex_points, described.vertices);
+    for (n, p) in (1..).zip(&mesh.vertex_points) {
+        let ends = mesh
+            .edges()
+            .filter(|e| !e.is_empty())
+            .flat_map(|e| [e[0], e[e.len() - 1]]);
+        let nearest = ends.map(|q| norm(sub(q, *p))).fold(f64::INFINITY, f64::min);
+        assert!(
+            nearest <= 1e-7,
+            "Vertex{n} {p:?} is {nearest} from any edge's end"
+        );
+    }
 }
 
 #[test]

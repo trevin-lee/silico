@@ -204,6 +204,125 @@ pub fn focus_ring(
     }
 }
 
+/// A key cap's box (`.kbd`) in `rect`: `fill` under its border in `border`,
+/// [`KEY_CAP_BORDER`] at its top and sides and [`KEY_CAP_BORDER_BOTTOM`] at its bottom, its
+/// outer corners [`KEY_CAP_CORNER_RADIUS`] round, as CSS draws a `border-radius` with sides of
+/// two widths. The border is one mesh, so a translucent one (`.btn .kbd`'s) is laid once
+/// everywhere, and its outer edge is on the pixel grid, as egui's rectangles' are.
+pub fn key_cap_box(ui: &egui::Ui, rect: egui::Rect, fill: Color32, border: Color32) {
+    use egui::emath::GuiRounding as _;
+    let painter = ui.painter();
+    painter.rect_filled(rect, KEY_CAP_CORNER_RADIUS, fill);
+    let pixels = ui.ctx().pixels_per_point();
+    let feather = ui.ctx().tessellation_options(|options| {
+        if options.feathering {
+            options.feathering_size_in_pixels / pixels
+        } else {
+            0.0
+        }
+    });
+    painter.add(key_cap_border(
+        rect.round_to_pixels(pixels),
+        border,
+        feather,
+    ));
+}
+
+/// Where a key cap's words' middle goes in its box `rect`: across, its middle
+/// (`text-align: center`, its side borders alike); down, its line's middle, its line starting
+/// under its top border.
+pub fn key_cap_text_centre(rect: egui::Rect) -> egui::Pos2 {
+    egui::pos2(
+        rect.center().x,
+        rect.top() + KEY_CAP_BORDER + KEY_CAP_LINE_HEIGHT / 2.0,
+    )
+}
+
+/// The ring `.kbd`'s border makes round `rect`, in `colour`, faded to nothing over `feather`
+/// across each of its edges. Each outer corner is a quarter circle of the cap's radius; each
+/// inner one, as CSS has it, a quarter ellipse whose radii are the outer's less the border's
+/// widths at it (none if that's less than nothing), about the same centre while the radius is
+/// wider than the border.
+fn key_cap_border(rect: egui::Rect, colour: Color32, feather: f32) -> egui::Mesh {
+    use egui::{Pos2, vec2};
+    use std::f32::consts::{FRAC_PI_2, PI};
+    /// Each quarter's segments.
+    const STEPS: u16 = 8;
+    let mut mesh = egui::Mesh::default();
+    if !rect.is_positive() {
+        return mesh;
+    }
+    let radius = f32::from(KEY_CAP_CORNER_RADIUS)
+        .min(rect.width() / 2.0)
+        .min(rect.height() / 2.0);
+    // Each side's feather at most as wide as the thinnest side, so no edge's crosses another's.
+    let half = feather.clamp(0.0, KEY_CAP_BORDER.min(KEY_CAP_BORDER_BOTTOM)) / 2.0;
+    // Each corner clockwise from the top left: its point, the way into the cap from it, the
+    // border's widths across it (its side's) and down it (its top's or bottom's), and the angle
+    // its quarter starts at (y down).
+    let corners: [(Pos2, egui::Vec2, f32, f32, f32); 4] = [
+        (
+            rect.left_top(),
+            vec2(1.0, 1.0),
+            KEY_CAP_BORDER,
+            KEY_CAP_BORDER,
+            PI,
+        ),
+        (
+            rect.right_top(),
+            vec2(-1.0, 1.0),
+            KEY_CAP_BORDER,
+            KEY_CAP_BORDER,
+            1.5 * PI,
+        ),
+        (
+            rect.right_bottom(),
+            vec2(-1.0, -1.0),
+            KEY_CAP_BORDER,
+            KEY_CAP_BORDER_BOTTOM,
+            0.0,
+        ),
+        (
+            rect.left_bottom(),
+            vec2(1.0, -1.0),
+            KEY_CAP_BORDER,
+            KEY_CAP_BORDER_BOTTOM,
+            FRAC_PI_2,
+        ),
+    ];
+    for (corner, inward, across, down, start) in corners {
+        let outer_centre = corner + inward * radius;
+        let (rx, ry) = ((radius - across).max(0.0), (radius - down).max(0.0));
+        let inner_centre = corner + inward * vec2(across + rx, down + ry);
+        for step in 0..=STEPS {
+            let angle = start + FRAC_PI_2 * f32::from(step) / f32::from(STEPS);
+            let way = vec2(libm::cosf(angle), libm::sinf(angle));
+            let outer = outer_centre + way * radius;
+            let inner = inner_centre + way * vec2(rx, ry);
+            // The inner edge's normal, out of the cap's inside: the ellipse's gradient.
+            let normal = if rx > 0.0 && ry > 0.0 {
+                vec2(way.x / rx, way.y / ry).normalized()
+            } else {
+                way
+            };
+            mesh.colored_vertex(outer + way * half, Color32::TRANSPARENT);
+            mesh.colored_vertex(outer - way * half, colour);
+            mesh.colored_vertex(inner + normal * half, colour);
+            mesh.colored_vertex(inner - normal * half, Color32::TRANSPARENT);
+        }
+    }
+    // Each point's four to the next's: the outer feather, the border, the inner feather.
+    let points = 4 * (u32::from(STEPS) + 1);
+    for point in 0..points {
+        let (this, next) = (4 * point, 4 * ((point + 1) % points));
+        for band in 0..3 {
+            mesh.add_triangle(this + band, this + band + 1, next + band);
+            mesh.add_triangle(this + band + 1, next + band + 1, next + band);
+        }
+    }
+    mesh
+}
+
 // ---- States ----
 
 /// An error's badges and marks, filled (`error_fg_color`, `#ab0116`).
@@ -401,6 +520,16 @@ pub const VIEWPORT_SELECTION_EDGE_WIDTH: f32 = 3.5;
 pub const VIEWPORT_FEATURE_HOVER_TINT: Rgba8 = rgba8(0xd4dbff);
 /// How much of [`VIEWPORT_FEATURE_HOVER_TINT`] those faces take.
 pub const VIEWPORT_FEATURE_HOVER_TINT_AMOUNT: f32 = 0.4;
+/// A hovered vertex's dot (interact.js, `overlay`'s `dot`).
+pub const VIEWPORT_HOVER_VERTEX: Rgba8 = rgba8(0xffffff);
+/// A selected vertex's dot.
+pub const VIEWPORT_SELECTION_VERTEX: Rgba8 = rgba8(0x4676ff);
+/// A vertex's dot's radius, in points.
+pub const VIEWPORT_VERTEX_RADIUS: f32 = 4.5;
+/// The width of the ring about a vertex's dot, in points.
+pub const VIEWPORT_VERTEX_RING: f32 = 1.0;
+/// The ring's colour.
+pub const VIEWPORT_VERTEX_RING_COLOR: Rgba8 = rgba8(0x000000);
 /// A broken reference's candidates ([`WARNING`], `warn_fg_color`).
 pub const VIEWPORT_CANDIDATE: Rgba8 = rgba8_of(WARNING, 0xff);
 /// A candidate edge's width.
@@ -431,6 +560,32 @@ pub const BOX_SELECT_STROKE: Rgba8 = rgba8_of(FOCUS, 0xff);
 pub const BOX_SELECT_STROKE_WIDTH: f32 = 1.0;
 /// A crossing box's dash and gap, in points.
 pub const BOX_SELECT_CROSSING_DASH: [f32; 2] = [4.0, 3.0];
+
+/// A toast (the prototype's `.toast`, `#toasts`: DESIGN.md's *Toasts*, an `Area` anchored
+/// bottom-right of the canvas): Gray.200 inside a Gray.250 border, `--r`'s corners, a menu's
+/// shadow (`0 6px 18px`, black at 60%), padded 7 over and under, 10 at the left and 8 at the
+/// right, at most 420 wide, its text as the body's; 12 in from the canvas's right and 58 up
+/// from its foot; shown for 3.8 seconds (app.js's `toast`).
+pub const TOAST_BG: Color32 = GRAY_200;
+pub const TOAST_BORDER: Color32 = GRAY_250;
+pub const TOAST_TEXT: Color32 = TEXT_DEFAULT;
+pub const TOAST_CORNER_RADIUS: u8 = NORMAL_CORNER_RADIUS;
+pub const TOAST_SHADOW: Shadow = Shadow {
+    offset: [0, 6],
+    blur: 18,
+    spread: 0,
+    color: with_alpha(GRAY_0, 153),
+};
+pub const TOAST_PADDING: Margin = Margin {
+    left: 10,
+    right: 8,
+    top: 7,
+    bottom: 7,
+};
+pub const TOAST_MAX_WIDTH: f32 = 420.0;
+pub const TOAST_MARGIN_RIGHT: f32 = 12.0;
+pub const TOAST_MARGIN_BOTTOM: f32 = 58.0;
+pub const TOAST_SECONDS: f64 = 3.8;
 
 // ---- Spacing (DESIGN.md, *Spacing*; `re_ui`'s tokens) ----
 
@@ -655,6 +810,13 @@ pub const TOOLBAR_BUTTON_ICON: Color32 = TEXT_DEFAULT;
 pub const TOOLBAR_BUTTON_HOVER_BG: Color32 = WIDGET_BG;
 pub const TOOLBAR_BUTTON_HOVER_ICON: Color32 = TEXT_STRONG;
 pub const TOOLBAR_BUTTON_DISABLED_ICON: Color32 = TEXT_DISABLED;
+/// A toggle button that's on (`.tb-btn.toggle-on`, SELECT's filters): white on Gray.250,
+/// marked along its foot by a 2-point line in the selection's blue (`box-shadow: inset 0
+/// -2px 0 var(--blue)`).
+pub const TOOLBAR_BUTTON_TOGGLED_BG: Color32 = GRAY_250;
+pub const TOOLBAR_BUTTON_TOGGLED_ICON: Color32 = GRAY_1000;
+pub const TOOLBAR_BUTTON_TOGGLED_MARK: Color32 = SELECTION_BG;
+pub const TOOLBAR_BUTTON_TOGGLED_MARK_WIDTH: f32 = 2.0;
 
 /// A panel's label and its drop-down (`.tb-label`): its text's size and line; its padding
 /// over and under, and at its sides; the gap before its arrow, and the arrow's side; its
@@ -799,6 +961,9 @@ pub const TIMELINE_BADGE_RING_WIDTH: f32 = 1.5;
 pub const TIMELINE_BADGE_RING: Color32 = BOTTOM_BAR_BG;
 pub const TIMELINE_BADGE_ERROR: Color32 = ERROR_FILL;
 pub const TIMELINE_BADGE_WARNING: Color32 = WARNING;
+/// A feature another program changed (`.badge.outside`): a smaller dot, 7 at the same
+/// inset, in [`CHANGED_OUTSIDE`], in the same ring.
+pub const TIMELINE_BADGE_OUTSIDE_SIZE: f32 = 7.0;
 
 /// Where a dragged feature would drop (`.drop-before::before`): a Blue.525 line this wide,
 /// this far left of the item it would drop before, short of its top and bottom by this.
@@ -841,11 +1006,17 @@ pub const KEY_CAP_ON_PRIMARY_TEXT: Color32 = hex(0x444444);
 /// A key cap's text size.
 pub const KEY_CAP_TEXT_SIZE: f32 = 10.5;
 
-/// A key cap's least width, its padding at each side of its text, and its outline's width,
-/// inside its width as `.kbd`'s `border-box` has it.
+/// A key cap's least width, its padding at each side of its text, and its border's width at
+/// its top and sides, inside its width and height as `.kbd`'s `border-box` has them.
 pub const KEY_CAP_MIN_WIDTH: f32 = 16.0;
 pub const KEY_CAP_PADDING: f32 = 4.0;
 pub const KEY_CAP_BORDER: f32 = 1.0;
+/// A key cap's border at its bottom (`.kbd { border-bottom-width: 2px }`), in every key cap,
+/// a button's (`.btn .kbd`) too.
+pub const KEY_CAP_BORDER_BOTTOM: f32 = 2.0;
+/// A key cap's line (`.kbd { line-height: 16px }`), from under its top border: its words sit
+/// in its middle, a top border's width below the cap's.
+pub const KEY_CAP_LINE_HEIGHT: f32 = 16.0;
 
 /// A key cap's corners, and the space between two caps of one shortcut (`.keys`).
 pub const KEY_CAP_CORNER_RADIUS: u8 = 3;
@@ -957,6 +1128,14 @@ pub const HINT_PADDING: Margin = Margin::symmetric(10, 8);
 pub const HINT_BG: Color32 = GRAY_150;
 pub const HINT_TEXT: Color32 = TEXT_SUBDUED;
 pub const HINT_STRONG: Color32 = GRAY_800;
+/// A hint in a modal's body (`.hint-block` with `margin: 12px 0 0`): 12 above it, nothing
+/// at its sides or under it.
+pub const MODAL_HINT_MARGIN: Margin = Margin {
+    left: 0,
+    right: 0,
+    top: 12,
+    bottom: 0,
+};
 
 /// An error card (`.err-card`): 8 above and below it, `--pad` at its sides, corners `--r`;
 /// its fill, its 1 px border, its head's text and icon (`.ec-head`), and its accent
@@ -1062,6 +1241,182 @@ pub const SECONDARY_BUTTON_HOVER_TEXT: Color32 = TEXT_STRONG;
 /// (`.btn .kbd`: `opacity: .55`, its border and text the button's).
 pub const BUTTON_GAP: f32 = 6.0;
 pub const BUTTON_KEY_CAP_OPACITY: f32 = 0.55;
+/// A button's key cap's margin at its left (`.btn .kbd { margin-left: 2px }`): the cap is
+/// [`BUTTON_GAP`] and this after the button's words.
+pub const BUTTON_KEY_CAP_MARGIN: f32 = 2.0;
+/// A button's padding at its sides (`.btn { padding: 0 10px }`), and its height
+/// (`.btn { height: 22px }`, [`BUTTON_HEIGHT`]) where nothing sets another.
+pub const BUTTON_PADDING: f32 = 10.0;
+
+// ---- Modals (`.backdrop`, `.modal`) ----
+
+/// A modal's width, its border in it (`.modal { width: 440px }`, `border-box`), on
+/// [`MODAL_BACKDROP`].
+pub const MODAL_WIDTH: f32 = 440.0;
+/// A modal's tallest: the window's height but this (`.modal { max-height: calc(100vh -
+/// 80px) }`); its body scrolls past that (`.m-body { overflow: auto }`), its foot staying.
+pub const MODAL_WINDOW_MARGIN: f32 = 80.0;
+/// A modal's fill, its 1 px border, and its corners (`.modal`: Gray.200, Gray.250, `--r`).
+pub const MODAL_BG: Color32 = FLOATING_BG;
+pub const MODAL_BORDER: Color32 = PANEL_BORDER;
+pub const MODAL_CORNER_RADIUS: u8 = NORMAL_CORNER_RADIUS;
+/// A modal's shadow (`.modal`: `0 15px 50px rgba(0,0,0,.7)`).
+pub const MODAL_SHADOW: Shadow = Shadow {
+    offset: [0, 15],
+    blur: 50,
+    spread: 0,
+    color: with_alpha(GRAY_0, 179),
+};
+/// A modal's head (`.m-head`): padded 12 above, 12 at its right, 8 under, 16 at its left;
+/// its icon 8 from its title, which is 14 high in Gray.1000 on a line of the body's
+/// ([`BODY_LINE_HEIGHT`]).
+pub const MODAL_HEAD_PADDING: Margin = Margin {
+    left: 16,
+    right: 12,
+    top: 12,
+    bottom: 8,
+};
+pub const MODAL_HEAD_GAP: f32 = 8.0;
+pub const MODAL_TITLE_SIZE: f32 = 14.0;
+pub const MODAL_TITLE: Color32 = TEXT_STRONG;
+/// A modal's body (`.m-body`): padded 16 at its sides and 12 under; its words Gray.750
+/// (`p { color: var(--g750) }`), red where they say what went wrong (`.err-text`).
+pub const MODAL_BODY_PADDING: Margin = Margin {
+    left: 16,
+    right: 16,
+    top: 0,
+    bottom: 12,
+};
+pub const MODAL_TEXT: Color32 = TEXT_DEFAULT;
+/// A field's label in a modal (`.modal .lbl`): `--fs-small` in Gray.550, 10 above it and 4
+/// under, on a line of the body's.
+pub const MODAL_LABEL: Color32 = TEXT_SUBDUED;
+pub const MODAL_LABEL_MARGIN_TOP: f32 = 10.0;
+pub const MODAL_LABEL_MARGIN_BOTTOM: f32 = 4.0;
+/// A field in a modal (`.modal .field { height: 26px }`), and a button beside one.
+pub const MODAL_FIELD_HEIGHT: f32 = 26.0;
+/// A modal's foot (`.m-foot`): padded 10 above, 16 at its sides, 14 under; its buttons at
+/// its right, 6 apart, each 26 high and 76 wide at least (`.m-foot .btn`).
+pub const MODAL_FOOT_PADDING: Margin = Margin {
+    left: 16,
+    right: 16,
+    top: 10,
+    bottom: 14,
+};
+pub const MODAL_FOOT_GAP: f32 = 6.0;
+pub const MODAL_BUTTON_HEIGHT: f32 = DIALOG_BUTTON_HEIGHT;
+pub const MODAL_BUTTON_MIN_WIDTH: f32 = 76.0;
+
+// ---- The shortcut sheet (`.sheet`) ----
+
+/// The sheet's width, its border in it (`.sheet { width: 920px }`), at most the window's
+/// less this (`.modal { max-width: calc(100vw - 40px) }`).
+pub const SHEET_WIDTH: f32 = 920.0;
+pub const SHEET_WINDOW_MARGIN: f32 = 40.0;
+/// Its filter (the head's `.field`, `width: 220px; height: 24px`), its icon at its left and
+/// its text after it as a field's padding puts it (`.field input { padding: 0 6px }`).
+pub const SHEET_FILTER_WIDTH: f32 = 220.0;
+pub const SHEET_FILTER_HEIGHT: f32 = 24.0;
+/// Its columns (`.cols { columns: 3 260px; column-gap: 28px }`): three, each 260 wide at
+/// least, 28 apart.
+pub const SHEET_COLUMNS: usize = 3;
+pub const SHEET_COLUMN_MIN_WIDTH: f32 = 260.0;
+pub const SHEET_COLUMN_GAP: f32 = 28.0;
+/// A group (`.grp { margin-bottom: 14px }`), 14 above the next in its column.
+pub const SHEET_GROUP_GAP: f32 = 14.0;
+/// A group's title (`.grp-t`): 10.5 high capitals, spaced as the panels' ([`CAPITALS_LETTER_SPACING`]),
+/// in [`TEXT_SUBDUED`] on a line of the body's, its note beside it at its right; then 4,
+/// its 1 px [`PANEL_BORDER`] underline, and 4 more before its rows.
+pub const SHEET_GROUP_TITLE_SIZE: f32 = 10.5;
+pub const SHEET_GROUP_TITLE_TEXT: Color32 = TEXT_SUBDUED;
+pub const SHEET_GROUP_TITLE_PADDING: f32 = 4.0;
+pub const SHEET_GROUP_TITLE_BORDER: Color32 = PANEL_BORDER;
+pub const SHEET_GROUP_TITLE_MARGIN: f32 = 4.0;
+/// A command's row (`.sc-row`): 22 high, its name in [`TEXT_DEFAULT`] (`.d`), its caps at
+/// its right, 3 apart (`.sheet .sc-row .keys { gap: 3px }`), 8 from its name at the least.
+pub const SHEET_ROW_HEIGHT: f32 = 22.0;
+pub const SHEET_ROW_TEXT: Color32 = TEXT_DEFAULT;
+pub const SHEET_ROW_GAP: f32 = 8.0;
+pub const SHEET_KEY_CAP_GAP: f32 = 3.0;
+/// What the filter found in a name (`.sheet mark`): Blue.500 at 35% under white words.
+pub const SHEET_MATCH_BG: Color32 = with_alpha(SELECTION_BG, 89);
+pub const SHEET_MATCH_TEXT: Color32 = GRAY_1000;
+/// The notes (`.sheet .note`): `--fs-small` ([`HEADER_SIZE`]) in [`TEXT_SUBDUED`], their
+/// strong words (`.strong`) [`TEXT_STRONG`]. The note under the columns sits 6 under them,
+/// over a 1 px [`PANEL_BORDER`] rule, 8 above its words.
+pub const SHEET_NOTE_TEXT: Color32 = TEXT_SUBDUED;
+pub const SHEET_NOTE_STRONG: Color32 = TEXT_STRONG;
+pub const SHEET_NOTE_MARGIN: f32 = 6.0;
+pub const SHEET_NOTE_PADDING: f32 = 8.0;
+pub const SHEET_NOTE_BORDER: Color32 = PANEL_BORDER;
+
+// ---- Banners over the canvas (`.canvas-banner`) ----
+
+/// A banner's place over the canvas: 10 from its left and top, 148 from its right, clear of
+/// the ViewCube (`.canvas-banner { left: 10px; top: 10px }`, and `right: 148px` as
+/// `renderBanner` sets it).
+pub const BANNER_MARGIN: f32 = 10.0;
+pub const BANNER_MARGIN_RIGHT: f32 = 148.0;
+/// Where the prototype gives no rule (its canvas is never narrow), proposals: the least
+/// width a banner keeps beside the ViewCube, below which it takes the canvas's width but
+/// [`BANNER_MARGIN`] at each side; and the least room its words keep beside its buttons,
+/// below which the buttons go under the words, [`BANNER_ACTION_GAP`] under them, in rows
+/// as they fit, the words never narrower than this.
+pub const BANNER_MIN_WIDTH: f32 = 320.0;
+pub const BANNER_WORDS_MIN_WIDTH: f32 = 200.0;
+/// A banner's padding (`9px 10px 9px 12px`), inside its 1 px border, its corners `--r`; 10
+/// between its icon, its words, and its buttons, which are 6 apart; its icon 1 lower than
+/// its words' top (`.b-icon { margin-top: 1px }`); its second line 2 under its first, at
+/// 85% (`.b-text .s`).
+pub const BANNER_PADDING: Margin = Margin {
+    left: 12,
+    right: 10,
+    top: 9,
+    bottom: 9,
+};
+pub const BANNER_CORNER_RADIUS: u8 = NORMAL_CORNER_RADIUS;
+pub const BANNER_GAP: f32 = 10.0;
+pub const BANNER_ACTION_GAP: f32 = 6.0;
+pub const BANNER_ICON_MARGIN_TOP: f32 = 1.0;
+pub const BANNER_SUB_MARGIN_TOP: f32 = 2.0;
+pub const BANNER_SUB_OPACITY: f32 = 0.85;
+/// The banner's title (`.b-text .t`): Gray.1000.
+pub const BANNER_TITLE: Color32 = TEXT_STRONG;
+/// A banner with unsaved edits held over a file changed on disk (`.canvas-banner.warn`):
+/// its fill, border, and words (`--alert-warn-text`).
+pub const BANNER_WARNING_BG: Color32 = hex(0x2a1d0b);
+pub const BANNER_WARNING_BORDER: Color32 = hex(0x6b4310);
+pub const BANNER_WARNING_TEXT: Color32 = ALERT_WARNING_TEXT;
+/// A banner saying the session reloaded its file (`.canvas-banner.info`): purple.
+pub const BANNER_INFO_BG: Color32 = hex(0x17142a);
+pub const BANNER_INFO_BORDER: Color32 = hex(0x463375);
+pub const BANNER_INFO_TEXT: Color32 = hex(0xe4d6ff);
+/// A banner saying the file is gone (`.canvas-banner.err`).
+pub const BANNER_ERROR_BG: Color32 = hex(0x2a0a12);
+pub const BANNER_ERROR_BORDER: Color32 = hex(0x6e1228);
+pub const BANNER_ERROR_TEXT: Color32 = DANGER_BUTTON_TEXT;
+/// A button on a banner (`.canvas-banner .btn-secondary`): white at 8%, its words the
+/// banner's; hovered, white at 16%, its words white.
+pub const BANNER_BUTTON_BG: Color32 = with_alpha(GRAY_1000, 20);
+pub const BANNER_BUTTON_HOVER_BG: Color32 = with_alpha(GRAY_1000, 41);
+pub const BANNER_BUTTON_HOVER_TEXT: Color32 = GRAY_1000;
+/// The list of what changed under a banner's words (`.canvas-banner .diff`): 6 under them,
+/// in the small size, on rows 2 apart, its three columns 10 apart; the feature's name in
+/// [`CHANGED_OUTSIDE`] (`.k`), the rest in the banner's words' colour.
+pub const BANNER_LIST_MARGIN_TOP: f32 = 6.0;
+pub const BANNER_LIST_ROW_GAP: f32 = 2.0;
+pub const BANNER_LIST_COLUMN_GAP: f32 = 10.0;
+
+/// The card in a feature's properties saying another program changed it (`.err-card.warn`,
+/// restyled purple as `featureProps` styles it): `rgba(183,128,255,.12)`, its border
+/// `#463375`, its words `#e4d6ff`.
+pub const OUTSIDE_CARD_BG: Color32 = Color32::from_rgba_unmultiplied_const(183, 128, 255, 31);
+pub const OUTSIDE_CARD_BORDER: Color32 = hex(0x463375);
+pub const OUTSIDE_CARD_TEXT: Color32 = hex(0xe4d6ff);
+/// A ghost button's words (`.btn-ghost`): Gray.750; hovered, on its fill
+/// ([`GHOST_BUTTON_HOVER_BG`]), white.
+pub const GHOST_BUTTON_TEXT: Color32 = GRAY_750;
+pub const GHOST_BUTTON_HOVER_TEXT: Color32 = GRAY_1000;
 
 // ---- The start page (`.st-*`, `.recent-row`) ----
 
@@ -1315,6 +1670,19 @@ pub fn field_with_room<'t>(
     invalid: bool,
     room: f32,
 ) -> egui::TextEdit<'t> {
+    field_with_rooms(ui, edit, id_salt, kind, invalid, [0.0, room])
+}
+
+/// [`field`], with `rooms[0]` more points inside its frame at its left, before its text
+/// (where an icon goes, which the caller paints there), and `rooms[1]` at its right.
+pub fn field_with_rooms<'t>(
+    ui: &egui::Ui,
+    edit: egui::TextEdit<'t>,
+    id_salt: impl egui::AsIdSalt,
+    kind: FieldKind,
+    invalid: bool,
+    rooms: [f32; 2],
+) -> egui::TextEdit<'t> {
     let id = ui.make_persistent_id(id_salt);
     let hovered = ui
         .ctx()
@@ -1322,10 +1690,9 @@ pub fn field_with_room<'t>(
         .is_some_and(|drawn| drawn.enabled() && ui.rect_contains_pointer(drawn.rect));
     let focused = ui.memory(|memory| memory.has_focus(id));
     let mut frame = field_frame(kind, hovered, focused, invalid);
-    frame.inner_margin.right = frame
-        .inner_margin
-        .right
-        .saturating_add(room.ceil().clamp(0.0, f32::from(i8::MAX)) as i8);
+    let room = |room: f32| room.ceil().clamp(0.0, f32::from(i8::MAX)) as i8;
+    frame.inner_margin.left = frame.inner_margin.left.saturating_add(room(rooms[0]));
+    frame.inner_margin.right = frame.inner_margin.right.saturating_add(room(rooms[1]));
     edit.id(id)
         .frame(frame)
         .text_color(if invalid { ERROR_TEXT } else { TEXT_STRONG })
@@ -1333,7 +1700,10 @@ pub fn field_with_room<'t>(
 
 #[cfg(test)]
 mod tests {
+    use egui::{Pos2, Rect, pos2, vec2};
+
     use super::*;
+    use crate::modal::tests::{cover, painted};
 
     #[test]
     fn inter_is_the_text_font_and_jetbrains_mono_the_monospace() {
@@ -1524,6 +1894,16 @@ mod tests {
             // `.menu`'s and `.tooltip`'s shadows, `rgba(0,0,0,.6)`.
             ("POPUP_SHADOW", POPUP_SHADOW.color, [0, 0, 0], 0.6),
             ("TOOLTIP_SHADOW", TOOLTIP_SHADOW.color, [0, 0, 0], 0.6),
+            // `.modal`'s shadow, `rgba(0,0,0,.7)`.
+            ("MODAL_SHADOW", MODAL_SHADOW.color, [0, 0, 0], 0.7),
+            // `.canvas-banner .btn-secondary`, `rgba(255,255,255,.08)`, `.16` hovered.
+            ("BANNER_BUTTON_BG", BANNER_BUTTON_BG, [255, 255, 255], 0.08),
+            (
+                "BANNER_BUTTON_HOVER_BG",
+                BANNER_BUTTON_HOVER_BG,
+                [255, 255, 255],
+                0.16,
+            ),
         ] {
             assert_eq!(
                 color,
@@ -1637,9 +2017,28 @@ mod tests {
                 [0xff, 0x7a, 0x0c, 0xff],
             ),
             ("VIEWPORT_BG", VIEWPORT_BG, [0, 0, 0, 0xff]),
+            // interact.js:473-475, `overlay`'s `dot`: a hovered vertex white, a selected one
+            // #4676ff, each ringed `stroke="#000"`.
+            (
+                "VIEWPORT_HOVER_VERTEX",
+                VIEWPORT_HOVER_VERTEX,
+                [0xff, 0xff, 0xff, 0xff],
+            ),
+            (
+                "VIEWPORT_SELECTION_VERTEX",
+                VIEWPORT_SELECTION_VERTEX,
+                [0x46, 0x76, 0xff, 0xff],
+            ),
+            (
+                "VIEWPORT_VERTEX_RING_COLOR",
+                VIEWPORT_VERTEX_RING_COLOR,
+                [0, 0, 0, 0xff],
+            ),
         ] {
             assert_eq!(color, rgba, "{name}");
         }
+        // The dot's `r="4.5"` and its ring's `stroke-width="1"`.
+        assert_eq!((VIEWPORT_VERTEX_RADIUS, VIEWPORT_VERTEX_RING), (4.5, 1.0));
     }
 
     /// The app bar's and its tabs' values, typed from styles.css's `#appbar`, `.traffic`,
@@ -1995,5 +2394,224 @@ mod tests {
             ),
             ([0, 6], 18, 0)
         );
+    }
+
+    // ---- A key cap's border, as `.kbd` draws it (border 1/1/2/1, radius 3, border-box) ----
+
+    /// The feather egui gives an edge at two pixels a point, a Retina screen's: its one pixel
+    /// (`feathering_size_in_pixels`) over the pixels per point, half a point.
+    const RETINA_FEATHER: f32 = 0.5;
+
+    /// A cover feathered over [`RETINA_FEATHER`] rises from nothing to whole linearly across
+    /// it, so from a tenth to nine tenths over 0.8 of it.
+    const RETINA_BAND: f32 = 0.8 * RETINA_FEATHER;
+
+    /// Along the line from `from` to `to`, read in steps of 1/256 point and between them in a
+    /// line: how far from `from` `mesh`'s cover first reaches each of `levels`.
+    #[track_caller]
+    fn reaches<const N: usize>(
+        mesh: &egui::Mesh,
+        from: Pos2,
+        to: Pos2,
+        levels: [f32; N],
+    ) -> [f32; N] {
+        const STEP: f32 = 1.0 / 256.0;
+        let way = (to - from).normalized();
+        let length = (to - from).length();
+        levels.map(|level| {
+            let mut last = cover(mesh, from);
+            assert!(last < level, "{level} from {from:?}: {last} there already");
+            let mut at = STEP;
+            while at <= length {
+                let now = cover(mesh, from + way * at);
+                if now >= level {
+                    return at - STEP + STEP * (level - last) / (now - last);
+                }
+                last = now;
+                at += STEP;
+            }
+            panic!("the cover never reaches {level} from {from:?} to {to:?}")
+        })
+    }
+
+    /// Where `mesh`'s cover is half, and how far it takes to rise from a tenth to nine tenths,
+    /// from `from` towards `to`.
+    #[track_caller]
+    fn edge(mesh: &egui::Mesh, from: Pos2, to: Pos2) -> (f32, f32) {
+        let [tenth, half, nine] = reaches(mesh, from, to, [0.1, 0.5, 0.9]);
+        (half, nine - tenth)
+    }
+
+    /// Each corner of `rect`, clockwise from the top left, and the way into the box from it.
+    fn corners(rect: Rect) -> [(Pos2, egui::Vec2); 4] {
+        [
+            (rect.left_top(), vec2(1.0, 1.0)),
+            (rect.right_top(), vec2(-1.0, 1.0)),
+            (rect.right_bottom(), vec2(-1.0, -1.0)),
+            (rect.left_bottom(), vec2(1.0, -1.0)),
+        ]
+    }
+
+    /// A border's mesh has no point that isn't a number.
+    #[track_caller]
+    fn finite(mesh: &egui::Mesh, what: &str) {
+        let bad: Vec<Pos2> = mesh
+            .vertices
+            .iter()
+            .map(|vertex| vertex.pos)
+            .filter(|pos| !pos.x.is_finite() || !pos.y.is_finite())
+            .collect();
+        assert!(bad.is_empty(), "{what}'s border has points {bad:?}");
+    }
+
+    /// At two pixels a point, egui feathers an edge over one pixel, so `key_cap_box` fades a
+    /// key cap's border in over half a point ([`RETINA_FEATHER`]), centred on each of its
+    /// edges: half covered on the edge, and from a tenth to nine tenths over 0.4 points
+    /// ([`RETINA_BAND`]). Along the lines through the middle of a box at (20, 20) 24 by 16, on
+    /// the half-point grid as it is: its outer edges on the box, 1 in from each line's start
+    /// 1 outside it; its inner edges 1 in at its top and sides and 2 at its bottom, 7 up from
+    /// its middle, 11 to each side, and 6 down. A feather of a pixel a point, or of the
+    /// pixel's size times the pixels a point, is twice as wide.
+    #[test]
+    fn a_key_caps_border_is_feathered_over_a_pixel_at_two_pixels_a_point() {
+        let rect = Rect::from_min_size(pos2(20.0, 20.0), vec2(24.0, 16.0));
+        let mut h = egui_kittest::Harness::builder()
+            .with_pixels_per_point(2.0)
+            .with_size(vec2(80.0, 60.0))
+            .build_ui(move |ui| key_cap_box(ui, rect, Color32::TRANSPARENT, Color32::WHITE));
+        h.run();
+        let meshes: Vec<egui::Mesh> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                egui::Shape::Mesh(mesh) => Some((*mesh).clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(meshes.len(), 1, "the key cap's border");
+        let mesh = &meshes[0];
+        let middle = pos2(32.0, 28.0);
+        let lines = [
+            (pos2(32.0, 19.0), middle, 1.0),
+            (pos2(45.0, 28.0), middle, 1.0),
+            (pos2(32.0, 37.0), middle, 1.0),
+            (pos2(19.0, 28.0), middle, 1.0),
+            (middle, pos2(32.0, 19.0), 7.0),
+            (middle, pos2(45.0, 28.0), 11.0),
+            (middle, pos2(32.0, 37.0), 6.0),
+            (middle, pos2(19.0, 28.0), 11.0),
+        ];
+        for (from, to, want) in lines {
+            let (half, band) = edge(mesh, from, to);
+            assert!(
+                (half - want).abs() <= 1.0 / 512.0 && (band - RETINA_BAND).abs() <= 1.0 / 512.0,
+                "from {from:?} towards {to:?}: half covered {half} in and feathered over \
+                 {band}, not {want} and {RETINA_BAND}"
+            );
+        }
+    }
+
+    /// A cap narrower or shorter than its corners' two radii: CSS scales `border-radius`
+    /// down until the radii at each side fit it, so a cap 4 across or 4 high has corners of
+    /// 2. Each corner's outer edge is then a circle of 2 about the point 2 in on each axis,
+    /// crossing its diagonal 2 − 2/√2 = 0.586 in on each axis (not a radius of 3's 0.879).
+    /// Its bottom corners' inner radii are 2 − 1 across and 2 − 2, none, down: a square inner
+    /// corner, so the edge above the bottom border is straight, 2 up, half covered there and
+    /// feathered over [`RETINA_BAND`] down the cap's middle, and no point of the border is
+    /// other than a number.
+    #[test]
+    fn a_key_caps_corners_fit_a_cap_narrower_or_shorter_than_them() {
+        let caps = [
+            Rect::from_min_size(pos2(20.0, 20.0), vec2(4.0, 16.0)),
+            Rect::from_min_size(pos2(20.0, 20.0), vec2(16.0, 4.0)),
+        ];
+        let want = 2.0 - std::f32::consts::SQRT_2;
+        for rect in caps {
+            let mesh = key_cap_border(rect, Color32::WHITE, RETINA_FEATHER);
+            finite(&mesh, &format!("{rect:?}"));
+            for (corner, inward) in corners(rect) {
+                let [half] = reaches(&mesh, corner, corner + inward * 1.5, [0.5]);
+                let got = half * std::f32::consts::FRAC_1_SQRT_2;
+                assert!(
+                    (got - want).abs() <= 1.0 / 512.0,
+                    "{rect:?}'s corner at {corner:?}: its outer edge {got} in on its \
+                     diagonal, not {want}"
+                );
+            }
+            let foot = pos2(rect.center().x, rect.bottom() - 2.0);
+            let from = foot - vec2(0.0, 0.5);
+            let (half, band) = edge(&mesh, from, foot + vec2(0.0, 0.5));
+            assert!(
+                (half - 0.5).abs() <= 1.0 / 512.0 && (band - RETINA_BAND).abs() <= 1.0 / 512.0,
+                "{rect:?}'s bottom inner edge: half covered {half} below {from:?} and \
+                 feathered over {band}, not 0.5 and {RETINA_BAND}"
+            );
+        }
+    }
+
+    /// Each outer corner is a quarter circle of 3 about the point 3 in on each axis: it
+    /// leaves its side 3 from the corner along it (its 0°), meets the next side 3 from the
+    /// corner along that (its 90°), and crosses its diagonal 3 − 3/√2 = 0.879 in on each
+    /// axis. The quarter is drawn in eight steps, so a point at each of those three: each is
+    /// half covered exactly there, in the line across the edge through it, not only within
+    /// the steps' chords (a quarter turned by a few degrees moves each by about a hundredth).
+    #[test]
+    fn a_key_caps_outer_corners_are_quarter_circles_where_css_puts_them() {
+        let rect = Rect::from_min_size(pos2(20.0, 20.0), vec2(24.0, 16.0));
+        let mesh = key_cap_border(rect, Color32::WHITE, RETINA_FEATHER);
+        let diagonal = 3.0 - 3.0 * std::f32::consts::FRAC_1_SQRT_2;
+        for (corner, inward) in corners(rect) {
+            let along_x = corner + vec2(inward.x * 3.0, 0.0);
+            let along_y = corner + vec2(0.0, inward.y * 3.0);
+            let ends = [
+                (along_x - vec2(0.0, inward.y), vec2(0.0, inward.y)),
+                (along_y - vec2(inward.x, 0.0), vec2(inward.x, 0.0)),
+            ];
+            for (from, way) in ends {
+                let [half] = reaches(&mesh, from, from + way * 2.0, [0.5]);
+                assert!(
+                    (half - 1.0).abs() <= 1.0 / 1024.0,
+                    "the corner at {corner:?}: its arc's end {half} from {from:?}, not 1"
+                );
+            }
+            let [half] = reaches(&mesh, corner, corner + inward * 1.5, [0.5]);
+            let got = half * std::f32::consts::FRAC_1_SQRT_2;
+            assert!(
+                (got - diagonal).abs() <= 1.0 / 1024.0,
+                "the corner at {corner:?}: its outer edge {got} in on its diagonal, not \
+                 {diagonal}"
+            );
+        }
+    }
+
+    /// Each inner corner is a quarter ellipse about the point 3 in on each axis, its radii the
+    /// outer's 3 less the border's widths: 2 and 2 at the top, 2 across and 1 down at the
+    /// bottom. egui feathers an edge across it, along its normal, so at each of the quarter's
+    /// points, (3 − rx cos φ, 3 − ry sin φ) in from the corner for φ in eighths of a right
+    /// angle, the line along the ellipse's normal there, (cos φ / rx, sin φ / ry) out of the
+    /// cap's inside, is half covered on the ellipse and feathered over [`RETINA_BAND`]. At the
+    /// bottom, where the radii differ, that normal is not the way from the centre: at 22.5°,
+    /// 39.6° from the side rather than 22.5°; a feather along the way from the centre is
+    /// cos 17.1° = 0.956 as wide across the edge, 0.382.
+    #[test]
+    fn a_key_caps_inner_corners_are_feathered_along_their_normals() {
+        let rect = Rect::from_min_size(pos2(20.0, 20.0), vec2(24.0, 16.0));
+        let mesh = key_cap_border(rect, Color32::WHITE, RETINA_FEATHER);
+        for (index, (corner, inward)) in corners(rect).into_iter().enumerate() {
+            let (rx, ry) = if index < 2 { (2.0, 2.0) } else { (2.0, 1.0) };
+            let centre = corner + inward * 3.0;
+            for step in 1..8_u8 {
+                let angle = std::f32::consts::FRAC_PI_2 * f32::from(step) / 8.0;
+                let (cos, sin) = (libm::cosf(angle), libm::sinf(angle));
+                let on = centre - inward * vec2(rx * cos, ry * sin);
+                let normal = (-inward * vec2(cos / rx, sin / ry)).normalized();
+                let (half, band) = edge(&mesh, on - normal * 0.5, on + normal * 0.5);
+                assert!(
+                    (half - 0.5).abs() <= 1.0 / 512.0 && (band - RETINA_BAND).abs() <= 1.0 / 512.0,
+                    "the corner at {corner:?}, {step} eighths round: half covered {half} \
+                     from inside its edge and feathered over {band}, not 0.5 and \
+                     {RETINA_BAND}"
+                );
+            }
+        }
     }
 }

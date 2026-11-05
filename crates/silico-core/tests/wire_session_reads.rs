@@ -21,11 +21,14 @@ use silico_core::command::wire::session::{
     CANCELLABLE, CancelRequest, OpenRequest, PUBLISHED_READS, SESSION_COMMANDS, VersionRequest,
 };
 use silico_core::command::wire::transaction::SessionRequest;
-use silico_core::command::wire::{Layout, ToWire, response, response_text, snapshot_value, write};
+use silico_core::command::wire::{
+    Layout, Named, ToWire, response, response_text, snapshot_value, write,
+};
 use silico_core::command::{
     Cancellable, Cancelled, CheckModel, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer,
     Problems, Progress, ReadCommand, Rebuild, RebuildState, Response, Revision, RunningCommand,
-    SessionCommand, SessionId, Sessions, Status, TextAnswer, Transaction, VERSION, Version,
+    SessionCommand, SessionId, Sessions, Status, StepState, TextAnswer, Transaction, VERSION,
+    Version,
 };
 use silico_core::disk::Disk;
 use silico_core::document::json::{Node, read};
@@ -281,6 +284,7 @@ fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_sc
         TextRequest {
             session: s1(),
             feature: None,
+            revision: None,
         }
     );
     assert_eq!(written(&request), text);
@@ -326,17 +330,71 @@ fn requests_with_their_other_values_are_read_and_written_back() {
         );
         holds(&schema_of("open", "request"), text, text);
     }
-    let text = "{\"session\": \"s12\", \"feature\": \"k7f2qx3m\"}\n";
+    let text = "{\"session\": \"s12\", \"feature\": \"k7f2qx3m\", \"revision\": null}\n";
     let request = TextRequest::read(&parsed(text)).unwrap();
     assert_eq!(
         request,
         TextRequest {
             session: SessionId::parse("s12").unwrap(),
             feature: Some(id("k7f2qx3m")),
+            revision: None,
         }
     );
     assert_eq!(written(&request), text);
     holds(&schema_of("text", "request"), text, "a feature");
+    // A revision, with a feature and without (Fable's decision of 2026-11-04, section 2).
+    let text = "{\"session\": \"s3\", \"feature\": \"k7f2qx3m\", \"revision\": 7}\n";
+    let request = TextRequest::read(&parsed(text)).unwrap();
+    assert_eq!(
+        request,
+        TextRequest {
+            session: SessionId::parse("s3").unwrap(),
+            feature: Some(id("k7f2qx3m")),
+            revision: Revision::from_number(7).map(Named::Revision),
+        }
+    );
+    assert_eq!(written(&request), text);
+    holds(
+        &schema_of("text", "request"),
+        text,
+        "a feature at a revision",
+    );
+    let text = example("text/request-revision");
+    let request = TextRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        request,
+        TextRequest {
+            session: s1(),
+            feature: None,
+            revision: Revision::from_number(1).map(Named::Revision),
+        }
+    );
+    assert_eq!(written(&request), text);
+    holds(&schema_of("text", "request"), &text, "a revision");
+    // The file on disk, with a feature and without (Fable's decision of 2026-11-04, 6d's
+    // other half): the word, written back as it was read.
+    for feature in ["null", "\"k7f2qx3m\""] {
+        let text =
+            format!("{{\"session\": \"s4\", \"feature\": {feature}, \"revision\": \"disk\"}}\n");
+        let request = TextRequest::read(&parsed(&text)).unwrap();
+        assert_eq!(
+            request,
+            TextRequest {
+                session: SessionId::parse("s4").unwrap(),
+                feature: (feature != "null").then(|| id("k7f2qx3m")),
+                revision: Some(Named::Disk),
+            }
+        );
+        assert_eq!(written(&request), text);
+        holds(&schema_of("text", "request"), &text, "the file on disk");
+    }
+    // The schema refuses what the reader refuses: another word, a number below 1, a
+    // string of digits.
+    for wrong in ["\"Disk\"", "\"disk \"", "\"\"", "\"1\"", "0", "-1", "true"] {
+        let text = format!("{{\"session\": \"s4\", \"feature\": null, \"revision\": {wrong}}}");
+        assert!(TextRequest::read(&parsed(&text)).is_err(), "{wrong}");
+        fails(&schema_of("text", "request"), &text, &text);
+    }
     let text = "{\"session\": \"s2\", \"model\": \"published\", \"fresh\": false}\n";
     let request = CheckRequest::read(&parsed(text)).unwrap();
     assert_eq!(request.model, CheckModel::Published);
@@ -533,12 +591,13 @@ fn version_and_open_take_only_their_fields_and_require_each() {
 fn cancel_names_only_a_command_and_any_other_name_is_refused_with_every_command_as_candidates() {
     let text = example("cancel/request");
     let names: Vec<String> = CANCELLABLE.map(str::to_owned).to_vec();
-    // Every command that runs in a session, then the rebuild: 38 and one, counted by hand
+    // Every command that runs in a session, then the rebuild: 39 and one, counted by hand
     // from the design's lists (M4.1's 20, M5.0's 18, the drag's three and `meshes` among
-    // them, sketch_join the last of the sketch edits).
-    assert_eq!(names.len(), 39);
-    assert_eq!(names[..38], SESSION_COMMANDS.map(str::to_owned));
-    assert_eq!(names[38], "rebuild");
+    // them, sketch_join the last of the sketch edits; then `diff`, Fable's of 2026-11-04).
+    assert_eq!(names.len(), 40);
+    assert_eq!(names[..39], SESSION_COMMANDS.map(str::to_owned));
+    assert_eq!(names[38], "diff");
+    assert_eq!(names[39], "rebuild");
     // A name close to one, the session's own probe, commands that never run in a session
     // (`read_logs` among them, answered at once), and other types.
     for (value, got) in [
@@ -867,7 +926,12 @@ fn close_answers_and_refuses_as_the_design_gives_it() {
 #[test]
 fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     // The design's: a check running, a published read, a transaction begun at 4 with three
-    // edits to undo (M5.0's section 6).
+    // edits to undo (M5.0's section 6). Its rebuild is M4.9's bracket's (the design's section
+    // 7 example document: crates/silico-cli/tests/bracket.rs), 9 steps by hand: the pad's
+    // faces and prism (2), each pocket's faces, prism, and cut (3 and 3), and the fillet (1);
+    // its 3 sketches solved before the plan, so built; the three faces steps settled (3
+    // done, needing no input), the pad's prism running, the pockets between their steps
+    // queued, and the fillet queued.
     let status = Status {
         features: Some(7),
         gated: true,
@@ -887,7 +951,19 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
             progress: Some(Progress {
                 done: 3,
                 steps: 9,
-                running: Some("f0000001 fillet".to_owned()),
+                running: Some("p0000001 pad".to_owned()),
+                features: [
+                    ("s0000001", StepState::Built),
+                    ("p0000001", StepState::Running),
+                    ("s0000002", StepState::Built),
+                    ("h0000001", StepState::Queued),
+                    ("s0000003", StepState::Built),
+                    ("h0000002", StepState::Queued),
+                    ("f0000001", StepState::Queued),
+                ]
+                .into_iter()
+                .map(|(feature, state)| (id(feature), state))
+                .collect(),
             }),
         },
         drag: None,
@@ -898,7 +974,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     let text = written(&status);
     assert_eq!(
         text,
-        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4, \"changed\": true, \"undo\": 3, \"redo\": 0, \"dropped\": 0, \"bytes\": 61530},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\", \"done\": 3, \"steps\": 9},\n  \"drag\": null,\n  \"disk\": \"unchanged\"\n}\n"
+        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4, \"changed\": true, \"undo\": 3, \"redo\": 0, \"dropped\": 0, \"bytes\": 61530},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\n    \"revision\": 6,\n    \"state\": \"running\",\n    \"done\": 3,\n    \"steps\": 9,\n    \"features\": [\n      {\"feature\": \"s0000001\", \"state\": \"built\"},\n      {\"feature\": \"p0000001\", \"state\": \"running\"},\n      {\"feature\": \"s0000002\", \"state\": \"built\"},\n      {\"feature\": \"h0000001\", \"state\": \"queued\"},\n      {\"feature\": \"s0000003\", \"state\": \"built\"},\n      {\"feature\": \"h0000002\", \"state\": \"queued\"},\n      {\"feature\": \"f0000001\", \"state\": \"queued\"}\n    ]\n  },\n  \"drag\": null,\n  \"disk\": \"unchanged\"\n}\n"
     );
     // Its read, `distance`, a read of the published model (M4.5's): it holds.
     holds(&schema_of("status", "result"), &text, "the design's");
@@ -906,9 +982,14 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     assert_eq!(designed.clone() + "\n", text, "the design's");
     assert_eq!(text, example("status/result"));
     // Progress is a count: a fraction, or a negative, isn't one.
+    // A feature's state is one of the six (issue #367): not `cancelled` or `cached`, which
+    // the decision left out, and never a feature's place for its ID.
     for (from, to) in [
         ("\"done\": 3", "\"done\": 2.5"),
         ("\"steps\": 9", "\"steps\": -1"),
+        ("\"state\": \"queued\"}", "\"state\": \"cancelled\"}"),
+        ("\"state\": \"built\"}", "\"state\": \"cached\"}"),
+        ("\"feature\": \"p0000001\"", "\"feature\": 1"),
     ] {
         fails(&schema_of("status", "result"), &text.replace(from, to), to);
     }
@@ -919,7 +1000,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     let text = written(f.sessions.status(&request.session).result.as_ref().unwrap());
     assert_eq!(
         text,
-        "{\n  \"features\": 1,\n  \"gated\": true,\n  \"transaction\": null,\n  \"running\": null,\n  \"reads\": [],\n  \"rebuild\": {\"revision\": 1, \"state\": \"none\", \"done\": null, \"steps\": null},\n  \"drag\": null,\n  \"disk\": null\n}\n"
+        "{\n  \"features\": 1,\n  \"gated\": true,\n  \"transaction\": null,\n  \"running\": null,\n  \"reads\": [],\n  \"rebuild\": {\"revision\": 1, \"state\": \"none\", \"done\": null, \"steps\": null, \"features\": null},\n  \"drag\": null,\n  \"disk\": null\n}\n"
     );
     holds(&schema_of("status", "result"), &text, "a box's");
     // A document the reader refuses: no features, not gated.
@@ -939,7 +1020,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     };
     assert_eq!(
         one_line(&other),
-        r#"{"features": null, "gated": false, "transaction": null, "running": null, "reads": ["elements", "query"], "rebuild": {"revision": 9, "state": "none", "done": null, "steps": null}, "drag": null, "disk": null}"#
+        r#"{"features": null, "gated": false, "transaction": null, "running": null, "reads": ["elements", "query"], "rebuild": {"revision": 9, "state": "none", "done": null, "steps": null, "features": null}, "drag": null, "disk": null}"#
     );
     holds(&schema_of("status", "result"), &written(&other), "unread");
     // The session's own reload (M5.0's A3), and each finding on disk, each the word the
@@ -1170,10 +1251,12 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
                 "DragOpen",
                 "ElementId",
                 "FeatureId",
+                "FeatureStep",
                 "PublishedRead",
                 "Rebuild",
                 "RebuildState",
                 "RunningCommand",
+                "StepState",
                 "Transaction",
             ],
         ),
@@ -1269,7 +1352,7 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
     }
     let base = |running: &str, reads: &str| {
         format!(
-            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none", "done": null, "steps": null}}, "drag": null, "disk": null}}"#
+            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none", "done": null, "steps": null, "features": null}}, "drag": null, "disk": null}}"#
         )
     };
     holds(&status, &base(r#""check""#, ""), "check running");

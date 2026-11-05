@@ -11,12 +11,13 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use eframe::egui::text::{LayoutJob, TextFormat, TextWrapping};
 use eframe::egui::{
-    self, Align2, Color32, FontFamily, FontId, Key, Modifiers, Pos2, Rect, Response, RichText,
-    Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
+    self, Align2, Color32, FontFamily, FontId, Modifiers, Pos2, Rect, Response, RichText, Sense,
+    Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
 };
 
 use crate::icons::{Icon, IconSize};
 use crate::recent::{Recent, Recents};
+use crate::shortcuts::Command;
 use crate::theme;
 use crate::wake::Wake;
 
@@ -263,11 +264,11 @@ fn side(ui: &mut Ui, workspace_known: bool, act: &mut Act) {
         );
     });
     ui.add_space(theme::START_BRAND_MARGIN);
-    if action(ui, Icon::NewDoc, "New part", Key::N, true).clicked() {
+    if action(ui, Icon::NewDoc, Command::New, true).clicked() {
         *act = Act::New;
     }
     ui.add_space(theme::START_ACTION_GAP);
-    if action(ui, Icon::Open, "Open…", Key::O, false).clicked() {
+    if action(ui, Icon::Open, Command::Open, false).clicked() {
         *act = Act::Open;
     }
     ui.add_space(theme::START_NOTE_MARGIN);
@@ -320,9 +321,11 @@ fn side(ui: &mut Ui, workspace_known: bool, act: &mut Act) {
     }
 }
 
-/// One of the left column's actions, the column's width: its icon, its label, and its
-/// shortcut's key caps, the primary one filled as `button_primary` is.
-fn action(ui: &mut Ui, icon: Icon, label: &str, key: Key, primary: bool) -> Response {
+/// One of the left column's actions, the column's width: its icon, its command's label, and
+/// its shortcut's key caps (both from the registry), the primary one filled as
+/// `button_primary` is.
+fn action(ui: &mut Ui, icon: Icon, command: Command, primary: bool) -> Response {
+    let label = command.label();
     let size = Vec2::new(ui.available_width(), theme::START_ACTION_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
@@ -365,20 +368,15 @@ fn action(ui: &mut Ui, icon: Icon, label: &str, key: Key, primary: bool) -> Resp
     key_caps(
         ui,
         Pos2::new(rect.right() - theme::START_ACTION_PADDING, rect.center().y),
-        &shortcut_caps(ui.ctx(), key),
+        &command.caps(ui.ctx()),
         primary,
     );
     response
 }
 
-/// The caps of Command (Ctrl off macOS) and `key`, as the platform names them.
-pub(crate) fn shortcut_caps(ctx: &egui::Context, key: Key) -> Vec<String> {
-    caps(ctx, Modifiers::COMMAND, key)
-}
-
-/// A cap for each of `modifiers`, Command (Ctrl off macOS) first, then Shift, then `key`'s,
-/// as the platform names them (the prototype's `kbd`, in its `Mod Shift` order).
-pub(crate) fn caps(ctx: &egui::Context, modifiers: Modifiers, key: Key) -> Vec<String> {
+/// A cap for each of `modifiers`, Command (Ctrl off macOS) first, then Shift, as the
+/// platform names them.
+pub(crate) fn modifier_caps(ctx: &egui::Context, modifiers: Modifiers) -> Vec<String> {
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     let names = if mac {
         egui::ModifierNames::SYMBOLS
@@ -389,13 +387,17 @@ pub(crate) fn caps(ctx: &egui::Context, modifiers: Modifiers, key: Key) -> Vec<S
         .into_iter()
         .filter(|modifier| modifiers.contains(*modifier))
         .map(|modifier| names.format(&modifier, mac))
-        .chain(std::iter::once(key.symbol_or_name().to_owned()))
         .collect()
 }
 
 /// The width `caps` take as [`key_caps`] paints them.
 pub(crate) fn key_caps_width(ui: &Ui, caps: &[String]) -> f32 {
-    let gaps = caps.len().saturating_sub(1) as f32 * theme::KEY_CAP_GAP;
+    key_caps_width_spaced(ui, caps, theme::KEY_CAP_GAP)
+}
+
+/// The width `caps` take as [`key_caps_spaced`] paints them, `gap` apart.
+pub(crate) fn key_caps_width_spaced(ui: &Ui, caps: &[String], gap: f32) -> f32 {
+    let gaps = caps.len().saturating_sub(1) as f32 * gap;
     caps.iter()
         .map(|cap| {
             let galley = ui.painter().layout_no_wrap(
@@ -409,13 +411,18 @@ pub(crate) fn key_caps_width(ui: &Ui, caps: &[String]) -> f32 {
         + gaps
 }
 
-/// A key cap's width, for text `text` wide: its padding and its outline at each side.
+/// A key cap's width, for text `text` wide: its padding and its side border at each side.
 fn key_cap_width(text: f32) -> f32 {
     (text + 2.0 * (theme::KEY_CAP_PADDING + theme::KEY_CAP_BORDER)).max(theme::KEY_CAP_MIN_WIDTH)
 }
 
 /// `caps` painted as key caps, the last ending at `right` (centred on its height).
 pub(crate) fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
+    key_caps_spaced(ui, right, caps, primary, theme::KEY_CAP_GAP);
+}
+
+/// [`key_caps`], `gap` apart.
+pub(crate) fn key_caps_spaced(ui: &Ui, right: Pos2, caps: &[String], primary: bool, gap: f32) {
     let painter = ui.painter();
     let (fill, stroke, text) = if primary {
         (
@@ -442,15 +449,13 @@ pub(crate) fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
             Pos2::new(x - width, right.y - theme::KEY_CAP_HEIGHT / 2.0),
             Pos2::new(x, right.y + theme::KEY_CAP_HEIGHT / 2.0),
         );
-        painter.rect(
-            rect,
-            theme::KEY_CAP_CORNER_RADIUS,
-            fill,
-            Stroke::new(theme::KEY_CAP_BORDER, stroke),
-            StrokeKind::Inside,
+        theme::key_cap_box(ui, rect, fill, stroke);
+        painter.galley(
+            theme::key_cap_text_centre(rect) - galley.size() / 2.0,
+            galley,
+            text,
         );
-        painter.galley(rect.center() - galley.size() / 2.0, galley, text);
-        x = rect.left() - theme::KEY_CAP_GAP;
+        x = rect.left() - gap;
     }
 }
 
@@ -865,12 +870,14 @@ mod tests {
         pub const ACTION_HEIGHT: f32 = 34.0;
         pub const ACTION_PADDING: f32 = 10.0;
         /// `.keys { gap: 2px }`; `.kbd`: `min-width: 16px; padding: 0 4px; height: 16px;
-        /// border-radius: 3px; border: 1px; font-size: 10.5px` (`border-box`, `*`'s).
+        /// line-height: 16px; border-radius: 3px; border: 1px; border-bottom-width: 2px;
+        /// font-size: 10.5px` (`border-box`, `*`'s).
         pub const KEYS_GAP: f32 = 2.0;
         pub const KBD_MIN_WIDTH: f32 = 16.0;
         pub const KBD_PADDING: f32 = 4.0;
         pub const KBD_BORDER: f32 = 1.0;
         pub const KBD_HEIGHT: f32 = 16.0;
+        pub const KBD_LINE_HEIGHT: f32 = 16.0;
         pub const KBD_RADIUS: u8 = 3;
         pub const KBD_SIZE: f32 = 10.5;
         /// `.st-side-note`: `margin-top: 28px; padding-top: 16px; border-top: 1px solid
@@ -1257,7 +1264,8 @@ mod tests {
             assert_eq!(colour(&named, 0), ink);
             // Its caps, Ctrl and the key, the last 10 from the right, 2 apart: each 16 high
             // on the action's middle, its text's width with 4 of padding and 1 of border at
-            // each side (16 at least), its text centred, 10.5 points.
+            // each side (16 at least), its border 1 and 2 at its bottom, its text centred
+            // across and on its 16 line under its top border, 10.5 points.
             let mut end = rect.right() - css::ACTION_PADDING;
             for cap in [key, "Ctrl"] {
                 let shown = texts(&h, cap)
@@ -1279,13 +1287,25 @@ mod tests {
                     })
                     .unwrap_or_else(|| panic!("{label}'s {cap} cap at {want:?}"));
                 assert_eq!(drawn.fill, cap_fill, "{label}'s {cap}");
-                assert_eq!(
-                    drawn.stroke,
-                    Stroke::new(css::KBD_BORDER, cap_border),
-                    "{label}'s {cap}"
+                assert!(
+                    drawn.stroke.is_empty(),
+                    "{label}'s {cap}: {:?}",
+                    drawn.stroke
                 );
-                assert_eq!(drawn.stroke_kind, StrokeKind::Inside);
-                at(shown.pos, want.center() - size / 2.0, cap);
+                crate::modal::tests::kbd_border(
+                    &crate::modal::tests::cap_border(&h, want),
+                    want,
+                    cap_border,
+                    &format!("{label}'s {cap}"),
+                );
+                at(
+                    shown.pos,
+                    Pos2::new(
+                        want.center().x,
+                        want.top() + css::KBD_BORDER + css::KBD_LINE_HEIGHT / 2.0,
+                    ) - size / 2.0,
+                    cap,
+                );
                 assert_eq!(
                     format(&shown, 0).font_id,
                     FontId::proportional(css::KBD_SIZE)
@@ -1392,7 +1412,7 @@ mod tests {
         ] {
             ctx.set_os(os);
             assert_eq!(
-                shortcut_caps(&ctx, Key::N),
+                Command::New.caps(&ctx),
                 [command.to_owned(), "N".to_owned()],
                 "{os:?}"
             );

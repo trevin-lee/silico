@@ -244,6 +244,79 @@ fn one_solid_passes_and_two_or_none_are_refused_naming_the_count() {
 }
 
 #[test]
+fn a_result_lost_or_parted_gives_each_features_own_advice() {
+    // What to try, in each feature's words, when the result is no solid or several: a sweep
+    // that adds was lost by OCCT with its base, one that cuts took all of its base; an M2
+    // boolean's tool is to move or shrink for either, and to move when it parts its base.
+    use silico_core::sweep::check_boolean_change;
+    use silico_protocol::BooleanOp;
+    let lost = Measured {
+        solids: 0,
+        volume: 0.0,
+        ..cube()
+    };
+    for (kind, advice) in [
+        (
+            SweepFeature::Pad,
+            "OCCT lost both shapes: move the sketch slightly",
+        ),
+        (
+            SweepFeature::Revolve,
+            "OCCT lost both shapes: move the sketch slightly",
+        ),
+        (
+            SweepFeature::Pocket,
+            "move the sketch or shorten the cut, so it leaves some of its base",
+        ),
+        (
+            SweepFeature::Groove,
+            "move the sketch or shorten the cut, so it leaves some of its base",
+        ),
+    ] {
+        let refused = check(kind, cube(), lost).unwrap_err();
+        assert_eq!(refused.suggestion(), Some(advice), "{kind:?}");
+    }
+    let boolean = |op, after: Measured| {
+        check_boolean_change(&fid(FEATURE), op, &fid(BASE), &cube(), &after).unwrap_err()
+    };
+    let parted = Measured {
+        solids: 2,
+        ..result(900.0)
+    };
+    for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Common] {
+        let none = boolean(op, lost);
+        assert_eq!(none.code(), ErrorCode::KernelFailed);
+        assert_eq!(
+            none.message(),
+            format!(
+                "{} p0000001 leaves nothing of its base b0000001: the result is no solid",
+                op.word()
+            )
+        );
+        assert_eq!(
+            none.suggestion(),
+            Some("move or shrink the tool, so the result keeps some of its base"),
+            "{op:?}"
+        );
+        let two = boolean(op, parted);
+        assert_eq!(two.code(), ErrorCode::KernelFailed);
+        assert_eq!(
+            two.suggestion(),
+            Some("move the tool so the result is one piece"),
+            "{op:?}"
+        );
+    }
+    assert_eq!(
+        boolean(BooleanOp::Fuse, parted).message(),
+        "fuse p0000001 doesn't reach its base b0000001: the result is 2 solids"
+    );
+    assert_eq!(
+        boolean(BooleanOp::Cut, parted).message(),
+        "cut p0000001 cuts its base b0000001 in two: the result is 2 solids"
+    );
+}
+
+#[test]
 fn each_feature_knows_whether_it_adds() {
     let adds: Vec<bool> = SweepFeature::ALL.iter().map(|k| k.adds()).collect();
     assert_eq!(adds, [true, false, true, false]);

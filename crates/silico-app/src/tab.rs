@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use silico_core::ErrorCode;
 use silico_core::command::export::{Export, Exported};
+use silico_core::command::wire::Named;
 use silico_core::command::{
-    Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, FieldSet, ModelChoice,
-    Moved, Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId, Sessions,
-    Status, Stepped, TextAnswer, TimelineAnswer,
+    Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, DiffAnswer, FieldSet,
+    ModelChoice, Moved, Problems, RebuildState, Replaced, Response, Revision, RolledBack, Running,
+    SessionId, SessionInfo, Sessions, Status, Stepped, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
@@ -19,6 +20,7 @@ use silico_core::document::json::Node;
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
 
+use crate::changes::{self, Changes};
 use crate::dialog::{Dialog, Kind, feature_node};
 
 /// What a feature's mark says: its first problem's (or warning's) message, and its
@@ -49,10 +51,12 @@ enum Queued {
     Save {
         then_close: bool,
     },
-    /// Save As (`commit` with a path): to `path`, replacing a file there if `replace`.
+    /// Save As (`commit` with a path): to `path`, replacing a file there if `replace`; then,
+    /// if `then_close`, close (an untitled part's Save, asked by Close or Quit).
     SaveAs {
         path: String,
         replace: bool,
+        then_close: bool,
     },
     Revert {
         then_close: bool,
@@ -93,6 +97,17 @@ enum Queued {
     Closed {
         ok: bool,
     },
+    /// Restore (Fable's decision of 2026-11-04, section 2): the text of `revision`, the one
+    /// a reload replaced, read (`text` with `revision`), then put back as an edit.
+    Restore {
+        revision: Revision,
+    },
+    /// Restore's text read, put back: `begin` if no transaction is open, then `replace_text`
+    /// of it, an edit like any other.
+    Replace {
+        revision: Revision,
+        text: String,
+    },
 }
 
 /// A new sweep's body: not yet read, or read from the document at a revision (its tip,
@@ -126,6 +141,8 @@ pub enum Sent {
     Edit(String),
     /// `move_feature`, of the feature, before the feature (none: to the end).
     Move(FeatureId, Option<FeatureId>),
+    /// `replace_text`: Restore's edit.
+    Replace,
     Undo(Option<Revision>),
     Redo(Option<Revision>),
     Commit,
@@ -183,7 +200,9 @@ impl Edits {
                 | Queued::Add { .. }
                 | Queued::Opened
                 | Queued::Load { .. }
-                | Queued::Closed { .. } => break,
+                | Queued::Closed { .. }
+                | Queued::Restore { .. }
+                | Queued::Replace { .. } => break,
             }
         }
         self.queue.push_back(Queued::Edit(edit));
@@ -208,12 +227,14 @@ enum Under {
         running: Running<Moved>,
     },
     /// A Save As, the path it was given, which the tab asks to replace if a file is
-    /// there, and whether the tab began the transaction it commits (rolled back if it's
-    /// refused, so no empty transaction stays open).
+    /// there, whether the tab began the transaction it commits (rolled back if it's
+    /// refused, so no empty transaction stays open), and whether it closes the tab once
+    /// it has saved.
     SaveAs {
         running: Running<Committed>,
         path: String,
         began: bool,
+        then_close: bool,
     },
     Close(Running<Closed>),
     /// A dialog's add, of the dialog numbered `serial`, as it was sent.
@@ -240,6 +261,20 @@ enum Under {
         feature: FeatureId,
         running: Running<TextAnswer>,
     },
+    /// Restore's read of the text of `revision`, sent at the tab's revision `sent_at`.
+    Restore {
+        revision: Revision,
+        sent_at: Revision,
+        running: Running<TextAnswer>,
+    },
+    /// Restore's edit, `replace_text` of `revision`'s text, as it was sent, and whether its
+    /// `begin` was sent for it.
+    Replace {
+        revision: Revision,
+        began: bool,
+        sending: Sending,
+        running: Running<Replaced>,
+    },
 }
 
 /// The choice offered for a file changed on disk while edits are held (section 4).
@@ -251,6 +286,52 @@ pub enum DiskChoice {
     Offered(Disk),
     /// Kept: not offered again until the file is as the session holds it once more.
     Kept,
+}
+
+/// A reload of the session's own (section 4): the revision the tab had, and the one the
+/// file read gave; what changed between them, as `diff` answers (DESIGN.md, 6c); and
+/// Restore's refusal, said, if it was refused (the revision no longer held, after another
+/// reload).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reloaded {
+    pub from: Revision,
+    pub to: Revision,
+    pub changes: Changes,
+    pub refused: Option<String>,
+    /// The earlier reloads this one's banner replaced before their changes were listed
+    /// (their `diff` still asked, or refused, the file having changed again before it ran),
+    /// each from and to: their changes are never listed, nor their features marked.
+    pub unlisted: Vec<(Revision, Revision)>,
+    /// Whether the session still holds `from`'s text, as far as the tab knows: not once
+    /// the reload's `diff` was refused for not holding it (the file changed again, and a
+    /// reload queued ahead of the diff, the disk watch's own or another client's read,
+    /// replaced it), when Restore, which reads it, can only be refused too.
+    pub from_held: bool,
+}
+
+/// Show changes' two lists (DESIGN.md, 6d), each from its own `diff`, answered or refused
+/// on its own: "Their change (on disk)", from the transaction's base to the file; and "Your
+/// unsaved edits", from the base to the document then.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HeldChanges {
+    pub theirs: Changes,
+    pub mine: Changes,
+}
+
+/// What `read`, a diff asked for a list, answered, if it has: its changes listed, or its
+/// refusal said; `read` let go once it answers.
+fn took(read: &mut Option<Running<DiffAnswer>>) -> Option<Changes> {
+    let running = read.take()?;
+    match running.try_take() {
+        Ok(response) => Some(match response.result {
+            Ok(answer) => Changes::Listed(changes::listed(&answer.changes)),
+            Err(problems) => Changes::refused(&problems),
+        }),
+        Err(running) => {
+            *read = Some(running);
+            None
+        }
+    }
 }
 
 /// A row of the browser (section 8, *The browser*): a feature, by its ID and name, with the
@@ -290,8 +371,12 @@ enum OwnRead {
 /// One open document.
 pub struct Tab {
     pub id: SessionId,
-    /// The path, as it was opened.
-    pub path: String,
+    /// The path, as it was opened or as its last Save As gave it: none while it's an
+    /// untitled part, which has no file until its first save.
+    pub path: Option<String>,
+    /// The name it's shown by while untitled ("Untitled", "Untitled 2", ...): empty for a
+    /// tab opened on a file.
+    untitled: String,
     /// The session's revision and whether a transaction is open, as last answered: never
     /// moved back by an answer that comes after a newer one.
     pub revision: Revision,
@@ -301,6 +386,11 @@ pub struct Tab {
     status_revision: Revision,
     /// The revision of the newest model published, if there's one.
     pub published: Option<Revision>,
+    /// The newest model published, as last seen (held weakly: only to tell it from
+    /// another, which a fresh check publishes at the same revision), and one more each time
+    /// it was another: what the viewport tells a model its meshes are stale by.
+    published_model: Option<std::sync::Weak<silico_core::recompute::Model>>,
+    pub published_models: u64,
     /// The newest `timeline`, and the browser's rows worked out from it.
     pub timeline: Option<TimelineAnswer>,
     pub browser: Browser,
@@ -333,6 +423,10 @@ pub struct Tab {
     ///
     /// [`cancel_own_reads`]: Self::cancel_own_reads
     check_first: bool,
+    /// Whether the check read out is Rebuild everything's (`check` with `fresh`), until it
+    /// answers: its answer has the timeline read again, the model it published being the
+    /// revision's from then on.
+    fresh_out: bool,
     checked: Option<(Revision, Option<Revision>)>,
     pub edits: Edits,
     under: Vec<Under>,
@@ -340,6 +434,8 @@ pub struct Tab {
     pub saves: u64,
     /// How many Rebuilds it has sent: what a test counts.
     pub rebuilds: u64,
+    /// How many Rebuild everythings it has sent: what a test counts.
+    pub rebuilds_all: u64,
     /// One more each time the document moved other than by the person's typing, with none
     /// of it waiting to be applied: an undo, a redo, or a revert done, or the session's own
     /// reload of its file (a revision the tab didn't ask for, with nothing of its own under
@@ -350,8 +446,40 @@ pub struct Tab {
     /// A `begin` sent and not yet answered: the next edit begins none.
     beginning: bool,
     pub disk_choice: DiskChoice,
-    /// The feature selected in the timeline or the browser.
-    pub selected: Option<FeatureId>,
+    /// The session's last reload of its file, changed on disk while nothing was held (a
+    /// revision the tab didn't ask for), until the person dismisses its banner (DESIGN.md,
+    /// 6c).
+    pub reloaded: Option<Reloaded>,
+    /// The person reverted while the file had changed on disk (Reload, or Revert after
+    /// keeping their edits): the session's reload that follows is theirs, not another
+    /// program's, so it shows no [`reloaded`](Self::reloaded) banner. Let go once the file
+    /// is as the session holds it again.
+    reload_asked: bool,
+    /// The revision the newest reload the tab saw came to. A `status` of an older revision
+    /// compared the file with the bytes that reload replaced.
+    reloaded_to: Option<Revision>,
+    /// What's selected (M5.7): features of the timeline or the browser, faces and edges of
+    /// the canvas, by name; and what the pointer is over.
+    selection: crate::selection::Selection,
+    /// The canvas's box selection (M5.7): a left drag, on geometry or empty space.
+    box_select: crate::box_select::BoxSelect,
+    /// What a toast is to say for the tab (a box's count, or why it took nothing), until
+    /// the app takes it.
+    toast: Option<String>,
+    /// The `diff` of the reload [`reloaded`](Self::reloaded) shows, asked as the reload was
+    /// seen, from the revision the tab had to the session's now, until it answers.
+    reload_diff: Option<Running<DiffAnswer>>,
+    /// The features another program changed, each by its ID with what changed in it, as
+    /// the reloads' diffs answered (`d.outside`): marked purple in the timeline and the
+    /// browser until the person marks it seen in its properties (DESIGN.md, 6c).
+    pub outside: BTreeMap<FeatureId, String>,
+    /// Show changes (DESIGN.md, 6d): what another program wrote to the file and what the
+    /// edits held changed, each as its own `diff` answers ([`HeldChanges`]); none until
+    /// it's asked, and again once its modal closes.
+    pub held_changes: Option<HeldChanges>,
+    /// Show changes' two diffs, the file's and the edits', each until it answers.
+    theirs_diff: Option<Running<DiffAnswer>>,
+    mine_diff: Option<Running<DiffAnswer>>,
     /// What the browser's eyes hide: the tab's state, never saved (open item 29).
     pub hidden: std::collections::BTreeSet<Hideable>,
     /// The last refusal a command of the tab's answered, as said to the person, until
@@ -361,8 +489,9 @@ pub struct Tab {
     /// waiting on it stops ([`take_close_refused`](Self::take_close_refused)).
     close_refused: bool,
     /// A Save As found a file at the path it was given, and wasn't to replace it: the path,
-    /// for the window to ask whether to ([`take_replace_asked`](Self::take_replace_asked)).
-    replace_asked: Option<String>,
+    /// and whether the Save As was to close the tab, for the window to ask whether to
+    /// ([`take_replace_asked`](Self::take_replace_asked)).
+    replace_asked: Option<(String, bool)>,
     /// A Save As that began its own transaction was refused: it's rolled back next.
     roll_back: bool,
     /// The session has closed: the tab goes.
@@ -407,12 +536,22 @@ pub struct Tab {
     /// frame with the same painter and frame. For the crate's tests only; None otherwise.
     #[doc(hidden)]
     pub watch: Option<Watch>,
+    /// A test's hook in [`poll`](Self::poll), called once the session's `status` is read
+    /// and before any answer is taken: so a test can have commands answer between the two,
+    /// as they may in any frame. For the crate's tests only; None otherwise.
+    #[doc(hidden)]
+    pub after_status: Option<AfterStatus>,
 }
 
 /// What a test sees of each frame a tab's overlay is given, and draws with its painter:
 /// for the crate's tests only.
 #[doc(hidden)]
 pub type Watch = Box<dyn FnMut(&eframe::egui::Painter, &crate::viewport::ViewFrame)>;
+
+/// What a test does in a tab's [`poll`](Tab::poll) between its `status` read and the
+/// answers it takes: for the crate's tests only.
+#[doc(hidden)]
+pub type AfterStatus = Box<dyn FnMut()>;
 
 /// What a refusal says to the person: its first error's message and suggestion.
 pub fn said(problems: &Problems) -> String {
@@ -428,14 +567,28 @@ pub fn said(problems: &Problems) -> String {
 impl Tab {
     /// The tab of a session `open` opened, with the gate's problems it found.
     pub fn opened(id: SessionId, path: String, problems: &Problems) -> Self {
+        Self::of(id, Some(path), String::new(), problems)
+    }
+
+    /// The tab of an untitled part (`open` with no path), shown as `name` until its first
+    /// save gives it a file.
+    pub fn untitled(id: SessionId, name: String, problems: &Problems) -> Self {
+        Self::of(id, None, name, problems)
+    }
+
+    /// The tab of a session, its file at `path` (none while untitled, shown as `untitled`).
+    fn of(id: SessionId, path: Option<String>, untitled: String, problems: &Problems) -> Self {
         Tab {
             id,
             path,
+            untitled,
             revision: Revision::OPENED,
             transaction: false,
             status: None,
             status_revision: Revision::OPENED,
             published: None,
+            published_model: None,
+            published_models: 0,
             timeline: None,
             browser: Browser::default(),
             timeline_read: None,
@@ -455,15 +608,27 @@ impl Tab {
             check_read: None,
             check_superseded: false,
             check_first: false,
+            fresh_out: false,
             checked: None,
             edits: Edits::default(),
             under: Vec::new(),
             saves: 0,
             rebuilds: 0,
+            rebuilds_all: 0,
             resets: 0,
             beginning: false,
             disk_choice: DiskChoice::None,
-            selected: None,
+            reloaded: None,
+            reload_asked: false,
+            reloaded_to: None,
+            selection: crate::selection::Selection::default(),
+            box_select: crate::box_select::BoxSelect::default(),
+            toast: None,
+            reload_diff: None,
+            outside: BTreeMap::new(),
+            held_changes: None,
+            theirs_diff: None,
+            mine_diff: None,
             hidden: std::collections::BTreeSet::new(),
             message: None,
             close_refused: false,
@@ -488,6 +653,7 @@ impl Tab {
             export_disowned: false,
             view: crate::viewport::View::default(),
             watch: None,
+            after_status: None,
         }
     }
 
@@ -499,13 +665,66 @@ impl Tab {
     /// navigation bar. The end of a drag in a tab no longer shown comes here too, its
     /// painter drawing nothing. A mode sends its commands from here through `sessions`, on
     /// the tab's own queue and its `Running` handles, polled with `try_take`, never waiting:
-    /// a drag's move goes out in the frame it happened. No mode draws or acts yet.
+    /// a drag's move goes out in the frame it happened.
+    ///
+    /// With no sketch open, the left button and the pointer are the selection's (M5.7):
+    /// a click picks what's under it, the hover what the pointer is over, a drag on
+    /// geometry what's under its press, and a drag from empty space a box
+    /// (`crate::box_select`), each read against the published model the tab last polled,
+    /// which asks the session nothing more. The box select comes after the selection, so
+    /// it reads the hover this frame's answer gave.
+    /// SEAM(#351): sketch mode claims them first, while a sketch is open
+    /// (`if self.in_sketch() { self.selection.canvas_claimed(); self.box_select =
+    /// Default::default(); return self.sketch.overlay(sessions, painter, frame) }`, a click
+    /// of the selection's waiting and a box drawn let go), its face pick for Create Sketch
+    /// reading [`selection`](Self::selection)'s hover and pick.
     pub fn overlay<P: Clients + 'static>(
         &mut self,
         _sessions: &Arc<Sessions<P>>,
-        _painter: &eframe::egui::Painter,
-        _frame: &crate::viewport::ViewFrame,
+        painter: &eframe::egui::Painter,
+        frame: &crate::viewport::ViewFrame,
     ) {
+        self.selection.overlay(&mut self.view, frame, painter.ctx());
+        // The bodies are of the model the selection is read against: the one published
+        // last, as counted.
+        let current = matches!(
+            (self.published, self.view.bodies_of()),
+            (Some(revision), Some(of)) if of == (self.published_models, revision)
+        );
+        let hidden: std::collections::BTreeSet<silico_core::document::FeatureId> = self
+            .hidden
+            .iter()
+            .filter_map(|what| match what {
+                Hideable::Feature(id) => Some(id.clone()),
+                Hideable::Origin(_) => None,
+            })
+            .collect();
+        if let Some(toast) = self.box_select.overlay(
+            &mut self.selection,
+            &mut self.view,
+            frame,
+            painter,
+            current,
+            &hidden,
+        ) {
+            self.toast = Some(toast);
+        }
+    }
+
+    /// What a toast is to say for the tab, taken once (the app shows it).
+    pub fn take_toast(&mut self) -> Option<String> {
+        self.toast.take()
+    }
+
+    /// What's selected (M5.7), and what the pointer is over in the canvas: one selection,
+    /// the browser's, the timeline's, and the canvas's.
+    pub fn selection(&self) -> &crate::selection::Selection {
+        &self.selection
+    }
+
+    /// The selection, to change: a pick by name, a feature, a clear, its filter.
+    pub fn selection_mut(&mut self) -> &mut crate::selection::Selection {
+        &mut self.selection
     }
 
     /// The errors its timeline counts: the gate's, and each feature's problems (the
@@ -521,12 +740,20 @@ impl Tab {
         })
     }
 
-    /// The tab's name: its file's.
+    /// The tab's name: its file's, or, while it's untitled, the name it was given.
     pub fn name(&self) -> &str {
-        std::path::Path::new(&self.path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(&self.path)
+        match &self.path {
+            Some(path) => std::path::Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(path),
+            None => &self.untitled,
+        }
+    }
+
+    /// Whether it's an untitled part, with no file until its first save (a Save As).
+    pub fn is_untitled(&self) -> bool {
+        self.path.is_none()
     }
 
     /// Whether the document differs from the file: `status.transaction.changed` (#300),
@@ -608,41 +835,63 @@ impl Tab {
             || (self.transaction && !self.quiet())
     }
 
-    /// Whether a move or a dialog's add is queued or running: each changes the document,
-    /// and may be under way before the transaction its `begin` opens is.
+    /// Whether a move, a dialog's add, or Restore's edit is queued or running: each changes
+    /// the document, and may be under way before the transaction its `begin` opens is.
+    /// Restore's read of the text it puts back changes nothing: until it answers, a file
+    /// changed on disk is no reason to offer to keep edits.
     fn changing(&self) -> bool {
-        self.edits
-            .queue
-            .iter()
-            .any(|queued| matches!(queued, Queued::Move { .. } | Queued::Add { .. }))
-            || self.under.iter().any(|under| {
-                matches!(
-                    under,
-                    Under::Move { .. } | Under::Add { .. } | Under::Base { .. }
-                )
-            })
+        self.edits.queue.iter().any(|queued| {
+            matches!(
+                queued,
+                Queued::Move { .. } | Queued::Add { .. } | Queued::Replace { .. }
+            )
+        }) || self.under.iter().any(|under| {
+            matches!(
+                under,
+                Under::Move { .. } | Under::Add { .. } | Under::Base { .. } | Under::Replace { .. }
+            )
+        })
     }
 
     /// Save As (`commit` with a path, docs/design/m5.0-app.md §4): once everything asked
     /// before it has answered, as a save, the document written to `path` (replacing a file
-    /// there if `replace`), the tab then of the new file. A file there and no `replace` is
+    /// there if `replace`), the tab then of the new file; then, if `then_close`, closed (an
+    /// untitled part saved by Close's or Quit's Save). A file there and no `replace` is
     /// asked about ([`take_replace_asked`](Self::take_replace_asked)); any other refusal is
-    /// said.
+    /// said, and, if it was to close the tab, the tab kept and that said too.
     pub fn save_as<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
         path: String,
         replace: bool,
+        then_close: bool,
     ) {
         self.message = None;
-        self.edits.queue.push_back(Queued::SaveAs { path, replace });
+        self.edits.queue.push_back(Queued::SaveAs {
+            path,
+            replace,
+            then_close,
+        });
         self.advance(sessions);
     }
 
-    /// The path a Save As found a file at, if one did since this was last asked: whether to
-    /// replace it is the person's to say.
-    pub fn take_replace_asked(&mut self) -> Option<String> {
+    /// The path a Save As found a file at, if one did since this was last asked, and
+    /// whether that Save As was to close the tab: whether to replace it is the person's to
+    /// say.
+    pub fn take_replace_asked(&mut self) -> Option<(String, bool)> {
         self.replace_asked.take()
+    }
+
+    /// Whether a Save As is queued or running: its answer gives the tab its file, or not.
+    pub fn saving_as(&self) -> bool {
+        self.edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::SaveAs { .. }))
+            || self
+                .under
+                .iter()
+                .any(|under| matches!(under, Under::SaveAs { .. }))
     }
 
     /// Whether a save or a revert that was to close it was refused since this was last asked.
@@ -654,20 +903,30 @@ impl Tab {
     /// once), every command under way polled, and the reads a change needs started.
     pub fn poll<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         let status = sessions.status(&self.id);
+        if let Some(after_status) = &mut self.after_status {
+            after_status();
+        }
         // Answered at once, of the session as it is: its revision and transaction are now.
         let mut reloaded = false;
         if let Some(session) = &status.session {
             // Moved with nothing of the tab's under way: the session's own reload.
             if self.status.is_some() && session.revision != self.revision && self.quiet() {
-                self.resets += 1;
                 reloaded = true;
+                self.reload_seen(sessions, self.revision, session.revision);
             }
             self.revision = session.revision;
             self.transaction = session.transaction;
             self.status_revision = session.revision;
         }
         match status.result {
-            Ok(status) => self.status = Some(status),
+            Ok(status) => {
+                // The file as the session holds it, nothing of the tab's under way: no
+                // reload of the person's is still to come.
+                if self.quiet() && !matches!(status.disk, Some(Disk::Changed | Disk::Gone)) {
+                    self.reload_asked = false;
+                }
+                self.status = Some(status);
+            }
             // Its session isn't open any more: the tab goes.
             Err(_) => {
                 self.closed = true;
@@ -678,6 +937,28 @@ impl Tab {
             self.reloaded_under_dialog(sessions);
         }
         let published = sessions.published(&self.id);
+        let model = published
+            .result
+            .as_ref()
+            .ok()
+            .map(|published| Arc::downgrade(&published.model));
+        // Another model than the last seen, though maybe of the same revision (a fresh
+        // check's): counted, so the viewport reads its meshes again.
+        let same = match (&self.published_model, &model) {
+            (Some(seen), Some(now)) => seen.ptr_eq(now),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.published_models = self.published_models.wrapping_add(1);
+            self.published_model = model;
+        }
+        let model = published
+            .result
+            .as_ref()
+            .ok()
+            .map(|published| (Arc::clone(&published.model), published.revision));
+        self.selection.published(model, self.published_models);
         self.published = published.result.ok().map(|published| published.revision);
         if self.published.is_some() {
             self.nothing_published = false;
@@ -686,6 +967,71 @@ impl Tab {
         self.offer_disk_choice();
         self.read_timeline(sessions);
         self.read_check(sessions);
+    }
+
+    /// The session's own reload seen, from `from`, the revision the tab had (the one the
+    /// reload replaced), to `to`: the views read again; the banner saying so in place of
+    /// any before it (none for a reload the person asked for, section 4); and what changed
+    /// asked of `diff`, from `from` to `to`, both by number (Fable's decisions of
+    /// 2026-11-04, *the three core gaps*, section 1, and *6d's other half*, section 2), so
+    /// it reads nothing of the file and a write landing after the reload never refuses it;
+    /// its features marked when it answers, the person's reload's too. An older reload's
+    /// diff that has answered is taken first, into its own banner; one still out is let
+    /// go, so its answer never lands in this banner. An older banner whose changes weren't
+    /// listed (its diff still out, or refused: the session no longer held its `from`, a
+    /// reload queued ahead of the diff having replaced it) is said in this one, as are
+    /// those it carried.
+    fn reload_seen<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        from: Revision,
+        to: Revision,
+    ) {
+        self.resets += 1;
+        self.reloaded_to = Some(to);
+        self.take_diffs();
+        let unlisted = match self.reloaded.take() {
+            Some(older) => {
+                let mut unlisted = older.unlisted;
+                if matches!(older.changes, Changes::Asking | Changes::Refused { .. }) {
+                    unlisted.push((older.from, older.to));
+                }
+                unlisted
+            }
+            None => Vec::new(),
+        };
+        self.reloaded = (!std::mem::take(&mut self.reload_asked)).then_some(Reloaded {
+            from,
+            to,
+            changes: Changes::Asking,
+            refused: None,
+            unlisted,
+            from_held: true,
+        });
+        self.reload_diff = Some(sessions.diff(
+            &self.id,
+            Some(Named::Revision(from)),
+            Some(Named::Revision(to)),
+        ));
+    }
+
+    /// The session's own reload, if `session`, as the answer to a command the tab sent at
+    /// revision `sent_at` that changes nothing itself (or one refused) left it, says one
+    /// came first: it says it reloaded, or its revision isn't `sent_at`. Seen as
+    /// [`poll`](Self::poll) sees one, which it can't while the command is under way.
+    fn reload_in<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        sent_at: Revision,
+        session: Option<&SessionInfo>,
+    ) {
+        let Some(session) = session else {
+            return;
+        };
+        if session.reloaded || session.revision != sent_at {
+            self.reload_seen(sessions, sent_at, session.revision);
+            self.reloaded_under_dialog(sessions);
+        }
     }
 
     /// The session as `response` left it, if that's no older than what the tab knows.
@@ -700,6 +1046,7 @@ impl Tab {
 
     fn take_answers<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         self.take_export();
+        self.take_diffs();
         if let Some(read) = self.timeline_read.take() {
             match read.try_take() {
                 Ok(response) => {
@@ -719,6 +1066,10 @@ impl Tab {
             match read.try_take() {
                 Ok(response) => {
                     self.check_superseded = false;
+                    if std::mem::take(&mut self.fresh_out) {
+                        // Rebuild everything's: what it published is read again.
+                        self.timeline_asked = None;
+                    }
                     if let Ok(answer) = response.result {
                         self.took_check(&answer, gate);
                     }
@@ -728,7 +1079,7 @@ impl Tab {
         }
         let mut close = false;
         for under in std::mem::take(&mut self.under) {
-            if let Some(under) = self.take(under, &mut close) {
+            if let Some(under) = self.take(sessions, under, &mut close) {
                 self.under.push(under);
             }
         }
@@ -742,6 +1093,117 @@ impl Tab {
             });
         }
         self.advance(sessions);
+    }
+
+    /// The reload's diff and Show changes' two, if they've answered: the reload's listed in
+    /// its banner, each feature it changed marked; Show changes' each listed in its section
+    /// of the modal, or its refusal said there, each on its own.
+    fn take_diffs(&mut self) {
+        if let Some(read) = self.reload_diff.take() {
+            match read.try_take() {
+                Ok(response) => {
+                    let changes = match response.result {
+                        Ok(answer) => {
+                            self.outside.extend(changes::marks(&answer.changes));
+                            Changes::Listed(changes::listed(&answer.changes))
+                        }
+                        Err(problems) => {
+                            if let Some(reloaded) = &mut self.reloaded {
+                                reloaded.from_held = !changes::not_held(&problems, reloaded.from);
+                            }
+                            Changes::refused(&problems)
+                        }
+                    };
+                    if let Some(reloaded) = &mut self.reloaded {
+                        reloaded.changes = changes;
+                    }
+                }
+                Err(read) => self.reload_diff = Some(read),
+            }
+        }
+        if let Some(changes) = took(&mut self.theirs_diff)
+            && let Some(held) = &mut self.held_changes
+        {
+            held.theirs = changes;
+        }
+        if let Some(changes) = took(&mut self.mine_diff)
+            && let Some(held) = &mut self.held_changes
+        {
+            held.mine = changes;
+        }
+    }
+
+    /// Show changes (DESIGN.md, 6d; Fable's decision of 2026-11-04, *6d's other half*,
+    /// section 2): two diffs asked for its modal, each from the revision the open
+    /// transaction began at: to `"disk"`, the file as the core reads it then (inside the
+    /// transaction, reloading nothing and touching no edit), what another program wrote;
+    /// and to the document now, what the edits held changed. Neither moves the session's
+    /// revision. Nothing with no transaction open.
+    pub fn show_changes<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let Some(base) = self.transaction().map(|transaction| transaction.base) else {
+            return;
+        };
+        let base = Some(Named::Revision(base));
+        self.held_changes = Some(HeldChanges::default());
+        self.theirs_diff = Some(sessions.diff(&self.id, base, Some(Named::Disk)));
+        // The edits' side is the document now (`null`), not the tab's newest revision by
+        // number: Show changes is offered only inside a transaction, where a `null` side
+        // reads no file and reloads nothing, and it names the document as it is when the
+        // diff runs, so an edit still in flight can't leave a number no longer held and the
+        // list refused (a departure from Fable's `<revision now>`: the same meaning, no
+        // race).
+        self.mine_diff = Some(sessions.diff(&self.id, base, None));
+    }
+
+    /// Show changes' modal closed: its diffs let go.
+    pub fn hide_changes(&mut self) {
+        self.held_changes = None;
+        self.theirs_diff = None;
+        self.mine_diff = None;
+    }
+
+    /// Restore (Fable's decision of 2026-11-04, section 2; DESIGN.md, 6c): the text of
+    /// `revision`, the one the reload replaced, read through `text`, then put back by
+    /// `replace_text`, inside the tab's transaction, begun first if none is open: an edit
+    /// like any other, which Undo takes back and Save writes. Sent once everything asked
+    /// before it has answered. Never while a dialog is open or the tab closes. A refusal
+    /// (the revision no longer held) is said in the reload's banner.
+    pub fn restore<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        revision: Revision,
+    ) {
+        if self.in_dialog() || self.closing() || self.restoring() {
+            return;
+        }
+        self.message = None;
+        if let Some(reloaded) = &mut self.reloaded {
+            reloaded.refused = None;
+        }
+        self.edits.queue.push_back(Queued::Restore { revision });
+        self.advance(sessions);
+    }
+
+    /// Whether a Restore is queued or running.
+    pub fn restoring(&self) -> bool {
+        self.edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::Restore { .. } | Queued::Replace { .. }))
+            || self
+                .under
+                .iter()
+                .any(|under| matches!(under, Under::Restore { .. } | Under::Replace { .. }))
+    }
+
+    /// Restore of `revision` refused: said in the banner of the reload that replaced it, if
+    /// it still shows, or else in the status bar.
+    fn restore_refused(&mut self, revision: Revision, problems: &Problems) {
+        let said = changes::refused(problems);
+        match &mut self.reloaded {
+            Some(reloaded) if reloaded.from == revision => reloaded.refused = Some(said),
+            _ => self.message = Some(said),
+        }
     }
 
     /// A timeline read refused: what it says of the published model kept, and asked again
@@ -767,7 +1229,12 @@ impl Tab {
     }
 
     /// `under` polled: none if it answered (what it changed taken), or it back.
-    fn take(&mut self, under: Under, close: &mut bool) -> Option<Under> {
+    fn take<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        under: Under,
+        close: &mut bool,
+    ) -> Option<Under> {
         match under {
             Under::Begin(running) => match running.try_take() {
                 Ok(response) => {
@@ -798,24 +1265,37 @@ impl Tab {
                 running,
                 path,
                 began,
+                then_close,
             } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
                     match response.result {
                         // The session holds the new file from now on, by the path given.
                         Ok(committed) => {
-                            self.path = committed.path;
+                            self.path = Some(committed.path);
                             self.disk_choice = DiskChoice::None;
+                            *close |= then_close;
+                            if then_close {
+                                // Closing: nothing after it is sent.
+                                self.edits.queue.clear();
+                            }
                         }
                         Err(problems) => {
                             // Its own transaction, begun for it, ended: it held nothing.
                             self.roll_back |= began;
-                            if problems.errors().first().and_then(|e| e.suggestion())
-                                == Some(silico_core::file::REPLACE_ADVICE)
-                            {
-                                self.replace_asked = Some(path);
+                            let advice = problems.errors().first().and_then(|e| e.suggestion());
+                            if advice == Some(silico_core::file::OWN_FILE_ADVICE) {
+                                // Its own file, by any path to it (a link, the panel's
+                                // canonical form): a Save, sent next, after the rollback of a
+                                // transaction it began (nothing to save then, but a close).
+                                self.edits.queue.push_front(Queued::Save { then_close });
+                            } else if advice == Some(silico_core::file::REPLACE_ADVICE) {
+                                // Whether to replace it is asked; a Cancel then refuses the
+                                // close, if it was to close.
+                                self.replace_asked = Some((path, then_close));
                             } else {
                                 self.message = Some(said(&problems));
+                                self.close_refused |= then_close;
                             }
                         }
                     }
@@ -825,6 +1305,7 @@ impl Tab {
                     running,
                     path,
                     began,
+                    then_close,
                 }),
             },
             Under::Rollback {
@@ -832,6 +1313,16 @@ impl Tab {
                 then_close,
             } => match running.try_take() {
                 Ok(response) => {
+                    // Past its revision already: the session's own reload, once the
+                    // transaction ended, seen by `status` before this answer was taken
+                    // (nothing of the tab's runs while a rollback does, so nothing else
+                    // moves it).
+                    if let Some(session) = &response.session
+                        && session.revision < self.revision
+                    {
+                        self.reload_seen(sessions, session.revision, self.revision);
+                        self.reloaded_under_dialog(sessions);
+                    }
                     self.took_session(&response);
                     // Typing queued after it is applied next: the field keeps it.
                     if response.result.is_ok() && self.edits.idle() {
@@ -881,7 +1372,7 @@ impl Tab {
                                 dialog.feature = Some(added.feature.id.clone());
                                 // Selected, so its mark's text is read and the property
                                 // panel shows it.
-                                self.selected = Some(added.feature.id);
+                                self.selection.select_feature(added.feature.id);
                             }
                         }
                         Err(problems) => {
@@ -986,6 +1477,79 @@ impl Tab {
                     serial,
                     kind,
                     feature,
+                    running,
+                }),
+            },
+            Under::Restore {
+                revision,
+                sent_at,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    // Its read names a revision, so it reads nothing of the file; but a
+                    // reload queued ahead of it (the disk watch's own, or another client's
+                    // read) may have run first, which no answer said while it waited:
+                    // another program's change, said in place of the banner Restore was
+                    // clicked on.
+                    self.reload_in(sessions, sent_at, response.session.as_ref());
+                    self.took_session(&response);
+                    match response.result {
+                        // Put back next, before anything queued after it.
+                        Ok(answer) => self.edits.queue.push_front(Queued::Replace {
+                            revision,
+                            text: answer.text,
+                        }),
+                        Err(problems) => self.restore_refused(revision, &problems),
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Restore {
+                    revision,
+                    sent_at,
+                    running,
+                }),
+            },
+            Under::Replace {
+                revision,
+                began,
+                sending,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    match response.result {
+                        Ok(_) => {
+                            // The banner's done (the prototype's `undoReload`); the property
+                            // panel's field shows the document's value again.
+                            if self
+                                .reloaded
+                                .as_ref()
+                                .is_some_and(|reloaded| reloaded.from == revision)
+                            {
+                                self.reloaded = None;
+                            }
+                            if self.edits.idle() {
+                                self.resets += 1;
+                            }
+                        }
+                        Err(problems) => {
+                            // At another revision than it was sent against: the session
+                            // reloaded first (its `begin`'s read of the file), which no
+                            // answer said while it ran.
+                            self.reload_in(sessions, sending.against, response.session.as_ref());
+                            // Its own transaction, begun for it, ended: it held nothing,
+                            // and, left open, the session would follow the file no more.
+                            self.roll_back |= began;
+                            self.restore_refused(revision, &problems);
+                        }
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Replace {
+                    revision,
+                    began,
+                    sending,
                     running,
                 }),
             },
@@ -1167,6 +1731,27 @@ impl Tab {
                         });
                     }
                 }
+                Queued::Restore { revision } => {
+                    let running = sessions.text_at(&self.id, None, Some(Named::Revision(revision)));
+                    self.under.push(Under::Restore {
+                        revision,
+                        sent_at: self.revision,
+                        running,
+                    });
+                }
+                Queued::Replace { revision, text } => {
+                    let began = !self.transaction && !self.beginning;
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::Replace);
+                    let sending = self.sending();
+                    self.under.push(Under::Replace {
+                        revision,
+                        began,
+                        sending,
+                        running: sessions.replace_text(&self.id, self.revision, text),
+                    });
+                }
                 Queued::Closed { ok } => {
                     let Some(base) = self.dialog_base.take() else {
                         continue;
@@ -1222,7 +1807,11 @@ impl Tab {
                         then_close,
                     });
                 }
-                Queued::SaveAs { path, replace } => {
+                Queued::SaveAs {
+                    path,
+                    replace,
+                    then_close,
+                } => {
                     // A transaction begun first if none is open: a Save As commits one,
                     // and one with nothing changed writes the document all the same.
                     let began = !self.transaction && !self.beginning;
@@ -1235,6 +1824,7 @@ impl Tab {
                         running: sessions.save_as(&self.id, path.clone(), replace),
                         path,
                         began,
+                        then_close,
                     });
                 }
                 Queued::Save { then_close } => {
@@ -1281,6 +1871,8 @@ impl Tab {
                         | Under::Move { .. }
                         | Under::Add { .. }
                         | Under::Base { .. }
+                        | Under::Restore { .. }
+                        | Under::Replace { .. }
                 )
             })
     }
@@ -1313,18 +1905,26 @@ impl Tab {
                 .is_none_or(|timeline| timeline.revision < self.revision)
     }
 
-    /// Whether it's closing: a save or a revert that closes it, or its close, queued or
-    /// running. The property panel takes no edit then: it would be dropped.
+    /// Whether it's closing: a save, a Save As, or a revert that closes it, or its close,
+    /// queued or running. The property panel takes no edit then: it would be dropped.
     pub fn closing(&self) -> bool {
         self.edits.queue.iter().any(|queued| {
             matches!(
                 queued,
-                Queued::Save { then_close: true } | Queued::Revert { then_close: true }
+                Queued::Save { then_close: true }
+                    | Queued::SaveAs {
+                        then_close: true,
+                        ..
+                    }
+                    | Queued::Revert { then_close: true }
             )
         }) || self.under.iter().any(|under| {
             matches!(
                 under,
                 Under::Commit {
+                    then_close: true,
+                    ..
+                } | Under::SaveAs {
                     then_close: true,
                     ..
                 } | Under::Rollback {
@@ -1387,6 +1987,15 @@ impl Tab {
     /// (section 4).
     pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
         self.message = None;
+        // The session reloads the file changed on disk once the edits are gone: at the
+        // person's asking.
+        if self
+            .status
+            .as_ref()
+            .is_some_and(|status| matches!(status.disk, Some(Disk::Changed | Disk::Gone)))
+        {
+            self.reload_asked = true;
+        }
         // The document goes back to the file's: a dialog open on it has nothing to edit.
         self.dialog = None;
         self.loading = None;
@@ -1655,6 +2264,40 @@ impl Tab {
         self.rebuilds += 1;
     }
 
+    /// Rebuild everything (Shift+Ctrl+B; DESIGN.md, *Keyboard*: "every feature, ignoring
+    /// the cache"): `check` of the current model with `fresh`, which rebuilds the tab's
+    /// revision with every step built anew, reading nothing kept, neither the session's
+    /// steps nor the cache on disk, as SolidWorks' forced rebuild (Ctrl+Q) does, a fault
+    /// kept as the revision's outcome tried again. A stopped rebuild is started so too.
+    /// Read as the tab's own check is, so the stop (Esc, Stop) stops it as it stops that
+    /// one, and an edit supersedes it; its problems are what the property panel says. Only
+    /// while [`can_rebuild_all`](Self::can_rebuild_all).
+    pub fn rebuild_all<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if !self.can_rebuild_all() {
+            return;
+        }
+        let gate = self
+            .timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.problems > 0);
+        // Sent after any timeline read out: the later of the two, cancelled first.
+        self.check_first = false;
+        self.check_superseded = false;
+        self.fresh_out = true;
+        self.check_read = Some((
+            gate,
+            sessions.check(&self.id, CheckModel::Current { fresh: true }),
+        ));
+        self.rebuilds_all += 1;
+    }
+
+    /// Whether Rebuild everything may be sent: the document read, no dialog open (its
+    /// preview is its own rebuild), not closing, and no check of the tab's out, which a
+    /// second would only queue behind.
+    pub fn can_rebuild_all(&self) -> bool {
+        self.timeline.is_some() && !self.in_dialog() && !self.closing() && self.check_read.is_none()
+    }
+
     /// Whether Rebuild is on: the tab's revision's rebuild stopped, and no read of the
     /// current model of the tab's own already out (one Rebuild sent, not yet started by the
     /// session, which a second would only queue behind).
@@ -1662,12 +2305,15 @@ impl Tab {
         self.rebuild_stopped() && !self.rebuild_out
     }
 
-    /// Esc with no dialog open (section 3's order): the selection cleared, or, with none, a
-    /// rebuild running stopped quietly ([`stop_quietly`](Self::stop_quietly)); with
-    /// neither, nothing.
+    /// Esc with no dialog open (section 3's order, the prototype's `escChain`): the reload's
+    /// purple banner dismissed, if one shows (DESIGN.md, 6c; an amber or red one in its
+    /// place has let it go already); or else the selection cleared; or else, with neither,
+    /// a rebuild running stopped quietly ([`stop_quietly`](Self::stop_quietly)).
     pub fn escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if self.selected.is_some() {
-            self.selected = None;
+        if self.reloaded.is_some() {
+            self.reloaded = None;
+        } else if !self.selection.is_empty() {
+            self.selection.clear();
         } else if self.stoppable() {
             self.stop_quietly(sessions);
         }
@@ -1700,7 +2346,18 @@ impl Tab {
     /// The choice section 4 offers once the file changed on disk while unsaved edits are
     /// held.
     fn offer_disk_choice(&mut self) {
-        let disk = self.status.as_ref().and_then(|status| status.disk);
+        // A status read before a reload the tab saw since, in an answer taken after it in
+        // the same frame (Restore's `begin`, which read the file, answering as the frame
+        // read the status), compared the file with the bytes that reload replaced: what it
+        // found says nothing of the file now, and offers no choice over the reload's banner.
+        let stale = self
+            .reloaded_to
+            .is_some_and(|reloaded_to| self.status_revision < reloaded_to);
+        let disk = self
+            .status
+            .as_ref()
+            .and_then(|status| status.disk)
+            .filter(|_| !stale);
         let changed = matches!(disk, Some(Disk::Changed | Disk::Gone));
         self.disk_choice = match (self.disk_choice, changed, self.unsaved(), disk) {
             (_, false, _, _) | (_, _, false, _) => DiskChoice::None,
@@ -1862,7 +2519,7 @@ impl Tab {
     /// H (DESIGN.md, *Keyboard*: Fusion's V, moved to H): the selected feature hidden or
     /// shown, if the browser lists it (a body or a sketch); nothing otherwise.
     pub fn toggle_selected_shown(&mut self) {
-        let Some(id) = self.selected.clone() else {
+        let Some(id) = self.selection.feature().cloned() else {
             return;
         };
         let listed = self
@@ -1897,7 +2554,11 @@ impl Tab {
             return;
         }
         let serial = self.opening();
-        let sketch = self.selected.clone().filter(|id| self.is_sketch(id));
+        let sketch = self
+            .selection
+            .feature()
+            .cloned()
+            .filter(|id| self.is_sketch(id));
         self.dialog = Some(Dialog::new(kind, sketch, serial));
         self.dialog_changed(sessions);
         self.advance(sessions);
@@ -1926,7 +2587,7 @@ impl Tab {
         if !self.can_open(kind) {
             return;
         }
-        self.selected = Some(id.clone());
+        self.selection.select_feature(id.clone());
         self.load(sessions, kind, id.clone());
     }
 
@@ -2115,7 +2776,7 @@ impl Tab {
         if self.check_read.is_some() || self.checked == Some(asked) {
             return;
         }
-        let Some((gate, model)) = check_wanted(timeline, self.selected.as_ref()) else {
+        let Some((gate, model)) = check_wanted(timeline, self.selection.feature()) else {
             return;
         };
         // Never the current model of a revision whose rebuild was stopped: its check would
@@ -2410,6 +3071,35 @@ mod tests {
         tab.status = Some(counted(three, true, 1, 1));
         tab.status_revision = three;
         assert!(tab.undoable() && tab.redoable());
+    }
+
+    #[test]
+    fn a_disk_finding_read_before_a_reload_seen_since_offers_no_choice() {
+        // A status of revision 2 found the file changed with edits held: the choice offered.
+        // An answer since said the session reloaded the file at 3 (Restore's `begin`, in the
+        // frame that read that status): the finding compared the file with the bytes that
+        // reload replaced, so nothing is offered until a status of 3 is read; one that finds
+        // the file changed again offers it.
+        let two = Revision::from_number(2).unwrap();
+        let three = Revision::from_number(3).unwrap();
+        let mut tab = tab();
+        let mut found = status(two, true);
+        found.disk = Some(Disk::Changed);
+        tab.status = Some(found);
+        tab.status_revision = two;
+        tab.revision = two;
+        tab.offer_disk_choice();
+        assert_eq!(tab.disk_choice, DiskChoice::Offered(Disk::Changed));
+        tab.reloaded_to = Some(three);
+        tab.revision = three;
+        tab.offer_disk_choice();
+        assert_eq!(tab.disk_choice, DiskChoice::None);
+        let mut again = status(three, true);
+        again.disk = Some(Disk::Changed);
+        tab.status = Some(again);
+        tab.status_revision = three;
+        tab.offer_disk_choice();
+        assert_eq!(tab.disk_choice, DiskChoice::Offered(Disk::Changed));
     }
 
     fn entry(id: &str, problems: u64, warnings: u64) -> Entry {
@@ -2804,7 +3494,8 @@ mod tests {
             Some(Revision::OPENED),
             vec![entry("a0000001", 0, 1)],
         ));
-        tab.selected = Some(FeatureId::new("a0000001").unwrap());
+        tab.selection_mut()
+            .select_feature(FeatureId::new("a0000001").unwrap());
         tab.read_check(&sessions);
         assert!(tab.check_read.is_some());
         // Answered and taken.
@@ -2837,7 +3528,8 @@ mod tests {
             status.rebuild.state = state;
             tab.status = Some(status);
             tab.timeline = Some(timeline(0, model, vec![entry("a0000001", 0, 1)]));
-            tab.selected = Some(FeatureId::new("a0000001").unwrap());
+            tab.selection_mut()
+                .select_feature(FeatureId::new("a0000001").unwrap());
             tab.read_check(&sessions);
             tab.check_read.is_some()
         };
@@ -2901,7 +3593,8 @@ mod tests {
         );
         assert!(kernel.wait_running(1, std::time::Duration::from_secs(60)));
         tab.timeline = Some(timeline(0, None, vec![entry("k7f2qx3m", 0, 1)]));
-        tab.selected = Some(FeatureId::new("k7f2qx3m").unwrap());
+        tab.selection_mut()
+            .select_feature(FeatureId::new("k7f2qx3m").unwrap());
         tab.read_check(&sessions);
         assert!(tab.check_read.is_some());
         // The stop: no rebuild running, so refused, but the check cancelled.
@@ -3043,7 +3736,9 @@ mod tests {
         /// selected either way.
         fn send_check(&mut self, model: Option<Revision>) {
             self.tab.timeline = Some(timeline(0, model, vec![entry("k7f2qx3m", 0, 1)]));
-            self.tab.selected = Some(FeatureId::new("k7f2qx3m").unwrap());
+            self.tab
+                .selection_mut()
+                .select_feature(FeatureId::new("k7f2qx3m").unwrap());
             self.tab.read_check(&self.sessions);
             assert!(self.tab.check_read.is_some());
         }
@@ -3209,5 +3904,312 @@ mod tests {
             .iter()
             .filter(|call| matches!(call.op, Op::MakePrimitive(Primitive::Box { .. })))
             .count()
+    }
+
+    // ---- #382's mutants: Rebuild everything's state, its problems, and nothing published ----
+
+    /// A document of one block, as the app's tests write one.
+    const BLOCK: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}, {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [2, 1, -1], "radius": 0.5, "height": 3}, {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"}]}"#;
+
+    type FakeSessions = Arc<Sessions<Arc<silico_core::fake::FakeKernel>>>;
+
+    /// Sessions on a fake kernel, `kernel` first told what to do, and `text` opened in a
+    /// tab: its directory (kept for the session's file), the sessions, and the tab.
+    fn opened_on(
+        text: &str,
+        kernel: impl FnOnce(&silico_core::fake::FakeKernel),
+    ) -> (tempfile::TempDir, FakeSessions, Tab) {
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("part.silico");
+        std::fs::write(&document, text).unwrap();
+        let fake = silico_core::fake::FakeKernel::new(1).unwrap();
+        kernel(&fake);
+        let kernel = Arc::new(fake);
+        let sessions = Arc::new(Sessions::with_cache_opener(Arc::clone(&kernel), |dir| {
+            silico_core::cache::Cache::unsealed(dir)
+        }));
+        let opened = sessions.open(&document, false).wait();
+        let id = opened.session.unwrap().id;
+        let tab = Tab::opened(
+            id,
+            document.to_str().unwrap().to_owned(),
+            &opened.result.unwrap().problems,
+        );
+        (dir, sessions, tab)
+    }
+
+    /// Answers taken until `done` holds, within a minute.
+    fn taken_until(tab: &mut Tab, sessions: &FakeSessions, done: impl Fn(&Tab) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !done(tab) {
+            tab.take_answers(sessions);
+            assert!(std::time::Instant::now() < deadline, "never answered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// How many Restores, and the put-backs of their text, `tab` holds, queued or sent.
+    fn restores(tab: &Tab) -> usize {
+        let queued = tab
+            .edits
+            .queue
+            .iter()
+            .filter(|queued| matches!(queued, Queued::Restore { .. } | Queued::Replace { .. }))
+            .count();
+        let under = tab
+            .under
+            .iter()
+            .filter(|under| matches!(under, Under::Restore { .. } | Under::Replace { .. }))
+            .count();
+        queued + under
+    }
+
+    #[test]
+    fn restore_is_asked_once_never_in_a_dialog_or_a_close_and_its_put_back_resets_the_fields() {
+        // Fable's decision of 2026-11-04, section 2: Restore is never asked while a dialog is
+        // open or the tab closes, and once while one is under way; its text put back, an
+        // edit of the document other than the property panel's own, resets the panel's
+        // fields, as an undo, a redo, a revert, or a reload does.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        let one = Revision::OPENED;
+        // A dialog open, its feature's text still read: nothing asked.
+        tab.loading = Some(1);
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 0, "asked in a dialog");
+        tab.loading = None;
+        // The tab closing: nothing asked.
+        tab.edits.queue.push_back(Queued::Save { then_close: true });
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 0, "asked as the tab closes");
+        tab.edits.queue.clear();
+        // Asked: under way until its text is put back, and asked again meanwhile, nothing
+        // more.
+        let resets = tab.resets;
+        tab.restore(&sessions, one);
+        assert!(tab.restoring(), "the read asked");
+        assert_eq!(restores(&tab), 1);
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 1, "asked twice");
+        // Put back in a transaction begun for it.
+        taken_until(&mut tab, &sessions, |tab| {
+            tab.under
+                .iter()
+                .any(|under| matches!(under, Under::Replace { .. }))
+        });
+        assert!(tab.restoring(), "the text put back");
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 1, "asked while its text is put back");
+        assert!(matches!(
+            tab.under
+                .iter()
+                .find(|under| matches!(under, Under::Replace { .. })),
+            Some(Under::Replace { began: true, .. })
+        ));
+        taken_until(&mut tab, &sessions, |tab| restores(tab) == 0);
+        assert!(!tab.restoring());
+        assert_eq!(tab.sent[tab.sent.len() - 2..], [Sent::Begin, Sent::Replace]);
+        assert_eq!(tab.resets, resets + 1, "the fields reset once");
+        // Asked again, the transaction open: its put-back begins none, so a refusal of it
+        // would leave the transaction as it was.
+        assert!(tab.transaction);
+        tab.restore(&sessions, one);
+        taken_until(&mut tab, &sessions, |tab| {
+            tab.under
+                .iter()
+                .any(|under| matches!(under, Under::Replace { .. }))
+        });
+        assert!(matches!(
+            tab.under
+                .iter()
+                .find(|under| matches!(under, Under::Replace { .. })),
+            Some(Under::Replace { began: false, .. })
+        ));
+        taken_until(&mut tab, &sessions, |tab| restores(tab) == 0);
+        assert_eq!(tab.resets, resets + 2, "the fields reset again");
+    }
+
+    #[test]
+    fn restores_refusal_is_said_in_its_reloads_banner_or_else_in_the_status_bar() {
+        // DESIGN.md, 6c: Restore's refusal is said in the banner of the reload that replaced
+        // the revision it asked for, while that banner shows; a refusal of another
+        // revision's, in the status bar.
+        let (one, two, three) = (
+            Revision::from_number(1).unwrap(),
+            Revision::from_number(2).unwrap(),
+            Revision::from_number(3).unwrap(),
+        );
+        let mut tab = tab();
+        tab.reloaded = Some(Reloaded {
+            from: two,
+            to: three,
+            changes: Changes::Asking,
+            refused: None,
+            unlisted: Vec::new(),
+            from_held: true,
+        });
+        let problems = Problems::from(silico_core::Error::new(
+            silico_core::ErrorCode::Internal,
+            "revision 1 isn't held",
+        ));
+        tab.restore_refused(one, &problems);
+        assert_eq!(tab.message.as_deref(), Some("revision 1 isn't held"));
+        assert_eq!(tab.reloaded.as_ref().unwrap().refused, None);
+        tab.message = None;
+        let problems = Problems::from(silico_core::Error::new(
+            silico_core::ErrorCode::Internal,
+            "revision 2 isn't held",
+        ));
+        tab.restore_refused(two, &problems);
+        assert_eq!(
+            tab.reloaded.as_ref().unwrap().refused.as_deref(),
+            Some("revision 2 isn't held")
+        );
+        assert_eq!(tab.message, None);
+    }
+
+    /// `tab`'s document read (its timeline, as `read_timeline` takes it), then Rebuild
+    /// everything sent and answered, what the tab said of the document before cleared.
+    fn rebuilt_everything(tab: &mut Tab, sessions: &FakeSessions) {
+        let timeline = sessions
+            .timeline(&tab.id, ModelChoice::Current)
+            .wait()
+            .result
+            .unwrap();
+        tab.took_timeline(timeline);
+        tab.document_problems.clear();
+        tab.rebuild_all(sessions);
+        assert_eq!(tab.rebuilds_all, 1, "sent");
+        taken_until(tab, sessions, |tab| tab.check_read.is_none());
+    }
+
+    #[test]
+    fn rebuild_everything_says_a_features_fault_as_the_features_never_the_documents() {
+        // The gate passes the document (its timeline counts no problem of the gate's); the
+        // block's build is refused, a problem of the block's: said once the block is opened
+        // (selected), as any feature's mark is, and nothing said of the document.
+        use silico_core::kernel::{Op, Primitive};
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |kernel| {
+            kernel.refuse(|op| {
+                matches!(op, Op::MakePrimitive(Primitive::Box { .. })).then(|| {
+                    silico_core::Error::new(ErrorCode::KernelFailed, "the block came apart")
+                })
+            });
+        });
+        rebuilt_everything(&mut tab, &sessions);
+        assert_eq!(tab.timeline.as_ref().map(|t| t.problems), Some(0));
+        assert_eq!(
+            tab.said.get("k7f2qx3m").map(|said| said.message.as_str()),
+            Some("the block came apart")
+        );
+        assert!(
+            tab.document_problems.is_empty(),
+            "{:?}",
+            tab.document_problems
+        );
+    }
+
+    #[test]
+    fn rebuild_everything_says_every_problem_of_a_document_the_gate_refused_as_the_documents() {
+        // A cut whose tool names no feature: the gate's one problem, of the cut. Every problem
+        // the check finds is the document's, the cut's too, as the property panel shows a
+        // refused document's.
+        let refused = BLOCK.replace(r#""tool": "a91cw0de""#, r#""tool": "zzzzzzzz""#);
+        let (_dir, sessions, mut tab) = opened_on(&refused, |_| {});
+        rebuilt_everything(&mut tab, &sessions);
+        assert_eq!(tab.timeline.as_ref().map(|t| t.problems), Some(1));
+        let cut = tab.said.get("m3tq8v0z").expect("the cut's problem").clone();
+        assert_eq!(tab.document_problems, [cut]);
+    }
+
+    #[test]
+    fn rebuild_everything_is_sent_only_with_the_document_read_no_dialog_no_close_and_no_check_out()
+    {
+        let sessions = Arc::new(Sessions::with_cache_opener(
+            Arc::new(silico_core::fake::FakeKernel::new(1).unwrap()),
+            |dir| silico_core::cache::Cache::unsealed(dir),
+        ));
+        let ready = || {
+            let mut tab = tab();
+            tab.timeline = Some(timeline(
+                0,
+                Some(Revision::OPENED),
+                vec![entry("a0000001", 0, 0)],
+            ));
+            tab
+        };
+        assert!(ready().can_rebuild_all());
+        // Each condition alone unmet.
+        let mut unread = ready();
+        unread.timeline = None;
+        let mut in_dialog = ready();
+        in_dialog.loading = Some(1);
+        let mut closing = ready();
+        closing
+            .edits
+            .queue
+            .push_back(Queued::Save { then_close: true });
+        let mut checking = ready();
+        checking.check_read = Some((false, sessions.check(&checking.id, CheckModel::Published)));
+        for (what, mut tab) in [
+            ("unread", unread),
+            ("in a dialog", in_dialog),
+            ("closing", closing),
+            ("a check out", checking),
+        ] {
+            assert!(!tab.can_rebuild_all(), "{what}");
+            tab.rebuild_all(&sessions);
+            assert_eq!(tab.rebuilds_all, 0, "{what}: sent");
+            assert!(!tab.fresh_out, "{what}: sent");
+        }
+        // All met: sent, once; a second waits for its answer.
+        let mut tab = ready();
+        tab.rebuild_all(&sessions);
+        assert_eq!(tab.rebuilds_all, 1);
+        assert!(!tab.can_rebuild_all());
+        tab.rebuild_all(&sessions);
+        assert_eq!(tab.rebuilds_all, 1);
+    }
+
+    #[test]
+    fn with_nothing_published_poll_after_poll_counts_no_model_and_the_first_published_once() {
+        // Every request of the kernel held: the rebuild publishes nothing, and the tab's count
+        // of the models it has seen published stays 0, poll after poll; once released, the
+        // model published counts once, and polls after it count nothing more.
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("part.silico");
+        std::fs::write(&document, BLOCK).unwrap();
+        let kernel = Arc::new(silico_core::fake::FakeKernel::new(1).unwrap());
+        let hold = kernel.hold(|_| true);
+        let sessions = Arc::new(Sessions::with_cache_opener(Arc::clone(&kernel), |dir| {
+            silico_core::cache::Cache::unsealed(dir)
+        }));
+        let opened = sessions.open(&document, false).wait();
+        let id = opened.session.unwrap().id;
+        let mut tab = Tab::opened(
+            id,
+            document.to_str().unwrap().to_owned(),
+            &opened.result.unwrap().problems,
+        );
+        // The first poll reads the timeline, which starts the rebuild.
+        tab.poll(&sessions);
+        assert!(kernel.wait_running(1, std::time::Duration::from_secs(60)));
+        assert_eq!(tab.published_models, 0);
+        for _ in 0..5 {
+            tab.poll(&sessions);
+            assert_eq!(tab.published, None);
+            assert_eq!(tab.published_models, 0);
+        }
+        hold.release();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while tab.published.is_none() {
+            tab.poll(&sessions);
+            assert!(std::time::Instant::now() < deadline, "never published");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(tab.published_models, 1);
+        for _ in 0..5 {
+            tab.poll(&sessions);
+            assert_eq!(tab.published_models, 1);
+        }
     }
 }

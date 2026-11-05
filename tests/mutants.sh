@@ -71,7 +71,16 @@ render_scale=(
 # getting fresh seeds, and the gate runs them at its fixed one. Beside each entry, say what it
 # alone tests (as the lists above do), so a render survivor there is checked against it,
 # unloaded, before it's a finding.
-slow_proptests=()
+slow_proptests=(
+  # A thousand random orthographic and perspective looks at long slabs, each view drawn and
+  # every clear pixel against a ray cast by hand (some 357 s alone): what it alone tests is
+  # the faces' anchors and the cut at random, near the render's limits; each rule it holds
+  # is tested at its edge by a fast test of its own.
+  adversarial_face_anchors::random_close_looks_at_long_slabs_draw_every_clear_pixel_as_a_ray_cast_by_hand_sees_it
+  # The same in perspective alone (some 357 s alone): what it alone tests is the cut of
+  # perspective looks at random; the pyramid's tests hold its rules at their edges.
+  adversarial_face_anchors::random_close_perspective_looks_at_long_slabs_draw_every_clear_face_pixel_as_a_ray_cast_sees_it
+)
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.
 tests_of() {
   local package=$1 tests="" t

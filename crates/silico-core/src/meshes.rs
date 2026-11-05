@@ -315,6 +315,7 @@ mod tests {
             face_triangles: vec![u32::try_from(triangles).unwrap()],
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
             valid: None,
         }
     }

@@ -726,6 +726,7 @@ fn faces_of(faces: &[[[f64; 3]; 3]]) -> Mesh {
         face_triangles: vec![1; faces.len()],
         edge_points: vec![],
         edge_point_counts: vec![],
+        vertex_points: vec![],
         valid: None,
     }
 }

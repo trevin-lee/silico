@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
+use silico_core::command::wire::Named;
 use silico_core::command::{
     CheckModel, Closed, ModelChoice, ReadCommand, Response, Revision, SessionId, Sessions,
     TextAnswer, Transaction,
@@ -786,6 +787,83 @@ fn a_symbolic_link_to_another_sessions_file_put_at_the_path_is_refused_naming_it
 #[test]
 fn a_hard_link_to_another_sessions_file_put_at_the_path_is_refused_naming_it() {
     a_link_to_another_sessions_file_is_refused_naming_it(|to, at| {
+        std::fs::hard_link(to, at).unwrap();
+    });
+}
+
+/// [`held_by_s2`], naming `parameter`: a `"disk"` side's field, which asked for the file.
+fn held_by_s2_naming(
+    path: &Path,
+    parameter: &str,
+) -> (
+    ErrorCode,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
+    let (code, message, _, cause, suggestion) = held_by_s2(path);
+    (code, message, Some(parameter.to_owned()), cause, suggestion)
+}
+
+/// As [`a_link_to_another_sessions_file_is_refused_naming_it`], inside a transaction with
+/// an edit held: each read of the file (a `"disk"` side, and `commit`'s) refuses the link,
+/// naming s2, rather than giving s2's bytes as s1's file or calling them a conflict; s2's
+/// claim and s1's transaction are as they were.
+fn inside_a_transaction_a_link_to_another_sessions_file_is_refused_naming_it(
+    link: fn(&Path, &Path),
+) {
+    let f = opened(BLOCK);
+    let dir = f.path.parent().unwrap().to_owned();
+    let other = dir.join("b.silico");
+    std::fs::write(&other, higher()).unwrap();
+    let s2 = answer(f.sessions.open(&other, false)).session.unwrap().id;
+    assert_eq!(s2.to_string(), "s2");
+    answer(f.sessions.begin(&f.id)).result.unwrap();
+    f.set_length(Revision::OPENED, "41").result.unwrap();
+    std::fs::remove_file(&f.path).unwrap();
+    link(&other, &f.path);
+    assert_eq!(f.file(), higher());
+    let text = answer(f.sessions.text_at(&f.id, None, Some(Named::Disk)));
+    assert_eq!(the_error(&text), held_by_s2_naming(&f.path, "revision"));
+    assert_eq!(Fixture::after(&text), (2, false));
+    let diff = answer(f.sessions.diff(
+        &f.id,
+        Some(Named::Revision(Revision::OPENED)),
+        Some(Named::Disk),
+    ));
+    assert_eq!(the_error(&diff), held_by_s2_naming(&f.path, "to"));
+    let commit = answer(f.sessions.commit(&f.id));
+    assert_eq!(the_error(&commit), held_by_s2(&f.path));
+    assert_eq!(Fixture::after(&commit), (2, false));
+    assert!(commit.session.as_ref().unwrap().transaction);
+    assert_eq!(std::fs::read_to_string(&other).unwrap(), higher());
+    // s2's claim intact: another name for its file is still s2's.
+    let third = dir.join("c.silico");
+    std::fs::hard_link(&other, &third).unwrap();
+    assert_eq!(
+        refusal(&answer(f.sessions.open(&third, false))).1,
+        format!("{} is already open in session s2", quoted(&third))
+    );
+    // s1's file put back as it was read: `"disk"` is its bytes, the edit still held.
+    std::fs::remove_file(&f.path).unwrap();
+    f.write(BLOCK);
+    let text = answer(f.sessions.text_at(&f.id, None, Some(Named::Disk)));
+    assert_eq!(Fixture::after(&text), (2, false));
+    assert_eq!(text.result.unwrap().text, BLOCK);
+    assert!(f.text().result.unwrap().text.contains("\"length\": 41,"));
+}
+
+#[test]
+fn inside_a_transaction_a_symbolic_link_to_another_sessions_file_is_refused_naming_it() {
+    inside_a_transaction_a_link_to_another_sessions_file_is_refused_naming_it(|to, at| {
+        std::os::unix::fs::symlink(to, at).unwrap();
+    });
+}
+
+#[test]
+fn inside_a_transaction_a_hard_link_to_another_sessions_file_is_refused_naming_it() {
+    inside_a_transaction_a_link_to_another_sessions_file_is_refused_naming_it(|to, at| {
         std::fs::hard_link(to, at).unwrap();
     });
 }

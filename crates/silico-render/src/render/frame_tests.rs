@@ -10,14 +10,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use silico_protocol::{Camera, Mesh, Projection};
+use silico_protocol::{Camera, MIN_EYE_DISTANCE, Mesh, Projection};
 
 use super::tests::on_lavapipe;
 use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjection};
 
 use super::{
-    BACKGROUND, Element, Frame, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, PendingPick,
-    Pick, Picking, PixelRect, RenderFailure, Renderer,
+    BACKGROUND, Element, Frame, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines,
+    PendingPick, Pick, Picking, PixelRect, RenderFailure, Renderer, project, ray,
 };
 use crate::bench::{box_mesh, front_of_a_box};
 
@@ -48,9 +48,16 @@ fn frame<'a>(
         pixels_per_point: 1.0,
         bodies,
         highlights,
+        hovered: &[],
+        outlines: Outlines::DEFAULT,
         picking,
+        vertices: None,
+        background: VIEWPORT_BG,
     }
 }
+
+/// The app's viewport's background, #000000 (its theme's `VIEWPORT_BG`).
+const VIEWPORT_BG: [u8; 4] = [0, 0, 0, 255];
 
 fn rect(min: [i32; 2], size: [u32; 2]) -> PixelRect {
     PixelRect { min, size }
@@ -250,8 +257,9 @@ fn a_body_forgotten_is_drawn_no_more_and_one_replaced_is_uploaded_again() {
             let found = hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE)));
             assert_eq!(found, Some((1, Element::Face(3), [32, 26])));
             // The same mesh again, by its Arc or an equal one, uploads nothing; another, the
-            // box moved 100 mm right (out of view: from column 32 + 79 × 12/11 = 118), is
-            // uploaded again and drawn where it now is.
+            // box moved 100 mm right (out of view: from column 32 + 79 × 12/11 = 118), drops
+            // the old meshes, and isn't placed where the view can't see it: nothing uploaded
+            // until a view does.
             let before = r.uploads();
             let mesh = the_box();
             r.upload(1, &mesh).unwrap();
@@ -264,7 +272,7 @@ fn a_body_forgotten_is_drawn_no_more_and_one_replaced_is_uploaded_again() {
             )
             .unwrap();
             assert_eq!(hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE))), None);
-            assert_eq!(r.uploads(), before + 6);
+            assert_eq!(r.uploads(), before);
         },
     );
 }
@@ -495,12 +503,10 @@ fn a_frame_is_composited_into_the_pass_and_a_refused_one_not_at_all() {
             let commands = r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
             let pixels = composited(r, Some(commands));
             let at = |x: u32, y: u32| pixels[usize::try_from(y * WIDTH + x).unwrap()];
-            // The corner is the background, opaque; the centre is the front face, not it.
-            let [red, green, blue] = BACKGROUND;
+            // The corner is the frame's background, opaque; the centre is the front face, not
+            // it.
             let corner = at(1, 1);
-            for (got, want) in corner.iter().zip([red, green, blue, 255]) {
-                assert!(got.abs_diff(want) <= 2, "{corner:?}");
-            }
+            assert_eq!(corner, VIEWPORT_BG);
             assert_ne!(at(32, 26), corner);
             assert_eq!(at(32, 26)[3], 255);
             // Composited again, without another frame: the same frame.
@@ -510,6 +516,63 @@ fn a_frame_is_composited_into_the_pass_and_a_refused_one_not_at_all() {
             broken.eye = broken.target;
             assert!(r.prepare(&frame(&broken, &[1], &[], None)).is_err());
             assert!(composited(r, None).iter().all(|p| *p == [0, 0, 0, 0]));
+        },
+    );
+}
+
+#[test]
+fn a_frames_background_is_the_colour_it_gives_and_a_renders_its_own() {
+    on_lavapipe(
+        "render::frame_tests::a_frames_background_is_the_colour_it_gives_and_a_renders_its_own",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            // Each colour at the corner, off the box, to 1 of 255 (sRGB to linear and back);
+            // the box's front face at the centre the same whatever's behind it.
+            let mut centres = vec![];
+            for background in [
+                VIEWPORT_BG,
+                [255, 255, 255, 255],
+                [12, 200, 77, 255],
+                [230, 233, 237, 255],
+            ] {
+                let commands = r
+                    .prepare(&Frame {
+                        background,
+                        ..frame(&camera, &[1], &[], None)
+                    })
+                    .unwrap();
+                let pixels = composited(r, Some(commands));
+                let at = |x: u32, y: u32| pixels[usize::try_from(y * WIDTH + x).unwrap()];
+                for (x, y) in [(1, 1), (62, 46), (32, 5)] {
+                    let got = at(x, y);
+                    for k in 0..4 {
+                        assert!(
+                            got[k].abs_diff(background[k]) <= 1,
+                            "{background:?} at ({x}, {y}): {got:?}"
+                        );
+                    }
+                }
+                centres.push(at(32, 26));
+            }
+            assert!(centres.windows(2).all(|w| w[0] == w[1]), "{centres:?}");
+            // One not opaque is refused, naming it: the frame is composited opaque.
+            for alpha in [0, 128, 254] {
+                let translucent = Frame {
+                    background: [12, 200, 77, alpha],
+                    ..frame(&camera, &[1], &[], None)
+                };
+                assert_eq!(refused(r, &translucent), "background");
+            }
+            // A render keeps its own, the light grey.
+            let [red, green, blue] = BACKGROUND;
+            let rendered = r.render(&front_of_a_box(WIDTH, HEIGHT)).unwrap();
+            let mut reader = png::Decoder::new(std::io::Cursor::new(rendered.png))
+                .read_info()
+                .unwrap();
+            let mut rgb = vec![0; reader.output_buffer_size().unwrap()];
+            reader.next_frame(&mut rgb).unwrap();
+            assert_eq!(rgb[..3], [red, green, blue]);
         },
     );
 }
@@ -657,6 +720,12 @@ fn a_hostile_upload_is_refused_and_the_body_keeps_its_mesh() {
             let mut miscounted = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
             miscounted.face_triangles[0] = 3;
             hostile.push(miscounted);
+            // A vertex's point as an edge's: not finite, or past the coordinates' bound.
+            for bad in [f64::NAN, f64::INFINITY, -2e12] {
+                let mut vertex = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+                vertex.vertex_points[7][2] = bad;
+                hostile.push(vertex);
+            }
             for mesh in hostile {
                 let Err(RenderFailure::Invalid(invalid)) = r.upload(1, &Arc::new(mesh)) else {
                     panic!("a hostile mesh uploaded");
@@ -681,6 +750,7 @@ fn a_hostile_upload_is_refused_and_the_body_keeps_its_mesh() {
                 face_triangles: vec![],
                 edge_points: vec![],
                 edge_point_counts: vec![],
+                vertex_points: vec![],
                 valid: None,
             };
             r.upload(1, &Arc::new(empty)).unwrap();
@@ -869,6 +939,478 @@ fn a_perspective_picks_point_is_the_pixels_centre_on_the_face() {
             ];
             assert!((want[0] - 21.3791).abs() < 1e-4 && (want[2] - 5.1043).abs() < 1e-4);
             assert_point(&found, want, [1e-3, 1e-3, 1e-3]);
+        },
+    );
+}
+
+/// `a`'s length.
+fn norm(a: [f64; 3]) -> f64 {
+    a.iter().map(|c| c * c).sum::<f64>().sqrt()
+}
+
+/// Where the ray `(origin, direction)` meets the plane where coordinate `k` is `at`.
+fn meets((origin, direction): ([f64; 3], [f64; 3]), k: usize, at: f64) -> [f64; 3] {
+    let t = (at - origin[k]) / direction[k];
+    std::array::from_fn(|i| origin[i] + direction[i] * t)
+}
+
+/// `p`'s distance from the line of the ray `(origin, direction)`, its direction of unit
+/// length.
+fn off_the_ray(p: [f64; 3], (origin, direction): ([f64; 3], [f64; 3])) -> f64 {
+    let d: [f64; 3] = std::array::from_fn(|k| p[k] - origin[k]);
+    let t: f64 = (0..3).map(|k| d[k] * direction[k]).sum();
+    norm(std::array::from_fn(|k| d[k] - direction[k] * t))
+}
+
+fn assert_near(got: [f64; 3], want: [f64; 3], relative: f64) {
+    let off = norm(std::array::from_fn(|k| got[k] - want[k]));
+    assert!(
+        off <= relative * norm(want),
+        "{got:?} against {want:?}: {off:e} off"
+    );
+}
+
+/// The front camera in perspective, 40° high.
+fn front_in_perspective() -> Camera {
+    Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        ..front()
+    }
+}
+
+/// From above, in front, and to the right of the box, looking at (20, 10, 5).
+fn from_the_corner(projection: Projection) -> Camera {
+    Camera {
+        projection,
+        eye: [70.0, -45.0, 55.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    }
+}
+
+#[test]
+fn the_ray_through_the_images_centre_is_the_view_axis() {
+    // The image's centre is half its size, (32, 24): the ray from the eye toward the target
+    // in perspective; orthographic, from the target along the view. The way, by hand, from
+    // the eye to the target.
+    let size = [WIDTH, HEIGHT];
+    let centre = [32.0, 24.0];
+    let ortho = Projection::Orthographic { view_height: 60.0 };
+    let wide = Projection::Perspective {
+        field_of_view: 60.0,
+    };
+    for camera in [
+        front(),
+        front_in_perspective(),
+        from_the_corner(ortho),
+        from_the_corner(wide),
+    ] {
+        let (origin, direction) = ray(&camera, size, centre).unwrap();
+        let way: [f64; 3] = std::array::from_fn(|k| camera.target[k] - camera.eye[k]);
+        let way = way.map(|c| c / norm(way));
+        assert_near(direction, way, 1e-15);
+        assert!((norm(direction) - 1.0).abs() <= 1e-15);
+        let want = match camera.projection {
+            Projection::Perspective { .. } => camera.eye,
+            Projection::Orthographic { .. } => camera.target,
+        };
+        assert_near(origin, want, 1e-15);
+    }
+    // The front view's, exactly: along +y.
+    let (_, direction) = ray(&front(), size, centre).unwrap();
+    assert_eq!(direction.map(|c| c + 0.0), [0.0, 1.0, 0.0]);
+}
+
+#[test]
+fn a_ray_through_a_pixel_meets_the_face_where_its_worked_by_hand() {
+    // The ray is the GPU's projection, whose matrix is f32 (each entry to 6e-8 of it), so it
+    // meets the hand's worked points to 6e-8 of their offsets across the view (a few mm
+    // here): to 1e-8 of the points, which are 20 mm and more from the origin.
+    let size = [WIDTH, HEIGHT];
+    // Orthographic, from the front: through pixel (32, 26)'s centre, (32.5, 26.5), parallel
+    // to the view (+y), from the target's plane (y = 10), so meeting the front face (y = 0)
+    // at (21 + 0.5 × 11/12, 0, 7 − 2.5 × 11/12).
+    let (origin, direction) = ray(&front(), size, [32.5, 26.5]).unwrap();
+    assert_eq!(direction.map(|c| c + 0.0), [0.0, 1.0, 0.0]);
+    assert_near(origin, [21.0 + 5.5 / 12.0, 10.0, 7.0 - 27.5 / 12.0], 1e-8);
+    assert_near(meets((origin, direction), 1, 0.0), CENTRE_OF_32_26, 1e-8);
+    // In perspective, 40° high from (21, −50, 7): from the eye, meeting the face 50 mm
+    // along the view at x = 21 + 50 × (1/64) × tan 20° × 4/3, z = 7 − 50 × (5/48) × tan 20°.
+    let camera = front_in_perspective();
+    let (origin, direction) = ray(&camera, size, [32.5, 26.5]).unwrap();
+    assert_eq!(origin, camera.eye);
+    let tan = libm::tan(20f64.to_radians());
+    let want = [
+        21.0 + 50.0 / 64.0 * tan * 4.0 / 3.0,
+        0.0,
+        7.0 - 50.0 * 5.0 / 48.0 * tan,
+    ];
+    assert_near(meets((origin, direction), 1, 0.0), want, 1e-8);
+    // The image's corner (0, 0), by hand: up tan 20° and left tan 20° × 4/3 for each mm;
+    // its offsets across the view are about half its length, so to 5e-8.
+    let (_, corner) = ray(&camera, size, [0.0, 0.0]).unwrap();
+    let way = [-tan * 4.0 / 3.0, 1.0, tan];
+    assert_near(corner, way.map(|c| c / norm(way)), 5e-8);
+}
+
+#[test]
+fn a_ray_is_none_for_a_camera_or_size_the_checks_refuse() {
+    let pixel = [1.0, 1.0];
+    assert_eq!(ray(&front(), [0, HEIGHT], pixel), None);
+    assert_eq!(ray(&front(), [WIDTH, 0], pixel), None);
+    for bad in [f64::NAN, f64::INFINITY] {
+        assert_eq!(ray(&front(), [WIDTH, HEIGHT], [bad, 1.0]), None);
+        assert_eq!(ray(&front(), [WIDTH, HEIGHT], [1.0, bad]), None);
+    }
+    let at_the_target = Camera {
+        eye: front().target,
+        ..front()
+    };
+    let no_up = Camera {
+        up: [0.0, 1.0, 0.0],
+        ..front()
+    };
+    let flat = Camera {
+        projection: Projection::Orthographic { view_height: 0.0 },
+        ..front()
+    };
+    let no_angle = Camera {
+        projection: Projection::Perspective { field_of_view: 0.0 },
+        ..front()
+    };
+    let nan_eye = Camera {
+        eye: [f64::NAN, -50.0, 7.0],
+        ..front()
+    };
+    for camera in [at_the_target, no_up, flat, no_angle, nan_eye] {
+        assert!(camera.check(WIDTH, HEIGHT).is_err());
+        assert_eq!(ray(&camera, [WIDTH, HEIGHT], pixel), None, "{camera:?}");
+    }
+    // A pixel outside the image is a ray all the same.
+    assert!(ray(&front(), [WIDTH, HEIGHT], [-10.0, 1e6]).is_some());
+}
+
+#[test]
+fn a_ray_through_a_pixel_far_off_the_image_is_finite_or_none() {
+    // Pixels out to f64's largest, on each side, of a small image of a tall orthographic
+    // view (so a pixel's offset across it is the most), from the front and from the corner
+    // (where the view's right and up add on one axis), and in perspective: each ray given
+    // is finite, its direction of unit length; and those past f64 are none.
+    let tall = Projection::Orthographic { view_height: 1e9 };
+    let wide = Projection::Perspective {
+        field_of_view: 60.0,
+    };
+    let huge = [1e300, 1e306, 1e307, 4e307, 1e308, f64::MAX];
+    let mut nones = 0;
+    for camera in [
+        Camera {
+            projection: tall,
+            ..front()
+        },
+        from_the_corner(tall),
+        from_the_corner(wide),
+    ] {
+        for &x in &huge {
+            for &y in &huge {
+                for [sx, sy] in [[1.0, 1.0], [1.0, -1.0], [-1.0, 1.0], [-1.0, -1.0]] {
+                    match ray(&camera, [2, 2], [sx * x, sy * y]) {
+                        Some((origin, direction)) => {
+                            assert!(
+                                origin.iter().chain(&direction).all(|c| c.is_finite()),
+                                "{camera:?} at ({x}, {y}): {origin:?} {direction:?}"
+                            );
+                            assert!((norm(direction) - 1.0).abs() <= 1e-15);
+                        }
+                        None => nones += 1,
+                    }
+                }
+            }
+        }
+    }
+    assert!(nones > 0);
+    // An orthographic origin past f64 though its offsets across the view aren't: from the
+    // corner, 0.99 of f64's largest right and as much down (half the view, 5e8 mm, for each
+    // unit of the image's device coordinates, which are the pixel less 1 across and 1 less
+    // it up), whose sum on the document's x (the view's right 0.740 of it, its up −0.375)
+    // is 1.10 of it: none, where it was an origin of infinity.
+    let corner = from_the_corner(tall);
+    let d = 0.99 * f64::MAX / 5e8;
+    assert_eq!(ray(&corner, [2, 2], [1.0 + d, 1.0 + d]), None);
+    // And inside, 0.8 of it each way (0.89 on x): finite.
+    let d = 0.8 * f64::MAX / 5e8;
+    let (origin, _) = ray(&corner, [2, 2], [1.0 + d, 1.0 + d]).unwrap();
+    assert!(origin.iter().all(|c| c.is_finite()), "{origin:?}");
+}
+
+/// `got` within `within` pixels of `want`, on each axis.
+fn assert_pixel(got: Option<[f64; 2]>, want: [f64; 2], within: f64) {
+    let got = got.expect("not projected");
+    assert!(
+        (0..2).all(|k| (got[k] - want[k]).abs() <= within),
+        "{got:?} against {want:?}"
+    );
+}
+
+#[test]
+fn the_projection_is_the_cameras_with_its_near_plane_half_the_least_eye_distance() {
+    // By the design (docs/design/m4.6-render.md, *A given camera*): what's drawn is cut to
+    // depth MIN_EYE_DISTANCE and more, and the near plane is half that, so no triangle drawn
+    // crosses it. The angle in radians and the image's aspect, f32, as the GPU takes them.
+    let ViewProjection::Perspective {
+        vertical_fov,
+        near_plane_distance,
+        aspect_ratio,
+    } = super::view_projection(
+        Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        [WIDTH, HEIGHT],
+        0.0,
+    )
+    else {
+        panic!("not a perspective");
+    };
+    assert_eq!(near_plane_distance, 5e-7f32);
+    assert_eq!(aspect_ratio, 4.0f32 / 3.0);
+    assert_eq!(vertical_fov, 40f64.to_radians() as f32);
+    let ViewProjection::Orthographic {
+        camera_mode,
+        vertical_world_size,
+        far_plane_distance,
+    } = super::view_projection(
+        Projection::Orthographic { view_height: 44.0 },
+        [WIDTH, HEIGHT],
+        3.5,
+    )
+    else {
+        panic!("not orthographic");
+    };
+    assert!(matches!(
+        camera_mode,
+        OrthographicCameraMode::NearPlaneCenter
+    ));
+    assert_eq!((vertical_world_size, far_plane_distance), (44.0, 3.5));
+}
+
+#[test]
+fn a_box_corner_projects_to_the_pixel_worked_by_hand() {
+    // The corner (0, 0, 10), its top front left. From the front, orthographic: column
+    // 32 + (0 − 21) × 12/11, row 24 − (10 − 7) × 12/11. To 2e-6 of a pixel: the GPU's
+    // matrix is f32, its entries to 6e-8 of them, and the offsets are some 20 pixels.
+    let size = [WIDTH, HEIGHT];
+    let corner = [0.0, 0.0, 10.0];
+    let want: [f64; 2] = [32.0 - 21.0 * 12.0 / 11.0, 24.0 - 3.0 * 12.0 / 11.0];
+    assert!((want[0] - 9.0909).abs() < 1e-4 && (want[1] - 20.7273).abs() < 1e-4);
+    assert_pixel(project(&front(), size, corner), want, 2e-6);
+    // In perspective, 40° high from (21, −50, 7): 50 mm along the view, 21 left and 3 up,
+    // so tan 20° of half the height (24 rows) for each unit, and tan 20° × 4/3 of half the
+    // width (32 columns).
+    let tan = libm::tan(20f64.to_radians());
+    let want = [
+        32.0 - 21.0 / 50.0 / (tan * 4.0 / 3.0) * 32.0,
+        24.0 - 3.0 / 50.0 / tan * 24.0,
+    ];
+    assert_pixel(project(&front_in_perspective(), size, corner), want, 2e-6);
+    // A point off the image lands off it: (−100, 0, 7), 121 mm left, from the front.
+    assert_pixel(
+        project(&front(), size, [-100.0, 0.0, 7.0]),
+        [32.0 - 121.0 * 12.0 / 11.0, 24.0],
+        1e-5,
+    );
+}
+
+#[test]
+fn a_point_on_a_pixels_ray_projects_back_to_the_pixel() {
+    // Pixels across the image and off it, at depths along each ray from a micrometre to
+    // ten metres (and before the view's plane, orthographic): back to the pixel, to 1e-9
+    // of it.
+    let size = [WIDTH, HEIGHT];
+    let ortho = Projection::Orthographic { view_height: 60.0 };
+    let wide = Projection::Perspective {
+        field_of_view: 60.0,
+    };
+    let pixels = [
+        [0.0, 0.0],
+        [0.5, 0.5],
+        [32.0, 24.0],
+        [63.5, 47.5],
+        [64.0, 48.0],
+        [13.25, 40.75],
+        [-20.0, 70.0],
+    ];
+    for camera in [
+        front(),
+        front_in_perspective(),
+        from_the_corner(ortho),
+        from_the_corner(wide),
+    ] {
+        let perspective = matches!(camera.projection, Projection::Perspective { .. });
+        for pixel in pixels {
+            let (origin, direction) = ray(&camera, size, pixel).unwrap();
+            let mut along = vec![1e-3, 1.0, 37.5, 1e4];
+            if !perspective {
+                along.extend([0.0, -50.0]);
+            }
+            for t in along {
+                let p: [f64; 3] = std::array::from_fn(|k| origin[k] + direction[k] * t);
+                let got = project(&camera, size, p).unwrap();
+                let length = |[x, y]: [f64; 2]| (x * x + y * y).sqrt();
+                let scale = length(pixel).max(1.0);
+                let off = length([got[0] - pixel[0], got[1] - pixel[1]]);
+                assert!(
+                    off <= 1e-9 * scale,
+                    "{camera:?} {pixel:?} at {t}: {got:?}, {off:e} off"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn project_is_none_behind_the_eye_where_the_drawing_cuts_and_for_what_the_checks_refuse() {
+    let size = [WIDTH, HEIGHT];
+    // From the origin along +y: a point MIN_EYE_DISTANCE along the view projects (the
+    // drawing's pyramid holds depth ≥ MIN_EYE_DISTANCE), one an ulp nearer doesn't, nor the
+    // eye, nor what's behind it.
+    let at_the_origin = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        eye: [0.0; 3],
+        target: [0.0, 10.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let nearer = f64::from_bits(MIN_EYE_DISTANCE.to_bits() - 1);
+    assert_pixel(
+        project(&at_the_origin, size, [0.0, MIN_EYE_DISTANCE, 0.0]),
+        [32.0, 24.0],
+        1e-9,
+    );
+    for y in [nearer, 0.0, -1.0, -1e9] {
+        assert_eq!(project(&at_the_origin, size, [0.0, y, 0.0]), None, "{y}");
+    }
+    // Orthographic has no behind: from the front, a point 1 km behind the eye projects.
+    assert_pixel(
+        project(&front(), size, [21.0, -1e6, 7.0]),
+        [32.0, 24.0],
+        1e-9,
+    );
+    // Not finite, in or out.
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for k in 0..3 {
+            let mut p = [20.0, 0.0, 5.0];
+            p[k] = bad;
+            assert_eq!(project(&front(), size, p), None);
+            assert_eq!(project(&front_in_perspective(), size, p), None);
+        }
+    }
+    let narrow = Camera {
+        projection: Projection::Orthographic { view_height: 1e-3 },
+        ..front()
+    };
+    assert!(project(&narrow, size, [1e300, 0.0, 7.0]).is_some());
+    assert_eq!(project(&narrow, size, [f64::MAX, 0.0, 7.0]), None);
+    // A camera or size the checks refuse.
+    let at_the_target = Camera {
+        eye: front().target,
+        ..front()
+    };
+    assert_eq!(project(&at_the_target, size, [20.0, 0.0, 5.0]), None);
+    assert_eq!(project(&front(), [0, HEIGHT], [20.0, 0.0, 5.0]), None);
+    assert_eq!(project(&front(), [WIDTH, 0], [20.0, 0.0, 5.0]), None);
+    // In perspective a height of 0 passes the camera's check (its corner's sec² and its
+    // pyramid's slope both infinite), and the projection's x scale is then 0 and its y
+    // pixels 0 high: a pixel (32, 0) of nothing, if the size weren't refused first.
+    let at = [21.0, 0.0, 7.0];
+    assert!(front_in_perspective().check(WIDTH, 0).is_ok());
+    assert_eq!(project(&front_in_perspective(), [WIDTH, 0], at), None);
+    assert_eq!(project(&front_in_perspective(), [0, HEIGHT], at), None);
+}
+
+#[test]
+fn a_faces_projected_centre_is_that_face_in_a_frames_picking() {
+    on_lavapipe(
+        "render::frame_tests::a_faces_projected_centre_is_that_face_in_a_frames_picking",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            // Close enough that each face seen is many pixels across, its centre clear of its
+            // edges' 2-pixel strokes.
+            let ortho = Projection::Orthographic { view_height: 40.0 };
+            let wide = Projection::Perspective {
+                field_of_view: 30.0,
+            };
+            // The box's faces' centres: x high (Face2), y low (Face3), z high (Face6). From
+            // the front only Face3 is seen; from the corner all three.
+            let centres = [
+                (2, [40.0, 10.0, 5.0]),
+                (3, [20.0, 0.0, 5.0]),
+                (6, [20.0, 10.0, 10.0]),
+            ];
+            for (camera, seen) in [
+                (front(), &[3][..]),
+                (front_in_perspective(), &[3][..]),
+                (from_the_corner(ortho), &[2, 3, 6][..]),
+                (from_the_corner(wide), &[2, 3, 6][..]),
+            ] {
+                for &(face, centre) in centres.iter().filter(|(f, _)| seen.contains(f)) {
+                    let at = project(&camera, [WIDTH, HEIGHT], centre).unwrap();
+                    let pixel = at.map(|c| c.floor() as i32);
+                    let found = hit(r, &frame(&camera, &[1], &[], Some(rect(pixel, [1, 1]))));
+                    assert_eq!(
+                        found.map(|(body, element, _)| (body, element)),
+                        Some((1, Element::Face(face))),
+                        "{camera:?}: Face{face}'s centre at {at:?}"
+                    );
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn a_ray_passes_through_the_point_a_frames_picking_finds_at_its_pixel() {
+    on_lavapipe(
+        "render::frame_tests::a_ray_passes_through_the_point_a_frames_picking_finds_at_its_pixel",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let centre = Some(rect([32, 24], [1, 1]));
+            let ortho = Projection::Orthographic { view_height: 60.0 };
+            let wide = Projection::Perspective {
+                field_of_view: 60.0,
+            };
+            // The front face's pixel (32, 26) from the front, both ways, and the image's
+            // centre from the corner, both ways: the ID buffer's face, and its point on the
+            // pixel's ray, off it by at most 1e-9 of its distance from the origin (along the
+            // ray, the point is the GPU's f32 depth).
+            for (camera, picking, face) in [
+                (front(), Some(ON_THE_FACE), 3),
+                (front_in_perspective(), Some(ON_THE_FACE), 3),
+                (from_the_corner(ortho), centre, 6),
+                (from_the_corner(wide), centre, 6),
+            ] {
+                let found = pick(r, &frame(&camera, &[1], &[], picking)).hit.unwrap();
+                assert_eq!(
+                    (found.body, found.hit),
+                    (1, Element::Face(face)),
+                    "{camera:?}"
+                );
+                let pixel = found.pixel.map(|c| f64::from(c) + 0.5);
+                let line = ray(&camera, [WIDTH, HEIGHT], pixel).unwrap();
+                let point = found.point.unwrap();
+                let off = off_the_ray(point, line);
+                assert!(
+                    off <= 1e-9 * norm(point),
+                    "{camera:?}: {point:?} {off:e} off"
+                );
+                // And where the ray meets the face's plane is that point, to the depth's f32.
+                let on_the_face = match face {
+                    3 => meets(line, 1, 0.0),
+                    _ => meets(line, 2, 10.0),
+                };
+                assert_near(on_the_face, point, 1e-5);
+            }
         },
     );
 }
@@ -1215,9 +1757,138 @@ fn nearest_of(
     ids: &[re_renderer::PickingLayerId],
     extent: [u32; 2],
 ) -> Option<(Element, [u32; 2])> {
-    request
-        .nearest(ids, glam::UVec2::from(extent), |_| true)
-        .map(|(_, pick)| (pick.hit, pick.pixel))
+    let [any, _] = request.nearest(ids, glam::UVec2::from(extent), |_| true);
+    any.map(|(_, pick)| (pick.hit, pick.pixel))
+}
+
+/// Body 1's edge `n`'s picking ID.
+fn edge_id(n: u64) -> re_renderer::PickingLayerId {
+    re_renderer::PickingLayerId {
+        object: re_renderer::PickingLayerObjectId(1),
+        instance: re_renderer::PickingLayerInstanceId(u64::from(silico_protocol::EDGE_BIT) | n),
+    }
+}
+
+#[test]
+fn the_edge_nearest_the_centre_is_found_beside_the_nearest_of_anything() {
+    let size = [WIDTH, HEIGHT];
+    let empty = re_renderer::PickingLayerId::default();
+    // A 5 by 1 row from column 10: the centre (2.5, 0.5) is the middle pixel's, a face's;
+    // Edge4 two pixels left of it and Edge7 one right of it. The nearest of anything is
+    // the face, at (12, 10); the nearest edge Edge7, at (13, 10), one from the centre, not
+    // Edge4, two from it.
+    let row = request(rect([10, 10], [5, 1]), size);
+    let ids = [empty, empty, face_id(2), edge_id(7), empty];
+    let ids_far = [edge_id(4), empty, face_id(2), empty, empty];
+    let [any, edge] = row.nearest(&ids, glam::UVec2::new(5, 1), |_| true);
+    let seen = |found: Option<(u32, Pick)>| found.map(|(i, pick)| (i, pick.hit, pick.pixel));
+    assert_eq!(seen(any), Some((2, Element::Face(2), [12, 10])));
+    assert_eq!(seen(edge), Some((3, Element::Edge(7), [13, 10])));
+    let [_, edge] = row.nearest(&ids_far, glam::UVec2::new(5, 1), |_| true);
+    assert_eq!(seen(edge), Some((0, Element::Edge(4), [10, 10])));
+    // No edge in it: none; and an edge of a body not current is passed over, as `hit`'s
+    // are.
+    let [any, edge] = row.nearest(
+        &[empty, empty, face_id(2), empty, empty],
+        glam::UVec2::new(5, 1),
+        |_| true,
+    );
+    assert_eq!(seen(any), Some((2, Element::Face(2), [12, 10])));
+    assert_eq!(seen(edge), None);
+    let [any, edge] = row.nearest(&ids, glam::UVec2::new(5, 1), |_| false);
+    assert_eq!((seen(any), seen(edge)), (None, None));
+}
+
+#[test]
+fn a_picking_answers_the_edge_in_its_band_beside_the_face_under_its_centre() {
+    on_lavapipe(
+        "render::frame_tests::a_picking_answers_the_edge_in_its_band_beside_the_face_under_its_centre",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            // Centred on (32, 23), on the front face (rows 20.73 to 31.64), 2.5 rows under
+            // its top edge's line (row 20.73): a 7 by 7 square, rows 20 to 26, reaches row
+            // 20, where Edge3 is drawn (1 point either side of its line). Its hit is the
+            // face under the centre; its edge, Edge3, at row 20 or 21, column 32.
+            let band = rect([29, 20], [7, 7]);
+            let picking = pick(r, &frame(&camera, &[1], &[], Some(band)));
+            let hit = picking.hit.expect("the face under the centre");
+            assert_eq!((hit.hit, hit.pixel), (Element::Face(3), [32, 23]));
+            let edge = picking.edge.expect("the top edge in the band");
+            assert_eq!(edge.hit, Element::Edge(3));
+            assert_eq!(edge.pixel[0], 32);
+            assert!((20..=21).contains(&edge.pixel[1]), "{:?}", edge.pixel);
+            // Its point at its pixel's centre: on the front, y = 0 (to the edges' depth offset
+            // and f32's depth), and within the row's 11/12 mm of the edge's z = 10.
+            let point = edge.point.expect("its point");
+            assert!(
+                point[1].abs() < 0.05 && (point[2] - 10.0).abs() < 1.0,
+                "{point:?}"
+            );
+            // A 3 by 3 square on the same centre, rows 22 to 24, doesn't reach it: no edge.
+            let narrow = pick(r, &frame(&camera, &[1], &[], Some(rect([31, 22], [3, 3]))));
+            assert_eq!(narrow.edge, None);
+            assert_eq!(narrow.hit.map(|h| h.hit), Some(Element::Face(3)));
+        },
+    );
+}
+
+#[test]
+fn a_hover_is_checked_as_highlights_are_and_changes_no_picking_id_and_uploads_nothing() {
+    on_lavapipe(
+        "render::frame_tests::a_hover_is_checked_as_highlights_are_and_changes_no_picking_id_and_uploads_nothing",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            draw(r, &frame(&camera, &[1], &[], None));
+            let uploaded = r.uploads();
+            // The front face and its top edge hovered, one of them highlighted too: what
+            // each pick finds is what it finds of the plain frame, and nothing is uploaded.
+            let hovered = [(1, Element::Face(3)), (1, Element::Edge(3))];
+            let lit = [(1, Element::Face(3))];
+            for picking in [ON_THE_FACE, ON_THE_TOP_EDGE] {
+                let plain = hit(r, &frame(&camera, &[1], &[], Some(picking)));
+                let both = Frame {
+                    hovered: &hovered,
+                    outlines: Outlines {
+                        selected: [1, 2, 3],
+                        hovered: [4, 5, 6],
+                    },
+                    ..frame(&camera, &[1], &lit, Some(picking))
+                };
+                assert!(plain.is_some());
+                assert_eq!(hit(r, &both), plain);
+            }
+            assert_eq!(r.uploads(), uploaded);
+            // Refused as a highlight is: a body not drawn, an element its mesh hasn't.
+            let not_drawn = [(2, Element::Face(1))];
+            let mut refused_by = |hovered: &[(u32, Element)]| {
+                let frame = Frame {
+                    hovered,
+                    ..frame(&camera, &[1], &[], None)
+                };
+                match r.prepare(&frame) {
+                    Err(RenderFailure::Invalid(invalid)) => (invalid.parameter, invalid.message),
+                    other => panic!("not refused: {:?}", other.err()),
+                }
+            };
+            assert_eq!(
+                refused_by(&not_drawn),
+                (
+                    "hovered",
+                    "hovered[0]'s body 2 isn't drawn in the frame".to_owned()
+                )
+            );
+            assert_eq!(
+                refused_by(&[(1, Element::Face(1)), (1, Element::Edge(13))]),
+                (
+                    "hovered",
+                    "hovered[1], Edge(13) of body 1, isn't one of its 12 edges (numbered from 1)"
+                        .to_owned()
+                )
+            );
+        },
+    );
 }
 
 #[test]
@@ -1256,6 +1927,23 @@ fn of_pixels_as_near_the_first_in_rows_is_taken_and_one_past_the_frames_edge_nev
 }
 
 #[test]
+fn of_edges_as_near_the_first_in_rows_is_the_edge_taken() {
+    // A 3 by 1 row from column 10, its centre (1.5, 0.5): Edge4 at its first pixel and
+    // Edge7 at its last, each 1 from the centre, a face between them. The edge is Edge4,
+    // the first; so for a 1 by 3 column, the first row's.
+    let size = [WIDTH, HEIGHT];
+    let seen = |found: Option<(u32, Pick)>| found.map(|(i, pick)| (i, pick.hit, pick.pixel));
+    let row = request(rect([10, 10], [3, 1]), size);
+    let ids = [edge_id(4), face_id(2), edge_id(7)];
+    let [any, edge] = row.nearest(&ids, glam::UVec2::new(3, 1), |_| true);
+    assert_eq!(seen(any), Some((1, Element::Face(2), [11, 10])));
+    assert_eq!(seen(edge), Some((0, Element::Edge(4), [10, 10])));
+    let column = request(rect([10, 10], [1, 3]), size);
+    let [_, edge] = column.nearest(&ids, glam::UVec2::new(1, 3), |_| true);
+    assert_eq!(seen(edge), Some((0, Element::Edge(4), [10, 10])));
+}
+
+#[test]
 fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bodies() {
     on_lavapipe(
         "render::frame_tests::a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bodies",
@@ -1271,7 +1959,13 @@ fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bod
             assert!(r.pending.contains_key(&id));
             r.failed(Some(id));
             assert!(r.pending.is_empty());
-            // The next frame uploads all six faces again, and no answer comes.
+            // The next frame is refused, backing off ([`Backoff`]); the one after it uploads
+            // all six faces again, and no answer comes.
+            assert!(matches!(
+                r.prepare(&frame(&camera, &[1], &[], None)),
+                Err(RenderFailure::BackingOff { frames: 1 })
+            ));
+            assert_eq!(r.uploads(), 6);
             draw(r, &frame(&camera, &[1], &[], None));
             assert_eq!(r.uploads(), 12);
             assert_eq!(r.take_picking(), None);
@@ -1284,18 +1978,197 @@ fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bod
     );
 }
 
+/// What one frame did: drawn, failed as the GPU fails one, or refused backing off, with the
+/// frames refused from it on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Drawn,
+    Failed,
+    Refused(u32),
+}
+
+/// `frame` prepared, and submitted if it was built, and what it did.
+fn outcome(r: &mut Renderer, frame: &Frame<'_>) -> Outcome {
+    match r.prepare(frame) {
+        Ok(commands) => {
+            r.ctx.queue.submit([commands]);
+            wait(r);
+            Outcome::Drawn
+        }
+        Err(RenderFailure::Failed(_)) => Outcome::Failed,
+        Err(RenderFailure::BackingOff { frames }) => Outcome::Refused(frames),
+        Err(other) => panic!("{other}"),
+    }
+}
+
+#[test]
+fn after_the_gpu_fails_a_frame_the_next_back_off_doubling_until_one_succeeds() {
+    on_lavapipe(
+        "render::frame_tests::after_the_gpu_fails_a_frame_the_next_back_off_doubling_until_one_succeeds",
+        |r| {
+            use Outcome::{Drawn, Failed, Refused};
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain = frame(&camera, &[1], &[], None);
+            assert_eq!(outcome(r, &plain), Drawn);
+            assert_eq!(r.uploads(), 6);
+            // Four tries in a row fail: after each, 1, 2, 4, then 8 frames refused at once,
+            // each uploading nothing; each try after the first uploads the six faces again
+            // (a failure drops them); the fifth try draws.
+            r.fail_frames = 4;
+            let mut want = vec![];
+            for refused in [1, 2, 4, 8] {
+                want.push((Failed, if want.is_empty() { 0 } else { 6 }));
+                want.extend((1..=refused).rev().map(|left| (Refused(left), 0)));
+            }
+            want.push((Drawn, 6));
+            let got: Vec<(Outcome, u64)> = want
+                .iter()
+                .map(|_| {
+                    let before = r.uploads();
+                    let done = outcome(r, &plain);
+                    (done, r.uploads() - before)
+                })
+                .collect();
+            assert_eq!(got, want);
+            // A success ended it: the next failure refuses one frame again, not 16.
+            r.fail_frames = 1;
+            let got: Vec<Outcome> = (0..3).map(|_| outcome(r, &plain)).collect();
+            assert_eq!(got, [Failed, Refused(1), Drawn]);
+        },
+    );
+}
+
+#[test]
+fn a_frame_refused_backing_off_asks_nothing_is_checked_for_nothing_and_caps_at_64() {
+    on_lavapipe(
+        "render::frame_tests::a_frame_refused_backing_off_asks_nothing_is_checked_for_nothing_and_caps_at_64",
+        |r| {
+            use Outcome::{Drawn, Failed, Refused};
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain = frame(&camera, &[1], &[], None);
+            r.fail_frames = 1;
+            assert_eq!(outcome(r, &plain), Failed);
+            // Refused before its checks (body 2 isn't uploaded) and asking for no picking.
+            let readback = r.readback;
+            assert_eq!(
+                outcome(r, &frame(&camera, &[2], &[], Some(ON_THE_FACE))),
+                Refused(1)
+            );
+            assert_eq!((r.readback, r.pending.len()), (readback, 0));
+            assert_eq!(outcome(r, &plain), Drawn);
+            assert_eq!(
+                RenderFailure::BackingOff { frames: 3 }.to_string(),
+                "the GPU failed a recent frame: backing off, 3 frame(s) refused before the next try"
+            );
+            // Nine failures in a row: the runs refused after them, 1, 2, 4, … doubling to 64,
+            // and no further.
+            r.fail_frames = 9;
+            let mut runs: Vec<u32> = vec![];
+            loop {
+                match outcome(r, &plain) {
+                    Failed => runs.push(0),
+                    Refused(_) => *runs.last_mut().unwrap() += 1,
+                    Drawn => break,
+                }
+            }
+            assert_eq!(runs, [1, 2, 4, 8, 16, 32, 64, 64, 64]);
+        },
+    );
+}
+
+#[test]
+fn a_new_mesh_has_the_next_frame_tried_but_keeps_the_doubling() {
+    on_lavapipe(
+        "render::frame_tests::a_new_mesh_has_the_next_frame_tried_but_keeps_the_doubling",
+        |r| {
+            use Outcome::{Failed, Refused};
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain = frame(&camera, &[1], &[], None);
+            // Fail, refuse one, fail (refusing two), a new mesh (the next frame tried), fail:
+            // four refused, not one, as an edit made during a shortage would otherwise have
+            // every other frame upload the model.
+            r.fail_frames = 3;
+            assert_eq!(outcome(r, &plain), Failed);
+            assert_eq!(outcome(r, &plain), Refused(1));
+            assert_eq!(outcome(r, &plain), Failed);
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [40.0, 20.0, 11.0])))
+                .unwrap();
+            assert_eq!(outcome(r, &plain), Failed);
+            assert_eq!(outcome(r, &plain), Refused(4));
+        },
+    );
+}
+
+#[test]
+fn forgetting_a_body_leaves_a_backoff_as_it_was() {
+    on_lavapipe(
+        "render::frame_tests::forgetting_a_body_leaves_a_backoff_as_it_was",
+        |r| {
+            use Outcome::{Drawn, Failed, Refused};
+            r.upload(1, &the_box()).unwrap();
+            r.upload(
+                2,
+                &Arc::new(box_mesh([0.0, -30.0, 0.0], [40.0, 20.0, 10.0])),
+            )
+            .unwrap();
+            let camera = front();
+            r.fail_frames = 2;
+            assert_eq!(outcome(r, &frame(&camera, &[1, 2], &[], None)), Failed);
+            assert_eq!(outcome(r, &frame(&camera, &[1, 2], &[], None)), Refused(1));
+            assert_eq!(outcome(r, &frame(&camera, &[1, 2], &[], None)), Failed);
+            // Refusing two; forgetting body 2 (and one never uploaded) refuses them still.
+            r.forget(2);
+            r.forget(9);
+            let one = frame(&camera, &[1], &[], None);
+            assert_eq!(outcome(r, &one), Refused(2));
+            assert_eq!(outcome(r, &one), Refused(1));
+            assert_eq!(outcome(r, &one), Drawn);
+        },
+    );
+}
+
+#[test]
+fn a_new_mesh_ends_a_backoff_and_the_same_one_again_doesnt() {
+    on_lavapipe(
+        "render::frame_tests::a_new_mesh_ends_a_backoff_and_the_same_one_again_doesnt",
+        |r| {
+            use Outcome::{Drawn, Failed, Refused};
+            let held = the_box();
+            r.upload(1, &held).unwrap();
+            let camera = front();
+            let plain = frame(&camera, &[1], &[], None);
+            r.fail_frames = 2;
+            assert_eq!(outcome(r, &plain), Failed);
+            assert_eq!(outcome(r, &plain), Refused(1));
+            assert_eq!(outcome(r, &plain), Failed);
+            // Refusing two now. The same mesh again changes nothing, so the backoff stays.
+            r.upload(1, &held).unwrap();
+            r.upload(1, &the_box()).unwrap();
+            assert_eq!(outcome(r, &plain), Refused(2));
+            // Another mesh ends it: the next frame is tried, and draws.
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [40.0, 20.0, 11.0])))
+                .unwrap();
+            assert_eq!(outcome(r, &plain), Drawn);
+        },
+    );
+}
+
 #[test]
 fn an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allows() {
     on_lavapipe(
         "render::frame_tests::an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allows",
         |r| {
             r.upload(1, &the_box()).unwrap();
-            // The box's reach from the target, by its box's farthest corner: from (21, 10,
-            // 7), the corner (0, 0, 0) on x, y, and z alike (21, 10, 7 away), √590; from
-            // (5, 4, 3), the corner (40, 20, 10) (35, 16, 7 away), √1530. The least height is
-            // that times MIN_VIEW_HEIGHT_OF_REACH: drawn at it, refused just under it.
+            // The box's reach from the target, its farthest corner: from (21, 10, 7), the
+            // corner (0, 0, 0) on x, y, and z alike (21, 10, 7 away), √590; from (5, 4, 3),
+            // the corner (40, 20, 10) (35, 16, 7 away), √1530. The least height at 48 rows is
+            // 48 times that over 2^19, as a scene's check takes it (0.00222 and 0.00358 mm):
+            // drawn at it, refused just under it.
             for (target, squared) in [([21.0, 10.0, 7.0], 590.0f64), ([5.0, 4.0, 3.0], 1530.0)] {
-                let least = squared.sqrt() * silico_protocol::MIN_VIEW_HEIGHT_OF_REACH;
+                let least = 48.0 * squared.sqrt() / 524_288.0;
                 let at = |view_height: f64| Camera {
                     projection: Projection::Orthographic { view_height },
                     eye: [target[0], target[1] - 60.0, target[2]],
@@ -1309,6 +2182,168 @@ fn an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allow
                     refused(r, &frame(&camera, &[1], &[], None)),
                     "camera.view_height",
                     "{target:?}"
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn a_perspective_frame_takes_the_angles_a_scenes_check_does_at_its_size_and_any_eye() {
+    on_lavapipe(
+        "render::frame_tests::a_perspective_frame_takes_the_angles_a_scenes_check_does_at_its_size_and_any_eye",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let at = |distance: f64, field_of_view: f64| Camera {
+                projection: Projection::Perspective { field_of_view },
+                eye: [21.0, -distance, 7.0],
+                target: [21.0, 10.0, 7.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            // Any eye: 0.1 mm before the front face (its corners 221 times as far across the
+            // view as along it at 1°, past the pyramid's 190.6 over 48 rows: cut), in its
+            // plane, or inside the box: each drawn, what's outside the pyramid cut away.
+            for (distance, field_of_view) in [(0.2, 1.0), (0.1, 1.0), (0.0, 60.0), (-1.0, 60.0)] {
+                let camera = at(distance, field_of_view);
+                r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
+            }
+            // The angle at the frame's size: at 64 by 48, from 0.005246° (by hand, the
+            // quadratic's root): 0.001° is refused, 0.006° drawn.
+            let camera = at(1e5, 0.001);
+            assert_eq!(
+                refused(r, &frame(&camera, &[1], &[], None)),
+                "camera.field_of_view"
+            );
+            let camera = at(1e5, 0.006);
+            r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
+        },
+    );
+}
+
+/// Every pixel's ID of `camera`'s frame of `bodies`, `size` pixels (at most 256 a side), as
+/// its picking reads them back: the body's number and the element's, as the worker's ID
+/// buffer writes them.
+fn frame_ids(r: &mut Renderer, camera: &Camera, bodies: &[u32], size: [u32; 2]) -> Vec<[u32; 2]> {
+    frame_ids_at(r, camera, bodies, size, 1.0)
+}
+
+/// [`frame_ids`] at `pixels_per_point`.
+fn frame_ids_at(
+    r: &mut Renderer,
+    camera: &Camera,
+    bodies: &[u32],
+    size: [u32; 2],
+    pixels_per_point: f32,
+) -> Vec<[u32; 2]> {
+    let asking = Frame {
+        size_px: size,
+        picking: Some(rect([0, 0], size)),
+        pixels_per_point,
+        ..frame(camera, bodies, &[], None)
+    };
+    pick(r, &asking);
+    // `pick` took the answer's hit; the frame again, and its readback read whole.
+    draw(r, &asking);
+    draw(
+        r,
+        &Frame {
+            serial: asking.serial.wrapping_add(1),
+            picking: None,
+            ..asking
+        },
+    );
+    r.harvest();
+    let answer = r.picked.take().expect("no answer");
+    answer
+        .ids
+        .iter()
+        .map(|id| {
+            [
+                u32::try_from(id.object.0).unwrap(),
+                u32::try_from(id.instance.0).unwrap(),
+            ]
+        })
+        .collect()
+}
+
+#[test]
+fn an_edge_past_the_frames_side_by_less_than_its_stroke_at_two_pixels_a_point_is_drawn() {
+    on_lavapipe(
+        "render::frame_tests::an_edge_past_the_frames_side_by_less_than_its_stroke_at_two_pixels_a_point_is_drawn",
+        |r| {
+            // Orthographic about the origin from −y, 48 mm over 48 rows, 64 wide: a pixel a
+            // millimetre, the frame's right side at x = 32. At 2 pixels a point an edge's
+            // 2-point stroke is 4 pixels, reaching 2 past its line: one along z at x = 33.25,
+            // 1.25 past the side, reaches the last column's centres (1.75 from it), by hand
+            // rows 16 to 32; at one pixel a point (a reach of 1) it doesn't reach the frame.
+            let edge = Arc::new(Mesh {
+                positions: vec![],
+                normals: vec![],
+                triangles: vec![],
+                face_triangles: vec![],
+                edge_points: vec![[33.25, 0.0, -10.0], [33.25, 0.0, 10.0]],
+                edge_point_counts: vec![2],
+                vertex_points: vec![],
+                valid: None,
+            });
+            r.upload(1, &edge).unwrap();
+            let camera = Camera {
+                projection: Projection::Orthographic { view_height: 48.0 },
+                eye: [0.0, -10.0, 0.0],
+                target: [0.0; 3],
+                up: [0.0, 0.0, 1.0],
+            };
+            let id = [1, 0x8000_0001];
+            let ids = frame_ids_at(r, &camera, &[1], [64, 48], 2.0);
+            for row in 16..=32 {
+                assert_eq!(ids[row * 64 + 63], id, "row {row}");
+            }
+            let ids = frame_ids_at(r, &camera, &[1], [64, 48], 1.0);
+            assert!(ids.iter().all(|id| *id == [0, 0]));
+        },
+    );
+}
+
+#[test]
+fn a_box_seen_from_inside_draws_in_a_frame_as_the_workers_render_draws_it() {
+    on_lavapipe(
+        "render::frame_tests::a_box_seen_from_inside_draws_in_a_frame_as_the_workers_render_draws_it",
+        |r| {
+            // The bench's box with the eye at its centre, in a wall's plane (x = 0), and 1 mm
+            // from it, looking along +y at 90°: its walls beside and behind the eye cut to the
+            // view's pyramid, as a frame and the worker's render cut them, pixel for pixel.
+            for eye in [[20.0, 10.0, 5.0], [0.0, 10.0, 5.0], [1.0, 10.0, 5.0]] {
+                let camera = Camera {
+                    projection: Projection::Perspective {
+                        field_of_view: 90.0,
+                    },
+                    eye,
+                    target: [eye[0], 20.0, eye[2]],
+                    up: [0.0, 0.0, 1.0],
+                };
+                let scene = silico_protocol::RenderScene {
+                    bodies: vec![silico_protocol::RenderBody {
+                        body: 1,
+                        mesh: Mesh::clone(&the_box()),
+                        highlight_faces: vec![],
+                        highlight_edges: vec![],
+                    }],
+                    camera: camera.clone(),
+                    width: WIDTH,
+                    height: HEIGHT,
+                    ids: true,
+                };
+                scene.check().unwrap();
+                let rendered = r.render(&scene).unwrap().ids.unwrap();
+                assert!(
+                    rendered.contains(&[1, 4]),
+                    "{eye:?}: the far wall isn't drawn"
+                );
+                r.upload(1, &the_box()).unwrap();
+                let framed = frame_ids(r, &camera, &[1], [WIDTH, HEIGHT]);
+                assert!(
+                    framed == rendered,
+                    "{eye:?}: the frame differs from the render"
                 );
             }
         },
@@ -1346,6 +2381,579 @@ fn edges_and_outlines_are_as_wide_as_their_points_at_the_frames_pixels_per_point
             };
             let (one, two) = (changed(1.0), changed(2.0));
             assert!(two * 2 > one * 3, "{one} pixels changed at 1, {two} at 2");
+        },
+    );
+}
+
+#[test]
+fn a_hover_and_a_highlight_are_outlined_each_in_the_callers_colour() {
+    // The front face (Face3, columns 9.09 to 52.73, rows 20.73 to 31.64) hovered, then
+    // highlighted, outlined in colours picked by hand, unlike the defaults (white for the
+    // hover, the highlight's blue): magenta for the hover, green for the selection. Just
+    // outside the face, (8, 26) left of its left side and (32, 20) above its top, within
+    // the outline's 1.5 points, the plain frame draws the edges' dark line; outlined,
+    // each pixel is the outline's colour, the caller's for that layer, and the face's
+    // inside, (32, 26), is as uploaded.
+    on_lavapipe(
+        "render::frame_tests::a_hover_and_a_highlight_are_outlined_each_in_the_callers_colour",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            const MAGENTA: [u8; 3] = [255, 0, 255];
+            const GREEN: [u8; 3] = [0, 255, 0];
+            assert_ne!(Outlines::DEFAULT.hovered, MAGENTA);
+            assert_ne!(Outlines::DEFAULT.selected, GREEN);
+            let outlines = Outlines {
+                selected: GREEN,
+                hovered: MAGENTA,
+            };
+            let face = [(1, Element::Face(3))];
+            let mut image = |lit: &[(u32, Element)], hovered: &[(u32, Element)]| {
+                let commands = r
+                    .prepare(&Frame {
+                        hovered,
+                        outlines,
+                        ..frame(&camera, &[1], lit, None)
+                    })
+                    .unwrap();
+                composited(r, Some(commands))
+            };
+            let at = |pixels: &[[u8; 4]], x: u32, y: u32| pixels[(y * WIDTH + x) as usize];
+            let near = |got: [u8; 4], [r, g, b]: [u8; 3]| {
+                got.iter()
+                    .zip([r, g, b, 255])
+                    .all(|(got, want)| got.abs_diff(want) <= 2)
+            };
+            let plain = image(&[], &[]);
+            let hovered = image(&[], &face);
+            let lit = image(&face, &[]);
+            for (x, y) in [(8, 26), (32, 20)] {
+                let [r, g, b, _] = at(&plain, x, y);
+                assert!(
+                    r < 64 && g < 64 && b < 64,
+                    "plain ({x}, {y}): {:?}",
+                    at(&plain, x, y)
+                );
+                assert!(
+                    near(at(&hovered, x, y), MAGENTA),
+                    "hovered ({x}, {y}): {:?}",
+                    at(&hovered, x, y)
+                );
+                assert!(
+                    near(at(&lit, x, y), GREEN),
+                    "lit ({x}, {y}): {:?}",
+                    at(&lit, x, y)
+                );
+            }
+            assert_eq!(at(&hovered, 32, 26), at(&plain, 32, 26));
+            assert_eq!(at(&lit, 32, 26), at(&plain, 32, 26));
+            // Nothing hovered or lit: no pixel of either colour anywhere.
+            assert!(!plain.iter().any(|&p| near(p, MAGENTA) || near(p, GREEN)));
+            assert!(!hovered.iter().any(|&p| near(p, GREEN)));
+            assert!(!lit.iter().any(|&p| near(p, MAGENTA)));
+        },
+    );
+}
+
+/// The composited image of the box from the front, `lit` highlighted and `hovered` hovered,
+/// outlined in `outlines`.
+fn outlined(
+    r: &mut Renderer,
+    lit: &[(u32, Element)],
+    hovered: &[(u32, Element)],
+    outlines: Outlines,
+) -> Vec<[u8; 4]> {
+    let camera = front();
+    let commands = r
+        .prepare(&Frame {
+            hovered,
+            outlines,
+            ..frame(&camera, &[1], lit, None)
+        })
+        .unwrap();
+    composited(r, Some(commands))
+}
+
+#[test]
+fn a_hovered_edge_alone_is_outlined_and_a_frame_with_nothing_lit_makes_no_outline_pass() {
+    // The front's top edge (Edge3, row 20.73) hovered alone: outlined in the hover's colour,
+    // magenta, picked by hand unlike the defaults; nothing lit, no pixel of it. The outline
+    // pass is made only for a frame with something to outline: its jump-flooding pipelines
+    // (re_renderer's `OutlineMaskProcessor`) are first made for the hovered frame, none for
+    // the plain one before it. And a body with every list lit (faces and edges, highlighted
+    // and hovered) is outlined too: the selection's green round the front face.
+    on_lavapipe(
+        "render::frame_tests::a_hovered_edge_alone_is_outlined_and_a_frame_with_nothing_lit_makes_no_outline_pass",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            const MAGENTA: [u8; 3] = [255, 0, 255];
+            const GREEN: [u8; 3] = [0, 255, 0];
+            let outlines = Outlines {
+                selected: GREEN,
+                hovered: MAGENTA,
+            };
+            let near = |got: &[u8; 4], [r, g, b]: [u8; 3]| {
+                got.iter()
+                    .zip([r, g, b, 255])
+                    .all(|(got, want)| got.abs_diff(want) <= 2)
+            };
+            let count =
+                |pixels: &[[u8; 4]], colour| pixels.iter().filter(|p| near(p, colour)).count();
+            let pipelines = |r: &Renderer| r.ctx.gpu_resources.statistics().num_render_pipelines;
+            let plain = outlined(r, &[], &[], outlines);
+            let before = pipelines(r);
+            assert_eq!(count(&plain, MAGENTA), 0);
+            let hovered = outlined(r, &[], &[(1, Element::Edge(3))], outlines);
+            assert!(
+                pipelines(r) > before,
+                "no outline pass made for the hovered frame: {before} pipelines before it, {} after",
+                pipelines(r)
+            );
+            assert!(
+                count(&hovered, MAGENTA) > 0,
+                "the hovered edge isn't outlined"
+            );
+            assert_eq!(count(&hovered, GREEN), 0);
+            let every = outlined(
+                r,
+                &[(1, Element::Face(3)), (1, Element::Edge(3))],
+                &[(1, Element::Face(4)), (1, Element::Edge(9))],
+                outlines,
+            );
+            assert!(
+                count(&every, GREEN) > 0,
+                "the highlighted face isn't outlined"
+            );
+        },
+    );
+}
+
+// ---- Vertices (M5.7): picked by a disc in the picking layer alone ----
+
+/// The design's corner (M5.7 part 3, §4): a box 0 to 20 mm on each axis, orthographic about
+/// (10, 10, 10) from along (1, 1, 1), z up, 80 mm over 800 × 800 pixels at a pixel a point
+/// (10 pixels a mm). By hand, right = (−1, 1, 0)/√2 and up = (−1, −1, 2)/√6, so the corner
+/// (20, 0, 20), its offset d = (10, −10, 10), lands at right·d = −20/√2 = −14.1421 mm and
+/// up·d = 20/√6 = 8.1650 mm: pixel (400 − 141.421, 400 − 81.650) = (258.58, 318.35). It is
+/// `Vertex5` in OCCT's box order. The top face (`Face6`, z = 20) lies between its edges along
+/// −x and along +y, whose images leave it 30° above and below +x: a step along +x stays on
+/// the top face at the corner's own depth (a = b along x and y keeps (1, 1, 1)·d), and a
+/// pixel's centre half a row below it on the face that rises toward the eye, to (20, 20, 20):
+/// the disc wins there by its reach toward the eye (0.012 × 80 = 0.96 mm), not by its depth
+/// offset alone.
+fn corner_camera(projection: Projection) -> Camera {
+    Camera {
+        projection,
+        eye: [110.0, 110.0, 110.0],
+        target: [10.0, 10.0, 10.0],
+        up: [0.0, 0.0, 1.0],
+    }
+}
+
+const CORNER_SIZE: [u32; 2] = [800, 800];
+
+/// The pixel the corner (20, 0, 20) lands on: (400 − 200/√2, 400 − 200/√6).
+fn corner_pixel() -> [f64; 2] {
+    [400.0 - 200.0 / 2f64.sqrt(), 400.0 - 200.0 / 6f64.sqrt()]
+}
+
+/// A frame of the corner's box, body 1, picking the one pixel `at`, its vertices picked
+/// within `vertices` points.
+fn corner_frame<'a>(camera: &'a Camera, at: [i32; 2], vertices: Option<f32>) -> Frame<'a> {
+    Frame {
+        size_px: CORNER_SIZE,
+        vertices,
+        ..frame(camera, &[1], &[], Some(rect(at, [1, 1])))
+    }
+}
+
+#[test]
+fn a_corner_is_picked_within_its_disc_before_the_top_face_and_past_it_the_face_is() {
+    on_lavapipe(
+        "render::frame_tests::a_corner_is_picked_within_its_disc_before_the_top_face_and_past_it_the_face_is",
+        |r| {
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [20.0; 3])))
+                .unwrap();
+            let camera = corner_camera(Projection::Orthographic { view_height: 80.0 });
+            let want = corner_pixel();
+            assert!((want[0] - 258.5786).abs() < 1e-4 && (want[1] - 318.3503).abs() < 1e-4);
+            assert_pixel(project(&camera, CORNER_SIZE, [20.0, 0.0, 20.0]), want, 1e-4);
+            let corner = Element::Vertex(5);
+            let top = Element::Face(6);
+            // The pixel (258, 318), its centre 0.17 pixels from the corner's; 6 pixels along
+            // +x, 5.92 from it, inside the 7-point disc (and 3 from each edge, past their
+            // 1-point half width); 8 along, 7.92 from it, outside: the top face.
+            for (at, want) in [
+                ([258, 318], corner),
+                ([264, 318], corner),
+                ([266, 318], top),
+            ] {
+                assert_eq!(
+                    hit(r, &corner_frame(&camera, at, Some(7.0))),
+                    Some((1, want, at.map(|c| u32::try_from(c).unwrap()))),
+                    "{at:?}"
+                );
+            }
+            // The vertex's point is its own, exactly (its disc is drawn toward the eye).
+            let picked = pick(r, &corner_frame(&camera, [264, 318], Some(7.0)));
+            assert_eq!(picked.hit.unwrap().point, Some([20.0, 0.0, 20.0]));
+            // With vertices filtered off the disc is left out, and hides nothing: 3 pixels
+            // along +x is the top face (1.33 and 1.59 pixels from the two edges, past their
+            // half width), and the corner's own pixel an edge or the face, never a vertex.
+            assert_eq!(
+                hit(r, &corner_frame(&camera, [261, 318], None)),
+                Some((1, top, [261, 318]))
+            );
+            assert_eq!(
+                hit(r, &corner_frame(&camera, [261, 318], Some(7.0))),
+                Some((1, corner, [261, 318]))
+            );
+            let bare = hit(r, &corner_frame(&camera, [258, 318], None));
+            assert!(
+                matches!(bare, Some((1, Element::Edge(_) | Element::Face(_), _))),
+                "{bare:?}"
+            );
+            // A smaller disc is a smaller tolerance: 4 points leaves the pixel 5.92 away to
+            // the face, and two pixels a point doubles it in pixels, reaching it again.
+            assert_eq!(
+                hit(r, &corner_frame(&camera, [264, 318], Some(4.0))),
+                Some((1, top, [264, 318]))
+            );
+            assert_eq!(
+                hit(
+                    r,
+                    &Frame {
+                        pixels_per_point: 2.0,
+                        ..corner_frame(&camera, [264, 318], Some(4.0))
+                    }
+                ),
+                Some((1, corner, [264, 318]))
+            );
+            // Its reach is the radius in points times the pixels a point, 5 × 2 = 10 pixels,
+            // the discs near the picking taken within that and a pixel more; not 5 + 2 = 7,
+            // within 8: the pixel 9 along, 8.92 from the corner, is the corner's.
+            assert_eq!(
+                hit(
+                    r,
+                    &Frame {
+                        pixels_per_point: 2.0,
+                        ..corner_frame(&camera, [267, 318], Some(5.0))
+                    }
+                ),
+                Some((1, corner, [267, 318]))
+            );
+        },
+    );
+}
+
+/// The corner nearest the eye, (20, 20, 20), at the corner camera's offset from its target
+/// d = (10, 10, 10): right·d = 0 and up·d = (−10 − 10 + 20)/√6 = 0, so it lands at the image's
+/// centre, (400, 400), and the pixel (400, 400) has its centre 0.71 pixels from it. It is the
+/// scene's front: the orthographic camera stands its margin (1 mm, past 1% of the reach
+/// 10√3 = 17.32 mm) in front of it. At 100 mm high the disc's reach, 0.012 × 100 = 1.2 mm,
+/// is past that margin, and a disc moved all of it would be cut by the near plane and leave
+/// the corner to its edges and faces; at 80 mm, 0.96 mm, it is not.
+#[test]
+fn the_corner_nearest_an_orthographic_eye_is_picked_however_high_the_view() {
+    on_lavapipe(
+        "render::frame_tests::the_corner_nearest_an_orthographic_eye_is_picked_however_high_the_view",
+        |r| {
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [20.0; 3])))
+                .unwrap();
+            // (x1, y1, z1): `Vertex7` in the box's order ([`box_mesh`]).
+            let front = Element::Vertex(7);
+            for view_height in [80.0, 100.0, 400.0, 4000.0] {
+                let camera = corner_camera(Projection::Orthographic { view_height });
+                assert_pixel(
+                    project(&camera, CORNER_SIZE, [20.0, 20.0, 20.0]),
+                    [400.0, 400.0],
+                    1e-9,
+                );
+                let picked = pick(r, &corner_frame(&camera, [400, 400], Some(7.0)));
+                let hit = picked.hit.unwrap();
+                assert_eq!(
+                    (hit.body, hit.hit),
+                    (1, front),
+                    "a view {view_height} mm high"
+                );
+                assert_eq!(hit.point, Some([20.0, 20.0, 20.0]));
+            }
+        },
+    );
+}
+
+#[test]
+fn a_vertex_nearer_a_perspective_eye_than_it_draws_is_never_picked() {
+    on_lavapipe(
+        "render::frame_tests::a_vertex_nearer_a_perspective_eye_than_it_draws_is_never_picked",
+        |r| {
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [20.0; 3])))
+                .unwrap();
+            // The eye along (1, −1, 1) from the corner (20, 0, 20), looking at it: the corner
+            // at the image's centre. 0.75 nm off, the corner is nearer than the 1 nm the
+            // drawing cuts at (and past the near plane, half that, so a disc there would be
+            // drawn): none projects and none is picked. 2 nm off, it's drawn and picked.
+            let u = [1.0, -1.0, 1.0].map(|c: f64| c / 3f64.sqrt());
+            let looking = |off: f64| Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 60.0,
+                },
+                eye: [20.0 + u[0] * off, u[1] * off, 20.0 + u[2] * off],
+                target: [20.0 - u[0], -u[1], 20.0 - u[2]],
+                up: [0.0, 0.0, 1.0],
+            };
+            let near = looking(0.75 * MIN_EYE_DISTANCE);
+            assert_eq!(project(&near, CORNER_SIZE, [20.0, 0.0, 20.0]), None);
+            // The faces about the corner cut away there, the box is seen through them from
+            // inside: the centre's line of sight, (20, 0, 20) − t(1, −1, 1)/√3, meets the far
+            // corner (0, 20, 0), Vertex4, at t = 20√3, which is picked; never Vertex5. Without
+            // the discs, a face there.
+            let without = hit(r, &corner_frame(&near, [400, 400], None));
+            assert!(
+                matches!(without, Some((1, Element::Face(_), _))),
+                "{without:?}"
+            );
+            assert_eq!(
+                hit(r, &corner_frame(&near, [400, 400], Some(7.0))),
+                Some((1, Element::Vertex(4), [400, 400]))
+            );
+            let far = looking(2.0 * MIN_EYE_DISTANCE);
+            assert_pixel(
+                project(&far, CORNER_SIZE, [20.0, 0.0, 20.0]),
+                [400.0, 400.0],
+                1e-6,
+            );
+            assert_eq!(
+                hit(r, &corner_frame(&far, [400, 400], Some(7.0))),
+                Some((1, Element::Vertex(5), [400, 400]))
+            );
+        },
+    );
+}
+
+#[test]
+fn a_vertex_disc_draws_nothing_of_the_image() {
+    on_lavapipe(
+        "render::frame_tests::a_vertex_disc_draws_nothing_of_the_image",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            // From the front, the corner (0, 0, 10) lands at (9.09, 20.73): the picking
+            // there with its vertices' discs, and without, draw the same pixels, and the
+            // discs pick it.
+            let at_corner = Some(rect([9, 20], [1, 1]));
+            let with = Frame {
+                vertices: Some(7.0),
+                ..frame(&camera, &[1], &[], at_corner)
+            };
+            let commands = r.prepare(&with).unwrap();
+            let discs = composited(r, Some(commands));
+            let commands = r
+                .prepare(&Frame {
+                    vertices: None,
+                    ..with
+                })
+                .unwrap();
+            assert_eq!(composited(r, Some(commands)), discs);
+            assert_eq!(hit(r, &with), Some((1, Element::Vertex(1), [9, 20])));
+        },
+    );
+}
+
+#[test]
+fn a_frames_vertices_and_its_vertex_highlights_are_checked() {
+    on_lavapipe(
+        "render::frame_tests::a_frames_vertices_and_its_vertex_highlights_are_checked",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let good = frame(&camera, &[1], &[], Some(ON_THE_FACE));
+            for radius in [0.0, -0.0, -7.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let hostile = Frame {
+                    vertices: Some(radius),
+                    ..good
+                };
+                assert_eq!(refused(r, &hostile), "vertices", "{radius}");
+            }
+            // Any finite radius above 0 is drawn: a subnormal's disc covers nothing.
+            for radius in [f32::MIN_POSITIVE / 2.0, 7.0, 1e6] {
+                r.prepare(&Frame {
+                    vertices: Some(radius),
+                    ..good
+                })
+                .unwrap();
+            }
+            // A vertex highlighted or hovered must be the body's, as a face is: drawn by the
+            // caller, never outlined here, so it changes no pixel and no picking ID.
+            for vertex in [0, 9, u32::MAX] {
+                let lit = [(1, Element::Vertex(vertex))];
+                assert_eq!(
+                    refused(r, &frame(&camera, &[1], &lit, None)),
+                    "highlights",
+                    "{vertex}"
+                );
+                assert_eq!(
+                    refused(
+                        r,
+                        &Frame {
+                            hovered: &lit,
+                            ..good
+                        }
+                    ),
+                    "hovered",
+                    "{vertex}"
+                );
+            }
+            let lit = [(1, Element::Vertex(8))];
+            let commands = r.prepare(&frame(&camera, &[1], &lit, None)).unwrap();
+            let marked = composited(r, Some(commands));
+            let commands = r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
+            assert_eq!(composited(r, Some(commands)), marked);
+            assert_eq!(
+                hit(
+                    r,
+                    &Frame {
+                        hovered: &lit,
+                        ..frame(&camera, &[1], &lit, Some(ON_THE_FACE))
+                    }
+                ),
+                Some((1, Element::Face(3), [32, 26]))
+            );
+        },
+    );
+}
+
+#[test]
+fn a_vertex_behind_a_face_is_picked_within_the_reach_toward_the_eye_and_not_past_it() {
+    on_lavapipe(
+        "render::frame_tests::a_vertex_behind_a_face_is_picked_within_the_reach_toward_the_eye_and_not_past_it",
+        |r| {
+            // The front view's box, its vertices put behind its front face (y = 0) at
+            // (10, y, 5) and (30, y, 5): at columns 32 + (10 − 21) × 12/11 = 20 and
+            // 32 + 9 × 12/11 = 41.82, row 24 + 2 × 12/11 = 26.18. The view is 44 mm high,
+            // so the reach toward the eye is 0.012 × 44 = 0.528 mm: 0.5 behind is picked,
+            // 0.56 behind isn't (the face is), nor is the back face's middle, 20 behind.
+            let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+            mesh.vertex_points = vec![[10.0, 0.5, 5.0], [30.0, 0.56, 5.0], [20.0, 20.0, 5.0]];
+            r.upload(1, &Arc::new(mesh)).unwrap();
+            let camera = front();
+            let at = |x: i32| Frame {
+                vertices: Some(7.0),
+                ..frame(&camera, &[1], &[], Some(rect([x, 26], [1, 1])))
+            };
+            assert_eq!(hit(r, &at(20)), Some((1, Element::Vertex(1), [20, 26])));
+            assert_eq!(hit(r, &at(41)), Some((1, Element::Face(3), [41, 26])));
+            assert_eq!(hit(r, &at(32)), Some((1, Element::Face(3), [32, 26])));
+        },
+    );
+}
+
+#[test]
+fn a_vertex_behind_a_face_in_perspective_is_picked_within_its_reach_along_its_line_and_not_past_it()
+{
+    on_lavapipe(
+        "render::frame_tests::a_vertex_behind_a_face_in_perspective_is_picked_within_its_reach_along_its_line_and_not_past_it",
+        |r| {
+            // The front face (y = 0) seen square on from (20, −100, 5), 60° high: a vertex at
+            // (20, y, 5) lands on the image's centre, (32, 24), 100 + y along the view. Its
+            // disc goes toward the eye by 0.012 × 2 tan 30° = 0.013856 of that, so it lies
+            // before the face, 100 along, while (100 + y)(1 − 0.013856) < 100: y < 1.405 mm.
+            // 1.2 behind is picked; 1.6 behind, the face is.
+            let camera = Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 60.0,
+                },
+                eye: [20.0, -100.0, 5.0],
+                target: [20.0, 0.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            assert_pixel(
+                project(&camera, [WIDTH, HEIGHT], [20.0, 1.2, 5.0]),
+                [32.0, 24.0],
+                1e-9,
+            );
+            for (behind, want) in [(1.2, Element::Vertex(1)), (1.6, Element::Face(3))] {
+                let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+                mesh.vertex_points = vec![[20.0, behind, 5.0]];
+                r.upload(1, &Arc::new(mesh)).unwrap();
+                let asking = Frame {
+                    vertices: Some(7.0),
+                    ..frame(&camera, &[1], &[], Some(rect([32, 24], [1, 1])))
+                };
+                assert_eq!(
+                    hit(r, &asking),
+                    Some((1, want, [32, 24])),
+                    "{behind} behind"
+                );
+            }
+        },
+    );
+}
+
+// ---- Hostile vertices ----
+
+#[test]
+fn a_crowd_of_vertices_on_one_pixel_picks_one_of_them_and_the_frame_still_draws() {
+    on_lavapipe(
+        "render::frame_tests::a_crowd_of_vertices_on_one_pixel_picks_one_of_them_and_the_frame_still_draws",
+        |r| {
+            // 200,000 vertices on the front face's centre, (21, 0, 7), and one more off the
+            // frame: the picking draws a disc for each near its square, and picks a vertex
+            // there (whichever the GPU drew last of those at one depth); the frames after,
+            // with no picking, draw none.
+            let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+            mesh.vertex_points = vec![[21.0, 0.0, 7.0]; 200_000];
+            mesh.vertex_points.push([1e9, 0.0, 7.0]);
+            r.upload(1, &Arc::new(mesh)).unwrap();
+            let camera = front();
+            let asking = Frame {
+                vertices: Some(7.0),
+                ..frame(&camera, &[1], &[], Some(rect([32, 24], [1, 1])))
+            };
+            let found = hit(r, &asking);
+            assert!(
+                matches!(found, Some((1, Element::Vertex(1..=200_000), [32, 24]))),
+                "{found:?}"
+            );
+            assert_eq!(
+                hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE))),
+                Some((1, Element::Face(3), [32, 26]))
+            );
+        },
+    );
+}
+
+#[test]
+fn a_perspective_as_wide_as_170_degrees_draws_a_disc_toward_the_eye_a_quarter_of_its_depth_at_most()
+{
+    on_lavapipe(
+        "render::frame_tests::a_perspective_as_wide_as_170_degrees_draws_a_disc_toward_the_eye_a_quarter_of_its_depth_at_most",
+        |r| {
+            // From (20, −10, 5), looking along +y at the front face's middle (y = 0, 10 mm
+            // off), 170° wide: the view's height at a depth d is 2 tan 85° d = 22.86 d, so
+            // 1.2% of it is 0.274 d, past the most, a quarter. A vertex 3.5 mm behind the
+            // face, 13.5 mm off, has its disc 10.125 mm off, behind the face (0.274 d would
+            // put it at 9.80, ahead of it): the face is picked. One 2.6 behind, 12.6 off, has
+            // its disc at 9.45: picked.
+            let camera = Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 170.0,
+                },
+                eye: [20.0, -10.0, 5.0],
+                target: [20.0, 0.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            let centre = Some(rect([32, 24], [1, 1]));
+            for (behind, want) in [(3.5, Element::Face(3)), (2.6, Element::Vertex(1))] {
+                let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+                mesh.vertex_points = vec![[20.0, behind, 5.0]];
+                r.upload(1, &Arc::new(mesh)).unwrap();
+                let asking = Frame {
+                    vertices: Some(7.0),
+                    ..frame(&camera, &[1], &[], centre)
+                };
+                assert_eq!(hit(r, &asking), Some((1, want, [32, 24])), "{behind}");
+            }
         },
     );
 }

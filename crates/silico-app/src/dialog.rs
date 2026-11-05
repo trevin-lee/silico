@@ -16,6 +16,7 @@ use silico_core::document::json::{self, Node, Value as Json};
 
 use crate::icons::Icon;
 use crate::properties;
+use crate::shortcuts::Command;
 use crate::theme::{self, FieldKind};
 
 /// The features a dialog makes or edits.
@@ -570,7 +571,7 @@ impl Dialog {
             self.kind.title(),
             Some(CLOSE),
         );
-        let rebuild = crate::start::shortcut_caps(ui.ctx(), egui::Key::B).concat();
+        let rebuild = Command::Rebuild.caps(ui.ctx()).concat();
         let (footer, cancel_at, ok_at) = properties::footer_places(whole);
         let body =
             egui::Rect::from_min_max(ui.cursor().min, egui::pos2(whole.right(), footer.top()));
@@ -628,18 +629,22 @@ impl Dialog {
         } else {
             Action::None
         };
+        // Their words and their keys' caps the registry's.
+        let (cancel_word, ok_word) = (Command::Cancel.label(), Command::Ok.label());
         let cancel = properties::footer_button(
             ui,
             cancel_at,
-            "Cancel",
-            "Esc",
-            properties::Look::Secondary,
+            cancel_word,
+            &Command::Cancel.keys_text(ui.ctx()),
+            crate::modal::Kind::Secondary,
             enabled,
         );
         if cancel.clicked() {
             action = Action::Cancel;
         }
-        if properties::footer_button(ui, ok_at, "OK", "↵", properties::Look::Primary, ok).clicked()
+        let ok_cap = Command::Ok.keys_text(ui.ctx());
+        if properties::footer_button(ui, ok_at, ok_word, &ok_cap, crate::modal::Kind::Primary, ok)
+            .clicked()
         {
             action = Action::Ok;
         }

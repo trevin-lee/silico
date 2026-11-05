@@ -1,7 +1,8 @@
 //! Native file dialogs: Open's own (File > Open…, Command+O, and the start page's Open…,
-//! which open the file picked), and the Browse… button beside a path field (New, Save As,
-//! Export's path, and the typed-path Open the app falls back to), which asks the platform's
-//! own dialog for a path and fills the field with it.
+//! which open the file picked), Save As's (File > Save As…, Command+Shift+S, and an untitled
+//! part's Save, which save the document as the file picked), and the Browse… button beside a
+//! path field (Export's path, and the typed Open and Save As the app falls back to), which
+//! asks the platform's own dialog for a path and fills the field with it.
 //!
 //! A dialog is a future ([`Answer`]) that the frame polls, never waits on (invariant 4): it
 //! answers through a waker that asks egui for a frame ([`Repaint`]), and the frame after
@@ -22,7 +23,7 @@ use eframe::egui;
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 
 /// Which dialog: one picking a file that is there (Open), or one naming a file to write
-/// (New, Save As, Export), which asks before replacing one.
+/// (Save As, Export), which asks before replacing one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
     Open,
@@ -90,7 +91,7 @@ impl Native {
             .map(|window| Arc::clone(window) as Arc<dyn Window>);
         if window.is_none() && cfg!(target_os = "macos") {
             tracing::warn!(
-                "eframe gave no window: Open asks for a typed path, and Browse… opens nothing"
+                "eframe gave no window: Open and Save As ask for a typed path, and Browse… opens nothing"
             );
         }
         Native {
@@ -208,13 +209,19 @@ impl<T> Browsing<T> {
 /// What a Browse… button that's off says when hovered.
 pub const ALREADY_OPEN: &str = "A file dialog is already open";
 
-/// The Browse… button, drawn into `ui`: off unless `on` (off while a dialog is open), and
-/// then saying why when hovered. Whether it was clicked.
-pub fn button(ui: &mut egui::Ui, on: bool) -> bool {
-    let mut response = ui.add_enabled(on, egui::Button::new("Browse…"));
-    if !on {
-        response = response.on_disabled_hover_text(ALREADY_OPEN);
-    }
+/// The Browse… button beside a path field (`.btn-secondary`): off unless `on` (off while
+/// a dialog is open).
+pub(crate) fn button(on: bool) -> crate::modal::Button<'static> {
+    crate::modal::Button::new("Browse…", crate::modal::Kind::Secondary).enabled(on)
+}
+
+/// The Browse… button as drawn: saying why it's off when hovered. Whether it was clicked.
+pub(crate) fn clicked(response: egui::Response) -> bool {
+    let response = if response.enabled() {
+        response
+    } else {
+        response.on_disabled_hover_text(ALREADY_OPEN)
+    };
     response.clicked()
 }
 

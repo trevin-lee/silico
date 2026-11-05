@@ -7,17 +7,24 @@
 //! also its Home tab, and the documents opened lately (`recent`).
 
 pub mod app;
+mod banner;
 pub mod bar;
+pub mod box_select;
 pub mod browse;
+pub mod changes;
 pub mod dialog;
 pub mod export;
 pub mod icons;
 pub mod missing;
+mod modal;
 pub mod navigate;
 mod panes;
 mod properties;
 pub mod recent;
 pub mod renderer;
+pub mod selection;
+mod sheet;
+pub mod shortcuts;
 pub mod start;
 pub mod status;
 pub mod tab;

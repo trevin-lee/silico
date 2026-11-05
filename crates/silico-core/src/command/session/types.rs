@@ -21,7 +21,7 @@ use crate::document::json::{self, Node, Plain};
 use crate::document::sketch_edit::Members;
 use crate::document::write::{self, Layout, Out};
 use crate::document::{Angle, Coordinate, ElementId, Feature, FeatureId, Length, Plane, Sketch};
-use crate::recompute::{Model, StepCount};
+use crate::recompute::{FeatureStates, Model, StepCount};
 use crate::timeline::{Entry, Excepted, Timeline, timeline};
 use crate::warnings::Warnings;
 use crate::{Error, ErrorCode};
@@ -1139,15 +1139,18 @@ pub struct Rebuild {
 
 /// How far a rebuild has got (the design's section 6): its steps settled (built, failed,
 /// kept from before, or never to run; all of them once it finishes), the steps of its plan
-/// (none until its plan is made, after the sketches it sweeps are solved), and the step
+/// (none until its plan is made, after the sketches it sweeps are solved), the step
 /// started last of those running, as its feature and the feature's type (`f0000001
-/// fillet`, MCP's progress message), none while no step runs. A diagnostic, not a result
-/// (section 10): which step finishes first depends on scheduling.
+/// fillet`, MCP's progress message), none while no step runs, and each unsuppressed
+/// feature's state, in timeline order (queued, running, built, failed, blocked, or faulted:
+/// issue #367), kept once it ends. A diagnostic, not a result (section 10): which step
+/// finishes first depends on scheduling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Progress {
     pub done: usize,
     pub steps: usize,
     pub running: Option<String>,
+    pub features: FeatureStates,
 }
 
 impl From<&StepCount> for Progress {
@@ -1156,6 +1159,7 @@ impl From<&StepCount> for Progress {
             done: count.done,
             steps: count.steps,
             running: count.running.clone(),
+            features: count.features.clone(),
         }
     }
 }
