@@ -21101,8 +21101,6 @@ fn a_dimension_whose_text_is_under_the_palette_opens_its_modify_box_whole_in_the
     let f = fixture();
     counting(&f);
     let mut h = boxed(&f);
-    // The app's fonts and icons, so text and icons have their sizes.
-    silico_app::theme::apply(&h.ctx);
     step(&mut h);
     hand_camera(&mut h);
     h.key_press(eframe::egui::Key::D);
@@ -21355,8 +21353,6 @@ fn the_modify_boxs_buttons_are_its_icons_named_accept_and_cancel_with_no_glyph_d
     let f = fixture();
     counting(&f);
     let mut h = boxed(&f);
-    // The app's fonts and icons, so text and icons have their sizes.
-    silico_app::theme::apply(&h.ctx);
     step(&mut h);
     h.key_press(eframe::egui::Key::D);
     step(&mut h);
@@ -21428,8 +21424,6 @@ fn the_over_define_prompts_rows_share_their_edges_its_keys_are_16_high_at_their_
     let f = fixture();
     counting(&f);
     let mut h = boxed(&f);
-    // The app's fonts and icons, so text and icons have their sizes.
-    silico_app::theme::apply(&h.ctx);
     step(&mut h);
     h.key_press(eframe::egui::Key::D);
     step(&mut h);
@@ -21490,7 +21484,7 @@ fn the_over_define_prompts_rows_share_their_edges_its_keys_are_16_high_at_their_
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// The app at `size` points with `text` open from `name`, its timeline read.
+/// The app at `size` points, in the app's look, with `text` open from `name`, its timeline read.
 fn opened_sized(f: &Fixture, name: &str, text: &str, size: (f32, f32)) -> AppHarness {
     let path = f.file(name, text);
     let app = App::new(Arc::clone(&f.sessions));
@@ -21500,6 +21494,8 @@ fn opened_sized(f: &Fixture, name: &str, text: &str, size: (f32, f32)) -> AppHar
             .with_size(size)
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
+    // The app's look, as main.rs gives it and `Fixture::app` does.
+    silico_app::theme::apply(&h.ctx);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the timeline read", |h| {
         h.state()
@@ -21515,8 +21511,6 @@ fn in_a_short_window_the_sketch_palette_stays_inside_the_viewport_and_its_last_s
  {
     let f = fixture();
     let mut h = opened_sized(&f, "boxed.silico", BOXED, (1280.0, 560.0));
-    // The app's fonts, so the palette's text has its sizes.
-    silico_app::theme::apply(&h.ctx);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
     double_click(&mut h, "Browser", "Box");
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
