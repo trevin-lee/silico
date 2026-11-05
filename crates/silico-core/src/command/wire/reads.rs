@@ -19,13 +19,13 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 use super::elements::ModelChoiceSchema;
 use super::{
-    ErrorSchema, Json, Layout, MAX_RESPONSE_LEN, RequestFields, ToWire, WarningSchema,
+    DISK, ErrorSchema, Json, Layout, MAX_RESPONSE_LEN, Named, RequestFields, ToWire, WarningSchema,
     answer_within_or, problems, wire_shape, words,
 };
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
-    CheckAnswer, CheckModel, DiffAnswer, ModelChoice, OutlineAnswer, Problems, Response, Revision,
-    SessionId, TextAnswer, TimelineAnswer,
+    CheckAnswer, CheckModel, DiffAnswer, ModelChoice, OutlineAnswer, Problems, Response, SessionId,
+    TextAnswer, TimelineAnswer,
 };
 use crate::document::json::Node;
 use crate::document::write::{Out, length};
@@ -34,13 +34,14 @@ use crate::timeline::{Entry, Health};
 use crate::{Error, ErrorCode};
 
 /// A `text` request: the session, the feature to read alone (`None` for the whole
-/// document), and the revision whose text to read (`None` for the document now: Fable's
-/// decision of 2026-11-04, section 2).
+/// document), and the text to read: a revision's, or the file's on disk (`None` for the
+/// document now: Fable's decisions of 2026-11-04, the three core gaps' section 2 and 6d's
+/// other half).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextRequest {
     pub session: SessionId,
     pub feature: Option<FeatureId>,
-    pub revision: Option<Revision>,
+    pub revision: Option<Named>,
 }
 
 impl TextRequest {
@@ -49,7 +50,7 @@ impl TextRequest {
         RequestFields::read(node, |f| {
             let session = f.session();
             let feature = f.nullable_feature("feature");
-            let revision = f.nullable_revision("revision");
+            let revision = f.nullable_named("revision");
             Some(TextRequest {
                 session: session?,
                 feature: feature?,
@@ -222,13 +223,13 @@ impl ToWire for OutlineAnswer {
     }
 }
 
-/// A `diff` request: the session, and the two revisions to compare, each `None` for the
-/// session's revision now.
+/// A `diff` request: the session, and the two texts to compare, each a revision the
+/// session holds or its file on disk ([`Named`]), or `None` for the session's revision now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiffRequest {
     pub session: SessionId,
-    pub from: Option<Revision>,
-    pub to: Option<Revision>,
+    pub from: Option<Named>,
+    pub to: Option<Named>,
 }
 
 impl DiffRequest {
@@ -236,8 +237,8 @@ impl DiffRequest {
     pub fn read(node: &Node) -> Result<Self, Problems> {
         RequestFields::read(node, |f| {
             let session = f.session();
-            let from = f.nullable_revision("from");
-            let to = f.nullable_revision("to");
+            let from = f.nullable_named("from");
+            let to = f.nullable_named("to");
             Some(DiffRequest {
                 session: session?,
                 from: from?,
@@ -371,10 +372,9 @@ fn diff_too_long(answer: &DiffAnswer, size: u64, limit: usize) -> Error {
     Error::new(
         ErrorCode::InvalidInput,
         format!(
-            "the diff from revision {} to revision {} would be {size} bytes, more than the \
-             {limit} bytes a response may be",
-            answer.from.number(),
-            answer.to.number()
+            "the diff from {} to {} would be {size} bytes, more than the {limit} bytes a \
+             response may be",
+            answer.from, answer.to
         ),
     )
     .with_cause(format!(
@@ -410,13 +410,15 @@ pub struct TextRequestSchema {
     /// The feature whose text to give alone, by ID, or null for the whole document. For a
     /// document too large to give in one response, read it a feature at a time.
     pub feature: Option<FeatureId>,
-    /// The revision whose text to give, or null for the document now. A session holds the
-    /// text of its revision now, of the one its last reload replaced (after a response that
-    /// says `reloaded`), and, inside a transaction, of the one it began at; any other is
-    /// refused, the revisions it holds its candidates. To put back the text a reload
-    /// replaced, `begin`, then `replace_text` with it: an edit like any other, which `undo`
-    /// takes back and `commit` saves.
-    #[schemars(range(min = 1))]
+    /// The revision whose text to give, "disk" for the session's file as this command reads
+    /// it (inside a transaction too, reloading nothing there), or null for the document now.
+    /// A session holds the text of its revision now, of the one its last reload replaced
+    /// (after a response that says `reloaded`), and, inside a transaction, of the one it
+    /// began at; any other is refused, the revisions it holds its candidates. A revision by
+    /// number reads nothing of the file. To put back the text a reload replaced, `begin`,
+    /// then `replace_text` with it: an edit like any other, which `undo` takes back and
+    /// `commit` saves.
+    #[schemars(schema_with = "nullable_named_schema")]
     pub revision: Option<u64>,
 }
 
@@ -552,14 +554,17 @@ pub struct DiffRequestSchema {
     /// The session's ID, as `open` gave it.
     #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
-    /// The revision to compare from, or null for the document now. A session holds the
+    /// The revision to compare from, "disk" for the session's file as this command reads it
+    /// (inside a transaction too, reloading nothing there: what changed on disk since the
+    /// transaction began, from its base), or null for the document now. A session holds the
     /// text of its revision now, of the one its last reload replaced (after a response that
     /// says `reloaded`), and, inside a transaction, of the one it began at; any other is
-    /// refused, the revisions it holds its candidates.
-    #[schemars(range(min = 1))]
+    /// refused, the revisions it holds its candidates. Revisions by number read nothing of
+    /// the file.
+    #[schemars(schema_with = "nullable_named_schema")]
     pub from: Option<u64>,
-    /// The revision to compare to, or null for the document now, held as `from` is.
-    #[schemars(range(min = 1))]
+    /// The revision to compare to, "disk", or null for the document now, as `from` is.
+    #[schemars(schema_with = "nullable_named_schema")]
     pub to: Option<u64>,
 }
 
@@ -567,11 +572,12 @@ pub struct DiffRequestSchema {
 #[derive(JsonSchema)]
 #[schemars(rename = "DiffResult", transform = wire_shape)]
 pub struct DiffResultSchema {
-    /// The revision compared from: the request's, or, for null, the session's then.
-    #[schemars(range(min = 1))]
+    /// The revision compared from: the request's, or, for null, the session's then; or
+    /// "disk", the session's file as the command read it.
+    #[schemars(schema_with = "named_schema")]
     pub from: u64,
-    /// The revision compared to, likewise.
-    #[schemars(range(min = 1))]
+    /// The revision compared to, or "disk", likewise.
+    #[schemars(schema_with = "named_schema")]
     pub to: u64,
     /// Each change from `from` to `to`, in `to`'s timeline order (a feature's change of
     /// place first, then its fields in the order the document writes them), then each
@@ -602,6 +608,28 @@ pub struct DiffChangeSchema {
     pub field: Option<String>,
     pub before: DiffValueSchema,
     pub after: DiffValueSchema,
+}
+
+/// A side a read names, as its result says it: a revision, from 1, or the word `"disk"`.
+fn named_schema(_: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({
+        "anyOf": [
+            {"type": "integer", "minimum": 1},
+            {"type": "string", "enum": [DISK]},
+        ],
+    })
+}
+
+/// A side a read names, as its request gives it: a revision, from 1, the word `"disk"`, or
+/// null.
+fn nullable_named_schema(_: &mut SchemaGenerator) -> Schema {
+    schemars::json_schema!({
+        "anyOf": [
+            {"type": "integer", "minimum": 1},
+            {"type": "string", "enum": [DISK]},
+            {"type": "null"},
+        ],
+    })
 }
 
 /// A change's value on one side.
@@ -649,7 +677,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::{diff_answer_within, written_length};
-    use crate::command::wire::Layout;
+    use crate::command::wire::{Layout, Named};
     use crate::command::{DiffAnswer, Response, Revision, SessionId, SessionInfo};
     use crate::document::json::Plain;
     use crate::document::write::text;
@@ -657,8 +685,9 @@ mod tests {
 
     /// Two features' changes: one name shared by three changes (a place, a scalar, and a
     /// whole object, which the canonical layout writes over lines), one with characters
-    /// written as escapes (a quote, a newline, a right-to-left override, an é).
-    fn answer() -> Response<DiffAnswer> {
+    /// written as escapes (a quote, a newline, a right-to-left override, an é); from
+    /// revision 1 to `to`.
+    fn answer(to: Named) -> Response<DiffAnswer> {
         let shared: Arc<str> = Arc::from("Sketch \"one\"\n");
         let other: Arc<str> = Arc::from("\u{202e}é");
         let id = |s: &str| FeatureId::new(s).unwrap();
@@ -709,8 +738,8 @@ mod tests {
             }),
             model: None,
             result: Ok(DiffAnswer {
-                from: Revision::OPENED,
-                to: two,
+                from: Named::Revision(Revision::OPENED),
+                to,
                 changes,
             }),
         }
@@ -718,33 +747,37 @@ mod tests {
 
     #[test]
     fn the_length_counted_is_the_texts_in_either_layout_and_past_it_the_refusal_says_both() {
-        let response = answer();
-        let Ok(diffed) = &response.result else {
-            panic!("an answer");
-        };
-        for layout in [Layout::OneLine, Layout::Canonical] {
-            // The text itself, written whole: the length the count must give.
-            let whole = text(&super::super::response(&response).0, layout, usize::MAX).unwrap();
-            let size = whole.len();
-            assert_eq!(
-                written_length(&response, diffed, layout),
-                size as u64,
-                "{layout:?}"
-            );
-            // At the size, written; a byte short, refused, saying the size and the limit.
-            assert_eq!(diff_answer_within(&response, layout, size), (true, whole));
-            let (ok, refusal) = diff_answer_within(&response, layout, size - 1);
-            assert!(!ok);
-            let said = format!(
-                "the diff from revision 1 to revision 2 would be {size} bytes, more than the {} bytes a response may be",
-                size - 1
-            );
-            assert!(refusal.contains(&said), "{refusal}");
-            assert!(refusal.contains("it has 4 changes"), "{refusal}");
-            assert!(
-                refusal.contains("diff revisions nearer each other, or read the text of each side with text instead"),
-                "{refusal}"
-            );
+        // To revision 2, and to the file on disk, which the refusal names as such.
+        let two = Named::Revision(Revision::OPENED.next().unwrap());
+        for (to, said_to) in [(two, "revision 2"), (Named::Disk, "the file on disk")] {
+            let response = answer(to);
+            let Ok(diffed) = &response.result else {
+                panic!("an answer");
+            };
+            for layout in [Layout::OneLine, Layout::Canonical] {
+                // The text itself, written whole: the length the count must give.
+                let whole = text(&super::super::response(&response).0, layout, usize::MAX).unwrap();
+                let size = whole.len();
+                assert_eq!(
+                    written_length(&response, diffed, layout),
+                    size as u64,
+                    "{layout:?}"
+                );
+                // At the size, written; a byte short, refused, saying the size and the limit.
+                assert_eq!(diff_answer_within(&response, layout, size), (true, whole));
+                let (ok, refusal) = diff_answer_within(&response, layout, size - 1);
+                assert!(!ok);
+                let said = format!(
+                    "the diff from revision 1 to {said_to} would be {size} bytes, more than the {} bytes a response may be",
+                    size - 1
+                );
+                assert!(refusal.contains(&said), "{refusal}");
+                assert!(refusal.contains("it has 4 changes"), "{refusal}");
+                assert!(
+                    refusal.contains("diff revisions nearer each other, or read the text of each side with text instead"),
+                    "{refusal}"
+                );
+            }
         }
     }
 }

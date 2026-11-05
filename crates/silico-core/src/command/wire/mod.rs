@@ -368,6 +368,40 @@ impl ToWire for Revision {
     }
 }
 
+/// A text a read names (Fable's decision of 2026-11-04, *6d's other half*): a revision whose
+/// text the session holds, or the session's file as the command's own read of it finds it
+/// (`"disk"`), which is never a revision and never held. `diff`'s sides and `text`'s
+/// `revision` take one, or `null` for the document now; `diff`'s result says each side as
+/// it resolved, a revision's number or the word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Named {
+    Revision(Revision),
+    Disk,
+}
+
+/// The word a request and a result give for the session's file: `"disk"`.
+pub const DISK: &str = "disk";
+
+impl ToWire for Named {
+    /// A revision's number, bare, or the word `"disk"`.
+    fn to_wire(&self) -> Json<'_> {
+        match self {
+            Named::Revision(revision) => revision.to_wire(),
+            Named::Disk => Json::str(DISK),
+        }
+    }
+}
+
+impl fmt::Display for Named {
+    /// As a refusal or a log names it: `revision 3`, or `the file on disk`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Named::Revision(revision) => write!(f, "revision {}", revision.number()),
+            Named::Disk => f.write_str("the file on disk"),
+        }
+    }
+}
+
 impl ToWire for SessionId {
     /// `s1`, `s2`, ...
     fn to_wire(&self) -> Json<'_> {
@@ -945,6 +979,27 @@ impl<'a> RequestFields<'a> {
                 .and_then(Revision::from_number)
                 .map(Some),
         }
+    }
+
+    /// A text a read names ([`Named`]): a session's revision, a whole number from 1 to
+    /// `u64::MAX` written as its digits alone; the word `"disk"`, exactly; or `null`.
+    /// Anything else is refused as "an integer from 1, \"disk\", or null".
+    pub fn nullable_named(&mut self, key: &str) -> Option<Option<Named>> {
+        let node = self.take_nullable(key)?;
+        let Some(node) = node else {
+            return Some(None);
+        };
+        let named = match &node.value {
+            Value::String(text) if text == DISK => Some(Named::Disk),
+            Value::Number(text) => super::whole_number(text)
+                .and_then(Revision::from_number)
+                .map(Named::Revision),
+            _ => None,
+        };
+        if named.is_none() {
+            self.wrong(key, "an integer from 1, \"disk\", or null", node);
+        }
+        named.map(Some)
     }
 
     /// A length, in millimetres: read exactly from its digits, and refused as a

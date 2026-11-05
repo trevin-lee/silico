@@ -5,12 +5,22 @@
     "description": "`diff`'s request: what changed between two revisions the session holds.",
     "properties": {
       "from": {
-        "description": "The revision to compare from, or null for the document now. A session holds the\ntext of its revision now, of the one its last reload replaced (after a response that\nsays `reloaded`), and, inside a transaction, of the one it began at; any other is\nrefused, the revisions it holds its candidates.",
-        "minimum": 1,
-        "type": [
-          "integer",
-          "null"
-        ]
+        "anyOf": [
+          {
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "enum": [
+              "disk"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The revision to compare from, \"disk\" for the session's file as this command reads it\n(inside a transaction too, reloading nothing there: what changed on disk since the\ntransaction began, from its base), or null for the document now. A session holds the\ntext of its revision now, of the one its last reload replaced (after a response that\nsays `reloaded`), and, inside a transaction, of the one it began at; any other is\nrefused, the revisions it holds its candidates. Revisions by number read nothing of\nthe file."
       },
       "session": {
         "description": "The session's ID, as `open` gave it.",
@@ -18,12 +28,22 @@
         "type": "string"
       },
       "to": {
-        "description": "The revision to compare to, or null for the document now, held as `from` is.",
-        "minimum": 1,
-        "type": [
-          "integer",
-          "null"
-        ]
+        "anyOf": [
+          {
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "enum": [
+              "disk"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The revision to compare to, \"disk\", or null for the document now, as `from` is."
       }
     },
     "required": [
@@ -92,14 +112,34 @@
         "type": "array"
       },
       "from": {
-        "description": "The revision compared from: the request's, or, for null, the session's then.",
-        "minimum": 1,
-        "type": "integer"
+        "anyOf": [
+          {
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "enum": [
+              "disk"
+            ],
+            "type": "string"
+          }
+        ],
+        "description": "The revision compared from: the request's, or, for null, the session's then; or\n\"disk\", the session's file as the command read it."
       },
       "to": {
-        "description": "The revision compared to, likewise.",
-        "minimum": 1,
-        "type": "integer"
+        "anyOf": [
+          {
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "enum": [
+              "disk"
+            ],
+            "type": "string"
+          }
+        ],
+        "description": "The revision compared to, or \"disk\", likewise."
       }
     },
     "required": [

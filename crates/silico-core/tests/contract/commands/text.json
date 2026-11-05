@@ -23,12 +23,22 @@
         "description": "The feature whose text to give alone, by ID, or null for the whole document. For a\ndocument too large to give in one response, read it a feature at a time."
       },
       "revision": {
-        "description": "The revision whose text to give, or null for the document now. A session holds the\ntext of its revision now, of the one its last reload replaced (after a response that\nsays `reloaded`), and, inside a transaction, of the one it began at; any other is\nrefused, the revisions it holds its candidates. To put back the text a reload\nreplaced, `begin`, then `replace_text` with it: an edit like any other, which `undo`\ntakes back and `commit` saves.",
-        "minimum": 1,
-        "type": [
-          "integer",
-          "null"
-        ]
+        "anyOf": [
+          {
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "enum": [
+              "disk"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The revision whose text to give, \"disk\" for the session's file as this command reads\nit (inside a transaction too, reloading nothing there), or null for the document now.\nA session holds the text of its revision now, of the one its last reload replaced\n(after a response that says `reloaded`), and, inside a transaction, of the one it\nbegan at; any other is refused, the revisions it holds its candidates. A revision by\nnumber reads nothing of the file. To put back the text a reload replaced, `begin`,\nthen `replace_text` with it: an edit like any other, which `undo` takes back and\n`commit` saves."
       },
       "session": {
         "description": "The session's ID, as `open` gave it.",

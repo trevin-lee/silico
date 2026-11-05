@@ -10109,7 +10109,7 @@
         "readOnlyHint": true,
         "title": "Document text"
       },
-      "description": "The document's text as the session holds it, or one feature's.",
+      "description": "The document's text as the session holds it, or one feature's: of the document now, of a revision the session holds, or of the file on disk (`revision` `\"disk\"`). Taking the file's text into a transaction with `replace_text` doesn't make the file the transaction's own: its `commit` is still refused as a `conflict`; roll back, or save elsewhere with `path`.",
       "inputSchema": {
         "$defs": {
           "FeatureId": {
@@ -10134,12 +10134,22 @@
             "description": "The feature whose text to give alone, by ID, or null for the whole document. For a\ndocument too large to give in one response, read it a feature at a time."
           },
           "revision": {
-            "description": "The revision whose text to give, or null for the document now. A session holds the\ntext of its revision now, of the one its last reload replaced (after a response that\nsays `reloaded`), and, inside a transaction, of the one it began at; any other is\nrefused, the revisions it holds its candidates. To put back the text a reload\nreplaced, `begin`, then `replace_text` with it: an edit like any other, which `undo`\ntakes back and `commit` saves.",
-            "minimum": 1,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "enum": [
+                  "disk"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The revision whose text to give, \"disk\" for the session's file as this command reads\nit (inside a transaction too, reloading nothing there), or null for the document now.\nA session holds the text of its revision now, of the one its last reload replaced\n(after a response that says `reloaded`), and, inside a transaction, of the one it\nbegan at; any other is refused, the revisions it holds its candidates. A revision by\nnumber reads nothing of the file. To put back the text a reload replaced, `begin`,\nthen `replace_text` with it: an edit like any other, which `undo` takes back and\n`commit` saves."
           },
           "session": {
             "description": "The session's ID, as `open` gave it.",
@@ -26761,19 +26771,29 @@
         "readOnlyHint": true,
         "title": "Changes between revisions"
       },
-      "description": "What changed between two revisions the session holds (`null` for the document now): each feature added, removed, or moved (`field` null, `before` and `after` its place in the timeline), and each field that changed, by the path `set_field` names it by, with its value before and after. A change set_field accepts is applied by set_field with its feature, field, and after; set_field doesn't accept fingerprint fields; `type`, `id`, or `v` (or, with a feature's `type`, a field its new type brings or takes away); a member only one side has below the feature's top level (a sketch member added or removed, an item added to or removed from a list by place), but for a sketch angle's `reversed`; or an extent's or a constraint's `type` changed to one that takes other fields. The session holds its revision now, the one its last reload replaced, and inside a transaction the one it began at: after a response that says `reloaded`, diff from the revision you last saw to `null` to learn what changed outside the session.",
+      "description": "What changed between two revisions the session holds (`null` for the document now): each feature added, removed, or moved (`field` null, `before` and `after` its place in the timeline), and each field that changed, by the path `set_field` names it by, with its value before and after. A change set_field accepts is applied by set_field with its feature, field, and after; set_field doesn't accept fingerprint fields; `type`, `id`, or `v` (or, with a feature's `type`, a field its new type brings or takes away); a member only one side has below the feature's top level (a sketch member added or removed, an item added to or removed from a list by place), but for a sketch angle's `reversed`; or an extent's or a constraint's `type` changed to one that takes other fields. The session holds its revision now, the one its last reload replaced, and inside a transaction the one it began at: after a response that says `reloaded`, diff from the revision you last saw to `null` to learn what changed outside the session. A side may also be `\"disk\"`, the session's file as this call reads it, inside a transaction too, where nothing is reloaded: before a `commit` refused as a `conflict`, diff from the transaction's base to `\"disk\"` to see what changed on disk, and from its base to `null` to see your own edits. Revisions by number read nothing of the file.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "description": "`diff`'s request: what changed between two revisions the session holds.",
         "properties": {
           "from": {
-            "description": "The revision to compare from, or null for the document now. A session holds the\ntext of its revision now, of the one its last reload replaced (after a response that\nsays `reloaded`), and, inside a transaction, of the one it began at; any other is\nrefused, the revisions it holds its candidates.",
-            "minimum": 1,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "enum": [
+                  "disk"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The revision to compare from, \"disk\" for the session's file as this command reads it\n(inside a transaction too, reloading nothing there: what changed on disk since the\ntransaction began, from its base), or null for the document now. A session holds the\ntext of its revision now, of the one its last reload replaced (after a response that\nsays `reloaded`), and, inside a transaction, of the one it began at; any other is\nrefused, the revisions it holds its candidates. Revisions by number read nothing of\nthe file."
           },
           "session": {
             "description": "The session's ID, as `open` gave it.",
@@ -26781,12 +26801,22 @@
             "type": "string"
           },
           "to": {
-            "description": "The revision to compare to, or null for the document now, held as `from` is.",
-            "minimum": 1,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "enum": [
+                  "disk"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The revision to compare to, \"disk\", or null for the document now, as `from` is."
           }
         },
         "required": [
@@ -27113,14 +27143,34 @@
                     "type": "array"
                   },
                   "from": {
-                    "description": "The revision compared from: the request's, or, for null, the session's then.",
-                    "minimum": 1,
-                    "type": "integer"
+                    "anyOf": [
+                      {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      {
+                        "enum": [
+                          "disk"
+                        ],
+                        "type": "string"
+                      }
+                    ],
+                    "description": "The revision compared from: the request's, or, for null, the session's then; or\n\"disk\", the session's file as the command read it."
                   },
                   "to": {
-                    "description": "The revision compared to, likewise.",
-                    "minimum": 1,
-                    "type": "integer"
+                    "anyOf": [
+                      {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      {
+                        "enum": [
+                          "disk"
+                        ],
+                        "type": "string"
+                      }
+                    ],
+                    "description": "The revision compared to, or \"disk\", likewise."
                   }
                 },
                 "required": [

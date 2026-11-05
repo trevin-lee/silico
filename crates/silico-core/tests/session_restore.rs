@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
+use silico_core::command::wire::Named;
 use silico_core::command::{Command, Response, Revision, SessionId, Sessions, TextAnswer};
 use silico_core::document::json;
 use silico_core::fake::FakeKernel;
@@ -107,7 +108,16 @@ impl Fixture {
         feature: Option<&str>,
         revision: Option<u64>,
     ) -> Response<TextAnswer> {
-        answer(self.sessions.text_at(s, feature.map(id), revision.map(rev)))
+        answer(self.sessions.text_at(
+            s,
+            feature.map(id),
+            revision.map(|n| Named::Revision(rev(n))),
+        ))
+    }
+
+    /// `text` of the file on disk (`"disk"`), or its `feature`.
+    fn disk_text(&self, s: &SessionId, feature: Option<&str>) -> Response<TextAnswer> {
+        answer(self.sessions.text_at(s, feature.map(id), Some(Named::Disk)))
     }
 
     /// The text `text` gives, refused or not.
@@ -200,17 +210,68 @@ fn text_of_the_revision_a_reload_replaced_is_the_original_bytes() {
 }
 
 #[test]
-fn a_text_sent_after_a_change_outside_reloads_first_and_reads_the_text_replaced() {
-    // No `status` stepped: the text's own reread reloads (its response says so), and
-    // revision 1 is then the one the reload replaced.
+fn a_read_of_revisions_by_number_reads_nothing_of_the_file_and_null_reloads_it() {
+    // Fable's 6d decision: a revision by number names a text the session holds, so its read
+    // reads nothing of the file; only `null`, the document now, reads it first. No `status`
+    // is asked, so the disk watch queues no reload of its own.
     let f = fixture();
     let s = f.open(ORIGINAL);
     f.write(AGENTS);
+    let named = Named::Revision(Revision::OPENED);
+    let one = Some(named);
+    let same = answer(f.sessions.diff(&s, one, one));
+    let session = same.session.unwrap();
+    assert_eq!((session.revision, session.reloaded), (rev(1), false));
+    let same = same.result.unwrap();
+    assert_eq!((same.from, same.to), (named, named));
+    assert_eq!(same.changes, []);
     let read = f.text(&s, None, Some(1));
     let session = read.session.unwrap();
-    assert!(session.reloaded);
-    assert_eq!(session.revision, rev(2));
+    assert_eq!((session.revision, session.reloaded), (rev(1), false));
     assert_eq!(read.result.unwrap().text, ORIGINAL);
+    // The document now reads the file first: reloaded, at revision 2, the agent's text.
+    let now = f.text(&s, None, None);
+    let session = now.session.unwrap();
+    assert_eq!((session.revision, session.reloaded), (rev(2), true));
+    assert_eq!(now.result.unwrap().text, AGENTS);
+    // Revision 1 again: the text the reload replaced, read as it was.
+    let replaced = f.text(&s, None, Some(1));
+    let session = replaced.session.unwrap();
+    assert_eq!((session.revision, session.reloaded), (rev(2), false));
+    assert_eq!(replaced.result.unwrap().text, ORIGINAL);
+    // The file gone: revisions by number answer from what's held; null is refused.
+    std::fs::remove_file(f.path()).unwrap();
+    assert_eq!(f.text_of(&s, None, Some(1)), ORIGINAL);
+    assert_eq!(f.text_of(&s, None, Some(2)), AGENTS);
+    let diffed = answer(f.sessions.diff(
+        &s,
+        Some(Named::Revision(rev(1))),
+        Some(Named::Revision(rev(2))),
+    ));
+    // By hand: the height, 10 to 11, then the fingerprint's measures that follow it (the
+    // volume, the area, and the box's top), in the order the document writes them.
+    let fields: Vec<Option<String>> = diffed
+        .result
+        .unwrap()
+        .changes
+        .into_iter()
+        .map(|c| c.field)
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            "height",
+            "fingerprint.volume",
+            "fingerprint.area",
+            "fingerprint.bbox.5"
+        ]
+        .map(|f| Some(f.to_owned()))
+    );
+    let gone = f.text(&s, None, None);
+    let (code, _, parameter, _) = refusal(&gone);
+    assert_eq!(code, ErrorCode::IoFailed);
+    assert_eq!(parameter.as_deref(), Some("path"));
+    assert_eq!(gone.session.unwrap().revision, rev(2));
 }
 
 #[test]
@@ -318,7 +379,7 @@ fn the_agent_holding_the_file_sees_the_restore_reloaded_on_its_next_command() {
     assert!(session.reloaded);
     assert_eq!(session.revision, rev(3));
     assert_eq!(read.result.unwrap().text, ORIGINAL);
-    let mine = answer(agent.text_at(&a, None, Some(rev(2))));
+    let mine = answer(agent.text_at(&a, None, Some(Named::Revision(rev(2)))));
     assert_eq!(mine.result.unwrap().text, AGENTS);
 }
 
@@ -503,4 +564,80 @@ fn a_feature_the_revision_hasnt_is_refused_naming_feature() {
             Some("name a feature by its ID, as the document's outline lists them")
         );
     }
+}
+
+/// The agent's change written by hand: on one line, the block's keys in another order than
+/// canonical form's (`type` before `id`, `height` before `position`), the reader taking any.
+const AGENTS_BY_HAND: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"type": "box", "id": "k7f2qx3m", "v": 1, "name": "Block", "height": 11, "position": [0, 0, 0], "length": 40, "width": 20, "fingerprint": {"volume": 8800, "area": 2920, "bbox": [0, 0, 0, 40, 20, 11], "faces": 6, "edges": 12, "vertices": 8}}]}"#;
+
+#[test]
+fn text_of_disk_inside_a_transaction_is_the_files_bytes_exactly_and_its_features_canonical() {
+    let f = fixture();
+    let s = f.open(ORIGINAL);
+    answer(f.sessions.begin(&s)).result.unwrap();
+    f.write(AGENTS_BY_HAND);
+    // The file's bytes exactly, not canonical form; nothing reloaded, nothing moved.
+    let read = f.disk_text(&s, None);
+    let session = read.session.unwrap();
+    assert_eq!((session.revision, session.reloaded), (rev(1), false));
+    assert_eq!(read.result.unwrap().text, AGENTS_BY_HAND);
+    assert_eq!(f.text_of(&s, None, None), ORIGINAL);
+    assert!(!f.changed(&s));
+    // A feature: its canonical text, as the file's document has it.
+    assert_eq!(
+        f.disk_text(&s, Some("k7f2qx3m")).result.unwrap().text,
+        block(11, FINGERPRINT_11)
+    );
+    // A feature the file hasn't: refused naming `feature`, saying it's the file's.
+    let (code, message, parameter, suggestion) = refusal(&f.disk_text(&s, Some("a91cw0de")));
+    assert_eq!(code, ErrorCode::InvalidInput);
+    assert_eq!(message, "the file on disk has no feature a91cw0de");
+    assert_eq!(parameter.as_deref(), Some("feature"));
+    assert_eq!(
+        suggestion.as_deref(),
+        Some("name a feature the file on disk has, or give revision null for the document now")
+    );
+    // By name, as MCP's server calls it: the same bytes in the core's envelope.
+    let called = f.called(&format!(
+        r#"{{"session": "{s}", "feature": null, "revision": "disk"}}"#
+    ));
+    let envelope: serde_json::Value = serde_json::from_str(&called).unwrap();
+    assert_eq!(envelope["ok"], true, "{called}");
+    assert_eq!(envelope["result"]["text"], AGENTS_BY_HAND);
+    assert_eq!(envelope["session"]["revision"], 1);
+    // Taken into the transaction ("take theirs, keep my undo"): the document equals the
+    // file, but the file isn't the transaction's own, so its commit is a conflict, loud.
+    answer(
+        f.sessions
+            .replace_text(&s, rev(1), AGENTS_BY_HAND.to_owned()),
+    )
+    .result
+    .unwrap();
+    let committed = answer(f.sessions.commit(&s));
+    let (code, _, parameter, _) = refusal(&committed);
+    assert_eq!(code, ErrorCode::Conflict);
+    assert_eq!(parameter.as_deref(), Some("path"));
+    assert_eq!(f.file(), AGENTS_BY_HAND);
+}
+
+#[test]
+fn text_of_disk_thats_not_utf8_is_refused_naming_revision() {
+    let f = fixture();
+    let s = f.open(ORIGINAL);
+    answer(f.sessions.begin(&s)).result.unwrap();
+    // By hand: `{"silico": 1, ` is 14 bytes, so the 0xff is at byte 14.
+    std::fs::write(f.path(), b"{\"silico\": 1, \xff}").unwrap();
+    let (code, message, parameter, suggestion) = refusal(&f.disk_text(&s, None));
+    assert_eq!(code, ErrorCode::InvalidInput);
+    assert_eq!(
+        message,
+        "the file on disk isn't UTF-8 (at byte 14), so it can't be given as text"
+    );
+    assert_eq!(parameter.as_deref(), Some("revision"));
+    assert_eq!(
+        suggestion.as_deref(),
+        Some("mend the file: a document is UTF-8 text; or give revision null for the document now")
+    );
+    // The document now is the session's still.
+    assert_eq!(f.text_of(&s, None, None), ORIGINAL);
 }

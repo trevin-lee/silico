@@ -20,6 +20,7 @@ use super::{
     RolledBack, Session, SessionId, Transaction, shown_path,
 };
 use crate::command::edit::Candidate;
+use crate::command::wire::Named;
 use crate::document::json::MAX_INPUT_LEN;
 use crate::document::undo::{After, Pushed, UndoStack};
 use crate::document::{self, Document, FeatureId};
@@ -1088,8 +1089,10 @@ impl<C: Kernel + 'static> Session<C> {
         if let Some(outside) = changed_outside {
             if !unchanged {
                 return Err(Problems::from(match outside {
-                    Outside::ChangedOrGone => saver.conflict(&path),
-                    Outside::Unreadable(error) => error,
+                    Outside::Changed(_) | Outside::TooLong | Outside::Gone(_) => {
+                        saver.conflict(&path)
+                    }
+                    Outside::Unreadable(error) => unread_by_commit(error),
                 }));
             }
             // Only a transaction's commit is given what was found outside.
@@ -1496,9 +1499,11 @@ impl<C: Kernel + 'static> Session<C> {
     /// or longer than Silico reads of a document, refuses the command, naming it, the
     /// session as it was; as does a session with no revisions left to give.
     ///
-    /// Inside a transaction, only for `commit` ([`Rereads::Always`]): nothing is reloaded,
-    /// and a file changed (longer than a document may be, or gone) or unreadable is found
-    /// for the commit to refuse, if it would write ([`Reload::Outside`]).
+    /// Inside a transaction, only for `commit`, and `diff` and `text` naming `"disk"`
+    /// ([`Rereads::Always`]): nothing is reloaded, and a file changed (its bytes kept),
+    /// longer than a document may be, gone, or unreadable is found for the command
+    /// ([`Reload::Outside`]): for the commit to refuse, if it would write; for a read, the
+    /// text `"disk"` names, or why there's none.
     ///
     /// A file this session's own save left part written isn't compared, nor reloaded (the
     /// next save says where its old text is), until it holds what the session last read or
@@ -1569,10 +1574,11 @@ impl<C: Kernel + 'static> Session<C> {
                     claimed(opened)?;
                     return Ok(Reload::AsHeld);
                 }
-                // Other bytes, or more than a document may be.
-                Ok(_) => Outside::ChangedOrGone,
-                Err(_) if gone() => Outside::ChangedOrGone,
-                Err(error) => Outside::Unreadable(unread_by_commit(&path, &error)),
+                Ok((_, now)) if now.len() > MAX_INPUT_LEN => Outside::TooLong,
+                // Kept, for a read that names the file (`"disk"`): the one read made of it.
+                Ok((_, now)) => Outside::Changed(Arc::new(now)),
+                Err(error) if gone() => Outside::Gone(of_file(&path, &error)),
+                Err(error) => Outside::Unreadable(of_file(&path, &error)),
             };
             tracing::info!(session = %self.id, "the file changed outside the session, inside a transaction: not reloaded");
             return Ok(Reload::Outside(outside));
@@ -1822,13 +1828,11 @@ pub(super) fn put_back(path: &str) -> String {
     )
 }
 
-/// `error`, why the file at `path` (as `open` was given it) couldn't be read before a
-/// transaction's `commit`: its `io_failed`, if the commit would write, naming the file.
-fn unread_by_commit(path: &str, error: &Error) -> Error {
+/// `error`, why the session's file couldn't be read before a transaction's `commit`, naming
+/// the file ([`of_file`]): its `io_failed`, if the commit would write.
+fn unread_by_commit(error: Error) -> Error {
     const SUGGESTION: &str = "nothing was written: make it a regular file this user may read again, then commit; or roll back";
-    of_file(path, error)
-        .with_parameter("path")
-        .with_suggestion(SUGGESTION)
+    error.with_parameter("path").with_suggestion(SUGGESTION)
 }
 
 /// The refusal of a save after this session's own save left the file at `path` part
@@ -1907,18 +1911,39 @@ pub(super) fn transaction_open(id: SessionId, then: &str) -> Error {
 }
 
 /// When a queued command's session reads its file first (decision 2; the design's section
-/// 4).
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// 4), each need stronger than the one before it (`Never < OutsideTransaction < Always`), so
+/// a command whose request names several texts reads as the strongest asks
+/// ([`needed`](Self::needed)).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(super) enum Rereads {
+    /// Never: the commands that need nothing of the document, `close` (which always
+    /// closes) and `cache_clear` (which clears the directory's cache whatever the file
+    /// holds); and reads that name only revisions by number, whose texts the session holds
+    /// whatever the file holds now. (An untitled session never reads, having no file.)
+    Never,
     /// Outside a transaction only: inside one, the command runs on what the session holds.
     OutsideTransaction,
     /// Inside a transaction too, where nothing is reloaded: what's found is the command's
-    /// (`commit`'s) to refuse.
+    /// (`commit`'s to refuse, or a read's that names `"disk"`).
     Always,
-    /// Never: the commands that need nothing of the document, `close` (which always
-    /// closes) and `cache_clear` (which clears the directory's cache whatever the file holds).
-    /// (An untitled session never reads, having no file.)
-    Never,
+}
+
+impl Rereads {
+    /// What a read of `sides` needs (Fable's decision of 2026-11-04, *6d's other half*,
+    /// section 2): the strongest of each side's, a `null` side (the document now) as every
+    /// command reads, outside a transaction; `"disk"` inside one too, as `commit` reads;
+    /// a revision by number, nothing. None for no sides.
+    pub(super) fn needed(sides: impl IntoIterator<Item = Option<Named>>) -> Rereads {
+        sides
+            .into_iter()
+            .map(|side| match side {
+                None => Rereads::OutsideTransaction,
+                Some(Named::Disk) => Rereads::Always,
+                Some(Named::Revision(_)) => Rereads::Never,
+            })
+            .max()
+            .unwrap_or(Rereads::Never)
+    }
 }
 
 /// What a session found of its file before a command ([`Session::reload`]), given to the
@@ -1930,9 +1955,9 @@ pub(super) enum Reload {
     AsHeld,
     /// Found changed outside the session, and reloaded: the response's `reloaded`.
     Reloaded,
-    /// Inside a transaction, before `commit` ([`Rereads::Always`]): found not as the
-    /// session last read or wrote it, and not reloaded, for the commit to refuse if it
-    /// would write.
+    /// Inside a transaction, before `commit` or a read naming `"disk"`
+    /// ([`Rereads::Always`]): found not as the session last read or wrote it, and not
+    /// reloaded, for the commit to refuse if it would write, or the read to give or refuse.
     Outside(Outside),
 }
 
@@ -1952,12 +1977,18 @@ impl Reload {
     }
 }
 
-/// A file found, inside a transaction, not as its session last read or wrote it.
+/// A file found, inside a transaction, not as its session last read or wrote it: for a
+/// commit that would write, each but `Unreadable` a conflict.
 pub(super) enum Outside {
-    /// It holds other bytes (more than a document may be, perhaps), or it's gone (nothing
-    /// at its path, or a link there to nothing): a conflict.
-    ChangedOrGone,
-    /// It couldn't be read, as the error says: an `io_failed`.
+    /// It holds other bytes, these, at most what Silico reads of a document: what a read
+    /// naming `"disk"` gives.
+    Changed(Arc<Vec<u8>>),
+    /// It holds more bytes than Silico reads of a document.
+    TooLong,
+    /// It's gone (nothing at its path, or a link there to nothing), as the read's error,
+    /// naming the file, says.
+    Gone(Error),
+    /// It couldn't be read, as the error, naming the file, says: an `io_failed`.
     Unreadable(Error),
 }
 

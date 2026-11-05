@@ -15,7 +15,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::wire::MAX_RESPONSE_LEN;
+use silico_core::command::wire::{MAX_RESPONSE_LEN, Named};
 use silico_core::command::{Command, Response, Revision, SessionId, Sessions, TextAnswer};
 use silico_core::document;
 use silico_core::document::json::MAX_DOCUMENT_LEN;
@@ -68,14 +68,23 @@ impl Fixture {
         feature: Option<&str>,
         revision: Option<u64>,
     ) -> Response<TextAnswer> {
-        answer(self.sessions.text_at(s, feature.map(id), revision.map(rev)))
+        let revision = revision.map(|n| Named::Revision(rev(n)));
+        answer(self.sessions.text_at(s, feature.map(id), revision))
     }
 
-    /// `bytes` written outside, then `text` of revision 1, whose own reread reloads it.
+    /// `text` of the file on disk (`"disk"`), or its `feature`.
+    fn disk_text(&self, s: &SessionId, feature: Option<&str>) -> Response<TextAnswer> {
+        answer(self.sessions.text_at(s, feature.map(id), Some(Named::Disk)))
+    }
+
+    /// `bytes` written outside, then `text` of the document now, whose own reread reloads
+    /// it, then `text` of revision 1, which reads nothing of the file: the text replaced.
     fn reloaded_text(&self, s: &SessionId, bytes: &[u8]) -> Response<TextAnswer> {
         self.write(bytes);
+        let now = self.text(s, None, None);
+        assert!(now.session.as_ref().unwrap().reloaded);
         let read = self.text(s, None, Some(1));
-        assert!(read.session.as_ref().unwrap().reloaded);
+        assert!(!read.session.as_ref().unwrap().reloaded);
         read
     }
 
@@ -334,8 +343,12 @@ fn a_replaced_text_that_isnt_utf8_is_refused_as_text_and_the_session_answers_aft
     // `revision`, whose text can't be given as text, and points to the document now.
     let mended = boxes(1, 1, None);
     f.write(mended.as_bytes());
+    // Revision 1 by number reads nothing of the file: the document now's read reloads it.
     let replaced = f.text(&s, None, Some(1));
-    assert!(replaced.session.as_ref().unwrap().reloaded);
+    assert!(!replaced.session.as_ref().unwrap().reloaded);
+    assert_eq!(refusal(&replaced), refusal(&now));
+    assert!(f.text(&s, None, None).session.unwrap().reloaded);
+    let replaced = f.text(&s, None, Some(1));
     old_revision_not_utf8(&replaced, 1, 14);
     assert_eq!(f.text(&s, None, None).result.unwrap().text, mended);
     assert_eq!(f.text(&s, None, Some(2)).result.unwrap().text, mended);
@@ -393,4 +406,76 @@ fn a_revision_of_a_session_closed_or_never_opened_is_refused_naming_session() {
         assert_eq!(code, ErrorCode::InvalidInput);
         assert_eq!(parameter.as_deref(), Some("session"));
     }
+}
+
+#[test]
+fn a_revision_that_almost_says_disk_is_refused_by_the_reader_and_disk_itself_reads() {
+    // Fable's 6d decision: `"disk"` exactly, or a revision, or null; each near miss refused
+    // naming `revision`, said as written (a string quoted, a number bare).
+    let f = fixture();
+    let one = boxes(1, 1, None);
+    let s = f.open(one.as_bytes());
+    for (value, said) in [
+        (r#""Disk""#, r#""Disk""#),
+        (r#""disk ""#, r#""disk ""#),
+        (r#"" disk""#, r#"" disk""#),
+        (r#""DISK""#, r#""DISK""#),
+        (r#""""#, r#""""#),
+        (r#""1""#, r#""1""#),
+        ("0", "0"),
+        ("-1", "-1"),
+    ] {
+        let envelope = f.called(&format!(
+            r#"{{"session": "{s}", "feature": null, "revision": {value}}}"#
+        ));
+        let (code, parameter, message) = refused(&envelope);
+        assert_eq!(
+            (code.as_str(), parameter.as_str()),
+            ("invalid_input", "revision"),
+            "{value}"
+        );
+        assert_eq!(
+            message,
+            format!(r#"revision must be an integer from 1, "disk", or null, got {said}"#)
+        );
+    }
+    // `true`, by its kind.
+    let envelope = f.called(&format!(
+        r#"{{"session": "{s}", "feature": null, "revision": true}}"#
+    ));
+    assert_eq!(refused(&envelope).1, "revision");
+    // The word: the file's bytes, outside a transaction reloading nothing (unchanged).
+    let envelope = f.called(&format!(
+        r#"{{"session": "{s}", "feature": null, "revision": "disk"}}"#
+    ));
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    assert_eq!(envelope["result"]["text"], one.as_str());
+    assert_eq!(envelope["session"]["reloaded"], false);
+}
+
+#[test]
+fn text_of_disk_just_under_sixteen_mib_inside_a_transaction_is_given_whole() {
+    // The agent's text near the limit, read through `"disk"` inside a transaction (nothing
+    // reloaded), whole; by name too, its answer under the response's bound.
+    const N: usize = 1000;
+    let f = fixture();
+    let original = near_the_limit(N, None);
+    let agents = near_the_limit(N, Some(617));
+    let s = f.open(original.as_bytes());
+    answer(f.sessions.begin(&s)).result.unwrap();
+    f.write(agents.as_bytes());
+    let read = f.disk_text(&s, None);
+    assert_eq!(read.session.as_ref().unwrap().revision, rev(1));
+    assert!(read.result.unwrap().text == agents, "the file's text");
+    let envelope = f.called(&format!(
+        r#"{{"session": "{s}", "feature": null, "revision": "disk"}}"#
+    ));
+    assert_eq!(envelope["ok"], true);
+    assert!(envelope["result"]["text"].as_str() == Some(agents.as_str()));
+    // A feature of it: its canonical text, the 617th box 5 long.
+    let id = feature_id(617);
+    let feature = f.disk_text(&s, Some(&id)).result.unwrap().text;
+    assert!(feature.contains("\"length\": 5,"), "{}", &feature[..200]);
+    // The session's own text is `begin`'s still.
+    assert!(f.text(&s, None, None).result.unwrap().text == original);
 }

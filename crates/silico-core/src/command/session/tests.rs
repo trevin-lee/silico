@@ -4,6 +4,7 @@ use super::rebuilds::*;
 use super::transaction::*;
 use super::types::*;
 use super::*;
+use crate::command::wire::Named;
 use crate::document;
 use crate::document::Checked;
 use crate::document::Measure;
@@ -2432,6 +2433,79 @@ fn a_file_this_sessions_own_save_left_part_written_isnt_reloaded() {
         part_written(f.path.to_str().unwrap(), &old)
     );
     assert_eq!(f.file(), "part written");
+}
+
+#[test]
+fn a_read_needs_the_strongest_of_its_sides() {
+    // Fable's 6d decision, by hand: a revision by number reads nothing; null, outside a
+    // transaction; "disk", inside one too; and a read of several sides, the strongest.
+    assert!(Rereads::Never < Rereads::OutsideTransaction);
+    assert!(Rereads::OutsideTransaction < Rereads::Always);
+    let one = Some(Named::Revision(Revision::OPENED));
+    let disk = Some(Named::Disk);
+    for (sides, need) in [
+        (vec![], Rereads::Never),
+        (vec![one], Rereads::Never),
+        (vec![one, one], Rereads::Never),
+        (vec![None], Rereads::OutsideTransaction),
+        (vec![one, None], Rereads::OutsideTransaction),
+        (vec![None, one], Rereads::OutsideTransaction),
+        (vec![disk], Rereads::Always),
+        (vec![one, disk], Rereads::Always),
+        (vec![disk, None], Rereads::Always),
+        (vec![None, disk], Rereads::Always),
+        (vec![disk, disk], Rereads::Always),
+    ] {
+        assert_eq!(Rereads::needed(sides.clone()), need, "{sides:?}");
+    }
+}
+
+#[test]
+fn a_disk_side_of_a_file_left_part_written_is_refused_as_the_next_save_would_be() {
+    // Fable's 6d decision: the session knows the file isn't what it holds, so its held
+    // bytes never stand in for it; the refusal is the one the next save gives, naming the
+    // side, outside a transaction and inside one alike.
+    let f = opened(STORED);
+    let old = f.path.with_file_name(".a.silico.fmt-1");
+    *f.session().held.session_changing().part_written_mut() = Some(old.clone());
+    std::fs::write(&f.path, "part written").unwrap();
+    let path = f.path.to_str().unwrap();
+    let one = Some(Named::Revision(Revision::OPENED));
+    for transaction in [false, true] {
+        if transaction {
+            f.sessions.begin(&f.id).wait().result.unwrap();
+        }
+        let response = f.sessions.diff(&f.id, one, Some(Named::Disk)).wait();
+        let session = response.session.unwrap();
+        assert_eq!(
+            (session.revision, session.reloaded),
+            (Revision::OPENED, false)
+        );
+        assert_eq!(
+            response.result.unwrap_err().errors(),
+            [part_written(path, &old).with_parameter("to")]
+        );
+        let text = f.sessions.text_at(&f.id, None, Some(Named::Disk)).wait();
+        assert_eq!(
+            text.result.unwrap_err().errors(),
+            [part_written(path, &old).with_parameter("revision")]
+        );
+        // A revision by number answers, the file unread.
+        assert_eq!(
+            f.sessions
+                .diff(&f.id, one, one)
+                .wait()
+                .result
+                .unwrap()
+                .changes,
+            []
+        );
+    }
+    // The old text put back: the read clears the mark, and `"disk"` is the file.
+    std::fs::write(&f.path, STORED).unwrap();
+    let response = f.sessions.diff(&f.id, one, Some(Named::Disk)).wait();
+    assert_eq!(response.result.unwrap().changes, []);
+    assert_eq!(f.session().held.read().part_written(), None);
 }
 
 /// Makes `dir` read-only until dropped: a save there can't make its file beside.
