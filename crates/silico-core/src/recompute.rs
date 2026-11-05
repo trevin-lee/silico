@@ -7433,12 +7433,17 @@ mod tests {
     fn a_models_unnamed_copy_shares_nothing_named_with_it() {
         // `unnamed` (and the test models made from it) gives a copy slots of its own: the
         // model named, the copy still has nothing named, and naming the copy names nothing
-        // of a fresh copy of the model's.
+        // of a fresh copy of the model's; nor is its live bodies' index the model's.
         let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
         let model = published(engine.start(Arc::new(boxes(2, |_| false))));
         model.name_all(|| true);
+        for (id, _) in model.features() {
+            model.live_body(id);
+        }
+        assert!(model.live.get().is_some());
         let unnamed = model.unnamed();
         let other = model.unnamed();
+        assert!(unnamed.live.get().is_none());
         for (id, _) in model.features() {
             assert!(model.named_element_map(id).is_some(), "{id}");
             assert!(unnamed.named_so_far(id).is_none(), "{id}");
