@@ -251,6 +251,23 @@ fn held_given_back_as_the_result_wrote_it_answers_the_body_named_with_no_geometr
         body["edge_points"],
         serde_json::json!([[0, 0, -1], [40, 20, 11]].repeat(15))
     );
+    // Each vertex the box's high corner, one for each the map names, each named once, with
+    // its name and stability alone.
+    let vertices = body["vertices"].as_array().unwrap();
+    assert!(!vertices.is_empty());
+    assert_eq!(
+        body["vertex_points"],
+        serde_json::json!(vec![[40, 20, 11]; vertices.len()])
+    );
+    let mut names = std::collections::BTreeSet::new();
+    for vertex in vertices {
+        assert_eq!(
+            vertex.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["name", "stable"]
+        );
+        let name = vertex["name"].as_str().unwrap();
+        assert!(name.contains("Vertex") && names.insert(name), "{vertex}");
+    }
     let held = format!(
         r#"[{{"key": {}, "deflection": {}}}]"#,
         body["key"], body["deflection"]
@@ -260,9 +277,17 @@ fn held_given_back_as_the_result_wrote_it_answers_the_body_named_with_no_geometr
     let second: serde_json::Value = serde_json::from_str(&second).unwrap();
     let again = &second["result"]["bodies"][0];
     assert_eq!(again["held"], true);
-    for array in ["positions", "normals", "triangles", "edge_points"] {
+    for array in [
+        "positions",
+        "normals",
+        "triangles",
+        "edge_points",
+        "vertex_points",
+    ] {
         assert_eq!(again[array], serde_json::json!([]), "{array}");
     }
+    // The vertices, named still, as they were.
+    assert_eq!(again["vertices"], body["vertices"]);
     // The same names, each count null.
     for (list, count) in [("faces", "triangles"), ("edges", "points")] {
         let names = |b: &serde_json::Value| -> Vec<serde_json::Value> {

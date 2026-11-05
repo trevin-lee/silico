@@ -19,6 +19,11 @@
       "edge_points": [[0, 0, 0], [60, 0, 0]],
       "edges": [
         {"name": "p0000001.pad.Edge(M s0000001.sketch.Edge.na000001)", "stable": true, "points": 2}
+      ],
+      "vertex_points": [[0, 0, 0], [60, 0, 0]],
+      "vertices": [
+        {"name": "p0000001.pad.Vertex(M s0000001.sketch.Vertex.pa000001)", "stable": true},
+        {"name": "p0000001.pad.Vertex(M s0000001.sketch.Vertex.pa000002)", "stable": true}
       ]
     }
   ]

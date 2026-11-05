@@ -810,6 +810,7 @@ mod tests {
             valid: None,
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
         });
         let name = Arc::new(
             Name::parse("aaaaaaaa.cut.Face1", &|_: &FeatureId| {
@@ -833,6 +834,7 @@ mod tests {
                 count: Some(u32::try_from(triangles).unwrap()),
             }],
             edges: vec![],
+            vertices: Vec::new(),
         };
         let camera = AnsweredCamera::of(&Camera {
             projection: Projection::Orthographic { view_height: 80.0 },
