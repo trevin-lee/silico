@@ -22488,6 +22488,36 @@ const EXAMPLE_PIN_SUPPRESSED: &str = r#"{
 }
 "#;
 
+/// A block, a hole cut in it, and a bore cut after the hole: the hole is mid-chain.
+const CHAIN: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"},
+    {"id": "r5dw1b7n", "type": "cylinder", "v": 1, "name": "Peg", "position": [10, 10, -1], "radius": 1.5, "height": 12},
+    {"id": "h2bx6c9p", "type": "cut", "v": 1, "name": "Bore", "base": "m3tq8v0z", "tool": "r5dw1b7n"}
+  ]
+}
+"#;
+
+/// CHAIN with its hole deleted, as `remove_feature` has it (docs/design/m5.0-app.md, A9):
+/// the bore, which consumed the hole, takes the hole's base, the block. Written by hand.
+const CHAIN_WITHOUT_HOLE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "r5dw1b7n", "type": "cylinder", "v": 1, "name": "Peg", "position": [10, 10, -1], "radius": 1.5, "height": 12},
+    {"id": "h2bx6c9p", "type": "cut", "v": 1, "name": "Bore", "base": "k7f2qx3m", "tool": "r5dw1b7n"}
+  ]
+}
+"#;
+
 #[test]
 fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
     let f = fixture();
@@ -22496,7 +22526,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
     let on = |label: &str| (label.to_owned(), None);
     let off = |label: &str, why: &str| (label.to_owned(), Some(why.to_owned()));
     // The timeline's, on the block (js/interact.js's `contextmenu`: Edit feature with
-    // "double-click", Suppress, then Find in browser).
+    // "double-click", Suppress, Find in browser, then Delete).
     // The block is inside the hole's body, which the browser lists by the hole: it has no
     // row there.
     menu_on(&mut h, "Timeline", "Block");
@@ -22509,6 +22539,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
                 "Find in browser",
                 "It's inside a body: the browser lists bodies and sketches"
             ),
+            on("Delete"),
         ]
     );
     // The prototype's right-click selects the feature it's on.
@@ -22529,6 +22560,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
             off("Edit feature double-click", "Subtract has no dialog yet"),
             on("Suppress"),
             on("Find in browser"),
+            on("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -22541,6 +22573,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
             off("Edit feature double-click", "Subtract has no dialog yet"),
             on("Suppress"),
             on("Find in timeline"),
+            on("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -22554,6 +22587,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
             off("Edit feature double-click", origin),
             off("Suppress", origin),
             off("Find in timeline", origin),
+            off("Delete", origin),
         ]
     );
     h.key_press(Key::Escape);
@@ -22573,13 +22607,14 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
                 "Find in browser",
                 "It's inside a body: the browser lists bodies and sketches"
             ),
+            off("Delete", dialog),
         ]
     );
     assert!(
         !h.state().tabs()[0]
             .sent
             .iter()
-            .any(|sent| matches!(sent, Sent::Suppress(..)))
+            .any(|sent| matches!(sent, Sent::Suppress(..) | Sent::Remove(_)))
     );
     assert_eq!(never_waits::waits(), 0);
 }
@@ -22608,6 +22643,7 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
                 "Find in browser".to_owned(),
                 Some("It built no body, so the browser has no row for it".to_owned())
             ),
+            ("Delete".to_owned(), None),
         ]
     );
     // Its block, whose consumer failed, is a body of its own now: found.
@@ -22686,6 +22722,46 @@ fn suppress_then_unsuppress_writes_and_drops_suppressed_and_undo_restores_each_t
     });
     settled(&mut h);
     assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn delete_of_a_mid_chain_feature_rewires_its_consumer_and_undo_puts_it_back() {
+    let f = fixture();
+    let (mut h, path) = f.opened("chain.silico", CHAIN);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Bore"));
+    assert_eq!(text_of(&f, &h), CHAIN);
+    // Delete from its menu: deleted at once, asking nothing (the prototype's `del`), the
+    // bore built on the block in its place.
+    menu_on(&mut h, "Timeline", "Hole");
+    menu_click(&mut h, "HOLE", "Delete");
+    step_until(&mut h, "deleted", |h| {
+        said_done(h, "Deleted").as_deref() == Some("Deleted Hole · Bore now builds on Block")
+    });
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), CHAIN_WITHOUT_HOLE);
+    assert!(!shows(&h, "Timeline", "Hole"));
+    // Nothing left selected of it; the file is as it was until a save.
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), CHAIN);
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    step_until(&mut h, "undone", |h| shows(h, "Timeline", "Hole"));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), CHAIN);
+    // The block deleted from its menu: nothing can stand in for the root of the bore's
+    // chain, so the core refuses, naming both, and that's said; nothing changes.
+    menu_on(&mut h, "Timeline", "Block");
+    menu_click(&mut h, "BLOCK", "Delete");
+    step_until(&mut h, "refused", |h| {
+        h.state().tabs()[0].message.is_some() && !h.state().tabs()[0].unsettled()
+    });
+    let said = h.state().tabs()[0].message.clone().unwrap();
+    assert!(
+        said.starts_with("k7f2qx3m is the root of m3tq8v0z's chain"),
+        "{said}"
+    );
+    assert_eq!(said_done(&h, "Deleted"), None);
+    assert_eq!(text_of(&f, &h), CHAIN);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -22850,7 +22926,12 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
                 .into_iter()
                 .map(|(label, _)| label)
                 .collect::<Vec<_>>(),
-            ["Edit feature double-click", "Suppress", "Find in browser",]
+            [
+                "Edit feature double-click",
+                "Suppress",
+                "Find in browser",
+                "Delete"
+            ]
         );
         if let Some(shot) = std::env::var_os("SILICO_APP_FEATURE_MENU_SHOT") {
             h.render().unwrap().save(shot).unwrap();

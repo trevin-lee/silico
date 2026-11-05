@@ -11,8 +11,9 @@ use silico_core::command::export::{Export, Exported};
 use silico_core::command::wire::Named;
 use silico_core::command::{
     Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, DiffAnswer, FieldSet,
-    ModelChoice, Moved, Problems, RebuildState, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, SessionInfo, Sessions, Status, Stepped, Suppressed, TextAnswer, TimelineAnswer,
+    ModelChoice, Moved, Problems, RebuildState, Removed, Replaced, Response, Revision, RolledBack,
+    Running, SessionId, SessionInfo, Sessions, Status, Stepped, Suppressed, TextAnswer,
+    TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
@@ -195,6 +196,11 @@ enum Queued {
         feature: FeatureId,
         suppressed: bool,
     },
+    /// A feature deleted (`remove_feature`), from a menu: what consumed it rewired to its
+    /// base.
+    Remove {
+        feature: FeatureId,
+    },
     /// A dialog's new feature (`add_feature`), of `kind`, of the dialog numbered `serial`:
     /// the members its dialog gave ([`Dialog::add`]), and, for a sweep, the body it builds
     /// on, read from the document when the add comes up ([`Body`]).
@@ -268,6 +274,8 @@ pub enum Sent {
     Move(FeatureId, Option<FeatureId>),
     /// `suppress_feature`, of the feature, suppressed or (false) unsuppressed.
     Suppress(FeatureId, bool),
+    /// `remove_feature`, of the feature.
+    Remove(FeatureId),
     /// `replace_text`: Restore's edit.
     Replace,
     Undo(Option<Revision>),
@@ -325,6 +333,7 @@ impl Edits {
                 | Queued::Step { .. }
                 | Queued::Move { .. }
                 | Queued::Suppress { .. }
+                | Queued::Remove { .. }
                 | Queued::Add { .. }
                 | Queued::Opened
                 | Queued::Load { .. }
@@ -358,6 +367,11 @@ enum Under {
     Suppress {
         sending: Sending,
         running: Running<Suppressed>,
+    },
+    /// A deletion, as it was sent.
+    Remove {
+        sending: Sending,
+        running: Running<Removed>,
     },
     /// A Save As, the path it was given, which the tab asks to replace if a file is
     /// there, whether the tab began the transaction it commits (rolled back if it's
@@ -632,9 +646,9 @@ pub struct Tab {
     /// The last refusal a command of the tab's answered, as said to the person, until
     /// their next action (an edit, a save, a revert, a step).
     pub message: Option<String>,
-    /// What the last suppression did, as said to the person (the prototype's toast, in the
-    /// status bar): what it suppressed with the feature. Until their next action, as
-    /// [`message`](Self::message) is.
+    /// What the last suppression or deletion did, as said to the person (the prototype's
+    /// toast, in the status bar): what it suppressed with the feature, or rewired in its
+    /// place. Until their next action, as [`message`](Self::message) is.
     pub told: Option<String>,
     /// A save or a revert that was to close the tab was refused: the tab stays, and a quit
     /// waiting on it stops ([`take_close_refused`](Self::take_close_refused)).
@@ -1048,6 +1062,7 @@ impl Tab {
                 queued,
                 Queued::Move { .. }
                     | Queued::Suppress { .. }
+                    | Queued::Remove { .. }
                     | Queued::Add { .. }
                     | Queued::Replace { .. }
             )
@@ -1056,6 +1071,7 @@ impl Tab {
                 under,
                 Under::Move { .. }
                     | Under::Suppress { .. }
+                    | Under::Remove { .. }
                     | Under::Add { .. }
                     | Under::Base { .. }
                     | Under::Replace { .. }
@@ -1636,6 +1652,26 @@ impl Tab {
                 }
                 Err(running) => Some(Under::Suppress { sending, running }),
             },
+            Under::Remove { sending, running } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    match response.result {
+                        Ok(removed) => {
+                            // Selected no longer: its properties have nothing to show.
+                            if self.selection.has_feature(&removed.feature.id) {
+                                self.selection.clear();
+                            }
+                            self.told = Some(crate::feature_menu::removed_words(&removed, |id| {
+                                self.name_of(id)
+                            }));
+                        }
+                        Err(problems) => self.message = Some(said(&problems)),
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Remove { sending, running }),
+            },
             Under::Base {
                 serial,
                 kind,
@@ -1973,6 +2009,16 @@ impl Tab {
                         ),
                     });
                 }
+                Queued::Remove { feature } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::Remove(feature.clone()));
+                    let sending = self.sending();
+                    self.under.push(Under::Remove {
+                        sending,
+                        running: sessions.remove_feature(&self.id, self.revision, feature),
+                    });
+                }
                 Queued::Opened => {
                     self.dialog_base = Some(self.revision);
                     self.dialog_began = !self.transaction && !self.beginning;
@@ -2157,6 +2203,7 @@ impl Tab {
                         | Under::Step(_)
                         | Under::Move { .. }
                         | Under::Suppress { .. }
+                        | Under::Remove { .. }
                         | Under::Add { .. }
                         | Under::Base { .. }
                         | Under::Restore { .. }
@@ -2280,6 +2327,27 @@ impl Tab {
         self.advance(sessions);
     }
 
+    /// The feature `feature` deleted (`remove_feature`; the prototype's Delete, which asks
+    /// nothing), as a move is: one undo puts it back. What consumed it takes its base, which
+    /// the status bar lists; where nothing can stand in, the core refuses, naming both, and
+    /// that's said. Never while a dialog is open or the tab closes.
+    pub fn remove_feature<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        feature: FeatureId,
+    ) {
+        if self.in_dialog() {
+            self.message = Some("Close the dialog before deleting a feature".to_owned());
+            return;
+        }
+        if self.closing() {
+            return;
+        }
+        self.hush();
+        self.edits.queue.push_back(Queued::Remove { feature });
+        self.advance(sessions);
+    }
+
     /// Whether the browser has a row for the feature `id`: a body's or a sketch's.
     pub fn in_browser(&self, id: &FeatureId) -> bool {
         self.browser
@@ -2295,8 +2363,8 @@ impl Tab {
             .map_or_else(|| id.as_str().to_owned(), |entry| entry.name.clone())
     }
 
-    /// The person's next action: the last refusal said, and what the last suppression did,
-    /// let go.
+    /// The person's next action: the last refusal said, and what the last suppression or
+    /// deletion did, let go.
     fn hush(&mut self) {
         self.message = None;
         self.told = None;

@@ -2,20 +2,26 @@
 //! 8, *The timeline*: "Right-click also gives Rename, Suppress or Unsuppress, and Find in
 //! Browser"; the approved prototype's `contextmenu` handler in js/interact.js): the right-click
 //! menu each draws for a feature, its items in the prototype's order and words, each off
-//! with its reason where it can't apply; and what the status bar says a suppression did
-//! (the prototype's toast).
+//! with its reason where it can't apply; and what the status bar says a suppression or a
+//! deletion did (the prototype's toast).
 //!
 //! Every item goes through the core's commands (invariant 3): Edit feature opens the
-//! feature's dialog as a double-click does, and Suppress and Unsuppress are
-//! `suppress_feature`, an edit in the tab's transaction, so one undo takes it back.
+//! feature's dialog as a double-click does, Suppress and Unsuppress are
+//! `suppress_feature`, and Delete is `remove_feature`, each an edit in the tab's
+//! transaction, so one undo takes it back. Delete asks nothing first, as the prototype's
+//! `del`: SolidWorks' Confirm Delete lists a feature's absorbed and child features, to
+//! delete with it or keep, but the core never deletes a child with its parent: it rewires
+//! what consumed the feature to its base, says so, and refuses, naming both, where nothing
+//! can stand in, so there's nothing to confirm and the undo is there.
 //!
 //! Left out: the prototype's "Roll back to here". SEAM: the core has no rollback (the
-//! rollback bar is out of M5, DESIGN.md's Proposal 5); the item goes after Find in… once
-//! it has one.
+//! rollback bar is out of M5, DESIGN.md's Proposal 5); the item goes between Find in… and
+//! Delete once it has one.
 
 use eframe::egui::{self, RichText, Ui};
-use silico_core::command::Suppressed;
+use silico_core::command::{Removed, Suppressed};
 use silico_core::document::FeatureId;
+use silico_core::document::chain::Rewired;
 use silico_core::timeline::{Entry, Health};
 
 use crate::tab::Tab;
@@ -39,6 +45,7 @@ pub enum Act {
     FindInBrowser(FeatureId),
     /// Find in timeline: the feature selected, its item scrolled to.
     FindInTimeline(FeatureId),
+    Delete(FeatureId),
 }
 
 /// One of the menu's items, in the prototype's order.
@@ -47,10 +54,11 @@ pub enum Item {
     Edit,
     Suppress,
     Find,
+    Delete,
 }
 
-/// The items, in order (the prototype's: Edit, Suppress, Find in…).
-pub const ITEMS: [Item; 3] = [Item::Edit, Item::Suppress, Item::Find];
+/// The items, in order (the prototype's: Edit, Suppress, Find in…, a separator, Delete).
+pub const ITEMS: [Item; 4] = [Item::Edit, Item::Suppress, Item::Find, Item::Delete];
 
 /// An item as the menu shows it: its words, the keys or gesture beside them, and why it's
 /// off, if it is.
@@ -75,6 +83,7 @@ pub fn label(item: Item, entry: &Entry, place: Place) -> &'static str {
             Place::Timeline => "Find in browser",
             Place::Browser => "Find in timeline",
         },
+        Item::Delete => "Delete",
     }
 }
 
@@ -121,7 +130,7 @@ pub fn off(tab: &Tab, entry: &Entry, item: Item, place: Place) -> Option<String>
                 Some(unchangeable(tab).unwrap_or_else(|| "Its dialog can't open now".to_owned()))
             }
         }
-        Item::Suppress => unchangeable(tab),
+        Item::Suppress | Item::Delete => unchangeable(tab),
         Item::Find => match place {
             Place::Browser => None,
             Place::Timeline if tab.in_browser(&entry.id) => None,
@@ -156,7 +165,7 @@ pub fn items(tab: &Tab, entry: &Entry, place: Place) -> Vec<Shown> {
             label: label(item, entry, place).to_owned(),
             keys: match item {
                 Item::Edit => Some("double-click".to_owned()),
-                Item::Suppress | Item::Find => None,
+                Item::Suppress | Item::Find | Item::Delete => None,
             },
             off: off(tab, entry, item, place),
         })
@@ -173,10 +182,15 @@ fn head(ui: &mut Ui, name: &str) {
     );
 }
 
-/// One item (`.menu .mi`), on or off: off, its reason its hover text and its description
-/// for a screen reader. Whether it was clicked.
-fn item(ui: &mut Ui, label: &str, keys: Option<&str>, off: Option<&str>) -> bool {
-    let mut button = egui::Button::new(label);
+/// One item (`.menu .mi`, Delete's `.danger` red), on or off: off, its reason its hover
+/// text and its description for a screen reader. Whether it was clicked.
+fn item(ui: &mut Ui, label: &str, keys: Option<&str>, off: Option<&str>, danger: bool) -> bool {
+    let text = if danger {
+        RichText::new(label).color(theme::ERROR_TEXT)
+    } else {
+        RichText::new(label)
+    };
+    let mut button = egui::Button::new(text);
     if let Some(keys) = keys {
         button = button.shortcut_text(keys);
     }
@@ -191,17 +205,21 @@ fn item(ui: &mut Ui, label: &str, keys: Option<&str>, off: Option<&str>) -> bool
 }
 
 /// The right-click menu of the feature `entry`, at `place` (the prototype's, in its order:
-/// the name, Edit feature, Suppress or Unsuppress, Find in…): what was clicked, the menu
-/// closed.
+/// the name, Edit feature, Suppress or Unsuppress, Find in…, a separator, Delete): what
+/// was clicked, the menu closed.
 pub fn menu(ui: &mut Ui, tab: &Tab, entry: &Entry, place: Place) -> Option<Act> {
     head(ui, &entry.name);
     let mut asked = None;
     for shown in items(tab, entry, place) {
+        if shown.item == Item::Delete {
+            ui.separator();
+        }
         let clicked = item(
             ui,
             &shown.label,
             shown.keys.as_deref(),
             shown.off.as_deref(),
+            shown.item == Item::Delete,
         );
         if clicked {
             let id = entry.id.clone();
@@ -212,6 +230,7 @@ pub fn menu(ui: &mut Ui, tab: &Tab, entry: &Entry, place: Place) -> Option<Act> 
                     Place::Timeline => Act::FindInBrowser(id),
                     Place::Browser => Act::FindInTimeline(id),
                 },
+                Item::Delete => Act::Delete(id),
             });
             ui.close();
         }
@@ -228,8 +247,13 @@ pub fn origin_menu(ui: &mut Ui, name: &str) {
         ("Edit feature", Some("double-click")),
         ("Suppress", None),
         ("Find in timeline", None),
+        ("Delete", None),
     ] {
-        item(ui, label, keys, Some(&off));
+        let danger = label == "Delete";
+        if danger {
+            ui.separator();
+        }
+        item(ui, label, keys, Some(&off), danger);
     }
 }
 
@@ -257,6 +281,10 @@ pub fn act<P: silico_core::kernel::Clients + 'static>(
         Act::FindInTimeline(id) => {
             tab.show_in_timeline(id);
             false
+        }
+        Act::Delete(id) => {
+            tab.remove_feature(sessions, id);
+            true
         }
     }
 }
@@ -296,6 +324,28 @@ pub fn suppressed_words(done: &Suppressed, name: impl Fn(&FeatureId) -> String) 
         (false, _) => "which it needs",
     };
     Some(format!("{word} {feature}, and {}, {with}", listed(&others)))
+}
+
+/// What the status bar says a deletion did: the feature deleted, then each feature rewired
+/// in its place, by `name`.
+pub fn removed_words(removed: &Removed, name: impl Fn(&FeatureId) -> String) -> String {
+    let mut words = format!("Deleted {}", removed.feature.name);
+    for rewired in &removed.rewired {
+        words.push_str(" · ");
+        words.push_str(&rewired_words(rewired, &name));
+    }
+    words
+}
+
+/// What `rewired` changed, in words.
+fn rewired_words(rewired: &Rewired, name: impl Fn(&FeatureId) -> String) -> String {
+    let feature = name(&rewired.feature);
+    match (rewired.field, &rewired.to) {
+        ("base", Some(to)) => format!("{feature} now builds on {}", name(to)),
+        ("base", None) => format!("{feature} now begins a body"),
+        (field, Some(to)) => format!("{feature}'s {field} is now {}", name(to)),
+        (field, None) => format!("{feature} has no {field} now"),
+    }
 }
 
 #[cfg(test)]
@@ -365,5 +415,31 @@ mod tests {
         assert_eq!(listed(&names(&["A"])), "A");
         assert_eq!(listed(&names(&["A", "B"])), "A and B");
         assert_eq!(listed(&names(&["A", "B", "C"])), "A, B, and C");
+    }
+
+    #[test]
+    fn a_rewiring_says_what_each_feature_builds_on_now() {
+        let rewired = |field: &'static str, to: Option<&str>| Rewired {
+            feature: fid("d0000001"),
+            field,
+            from: Some(fid("c0000001")),
+            to: to.map(fid),
+        };
+        assert_eq!(
+            rewired_words(&rewired("base", Some("a0000001")), named),
+            "Bore now builds on Block"
+        );
+        assert_eq!(
+            rewired_words(&rewired("base", None), named),
+            "Bore now begins a body"
+        );
+        assert_eq!(
+            rewired_words(&rewired("tool", Some("b0000001")), named),
+            "Bore's tool is now Pin"
+        );
+        assert_eq!(
+            rewired_words(&rewired("tool", None), named),
+            "Bore has no tool now"
+        );
     }
 }
