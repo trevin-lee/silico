@@ -546,6 +546,33 @@ pub(crate) fn card(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -
     asked
 }
 
+/// A card for each of `listed`, of `tab`'s document (`errCard(p)`, as `docProps` and the
+/// `whatswrong` modal list them): each by the name of the feature it names, with Edit
+/// (enabled where its dialog can open now) and Show in timeline where the timeline lists
+/// that feature, and Copy as JSON; each card's widgets under `salt` and its place. What a
+/// card's button asked, if one was.
+pub(crate) fn document_cards(
+    ui: &mut Ui,
+    tab: &crate::tab::Tab,
+    listed: &[Said],
+    salt: &str,
+) -> Option<CardAct> {
+    let mut asked = None;
+    for (place, said) in listed.iter().enumerate() {
+        let entry = said.feature().and_then(|id| tab.entry(id));
+        let offer = Offer {
+            edit: Some(entry.is_some_and(|entry| tab.can_edit(&entry.id))),
+            show: entry.is_some(),
+        };
+        let name = entry.map(|entry| entry.name.as_str());
+        let card = ui
+            .push_id((salt, place), |ui| card(ui, said, name, offer))
+            .inner;
+        asked = asked.or(card);
+    }
+    asked
+}
+
 /// `text` in the body's type on a line of the body's, in `colour`, unwrapped (a label
 /// wraps it).
 fn card_words(text: &str, colour: Color32) -> LayoutJob {
@@ -1854,5 +1881,22 @@ mod tests {
             )],
             "the card"
         );
+    }
+
+    #[test]
+    fn a_chip_keeps_a_name_of_34_characters_whole_and_cuts_a_longer_one_to_32_by_characters() {
+        // 34 characters: whole.
+        let whole = "k7f2qx3m.box.Edge12345678901234567";
+        assert_eq!(whole.chars().count(), 34);
+        assert_eq!(chip_text(whole), "k7f2qx3m.box.Edge12345678901234567");
+        // 35: its first 32, then an ellipsis.
+        let long = "k7f2qx3m.box.Edge123456789012345678";
+        assert_eq!(long.chars().count(), 35);
+        assert_eq!(chip_text(long), "k7f2qx3m.box.Edge123456789012345…");
+        // 35 characters of two bytes each (70 bytes): cut at the 32nd character, not the
+        // 32nd byte, and a name of 34 such characters (68 bytes) kept whole.
+        let wide = "é".repeat(35);
+        assert_eq!(chip_text(&wide), format!("{}…", "é".repeat(32)));
+        assert_eq!(chip_text(&"é".repeat(34)), "é".repeat(34));
     }
 }

@@ -22013,15 +22013,16 @@ fn a_chamfer_dialog_fed_the_selection_of_an_edge_writes_a_chamfer_of_its_distanc
 
 /// Three blocks side by side: the first and the third short enough for the kernel to refuse
 /// ([`refuses_the_short_blocks`]), the second built, warned only of its missing fingerprint
-/// (the document stores none: `fingerprint_missing`).
+/// (the document stores none: `fingerprint_missing`). Their IDs are out of their order (c,
+/// a, b), so a list in the IDs' order isn't the document's.
 const THREE_BLOCKS: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
   "naming": 5,
   "features": [
-    {"id": "a0000001", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
-    {"id": "b0000001", "type": "box", "v": 1, "name": "Second", "position": [20, 0, 0], "length": 20, "width": 10, "height": 10},
-    {"id": "c0000001", "type": "box", "v": 1, "name": "Third", "position": [50, 0, 0], "length": 10, "width": 10, "height": 10}
+    {"id": "c0000001", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
+    {"id": "a0000001", "type": "box", "v": 1, "name": "Second", "position": [20, 0, 0], "length": 20, "width": 10, "height": 10},
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Third", "position": [50, 0, 0], "length": 10, "width": 10, "height": 10}
   ]
 }
 "#;
@@ -22075,7 +22076,7 @@ fn whats_wrong_lists_two_failures_and_a_warning_in_the_documents_order_each_its_
     });
     step(&mut h);
     // Its head names the document; each card names its feature, by name and ID, in the
-    // document's order: First's error, Second's warning, Third's error.
+    // document's order (not its IDs'): First's error, Second's warning, Third's error.
     assert!(
         whats_wrong(&h)
             .unwrap()
@@ -22085,36 +22086,54 @@ fn whats_wrong_lists_two_failures_and_a_warning_in_the_documents_order_each_its_
     assert_eq!(
         in_whats_wrong(&h, "Feature: "),
         [
-            "Feature: First a0000001",
-            "Feature: Second b0000001",
-            "Feature: Third c0000001"
+            "Feature: First c0000001",
+            "Feature: Second a0000001",
+            "Feature: Third b0000001"
         ]
     );
-    // Each with its code, as the fake was told and the core warns, and its message, as the
-    // core's own check says it.
+    // Each card's code and message, the fake's refusal and the core's warning as written by
+    // hand, under that card's head: below the card before's Feature row, above its own.
     let open = whats_wrong(&h).unwrap();
     let top = |label: &str| -> Vec<f32> {
         open.query_all_by_label(label)
             .map(|node| node.rect().top())
             .collect()
     };
-    let failed = top("kernel_failed");
-    let warned = top("fingerprint_missing");
-    assert_eq!((failed.len(), warned.len()), (2, 1));
-    assert!(
-        failed[0] < warned[0] && warned[0] < failed[1],
-        "{failed:?}, {warned:?}"
-    );
-    for (feature, said) in [
-        ("a0000001", "First"),
-        ("b0000001", "Second"),
-        ("c0000001", "Third"),
+    let rows: Vec<f32> = open
+        .query_all_by_label_contains("Feature: ")
+        .map(|node| node.rect().top())
+        .collect();
+    assert!(rows[0] < rows[1] && rows[1] < rows[2], "{rows:?}");
+    let apart = "the block came apart";
+    let unprinted = "a0000001 built, but its file stores no fingerprint, so a change in what it \
+                     builds isn't caught as drift";
+    for (label, count) in [
+        ("kernel_failed", 2),
+        ("fingerprint_missing", 1),
+        (apart, 2),
+        (unprinted, 1),
     ] {
-        let message = core_says(&f, THREE_BLOCKS, feature);
-        assert!(
-            open.query_all_by_label(&message).count() >= 1,
-            "{said}'s {message:?}"
-        );
+        assert_eq!(top(label).len(), count, "{label:?}");
+    }
+    for (card, (code, message)) in [
+        ("kernel_failed", apart),
+        ("fingerprint_missing", unprinted),
+        ("kernel_failed", apart),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let above = card.checked_sub(1).map_or(f32::NEG_INFINITY, |at| rows[at]);
+        for label in [code, message] {
+            assert_eq!(
+                top(label)
+                    .into_iter()
+                    .filter(|at| above < *at && *at < rows[card])
+                    .count(),
+                1,
+                "card {card}'s {label:?}: {rows:?}"
+            );
+        }
     }
     // Every card offers Edit, Show in timeline, and Copy as JSON (`errCard(p)`).
     for button in ["Edit First", "Edit Second", "Edit Third"] {
@@ -22204,6 +22223,50 @@ fn whats_wrong_opens_from_the_status_bar_the_timeline_and_the_documents_row_and_
         silico_app::shortcuts::Command::WhatsWrong.label(),
         "What's wrong"
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn whats_wrong_lists_the_first_hundred_warnings_and_counts_the_thirty_past_them() {
+    // 130 blocks, none with a fingerprint: 130 `fingerprint_missing` warnings, of which the
+    // core lists the first 100.
+    let f = fixture();
+    let blocks = (0..130)
+        .map(|at| {
+            format!(
+                r#"    {{"id": "f{at:07}", "type": "box", "v": 1, "name": "Block {at}", "position": [{x}, 0, 0], "length": 10, "width": 10, "height": 10}}"#,
+                x = at * 20
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let text = format!(
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n{blocks}\n  ]\n}}\n"
+    );
+    let (mut h, _) = f.opened("many.silico", &text);
+    step_until(&mut h, "the timeline warned", |h| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_ref())
+            .is_some_and(|features| features.iter().all(|entry| entry.warnings == 1))
+    });
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("many")
+        .click();
+    step_until(&mut h, "a hundred listed", |h| {
+        in_whats_wrong(h, "Feature: ").len() == 100
+    });
+    step(&mut h);
+    let open = whats_wrong(&h).unwrap();
+    assert_eq!(open.query_all_by_label("fingerprint_missing").count(), 100);
+    // The first hundred, in the document's order: Block 0 to Block 99.
+    let features = in_whats_wrong(&h, "Feature: ");
+    assert_eq!(features[0], "Feature: Block 0 f0000000");
+    assert_eq!(features[99], "Feature: Block 99 f0000099");
+    // Then the thirty past them, counted; no errors to count.
+    assert!(open.query_by_label("and 30 more warnings").is_some());
+    assert_eq!(open.query_all_by_label_contains(" more error").count(), 0);
     assert_eq!(never_waits::waits(), 0);
 }
 

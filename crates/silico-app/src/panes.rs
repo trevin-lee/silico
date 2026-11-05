@@ -635,22 +635,7 @@ fn selected_element(ui: &mut Ui, picked: &crate::selection::Picked) {
 /// with Edit and Show in timeline for a feature it names). What a card's button asked, if
 /// one was.
 fn problems(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
-    let mut asked = None;
-    for (place, said) in tab.document_problems.iter().enumerate() {
-        let entry = said.feature().and_then(|id| tab.entry(id));
-        let offer = properties::Offer {
-            edit: Some(entry.is_some_and(|entry| tab.can_edit(&entry.id))),
-            show: entry.is_some(),
-        };
-        let name = entry.map(|entry| entry.name.as_str());
-        let card = ui
-            .push_id(("document-problem", place), |ui| {
-                properties::card(ui, said, name, offer)
-            })
-            .inner;
-        asked = asked.or(card);
-    }
-    asked
+    properties::document_cards(ui, tab, &tab.document_problems, "document-problem")
 }
 
 /// The document's properties, with nothing selected (`docProps`): its head (its file's name

@@ -41,6 +41,13 @@ pub struct Said {
     pub source: Option<Source>,
 }
 
+/// How many errors and warnings a `check` counted past those it listed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Unlisted {
+    pub errors: u64,
+    pub warnings: u64,
+}
+
 /// What the core said, kept whole: an error, or a warning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -526,6 +533,8 @@ pub struct Tab {
     /// its warnings), and the timeline it answers (its revision and model): What's Wrong's
     /// list.
     listed: Vec<Said>,
+    /// How many errors and warnings that `check` counted past those it listed.
+    unlisted: Unlisted,
     listed_for: Option<(Revision, Option<Revision>)>,
     /// What's Wrong is open over the window (docs/ux/solidworks.md, §5, *Errors and
     /// warnings*): while it is, the tab reads a `check` of its model whenever the timeline
@@ -730,6 +739,7 @@ impl Tab {
             said: BTreeMap::new(),
             document_problems: problems.errors().iter().map(Said::of).collect(),
             listed: Vec::new(),
+            unlisted: Unlisted::default(),
             listed_for: None,
             whats_wrong: false,
             timeline_scroll: None,
@@ -1398,6 +1408,7 @@ impl Tab {
         if !marked(&timeline) {
             self.said.clear();
             self.listed.clear();
+            self.unlisted = Unlisted::default();
         }
         if timeline.problems == 0 {
             self.document_problems.clear();
@@ -3175,6 +3186,16 @@ impl Tab {
         self.said = by_feature;
         self.document_problems = document;
         self.listed = listed;
+        self.unlisted = Unlisted {
+            errors: answer
+                .problems
+                .total()
+                .saturating_sub(answer.problems.errors().len() as u64),
+            warnings: answer
+                .warnings
+                .total()
+                .saturating_sub(answer.warnings.listed().len() as u64),
+        };
         self.listed_for = self.checked;
     }
 
@@ -3188,6 +3209,12 @@ impl Tab {
         }
         (self.listed_for == Some((timeline.revision, timeline.model)))
             .then_some(self.listed.as_slice())
+    }
+
+    /// How many errors and warnings the `check` [`listed`](Self::listed) answers counted
+    /// past those it lists (the core lists the first hundred of each, and counts them all).
+    pub fn unlisted(&self) -> Unlisted {
+        self.unlisted
     }
 }
 
@@ -3742,18 +3769,19 @@ mod tests {
 
     #[test]
     fn whats_wrong_lists_every_problem_and_warning_in_the_documents_order() {
-        // The timeline: a, b, c. The core gave c's error, a's error, a problem of no
-        // feature, b's warning, a's warning, and a warning of a feature it doesn't list.
+        // The timeline: c, a, b, out of their IDs' order. The core gave a's error, b's
+        // error, a problem of no feature, c's warning, a's warning, and a warning of a
+        // feature it doesn't list.
         let entries = [
-            entry("a0000001", 2, 1),
-            entry("b0000001", 0, 1),
-            entry("c0000001", 1, 0),
+            entry("c0000001", 0, 1),
+            entry("a0000001", 1, 1),
+            entry("b0000001", 1, 0),
         ];
         let mut listed = vec![
-            Said::of(&failed("c fails", Some("c0000001"))),
             Said::of(&failed("a fails", Some("a0000001"))),
+            Said::of(&failed("b fails", Some("b0000001"))),
             Said::of(&failed("the document fails", None)),
-            Said::of_warning(&warned("b warns", "b0000001")),
+            Said::of_warning(&warned("c warns", "c0000001")),
             Said::of_warning(&warned("a warns", "a0000001")),
             Said::of_warning(&warned("z warns", "z0000001")),
         ];
@@ -3767,10 +3795,10 @@ mod tests {
         in_document_order(&mut listed, &entries, false);
         let want = [
             ("the document fails", false),
+            ("c warns", true),
             ("a fails", false),
             ("a warns", true),
-            ("b warns", true),
-            ("c fails", false),
+            ("b fails", false),
             ("z warns", true),
         ]
         .map(|(message, warning)| (message.to_owned(), warning));
@@ -3783,10 +3811,10 @@ mod tests {
                 .map(|(message, _)| message.as_str())
                 .collect::<Vec<_>>(),
             [
-                "c fails",
                 "a fails",
+                "b fails",
                 "the document fails",
-                "b warns",
+                "c warns",
                 "a warns",
                 "z warns"
             ]
@@ -3833,6 +3861,81 @@ mod tests {
         // Nothing marked: nothing to list.
         tab.took_timeline(timeline(0, Some(one), vec![entry("a0000001", 0, 0)]));
         assert_eq!(messages(&tab), Some(Vec::new()));
+        // A check of revision 1 that answers once the timeline shows revision 2: listed for
+        // the revision it was asked of, so not for the one shown.
+        tab.checked = Some((one, Some(one)));
+        let mut later = timeline(0, Some(one), vec![entry("b0000001", 1, 0)]);
+        later.revision = one.next().unwrap();
+        tab.took_timeline(later);
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(failed("b fails", Some("b0000001"))),
+                warnings: silico_core::warnings::Warnings::none(),
+            },
+            false,
+        );
+        assert_eq!(messages(&tab), None);
+    }
+
+    #[test]
+    fn whats_wrong_counts_the_errors_and_warnings_the_core_counted_past_those_it_listed() {
+        let one = Revision::OPENED;
+        // 130 warnings: the core lists 100, and counts 30 more.
+        let mut tab = tab();
+        tab.took_timeline(timeline(0, Some(one), vec![entry("a0000001", 0, 130)]));
+        tab.checked = Some((one, Some(one)));
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(failed("a fails", Some("a0000001"))),
+                warnings: silico_core::warnings::Warnings::of(
+                    (0..130).map(|_| warned("a warns", "a0000001")),
+                ),
+            },
+            false,
+        );
+        assert_eq!(tab.listed().map(<[Said]>::len), Some(101));
+        assert_eq!(
+            tab.unlisted(),
+            Unlisted {
+                errors: 0,
+                warnings: 30
+            }
+        );
+        // A document the gate refuses for 130 boxes of no length: 100 errors listed, and 30
+        // more counted.
+        let boxes = (0..130)
+            .map(|at| {
+                format!(
+                    r#"{{"id": "f{at:07}", "type": "box", "v": 1, "name": "Box", "position": [0, 0, 0], "length": 0, "width": 1, "height": 1}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{boxes}]}}"#
+        );
+        let document = silico_core::document::read(text.as_bytes()).unwrap();
+        let invalid = silico_core::document::validate(&document).unwrap_err();
+        assert_eq!((invalid.errors().len(), invalid.total()), (100, 130));
+        tab.took_timeline(timeline(130, Some(one), vec![entry("f0000000", 0, 0)]));
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(invalid),
+                warnings: silico_core::warnings::Warnings::none(),
+            },
+            true,
+        );
+        assert_eq!(tab.listed().map(<[Said]>::len), Some(100));
+        assert_eq!(
+            tab.unlisted(),
+            Unlisted {
+                errors: 30,
+                warnings: 0
+            }
+        );
+        // Nothing marked: none counted.
+        tab.took_timeline(timeline(0, Some(one), vec![entry("a0000001", 0, 0)]));
+        assert_eq!(tab.unlisted(), Unlisted::default());
     }
 
     #[test]

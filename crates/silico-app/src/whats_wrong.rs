@@ -20,7 +20,7 @@ use eframe::egui::{self, Rect, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
 use crate::bar;
 use crate::icons::{ICON_SIZE, Icon, IconSize};
 use crate::modal;
-use crate::properties::{self, CardAct, Offer};
+use crate::properties::{self, CardAct};
 use crate::tab::Tab;
 use crate::theme;
 
@@ -136,7 +136,8 @@ fn body(ui: &mut Ui, tab: &Tab) -> Option<CardAct> {
 }
 
 /// Each problem's card (`errCard(p)`: Edit, Show in timeline, and Copy as JSON), by the
-/// name of the feature it names; or the hint.
+/// name of the feature it names, then how many errors and warnings the core counted past
+/// those it listed, as a card's "the first N of M" counts its elements; or the hint.
 fn cards(ui: &mut Ui, tab: &Tab) -> Option<CardAct> {
     let Some(listed) = tab.listed() else {
         properties::hint(ui, &[(READING, false)]);
@@ -146,20 +147,43 @@ fn cards(ui: &mut Ui, tab: &Tab) -> Option<CardAct> {
         properties::hint(ui, &[(NOTHING_WRONG, false)]);
         return None;
     }
-    let mut asked = None;
-    for (place, said) in listed.iter().enumerate() {
-        let entry = said.feature().and_then(|id| tab.entry(id));
-        let offer = Offer {
-            edit: Some(entry.is_some_and(|entry| tab.can_edit(&entry.id))),
-            show: entry.is_some(),
-        };
-        let name = entry.map(|entry| entry.name.as_str());
-        let card = ui
-            .push_id(("whats-wrong", place), |ui| {
-                properties::card(ui, said, name, offer)
-            })
-            .inner;
-        asked = asked.or(card);
+    let asked = properties::document_cards(ui, tab, listed, "whats-wrong");
+    let unlisted = tab.unlisted();
+    for (count, one, many) in [
+        (unlisted.errors, "error", "errors"),
+        (unlisted.warnings, "warning", "warnings"),
+    ] {
+        if let Some(more) = more(count, one, many) {
+            properties::hint(ui, &[(&more, false)]);
+        }
     }
     asked
+}
+
+/// What's said of `count` more problems than are listed, `one` or `many` of them ("and 30
+/// more warnings"): nothing for none.
+fn more(count: u64, one: &str, many: &str) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some(format!("and 1 more {one}")),
+        count => Some(format!("and {count} more {many}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::more;
+
+    #[test]
+    fn what_is_said_of_those_unlisted_counts_them_in_the_singular_or_plural() {
+        assert_eq!(more(0, "error", "errors"), None);
+        assert_eq!(
+            more(1, "error", "errors").as_deref(),
+            Some("and 1 more error")
+        );
+        assert_eq!(
+            more(30, "warning", "warnings").as_deref(),
+            Some("and 30 more warnings")
+        );
+    }
 }
