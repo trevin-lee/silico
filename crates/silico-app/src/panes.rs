@@ -75,19 +75,56 @@ impl Pane {
 }
 
 /// Fusion's layout: the browser, the canvas, and the property panel side by side (the
-/// timeline, a panel of its own, is under them: `crate::timeline`).
+/// timeline, a panel of its own, is under them: `crate::timeline`), sized for each frame's
+/// width by [`fit`].
 pub fn layout() -> Tree<Pane> {
     let mut tiles = Tiles::default();
     let browser = tiles.insert_pane(Pane::Browser);
     let viewport = tiles.insert_pane(Pane::Viewport);
     let properties = tiles.insert_pane(Pane::Properties);
     let root = tiles.insert_horizontal_tile(vec![browser, viewport, properties]);
-    if let Some(Tile::Container(egui_tiles::Container::Linear(linear))) = tiles.get_mut(root) {
-        linear.shares.set_share(browser, 1.0);
-        linear.shares.set_share(viewport, 3.0);
-        linear.shares.set_share(properties, 1.0);
-    }
     Tree::new("silico-window", root, tiles)
+}
+
+/// The side panes' widths, as the prototype's `#main` lays them out (styles.css: `grid-
+/// template-columns: var(--browser-w) 1fr var(--right-w)`, `--browser-w: 248px`, `--right-
+/// w: 296px`), each with its 1px border inside it (`#browser`'s `border-right`, `#right`'s
+/// `border-left`, `box-sizing: border-box`): the border is the tiles' gap, 1 wide
+/// (`Behavior::gap_width`), so each pane's own rect is the column less that 1.
+const BROWSER_W: f32 = 248.0;
+const RIGHT_W: f32 = 296.0;
+
+/// The tree's panes sized for a width of `width`: the browser `--browser-w` wide and the
+/// property panel `--right-w`, each with its border, and the canvas (`1fr`) the rest. A
+/// window narrower than the two side panes does as the prototype's grid does: the canvas
+/// shrinks to nothing (`#canvas-wrap`'s `min-width: 0`), and the panes keep their widths,
+/// the property panel running past the window's right edge, where it's cut off.
+///
+/// `egui_tiles` shares its width out in proportion to each child's share, so each share
+/// is the pane's width itself: shares that sum to the width shared give each its own.
+/// The panes aren't resizable ([`Panes`]' `is_container_resizable`), as the prototype's
+/// aren't.
+// SEAM: the browser collapsed to a 28px strip (`#main.browser-collapsed`, interact.js's
+// `toggleBrowser`; design section 8), once its strip and chevron are built.
+pub fn fit(tree: &mut Tree<Pane>, width: f32) {
+    let sides = BROWSER_W + RIGHT_W;
+    let width = width.max(sides);
+    tree.set_width(width);
+    let pane = |tree: &Tree<Pane>, pane| tree.tiles.find_pane(&pane);
+    let (Some(root), Some(browser), Some(viewport), Some(properties)) = (
+        tree.root(),
+        pane(tree, Pane::Browser),
+        pane(tree, Pane::Viewport),
+        pane(tree, Pane::Properties),
+    ) else {
+        return;
+    };
+    if let Some(Tile::Container(egui_tiles::Container::Linear(linear))) = tree.tiles.get_mut(root) {
+        // The two gaps are the side panes' borders.
+        linear.shares.set_share(browser, BROWSER_W - 1.0);
+        linear.shares.set_share(viewport, width - sides);
+        linear.shares.set_share(properties, RIGHT_W - 1.0);
+    }
 }
 
 /// What the panes draw from and change: the tab shown, and the sessions its commands go to.
@@ -108,9 +145,11 @@ pub struct Panes<'a, P: Clients + 'static> {
 impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
     fn pane_ui(&mut self, ui: &mut Ui, _tile_id: TileId, pane: &mut Pane) -> UiResponse {
         let label = pane.label();
+        let rect = ui.max_rect();
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
             node.set_role(egui::accesskit::Role::Pane);
             node.set_label(label);
+            node.set_bounds(bounds(rect));
         });
         if *pane == Pane::Viewport {
             // The canvas reaches the pane's edges.
@@ -135,11 +174,27 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
         1.0
     }
 
+    fn is_container_resizable(&self, _tiles: &Tiles<Pane>, _tile_id: TileId) -> bool {
+        // The prototype's columns are fixed (`fit`): no splitter between them.
+        false
+    }
+
     fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
         egui_tiles::SimplificationOptions {
             all_panes_must_have_tabs: false,
             ..Default::default()
         }
+    }
+}
+
+/// A pane's place, `rect`, as the accessibility tree gives it (in points, as egui's
+/// widgets give theirs).
+pub(crate) fn bounds(rect: egui::Rect) -> egui::accesskit::Rect {
+    egui::accesskit::Rect {
+        x0: rect.min.x.into(),
+        y0: rect.min.y.into(),
+        x1: rect.max.x.into(),
+        y1: rect.max.y.into(),
     }
 }
 

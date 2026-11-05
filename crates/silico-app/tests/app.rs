@@ -299,6 +299,67 @@ fn every_pane_has_its_label() {
     }
 }
 
+/// The prototype's `#main` (styles.css): `grid-template-columns: var(--browser-w) 1fr
+/// var(--right-w)`, `--browser-w: 248px`, `--right-w: 296px`, every box `border-box`, with
+/// `#browser`'s `border-right: 1px` and `#right`'s `border-left: 1px` inside them; `#main`
+/// fills the window's width between the toolbar and the timeline, with no padding.
+#[test]
+fn the_panes_are_the_prototypes_columns_the_browser_248_the_properties_296_and_the_canvas_the_rest()
+{
+    // The harness draws the app inside a margin of 8 (egui_kittest's `run_ui`:
+    // `Frame::central_panel(..).outer_margin(8.0)`), so a harness 16 more each way gives the
+    // app the window it's named for, its top left at (8, 8).
+    const MARGIN: f32 = 8.0;
+    // (window width, the canvas's x and width, the right panel's x), from the window's left,
+    // by hand: the browser 0 to 248 (its border 247 to 248), the right panel's border the 1
+    // before its panel, the canvas between. At 1280: 1280 − 248 − 296 = 736, the border at
+    // 248 + 736 = 984, the panel from 985 (1280 − 295). At 1600: 1600 − 544 = 1056, the
+    // panel from 1305. At 500, under the side columns' 544: `1fr` is nothing
+    // (`#canvas-wrap`'s `min-width: 0`), the panel's border at 248, the panel from 249 to
+    // 544, past the window's right edge.
+    for (window, canvas_w, right_x) in [
+        (1280.0, 736.0, 985.0),
+        (1600.0, 1056.0, 1305.0),
+        (500.0, 0.0, 249.0),
+    ] {
+        // Sessions of its own for each window: one holds the file it opened.
+        let f = fixture();
+        let path = f.file("example.silico", EXAMPLE);
+        let app = App::new(Arc::clone(&f.sessions));
+        let mut h = {
+            let _marked = never_waits::marked();
+            Harness::builder()
+                .with_size((window + 2.0 * MARGIN, 800.0 + 2.0 * MARGIN))
+                .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+        };
+        h.state_mut().open(path.to_str().unwrap(), false);
+        step_until(&mut h, "the panes", |h| {
+            h.query_by_role_and_label(Role::Pane, "Viewport").is_some()
+        });
+        step(&mut h);
+        let pane = |label| {
+            h.get_by_role_and_label(Role::Pane, label)
+                .rect()
+                .translate(-eframe::egui::vec2(MARGIN, MARGIN))
+        };
+        let (browser, canvas, right) = (pane("Browser"), pane("Viewport"), pane("Properties"));
+        let at = format!("at {window} wide");
+        assert_eq!((browser.left(), browser.width()), (0.0, 247.0), "{at}");
+        assert_eq!((canvas.left(), canvas.width()), (248.0, canvas_w), "{at}");
+        assert_eq!((right.left(), right.width()), (right_x, 295.0), "{at}");
+        // Side by side, the three the same height, down to the timeline, which runs the
+        // window's width: to 1 above its 40, egui's separator line, the timeline's border,
+        // drawn outside its panel (where `#timeline`'s `border-top` is inside its 40).
+        let timeline = pane("Timeline");
+        for rect in [canvas, right] {
+            assert_eq!(rect.y_range(), browser.y_range(), "{at}");
+        }
+        assert_eq!(browser.bottom() + 1.0, timeline.top(), "{at}");
+        assert_eq!((timeline.left(), timeline.right()), (0.0, window), "{at}");
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
 #[test]
 fn opening_the_m2_1_example_shows_its_three_features_in_order_and_its_body() {
     let f = fixture();

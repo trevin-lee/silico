@@ -264,11 +264,12 @@ pub(crate) fn show<P: Clients + 'static>(
         .resizable(false)
         .frame(egui::Frame::NONE.fill(theme::BOTTOM_BAR_BG))
         .show(ui, |ui| {
+            let rect = ui.max_rect();
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Pane);
                 node.set_label(LABEL);
+                node.set_bounds(crate::panes::bounds(rect));
             });
-            let rect = ui.max_rect();
             let inner = rect.shrink2(vec2(theme::TIMELINE_PADDING, 0.0));
             title(ui, inner);
             let left = inner.left() + theme::TIMELINE_LABEL_WIDTH + theme::TIMELINE_GAP;
