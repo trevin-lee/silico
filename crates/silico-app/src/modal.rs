@@ -32,6 +32,8 @@ pub(crate) enum Kind {
     Danger,
     /// `.canvas-banner .btn-secondary`: a button on a banner whose words are this colour.
     Banner(Color32),
+    /// `.btn-ghost`: no fill until hovered (Mark as seen).
+    Ghost,
 }
 
 /// A button: its words (its label), its kind, its key cap if it shows one, and whether it's
@@ -348,6 +350,9 @@ pub(crate) fn colours(kind: Kind, enabled: bool, hovered: bool) -> (Color32, Col
             theme::BANNER_BUTTON_HOVER_TEXT,
         ),
         (Kind::Banner(ink), true, false) => (theme::BANNER_BUTTON_BG, ink),
+        (Kind::Ghost, false, _) => (Color32::TRANSPARENT, theme::TEXT_DISABLED),
+        (Kind::Ghost, true, true) => (theme::GHOST_BUTTON_HOVER_BG, theme::GHOST_BUTTON_HOVER_TEXT),
+        (Kind::Ghost, true, false) => (Color32::TRANSPARENT, theme::GHOST_BUTTON_TEXT),
     }
 }
 

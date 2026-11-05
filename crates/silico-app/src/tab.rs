@@ -399,6 +399,10 @@ pub struct Tab {
     /// The `diff` of the reload [`reloaded`](Self::reloaded) shows, asked as the reload was
     /// seen, from the revision the tab had to the session's now, until it answers.
     reload_diff: Option<Running<DiffAnswer>>,
+    /// The features another program changed, each by its ID with what changed in it, as
+    /// the reloads' diffs answered (`d.outside`): marked purple in the timeline and the
+    /// browser until the person marks it seen in its properties (DESIGN.md, 6c).
+    pub outside: BTreeMap<FeatureId, String>,
     /// What the browser's eyes hide: the tab's state, never saved (open item 29).
     pub hidden: std::collections::BTreeSet<Hideable>,
     /// The last refusal a command of the tab's answered, as said to the person, until
@@ -533,6 +537,7 @@ impl Tab {
             box_select: crate::box_select::BoxSelect::default(),
             toast: None,
             reload_diff: None,
+            outside: BTreeMap::new(),
             hidden: std::collections::BTreeSet::new(),
             message: None,
             close_refused: false,
@@ -943,13 +948,17 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// The reload's diff, if it has answered: listed in its banner.
+    /// The reload's diff, if it has answered: listed in its banner, each feature it changed
+    /// marked.
     fn take_diffs(&mut self) {
         if let Some(read) = self.reload_diff.take() {
             match read.try_take() {
                 Ok(response) => {
                     let changes = match response.result {
-                        Ok(answer) => Changes::Listed(changes::listed(&answer.changes)),
+                        Ok(answer) => {
+                            self.outside.extend(changes::marks(&answer.changes));
+                            Changes::Listed(changes::listed(&answer.changes))
+                        }
                         Err(problems) => Changes::Refused(changes::refused(&problems)),
                     };
                     if let Some(reloaded) = &mut self.reloaded {

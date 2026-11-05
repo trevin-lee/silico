@@ -529,6 +529,20 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
                 said.map(|said| said.message.as_str()),
                 MarkLook::Badge,
             );
+        } else if let Some(text) = tab.outside.get(&entry.id) {
+            // Changed by another program, with no health mark (`.badge.outside`).
+            let side = theme::TIMELINE_BADGE_OUTSIDE_SIZE;
+            let corner = pos2(
+                rect.right() - theme::TIMELINE_BADGE_INSET - side,
+                rect.top() + theme::TIMELINE_BADGE_INSET,
+            );
+            panes::outside_mark(
+                ui,
+                id.with("outside"),
+                Rect::from_min_size(corner, Vec2::splat(side)),
+                text,
+                Some(theme::TIMELINE_BADGE_RING),
+            );
         }
         if response.dragged() {
             dragged = Some(at);
@@ -556,6 +570,9 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
         let mut tip = description;
         if let Some(said) = said {
             tip = format!("{tip} — {}", said.message);
+        }
+        if let Some(text) = tab.outside.get(&entry.id) {
+            tip = format!("{tip} — changed on disk: {text}");
         }
         if editable {
             tip.push_str(". Double-click to edit.");

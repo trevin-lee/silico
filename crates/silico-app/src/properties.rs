@@ -336,6 +336,77 @@ pub(crate) fn hint(ui: &mut Ui, parts: &[(&str, bool)]) {
         });
 }
 
+/// The card saying another program changed the selected feature (`featureProps`' purple
+/// `.err-card.warn`): its head, the diff icon and "Changed on disk"; what changed, `text`;
+/// and Mark as seen (`.btn-ghost`), which takes its mark away. Whether that was clicked.
+pub(crate) fn outside_card(ui: &mut Ui, text: &str) -> bool {
+    let words = |text: &str, colour| {
+        let mut job = LayoutJob::single_section(
+            text.to_owned(),
+            TextFormat {
+                line_height: Some(theme::BODY_LINE_HEIGHT),
+                ..format(theme::BODY_SIZE, colour, false)
+            },
+        );
+        job.wrap.max_width = f32::INFINITY;
+        job
+    };
+    let mut seen = false;
+    egui::Frame::new()
+        .fill(theme::OUTSIDE_CARD_BG)
+        .stroke(Stroke::new(theme::BORDER_WIDTH, theme::OUTSIDE_CARD_BORDER))
+        .corner_radius(CornerRadius::same(theme::NORMAL_CORNER_RADIUS))
+        .outer_margin(Margin {
+            left: theme::VIEW_PADDING,
+            right: theme::VIEW_PADDING,
+            top: theme::ERROR_CARD_MARGIN as i8,
+            bottom: theme::ERROR_CARD_MARGIN as i8,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            egui::Frame::new()
+                .inner_margin(theme::ERROR_CARD_HEAD_PADDING)
+                .show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(theme::ERROR_CARD_GAP, 0.0);
+                        let side = IconSize::Small.points();
+                        let (at, _) = ui.allocate_exact_size(
+                            vec2(side, theme::BODY_LINE_HEIGHT),
+                            Sense::hover(),
+                        );
+                        Icon::Diff
+                            .image(IconSize::Small)
+                            .tint(theme::OUTSIDE_CARD_TEXT)
+                            .paint_at(ui, Rect::from_min_size(at.min, Vec2::splat(side)));
+                        ui.add(
+                            Label::new(words("Changed on disk", theme::TEXT_STRONG))
+                                .selectable(false),
+                        );
+                    });
+                });
+            egui::Frame::new()
+                .inner_margin(theme::ERROR_CARD_BODY_PADDING)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(
+                        Label::new(words(text, theme::OUTSIDE_CARD_TEXT))
+                            .wrap()
+                            .selectable(false),
+                    );
+                    // `.ec-body p { margin: 0 0 6px }`, then the actions.
+                    ui.add_space(theme::ERROR_CARD_FIX_GAP);
+                    let button = modal::Button::new("Mark as seen", Kind::Ghost);
+                    let (at, _) = ui.allocate_exact_size(
+                        vec2(modal::natural_width(ui, &button), theme::BUTTON_HEIGHT),
+                        Sense::hover(),
+                    );
+                    seen = modal::paint(ui, at, &button).clicked();
+                });
+        });
+    seen
+}
+
 /// An error card (`.err-card`), a warning's if `warning`: its icon and `message`, and
 /// `suggestion` after an arrow, if it has one.
 ///

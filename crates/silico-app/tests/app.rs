@@ -621,7 +621,8 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
     });
     assert!(anywhere(
         &h,
-        "Revision 1 → 2. You had no unsaved edits, so nothing of yours was lost."
+        "Revision 1 → 2. You had no unsaved edits, so nothing of yours was lost. Changed \
+         features are marked ● until you look at them."
     ));
     // It stays until it's dismissed.
     for _ in 0..10 {
@@ -830,6 +831,210 @@ fn a_reload_lists_what_changed_by_feature_and_field_each_value_as_the_file_write
 /// Whether any node is labelled `label`, however many are.
 fn seen(h: &AppHarness, label: &str) -> bool {
     h.query_all_by_label(label).next().is_some()
+}
+
+/// The reload's second line, from revision `from` to `to`, its dot written as the
+/// prototype's `.state-dot` is drawn here.
+fn reloaded_sub(from: u64, to: u64) -> String {
+    format!(
+        "Revision {from} → {to}. You had no unsaved edits, so nothing of yours was lost. \
+         Changed features are marked ● until you look at them."
+    )
+}
+
+/// Two blocks, each with the fingerprint it rebuilds to on the fake kernel: Block, 40 × 20
+/// × 10 (volume 8000, area 2(800 + 400 + 200) = 2800), and Plate, 10 × 10 × 2 from x = 50
+/// (volume 200, area 2(100 + 20 + 20) = 280), so neither is marked with a warning.
+const TWO_BLOCKS: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}},
+    {"id": "p2t8wn4c", "type": "box", "v": 1, "name": "Plate", "position": [50, 0, 0], "length": 10, "width": 10, "height": 2, "fingerprint": {"volume": 200, "area": 280, "bbox": [50, 0, 0, 60, 10, 2], "faces": 6, "edges": 12, "vertices": 8}}
+  ]
+}
+"#;
+
+/// [`TWO_BLOCKS`] as an agent leaves it: Block named Base, and Plate named Lid.
+fn blocks_renamed() -> String {
+    TWO_BLOCKS
+        .replace(r#""name": "Block""#, r#""name": "Base""#)
+        .replace(r#""name": "Plate""#, r#""name": "Lid""#)
+}
+
+/// The marks of the two renames, as the accessibility tree reads them.
+const BASE_MARK: &str = r#"changed on disk: name "Block" → "Base""#;
+const LID_MARK: &str = r#"changed on disk: name "Plate" → "Lid""#;
+
+/// How many of `pane`'s features are marked changed on disk.
+fn outside_marks(h: &AppHarness, pane: &str) -> usize {
+    h.get_by_role_and_label(Role::Pane, pane)
+        .query_all_by_label_contains("changed on disk:")
+        .count()
+}
+
+#[test]
+fn the_changed_features_are_marked_in_purple_until_marked_seen_and_esc_dismisses_the_banner() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("blocks.silico", TWO_BLOCKS);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
+    assert_eq!(outside_marks(&h, "Timeline"), 0);
+    std::fs::write(&path, blocks_renamed()).unwrap();
+    step_until(&mut h, "the marks", |h| {
+        shows(h, "Timeline", BASE_MARK) && shows(h, "Timeline", LID_MARK)
+    });
+    assert!(anywhere(&h, &reloaded_sub(1, 2)));
+    // Both bodies, so the browser marks both too, and nothing else.
+    step_until(&mut h, "the browser's marks", |h| {
+        shows(h, "Browser", BASE_MARK) && shows(h, "Browser", LID_MARK)
+    });
+    assert_eq!(outside_marks(&h, "Timeline"), 2);
+    assert_eq!(outside_marks(&h, "Browser"), 2);
+    assert!(seen(&h, r#""Block" → "Base""#) && seen(&h, r#""Plate" → "Lid""#));
+    // Selected, and hovered: its properties say what changed, and the mark stays (the
+    // prototype's `selectFeature`: seen on select, cleared by the button).
+    select(&mut h, "Base");
+    assert!(shows(&h, "Properties", "Changed on disk"));
+    assert!(shows(&h, "Properties", r#"name "Block" → "Base""#));
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label("Base")
+        .hover();
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(
+        shows(&h, "Timeline", BASE_MARK),
+        "the mark went on a look alone"
+    );
+    // Mark as seen: its marks gone, the Lid's kept.
+    h.get_by_role_and_label(Role::Button, "Mark as seen")
+        .click();
+    step_until(&mut h, "Base's marks gone", |h| {
+        !shows(h, "Timeline", BASE_MARK) && !shows(h, "Browser", BASE_MARK)
+    });
+    assert!(!shows(&h, "Properties", "Changed on disk"));
+    assert_eq!(outside_marks(&h, "Timeline"), 1);
+    assert!(shows(&h, "Browser", LID_MARK));
+    // Esc: the selection first, then the banner; nothing modal, and the marks stay.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(h.state().tabs()[0].selected.is_none());
+    let title = "Reloaded blocks.silico: another program changed it on disk";
+    assert!(anywhere(&h, title));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "dismissed", |h| !anywhere(h, title));
+    assert!(!seen(&h, r#""Plate" → "Lid""#));
+    assert!(shows(&h, "Timeline", LID_MARK) && shows(&h, "Browser", LID_MARK));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_reload_lists_features_added_removed_and_moved_each_in_its_words() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    // The two blocks and a Peg, 4 × 4 × 4 from x = 70 (volume 64, area 6 × 16 = 96).
+    let peg = r#"    {"id": "g5r9x3k1", "type": "box", "v": 1, "name": "Peg", "position": [70, 0, 0], "length": 4, "width": 4, "height": 4, "fingerprint": {"volume": 64, "area": 96, "bbox": [70, 0, 0, 74, 4, 4], "faces": 6, "edges": 12, "vertices": 8}}"#;
+    let lines: Vec<&str> = TWO_BLOCKS.lines().collect();
+    let (block, plate) = (lines[5].trim_end_matches(','), lines[6]);
+    let document = |features: [&str; 3]| {
+        format!(
+            "{}\n{}\n  ]\n}}\n",
+            lines[..5].join("\n"),
+            features
+                .map(|feature| feature.trim_end_matches(','))
+                .join(",\n")
+        )
+    };
+    let (mut h, path) = f.opened("blocks.silico", &document([block, plate, peg]));
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Peg"));
+    // The Plate moved before the Block, the Peg removed, and a Lid added last, 40 × 20 × 2
+    // on the Block (volume 1600, area 2(800 + 80 + 40) = 1840): places by hand, from 1, the
+    // Block 1 → 2, the Plate 2 → 1, the Lid at 3, the Peg from 3.
+    let lid = r#"    {"id": "q4m7d2e9", "type": "box", "v": 1, "name": "Lid", "position": [0, 0, 10], "length": 40, "width": 20, "height": 2, "fingerprint": {"volume": 1600, "area": 1840, "bbox": [0, 0, 10, 40, 20, 12], "faces": 6, "edges": 12, "vertices": 8}}"#;
+    std::fs::write(&path, document([plate, block, lid])).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "at place 3"));
+    for label in [
+        "moved",
+        "place 2 → 1",
+        "place 1 → 2",
+        "added",
+        "at place 3",
+        "removed",
+        "from place 3",
+        "Peg",
+    ] {
+        assert!(seen(&h, label), "{label}");
+    }
+    assert_eq!(h.query_all_by_label("moved").count(), 2);
+    // Each feature still there marked with its words; the Peg, gone, has nothing to mark.
+    let marks = [
+        "changed on disk: moved place 2 → 1",
+        "changed on disk: moved place 1 → 2",
+        "changed on disk: added at place 3",
+    ];
+    step_until(&mut h, "the marks", |h| {
+        marks.iter().all(|mark| shows(h, "Timeline", mark))
+    });
+    assert_eq!(outside_marks(&h, "Timeline"), 3);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks() {
+    on_lavapipe(
+        "the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks",
+        || {
+            let f = fixture_reading(Some(Arc::new(real)));
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            h.set_render_every_step(true);
+            // The app's fonts, look, and icons, as main.rs sets them, so the shot has words.
+            silico_app::theme::apply(&h.ctx);
+            let path = f.file("blocks.silico", TWO_BLOCKS);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            step_until(&mut h, "its features", |h| {
+                h.state()
+                    .tabs()
+                    .first()
+                    .is_some_and(|tab| tab.timeline.is_some())
+                    && shows(h, "Timeline", "Plate")
+            });
+            std::fs::write(&path, blocks_renamed()).unwrap();
+            step_until(&mut h, "the changes listed and marked", |h| {
+                seen(h, r#""Plate" → "Lid""#)
+                    && shows(h, "Timeline", BASE_MARK)
+                    && shows(h, "Browser", LID_MARK)
+            });
+            meshes_settled(&mut h);
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            // The two rows under the words, and the marks in the timeline and the browser.
+            let words = h.get_by_label(&reloaded_sub(1, 2)).rect();
+            let base = h.get_by_label(r#""Block" → "Base""#).rect();
+            let lid = h.get_by_label(r#""Plate" → "Lid""#).rect();
+            assert!(words.bottom() < base.top() && base.bottom() < lid.top());
+            assert_eq!(outside_marks(&h, "Timeline"), 2);
+            assert_eq!(outside_marks(&h, "Browser"), 2);
+            let image = h.render().unwrap();
+            if let Some(shot) = std::env::var_os("SILICO_APP_RELOAD_SHOT") {
+                image.save(shot).unwrap();
+            }
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
 }
 
 /// The session's own read of its file, as `silico_core::disk` reads it, for a test that

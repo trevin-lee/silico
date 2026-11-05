@@ -337,15 +337,15 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
 
 /// The selected feature's properties (`featureProps`): its head (its type's icon, its name,
 /// its type and ID), the document's problems and its own (its mark's text and suggestion),
-/// its name, editable, which is an edit of the document, and its health and ID.
+/// its name, editable, which is an edit of the document, and its health and ID; and, if
+/// another program changed it, what changed (the purple Changed on disk card, with Mark as
+/// seen).
 ///
 /// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
 /// direction), which need its fields read, as its dialog reads them; and its Edit feature
 /// and Suppress buttons (the timeline's double-click and menu edit it already).
 /// SEAM: the ID row's copy button (`.prop .v .copy`), once the app has a clipboard command
-/// of its own; and the purple Changed on disk card (`d.outside`: what an agent's edit
-/// changed in this feature, with Mark as seen), which needs the reload's changes by feature
-/// and field, which the core doesn't give yet.
+/// of its own.
 fn feature<P: Clients + 'static>(
     ui: &mut Ui,
     tab: &mut Tab,
@@ -371,6 +371,12 @@ fn feature<P: Clients + 'static>(
     if let Some(said) = tab.said.get(entry.id.as_str()) {
         let warning = entry.health != Health::Error;
         properties::card(ui, warning, &said.message, said.suggestion.as_deref());
+    }
+    // Changed by another program (`d.outside`): what changed, until it's marked seen.
+    if let Some(text) = tab.outside.get(&entry.id).cloned()
+        && properties::outside_card(ui, &text)
+    {
+        tab.outside.remove(&entry.id);
     }
     // The text typed, kept for this document's feature alone (two documents may hold
     // features of one ID), and only while it's ahead of the document: the document's
@@ -704,6 +710,7 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
             meta: tab.unsaved().then_some("unsaved"),
             mark: failed.then_some((Health::Error, root_text)),
             failed: false,
+            outside: None,
         },
     );
     root.take(&ctx, &answer);
@@ -730,6 +737,7 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                         meta: None,
                         mark: None,
                         failed: false,
+                        outside: None,
                     },
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
@@ -800,6 +808,9 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                         // A sketch's own failure reddens its name (`.row.err`); a body's
                         // mark is its chain's.
                         failed: sketches && each.health == Health::Error,
+                        // Changed by another program (`d.outside`), its purple dot where it
+                        // has no health mark.
+                        outside: tab.outside.get(&each.id).map(String::as_str),
                     },
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
@@ -872,6 +883,7 @@ fn header(ui: &mut Ui, name: &str, meta: Option<&str>) -> bool {
             meta,
             mark: None,
             failed: false,
+            outside: None,
         },
     );
     openness.take(&ctx, &answer);
@@ -939,6 +951,9 @@ struct Line<'a> {
     mark: Option<(Health, Option<&'a str>)>,
     /// Whether its name is the error's red (`.row.err`).
     failed: bool,
+    /// What another program changed in it, if it did (`d.outside`): a purple dot at its
+    /// right where it has no mark (`.state-dot`).
+    outside: Option<&'a str>,
 }
 
 /// What a row answered: the row's response, its caret's state, and its eye's response.
@@ -1135,6 +1150,10 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         let at = place(right - icons::ICON_SIZE, icons::ICON_SIZE);
         health_mark(ui, id.with("mark"), at, health, text, MarkLook::Glyph);
         right -= icons::ICON_SIZE + gap;
+    } else if let Some(text) = line.outside {
+        let at = place(right - theme::STATE_DOT_SIZE, theme::STATE_DOT_SIZE);
+        outside_mark(ui, id.with("outside"), at, text, None);
+        right -= theme::STATE_DOT_SIZE + gap;
     }
     if let Some(meta) = line.meta {
         let colour = if selected {
@@ -1173,6 +1192,34 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         open: caret.map(|(_, open)| open),
         eye: eye.map(|(eye, _)| eye),
     }
+}
+
+/// The mark of a feature another program changed (`d.outside`), the browser's and the
+/// timeline's alike: a purple dot filling `rect` (`.state-dot`, or the timeline's
+/// `.badge.outside`, in a ring of `ring`'s colour 1.5 outside it), labelled with what
+/// changed (`changed on disk: radius 5 → 3`) for the accessibility tree, and with the
+/// prototype's words as its hover text.
+pub(crate) fn outside_mark(
+    ui: &mut Ui,
+    id: egui::Id,
+    rect: egui::Rect,
+    text: &str,
+    ring: Option<Color32>,
+) {
+    let radius = rect.width().min(rect.height()) / 2.0;
+    let painter = ui.painter();
+    if let Some(ring) = ring {
+        painter.circle_filled(
+            rect.center(),
+            radius + theme::TIMELINE_BADGE_RING_WIDTH,
+            ring,
+        );
+    }
+    painter.circle_filled(rect.center(), radius, theme::CHANGED_OUTSIDE);
+    let response = ui.interact(rect, id, Sense::hover());
+    let said = format!("changed on disk: {text}");
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
+    response.on_hover_text("Changed on disk since you opened it");
 }
 
 /// How a health mark is drawn: the browser's, the error's or the warning's icon at a row's
@@ -2100,6 +2147,7 @@ mod tests {
                             meta: Some("XY"),
                             mark: Some((Health::Warning, None)),
                             failed: false,
+                            outside: None,
                         },
                     );
                 });

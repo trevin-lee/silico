@@ -951,6 +951,9 @@ pub const TIMELINE_BADGE_RING_WIDTH: f32 = 1.5;
 pub const TIMELINE_BADGE_RING: Color32 = BOTTOM_BAR_BG;
 pub const TIMELINE_BADGE_ERROR: Color32 = ERROR_FILL;
 pub const TIMELINE_BADGE_WARNING: Color32 = WARNING;
+/// A feature another program changed (`.badge.outside`): a smaller dot, 7 at the same
+/// inset, in [`CHANGED_OUTSIDE`], in the same ring.
+pub const TIMELINE_BADGE_OUTSIDE_SIZE: f32 = 7.0;
 
 /// Where a dragged feature would drop (`.drop-before::before`): a Blue.525 line this wide,
 /// this far left of the item it would drop before, short of its top and bottom by this.
@@ -1385,6 +1388,17 @@ pub const BANNER_BUTTON_HOVER_TEXT: Color32 = GRAY_1000;
 pub const BANNER_LIST_MARGIN_TOP: f32 = 6.0;
 pub const BANNER_LIST_ROW_GAP: f32 = 2.0;
 pub const BANNER_LIST_COLUMN_GAP: f32 = 10.0;
+
+/// The card in a feature's properties saying another program changed it (`.err-card.warn`,
+/// restyled purple as `featureProps` styles it): `rgba(183,128,255,.12)`, its border
+/// `#463375`, its words `#e4d6ff`.
+pub const OUTSIDE_CARD_BG: Color32 = Color32::from_rgba_unmultiplied_const(183, 128, 255, 31);
+pub const OUTSIDE_CARD_BORDER: Color32 = hex(0x463375);
+pub const OUTSIDE_CARD_TEXT: Color32 = hex(0xe4d6ff);
+/// A ghost button's words (`.btn-ghost`): Gray.750; hovered, on its fill
+/// ([`GHOST_BUTTON_HOVER_BG`]), white.
+pub const GHOST_BUTTON_TEXT: Color32 = GRAY_750;
+pub const GHOST_BUTTON_HOVER_TEXT: Color32 = GRAY_1000;
 
 // ---- The start page (`.st-*`, `.recent-row`) ----
 

@@ -62,12 +62,13 @@ impl Tone {
     }
 }
 
-/// How a part of a banner's second line is written: in its words' type, or monospace
-/// (`.mono`).
+/// How a part of a banner's second line is written: in its words' type, monospace
+/// (`.mono`), or as a dot of a colour (`.state-dot`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Style {
     Plain,
     Mono,
+    Dot(Color32),
 }
 
 /// The list under a banner's words (`.diff`): its rows, each the feature's name, the
@@ -193,6 +194,7 @@ pub(crate) fn show(ui: &mut Ui, canvas: Rect, banner: &Banner<'_>) -> Clicked {
             Style::Mono => {
                 format.font_id = FontId::new(theme::MONOSPACE_SIZE, FontFamily::Monospace);
             }
+            Style::Dot(colour) => format.color = colour.gamma_multiply(theme::BANNER_SUB_OPACITY),
         }
         sub.append(part, 0.0, format);
     }

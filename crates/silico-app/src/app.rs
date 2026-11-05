@@ -1811,7 +1811,8 @@ impl<P: Clients + 'static> App<P> {
             tab.name()
         );
         let sub = format!(
-            "Revision {} → {}. You had no unsaved edits, so nothing of yours was lost.",
+            "Revision {} → {}. You had no unsaved edits, so nothing of yours was lost. \
+             Changed features are marked ",
             reloaded.from.number(),
             reloaded.to.number()
         );
@@ -1829,7 +1830,11 @@ impl<P: Clients + 'static> App<P> {
             &Banner {
                 tone: Tone::Info,
                 title: &title,
-                sub: &[(&sub, Style::Plain)],
+                sub: &[
+                    (&sub, Style::Plain),
+                    ("●", Style::Dot(theme::CHANGED_OUTSIDE)),
+                    (" until you look at them.", Style::Plain),
+                ],
                 list,
                 buttons: &[],
                 dismiss: true,
