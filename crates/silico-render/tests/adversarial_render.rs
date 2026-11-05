@@ -454,6 +454,7 @@ fn a_scene_of_no_bodies_and_a_body_of_no_mesh_are_the_background() {
         face_triangles: vec![],
         edge_points: vec![],
         edge_point_counts: vec![],
+        vertex_points: vec![],
         valid: None,
     };
     for bodies in [vec![], vec![body(1, empty)]] {
@@ -732,6 +733,7 @@ fn ctc_scale(faces: u32, per: u32) -> Mesh {
         face_triangles: vec![],
         edge_points: vec![],
         edge_point_counts: vec![],
+        vertex_points: vec![],
         valid: None,
     };
     let columns = per / 2;
@@ -1309,6 +1311,7 @@ fn mesh(wide: bool) -> impl Strategy<Value = Mesh> {
                     face_triangles,
                     edge_points,
                     edge_point_counts,
+                    vertex_points: vec![],
                     valid: None,
                 }
             },
@@ -1742,6 +1745,7 @@ fn a_highlight_on_a_face_with_no_triangles_or_a_body_of_one_point_draws_without_
         face_triangles: vec![1],
         edge_points: vec![point; 2],
         edge_point_counts: vec![2],
+        vertex_points: vec![],
         valid: None,
     };
     // Orthographic, at least 48 × 1.73e12 / 2^19 = 1.59e8 high for its reach (by hand).

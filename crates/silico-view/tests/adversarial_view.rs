@@ -15,6 +15,7 @@ fn triangle() -> Mesh {
         face_triangles: vec![1],
         edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
         edge_point_counts: vec![2],
+        vertex_points: vec![],
         valid: None,
     }
 }
@@ -80,6 +81,7 @@ fn an_empty_mesh_is_logged() {
         face_triangles: vec![],
         edge_points: vec![],
         edge_point_counts: vec![],
+        vertex_points: vec![],
         valid: None,
     };
     log_mesh(&rec, "empty", &empty).unwrap();

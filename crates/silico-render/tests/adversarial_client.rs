@@ -532,6 +532,7 @@ fn fine_front(n: u32) -> RenderScene {
         face_triangles: vec![],
         edge_points: vec![],
         edge_point_counts: vec![],
+        vertex_points: vec![],
         valid: None,
     };
     let step = |i: u32, size: f64| f64::from(i) * size / f64::from(n);
