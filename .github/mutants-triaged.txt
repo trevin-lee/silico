@@ -618,3 +618,9 @@ crates/silico-app/src/app.rs | App<P>::ask | delete match arm Some(Asking::Expor
 # frame changes the names between. `<=` differs only at a place equal to the count,
 # which never comes; the guard only keeps `remove` from a place that isn't there.
 crates/silico-app/src/dialog.rs | Dialog::ui | replace < with <= | #393
+# What's Wrong's card asked for Edit (#397): `started` only asks egui for the next frame at
+# once, and a card's Edit or Show in timeline is only ever asked in a frame with input in it
+# (its click, or the key or accessibility action that presses it), which egui already
+# repaints at once (`InputState::wants_repaint_after`: events not empty). `&=` changes no
+# frame asked for, and nothing else reads `started`.
+crates/silico-app/src/app.rs | App<P>::after_drawing | replace |= with &= | #397

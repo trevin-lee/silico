@@ -996,7 +996,9 @@ impl Dialog {
     /// The dialog drawn into `ui`, docked in the property panel as the prototype docks it
     /// (`renderDialog`): its title with its close button (Cancel), its inputs under INPUTS,
     /// its `preview`'s line under PREVIEW if it has one (state 3e), `said` (its feature's
-    /// error, a refusal), and Cancel and OK in its footer at the bottom of `ui`; `named`
+    /// error, a refusal), each an error card (`errCard`, `noEdit` and `noShow`) with the
+    /// name of the feature it names, if the timeline lists it, and Cancel and OK in its
+    /// footer at the bottom of `ui`; `named`
     /// gives a feature's name by its ID (a selection box shows it), `refused` whether an edit
     /// of a field was refused (its input red, OK off), and `enabled` whether anything can be
     /// sent now (off while the tab closes).
@@ -1006,7 +1008,7 @@ impl Dialog {
     pub fn ui(
         &mut self,
         ui: &mut Ui,
-        said: &[crate::tab::Said],
+        said: &[(crate::tab::Said, Option<String>)],
         preview: Option<properties::Preview>,
         named: &dyn Fn(&FeatureId) -> Option<String>,
         refused: &dyn Fn(&str) -> bool,
@@ -1081,23 +1083,16 @@ impl Dialog {
                         properties::section(ui, "Preview");
                         properties::preview(ui, preview, &rebuild);
                     }
-                    for said in said {
-                        // Its cause and the elements it names under its message, as the
-                        // prototype's card has them (`errCard`'s message and Elements), a
-                        // warning's as an error's.
-                        let details: Vec<String> = said
-                            .cause
-                            .iter()
-                            .cloned()
-                            .chain(said.elements_line())
-                            .collect();
-                        properties::card_with(
-                            ui,
-                            said.warning,
-                            &said.message,
-                            &details,
-                            said.suggestion.as_deref(),
-                        );
+                    for (place, (said, name)) in said.iter().enumerate() {
+                        // Copy as JSON alone: the dialog is the feature's edit already.
+                        ui.push_id(("dialog-said", place), |ui| {
+                            properties::card(
+                                ui,
+                                said,
+                                name.as_deref(),
+                                properties::Offer::default(),
+                            )
+                        });
                     }
                 });
         });

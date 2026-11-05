@@ -26,8 +26,10 @@ use crate::dialog::{Dialog, Kind, feature_node};
 /// What a feature's mark says: its first problem's (or warning's) message, its cause and
 /// the elements it names, if it has them, and how many elements are at fault in all (more
 /// than it names where there are too many to list, ARCHITECTURE.md's invariant 9), and its
-/// suggestion, from a `check` of the model the timeline's marks came from; and whether it's
-/// a warning's.
+/// suggestion, from a `check` of the model the timeline's marks came from; whether it's a
+/// warning's; and the core's error or warning itself, whole, if it's one (a refusal said
+/// in words alone isn't): what its card reads its code, feature, parameter, and candidates
+/// from, and copies as the JSON an agent gets.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Said {
     pub warning: bool,
@@ -36,6 +38,31 @@ pub struct Said {
     pub elements: Vec<String>,
     pub elements_total: u64,
     pub suggestion: Option<String>,
+    pub source: Option<Source>,
+}
+
+/// How many errors and warnings a `check` counted past those it listed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Unlisted {
+    pub errors: u64,
+    pub warnings: u64,
+}
+
+/// What the core said, kept whole: an error, or a warning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    Error(silico_core::Error),
+    Warning(silico_core::Warning),
+}
+
+impl Source {
+    /// Every field the error contract writes, borrowed.
+    fn said(&self) -> silico_core::Said<'_> {
+        match self {
+            Source::Error(error) => error.said(),
+            Source::Warning(warning) => warning.said(),
+        }
+    }
 }
 
 impl Said {
@@ -48,6 +75,7 @@ impl Said {
             elements: error.elements().to_vec(),
             elements_total: error.elements_total(),
             suggestion: error.suggestion().map(str::to_owned),
+            source: Some(Source::Error(error.clone())),
         }
     }
 
@@ -60,7 +88,46 @@ impl Said {
             elements: warning.elements().to_vec(),
             elements_total: warning.elements_total(),
             suggestion: warning.suggestion().map(str::to_owned),
+            source: Some(Source::Warning(warning.clone())),
         }
+    }
+
+    /// Its code, as an agent matches on it (`reference_broken`), if the core said it.
+    pub fn code(&self) -> Option<&'static str> {
+        self.source.as_ref().map(|source| source.said().code)
+    }
+
+    /// The feature it's about, by its ID, if the core named one.
+    pub fn feature(&self) -> Option<&str> {
+        self.source
+            .as_ref()
+            .and_then(|source| source.said().feature)
+    }
+
+    /// The field at fault, if the core named one.
+    pub fn parameter(&self) -> Option<&str> {
+        self.source
+            .as_ref()
+            .and_then(|source| source.said().parameter)
+    }
+
+    /// The names it offers in place of one broken, closest first.
+    pub fn candidates(&self) -> &[String] {
+        self.source
+            .as_ref()
+            .map_or(&[], |source| source.said().candidates)
+    }
+
+    /// The core's error or warning as the command API writes it, byte for byte: the error
+    /// contract's shape (`tests/contract/error-full.json`), on one line, as an agent gets it
+    /// over MCP. None for a refusal said in words alone, or one too long to write.
+    pub fn json(&self) -> Option<String> {
+        use silico_core::command::wire::{self, Layout, ToWire};
+        let value = match self.source.as_ref()? {
+            Source::Error(error) => error.to_wire(),
+            Source::Warning(warning) => warning.to_wire(),
+        };
+        wire::write(&value, Layout::OneLine).ok()
     }
 
     /// Its elements as the card lists them: each it names, and, where it names fewer than
@@ -461,6 +528,20 @@ pub struct Tab {
     /// and of the document (the gate's problems).
     pub said: BTreeMap<String, Said>,
     pub document_problems: Vec<Said>,
+    /// Every problem and warning the last `check` gave, in the document's order (the
+    /// document's own first, then each feature's in the timeline's order, its errors before
+    /// its warnings), and the timeline it answers (its revision and model): What's Wrong's
+    /// list.
+    listed: Vec<Said>,
+    /// How many errors and warnings that `check` counted past those it listed.
+    unlisted: Unlisted,
+    listed_for: Option<(Revision, Option<Revision>)>,
+    /// What's Wrong is open over the window (docs/ux/solidworks.md, §5, *Errors and
+    /// warnings*): while it is, the tab reads a `check` of its model whenever the timeline
+    /// marks anything, to list every problem.
+    pub whats_wrong: bool,
+    /// The feature the timeline is to scroll to, once (an error card's Show in timeline).
+    timeline_scroll: Option<FeatureId>,
     /// A `check` read, and whether it's of a document the gate refused (whose problems are
     /// all the document's).
     check_read: Option<(bool, Running<CheckAnswer>)>,
@@ -657,6 +738,11 @@ impl Tab {
             rebuild_out: false,
             said: BTreeMap::new(),
             document_problems: problems.errors().iter().map(Said::of).collect(),
+            listed: Vec::new(),
+            unlisted: Unlisted::default(),
+            listed_for: None,
+            whats_wrong: false,
+            timeline_scroll: None,
             check_read: None,
             check_superseded: false,
             check_first: false,
@@ -817,6 +903,12 @@ impl Tab {
     /// The selection, to change: a pick by name, a feature, a clear, its filter.
     pub fn selection_mut(&mut self) -> &mut crate::selection::Selection {
         &mut self.selection
+    }
+
+    /// Whether anything is wrong: the gate's problems, or a feature's problems or warnings,
+    /// as its timeline marks them (What's Wrong lists them).
+    pub fn anything_wrong(&self) -> bool {
+        self.timeline.as_ref().is_some_and(marked)
     }
 
     /// The errors its timeline counts: the gate's, and each feature's problems (the
@@ -1315,6 +1407,8 @@ impl Tab {
     fn took_timeline(&mut self, timeline: TimelineAnswer) {
         if !marked(&timeline) {
             self.said.clear();
+            self.listed.clear();
+            self.unlisted = Unlisted::default();
         }
         if timeline.problems == 0 {
             self.document_problems.clear();
@@ -2814,6 +2908,59 @@ impl Tab {
         }
     }
 
+    /// The feature `id` (by its ID as written) as the timeline lists it, if it does.
+    pub fn entry(&self, id: &str) -> Option<&Entry> {
+        self.timeline
+            .as_ref()?
+            .features
+            .as_ref()?
+            .iter()
+            .find(|entry| entry.id.as_str() == id)
+    }
+
+    /// Whether Edit Feature would open the feature `id`'s dialog now: it has one, and one
+    /// may open ([`can_open`](Self::can_open)).
+    pub fn can_edit(&self, id: &FeatureId) -> bool {
+        self.kind_of(id).is_some_and(|kind| self.can_open(kind))
+    }
+
+    /// An error card's Show in timeline: the feature `id` selected alone, and the timeline
+    /// scrolled to its item once it's next drawn.
+    pub fn show_in_timeline(&mut self, id: FeatureId) {
+        self.selection.select_feature(id.clone());
+        self.timeline_scroll = Some(id);
+    }
+
+    /// The feature the timeline is to scroll to, if one is.
+    pub fn timeline_scroll(&self) -> Option<&FeatureId> {
+        self.timeline_scroll.as_ref()
+    }
+
+    /// The timeline has scrolled to it (or had nothing to scroll), once.
+    pub fn timeline_scrolled(&mut self) {
+        self.timeline_scroll = None;
+    }
+
+    /// What an error card asked (`errCard`'s Edit and Show in timeline), done through
+    /// `sessions`: whether a command was started.
+    pub(crate) fn card_asked<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        asked: crate::properties::CardAct,
+    ) -> bool {
+        match asked {
+            crate::properties::CardAct::Edit(id) => {
+                // SEAM(#351): Edit Sketch for a sketch, as the timeline's double-click.
+                self.edit_feature(sessions, &id);
+                true
+            }
+            crate::properties::CardAct::Show(id) => {
+                self.show_in_timeline(id);
+                false
+            }
+        }
+    }
+
     /// The dialog kind of the feature `id`, if the timeline lists it and a dialog edits it.
     pub fn kind_of(&self, id: &FeatureId) -> Option<Kind> {
         self.timeline
@@ -2987,7 +3134,7 @@ impl Tab {
                 .as_ref()
                 .and_then(|dialog| dialog.feature.as_ref())
         });
-        let Some((gate, model)) = check_wanted(timeline, wanted) else {
+        let Some((gate, model)) = check_wanted(timeline, wanted, self.whats_wrong) else {
             return;
         };
         // Never the current model of a revision whose rebuild was stopped: its check would
@@ -3003,28 +3150,71 @@ impl Tab {
     }
 
     /// What `answer` says of each feature, and of the document: all of a document the gate
-    /// refused (`gate`), or else those of no feature.
+    /// refused (`gate`), or else those of no feature; and every problem and warning, in the
+    /// document's order, for What's Wrong.
     fn took_check(&mut self, answer: &CheckAnswer, gate: bool) {
         let mut by_feature = BTreeMap::new();
         let mut document = Vec::new();
+        let mut listed = Vec::new();
         for error in answer.problems.errors() {
             let said = Said::of(error);
             if gate || error.feature().is_none() {
                 document.push(said.clone());
             }
             if let Some(feature) = error.feature() {
-                by_feature.entry(feature.to_owned()).or_insert(said);
+                by_feature
+                    .entry(feature.to_owned())
+                    .or_insert_with(|| said.clone());
             }
+            listed.push(said);
         }
         for warning in answer.warnings.listed() {
+            let said = Said::of_warning(warning);
             if let Some(feature) = warning.feature() {
                 by_feature
                     .entry(feature.to_owned())
-                    .or_insert_with(|| Said::of_warning(warning));
+                    .or_insert_with(|| said.clone());
             }
+            listed.push(said);
         }
+        let entries = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
+        in_document_order(&mut listed, entries, gate);
         self.said = by_feature;
         self.document_problems = document;
+        self.listed = listed;
+        self.unlisted = Unlisted {
+            errors: answer
+                .problems
+                .total()
+                .saturating_sub(answer.problems.errors().len() as u64),
+            warnings: answer
+                .warnings
+                .total()
+                .saturating_sub(answer.warnings.listed().len() as u64),
+        };
+        self.listed_for = self.checked;
+    }
+
+    /// What What's Wrong lists: every problem and warning of the model the timeline shows,
+    /// in the document's order; none if the timeline marks nothing. None while they're being
+    /// read (or no timeline is read yet).
+    pub fn listed(&self) -> Option<&[Said]> {
+        let timeline = self.timeline.as_ref()?;
+        if !marked(timeline) {
+            return Some(&[]);
+        }
+        (self.listed_for == Some((timeline.revision, timeline.model)))
+            .then_some(self.listed.as_slice())
+    }
+
+    /// How many errors and warnings the `check` [`listed`](Self::listed) answers counted
+    /// past those it lists (the core lists the first hundred of each, and counts them all).
+    pub fn unlisted(&self) -> Unlisted {
+        self.unlisted
     }
 }
 
@@ -3108,22 +3298,41 @@ fn after_refusal(nothing_published: bool, problems: &Problems) -> (bool, bool) {
     (now, now != nothing_published || cancelled)
 }
 
-/// Whether a `check` of `timeline` is wanted, with `selected` the feature selected: for a
-/// document the gate refused (`gate`, true), of the current model, its problems all the
-/// document's; or for a selected feature `timeline` marks, of the published model (the
+/// `listed` sorted into the document's order, as `entries` (the timeline) list its
+/// features: the document's own first (all of a document the gate refused, `gate`, and any
+/// of no feature), then each feature's, in its order, then any of a feature it doesn't
+/// list; each feature's in the order the core gave them (its errors before its warnings).
+fn in_document_order(listed: &mut [Said], entries: &[Entry], gate: bool) {
+    let place: BTreeMap<&str, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(at, entry)| (entry.id.as_str(), at))
+        .collect();
+    // A stable sort: the core's order kept among equals.
+    listed.sort_by_key(|said| match said.feature() {
+        Some(feature) if !gate => place.get(feature).map_or((2, 0), |at| (1, *at)),
+        _ => (0, 0),
+    });
+}
+
+/// Whether a `check` of `timeline` is wanted, with `selected` the feature selected and
+/// `listing` whether What's Wrong is open: for a document the gate refused (`gate`, true),
+/// of the current model, its problems all the document's; or, for a selected feature
+/// `timeline` marks or for What's Wrong while it marks anything, of the published model (the
 /// current, while none is published). None for neither.
 fn check_wanted(
     timeline: &TimelineAnswer,
     selected: Option<&FeatureId>,
+    listing: bool,
 ) -> Option<(bool, CheckModel)> {
     let gate = timeline.problems > 0;
-    let opened = selected.is_some_and(|selected| {
-        timeline
-            .features
-            .iter()
-            .flatten()
-            .any(|entry| &entry.id == selected && (entry.problems > 0 || entry.warnings > 0))
-    });
+    let opened =
+        (listing && marked(timeline))
+            || selected.is_some_and(|selected| {
+                timeline.features.iter().flatten().any(|entry| {
+                    &entry.id == selected && (entry.problems > 0 || entry.warnings > 0)
+                })
+            });
     if !(gate || opened) {
         return None;
     }
@@ -3284,8 +3493,8 @@ mod tests {
         let mut tab = tab();
         tab.took_check(
             &CheckAnswer {
-                problems: Problems::from(error),
-                warnings: silico_core::warnings::Warnings::of([warning]),
+                problems: Problems::from(error.clone()),
+                warnings: silico_core::warnings::Warnings::of([warning.clone()]),
             },
             false,
         );
@@ -3296,6 +3505,7 @@ mod tests {
             elements: vec!["Edge1".to_owned(), "Edge2".to_owned()],
             elements_total: 150,
             suggestion: Some("try a smaller radius".to_owned()),
+            source: Some(Source::Error(error)),
         };
         assert_eq!(tab.said.get("f0000001"), Some(&fillet));
         assert_eq!(
@@ -3309,6 +3519,7 @@ mod tests {
             elements: vec!["pa000001".to_owned()],
             elements_total: 3,
             suggestion: Some("join them".to_owned()),
+            source: Some(Source::Warning(warning)),
         };
         assert_eq!(tab.said.get("s0000001"), Some(&sketch));
         assert_eq!(
@@ -3483,37 +3694,248 @@ mod tests {
         };
         // Nothing refused, nothing selected, or a healthy feature selected: none.
         assert_eq!(
-            check_wanted(&timeline(0, Some(one), features()), None),
+            check_wanted(&timeline(0, Some(one), features()), None, false),
             None
         );
         assert_eq!(
-            check_wanted(&timeline(0, Some(one), features()), Some(&a)),
+            check_wanted(&timeline(0, Some(one), features()), Some(&a), false),
             None
         );
         // A selected feature with warnings, or problems: of the published model.
         assert_eq!(
-            check_wanted(&timeline(0, Some(one), features()), Some(&b)),
+            check_wanted(&timeline(0, Some(one), features()), Some(&b), false),
             Some((false, CheckModel::Published))
         );
         let c = FeatureId::new("c0000001").unwrap();
         assert_eq!(
-            check_wanted(&timeline(0, Some(one), features()), Some(&c)),
+            check_wanted(&timeline(0, Some(one), features()), Some(&c), false),
             Some((false, CheckModel::Published))
         );
         // None published: of the current one.
         assert_eq!(
-            check_wanted(&timeline(0, None, features()), Some(&b)),
+            check_wanted(&timeline(0, None, features()), Some(&b), false),
             Some((false, CheckModel::Current { fresh: false }))
         );
         // A document the gate refused: the current model, whatever is selected.
         assert_eq!(
-            check_wanted(&timeline(2, Some(one), features()), None),
+            check_wanted(&timeline(2, Some(one), features()), None, false),
             Some((true, CheckModel::Current { fresh: false }))
         );
         assert_eq!(
-            check_wanted(&timeline(2, Some(one), features()), Some(&a)),
+            check_wanted(&timeline(2, Some(one), features()), Some(&a), false),
             Some((true, CheckModel::Current { fresh: false }))
         );
+    }
+
+    #[test]
+    fn whats_wrong_wants_a_check_whenever_the_timeline_marks_anything() {
+        let one = Revision::OPENED;
+        let marked = || vec![entry("a0000001", 0, 0), entry("b0000001", 0, 2)];
+        let clean = || vec![entry("a0000001", 0, 0), entry("b0000001", 0, 0)];
+        // A feature's warnings, nothing selected: of the published model while it's open,
+        // and none while it's not.
+        assert_eq!(
+            check_wanted(&timeline(0, Some(one), marked()), None, true),
+            Some((false, CheckModel::Published))
+        );
+        assert_eq!(
+            check_wanted(&timeline(0, Some(one), marked()), None, false),
+            None
+        );
+        // None published: of the current one.
+        assert_eq!(
+            check_wanted(&timeline(0, None, marked()), None, true),
+            Some((false, CheckModel::Current { fresh: false }))
+        );
+        // Nothing marked: nothing to list, nothing read.
+        assert_eq!(
+            check_wanted(&timeline(0, Some(one), clean()), None, true),
+            None
+        );
+    }
+
+    fn failed(message: &str, feature: Option<&str>) -> silico_core::Error {
+        let error = silico_core::Error::new(silico_core::ErrorCode::KernelFailed, message);
+        match feature {
+            Some(feature) => error.with_feature(feature),
+            None => error,
+        }
+    }
+
+    fn warned(message: &str, feature: &str) -> silico_core::Warning {
+        silico_core::Warning::new(silico_core::WarningCode::FingerprintMissing, message)
+            .with_feature(feature)
+    }
+
+    #[test]
+    fn whats_wrong_lists_every_problem_and_warning_in_the_documents_order() {
+        // The timeline: c, a, b, out of their IDs' order. The core gave a's error, b's
+        // error, a problem of no feature, c's warning, a's warning, and a warning of a
+        // feature it doesn't list.
+        let entries = [
+            entry("c0000001", 0, 1),
+            entry("a0000001", 1, 1),
+            entry("b0000001", 1, 0),
+        ];
+        let mut listed = vec![
+            Said::of(&failed("a fails", Some("a0000001"))),
+            Said::of(&failed("b fails", Some("b0000001"))),
+            Said::of(&failed("the document fails", None)),
+            Said::of_warning(&warned("c warns", "c0000001")),
+            Said::of_warning(&warned("a warns", "a0000001")),
+            Said::of_warning(&warned("z warns", "z0000001")),
+        ];
+        let said = |listed: &[Said]| -> Vec<(String, bool)> {
+            listed
+                .iter()
+                .map(|said| (said.message.clone(), said.warning))
+                .collect()
+        };
+        let mut gated = listed.clone();
+        in_document_order(&mut listed, &entries, false);
+        let want = [
+            ("the document fails", false),
+            ("c warns", true),
+            ("a fails", false),
+            ("a warns", true),
+            ("b fails", false),
+            ("z warns", true),
+        ]
+        .map(|(message, warning)| (message.to_owned(), warning));
+        assert_eq!(said(&listed), want);
+        // A document the gate refused: every problem the document's, in the core's order.
+        in_document_order(&mut gated, &entries, true);
+        assert_eq!(
+            said(&gated)
+                .iter()
+                .map(|(message, _)| message.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "a fails",
+                "b fails",
+                "the document fails",
+                "c warns",
+                "a warns",
+                "z warns"
+            ]
+        );
+    }
+
+    #[test]
+    fn whats_wrong_lists_a_check_only_of_the_timeline_it_shows() {
+        let one = Revision::OPENED;
+        let mut tab = tab();
+        tab.took_timeline(timeline(
+            0,
+            Some(one),
+            vec![entry("a0000001", 0, 1), entry("b0000001", 1, 0)],
+        ));
+        // Not read yet: being read.
+        assert_eq!(tab.listed(), None);
+        tab.checked = Some((one, Some(one)));
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(failed("b fails", Some("b0000001"))),
+                warnings: silico_core::warnings::Warnings::of([warned("a warns", "a0000001")]),
+            },
+            false,
+        );
+        let messages = |tab: &Tab| -> Option<Vec<String>> {
+            tab.listed()
+                .map(|listed| listed.iter().map(|said| said.message.clone()).collect())
+        };
+        assert_eq!(
+            messages(&tab),
+            Some(vec!["a warns".to_owned(), "b fails".to_owned()])
+        );
+        // Each kept whole, for its card's code and JSON.
+        assert_eq!(
+            tab.listed().unwrap()[1].source,
+            Some(Source::Error(failed("b fails", Some("b0000001"))))
+        );
+        // Another revision's timeline: being read again.
+        let mut moved = timeline(0, Some(one), vec![entry("b0000001", 1, 0)]);
+        moved.revision = one.next().unwrap();
+        tab.took_timeline(moved);
+        assert_eq!(messages(&tab), None);
+        // Nothing marked: nothing to list.
+        tab.took_timeline(timeline(0, Some(one), vec![entry("a0000001", 0, 0)]));
+        assert_eq!(messages(&tab), Some(Vec::new()));
+        // A check of revision 1 that answers once the timeline shows revision 2: listed for
+        // the revision it was asked of, so not for the one shown.
+        tab.checked = Some((one, Some(one)));
+        let mut later = timeline(0, Some(one), vec![entry("b0000001", 1, 0)]);
+        later.revision = one.next().unwrap();
+        tab.took_timeline(later);
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(failed("b fails", Some("b0000001"))),
+                warnings: silico_core::warnings::Warnings::none(),
+            },
+            false,
+        );
+        assert_eq!(messages(&tab), None);
+    }
+
+    #[test]
+    fn whats_wrong_counts_the_errors_and_warnings_the_core_counted_past_those_it_listed() {
+        let one = Revision::OPENED;
+        // 130 warnings: the core lists 100, and counts 30 more.
+        let mut tab = tab();
+        tab.took_timeline(timeline(0, Some(one), vec![entry("a0000001", 0, 130)]));
+        tab.checked = Some((one, Some(one)));
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(failed("a fails", Some("a0000001"))),
+                warnings: silico_core::warnings::Warnings::of(
+                    (0..130).map(|_| warned("a warns", "a0000001")),
+                ),
+            },
+            false,
+        );
+        assert_eq!(tab.listed().map(<[Said]>::len), Some(101));
+        assert_eq!(
+            tab.unlisted(),
+            Unlisted {
+                errors: 0,
+                warnings: 30
+            }
+        );
+        // A document the gate refuses for 130 boxes of no length: 100 errors listed, and 30
+        // more counted.
+        let boxes = (0..130)
+            .map(|at| {
+                format!(
+                    r#"{{"id": "f{at:07}", "type": "box", "v": 1, "name": "Box", "position": [0, 0, 0], "length": 0, "width": 1, "height": 1}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{boxes}]}}"#
+        );
+        let document = silico_core::document::read(text.as_bytes()).unwrap();
+        let invalid = silico_core::document::validate(&document).unwrap_err();
+        assert_eq!((invalid.errors().len(), invalid.total()), (100, 130));
+        tab.took_timeline(timeline(130, Some(one), vec![entry("f0000000", 0, 0)]));
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(invalid),
+                warnings: silico_core::warnings::Warnings::none(),
+            },
+            true,
+        );
+        assert_eq!(tab.listed().map(<[Said]>::len), Some(100));
+        assert_eq!(
+            tab.unlisted(),
+            Unlisted {
+                errors: 30,
+                warnings: 0
+            }
+        );
+        // Nothing marked: none counted.
+        tab.took_timeline(timeline(0, Some(one), vec![entry("a0000001", 0, 0)]));
+        assert_eq!(tab.unlisted(), Unlisted::default());
     }
 
     #[test]

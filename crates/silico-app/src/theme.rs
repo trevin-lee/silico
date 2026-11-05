@@ -1167,6 +1167,48 @@ pub const ERROR_CARD_BODY_PADDING: Margin = Margin {
 };
 pub const ERROR_CARD_FIX_GAP: f32 = 6.0;
 pub const ERROR_CARD_FIX_MARGIN: f32 = 8.0;
+/// The body's words (`.ec-body`: an error's #ffe2e5, a warning's #ffe6c2), and the space
+/// under each of its paragraphs, the core's message and its cause (`.ec-body p { margin: 0
+/// 0 6px }`).
+pub const ERROR_CARD_BODY_TEXT: Color32 = hex(0xffe2e5);
+pub const WARNING_CARD_BODY_TEXT: Color32 = hex(0xffe6c2);
+pub const ERROR_CARD_PARAGRAPH_MARGIN: f32 = 6.0;
+/// The code chip at the head's right (`.ec-code`): 10 high in the monospace font, in the
+/// accent, on black at 30% (77 of 255), padded 4 at its sides, corners 3.
+pub const ERROR_CARD_CODE_SIZE: f32 = 10.0;
+pub const ERROR_CARD_CODE_BG: Color32 = with_alpha(GRAY_0, 77);
+pub const ERROR_CARD_CODE_PADDING: f32 = 4.0;
+pub const ERROR_CARD_CODE_CORNER_RADIUS: u8 = 3;
+/// The Feature, Elements, and Parameter rows (`.ec-kv`): `--fs-small`, its keys in the
+/// accent, 8 from their values (its columns' gap) and 2 between rows, 6 under the last.
+pub const ERROR_CARD_ROW_SIZE: f32 = HEADER_SIZE;
+pub const ERROR_CARD_ROW_GAP: f32 = 8.0;
+pub const ERROR_CARD_ROW_SPACING: f32 = 2.0;
+pub const ERROR_CARD_ROWS_MARGIN: f32 = 6.0;
+/// The feature's ID after its name (`.mono`, at `opacity: .7`).
+pub const ERROR_CARD_ID_OPACITY: f32 = 0.7;
+/// An element's chip (`.el-chip`): 10.5 high in the monospace font, white, on black at 35%
+/// (89 of 255), padded 5 at its sides, corners 3; its name cut to 32 characters and an
+/// ellipsis where it's longer than 34.
+pub const ERROR_CARD_CHIP_SIZE: f32 = 10.5;
+pub const ERROR_CARD_CHIP_BG: Color32 = with_alpha(GRAY_0, 89);
+pub const ERROR_CARD_CHIP_TEXT: Color32 = GRAY_1000;
+pub const ERROR_CARD_CHIP_PADDING: f32 = 5.0;
+pub const ERROR_CARD_CHIP_CORNER_RADIUS: u8 = 3;
+pub const ERROR_CARD_CHIP_LONGEST: usize = 34;
+pub const ERROR_CARD_CHIP_KEPT: usize = 32;
+/// The candidates (`errCard`'s heading, 10.5 in capitals in the accent, 4 above the first;
+/// `.cand`: padded 5 by 6, corners `--r-sm`, black at 25% (64 of 255), 4 under each, its
+/// name `.mono` in #ffd1d6).
+pub const ERROR_CARD_CANDIDATES_SIZE: f32 = 10.5;
+pub const ERROR_CARD_CANDIDATES_MARGIN: f32 = 4.0;
+pub const ERROR_CARD_CANDIDATE_PADDING: Margin = Margin::symmetric(6, 5);
+pub const ERROR_CARD_CANDIDATE_BG: Color32 = with_alpha(GRAY_0, 64);
+pub const ERROR_CARD_CANDIDATE_MARGIN: f32 = 4.0;
+pub const ERROR_CARD_CANDIDATE_TEXT: Color32 = hex(0xffd1d6);
+/// The card's buttons (`.ec-actions`: wrapped, 6 apart each way), each `.btn`
+/// ([`BUTTON_HEIGHT`] high).
+pub const ERROR_CARD_ACTIONS_GAP: f32 = 6.0;
 
 // ---- The docked dialog (`.selbox`, `.chip`, `.seg`, `.dlg-footer`, `.btn-secondary`) ----
 
@@ -1318,6 +1360,20 @@ pub const MODAL_FOOT_PADDING: Margin = Margin {
 pub const MODAL_FOOT_GAP: f32 = 6.0;
 pub const MODAL_BUTTON_HEIGHT: f32 = DIALOG_BUTTON_HEIGHT;
 pub const MODAL_BUTTON_MIN_WIDTH: f32 = 76.0;
+
+// ---- What's Wrong (`renderModal`'s `whatswrong`) ----
+
+/// What's Wrong's width (`.modal`, `style="width:560px"`), no wider than the window but 40
+/// (`max-width: calc(100vw - 40px)`), and its body's padding (`.m-body`,
+/// `style="padding:0 4px 8px"`), its cards each `--pad` in from that.
+pub const WHATS_WRONG_WIDTH: f32 = 560.0;
+pub const WHATS_WRONG_WINDOW_MARGIN: f32 = 40.0;
+pub const WHATS_WRONG_BODY_PADDING: Margin = Margin {
+    left: 4,
+    right: 4,
+    top: 0,
+    bottom: 8,
+};
 
 // ---- The shortcut sheet (`.sheet`) ----
 
