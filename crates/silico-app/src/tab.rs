@@ -3626,6 +3626,82 @@ mod tests {
     }
 
     #[test]
+    fn a_let_go_the_box_takes_isnt_let_go_again_from_a_selection_that_took_it_back() {
+        // A new fillet's box of edges takes the canvas's picks on the 2 by 1 by 1 box. Edge1
+        // clicked: in the box and the selection. Then clicked twice before the box reads
+        // the toggles: let go, then added again. The box lets it go and takes it again; the
+        // let-go, removed from the box, isn't let go from the selection a second time, so
+        // both hold Edge1, as after the first click.
+        use crate::selection::How;
+        let edge = "aaaaaaaa.box.Edge1";
+        let mut tab = tab();
+        let model = crate::selection::tests::box_model();
+        tab.selection
+            .published(Some((model, Revision::from_number(1).unwrap())), 1);
+        let dialog = Dialog::new(Kind::Fillet, None, 1);
+        tab.selection.take_into(dialog.takes());
+        tab.dialog = Some(dialog);
+        let held = |tab: &Tab| {
+            let names = tab.dialog.as_ref().and_then(Dialog::names).unwrap();
+            (tab.selection.names().join(" "), names.names.join(" "))
+        };
+        tab.selection.pick(edge, How::Toggle);
+        assert!(tab.box_toggled());
+        assert_eq!(held(&tab), (edge.to_owned(), edge.to_owned()));
+        tab.selection.pick(edge, How::Toggle);
+        tab.selection.pick(edge, How::Toggle);
+        assert!(tab.box_toggled());
+        assert_eq!(held(&tab), (edge.to_owned(), edge.to_owned()));
+        assert!(!tab.box_toggled(), "nothing toggled since");
+    }
+
+    #[test]
+    fn a_cancels_put_back_selection_is_read_from_its_undo_only_and_only_if_none_waits_behind_it() {
+        // Edge1 picked on the box at revision 1, then put back by a Cancel: held, unread.
+        // Each model published at revision 3 below is the box not named yet, so a read of
+        // the selection against it leaves Edge1 waiting; unread, Edge1 stays found.
+        use crate::selection::How;
+        let edge = "aaaaaaaa.box.Edge1";
+        let three = Revision::from_number(3).unwrap();
+        // Found, by an answer of its own (a name waiting keeps the last it had, unstored).
+        let found = |tab: &Tab| tab.selection.elements().next().unwrap().stable();
+        let put_back = || {
+            let mut tab = tab();
+            let model = crate::selection::tests::box_model();
+            tab.selection
+                .published(Some((model, Revision::from_number(1).unwrap())), 1);
+            tab.selection.pick(edge, How::Replace);
+            let saved = tab.selection.saved();
+            tab.selection.clear();
+            tab.selection.restore(saved);
+            tab
+        };
+        let unnamed = || {
+            Some((
+                Arc::new(crate::selection::tests::box_model().unnamed()),
+                three,
+            ))
+        };
+        // A Cancel, another queued behind it: not read from 3, the later Cancel's undo says
+        // when.
+        let mut tab = put_back();
+        tab.edits.queue.push_back(Queued::Closed { ok: false });
+        tab.read_restored_from(false, three);
+        tab.selection.published(unnamed(), 2);
+        assert!(found(&tab), "read though another Cancel waits");
+        // An OK: nothing put back by it, so nothing read from 3.
+        let mut tab = put_back();
+        tab.read_restored_from(true, three);
+        tab.selection.published(unnamed(), 2);
+        assert!(found(&tab), "read from an OK");
+        // A Cancel alone: read from 3.
+        let mut tab = put_back();
+        tab.read_restored_from(false, three);
+        tab.selection.published(unnamed(), 2);
+        assert!(!found(&tab), "not read from the Cancel's undo");
+    }
+
+    #[test]
     fn a_refused_timeline_asks_again_only_when_the_refusal_changes_what_it_would_ask() {
         let refusal = |code: silico_core::ErrorCode, parameter: Option<&'static str>| {
             let error = silico_core::Error::new(code, "refused");

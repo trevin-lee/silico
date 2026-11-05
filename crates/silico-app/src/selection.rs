@@ -1697,7 +1697,7 @@ pub(crate) fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use silico_core::command::meshes::MeshElement;
     use silico_core::naming::{PrimitiveKind, TypeWord};
@@ -3248,7 +3248,7 @@ mod tests {
     }
 
     /// [`one_box`]'s model.
-    fn box_model() -> Arc<Model> {
+    pub(crate) fn box_model() -> Arc<Model> {
         let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 2, "width": 1, "height": 1}]}"#;
         let checked = silico_core::document::Checked::new(
             silico_core::document::read(text.as_bytes()).unwrap(),
@@ -3439,6 +3439,93 @@ mod tests {
                 ("aaaaaaaa.box.Edge1".to_owned(), "found"),
                 ("aaaaaaaa.box.Edge2".to_owned(), "found")
             ]
+        );
+    }
+
+    #[test]
+    fn a_boxs_toggles_of_names_waiting_are_placed_among_the_selections_elements_alone() {
+        // The box model, not named yet: every name waits. The selection holds a feature,
+        // then Edge1, Edge2 and Edge3, each waiting. A box takes the canvas, and a box drawn
+        // on Edge3 and Edge4 toggles both: Edge3 let go, Edge4 added. A waiting name's place
+        // is its place among the selection's elements, features not counted (the store's
+        // `selection.N`): Edge3 the third element before, so place 2; Edge4 placed after
+        // Edge1 and Edge2, Edge3 let go, so place 2 too.
+        let model = box_model();
+        let mut selection = Selection::default();
+        selection.published(
+            Some((Arc::new(model.unnamed()), Revision::from_number(1).unwrap())),
+            1,
+        );
+        let edge = |n: u32| format!("aaaaaaaa.box.Edge{n}");
+        selection.set(vec![
+            Item::Feature(fid("aaaaaaaa")),
+            picked(&edge(1)),
+            picked(&edge(2)),
+            picked(&edge(3)),
+        ]);
+        selection.take_into(Some(Filter::default()));
+        selection.pick_all(&[edge(3), edge(4)], How::Toggle);
+        let toggled: Vec<(bool, String, Option<String>)> = selection
+            .take_toggled()
+            .into_iter()
+            .map(|toggled| {
+                let error = toggled.stored.unwrap_err();
+                assert_eq!(error.code(), ErrorCode::Conflict, "{error:?}");
+                (
+                    toggled.added,
+                    toggled.name,
+                    error.parameter().map(str::to_owned),
+                )
+            })
+            .collect();
+        assert_eq!(
+            toggled,
+            [
+                (false, edge(3), Some("selection.2".to_owned())),
+                (true, edge(4), Some("selection.2".to_owned())),
+            ]
+        );
+        assert_eq!(
+            states(&selection),
+            [
+                (edge(1), "pending"),
+                (edge(2), "pending"),
+                (edge(4), "pending")
+            ]
+        );
+        // A click's toggle of a name waiting, let go: its place among the elements alone,
+        // Edge2 the second, so place 1; and one added after the two left, place 2.
+        selection.pick(&edge(2), How::Toggle);
+        selection.pick(&edge(5), How::Toggle);
+        let clicked: Vec<(bool, Option<String>)> = selection
+            .take_toggled()
+            .into_iter()
+            .map(|toggled| {
+                let error = toggled.stored.unwrap_err();
+                (toggled.added, error.parameter().map(str::to_owned))
+            })
+            .collect();
+        assert_eq!(
+            clicked,
+            [
+                (false, Some("selection.1".to_owned())),
+                (true, Some("selection.2".to_owned()))
+            ]
+        );
+        // Read in the box's solid while its elements aren't named yet: waiting, said so,
+        // not Silico's own bug.
+        let read = selection.read_on(&edge(1), &fid("aaaaaaaa"));
+        let OnBase::Found(Err(error)) = &read else {
+            panic!("{read:?}")
+        };
+        assert_eq!(error.code(), ErrorCode::Conflict);
+        assert_eq!(
+            error.message(),
+            "aaaaaaaa.box.Edge1 isn't answered yet: aaaaaaaa's elements aren't named yet"
+        );
+        assert_eq!(
+            error.suggestion(),
+            Some("select it again once the model has rebuilt")
         );
     }
 

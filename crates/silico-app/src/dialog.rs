@@ -1909,6 +1909,56 @@ mod tests {
     }
 
     #[test]
+    fn a_let_go_drops_the_boxs_name_by_whatever_name_reaches_it_and_an_emptied_box_cant_be_sent() {
+        // A fillet f0000001 on k7f2qx3m's Edge3 and Edge5, open under Edit Feature, a later
+        // feature's body r0000001 built through it.
+        let fillet = json::read(
+            br#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"], "radius": 1}"#,
+        )
+        .unwrap();
+        let id = FeatureId::new("f0000001").unwrap();
+        let mut dialog = Dialog::load(Kind::Fillet, id, &fillet, 1).unwrap();
+        let base = FeatureId::new("k7f2qx3m").unwrap();
+        // Let go on r0000001 by the name the later body gives it, r0000001.box.Edge9, which
+        // the box doesn't hold: read against the base, it's Edge5 there, so Edge5 is let go.
+        let later = toggle(false, &edge("r0000001", 9), "r0000001");
+        assert_eq!(
+            dialog.toggled(&later, true, &|_| OnBase::Found(Ok(edge("k7f2qx3m", 5)))),
+            Taken::Removed
+        );
+        assert_eq!(dialog.names().unwrap().names, ["k7f2qx3m.box.Edge3"]);
+        // Let go by the name the box holds, though nothing can be stored of it now (its
+        // body's elements not named yet): let go by that name.
+        let waiting = Toggled {
+            added: false,
+            name: "k7f2qx3m.box.Edge3".to_owned(),
+            stored: Err(Error::new(
+                silico_core::ErrorCode::Conflict,
+                "k7f2qx3m.box.Edge3 isn't answered yet",
+            )),
+            body: None,
+            kind: None,
+        };
+        assert_eq!(
+            dialog.toggled(&waiting, false, &|_| panic!("read against the base")),
+            Taken::Removed
+        );
+        // Emptied: the base stays, but the box holds nothing to send, so it isn't readable,
+        // and the dialog can't be sent.
+        let names = dialog.names().unwrap();
+        assert!(names.names.is_empty());
+        assert_eq!(names.body, Some(base));
+        let at = dialog
+            .inputs
+            .iter()
+            .position(|input| matches!(input.value, Value::Names(_)))
+            .unwrap();
+        assert!(!dialog.readable(&dialog.inputs[at]));
+        assert!(!dialog.valid());
+        assert_eq!(field(&dialog, "edges"), None);
+    }
+
+    #[test]
     fn a_dressings_numbers_are_remembered_from_its_last_ok_and_others_are_not() {
         let mut remembered = Remembered::default();
         // Nothing OK'd yet: the first values, 1 mm.

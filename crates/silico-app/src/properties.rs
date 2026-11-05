@@ -1101,11 +1101,12 @@ mod tests {
     use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
     use egui::accesskit::Role;
     use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
 
     use super::*;
     use crate::modal::tests::{
         at, at_opacity, cap_border, colour, fills_at, font, icon_at, kbd_border, near, rects,
-        text_shape, widget,
+        sized, text_shape, widget,
     };
 
     /// styles.css: `.dlg-footer .btn { flex: 1; height: 26px }`; `.btn { gap: 6px }`;
@@ -1203,6 +1204,141 @@ mod tests {
         font(&value, FS, "the value");
         assert_eq!(colour(&key), purple);
         assert_eq!(colour(&value), G800);
+    }
+
+    /// `renderDialog`'s Clear: `.ab-btn` 18 square (`style="height:18px;min-width:18px"`),
+    /// `--r-sm` round; `.ab-btn:hover:not(:disabled)` Gray.300 behind Gray.1000.
+    /// `.selbox .chip`: 16 high, Gray.300, `padding: 0 5px; gap: 4px`.
+    const CLEAR: f32 = 18.0;
+    const CHIP_H: f32 = 16.0;
+    const CHIP_GAP: f32 = 4.0;
+    const G300: Color32 = Color32::from_rgb(0x2c, 0x2b, 0x2b);
+    const G1000: Color32 = Color32::WHITE;
+
+    /// A box of names' row listing `name`, `enabled` or not, drawn in `place`, its Remove
+    /// button hovered if `hover`.
+    fn listed_in(place: Rect, name: &'static str, enabled: bool, hover: bool) -> Harness<'static> {
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(300.0, 120.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    listed(ui, "row", Icon::SelEdge, name, enabled);
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        if hover {
+            h.get_by_role_and_label(Role::Button, &format!("Remove {name}"))
+                .hover();
+            h.run_steps(2);
+        }
+        h
+    }
+
+    #[test]
+    fn a_listed_names_row_runs_from_the_pad_its_remove_button_18_square_at_its_right() {
+        // `.prop`'s `padding: 0 var(--pad)`, `--row-h` high: the row's chip from 12 in, the
+        // button 18 square, centred in the row, its right 12 in from the row's; the chip,
+        // a name too long for the row cut short, ends a chip's gap (4) before the button.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(200.0, 60.0));
+        let name = "k7f2qx3m.fillet.Edge111111111111111111111111111111111111";
+        let h = listed_in(place, name, true, false);
+        let button = widget(&h, Role::Button, &format!("Remove {name}"));
+        sized(
+            button,
+            Rect::from_min_size(
+                Pos2::new(
+                    place.right() - PAD - CLEAR,
+                    place.top() + (ROW_H - CLEAR) / 2.0,
+                ),
+                Vec2::splat(CLEAR),
+            ),
+            "the Remove button",
+        );
+        let chip = rects(&h)
+            .into_iter()
+            .find(|shape| shape.fill == G300 && near(shape.rect.height(), CHIP_H))
+            .expect("the chip")
+            .rect;
+        assert!(
+            near(chip.left(), place.left() + PAD),
+            "the chip at {chip:?}"
+        );
+        // Cut to fit, it ends within a narrow digit's width (under 8) of where it may.
+        let end = button.left() - CHIP_GAP;
+        assert!(
+            chip.right() <= end + egui::emath::GUI_ROUNDING && chip.right() > end - 8.0,
+            "the chip at {chip:?}, the button at {button:?}"
+        );
+    }
+
+    #[test]
+    fn a_listed_names_remove_button_is_lit_when_hovered_only_if_its_on() {
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(200.0, 60.0));
+        let name = "k7f2qx3m.box.Edge3";
+        for enabled in [true, false] {
+            let h = listed_in(place, name, enabled, true);
+            let button = Rect::from_min_size(
+                Pos2::new(
+                    place.right() - PAD - CLEAR,
+                    place.top() + (ROW_H - CLEAR) / 2.0,
+                ),
+                Vec2::splat(CLEAR),
+            );
+            let lit: Vec<Color32> = fills_at(&h, button)
+                .into_iter()
+                .map(|(fill, _)| fill)
+                .collect();
+            let tint = icon_at(
+                &h,
+                Rect::from_center_size(button.center(), Vec2::splat(ICON)),
+            );
+            if enabled {
+                assert_eq!(lit, [G300], "hovered, on");
+                assert_eq!(tint, Some(G1000), "hovered, on");
+            } else {
+                assert!(lit.is_empty(), "hovered, off: {lit:?}");
+                assert!(
+                    tint.is_some_and(|tint| tint != G1000),
+                    "hovered, off: {tint:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn what_a_box_of_names_says_is_in_the_value_column_11_px_on_16_px_lines() {
+        // `<div class="prop"><span></span><span class="err-text" style="font-size:11px;
+        // white-space:normal">`: in the value's column, 12 + 96 + 8 in from the panel's
+        // left, wrapped, each line `body`'s 16 high.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(260.0, 200.0));
+        let text = "k7f2qx3m.box.Face1 is a face: a fillet takes edges, so select one of the \
+                    edges of the body it's built on";
+        let red = Color32::from_rgb(0xff, 0x38, 0x65);
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(360.0, 260.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    said(ui, text, red);
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let said = text_shape(&h, text);
+        at(
+            said.pos,
+            Pos2::new(place.left() + PAD + KEY_W + ROW_GAP, place.top()),
+            "what's said",
+        );
+        font(&said, 11.0, "what's said");
+        assert_eq!(colour(&said), red);
+        let lines = said.galley.rows.len();
+        assert!(lines > 1, "what's said didn't wrap");
+        assert!(
+            near(said.galley.size().y, lines as f32 * LH),
+            "{lines} lines {} high",
+            said.galley.size().y
+        );
     }
 
     #[test]
