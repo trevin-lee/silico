@@ -91,8 +91,12 @@ pub fn layout() -> Tree<Pane> {
 /// w: 296px`), each with its 1px border inside it (`#browser`'s `border-right`, `#right`'s
 /// `border-left`, `box-sizing: border-box`): the border is the tiles' gap, 1 wide
 /// (`Behavior::gap_width`), so each pane's own rect is the column less that 1.
-const BROWSER_W: f32 = 248.0;
-const RIGHT_W: f32 = 296.0;
+pub(crate) const BROWSER_W: f32 = 248.0;
+pub(crate) const RIGHT_W: f32 = 296.0;
+
+/// A side pane's border (`#browser`'s `border-right`, `#right`'s `border-left`): the tiles'
+/// gap ([`Panes`]' `gap_width`), taken from its column's width in [`fit`].
+const BORDER: f32 = 1.0;
 
 /// The tree's panes sized for a width of `width`: the browser `--browser-w` wide and the
 /// property panel `--right-w`, each with its border, and the canvas (`1fr`) the rest. A
@@ -121,9 +125,9 @@ pub fn fit(tree: &mut Tree<Pane>, width: f32) {
     };
     if let Some(Tile::Container(egui_tiles::Container::Linear(linear))) = tree.tiles.get_mut(root) {
         // The two gaps are the side panes' borders.
-        linear.shares.set_share(browser, BROWSER_W - 1.0);
+        linear.shares.set_share(browser, BROWSER_W - BORDER);
         linear.shares.set_share(viewport, width - sides);
-        linear.shares.set_share(properties, RIGHT_W - 1.0);
+        linear.shares.set_share(properties, RIGHT_W - BORDER);
     }
 }
 
@@ -171,7 +175,7 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
     }
 
     fn gap_width(&self, _style: &egui::Style) -> f32 {
-        1.0
+        BORDER
     }
 
     fn is_container_resizable(&self, _tiles: &Tiles<Pane>, _tile_id: TileId) -> bool {

@@ -310,17 +310,19 @@ fn the_panes_are_the_prototypes_columns_the_browser_248_the_properties_296_and_t
     // `Frame::central_panel(..).outer_margin(8.0)`), so a harness 16 more each way gives the
     // app the window it's named for, its top left at (8, 8).
     const MARGIN: f32 = 8.0;
-    // (window width, the canvas's x and width, the right panel's x), from the window's left,
-    // by hand: the browser 0 to 248 (its border 247 to 248), the right panel's border the 1
-    // before its panel, the canvas between. At 1280: 1280 − 248 − 296 = 736, the border at
-    // 248 + 736 = 984, the panel from 985 (1280 − 295). At 1600: 1600 − 544 = 1056, the
-    // panel from 1305. At 500, under the side columns' 544: `1fr` is nothing
+    // (window width and height, the canvas's x and width, the right panel's x), from the
+    // window's left, by hand: the browser 0 to 248 (its border 247 to 248), the right
+    // panel's border the 1 before its panel, the canvas between. At 1280: 1280 − 248 − 296 =
+    // 736, the border at 248 + 736 = 984, the panel from 985 (1280 − 295). At 1600: 1600 −
+    // 544 = 1056, the panel from 1305. At 500, under the side columns' 544: `1fr` is nothing
     // (`#canvas-wrap`'s `min-width: 0`), the panel's border at 248, the panel from 249 to
-    // 544, past the window's right edge.
-    for (window, canvas_w, right_x) in [
-        (1280.0, 736.0, 985.0),
-        (1600.0, 1056.0, 1305.0),
-        (500.0, 0.0, 249.0),
+    // 544, past the window's right edge. At the window's least size, 884 by 336 (main.rs):
+    // 884 − 544 = 340, the panel from 589 (884 − 295).
+    for (window, window_h, canvas_w, right_x) in [
+        (1280.0, 800.0, 736.0, 985.0),
+        (1600.0, 800.0, 1056.0, 1305.0),
+        (500.0, 800.0, 0.0, 249.0),
+        (884.0, 336.0, 340.0, 589.0),
     ] {
         // Sessions of its own for each window: one holds the file it opened.
         let f = fixture();
@@ -329,7 +331,7 @@ fn the_panes_are_the_prototypes_columns_the_browser_248_the_properties_296_and_t
         let mut h = {
             let _marked = never_waits::marked();
             Harness::builder()
-                .with_size((window + 2.0 * MARGIN, 800.0 + 2.0 * MARGIN))
+                .with_size((window + 2.0 * MARGIN, window_h + 2.0 * MARGIN))
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
         h.state_mut().open(path.to_str().unwrap(), false);
@@ -343,19 +345,35 @@ fn the_panes_are_the_prototypes_columns_the_browser_248_the_properties_296_and_t
                 .translate(-eframe::egui::vec2(MARGIN, MARGIN))
         };
         let (browser, canvas, right) = (pane("Browser"), pane("Viewport"), pane("Properties"));
-        let at = format!("at {window} wide");
+        let at = format!("at {window} by {window_h}");
         assert_eq!((browser.left(), browser.width()), (0.0, 247.0), "{at}");
         assert_eq!((canvas.left(), canvas.width()), (248.0, canvas_w), "{at}");
         assert_eq!((right.left(), right.width()), (right_x, 295.0), "{at}");
+        // Their top the toolbar's bottom: `--top-bar-h` 30, then the toolbar's
+        // `--toolbar-tabs-h` 24, `--toolbar-h` 52, and its `border-bottom` 1.
+        assert_eq!(browser.top(), 30.0 + 24.0 + 52.0 + 1.0, "{at}");
         // Side by side, the three the same height, down to the timeline, which runs the
         // window's width: to 1 above its 40, egui's separator line, the timeline's border,
-        // drawn outside its panel (where `#timeline`'s `border-top` is inside its 40).
+        // drawn outside its panel (where `#timeline`'s `border-top` is inside its 40); the
+        // status bar, `--status-h` 24, under it.
         let timeline = pane("Timeline");
         for rect in [canvas, right] {
             assert_eq!(rect.y_range(), browser.y_range(), "{at}");
         }
         assert_eq!(browser.bottom() + 1.0, timeline.top(), "{at}");
         assert_eq!((timeline.left(), timeline.right()), (0.0, window), "{at}");
+        assert_eq!(timeline.bottom(), window_h - 24.0, "{at}");
+        // The viewport draws in its pane's rect, once it has drawn a frame.
+        if canvas_w > 0.0 {
+            step_until(&mut h, "the viewport's frame", |h| {
+                view(h).frame().is_some()
+            });
+            assert_eq!(
+                the_viewport(&h),
+                h.get_by_role_and_label(Role::Pane, "Viewport").rect(),
+                "{at}"
+            );
+        }
         assert_eq!(never_waits::waits(), 0);
     }
 }

@@ -1364,6 +1364,34 @@ pub const BANNER_MARGIN_RIGHT: f32 = 148.0;
 /// as they fit, the words never narrower than this.
 pub const BANNER_MIN_WIDTH: f32 = 320.0;
 pub const BANNER_WORDS_MIN_WIDTH: f32 = 200.0;
+
+// ---- The window's least size ----
+
+/// The canvas's least size: room for a banner at its least width, [`BANNER_MIN_WIDTH`],
+/// [`BANNER_MARGIN`] at each side (340); and for the ViewCube, [`VIEW_CUBE_MARGIN`] from
+/// the top, over the navigation bar, [`NAVIGATION_BAR_MARGIN`] above and below it (164).
+pub const CANVAS_MIN_WIDTH: f32 = BANNER_MIN_WIDTH + 2.0 * BANNER_MARGIN;
+pub const CANVAS_MIN_HEIGHT: f32 = VIEW_CUBE_MARGIN
+    + VIEW_CUBE_SIDE
+    + NAVIGATION_BAR_MARGIN
+    + NAVIGATION_BAR_HEIGHT
+    + NAVIGATION_BAR_MARGIN;
+
+/// The window's least size (Fusion's window has one; the prototype, a page, has none): the
+/// browser's and the property panel's columns (`--browser-w`, `--right-w`) and the least
+/// canvas between them, 884; and the app bar (`--top-bar-h`), the toolbar (`--toolbar-tabs-
+/// h`, `--toolbar-h`, and its border), the least canvas, the timeline (`--timeline-h`, and
+/// the 1 egui's separator line takes above it), and the status bar (`--status-h`), 336.
+pub const WINDOW_MIN_WIDTH: f32 =
+    crate::panes::BROWSER_W + crate::panes::RIGHT_W + CANVAS_MIN_WIDTH;
+pub const WINDOW_MIN_HEIGHT: f32 = TOP_BAR_HEIGHT
+    + TOOLBAR_TABS_HEIGHT
+    + TOOLBAR_PANELS_HEIGHT
+    + BORDER_WIDTH
+    + CANVAS_MIN_HEIGHT
+    + BORDER_WIDTH
+    + TIMELINE_HEIGHT
+    + STATUS_BAR_HEIGHT;
 /// A banner's padding (`9px 10px 9px 12px`), inside its 1 px border, its corners `--r`; 10
 /// between its icon, its words, and its buttons, which are 6 apart; its icon 1 lower than
 /// its words' top (`.b-icon { margin-top: 1px }`); its second line 2 under its first, at
