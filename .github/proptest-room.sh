@@ -7,8 +7,9 @@
 #     filler's, holds cases to deadlines, which a run at the idle weight beside it would
 #     share the CPU of;
 #   - filler's oracle sweep is due (no filler sweep started on BRANCH in four hours, as
-#     filler.yml reckons it): the filler waits for an exploration going before it starts the
-#     sweep, so one started now would hold it back by up to an hour;
+#     filler.yml reckons it) or overdue (none in a day but those cancelled): the filler waits
+#     for an exploration going before it starts the sweep, so one started now would hold it
+#     back by up to an hour;
 #   - a real mutants run is starting (no shard yet: its plan is cancelling filler, and its
 #     shards will want filler's runners) or has a shard waiting for a runner: unlike filler.yml,
 #     which lets filler start beside a lane whose every runner is busy, this can't ask for
@@ -16,16 +17,18 @@
 #   - a fifth of the VM's CPUs or fewer are idle, over 15 seconds (this runs on the VM): its
 #     tests, starved, would time out and read as failures;
 #   - every runner labelled filler is busy.
-# Overdue, when no exploration's explore job has passed or failed in a day, it goes whatever
-# CPU is idle, and beside a sweep merely due: real mutants runs can keep the VM a fifth or
-# less idle for days (2026-11-04 and 05), and a sweep due waits for idle CPU too. Not while a
-# bench or a sweep is going, nor while filler's sweep is overdue too (no filler sweep started
-# in a day: it goes first, filler.yml, and starts none beside an exploration, so neither waits
-# on the other for long), nor while a gate is waiting for a runner, a real mutants run is
-# starting, or one has a shard waiting that a free runner of its lane could take (filler.yml's
-# rule: one waiting behind its lane's busy runners waits whatever this does, and every
-# runner labelled filler busy still holds this back, so its job never queues to race one for
-# the next runner freed). Its slow proptests then run alone (tests/proptest-explore.sh).
+# Overdue, when no exploration's explore job has passed or failed, having run a round (its step
+# "Rounds ran"), in a day, it goes whatever CPU is idle, and beside a sweep merely due: real
+# mutants runs can keep the VM a fifth or less idle for days (2026-11-04 and 05), and a sweep
+# due waits for idle CPU too. Not while a bench or a sweep is going, nor while filler's sweep
+# is overdue too (no filler sweep in a day but those cancelled: it goes first, filler.yml, and
+# starts none beside an exploration, so neither waits on the other for long), nor while a gate
+# is waiting for a runner, a real mutants run is starting, or one has a shard waiting that a
+# free runner of its lane could take (filler.yml's rule: one waiting behind its lane's busy
+# runners waits whatever this does, and every runner labelled filler busy still holds this
+# back, so its job never queues to race one for the next runner freed). Its tests then take a
+# real shard's share of threads, 2, and its slow proptests run alone (proptest-explore.yml,
+# tests/proptest-explore.sh).
 # Once it starts, real work that starts cancels it, as it does every filler run
 # (cancel-filler.sh). A failed look at GitHub's runs fails this, and with it the run: no
 # exploration starts unchecked.
@@ -60,14 +63,17 @@ if awk -F '\t' '$2 == "bench.yml" || $2 == "oracle-sweep.yml" { found = 1 } END 
   decide false "Not started: a bench or an oracle sweep is going."
 fi
 
-# Overdue: no explore job passed or failed in a day (one cancelled, or skipped for want of
-# room, doesn't count), of the runs made in two (a run can wait, then run, for hours).
+# Overdue: no explore job passed or failed in a day having run a round (one cancelled, or
+# skipped for want of room, doesn't count, nor one whose starved build left no time for a
+# round, which ends passed: its step "Rounds ran" is skipped, proptest-explore.yml), of the
+# runs made in two (a run can wait, then run, for hours).
 runs=$(gh run list --workflow proptest-explore.yml --branch "$BRANCH" --limit 50 --json databaseId,createdAt \
   --jq ".[] | select(now - (.createdAt | fromdateiso8601) < $((2 * day))) | .databaseId")
 explored=0
 for run in $runs; do
   ended=$(gh api "repos/$GH_REPO/actions/runs/$run/jobs?per_page=100" --jq \
     "[.jobs[] | select(.name == \"explore\" and (.conclusion == \"success\" or .conclusion == \"failure\")
+       and any(.steps[]?; .name == \"Rounds ran\" and .conclusion == \"success\")
        and now - (.completed_at | fromdateiso8601) < $day)] | length")
   explored=$((explored + ended))
 done
@@ -76,21 +82,19 @@ if [ "$explored" -eq 0 ]; then
   report "Overdue: no exploration has passed or failed in a day."
 fi
 
-# The filler sweeps started on BRANCH in the last $1 seconds, as filler.yml counts them.
-sweeps() {
-  gh run list --workflow oracle-sweep.yml --branch "$BRANCH" --limit 100 --json displayTitle,createdAt \
-    --jq "[.[] | select((.displayTitle | startswith(\"filler \"))
-            and now - (.createdAt | fromdateiso8601) < $1)] | length"
-}
+# The filler sweeps, as filler.yml counts them (sweeps, .github/lanes.sh): overdue (none in a
+# day but those cancelled), whether or not one started in four hours (one cancelled may have),
+# the sweep goes first; merely due, only an exploration not overdue waits for it.
 recent=$(sweeps "$oracle_every")
-if [ "$recent" -eq 0 ]; then
-  if [ "$overdue" = false ]; then
-    decide false "Not started: filler's oracle sweep is due, and goes first."
-  fi
-  today=$(sweeps "$day")
-  if [ "$today" -eq 0 ]; then
+today=$(sweeps "$day" uncancelled)
+if [ "$today" -eq 0 ]; then
+  if [ "$overdue" = true ]; then
     decide false "Not started: filler's oracle sweep is overdue too, and goes first."
   fi
+  decide false "Not started: filler's oracle sweep is overdue, and goes first."
+fi
+if [ "$recent" -eq 0 ] && [ "$overdue" = false ]; then
+  decide false "Not started: filler's oracle sweep is due, and goes first."
 fi
 if [ "$overdue" = true ] && awk -F '\t' '$2 == "gate.yml" && $3 == "queued" { found = 1 } END { exit !found }' <<<"$active"; then
   decide false "Not started: a gate is waiting for a runner."

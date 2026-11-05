@@ -211,6 +211,9 @@ failures() {
 echo "proptest-explore: testing $commit"
 "${nextest[@]}" --workspace --no-run
 printf 'round\tseed\tstatus\tseconds\n' >"$out/rounds.tsv"
+# No time left for a round passes, but explores nothing: the rounds.tsv it leaves, its header
+# alone, keeps an overdue exploration overdue (proptest-explore.yml's "Rounds ran",
+# .github/proptest-room.sh).
 if [ "$SECONDS" -ge "$last_start" ]; then
   report "No round: the build ended past $((minutes * 3 / 4)) minutes"
   echo passed >"$out/outcome"

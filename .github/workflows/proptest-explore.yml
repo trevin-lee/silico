@@ -34,9 +34,10 @@
 # filler's sweep due, no real mutants run starting or waiting for a runner, a free runner
 # labelled filler, more than a fifth of the VM's CPUs idle); the filler waits for one going
 # before it starts a sweep. Once a day at least: overdue (no exploration passed or failed in
-# a day), it goes whatever CPU is idle and beside a sweep merely due, though never ahead of a
-# gate or a real mutants run waiting, nor of an overdue sweep, and its slow proptests then
-# run alone (PROPTEST_EXPLORE_SLOW_ALONE, tests/proptest-explore.sh).
+# a day having run a round, its step "Rounds ran"), it goes whatever CPU is idle and beside a
+# sweep merely due, though never ahead of a gate or a real mutants run waiting, nor of an
+# overdue sweep; its tests then take 2 threads, a real shard's on a busy VM, and its slow
+# proptests run alone (PROPTEST_EXPLORE_SLOW_ALONE, tests/proptest-explore.sh).
 #
 #   gh workflow run proptest-explore.yml --ref main                 (new seeds)
 #   gh workflow run proptest-explore.yml --ref main -f seed=SEED    (one round at SEED, to repeat it)
@@ -104,6 +105,7 @@ jobs:
       - name: Test scratch
         run: bash .github/scratch.sh start
       - name: Explore
+        id: explore
         # Within the job's limit, so a run past it still uploads what it found, and its report
         # reads it as cut off mid-round, not as a setup failure (its outcome, below).
         timeout-minutes: 80
@@ -113,6 +115,7 @@ jobs:
           # Overdue, it may start on a busy VM: its slow proptests alone, so they keep within
           # their 20 minutes (tests/proptest-explore.sh).
           PROPTEST_EXPLORE_SLOW_ALONE: ${{ needs.room.outputs.overdue == 'true' && '1' || '' }}
+          OVERDUE: ${{ needs.room.outputs.overdue == 'true' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # A real shard's claim this runner's last job left, if it died before releasing it
@@ -123,11 +126,37 @@ jobs:
           # can't slow a gate; with filler's Cargo home, so a starved build never holds the
           # package cache's lock every other build shares; and in filler's target directory,
           # without debug info, beside the gate's in its worktree (tests/committed-tree.sh).
+          # Overdue, it may start on a busy VM, where its runner's share of the CPU is far less
+          # than a quarter: then the threads a real shard takes on a busy VM, 2
+          # (.github/shard-threads.sh), so its tests aren't starved past their time limits (its
+          # slow proptests run alone, tests/proptest-explore.sh).
           share=$(( $(nproc) / 4 > 2 ? $(nproc) / 4 : 2 ))
+          if [ "$OVERDUE" = true ]; then share=2; fi
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share
           export CARGO_HOME=$HOME/.cargo-filler
           export CARGO_PROFILE_DEV_DEBUG=0 SILICO_TARGET=target-filler SILICO_TARGET_LIMIT_GIB=6
-          chrt --idle 0 ionice -c 3 nice -n 19 pixi run proptest-explore -- "$RUNNER_TEMP/explore" ${SEED:+"$SEED"}
+          # The rounds that ran (rounds.tsv's rows below its header), for "Rounds ran": none
+          # when the build ended too late for one, which passes, or when it failed. Never an
+          # earlier run's rows.
+          rm -f "$RUNNER_TEMP/explore/rounds.tsv"
+          status=0
+          chrt --idle 0 ionice -c 3 nice -n 19 pixi run proptest-explore -- "$RUNNER_TEMP/explore" ${SEED:+"$SEED"} || status=$?
+          rounds=0
+          if [ -f "$RUNNER_TEMP/explore/rounds.tsv" ]; then
+            rounds=$(( $(wc -l <"$RUNNER_TEMP/explore/rounds.tsv") - 1 ))
+          fi
+          echo "rounds=$rounds" >>"$GITHUB_OUTPUT"
+          exit "$status"
+      # Whether the exploration ran a round, passed or failed: the room's check
+      # (.github/proptest-room.sh) counts an exploration toward its day's minimum only if
+      # this succeeded. Not when the Explore step ran none (its build ended past its
+      # three quarters of an hour, on a starved VM), nor when it was stopped before it said
+      # (rounds empty).
+      - name: Rounds ran
+        if: ${{ always() && steps.explore.outputs.rounds != '' && steps.explore.outputs.rounds != '0' }}
+        env:
+          ROUNDS: ${{ steps.explore.outputs.rounds }}
+        run: echo "$ROUNDS rounds ran"
       # Even when a round failed: its report and the failures' issues are in it.
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}

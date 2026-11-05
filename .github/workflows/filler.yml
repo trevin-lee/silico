@@ -25,9 +25,10 @@
 #   a. Main's new commits: mutants in what main changed in its source since the commit the
 #      last filler `a` run tested (or since main's parent, at first).
 #   c. Every four hours: the oracle sweep, with a new seed (its run number). Once a day at
-#      least: a sweep overdue (none started in a day) goes before a and b, whatever CPU is
-#      idle, filler mutants cancelled to make room, but never while a gate or a real mutants
-#      run is starting or waiting for a runner it could take, nor beside an exploration.
+#      least: a sweep overdue (none in a day but those cancelled) goes before a and b,
+#      whatever CPU is idle, filler mutants cancelled to make room, but never while a gate or
+#      a real mutants run is starting or waiting for a runner it could take, nor beside an
+#      exploration.
 #   b. Otherwise the next slice of the workspace's source (crates/*/src/**/*.rs in path
 #      order, as many files as fit in 24 KiB, or one larger file), after the last filler
 #      `b` run's, wrapping around.
@@ -130,11 +131,13 @@ jobs:
             fi
           fi
 
-          # Every queued or running run but this one: its id, workflow file, status, title.
+          # Every queued or running run but this one: its id, workflow file, status, title. A
+          # failed look fails this, as each below does (the jobs loop's from its subshell, its
+          # pipeline's last stage): nothing starts, or is cancelled, on a partial view of runs.
           active=$(for status in queued in_progress; do
             gh api "repos/$GH_REPO/actions/runs?status=$status&per_page=100" --jq \
               ".workflow_runs[] | select(.id != $GITHUB_RUN_ID)
-                | [.id, (.path | ltrimstr(\".github/workflows/\")), .status, .display_title] | @tsv"
+                | [.id, (.path | ltrimstr(\".github/workflows/\")), .status, .display_title] | @tsv" || exit 1
           done)
           # Runs of this workflow are decisions like this one, and the clock's (filler-clock.yml)
           # only start them: neither is work, nor waits for a runner work could use.
@@ -161,7 +164,7 @@ jobs:
                 | [.status, (.runner_name // \"\"), (.labels // [] | join(\",\"))] | @tsv),
               (if (\"$workflow\" == \"mutants.yml\" or \"$workflow\" == \"oracle-sweep.yml\" or \"$workflow\" == \"proptest-explore.yml\")
                   and ([.jobs[].name | select(startswith(\"shard\") or startswith(\"sweep\") or startswith(\"explore\"))] | length) == 0
-                then \"starting\\t\\t\" else empty end)"
+                then \"starting\\t\\t\" else empty end)" || exit 1
           done)
           if awk -F '\t' '$1 == "starting" { found = 1 } END { exit !found }' <<<"$jobs"; then
             skip "a mutants run, a sweep, or a proptest exploration is starting"
@@ -192,37 +195,31 @@ jobs:
           explorations=$(awk -F '\t' '$2 == "proptest-explore.yml"' <<<"$active" | wc -l)
           # The runners labelled filler that are running a job, of any run.
           busy=$(awk -F '\t' '$1 == "in_progress" && $2 ~ /^pve-silico-([5-9]|1[0-2]|2[23])-/' <<<"$jobs" | wc -l)
-          # The filler sweeps started on this branch in the last $1 seconds.
-          sweeps() {
-            gh run list --workflow oracle-sweep.yml --branch "$BRANCH" --limit 100 --json displayTitle,createdAt \
-              --jq "[.[] | select((.displayTitle | startswith(\"filler \"))
-                      and now - (.createdAt | fromdateiso8601) < $1)] | length"
-          }
-          # c, overdue: no filler sweep started in a day. Real mutants runs can keep the VM a
-          # fifth or less idle for days (2026-11-04 and 05), when the sweep due waits below for
-          # CPU that never comes: overdue, it goes now, whatever CPU is idle, ahead of filler
-          # mutants, which it cancels (cancel-filler.sh, for them alone), never running beside
-          # them. Never ahead of real work: a gate waiting holds it back, as a real mutants run
-          # starting or with a job a free runner could take has above. Nor beside a proptest
-          # exploration, which ends within its hour and a half, and starts none while the sweep
-          # is overdue (proptest-room.sh). At the idle weight it shares the CPU about equally
-          # with the real shards that keep the VM busy (each at the idle weight too): the
-          # sweep's cases, one at a time and each well under a second (its 500 in about three
+          # c, overdue: no filler sweep in a day but those cancelled (sweeps, .github/lanes.sh).
+          # Real mutants runs can keep the VM a fifth or less idle for days (2026-11-04 and 05),
+          # when the sweep due waits below for CPU that never comes: overdue, it goes now, whatever
+          # CPU is idle, ahead of filler mutants, which it cancels (cancel-filler.sh, for them
+          # alone), never running beside them. Never ahead of real work: a gate waiting holds it
+          # back, as a real mutants run starting or with a job a free runner could take has above.
+          # Nor beside a proptest exploration, which ends within its hour and a half, and starts
+          # none while the sweep is overdue (proptest-room.sh). At the idle weight it shares the CPU
+          # about equally with the real shards that keep the VM busy (each at the idle weight too):
+          # the sweep's cases, one at a time and each well under a second (its 500 in about three
           # minutes), keep far inside Silico's 60 s deadlines and FreeCAD's half hour
           # (oracle-sweep.yml). Gates, at their full weight, can starve it, as any filler sweep.
-          today=$(sweeps $((24 * 3600)))
+          today=$(sweeps $((24 * 3600)) uncancelled)
           if [ "$today" -eq 0 ]; then
             if awk -F '\t' '$2 == "gate.yml" && $3 == "queued" { found = 1 } END { exit !found }' <<<"$active"; then
-              skip "the oracle sweep is overdue (none started in a day), but a gate is waiting for a runner"
+              skip "the oracle sweep is overdue (none in a day but those cancelled), but a gate is waiting for a runner"
             fi
             if [ "$explorations" -gt 0 ]; then
-              skip "the oracle sweep is overdue (none started in a day), waiting for a proptest exploration to end"
+              skip "the oracle sweep is overdue (none in a day but those cancelled), waiting for a proptest exploration to end"
             fi
             # Queued for a runner, it would take the next one freed ahead of a real shard.
             if [ "$busy" -ge "$pool" ] && [ "$filler_mutants" -eq 0 ]; then
-              skip "the oracle sweep is overdue (none started in a day), but real work holds every runner labelled filler"
+              skip "the oracle sweep is overdue (none in a day but those cancelled), but real work holds every runner labelled filler"
             fi
-            report "The oracle sweep is overdue: no filler sweep started in a day, so it starts whatever CPU is idle"
+            report "The oracle sweep is overdue: no filler sweep in a day but those cancelled, so it starts whatever CPU is idle"
             if [ "$filler_mutants" -gt 0 ]; then
               report "Cancelling filler mutants ($filler_mutants runs) to make room for it"
               if [ "$DRY" = true ]; then report "(dry: not cancelled)"; else bash .github/cancel-filler.sh mutants.yml; fi
