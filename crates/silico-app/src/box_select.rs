@@ -35,9 +35,13 @@
 //! its outline. The box is clamped to the canvas, so nothing off the canvas is inside it.
 //! Let go, it replaces the selection; with Shift it adds ([`How::Add`]); with Ctrl it
 //! inverts what's inside ([`How::Toggle`]); through [`Selection::pick_all`], one change.
+//! While a dialog's box of names takes the canvas's picks, a box, like a drag on geometry,
+//! toggles what it takes, whatever its modifiers, and the dialog's box hears of each as it
+//! hears of a click ([`Selection::take_toggled`]).
 //! As the prototype's `onBox`: a box in a part takes edges, always; with the edge filter
-//! off it takes nothing and a toast says so ([`EDGE_FILTER_OFF`]); else a toast says how
-//! many edges it took ("Window selection: 4 edges").
+//! off (or a dialog's box taking other kinds: [`Selection::picks`]) it takes nothing and a
+//! toast says so ([`EDGE_FILTER_OFF`]); else a toast says how many edges it took
+//! ("Window selection: 4 edges").
 //!
 //! **What's inside** is decided against the displayed mesh, what the person sees: each
 //! body drawn (not hidden), its edges' polylines (and, for a box that takes faces, its
@@ -218,7 +222,7 @@ impl BoxSelect {
             camera: frame.camera.clone(),
             table: view.table(),
             model: selection.model_of(),
-            filter: selection.filter,
+            filter: selection.picks(),
             hidden: hidden.clone(),
         };
         let changed = self.seen.as_ref().is_some_and(|seen| *seen != now);
@@ -241,12 +245,15 @@ impl BoxSelect {
         let mut toast = None;
         for effect in effects {
             match effect {
-                Effect::Pick(name, how) if current => selection.pick(&name.to_string(), how),
+                Effect::Pick(name, how) if current => {
+                    let how = selection.canvas_how(how);
+                    selection.pick(&name.to_string(), how);
+                }
                 // Decided over meshes of another model than the selection's: the name was
                 // read from what's drawn, not what it would be read against.
                 Effect::Pick(..) => toast = Some(PRESS_MOVED.to_owned()),
                 Effect::Said(said) => toast = Some(said.to_owned()),
-                Effect::Box { .. } if !selection.filter.edges => {
+                Effect::Box { .. } if !selection.picks().edges => {
                     toast = Some(EDGE_FILTER_OFF.to_owned());
                 }
                 Effect::Box {

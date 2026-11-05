@@ -44,7 +44,9 @@
 //! While a dialog's selection box of names is active ([`Selection::take_into`], section 9's
 //! *Feature dialogs*), the canvas picks only what the box takes, every click toggles the
 //! element under it (a click on nothing changes nothing), as SolidWorks' PropertyManager
-//! box takes its items, and each toggle is kept for the box ([`Selection::take_toggled`]);
+//! box takes its items, as does a drag on geometry and a box drawn (`crate::box_select`,
+//! each element it takes toggled), and each toggle is kept for the box
+//! ([`Selection::take_toggled`]);
 //! what a rebuild leaves gone isn't said, as the box, not the selection, holds what it
 //! writes (its own feature's preview may consume it).
 //!
@@ -490,10 +492,20 @@ impl Selection {
 
     /// What the canvas picks: what the filter takes, and, while a box takes the canvas's
     /// picks, what the box takes.
-    fn picks(&self) -> Filter {
+    pub(crate) fn picks(&self) -> Filter {
         match self.taking {
             Some(kinds) => self.filter.and(kinds),
             None => self.filter,
+        }
+    }
+
+    /// How a pick in the canvas changes the selection, picked `how`: while a box takes the
+    /// canvas's picks, it toggles, whatever its modifiers.
+    pub(crate) fn canvas_how(&self, how: How) -> How {
+        if self.taking.is_some() {
+            How::Toggle
+        } else {
+            how
         }
     }
 
@@ -781,8 +793,11 @@ impl Selection {
     /// waiting, as a click's is. The same element named twice is taken once (the core reads
     /// it so). A selection
     /// that would hold more elements than the core reads at once
-    /// ([`rules::MAX_SELECTED`]) isn't made: the selection is kept and that's said.
+    /// ([`rules::MAX_SELECTED`]) isn't made: the selection is kept and that's said. While a
+    /// box takes the canvas's picks, every pick toggles, and each element added or let go
+    /// is kept for the box, in the order named, as a click's toggle is.
     pub fn pick_all(&mut self, names: &[String], how: How) {
+        let how = self.canvas_how(how);
         let _span = tracing::debug_span!("selection_pick_all", ?how, names = names.len()).entered();
         self.said = None;
         if names.is_empty() {
@@ -866,6 +881,8 @@ impl Selection {
         }
         let mut removed: BTreeSet<usize> = BTreeSet::new();
         let mut scroll = None;
+        // Each toggled, in the order named, by its item's index here: added, or let go.
+        let mut toggles: Vec<(bool, usize)> = Vec::new();
         // The core's read gives each name once, and each element once (at its first name):
         // no two of the batch are one item's.
         for picked in each.into_values() {
@@ -873,6 +890,7 @@ impl Selection {
                 Some(at) => {
                     if how == How::Toggle {
                         removed.insert(at);
+                        toggles.push((false, at));
                     }
                 }
                 None => {
@@ -882,9 +900,35 @@ impl Selection {
                         scroll = picked.found().map(|found| found.feature.clone());
                     }
                     items.push(Item::Element(picked));
+                    toggles.push((true, at));
                 }
             }
         }
+        // For the box taking them: each let go at its place in the selection before, each
+        // added at its place in the selection after.
+        let boxed: Vec<Toggled> = if self.taking.is_some() {
+            toggles
+                .iter()
+                .filter_map(|&(added, at)| {
+                    let Some(Item::Element(picked)) = items.get(at) else {
+                        return None;
+                    };
+                    let place = if added {
+                        (0..at)
+                            .filter(|before| {
+                                !removed.contains(before)
+                                    && matches!(items.get(*before), Some(Item::Element(_)))
+                            })
+                            .count()
+                    } else {
+                        elements_before(&items, at)
+                    };
+                    Some(toggled(added, place, picked))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let items: Vec<Item> = items
             .into_iter()
             .enumerate()
@@ -901,6 +945,7 @@ impl Selection {
         }
         if items != self.items {
             self.scroll = scroll;
+            self.toggled.extend(boxed);
             // One revision, whether the read makes the items again (each answer's place
             // is its place in the selection, not in `names`) or not.
             let version = self.version;
@@ -1298,11 +1343,7 @@ impl Selection {
     /// selection cleared by a plain click, kept by a Ctrl-click. While a box takes the
     /// canvas's picks, every click toggles, and one on nothing changes nothing.
     fn clicked(&mut self, picking: &Picking, how: How, bodies: &BTreeMap<u32, ViewBody>) {
-        let how = if self.taking.is_some() {
-            How::Toggle
-        } else {
-            how
-        };
+        let how = self.canvas_how(how);
         match self.under(picking, bodies) {
             Some((_, _, name, _)) => self.pick(&name.to_string(), how),
             None if how == How::Replace => self.clear(),

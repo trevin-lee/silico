@@ -21093,6 +21093,63 @@ fn in_the_fillet_dialog_a_ctrl_click_adds_an_edge_and_a_click_on_a_listed_edge_r
 }
 
 #[test]
+fn in_the_fillet_dialog_a_box_over_faces_and_edges_toggles_only_the_edges_into_its_box() {
+    use eframe::egui::Modifiers;
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3"]);
+    // Nothing under the pointer: a plain window from (-2, -2) to (42, 12) mm, round the
+    // whole part, its faces and all 12 edges inside. The fillet's box takes edges, so the
+    // box takes the edges alone, and toggles each, as a click in the box does: Edge3, in
+    // the box already, let go; the other 11 added after it, by number, as the box takes
+    // them. A Replace would have kept Edge3 and told the dialog nothing.
+    answering(&record, None, None);
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 12.0));
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    let toggled = box_edges(&[1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    let want: Vec<&str> = toggled.iter().map(String::as_str).collect();
+    boxed_until(&mut h, &want);
+    selected_until(&mut h, &want);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Window selection: 12 edges")
+    );
+    assert_eq!(box_said(&h), None);
+    settled(&mut h);
+    let written_edges = format!(
+        "[{}]",
+        want.iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(&written_edges))
+    );
+    // Shift held, the same window again: toggled, not added, so all 11 let go and Edge3
+    // back, alone.
+    box_drag(&mut h, low, high, Modifiers::SHIFT);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    // A plain drag pressed on Edge5 picks it as a click does, toggled into the box: added
+    // after Edge3, not replacing it.
+    let from = on_canvas(&h, 20.0, 0.0);
+    answering(&record, None, Some((1, Edge(5), pixel_at(&h, from))));
+    let to = on_canvas(&h, 45.0, -5.0);
+    box_drag(&mut h, from, to, Modifiers::NONE);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_fillet_dialog_refuses_an_unstable_selected_name_saying_why_and_writes_nothing() {
     let f = fixture();
     f.kernel.answer_instead(|op| match op {
