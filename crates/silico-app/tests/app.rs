@@ -19386,6 +19386,27 @@ fn an_unstable_name_is_selectable_shown_with_its_reason_and_refused_by_a_store()
         "{:?}",
         labels(&h, "Properties", Role::Label)
     );
+    // Its card a warning's (`.err-card.warn`: `--alert-warn-bg`, rgba(223, 119, 0, .18),
+    // bordered #5c3a08), with the refusal's suggestion after its arrow, in the core's words
+    // (by hand from selection.rs's refusal of an unstable face).
+    let fix = "name the face as its feature now names it: the candidates are the likeliest, \
+               none taken for it";
+    let fix_at = h
+        .get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_label(fix)
+        .rect();
+    let warn = eframe::egui::Color32::from_rgba_unmultiplied(223, 119, 0, 46);
+    let warn_border = eframe::egui::Color32::from_rgb(0x5c, 0x3a, 0x08);
+    let cards: Vec<_> = painted(&h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Rect(card) if card.rect.contains_rect(fix_at) => {
+                Some((card.fill, card.stroke.color))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(cards.contains(&(warn, warn_border)), "{cards:?}");
     let refusal = h.state().tabs()[0].selection().storable().unwrap_err();
     assert_eq!(refusal.code(), ErrorCode::ReferenceBroken);
     assert_eq!(refusal.message(), why);

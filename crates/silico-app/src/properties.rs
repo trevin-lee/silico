@@ -1603,8 +1603,8 @@ mod tests {
 
     use super::*;
     use crate::modal::tests::{
-        at, at_opacity, cap_border, colour, fills_at, font, icon_at, kbd_border, near, rects,
-        sized, text_shape, widget,
+        at, at_opacity, cap_border, colour, fills_at, font, icon_at, kbd_border, near, near_rect,
+        painted, rects, sized, text_shape, widget,
     };
 
     /// styles.css: `.dlg-footer .btn { flex: 1; height: 26px }`; `.btn { gap: 6px }`;
@@ -1898,6 +1898,481 @@ mod tests {
                 egui::CornerRadius::same(6)
             )],
             "the card"
+        );
+    }
+
+    // ---- The error card's rows and buttons, against `errCard` and `.err-card`'s rules ----
+
+    /// styles.css's `.err-card` and its parts.
+    mod ec {
+        use eframe::egui::Color32;
+
+        /// `.err-card`: `margin: 8px var(--pad)`, `1px solid #5c001a`, on
+        /// `--alert-red-bg: rgba(236, 0, 79, 0.18)` (255 × .18 = 45.9, 46).
+        pub const MARGIN: f32 = 8.0;
+        pub const BORDER: f32 = 1.0;
+        pub const BG: Color32 = Color32::from_rgba_unmultiplied_const(236, 0, 79, 46);
+        /// `.ec-head`: `padding: 8px 10px 4px`; `.ec-body`: `padding: 0 10px 8px 32px`,
+        /// `#ffe2e5`; `.ec-body p { margin: 0 0 6px }`.
+        pub const HEAD_TOP: f32 = 8.0;
+        pub const SIDE: f32 = 10.0;
+        pub const HEAD_BOTTOM: f32 = 4.0;
+        pub const BODY_LEFT: f32 = 32.0;
+        pub const BODY_BOTTOM: f32 = 8.0;
+        pub const BODY_TEXT: Color32 = Color32::from_rgb(0xff, 0xe2, 0xe5);
+        pub const P_MARGIN: f32 = 6.0;
+        /// `.ec-kv`: `gap: 2px 8px; font-size: var(--fs-small); margin-bottom: 6px`, on
+        /// `body`'s 16 px line.
+        pub const ROW_GAP: f32 = 2.0;
+        pub const COLUMN_GAP: f32 = 8.0;
+        pub const KV_MARGIN: f32 = 6.0;
+        pub const FS_SMALL: f32 = 11.0;
+        /// `.mono { opacity: .7 }` (`the first N of M` as the ID's): 255 × .7 = 178.5, 179.
+        pub const FADED_ALPHA: u8 = 179;
+        /// `.el-chip`: `padding: 0 5px; border-radius: 3px; background: rgba(0,0,0,.35)`
+        /// (255 × .35 = 89.25, 89); the chips `.join(' ')`ed.
+        pub const CHIP_PADDING: f32 = 5.0;
+        pub const CHIP_RADIUS: u8 = 3;
+        pub const CHIP_BG: Color32 = Color32::from_rgba_unmultiplied_const(0, 0, 0, 89);
+        /// `.ec-actions { display: flex; flex-wrap: wrap; gap: 6px }`.
+        pub const ACTIONS_GAP: f32 = 6.0;
+    }
+
+    /// `said`'s card, by `name`, offering `offer`, drawn in `place`.
+    fn card_in(
+        place: Rect,
+        said: Said,
+        name: Option<&'static str>,
+        offer: Offer,
+    ) -> Harness<'static> {
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(place.right() + 40.0, place.bottom() + 40.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    card(ui, &said, name, offer);
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        h
+    }
+
+    /// The card's body in `place` (`.ec-body`'s inside): its left and right, and its top
+    /// under a title `title` high.
+    fn ec_body(place: Rect, title: f32) -> (f32, f32, f32) {
+        let head_top = place.top() + ec::MARGIN + ec::BORDER + ec::HEAD_TOP;
+        (
+            place.left() + PAD + ec::BORDER + ec::BODY_LEFT,
+            place.right() - PAD - ec::BORDER - ec::SIDE,
+            head_top + title + ec::HEAD_BOTTOM,
+        )
+    }
+
+    /// Where `shown`'s first glyph sits: its baseline, in the window.
+    fn baseline(shown: &egui::epaint::TextShape) -> f32 {
+        let row = &shown.galley.rows[0];
+        shown.pos.y + row.pos.y + row.row.glyphs[0].pos.y
+    }
+
+    /// A space at `.ec-kv`'s 11 px, as the font sets it.
+    fn space<S>(h: &Harness<'_, S>) -> f32 {
+        h.ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(
+                    " ".to_owned(),
+                    FontId::proportional(ec::FS_SMALL),
+                    Color32::WHITE,
+                )
+                .size()
+                .x
+        })
+    }
+
+    /// The `.ec-kv` keys `keys` as painted, each from the body's left, 11 px on a 16 line in
+    /// the accent: the left of the values' column, 8 after the widest.
+    #[track_caller]
+    fn values_left<S>(h: &Harness<'_, S>, keys: &[&str], body_left: f32) -> f32 {
+        let mut column = 0.0f32;
+        for key in keys {
+            let shown = text_shape(h, key);
+            font(&shown, ec::FS_SMALL, key);
+            assert!(near(shown.galley.size().y, LH), "{key}'s line");
+            assert!(near(shown.pos.x, body_left), "{key} at {:?}", shown.pos);
+            assert_eq!(colour(&shown), Color32::from_rgb(0xff, 0x99, 0xa6), "{key}");
+            column = column.max(shown.galley.size().x);
+        }
+        body_left + column + ec::COLUMN_GAP
+    }
+
+    /// Inline items laid out as CSS lays out words, from `left` to `right` on lines `line`
+    /// apart: each `(rect, its line's top)` after the one before it, `gap` from it on its
+    /// line, or, where it wouldn't fit there, first on the next, at `left` (the first on
+    /// a line staying there however wide). How many lines they take.
+    #[track_caller]
+    fn flowed(
+        items: &[(Rect, f32)],
+        left: f32,
+        right: f32,
+        gap: f32,
+        line: f32,
+        what: &str,
+    ) -> usize {
+        let mut lines = 1;
+        for pair in items.windows(2) {
+            let ((before, before_line), (item, item_line)) = (pair[0], pair[1]);
+            if near(item_line, before_line) {
+                assert!(
+                    near(item.left(), before.right() + gap),
+                    "{what}: {item:?} not {gap} after {before:?}"
+                );
+                assert!(
+                    item.right() <= right + 0.5,
+                    "{what}: {item:?} past {right} on its line"
+                );
+            } else {
+                lines += 1;
+                assert!(
+                    near(item_line, before_line + line),
+                    "{what}: {item:?}'s line"
+                );
+                assert!(
+                    near(item.left(), left),
+                    "{what}: {item:?} not first on its line"
+                );
+                assert!(
+                    before.right() + gap + item.width() > right,
+                    "{what}: {item:?} wrapped, though it fit after {before:?} in {right}"
+                );
+            }
+        }
+        lines
+    }
+
+    /// The Elements chips of `names`, each as painted: its rect, and its line's top.
+    #[track_caller]
+    fn chips<S>(h: &Harness<'_, S>, names: &[&str]) -> Vec<(Rect, f32)> {
+        names
+            .iter()
+            .map(|name| {
+                let shown = text_shape(h, name);
+                let size = shown.galley.size();
+                let chip = Rect::from_min_size(
+                    shown.pos - Vec2::new(ec::CHIP_PADDING, 0.0),
+                    Vec2::new(size.x + 2.0 * ec::CHIP_PADDING, size.y),
+                );
+                assert_eq!(
+                    fills_at(h, chip),
+                    [(ec::CHIP_BG, egui::CornerRadius::same(ec::CHIP_RADIUS))],
+                    "{name}'s chip"
+                );
+                // Centred on its 16 line.
+                (chip, chip.center().y - LH / 2.0)
+            })
+            .collect()
+    }
+
+    /// The error card's place in a 296 wide properties panel (less its border).
+    fn panel_place(height: f32) -> Rect {
+        Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(295.0, height))
+    }
+
+    #[test]
+    fn the_elements_chips_wrap_as_words_their_count_after_them_and_the_parameter_under_them() {
+        // `.ec-kv`'s Elements: the chips `.join(' ')`ed in the value's column, wrapping as
+        // words do, a name too long for the column first on its line however wide; then
+        // "the first 8 of 12" at the ID's 70%; Parameter 2 under the last line.
+        const LONG: &str = "k7f2qx3m.box.Edge12345678901234567";
+        let names = [
+            LONG, "Edge11", "Edge12", "Edge13", "Edge14", "Edge15", "Edge16", "Edge17",
+        ];
+        let said = Said::of(
+            &silico_core::Error::new(silico_core::ErrorCode::ReferenceBroken, "Edges are gone")
+                .with_feature("c0000001")
+                .with_elements(names)
+                .with_elements_total(12)
+                .with_parameter("edges"),
+        );
+        let place = panel_place(400.0);
+        let offer = Offer {
+            edit: None,
+            show: false,
+        };
+        let h = card_in(place, said, Some("Hole"), offer);
+        let title = text_shape(&h, "Hole").galley.size().y;
+        let (body_left, body_right, body_top) = ec_body(place, title);
+        let message = text_shape(&h, "Edges are gone");
+        at(message.pos, Pos2::new(body_left, body_top), "the message");
+        assert_eq!(colour(&message), ec::BODY_TEXT);
+        let rows_top = body_top + message.galley.size().y + ec::P_MARGIN;
+        let values = values_left(&h, &["Feature", "Elements", "Parameter"], body_left);
+        at(
+            text_shape(&h, "Feature").pos,
+            Pos2::new(body_left, rows_top),
+            "Feature",
+        );
+        // The feature's name on the key's baseline (one line, one font and size); the ID
+        // after it on that line, faded.
+        let feature = text_shape(&h, "Hole c0000001");
+        at(feature.pos, Pos2::new(values, rows_top), "the feature");
+        assert!(near(feature.galley.size().y, LH), "the feature's line");
+        assert!(
+            near(baseline(&feature), baseline(&text_shape(&h, "Feature"))),
+            "the name off the key's baseline"
+        );
+        let elements_top = rows_top + LH + ec::ROW_GAP;
+        at(
+            text_shape(&h, "Elements").pos,
+            Pos2::new(body_left, elements_top),
+            "Elements",
+        );
+        let mut items = chips(&h, &names);
+        let first = items[0].0;
+        assert!(
+            first.width() > body_right - values,
+            "{LONG}'s chip fits the column: the case is gone"
+        );
+        assert!(near(first.left(), values), "the first chip at {first:?}");
+        assert!(near(items[0].1, elements_top), "the first chip's line");
+        // The count, in the row's words faded as the ID is, on a 16 line.
+        let more = text_shape(&h, "the first 8 of 12");
+        font(&more, ec::FS_SMALL, "the count");
+        assert!(near(more.galley.size().y, LH), "the count's line");
+        assert_eq!(colour(&more).a(), ec::FADED_ALPHA);
+        items.push((
+            Rect::from_min_size(more.pos, more.galley.size()),
+            more.pos.y,
+        ));
+        let lines = flowed(&items, values, body_right, space(&h), LH, "the elements");
+        assert!(lines >= 3, "{lines} lines: the chips didn't wrap twice");
+        // Parameter, 2 under the last line, its value on a 16 line.
+        let last_line = items[items.len() - 1].1;
+        let parameter_top = last_line + LH + ec::ROW_GAP;
+        at(
+            text_shape(&h, "Parameter").pos,
+            Pos2::new(body_left, parameter_top),
+            "Parameter",
+        );
+        let parameter = text_shape(&h, "edges");
+        at(parameter.pos, Pos2::new(values, parameter_top), "edges");
+        assert!(near(parameter.galley.size().y, LH), "edges' line");
+        font(&parameter, ec::FS_SMALL, "edges");
+    }
+
+    #[test]
+    fn a_chip_that_just_fits_after_another_stays_on_its_line() {
+        // Two chips and the space between them exactly as wide as the value's column: on
+        // one line (CSS breaks a line only where the next word overflows it).
+        let names = ["Edge11", "Edge2"];
+        let said = || {
+            Said::of(
+                &silico_core::Error::new(silico_core::ErrorCode::ReferenceBroken, "Gone")
+                    .with_feature("c0000001")
+                    .with_elements(names),
+            )
+        };
+        let offer = Offer::default();
+        // Measured in a panel wide enough for both.
+        let wide = card_in(panel_place(300.0), said(), Some("Hole"), offer);
+        let measured = chips(&wide, &names);
+        let column = ["Feature", "Elements"]
+            .iter()
+            .map(|key| text_shape(&wide, key).galley.size().x)
+            .fold(0.0f32, f32::max);
+        let both = measured[0].0.width() + space(&wide) + measured[1].0.width();
+        // The panel the two fill: the card's margins, border and body padding, the keys'
+        // column and its gap, and the two.
+        let width =
+            both + column + ec::COLUMN_GAP + 2.0 * (PAD + ec::BORDER) + ec::BODY_LEFT + ec::SIDE;
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(width, 300.0));
+        let h = card_in(place, said(), Some("Hole"), offer);
+        let (body_left, body_right, _) = ec_body(place, LH);
+        let values = values_left(&h, &["Feature", "Elements"], body_left);
+        assert_eq!(body_right - values, both, "the column, the two exactly");
+        let items = chips(&h, &names);
+        assert_eq!(
+            flowed(&items, values, body_right, space(&h), LH, "the chips"),
+            1
+        );
+    }
+
+    #[test]
+    fn an_id_alone_is_on_the_rows_16_line_and_every_element_named_gives_no_count() {
+        // A card for a feature the timeline doesn't list: its Feature row the ID alone
+        // (`f ? f.name : pr.feature`), `.mono` on the row's 16 line (`body`'s line-height,
+        // whatever the font's own); its one element named,
+        // of one, so no count.
+        let said = Said::of(
+            &silico_core::Error::new(silico_core::ErrorCode::KernelFailed, "Fillet failed")
+                .with_feature("c0000001")
+                .with_elements(["Edge3"]),
+        );
+        let place = panel_place(300.0);
+        let h = card_in(place, said, None, Offer::default());
+        let ids: Vec<_> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                egui::Shape::Text(shown) if shown.galley.text() == "c0000001" => Some(shown),
+                _ => None,
+            })
+            .collect();
+        // The title (the ID, as the Feature row falls back) and the row's value.
+        assert_eq!(ids.len(), 2, "the ID painted {} times", ids.len());
+        let value = ids
+            .iter()
+            .find(|shown| {
+                shown.galley.job.sections[0].format.font_id.family == egui::FontFamily::Monospace
+            })
+            .expect("the ID in `.mono`");
+        assert!(near(value.galley.size().y, LH), "the ID's line");
+        let texts: Vec<String> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                egui::Shape::Text(shown) => Some(shown.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !texts.iter().any(|text| text.starts_with("the first")),
+            "{texts:?}"
+        );
+    }
+
+    /// The card's buttons, in order, as the accessibility tree has them: each rect and its
+    /// line's top.
+    fn buttons<S>(h: &Harness<'_, S>, labels: &[&str]) -> Vec<(Rect, f32)> {
+        labels
+            .iter()
+            .map(|label| {
+                let rect = widget(h, Role::Button, label);
+                assert!(near(rect.height(), BTN_H), "{label}: {rect:?}");
+                (rect, rect.top())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_cards_buttons_wrap_as_ec_actions_flex_wrap_and_the_card_ends_8_under_them() {
+        // `docProps`' card: Edit Hole, Show in timeline, and Copy as JSON, too wide together
+        // for the body, wrapping (`flex-wrap: wrap; gap: 6px`): a line 22 high, the next 6
+        // under it; the card's frame to 8 under the last (`.ec-body`'s padding) and its
+        // border. Then a name so long its Edit is wider than the body: first on its line.
+        for name in [
+            "Hole",
+            "Hole through the whole block for the long mounting bolt",
+        ] {
+            let said = Said::of(
+                &silico_core::Error::new(
+                    silico_core::ErrorCode::InvalidInput,
+                    "The tool names no feature",
+                )
+                .with_feature("c0000001"),
+            );
+            let place = panel_place(400.0);
+            let offer = Offer {
+                edit: Some(false),
+                show: true,
+            };
+            let h = card_in(place, said, Some(name), offer);
+            let titles: Vec<f32> = painted(&h)
+                .into_iter()
+                .filter_map(|shape| match shape {
+                    egui::Shape::Text(shown) if shown.galley.text() == name => {
+                        Some(shown.galley.size().y)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(titles.len(), 1, "{name}'s title");
+            let (body_left, body_right, body_top) = ec_body(place, titles[0]);
+            let message = text_shape(&h, "The tool names no feature");
+            let rows_top = body_top + message.galley.size().y + ec::P_MARGIN;
+            let feature = text_shape(&h, &format!("{name} c0000001"));
+            let actions_top = rows_top + feature.galley.size().y.max(LH) + ec::KV_MARGIN;
+            let edit = format!("Edit {name}");
+            let items = buttons(&h, &[&edit, "Show in timeline", "Copy as JSON"]);
+            at(
+                items[0].0.left_top(),
+                Pos2::new(body_left, actions_top),
+                &edit,
+            );
+            let lines = flowed(
+                &items,
+                body_left,
+                body_right,
+                ec::ACTIONS_GAP,
+                BTN_H + ec::ACTIONS_GAP,
+                name,
+            );
+            assert!(lines >= 2, "{name}: the buttons didn't wrap");
+            let last = items[items.len() - 1].0;
+            let card = Rect::from_min_max(
+                Pos2::new(place.left() + PAD, place.top() + ec::MARGIN),
+                Pos2::new(
+                    place.right() - PAD,
+                    last.bottom() + ec::BODY_BOTTOM + ec::BORDER,
+                ),
+            );
+            let frames: Vec<Rect> = rects(&h)
+                .into_iter()
+                .filter(|shape| shape.fill == ec::BG)
+                .map(|shape| shape.rect)
+                .collect();
+            let [frame] = frames.as_slice() else {
+                panic!("{name}'s cards: {frames:?}")
+            };
+            // Its right, but where an Edit wider than the body widens it (not yet clipped,
+            // as `.err-card`'s `overflow: hidden` would).
+            let sides = if items[0].0.right() > body_right {
+                near(frame.left(), card.left())
+                    && near(frame.top(), card.top())
+                    && near(frame.bottom(), card.bottom())
+            } else {
+                near_rect(*frame, card)
+            };
+            assert!(sides, "{name}'s card: {frame:?}, not {card:?}");
+        }
+    }
+
+    #[test]
+    fn a_button_that_just_fits_after_another_stays_on_its_line() {
+        // Edit Hole, the gap, and Show in timeline exactly as wide as the body: Show stays
+        // on Edit's line, Copy as JSON on the next.
+        let said = || {
+            Said::of(
+                &silico_core::Error::new(silico_core::ErrorCode::InvalidInput, "No tool")
+                    .with_feature("c0000001"),
+            )
+        };
+        let offer = Offer {
+            edit: Some(false),
+            show: true,
+        };
+        let labels = ["Edit Hole", "Show in timeline", "Copy as JSON"];
+        let wide = card_in(
+            Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(600.0, 300.0)),
+            said(),
+            Some("Hole"),
+            offer,
+        );
+        let measured = buttons(&wide, &labels);
+        let both = measured[0].0.width() + ec::ACTIONS_GAP + measured[1].0.width();
+        let width = both + 2.0 * (PAD + ec::BORDER) + ec::BODY_LEFT + ec::SIDE;
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(width, 300.0));
+        let h = card_in(place, said(), Some("Hole"), offer);
+        let (body_left, body_right, _) = ec_body(place, LH);
+        assert_eq!(body_right - body_left, both, "the body, the two exactly");
+        let items = buttons(&h, &labels);
+        assert!(near(items[1].1, items[0].1), "Show wrapped: {items:?}");
+        assert_eq!(
+            flowed(
+                &items,
+                body_left,
+                body_right,
+                ec::ACTIONS_GAP,
+                BTN_H + ec::ACTIONS_GAP,
+                "the buttons"
+            ),
+            2
         );
     }
 

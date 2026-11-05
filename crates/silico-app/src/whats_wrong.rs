@@ -172,7 +172,193 @@ fn more(count: u64, one: &str, many: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::more;
+    use eframe::egui::accesskit::Role;
+    use eframe::egui::epaint::RectShape;
+    use eframe::egui::{Event, Modifiers, PointerButton, Pos2};
+    use egui_kittest::Harness;
+    use silico_core::command::{Problems, Revision, SessionId, TimelineAnswer};
+
+    use super::*;
+    use crate::modal::tests::{at, font, icon_at, near, rects, sized, text_shape, widget};
+
+    /// The prototype's tokens and geometry (docs/design/m5-ui/styles.css, and `renderModal`'s
+    /// `whatswrong` in js/app.js).
+    mod css {
+        use eframe::egui::Color32;
+
+        /// `--g200`, `--g250`, `--g1000`.
+        pub const G200: Color32 = Color32::from_rgb(0x21, 0x21, 0x21);
+        pub const G250: Color32 = Color32::from_rgb(0x27, 0x26, 0x26);
+        pub const G1000: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
+        /// `<div class="modal" style="width:560px">`, `border-box`, its border 1;
+        /// `.modal { max-width: calc(100vw - 40px) }`.
+        pub const WIDTH: f32 = 560.0;
+        pub const WINDOW_MARGIN: f32 = 40.0;
+        pub const BORDER: f32 = 1.0;
+        /// `.m-head`: `display: flex; align-items: center; gap: 8px; padding: 12px 12px 8px
+        /// 16px; font-size: 14px`, on `body`'s 16 px line.
+        pub const HEAD_TOP: f32 = 12.0;
+        pub const HEAD_RIGHT: f32 = 12.0;
+        pub const HEAD_LEFT: f32 = 16.0;
+        pub const HEAD_GAP: f32 = 8.0;
+        pub const HEAD_FS: f32 = 14.0;
+        pub const LH: f32 = 16.0;
+        /// `svg.i`: `--icon`, 14 square.
+        pub const ICON: f32 = 14.0;
+        /// `.ab-btn`: `height: var(--btn); min-width: var(--btn); padding: 0 5px`: 22 high,
+        /// and with its icon alone, 14 + 2 × 5 = 24 wide.
+        pub const AB_BTN_H: f32 = 22.0;
+        pub const AB_BTN_W: f32 = 14.0 + 2.0 * 5.0;
+    }
+
+    /// What's Wrong of `tab`, as it's shown, and everything it was asked.
+    struct Shown {
+        tab: Tab,
+        asked: Vec<Asked>,
+    }
+
+    /// The tab of `path`, its timeline listing nothing wrong.
+    fn clean(path: &str) -> Tab {
+        let none = Problems::from(silico_core::Error::new(
+            silico_core::ErrorCode::Internal,
+            "unused",
+        ));
+        let mut tab = Tab::opened(SessionId::parse("s1").unwrap(), path.to_owned(), &none);
+        tab.timeline = Some(TimelineAnswer {
+            revision: Revision::OPENED,
+            model: Some(Revision::OPENED),
+            problems: 0,
+            features: Some(Vec::new()),
+            bodies: Vec::new(),
+        });
+        tab
+    }
+
+    /// What's Wrong of `tab` in a window `window` in size.
+    fn shown(tab: Tab, window: Vec2) -> Harness<'static, Shown> {
+        let mut h = Harness::builder().with_size(window).build_ui_state(
+            |ui, shown: &mut Shown| {
+                let asked = show(ui.ctx(), &shown.tab);
+                if asked != Asked::None {
+                    shown.asked.push(asked);
+                }
+            },
+            Shown {
+                tab,
+                asked: Vec::new(),
+            },
+        );
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        h
+    }
+
+    /// The modal's frame: its fill's shape.
+    fn frame(h: &Harness<'_, Shown>) -> RectShape {
+        let mut found: Vec<RectShape> = rects(h)
+            .into_iter()
+            .filter(|shape| shape.fill == css::G200 && shape.stroke.color == css::G250)
+            .collect();
+        assert_eq!(found.len(), 1, "the modal's frames");
+        found.remove(0)
+    }
+
+    /// A click of the primary button at `at`.
+    fn click_at(h: &mut Harness<'_, Shown>, at: Pos2) {
+        for pressed in [true, false] {
+            let input = h.input_mut();
+            input.events.push(Event::PointerMoved(at));
+            input.events.push(Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+            h.run();
+        }
+        h.run_steps(2);
+    }
+
+    #[test]
+    fn whats_wrong_is_560_wide_its_head_the_icon_its_title_and_its_close_ab_btn() {
+        let window = Vec2::new(800.0, 600.0);
+        let h = shown(clean("/models/Part.silico"), window);
+        let frame = frame(&h).rect;
+        assert!(near(frame.width(), css::WIDTH), "{frame:?}");
+        assert!(near(frame.center().x, window.x / 2.0), "{frame:?}");
+        let inside = frame.shrink(css::BORDER);
+        // `align-items: center` on the head's tallest item, the × 22 high.
+        let middle = inside.top() + css::HEAD_TOP + css::AB_BTN_H / 2.0;
+        let icon = Rect::from_min_size(
+            Pos2::new(inside.left() + css::HEAD_LEFT, middle - css::ICON / 2.0),
+            Vec2::splat(css::ICON),
+        );
+        assert_eq!(icon_at(&h, icon), Some(css::G1000), "the error icon");
+        let title = text_shape(&h, "What's wrong in Part.silico");
+        font(&title, css::HEAD_FS, "the title");
+        assert!(near(title.galley.size().y, css::LH), "one 16 line");
+        assert_eq!(
+            title
+                .override_text_color
+                .unwrap_or(title.galley.job.sections[0].format.color),
+            css::G1000
+        );
+        at(
+            title.pos,
+            Pos2::new(icon.right() + css::HEAD_GAP, middle - css::LH / 2.0),
+            "the title",
+        );
+        sized(
+            widget(&h, Role::Button, "Close"),
+            Rect::from_min_size(
+                Pos2::new(
+                    inside.right() - css::HEAD_RIGHT - css::AB_BTN_W,
+                    middle - css::AB_BTN_H / 2.0,
+                ),
+                Vec2::new(css::AB_BTN_W, css::AB_BTN_H),
+            ),
+            "the close button",
+        );
+    }
+
+    #[test]
+    fn in_a_window_narrower_than_600_whats_wrong_is_the_window_less_40_wide() {
+        // `max-width: calc(100vw - 40px)`: 500 - 40.
+        let h = shown(clean("/models/Part.silico"), Vec2::new(500.0, 600.0));
+        let frame = frame(&h).rect;
+        assert!(near(frame.width(), 500.0 - css::WINDOW_MARGIN), "{frame:?}");
+    }
+
+    #[test]
+    fn a_name_too_long_for_the_head_is_cut_short_a_gap_before_the_close_button() {
+        let name = "a-bracket-for-the-left-hand-mount-of-the-second-prototype-run-revised.silico";
+        let h = shown(clean(&format!("/models/{name}")), Vec2::new(800.0, 600.0));
+        let title = text_shape(&h, &format!("What's wrong in {name}"));
+        let close = widget(&h, Role::Button, "Close");
+        // Never under the ×, nor within `.m-head`'s gap of it; one line, cut short with an
+        // ellipsis no more than a glyph and the ellipsis short of the room it has.
+        let room = close.left() - css::HEAD_GAP;
+        let right = title.pos.x + title.galley.size().x;
+        assert!(right <= room + 0.5, "{right} past {room}");
+        assert!(
+            right > room - 2.0 * css::HEAD_FS,
+            "{right}, short of {room}"
+        );
+        assert_eq!(title.galley.rows.len(), 1);
+        assert!(title.galley.rows[0].text().ends_with('…'));
+    }
+
+    #[test]
+    fn a_click_on_the_backdrop_closes_whats_wrong_and_one_inside_it_doesnt() {
+        let mut h = shown(clean("/models/Part.silico"), Vec2::new(800.0, 600.0));
+        let frame = frame(&h).rect;
+        // Inside: on its hint.
+        click_at(&mut h, frame.center());
+        assert!(h.state().asked.is_empty(), "{:?}", h.state().asked);
+        // Outside it, on the backdrop (`.backdrop`'s `closeModal`).
+        click_at(&mut h, Pos2::new(frame.left() / 2.0, frame.top() / 2.0));
+        assert_eq!(h.state().asked, [Asked::Close]);
+    }
 
     #[test]
     fn what_is_said_of_those_unlisted_counts_them_in_the_singular_or_plural() {

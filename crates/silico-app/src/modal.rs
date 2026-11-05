@@ -1445,4 +1445,56 @@ pub(crate) mod tests {
         assert_eq!(clamped, [true, true], "the caps' widths");
         assert!(widget(&h, Role::Button, "Export").width() > css::FOOT_BTN_MIN_W + 1.0);
     }
+
+    #[test]
+    fn a_buttons_icon_is_10_in_its_words_6_after_it_and_the_button_as_wide_as_both_padded() {
+        // An error card's Edit (`errCard`: `<button class="btn btn-secondary">${icon('edit')}
+        // Edit …`): `.btn { padding: 0 10px; gap: 6px; align-items: center }`, `svg.i` 14
+        // square; with nothing to widen it, as wide as its icon, its gap, and its words,
+        // padded. Its icon and words `.btn-secondary`'s Gray.750, each centred down it.
+        const WORDS: &str = "Edit Hole";
+        let place = Pos2::new(40.0, 30.0);
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(300.0, 100.0))
+            .build_ui(move |ui| {
+                let button = Button::new(WORDS, Kind::Secondary).icon(Icon::Edit);
+                let width = natural_width(ui, &button);
+                paint(
+                    ui,
+                    Rect::from_min_size(place, Vec2::new(width, css::BTN_H)),
+                    &button,
+                );
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let words = text_shape(&h, WORDS);
+        let wide = words.galley.size().x;
+        let button = widget(&h, Role::Button, WORDS);
+        sized(
+            button,
+            Rect::from_min_size(
+                place,
+                Vec2::new(
+                    css::BTN_PADDING + css::ICON + css::BTN_GAP + wide + css::BTN_PADDING,
+                    css::BTN_H,
+                ),
+            ),
+            "the button",
+        );
+        let middle = place.y + css::BTN_H / 2.0;
+        let icon = Rect::from_min_size(
+            Pos2::new(place.x + css::BTN_PADDING, middle - css::ICON / 2.0),
+            Vec2::splat(css::ICON),
+        );
+        assert_eq!(icon_at(&h, icon), Some(css::SECONDARY.1), "the icon");
+        at(
+            words.pos,
+            Pos2::new(
+                icon.right() + css::BTN_GAP,
+                middle - words.galley.size().y / 2.0,
+            ),
+            "the words",
+        );
+        assert_eq!(colour(&words), css::SECONDARY.1);
+    }
 }

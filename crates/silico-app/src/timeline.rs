@@ -1154,6 +1154,8 @@ mod tests {
         pub const RIGHT_GAP: f32 = 2.0;
         pub const ST_PADDING: f32 = 8.0;
         pub const ST_GAP: f32 = 6.0;
+        /// `.st-item { height: 20px }`, centred in `.tl-right` (`align-items: center`).
+        pub const ST_H: f32 = 20.0;
     }
 
     /// Where the timeline's scope starts in the harness's window (away from the origin, so a
@@ -1744,6 +1746,56 @@ mod tests {
         let clean = [entry("b0000001", "box", &[], Health::Healthy)];
         let h = drawn(tab_of(Some(&clean), 0));
         assert!(h.query_by_label_contains("error").is_none());
+    }
+
+    #[test]
+    fn the_summarys_errors_button_is_st_item_20_high_padded_8_and_lit_when_hovered() {
+        use eframe::egui::accesskit::Role;
+        let mut h = drawn(tab_of(Some(&features()), 1));
+        // `button.st-item`: from 8 before its icon to 8 after its words, 20 high on the
+        // content's middle.
+        let count = text(&h, "5 features");
+        let right = panel().right() - css::PADDING;
+        assert!(near(count.pos.x + count.galley.size().x, right));
+        let words = text(&h, "2 errors");
+        let words = Rect::from_min_size(words.pos, words.galley.size());
+        let icon_left = words.left() - css::ST_GAP - css::ICON;
+        let place = Rect::from_min_max(
+            Pos2::new(icon_left - css::ST_PADDING, middle() - css::ST_H / 2.0),
+            Pos2::new(words.right() + css::ST_PADDING, middle() + css::ST_H / 2.0),
+        );
+        let button = h.get_by_role_and_label(Role::Button, "2 errors").rect();
+        assert!(near_rect(button, place), "{button:?}, not {place:?}");
+        // Not hovered: no fill.
+        assert!(fills_at(&h, place).is_empty());
+        // `button.st-item:hover`: `--g300` under it, `--r-sm` round, its icon and words
+        // `--g1000`.
+        h.input_mut()
+            .events
+            .push(Event::PointerMoved(place.center()));
+        h.run_steps(2);
+        assert_eq!(
+            fills_at(&h, place),
+            [(css::G300, CornerRadius::same(css::R_SM))]
+        );
+        let icon = Rect::from_min_size(
+            Pos2::new(icon_left, middle() - css::ICON / 2.0),
+            Vec2::splat(css::ICON),
+        );
+        assert_eq!(icon_at(&h, icon), Some(css::G1000), "the icon, hovered");
+        assert_eq!(
+            colour(&text(&h, "2 errors")),
+            css::G1000,
+            "the words, hovered"
+        );
+        // Off it, by its edge: red again, unlit.
+        h.input_mut().events.push(Event::PointerMoved(Pos2::new(
+            place.center().x,
+            place.top() - 2.0,
+        )));
+        h.run_steps(2);
+        assert!(fills_at(&h, place).is_empty());
+        assert_eq!(colour(&text(&h, "2 errors")), css::RED);
     }
 
     #[test]
