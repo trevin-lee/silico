@@ -455,11 +455,9 @@ fn feature<P: Clients + 'static>(
     );
     properties::head(ui, Icon::of_kind(entry.kind), &entry.name, sub);
     let mut asked = problems(ui, tab);
-    if let Some(said) = tab.said.get(entry.id.as_str()) {
-        let said = crate::tab::Said {
-            warning: entry.health != Health::Error,
-            ..said.clone()
-        };
+    // Coloured by the problem's own severity, as the prototype's `errCard` is, not by
+    // the feature's health in the timeline.
+    if let Some(said) = tab.said.get(entry.id.as_str()).cloned() {
         let offer = properties::Offer {
             edit: Some(tab.can_edit(&entry.id)),
             show: false,
