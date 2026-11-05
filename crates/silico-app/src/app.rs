@@ -47,6 +47,54 @@ pub const IDLE_MARGIN: Duration = Duration::from_millis(100);
 /// [`DISK_CHECK_INTERVAL`], whose `status` starts the next comparison (section 3, *Idle*).
 pub const IDLE_FRAME: Duration = DISK_CHECK_INTERVAL.saturating_add(IDLE_MARGIN);
 
+/// What F5 says (the prototype's toast, interact.js): SolidWorks' key for its filter
+/// toolbar, which the app has none of (DESIGN.md, open question 2).
+pub const FILTERS_SAID: &str =
+    "F5 shows the selection filters. They live in the toolbar, under SELECT.";
+
+/// The selection filters' keys pressed this frame, X, E, and V (`crate::shortcuts`), each
+/// taken and its kind given, in that order; none taken while a sketch is open (`in_sketch`),
+/// whose X is Construction and whose picking is its own.
+pub fn filter_keys(ui: &mut Ui, in_sketch: bool) -> Vec<toolbar::FilterKind> {
+    if in_sketch {
+        return Vec::new();
+    }
+    [
+        (Command::FilterFace, toolbar::FilterKind::Faces),
+        (Command::FilterEdge, toolbar::FilterKind::Edges),
+        (Command::FilterVertex, toolbar::FilterKind::Vertices),
+    ]
+    .into_iter()
+    .filter(|(command, _)| shortcuts::take(ui, *command))
+    .map(|(_, kind)| kind)
+    .collect()
+}
+
+/// A toast saying `text` over `canvas`'s bottom right (the prototype's `.toast`): drawn in
+/// its own area, above the panes, taking no input. SEAM: the prototype's info icon and its
+/// fade, which the UI port adds.
+fn toast(ctx: &egui::Context, canvas: egui::Rect, text: &str) {
+    let corner =
+        canvas.right_bottom() - egui::vec2(theme::TOAST_MARGIN_RIGHT, theme::TOAST_MARGIN_BOTTOM);
+    egui::Area::new(egui::Id::new("toast"))
+        .order(egui::Order::Foreground)
+        .pivot(egui::Align2::RIGHT_BOTTOM)
+        .fixed_pos(corner)
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(theme::TOAST_BG)
+                .stroke(egui::Stroke::new(theme::BORDER_WIDTH, theme::TOAST_BORDER))
+                .corner_radius(theme::TOAST_CORNER_RADIUS)
+                .shadow(theme::TOAST_SHADOW)
+                .inner_margin(theme::TOAST_PADDING)
+                .show(ui, |ui| {
+                    ui.set_max_width(theme::TOAST_MAX_WIDTH);
+                    ui.label(egui::RichText::new(text).color(theme::TOAST_TEXT));
+                });
+        });
+}
+
 /// Whether Enter, pressed this frame, is an open dialog's OK, taking it if so: while typing
 /// in a field or with nothing focused (a focused button's or checkbox's Enter is its own
 /// click), and only a fresh press, never the system's repeat of one held down (an Enter held
@@ -259,6 +307,9 @@ pub struct App<P: Clients + 'static> {
     /// The platform's Documents folder: the workspace Copy MCP config names when no
     /// document is shown and none listed in Recent will do.
     documents: Option<PathBuf>,
+    /// The toast shown over the canvas's bottom right (DESIGN.md's *Toasts*), and when it
+    /// was shown, by egui's clock: F5's word on where the filters are, or a box's.
+    toast: Option<(String, f64)>,
 }
 
 impl<P: Clients + 'static> App<P> {
@@ -298,6 +349,7 @@ impl<P: Clients + 'static> App<P> {
             silico: "silico".to_owned(),
             documents: directories::UserDirs::new()
                 .and_then(|dirs| dirs.document_dir().map(std::path::Path::to_path_buf)),
+            toast: None,
         }
     }
 
@@ -552,7 +604,23 @@ impl<P: Clients + 'static> App<P> {
                 .and_then(|viewport| tree.tiles.rect(viewport))
                 .unwrap_or_else(|| ui.max_rect());
             self.disk_banner(ui, canvas, &mut started);
+            self.show_toast(ui, canvas);
         });
+        // A toast the tab shown asked for this frame (a box's), drawn from the next; one a tab
+        // not shown asked for (its drag ended as it was left) dropped, never shown later out
+        // of its context.
+        let active = self.active_place();
+        let mut asked = None;
+        for (at, tab) in self.tabs.iter_mut().enumerate() {
+            let toast = tab.take_toast();
+            if Some(at) == active {
+                asked = toast;
+            }
+        }
+        if let Some(text) = asked {
+            self.toast = Some((text, ui.input(|input| input.time)));
+            ui.ctx().request_repaint();
+        }
         self.after_drawing(ui, started);
     }
 
@@ -967,11 +1035,31 @@ impl<P: Clients + 'static> App<P> {
                 }
             })
         };
+        // SEAM(#351): `tab.in_sketch()`, once sketch mode is in; no sketch opens here yet.
+        let in_sketch = false;
+        let filters = if typing {
+            Vec::new()
+        } else {
+            filter_keys(ui, in_sketch)
+        };
+        // F5: where the filters are (the prototype's, no command of the registry's).
+        let filters_said =
+            !typing && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::F5));
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return (false, None);
         };
         if hide {
             tab.toggle_selected_shown();
+        }
+        for kind in filters {
+            let selection = tab.selection_mut();
+            selection.filter = kind.toggled(selection.filter);
+        }
+        if filters_said {
+            // The toolbar shows SOLID, whose SELECT panel holds the filters, whenever no
+            // sketch is open: there's no other tab to switch from (a sketch's SKETCH is its
+            // mode's, left by Finish or Cancel).
+            self.toast = Some((FILTERS_SAID.to_owned(), ui.input(|input| input.time)));
         }
         if let Some(ask) = view {
             tab.view.ask(ask);
@@ -1022,6 +1110,29 @@ impl<P: Clients + 'static> App<P> {
             save || undo || redo || stop || close || enter || rebuild || rebuild_all,
             dialog_key,
         )
+    }
+
+    /// The toast, if one is shown, over `canvas`'s bottom right, until
+    /// [`theme::TOAST_SECONDS`] have passed since it was shown; a frame asked for then, to
+    /// take it down.
+    fn show_toast(&mut self, ui: &Ui, canvas: egui::Rect) {
+        let Some((text, at)) = &self.toast else {
+            return;
+        };
+        let now = ui.input(|input| input.time);
+        let left = theme::TOAST_SECONDS - (now - at);
+        if left.is_nan() || left <= 0.0 {
+            self.toast = None;
+            return;
+        }
+        toast(ui.ctx(), canvas, text);
+        ui.ctx()
+            .request_repaint_after(Duration::from_secs_f64(left));
+    }
+
+    /// The toast shown now, if one is, and when it was shown, by egui's clock.
+    pub fn toast(&self) -> Option<(&str, f64)> {
+        self.toast.as_ref().map(|(text, at)| (text.as_str(), *at))
     }
 
     /// Close the tab of session `id`: asking first if it holds edits (decision 1).
@@ -1553,6 +1664,9 @@ impl<P: Clients + 'static> App<P> {
                     can_open: &can_open,
                     selected: shown
                         .is_some_and(|tab| !tab.selection().is_empty() && !tab.in_dialog()),
+                    filter: shown.map_or_else(crate::selection::Filter::default, |tab| {
+                        tab.selection().filter
+                    }),
                 },
             )
         };
@@ -1565,6 +1679,13 @@ impl<P: Clients + 'static> App<P> {
                 *started = true;
             }
             Some(toolbar::Act::ClearSelection) => tab.selection_mut().clear(),
+            Some(toolbar::Act::Filter(kind)) => {
+                let selection = tab.selection_mut();
+                selection.filter = kind.toggled(selection.filter);
+            }
+            Some(toolbar::Act::AllFilters) => {
+                tab.selection_mut().filter = crate::selection::Filter::default();
+            }
             // Sketch mode (#351) wires these: `CreateSketch(plane)` to
             // `tab.create_sketch(&self.sessions, plane)` and `*started = true`, and
             // `FinishSketch` to `tab.finish_sketch(&self.sessions, true)` (false is Cancel).
@@ -2333,5 +2454,70 @@ mod tests {
         }
         let numbers: Vec<u64> = app.opening.iter().map(|opening| opening.number).collect();
         assert_eq!(numbers, [0, 1]);
+    }
+
+    #[test]
+    fn x_e_and_v_are_the_filters_outside_a_sketch_and_left_for_it_inside_one() {
+        use eframe::egui::{Event, Key, Modifiers};
+        use egui_kittest::Harness;
+
+        use crate::toolbar::FilterKind;
+
+        /// The filters taken in a step's passes, and whether X was left in one for what
+        /// comes after (sketch mode's Construction).
+        #[derive(Default)]
+        struct Seen {
+            in_sketch: bool,
+            taken: Vec<FilterKind>,
+            x_left: bool,
+        }
+        let mut h = Harness::builder().build_ui_state(
+            |ui, seen: &mut Seen| {
+                let taken = super::filter_keys(ui, seen.in_sketch);
+                let x = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::X));
+                seen.taken.extend(taken);
+                seen.x_left |= x;
+            },
+            Seen::default(),
+        );
+        h.run();
+        let press = |h: &mut Harness<'_, Seen>, key: Key, modifiers: Modifiers| {
+            h.state_mut().taken.clear();
+            h.state_mut().x_left = false;
+            // Pressed and let go, so the next press isn't egui's repeat of a key held down.
+            for pressed in [true, false] {
+                h.event(Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                });
+            }
+            h.run();
+            (h.state().taken.clone(), h.state().x_left)
+        };
+        // Outside a sketch: X faces, E edges, V vertices, each taken, so X is no one else's.
+        assert_eq!(
+            press(&mut h, Key::X, Modifiers::NONE),
+            (vec![FilterKind::Faces], false)
+        );
+        assert_eq!(
+            press(&mut h, Key::E, Modifiers::NONE).0,
+            [FilterKind::Edges]
+        );
+        assert_eq!(
+            press(&mut h, Key::V, Modifiers::NONE).0,
+            [FilterKind::Vertices]
+        );
+        // Exactly the key: Shift+X or Ctrl+E is no filter's.
+        assert!(press(&mut h, Key::X, Modifiers::SHIFT).0.is_empty());
+        assert!(press(&mut h, Key::E, Modifiers::COMMAND).0.is_empty());
+        // In a sketch: none of them, and X left for sketch mode.
+        h.state_mut().in_sketch = true;
+        for key in [Key::E, Key::V] {
+            assert!(press(&mut h, key, Modifiers::NONE).0.is_empty(), "{key:?}");
+        }
+        assert_eq!(press(&mut h, Key::X, Modifiers::NONE), (Vec::new(), true));
     }
 }

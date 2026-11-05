@@ -187,15 +187,18 @@ impl Hovered {
 }
 
 /// What a pick does to the selection: a click replaces it, a Ctrl-click adds the element,
-/// or removes it if it's selected.
+/// or removes it if it's selected; a box with Shift adds what's inside, selected or not
+/// (SolidWorks' Box Selection, docs/ux/solidworks.md §1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum How {
     Replace,
     Toggle,
+    Add,
 }
 
-/// Which kinds of element the canvas picks (SolidWorks' selection filters; their toolbar,
-/// E, X, and V, are M5.7's next part). Vertices aren't drawn yet, so none is picked.
+/// Which kinds of element the canvas picks (SolidWorks' selection filters: SELECT's
+/// buttons, and X, E, and V, `crate::shortcuts`), and a box takes (`crate::box_select`).
+/// Vertices aren't drawn yet, so none is picked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Filter {
     pub faces: bool,
@@ -282,6 +285,9 @@ pub struct Selection {
     /// What a rebuild left gone, as said, and the model whose carry said it: a click let go
     /// as that model's meshes are awaited says nothing over it.
     gone_said: Option<(Of, String)>,
+    /// The hover's answer taken this frame, if one was: the pixel it was asked at, and what
+    /// it found there (M5.7's box select reads it, `crate::box_select`).
+    heard: Option<([u32; 2], Option<Arc<Name>>)>,
     /// The newest picking answer taken, by its frame.
     taken: Option<u64>,
     /// The version and bodies table the highlights were last worked out for.
@@ -379,6 +385,25 @@ impl Selection {
         self.hovered.as_ref().map(Hovered::feature)
     }
 
+    /// The hover's answer taken this frame, if one was: the pixel it was asked at, and the
+    /// name of what it found there, as the filter takes it (none: nothing). Never a click's
+    /// answer, nor one of another view than the hover's (M5.7's box select).
+    pub(crate) fn heard(&self) -> Option<&([u32; 2], Option<Arc<Name>>)> {
+        self.heard.as_ref()
+    }
+
+    /// One more each time its items change (M5.7's box select lets a drag waiting go when
+    /// it does, as a click waiting is let go).
+    pub(crate) fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Which published model the selection is read against: the tab's count of them and
+    /// its revision (M5.7's box select lets a press go when it changes).
+    pub(crate) fn model_of(&self) -> Option<(u64, Revision)> {
+        self.of
+    }
+
     /// What the status bar says of the selection's last change, if anything: a name a
     /// rebuild left gone, or a pick the model didn't find.
     pub fn said(&self) -> Option<&str> {
@@ -460,24 +485,164 @@ impl Selection {
         }
         let mut items = match how {
             How::Replace => Vec::new(),
-            How::Toggle => self.items.clone(),
+            How::Toggle | How::Add => self.items.clone(),
         };
-        let same = |item: &Item| match item {
-            Item::Element(each) => match (each.found(), picked.found()) {
-                (Some(a), Some(b)) => a.feature == b.feature && a.element == b.element,
-                _ => each.name == picked.name,
-            },
-            Item::Feature(_) => false,
-        };
-        match items.iter().position(same) {
+        let mut index = Index::default();
+        for (at, item) in items.iter().enumerate() {
+            if let Item::Element(each) = item {
+                index.add(at, each);
+            }
+        }
+        match index.find(&picked) {
             Some(at) if how == How::Toggle => {
                 items.remove(at);
                 self.scroll = None;
             }
-            _ => items.push(Item::Element(picked)),
+            // Added, and selected already: kept where it was.
+            Some(_) => {}
+            None => items.push(Item::Element(picked)),
         }
         self.set(items);
         self.read(&model);
+    }
+
+    /// `names` picked together, `how` (a box's elements, by their names as the element map
+    /// gives them): read at once against the published model in one read, and the
+    /// selection changed once, so it's one change, one notice, and one revision of the
+    /// items, however many names. Replace makes the selection the names found (none: it's
+    /// cleared, as [`clear`](Self::clear) clears it); Add adds each found that isn't
+    /// selected; Toggle removes each found that is and adds the rest. A name the model
+    /// doesn't find is left out, and the first is said, with how many; one waiting (its body's elements not named yet) is added
+    /// waiting, as a click's is. The same element named twice is taken once (the core reads
+    /// it so). A selection
+    /// that would hold more elements than the core reads at once
+    /// ([`rules::MAX_SELECTED`]) isn't made: the selection is kept and that's said.
+    pub fn pick_all(&mut self, names: &[String], how: How) {
+        let _span = tracing::debug_span!("selection_pick_all", ?how, names = names.len()).entered();
+        self.said = None;
+        if names.is_empty() {
+            if how == How::Replace {
+                self.clear();
+            }
+            return;
+        }
+        let Some(model) = self.model.clone() else {
+            self.said = Some(format!(
+                "Can't select {}: no model is built yet",
+                count_of(names.len())
+            ));
+            return;
+        };
+        if names.len() > rules::MAX_SELECTED {
+            self.said = Some(too_many(names.len()));
+            return;
+        }
+        let answer = match rules::resolve(&model, names, PARAMETER) {
+            Ok(answer) => answer,
+            Err(error) => {
+                self.said = Some(format!(
+                    "Can't select {}: {}",
+                    count_of(names.len()),
+                    error.message()
+                ));
+                return;
+            }
+        };
+        if let Some(first) = answer.gone.first() {
+            let why = words(&first.why);
+            self.said = Some(match answer.gone.len() {
+                1 => format!("Can't select {}: {why}", first.name),
+                many => format!(
+                    "Can't select {many} of the {}: {why}",
+                    count_of(names.len())
+                ),
+            });
+        }
+        // In the order named: each found, by the name the core holds it by; each pending,
+        // waiting.
+        let mut each: BTreeMap<usize, Picked> = BTreeMap::new();
+        for selected in answer.kept {
+            each.insert(
+                selected.place,
+                Picked {
+                    name: selected.name.to_string(),
+                    state: State::Found(selected),
+                    carry: Carry::Pick,
+                    found_in: self.of,
+                },
+            );
+        }
+        for pending in answer.pending {
+            each.insert(
+                pending.place,
+                Picked {
+                    name: pending.name,
+                    state: State::Waiting {
+                        why: None,
+                        last: None,
+                    },
+                    carry: Carry::Pick,
+                    found_in: None,
+                },
+            );
+        }
+        let mut items = match how {
+            How::Replace => Vec::new(),
+            How::Toggle | How::Add => self.items.clone(),
+        };
+        // Each picked matched to the item that's its element, by
+        // index, so a box of thousands costs no more than a sort: the items', and those the
+        // batch has added so far.
+        let mut index = Index::default();
+        for (at, item) in items.iter().enumerate() {
+            if let Item::Element(picked) = item {
+                index.add(at, picked);
+            }
+        }
+        let mut removed: BTreeSet<usize> = BTreeSet::new();
+        let mut scroll = None;
+        // The core's read gives each name once, and each element once (at its first name):
+        // no two of the batch are one item's.
+        for picked in each.into_values() {
+            match index.find(&picked) {
+                Some(at) => {
+                    if how == How::Toggle {
+                        removed.insert(at);
+                    }
+                }
+                None => {
+                    let at = items.len();
+                    index.add(at, &picked);
+                    if scroll.is_none() {
+                        scroll = picked.found().map(|found| found.feature.clone());
+                    }
+                    items.push(Item::Element(picked));
+                }
+            }
+        }
+        let items: Vec<Item> = items
+            .into_iter()
+            .enumerate()
+            .filter(|(at, _)| !removed.contains(at))
+            .map(|(_, item)| item)
+            .collect();
+        let elements = items
+            .iter()
+            .filter(|item| matches!(item, Item::Element(_)))
+            .count();
+        if elements > rules::MAX_SELECTED {
+            self.said = Some(too_many(elements));
+            return;
+        }
+        if items != self.items {
+            self.scroll = scroll;
+            // One revision, whether the read makes the items again (each answer's place
+            // is its place in the selection, not in `names`) or not.
+            let version = self.version;
+            self.items = items;
+            self.read(&model);
+            self.version = version.wrapping_add(1);
+        }
     }
 
     /// The model the session published, which it is (its revision), and `models`, the tab's
@@ -643,6 +808,7 @@ impl Selection {
         let click_px = ctx.options(|options| options.input_options.max_click_dist) * ppp;
         let band = band_px(ppp);
         let current = self.of.is_some() && view.bodies_of() == self.of;
+        self.heard = None;
         if let Some((at_px, how)) = self.take_left(frame, click_px) {
             self.click = Some(Click {
                 rect: square(at_px, frame.size_px, band),
@@ -861,7 +1027,12 @@ impl Selection {
     /// A hover's pick answered: what's under the pointer, read against the published model
     /// when it's another element than before.
     fn hover_answered(&mut self, picking: &Picking, bodies: &BTreeMap<u32, ViewBody>) {
-        let Some((body, element, name, stable)) = self.under(picking, bodies) else {
+        let under = self.under(picking, bodies);
+        self.heard = Some((
+            centre_of(picking.rect),
+            under.as_ref().map(|(_, _, name, _)| Arc::clone(name)),
+        ));
+        let Some((body, element, name, stable)) = under else {
             self.hovered = None;
             return;
         };
@@ -978,6 +1149,65 @@ fn drawn_as(element: ElementRef) -> Option<Element> {
     }
 }
 
+/// The elements of a list of items by where each stands, to find a pick's without a scan:
+/// a found pick by its element among the found, else by its name among those not found;
+/// one not found by its name among all. A pick is the item's element so (the same element
+/// found, or, either not found, the same name).
+#[derive(Default)]
+struct Index {
+    found: BTreeMap<(FeatureId, ElementRef), usize>,
+    unfound: BTreeMap<String, usize>,
+    named: BTreeMap<String, usize>,
+}
+
+impl Index {
+    /// `picked`, standing `at`: the first of each key kept.
+    fn add(&mut self, at: usize, picked: &Picked) {
+        match picked.found() {
+            Some(found) => {
+                self.found
+                    .entry((found.feature.clone(), found.element))
+                    .or_insert(at);
+            }
+            None => {
+                self.unfound.entry(picked.name.clone()).or_insert(at);
+            }
+        }
+        self.named.entry(picked.name.clone()).or_insert(at);
+    }
+
+    /// Where `picked`'s element stands, if it's there.
+    fn find(&self, picked: &Picked) -> Option<usize> {
+        match picked.found() {
+            Some(found) => self
+                .found
+                .get(&(found.feature.clone(), found.element))
+                .or_else(|| self.unfound.get(&picked.name)),
+            None => self.named.get(&picked.name),
+        }
+        .copied()
+    }
+}
+
+/// `count` elements, in words: "1 element", "3 elements".
+fn count_of(count: usize) -> String {
+    if count == 1 {
+        "1 element".to_owned()
+    } else {
+        format!("{count} elements")
+    }
+}
+
+/// What's said of a selection that would hold `count` elements, past what the core reads
+/// at once.
+fn too_many(count: usize) -> String {
+    format!(
+        "Can't select {count} elements: a selection holds at most {}; select fewer, or use a \
+         filter",
+        rules::MAX_SELECTED
+    )
+}
+
 /// What a refusal's errors say, its first's message and suggestion (as the tab says a
 /// refusal).
 fn words(problems: &Problems) -> String {
@@ -1035,7 +1265,7 @@ fn gone_words(
 }
 
 /// The edge band, in physical pixels, at `ppp` pixels a point: at least one.
-fn band_px(ppp: f32) -> u32 {
+pub(crate) fn band_px(ppp: f32) -> u32 {
     // At most MAX_PIXELS_PER_POINT (32) × 3 points: well inside a u32, and the square
     // (2 · band + 1) inside the most a picking takes on a side (256).
     (EDGE_BAND_POINTS * ppp).ceil().clamp(1.0, 96.0) as u32
@@ -1044,7 +1274,7 @@ fn band_px(ppp: f32) -> u32 {
 /// The square `band` pixels out on each side of the pixel `at_px` (physical pixels from
 /// the viewport's top left, maybe outside it) is in, the pixel clamped into the viewport,
 /// `size` pixels.
-fn square(at_px: [f32; 2], size: [u32; 2], band: u32) -> PixelRect {
+pub(crate) fn square(at_px: [f32; 2], size: [u32; 2], band: u32) -> PixelRect {
     let pixel = |at: f32, side: u32| {
         let last = side.saturating_sub(1);
         // Floored and clamped into [0, last]: a NaN is 0, as `as` takes it.
@@ -1060,12 +1290,12 @@ fn square(at_px: [f32; 2], size: [u32; 2], band: u32) -> PixelRect {
 }
 
 /// A square's centre pixel ([`square`]'s sides are odd).
-fn centre_of(rect: PixelRect) -> [u32; 2] {
+pub(crate) fn centre_of(rect: PixelRect) -> [u32; 2] {
     let at = |min: i32, side: u32| u32::try_from(i64::from(min) + i64::from(side / 2)).unwrap_or(0);
     [at(rect.min[0], rect.size[0]), at(rect.min[1], rect.size[1])]
 }
 
-fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
+pub(crate) fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
     let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
     (dx * dx + dy * dy).sqrt()
 }
@@ -2127,5 +2357,346 @@ mod tests {
             set(&[])
         );
         assert_eq!(highlights(&[element(Some(of))], &bodies, None), set(&[]));
+    }
+
+    // ---- Picks together (M5.7's box) ----
+
+    /// One 2 by 1 by 1 box, rebuilt on the fake kernel and published at revision 1, its
+    /// elements named: `aaaaaaaa.box.Edge1` to `Edge12`, `Face1` to `Face6`.
+    fn one_box() -> Selection {
+        let mut selection = Selection::default();
+        selection.published(Some((box_model(), Revision::from_number(1).unwrap())), 1);
+        selection
+    }
+
+    /// [`one_box`]'s model.
+    fn box_model() -> Arc<Model> {
+        let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 2, "width": 1, "height": 1}]}"#;
+        let checked = silico_core::document::Checked::new(
+            silico_core::document::read(text.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        let engine =
+            silico_core::recompute::Recompute::new(silico_core::fake::FakeKernel::new(1).unwrap())
+                .with_sketches(silico_core::fake::FakeSketches::new());
+        let Ok(Ok(silico_core::recompute::RunOutcome::Published(model))) = engine
+            .start(Arc::new(checked))
+            .wait_timeout(std::time::Duration::from_secs(120))
+        else {
+            panic!("not published")
+        };
+        for (id, _) in model.features() {
+            model.element_map(id);
+        }
+        model
+    }
+
+    fn edges(numbers: &[u32]) -> Vec<String> {
+        numbers
+            .iter()
+            .map(|n| format!("aaaaaaaa.box.Edge{n}"))
+            .collect()
+    }
+
+    #[test]
+    fn picks_together_are_one_change_one_revision_and_an_empty_replace_clears() {
+        let mut selection = one_box();
+        let before = selection.version;
+        selection.pick_all(&edges(&[1, 2, 3]), How::Replace);
+        assert_eq!(selection.names(), edges(&[1, 2, 3]));
+        assert_eq!(
+            selection.version,
+            before + 1,
+            "one revision for three names"
+        );
+        assert_eq!(selection.said(), None);
+        // The same again: nothing changes, no revision.
+        selection.pick_all(&edges(&[1, 2, 3]), How::Replace);
+        assert_eq!(selection.version, before + 1);
+        // An empty replace clears, as Esc does: once.
+        selection.pick_all(&[], How::Replace);
+        assert!(selection.is_empty());
+        assert_eq!(selection.version, before + 2);
+        selection.pick_all(&[], How::Replace);
+        assert_eq!(selection.version, before + 2);
+        // An empty add or toggle changes nothing.
+        selection.pick_all(&edges(&[4]), How::Replace);
+        let version = selection.version;
+        selection.pick_all(&[], How::Add);
+        selection.pick_all(&[], How::Toggle);
+        assert_eq!(selection.names(), edges(&[4]));
+        assert_eq!(selection.version, version);
+    }
+
+    #[test]
+    fn picks_together_add_with_shift_and_toggle_with_ctrl_each_element_once() {
+        let mut selection = one_box();
+        selection.pick_all(&edges(&[1, 2]), How::Replace);
+        // Add: what's selected stays where it was, the rest after it, in the order named.
+        selection.pick_all(&edges(&[3, 2, 4]), How::Add);
+        assert_eq!(selection.names(), edges(&[1, 2, 3, 4]));
+        // Toggle: those selected removed, the others added.
+        let version = selection.version;
+        selection.pick_all(&edges(&[2, 5, 4]), How::Toggle);
+        assert_eq!(selection.names(), edges(&[1, 3, 5]));
+        assert_eq!(selection.version, version + 1);
+        // Named twice, toggled once: Edge6 added, Edge1 removed.
+        selection.pick_all(&edges(&[6, 6, 1, 1]), How::Toggle);
+        assert_eq!(selection.names(), edges(&[3, 5, 6]));
+        // A replace named twice holds it once.
+        selection.pick_all(&edges(&[7, 7]), How::Replace);
+        assert_eq!(selection.names(), edges(&[7]));
+        // A feature selected stays through an add, and goes with a replace.
+        let id = FeatureId::new("aaaaaaaa").unwrap();
+        selection.select_feature(id.clone());
+        selection.pick_all(&edges(&[8]), How::Add);
+        assert_eq!(selection.items()[0], Item::Feature(id));
+        assert_eq!(selection.names(), edges(&[8]));
+        selection.pick_all(&edges(&[9]), How::Replace);
+        assert_eq!(selection.names(), edges(&[9]));
+        assert_eq!(selection.items().len(), 1);
+    }
+
+    #[test]
+    fn a_name_not_found_among_picks_together_is_left_out_and_said_and_too_many_are_refused() {
+        let mut selection = one_box();
+        let mut names = edges(&[1]);
+        names.push("aaaaaaaa.box.Edge99".to_owned());
+        names.extend(edges(&[2]));
+        selection.pick_all(&names, How::Replace);
+        assert_eq!(selection.names(), edges(&[1, 2]));
+        let said = selection.said().unwrap();
+        assert!(
+            said.starts_with("Can't select aaaaaaaa.box.Edge99: "),
+            "{said}"
+        );
+        // Two not found: counted.
+        names.push("aaaaaaaa.box.Face77".to_owned());
+        selection.pick_all(&names, How::Replace);
+        let said = selection.said().unwrap();
+        assert!(
+            said.starts_with("Can't select 2 of the 4 elements: "),
+            "{said}"
+        );
+        // More than the core reads at once: refused whole, the selection kept, and said.
+        let version = selection.version;
+        let many: Vec<String> = (0..=silico_core::selection::MAX_SELECTED)
+            .map(|n| format!("aaaaaaaa.box.Edge{}", n % 12 + 1))
+            .collect();
+        selection.pick_all(&many, How::Replace);
+        assert_eq!(selection.names(), edges(&[1, 2]));
+        assert_eq!(selection.version, version);
+        assert_eq!(
+            selection.said(),
+            Some(
+                "Can't select 10001 elements: a selection holds at most 10000; select fewer, \
+                 or use a filter"
+            )
+        );
+        // With no model built: said, nothing changed.
+        let mut unbuilt = Selection::default();
+        unbuilt.pick_all(&edges(&[1, 2]), How::Replace);
+        assert!(unbuilt.is_empty());
+        assert_eq!(
+            unbuilt.said(),
+            Some("Can't select 2 elements: no model is built yet")
+        );
+    }
+
+    #[test]
+    fn a_click_adds_with_add_and_keeps_what_is_selected() {
+        let mut selection = one_box();
+        selection.pick("aaaaaaaa.box.Edge1", How::Replace);
+        selection.pick("aaaaaaaa.box.Edge2", How::Add);
+        selection.pick("aaaaaaaa.box.Edge1", How::Add);
+        assert_eq!(selection.names(), edges(&[1, 2]));
+    }
+
+    #[test]
+    fn picks_together_keep_a_carried_name_carried_and_its_alias_picked() {
+        // As `a_ctrl_click_of_a_carried_names_alias_is_held_as_the_carried_name_is_dropped`,
+        // the Ctrl-click a box's toggle: the carried text stays carried through the batch,
+        // so once the names are named it's gone, said, and the alias held.
+        let name = "rrrrrrrr.fuse.Face1";
+        let alias = "cccccccc.box.Face1";
+        let revision = |n| Revision::from_number(n).unwrap();
+        let after = fused(3, 4);
+        let mut selection = Selection::default();
+        selection.published(Some((fused(1, 2), revision(1))), 1);
+        selection.pick(name, How::Replace);
+        selection.published(Some((Arc::new(after.unnamed()), revision(2))), 2);
+        selection.pick_all(&[alias.to_owned()], How::Toggle);
+        assert_eq!(
+            states(&selection),
+            [(name.to_owned(), "pending"), (alias.to_owned(), "pending")]
+        );
+        selection.published(Some((after, revision(2))), 2);
+        assert_eq!(selection.names(), [alias]);
+        let said = selection.said().unwrap();
+        assert!(said.starts_with(CARRIED_GONE), "{said}");
+    }
+
+    #[test]
+    fn picks_together_on_a_model_not_named_yet_wait_and_are_found_once_it_is() {
+        let model = box_model();
+        let revision = Revision::from_number(1).unwrap();
+        let mut selection = Selection::default();
+        selection.published(Some((Arc::new(model.unnamed()), revision)), 1);
+        let version = selection.version;
+        selection.pick_all(&edges(&[1, 2]), How::Replace);
+        assert_eq!(
+            states(&selection),
+            [
+                ("aaaaaaaa.box.Edge1".to_owned(), "pending"),
+                ("aaaaaaaa.box.Edge2".to_owned(), "pending")
+            ]
+        );
+        assert_eq!(selection.version, version + 1);
+        assert!(selection.again);
+        // The same model, named: asked again, and found.
+        selection.published(Some((model, revision)), 1);
+        assert_eq!(
+            states(&selection),
+            [
+                ("aaaaaaaa.box.Edge1".to_owned(), "found"),
+                ("aaaaaaaa.box.Edge2".to_owned(), "found")
+            ]
+        );
+    }
+
+    #[test]
+    fn picks_together_that_would_overfill_the_selection_with_whats_there_are_refused() {
+        // 9,995 names selected already (waiting), and six faces added: 10,001, one past what
+        // the core reads at once. Refused whole, said, nothing changed.
+        let mut selection = one_box();
+        let held: Vec<Item> = (1..=9_995)
+            .map(|n| picked(&format!("zzzzzzzz.box.Edge{n}")))
+            .collect();
+        selection.set(held.clone());
+        let version = selection.version;
+        let faces: Vec<String> = (1..=6).map(|n| format!("aaaaaaaa.box.Face{n}")).collect();
+        selection.pick_all(&faces, How::Add);
+        assert_eq!(selection.items(), held.as_slice());
+        assert_eq!(selection.version, version);
+        assert_eq!(
+            selection.said(),
+            Some(
+                "Can't select 10001 elements: a selection holds at most 10000; select fewer, \
+                 or use a filter"
+            )
+        );
+        // Five fit: taken (the read that follows drops the 9,995, which no model holds).
+        selection.pick_all(&faces[..5], How::Add);
+        assert_eq!(selection.names(), faces[..5]);
+    }
+
+    #[test]
+    fn picks_together_scroll_the_browser_to_the_first_added_and_a_removal_scrolls_nowhere() {
+        let mut selection = one_box();
+        selection.pick_all(&edges(&[1, 2]), How::Replace);
+        assert_eq!(
+            selection.scroll_target().map(FeatureId::as_str),
+            Some("aaaaaaaa")
+        );
+        selection.scrolled();
+        selection.pick_all(&edges(&[2]), How::Toggle);
+        assert_eq!(selection.names(), edges(&[1]));
+        assert_eq!(selection.scroll_target(), None);
+    }
+
+    #[test]
+    fn the_hovers_answer_is_heard_for_the_frame_it_was_taken_and_a_clicks_never() {
+        use LeftKind::{Press, Release};
+        let model = fused(1, 2);
+        let of = (1, Revision::from_number(1).unwrap());
+        let mut selection = Selection::default();
+        selection.published(Some((model, of.1)), of.0);
+        let mut view = View::default();
+        let hover = square([50.0, 50.0], [100, 100], 3);
+        view.answered_as(
+            of,
+            Picking {
+                frame: 5,
+                rect: hover,
+                hit: None,
+                edge: None,
+            },
+        );
+        let ctx = egui::Context::default();
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+        assert_eq!(selection.heard(), Some(&([50, 50], None)));
+        // Heard in that frame alone.
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+        assert_eq!(selection.heard(), None);
+        // A click at (20, 20), and its answer: the click's, never heard as the hover's.
+        let click = frame_of(vec![
+            event(Press, [20.0, 20.0], false),
+            event(Release, [20.0, 20.0], false),
+        ]);
+        selection.overlay(&mut view, &click, &ctx);
+        assert!(selection.click.is_some());
+        view.answered_as(
+            of,
+            Picking {
+                frame: 6,
+                rect: square([20.0, 20.0], [100, 100], 3),
+                hit: None,
+                edge: None,
+            },
+        );
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+        assert!(selection.click.is_none(), "the click's answer not taken");
+        assert_eq!(selection.heard(), None);
+    }
+
+    #[test]
+    fn every_change_of_the_items_is_a_new_version_and_the_model_is_told() {
+        let mut selection = one_box();
+        assert_eq!(
+            selection.model_of(),
+            Some((1, Revision::from_number(1).unwrap()))
+        );
+        let mut seen = vec![selection.version()];
+        selection.pick("aaaaaaaa.box.Edge1", How::Replace);
+        seen.push(selection.version());
+        selection.pick("aaaaaaaa.box.Edge2", How::Toggle);
+        seen.push(selection.version());
+        selection.pick_all(&edges(&[3, 4]), How::Replace);
+        seen.push(selection.version());
+        selection.clear();
+        seen.push(selection.version());
+        assert!(seen.windows(2).all(|pair| pair[0] != pair[1]), "{seen:?}");
+        assert_eq!(Selection::default().model_of(), None);
+    }
+
+    #[test]
+    fn exactly_as_many_names_as_the_core_reads_are_read() {
+        // MAX_SELECTED names, the box's twelve edges over and over: read, each taken once.
+        let mut selection = one_box();
+        let many: Vec<String> = (0..silico_core::selection::MAX_SELECTED)
+            .map(|n| format!("aaaaaaaa.box.Edge{}", n % 12 + 1))
+            .collect();
+        selection.pick_all(&many, How::Replace);
+        assert_eq!(selection.said(), None);
+        assert_eq!(selection.names(), edges(&(1..=12).collect::<Vec<_>>()));
+    }
+
+    #[test]
+    fn a_name_waiting_named_twice_in_a_toggle_is_added_once() {
+        // On a model not named yet, Edge1 named twice waits once (the core reads a name
+        // once): added, not toggled back out.
+        let mut selection = Selection::default();
+        selection.published(
+            Some((
+                Arc::new(box_model().unnamed()),
+                Revision::from_number(1).unwrap(),
+            )),
+            1,
+        );
+        selection.pick_all(&edges(&[1, 1]), How::Toggle);
+        assert_eq!(
+            states(&selection),
+            [("aaaaaaaa.box.Edge1".to_owned(), "pending")]
+        );
     }
 }

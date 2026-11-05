@@ -9,6 +9,7 @@
 pub mod app;
 mod banner;
 pub mod bar;
+pub mod box_select;
 pub mod browse;
 pub mod dialog;
 pub mod export;
