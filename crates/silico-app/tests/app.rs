@@ -22271,6 +22271,63 @@ fn whats_wrong_lists_the_first_hundred_warnings_and_counts_the_thirty_past_them(
 }
 
 #[test]
+fn on_lavapipe_a_features_card_is_titled_by_its_name_and_its_message_wraps_across_the_body() {
+    on_lavapipe(
+        "on_lavapipe_a_features_card_is_titled_by_its_name_and_its_message_wraps_across_the_body",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            refuses_the_short_blocks(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            h.set_render_every_step(true);
+            silico_app::theme::apply(&h.ctx);
+            let path = f.file("blocks.silico", THREE_BLOCKS);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            step_until(&mut h, "rebuilt with its two errors", |h| {
+                status_said(h, "Rebuilt").as_deref() == Some("Rebuilt with 2 errors")
+            });
+            meshes_settled(&mut h);
+            select(&mut h, "Second");
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            // The head: the feature's name beside the code; the core's message under them,
+            // in the body, starting at the body's left.
+            let pane = h.get_by_role_and_label(Role::Pane, "Properties");
+            let code = pane.get_by_label("fingerprint_missing").rect();
+            let title = pane
+                .query_all_by_label("Second")
+                .map(|node| node.rect())
+                .find(|rect| (rect.top() - code.top()).abs() <= 0.5)
+                .expect("the title on the code's line");
+            let message = pane
+                .query_all_by_label_contains("built, but its file stores no fingerprint")
+                .next()
+                .expect("the message")
+                .rect();
+            assert!(message.top() >= code.bottom(), "{message:?} under {code:?}");
+            assert!(message.left() < code.left() && title.right() < code.left());
+            if let Some(shot) = std::env::var_os("SILICO_APP_CARD_SHOT") {
+                h.render().unwrap().save(shot).unwrap();
+            }
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
+}
+
+#[test]
 fn on_lavapipe_whats_wrong_shows_two_error_cards_and_a_warnings() {
     on_lavapipe(
         "on_lavapipe_whats_wrong_shows_two_error_cards_and_a_warnings",

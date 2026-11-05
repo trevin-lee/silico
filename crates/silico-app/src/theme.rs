@@ -1168,10 +1168,11 @@ pub const ERROR_CARD_BODY_PADDING: Margin = Margin {
 pub const ERROR_CARD_FIX_GAP: f32 = 6.0;
 pub const ERROR_CARD_FIX_MARGIN: f32 = 8.0;
 /// The body's words (`.ec-body`: an error's #ffe2e5, a warning's #ffe6c2), and the space
-/// under its first paragraph, the core's cause (`.ec-body p { margin: 0 0 6px }`).
+/// under each of its paragraphs, the core's message and its cause (`.ec-body p { margin: 0
+/// 0 6px }`).
 pub const ERROR_CARD_BODY_TEXT: Color32 = hex(0xffe2e5);
 pub const WARNING_CARD_BODY_TEXT: Color32 = hex(0xffe6c2);
-pub const ERROR_CARD_CAUSE_MARGIN: f32 = 6.0;
+pub const ERROR_CARD_PARAGRAPH_MARGIN: f32 = 6.0;
 /// The code chip at the head's right (`.ec-code`): 10 high in the monospace font, in the
 /// accent, on black at 30% (77 of 255), padded 4 at its sides, corners 3.
 pub const ERROR_CARD_CODE_SIZE: f32 = 10.0;

@@ -1728,6 +1728,11 @@ mod tests {
 
     /// The browser pane, at [`PANE`], drawn from `tab` in the app's theme.
     fn drawn(tab: Tab) -> Harness<'static, Shown> {
+        drawn_at(tab, W)
+    }
+
+    /// `tab`'s properties drawn in a pane `width` wide.
+    fn drawn_at(tab: Tab, width: f32) -> Harness<'static, Shown> {
         let shown = Shown {
             tab: Some(tab),
             sessions: Arc::new(Sessions::with_cache_opener(
@@ -1739,10 +1744,10 @@ mod tests {
             drawing: crate::viewport::Drawing::default(),
         };
         let mut h = Harness::builder()
-            .with_size(Vec2::new(PANE.x + W + 40.0, PANE.y + HEIGHT + 40.0))
+            .with_size(Vec2::new(PANE.x + width + 40.0, PANE.y + HEIGHT + 40.0))
             .build_ui_state(
-                |ui, shown: &mut Shown| {
-                    let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
+                move |ui, shown: &mut Shown| {
+                    let pane = Rect::from_min_size(PANE, Vec2::new(width, HEIGHT));
                     ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
                         Panes {
                             tab: shown.tab.as_mut(),
@@ -2745,6 +2750,11 @@ mod property_panel_drawn {
     }
 
     fn drawn(tab: Tab) -> Harness<'static, Shown> {
+        drawn_at(tab, W)
+    }
+
+    /// `tab`'s properties drawn in a pane `width` wide.
+    fn drawn_at(tab: Tab, width: f32) -> Harness<'static, Shown> {
         let shown = Shown {
             tab: Some(tab),
             sessions: Arc::new(Sessions::with_cache_opener(
@@ -2756,10 +2766,10 @@ mod property_panel_drawn {
             drawing: crate::viewport::Drawing::default(),
         };
         let mut h = Harness::builder()
-            .with_size(Vec2::new(PANE.x + W + 40.0, PANE.y + HEIGHT + 40.0))
+            .with_size(Vec2::new(PANE.x + width + 40.0, PANE.y + HEIGHT + 40.0))
             .build_ui_state(
-                |ui, shown: &mut Shown| {
-                    let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
+                move |ui, shown: &mut Shown| {
+                    let pane = Rect::from_min_size(PANE, Vec2::new(width, HEIGHT));
                     ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
                         Panes {
                             tab: shown.tab.as_mut(),
@@ -3645,12 +3655,19 @@ mod property_panel_drawn {
     #[test]
     fn an_error_card_says_its_code_feature_elements_parameter_and_candidates() {
         let h = drawn(broken_hole());
-        // `errCard`, its parts in its order: the message and the code; the cause; Feature
-        // (the name, then the ID), Elements (two of five), Parameter; the suggestion; the
-        // candidates under their heading.
+        // `errCard`, its parts in its order: the title, the feature's name, and the code;
+        // the message (`.ec-body p`); the cause; Feature (the name, then the ID), Elements
+        // (two of five), Parameter; the suggestion; the candidates under their heading.
+        let code = h.get_by_label("reference_broken").rect().top();
+        let titles: Vec<f32> = h
+            .query_all_by_label("Hole")
+            .map(|node| node.rect().top())
+            .filter(|top| near(*top, code))
+            .collect();
+        assert_eq!(titles.len(), 1, "the title on the code's line: {titles:?}");
         let lines = [
-            "An edge the fillet names is gone",
             "reference_broken",
+            "An edge the fillet names is gone",
             "Edge3 and Edge5 aren't in its base",
             "Feature: Hole c0000001",
             "Elements: Edge3, Edge5 (the first 2 of 5)",
@@ -3664,9 +3681,8 @@ mod property_panel_drawn {
             .iter()
             .map(|line| h.get_by_label(line).rect().top())
             .collect();
-        // The message and its code on one line; the rest each under the one before.
-        assert!(near(tops[0], tops[1]), "{tops:?}");
-        for pair in tops[1..].windows(2) {
+        // Each under the one before.
+        for pair in tops.windows(2) {
             assert!(pair[0] < pair[1], "{lines:?} out of order: {tops:?}");
         }
         // `featureProps` gives `noShow`: Edit, off (a cut has no dialog), and Copy as JSON.
@@ -3771,6 +3787,87 @@ mod property_panel_drawn {
         assert!(!h.state().started, "a selection sends nothing");
     }
 
+    /// The pane's width in the app's 1280 × 800 window (its fixture's screenshots): the
+    /// tiles' shares, not yet `--right-w`.
+    const APP_W: f32 = 248.0;
+
+    #[test]
+    fn an_error_cards_message_wraps_across_the_body_and_its_title_beside_the_code() {
+        // The core's message, long and with long words, under a title on the code's line.
+        let message = "edges.1, \"k7f2qx3m.box.Edge5\", names no element of m3tq8v0z's \
+                       solid: it isn't one of the elements that solid is made from";
+        for width in [W, APP_W] {
+            let mut tab = part();
+            let error = silico_core::Error::new(silico_core::ErrorCode::ReferenceBroken, message)
+                .with_feature("c0000001");
+            tab.said.insert("c0000001".to_owned(), Said::of(&error));
+            tab.selection_mut().select_feature(fid("c0000001"));
+            let h = drawn_at(tab, width);
+            // The card's inside: the pane less `--pad` and the border at each side.
+            let inner_left = PANE.x + css::PAD + css::BORDER;
+            let inner_right = PANE.x + width - css::PAD - css::BORDER;
+            // `.ec-body p`: wrapped at the body's whole width, `padding: 0 10px 0 32px`.
+            let body = inner_right - inner_left - css::EC_BODY_LEFT - css::EC_HEAD_SIDE;
+            let said = text(&h, message);
+            assert!(
+                (said.galley.job.wrap.max_width - body).abs() <= 1.0,
+                "at {width}: the message wraps at {}, not {body}",
+                said.galley.job.wrap.max_width
+            );
+            assert!(said.galley.rows.len() > 1, "at {width}: it wraps");
+            assert!(said.galley.size().x <= body + 0.5, "at {width}");
+            assert!(
+                near(said.pos.x, inner_left + css::EC_BODY_LEFT),
+                "at {width}"
+            );
+            // `.ec-code`: its right edge at the head's 10 px right padding, on the title's
+            // line; the title, `flex: 1`, wraps at what the icon, both gaps, and the chip
+            // leave.
+            let code = text(&h, "reference_broken");
+            let chip_width = code.galley.size().x + 2.0 * css::EC_CODE_PADDING;
+            let line = code.pos.y + code.galley.size().y / 2.0 - css::LH / 2.0;
+            let title = text_in(
+                &h,
+                "Hole",
+                Rect::from_min_max(
+                    Pos2::new(inner_left, line - 0.5),
+                    Pos2::new(inner_right, line + 0.5),
+                ),
+            );
+            let chip = Rect::from_min_max(
+                Pos2::new(inner_right - css::EC_HEAD_SIDE - chip_width, line),
+                Pos2::new(inner_right - css::EC_HEAD_SIDE, line + css::LH),
+            );
+            assert_eq!(
+                fills_at(&h, chip),
+                [(
+                    css::EC_CODE_BG,
+                    CornerRadius::same(css::EC_CODE_RADIUS),
+                    Stroke::NONE
+                )],
+                "at {width}: the chip"
+            );
+            let row = inner_right
+                - inner_left
+                - 2.0 * css::EC_HEAD_SIDE
+                - css::ICON
+                - 2.0 * css::EC_HEAD_GAP
+                - chip_width;
+            assert!(
+                (title.galley.job.wrap.max_width - row).abs() <= 1.0,
+                "at {width}: the title wraps at {}, not {row}",
+                title.galley.job.wrap.max_width
+            );
+            assert!(
+                near(
+                    title.pos.x,
+                    inner_left + css::EC_HEAD_SIDE + css::ICON + css::EC_HEAD_GAP
+                ),
+                "at {width}"
+            );
+        }
+    }
+
     #[test]
     fn an_error_card_is_drawn_as_err_card_with_its_code_rows_candidates_and_buttons() {
         let h = drawn(broken_hole());
@@ -3778,18 +3875,27 @@ mod property_panel_drawn {
         let card_top = y + css::CARD_MARGIN;
         let inner = Pos2::new(PANE.x + css::PAD + css::BORDER, card_top + css::BORDER);
         let inner_right = PANE.x + W - css::PAD - css::BORDER;
-        // `.ec-head`: the message from the icon's right, and the code chip flush with the
-        // head's right padding, on the head's first line.
+        // `.ec-head`: the title, the feature's name, from the icon's right, white, and the
+        // code chip flush with the head's right padding, on the head's first line.
         let head_top = inner.y + css::EC_HEAD_TOP;
-        let message = text(&h, "An edge the fillet names is gone");
+        let title = text_in(
+            &h,
+            "Hole",
+            Rect::from_min_max(
+                Pos2::new(inner.x, head_top),
+                Pos2::new(inner_right, head_top + css::LH),
+            ),
+        );
         at(
-            message.pos,
+            title.pos,
             Pos2::new(
                 inner.x + css::EC_HEAD_SIDE + css::ICON + css::EC_HEAD_GAP,
                 head_top,
             ),
-            "the message",
+            "the title",
         );
+        assert_eq!(title.galley.job.sections[0].format.font_id, body(css::FS));
+        assert_eq!(colour(&title, 0), css::G1000);
         let code = text(&h, "reference_broken");
         assert_eq!(
             code.galley.job.sections[0].format.font_id,
@@ -3819,17 +3925,23 @@ mod property_panel_drawn {
             ),
             "the code",
         );
-        // The message wraps short of the chip, `gap: 8px` before it.
-        assert!(message.pos.x + message.galley.size().x <= chip.left() - css::EC_HEAD_GAP + 0.5);
-        // `.ec-body p`: the cause, 32 in, in the body's colour, 6 above the rows.
+        // The title wraps short of the chip, `gap: 8px` before it.
+        assert!(title.pos.x + title.galley.size().x <= chip.left() - css::EC_HEAD_GAP + 0.5);
+        // `.ec-body p`: the message, 32 in, in the body's colour, then the cause 6 under it,
+        // 6 above the rows.
         let body_left = inner.x + css::EC_BODY_LEFT;
-        let body_top = head_top + message.galley.size().y + css::EC_HEAD_BOTTOM;
+        let body_top = head_top + title.galley.size().y + css::EC_HEAD_BOTTOM;
+        let message = text(&h, "An edge the fillet names is gone");
+        at(message.pos, Pos2::new(body_left, body_top), "the message");
+        assert_eq!(message.galley.job.sections[0].format.font_id, body(css::FS));
+        assert_eq!(colour(&message, 0), css::EC_BODY_TEXT);
+        let cause_top = body_top + message.galley.size().y + css::EC_P_MARGIN;
         let cause = text(&h, "Edge3 and Edge5 aren't in its base");
-        at(cause.pos, Pos2::new(body_left, body_top), "the cause");
+        at(cause.pos, Pos2::new(body_left, cause_top), "the cause");
         assert_eq!(cause.galley.job.sections[0].format.font_id, body(css::FS));
         assert_eq!(colour(&cause, 0), css::EC_BODY_TEXT);
         // `.ec-kv`: each key in the accent at `--fs-small`, the values 8 after the widest.
-        let rows_top = body_top + cause.galley.size().y + css::EC_P_MARGIN;
+        let rows_top = cause_top + cause.galley.size().y + css::EC_P_MARGIN;
         let keys: Vec<TextShape> = ["Feature", "Elements", "Parameter"]
             .iter()
             .map(|key| text(&h, key))

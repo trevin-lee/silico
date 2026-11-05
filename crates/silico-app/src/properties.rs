@@ -501,14 +501,15 @@ impl CardLook {
 }
 
 /// An error card (`.err-card`; app.js's `errCard`; DESIGN.md, *Errors carry the agent's
-/// words*), a warning's in its own colours if `said` is a warning's: its icon, its message,
-/// and its code at the head's right (`.ec-code`); under them its cause, its Feature (`name`,
-/// if the timeline lists it, then its ID), Elements (each a chip, and how many in all past
-/// those listed), and Parameter rows (`.ec-kv`), its suggestion after an arrow (`.ec-fix`),
-/// the names it offers in place of a broken one, and its buttons (`.ec-actions`): Edit and
-/// Show in timeline as `offer` offers them, and Copy as JSON, the core's error as an agent
-/// gets it. Each part only where `said` has it: a refusal said in words alone is its
-/// message and suggestion. What a button asked, if one was.
+/// words*), a warning's in its own colours if `said` is a warning's: its icon, its title
+/// (`.ec-head .t`, [`card_title`]), and its code at the head's right (`.ec-code`); under
+/// them the core's message (`.ec-body p`) where the title isn't it, its cause, its Feature
+/// (`name`, if the timeline lists it, then its ID), Elements (each a chip, and how many in
+/// all past those listed), and Parameter rows (`.ec-kv`), its suggestion after an arrow
+/// (`.ec-fix`), the names it offers in place of a broken one, and its buttons
+/// (`.ec-actions`): Edit and Show in timeline as `offer` offers them, and Copy as JSON, the
+/// core's error as an agent gets it. Each part only where `said` has it: a refusal said in
+/// words alone is its message and suggestion. What a button asked, if one was.
 ///
 /// SEAM: each candidate's Use and the card's Remove the edge (a fillet's or chamfer's
 /// `edges` written with the candidate in the broken name's place, or without it), once the
@@ -516,6 +517,7 @@ impl CardLook {
 /// give.
 pub(crate) fn card(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> Option<CardAct> {
     let look = CardLook::of(said.warning);
+    let (title, message) = card_title(said, name);
     let mut asked = None;
     egui::Frame::new()
         .fill(look.fill)
@@ -534,13 +536,13 @@ pub(crate) fn card(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -
                 .inner_margin(theme::ERROR_CARD_HEAD_PADDING)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    card_head(ui, said, &look);
+                    card_head(ui, said, title, &look);
                 });
             egui::Frame::new()
                 .inner_margin(theme::ERROR_CARD_BODY_PADDING)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    asked = card_body(ui, said, name, offer, &look);
+                    asked = card_body(ui, said, message, name, offer, &look);
                 });
         });
     asked
@@ -587,9 +589,23 @@ fn card_words(text: &str, colour: Color32) -> LayoutJob {
     job
 }
 
+/// A card's title (`.ec-head .t`, the prototype's `pr.title`): the name of the feature
+/// `said` names (`name`, if the timeline lists it, else its ID, as the Feature row falls
+/// back), its message below it in the body. The core gives no title, so a card that names
+/// no feature (the gate's own problems, a selection's refusal) keeps the core's message
+/// here, and its body doesn't say it again. The title, and the message for the body if
+/// the title isn't it.
+fn card_title<'a>(said: &'a Said, name: Option<&'a str>) -> (&'a str, Option<&'a str>) {
+    match said.feature() {
+        Some(id) => (name.unwrap_or(id), Some(&said.message)),
+        None => (&said.message, None),
+    }
+}
+
 /// The head (`.ec-head`, `align-items: flex-start`): the icon at the top of the first line,
-/// the message in white beside it, wrapped short of the code chip at the head's right.
-fn card_head(ui: &mut Ui, said: &Said, look: &CardLook) {
+/// `title` in white beside it (`.t { flex: 1 }`), wrapped short of the code chip at the
+/// head's right (`white-space: nowrap`).
+fn card_head(ui: &mut Ui, said: &Said, title: &str, look: &CardLook) {
     let width = ui.available_width();
     let side = IconSize::Small.points();
     let code = said.code().map(|code| {
@@ -603,7 +619,7 @@ fn card_head(ui: &mut Ui, said: &Said, look: &CardLook) {
         .as_ref()
         .map(|code| code.size().x + 2.0 * theme::ERROR_CARD_CODE_PADDING);
     let room = chip_width.map_or(0.0, |chip| chip + theme::ERROR_CARD_GAP);
-    let mut job = card_words(&said.message, theme::TEXT_STRONG);
+    let mut job = card_words(title, theme::TEXT_STRONG);
     job.wrap.max_width = (width - side - theme::ERROR_CARD_GAP - room).max(1.0);
     let galley = ui.painter().layout_job(job);
     let (rect, _) = ui.allocate_exact_size(
@@ -644,21 +660,23 @@ fn card_head(ui: &mut Ui, said: &Said, look: &CardLook) {
     }
 }
 
-/// The body (`.ec-body`): what [`card`] says under its head, and what its buttons asked.
+/// The body (`.ec-body`): what [`card`] says under its head, the core's `message` first
+/// (`.ec-body p`) unless the head says it, and what its buttons asked.
 fn card_body(
     ui: &mut Ui,
     said: &Said,
+    message: Option<&str>,
     name: Option<&str>,
     offer: Offer,
     look: &CardLook,
 ) -> Option<CardAct> {
-    if let Some(cause) = &said.cause {
+    for paragraph in message.into_iter().chain(said.cause.as_deref()) {
         ui.add(
-            Label::new(card_words(cause, look.words))
+            Label::new(card_words(paragraph, look.words))
                 .wrap()
                 .selectable(false),
         );
-        ui.add_space(theme::ERROR_CARD_CAUSE_MARGIN);
+        ui.add_space(theme::ERROR_CARD_PARAGRAPH_MARGIN);
     }
     let rows = card_rows(said, name);
     if !rows.is_empty() {
