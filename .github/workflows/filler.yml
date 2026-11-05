@@ -24,7 +24,10 @@
 # In order:
 #   a. Main's new commits: mutants in what main changed in its source since the commit the
 #      last filler `a` run tested (or since main's parent, at first).
-#   c. Every four hours: the oracle sweep, with a new seed (its run number).
+#   c. Every four hours: the oracle sweep, with a new seed (its run number). Once a day at
+#      least: a sweep overdue (none started in a day) goes before a and b, whatever CPU is
+#      idle, filler mutants cancelled to make room, but never while a gate or a real mutants
+#      run is starting or waiting for a runner it could take, nor beside an exploration.
 #   b. Otherwise the next slice of the workspace's source (crates/*/src/**/*.rs in path
 #      order, as many files as fit in 24 KiB, or one larger file), after the last filler
 #      `b` run's, wrapping around.
@@ -41,7 +44,9 @@
 # The proptest exploration (proptest-explore.yml) is filler too, started by its own schedule
 # when there's room (.github/proptest-room.sh, these rules for one run), and cancelled by
 # real work the same way: one starting holds this back as a mutants run starting does, and
-# a sweep due waits for one going to end, as it waits for filler mutants.
+# a sweep due waits for one going to end, as it waits for filler mutants. Each has a
+# once-a-day minimum, overdue after a day without one, which goes on a busy VM (the sweep
+# here, c; the exploration, proptest-room.sh); both overdue, the sweep goes first.
 #
 #   gh workflow run filler.yml --ref main -f dry=true   (says what it would start)
 name: filler
@@ -166,27 +171,10 @@ jobs:
           # (each takes one job, then registers again). One whose every runner is busy, a long
           # run's shards queued behind its own, waits whatever filler does, so filler fills the
           # idle CPU meanwhile on silico-22 and -23, which no lane uses; a real run starting
-          # still cancels it (its plan, cancel-filler.sh). The runners each label is on, as
-          # /etc/ci-runner/labels gives them on the VM (this token can't list runners): mutants,
-          # the long lane; mutants-pr, the merge lane; filler, filler's own.
-          lane_mutants='9 10 11 12 15 16 17'
-          lane_mutants_pr='5 6 7 8 9 10 11 12 15 16 17 20 21'
-          lane_filler='5 6 7 8 9 10 11 12 22 23'
+          # still cancels it (its plan, cancel-filler.sh). Each label's runners: .github/lanes.sh.
+          . .github/lanes.sh
           # Runners running a job now, of any run going, by number (pve-silico-N-...).
           running=" $(awk -F '\t' '$1 == "in_progress" { if (match($2, /^pve-silico-[0-9]+-/)) { n = substr($2, 12, RLENGTH - 12); print n } }' <<<"$jobs" | tr '\n' ' ')"
-          free_for() {
-            local label=$1 lane n
-            case $label in
-              mutants) lane=$lane_mutants ;;
-              mutants-pr) lane=$lane_mutants_pr ;;
-              filler) lane=$lane_filler ;;
-              *) return 1 ;;
-            esac
-            for n in $lane; do
-              case $running in *" $n "*) ;; *) return 0 ;; esac
-            done
-            return 1
-          }
           # Each queued job's labels (by awk: `read` would merge the empty runner field
           # into the next, a tab being whitespace to it).
           for label in $(awk -F '\t' '$1 != "" && $1 != "in_progress" && $1 != "starting" { n = split($3, l, ","); for (i = 1; i <= n; i++) print l[i] }' <<<"$jobs" | sort -u); do
@@ -204,6 +192,44 @@ jobs:
           explorations=$(awk -F '\t' '$2 == "proptest-explore.yml"' <<<"$active" | wc -l)
           # The runners labelled filler that are running a job, of any run.
           busy=$(awk -F '\t' '$1 == "in_progress" && $2 ~ /^pve-silico-([5-9]|1[0-2]|2[23])-/' <<<"$jobs" | wc -l)
+          # The filler sweeps started on this branch in the last $1 seconds.
+          sweeps() {
+            gh run list --workflow oracle-sweep.yml --branch "$BRANCH" --limit 100 --json displayTitle,createdAt \
+              --jq "[.[] | select((.displayTitle | startswith(\"filler \"))
+                      and now - (.createdAt | fromdateiso8601) < $1)] | length"
+          }
+          # c, overdue: no filler sweep started in a day. Real mutants runs can keep the VM a
+          # fifth or less idle for days (2026-11-04 and 05), when the sweep due waits below for
+          # CPU that never comes: overdue, it goes now, whatever CPU is idle, ahead of filler
+          # mutants, which it cancels (cancel-filler.sh, for them alone), never running beside
+          # them. Never ahead of real work: a gate waiting holds it back, as a real mutants run
+          # starting or with a job a free runner could take has above. Nor beside a proptest
+          # exploration, which ends within its hour and a half, and starts none while the sweep
+          # is overdue (proptest-room.sh). At the idle weight it shares the CPU about equally
+          # with the real shards that keep the VM busy (each at the idle weight too): the
+          # sweep's cases, one at a time and each well under a second (its 500 in about three
+          # minutes), keep far inside Silico's 60 s deadlines and FreeCAD's half hour
+          # (oracle-sweep.yml). Gates, at their full weight, can starve it, as any filler sweep.
+          today=$(sweeps $((24 * 3600)))
+          if [ "$today" -eq 0 ]; then
+            if awk -F '\t' '$2 == "gate.yml" && $3 == "queued" { found = 1 } END { exit !found }' <<<"$active"; then
+              skip "the oracle sweep is overdue (none started in a day), but a gate is waiting for a runner"
+            fi
+            if [ "$explorations" -gt 0 ]; then
+              skip "the oracle sweep is overdue (none started in a day), waiting for a proptest exploration to end"
+            fi
+            # Queued for a runner, it would take the next one freed ahead of a real shard.
+            if [ "$busy" -ge "$pool" ] && [ "$filler_mutants" -eq 0 ]; then
+              skip "the oracle sweep is overdue (none started in a day), but real work holds every runner labelled filler"
+            fi
+            report "The oracle sweep is overdue: no filler sweep started in a day, so it starts whatever CPU is idle"
+            if [ "$filler_mutants" -gt 0 ]; then
+              report "Cancelling filler mutants ($filler_mutants runs) to make room for it"
+              if [ "$DRY" = true ]; then report "(dry: not cancelled)"; else bash .github/cancel-filler.sh mutants.yml; fi
+            fi
+            start oracle-sweep.yml -f filler=true
+            exit 0
+          fi
           # The CPUs idle now, over 15 seconds (this job runs on the VM; the load average lags
           # minutes behind a run that just ended): idle and I/O wait over all time spent.
           cpu() { awk '/^cpu / { print $2 + $3 + $4 + $5 + $6 + $7 + $8 + $9, $5 + $6 }' /proc/stat; }
@@ -247,10 +273,9 @@ jobs:
             report "Main's source is unchanged since ${base:0:12}"
           fi
 
-          # c. The oracle sweep, if no filler sweep started in the last four hours.
-          recent=$(gh run list --workflow oracle-sweep.yml --branch "$BRANCH" --limit 100 --json displayTitle,createdAt \
-            --jq "[.[] | select((.displayTitle | startswith(\"filler \"))
-                    and now - (.createdAt | fromdateiso8601) < $oracle_every)] | length")
+          # c. The oracle sweep, if no filler sweep started in the last four hours (or a day:
+          # above).
+          recent=$(sweeps "$oracle_every")
           # Due while filler mutants go: wait for them to end, so the sweep comes next, rather
           # than start more, which overlap and would keep it from ever coming. And for a
           # proptest exploration, which shares the CPU at the idle weight as a shard does.

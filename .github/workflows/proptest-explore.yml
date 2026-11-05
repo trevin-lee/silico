@@ -33,7 +33,10 @@
 # while there's room for it (.github/proptest-room.sh: no bench or oracle sweep going or
 # filler's sweep due, no real mutants run starting or waiting for a runner, a free runner
 # labelled filler, more than a fifth of the VM's CPUs idle); the filler waits for one going
-# before it starts a sweep.
+# before it starts a sweep. Once a day at least: overdue (no exploration passed or failed in
+# a day), it goes whatever CPU is idle and beside a sweep merely due, though never ahead of a
+# gate or a real mutants run waiting, nor of an overdue sweep, and its slow proptests then
+# run alone (PROPTEST_EXPLORE_SLOW_ALONE, tests/proptest-explore.sh).
 #
 #   gh workflow run proptest-explore.yml --ref main                 (new seeds)
 #   gh workflow run proptest-explore.yml --ref main -f seed=SEED    (one round at SEED, to repeat it)
@@ -74,6 +77,7 @@ jobs:
       contents: read
     outputs:
       go: ${{ steps.room.outputs.go }}
+      overdue: ${{ steps.room.outputs.overdue }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -106,6 +110,9 @@ jobs:
         env:
           # Through the environment, so the input is never read as the script's text.
           SEED: ${{ inputs.seed }}
+          # Overdue, it may start on a busy VM: its slow proptests alone, so they keep within
+          # their 20 minutes (tests/proptest-explore.sh).
+          PROPTEST_EXPLORE_SLOW_ALONE: ${{ needs.room.outputs.overdue == 'true' && '1' || '' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # A real shard's claim this runner's last job left, if it died before releasing it
