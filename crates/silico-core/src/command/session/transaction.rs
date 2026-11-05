@@ -1500,10 +1500,10 @@ impl<C: Kernel + 'static> Session<C> {
     /// session as it was; as does a session with no revisions left to give.
     ///
     /// Inside a transaction, only for `commit`, and `diff` and `text` naming `"disk"`
-    /// ([`Rereads::Always`]): nothing is reloaded, and a file changed (its bytes kept),
-    /// longer than a document may be, gone, or unreadable is found for the command
-    /// ([`Reload::Outside`]): for the commit to refuse, if it would write; for a read, the
-    /// text `"disk"` names, or why there's none.
+    /// ([`Rereads::Always`]): nothing is reloaded, and a file changed (its bytes kept, once
+    /// claimed as a reload's are), longer than a document may be, gone, or unreadable is
+    /// found for the command ([`Reload::Outside`]): for the commit to refuse, if it would
+    /// write; for a read, the text `"disk"` names, or why there's none.
     ///
     /// A file this session's own save left part written isn't compared, nor reloaded (the
     /// next save says where its old text is), until it holds what the session last read or
@@ -1575,8 +1575,13 @@ impl<C: Kernel + 'static> Session<C> {
                     return Ok(Reload::AsHeld);
                 }
                 Ok((_, now)) if now.len() > MAX_INPUT_LEN => Outside::TooLong,
-                // Kept, for a read that names the file (`"disk"`): the one read made of it.
-                Ok((_, now)) => Outside::Changed(Arc::new(now)),
+                // Kept, for a read that names the file (`"disk"`): the one read made of it,
+                // claimed first, as outside a transaction, so another session's file (a link
+                // to its document put at the path) is never given as this session's.
+                Ok((opened, now)) => {
+                    claimed(opened)?;
+                    Outside::Changed(Arc::new(now))
+                }
                 Err(error) if gone() => Outside::Gone(of_file(&path, &error)),
                 Err(error) => Outside::Unreadable(of_file(&path, &error)),
             };

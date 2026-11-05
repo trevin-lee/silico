@@ -203,9 +203,14 @@ fn read_side(held: &HeldText, parameter: &'static str) -> Result<SideDocument, E
         )
         .with_parameter(parameter)
         .with_cause(message.to_owned())
-        .with_suggestion(format!(
-            "give {parameter} a revision whose text reads as a document; text gives a revision's text"
-        ))
+        .with_suggestion(match held.named {
+            Named::Disk => {
+                format!("mend the file on disk, or give {parameter} a revision the session holds")
+            }
+            Named::Revision(_) => format!(
+                "give {parameter} a revision whose text reads as a document; text gives a revision's text"
+            ),
+        })
     };
     match &held.gated {
         Some(gated) => match gated.document() {
@@ -239,8 +244,15 @@ impl SideDocument {
 }
 
 /// The refusal of a `"disk"` side, `parameter`, in session `id`, which is untitled: it has
-/// no file until its first save, and the empty document it holds stands in for none.
-fn untitled_disk(id: SessionId, parameter: &str) -> Error {
+/// no file until its first save, and the empty document it holds stands in for none. Its
+/// first save is a commit given a path, so outside a transaction, where `commit` is refused,
+/// one is begun first, as [`untitled_save`](super::transaction::untitled_save) says.
+fn untitled_disk(id: SessionId, parameter: &str, transaction: bool) -> Error {
+    let save = if transaction {
+        "commit it given a path, which saves it (Save As)"
+    } else {
+        "begin a transaction first; its commit, given a path, saves it (Save As)"
+    };
     Error::new(
         ErrorCode::InvalidInput,
         format!("session {id} is untitled: it has no file on disk to read"),
@@ -248,7 +260,7 @@ fn untitled_disk(id: SessionId, parameter: &str) -> Error {
     .with_parameter(parameter)
     .with_cause("the session is untitled: nothing is on disk until its first save")
     .with_suggestion(format!(
-        "save it first, with commit given a path (Save As); until then, give {parameter} a revision the session holds, or null for the document now"
+        "{save}; until then, give {parameter} a revision the session holds, or null for the document now"
     ))
 }
 
@@ -297,7 +309,11 @@ impl<C: Kernel + 'static> Session<C> {
         };
         let held = self.held.read();
         let Some(file) = &held.file else {
-            return Err(untitled_disk(self.id, parameter));
+            return Err(untitled_disk(
+                self.id,
+                parameter,
+                held.transaction.is_some(),
+            ));
         };
         let shown = shown_path(Path::new(&file.path));
         match reload {

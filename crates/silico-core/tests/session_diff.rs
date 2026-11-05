@@ -1140,6 +1140,15 @@ fn a_side_that_doesnt_read_as_a_document_is_refused_with_the_readers_message() {
             e.message(),
             format!("{side}, revision 1, doesn't read as a document, so it can't be compared")
         );
+        assert_eq!(
+            e.suggestion(),
+            Some(
+                format!(
+                    "give {side} a revision whose text reads as a document; text gives a revision's text"
+                )
+                .as_str()
+            )
+        );
     }
     // Mended outside: the side now reads, the one replaced still doesn't.
     f.write(doc_text(&[BOX]).as_bytes());
@@ -1436,9 +1445,15 @@ fn a_disk_side_the_file_cant_give_is_refused_naming_the_side_the_transaction_lef
             Some(reader.message().to_owned())
         )
     );
+    let e = &refused.result.as_ref().unwrap_err().errors()[0];
     assert_eq!(
-        refused.result.unwrap_err().errors()[0].message(),
+        e.message(),
         "to, the file on disk, doesn't read as a document, so it can't be compared"
+    );
+    // The file to mend, not a revision to choose.
+    assert_eq!(
+        e.suggestion(),
+        Some("mend the file on disk, or give to a revision the session holds")
     );
     open();
     // And mended outside, it reads again: nothing reloaded, the edit still held.
@@ -1474,10 +1489,23 @@ fn outside_a_transaction_a_disk_side_the_read_refuses_names_the_side() {
 fn an_untitled_session_has_no_disk_and_says_so() {
     let f = sessions();
     let s = answer(f.sessions.open_untitled()).session.unwrap().id;
-    for transaction in [false, true] {
+    // Its first save is a commit given a path: outside a transaction, where `commit` is
+    // refused, one begun first, as an edit's refusal there says.
+    for (transaction, save) in [
+        (
+            false,
+            "begin a transaction first; its commit, given a path, saves it (Save As)",
+        ),
+        (true, "commit it given a path, which saves it (Save As)"),
+    ] {
         if transaction {
             answer(f.sessions.begin(&s)).result.unwrap();
         }
+        let suggestion = |parameter: &str| {
+            format!(
+                "{save}; until then, give {parameter} a revision the session holds, or null for the document now"
+            )
+        };
         let refused = f.diff_of(&s, None, Some(Named::Disk));
         assert_eq!(
             refused_side(&refused),
@@ -1487,6 +1515,10 @@ fn an_untitled_session_has_no_disk_and_says_so() {
                 Some("the session is untitled: nothing is on disk until its first save".to_owned())
             )
         );
+        assert_eq!(
+            refused.result.as_ref().unwrap_err().errors()[0].suggestion(),
+            Some(suggestion("to").as_str())
+        );
         let text = answer(f.sessions.text_at(&s, None, Some(Named::Disk)));
         let e = &text.result.as_ref().unwrap_err().errors()[0];
         assert_eq!(e.parameter(), Some("revision"));
@@ -1494,6 +1526,7 @@ fn an_untitled_session_has_no_disk_and_says_so() {
             e.cause(),
             Some("the session is untitled: nothing is on disk until its first save")
         );
+        assert_eq!(e.suggestion(), Some(suggestion("revision").as_str()));
     }
 }
 

@@ -367,8 +367,13 @@ fn written_length(response: &Response<DiffAnswer>, answer: &DiffAnswer, layout: 
 }
 
 /// The refusal of a `diff` answer of `size` bytes, past `limit`: saying both, and what to
-/// ask instead.
+/// ask instead (with a side the file on disk, a revision nearer it, or the file's text).
 fn diff_too_long(answer: &DiffAnswer, size: u64, limit: usize) -> Error {
+    let suggestion = if answer.from == Named::Disk || answer.to == Named::Disk {
+        "compare the file with a nearer revision, or read the file with text and revision \"disk\""
+    } else {
+        "diff revisions nearer each other, or read the text of each side with text instead"
+    };
     Error::new(
         ErrorCode::InvalidInput,
         format!(
@@ -381,9 +386,7 @@ fn diff_too_long(answer: &DiffAnswer, size: u64, limit: usize) -> Error {
         "it has {} changes, each written with its feature's name",
         answer.changes.len()
     ))
-    .with_suggestion(
-        "diff revisions nearer each other, or read the text of each side with text instead",
-    )
+    .with_suggestion(suggestion)
 }
 
 impl ToWire for CheckAnswer {
@@ -686,8 +689,8 @@ mod tests {
     /// Two features' changes: one name shared by three changes (a place, a scalar, and a
     /// whole object, which the canonical layout writes over lines), one with characters
     /// written as escapes (a quote, a newline, a right-to-left override, an é); from
-    /// revision 1 to `to`.
-    fn answer(to: Named) -> Response<DiffAnswer> {
+    /// `from` to `to`.
+    fn answer(from: Named, to: Named) -> Response<DiffAnswer> {
         let shared: Arc<str> = Arc::from("Sketch \"one\"\n");
         let other: Arc<str> = Arc::from("\u{202e}é");
         let id = |s: &str| FeatureId::new(s).unwrap();
@@ -737,20 +740,39 @@ mod tests {
                 reloaded: true,
             }),
             model: None,
-            result: Ok(DiffAnswer {
-                from: Named::Revision(Revision::OPENED),
-                to,
-                changes,
-            }),
+            result: Ok(DiffAnswer { from, to, changes }),
         }
     }
 
     #[test]
     fn the_length_counted_is_the_texts_in_either_layout_and_past_it_the_refusal_says_both() {
-        // To revision 2, and to the file on disk, which the refusal names as such.
+        // Revision 1 to revision 2; and to and from the file on disk, which the refusal names
+        // as such, its advice the file's: a nearer revision, or the file's own text.
+        let one = Named::Revision(Revision::OPENED);
         let two = Named::Revision(Revision::OPENED.next().unwrap());
-        for (to, said_to) in [(two, "revision 2"), (Named::Disk, "the file on disk")] {
-            let response = answer(to);
+        // As the envelope writes it, its quotes escaped.
+        let the_files = r#"compare the file with a nearer revision, or read the file with text and revision \"disk\""#;
+        for (from, to, said, advice) in [
+            (
+                one,
+                two,
+                "revision 1 to revision 2",
+                "diff revisions nearer each other, or read the text of each side with text instead",
+            ),
+            (
+                one,
+                Named::Disk,
+                "revision 1 to the file on disk",
+                the_files,
+            ),
+            (
+                Named::Disk,
+                two,
+                "the file on disk to revision 2",
+                the_files,
+            ),
+        ] {
+            let response = answer(from, to);
             let Ok(diffed) = &response.result else {
                 panic!("an answer");
             };
@@ -768,13 +790,14 @@ mod tests {
                 let (ok, refusal) = diff_answer_within(&response, layout, size - 1);
                 assert!(!ok);
                 let said = format!(
-                    "the diff from revision 1 to {said_to} would be {size} bytes, more than the {} bytes a response may be",
+                    "the diff from {said} would be {size} bytes, more than the {} bytes a response may be",
                     size - 1
                 );
                 assert!(refusal.contains(&said), "{refusal}");
                 assert!(refusal.contains("it has 4 changes"), "{refusal}");
+                // The suggestion whole.
                 assert!(
-                    refusal.contains("diff revisions nearer each other, or read the text of each side with text instead"),
+                    refusal.contains(&format!(r#""suggestion": "{advice}""#)),
                     "{refusal}"
                 );
             }
