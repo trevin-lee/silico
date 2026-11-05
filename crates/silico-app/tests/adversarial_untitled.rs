@@ -128,9 +128,12 @@ impl Fixture {
     fn app(&self, browser: &FakeBrowser) -> AppHarness {
         let app = App::new(Arc::clone(&self.sessions)).browsing(Box::new(browser.clone()));
         let _marked = never_waits::marked();
-        Harness::builder()
+        let h = Harness::builder()
             .with_size((1280.0, 800.0))
-            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
+        // The app's look, as main.rs gives it: its fonts above all.
+        silico_app::theme::apply(&h.ctx);
+        h
     }
 }
 
