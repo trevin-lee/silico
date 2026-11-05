@@ -491,6 +491,14 @@ pub(crate) struct CardOut {
     pub hovered: Option<String>,
 }
 
+/// The cards a dialog shows (its feature's error, a refusal), each with the name of the
+/// feature it names and what it offers to mend a broken reference; and what they gave.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Cards {
+    pub said: Vec<(Said, Option<String>, Option<Repair>)>,
+    pub out: CardOut,
+}
+
 impl CardOut {
     /// `other`'s, after this one's: the first asked, and the first hovered.
     pub(crate) fn or(self, other: CardOut) -> CardOut {
@@ -595,8 +603,9 @@ pub(crate) fn repair_card(
 /// A card for each of `listed`, of `tab`'s document (`errCard(p)`, as `docProps` and the
 /// `whatswrong` modal list them): each by the name of the feature it names, with Edit
 /// (enabled where its dialog can open now) and Show in timeline where the timeline lists
-/// that feature, and Copy as JSON; each card's widgets under `salt` and its place. What a
-/// card's button asked, if one was.
+/// that feature, a broken reference's candidates and Remove the edge
+/// ([`Tab::repair`](crate::tab::Tab::repair)), and Copy as JSON; each card's widgets under
+/// `salt` and its place. What a card's button asked, if one was, and the candidate hovered.
 pub(crate) fn document_cards(
     ui: &mut Ui,
     tab: &crate::tab::Tab,
@@ -611,8 +620,11 @@ pub(crate) fn document_cards(
             show: entry.is_some(),
         };
         let name = entry.map(|entry| entry.name.as_str());
+        let repair = tab.repair(said);
         let card = ui
-            .push_id((salt, place), |ui| repair_card(ui, said, name, offer, None))
+            .push_id((salt, place), |ui| {
+                repair_card(ui, said, name, offer, repair.as_ref())
+            })
             .inner;
         out = out.or(card);
     }

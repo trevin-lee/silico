@@ -796,12 +796,20 @@ impl<P: Clients + 'static> App<P> {
         // What's Wrong, the shown tab's, the same.
         let sessions = Arc::clone(&self.sessions);
         if let Some(tab) = self.whats_wrong_shown() {
-            match crate::whats_wrong::show(ui.ctx(), tab) {
+            let (asked, hovered) = crate::whats_wrong::show(ui.ctx(), tab);
+            tab.hover_candidate(hovered);
+            match asked {
                 crate::whats_wrong::Asked::None => {}
                 crate::whats_wrong::Asked::Close => tab.whats_wrong = false,
                 crate::whats_wrong::Asked::Card(asked) => {
-                    // Edit and Show in timeline each close it, as the prototype's do.
-                    tab.whats_wrong = false;
+                    // Edit and Show in timeline each close it, as the prototype's do; Use and
+                    // Remove the edge leave it open (`useCand` and `removeRef` close nothing).
+                    if matches!(
+                        asked,
+                        crate::properties::CardAct::Edit(_) | crate::properties::CardAct::Show(_)
+                    ) {
+                        tab.whats_wrong = false;
+                    }
                     started |= tab.card_asked(&sessions, asked);
                 }
             }

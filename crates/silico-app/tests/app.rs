@@ -23827,10 +23827,31 @@ fn corner_alone() -> String {
 /// so named by its number alone, unstable). The cut's shape is the block's, so it's meshed
 /// and described as the block is. With a narrower pin, the fake's own cut.
 fn swallowing_edge5(f: &Fixture) {
+    swallowing_edge5_meshed(f, false);
+}
+
+/// [`swallowing_edge5`], and, if `real`, each body meshed as a real 40 × 20 × 10 box, as
+/// [`meshes_a_real_box`] meshes it (for a frame drawn on lavapipe).
+fn swallowing_edge5_meshed(f: &Fixture, real: bool) {
     use silico_core::kernel::{
         BooleanOp, BuiltData, ElementCounts, ElementFate, History, InputHistory, Topology,
     };
-    f.kernel.answer_instead(|op| match op {
+    f.kernel.answer_instead(move |op| match op {
+        Op::Tessellate {
+            deflection,
+            at_least_the_floor,
+            ..
+        } if real => {
+            let mesh = silico_render::bench::box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+            Some(if *at_least_the_floor {
+                silico_protocol::Reply::MeshAt(silico_protocol::MeshAt {
+                    mesh,
+                    deflection: *deflection,
+                })
+            } else {
+                silico_protocol::Reply::Mesh(mesh)
+            })
+        }
         Op::Boolean {
             op: BooleanOp::Cut,
             base,
@@ -24134,4 +24155,172 @@ fn candidate_row(h: &AppHarness, words: &str) -> (eframe::egui::Rect, Option<boo
         .get_by_role_and_label(Role::Pane, "Properties")
         .get_by_label(words);
     (row.rect(), row.accesskit_node().is_selected())
+}
+
+#[test]
+fn the_fillets_own_dialog_shows_its_candidates_and_use_puts_one_in_its_box_in_the_broken_ones_place()
+ {
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    let before = text_of(&f, &h);
+    edit_from_the_timeline(&mut h, "Inside corner");
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]);
+    step_until(&mut h, "the candidates in the dialog", |h| {
+        dialog(h)
+            .query_by_label(&format!("Closest · {EDGE4}"))
+            .is_some()
+    });
+    assert!(dialog(&h).query_by_label(EDGE6).is_some());
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE4}"))
+        .click();
+    // In the broken name's place in the box, and sent as the dialog's own edit.
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge1", EDGE4]);
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Inside corner", "edges"),
+        Some(plain(&format!(r#"["k7f2qx3m.box.Edge1", "{EDGE4}"]"#)))
+    );
+    assert_eq!(
+        status_said(&h, "Inside corner now").as_deref(),
+        Some("Inside corner now rounds the edge you picked. Undo puts the broken reference back.")
+    );
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(
+        text_of(&f, &h),
+        before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE4}""#))
+    );
+    // One undo takes the dialog's edits back, the broken name with them.
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_the_fillets_dialog_remove_the_edge_empties_its_box_and_ok_waits_for_an_edge() {
+    // SolidWorks' Fillet PropertyManager, its missing references cleared, is completed by
+    // picking edges again: the box may empty, OK off until it holds one.
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, &corner_alone());
+    let before = text_of(&f, &h);
+    edit_from_the_timeline(&mut h, "Inside corner");
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge5"]);
+    step_until(&mut h, "Remove the edge in the dialog", |h| {
+        dialog(h)
+            .query_by_role_and_label(Role::Button, "Remove the edge")
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
+    });
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Remove the edge")
+        .click();
+    boxed_until(&mut h, &[]);
+    settled(&mut h);
+    assert!(!ok_enabled(&h));
+    cancel_dialog(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn whats_wrong_lists_the_candidates_and_use_there_writes_one_and_leaves_it_open() {
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    let before = text_of(&f, &h);
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 1 error")
+        .click();
+    step_until(&mut h, "its candidates in What's Wrong", |h| {
+        in_whats_wrong(h, "k7f2qx3m.box.Edge").contains(&format!("Closest · {EDGE4}"))
+    });
+    let rows: Vec<String> = in_whats_wrong(&h, "k7f2qx3m.box.Edge")
+        .into_iter()
+        .filter(|label| {
+            let name = label.strip_prefix("Closest · ").unwrap_or(label);
+            !name.contains(' ')
+        })
+        .collect();
+    assert_eq!(rows, [format!("Closest · {EDGE4}"), EDGE6.to_owned()]);
+    step(&mut h);
+    whats_wrong(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE6}"))
+        .click();
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(
+        text_of(&f, &h),
+        before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE6}""#))
+    );
+    // Open still, as `useCand` leaves it, listing the block's warning alone now.
+    step_until(&mut h, "Inside corner's card gone", |h| {
+        whats_wrong(h).is_some() && in_whats_wrong(h, "Feature: ") == ["Feature: Block k7f2qx3m"]
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_lavapipe_a_hovered_candidate_lights_its_edge_beside_the_broken_fillets_card() {
+    use silico_app::renderer::Element::Edge;
+    on_lavapipe(
+        "on_lavapipe_a_hovered_candidate_lights_its_edge_beside_the_broken_fillets_card",
+        || {
+            let f = fixture();
+            swallowing_edge5_meshed(&f, true);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            h.set_render_every_step(true);
+            silico_app::theme::apply(&h.ctx);
+            // Opened with the pin already widened (an upstream edit made before it was
+            // saved): the broken fillet builds nothing, so the cut's body is drawn, whose
+            // elements the real box's mesh has, as a built fillet's it wouldn't.
+            let widened = CORNER.replace(r#""radius": 2.5"#, r#""radius": 30"#);
+            let path = f.file("corner.silico", &widened);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            step_until(&mut h, "Inside corner broken", |h| {
+                h.state()
+                    .tabs()
+                    .first()
+                    .is_some_and(|tab| tab.errors() == 1)
+            });
+            meshes_settled(&mut h);
+            // From the front (−y), above and to the left, onto the block's centre, the whole
+            // block in view, so its front left edge (the fixture's Edge4) is.
+            view_mut(&mut h).set_camera(silico_protocol::Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 50.0 },
+                eye: [-40.0, -100.0, 50.0],
+                target: [20.0, 10.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            });
+            meshes_settled(&mut h);
+            select(&mut h, "Inside corner");
+            step_until(&mut h, "its candidates", |h| {
+                !candidate_rows(h, "Properties").is_empty()
+            });
+            let at = candidate_row(&h, &format!("Closest · {EDGE4}")).0.center();
+            h.hover_at(at);
+            let body = body_of(&h, "m3tq8v0z");
+            step_until(&mut h, "Edge4 lit", |h| {
+                view(h).candidate == Some((body, Edge(4)))
+            });
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            if let Some(shot) = std::env::var_os("SILICO_APP_CANDIDATES_SHOT") {
+                h.render().unwrap().save(shot).unwrap();
+            }
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
 }

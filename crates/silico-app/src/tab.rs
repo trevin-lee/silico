@@ -3286,18 +3286,30 @@ impl Tab {
             .map_or_else(|| id.to_string(), |entry| entry.name.clone())
     }
 
+    /// Whether the open dialog edits the feature `id`.
+    fn dialog_of(&self, id: &FeatureId) -> bool {
+        self.dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.as_ref() == Some(id))
+    }
+
     /// What a card of `said` offers to mend a broken reference (flow 6b), if it's one with
     /// candidates (`errCard` offers Use and Remove the edge only then): Remove the edge off
-    /// for the feature's last edge, saying why; and the candidate whose edge the canvas's
-    /// pointer is over.
+    /// for the feature's last edge, saying why, unless its dialog is open (whose box of
+    /// names may be emptied, its OK off until an edge is picked, as SolidWorks' Fillet
+    /// PropertyManager has it); and the candidate whose edge the canvas's pointer is over.
     pub(crate) fn repair(&self, said: &Said) -> Option<crate::properties::Repair> {
         let broken = crate::repair::Broken::of(said)?;
         if broken.candidates.is_empty() {
             return None;
         }
-        let remove = self.dressing(&broken.feature).map_or(Ok(()), |dressing| {
-            dressing.removable(&self.named(&broken.feature))
-        });
+        let remove = if self.dialog_of(&broken.feature) {
+            Ok(())
+        } else {
+            self.dressing(&broken.feature).map_or(Ok(()), |dressing| {
+                dressing.removable(&self.named(&broken.feature))
+            })
+        };
         let marked = self.selection.hovered().and_then(|hovered| {
             broken
                 .candidates
@@ -3340,9 +3352,10 @@ impl Tab {
     /// A broken reference's `candidate` used in its place (`useCand`): read in the
     /// feature's base as its dialog reads a pick (the core's `resolve_in`), and written at
     /// the broken name's place in `edges` (`set_field` of `edges.N`, one undoable edit), the
-    /// status bar saying so. Refused, saying why, for a candidate that can't be stored
-    /// there (unstable, or not on the base), or a card older than the document. Whether a
-    /// command was started.
+    /// status bar saying so; or, its dialog open, put in the broken name's place in its box
+    /// of names, which the dialog sends as its own edit. Refused, saying why, for a
+    /// candidate that can't be stored there (unstable, or not on the base), or a card older
+    /// than the document. Whether a command was started.
     pub(crate) fn use_candidate<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -3353,9 +3366,12 @@ impl Tab {
             return false;
         }
         let name = self.named(&broken.feature);
+        if self.dialog_of(&broken.feature) {
+            return self.repair_in_dialog(sessions, broken, Some(candidate), &name);
+        }
         if self.in_dialog() {
             self.hush();
-            self.message = Some("Close the dialog before mending a feature".to_owned());
+            self.message = Some("Close the dialog before mending another feature".to_owned());
             return false;
         }
         let Some(dressing) = self.dressing(&broken.feature) else {
@@ -3379,8 +3395,9 @@ impl Tab {
     }
 
     /// A broken reference's name dropped from its feature's `edges` (`removeRef`): one
-    /// undoable edit setting `edges` without it, the status bar saying so. Never the
-    /// feature's last edge, which is said. Whether a command was started.
+    /// undoable edit setting `edges` without it, the status bar saying so; or, its dialog
+    /// open, let go from its box of names. Never a closed feature's last edge, which is said.
+    /// Whether a command was started.
     pub(crate) fn remove_reference<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -3390,9 +3407,12 @@ impl Tab {
             return false;
         }
         let name = self.named(&broken.feature);
+        if self.dialog_of(&broken.feature) {
+            return self.repair_in_dialog(sessions, broken, None, &name);
+        }
         if self.in_dialog() {
             self.hush();
-            self.message = Some("Close the dialog before mending a feature".to_owned());
+            self.message = Some("Close the dialog before mending another feature".to_owned());
             return false;
         }
         let Some(dressing) = self.dressing(&broken.feature) else {
@@ -3412,6 +3432,74 @@ impl Tab {
                 false
             }
         }
+    }
+
+    /// `broken` mended in the open dialog's box of names: `candidate`, read in the box's
+    /// base, put in its place, or, for none, the name let go; then sent as the dialog sends
+    /// its edits. Whether a command was started.
+    fn repair_in_dialog<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        broken: &crate::repair::Broken,
+        candidate: Option<&str>,
+        name: &str,
+    ) -> bool {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return false;
+        };
+        let base = dialog
+            .names_input()
+            .and_then(|names| names.body.clone())
+            .or_else(|| {
+                self.entry(broken.feature.as_str())
+                    .and_then(|entry| entry.inputs.first().cloned())
+            });
+        let stored = match (candidate, base) {
+            (None, _) => None,
+            (Some(candidate), Some(base)) => match self.selection.read_on(candidate, &base) {
+                crate::selection::OnBase::Found(Ok(stored)) => Some(stored.to_string()),
+                crate::selection::OnBase::Found(Err(refusal)) => {
+                    self.hush();
+                    self.message = Some(said(&Problems::from(refusal)));
+                    return false;
+                }
+                crate::selection::OnBase::Missing => {
+                    self.hush();
+                    self.message = Some(format!(
+                        "{candidate} isn't on {base}, which {name} is built on: it can't take \
+                         that edge"
+                    ));
+                    return false;
+                }
+            },
+            (Some(_), None) => {
+                self.hush();
+                self.message = Some(crate::repair::STALE.to_owned());
+                return false;
+            }
+        };
+        let chamfer = self
+            .dialog
+            .as_ref()
+            .is_some_and(|d| d.kind == Kind::Chamfer);
+        let Some(dialog) = self.dialog.as_mut() else {
+            return false;
+        };
+        let used = stored.is_some();
+        if !dialog.repair(broken, stored) {
+            self.hush();
+            self.message = Some(crate::repair::STALE.to_owned());
+            return false;
+        }
+        self.hush();
+        // Sent first: an edit hushes what was said before it.
+        let started = self.dialog_changed(sessions);
+        self.told = Some(if used {
+            crate::repair::used_words(name, chamfer)
+        } else {
+            crate::repair::removed_words(name)
+        });
+        started
     }
 
     /// The dialog kind of the feature `id`, if the timeline lists it and a dialog edits it.

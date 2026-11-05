@@ -389,7 +389,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             .flat_map(|dialog| dialog.inputs.iter().map(|input| input.part.field()))
             .filter(|field| tab.field_refused(field))
             .collect();
-        let said: Vec<(crate::tab::Said, Option<String>)> = tab
+        let said: Vec<_> = tab
             .dialog_said()
             .into_iter()
             .map(|said| {
@@ -397,7 +397,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
                     .feature()
                     .and_then(|id| tab.entry(id))
                     .map(|entry| entry.name.clone());
-                (said, name)
+                let repair = tab.repair(&said);
+                (said, name, repair)
             })
             .collect();
         let preview = preview_of(tab);
@@ -413,16 +414,24 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 .map(|row| row.name.clone())
         };
         let refused = |field: &str| refused.contains(&field);
+        let mut cards = properties::Cards {
+            said,
+            out: properties::CardOut::default(),
+        };
         let mut action = ui
             .scope_builder(UiBuilder::new().id_salt(("dialog", dialog.serial)), |ui| {
                 ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                     node.set_role(egui::accesskit::Role::Dialog);
                     node.set_label(title);
                 });
-                dialog.ui(ui, &said, preview, &named, &refused, enabled)
+                dialog.ui(ui, &mut cards, preview, &named, &refused, enabled)
             })
             .inner;
         tab.dialog = Some(dialog);
+        tab.hover_candidate(cards.out.hovered);
+        if let Some(asked) = cards.out.asked {
+            *self.started |= tab.card_asked(sessions, asked);
+        }
         *self.started |= tab.dialog_changed(sessions);
         match key {
             Some(egui::Key::Enter) if tab.can_ok() => action = Action::Ok,
@@ -3341,9 +3350,10 @@ mod property_panel_drawn {
             .build_ui(move |ui| {
                 let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
                 ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
+                    let mut cards = properties::Cards::default();
                     dialog
                         .borrow_mut()
-                        .ui(ui, &[], None, &|_| None, &|_| false, true);
+                        .ui(ui, &mut cards, None, &|_| None, &|_| false, true);
                 });
             });
         theme::apply(&h.ctx);
@@ -3417,7 +3427,8 @@ mod property_panel_drawn {
                 move |ui, (dialog, action): &mut (Dialog, Action)| {
                     let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
                     ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
-                        let done = dialog.ui(ui, &[], preview, &|_| None, &|_| false, true);
+                        let mut cards = properties::Cards::default();
+                        let done = dialog.ui(ui, &mut cards, preview, &|_| None, &|_| false, true);
                         if done != Action::None {
                             *action = done;
                         }

@@ -797,6 +797,48 @@ impl Dialog {
         }
     }
 
+    /// Its box of names, active or not, if it has one (a fillet's or chamfer's edges).
+    pub fn names_input(&self) -> Option<&Names> {
+        self.inputs.iter().find_map(|input| match &input.value {
+            Value::Names(names) => Some(names),
+            _ => None,
+        })
+    }
+
+    /// `broken`'s name in its box of names put right (flow 6b): `stored` (a candidate's
+    /// Use, the name a store writes for it on the box's base) in its place, or, for none,
+    /// the name let go (Remove the edge), as the box's own remove button lets one go, so the
+    /// box may empty, its OK off until an edge is picked (SolidWorks' Fillet
+    /// PropertyManager, its missing references cleared). Whether the box held the name.
+    pub fn repair(&mut self, broken: &crate::repair::Broken, stored: Option<String>) -> bool {
+        let Some(names) = self
+            .inputs
+            .iter_mut()
+            .find_map(|input| match &mut input.value {
+                Value::Names(names) => Some(names),
+                _ => None,
+            })
+        else {
+            return false;
+        };
+        let Some(at) = names.names.iter().position(|name| broken.is(name)) else {
+            return false;
+        };
+        names.said = None;
+        match stored {
+            Some(stored) => {
+                if let Some(place) = names.names.get_mut(at) {
+                    *place = stored;
+                }
+            }
+            None => {
+                let gone = names.names.remove(at);
+                self.unpicked.push(gone);
+            }
+        }
+        true
+    }
+
     fn names_mut(&mut self) -> Option<&mut Names> {
         match self.active.and_then(|at| self.inputs.get_mut(at)) {
             Some(Input {
@@ -1005,10 +1047,14 @@ impl Dialog {
     ///
     /// Left out: the Name field (the property panel's renames a feature, a dialog's would be
     /// one more way).
-    pub fn ui(
+    ///
+    /// A card of a broken reference of its feature's offers its candidates' Use and Remove
+    /// the edge (its `Repair`): what they ask, and the candidate hovered, are `said`'s
+    /// `out`.
+    pub(crate) fn ui(
         &mut self,
         ui: &mut Ui,
-        said: &[(crate::tab::Said, Option<String>)],
+        said: &mut properties::Cards,
         preview: Option<properties::Preview>,
         named: &dyn Fn(&FeatureId) -> Option<String>,
         refused: &dyn Fn(&str) -> bool,
@@ -1083,16 +1129,22 @@ impl Dialog {
                         properties::section(ui, "Preview");
                         properties::preview(ui, preview, &rebuild);
                     }
-                    for (place, (said, name)) in said.iter().enumerate() {
-                        // Copy as JSON alone: the dialog is the feature's edit already.
-                        ui.push_id(("dialog-said", place), |ui| {
-                            properties::card(
-                                ui,
-                                said,
-                                name.as_deref(),
-                                properties::Offer::default(),
-                            )
-                        });
+                    let cards = &mut said.out;
+                    for (place, (said, name, repair)) in said.said.iter().enumerate() {
+                        // Copy as JSON, and a broken reference's repair: the dialog is the
+                        // feature's edit already.
+                        let out = ui
+                            .push_id(("dialog-said", place), |ui| {
+                                properties::repair_card(
+                                    ui,
+                                    said,
+                                    name.as_deref(),
+                                    properties::Offer::default(),
+                                    repair.as_ref(),
+                                )
+                            })
+                            .inner;
+                        *cards = std::mem::take(cards).or(out);
                     }
                 });
         });
