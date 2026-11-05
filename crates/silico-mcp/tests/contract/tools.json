@@ -1429,6 +1429,24 @@
             "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
             "type": "string"
           },
+          "FeatureStep": {
+            "additionalProperties": false,
+            "description": "A feature's state in a rebuild.",
+            "properties": {
+              "feature": {
+                "$ref": "#/$defs/FeatureId",
+                "description": "The feature's ID."
+              },
+              "state": {
+                "$ref": "#/$defs/StepState"
+              }
+            },
+            "required": [
+              "feature",
+              "state"
+            ],
+            "type": "object"
+          },
           "Model": {
             "additionalProperties": false,
             "description": "The model the command read.",
@@ -1496,6 +1514,16 @@
                   "null"
                 ]
               },
+              "features": {
+                "description": "Each unsuppressed feature's state in the rebuild, in timeline order, listed from its\nstart and kept once it ends: progress, a diagnostic, not a result (which feature runs\nfirst depends on scheduling). A stopped rebuild leaves what it hadn't settled\n`queued`. Null if no rebuild of the revision has started.",
+                "items": {
+                  "$ref": "#/$defs/FeatureStep"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
               "revision": {
                 "description": "The revision it's of: the session's current one.",
                 "minimum": 1,
@@ -1515,6 +1543,7 @@
             },
             "required": [
               "done",
+              "features",
               "revision",
               "state",
               "steps"
@@ -1686,6 +1715,41 @@
               "transaction"
             ],
             "type": "object"
+          },
+          "StepState": {
+            "description": "What's become of a feature's steps in a rebuild.",
+            "oneOf": [
+              {
+                "const": "queued",
+                "description": "Not settled yet: none of its steps running, or the rebuild stopped first (the next\nrebuild resumes it).",
+                "type": "string"
+              },
+              {
+                "const": "running",
+                "description": "A step of its is running; a sketch, its solve; a sketch on a face reads queued until\nthe round that places it, its solve included, then its outcome: its result is the\nsketch placed on its face.",
+                "type": "string"
+              },
+              {
+                "const": "built",
+                "description": "Built: its solid made, or kept from before; a sketch, solved.",
+                "type": "string"
+              },
+              {
+                "const": "failed",
+                "description": "Failed on its own: a step the kernel refused, a check its result failed, a sketch\nthat didn't solve, a pad, pocket, revolve, or groove whose sketch makes no profile,\nbroken references.",
+                "type": "string"
+              },
+              {
+                "const": "blocked",
+                "description": "Not built, since a feature it uses failed, faulted, or was blocked.",
+                "type": "string"
+              },
+              {
+                "const": "faulted",
+                "description": "Stopped by a kernel fault (a worker that crashed, hung, or couldn't be had); what\nuses it is blocked.",
+                "type": "string"
+              }
+            ]
           },
           "Transaction": {
             "additionalProperties": false,
