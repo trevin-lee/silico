@@ -3246,6 +3246,7 @@ impl Tab {
             crate::properties::CardAct::Use { broken, candidate } => {
                 self.use_candidate(sessions, &broken, &candidate)
             }
+            crate::properties::CardAct::Remove(broken) => self.remove_reference(sessions, &broken),
         }
     }
 
@@ -3270,13 +3271,17 @@ impl Tab {
     }
 
     /// What a card of `said` offers to mend a broken reference (flow 6b), if it's one with
-    /// candidates.
+    /// candidates (`errCard` offers Use and Remove the edge only then): Remove the edge off
+    /// for the feature's last edge, saying why.
     pub(crate) fn repair(&self, said: &Said) -> Option<crate::properties::Repair> {
         let broken = crate::repair::Broken::of(said)?;
         if broken.candidates.is_empty() {
             return None;
         }
-        Some(crate::properties::Repair { broken })
+        let remove = self.dressing(&broken.feature).map_or(Ok(()), |dressing| {
+            dressing.removable(&self.named(&broken.feature))
+        });
+        Some(crate::properties::Repair { broken, remove })
     }
 
     /// A broken reference's `candidate` used in its place (`useCand`): read in the
@@ -3307,6 +3312,42 @@ impl Tab {
         };
         let read = self.selection.read_on(candidate, &dressing.base);
         match crate::repair::used(broken, candidate, &dressing, read, &name) {
+            Ok((edit, told)) => {
+                self.edit(sessions, edit);
+                self.told = Some(told);
+                true
+            }
+            Err(why) => {
+                self.hush();
+                self.message = Some(why);
+                false
+            }
+        }
+    }
+
+    /// A broken reference's name dropped from its feature's `edges` (`removeRef`): one
+    /// undoable edit setting `edges` without it, the status bar saying so. Never the
+    /// feature's last edge, which is said. Whether a command was started.
+    pub(crate) fn remove_reference<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        broken: &crate::repair::Broken,
+    ) -> bool {
+        if self.closing() {
+            return false;
+        }
+        let name = self.named(&broken.feature);
+        if self.in_dialog() {
+            self.hush();
+            self.message = Some("Close the dialog before mending a feature".to_owned());
+            return false;
+        }
+        let Some(dressing) = self.dressing(&broken.feature) else {
+            self.hush();
+            self.message = Some(crate::repair::STALE.to_owned());
+            return false;
+        };
+        match crate::repair::removed(broken, &dressing, &name) {
             Ok((edit, told)) => {
                 self.edit(sessions, edit);
                 self.told = Some(told);

@@ -23813,6 +23813,14 @@ const CORNER: &str = r#"{
 }
 "#;
 
+/// [`CORNER`] with Inside corner rounding the block's Edge5 alone.
+fn corner_alone() -> String {
+    CORNER.replace(
+        r#""edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]"#,
+        r#""edges": ["k7f2qx3m.box.Edge5"]"#,
+    )
+}
+
 /// The upstream edit that breaks Inside corner's name: a pin of radius 30 swallows the
 /// block's Edge5, which the cut no longer keeps (its history says so: every other element
 /// of the block kept, by its own number; the pin's none; the cut's Edge5 made of nothing,
@@ -23980,4 +23988,83 @@ fn a_broken_edges_card_lists_the_cores_candidates_closest_first_and_use_writes_o
         h.state().tabs()[0].errors() == 1
     });
     assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn remove_the_edge_drops_the_broken_name_alone_and_undo_puts_it_back() {
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    let before = text_of(&f, &h);
+    let remove = h
+        .get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Remove the edge");
+    assert!(!remove.accesskit_node().is_disabled());
+    remove.click();
+    step(&mut h);
+    settled(&mut h);
+    // `edges` without Edge5, as the document writes a name to a line: by hand.
+    let removed = text_of(&f, &h);
+    assert_eq!(
+        removed,
+        before.replace(",\n        \"k7f2qx3m.box.Edge5\"", "")
+    );
+    assert_ne!(removed, before);
+    assert_eq!(
+        written(&f, &h, "Inside corner", "edges"),
+        Some(plain(r#"["k7f2qx3m.box.Edge1"]"#))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit("edges".to_owned()))
+    );
+    step_until(&mut h, "Inside corner built", |h| {
+        h.state().tabs()[0].errors() == 0 && !h.state().tabs()[0].applying()
+    });
+    assert_eq!(
+        status_said(&h, "Inside corner no").as_deref(),
+        Some("Inside corner no longer names the broken edge. Undo puts the broken reference back.")
+    );
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn remove_the_edge_is_off_for_a_fillets_last_edge_saying_why_and_writes_nothing() {
+    // The gate refuses a fillet that names no edge, and SolidWorks' Fillet PropertyManager
+    // is completed by picking edges again once its missing ones are cleared: so the last
+    // edge isn't removed; Use, or suppressing or deleting the fillet, are said instead.
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, &corner_alone());
+    assert_eq!(
+        candidate_rows(&h, "Properties"),
+        [format!("Closest · {EDGE4}"), EDGE6.to_owned()]
+    );
+    let before = text_of(&f, &h);
+    let sent = h.state().tabs()[0].sent.clone();
+    let why = "Inside corner names no other edge, and a fillet names at least one: use a \
+               candidate in its place, or suppress or delete Inside corner";
+    let remove = h
+        .get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Remove the edge");
+    assert!(remove.accesskit_node().is_disabled());
+    remove.hover();
+    step_until(&mut h, "why it's off", |h| anywhere(h, why));
+    remove_clicked_anyway(&mut h);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Remove the edge clicked where it's drawn, whether it's on or not.
+fn remove_clicked_anyway(h: &mut AppHarness) {
+    let at = h
+        .get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Remove the edge")
+        .rect()
+        .center();
+    click_at(h, at);
 }

@@ -462,20 +462,23 @@ pub(crate) struct Offer {
 }
 
 /// What an error card's button asked: the feature's dialog opened (Edit), or the feature
-/// selected and the timeline scrolled to it (Show in timeline); or a broken reference's
-/// candidate written in its place (Use). Copy as JSON is done where it's clicked.
+/// selected and the timeline scrolled to it (Show in timeline); a broken reference's
+/// candidate written in its place (Use), or the broken name dropped (Remove the edge).
+/// Copy as JSON is done where it's clicked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CardAct {
     Edit(FeatureId),
     Show(FeatureId),
     Use { broken: Broken, candidate: String },
+    Remove(Broken),
 }
 
 /// What a broken reference's card offers to mend it (flow 6b): its candidates, each with
-/// Use.
+/// Use, and Remove the edge, on, or off and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Repair {
     pub broken: Broken,
+    pub remove: Result<(), String>,
 }
 
 /// What a card's drawing gave: what its buttons asked.
@@ -535,7 +538,8 @@ impl CardLook {
 /// core's error as an agent gets it. Each part only where `said` has it: a refusal said in
 /// words alone is its message and suggestion. What a button asked, if one was.
 ///
-/// A broken reference's card, given `repair`, offers each candidate's Use (flow 6b).
+/// A broken reference's card, given `repair`, offers each candidate's Use and Remove the
+/// edge (flow 6b).
 ///
 /// SEAM: each candidate's why (`.cand .why`), which the core doesn't give: the first's
 /// row says only "Closest · ".
@@ -732,7 +736,7 @@ fn card_body(
         ui.add_space(theme::ERROR_CARD_FIX_MARGIN);
     }
     let mut out = candidates(ui, said.candidates(), repair);
-    out.asked = card_buttons(ui, said, name, offer).or(out.asked);
+    out.asked = card_buttons(ui, said, name, offer, repair).or(out.asked);
     out
 }
 
@@ -1082,10 +1086,14 @@ fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut
 /// What the closest candidate's row says under its name (`errCard`'s `'Closest · '`).
 pub(crate) const CLOSEST: &str = "Closest · ";
 
+/// The words of a broken reference's card's Remove the edge (`errCard`'s `removeRef`).
+pub(crate) const REMOVE_THE_EDGE: &str = "Remove the edge";
+
 /// One of the card's buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Which {
     Edit,
+    Remove,
     Show,
     Copy,
 }
@@ -1095,7 +1103,13 @@ enum Which {
 /// can't open now; Show in timeline (`.btn-ghost`) if offered and it names one; and Copy as
 /// JSON (`.btn-ghost`) if the core said it, which puts its JSON on the clipboard. What
 /// Edit or Show asked, if either was clicked.
-fn card_buttons(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> Option<CardAct> {
+fn card_buttons(
+    ui: &mut Ui,
+    said: &Said,
+    name: Option<&str>,
+    offer: Offer,
+    repair: Option<&Repair>,
+) -> Option<CardAct> {
     let feature = said.feature().and_then(FeatureId::new);
     let json = said.json();
     let edit_words = match name {
@@ -1111,6 +1125,13 @@ fn card_buttons(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> O
             modal::Button::new(&edit_words, Kind::Secondary)
                 .icon(Icon::Edit)
                 .enabled(on),
+        ));
+    }
+    // After Edit, as `errCard` places it; off, saying why, where it can't act.
+    if let Some(repair) = repair {
+        buttons.push((
+            Which::Remove,
+            modal::Button::new(REMOVE_THE_EDGE, Kind::Ghost).enabled(repair.remove.is_ok()),
         ));
     }
     if feature.is_some() && offer.show {
@@ -1148,6 +1169,10 @@ fn card_buttons(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> O
             Which::Copy => response
                 .on_hover_text("Copies the structured error an agent receives")
                 .clicked(),
+            Which::Remove => match repair.map(|repair| &repair.remove) {
+                Some(Err(why)) => response.on_disabled_hover_text(why.as_str()).clicked(),
+                _ => response.clicked(),
+            },
             Which::Edit | Which::Show => response.clicked(),
         };
         if !clicked {
@@ -1156,6 +1181,9 @@ fn card_buttons(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> O
         match (which, &feature, &json) {
             (Which::Edit, Some(id), _) => asked = Some(CardAct::Edit(id.clone())),
             (Which::Show, Some(id), _) => asked = Some(CardAct::Show(id.clone())),
+            (Which::Remove, _, _) => {
+                asked = repair.map(|repair| CardAct::Remove(repair.broken.clone()));
+            }
             (Which::Copy, _, Some(json)) => ui.ctx().copy_text(json.clone()),
             _ => {}
         }

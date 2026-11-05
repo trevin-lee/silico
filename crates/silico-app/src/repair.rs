@@ -1,10 +1,14 @@
 //! A broken reference's repair (the prototype's flow 6b, DESIGN.md's states table; its
-//! `errCard` candidates and `useCand`): a fillet's or chamfer's edge whose name its base no
-//! longer finds (`reference_broken`, at `edges.N`), with the names the core offers in its
-//! place, closest first. Use writes a candidate at the broken name's place, once it's read
-//! in the feature's base as its dialog reads a pick there (the core's `resolve_in`,
-//! [`Selection::read_on`]), and refuses one that can't be stored there, saying why as the
-//! dialogs do. It's one `set_field`, one step for undo; the status bar says what it did, as
+//! `errCard` candidates, `useCand`, and `removeRef`): a fillet's or chamfer's edge whose
+//! name its base no longer finds (`reference_broken`, at `edges.N`), with the names the core
+//! offers in its place, closest first. Use writes a candidate at the broken name's place,
+//! once it's read in the feature's base as its dialog reads a pick there (the core's
+//! `resolve_in`, [`Selection::read_on`]), and refuses one that can't be stored there,
+//! saying why as the dialogs do. Remove the edge drops the broken name from `edges`, but
+//! never a feature's last edge: the gate refuses a fillet or a chamfer that names none, and
+//! SolidWorks' Fillet PropertyManager, its missing references cleared, is completed by
+//! selecting edges again (*Repairing Missing References for Fillets*), never left with
+//! none. Each is one `set_field`, one step for undo; the status bar says what it did, as
 //! the prototype's toast does.
 //!
 //! [`Selection::read_on`]: crate::selection::Selection::read_on
@@ -22,6 +26,20 @@ use crate::tab::{Edit, Said};
 pub fn used_words(name: &str, chamfer: bool) -> String {
     let verb = if chamfer { "bevels" } else { "rounds" };
     format!("{name} now {verb} the edge you picked. Undo puts the broken reference back.")
+}
+
+/// What the status bar says once the broken name is removed.
+pub fn removed_words(name: &str) -> String {
+    format!("{name} no longer names the broken edge. Undo puts the broken reference back.")
+}
+
+/// Why Remove the edge is off for the feature `name`'s last edge.
+pub fn last_edge_words(name: &str, chamfer: bool) -> String {
+    let what = if chamfer { "chamfer" } else { "fillet" };
+    format!(
+        "{name} names no other edge, and a {what} names at least one: use a candidate in its \
+         place, or suppress or delete {name}"
+    )
 }
 
 /// What's said when the card is of an older document than the session's.
@@ -112,6 +130,15 @@ impl Dressing {
             .get(broken.place)
             .is_some_and(|stored| broken.is(stored))
     }
+
+    /// Whether Remove the edge can drop `broken`, or why not: the feature `name`'s last edge.
+    pub fn removable(&self, name: &str) -> Result<(), String> {
+        if self.edges.len() <= 1 {
+            Err(last_edge_words(name, self.chamfer))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// `candidate` used in `broken`'s place in `dressing` (the feature `name`, as the model
@@ -146,6 +173,33 @@ pub fn used(
             value,
         },
         used_words(name, dressing.chamfer),
+    ))
+}
+
+/// `broken` removed from `dressing`'s edges (the feature `name`): the edit that sets
+/// `edges` without it, and what the status bar says of it; or why not (its last edge, or
+/// the card older than the model).
+pub fn removed(broken: &Broken, dressing: &Dressing, name: &str) -> Result<(Edit, String), String> {
+    if !dressing.holds(broken) {
+        return Err(STALE.to_owned());
+    }
+    dressing.removable(name)?;
+    let kept: Vec<String> = dressing
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| *at != broken.place)
+        .map(|(_, edge)| crate::dialog::quoted(edge))
+        .collect();
+    let value = json::read(format!("[{}]", kept.join(", ")).as_bytes())
+        .map_err(|_| "the edges left don't read as names".to_owned())?;
+    Ok((
+        Edit {
+            feature: broken.feature.clone(),
+            field: "edges".to_owned(),
+            value,
+        },
+        removed_words(name),
     ))
 }
 
@@ -301,7 +355,7 @@ mod tests {
 
     #[test]
     fn a_card_older_than_the_document_changes_nothing() {
-        // The place holds another name now: Use doesn't write over it.
+        // The place holds another name now: neither Use nor Remove writes over it.
         let dressing = fillet(&["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge4"]);
         let stale = broken(1, "k7f2qx3m.box.Edge5");
         let read = OnBase::Found(Ok(edge(6)));
@@ -309,18 +363,46 @@ mod tests {
             used(&stale, "k7f2qx3m.box.Edge6", &dressing, read, "F").unwrap_err(),
             STALE
         );
+        assert_eq!(removed(&stale, &dressing, "F").unwrap_err(), STALE);
         // Its place past the edges, the same.
-        let read = OnBase::Found(Ok(edge(6)));
         assert_eq!(
-            used(
-                &broken(2, "k7f2qx3m.box.Edge5"),
-                "k7f2qx3m.box.Edge6",
-                &dressing,
-                read,
-                "F"
-            )
-            .unwrap_err(),
+            removed(&broken(2, "k7f2qx3m.box.Edge5"), &dressing, "F").unwrap_err(),
             STALE
+        );
+    }
+
+    #[test]
+    fn remove_drops_the_broken_name_alone_but_never_the_last_edge() {
+        let dressing = fillet(&[
+            "k7f2qx3m.box.Edge1",
+            "k7f2qx3m.box.Edge5",
+            "k7f2qx3m.box.Edge9",
+        ]);
+        let (edit, told) =
+            removed(&broken(1, "k7f2qx3m.box.Edge5"), &dressing, "Inside corner").unwrap();
+        assert_eq!(edit.field, "edges");
+        assert_eq!(
+            edit.value,
+            json::read(br#"["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge9"]"#).unwrap()
+        );
+        assert_eq!(
+            told,
+            "Inside corner no longer names the broken edge. Undo puts the broken reference back."
+        );
+        let last = fillet(&["k7f2qx3m.box.Edge5"]);
+        assert_eq!(
+            removed(&broken(0, "k7f2qx3m.box.Edge5"), &last, "Inside corner").unwrap_err(),
+            "Inside corner names no other edge, and a fillet names at least one: use a \
+             candidate in its place, or suppress or delete Inside corner"
+        );
+        let chamfer = Dressing {
+            chamfer: true,
+            ..last
+        };
+        assert_eq!(
+            chamfer.removable("Bevel").unwrap_err(),
+            "Bevel names no other edge, and a chamfer names at least one: use a candidate in \
+             its place, or suppress or delete Bevel"
         );
     }
 }
