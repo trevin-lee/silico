@@ -22979,8 +22979,11 @@ fn del_and_backspace_in_a_text_field_never_delete_the_feature() {
     );
     h.key_press(Key::Escape);
     step(&mut h);
-    // In the property panel's Name field, its cursor at its start: ⌫ deletes nothing.
+    // In the property panel's Name field, its cursor put at its start (focused, it's at
+    // the name's end): ⌫ deletes nothing.
     name_field(&h).focus();
+    step(&mut h);
+    h.key_press(Key::Home);
     step(&mut h);
     h.key_press(Key::Backspace);
     for _ in 0..5 {
