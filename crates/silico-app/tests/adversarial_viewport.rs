@@ -188,6 +188,7 @@ impl Fixture {
                 .with_size(size)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
+        silico_app::theme::apply(&h.ctx);
         let path = self.file(name, text);
         h.state_mut().open(&path, false);
         (h, record)
@@ -580,6 +581,7 @@ impl Fixture {
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
+        silico_app::theme::apply(&h.ctx);
         let path = self.file(name, text);
         h.state_mut().open(&path, false);
         (h, record)
@@ -1206,6 +1208,7 @@ fn a_pick_answered_two_frames_late_across_a_renumber_is_taken_only_by_its_own_ta
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
+    silico_app::theme::apply(&h.ctx);
     let path = f.file("a.silico", EXAMPLE);
     h.state_mut().open(&path, false);
     meshes_settled(&mut h, 0);
@@ -1770,6 +1773,7 @@ fn a_renderer_backing_off_has_the_pane_ask_for_each_frame_at_once_until_it_stops
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
+    silico_app::theme::apply(&h.ctx);
     let path = f.file("boxes.silico", TWO_BOXES);
     h.state_mut().open(&path, false);
     meshes_settled(&mut h, 0);
