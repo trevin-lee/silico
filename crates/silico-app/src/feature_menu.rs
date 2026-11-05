@@ -2,17 +2,18 @@
 //! 8, *The timeline*: "Right-click also gives Rename, Suppress or Unsuppress, and Find in
 //! Browser"; the approved prototype's `contextmenu` handler in js/interact.js): the right-click
 //! menu each draws for a feature, its items in the prototype's order and words, each off
-//! with its reason where it can't apply; and what the status bar says a suppression or a
-//! deletion did (the prototype's toast).
+//! with its reason where it can't apply; Rename's field, typed in the item's or the row's
+//! own place (the prototype's `renameSelected`); and what the status bar says a suppression
+//! or a deletion did (the prototype's toast).
 //!
 //! Every item goes through the core's commands (invariant 3): Edit feature opens the
-//! feature's dialog as a double-click does, Suppress and Unsuppress are
-//! `suppress_feature`, and Delete is `remove_feature`, each an edit in the tab's
-//! transaction, so one undo takes it back. Delete asks nothing first, as the prototype's
-//! `del`: SolidWorks' Confirm Delete lists a feature's absorbed and child features, to
-//! delete with it or keep, but the core never deletes a child with its parent: it rewires
-//! what consumed the feature to its base, says so, and refuses, naming both, where nothing
-//! can stand in, so there's nothing to confirm and the undo is there.
+//! feature's dialog as a double-click does, Rename is `set_field` of `name`, Suppress and
+//! Unsuppress are `suppress_feature`, and Delete is `remove_feature`, each an edit in the
+//! tab's transaction, so one undo takes it back. Delete asks nothing first, as the
+//! prototype's `del`: SolidWorks' Confirm Delete lists a feature's absorbed and child
+//! features, to delete with it or keep, but the core never deletes a child with its
+//! parent: it rewires what consumed the feature to its base, says so, and refuses, naming
+//! both, where nothing can stand in, so there's nothing to confirm and the undo is there.
 //!
 //! Left out: the prototype's "Roll back to here". SEAM: the core has no rollback (the
 //! rollback bar is out of M5, DESIGN.md's Proposal 5); the item goes between Find in… and
@@ -24,6 +25,7 @@ use silico_core::document::FeatureId;
 use silico_core::document::chain::Rewired;
 use silico_core::timeline::{Entry, Health};
 
+use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::theme;
 
@@ -34,11 +36,41 @@ pub enum Place {
     Browser,
 }
 
+/// A feature's name being typed in its own field (F2, or Rename in a menu): the feature,
+/// where its field is, and the text so far.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Renaming {
+    pub feature: FeatureId,
+    pub place: Place,
+    pub text: String,
+    /// Whether the field has had the focus: until it has, the focus is asked for it; once
+    /// it has, its losing it sends the name.
+    focused: bool,
+    /// Whether it's typed over whole still: until the person first types, deletes, or moves
+    /// in it.
+    whole: bool,
+}
+
+impl Renaming {
+    /// The feature `feature`'s name, `text`, to be typed over at `place`.
+    pub fn new(feature: FeatureId, place: Place, text: String) -> Self {
+        Renaming {
+            feature,
+            place,
+            text,
+            focused: false,
+            whole: true,
+        }
+    }
+}
+
 /// What a menu asked, done once its pane is drawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Act {
     /// Edit feature: the feature's dialog, as a double-click opens it.
     Edit(FeatureId),
+    /// Rename: the feature's own field, where the menu was.
+    Rename(FeatureId, Place),
     /// Suppress (true) or Unsuppress (false).
     Suppress(FeatureId, bool),
     /// Find in browser: the feature selected, its row scrolled to.
@@ -52,13 +84,21 @@ pub enum Act {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
     Edit,
+    Rename,
     Suppress,
     Find,
     Delete,
 }
 
-/// The items, in order (the prototype's: Edit, Suppress, Find in…, a separator, Delete).
-pub const ITEMS: [Item; 4] = [Item::Edit, Item::Suppress, Item::Find, Item::Delete];
+/// The items, in order (the prototype's: Edit, Rename, Suppress, Find in…, a separator,
+/// Delete).
+pub const ITEMS: [Item; 5] = [
+    Item::Edit,
+    Item::Rename,
+    Item::Suppress,
+    Item::Find,
+    Item::Delete,
+];
 
 /// An item as the menu shows it: its words, the keys or gesture beside them, and why it's
 /// off, if it is.
@@ -77,13 +117,14 @@ pub fn label(item: Item, entry: &Entry, place: Place) -> &'static str {
     match item {
         Item::Edit if entry.kind == "sketch" => "Edit Sketch",
         Item::Edit => "Edit feature",
+        Item::Rename => Command::Rename.label(),
         Item::Suppress if entry.suppressed => "Unsuppress",
-        Item::Suppress => "Suppress",
+        Item::Suppress => Command::Suppress.label(),
         Item::Find => match place {
-            Place::Timeline => "Find in browser",
-            Place::Browser => "Find in timeline",
+            Place::Timeline => Command::FindInBrowser.label(),
+            Place::Browser => Command::FindInTimeline.label(),
         },
-        Item::Delete => "Delete",
+        Item::Delete => Command::Delete.label(),
     }
 }
 
@@ -130,7 +171,7 @@ pub fn off(tab: &Tab, entry: &Entry, item: Item, place: Place) -> Option<String>
                 Some(unchangeable(tab).unwrap_or_else(|| "Its dialog can't open now".to_owned()))
             }
         }
-        Item::Suppress | Item::Delete => unchangeable(tab),
+        Item::Rename | Item::Suppress | Item::Delete => unchangeable(tab),
         Item::Find => match place {
             Place::Browser => None,
             Place::Timeline if tab.in_browser(&entry.id) => None,
@@ -157,7 +198,7 @@ fn no_row(tab: &Tab, entry: &Entry) -> String {
 }
 
 /// The menu's items for `entry` in `tab`, at `place`, in order.
-pub fn items(tab: &Tab, entry: &Entry, place: Place) -> Vec<Shown> {
+pub fn items(tab: &Tab, entry: &Entry, place: Place, ctx: &egui::Context) -> Vec<Shown> {
     ITEMS
         .iter()
         .map(|&item| Shown {
@@ -165,7 +206,9 @@ pub fn items(tab: &Tab, entry: &Entry, place: Place) -> Vec<Shown> {
             label: label(item, entry, place).to_owned(),
             keys: match item {
                 Item::Edit => Some("double-click".to_owned()),
-                Item::Suppress | Item::Find | Item::Delete => None,
+                Item::Rename => Some(Command::Rename.keys_text(ctx)),
+                Item::Delete => Some(Command::Delete.keys_text(ctx)),
+                Item::Suppress | Item::Find => None,
             },
             off: off(tab, entry, item, place),
         })
@@ -205,12 +248,12 @@ fn item(ui: &mut Ui, label: &str, keys: Option<&str>, off: Option<&str>, danger:
 }
 
 /// The right-click menu of the feature `entry`, at `place` (the prototype's, in its order:
-/// the name, Edit feature, Suppress or Unsuppress, Find in…, a separator, Delete): what
-/// was clicked, the menu closed.
+/// the name, Edit feature, Rename, Suppress or Unsuppress, Find in…, a separator, Delete):
+/// what was clicked, the menu closed.
 pub fn menu(ui: &mut Ui, tab: &Tab, entry: &Entry, place: Place) -> Option<Act> {
     head(ui, &entry.name);
     let mut asked = None;
-    for shown in items(tab, entry, place) {
+    for shown in items(tab, entry, place, ui.ctx()) {
         if shown.item == Item::Delete {
             ui.separator();
         }
@@ -225,6 +268,7 @@ pub fn menu(ui: &mut Ui, tab: &Tab, entry: &Entry, place: Place) -> Option<Act> 
             let id = entry.id.clone();
             asked = Some(match shown.item {
                 Item::Edit => Act::Edit(id),
+                Item::Rename => Act::Rename(id, place),
                 Item::Suppress => Act::Suppress(id, !entry.suppressed),
                 Item::Find => match place {
                     Place::Timeline => Act::FindInBrowser(id),
@@ -243,17 +287,25 @@ pub fn menu(ui: &mut Ui, tab: &Tab, entry: &Entry, place: Place) -> Option<Act> 
 pub fn origin_menu(ui: &mut Ui, name: &str) {
     head(ui, name);
     let off = format!("{name} is the origin's, not a feature");
+    let ctx = ui.ctx().clone();
     for (label, keys) in [
-        ("Edit feature", Some("double-click")),
-        ("Suppress", None),
-        ("Find in timeline", None),
-        ("Delete", None),
+        ("Edit feature", Some("double-click".to_owned())),
+        (
+            Command::Rename.label(),
+            Some(Command::Rename.keys_text(&ctx)),
+        ),
+        (Command::Suppress.label(), None),
+        (Command::FindInTimeline.label(), None),
+        (
+            Command::Delete.label(),
+            Some(Command::Delete.keys_text(&ctx)),
+        ),
     ] {
-        let danger = label == "Delete";
+        let danger = label == Command::Delete.label();
         if danger {
             ui.separator();
         }
-        item(ui, label, keys, Some(&off), danger);
+        item(ui, label, keys.as_deref(), Some(&off), danger);
     }
 }
 
@@ -270,15 +322,21 @@ pub fn act<P: silico_core::kernel::Clients + 'static>(
             tab.edit_feature(sessions, &id);
             true
         }
+        Act::Rename(id, place) => {
+            tab.start_rename(id, place);
+            false
+        }
         Act::Suppress(id, suppressed) => {
             tab.suppress_feature(sessions, id, suppressed);
             true
         }
         Act::FindInBrowser(id) => {
+            tab.selected_in = Place::Browser;
             tab.selection_mut().find_in_browser(id);
             false
         }
         Act::FindInTimeline(id) => {
+            tab.selected_in = Place::Timeline;
             tab.show_in_timeline(id);
             false
         }
@@ -287,6 +345,87 @@ pub fn act<P: silico_core::kernel::Clients + 'static>(
             true
         }
     }
+}
+
+/// What a rename field's frame came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Field {
+    /// Still being typed in.
+    Typing,
+    /// Enter, or a click away (SolidWorks keeps a name typed in its tree when the focus
+    /// leaves it): the name typed, to send.
+    Done(String),
+}
+
+/// The rename field of `renaming`, of the feature named `name`, in `rect`: given the focus
+/// as it's first drawn, its name typed over whole until the person first types, deletes,
+/// or moves in it. Esc drops it before it's drawn (`App::keys`), so it never sends.
+pub fn field(ui: &mut Ui, renaming: &mut Renaming, rect: egui::Rect, name: &str) -> Field {
+    let salt = ("rename", renaming.feature.as_str());
+    let id = ui.make_persistent_id(salt);
+    let kind = match renaming.place {
+        Place::Timeline => theme::FieldKind::Modify,
+        Place::Browser => theme::FieldKind::Dialog,
+    };
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    if !focused && !renaming.focused {
+        // The focus asked for it until it has it (a new layer's first frame lays it out
+        // unseen).
+        ui.memory_mut(|memory| memory.request_focus(id));
+    }
+    if renaming.whole && focused {
+        // Typed over whole, as a name selected whole is (the prototype's `prompt`): until
+        // the person first types, deletes, or moves in it, what's typed (or pasted)
+        // replaces the name, and Del or ⌫ clears it. Its text is shown selected too, as
+        // egui's DragValue selects its own.
+        let first = ui.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Text(_) | egui::Event::Paste(_) => Some(true),
+                egui::Event::Key {
+                    key: egui::Key::Backspace | egui::Key::Delete,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.is_none() => Some(true),
+                egui::Event::Key { pressed: true, .. } => Some(false),
+                egui::Event::PointerButton { pressed: true, .. } => Some(false),
+                _ => None,
+            })
+        });
+        match first {
+            Some(replaces) => {
+                if replaces {
+                    renaming.text.clear();
+                }
+                renaming.whole = false;
+            }
+            None => {
+                let mut state =
+                    egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+                let end = renaming.text.chars().count();
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(end),
+                    )));
+                state.store(ui.ctx(), id);
+            }
+        }
+    }
+    let edit = egui::TextEdit::singleline(&mut renaming.text);
+    let edit = theme::field(ui, edit, salt, kind, false);
+    let response = ui.put(rect, edit);
+    let label = format!("Rename {name}");
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_label(label);
+    });
+    if response.has_focus() {
+        renaming.focused = true;
+    } else if renaming.focused {
+        return Field::Done(renaming.text.clone());
+    }
+    Field::Typing
 }
 
 /// `names` as a list in words: "A", "A and B", "A, B, and C".

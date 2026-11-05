@@ -17398,6 +17398,81 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                     }
                 }
             }
+            Command::Rename => {
+                // By its keys, then by the timeline's menu item labelled as the registry
+                // names the command: each opens the selected feature's field, and Enter
+                // writes the name typed.
+                let f = fixture();
+                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+                select(&mut h, "Pin");
+                for chord in keys_of(command) {
+                    press_chord(&mut h, chord);
+                    renamed_in_field(&mut h, "Pin", "Peg");
+                    menu_on(&mut h, "Timeline", "Peg");
+                    menu_click(&mut h, "PEG", entry.label);
+                    renamed_in_field(&mut h, "Peg", "Pin");
+                }
+                assert_eq!(names_of(&text_of(&f, &h)), ["Block", "Pin", "Hole"]);
+            }
+            Command::Delete => {
+                // Each of its keys, then the menu's item: the hole deleted, then undone.
+                let f = fixture();
+                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+                for chord in keys_of(command) {
+                    select(&mut h, "Hole");
+                    press_chord(&mut h, chord);
+                    step_until(&mut h, "deleted by its keys", |h| {
+                        !shows(h, "Timeline", "Hole")
+                    });
+                    assert_eq!(names_of(&text_of(&f, &h)), ["Block", "Pin"]);
+                    h.get_by_role_and_label(Role::Button, "Undo").click();
+                    step_until(&mut h, "undone", |h| shows(h, "Timeline", "Hole"));
+                    settled(&mut h);
+                }
+                menu_on(&mut h, "Timeline", "Hole");
+                menu_click(&mut h, "HOLE", entry.label);
+                step_until(&mut h, "deleted by its menu", |h| {
+                    !shows(h, "Timeline", "Hole")
+                });
+                assert_eq!(names_of(&text_of(&f, &h)), ["Block", "Pin"]);
+            }
+            Command::Suppress | Command::FindInBrowser | Command::FindInTimeline => {
+                // No keys, as the prototype gives none: each the menus' item, labelled as
+                // the registry names the command (their own tests cover what each does).
+                assert!(entry.keys.is_empty());
+                let f = fixture();
+                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "its features", |h| shows(h, "Browser", "Hole"));
+                let pane = if command == Command::FindInTimeline {
+                    "Browser"
+                } else {
+                    "Timeline"
+                };
+                menu_on(&mut h, pane, "Hole");
+                menu_click(&mut h, "HOLE", entry.label);
+                match command {
+                    Command::Suppress => step_until(&mut h, "suppressed", |h| {
+                        text_of(&f, h).contains(r#""name": "Hole", "suppressed": true,"#)
+                    }),
+                    // Found: the hole selected, as the right-click left it, and from then
+                    // on selected in the other pane (where F2 renames it), which the
+                    // right-click's selection isn't.
+                    _ => {
+                        let other = if command == Command::FindInBrowser {
+                            silico_app::feature_menu::Place::Browser
+                        } else {
+                            silico_app::feature_menu::Place::Timeline
+                        };
+                        step_until(&mut h, "found", |h| {
+                            let tab = &h.state().tabs()[0];
+                            tab.selection().feature().map(|id| id.as_str()) == Some("m3tq8v0z")
+                                && tab.selected_in == other
+                        });
+                    }
+                }
+            }
             Command::Shortcuts => {
                 let f = fixture();
                 let (mut h, _) = f.opened("example.silico", EXAMPLE);
@@ -22402,7 +22477,7 @@ fn on_lavapipe_whats_wrong_shows_two_error_cards_and_a_warnings() {
     );
 }
 
-// ---- A feature's commands: the timeline's and the browser's menus ----
+// ---- A feature's commands: the timeline's and the browser's menus, F2, and Del ----
 
 /// The feature `name` right-clicked in `pane` ("Timeline" or "Browser"), its menu opened.
 fn menu_on(h: &mut AppHarness, pane: &str, name: &str) {
@@ -22457,6 +22532,37 @@ fn menu_click(h: &mut AppHarness, head: &str, label: &str) {
         .click();
     step(h);
     step(h);
+}
+
+/// The rename field of the feature `name`, if it's open.
+fn rename_field<'a>(h: &'a AppHarness, name: &str) -> Option<egui_kittest::Node<'a>> {
+    let label = format!("Rename {name}");
+    h.query_all_by_role(Role::TextInput)
+        .find(|node| node.accesskit_node().label().as_deref() == Some(label.as_str()))
+}
+
+/// `name`'s rename field, open, typed over with `to` (its text selected whole as it opens),
+/// then Enter: the edit landed.
+fn renamed_in_field(h: &mut AppHarness, name: &str, to: &str) {
+    step_until(h, "the rename field", |h| rename_field(h, name).is_some());
+    step(h);
+    assert_eq!(
+        rename_field(h, name).unwrap().value().as_deref(),
+        Some(name)
+    );
+    assert!(rename_field(h, name).unwrap().is_focused());
+    rename_field(h, name).unwrap().type_text(to);
+    step(h);
+    assert_eq!(
+        rename_field(h, name).unwrap().value().as_deref(),
+        Some(to),
+        "typed over whole"
+    );
+    h.key_press(Key::Enter);
+    step_until(h, "renamed", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", to)
+    });
+    assert!(rename_field(h, to).is_none(), "the field closed");
 }
 
 /// What the timeline's item of `name` says of it (its type and its state).
@@ -22526,7 +22632,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
     let on = |label: &str| (label.to_owned(), None);
     let off = |label: &str, why: &str| (label.to_owned(), Some(why.to_owned()));
     // The timeline's, on the block (js/interact.js's `contextmenu`: Edit feature with
-    // "double-click", Suppress, Find in browser, then Delete).
+    // "double-click", Rename with F2, Suppress, Find in browser, then Delete with Del).
     // The block is inside the hole's body, which the browser lists by the hole: it has no
     // row there.
     menu_on(&mut h, "Timeline", "Block");
@@ -22534,12 +22640,13 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "BLOCK"),
         [
             on("Edit feature double-click"),
+            on("Rename F2"),
             on("Suppress"),
             off(
                 "Find in browser",
                 "It's inside a body: the browser lists bodies and sketches"
             ),
-            on("Delete"),
+            on("Delete Del"),
         ]
     );
     // The prototype's right-click selects the feature it's on.
@@ -22558,9 +22665,10 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "HOLE"),
         [
             off("Edit feature double-click", "Subtract has no dialog yet"),
+            on("Rename F2"),
             on("Suppress"),
             on("Find in browser"),
-            on("Delete"),
+            on("Delete Del"),
         ]
     );
     h.key_press(Key::Escape);
@@ -22571,9 +22679,10 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "HOLE"),
         [
             off("Edit feature double-click", "Subtract has no dialog yet"),
+            on("Rename F2"),
             on("Suppress"),
             on("Find in timeline"),
-            on("Delete"),
+            on("Delete Del"),
         ]
     );
     h.key_press(Key::Escape);
@@ -22585,9 +22694,10 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "XY"),
         [
             off("Edit feature double-click", origin),
+            off("Rename F2", origin),
             off("Suppress", origin),
             off("Find in timeline", origin),
-            off("Delete", origin),
+            off("Delete Del", origin),
         ]
     );
     h.key_press(Key::Escape);
@@ -22602,12 +22712,13 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "BLOCK"),
         [
             off("Edit feature double-click", dialog),
+            off("Rename F2", dialog),
             off("Suppress", dialog),
             off(
                 "Find in browser",
                 "It's inside a body: the browser lists bodies and sketches"
             ),
-            off("Delete", dialog),
+            off("Delete Del", dialog),
         ]
     );
     assert!(
@@ -22638,12 +22749,13 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
                 "Edit feature double-click".to_owned(),
                 Some("Subtract has no dialog yet".to_owned())
             ),
+            ("Rename F2".to_owned(), None),
             ("Suppress".to_owned(), None),
             (
                 "Find in browser".to_owned(),
                 Some("It built no body, so the browser has no row for it".to_owned())
             ),
-            ("Delete".to_owned(), None),
+            ("Delete Del".to_owned(), None),
         ]
     );
     // Its block, whose consumer failed, is a body of its own now: found.
@@ -22651,7 +22763,7 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
     step(&mut h);
     menu_on(&mut h, "Timeline", "Block");
     assert_eq!(
-        menu_items(&h, "BLOCK")[2],
+        menu_items(&h, "BLOCK")[3],
         ("Find in browser".to_owned(), None)
     );
     assert_eq!(never_waits::waits(), 0);
@@ -22681,7 +22793,7 @@ fn suppress_then_unsuppress_writes_and_drops_suppressed_and_undo_restores_each_t
     assert_eq!(item_said(&h, "Block").as_deref(), Some("Box · Warning"));
     // The hole unsuppressed: its tool, which it needs, comes back with it.
     menu_on(&mut h, "Timeline", "Hole");
-    assert_eq!(menu_items(&h, "HOLE")[1], ("Unsuppress".to_owned(), None));
+    assert_eq!(menu_items(&h, "HOLE")[2], ("Unsuppress".to_owned(), None));
     menu_click(&mut h, "HOLE", "Unsuppress");
     step_until(&mut h, "unsuppressed", |h| {
         said_done(h, "Unsuppressed").as_deref()
@@ -22731,10 +22843,10 @@ fn delete_of_a_mid_chain_feature_rewires_its_consumer_and_undo_puts_it_back() {
     let (mut h, path) = f.opened("chain.silico", CHAIN);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Bore"));
     assert_eq!(text_of(&f, &h), CHAIN);
-    // Delete from its menu: deleted at once, asking nothing (the prototype's `del`), the
-    // bore built on the block in its place.
-    menu_on(&mut h, "Timeline", "Hole");
-    menu_click(&mut h, "HOLE", "Delete");
+    // Del, the hole selected, no field focused: deleted at once, asking nothing (the
+    // prototype's `del`), the bore built on the block in its place.
+    select(&mut h, "Hole");
+    h.key_press(Key::Delete);
     step_until(&mut h, "deleted", |h| {
         said_done(h, "Deleted").as_deref() == Some("Deleted Hole · Bore now builds on Block")
     });
@@ -22762,6 +22874,102 @@ fn delete_of_a_mid_chain_feature_rewires_its_consumer_and_undo_puts_it_back() {
     );
     assert_eq!(said_done(&h, "Deleted"), None);
     assert_eq!(text_of(&f, &h), CHAIN);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn f2_types_a_name_over_in_the_selected_items_field_enter_writes_it_and_esc_drops_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    // Nothing selected: F2 opens nothing.
+    h.key_press(Key::F2);
+    step(&mut h);
+    step(&mut h);
+    assert!(rename_field(&h, "Pin").is_none());
+    select(&mut h, "Pin");
+    h.key_press(Key::F2);
+    renamed_in_field(&mut h, "Pin", "Dowel");
+    assert_eq!(
+        text_of(&f, &h),
+        EXAMPLE.replace(r#""name": "Pin""#, r#""name": "Dowel""#)
+    );
+    let sent = h.state().tabs()[0].sent.len();
+    // Esc: the field closed, nothing sent, the selection kept (Esc's chain stops at it).
+    h.key_press(Key::F2);
+    step_until(&mut h, "the field", |h| rename_field(h, "Dowel").is_some());
+    step(&mut h);
+    rename_field(&h, "Dowel").unwrap().type_text("Rod");
+    step(&mut h);
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(rename_field(&h, "Dowel").is_none());
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert!(shows(&h, "Timeline", "Dowel"));
+    assert_eq!(
+        h.state().tabs()[0]
+            .selection()
+            .feature()
+            .map(|id| id.as_str()),
+        Some("a91cw0de")
+    );
+    // Selected in the browser, F2 opens the field on its row there.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Hole")
+        .click();
+    step(&mut h);
+    h.key_press(Key::F2);
+    step_until(&mut h, "the browser's field", |h| {
+        rename_field(h, "Hole").is_some_and(|field| in_pane(&field, "Browser"))
+    });
+    h.key_press(Key::Escape);
+    step(&mut h);
+    assert_eq!(
+        text_of(&f, &h),
+        EXAMPLE.replace(r#""name": "Pin""#, r#""name": "Dowel""#)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn del_and_backspace_in_a_text_field_never_delete_the_feature() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    select(&mut h, "Hole");
+    // In the rename field: Del clears the name typed over, and Esc drops it.
+    h.key_press(Key::F2);
+    step_until(&mut h, "the field", |h| rename_field(h, "Hole").is_some());
+    step(&mut h);
+    for key in [Key::Delete, Key::Backspace] {
+        h.key_press(key);
+        step(&mut h);
+    }
+    assert_eq!(
+        rename_field(&h, "Hole").unwrap().value().as_deref(),
+        Some("")
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    // In the property panel's Name field, its cursor at its start: ⌫ deletes nothing.
+    name_field(&h).focus();
+    step(&mut h);
+    h.key_press(Key::Backspace);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(
+        !h.state().tabs()[0]
+            .sent
+            .iter()
+            .any(|sent| matches!(sent, Sent::Remove(_)))
+    );
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert!(shows(&h, "Timeline", "Hole"));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -22928,9 +23136,10 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
                 .collect::<Vec<_>>(),
             [
                 "Edit feature double-click",
+                "Rename F2",
                 "Suppress",
                 "Find in browser",
-                "Delete"
+                "Delete Del"
             ]
         );
         if let Some(shot) = std::env::var_os("SILICO_APP_FEATURE_MENU_SHOT") {

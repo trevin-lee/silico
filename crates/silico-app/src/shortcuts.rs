@@ -21,8 +21,9 @@
 //! - F5, SolidWorks' key for its filter toolbar, which the app hasn't: the app takes it
 //!   itself and says where the filters are (`App::keys`), as the prototype's F5 is no
 //!   command of its `CMD` and isn't on its sheet.
-//! - SEAM: F2 Rename, Delete, and S Search commands, once they're built; Search reaches
-//!   What's wrong, which has no keys, by its name, as the prototype's does.
+//! - SEAM: S Search, once it's built; Search reaches What's wrong, Suppress, and Find in
+//!   browser and Find in timeline, which have no keys, by their names, as the prototype's
+//!   does.
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Ui};
 
@@ -38,6 +39,11 @@ pub enum Command {
     Close,
     Undo,
     Redo,
+    Rename,
+    Delete,
+    Suppress,
+    FindInBrowser,
+    FindInTimeline,
     Rebuild,
     RebuildAll,
     Stop,
@@ -223,6 +229,62 @@ const REDO: Entry = Entry {
         None,
     )
 };
+/// The selected feature's name typed over in its own field, in the timeline or the browser,
+/// where it was selected (the prototype's `CMD.rename`, `renameSelected`).
+const RENAME: Entry = entry(
+    Command::Rename,
+    "Rename",
+    Group::Edit,
+    &[Chord::Exact(KeyboardShortcut::new(
+        Modifiers::NONE,
+        Key::F2,
+    ))],
+    None,
+);
+/// The prototype's `CMD.del`: Del, the Mac's ⌫ (its `KEYNAME.Del`), Backspace and Delete
+/// alike as its `keydown` takes them; each freshly pressed, never a key held down's repeat,
+/// so holding it deletes one feature. Its description is the prototype's `del`'s words.
+const DELETE: Entry = Entry {
+    elsewhere: Some(Chord::Exact(KeyboardShortcut::new(
+        Modifiers::NONE,
+        Key::Delete,
+    ))),
+    ..entry(
+        Command::Delete,
+        "Delete",
+        Group::Edit,
+        &[
+            Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::Backspace)),
+            Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::Delete)),
+        ],
+        Some("Removes the selected feature, rewiring what follows it"),
+    )
+};
+/// No keys, as the prototype has none (`ACT.suppress`): the timeline's and the browser's
+/// menus give it, Unsuppress for a feature suppressed.
+const SUPPRESS: Entry = entry(
+    Command::Suppress,
+    "Suppress",
+    Group::Edit,
+    &[],
+    Some("The feature, and what depends on it, left out of the rebuild"),
+);
+/// No keys: the timeline's menu gives it (the prototype's `contextmenu`).
+const FIND_IN_BROWSER: Entry = entry(
+    Command::FindInBrowser,
+    "Find in browser",
+    Group::Edit,
+    &[],
+    Some("Selects the feature and scrolls to its row"),
+);
+/// No keys: the browser's menu gives it.
+const FIND_IN_TIMELINE: Entry = entry(
+    Command::FindInTimeline,
+    "Find in timeline",
+    Group::Edit,
+    &[],
+    Some("Selects the feature and scrolls to its item"),
+);
 const REBUILD: Entry = entry(
     Command::Rebuild,
     "Rebuild",
@@ -388,7 +450,7 @@ const SHORTCUTS: Entry = entry(
 );
 
 /// Every command, in the order the sheet lists each group's.
-pub const REGISTRY: [Entry; 31] = [
+pub const REGISTRY: [Entry; 36] = [
     NEW,
     OPEN,
     SAVE,
@@ -396,6 +458,11 @@ pub const REGISTRY: [Entry; 31] = [
     CLOSE,
     UNDO,
     REDO,
+    RENAME,
+    DELETE,
+    SUPPRESS,
+    FIND_IN_BROWSER,
+    FIND_IN_TIMELINE,
     REBUILD,
     REBUILD_ALL,
     STOP,
@@ -433,6 +500,11 @@ impl Command {
             Command::Close => &CLOSE,
             Command::Undo => &UNDO,
             Command::Redo => &REDO,
+            Command::Rename => &RENAME,
+            Command::Delete => &DELETE,
+            Command::Suppress => &SUPPRESS,
+            Command::FindInBrowser => &FIND_IN_BROWSER,
+            Command::FindInTimeline => &FIND_IN_TIMELINE,
             Command::Rebuild => &REBUILD,
             Command::RebuildAll => &REBUILD_ALL,
             Command::Stop => &STOP,
@@ -499,11 +571,13 @@ pub fn joined(ctx: &egui::Context, caps: &[String]) -> String {
 }
 
 /// What a key's cap says where the prototype names it otherwise than egui (its `KEYNAME`):
-/// Esc, and ↵ for Enter.
+/// Esc, ↵ for Enter, and Del, which is ⌫ on macOS (its Backspace).
 fn key_name(key: Key) -> &'static str {
     match key {
         Key::Escape => "Esc",
         Key::Enter => "↵",
+        Key::Delete => "Del",
+        Key::Backspace => "⌫",
         key => key.symbol_or_name(),
     }
 }

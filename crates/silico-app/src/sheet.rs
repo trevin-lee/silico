@@ -651,17 +651,19 @@ mod tests {
         // Each group's height: its title's 16 line, 4, its 1 underline, 4, and 22 a row.
         let height =
             |rows: f32| css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN + rows * css::ROW_H;
-        // By hand: File 5 rows (135), Edit 2 (69), Rebuild 3 (91), View 12 (289),
-        // Selection 5 (135), Dialogs 2 (69), Help 1 (47). The least height that takes three
-        // columns, filled in order: 323, File, Edit, and Rebuild's (135 + 14 + 69 + 14 +
-        // 91); View alone (289, with Selection 438); Selection, Dialogs, and Help (279).
+        // By hand: File 5 rows (135), Edit 4 (113: Undo, Redo, Rename, Delete), Rebuild 3
+        // (91), View 12 (289), Selection 5 (135), Dialogs 2 (69), Help 1 (47). The least
+        // height that takes three columns, filled in order: 367, File, Edit, and Rebuild's
+        // (135 + 14 + 113 + 14 + 91); View alone (289, with Selection 438); Selection,
+        // Dialogs, and Help (279). Any less leaves Rebuild out of the first, and Rebuild
+        // and View (394) out of one column: four.
         let placed = [
             ("FILE", 0, 0.0),
             ("EDIT", 0, height(5.0) + css::GROUP_GAP),
             (
                 "REBUILD",
                 0,
-                height(5.0) + height(2.0) + 2.0 * css::GROUP_GAP,
+                height(5.0) + height(4.0) + 2.0 * css::GROUP_GAP,
             ),
             ("VIEW", 1, 0.0),
             ("SELECTION", 2, 0.0),
@@ -814,11 +816,11 @@ mod tests {
         let h = sheet("");
         let inside = frame_of(&h).shrink(css::BORDER);
         let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
-        // The tallest column: File's, Edit's, and Rebuild's, their 10 rows and two gaps
-        // (323, by hand; View's alone is 289).
+        // The tallest column: File's, Edit's, and Rebuild's, their 12 rows and two gaps
+        // (367, by hand; View's alone is 289).
         let title = css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN;
-        let tallest = top + 3.0 * title + 10.0 * css::ROW_H + 2.0 * css::GROUP_GAP;
-        assert!(near(tallest - top, 323.0));
+        let tallest = top + 3.0 * title + 12.0 * css::ROW_H + 2.0 * css::GROUP_GAP;
+        assert!(near(tallest - top, 367.0));
         let rule = tallest + css::NOTE_TOP;
         let ruled = painted(&h).into_iter().any(|shape| match shape {
             egui::Shape::LineSegment { points, stroke } => {
@@ -963,7 +965,7 @@ mod tests {
         let mut down = 0.0;
         for (name, rows) in [
             ("FILE", 5.0),
-            ("EDIT", 2.0),
+            ("EDIT", 4.0),
             ("REBUILD", 3.0),
             ("VIEW", 12.0),
             ("SELECTION", 5.0),

@@ -628,6 +628,12 @@ pub const STATUS_BAR_HEIGHT: f32 = 24.0;
 /// A text field's height.
 pub const FIELD_HEIGHT: f32 = 22.0;
 
+/// A feature's rename field in the timeline (F2, or Rename in its menu), over its item: as
+/// wide as the property panel's Name field shows a name, the prototype's `prompt` giving
+/// none of its own; and the gap between it and the item.
+pub const TIMELINE_RENAME_WIDTH: f32 = 180.0;
+pub const TIMELINE_RENAME_GAP: f32 = 4.0;
+
 /// A key cap's height.
 pub const KEY_CAP_HEIGHT: f32 = 16.0;
 

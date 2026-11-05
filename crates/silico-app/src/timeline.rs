@@ -8,7 +8,9 @@
 //! shows its health, a failed one red ([`step_of_each`]). A click selects a feature, a
 //! double-click (or Edit feature in its menu) opens its dialog, a drag moves it
 //! (`move_feature`), and hovering it tints the faces it made in the viewport (`View::linked`).
-//! Its right-click menu is the feature's commands (`crate::feature_menu`).
+//! Its right-click menu is the feature's commands (`crate::feature_menu`): Edit feature,
+//! Rename (whose field opens over the item), Suppress or Unsuppress, Find in browser, and
+//! Delete.
 //!
 //! Left out, each for a reason: the rollback bar (the core has no rollback; Fusion's marker
 //! is out of M5, DESIGN.md flags Onshape's as a proposal), the gear's timeline options (none
@@ -332,6 +334,10 @@ struct Asked {
     moved: Option<(FeatureId, Option<FeatureId>)>,
     /// What a feature's menu asked.
     act: Option<feature_menu::Act>,
+    /// A rename field's name, sent (Enter, or a click away): the feature and the name.
+    renamed: Option<(FeatureId, String)>,
+    /// Whether the rename field was drawn.
+    renaming: bool,
 }
 
 /// The track and the summary, in `rect`, for `tab`.
@@ -361,6 +367,8 @@ fn features<P: Clients + 'static>(
     let rebuild = tab.status.as_ref().map(|status| &status.rebuild);
     let steps = step_of_each(entries, timeline.revision, rebuild);
     let mut asked = Asked::default();
+    // The rename field's, taken while the items are drawn, as they read the tab.
+    let mut renaming = tab.renaming.take();
     if entries.is_empty() {
         words(
             ui,
@@ -385,7 +393,7 @@ fn features<P: Clients + 'static>(
                 .show(ui, |ui| {
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing = vec2(theme::TIMELINE_ITEM_GAP, 0.0);
-                        items(ui, tab, entries, &steps, &mut asked);
+                        items(ui, tab, entries, &steps, &mut asked, &mut renaming);
                     });
                 });
         });
@@ -404,7 +412,28 @@ fn features<P: Clients + 'static>(
         ui.ctx().request_repaint();
     }
     tab.view.linked = asked.hovered;
+    // A field whose feature is gone (deleted, or undone away) goes with it.
+    let is_timelines =
+        |renaming: &feature_menu::Renaming| renaming.place == feature_menu::Place::Timeline;
+    if renaming.as_ref().is_some_and(is_timelines) && !asked.renaming {
+        renaming = None;
+    }
+    if asked.renamed.is_some() {
+        renaming = None;
+    }
+    if tab.renaming.is_none() {
+        tab.renaming = renaming;
+    }
+    if let Some((feature, name)) = asked.renamed
+        && tab
+            .entry(feature.as_str())
+            .is_some_and(|entry| entry.name != name)
+    {
+        tab.rename(sessions, feature, &name);
+        *started = true;
+    }
     if let Some(id) = asked.selected {
+        tab.selected_in = feature_menu::Place::Timeline;
         tab.selection_mut().select_feature(id);
     }
     if let Some(act) = asked.act {
@@ -542,7 +571,14 @@ fn summary_label(ui: &Ui, rect: Rect, said: &str) {
 }
 
 /// Each feature's item, in order, and a drag's drop line.
-fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut Asked) {
+fn items(
+    ui: &mut Ui,
+    tab: &Tab,
+    entries: &[Entry],
+    steps: &[Step],
+    asked: &mut Asked,
+    renaming: &mut Option<feature_menu::Renaming>,
+) {
     let mut rects = Vec::with_capacity(entries.len());
     let mut dragged = None;
     let mut dropped = None;
@@ -629,6 +665,28 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
                 asked.act = Some(act);
             }
         });
+        if let Some(field) = renaming.as_mut().filter(|renaming| {
+            renaming.place == feature_menu::Place::Timeline && renaming.feature == entry.id
+        }) {
+            asked.renaming = true;
+            // Over the item, at its left, on a layer of its own above the panels.
+            let at = pos2(
+                rect.left(),
+                rect.top() - theme::FIELD_HEIGHT - theme::TIMELINE_RENAME_GAP,
+            );
+            let size = vec2(theme::TIMELINE_RENAME_WIDTH, theme::FIELD_HEIGHT);
+            let done = egui::Area::new(id.with("rename"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(at)
+                .show(ui.ctx(), |ui| {
+                    let place = Rect::from_min_size(ui.max_rect().min, size);
+                    feature_menu::field(ui, field, place, &entry.name)
+                })
+                .inner;
+            if let feature_menu::Field::Done(name) = done {
+                asked.renamed = Some((entry.id.clone(), name));
+            }
+        }
         let said = tab.said.get(entry.id.as_str());
         let mut tip = description;
         if let Some(said) = said {

@@ -1020,7 +1020,9 @@ impl<P: Clients + 'static> App<P> {
     /// stopped (§5, *Rebuild*), and H hides or shows the selected body or sketch, outside a
     /// text field. Outside a text field too, `?` opens the shortcut sheet; F6 fits the shown
     /// tab's view, Home gives its home view, and Ctrl+1 to Ctrl+7 its standard views
-    /// (SolidWorks' numbering); and Ctrl+Shift+B rebuilds everything, ignoring the cache.
+    /// (SolidWorks' numbering); Ctrl+Shift+B rebuilds everything, ignoring the cache; and,
+    /// with a feature selected, F2 types its name over in its own field and Del (or ⌫)
+    /// deletes it (the prototype's `keydown`), Esc dropping a name being typed.
     /// With a modal open (the sheet too), none acts: Esc is the modal's Cancel (the sheet's
     /// close), and Enter its OK. With a dialog open, Enter and Esc are the dialog's, taken
     /// here and given to it once its inputs have taken this frame's typing (`Panes::dialog`,
@@ -1114,6 +1116,9 @@ impl<P: Clients + 'static> App<P> {
         let stop = shortcuts::take(ui, Command::Stop);
         // H hides or shows the selection (DESIGN.md, *Keyboard*), never a letter typed.
         let hide = !typing && shortcuts::take(ui, Command::Hide);
+        // F2 renames the selected feature, and Del (or ⌫) deletes it: never a field's keys.
+        let rename = !typing && shortcuts::take(ui, Command::Rename);
+        let delete = !typing && shortcuts::take(ui, Command::Delete);
         // The view's keys, never a field's (Home moves its cursor).
         let view = if typing {
             None
@@ -1165,6 +1170,23 @@ impl<P: Clients + 'static> App<P> {
             // mode's, left by Finish or Cancel).
             self.toast = Some((FILTERS_SAID.to_owned(), ui.input(|input| input.time)));
         }
+        let selected = tab.selection().feature().cloned();
+        if rename && let Some(id) = selected.clone() {
+            let place = tab.selected_in;
+            tab.start_rename(id, place);
+        }
+        let deleted = delete && selected.is_some();
+        if deleted && let Some(id) = selected {
+            tab.remove_feature(&self.sessions, id);
+        }
+        // Esc with a feature's name being typed: the name dropped, nothing sent, and nothing
+        // further down Esc's chain done (the field lost its focus to the Esc already).
+        let stop = if stop && tab.renaming.is_some() {
+            tab.renaming = None;
+            false
+        } else {
+            stop
+        };
         if let Some(ask) = view {
             tab.view.ask(ask);
         }
@@ -1210,7 +1232,7 @@ impl<P: Clients + 'static> App<P> {
             self.close(id);
         }
         (
-            save || undo || redo || stop || close || enter || rebuild || rebuild_all,
+            save || undo || redo || stop || close || enter || rebuild || rebuild_all || deleted,
             dialog_key,
         )
     }

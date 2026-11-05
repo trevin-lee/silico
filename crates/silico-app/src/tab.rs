@@ -196,8 +196,8 @@ enum Queued {
         feature: FeatureId,
         suppressed: bool,
     },
-    /// A feature deleted (`remove_feature`), from a menu: what consumed it rewired to its
-    /// base.
+    /// A feature deleted (`remove_feature`), from a menu or by Del: what consumed it
+    /// rewired to its base.
     Remove {
         feature: FeatureId,
     },
@@ -650,6 +650,11 @@ pub struct Tab {
     /// toast, in the status bar): what it suppressed with the feature, or rewired in its
     /// place. Until their next action, as [`message`](Self::message) is.
     pub told: Option<String>,
+    /// A feature's name being typed in its timeline item's or browser row's own field (F2,
+    /// or a menu's Rename), until Enter or a click away sends it or Esc drops it.
+    pub renaming: Option<crate::feature_menu::Renaming>,
+    /// Where the person last selected a feature: F2 renames it there.
+    pub selected_in: crate::feature_menu::Place,
     /// A save or a revert that was to close the tab was refused: the tab stays, and a quit
     /// waiting on it stops ([`take_close_refused`](Self::take_close_refused)).
     close_refused: bool,
@@ -724,6 +729,11 @@ pub type Watch = Box<dyn FnMut(&eframe::egui::Painter, &crate::viewport::ViewFra
 /// answers it takes: for the crate's tests only.
 #[doc(hidden)]
 pub type AfterStatus = Box<dyn FnMut()>;
+
+/// A feature's name as the document reads a string (`set_field`'s value).
+pub(crate) fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxError> {
+    silico_core::document::json::read(crate::dialog::quoted(name).as_bytes())
+}
 
 /// What a refusal says to the person: its first error's message and suggestion.
 pub fn said(problems: &Problems) -> String {
@@ -802,6 +812,8 @@ impl Tab {
             hidden: std::collections::BTreeSet::new(),
             message: None,
             told: None,
+            renaming: None,
+            selected_in: crate::feature_menu::Place::Timeline,
             close_refused: false,
             replace_asked: None,
             roll_back: false,
@@ -2346,6 +2358,48 @@ impl Tab {
         self.hush();
         self.edits.queue.push_back(Queued::Remove { feature });
         self.advance(sessions);
+    }
+
+    /// The feature `feature` renamed `name` (`set_field` of `name`), as the property panel's
+    /// Name field renames it: an edit, coalesced with one of the same field waiting. A name
+    /// that doesn't read as a string is never sent.
+    pub fn rename<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        feature: FeatureId,
+        name: &str,
+    ) {
+        if let Ok(value) = name_value(name) {
+            self.edit(
+                sessions,
+                Edit {
+                    feature,
+                    field: "name".to_owned(),
+                    value,
+                },
+            );
+        }
+    }
+
+    /// The feature `feature`'s name typed in its own field, at `place`: its timeline item's
+    /// or, if it has one, its browser row's (else its item's). Never while a dialog is open
+    /// or the tab closes, nor for a feature the timeline doesn't list.
+    pub fn start_rename(&mut self, feature: FeatureId, place: crate::feature_menu::Place) {
+        if self.in_dialog() || self.closing() {
+            return;
+        }
+        let Some(entry) = self.entry(feature.as_str()) else {
+            return;
+        };
+        let text = entry.name.clone();
+        let place = match place {
+            crate::feature_menu::Place::Browser if !self.in_browser(&feature) => {
+                crate::feature_menu::Place::Timeline
+            }
+            place => place,
+        };
+        self.selection.select_feature(feature.clone());
+        self.renaming = Some(crate::feature_menu::Renaming::new(feature, place, text));
     }
 
     /// Whether the browser has a row for the feature `id`: a body's or a sketch's.

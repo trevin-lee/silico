@@ -13,14 +13,13 @@ use silico_core::command::{SessionId, Sessions};
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
 use silico_core::document::Units;
-use silico_core::document::json::Node;
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
 
 use crate::dialog::Action;
 use crate::icons::{self, Icon, IconSize};
 use crate::properties;
-use crate::tab::{Edit, Hideable, Tab};
+use crate::tab::{Hideable, Tab};
 use crate::theme;
 
 /// The property panel's Name field, while it's typed in: the document's feature it's of,
@@ -229,10 +228,19 @@ impl<P: Clients + 'static> Panes<'_, P> {
             return;
         };
         let mut asked = Asked::default();
-        if let Some(shown) = tab.selection().scroll_target().cloned() {
-            // A body picked in the canvas, or a row found from the timeline: its row shown,
-            // its group opened (section 9, *Browser and canvas*: the browser expands and
-            // scrolls to it).
+        let browsers = |renaming: &crate::feature_menu::Renaming| {
+            renaming.place == crate::feature_menu::Place::Browser
+        };
+        let shown = tab.selection().scroll_target().cloned().or_else(|| {
+            tab.renaming
+                .as_ref()
+                .filter(|renaming| browsers(renaming))
+                .map(|renaming| renaming.feature.clone())
+        });
+        if let Some(shown) = shown {
+            // A body picked in the canvas, or a row found from the timeline or renamed:
+            // its row shown, its group opened (section 9, *Browser and canvas*: the browser
+            // expands and scrolls to it).
             let group = if tab.browser.sketches.iter().any(|row| row.id == shown) {
                 "Sketches"
             } else {
@@ -242,15 +250,35 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 Openness::load(ui.ctx(), key).opened(ui.ctx());
             }
         }
+        // The rename field's, taken while the rows are drawn, as they read the tab.
+        let mut renaming = tab.renaming.take();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
-                tree(ui, tab, &mut asked);
+                tree(ui, tab, &mut asked, &mut renaming);
                 ui.add_space(theme::BROWSER_PADDING_BOTTOM);
             });
         // Scrolled to once, whether its row was there or not.
         tab.selection_mut().scrolled();
+        // A field whose row is gone (its feature deleted, its body consumed) goes with it.
+        if renaming.as_ref().is_some_and(browsers) && !asked.renaming {
+            renaming = None;
+        }
+        if asked.renamed.is_some() {
+            renaming = None;
+        }
+        if tab.renaming.is_none() {
+            tab.renaming = renaming;
+        }
+        if let Some((feature, name)) = asked.renamed
+            && tab
+                .entry(feature.as_str())
+                .is_some_and(|entry| entry.name != name)
+        {
+            tab.rename(self.sessions, feature, &name);
+            *self.started = true;
+        }
         for what in asked.toggled {
             tab.toggle_shown(what);
         }
@@ -259,6 +287,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
         {
             // A sketch chosen here fills an open dialog's selection box (section 9).
             tab.pick(&id);
+            tab.selected_in = crate::feature_menu::Place::Browser;
             tab.selection_mut().select_feature(id);
         }
         if let Some(act) = asked.act {
@@ -518,17 +547,8 @@ fn feature<P: Clients + 'static>(
     if text != typed {
         // Each change an edit, coalesced in the tab (section 3); an empty name too, for
         // the core to refuse and the tab to say why.
-        if let Ok(value) = name_value(&text) {
-            tab.edit(
-                sessions,
-                Edit {
-                    feature: entry.id.clone(),
-                    field: "name".to_owned(),
-                    value,
-                },
-            );
-            *started = true;
-        }
+        tab.rename(sessions, entry.id.clone(), &text);
+        *started = true;
         field.typed.push(text.clone());
     }
     field.text = text;
@@ -745,14 +765,9 @@ fn units() -> String {
     format!("{} · {number} {unit} resolution", Units::LENGTH)
 }
 
-/// A feature's name as the document reads a string (`set_field`'s value).
-fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxError> {
-    silico_core::document::json::read(crate::dialog::quoted(name).as_bytes())
-}
-
 /// What the browser's rows asked for this frame, done once they're drawn: eyes clicked, a
-/// row selected, a sketch's Edit Sketch, the document's row clicked, and what a row's menu
-/// asked.
+/// row selected, a sketch's Edit Sketch, the document's row clicked, what a row's menu
+/// asked, and a rename field's name sent.
 #[derive(Default)]
 struct Asked {
     toggled: Vec<Hideable>,
@@ -760,6 +775,9 @@ struct Asked {
     edit: Option<FeatureId>,
     root: bool,
     act: Option<crate::feature_menu::Act>,
+    renamed: Option<(FeatureId, String)>,
+    /// Whether the rename field was drawn.
+    renaming: bool,
 }
 
 /// The origin's rows, each by its name with its icon (Fusion's Origin folder: its point,
@@ -795,8 +813,14 @@ fn prefix_colour(prefix: &str) -> Color32 {
     }
 }
 
-/// The browser's tree, for `tab`: what its rows ask is put in `asked`.
-fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
+/// The browser's tree, for `tab`: what its rows ask is put in `asked`, and a feature's name
+/// typed in `renaming`'s field, over its row.
+fn tree(
+    ui: &mut Ui,
+    tab: &Tab,
+    asked: &mut Asked,
+    renaming: &mut Option<crate::feature_menu::Renaming>,
+) {
     let ctx = ui.ctx().clone();
     let name = tab.name();
     let root_name = name.strip_suffix(".silico").unwrap_or(name);
@@ -953,6 +977,21 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                             asked.act = Some(act);
                         }
                     });
+                    if let Some(field) = renaming.as_mut().filter(|renaming| {
+                        renaming.place == crate::feature_menu::Place::Browser
+                            && renaming.feature == each.id
+                    }) {
+                        asked.renaming = true;
+                        let at = egui::Rect::from_center_size(
+                            answer.name.center(),
+                            Vec2::new(answer.name.width(), theme::FIELD_HEIGHT),
+                        );
+                        if let crate::feature_menu::Field::Done(name) =
+                            crate::feature_menu::field(ui, field, at, &entry.name)
+                        {
+                            asked.renamed = Some((each.id.clone(), name));
+                        }
+                    }
                 }
                 if tab.selection().scroll_target() == Some(&each.id) {
                     answer.row.scroll_to_me(None);
@@ -1096,12 +1135,14 @@ struct Line<'a> {
     clicks: bool,
 }
 
-/// What a row answered: the row's response, its caret's state, and its eye's response.
+/// What a row answered: the row's response, its caret's state, its eye's response, and
+/// where its name is (between its icon, or prefix, and its meta or mark).
 struct RowAnswer {
     row: egui::Response,
     /// Whether its caret is open, its click this frame taken.
     open: Option<bool>,
     eye: Option<egui::Response>,
+    name: egui::Rect,
 }
 
 /// The colours of a row's name and its icon (`.row`, `:hover`, `.selected`, `.err`,
@@ -1331,6 +1372,7 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         row: response,
         open: caret.map(|(_, open)| open),
         eye: eye.map(|(eye, _)| eye),
+        name: egui::Rect::from_x_y_ranges(x..=right.max(x), rect.y_range()),
     }
 }
 
@@ -1582,7 +1624,7 @@ mod tests {
             "tab\there",
             "Ω",
         ] {
-            let node = name_value(name).unwrap();
+            let node = crate::tab::name_value(name).unwrap();
             assert_eq!(node.value.as_str(), Some(name), "{name:?}");
         }
     }
