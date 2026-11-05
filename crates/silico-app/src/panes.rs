@@ -300,17 +300,24 @@ impl<P: Clients + 'static> Panes<'_, P> {
         let name = &mut *self.name;
         let started = &mut *self.started;
         let elements = tab.selection().elements().next().is_some();
-        egui::ScrollArea::vertical()
+        let asked = egui::ScrollArea::vertical()
             .id_salt("properties")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 match entry {
-                    _ if elements => selected_elements(ui, tab),
+                    _ if elements => {
+                        selected_elements(ui, tab);
+                        None
+                    }
                     Some(entry) => feature(ui, tab, &entry, sessions, name, started),
                     None => document(ui, tab),
                 }
-            });
+            })
+            .inner;
+        if let Some(asked) = asked {
+            *self.started |= tab.card_asked(sessions, asked);
+        }
     }
 
     /// The open dialog, docked in the property panel (open item 27): drawn, what's changed
@@ -330,7 +337,17 @@ impl<P: Clients + 'static> Panes<'_, P> {
             .flat_map(|dialog| dialog.inputs.iter().map(|input| input.part.field()))
             .filter(|field| tab.field_refused(field))
             .collect();
-        let said = tab.dialog_said();
+        let said: Vec<(crate::tab::Said, Option<String>)> = tab
+            .dialog_said()
+            .into_iter()
+            .map(|said| {
+                let name = said
+                    .feature()
+                    .and_then(|id| tab.entry(id))
+                    .map(|entry| entry.name.clone());
+                (said, name)
+            })
+            .collect();
         let preview = preview_of(tab);
         let Some(mut dialog) = tab.dialog.take() else {
             return;
@@ -395,10 +412,11 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
 }
 
 /// The selected feature's properties (`featureProps`): its head (its type's icon, its name,
-/// its type and ID), the document's problems and its own (its mark's text and suggestion),
-/// its name, editable, which is an edit of the document, and its health and ID; and, if
-/// another program changed it, what changed (the purple Changed on disk card, with Mark as
-/// seen).
+/// its type and ID), the document's problems and its own (its error card, with Edit, as
+/// `featureProps` offers it, `noShow`), its name, editable, which is an edit of the
+/// document, and its health and ID; and, if another program changed it, what changed (the
+/// purple Changed on disk card, with Mark as seen). What an error card's button asked, if
+/// one was.
 ///
 /// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
 /// direction), which need its fields read, as its dialog reads them; and its Edit feature
@@ -412,7 +430,7 @@ fn feature<P: Clients + 'static>(
     sessions: &Arc<Sessions<P>>,
     name: &mut Option<NameField>,
     started: &mut bool,
-) {
+) -> Option<properties::CardAct> {
     let mut sub = properties::body(
         &format!("{} · ", crate::timeline::kind_words(entry.kind)),
         theme::PROPERTY_HEAD_SUB,
@@ -426,10 +444,21 @@ fn feature<P: Clients + 'static>(
         properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_HEAD_SUB, true),
     );
     properties::head(ui, Icon::of_kind(entry.kind), &entry.name, sub);
-    problems(ui, tab);
+    let mut asked = problems(ui, tab);
     if let Some(said) = tab.said.get(entry.id.as_str()) {
-        let warning = entry.health != Health::Error;
-        properties::card(ui, warning, &said.message, said.suggestion.as_deref());
+        let said = crate::tab::Said {
+            warning: entry.health != Health::Error,
+            ..said.clone()
+        };
+        let offer = properties::Offer {
+            edit: Some(tab.can_edit(&entry.id)),
+            show: false,
+        };
+        asked = asked.or(ui
+            .push_id("feature-card", |ui| {
+                properties::card(ui, &said, Some(&entry.name), offer)
+            })
+            .inner);
     }
     // Changed by another program (`d.outside`): what changed, until it's marked seen.
     if let Some(text) = tab.outside.get(&entry.id).cloned()
@@ -511,6 +540,7 @@ fn feature<P: Clients + 'static>(
             false,
         )],
     );
+    asked
 }
 
 /// The selection's faces and edges (`selectionProps`, M5.7), each under its kind: its name
@@ -581,15 +611,36 @@ fn selected_element(ui: &mut Ui, picked: &crate::selection::Picked) {
     };
     properties::text_row(ui, "Stability", properties::body(state, colour));
     if let Some((message, suggestion)) = said {
-        properties::card(ui, true, &message, suggestion);
+        let said = crate::tab::Said {
+            warning: true,
+            message,
+            suggestion: suggestion.map(str::to_owned),
+            ..crate::tab::Said::default()
+        };
+        properties::card(ui, &said, None, properties::Offer::default());
     }
 }
 
-/// The document's problems, as the gate found them: a card each.
-fn problems(ui: &mut Ui, tab: &Tab) {
-    for said in &tab.document_problems {
-        properties::card(ui, false, &said.message, said.suggestion.as_deref());
+/// The document's problems, as the gate found them: a card each (`docProps`' `errCard(e)`,
+/// with Edit and Show in timeline for a feature it names). What a card's button asked, if
+/// one was.
+fn problems(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
+    let mut asked = None;
+    for (place, said) in tab.document_problems.iter().enumerate() {
+        let entry = said.feature().and_then(|id| tab.entry(id));
+        let offer = properties::Offer {
+            edit: Some(entry.is_some_and(|entry| tab.can_edit(&entry.id))),
+            show: entry.is_some(),
+        };
+        let name = entry.map(|entry| entry.name.as_str());
+        let card = ui
+            .push_id(("document-problem", place), |ui| {
+                properties::card(ui, said, name, offer)
+            })
+            .inner;
+        asked = asked.or(card);
     }
+    asked
 }
 
 /// The document's properties, with nothing selected (`docProps`): its head (its file's name
@@ -598,7 +649,7 @@ fn problems(ui: &mut Ui, tab: &Tab) {
 ///
 /// SEAM: the model's measures (`docProps`' Volume, Area, Size, and Faces), which need a
 /// `mass_properties` read of its bodies the app doesn't make yet; its bodies are counted.
-fn document(ui: &mut Ui, tab: &Tab) {
+fn document(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
     properties::head(
         ui,
         Icon::Doc,
@@ -610,7 +661,7 @@ fn document(ui: &mut Ui, tab: &Tab) {
             properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_HEAD_SUB, true),
         ),
     );
-    problems(ui, tab);
+    let asked = problems(ui, tab);
     properties::section(ui, "Document");
     let mut revision = properties::body(&tab.revision.number().to_string(), theme::PROPERTY_VALUE);
     if let Some(model) = tab.published.filter(|model| *model != tab.revision) {
@@ -679,6 +730,7 @@ fn document(ui: &mut Ui, tab: &Tab) {
         ui,
         &[("Double-click a feature in the timeline to edit it.", false)],
     );
+    asked
 }
 
 /// The document's units, as its header holds them: `mm · 1 nm resolution`.
@@ -2527,6 +2579,41 @@ mod property_panel_drawn {
         pub const EC_BODY_BOTTOM: f32 = 8.0;
         pub const EC_FIX_GAP: f32 = 6.0;
         pub const EC_FIX_MARGIN: f32 = 8.0;
+        /// `.ec-body { color: #ffe2e5 }`; `.ec-body p { margin: 0 0 6px }`.
+        pub const EC_BODY_TEXT: Color32 = Color32::from_rgb(0xff, 0xe2, 0xe5);
+        pub const EC_P_MARGIN: f32 = 6.0;
+        /// `.ec-code`: `font-size: 10px` (`--mono`), `background: rgba(0,0,0,.3)` (255 × .3 =
+        /// 76.5, 77), `padding: 0 4px; border-radius: 3px`; on the head's line (`--lh`).
+        pub const EC_CODE_FS: f32 = 10.0;
+        pub const EC_CODE_BG: Color32 = Color32::from_rgba_unmultiplied_const(0, 0, 0, 77);
+        pub const EC_CODE_PADDING: f32 = 4.0;
+        pub const EC_CODE_RADIUS: u8 = 3;
+        /// `.ec-kv`: `gap: 2px 8px; font-size: var(--fs-small); margin-bottom: 6px`.
+        pub const EC_KV_ROW_GAP: f32 = 2.0;
+        pub const EC_KV_COLUMN_GAP: f32 = 8.0;
+        pub const EC_KV_MARGIN: f32 = 6.0;
+        /// `.mono { opacity: .7 }` after the feature's name: an alpha of 255 × .7 = 178.5,
+        /// 179.
+        pub const EC_ID_ALPHA: u8 = 179;
+        /// `.el-chip`: `font-size: 10.5px` (`--mono`), `padding: 0 5px; border-radius: 3px;
+        /// background: rgba(0,0,0,.35)` (255 × .35 = 89.25, 89), white.
+        pub const EL_CHIP_FS: f32 = 10.5;
+        pub const EL_CHIP_PADDING: f32 = 5.0;
+        pub const EL_CHIP_RADIUS: u8 = 3;
+        pub const EL_CHIP_BG: Color32 = Color32::from_rgba_unmultiplied_const(0, 0, 0, 89);
+        /// The candidates' heading (`font-size: 10.5px; margin-bottom: 4px; letter-spacing:
+        /// .5px`, in capitals); `.cand`: `padding: 5px 6px; border-radius: var(--r-sm);
+        /// background: rgba(0,0,0,.25)` (255 × .25 = 63.75, 64); `margin-bottom: 4px`.
+        pub const CANDS_FS: f32 = 10.5;
+        pub const CANDS_MARGIN: f32 = 4.0;
+        pub const CAND_PADDING_X: f32 = 6.0;
+        pub const CAND_PADDING_Y: f32 = 5.0;
+        pub const CAND_BG: Color32 = Color32::from_rgba_unmultiplied_const(0, 0, 0, 64);
+        pub const CAND_MARGIN: f32 = 4.0;
+        pub const CAND_TEXT: Color32 = Color32::from_rgb(0xff, 0xd1, 0xd6);
+        /// `.ec-actions { gap: 6px }`; `.btn { height: 22px }`.
+        pub const EC_ACTIONS_GAP: f32 = 6.0;
+        pub const BTN_H: f32 = 22.0;
         /// `.field`: `height: 22px`, Gray.200, corners `--r-sm`.
         pub const FIELD_H: f32 = 22.0;
         /// `.dlg-footer`: `padding: 8px var(--pad); gap: 6px; border-top: 1px`; its `.btn`
@@ -3472,5 +3559,387 @@ mod property_panel_drawn {
             .click();
         h.run_steps(2);
         assert_eq!(h.state().1, Action::Cancel);
+    }
+
+    // ---- The error card (`errCard`) ----
+
+    /// A broken reference's error, by hand: Hole's, naming two of the five edges at fault,
+    /// its field, its cause, what to do, and two names in the broken ones' place.
+    fn broken() -> silico_core::Error {
+        silico_core::Error::new(
+            silico_core::ErrorCode::ReferenceBroken,
+            "An edge the fillet names is gone",
+        )
+        .with_feature("c0000001")
+        .with_elements(["Edge3", "Edge5"])
+        .with_elements_total(5)
+        .with_parameter("edges")
+        .with_cause("Edge3 and Edge5 aren't in its base")
+        .with_suggestion("Pick the edges again")
+        .with_candidates(["Edge2", "Edge4"])
+    }
+
+    /// [`broken`] as the command API writes it, typed by hand from the error contract
+    /// (`tests/contract/error-full.json`'s fields, in its order), on one line as MCP sends it.
+    const BROKEN_JSON: &str = r#"{"code": "reference_broken", "message": "An edge the fillet names is gone", "feature": "c0000001", "elements": ["Edge3", "Edge5"], "elements_total": 5, "parameter": "edges", "cause": "Edge3 and Edge5 aren't in its base", "suggestion": "Pick the edges again", "candidates": ["Edge2", "Edge4"], "advice": null}"#;
+
+    /// [`part`] with Hole selected, its card [`broken`]'s.
+    fn broken_hole() -> Tab {
+        let mut tab = part();
+        tab.said.insert("c0000001".to_owned(), Said::of(&broken()));
+        tab.selection_mut().select_feature(fid("c0000001"));
+        tab
+    }
+
+    /// The text the frame just stepped copied, if it copied any.
+    fn copied<S>(h: &Harness<'_, S>) -> Option<String> {
+        h.output()
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn an_error_card_says_its_code_feature_elements_parameter_and_candidates() {
+        let h = drawn(broken_hole());
+        // `errCard`, its parts in its order: the message and the code; the cause; Feature
+        // (the name, then the ID), Elements (two of five), Parameter; the suggestion; the
+        // candidates under their heading.
+        let lines = [
+            "An edge the fillet names is gone",
+            "reference_broken",
+            "Edge3 and Edge5 aren't in its base",
+            "Feature: Hole c0000001",
+            "Elements: Edge3, Edge5 (the first 2 of 5)",
+            "Parameter: edges",
+            "Pick the edges again",
+            "CANDIDATES, CLOSEST FIRST",
+            "Edge2",
+            "Edge4",
+        ];
+        let tops: Vec<f32> = lines
+            .iter()
+            .map(|line| h.get_by_label(line).rect().top())
+            .collect();
+        // The message and its code on one line; the rest each under the one before.
+        assert!(near(tops[0], tops[1]), "{tops:?}");
+        for pair in tops[1..].windows(2) {
+            assert!(pair[0] < pair[1], "{lines:?} out of order: {tops:?}");
+        }
+        // `featureProps` gives `noShow`: Edit, off (a cut has no dialog), and Copy as JSON.
+        let edit = h.get_by_role_and_label(Role::Button, "Edit Hole");
+        assert!(edit.accesskit_node().is_disabled());
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Show in timeline")
+                .is_none()
+        );
+        let copy = h.get_by_role_and_label(Role::Button, "Copy as JSON");
+        assert!(!copy.accesskit_node().is_disabled());
+        // Every element named: no count.
+        let mut tab = part();
+        let all = silico_core::Error::new(silico_core::ErrorCode::KernelFailed, "Fillet failed")
+            .with_feature("c0000001")
+            .with_elements(["Edge3"]);
+        tab.said.insert("c0000001".to_owned(), Said::of(&all));
+        tab.selection_mut().select_feature(fid("c0000001"));
+        let h = drawn(tab);
+        assert!(h.query_by_label("Elements: Edge3").is_some());
+        assert!(h.query_by_label("kernel_failed").is_some());
+        assert!(h.query_by_label_contains("Parameter").is_none());
+        assert!(h.query_by_label_contains("CANDIDATES").is_none());
+    }
+
+    #[test]
+    fn copy_as_json_puts_the_cores_error_on_the_clipboard_as_an_agent_gets_it() {
+        let mut h = drawn(broken_hole());
+        h.get_by_role_and_label(Role::Button, "Copy as JSON")
+            .click();
+        h.step();
+        assert_eq!(copied(&h).as_deref(), Some(BROKEN_JSON));
+        // A warning's, as an error's, its code a warning's.
+        let warning = silico_core::Warning::new(
+            silico_core::WarningCode::FingerprintMissing,
+            "Hole stores no fingerprint",
+        )
+        .with_feature("c0000001");
+        let said = Said::of_warning(&warning);
+        assert_eq!(
+            said.json().as_deref(),
+            Some(
+                r#"{"code": "fingerprint_missing", "message": "Hole stores no fingerprint", "feature": "c0000001", "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": null, "candidates": [], "advice": null}"#
+            )
+        );
+        // A refusal said in words alone has none to copy.
+        let words = Said {
+            message: "refused".to_owned(),
+            ..Said::default()
+        };
+        assert_eq!(words.json(), None);
+    }
+
+    #[test]
+    fn an_error_cards_edit_opens_its_features_dialog_as_edit_feature_does() {
+        let mut tab = part();
+        let failed =
+            silico_core::Error::new(silico_core::ErrorCode::KernelFailed, "The block failed")
+                .with_feature("b0000001");
+        tab.said.insert("b0000001".to_owned(), Said::of(&failed));
+        tab.selection_mut().select_feature(fid("b0000001"));
+        let mut h = drawn(tab);
+        assert!(!h.state().tab.as_ref().unwrap().in_dialog());
+        let edit = h.get_by_role_and_label(Role::Button, "Edit Block");
+        assert!(!edit.accesskit_node().is_disabled());
+        edit.click();
+        h.step();
+        // Edit Feature's read of the box, under way: the dialog opens once it answers.
+        let shown = h.state();
+        assert!(shown.tab.as_ref().unwrap().in_dialog());
+        assert!(shown.started);
+    }
+
+    #[test]
+    fn a_document_problems_show_in_timeline_selects_its_feature_for_the_timeline_to_scroll_to() {
+        // `docProps` gives every card Edit and Show in timeline: the gate's problem naming
+        // Hole, with nothing selected.
+        let mut tab = part();
+        let gate = silico_core::Error::new(
+            silico_core::ErrorCode::InvalidInput,
+            "Hole's tool names no feature",
+        )
+        .with_feature("c0000001")
+        .with_parameter("tool");
+        tab.document_problems.push(Said::of(&gate));
+        let mut h = drawn(tab);
+        assert!(
+            h.query_by_label("Revision").is_some(),
+            "the document's view"
+        );
+        assert!(
+            h.get_by_role_and_label(Role::Button, "Edit Hole")
+                .accesskit_node()
+                .is_disabled()
+        );
+        h.get_by_role_and_label(Role::Button, "Show in timeline")
+            .click();
+        h.step();
+        let tab = h.state().tab.as_ref().unwrap();
+        assert_eq!(tab.selection().feature(), Some(&fid("c0000001")));
+        assert_eq!(tab.timeline_scroll(), Some(&fid("c0000001")));
+        assert!(!h.state().started, "a selection sends nothing");
+    }
+
+    #[test]
+    fn an_error_card_is_drawn_as_err_card_with_its_code_rows_candidates_and_buttons() {
+        let h = drawn(broken_hole());
+        let y = title_and_head(&h, "Hole", "Subtract · c0000001", body(css::FS_SMALL));
+        let card_top = y + css::CARD_MARGIN;
+        let inner = Pos2::new(PANE.x + css::PAD + css::BORDER, card_top + css::BORDER);
+        let inner_right = PANE.x + W - css::PAD - css::BORDER;
+        // `.ec-head`: the message from the icon's right, and the code chip flush with the
+        // head's right padding, on the head's first line.
+        let head_top = inner.y + css::EC_HEAD_TOP;
+        let message = text(&h, "An edge the fillet names is gone");
+        at(
+            message.pos,
+            Pos2::new(
+                inner.x + css::EC_HEAD_SIDE + css::ICON + css::EC_HEAD_GAP,
+                head_top,
+            ),
+            "the message",
+        );
+        let code = text(&h, "reference_broken");
+        assert_eq!(
+            code.galley.job.sections[0].format.font_id,
+            FontId::new(css::EC_CODE_FS, FontFamily::Monospace)
+        );
+        assert_eq!(colour(&code, 0), css::CARD_ACCENT);
+        let chip = Rect::from_min_max(
+            Pos2::new(
+                inner_right - css::EC_HEAD_SIDE - code.galley.size().x - 2.0 * css::EC_CODE_PADDING,
+                head_top,
+            ),
+            Pos2::new(inner_right - css::EC_HEAD_SIDE, head_top + css::LH),
+        );
+        assert_eq!(
+            fills_at(&h, chip),
+            [(
+                css::EC_CODE_BG,
+                CornerRadius::same(css::EC_CODE_RADIUS),
+                Stroke::NONE
+            )]
+        );
+        at(
+            code.pos,
+            Pos2::new(
+                chip.left() + css::EC_CODE_PADDING,
+                chip.center().y - code.galley.size().y / 2.0,
+            ),
+            "the code",
+        );
+        // The message wraps short of the chip, `gap: 8px` before it.
+        assert!(message.pos.x + message.galley.size().x <= chip.left() - css::EC_HEAD_GAP + 0.5);
+        // `.ec-body p`: the cause, 32 in, in the body's colour, 6 above the rows.
+        let body_left = inner.x + css::EC_BODY_LEFT;
+        let body_top = head_top + message.galley.size().y + css::EC_HEAD_BOTTOM;
+        let cause = text(&h, "Edge3 and Edge5 aren't in its base");
+        at(cause.pos, Pos2::new(body_left, body_top), "the cause");
+        assert_eq!(cause.galley.job.sections[0].format.font_id, body(css::FS));
+        assert_eq!(colour(&cause, 0), css::EC_BODY_TEXT);
+        // `.ec-kv`: each key in the accent at `--fs-small`, the values 8 after the widest.
+        let rows_top = body_top + cause.galley.size().y + css::EC_P_MARGIN;
+        let keys: Vec<TextShape> = ["Feature", "Elements", "Parameter"]
+            .iter()
+            .map(|key| text(&h, key))
+            .collect();
+        let column = keys
+            .iter()
+            .map(|key| key.galley.size().x)
+            .fold(0.0, f32::max);
+        let values = body_left + column + css::EC_KV_COLUMN_GAP;
+        for key in &keys {
+            assert_eq!(
+                key.galley.job.sections[0].format.font_id,
+                body(css::FS_SMALL)
+            );
+            assert_eq!(colour(key, 0), css::CARD_ACCENT, "{}", key.galley.text());
+            assert!(near(key.pos.x, body_left), "{}", key.galley.text());
+        }
+        at(keys[0].pos, Pos2::new(body_left, rows_top), "Feature");
+        // Feature: the name in the body's colour, then the ID in `.mono` at 70%.
+        let feature = text(&h, "Hole c0000001");
+        at(feature.pos, Pos2::new(values, rows_top), "the feature");
+        assert_eq!(
+            feature.galley.job.sections[0].format.font_id,
+            body(css::FS_SMALL)
+        );
+        assert_eq!(colour(&feature, 0), css::EC_BODY_TEXT);
+        assert_eq!(feature.galley.job.sections[1].format.font_id, mono());
+        assert_eq!(colour(&feature, 1).a(), css::EC_ID_ALPHA);
+        // Elements, 2 under Feature: each a chip on the row's line.
+        let elements_top = rows_top + css::LH + css::EC_KV_ROW_GAP;
+        at(keys[1].pos, Pos2::new(body_left, elements_top), "Elements");
+        let edge3 = text(&h, "Edge3");
+        assert_eq!(
+            edge3.galley.job.sections[0].format.font_id,
+            FontId::new(css::EL_CHIP_FS, FontFamily::Monospace)
+        );
+        assert_eq!(colour(&edge3, 0), css::G1000);
+        let chip_height = edge3.galley.size().y;
+        let chip = Rect::from_min_size(
+            Pos2::new(values, elements_top + (css::LH - chip_height) / 2.0),
+            Vec2::new(
+                edge3.galley.size().x + 2.0 * css::EL_CHIP_PADDING,
+                chip_height,
+            ),
+        );
+        assert_eq!(
+            fills_at(&h, chip),
+            [(
+                css::EL_CHIP_BG,
+                CornerRadius::same(css::EL_CHIP_RADIUS),
+                Stroke::NONE
+            )]
+        );
+        at(
+            edge3.pos,
+            Pos2::new(chip.left() + css::EL_CHIP_PADDING, chip.top()),
+            "Edge3",
+        );
+        let edge5 = text(&h, "Edge5");
+        assert!(near(edge5.pos.y, edge3.pos.y) && edge5.pos.x > chip.right());
+        // Parameter, 2 under the Elements' last line.
+        let more = text(&h, "the first 2 of 5");
+        let elements_bottom = more.pos.y.max(elements_top) + css::LH;
+        let parameter_top = elements_bottom + css::EC_KV_ROW_GAP;
+        at(
+            keys[2].pos,
+            Pos2::new(body_left, parameter_top),
+            "Parameter",
+        );
+        let parameter = text(&h, "edges");
+        at(parameter.pos, Pos2::new(values, parameter_top), "edges");
+        // `.ec-fix`, 6 under the rows; the candidates' heading 8 under it.
+        let fix = parameter_top + css::LH + css::EC_KV_MARGIN;
+        let arrow = text(&h, "→");
+        at(arrow.pos, Pos2::new(body_left, fix), "→");
+        let heading = text(&h, "CANDIDATES, CLOSEST FIRST");
+        let heading_top = fix + css::LH + css::EC_FIX_MARGIN;
+        at(
+            heading.pos,
+            Pos2::new(body_left, heading_top),
+            "the heading",
+        );
+        assert_eq!(
+            heading.galley.job.sections[0].format.font_id,
+            body(css::CANDS_FS)
+        );
+        assert_eq!(
+            heading.galley.job.sections[0].format.extra_letter_spacing,
+            css::CAPITALS_SPACING
+        );
+        assert_eq!(colour(&heading, 0), css::CARD_ACCENT);
+        // `.cand`s: across the body, a line and its padding high, 4 apart.
+        let body_right = inner_right - css::EC_HEAD_SIDE;
+        let mut top = heading_top + css::LH + css::CANDS_MARGIN;
+        for name in ["Edge2", "Edge4"] {
+            let row = Rect::from_min_max(
+                Pos2::new(body_left, top),
+                Pos2::new(body_right, top + 2.0 * css::CAND_PADDING_Y + css::LH),
+            );
+            assert_eq!(
+                fills_at(&h, row),
+                [(css::CAND_BG, CornerRadius::same(css::R_SM), Stroke::NONE)],
+                "{name}'s row"
+            );
+            let shown = text(&h, name);
+            at(
+                shown.pos,
+                Pos2::new(body_left + css::CAND_PADDING_X, top + css::CAND_PADDING_Y),
+                name,
+            );
+            assert_eq!(shown.galley.job.sections[0].format.font_id, mono());
+            assert_eq!(colour(&shown, 0), css::CAND_TEXT);
+            top = row.bottom() + css::CAND_MARGIN;
+        }
+        // `.ec-actions`: Edit Hole (`.btn-secondary`, Gray.300, off: its words Gray.750),
+        // then Copy as JSON 6 after it (`.btn-ghost`: no fill, Gray.750), each 22 high.
+        let edit = h.get_by_role_and_label(Role::Button, "Edit Hole").rect();
+        assert!(
+            near(edit.left(), body_left) && near(edit.top(), top),
+            "{edit:?}"
+        );
+        assert!(near(edit.height(), css::BTN_H));
+        assert_eq!(
+            fills_at(&h, edit),
+            [(css::G300, CornerRadius::same(css::R_SM), Stroke::NONE)]
+        );
+        let copy = h.get_by_role_and_label(Role::Button, "Copy as JSON").rect();
+        assert!(
+            near(copy.left(), edit.right() + css::EC_ACTIONS_GAP) && near(copy.top(), top),
+            "{copy:?}"
+        );
+        assert!(near(copy.height(), css::BTN_H));
+        assert!(fills_at(&h, copy).is_empty(), "a ghost has no fill");
+        assert_eq!(colour(&text(&h, "Copy as JSON"), 0), css::G750);
+        // The card's frame, to 8 under the buttons (`.ec-body`'s padding) and its border.
+        let card = Rect::from_min_max(
+            Pos2::new(PANE.x + css::PAD, card_top),
+            Pos2::new(
+                PANE.x + W - css::PAD,
+                top + css::BTN_H + css::EC_BODY_BOTTOM + css::BORDER,
+            ),
+        );
+        assert_eq!(
+            fills_at(&h, card),
+            [(
+                css::ALERT_RED_BG,
+                CornerRadius::same(css::R),
+                Stroke::new(css::BORDER, css::CARD_BORDER)
+            )]
+        );
     }
 }

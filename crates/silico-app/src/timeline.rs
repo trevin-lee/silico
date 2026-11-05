@@ -376,6 +376,8 @@ fn features<P: Clients + 'static>(
         });
     }
     summary_label(ui, summary_rect, &said);
+    // Scrolled to once, whether its item was there or not.
+    tab.timeline_scrolled();
     if steps.contains(&Step::Running) {
         // The spinner turns only while a step runs.
         ui.ctx().request_repaint();
@@ -505,6 +507,10 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
         let hovered = response.hovered();
         if hovered {
             asked.hovered = Some(entry.id.clone());
+        }
+        if tab.timeline_scroll() == Some(&entry.id) {
+            // An error card's Show in timeline: its item brought into the track's view.
+            ui.scroll_to_rect(rect, Some(Align::Center));
         }
         let sketch = entry.kind == "sketch";
         let look = look(*step, sketch, hovered, selected);
@@ -1669,6 +1675,48 @@ mod tests {
             clips[0],
             track_left()
         );
+    }
+
+    #[test]
+    fn show_in_timeline_selects_the_feature_and_scrolls_its_item_into_the_track() {
+        use egui_kittest::kittest::NodeT;
+        // 40 items, 40 × 30 and 39 gaps of 4, about 1356 wide: past the 800 wide panel, so
+        // the last starts out of view at its right.
+        let mut many = features();
+        for n in 0..35 {
+            many.push(entry(&format!("x{n:07}"), "box", &[], Health::Healthy));
+        }
+        let last = many[39].id.clone();
+        let mut h = drawn(tab_of(Some(&many), 0));
+        let shown = |h: &Harness<'_, Shown>| h.get_by_label(last.as_str()).rect();
+        let before = shown(&h);
+        assert!(
+            before.left() > panel().right(),
+            "{before:?} in view already"
+        );
+        let toggled = |h: &Harness<'_, Shown>| {
+            h.get_by_label(last.as_str())
+                .accesskit_node()
+                .toggled()
+                .map(|toggled| toggled == eframe::egui::accesskit::Toggled::True)
+        };
+        assert_eq!(toggled(&h), Some(false));
+        h.state_mut()
+            .tab
+            .as_mut()
+            .unwrap()
+            .show_in_timeline(last.clone());
+        h.run_steps(4);
+        // Selected, and on the track, between its left and the panel's right.
+        let tab = h.state().tab.as_ref().unwrap();
+        assert_eq!(tab.selection().feature(), Some(&last));
+        assert_eq!(tab.timeline_scroll(), None, "scrolled to once");
+        let after = shown(&h);
+        assert!(
+            after.left() >= track_left() && after.right() <= panel().right() - css::PADDING,
+            "{after:?} out of the track"
+        );
+        assert_eq!(toggled(&h), Some(true));
     }
 
     /// A drag from `from` to `to`, held: pressed at `from`, moved past the drag threshold,

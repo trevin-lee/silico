@@ -12,8 +12,11 @@ use eframe::egui::{
     Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 
+use silico_core::document::FeatureId;
+
 use crate::icons::{Icon, IconSize};
 use crate::modal::{self, Kind};
+use crate::tab::Said;
 use crate::theme;
 
 /// The panel's padding at its sides (`--pad`).
@@ -448,57 +451,75 @@ pub(crate) fn outside_card(ui: &mut Ui, text: &str) -> bool {
     seen
 }
 
-/// An error card (`.err-card`), a warning's if `warning`: its icon and `message`, and
-/// `suggestion` after an arrow, if it has one.
-///
-/// SEAM: the rest of the prototype's card (DESIGN.md, *Agents as equal clients*; app.js's
-/// `errCard`): its code chip (`.ec-code`), its Feature and Parameter rows (`.ec-kv`; a
-/// dialog's card has its cause and Elements as lines, [`card_with`]), Copy as JSON, and Edit
-/// and Show in timeline. The tab keeps each problem's message, cause, elements, and
-/// suggestion (`tab::Said`); with the rest of the structured error kept, each is a row or a
-/// button here.
-pub(crate) fn card(ui: &mut Ui, warning: bool, message: &str, suggestion: Option<&str>) {
-    card_with(ui, warning, message, &[], suggestion);
+/// What an error card offers beside Copy as JSON (app.js's `errCard` and its `noEdit` and
+/// `noShow`): Edit, if it's offered, and whether the feature's dialog can open now; and
+/// Show in timeline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Offer {
+    pub edit: Option<bool>,
+    pub show: bool,
 }
 
-/// [`card`], with `details` under its message, each a line of its own (`errCard`'s message
-/// and its Elements), before its suggestion.
-pub(crate) fn card_with(
-    ui: &mut Ui,
-    warning: bool,
-    message: &str,
-    details: &[String],
-    suggestion: Option<&str>,
-) {
-    let (fill, border, head, icon) = if warning {
-        (
-            theme::WARNING_CARD_BG,
-            theme::WARNING_CARD_BORDER,
-            theme::WARNING_CARD_HEAD,
-            Icon::Warn,
-        )
-    } else {
-        (
-            theme::ERROR_CARD_BG,
-            theme::ERROR_CARD_BORDER,
-            theme::ERROR_CARD_HEAD,
-            Icon::Error,
-        )
-    };
-    let words = |text: &str| {
-        let mut job = LayoutJob::single_section(
-            text.to_owned(),
-            TextFormat {
-                line_height: Some(theme::BODY_LINE_HEIGHT),
-                ..format(theme::BODY_SIZE, theme::TEXT_STRONG, false)
-            },
-        );
-        job.wrap.max_width = f32::INFINITY;
-        job
-    };
+/// What an error card's button asked: the feature's dialog opened (Edit), or the feature
+/// selected and the timeline scrolled to it (Show in timeline). Copy as JSON is done where
+/// it's clicked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CardAct {
+    Edit(FeatureId),
+    Show(FeatureId),
+}
+
+/// The card's colours: an error's, or a warning's (`.err-card.warn`).
+struct CardLook {
+    fill: Color32,
+    border: Color32,
+    head: Color32,
+    words: Color32,
+    icon: Icon,
+}
+
+impl CardLook {
+    fn of(warning: bool) -> Self {
+        if warning {
+            CardLook {
+                fill: theme::WARNING_CARD_BG,
+                border: theme::WARNING_CARD_BORDER,
+                head: theme::WARNING_CARD_HEAD,
+                words: theme::WARNING_CARD_BODY_TEXT,
+                icon: Icon::Warn,
+            }
+        } else {
+            CardLook {
+                fill: theme::ERROR_CARD_BG,
+                border: theme::ERROR_CARD_BORDER,
+                head: theme::ERROR_CARD_HEAD,
+                words: theme::ERROR_CARD_BODY_TEXT,
+                icon: Icon::Error,
+            }
+        }
+    }
+}
+
+/// An error card (`.err-card`; app.js's `errCard`; DESIGN.md, *Errors carry the agent's
+/// words*), a warning's in its own colours if `said` is a warning's: its icon, its message,
+/// and its code at the head's right (`.ec-code`); under them its cause, its Feature (`name`,
+/// if the timeline lists it, then its ID), Elements (each a chip, and how many in all past
+/// those listed), and Parameter rows (`.ec-kv`), its suggestion after an arrow (`.ec-fix`),
+/// the names it offers in place of a broken one, and its buttons (`.ec-actions`): Edit and
+/// Show in timeline as `offer` offers them, and Copy as JSON, the core's error as an agent
+/// gets it. Each part only where `said` has it: a refusal said in words alone is its
+/// message and suggestion. What a button asked, if one was.
+///
+/// SEAM: each candidate's Use and the card's Remove the edge (a fillet's or chamfer's
+/// `edges` written with the candidate in the broken name's place, or without it), once the
+/// card can send an edit; and each candidate's why (`.cand .why`), which the core doesn't
+/// give.
+pub(crate) fn card(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> Option<CardAct> {
+    let look = CardLook::of(said.warning);
+    let mut asked = None;
     egui::Frame::new()
-        .fill(fill)
-        .stroke(Stroke::new(theme::BORDER_WIDTH, border))
+        .fill(look.fill)
+        .stroke(Stroke::new(theme::BORDER_WIDTH, look.border))
         .corner_radius(CornerRadius::same(theme::NORMAL_CORNER_RADIUS))
         .outer_margin(Margin {
             left: theme::VIEW_PADDING,
@@ -512,48 +533,480 @@ pub(crate) fn card_with(
             egui::Frame::new()
                 .inner_margin(theme::ERROR_CARD_HEAD_PADDING)
                 .show(ui, |ui| {
-                    ui.horizontal_top(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(theme::ERROR_CARD_GAP, 0.0);
-                        // `align-items: flex-start`: the icon at the top of the first line.
-                        let side = IconSize::Small.points();
-                        let (at, _) = ui.allocate_exact_size(
-                            vec2(side, theme::BODY_LINE_HEIGHT),
-                            Sense::hover(),
-                        );
-                        icon.image(IconSize::Small)
-                            .tint(head)
-                            .paint_at(ui, Rect::from_min_size(at.min, Vec2::splat(side)));
-                        ui.add(Label::new(words(message)).wrap().selectable(false));
-                    });
+                    ui.set_width(ui.available_width());
+                    card_head(ui, said, &look);
                 });
             egui::Frame::new()
                 .inner_margin(theme::ERROR_CARD_BODY_PADDING)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    for detail in details {
-                        ui.add(Label::new(words(detail)).wrap().selectable(false));
-                        ui.add_space(theme::ERROR_CARD_FIX_MARGIN);
-                    }
-                    let Some(suggestion) = suggestion else {
-                        return;
-                    };
-                    ui.horizontal_top(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(theme::ERROR_CARD_FIX_GAP, 0.0);
-                        ui.add(
-                            Label::new(LayoutJob::single_section(
-                                "→".to_owned(),
-                                TextFormat {
-                                    line_height: Some(theme::BODY_LINE_HEIGHT),
-                                    ..format(theme::BODY_SIZE, theme::ERROR_CARD_ACCENT, false)
-                                },
-                            ))
-                            .selectable(false),
-                        );
-                        ui.add(Label::new(words(suggestion)).wrap().selectable(false));
-                    });
-                    ui.add_space(theme::ERROR_CARD_FIX_MARGIN);
+                    asked = card_body(ui, said, name, offer, &look);
                 });
         });
+    asked
+}
+
+/// `text` in the body's type on a line of the body's, in `colour`, unwrapped (a label
+/// wraps it).
+fn card_words(text: &str, colour: Color32) -> LayoutJob {
+    let mut job = LayoutJob::single_section(
+        text.to_owned(),
+        TextFormat {
+            line_height: Some(theme::BODY_LINE_HEIGHT),
+            ..format(theme::BODY_SIZE, colour, false)
+        },
+    );
+    job.wrap.max_width = f32::INFINITY;
+    job
+}
+
+/// The head (`.ec-head`, `align-items: flex-start`): the icon at the top of the first line,
+/// the message in white beside it, wrapped short of the code chip at the head's right.
+fn card_head(ui: &mut Ui, said: &Said, look: &CardLook) {
+    let width = ui.available_width();
+    let side = IconSize::Small.points();
+    let code = said.code().map(|code| {
+        ui.painter().layout_no_wrap(
+            code.to_owned(),
+            FontId::monospace(theme::ERROR_CARD_CODE_SIZE),
+            theme::ERROR_CARD_ACCENT,
+        )
+    });
+    let chip_width = code
+        .as_ref()
+        .map(|code| code.size().x + 2.0 * theme::ERROR_CARD_CODE_PADDING);
+    let room = chip_width.map_or(0.0, |chip| chip + theme::ERROR_CARD_GAP);
+    let mut job = card_words(&said.message, theme::TEXT_STRONG);
+    job.wrap.max_width = (width - side - theme::ERROR_CARD_GAP - room).max(1.0);
+    let galley = ui.painter().layout_job(job);
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(width, galley.size().y.max(theme::BODY_LINE_HEIGHT)),
+        Sense::hover(),
+    );
+    look.icon
+        .image(IconSize::Small)
+        .tint(look.head)
+        .paint_at(ui, Rect::from_min_size(rect.min, Vec2::splat(side)));
+    modal::label_at(
+        ui,
+        pos2(rect.left() + side + theme::ERROR_CARD_GAP, rect.top()),
+        galley,
+    );
+    if let (Some(code), Some(chip_width)) = (code, chip_width) {
+        let chip = Rect::from_min_size(
+            pos2(rect.right() - chip_width, rect.top()),
+            vec2(chip_width, theme::BODY_LINE_HEIGHT),
+        );
+        ui.painter().rect_filled(
+            chip,
+            theme::ERROR_CARD_CODE_CORNER_RADIUS,
+            theme::ERROR_CARD_CODE_BG,
+        );
+        let text = code.text().to_owned();
+        ui.painter().galley(
+            pos2(
+                chip.left() + theme::ERROR_CARD_CODE_PADDING,
+                chip.center().y - code.size().y / 2.0,
+            ),
+            code,
+            theme::ERROR_CARD_ACCENT,
+        );
+        let response = ui.interact(chip, ui.id().with("error-code"), Sense::hover());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
+        response.on_hover_text("The error's code, as agents receive it");
+    }
+}
+
+/// The body (`.ec-body`): what [`card`] says under its head, and what its buttons asked.
+fn card_body(
+    ui: &mut Ui,
+    said: &Said,
+    name: Option<&str>,
+    offer: Offer,
+    look: &CardLook,
+) -> Option<CardAct> {
+    if let Some(cause) = &said.cause {
+        ui.add(
+            Label::new(card_words(cause, look.words))
+                .wrap()
+                .selectable(false),
+        );
+        ui.add_space(theme::ERROR_CARD_CAUSE_MARGIN);
+    }
+    let rows = card_rows(said, name);
+    if !rows.is_empty() {
+        card_grid(ui, &rows, look);
+        ui.add_space(theme::ERROR_CARD_ROWS_MARGIN);
+    }
+    if let Some(suggestion) = &said.suggestion {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing = vec2(theme::ERROR_CARD_FIX_GAP, 0.0);
+            ui.add(Label::new(card_words("→", theme::ERROR_CARD_ACCENT)).selectable(false));
+            ui.add(
+                Label::new(card_words(suggestion, theme::TEXT_STRONG))
+                    .wrap()
+                    .selectable(false),
+            );
+        });
+        ui.add_space(theme::ERROR_CARD_FIX_MARGIN);
+    }
+    candidates(ui, said.candidates());
+    card_buttons(ui, said, name, offer)
+}
+
+/// A row of the card's (`.ec-kv`): its key, what it says in the accessibility tree
+/// ("Elements: Edge3, Edge5 (the first 2 of 5)"), and its value.
+struct CardRow {
+    key: &'static str,
+    said: String,
+    value: RowValue,
+}
+
+/// A row's value as it's drawn.
+enum RowValue {
+    /// The feature's name, if the timeline lists it, then its ID in the monospace font.
+    Feature { name: Option<String>, id: String },
+    /// Each element named, a chip each, then, if more are at fault than are named, how many
+    /// in all.
+    Elements {
+        names: Vec<String>,
+        more: Option<String>,
+    },
+    /// Words.
+    Words(String),
+}
+
+/// The rows `said` has: its Feature (by `name` if the timeline lists it), its Elements,
+/// and its Parameter, in the prototype's order.
+fn card_rows(said: &Said, name: Option<&str>) -> Vec<CardRow> {
+    let mut rows = Vec::new();
+    if let Some(id) = said.feature() {
+        rows.push(CardRow {
+            key: "Feature",
+            said: match name {
+                Some(name) => format!("Feature: {name} {id}"),
+                None => format!("Feature: {id}"),
+            },
+            value: RowValue::Feature {
+                name: name.map(str::to_owned),
+                id: id.to_owned(),
+            },
+        });
+    }
+    if let Some(line) = said.elements_line() {
+        let named = said.elements.len() as u64;
+        rows.push(CardRow {
+            key: "Elements",
+            said: line,
+            value: RowValue::Elements {
+                names: said.elements.clone(),
+                more: (said.elements_total > named)
+                    .then(|| format!("the first {named} of {}", said.elements_total)),
+            },
+        });
+    }
+    if let Some(parameter) = said.parameter() {
+        rows.push(CardRow {
+            key: "Parameter",
+            said: format!("Parameter: {parameter}"),
+            value: RowValue::Words(parameter.to_owned()),
+        });
+    }
+    rows
+}
+
+/// An element's name as its chip shows it: whole up to
+/// [`theme::ERROR_CARD_CHIP_LONGEST`] characters, else its first
+/// [`theme::ERROR_CARD_CHIP_KEPT`] and an ellipsis (app.js's `e.slice(0, 32) + '…'`).
+pub(crate) fn chip_text(name: &str) -> String {
+    if name.chars().count() > theme::ERROR_CARD_CHIP_LONGEST {
+        let kept: String = name.chars().take(theme::ERROR_CARD_CHIP_KEPT).collect();
+        format!("{kept}…")
+    } else {
+        name.to_owned()
+    }
+}
+
+/// The rows' grid (`.ec-kv`, `grid-template-columns: auto 1fr`): each key in the accent,
+/// in a column as wide as the widest, and its value after the gap, the rows 2 apart; each
+/// row one label in the accessibility tree, saying its key and its value.
+fn card_grid(ui: &mut Ui, rows: &[CardRow], look: &CardLook) {
+    let small = |text: &str, colour: Color32| {
+        LayoutJob::single_section(
+            text.to_owned(),
+            TextFormat {
+                line_height: Some(theme::BODY_LINE_HEIGHT),
+                ..format(theme::ERROR_CARD_ROW_SIZE, colour, false)
+            },
+        )
+    };
+    let keys: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            ui.painter()
+                .layout_job(small(row.key, theme::ERROR_CARD_ACCENT))
+        })
+        .collect();
+    let column = keys.iter().map(|key| key.size().x).fold(0.0, f32::max);
+    let width = ui.available_width();
+    let value_left = column + theme::ERROR_CARD_ROW_GAP;
+    let value_width = (width - value_left).max(1.0);
+    for (at, (row, key)) in rows.iter().zip(keys).enumerate() {
+        if at > 0 {
+            ui.add_space(theme::ERROR_CARD_ROW_SPACING);
+        }
+        let painter = ui.painter().clone();
+        let place = ui.cursor().min;
+        let height = match &row.value {
+            RowValue::Feature { name, id } => {
+                let mut job = LayoutJob::default();
+                if let Some(name) = name {
+                    job.append(
+                        &format!("{name} "),
+                        0.0,
+                        TextFormat {
+                            line_height: Some(theme::BODY_LINE_HEIGHT),
+                            ..format(theme::ERROR_CARD_ROW_SIZE, look.words, false)
+                        },
+                    );
+                }
+                job.append(
+                    id,
+                    0.0,
+                    TextFormat {
+                        line_height: Some(theme::BODY_LINE_HEIGHT),
+                        ..format(
+                            theme::MONOSPACE_SIZE,
+                            look.words.gamma_multiply(theme::ERROR_CARD_ID_OPACITY),
+                            true,
+                        )
+                    },
+                );
+                job.wrap.max_width = value_width;
+                let galley = painter.layout_job(job);
+                let height = galley.size().y;
+                painter.galley(place + vec2(value_left, 0.0), galley, look.words);
+                height
+            }
+            RowValue::Words(words) => {
+                let mut job = small(words, look.words);
+                job.wrap.max_width = value_width;
+                let galley = painter.layout_job(job);
+                let height = galley.size().y;
+                painter.galley(place + vec2(value_left, 0.0), galley, look.words);
+                height
+            }
+            RowValue::Elements { names, more } => element_chips(
+                ui,
+                place + vec2(value_left, 0.0),
+                value_width,
+                names,
+                more.as_deref(),
+                look,
+            ),
+        };
+        let height = height.max(theme::BODY_LINE_HEIGHT);
+        painter.galley(place, key, theme::ERROR_CARD_ACCENT);
+        let (_, response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &row.said));
+    }
+}
+
+/// The Elements row's value, from `at`, `width` wide: each of `names` a chip (`.el-chip`),
+/// a space apart, wrapping as words do, then `more` in the row's words at the ID's opacity.
+/// Its height.
+fn element_chips(
+    ui: &Ui,
+    at: egui::Pos2,
+    width: f32,
+    names: &[String],
+    more: Option<&str>,
+    look: &CardLook,
+) -> f32 {
+    let painter = ui.painter();
+    let line = theme::BODY_LINE_HEIGHT;
+    let space = painter
+        .layout_no_wrap(
+            " ".to_owned(),
+            FontId::proportional(theme::ERROR_CARD_ROW_SIZE),
+            look.words,
+        )
+        .size()
+        .x;
+    let (mut x, mut y) = (0.0f32, 0.0f32);
+    let mut place = |item: f32| {
+        if x > 0.0 && x + item > width {
+            x = 0.0;
+            y += line;
+        }
+        let left = x;
+        x += item + space;
+        pos2(at.x + left, at.y + y)
+    };
+    for name in names {
+        let galley = painter.layout_no_wrap(
+            chip_text(name),
+            FontId::monospace(theme::ERROR_CARD_CHIP_SIZE),
+            theme::ERROR_CARD_CHIP_TEXT,
+        );
+        let size = vec2(
+            galley.size().x + 2.0 * theme::ERROR_CARD_CHIP_PADDING,
+            galley.size().y,
+        );
+        let corner = place(size.x);
+        let chip = Rect::from_min_size(pos2(corner.x, corner.y + (line - size.y) / 2.0), size);
+        painter.rect_filled(
+            chip,
+            theme::ERROR_CARD_CHIP_CORNER_RADIUS,
+            theme::ERROR_CARD_CHIP_BG,
+        );
+        painter.galley(
+            pos2(chip.left() + theme::ERROR_CARD_CHIP_PADDING, chip.top()),
+            galley,
+            theme::ERROR_CARD_CHIP_TEXT,
+        );
+    }
+    if let Some(more) = more {
+        let colour = look.words.gamma_multiply(theme::ERROR_CARD_ID_OPACITY);
+        let galley = painter.layout_job(LayoutJob::single_section(
+            more.to_owned(),
+            TextFormat {
+                line_height: Some(line),
+                ..format(theme::ERROR_CARD_ROW_SIZE, colour, false)
+            },
+        ));
+        let corner = place(galley.size().x);
+        painter.galley(corner, galley, colour);
+    }
+    y + line
+}
+
+/// The names a broken reference's error offers in its place, closest first (`errCard`'s
+/// candidates): a heading in capitals, then each name in a row of its own (`.cand`), its
+/// name in the monospace font, cut short with an ellipsis where it doesn't fit.
+fn candidates(ui: &mut Ui, names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    let heading = LayoutJob::single_section(
+        "CANDIDATES, CLOSEST FIRST".to_owned(),
+        TextFormat {
+            line_height: Some(theme::BODY_LINE_HEIGHT),
+            extra_letter_spacing: theme::CAPITALS_LETTER_SPACING,
+            ..format(
+                theme::ERROR_CARD_CANDIDATES_SIZE,
+                theme::ERROR_CARD_ACCENT,
+                false,
+            )
+        },
+    );
+    ui.add(Label::new(heading).selectable(false));
+    ui.add_space(theme::ERROR_CARD_CANDIDATES_MARGIN);
+    for name in names {
+        egui::Frame::new()
+            .fill(theme::ERROR_CARD_CANDIDATE_BG)
+            .corner_radius(CornerRadius::same(theme::SMALL_CORNER_RADIUS))
+            .inner_margin(theme::ERROR_CARD_CANDIDATE_PADDING)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let mut job = LayoutJob::single_section(
+                    name.clone(),
+                    TextFormat {
+                        line_height: Some(theme::BODY_LINE_HEIGHT),
+                        ..format(
+                            theme::MONOSPACE_SIZE,
+                            theme::ERROR_CARD_CANDIDATE_TEXT,
+                            true,
+                        )
+                    },
+                );
+                job.wrap = TextWrapping::truncate_at_width(ui.available_width());
+                ui.add(Label::new(job).selectable(false))
+                    .on_hover_text(name.as_str());
+            });
+        ui.add_space(theme::ERROR_CARD_CANDIDATE_MARGIN);
+    }
+}
+
+/// One of the card's buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Which {
+    Edit,
+    Show,
+    Copy,
+}
+
+/// The card's buttons (`.ec-actions`, wrapped, 6 apart each way): Edit (the edit icon and
+/// `name`, as `.btn-secondary`) if offered and the card names a feature, off if its dialog
+/// can't open now; Show in timeline (`.btn-ghost`) if offered and it names one; and Copy as
+/// JSON (`.btn-ghost`) if the core said it, which puts its JSON on the clipboard. What
+/// Edit or Show asked, if either was clicked.
+fn card_buttons(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> Option<CardAct> {
+    let feature = said.feature().and_then(FeatureId::new);
+    let json = said.json();
+    let edit_words = match name {
+        Some(name) => format!("Edit {name}"),
+        None => "Edit feature".to_owned(),
+    };
+    let mut buttons: Vec<(Which, modal::Button<'_>)> = Vec::new();
+    if feature.is_some()
+        && let Some(on) = offer.edit
+    {
+        buttons.push((
+            Which::Edit,
+            modal::Button::new(&edit_words, Kind::Secondary)
+                .icon(Icon::Edit)
+                .enabled(on),
+        ));
+    }
+    if feature.is_some() && offer.show {
+        buttons.push((
+            Which::Show,
+            modal::Button::new("Show in timeline", Kind::Ghost),
+        ));
+    }
+    if json.is_some() {
+        buttons.push((Which::Copy, modal::Button::new("Copy as JSON", Kind::Ghost)));
+    }
+    if buttons.is_empty() {
+        return None;
+    }
+    // Placed as `flex-wrap` places them: in a line until the next doesn't fit.
+    let width = ui.available_width();
+    let gap = theme::ERROR_CARD_ACTIONS_GAP;
+    let (mut x, mut y) = (0.0f32, 0.0f32);
+    let mut places = Vec::with_capacity(buttons.len());
+    for (_, button) in &buttons {
+        let wide = modal::natural_width(ui, button);
+        if x > 0.0 && x + wide > width {
+            x = 0.0;
+            y += theme::BUTTON_HEIGHT + gap;
+        }
+        places.push((x, y, wide));
+        x += wide + gap;
+    }
+    let (whole, _) = ui.allocate_exact_size(vec2(width, y + theme::BUTTON_HEIGHT), Sense::hover());
+    let mut asked = None;
+    for ((which, button), (x, y, wide)) in buttons.iter().zip(places) {
+        let rect = Rect::from_min_size(whole.min + vec2(x, y), vec2(wide, theme::BUTTON_HEIGHT));
+        let response = modal::paint(ui, rect, button);
+        let clicked = match which {
+            Which::Copy => response
+                .on_hover_text("Copies the structured error an agent receives")
+                .clicked(),
+            Which::Edit | Which::Show => response.clicked(),
+        };
+        if !clicked {
+            continue;
+        }
+        match (which, &feature, &json) {
+            (Which::Edit, Some(id), _) => asked = Some(CardAct::Edit(id.clone())),
+            (Which::Show, Some(id), _) => asked = Some(CardAct::Show(id.clone())),
+            (Which::Copy, _, Some(json)) => ui.ctx().copy_text(json.clone()),
+            _ => {}
+        }
+    }
+    asked
 }
 
 /// A selection box (`.selbox`), the active one if `active`: a chip of `chosen`'s name with

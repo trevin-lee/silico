@@ -26,8 +26,10 @@ use crate::dialog::{Dialog, Kind, feature_node};
 /// What a feature's mark says: its first problem's (or warning's) message, its cause and
 /// the elements it names, if it has them, and how many elements are at fault in all (more
 /// than it names where there are too many to list, ARCHITECTURE.md's invariant 9), and its
-/// suggestion, from a `check` of the model the timeline's marks came from; and whether it's
-/// a warning's.
+/// suggestion, from a `check` of the model the timeline's marks came from; whether it's a
+/// warning's; and the core's error or warning itself, whole, if it's one (a refusal said
+/// in words alone isn't): what its card reads its code, feature, parameter, and candidates
+/// from, and copies as the JSON an agent gets.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Said {
     pub warning: bool,
@@ -36,6 +38,24 @@ pub struct Said {
     pub elements: Vec<String>,
     pub elements_total: u64,
     pub suggestion: Option<String>,
+    pub source: Option<Source>,
+}
+
+/// What the core said, kept whole: an error, or a warning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    Error(silico_core::Error),
+    Warning(silico_core::Warning),
+}
+
+impl Source {
+    /// Every field the error contract writes, borrowed.
+    fn said(&self) -> silico_core::Said<'_> {
+        match self {
+            Source::Error(error) => error.said(),
+            Source::Warning(warning) => warning.said(),
+        }
+    }
 }
 
 impl Said {
@@ -48,6 +68,7 @@ impl Said {
             elements: error.elements().to_vec(),
             elements_total: error.elements_total(),
             suggestion: error.suggestion().map(str::to_owned),
+            source: Some(Source::Error(error.clone())),
         }
     }
 
@@ -60,7 +81,46 @@ impl Said {
             elements: warning.elements().to_vec(),
             elements_total: warning.elements_total(),
             suggestion: warning.suggestion().map(str::to_owned),
+            source: Some(Source::Warning(warning.clone())),
         }
+    }
+
+    /// Its code, as an agent matches on it (`reference_broken`), if the core said it.
+    pub fn code(&self) -> Option<&'static str> {
+        self.source.as_ref().map(|source| source.said().code)
+    }
+
+    /// The feature it's about, by its ID, if the core named one.
+    pub fn feature(&self) -> Option<&str> {
+        self.source
+            .as_ref()
+            .and_then(|source| source.said().feature)
+    }
+
+    /// The field at fault, if the core named one.
+    pub fn parameter(&self) -> Option<&str> {
+        self.source
+            .as_ref()
+            .and_then(|source| source.said().parameter)
+    }
+
+    /// The names it offers in place of one broken, closest first.
+    pub fn candidates(&self) -> &[String] {
+        self.source
+            .as_ref()
+            .map_or(&[], |source| source.said().candidates)
+    }
+
+    /// The core's error or warning as the command API writes it, byte for byte: the error
+    /// contract's shape (`tests/contract/error-full.json`), on one line, as an agent gets it
+    /// over MCP. None for a refusal said in words alone, or one too long to write.
+    pub fn json(&self) -> Option<String> {
+        use silico_core::command::wire::{self, Layout, ToWire};
+        let value = match self.source.as_ref()? {
+            Source::Error(error) => error.to_wire(),
+            Source::Warning(warning) => warning.to_wire(),
+        };
+        wire::write(&value, Layout::OneLine).ok()
     }
 
     /// Its elements as the card lists them: each it names, and, where it names fewer than
@@ -461,6 +521,8 @@ pub struct Tab {
     /// and of the document (the gate's problems).
     pub said: BTreeMap<String, Said>,
     pub document_problems: Vec<Said>,
+    /// The feature the timeline is to scroll to, once (an error card's Show in timeline).
+    timeline_scroll: Option<FeatureId>,
     /// A `check` read, and whether it's of a document the gate refused (whose problems are
     /// all the document's).
     check_read: Option<(bool, Running<CheckAnswer>)>,
@@ -657,6 +719,7 @@ impl Tab {
             rebuild_out: false,
             said: BTreeMap::new(),
             document_problems: problems.errors().iter().map(Said::of).collect(),
+            timeline_scroll: None,
             check_read: None,
             check_superseded: false,
             check_first: false,
@@ -2814,6 +2877,59 @@ impl Tab {
         }
     }
 
+    /// The feature `id` (by its ID as written) as the timeline lists it, if it does.
+    pub fn entry(&self, id: &str) -> Option<&Entry> {
+        self.timeline
+            .as_ref()?
+            .features
+            .as_ref()?
+            .iter()
+            .find(|entry| entry.id.as_str() == id)
+    }
+
+    /// Whether Edit Feature would open the feature `id`'s dialog now: it has one, and one
+    /// may open ([`can_open`](Self::can_open)).
+    pub fn can_edit(&self, id: &FeatureId) -> bool {
+        self.kind_of(id).is_some_and(|kind| self.can_open(kind))
+    }
+
+    /// An error card's Show in timeline: the feature `id` selected alone, and the timeline
+    /// scrolled to its item once it's next drawn.
+    pub fn show_in_timeline(&mut self, id: FeatureId) {
+        self.selection.select_feature(id.clone());
+        self.timeline_scroll = Some(id);
+    }
+
+    /// The feature the timeline is to scroll to, if one is.
+    pub fn timeline_scroll(&self) -> Option<&FeatureId> {
+        self.timeline_scroll.as_ref()
+    }
+
+    /// The timeline has scrolled to it (or had nothing to scroll), once.
+    pub fn timeline_scrolled(&mut self) {
+        self.timeline_scroll = None;
+    }
+
+    /// What an error card asked (`errCard`'s Edit and Show in timeline), done through
+    /// `sessions`: whether a command was started.
+    pub(crate) fn card_asked<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        asked: crate::properties::CardAct,
+    ) -> bool {
+        match asked {
+            crate::properties::CardAct::Edit(id) => {
+                // SEAM(#351): Edit Sketch for a sketch, as the timeline's double-click.
+                self.edit_feature(sessions, &id);
+                true
+            }
+            crate::properties::CardAct::Show(id) => {
+                self.show_in_timeline(id);
+                false
+            }
+        }
+    }
+
     /// The dialog kind of the feature `id`, if the timeline lists it and a dialog edits it.
     pub fn kind_of(&self, id: &FeatureId) -> Option<Kind> {
         self.timeline
@@ -3284,8 +3400,8 @@ mod tests {
         let mut tab = tab();
         tab.took_check(
             &CheckAnswer {
-                problems: Problems::from(error),
-                warnings: silico_core::warnings::Warnings::of([warning]),
+                problems: Problems::from(error.clone()),
+                warnings: silico_core::warnings::Warnings::of([warning.clone()]),
             },
             false,
         );
@@ -3296,6 +3412,7 @@ mod tests {
             elements: vec!["Edge1".to_owned(), "Edge2".to_owned()],
             elements_total: 150,
             suggestion: Some("try a smaller radius".to_owned()),
+            source: Some(Source::Error(error)),
         };
         assert_eq!(tab.said.get("f0000001"), Some(&fillet));
         assert_eq!(
@@ -3309,6 +3426,7 @@ mod tests {
             elements: vec!["pa000001".to_owned()],
             elements_total: 3,
             suggestion: Some("join them".to_owned()),
+            source: Some(Source::Warning(warning)),
         };
         assert_eq!(tab.said.get("s0000001"), Some(&sketch));
         assert_eq!(

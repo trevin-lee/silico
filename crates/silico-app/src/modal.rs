@@ -32,14 +32,16 @@ pub(crate) enum Kind {
     Danger,
     /// `.canvas-banner .btn-secondary`: a button on a banner whose words are this colour.
     Banner(Color32),
-    /// `.btn-ghost`: no fill until hovered (Mark as seen).
+    /// `.btn-ghost`: no fill until hovered (Mark as seen, and an error card's Show in
+    /// timeline and Copy as JSON).
     Ghost,
 }
 
-/// A button: its words (its label), its kind, its key cap if it shows one, and whether it's
-/// on.
+/// A button: its icon before its words, if it has one, its words (its label), its kind, its
+/// key cap if it shows one, and whether it's on.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Button<'a> {
+    pub icon: Option<Icon>,
     pub text: &'a str,
     pub kind: Kind,
     pub cap: Option<&'a str>,
@@ -47,13 +49,22 @@ pub(crate) struct Button<'a> {
 }
 
 impl<'a> Button<'a> {
-    /// A button of `kind` saying `text`, on, with no key cap.
+    /// A button of `kind` saying `text`, on, with no icon and no key cap.
     pub(crate) fn new(text: &'a str, kind: Kind) -> Self {
         Button {
+            icon: None,
             text,
             kind,
             cap: None,
             enabled: true,
+        }
+    }
+
+    /// With `icon` before its words (`.btn svg`, [`theme::BUTTON_GAP`] from them).
+    pub(crate) fn icon(self, icon: Icon) -> Self {
+        Button {
+            icon: Some(icon),
+            ..self
         }
     }
 
@@ -311,7 +322,12 @@ pub(crate) fn natural_width(ui: &Ui, button: &Button<'_>) -> f32 {
     let cap = button.cap.map_or(0.0, |cap| {
         cap_space() + cap_width(&cap_galley(ui, cap, Color32::WHITE))
     });
-    words + cap + 2.0 * theme::BUTTON_PADDING
+    words + cap + icon_room(button) + 2.0 * theme::BUTTON_PADDING
+}
+
+/// The room `button`'s icon takes before its words, its gap included: none without one.
+fn icon_room(button: &Button<'_>) -> f32 {
+    button.icon.map_or(0.0, |_| ICON_SIZE + theme::BUTTON_GAP)
 }
 
 /// The space between a button's words and its key cap: the button's gap and the cap's margin
@@ -380,11 +396,24 @@ pub(crate) fn paint(ui: &mut Ui, rect: Rect, button: &Button<'_>) -> Response {
             let words = ui.painter().layout_job(properties::body(button.text, ink));
             let cap = button.cap.map(|cap| cap_galley(ui, cap, ink));
             let cap_room = cap.as_ref().map_or(0.0, |cap| cap_space() + cap_width(cap));
-            let content = words.size().x + cap_room;
+            let icon_room = icon_room(button);
+            let content = icon_room + words.size().x + cap_room;
             let left = rect.center().x - content / 2.0;
             let middle = rect.center().y;
-            ui.painter()
-                .galley(pos2(left, middle - words.size().y / 2.0), words, ink);
+            if let Some(icon) = button.icon {
+                icon.image(IconSize::Small).tint(ink).paint_at(
+                    ui,
+                    Rect::from_min_size(
+                        pos2(left, middle - ICON_SIZE / 2.0),
+                        Vec2::splat(ICON_SIZE),
+                    ),
+                );
+            }
+            ui.painter().galley(
+                pos2(left + icon_room, middle - words.size().y / 2.0),
+                words,
+                ink,
+            );
             if let Some(cap) = cap {
                 let width = cap_width(&cap);
                 let cap_rect = Rect::from_min_size(
