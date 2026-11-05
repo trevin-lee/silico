@@ -262,6 +262,24 @@ pub fn meshes<K: Kernel>(
                 solid.id,
             )?;
             let vertices = named(map, ElementKind::Vertex, None, solid.id)?;
+            // Vertices have no counts for `named` to check: their points are checked here.
+            if let Some(mesh) = mesh.as_deref()
+                && mesh.vertex_points.len() != vertices.len()
+            {
+                return Err(Problems::from(
+                    Error::new(
+                        ErrorCode::Internal,
+                        format!(
+                            "{}'s element map names {} vertices, and its mesh, checked, {}",
+                            solid.id,
+                            vertices.len(),
+                            mesh.vertex_points.len()
+                        ),
+                    )
+                    .with_feature(solid.id.as_str())
+                    .with_suggestion(SILICO_BUG),
+                ));
+            }
             // At its floor when the kernel used more than was asked: a function of the read
             // and the solid alone, never of what the shared cache has seen.
             let serves = match (deflection > level, mesh_level(deflection)) {

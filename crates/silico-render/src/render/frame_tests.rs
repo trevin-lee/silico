@@ -2633,6 +2633,42 @@ fn a_corner_is_picked_within_its_disc_before_the_top_face_and_past_it_the_face_i
     );
 }
 
+/// The corner nearest the eye, (20, 20, 20), at the corner camera's offset from its target
+/// d = (10, 10, 10): right·d = 0 and up·d = (−10 − 10 + 20)/√6 = 0, so it lands at the image's
+/// centre, (400, 400), and the pixel (400, 400) has its centre 0.71 pixels from it. It is the
+/// scene's front: the orthographic camera stands its margin (1 mm, past 1% of the reach
+/// 10√3 = 17.32 mm) in front of it. At 100 mm high the disc's reach, 0.012 × 100 = 1.2 mm,
+/// is past that margin, and a disc moved all of it would be cut by the near plane and leave
+/// the corner to its edges and faces; at 80 mm, 0.96 mm, it is not.
+#[test]
+fn the_corner_nearest_an_orthographic_eye_is_picked_however_high_the_view() {
+    on_lavapipe(
+        "render::frame_tests::the_corner_nearest_an_orthographic_eye_is_picked_however_high_the_view",
+        |r| {
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [20.0; 3])))
+                .unwrap();
+            // (x1, y1, z1): `Vertex7` in the box's order ([`box_mesh`]).
+            let front = Element::Vertex(7);
+            for view_height in [80.0, 100.0, 400.0, 4000.0] {
+                let camera = corner_camera(Projection::Orthographic { view_height });
+                assert_pixel(
+                    project(&camera, CORNER_SIZE, [20.0, 20.0, 20.0]),
+                    [400.0, 400.0],
+                    1e-9,
+                );
+                let picked = pick(r, &corner_frame(&camera, [400, 400], Some(7.0)));
+                let hit = picked.hit.unwrap();
+                assert_eq!(
+                    (hit.body, hit.hit),
+                    (1, front),
+                    "a view {view_height} mm high"
+                );
+                assert_eq!(hit.point, Some([20.0, 20.0, 20.0]));
+            }
+        },
+    );
+}
+
 #[test]
 fn a_vertex_nearer_a_perspective_eye_than_it_draws_is_never_picked() {
     on_lavapipe(

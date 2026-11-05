@@ -1587,8 +1587,9 @@ impl View {
 
     /// Where a vertex at `p` has its picking disc: [`View::at`], moved toward the eye by
     /// [`VERTEX_REACH`] of the view's height there, in f64 before it's f32; along the view
-    /// (orthographic) or along its line to the eye (perspective, at most
-    /// [`MOST_VERTEX_REACH`] of its depth), so it lands on the same pixel.
+    /// (orthographic, at most halfway to the near plane) or along its line to the eye
+    /// (perspective, at most [`MOST_VERTEX_REACH`] of its depth), so it lands on the same
+    /// pixel.
     fn disc_at(&self, p: [f64; 3]) -> glam::Vec3 {
         let d = sub(p, self.origin);
         let mut v = [
@@ -1600,7 +1601,9 @@ impl View {
             let toward = (VERTEX_REACH * self.span).min(MOST_VERTEX_REACH);
             v = v.map(|c| c * (1.0 - toward));
         } else {
-            v[2] += VERTEX_REACH * self.span;
+            // The near plane is at the camera (z = 0), as little as a millimetre in front of
+            // the scene: at most halfway there, so a vertex at the scene's front isn't cut.
+            v[2] = (v[2] + VERTEX_REACH * self.span).min(v[2] / 2.0);
         }
         vec3(v)
     }

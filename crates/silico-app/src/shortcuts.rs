@@ -352,8 +352,6 @@ const FILTER_EDGE: Entry = entry(
     &[Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::E))],
     Some("Toggles whether edges can be selected"),
 );
-/// Vertices aren't picked yet (M5.7's part 3): the filter is kept, and matters once they
-/// are.
 const FILTER_VERTEX: Entry = entry(
     Command::FilterVertex,
     "Vertices",
