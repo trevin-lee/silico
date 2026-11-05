@@ -299,6 +299,146 @@ fn every_pane_has_its_label() {
     }
 }
 
+/// The prototype's `#main` (styles.css): `grid-template-columns: var(--browser-w) 1fr
+/// var(--right-w)`, `--browser-w: 248px`, `--right-w: 296px`, every box `border-box`, with
+/// `#browser`'s `border-right: 1px` and `#right`'s `border-left: 1px` inside them; `#main`
+/// fills the window's width between the toolbar and the timeline, with no padding.
+#[test]
+fn the_panes_are_the_prototypes_columns_the_browser_248_the_properties_296_and_the_canvas_the_rest()
+{
+    // The harness draws the app inside a margin of 8 (egui_kittest's `run_ui`:
+    // `Frame::central_panel(..).outer_margin(8.0)`), so a harness 16 more each way gives the
+    // app the window it's named for, its top left at (8, 8).
+    const MARGIN: f32 = 8.0;
+    // (window width and height, the canvas's x and width, the right panel's x), from the
+    // window's left, by hand: the browser 0 to 248 (its border 247 to 248), the right
+    // panel's border the 1 before its panel, the canvas between. At 1280: 1280 − 248 − 296 =
+    // 736, the border at 248 + 736 = 984, the panel from 985 (1280 − 295). At 1600: 1600 −
+    // 544 = 1056, the panel from 1305. At 500, under the side columns' 544: `1fr` is nothing
+    // (`#canvas-wrap`'s `min-width: 0`), the panel's border at 248, the panel from 249 to
+    // 544, past the window's right edge. At the window's least size, 884 by 336 (main.rs):
+    // 884 − 544 = 340, the panel from 589 (884 − 295).
+    for (window, window_h, canvas_w, right_x) in [
+        (1280.0, 800.0, 736.0, 985.0),
+        (1600.0, 800.0, 1056.0, 1305.0),
+        (500.0, 800.0, 0.0, 249.0),
+        (884.0, 336.0, 340.0, 589.0),
+    ] {
+        // Sessions of its own for each window: one holds the file it opened.
+        let f = fixture();
+        let path = f.file("example.silico", EXAMPLE);
+        let app = App::new(Arc::clone(&f.sessions));
+        let mut h = {
+            let _marked = never_waits::marked();
+            Harness::builder()
+                .with_size((window + 2.0 * MARGIN, window_h + 2.0 * MARGIN))
+                .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+        };
+        h.state_mut().open(path.to_str().unwrap(), false);
+        step_until(&mut h, "the panes", |h| {
+            h.query_by_role_and_label(Role::Pane, "Viewport").is_some()
+        });
+        step(&mut h);
+        let pane = |label| {
+            h.get_by_role_and_label(Role::Pane, label)
+                .rect()
+                .translate(-eframe::egui::vec2(MARGIN, MARGIN))
+        };
+        let (browser, canvas, right) = (pane("Browser"), pane("Viewport"), pane("Properties"));
+        let at = format!("at {window} by {window_h}");
+        assert_eq!((browser.left(), browser.width()), (0.0, 247.0), "{at}");
+        assert_eq!((canvas.left(), canvas.width()), (248.0, canvas_w), "{at}");
+        assert_eq!((right.left(), right.width()), (right_x, 295.0), "{at}");
+        // Their top the toolbar's bottom: `--top-bar-h` 30, then the toolbar's
+        // `--toolbar-tabs-h` 24, `--toolbar-h` 52, and its `border-bottom` 1.
+        assert_eq!(browser.top(), 30.0 + 24.0 + 52.0 + 1.0, "{at}");
+        // Side by side, the three the same height, down to the timeline, which runs the
+        // window's width: to 1 above its 40, egui's separator line, the timeline's border,
+        // drawn outside its panel (where `#timeline`'s `border-top` is inside its 40); the
+        // status bar, `--status-h` 24, under it.
+        let timeline = pane("Timeline");
+        for rect in [canvas, right] {
+            assert_eq!(rect.y_range(), browser.y_range(), "{at}");
+        }
+        assert_eq!(browser.bottom() + 1.0, timeline.top(), "{at}");
+        assert_eq!((timeline.left(), timeline.right()), (0.0, window), "{at}");
+        assert_eq!(timeline.bottom(), window_h - 24.0, "{at}");
+        // The viewport draws in its pane's rect, once it has drawn a frame.
+        if canvas_w > 0.0 {
+            step_until(&mut h, "the viewport's frame", |h| {
+                view(h).frame().is_some()
+            });
+            assert_eq!(
+                the_viewport(&h),
+                h.get_by_role_and_label(Role::Pane, "Viewport").rect(),
+                "{at}"
+            );
+        }
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+/// The prototype's columns are fixed (`#main`'s `grid-template-columns`, no splitter): either
+/// border, the browser's (247 to 248) or the properties' (984 to 985 at 1280), hovered shows
+/// no resize cursor (`#browser` and `#right` set none), and a drag along it moves neither,
+/// by hand the same 247, 736, and 295 wide after as before.
+#[test]
+fn a_drag_on_a_panes_border_resizes_no_column() {
+    use eframe::egui::{Event, Modifiers, PointerButton, pos2, vec2};
+    const MARGIN: f32 = 8.0;
+    let f = fixture();
+    let path = f.file("example.silico", EXAMPLE);
+    let app = App::new(Arc::clone(&f.sessions));
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0 + 2.0 * MARGIN, 800.0 + 2.0 * MARGIN))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(&mut h, "the panes", |h| {
+        h.query_by_role_and_label(Role::Pane, "Viewport").is_some()
+    });
+    step(&mut h);
+    let widths = |h: &Harness<'_, App<Fake>>| {
+        ["Browser", "Viewport", "Properties"]
+            .map(|label| h.get_by_role_and_label(Role::Pane, label).rect().width())
+    };
+    assert_eq!(widths(&h), [247.0, 736.0, 295.0]);
+    let middle = MARGIN + 30.0 + 24.0 + 52.0 + 1.0 + 200.0;
+    for border in [247.5, 984.5] {
+        let from = pos2(MARGIN + border, middle);
+        h.hover_at(from);
+        step(&mut h);
+        assert_ne!(
+            h.output().platform_output.cursor_icon,
+            eframe::egui::CursorIcon::ResizeHorizontal,
+            "the border at {border}"
+        );
+        h.event(Event::PointerButton {
+            pos: from,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        step(&mut h);
+        for i in 1..=8u8 {
+            h.hover_at(from + vec2(10.0 * f32::from(i), 0.0));
+            step(&mut h);
+        }
+        h.event(Event::PointerButton {
+            pos: from + vec2(80.0, 0.0),
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+        step(&mut h);
+        step(&mut h);
+        assert_eq!(widths(&h), [247.0, 736.0, 295.0], "the border at {border}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn opening_the_m2_1_example_shows_its_three_features_in_order_and_its_body() {
     let f = fixture();

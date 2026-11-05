@@ -635,7 +635,9 @@ impl<P: Clients + 'static> App<P> {
             &self.sessions,
             &mut started,
         );
-        egui::CentralPanel::default().show(ui, |ui| {
+        // The panes reach the bars and the window's sides, as `#main` fills its grid area.
+        let main = egui::Frame::NONE.fill(theme::PANEL_BG);
+        egui::CentralPanel::default().frame(main).show(ui, |ui| {
             let active = self.active_place();
             let shown = active.and_then(|at| self.tabs.get(at)).map(|tab| tab.id);
             // A left drag held in a tab no longer shown ends there, before the pane draws.
@@ -662,6 +664,7 @@ impl<P: Clients + 'static> App<P> {
                 drawing,
                 dialog_key,
             };
+            panes::fit(tree, ui.available_width());
             tree.ui(&mut panes, ui);
             // Over the canvas, drawn after it, so it takes the pointer over its place.
             let canvas = tree
