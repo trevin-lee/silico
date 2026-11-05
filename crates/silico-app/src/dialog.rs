@@ -1780,6 +1780,49 @@ mod tests {
     }
 
     #[test]
+    fn a_box_of_edges_refuses_a_vertex_whatever_the_canvas_picked() {
+        // As a face is: the canvas picks only what the box takes; a vertex that reached it
+        // all the same is refused, said, and nothing written, in a fillet's box and a
+        // chamfer's.
+        let vertex = Toggled {
+            name: "k7f2qx3m.box.Vertex2".to_owned(),
+            stored: Ok(Arc::new(Name::Element {
+                feature: FeatureId::new("k7f2qx3m").unwrap(),
+                made: silico_core::naming::TypeWord::Primitive(
+                    silico_core::naming::PrimitiveKind::Box,
+                ),
+                element: silico_protocol::ElementRef {
+                    kind: ElementKind::Vertex,
+                    index: 2,
+                },
+            })),
+            kind: Some(ElementKind::Vertex),
+            ..toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")
+        };
+        let mut fillet = edges_dialog();
+        let mut chamfer = Dialog::new(Kind::Chamfer, None, 1);
+        for (dialog, of) in [(&mut fillet, "fillet"), (&mut chamfer, "chamfer")] {
+            assert_eq!(dialog.take(&vertex), Taken::Refused, "{of}");
+            assert_eq!(
+                dialog.names().unwrap().said,
+                Some(Says::Refused(format!(
+                    "k7f2qx3m.box.Vertex2 is a vertex: a {of} takes edges"
+                ))),
+                "{of}"
+            );
+            assert!(dialog.names().unwrap().names.is_empty(), "{of}");
+            assert_eq!(dialog.names().unwrap().body, None, "{of}");
+            assert_eq!(field(dialog, "edges"), None, "{of}");
+            // An edge is taken.
+            assert_eq!(
+                dialog.take(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")),
+                Taken::Added,
+                "{of}"
+            );
+        }
+    }
+
+    #[test]
     fn a_pick_on_the_body_its_feature_is_built_into_is_read_against_its_base() {
         // A fillet f0000001 on k7f2qx3m, open under Edit Feature, a later feature's body
         // r0000001 built through it. A pick there is read against the base: found, it's the

@@ -3067,6 +3067,48 @@ mod tests {
     }
 
     #[test]
+    fn a_box_of_edges_picks_no_vertex_and_draws_no_discs_until_it_lets_go() {
+        // A vertex at the centre pixel, an edge 2 pixels off, as the vertex-first test has
+        // them: while a box of edges takes the canvas, the vertex isn't picked (the edge
+        // is), and the frame gets no discs, so none wins an edge's pixels.
+        let bodies = BTreeMap::from([(1, body_of_each("k7f2qx3m"))]);
+        let rect = square([50.0, 50.0], [100, 100], 3);
+        let pick = |hit: Element, pixel: [u32; 2]| crate::renderer::Pick {
+            body: 1,
+            hit,
+            pixel,
+            point: None,
+        };
+        let picking = Picking {
+            frame: 1,
+            rect,
+            hit: Some(pick(Element::Vertex(2), [50, 50])),
+            edge: Some(pick(Element::Edge(1), [52, 50])),
+        };
+        let mut selection = Selection::default();
+        let mut view = View::default();
+        selection.take_into(Some(Filter {
+            faces: false,
+            edges: true,
+            vertices: false,
+        }));
+        assert_eq!(
+            selection.under(&picking, &bodies).map(|u| u.1),
+            Some(Element::Edge(1))
+        );
+        selection.draw(&mut view);
+        assert_eq!(view.vertices, None);
+        // The box lets go: the vertex is picked, and the discs drawn, again.
+        selection.take_into(None);
+        assert_eq!(
+            selection.under(&picking, &bodies).map(|u| u.1),
+            Some(Element::Vertex(2))
+        );
+        selection.draw(&mut view);
+        assert_eq!(view.vertices, Some(VERTEX_PICK_POINTS));
+    }
+
+    #[test]
     fn the_vertex_filter_sets_the_frames_discs_and_a_vertex_selected_is_drawn() {
         let mut selection = Selection::default();
         let mut view = View::default();
