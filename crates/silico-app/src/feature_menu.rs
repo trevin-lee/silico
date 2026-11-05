@@ -779,8 +779,8 @@ mod tests {
 
         use super::super::{Item, Shown, draw};
         use crate::modal::tests::{
-            colour, css, fills_at, font, icon_at, near, rects, rgba, same_colour, sized,
-            text_shape, widget,
+            cap_border, colour, css, fills_at, font, icon_at, kbd_border, near, rects, rgba,
+            same_colour, sized, text_shape, widget,
         };
         use crate::theme;
 
@@ -800,9 +800,10 @@ mod tests {
         const SUB_FS: f32 = 11.0;
         /// `.menu .mi .sc`: `padding-left: 24px`, at the item's right.
         const SC_PAD: f32 = 24.0;
-        /// `.kbd`: 16 high; `.menu .mi:hover .kbd`: `border-color: rgba(255,255,255,.35)`,
-        /// no fill.
+        /// `.kbd`: 16 high, `border-radius: 3px`, its border 1 and 2 at its bottom;
+        /// `.menu .mi:hover .kbd`: `border-color: rgba(255,255,255,.35)`, no fill.
         const KBD_H: f32 = 16.0;
+        const KBD_R: u8 = 3;
         /// `.keys`: `gap: 2px` between one shortcut's caps.
         const KEYS_GAP: f32 = 2.0;
         const KBD_HOVER_BORDER: [u8; 4] = [255, 255, 255, 89];
@@ -955,20 +956,27 @@ mod tests {
                 sub.pos.x,
                 edit.pos.x + edit.galley.size().x + MI_GAP + SUB_MARGIN
             ));
-            // The keys as caps, 16 high, at the item's right less its padding.
+            // The keys as caps, 16 high, at the item's right less its padding, unstroked,
+            // their border `.kbd`'s, Gray.350.
             for (rect, key) in [(items[1], "F2"), (items[4], "Del")] {
                 let cap = rects(&h)
                     .into_iter()
                     .find(|shape| {
-                        shape.stroke.width == css::BORDER
+                        shape.corner_radius == egui::CornerRadius::same(KBD_R)
                             && rect.contains_rect(shape.rect)
                             && near(shape.rect.height(), KBD_H)
                     })
                     .unwrap_or_else(|| panic!("{key}'s cap"));
+                assert!(cap.stroke.is_empty(), "{key}'s cap: {:?}", cap.stroke);
                 assert!(near(cap.rect.right(), rect.right() - MI_PAD), "{key}");
                 assert!(near(cap.rect.center().y, rect.center().y), "{key}");
                 same_colour(cap.fill, css::G250, &format!("{key}'s cap"));
-                same_colour(cap.stroke.color, css::G350, &format!("{key}'s cap"));
+                kbd_border(
+                    &cap_border(&h, cap.rect),
+                    cap.rect,
+                    css::G350,
+                    &format!("{key}'s cap"),
+                );
                 same_colour(colour(&text_shape(&h, key)), css::G800, key);
             }
             // Hovered: filled blue at `--r-sm`, its words, icon, and caps `--blue-text`, the
@@ -984,11 +992,19 @@ mod tests {
             let cap = rects(&h)
                 .into_iter()
                 .find(|shape| {
-                    shape.stroke.width == css::BORDER && items[1].contains_rect(shape.rect)
+                    shape.corner_radius == egui::CornerRadius::same(KBD_R)
+                        && items[1].contains_rect(shape.rect)
+                        && near(shape.rect.height(), KBD_H)
                 })
                 .expect("F2's cap");
             assert_eq!(cap.fill, Color32::TRANSPARENT);
-            same_colour(cap.stroke.color, rgba(KBD_HOVER_BORDER), "the hovered cap");
+            assert!(cap.stroke.is_empty(), "the hovered cap: {:?}", cap.stroke);
+            kbd_border(
+                &cap_border(&h, cap.rect),
+                cap.rect,
+                rgba(KBD_HOVER_BORDER),
+                "the hovered cap",
+            );
             // Delete hovered is lit as the others are (`:hover` outweighs `.danger`); the
             // off Suppress, hovered, isn't.
             h.get_by_role_and_label(Role::Button, "Delete Del").hover();
@@ -1050,11 +1066,14 @@ mod tests {
             let mut caps: Vec<Rect> = rects(&h)
                 .into_iter()
                 .filter(|shape| {
-                    shape.stroke.width == css::BORDER
+                    shape.corner_radius == egui::CornerRadius::same(KBD_R)
                         && item.contains_rect(shape.rect)
                         && near(shape.rect.height(), KBD_H)
                 })
-                .map(|shape| shape.rect)
+                .map(|shape| {
+                    assert!(shape.stroke.is_empty(), "{shape:?}");
+                    shape.rect
+                })
                 .collect();
             caps.sort_by(|a, b| a.left().total_cmp(&b.left()));
             assert_eq!(caps.len(), 2, "{caps:?}");
