@@ -9,7 +9,7 @@ Silico is a parametric CAD system written in Rust, with OpenCascade as its geome
 ## What's different
 
 - **Agent-native.** Every capability is a command in one API, and the app, the MCP server, and the CLI are equal clients of it. An agent reads the model's faces and edges by name with their geometry, measures, renders offscreen, undoes, and gets errors as structured data: a code, the elements involved, and a suggestion.
-- **Git-native.** A document is canonical JSON: a timeline of features, each with the measures it rebuilt to. A reference to geometry is a readable name built from the part's history, not an index: `merge000.fuse.Edge(G base0000.box.Face6, G rght0000.box.Face2)` is the edge where two boxes meet. When an upstream edit breaks a reference, the rebuild fails and names its candidates. It never silently points at different geometry. `silico textconv` makes `git diff` show a model's changes feature by feature.
+- **Git-native.** A document is canonical JSON: a timeline of features, each with the measures it rebuilt to. A reference to geometry is a readable name built from the part's history, not an index: `merge000.fuse.Edge(G base0000.box.Face6, G rght0000.box.Face2)` is the edge where two boxes meet. When an upstream edit breaks a reference, the rebuild fails and names its candidates. It never silently points at different geometry. `silico textconv` makes `git diff` show a model's changes feature by feature ([docs/cli.md](docs/cli.md) sets it up).
 - **Exact and deterministic.** OpenCascade is built from source with a pinned recipe, so a document rebuilds bit for bit on macOS and Linux, checked by a 605-case stress test against a committed reference. Results are checked against FreeCAD, as an oracle, case by case.
 - **FreeCAD's behaviour, ported.** The kernel's behaviour, the sketcher's solver (FreeCAD's PlaneGCS), and the naming scheme follow FreeCAD's, and each ported subsystem has a note in [docs/ports/](docs/ports/) with the edge cases and bug fixes taken from FreeCAD's history. The app's behaviour follows SolidWorks and its layout follows Fusion 360.
 - **Crash-proof by design.** OpenCascade and the solvers run in worker processes behind a typed protocol. A crash, a hang, or a bad reply becomes an error, never a crashed app.
@@ -26,6 +26,8 @@ Silico is a parametric CAD system written in Rust, with OpenCascade as its geome
 }
 ```
 
+*A fillet from the bracket's document, its stored fingerprint left out.*
+
 ## Status
 
 Silico is a work in progress. These are built and tested:
@@ -40,22 +42,22 @@ The app (milestone M5) is under way. It has:
 - the 3D viewport, with picking and selection;
 - feature dialogs, including fillet and chamfer from the selected edges;
 - undo and redo, and untitled parts;
-- a banner, when an agent changes the file, listing what changed and offering to restore your version.
+- a banner, when the file changes on disk (an agent's save, say), listing what changed and offering to restore your version.
 
 Sketch mode in the app and the end-to-end slice are next. See [ROADMAP.md](ROADMAP.md).
 
 ## Build and run
 
-You need [pixi](https://pixi.sh) and [rustup](https://rustup.rs), on macOS (Apple silicon) or Linux (x86-64). The first build compiles OpenCascade, which takes a few minutes, and later builds reuse it.
+You need [pixi](https://pixi.sh) and [rustup](https://rustup.rs), on macOS 15 or later (Apple silicon) or Linux (x86-64). The first build compiles OpenCascade, which takes a few minutes, and later builds reuse it.
 
 ```bash
 pixi run app     # build everything and open the app
-pixi run build   # build the CLI, the MCP server, and the workers (target/debug/)
+pixi run build   # build everything into target/debug/ (the CLI is target/debug/silico)
 pixi run test    # every test
 pixi run oracle  # every oracle case, compared with FreeCAD
 ```
 
-The CLI checks, formats, shows, and exports documents: `silico check FILE`, `silico fmt FILE`, `silico export FILE out.3mf` ([docs/cli.md](docs/cli.md)). To connect an agent, run `silico serve --workspace DIR` as an MCP server over stdio; [docs/mcp.md](docs/mcp.md) covers setup and the workflow.
+The CLI (`target/debug/silico`) checks, formats, shows, and exports documents: `silico check FILE`, `silico fmt FILE`, `silico export FILE out.3mf` ([docs/cli.md](docs/cli.md)). To connect an agent, run `silico serve --workspace DIR` as an MCP server over stdio; [docs/mcp.md](docs/mcp.md) covers setup and the workflow.
 
 ## Read more
 
