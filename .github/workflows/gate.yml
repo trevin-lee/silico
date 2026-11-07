@@ -29,10 +29,13 @@ env:
 
 jobs:
   gate:
-    # Self-hosted runners run only this repository's own code: a pull request from a fork
-    # never reaches them (the repository's Actions settings also require approval for every
-    # outside contributor). Every other workflow starts only from a schedule, a dispatch, a
-    # push, or a workflow_run, which run the default branch's workflows.
+    # A fork's pull request is skipped here, so an unmodified one never reaches the
+    # self-hosted runners. This isn't the guard: a pull request runs the workflow files of its
+    # own merge commit, so a fork can change this line or add a workflow of its own. The guard
+    # is the repository's Actions setting that requires approval for every outside
+    # contributor's run; never approve one. A fork's change is gated by pushing its head to a
+    # branch of this repository. Every other workflow starts only from a schedule, a dispatch
+    # (write access), a push, or a workflow_run of those, on this repository's own refs.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: [self-hosted, linux, x64, pve, gate]
     timeout-minutes: 120
