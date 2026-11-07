@@ -29,6 +29,11 @@ env:
 
 jobs:
   gate:
+    # Self-hosted runners run only this repository's own code: a pull request from a fork
+    # never reaches them (the repository's Actions settings also require approval for every
+    # outside contributor). Every other workflow starts only from a schedule, a dispatch, a
+    # push, or a workflow_run, which run the default branch's workflows.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: [self-hosted, linux, x64, pve, gate]
     timeout-minutes: 120
     steps:
