@@ -2,7 +2,7 @@
 name = "silico-libm-shim"
 version = "0.0.0"
 edition = "2024"
-license = "GPL-3.0-or-later"
+license = "AGPL-3.0-or-later"
 publish = false
 description = "C math functions backed by the pure-Rust libm crate, linked into OCCT so results are identical on every platform."
 

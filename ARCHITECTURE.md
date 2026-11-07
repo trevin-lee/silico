@@ -240,7 +240,7 @@ FreeCAD's spreadsheet *capability* (named parameters driving the model) is in st
 
 ## License
 
-GPL-3.0-or-later. Silico's dependencies are LGPL (FreeCAD, OCCT, PlaneGCS, OndselSolver) and MIT/Apache (egui, wgpu, Rerun crates), and all of these licenses are compatible with GPL.
+AGPL-3.0-or-later ([LICENSE](LICENSE)). Silico's dependencies are LGPL (FreeCAD, OCCT, PlaneGCS, OndselSolver) and MIT/Apache (egui, wgpu, Rerun crates), all compatible with AGPL-3.0; the fonts in `silico-font` are OFL-1.1, distributed alongside the code under their own license. Code taken from them keeps its own license and notice: PlaneGCS in `third_party/planegcs` (LGPL-2.1-or-later, `LICENSE.FreeCAD`), the fonts' OFL texts, Rerun's MIT notice on the style constants `silico-app`'s theme takes from `re_ui`, and three.js's MIT notice beside the copy the prototype in `docs/design/m5-ui/` vendors. `deny.toml` admits only licenses compatible with Silico's.
 
 ## Open questions
 
