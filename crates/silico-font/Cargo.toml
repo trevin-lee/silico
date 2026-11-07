@@ -7,7 +7,7 @@ rust-version.workspace = true
 # The Rust is Silico's; the fonts are Inter's and JetBrains Mono's, each under the SIL Open
 # Font License 1.1 (OFL.txt, JetBrainsMono-OFL.txt), which deny.toml allows for this crate
 # alone (M5 decision 13b).
-license = "GPL-3.0-or-later AND OFL-1.1"
+license = "AGPL-3.0-or-later AND OFL-1.1"
 publish.workspace = true
 
 [lints]
