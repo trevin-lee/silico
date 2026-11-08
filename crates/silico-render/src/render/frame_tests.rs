@@ -17,7 +17,7 @@ use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjec
 
 use super::{
     BACKGROUND, Element, Frame, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines,
-    PendingPick, Pick, Picking, PixelRect, RenderFailure, Renderer, project, ray,
+    PendingPick, Pick, Pickable, Picking, PixelRect, RenderFailure, Renderer, hits, project, ray,
 };
 use crate::bench::{box_mesh, front_of_a_box};
 
@@ -2953,6 +2953,113 @@ fn a_perspective_as_wide_as_170_degrees_draws_a_disc_toward_the_eye_a_quarter_of
                     ..frame(&camera, &[1], &[], centre)
                 };
                 assert_eq!(hit(r, &asking), Some((1, want, [32, 24])), "{behind}");
+            }
+        },
+    );
+}
+
+/// What the app's selection takes of a picking (`Selection::under`, M5.7): a vertex at its
+/// centre pixel, else an edge in its square, else a face at its centre pixel.
+fn taken(picking: &Picking, centre: [u32; 2]) -> Option<(u32, Element)> {
+    let at_centre = |vertex: bool| {
+        picking
+            .hit
+            .filter(|pick| pick.pixel == centre && matches!(pick.hit, Element::Vertex(_)) == vertex)
+    };
+    let face = at_centre(false).filter(|pick| matches!(pick.hit, Element::Face(_)));
+    at_centre(true)
+        .or(picking.edge)
+        .or(face)
+        .map(|pick| (pick.body, pick.hit))
+}
+
+#[test]
+fn the_casts_first_is_what_the_renderer_picks_at_pixels_clear_of_ties() {
+    on_lavapipe(
+        "render::frame_tests::the_casts_first_is_what_the_renderer_picks_at_pixels_clear_of_ties",
+        |r| {
+            // The 20 mm cube in the bench's numbering (`box_mesh`: Face6 its top, Face3 its
+            // front, Edge7 along x at y = z = 20, Edge11 along y at x = z = 20, Vertex7 the
+            // corner (20, 20, 20)), drawn and cast on alike. Each pixel's square is the
+            // selection's (3 pixels about it) and its vertices are picked at 7 points; the
+            // cast is at the pixel's centre.
+            let mesh = Arc::new(box_mesh([0.0; 3], [20.0; 3]));
+            r.upload(1, &mesh).unwrap();
+            let pickable = Pickable::new(Arc::clone(&mesh));
+            let iso = corner_camera(Projection::Orthographic { view_height: 80.0 });
+            let wide = corner_camera(Projection::Perspective {
+                field_of_view: 40.0,
+            });
+            // Orthographic from above the front at 45 degrees, 40 mm over 400 rows: the top's
+            // back edge (Edge7) at row 200 − 200/√2 = 58.58.
+            let oblique = Camera {
+                projection: Projection::Orthographic { view_height: 40.0 },
+                eye: [10.0, -90.0, 110.0],
+                target: [10.0, 10.0, 10.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            let square = [400, 400];
+            let on = |camera: &Camera, size: [u32; 2], p: [f64; 3]| -> [i32; 2] {
+                project(camera, size, p).unwrap().map(|c| c.floor() as i32)
+            };
+            use Element::{Edge, Face, Vertex};
+            let cases = [
+                // The corner nearest the eye, every edge from it going away: the vertex.
+                (&iso, CORNER_SIZE, [400, 400], Some(Vertex(7))),
+                (&wide, CORNER_SIZE, [400, 400], Some(Vertex(7))),
+                // The top's middle, 10 mm from any edge.
+                (
+                    &iso,
+                    CORNER_SIZE,
+                    on(&iso, CORNER_SIZE, [10.0, 10.0, 20.0]),
+                    Some(Face(6)),
+                ),
+                (
+                    &wide,
+                    CORNER_SIZE,
+                    on(&wide, CORNER_SIZE, [10.0, 10.0, 20.0]),
+                    Some(Face(6)),
+                ),
+                // A tenth of a millimetre in from the top's edge at x = 20, under a pixel: the
+                // edge, in the band, and first within its reach.
+                (
+                    &iso,
+                    CORNER_SIZE,
+                    on(&iso, CORNER_SIZE, [19.9, 10.0, 20.0]),
+                    Some(Edge(11)),
+                ),
+                // Off the cube: nothing.
+                (&iso, CORNER_SIZE, [40, 40], None),
+                // Two pixels below the top's back edge, which the top recedes to: the edge.
+                (&oblique, square, [200, 60], Some(Edge(7))),
+                (
+                    &oblique,
+                    square,
+                    on(&oblique, square, [10.0, 10.0, 20.0]),
+                    Some(Face(6)),
+                ),
+                (
+                    &oblique,
+                    square,
+                    on(&oblique, square, [10.0, 0.0, 10.0]),
+                    Some(Face(3)),
+                ),
+            ];
+            for (camera, size, at, want) in cases {
+                let picking = rect([at[0] - 3, at[1] - 3], [7, 7]);
+                let asking = Frame {
+                    size_px: size,
+                    vertices: Some(7.0),
+                    ..frame(camera, &[1], &[], Some(picking))
+                };
+                let centre = at.map(|c| u32::try_from(c).unwrap());
+                let gpu = taken(&pick(r, &asking), centre);
+                assert_eq!(gpu, want.map(|e| (1, e)), "the renderer at {at:?}");
+                let pointer = at.map(|c| f64::from(c) + 0.5);
+                let cast = hits(camera, size, 1.0, &[(1, &pickable)], pointer);
+                let first = cast.first().map(|hit| (hit.body, hit.element));
+                assert_eq!(first, gpu, "the cast at {at:?}: {cast:?}");
+                assert!(cast.first().is_none_or(|hit| !hit.hidden), "{cast:?}");
             }
         },
     );

@@ -23,6 +23,13 @@
 //! frames after its own each answer came. The part is meshed by a kernel worker at half a
 //! pixel of a 1080-pixel view of it, as `views` meshes it.
 //!
+//! Then Select Other's cast (M5.7, `render::hits`), on the CPU alone, of ten copies of the
+//! part (four to a row, 1.2 of its extent apart, as the views bench lays them), all in a
+//! 1920 by 1080 perspective view: the time to make the copies' boxes once
+//! (`Pickable::new`), and each of 120 casts at pointers across the view's middle third,
+//! their median, 95th percentile, and most, and how many each found. Its budget, 2 ms on the
+//! UI thread (docs/design/m5.0-app.md, section 9, as built), is read from these lines.
+//!
 //! Recorded, never budgeted: it fails on no time. Run with
 //! `SILICO_KERNEL_WORKER=target/release/silico-kernel-worker SILICO_BENCH_BREP=part.brep
 //! pixi run cargo bench -p silico-render --bench picking`, the B-rep Silico's (as
@@ -39,7 +46,7 @@ use std::time::{Duration, Instant};
 
 use silico_core::kernel::{Blob, KernelWorker, ShapeData};
 use silico_protocol::{Camera, Mesh, Projection};
-use silico_render::render::{Element, Frame, Outlines, PixelRect, Renderer};
+use silico_render::render::{Element, Frame, Outlines, Pickable, PixelRect, Renderer, hits};
 use silico_render::worker::RenderAdapter;
 
 /// The frames timed in each run, after the frames that upload the part's faces.
@@ -212,8 +219,83 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+    out += &cast(&mesh, extent);
     std::io::stdout().write_all(out.as_bytes())?;
     Ok(())
+}
+
+/// The casts Select Other makes, on ten copies of `mesh`: their boxes' time, and the casts'
+/// times and counts, as one line.
+fn cast(mesh: &Mesh, extent: f64) -> String {
+    const CASTS: usize = 120;
+    let (width, height) = (1920u32, 1080u32);
+    let copies = copies_of(mesh, 10, extent);
+    let started = Instant::now();
+    let pickables: Vec<Pickable> = copies.into_iter().map(Pickable::new).collect();
+    let boxes = started.elapsed();
+    let bodies: Vec<(u32, &Pickable)> = (1u32..).zip(&pickables).collect();
+    let (low, high) = pickables.iter().map(|p| bounds(p.mesh())).fold(
+        ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
+        |(lo, hi), (l, h)| {
+            (
+                std::array::from_fn(|k| lo[k].min(l[k])),
+                std::array::from_fn(|k| hi[k].max(h[k])),
+            )
+        },
+    );
+    let target: [f64; 3] = std::array::from_fn(|k| (low[k] + high[k]) / 2.0);
+    let reach = (0..3)
+        .map(|k| (high[k] - low[k]) / 2.0)
+        .map(|h| h * h)
+        .sum::<f64>()
+        .sqrt();
+    let camera = orbit(target, reach, 0);
+    let mut times = Vec::with_capacity(CASTS);
+    let mut found = Vec::with_capacity(CASTS);
+    for i in 0..CASTS {
+        // A 12 by 10 grid over the view's middle third.
+        let (col, row) = ((i % 12) as f64, (i / 12) as f64);
+        let pointer = [
+            f64::from(width) * (1.0 + col / 11.0) / 3.0,
+            f64::from(height) * (1.0 + row / 9.0) / 3.0,
+        ];
+        let started = Instant::now();
+        let under = hits(&camera, [width, height], 1.0, &bodies, pointer);
+        times.push(started.elapsed());
+        found.push(under.len());
+    }
+    times.sort();
+    found.sort_unstable();
+    let ms = |d: Duration| d.as_secs_f64() * 1e3;
+    format!(
+        "cast copies 10 size {width}x{height} boxes_ms {:.2} cast_median_ms {:.3} cast_p95_ms {:.3} cast_max_ms {:.3} hits_median {} hits_max {}\n",
+        ms(boxes),
+        ms(times[CASTS / 2]),
+        ms(times[CASTS * 95 / 100]),
+        ms(times[CASTS - 1]),
+        found[CASTS / 2],
+        found[CASTS - 1],
+    )
+}
+
+/// `copies` of the part, four to a row, 1.2 of its extent apart (the views bench's layout),
+/// each moved whole: its positions, edge points, and vertex points.
+fn copies_of(mesh: &Mesh, copies: usize, extent: f64) -> Vec<Arc<Mesh>> {
+    (0..copies)
+        .map(|copy| {
+            let shift = [
+                (copy % 4) as f64 * extent * 1.2,
+                (copy / 4) as f64 * extent * 1.2,
+                0.0,
+            ];
+            let moved = |p: &[f64; 3]| [p[0] + shift[0], p[1] + shift[1], p[2] + shift[2]];
+            let mut mesh = mesh.clone();
+            mesh.positions = mesh.positions.iter().map(moved).collect();
+            mesh.edge_points = mesh.edge_points.iter().map(moved).collect();
+            mesh.vertex_points = mesh.vertex_points.iter().map(moved).collect();
+            Arc::new(mesh)
+        })
+        .collect()
 }
 
 /// What a run outlines: nothing; ten faces selected and one hovered; or every face of the

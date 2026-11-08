@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9e33083797b5c06cd9689ed5286febf2ab9df9234542ce459223ee91670af2e1 # shrinks to low = [1000000000000.0, 0.0, 0.0], size = [1000000.0, 1e-6, 1e-6], eye = [1000000000000.0, 226.1621715229786, 0.0], towards = [-0.10304784819264372, -0.3424119805460833, -0.2763000335070011], distance = 443.22545086406245, perspective = true, across = 88.46213069609429, pointer = [29.11034621290513, 0.0], ppp = 1.0

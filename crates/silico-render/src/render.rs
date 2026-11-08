@@ -43,12 +43,12 @@ use re_renderer::{
     PickingLayerInstanceId, PickingLayerObjectId, PickingLayerProcessor, PointCloudBuilder,
     RectInt, RenderConfig, RenderContext, Rgba, Rgba32Unmul, ScreenshotProcessor, Size,
 };
-use silico_protocol::vec3::{dot, sub};
+use silico_protocol::vec3::{cross, dot, sub};
 use silico_protocol::{
     Camera, Class, EDGE_BIT, F32_ROUNDING, Frame as CameraFrame, InView, InViewBody,
     InvalidParameter, MIN_EYE_DISTANCE, Mesh, PRECISION_OF_PIXEL, PixelId, Projection, RenderBody,
-    RenderScene, ViewRegion, box_of, check_bodies_in_view, check_render_mesh, corner_sec2,
-    pyramid_slope, reach_of_points,
+    RenderScene, ViewRegion, box_corners, box_of, check_bodies_in_view, check_render_mesh,
+    corner_sec2, pyramid_slope, reach_of_points,
 };
 
 /// A render's background: a flat light grey, sRGB. A frame's is the caller's
@@ -1770,27 +1770,638 @@ impl Projector {
         if !world.iter().all(|c| c.is_finite()) {
             return None;
         }
-        let frame = &self.frame;
-        let d = sub(world, self.origin);
-        let view = glam::DVec4::new(
-            dot(frame.right, d),
-            dot(frame.up, d),
-            dot(frame.back, d),
-            1.0,
-        );
+        let view = self.view_of(world);
         // Its depth as the drawing's pyramid takes it ([`View::eye_frame`]); NaN where the
         // point is so far that its offsets overflow.
         let depth = -view.z;
         if self.perspective && (depth.is_nan() || depth < MIN_EYE_DISTANCE) {
             return None;
         }
+        self.landing(view).map(|(pixel, _)| pixel)
+    }
+
+    /// `world` in the fixed camera's frame, about the camera's point: across the view (x
+    /// right, y up) and along it (z, toward the eye), in f64.
+    fn view_of(&self, world: [f64; 3]) -> glam::DVec4 {
+        let frame = &self.frame;
+        let d = sub(world, self.origin);
+        glam::DVec4::new(
+            dot(frame.right, d),
+            dot(frame.up, d),
+            dot(frame.back, d),
+            1.0,
+        )
+    }
+
+    /// Where `view`, a point in the fixed camera's frame ([`view_of`](Self::view_of)), lands
+    /// through the matrix, cut or not, and its clip w (its depth in perspective, 1
+    /// orthographic); none if either isn't finite.
+    fn landing(&self, view: glam::DVec4) -> Option<([f64; 2], f64)> {
         let clip = self.matrix * view;
         let pixel = [
             (clip.x / clip.w + 1.0) / 2.0 * self.size[0],
             (1.0 - clip.y / clip.w) / 2.0 * self.size[1],
         ];
-        pixel.iter().all(|c| c.is_finite()).then_some(pixel)
+        (pixel.iter().all(|c| c.is_finite()) && clip.w.is_finite()).then_some((pixel, clip.w))
     }
+}
+
+/// The most [`hits`] gives, the nearest: no list shows more, and each edge or vertex given
+/// costs a cast of its own (whether a face hides it), so a crowd under one pixel (a mesh's
+/// thousands of points there) costs no more than this many.
+pub const MAX_HITS: usize = 256;
+
+/// How near the pointer, in points, [`hits`] takes an edge's drawn polyline: the approved
+/// prototype's (docs/design/m5-ui, viewport.js, `pickAll`: `best.d < 6`).
+pub const HIT_EDGE_POINTS: f64 = 6.0;
+
+/// How near the pointer, in points, [`hits`] takes a vertex: the prototype's `d < 7`, the
+/// radius of the disc a frame picks a vertex within (M5.7's).
+pub const HIT_VERTEX_POINTS: f64 = 7.0;
+
+/// A body's mesh as [`hits`] casts on it: the mesh (the same `Arc` the renderer was given),
+/// its box (of its positions, edge points, and vertex points), each face's with triangles,
+/// and each edge's, made once ([`Pickable::new`]), so a cast tests a box before what's in it.
+#[derive(Debug, Clone)]
+pub struct Pickable {
+    mesh: Arc<Mesh>,
+    bounds: Option<Bounds>,
+    faces: Vec<(FaceSpan, Bounds)>,
+    edges: Vec<Option<Bounds>>,
+}
+
+impl Pickable {
+    /// `mesh`'s boxes, for casts on it: any mesh, checked or not (a triangle indexing past
+    /// its positions, or counts that don't add up, is passed over where it's met, never
+    /// read past).
+    pub fn new(mesh: Arc<Mesh>) -> Pickable {
+        let _span = tracing::debug_span!("pickable", faces = mesh.face_triangles.len()).entered();
+        let mut faces = Vec::new();
+        let mut first = 0usize;
+        for (number, &count) in (1u32..).zip(&mesh.face_triangles) {
+            let count = usize::try_from(count).unwrap_or(usize::MAX);
+            let span = FaceSpan {
+                number,
+                first,
+                count,
+            };
+            first = first.saturating_add(count);
+            if let Some(bounds) = face_bounds(&mesh, span) {
+                faces.push((span, bounds));
+            }
+        }
+        Pickable {
+            bounds: box_of(
+                mesh.positions
+                    .iter()
+                    .chain(&mesh.edge_points)
+                    .chain(&mesh.vertex_points),
+            ),
+            edges: edge_spans(&mesh)
+                .map(|points| box_of(points.iter()))
+                .collect(),
+            faces,
+            mesh,
+        }
+    }
+
+    /// The mesh it was made from.
+    pub fn mesh(&self) -> &Arc<Mesh> {
+        &self.mesh
+    }
+}
+
+/// What's under a pointer ([`hits`]): a body's face, edge, or vertex; where it's met (a
+/// face's point on the pointer's ray, an edge's point nearest the pointer in the image, a
+/// vertex's own point), in the document's coordinates; its depth there, along the view from
+/// the eye, in mm (in front of an orthographic eye, below 0, as it's drawn); and whether a
+/// face hides it there (the approved prototype's "· hidden").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hit {
+    pub body: u32,
+    pub element: Element,
+    pub point: [f64; 3],
+    pub depth: f64,
+    pub hidden: bool,
+}
+
+/// Everything under `pointer` in a frame from `camera`, `size_px` physical pixels at
+/// `pixels_per_point`, of `bodies` (each body's number and its [`Pickable`]: the bodies the
+/// frame drew, their meshes the renderer's), nearest the eye first (Select Other, M5.7;
+/// docs/design/m5.0-app.md, section 9). `pointer` is in physical pixels from the image's top
+/// left, as [`ray`] takes it. Pure f64, on the CPU, by the projection the renderer draws with
+/// ([`ray`], [`project`]), every kind of element whatever the selection's filters:
+/// - each face whose triangles the pointer's ray meets (each face's box tested first), at its
+///   nearest meeting;
+/// - each edge whose drawn polyline passes within [`HIT_EDGE_POINTS`] of the pointer in the
+///   image, at its point nearest it there (of a segment seen end on, its end nearest the
+///   eye); and each vertex within [`HIT_VERTEX_POINTS`], at its own point.
+///
+/// As the drawing cuts: in perspective nothing nearer the eye than [`MIN_EYE_DISTANCE`]
+/// along the view is met (each edge cut there about the eye before it's projected, as the
+/// drawing cuts its strips and `project` a point), and orthographic the whole line is (drawn
+/// in front of the eye too).
+///
+/// An edge or a vertex is taken [`VERTEX_REACH`] of the view's height at it toward the eye,
+/// as a frame's picking disc is drawn (the prototype's `pickAll` tolerance, `eps`): it's
+/// listed by its depth less that, and hidden only where a face is met nearer than that on
+/// the ray through its own point. So one lying on the faces it bounds is never hidden by
+/// them, at any angle, and comes before the face under the pointer within that reach, as the
+/// renderer's depth offset draws it over its face. A face is hidden where another face is
+/// met strictly nearer on the pointer's ray. Ordered by that depth, then vertex, edge, and
+/// face, then body and number, with no tolerance more but the triangles' own: a line along
+/// an edge two triangles share meets both ([`WATERTIGHT`], a part in 2^40 of a triangle).
+///
+/// The nearest [`MAX_HITS`] of them, if there are more. None for a camera [`Camera::check`]
+/// refuses at this size, a size of 0 on a side, a `pixels_per_point` that isn't above 0 and
+/// at most [`MAX_PIXELS_PER_POINT`], or a pointer that isn't finite and inside the image
+/// (where nothing is drawn).
+pub fn hits(
+    camera: &Camera,
+    size_px: [u32; 2],
+    pixels_per_point: f32,
+    bodies: &[(u32, &Pickable)],
+    pointer: [f64; 2],
+) -> Vec<Hit> {
+    let _span = tracing::debug_span!("hits", bodies = bodies.len()).entered();
+    let ppp = pixels_per_point;
+    if !(ppp.is_finite() && ppp > 0.0 && ppp <= MAX_PIXELS_PER_POINT) {
+        return Vec::new();
+    }
+    let inside = pointer
+        .iter()
+        .zip(size_px)
+        .all(|(c, side)| c.is_finite() && *c >= 0.0 && *c < f64::from(side));
+    if !inside {
+        return Vec::new();
+    }
+    let Some(caster) = Caster::new(camera, size_px, f64::from(ppp)) else {
+        return Vec::new();
+    };
+    let Some((origin, direction)) = ray(camera, size_px, pointer) else {
+        return Vec::new();
+    };
+    let line = Line {
+        origin,
+        direction,
+        whole: !caster.projector.perspective,
+    };
+    let mut found: Vec<Found> = Vec::new();
+    for &(body, pickable) in bodies {
+        caster.faces_met(body, pickable, &line, &mut found);
+        caster.edges_near(body, pickable, &line, pointer, &mut found);
+        caster.vertices_near(body, pickable, &line, pointer, &mut found);
+    }
+    let nearest_face = found
+        .iter()
+        .filter(|f| matches!(f.hit.element, Element::Face(_)))
+        .map(|f| f.hit.depth)
+        .fold(f64::INFINITY, f64::min);
+    found.sort_by(|a, b| {
+        a.key
+            .total_cmp(&b.key)
+            .then_with(|| rank(a.hit.element).cmp(&rank(b.hit.element)))
+            .then_with(|| a.hit.body.cmp(&b.hit.body))
+            .then_with(|| a.hit.element.cmp(&b.hit.element))
+    });
+    let under = found.len();
+    found.truncate(MAX_HITS);
+    for each in &mut found {
+        each.hit.hidden = match each.hit.element {
+            Element::Face(_) => nearest_face < each.hit.depth,
+            Element::Edge(_) | Element::Vertex(_) => caster.hidden(bodies, each),
+        };
+    }
+    tracing::debug!(hits = found.len(), under, "cast");
+    found.into_iter().map(|f| f.hit).collect()
+}
+
+/// A hit as [`hits`] orders it: its depth, less its reach for an edge or a vertex.
+struct Found {
+    hit: Hit,
+    key: f64,
+}
+
+/// An element's place among hits at one depth: a vertex, then an edge, then a face.
+fn rank(element: Element) -> u8 {
+    match element {
+        Element::Vertex(_) => 0,
+        Element::Edge(_) => 1,
+        Element::Face(_) => 2,
+    }
+}
+
+/// How far past a triangle's edges, of the triangle (its barycentric coordinates), a line is
+/// still taken to meet it: a part in 2^40, far under any pixel, so a line along an edge two
+/// triangles share (a face's diagonal, or the edge between two faces, as the ray through an
+/// edge's own point is) meets them whatever the rounding, never neither.
+const WATERTIGHT: f64 = 1.0 / 1_099_511_627_776.0;
+
+/// A ray, or, `whole`, the line it's on: its origin, and its direction of unit length.
+struct Line {
+    origin: [f64; 3],
+    direction: [f64; 3],
+    whole: bool,
+}
+
+impl Line {
+    /// Whether it passes within `out` of the box `(low, high)` (the box grown by `out` on
+    /// each side): the slabs' test, with a direction's 0 taken apart.
+    fn meets_box(&self, (low, high): Bounds, out: f64) -> bool {
+        let (mut enter, mut leave) = if self.whole {
+            (f64::NEG_INFINITY, f64::INFINITY)
+        } else {
+            (0.0, f64::INFINITY)
+        };
+        for k in 0..3 {
+            let (lo, hi) = (low[k] - out, high[k] + out);
+            let (o, d) = (self.origin[k], self.direction[k]);
+            if d == 0.0 {
+                if !(lo <= o && o <= hi) {
+                    return false;
+                }
+                continue;
+            }
+            let (a, b) = ((lo - o) / d, (hi - o) / d);
+            enter = enter.max(a.min(b));
+            leave = leave.min(a.max(b));
+        }
+        enter <= leave
+    }
+
+    /// Where it meets the triangle `[a, b, c]`, by how far along it, if it does, its edges
+    /// and corners its own, and as far past them as [`WATERTIGHT`] (Möller and Trumbore's,
+    /// in f64, either side facing it); none for a triangle seen edge on, which draws nothing,
+    /// or one met past f64.
+    fn meets(&self, [a, b, c]: [[f64; 3]; 3]) -> Option<f64> {
+        let (e1, e2) = (sub(b, a), sub(c, a));
+        let p = cross(self.direction, e2);
+        let det = dot(e1, p);
+        if det == 0.0 || !det.is_finite() {
+            return None;
+        }
+        let s = sub(self.origin, a);
+        let u = dot(s, p) / det;
+        if !(-WATERTIGHT..=1.0 + WATERTIGHT).contains(&u) {
+            return None;
+        }
+        let q = cross(s, e1);
+        let v = dot(self.direction, q) / det;
+        if !(v >= -WATERTIGHT && u + v <= 1.0 + WATERTIGHT) {
+            return None;
+        }
+        let t = dot(e2, q) / det;
+        (t.is_finite() && (self.whole || t >= 0.0)).then_some(t)
+    }
+}
+
+/// [`hits`]'s view: the renderer's projection ([`Projector`]), the eye and the way it looks,
+/// the pixels a point, how much of the view a pixel is (mm, orthographic; mm for each mm of
+/// depth, in perspective), and an edge's and a vertex's reach toward the eye (mm,
+/// orthographic; of its depth, in perspective).
+struct Caster {
+    projector: Projector,
+    eye: [f64; 3],
+    forward: [f64; 3],
+    pixels_per_point: f64,
+    per_pixel: f64,
+    reach: f64,
+}
+
+impl Caster {
+    fn new(camera: &Camera, size_px: [u32; 2], pixels_per_point: f64) -> Option<Caster> {
+        let projector = Projector::new(camera, size_px)?;
+        let rows = f64::from(size_px[1]);
+        let (per_pixel, reach) = match camera.projection {
+            Projection::Orthographic { view_height } => {
+                (view_height / rows, VERTEX_REACH * view_height)
+            }
+            Projection::Perspective { field_of_view } => {
+                let span = 2.0 * libm::tan(field_of_view.to_radians() / 2.0);
+                (span / rows, (VERTEX_REACH * span).min(MOST_VERTEX_REACH))
+            }
+        };
+        let forward = projector.frame.back.map(|c| -c);
+        Some(Caster {
+            eye: camera.eye,
+            forward,
+            pixels_per_point,
+            per_pixel,
+            reach,
+            projector,
+        })
+    }
+
+    /// `p`'s depth along the view, from the eye.
+    fn depth(&self, p: [f64; 3]) -> f64 {
+        dot(self.forward, sub(p, self.eye))
+    }
+
+    /// An edge's or a vertex's reach toward the eye at `depth`.
+    fn reach_at(&self, depth: f64) -> f64 {
+        if self.projector.perspective {
+            self.reach * depth
+        } else {
+            self.reach
+        }
+    }
+
+    /// Whether a point at `depth` is drawn: in perspective, no nearer the eye than
+    /// [`MIN_EYE_DISTANCE`]; orthographic, anywhere.
+    fn drawn(&self, depth: f64) -> bool {
+        depth.is_finite() && (!self.projector.perspective || depth >= MIN_EYE_DISTANCE)
+    }
+
+    /// How far out a box is grown so that whatever in it lands within `pixels` of a pixel
+    /// lies within it of that pixel's ray: the pixels' width at the box's farthest depth, and
+    /// a little of the box's size more, for rounding; none for a box nothing of which is
+    /// drawn.
+    fn grown(&self, bounds: Bounds, pixels: f64) -> Option<f64> {
+        let slack = slack_of(bounds);
+        if !self.projector.perspective {
+            return Some(pixels * self.per_pixel + slack);
+        }
+        let farthest = box_corners(bounds)
+            .into_iter()
+            .map(|corner| self.depth(corner))
+            .fold(f64::NEG_INFINITY, f64::max);
+        (farthest >= MIN_EYE_DISTANCE).then_some(pixels * self.per_pixel * farthest + slack)
+    }
+
+    /// Each face of `pickable` `line` meets, at its nearest drawn meeting.
+    fn faces_met(&self, body: u32, pickable: &Pickable, line: &Line, found: &mut Vec<Found>) {
+        let mesh = &pickable.mesh;
+        for &(span, bounds) in &pickable.faces {
+            if !line.meets_box(bounds, slack_of(bounds)) {
+                continue;
+            }
+            let Some(met) = self.nearest_met(mesh, span, line, f64::INFINITY) else {
+                continue;
+            };
+            found.push(Found {
+                hit: Hit {
+                    body,
+                    element: Element::Face(span.number),
+                    point: met.0,
+                    depth: met.1,
+                    hidden: false,
+                },
+                key: met.1,
+            });
+        }
+    }
+
+    /// Where `line` meets the face `span` of `mesh` nearest the eye, drawn and nearer than
+    /// `below`: the point and its depth; none if it doesn't.
+    fn nearest_met(
+        &self,
+        mesh: &Mesh,
+        span: FaceSpan,
+        line: &Line,
+        below: f64,
+    ) -> Option<([f64; 3], f64)> {
+        let end = span.first.checked_add(span.count)?;
+        let triangles = mesh.triangles.get(span.first..end)?;
+        let mut nearest: Option<([f64; 3], f64)> = None;
+        for triangle in triangles {
+            let Some(corners) = corners_of(mesh, triangle) else {
+                continue;
+            };
+            let Some(t) = line.meets(corners) else {
+                continue;
+            };
+            let point: [f64; 3] = std::array::from_fn(|k| line.origin[k] + line.direction[k] * t);
+            // In perspective every line cast is from the eye: its depth is how far along it,
+            // in the view's direction, precise about the eye wherever the eye is.
+            let depth = if self.projector.perspective {
+                t * dot(line.direction, self.forward)
+            } else {
+                self.depth(point)
+            };
+            if self.drawn(depth) && depth < below && nearest.is_none_or(|(_, best)| depth < best) {
+                nearest = Some((point, depth));
+            }
+        }
+        nearest
+    }
+
+    /// Each edge of `pickable` whose drawn polyline passes within [`HIT_EDGE_POINTS`] of
+    /// `pointer`, at its point nearest it: only of the boxes that come within that of the
+    /// pointer's `line`, grown by it at their farthest depth.
+    fn edges_near(
+        &self,
+        body: u32,
+        pickable: &Pickable,
+        line: &Line,
+        pointer: [f64; 2],
+        found: &mut Vec<Found>,
+    ) {
+        let pixels = HIT_EDGE_POINTS * self.pixels_per_point;
+        let near = |bounds: Bounds| {
+            self.grown(bounds, pixels)
+                .is_some_and(|out| line.meets_box(bounds, out))
+        };
+        if !pickable.bounds.is_some_and(near) {
+            return;
+        }
+        let edges = edge_spans(&pickable.mesh).zip(&pickable.edges).zip(1u32..);
+        for ((points, bounds), number) in edges {
+            if !bounds.is_some_and(near) {
+                continue;
+            }
+            let mut best: Option<(f64, [f64; 3], f64)> = None;
+            for pair in points.windows(2) {
+                let Some((distance, point, depth)) = self.nearest_on(pair[0], pair[1], pointer)
+                else {
+                    continue;
+                };
+                let better =
+                    best.is_none_or(|(d, _, z)| distance < d || (distance == d && depth < z));
+                if better {
+                    best = Some((distance, point, depth));
+                }
+            }
+            if let Some((distance, point, depth)) = best
+                && distance < pixels
+            {
+                found.push(Found {
+                    hit: Hit {
+                        body,
+                        element: Element::Edge(number),
+                        point,
+                        depth,
+                        hidden: false,
+                    },
+                    key: depth - self.reach_at(depth),
+                });
+            }
+        }
+    }
+
+    /// Of the segment from `a` to `b`, drawn (cut where the drawing cuts it, in 3D), its
+    /// point nearest `pointer` in the image: how far from it, in pixels, the point, and its
+    /// depth; of a segment seen end on, its end nearest the eye. None if nothing of it is
+    /// drawn, or it lands past f64. Cut, projected, and measured about the camera's point (in
+    /// perspective, the eye), as the drawing cuts and places its strips (`View::cut_strip`):
+    /// a point near the eye is precise about it wherever the eye is, as it isn't in the
+    /// document's coordinates far from their origin.
+    fn nearest_on(
+        &self,
+        a: [f64; 3],
+        b: [f64; 3],
+        pointer: [f64; 2],
+    ) -> Option<(f64, [f64; 3], f64)> {
+        let (va, vb) = (self.projector.view_of(a), self.projector.view_of(b));
+        let on = |u: f64| va + (vb - va) * u;
+        let (mut enter, mut leave) = (0.0f64, 1.0f64);
+        if self.projector.perspective {
+            // About the eye, a point's depth is its −z.
+            let (da, db) = (-va.z, -vb.z);
+            if !(da.is_finite() && db.is_finite()) {
+                return None;
+            }
+            let cut = MIN_EYE_DISTANCE;
+            match (da >= cut, db >= cut) {
+                (false, false) => return None,
+                (true, false) => leave = (cut - da) / (db - da),
+                (false, true) => enter = (cut - da) / (db - da),
+                (true, true) => {}
+            }
+        }
+        let (near, far) = (on(enter), on(leave));
+        let (pa, wa) = self.projector.landing(near)?;
+        let (pb, wb) = self.projector.landing(far)?;
+        let d = [pb[0] - pa[0], pb[1] - pa[1]];
+        let length = d[0] * d[0] + d[1] * d[1];
+        let s = if length == 0.0 {
+            // Seen end on: its end nearest the eye (about the camera, the greater z).
+            if far.z > near.z { 1.0 } else { 0.0 }
+        } else {
+            let along_image = (pointer[0] - pa[0]) * d[0] + (pointer[1] - pa[1]) * d[1];
+            (along_image / length).clamp(0.0, 1.0)
+        };
+        let at = [pa[0] + d[0] * s, pa[1] + d[1] * s];
+        let distance = image_distance(at, pointer);
+        // The point in 3D whose image is there: the image's fraction taken back through the
+        // perspective division (by each end's w, its depth); orthographic, the same fraction.
+        let t = if self.projector.perspective {
+            let w = (1.0 - s) * wb + s * wa;
+            if w == 0.0 { s } else { s * wa / w }
+        } else {
+            s
+        };
+        let u = (enter + (leave - enter) * t.clamp(0.0, 1.0)).clamp(0.0, 1.0);
+        let point = along(a, b, u);
+        let depth = if self.projector.perspective {
+            -on(u).z
+        } else {
+            self.depth(point)
+        };
+        // Drawn: what's left of it is, cut where the drawing cuts (a cut end's depth may
+        // round a hair under the cut, and is drawn all the same).
+        (distance.is_finite() && depth.is_finite() && point.iter().all(|c| c.is_finite()))
+            .then_some((distance, point, depth))
+    }
+
+    /// Each vertex of `pickable` drawn within [`HIT_VERTEX_POINTS`] of `pointer`: none if
+    /// its body's box doesn't come within that of the pointer's `line`.
+    fn vertices_near(
+        &self,
+        body: u32,
+        pickable: &Pickable,
+        line: &Line,
+        pointer: [f64; 2],
+        found: &mut Vec<Found>,
+    ) {
+        let pixels = HIT_VERTEX_POINTS * self.pixels_per_point;
+        let near = pickable.bounds.is_some_and(|bounds| {
+            self.grown(bounds, pixels)
+                .is_some_and(|out| line.meets_box(bounds, out))
+        });
+        if !near {
+            return;
+        }
+        for (point, number) in pickable.mesh.vertex_points.iter().zip(1u32..) {
+            let Some(at) = self.projector.pixel(*point) else {
+                continue;
+            };
+            let distance = image_distance(at, pointer);
+            let depth = self.depth(*point);
+            if distance < pixels && self.drawn(depth) {
+                found.push(Found {
+                    hit: Hit {
+                        body,
+                        element: Element::Vertex(number),
+                        point: *point,
+                        depth,
+                        hidden: false,
+                    },
+                    key: depth - self.reach_at(depth),
+                });
+            }
+        }
+    }
+
+    /// Whether a face of `bodies` is met, on the ray through `found`'s own point, nearer the
+    /// eye than its depth less its reach (its key).
+    fn hidden(&self, bodies: &[(u32, &Pickable)], found: &Found) -> bool {
+        let point = found.hit.point;
+        let line = if self.projector.perspective {
+            let toward = sub(point, self.eye);
+            let length = dot(toward, toward).sqrt();
+            if !(length.is_finite() && length > 0.0) {
+                return false;
+            }
+            Line {
+                origin: self.eye,
+                direction: toward.map(|c| c / length),
+                whole: false,
+            }
+        } else {
+            Line {
+                origin: point,
+                direction: self.forward,
+                whole: true,
+            }
+        };
+        bodies.iter().any(|(_, pickable)| {
+            pickable.faces.iter().any(|&(span, bounds)| {
+                line.meets_box(bounds, slack_of(bounds))
+                    && self
+                        .nearest_met(&pickable.mesh, span, &line, found.key)
+                        .is_some()
+            })
+        })
+    }
+}
+
+/// How far apart two points of the image are, in pixels.
+fn image_distance(a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// The point `s` of the way from `a` to `b`.
+fn along(a: [f64; 3], b: [f64; 3], s: f64) -> [f64; 3] {
+    std::array::from_fn(|k| a[k] + (b[k] - a[k]) * s)
+}
+
+/// A triangle's corners, if each is one of `mesh`'s positions.
+fn corners_of(mesh: &Mesh, triangle: &[u32; 3]) -> Option<[[f64; 3]; 3]> {
+    let corner = |v: u32| mesh.positions.get(usize::try_from(v).ok()?).copied();
+    Some([
+        corner(triangle[0])?,
+        corner(triangle[1])?,
+        corner(triangle[2])?,
+    ])
+}
+
+/// How far a box is grown for rounding alone: a part in 2^40 of its largest coordinate (and
+/// of a millimetre), so a test of the box never leaves out what the test of what's in it
+/// would take.
+fn slack_of((low, high): Bounds) -> f64 {
+    let largest = low.iter().chain(&high).map(|c| c.abs()).fold(1.0, f64::max);
+    largest * f64::EPSILON * 4096.0
 }
 
 /// Where a mesh stored about `centre` is drawn, for the camera at `origin` (then `depth`
@@ -1944,7 +2555,7 @@ struct UploadedFace {
 
 /// A face's number from 1, and its `count` triangles' place, from `first`, in its body's
 /// mesh.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct FaceSpan {
     number: u32,
     first: usize,
@@ -2488,6 +3099,9 @@ fn png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod frame_tests;
+
+#[cfg(test)]
+mod hits_tests;
 
 #[cfg(test)]
 mod tests {
