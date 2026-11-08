@@ -72,7 +72,7 @@ use silico_core::document::FeatureId;
 use silico_core::naming::Name;
 use silico_protocol::vec3::{dot, sub};
 use silico_protocol::{Camera, MIN_EYE_DISTANCE, Projection};
-use silico_render::render::project;
+use silico_render::render::{project, project_segment};
 
 use crate::renderer::Element;
 use crate::selection::{
@@ -639,27 +639,10 @@ impl<'a> Sight<'a> {
         self.depth(p).is_none_or(|depth| depth >= MIN_EYE_DISTANCE)
     }
 
-    /// Where the segment from `inside` (kept) to `outside` (cut) crosses the cut, nudged a
-    /// hair toward `inside` if rounding leaves it short, so it projects; `inside` itself
-    /// if it can't be.
-    fn crossing(&self, inside: [f64; 3], outside: [f64; 3]) -> [f64; 3] {
-        let (Some(near), Some(far)) = (self.depth(inside), self.depth(outside)) else {
-            return inside;
-        };
-        let t = (near - MIN_EYE_DISTANCE) / (near - far);
-        for nudge in [0.0, 1e-12, 1e-9, 1e-6] {
-            let s = t * (1.0 - nudge);
-            let p: [f64; 3] = std::array::from_fn(|k| inside[k] + s * (outside[k] - inside[k]));
-            // `project` cuts as the drawing does: a point it places is kept.
-            if project(self.camera, self.size, p).is_some() {
-                return p;
-            }
-        }
-        inside
-    }
-
     /// `points`, a segment or one point of an edge, as drawn: cut to its part in front of
-    /// the cut, then projected.
+    /// the cut, then projected. A segment is cut and projected by the renderer's own rule
+    /// ([`project_segment`], as Select Other's cast and the drawing cut it: about the eye, so
+    /// where it's cut is as precise as the eye is, wherever the eye is).
     fn drawn(&self, points: &[[f64; 3]]) -> Drawn {
         let read: Vec<[f64; 3]> = points
             .iter()
@@ -674,12 +657,13 @@ impl<'a> Sight<'a> {
             return Drawn::Unread(beside);
         }
         let left: Vec<[f64; 3]> = match read.as_slice() {
-            [a, b] => match (self.kept(*a), self.kept(*b)) {
-                (true, true) => vec![*a, *b],
-                (true, false) => vec![*a, self.crossing(*a, *b)],
-                (false, true) => vec![self.crossing(*b, *a), *b],
-                (false, false) => Vec::new(),
-            },
+            [a, b] => {
+                return match project_segment(self.camera, self.size, *a, *b) {
+                    None => Drawn::Cut,
+                    Some([Some(a), Some(b)]) => Drawn::Shown(vec![a, b]),
+                    Some(ends) => Drawn::Unread(ends.into_iter().flatten().collect()),
+                };
+            }
             points => points.iter().copied().filter(|p| self.kept(*p)).collect(),
         };
         if left.is_empty() {
@@ -838,6 +822,10 @@ mod tests {
     }
 
     const SIZE: [u32; 2] = [256, 128];
+
+    /// The edge band about a press, in pixels at one pixel a point: the prototype's 6
+    /// points (viewport.js, `d < 6`).
+    const BAND: u32 = 6;
 
     /// The document's point that [`front`] lands on pixel `(px, py)`, at depth `y`.
     fn at(px: f64, py: f64, y: f64) -> [f64; 3] {
@@ -1662,7 +1650,7 @@ mod tests {
             event(Release, [90.0, 70.0]),
         ];
         assert!(frame(&mut boxes, &left, None, false).is_empty());
-        let ours = square([50.0, 40.0], SIZE, 3);
+        let ours = square([50.0, 40.0], SIZE, BAND);
         for n in 1..=CLICK_FRAMES {
             let mut view = View::default();
             assert_eq!(boxes.ask(&mut view, &view_frame(None)), None, "frame {n}");
@@ -1690,8 +1678,8 @@ mod tests {
     fn the_presss_pick_takes_the_hovers_place_never_a_waiting_clicks() {
         let mut boxes = BoxSelect::default();
         frame(&mut boxes, &[event(Press, [50.0, 40.0])], None, false);
-        let ours = square([50.0, 40.0], SIZE, 3);
-        let at = |pixel: [f32; 2]| square(pixel, SIZE, 3);
+        let ours = square([50.0, 40.0], SIZE, BAND);
+        let at = |pixel: [f32; 2]| square(pixel, SIZE, BAND);
         let pointer = [80.5, 70.5];
         // A click's pick asked this frame, about another pixel than the pointer's: kept.
         let mut view = View::default();
@@ -1888,25 +1876,77 @@ mod tests {
     fn a_segment_is_cut_where_the_eye_cuts_at_its_hand_worked_point() {
         // From the eye at (0, −100, 0), depth is y + 100. The segment from (−50, 0, 0),
         // depth 100, to (50, −200, 0), depth −100, meets the cut, depth 1e-6, at t =
-        // (100 − 1e-6) / 200: (−5e-7, −99.999999, 0).
+        // (100 − 1e-6) / 200: (−5e-7, −99.999999, 0), x half its depth left: a pixel of the
+        // 128 rows is 2 tan 22.5° / 128 of the depth, so column 128 − 64 · 0.5 / tan 22.5° =
+        // 50.75, row 64.
         let camera = from_near();
         let sight = Sight::new(&camera, SIZE);
-        let cut = sight.crossing([-50.0, 0.0, 0.0], [50.0, -200.0, 0.0]);
-        let want = [-5e-7, -99.999_999, 0.0];
-        for k in 0..3 {
-            assert!((cut[k] - want[k]).abs() < 1e-9, "{cut:?}");
+        // (The point written in decimals rounds a hair nearer the eye than the cut, so
+        // `project` itself refuses it: the pixel is worked here.)
+        let landed = [128.0 - 64.0 * 0.5 / libm::tan(22.5f64.to_radians()), 64.0];
+        assert!((landed[0] - 50.745).abs() < 1e-3);
+        // Drawn, the segment is its start to that point; the other way round, the same.
+        for (from, to) in [
+            ([-50.0, 0.0, 0.0], [50.0, -200.0, 0.0]),
+            ([50.0, -200.0, 0.0], [-50.0, 0.0, 0.0]),
+        ] {
+            let Drawn::Shown(points) = sight.drawn(&[from, to]) else {
+                panic!("not drawn")
+            };
+            assert_eq!(points.len(), 2);
+            let (kept, cut) = if from[1] == 0.0 {
+                (points[0], points[1])
+            } else {
+                (points[1], points[0])
+            };
+            assert_eq!(Some(kept), project(&camera, SIZE, [-50.0, 0.0, 0.0]));
+            assert!(
+                (cut[0] - landed[0]).abs() < 1e-3 && (cut[1] - landed[1]).abs() < 1e-6,
+                "{cut:?}, not {landed:?}"
+            );
         }
-        assert!(project(&camera, SIZE, cut).is_some());
-        // The other way round, from the kept end: the same point.
-        let back = sight.crossing([50.0, 0.0, 0.0], [-50.0, -200.0, 0.0]);
-        assert!((back[0] - 5e-7).abs() < 1e-9 && (back[1] + 99.999_999).abs() < 1e-9);
-        // Drawn, the segment is its start to that point.
-        let Drawn::Shown(points) = sight.drawn(&[[-50.0, 0.0, 0.0], [50.0, -200.0, 0.0]]) else {
+    }
+
+    #[test]
+    fn a_segment_cut_near_an_eye_far_from_the_origin_lands_where_the_drawing_cuts_it() {
+        // The eye at (2^36, 0, 0), about 6.9e10 mm out (well inside what the renderer
+        // draws, where f64's step is 1.5e-5 mm), looking along −z, 90° high.
+        // The segment from (2^36 − 0.25, 0, 1), behind the eye, to (2^36 + 0.25, 0, −1), in
+        // front of it, runs through the eye: seen end on, every point of what's drawn of it
+        // lands on one pixel, x a quarter of its depth, column 128 + 64 · 0.25 = 144, row 64.
+        // It meets the cut, depth 1e-6, 2.5e-7 mm right of the eye: about the eye that's
+        // exact, but at 2^36 it rounds to the eye's own x, which would land the cut at the
+        // middle, column 128, and draw it as a line from 128 to 144.
+        let x = 68_719_476_736.0_f64;
+        let camera = Camera {
+            projection: Projection::Perspective {
+                field_of_view: 90.0,
+            },
+            eye: [x, 0.0, 0.0],
+            target: [x, 0.0, -10.0],
+            up: [0.0, 1.0, 0.0],
+        };
+        let sight = Sight::new(&camera, SIZE);
+        let Drawn::Shown(points) = sight.drawn(&[[x - 0.25, 0.0, 1.0], [x + 0.25, 0.0, -1.0]])
+        else {
             panic!("not drawn")
         };
-        assert_eq!(points.len(), 2);
-        assert_eq!(Some(points[0]), project(&camera, SIZE, [-50.0, 0.0, 0.0]));
-        assert_eq!(Some(points[1]), project(&camera, SIZE, cut));
+        for point in &points {
+            assert!(
+                (point[0] - 144.0).abs() < 1e-3 && (point[1] - 64.0).abs() < 1e-3,
+                "{points:?}"
+            );
+        }
+        // So a crossing box from column 132 to 140 about its row doesn't take it, and one
+        // from 140 to 148 does.
+        let edges: [&[[f64; 3]]; 1] = [&[[x - 0.25, 0.0, 1.0], [x + 0.25, 0.0, -1.0]]];
+        let held = body_at(&edges);
+        let crossing = |from: f32, to: f32| -> Vec<String> {
+            let area = PxBox::clamped([to, 60.0], [from, 68.0], SIZE);
+            taken(&held, &none(), &camera, SIZE, area, true)
+        };
+        assert!(crossing(132.0, 140.0).is_empty());
+        assert_eq!(crossing(140.0, 148.0), ["k7f2qx3m.box.Edge1"]);
     }
 
     #[test]
@@ -2125,7 +2165,7 @@ mod tests {
         // answer stands (asking again lets it go).
         let mut boxes = BoxSelect::default();
         frame(&mut boxes, &[event(Press, [50.0, 40.0])], None, false);
-        let ours = square([50.0, 40.0], SIZE, 3);
+        let ours = square([50.0, 40.0], SIZE, BAND);
         let mut view = View::default();
         view.pick(ours);
         view.answered_as(

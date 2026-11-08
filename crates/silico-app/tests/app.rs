@@ -25768,9 +25768,10 @@ fn a_clicks_pick_is_asked_again_until_answered_after_passes_that_were_discarded(
         .iter()
         .filter_map(|frame| frame.picking)
         .collect();
+    // The edge band, the prototype's 6 points out on each side (at one pixel a point).
     let square = silico_app::renderer::PixelRect {
-        min: [centre[0] as i32 - 3, centre[1] as i32 - 3],
-        size: [7, 7],
+        min: [centre[0] as i32 - 6, centre[1] as i32 - 6],
+        size: [13, 13],
     };
     assert!(asked.len() >= 4, "{asked:?}");
     assert!(asked.iter().all(|rect| *rect == square), "{asked:?}");
@@ -26358,7 +26359,7 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
             // The face at (30, 0, 3): Face3, by the name the element map gives it.
             select_at(&mut h, seen(30.0, 3.0), false, &["k7f2qx3m.box.Face3"]);
             // Its top edge, z = 10 (drawn 2 points wide about its line), from the face 2
-            // points below its line: inside the 3-point band, the edge, not the face. It's
+            // points below its line: inside the 6-point band, the edge, not the face. It's
             // Edge3 in the fixture's numbering (`silico_render::bench::box_mesh`: the front
             // face's bottom, right, top, left first), which the fake kernel meshes every box
             // with, so the element map names it so; OCCT's box numbers the top front edge
@@ -26366,8 +26367,9 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
             let edge = seen(30.0, 10.0);
             let below = |points: f32| edge + eframe::egui::vec2(0.0, points);
             select_at(&mut h, below(2.0), false, &["k7f2qx3m.box.Edge3"]);
-            // 6 points below it, past the band: the face under the pointer.
-            select_at(&mut h, below(6.0), false, &["k7f2qx3m.box.Face3"]);
+            // 9 points below it, past the band and the stroke's half (6 and 1): the face
+            // under the pointer.
+            select_at(&mut h, below(9.0), false, &["k7f2qx3m.box.Face3"]);
             // Above the box (z = 14, clear of the ViewCube at the top right), the
             // background: a click there clears.
             select_at(&mut h, seen(10.0, 14.0), false, &[]);
@@ -28453,7 +28455,7 @@ fn on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_s
                 assert_eq!(selected_names(h), want, "at {at:?}");
             };
             // The front face's top edge (z = 10) from 2 points below its line, and, Ctrl
-            // held, its bottom edge (z = 0) from 2 points above: inside the 3-point band
+            // held, its bottom edge (z = 0) from 2 points above: inside the 6-point band
             // of each, so each edge, not the face. Edge3 and Edge1 in the fixture's
             // numbering (`silico_render::bench::box_mesh`: the front face's bottom, right,
             // top, left first).
@@ -32828,5 +32830,458 @@ fn in_the_fillet_dialog_a_row_chosen_toggles_into_its_box_as_a_click_does_and_a_
         "{said}"
     );
     assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge11"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The context menu, open: its items' words, in order, and whether each is on.
+fn context_said(h: &AppHarness) -> Vec<(String, bool)> {
+    select_other(h)
+        .context()
+        .expect("the context menu")
+        .items
+        .iter()
+        .map(|shown| (shown.said(&h.ctx), shown.off.is_none()))
+        .collect()
+}
+
+/// A right click at `at`, its context menu open.
+fn context_at(h: &mut AppHarness, at: eframe::egui::Pos2) {
+    right_click(h, at, at, eframe::egui::Modifiers::NONE);
+    step_until(h, "the context menu", |h| {
+        select_other(h).phase() == Some(silico_app::select_other::Phase::Context)
+    });
+    for _ in 0..3 {
+        step(h);
+    }
+}
+
+#[test]
+fn over_an_element_the_context_menu_is_headed_by_it_and_hides_its_body_as_h_does() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    // The top under the pointer, as the renderer's hover finds it: what a click there would
+    // select, so the menu's head, and Edit and Hide its maker's and its body's.
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(6), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the top hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    context_at(&mut h, at);
+    let menu = select_other(&h).context().unwrap();
+    assert_eq!(menu.head.as_deref(), Some("Face6 · Face"));
+    assert!(anywhere(&h, "FACE6 · FACE"));
+    assert_eq!(
+        context_said(&h),
+        [
+            ("Select Other… 2 under the pointer".to_owned(), true),
+            ("Edit Block".to_owned(), true),
+            ("Hide Block H".to_owned(), true),
+        ]
+    );
+    for (label, _) in context_said(&h) {
+        assert!(anywhere(&h, &label), "{label}");
+    }
+    // Hide Block: the body hidden, as H hides it, and the menu closed.
+    h.get_by_label("Hide Block H").click();
+    step_until(&mut h, "the body hidden", |h| {
+        h.state().tabs()[0]
+            .hidden
+            .contains(&silico_app::tab::Hideable::Feature(
+                silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+            ))
+    });
+    assert!(!select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn over_an_element_the_context_menus_edit_opens_its_makers_dialog() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(6), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the top hovered", |h| hover_name(h).is_some());
+    context_at(&mut h, at);
+    h.get_by_label("Edit Block").click();
+    step_until(&mut h, "the box's dialog", |h| {
+        h.state().tabs()[0].in_dialog()
+    });
+    assert!(!select_other(&h).is_open());
+    // With its dialog open, Edit is off, saying why (the feature menus' reason).
+    answering(&record, Some((1, Face(6), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    context_at(&mut h, at);
+    let edit = select_other(&h).context().unwrap().items[1].clone();
+    assert_eq!(edit.label, "Edit Block");
+    assert_eq!(edit.off.as_deref(), Some("Close the open dialog first"));
+    assert!(h.get_by_label("Edit Block").accesskit_node().is_disabled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
+    use eframe::egui::Key;
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    // Off the box, 5 mm past its far edge (y = 20), at the canvas's top middle, clear of the
+    // ViewCube: no hover, nothing under the pointer.
+    let off = above_at(&h, 20.0, 25.0, [0.0, 0.0]);
+    answering(&record, None, None);
+    h.hover_at(off);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    context_at(&mut h, off);
+    assert_eq!(select_other(&h).context().unwrap().head, None);
+    assert_eq!(
+        context_said(&h),
+        [
+            ("Fit F6".to_owned(), true),
+            ("Home view Home".to_owned(), true),
+            ("Select Other… nothing under the pointer".to_owned(), false),
+            ("Clear selection Esc".to_owned(), false),
+        ]
+    );
+    // Fit: the camera F6 gives, from the same camera.
+    let start = view(&h).camera().clone();
+    h.get_by_label("Fit F6").click();
+    step_until(&mut h, "fitted", |h| view(h).camera() != &start);
+    let by_menu = view(&h).camera().clone();
+    view_mut(&mut h).set_camera(start.clone());
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    h.key_press(Key::F6);
+    step_until(&mut h, "fitted by F6", |h| view(h).camera() != &start);
+    assert_eq!(view(&h).camera(), &by_menu);
+    // Home view: Home's camera.
+    view_mut(&mut h).set_camera(start.clone());
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    context_at(&mut h, off);
+    h.get_by_label("Home view Home").click();
+    step_until(&mut h, "home", |h| view(h).camera() != &start);
+    let by_menu = view(&h).camera().clone();
+    view_mut(&mut h).set_camera(start.clone());
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    h.key_press(Key::Home);
+    step_until(&mut h, "home by its key", |h| view(h).camera() != &start);
+    assert_eq!(view(&h).camera(), &by_menu);
+    // Clear selection, with something selected: on, and it clears it.
+    view_mut(&mut h).set_camera(start);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let top = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(6), pixel_at(&h, top))), None);
+    click_canvas(&mut h, top, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
+    answering(&record, None, None);
+    h.hover_at(off);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    context_at(&mut h, off);
+    assert_eq!(
+        context_said(&h)[3],
+        ("Clear selection Esc".to_owned(), true)
+    );
+    h.get_by_label("Clear selection Esc").click();
+    selected_until(&mut h, &[]);
+    assert!(!select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_keys_step_its_items_that_are_on_and_enter_chooses_the_one_lit() {
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let off = above_at(&h, 20.0, 25.0, [0.0, 0.0]);
+    answering(&record, None, None);
+    h.hover_at(off);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    context_at(&mut h, off);
+    assert_eq!(select_other(&h).lit(), None);
+    // Down lights Fit, then Home view; Select Other… and Clear selection, off, are passed
+    // over, so on from Home view is Fit again, and back from Fit Home view.
+    let lit = |h: &mut AppHarness| {
+        step(h);
+        step(h);
+        select_other(h).lit()
+    };
+    h.key_press(Key::ArrowDown);
+    assert_eq!(lit(&mut h), Some(0));
+    h.key_press(Key::Tab);
+    assert_eq!(lit(&mut h), Some(1));
+    h.key_press(Key::Tab);
+    assert_eq!(lit(&mut h), Some(0));
+    h.key_press(Key::ArrowUp);
+    assert_eq!(lit(&mut h), Some(1));
+    // Enter: Home view done, the menu closed.
+    let start = view(&h).camera().clone();
+    h.key_press(Key::Enter);
+    step_until(&mut h, "home", |h| view(h).camera() != &start);
+    assert!(!select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_click_then_a_left_press_in_one_frame_leave_select_other_closed_and_select_nothing() {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(6), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    // Events given to one frame together (the harness's `event` gives each a frame of its
+    // own).
+    let button = |button, pressed| Event::PointerButton {
+        pos: at,
+        button,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    let (left, right) = (PointerButton::Primary, PointerButton::Secondary);
+    let one_frame = |h: &mut AppHarness, events: Vec<Event>| {
+        h.input_mut().events.extend(events);
+        step(h);
+    };
+    // The right button pressed, then, in the next frame, let go (the right click) and the
+    // left pressed after it: the click opens the menu, the press after it closes it, and is
+    // the menu's.
+    one_frame(&mut h, vec![button(right, true)]);
+    assert!(!select_other(&h).is_open());
+    one_frame(&mut h, vec![button(right, false), button(left, true)]);
+    assert!(!select_other(&h).is_open());
+    one_frame(&mut h, vec![button(left, false)]);
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert!(!select_other(&h).is_open());
+    assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+    // The other way round, a left click and then a right click in one frame: the click is
+    // the canvas's (no menu open at its press), selecting the top, and the menu opens after
+    // it.
+    one_frame(
+        &mut h,
+        vec![
+            button(left, true),
+            button(left, false),
+            button(right, true),
+            button(right, false),
+        ],
+    );
+    assert!(select_other(&h).is_open());
+    selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn select_other_closes_when_its_bodys_mesh_changes_under_the_same_model_or_the_body_is_hidden() {
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    list_at(&mut h, at, "4 under the pointer");
+    let model = h.state().tabs()[0].published;
+    let mesh = Arc::clone(&view(&h).bodies()[&1].mesh);
+    // Zoomed in tenfold (the wheel is the menu's): the view reads finer meshes of the same
+    // model, and the menu, cast on the old one, closes.
+    let mut camera = view(&h).camera().clone();
+    camera.projection = silico_protocol::Projection::Orthographic { view_height: 4.0 };
+    view_mut(&mut h).set_camera(camera);
+    step_until(&mut h, "another mesh", |h| {
+        view(h)
+            .bodies()
+            .get(&1)
+            .is_some_and(|body| !Arc::ptr_eq(&body.mesh, &mesh))
+    });
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].published, model, "the same model");
+    assert!(!select_other(&h).is_open());
+    // No box kept of the old mesh.
+    assert!(
+        select_other(&h)
+            .kept_meshes()
+            .iter()
+            .all(|kept| !Arc::ptr_eq(kept, &mesh))
+    );
+    // The body hidden in the browser while the list is open: closed.
+    let mut camera = view(&h).camera().clone();
+    camera.projection = silico_protocol::Projection::Orthographic { view_height: 40.0 };
+    view_mut(&mut h).set_camera(camera);
+    step_until(&mut h, "the meshes read", |h| {
+        !view(h).reading() && meshes_current(h)
+    });
+    list_at(&mut h, at, "4 under the pointer");
+    h.state_mut().tabs_mut()[0]
+        .hidden
+        .insert(silico_app::tab::Hideable::Feature(
+            silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+        ));
+    step(&mut h);
+    step(&mut h);
+    assert!(!select_other(&h).is_open());
+    assert!(!h.state().tabs()[0].selection().hover_held());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_model_published_lets_go_of_the_boxes_select_other_kept_of_its_old_meshes() {
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    list_at(&mut h, at, "4 under the pointer");
+    let old = Arc::clone(&view(&h).bodies()[&1].mesh);
+    // Closed, its boxes are kept for the next cast while the mesh is the view's.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(!select_other(&h).is_open());
+    assert_eq!(select_other(&h).kept_meshes().len(), 1);
+    assert!(Arc::ptr_eq(select_other(&h).kept_meshes()[0], &old));
+    // The box made taller by another client, its meshes read: the old mesh's boxes let go
+    // with no right click, so they keep no mesh the view has let go.
+    set_through_the_core(&f, &mut h, "k7f2qx3m", "height", "12");
+    step(&mut h);
+    assert!(
+        select_other(&h)
+            .kept_meshes()
+            .iter()
+            .all(|kept| !Arc::ptr_eq(kept, &old)),
+        "an old mesh kept"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn over_another_models_meshes_select_other_says_they_arent_shown_and_casts_nothing() {
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    // The box made taller, its new meshes held: the model is published, the view still
+    // draws the old one's.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    let (models, revision) = models_and_revision(&f, &h);
+    let session = h.state().tabs()[0].id;
+    f.sessions
+        .set_field(
+            &session,
+            revision,
+            silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+            "height".to_owned(),
+            json::read(b"12").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the new model", |h| {
+        h.state().tabs()[0].published_models != models
+    });
+    assert!(!meshes_current(&h));
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    right_click(&mut h, at, at, eframe::egui::Modifiers::NONE);
+    let item = format!("Select Other… {}", silico_app::canvas_menu::UNREAD);
+    step_until(&mut h, "the context menu", |h| anywhere(h, &item));
+    assert!(select_other(&h).rows().is_empty());
+    assert!(h.get_by_label(&item).accesskit_node().is_disabled());
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_press_off_select_other_anywhere_in_the_window_closes_it() {
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    list_at(&mut h, at, "4 under the pointer");
+    // A press on the timeline, off the canvas: the menu's let go.
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label("Block")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert!(!select_other(&h).is_open());
+    assert!(!h.state().tabs()[0].selection().hover_held());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn while_select_other_is_open_no_other_shortcut_acts() {
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    list_at(&mut h, at, "4 under the pointer");
+    let camera = view(&h).camera().clone();
+    // F6, Home, Ctrl+1, and H: none acts while the list holds the keys.
+    for (modifiers, key) in [
+        (Modifiers::NONE, Key::F6),
+        (Modifiers::NONE, Key::Home),
+        (Modifiers::COMMAND, Key::Num1),
+        (Modifiers::NONE, Key::H),
+        (Modifiers::NONE, Key::X),
+    ] {
+        h.key_press_modifiers(modifiers, key);
+        for _ in 0..3 {
+            step(&mut h);
+        }
+        assert!(select_other(&h).is_open(), "{key:?} closed it");
+        assert_eq!(view(&h).camera(), &camera, "{key:?} moved the view");
+    }
+    assert!(h.state().tabs()[0].hidden.is_empty());
+    assert!(
+        h.state().tabs()[0].selection().filter.faces,
+        "X filtered faces"
+    );
+    // Closed, F6 fits again.
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    h.key_press(Key::F6);
+    step_until(&mut h, "fitted", |h| view(h).camera() != &camera);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn question_mark_over_select_other_closes_it_and_the_sheets_filter_takes_the_typing() {
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    list_at(&mut h, at, "4 under the pointer");
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    assert!(!select_other(&h).is_open());
+    assert!(!h.state().tabs()[0].selection().hover_held());
+    let filter = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::TextInput, "Filter shortcuts")
+            .accesskit_node()
+            .is_focused()
+    };
+    step_until(&mut h, "the filter focused", filter);
+    h.get_by_role_and_label(Role::TextInput, "Filter shortcuts")
+        .type_text("f6");
+    step_until(&mut h, "narrowed to Fit", |h| {
+        sheet_shows(h, "Fit") && !sheet_shows(h, "Save")
+    });
+    // Esc is the sheet's, and closes it.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
     assert_eq!(never_waits::waits(), 0);
 }

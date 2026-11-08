@@ -649,6 +649,13 @@ impl<P: Clients + 'static> App<P> {
         // acts, so it comes first in the tab's queue.
         let renamed = self.rename_clicked_away(ui.ctx());
         let (mut started, dialog_key) = self.keys(ui);
+        // The canvas's Select Other closed under a modal, the shortcut sheet, or What's
+        // Wrong (one its keys just opened, `?`, too): the focus and the keys are theirs.
+        let over =
+            self.asking.is_some() || self.sheet.is_some() || self.whats_wrong_shown().is_some();
+        if over && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
+            tab.close_select_other(ui.ctx());
+        }
         started |= renamed;
         started |= self.take_browsed();
         self.app_bar(ui, &mut started);

@@ -1,8 +1,8 @@
 //! Select Other (M5.7; docs/design/m5.0-app.md, section 9's *Selection*): a right click on the
-//! canvas opens a menu, *Select Other…*, and that a list of everything under the pointer,
-//! nearest the eye first, as SolidWorks lists it (docs/ux/solidworks.md §1, *Select Other*)
-//! and the approved prototype draws it (docs/design/m5-ui: DESIGN.md's *Menus*, interact.js's
-//! `onContext` and `openSelectOther`).
+//! canvas opens its context menu (`crate::canvas_menu`), *Select Other…* among its items, and
+//! that a list of everything under the pointer, nearest the eye first, as SolidWorks lists it
+//! (docs/ux/solidworks.md §1, *Select Other*) and the approved prototype draws it
+//! (docs/design/m5-ui: DESIGN.md's *Menus*, interact.js's `onContext` and `openSelectOther`).
 //!
 //! **The cast.** The right click casts at its pixel's centre, with that frame's camera and
 //! size, on the bodies that frame drew (none the browser hides, none the renderer refused),
@@ -13,7 +13,8 @@
 //! model than the selection's (a model published, its meshes not read yet): the menu says
 //! so. Each row is named as the element map names it ([`crate::viewport::ViewBody::name_of`]):
 //! its element ("Face6"), its kind, the feature that made it, and "· hidden" where a face
-//! hides it (`hits`' rule). Each body's boxes are made once for each mesh it's cast on.
+//! hides it (`hits`' rule). Each body's boxes are made once for each mesh it's cast on, and
+//! let go the frame its body's mesh is no longer the view's.
 //!
 //! **The list.** Choosing *Select Other…* opens it beside the click, its first row lit. The
 //! row lit is the selection's hover ([`Selection::hold_hover`]: its face or edge outlined, its
@@ -21,17 +22,22 @@
 //! the up arrow back) and the wheel step through the rows, round from the last to the first.
 //! A click on a row, or Enter, chooses it as a click on the canvas would: it replaces the
 //! selection, Ctrl (Cmd on macOS) toggling it, and while a dialog's box of names takes the
-//! canvas's picks, it toggles it into the box, which says if it can't take it.
+//! canvas's picks, it toggles it into the box, which says if it can't take it. In the context
+//! menu the keys step through its items that are on, and Enter chooses the one lit; any
+//! other item is the tab's to do ([`CanvasAct`]).
 //!
 //! **Closing.** Esc, a press anywhere off the menu (on the canvas it does nothing more: its
 //! press, its drag, and its release are the menu's, as the prototype's click closes a menu
 //! and selects nothing), another right click on the canvas (which opens another), the
-//! published model or a body's mesh changing, or the tab not shown, closes it. While it's open
-//! the pane's wheel doesn't zoom ([`View::wheel_held`]), the pointer's hover isn't asked, the
-//! menu holds the keyboard's focus, and no other shortcut acts (`crate::app`'s keys).
+//! published model or a body's mesh changing, a modal or the shortcut sheet coming up over
+//! it, or the tab not shown, closes it. The canvas's right clicks and left presses are taken
+//! in the order they came, so a right click and then a press in one frame leave it closed.
+//! While it's open the pane's wheel doesn't zoom ([`View::wheel_held`]), the pointer's hover
+//! isn't asked, the menu holds the keyboard's focus, and no other shortcut acts
+//! (`crate::app`'s keys).
 //!
-//! The visuals are behind small functions ([`menu_frame`], [`paint_row`], [`paint_head`],
-//! [`paint_foot`]), each of the theme's tokens, which the UI port may replace.
+//! Its lines are drawn as every menu's (`crate::menu`), in egui's menu frame ([`menu_frame`]);
+//! its foot behind [`paint_foot`], of the theme's tokens.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -46,21 +52,16 @@ use silico_core::naming::Name;
 use silico_protocol::Mesh;
 use silico_render::render::{Hit, MAX_HITS, Pickable, hits};
 
-use crate::icons::{Icon, IconSize};
+use crate::canvas_menu::{CanvasAct, CanvasItem, CanvasMenu, Context, UNREAD, Under};
+use crate::icons::Icon;
+use crate::menu;
 use crate::renderer::Element;
 use crate::selection::{How, Selection, centre_of, square};
 use crate::theme;
 use crate::viewport::{LeftEvent, LeftKind, SecondaryClick, View, ViewFrame};
 
-/// The context menu's one item, as the prototype labels it.
-pub const SELECT_OTHER: &str = "Select Other…";
-
 /// The list's heading, as the prototype has it (drawn in capitals).
 pub const HEADING: &str = "Under the pointer, nearest first";
-
-/// What the context menu's item says while the view's meshes aren't of the model the
-/// selection is read against: nothing was cast.
-pub const UNREAD: &str = "the model's meshes aren't shown yet";
 
 /// A key the menu takes while it's open, from `crate::app`'s keys (before the pane draws).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,7 +118,7 @@ pub fn keys(ctx: &egui::Context) -> Vec<MenuKey> {
 /// Which of its two menus is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// The canvas's context menu, *Select Other…*.
+    /// The canvas's context menu (`crate::canvas_menu`).
     Context,
     /// The list of what's under the pointer.
     List,
@@ -144,9 +145,18 @@ impl Row {
     }
 }
 
+/// What the tab knows that the canvas's menus say ([`SelectOther::overlay`]): a feature's
+/// name by its ID, and why Edit can't open a feature's dialog now, if it can't (the feature
+/// menus' reason, `crate::feature_menu::off`).
+pub(crate) struct Facts<'a> {
+    pub(crate) names: &'a dyn Fn(&FeatureId) -> Option<String>,
+    pub(crate) edit_off: &'a dyn Fn(&FeatureId) -> Option<String>,
+}
+
 /// The canvas's Select Other: its menu, while one is open; each body's boxes, as the last cast
-/// made them; the keys taken for the menu and not yet applied; whether a left press closed it
-/// (its stream, to its end, is the menu's); and the egui pass it was last given a frame in.
+/// made them, while their meshes are the view's; the keys taken for the menu and not yet
+/// applied; whether a left press closed it (its stream, to its end, is the menu's); and the
+/// egui pass it was last given a frame in.
 #[derive(Debug, Default)]
 pub struct SelectOther {
     menu: Option<Menu>,
@@ -156,16 +166,16 @@ pub struct SelectOther {
     shown: Option<u64>,
 }
 
-/// An open menu: which; where its right click was, in points; the rows the cast found (none,
-/// with `unread`, if it wasn't cast); the row lit and the one the pointer was last over; what
-/// it was cast on (the selection's model, and each body drawn with its mesh); the wheel's
-/// steps not yet whole; the list's scroll, whether it was just stepped, and its width.
+/// An open menu: which; where its right click was, in points; the context menu, its items
+/// for what was under the pointer; the rows the cast found (none if it wasn't cast); the item or row lit and the one the pointer was last over; what it was cast on (the
+/// selection's model, and each body drawn with its mesh); the wheel's steps not yet whole;
+/// the list's scroll, whether it was just stepped, and its width.
 #[derive(Debug)]
 struct Menu {
     phase: Phase,
     at: Pos2,
+    context: CanvasMenu,
     rows: Vec<Row>,
-    unread: bool,
     lit: Option<usize>,
     pointed: Option<usize>,
     model: Option<(u64, Revision)>,
@@ -178,10 +188,27 @@ struct Menu {
 
 /// What the person did in the menu this frame.
 enum Act {
-    /// *Select Other…* chosen: the list.
-    List,
+    /// The context menu's item at this place chosen.
+    Context(usize),
     /// A row chosen, Ctrl held or not.
     Choose(usize, bool),
+}
+
+/// What a frame gives the menu: the canvas's frame, whether its bodies are of the
+/// selection's model (`current`: only then is a cast made), the tab's facts, and egui's
+/// context.
+#[derive(Clone, Copy)]
+struct Given<'a> {
+    frame: &'a ViewFrame,
+    current: bool,
+    facts: &'a Facts<'a>,
+    ctx: &'a egui::Context,
+}
+
+/// One of the canvas's events this frame, in the order they came.
+enum CanvasEvent<'a> {
+    Left(&'a LeftEvent),
+    Right(&'a SecondaryClick, bool),
 }
 
 impl SelectOther {
@@ -200,9 +227,21 @@ impl SelectOther {
         self.menu.as_ref().map_or(&[], |menu| &menu.rows)
     }
 
-    /// The row lit, if one is.
+    /// The open context menu, its items for what was under the pointer (kept while the list
+    /// is open).
+    pub fn context(&self) -> Option<&CanvasMenu> {
+        self.menu.as_ref().map(|menu| &menu.context)
+    }
+
+    /// The item or row lit, if one is.
     pub fn lit(&self) -> Option<usize> {
         self.menu.as_ref().and_then(|menu| menu.lit)
+    }
+
+    /// The meshes whose boxes are kept for the next cast, by their bodies' numbers: each the
+    /// view's, never one it has let go.
+    pub fn kept_meshes(&self) -> Vec<&Arc<Mesh>> {
+        self.pickables.values().map(Pickable::mesh).collect()
     }
 
     /// `key`, taken for the menu by the window's keys, applied when the tab's overlay is
@@ -212,12 +251,14 @@ impl SelectOther {
     }
 
     /// The canvas's right clicks and left button this frame (`frame`, given to the tab's
-    /// overlay before the selection takes its own), for the menu: a right click opens it, cast
-    /// on the bodies `frame` drew if `current` (`view`'s bodies of the model `selection` is
-    /// read against); the keys taken for it applied, the wheel stepping its list, and it drawn
-    /// over the canvas with `painter`'s context; it closed as the module says. `names` gives a
-    /// feature's name, by its ID, for the rows. The left events the selection and the box
-    /// select are to be given: every one but those of a press that closed the menu.
+    /// overlay before the selection takes its own), for the menu, in the order they came: a
+    /// right click opens it, cast (if `current`) on the bodies `frame` drew (`view`'s bodies
+    /// of the model `selection` is read against), and a left press closes it; the keys taken
+    /// for it applied, the wheel stepping its list, and it drawn over the canvas with
+    /// `painter`'s context; it closed as the module says. `facts` give a feature's name, by
+    /// its ID, for the rows, and Edit's reason it's off. The left events the selection and
+    /// the box select are to be given (every one but those of a press that closed the menu),
+    /// and what an item chosen asks of the tab.
     pub(crate) fn overlay(
         &mut self,
         selection: &mut Selection,
@@ -225,11 +266,10 @@ impl SelectOther {
         frame: &ViewFrame,
         painter: &egui::Painter,
         current: bool,
-        names: &dyn Fn(&FeatureId) -> Option<String>,
-    ) -> Vec<LeftEvent> {
+        facts: &Facts<'_>,
+    ) -> (Vec<LeftEvent>, Option<CanvasAct>) {
         let ctx = painter.ctx().clone();
         let before = self.state();
-        let kept = self.left_kept(frame, selection, view, &ctx);
         let pass = ctx.cumulative_pass_nr();
         let shown_last = self
             .shown
@@ -241,7 +281,19 @@ impl SelectOther {
             self.close(selection, view, &ctx);
             self.keys.clear();
             if !painter.is_visible() {
-                return kept;
+                self.pickables.clear();
+                // Its left events still ended as the menu's, its right clicks not taken.
+                let unshown = ViewFrame {
+                    secondary: Vec::new(),
+                    ..frame.clone()
+                };
+                let given = Given {
+                    frame: &unshown,
+                    current: false,
+                    facts,
+                    ctx: &ctx,
+                };
+                return (self.canvas_events(selection, view, &given).0, None);
             }
         }
         if self
@@ -252,23 +304,39 @@ impl SelectOther {
             tracing::debug!("the model or a mesh changed under Select Other: closed");
             self.close(selection, view, &ctx);
         }
-        self.pressed_off(selection, view, &ctx);
-        if let Some(click) = frame.secondary.last() {
-            self.open(click, selection, view, frame, current, names);
+        // The boxes of a mesh no longer the view's let go: nothing keeps an old mesh.
+        self.pickables.retain(|number, pickable| {
+            view.bodies()
+                .get(number)
+                .is_some_and(|body| Arc::ptr_eq(&body.mesh, pickable.mesh()))
+        });
+        let given = Given {
+            frame,
+            current,
+            facts,
+            ctx: &ctx,
+        };
+        let (kept, opened) = self.canvas_events(selection, view, &given);
+        // A menu open since before this frame, closed by a press anywhere off it; one this
+        // frame's right click opened is the canvas's events' to close.
+        if !opened {
+            self.pressed_off(selection, view, &ctx);
         }
+        let mut asked = None;
         for key in std::mem::take(&mut self.keys) {
-            self.apply(key, selection, view, &ctx);
+            if let Some(act) = self.apply(key, selection, view, &ctx) {
+                asked = Some(act);
+            }
         }
         self.wheel(&ctx, frame);
-        if let Some(act) = self.show(&ctx) {
-            match act {
-                Act::List => {
-                    if let Some(menu) = &mut self.menu {
-                        menu.list();
-                    }
+        match self.show(&ctx) {
+            Some(Act::Context(at)) => {
+                if let Some(act) = self.context_chosen(at, selection, view, &ctx) {
+                    asked = Some(act);
                 }
-                Act::Choose(at, ctrl) => self.choose(at, ctrl, selection, view, &ctx),
             }
+            Some(Act::Choose(at, ctrl)) => self.choose(at, ctrl, selection, view, &ctx),
+            None => {}
         }
         if let Some(menu) = &self.menu {
             let row = menu.lit.and_then(|at| menu.rows.get(at));
@@ -283,27 +351,57 @@ impl SelectOther {
             ctx.request_repaint();
         }
         view.wheel_held = self.menu.is_some();
-        kept
+        (kept, asked)
     }
 
-    /// Which menu is open, and its row lit: what a frame changing asks the next to show.
+    /// Which menu is open, and its item or row lit: what a frame changing asks the next to
+    /// show.
     fn state(&self) -> Option<(Phase, Option<usize>)> {
         self.menu.as_ref().map(|menu| (menu.phase, menu.lit))
     }
 
-    /// `frame`'s left events but those of a press that closed the menu: a press while it's
-    /// open closes it, and that press's stream (its moves, its release or cancel, and the
-    /// double-click straight after its release) is the menu's.
-    fn left_kept(
+    /// The frame's left events and right clicks, in the order they came (their `seq`): a
+    /// right click opens the menu (the frame's last; one before it, another, closes it), a
+    /// left press while it's open closes it, and that press's stream (its moves, its release
+    /// or cancel, and the double-click straight after its release) is the menu's. The left
+    /// events but those, and whether a right click opened the menu.
+    fn canvas_events(
         &mut self,
-        frame: &ViewFrame,
         selection: &mut Selection,
         view: &mut View,
-        ctx: &egui::Context,
-    ) -> Vec<LeftEvent> {
+        given: &Given<'_>,
+    ) -> (Vec<LeftEvent>, bool) {
+        let frame = given.frame;
+        let last = frame.secondary.len().saturating_sub(1);
+        let mut events: Vec<(u32, CanvasEvent<'_>)> = frame
+            .left
+            .iter()
+            .map(|event| (event.seq, CanvasEvent::Left(event)))
+            .chain(
+                frame
+                    .secondary
+                    .iter()
+                    .enumerate()
+                    .map(|(at, click)| (click.seq, CanvasEvent::Right(click, at == last))),
+            )
+            .collect();
+        events.sort_by_key(|(seq, _)| *seq);
         let mut kept = Vec::with_capacity(frame.left.len());
         let mut ended = false;
-        for event in &frame.left {
+        let mut opened = false;
+        for (_, event) in events {
+            let event = match event {
+                CanvasEvent::Right(click, true) => {
+                    self.open(click, selection, view, given);
+                    opened = true;
+                    continue;
+                }
+                CanvasEvent::Right(_, false) => {
+                    self.close(selection, view, given.ctx);
+                    continue;
+                }
+                CanvasEvent::Left(event) => event,
+            };
             if ended && event.kind == LeftKind::DoubleClick {
                 ended = false;
                 continue;
@@ -318,13 +416,15 @@ impl SelectOther {
             }
             if self.menu.is_some() && event.kind == LeftKind::Press {
                 tracing::debug!("a press on the canvas closed Select Other");
-                self.close(selection, view, ctx);
+                self.close(selection, view, given.ctx);
+                // Closed after a right click this frame: no press is to close it again.
+                opened = false;
                 self.swallowing = true;
                 continue;
             }
             kept.push(*event);
         }
-        kept
+        (kept, opened)
     }
 
     /// The menu closed by a press of any button off it, anywhere in the window: where egui's
@@ -347,21 +447,34 @@ impl SelectOther {
                 .collect()
         });
         if presses.iter().any(|at| ctx.layer_id_at(*at) != Some(layer)) {
+            tracing::debug!("a press off Select Other closed it");
             self.close(selection, view, ctx);
         }
     }
 
-    /// The context menu opened at `click`, cast (if `current`) on what `frame` drew.
+    /// The context menu opened at `click`, cast (if the frame's bodies are current) on what
+    /// the frame drew, over what a click there would select.
     fn open(
         &mut self,
         click: &SecondaryClick,
         selection: &mut Selection,
-        view: &View,
-        frame: &ViewFrame,
-        current: bool,
-        names: &dyn Fn(&FeatureId) -> Option<String>,
+        view: &mut View,
+        given: &Given<'_>,
     ) {
+        let Given {
+            frame,
+            current,
+            facts,
+            ctx,
+        } = *given;
         let _span = tracing::debug_span!("select_other_open", current).entered();
+        // The hover a menu held, if one was open, is its row's, not the pointer's.
+        let held = selection.hover_held();
+        let hovered = selection
+            .hovered()
+            .filter(|_| !held)
+            .map(|hovered| (hovered.body, hovered.element, Arc::clone(&hovered.name)));
+        self.close(selection, view, ctx);
         let ppp = frame.pixels_per_point;
         let at = frame.rect.min + Vec2::new(click.at_px[0], click.at_px[1]) / ppp;
         let meshes: Vec<(u32, Arc<Mesh>)> = frame
@@ -374,11 +487,45 @@ impl SelectOther {
             })
             .collect();
         let rows = if current {
-            self.cast(click, view, frame, &meshes, names)
+            self.cast(click, view, frame, &meshes, facts.names)
         } else {
             Vec::new()
         };
         tracing::debug!(rows = rows.len(), "select_other_cast");
+        // What a click there would select: the pointer's hover; or, while a menu held it,
+        // the first of the cast's no face hides that the filters take.
+        let filter = selection.picks();
+        let under = hovered
+            .or_else(|| {
+                rows.iter()
+                    .find(|row| {
+                        !row.hidden
+                            && match row.element {
+                                Element::Face(_) => filter.faces,
+                                Element::Edge(_) => filter.edges,
+                                Element::Vertex(_) => filter.vertices,
+                            }
+                    })
+                    .map(|row| (row.body, row.element, Arc::clone(&row.name)))
+            })
+            .and_then(|(body, element, name)| under_of(view, facts, body, element, &name));
+        let count = if current {
+            match rows.len() {
+                0 => "nothing under the pointer".to_owned(),
+                n if n >= MAX_HITS => format!("{n} or more under the pointer"),
+                n => format!("{n} under the pointer"),
+            }
+        } else {
+            UNREAD.to_owned()
+        };
+        let context = Context {
+            count,
+            listable: !rows.is_empty(),
+            edit_off: under
+                .as_ref()
+                .and_then(|under| (facts.edit_off)(&under.maker)),
+            selected: !selection.is_empty(),
+        };
         self.menu = Some(Menu {
             phase: Phase::Context,
             at: if at.x.is_finite() && at.y.is_finite() {
@@ -386,8 +533,8 @@ impl SelectOther {
             } else {
                 frame.rect.center()
             },
+            context: CanvasMenu::new(under.as_ref(), &context, ctx),
             rows,
-            unread: !current,
             lit: None,
             pointed: None,
             model: selection.model_of(),
@@ -438,27 +585,55 @@ impl SelectOther {
         .collect()
     }
 
-    /// `key` applied to the open menu.
+    /// `key` applied to the open menu: what an item it chose asks of the tab.
     fn apply(
         &mut self,
         key: MenuKey,
         selection: &mut Selection,
         view: &mut View,
         ctx: &egui::Context,
-    ) {
-        let Some(menu) = &mut self.menu else {
-            return;
-        };
+    ) -> Option<CanvasAct> {
+        let menu = self.menu.as_mut()?;
         match key {
             MenuKey::Close => self.close(selection, view, ctx),
             MenuKey::Next => menu.step(1),
             MenuKey::Back => menu.step(-1),
             MenuKey::Choose { ctrl } => match (menu.phase, menu.lit) {
-                (Phase::Context, Some(_)) => menu.list(),
+                (Phase::Context, Some(at)) => return self.context_chosen(at, selection, view, ctx),
                 (Phase::List, Some(at)) => self.choose(at, ctrl, selection, view, ctx),
                 (_, None) => {}
             },
         }
+        None
+    }
+
+    /// The context menu's item `at` chosen, if it's on: *Select Other…* opens the list;
+    /// another closes the menu and is the tab's to do.
+    fn context_chosen(
+        &mut self,
+        at: usize,
+        selection: &mut Selection,
+        view: &mut View,
+        ctx: &egui::Context,
+    ) -> Option<CanvasAct> {
+        let menu = self.menu.as_mut()?;
+        if !menu.context.on(at) {
+            return None;
+        }
+        let act = match menu.context.items.get(at)?.item.clone() {
+            CanvasItem::SelectOther => {
+                menu.list();
+                return None;
+            }
+            CanvasItem::Edit(id) => CanvasAct::Edit(id),
+            CanvasItem::Hide(id) => CanvasAct::Hide(id),
+            CanvasItem::Fit => CanvasAct::Fit,
+            CanvasItem::Home => CanvasAct::Home,
+            CanvasItem::ClearSelection => CanvasAct::ClearSelection,
+        };
+        tracing::debug!(?act, "canvas_menu_chosen");
+        self.close(selection, view, ctx);
+        Some(act)
     }
 
     /// The wheel this frame, over the canvas or the menu, stepping the list: a line a row
@@ -521,8 +696,15 @@ impl SelectOther {
         selection.pick(&row.name.to_string(), how);
     }
 
-    /// The menu closed: the hover and the wheel let go, and the keyboard's focus.
-    fn close(&mut self, selection: &mut Selection, view: &mut View, ctx: &egui::Context) {
+    /// The menu closed: the hover and the wheel let go, and the keyboard's focus. The tab's,
+    /// as a modal or the shortcut sheet comes up over it (and sketch mode, when it takes the
+    /// canvas: SEAM(#351)).
+    pub(crate) fn close(
+        &mut self,
+        selection: &mut Selection,
+        view: &mut View,
+        ctx: &egui::Context,
+    ) {
         if self.menu.take().is_some() {
             selection.release_hover();
             view.wheel_held = false;
@@ -552,9 +734,13 @@ impl SelectOther {
                     ui.scope_builder(UiBuilder::new().id_salt("select_other"), |ui| {
                         // Its rows stacked, as the prototype's are: each its own padding.
                         ui.spacing_mut().item_spacing = Vec2::ZERO;
+                        let label = match menu.phase {
+                            Phase::Context => "Canvas",
+                            Phase::List => "Select Other",
+                        };
                         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                             node.set_role(egui::accesskit::Role::Menu);
-                            node.set_label("Select Other");
+                            node.set_label(label);
                         });
                         // The keyboard's focus held by the menu, so Tab steps it and no
                         // widget behind it takes Tab, Enter, or Esc.
@@ -616,7 +802,8 @@ impl Menu {
         egui::LayerId::new(Order::Foreground, menu_id().with(which))
     }
 
-    /// Whether its context menu's item can be chosen: something is under the pointer.
+    /// Whether its context menu's *Select Other…* can be chosen: something is under the
+    /// pointer.
     fn listable(&self) -> bool {
         !self.rows.is_empty()
     }
@@ -633,13 +820,11 @@ impl Menu {
         }
     }
 
-    /// The lit row moved `by` rows, round the list's ends; in the context menu, its item lit
-    /// (if it can be chosen).
+    /// The lit row moved `by` rows, round the list's ends; in the context menu, the lit item
+    /// moved `by` among those that are on.
     fn step(&mut self, by: i64) {
         if self.phase == Phase::Context {
-            if self.listable() {
-                self.lit = Some(0);
-            }
+            self.lit = self.context.step(self.lit, by);
             return;
         }
         let Ok(rows) = i64::try_from(self.rows.len()) else {
@@ -683,18 +868,49 @@ fn menu_id() -> Id {
     Id::new("select_other_menu")
 }
 
+/// An element's kind, as the rows and the context menu's head say it, and its number.
+fn kind_of(element: Element) -> (&'static str, u32) {
+    match element {
+        Element::Face(n) => ("Face", n),
+        Element::Edge(n) => ("Edge", n),
+        Element::Vertex(n) => ("Vertex", n),
+    }
+}
+
+/// A feature's name, as `names` gives it, or its ID.
+fn named(names: &dyn Fn(&FeatureId) -> Option<String>, id: &FeatureId) -> String {
+    names(id).unwrap_or_else(|| id.as_str().to_owned())
+}
+
+/// What the context menu says is under the pointer: `element` of body `body`, by `name`;
+/// none if its body isn't the view's.
+fn under_of(
+    view: &View,
+    facts: &Facts<'_>,
+    body: u32,
+    element: Element,
+    name: &Name,
+) -> Option<Under> {
+    let body = view.bodies().get(&body)?;
+    let (kind, number) = kind_of(element);
+    let maker = name.feature().clone();
+    Some(Under {
+        label: format!("{kind}{number}"),
+        kind,
+        maker_name: named(facts.names, &maker),
+        maker,
+        body_name: named(facts.names, &body.feature),
+        body: body.feature.clone(),
+    })
+}
+
 /// `hit` as a row: named as its body's mesh names it, its note its kind, the feature that
 /// made it (by its name, as `names` gives it, or its ID), and whether it's hidden; none if
 /// its body or its name isn't the view's.
 fn row_of(hit: &Hit, view: &View, names: &dyn Fn(&FeatureId) -> Option<String>) -> Option<Row> {
-    let named = view.bodies().get(&hit.body)?.name_of(hit.element)?;
-    let (kind, number) = match hit.element {
-        Element::Face(n) => ("Face", n),
-        Element::Edge(n) => ("Edge", n),
-        Element::Vertex(n) => ("Vertex", n),
-    };
-    let maker = named.name.feature();
-    let made_by = names(maker).unwrap_or_else(|| maker.as_str().to_owned());
+    let named_as = view.bodies().get(&hit.body)?.name_of(hit.element)?;
+    let (kind, number) = kind_of(hit.element);
+    let made_by = named(names, named_as.name.feature());
     let mut note = format!("{kind} · {made_by}");
     if hit.hidden {
         note.push_str(" · hidden");
@@ -702,57 +918,51 @@ fn row_of(hit: &Hit, view: &View, names: &dyn Fn(&FeatureId) -> Option<String>) 
     Some(Row {
         body: hit.body,
         element: hit.element,
-        name: Arc::clone(&named.name),
-        stable: named.stable,
+        name: Arc::clone(&named_as.name),
+        stable: named_as.stable,
         hidden: hit.hidden,
         label: format!("{kind}{number}"),
         note,
     })
 }
 
-/// The context menu: *Select Other…*, how many are under the pointer (or why none were
-/// counted), off with none.
+/// The context menu (`crate::canvas_menu`): the pointer onto an item lights it, and a click
+/// chooses it.
 fn context_ui(ui: &mut Ui, menu: &mut Menu, act: &mut Option<Act>) {
-    let note = if menu.unread {
-        UNREAD.to_owned()
-    } else {
-        match menu.rows.len() {
-            0 => "nothing under the pointer".to_owned(),
-            n if n >= MAX_HITS => format!("the nearest {n} under the pointer"),
-            n => format!("{n} under the pointer"),
-        }
-    };
-    let enabled = menu.listable();
-    let width = row_width(ui, SELECT_OTHER, &note).max(least_width());
-    let response = paint_row(
-        ui,
-        width,
-        Some(Icon::Target),
-        SELECT_OTHER,
-        &note,
-        enabled,
-        menu.lit == Some(0),
-    );
-    if enabled && response.hovered() {
-        menu.lit = Some(0);
+    let (pointed, clicked) = menu.context.draw(ui, menu.lit);
+    // An item the pointer has moved onto lights (the prototype's mouseover); one it rests on
+    // doesn't take the light back from the keys.
+    if pointed.is_some() && pointed != menu.pointed {
+        menu.lit = pointed;
     }
-    if enabled && response.clicked() {
-        *act = Some(Act::List);
+    menu.pointed = pointed;
+    if let Some(at) = clicked {
+        *act = Some(Act::Context(at));
+    }
+}
+
+/// A row's line, as every menu draws its items (`crate::menu`), lit or not.
+fn row_line(row: &Row, lit: bool) -> menu::Item<'_> {
+    menu::Item {
+        icon: Some(icon_of(row.element)),
+        label: &row.label,
+        sub: Some(&row.note),
+        caps: &[],
+        off: None,
+        danger: false,
+        lit,
     }
 }
 
 /// The list: its heading, its rows (scrolling past [`theme::SELECT_OTHER_ROWS`], the lit row
 /// kept in view as it's stepped to), and its foot.
 fn list_ui(ui: &mut Ui, menu: &mut Menu, act: &mut Option<Act>) {
-    // Its rows' widest, laid out once: they don't change while it's open.
+    // Its lines' widest, laid out once: they don't change while it's open.
     let width = *menu.width.get_or_insert_with(|| {
-        menu.rows
-            .iter()
-            .map(|row| row_width(ui, &row.label, &row.note))
-            .fold(least_width(), f32::max)
-            .max(foot_width(ui))
+        let lines: Vec<menu::Item<'_>> = menu.rows.iter().map(|row| row_line(row, false)).collect();
+        menu::width(ui, Some(HEADING), &lines, foot_width(ui))
     });
-    paint_head(ui, width, HEADING);
+    menu::head(ui, HEADING, width);
     let row = theme::MENU_ITEM_HEIGHT;
     let shown = theme::SELECT_OTHER_ROWS as f32 * row;
     let mut scroll = egui::ScrollArea::vertical()
@@ -779,15 +989,7 @@ fn list_ui(ui: &mut Ui, menu: &mut Menu, act: &mut Option<Act>) {
             let Some(each) = menu.rows.get(at) else {
                 continue;
             };
-            let response = paint_row(
-                ui,
-                width,
-                Some(icon_of(each.element)),
-                &each.label,
-                &each.note,
-                true,
-                menu.lit == Some(at),
-            );
+            let response = menu::item(ui, &row_line(each, menu.lit == Some(at)), width);
             if response.hovered() {
                 pointed = Some(at);
             }
@@ -822,129 +1024,6 @@ fn menu_frame(ui: &Ui) -> egui::Frame {
     egui::Frame::menu(ui.style())
 }
 
-/// The least a menu's rows are wide: [`theme::MENU_MIN_WIDTH`] with its border and padding
-/// inside it (`box-sizing: border-box`), as the feature menus take it.
-fn least_width() -> f32 {
-    theme::MENU_MIN_WIDTH - 2.0 * (f32::from(theme::MENU_PADDING) + theme::BORDER_WIDTH)
-}
-
-/// The width a row of `label` and `note` takes (`.menu .mi`): its padding, its icon, and its
-/// words, its note dim after them (a gap and its margin, the prototype's `subdued` span).
-fn row_width(ui: &Ui, label: &str, note: &str) -> f32 {
-    let words = text_width(ui, label, theme::BODY_SIZE);
-    let note = text_width(ui, note, theme::MENU_ITEM_SUB_SIZE);
-    2.0 * theme::MENU_ITEM_PADDING
-        + IconSize::Small.points()
-        + theme::MENU_ITEM_GAP
-        + words
-        + theme::MENU_ITEM_GAP
-        + theme::MENU_ITEM_SUB_MARGIN
-        + note
-}
-
-fn text_width(ui: &Ui, text: &str, size: f32) -> f32 {
-    ui.painter()
-        .layout_no_wrap(
-            text.to_owned(),
-            FontId::proportional(size),
-            theme::MENU_ITEM_TEXT,
-        )
-        .size()
-        .x
-}
-
-/// A menu's row (`.menu .mi`), `width` wide: its icon (or the space of one), its words, and
-/// its note, lit or not, on or off; its response, labelled with its words and note.
-fn paint_row(
-    ui: &mut Ui,
-    width: f32,
-    icon: Option<Icon>,
-    label: &str,
-    note: &str,
-    enabled: bool,
-    lit: bool,
-) -> egui::Response {
-    let sense = if enabled {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, theme::MENU_ITEM_HEIGHT), sense);
-    let said = format!("{label} {note}");
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, &said));
-    let lit = enabled && (lit || response.hovered());
-    let ink = match (enabled, lit) {
-        (false, _) => theme::TEXT_DISABLED,
-        (true, true) => theme::MENU_ITEM_HOVER_TEXT,
-        (true, false) => theme::MENU_ITEM_TEXT,
-    };
-    let painter = ui.painter();
-    if lit {
-        painter.rect_filled(rect, theme::SMALL_CORNER_RADIUS, theme::MENU_ITEM_HOVER_BG);
-    }
-    let side = IconSize::Small.points();
-    let icon_rect = Rect::from_min_size(
-        Pos2::new(
-            rect.left() + theme::MENU_ITEM_PADDING,
-            rect.center().y - side / 2.0,
-        ),
-        Vec2::splat(side),
-    );
-    if let Some(icon) = icon {
-        icon.image(IconSize::Small)
-            .tint(ink)
-            .paint_at(ui, icon_rect);
-    }
-    let painter = ui.painter();
-    let words = painter.layout_no_wrap(
-        label.to_owned(),
-        FontId::proportional(theme::BODY_SIZE),
-        ink,
-    );
-    let words_at = Pos2::new(
-        icon_rect.right() + theme::MENU_ITEM_GAP,
-        rect.center().y - words.size().y / 2.0,
-    );
-    let words_end = words_at.x + words.size().x;
-    painter.galley(words_at, words, ink);
-    let note = painter.layout_no_wrap(
-        note.to_owned(),
-        FontId::proportional(theme::MENU_ITEM_SUB_SIZE),
-        theme::MENU_ITEM_SUB_TEXT,
-    );
-    let note_at = Pos2::new(
-        words_end + theme::MENU_ITEM_GAP + theme::MENU_ITEM_SUB_MARGIN,
-        rect.center().y - note.size().y / 2.0,
-    );
-    painter.galley(note_at, note, theme::MENU_ITEM_SUB_TEXT);
-    response
-}
-
-/// A menu's heading (`.menu .mh`), `width` wide: 10 high capitals spaced as the panels'
-/// are, Gray.550, 6 above its line and 2 under it, 8 in from the left, as the feature menus
-/// head theirs.
-fn paint_head(ui: &mut Ui, width: f32, text: &str) {
-    let job = egui::text::LayoutJob::single_section(
-        text.to_uppercase(),
-        egui::TextFormat {
-            font_id: FontId::proportional(theme::TOOLBAR_LABEL_SIZE),
-            color: theme::TOOLBAR_LABEL_TEXT,
-            extra_letter_spacing: theme::CAPITALS_LETTER_SPACING,
-            ..Default::default()
-        },
-    );
-    let galley = ui.painter().layout_job(job);
-    let height = theme::MENU_HEAD_TOP + theme::MENU_LINE_HEIGHT + theme::MENU_HEAD_BOTTOM;
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
-    let line = rect.top() + theme::MENU_HEAD_TOP;
-    let at = Pos2::new(
-        rect.left() + theme::MENU_ITEM_PADDING,
-        line + (theme::MENU_LINE_HEIGHT - galley.size().y) / 2.0,
-    );
-    ui.painter().galley(at, galley, theme::TOOLBAR_LABEL_TEXT);
-}
-
 /// The foot's parts: words, and a key cap's.
 const FOOT: [(&str, bool); 6] = [
     ("Tab", true),
@@ -964,7 +1043,7 @@ fn foot_width(ui: &Ui) -> f32 {
             if *cap {
                 crate::start::key_caps_width(ui, &[(*text).to_owned()])
             } else {
-                text_width(ui, text, theme::MENU_FOOT_SIZE)
+                menu::text_width(ui, text, theme::MENU_FOOT_SIZE)
             }
         })
         .sum();
@@ -1038,11 +1117,20 @@ mod tests {
             label: format!("Face{n}"),
             note: "Face · Block".to_owned(),
         };
+        let ctx = egui::Context::default();
+        let context = Context {
+            count: format!("{rows} under the pointer"),
+            listable: rows > 0,
+            edit_off: None,
+            selected: false,
+        };
+        // Over nothing, nothing selected: Fit and Home on, Clear selection off, and Select
+        // Other… on with rows.
         Menu {
             phase,
             at: Pos2::ZERO,
+            context: CanvasMenu::new(None, &context, &ctx),
             rows: (1..=u32::try_from(rows).unwrap()).map(row).collect(),
-            unread: false,
             lit: None,
             pointed: None,
             model: None,
@@ -1074,16 +1162,23 @@ mod tests {
         list.step(i64::MAX);
         list.step(i64::MIN);
         assert!(list.lit.is_some_and(|at| at < 4));
-        // An empty list lights nothing; a context menu lights its item if it can be chosen.
+        // An empty list lights nothing; a context menu steps through its items that are on
+        // (Fit, Home view, and Select Other… with rows; Clear selection off, as nothing is
+        // selected): back from none to the last on, Select Other…, and on round to Fit.
         let mut empty = menu(0, Phase::List);
         empty.step(1);
         assert_eq!(empty.lit, None);
         let mut context = menu(2, Phase::Context);
         context.step(-1);
+        assert_eq!(context.lit, Some(2));
+        context.step(1);
         assert_eq!(context.lit, Some(0));
+        // With nothing under the pointer, Select Other… is off and passed over.
         let mut off = menu(0, Phase::Context);
+        off.step(-1);
+        assert_eq!(off.lit, Some(1));
         off.step(1);
-        assert_eq!(off.lit, None);
+        assert_eq!(off.lit, Some(0));
         // The list opens on its first row, and only from a context menu with rows.
         context.list();
         assert_eq!((context.phase, context.lit), (Phase::List, Some(0)));

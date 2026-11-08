@@ -24,8 +24,8 @@
 //! by. A hover asks again each frame the pointer moves to another pixel, but while a drag
 //! navigates; what it found is let go when the camera or the bodies change under it, and
 //! answers asked before that change are passed over. A pick takes an edge within
-//! [`EDGE_BAND_POINTS`] of the pointer before the face under it, as SolidWorks takes an
-//! edge near the pointer.
+//! [`EDGE_BAND_POINTS`] of the pointer (the prototype's 6, Select Other's too) before the
+//! face under it, as SolidWorks takes an edge near the pointer.
 //!
 //! A pick is named, and the selection's elements drawn, only on bodies read from the model
 //! the selection is read against ([`View::bodies_of`]): a model published, its meshes not
@@ -64,6 +64,7 @@ use silico_core::recompute::Model;
 use silico_core::selection::{self as rules, Carry, Gone, Resolved, Selected};
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{ElementKind, ElementRef};
+use silico_render::render::{HIT_EDGE_POINTS, HIT_VERTEX_POINTS, MAX_PICKING_SIDE};
 
 use crate::renderer::{Element, Outlines, Picking, PixelRect};
 use crate::theme;
@@ -74,14 +75,20 @@ use crate::viewport::{LeftKind, View, ViewBody, ViewFrame};
 pub const PARAMETER: &str = "selection";
 
 /// How far from the pointer an edge is taken before the face under it, in points: the
-/// picking rectangle is a square this far out on each side of the pointer's pixel.
-pub const EDGE_BAND_POINTS: f32 = 3.0;
+/// picking rectangle is a square this far out on each side of the pointer's pixel. The
+/// prototype's (viewport.js: its `pick`, the hover and the click, takes `pickAll`'s `d < 6`),
+/// so one threshold with Select Other's cast, [`HIT_EDGE_POINTS`]. The two still part a
+/// little past it: the square takes an edge drawn anywhere in it, out to the square's
+/// corners, and the edge is drawn 2 points wide about its line, where the cast measures to
+/// the line itself (docs/design/m5.0-app.md, section 9, Select Other as built).
+pub const EDGE_BAND_POINTS: f32 = HIT_EDGE_POINTS as f32;
 
 /// How far from a vertex the pointer takes it, in points: the radius of the disc the
 /// renderer picks it by ([`crate::renderer::Frame::vertices`]), the prototype's (viewport.js,
-/// `d < 7`). The disc wins the pixels it shares with the faces and edges under it, so a
-/// vertex is taken before an edge, and an edge before a face.
-pub const VERTEX_PICK_POINTS: f32 = 7.0;
+/// `d < 7`), Select Other's cast's too ([`HIT_VERTEX_POINTS`]). The disc wins the pixels it
+/// shares with the faces and edges under it, so a vertex is taken before an edge, and an edge
+/// before a face.
+pub const VERTEX_PICK_POINTS: f32 = HIT_VERTEX_POINTS as f32;
 
 /// How many frames a click waits for its pick's answer, asking again each frame: past
 /// this (a second at 60 Hz: a renderer that answers none, or none installed), it's let go,
@@ -1787,12 +1794,18 @@ fn gone_words(
     })
 }
 
-/// The edge band, in physical pixels, at `ppp` pixels a point: at least one.
+/// The edge band, in physical pixels, at `ppp` pixels a point: at least one, and at most
+/// [`MOST_BAND_PX`].
 pub(crate) fn band_px(ppp: f32) -> u32 {
-    // At most MAX_PIXELS_PER_POINT (32) × 3 points: well inside a u32, and the square
-    // (2 · band + 1) inside the most a picking takes on a side (256).
-    (EDGE_BAND_POINTS * ppp).ceil().clamp(1.0, 96.0) as u32
+    (EDGE_BAND_POINTS * ppp)
+        .ceil()
+        .clamp(1.0, MOST_BAND_PX as f32) as u32
 }
+
+/// The most the edge band is, in pixels: its square (2 · band + 1 on a side) the most a
+/// picking takes ([`MAX_PICKING_SIDE`], 256) can hold, 255. Reached past 21 pixels a point
+/// (6 points of 21.2 are 127.2).
+pub(crate) const MOST_BAND_PX: u32 = (MAX_PICKING_SIDE - 1) / 2;
 
 /// The square `band` pixels out on each side of the pixel `at_px` (physical pixels from
 /// the viewport's top left, maybe outside it) is in, the pixel clamped into the viewport,
@@ -2218,8 +2231,16 @@ pub(crate) mod tests {
 
     #[test]
     fn a_picks_square_is_the_band_about_the_pointers_pixel_clamped_into_the_view() {
-        // 3 points at 1 and at 2 pixels a point: 3 and 6 pixels out on each side.
-        assert_eq!((band_px(1.0), band_px(2.0), band_px(1.5)), (3, 6, 5));
+        // The prototype's 6 points (viewport.js, `d < 6`) at 1, 2, and 1.5 pixels a point: 6,
+        // 12, and 9 pixels out on each side; at 32, the square no wider than a picking's 256:
+        // 127 out, 255 across.
+        assert_eq!(EDGE_BAND_POINTS, 6.0);
+        assert_eq!((band_px(1.0), band_px(2.0), band_px(1.5)), (6, 12, 9));
+        assert_eq!(
+            (band_px(21.0), band_px(21.2), band_px(32.0)),
+            (126, 127, 127)
+        );
+        assert_eq!(2 * band_px(32.0) + 1, 255);
         let rect = square([10.7, 20.2], [100, 50], 3);
         assert_eq!(
             rect,

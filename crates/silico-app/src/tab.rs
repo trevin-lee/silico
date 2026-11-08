@@ -1088,9 +1088,10 @@ impl Tab {
     /// geometry what's under its press, and a drag from empty space a box
     /// (`crate::box_select`), each read against the published model the tab last polled,
     /// which asks the session nothing more. The box select comes after the selection, so
-    /// it reads the hover this frame's answer gave. A right click opens Select Other's menu
-    /// (`crate::select_other`), first of them: while it's open it holds the hover and the
-    /// wheel, and a left press that closes it is given to neither.
+    /// it reads the hover this frame's answer gave. A right click opens the canvas's context
+    /// menu (`crate::canvas_menu`, through `crate::select_other`), first of them: while it's
+    /// open it holds the hover and the wheel, and a left press that closes it is given to
+    /// neither; an item chosen in it is done here, as its command is elsewhere.
     /// SEAM(#351): sketch mode claims them first, while a sketch is open
     /// (`if self.in_sketch() { self.selection.canvas_claimed(); self.box_select =
     /// Default::default(); return self.sketch.overlay(sessions, painter, frame) }`, a click
@@ -1132,7 +1133,32 @@ impl Tab {
         // hover and the wheel, and a left press that closes it is its own, given to neither
         // the selection nor the box. SEAM(#351): sketch mode claims the canvas before this,
         // so Select Other, the selection's, never opens in a sketch (one open as a sketch
-        // opens is closed there, `self.select_other.close(..)`).
+        // opens is closed there: `self.select_other.close(&mut self.selection, &mut
+        // self.view, painter.ctx())`).
+        // Why Edit can't open each feature's dialog, as the feature menus say it: worked out
+        // only in a frame a right click may open the menu in.
+        let edit_off: BTreeMap<silico_core::document::FeatureId, Option<String>> =
+            if frame.secondary.is_empty() {
+                BTreeMap::new()
+            } else {
+                let entries = self
+                    .timeline
+                    .as_ref()
+                    .and_then(|timeline| timeline.features.as_deref())
+                    .unwrap_or_default();
+                entries
+                    .iter()
+                    .map(|entry| {
+                        let off = crate::feature_menu::off(
+                            self,
+                            entry,
+                            crate::feature_menu::Item::Edit,
+                            crate::feature_menu::Place::Browser,
+                        );
+                        (entry.id.clone(), off)
+                    })
+                    .collect()
+            };
         let entries = self
             .timeline
             .as_ref()
@@ -1144,13 +1170,23 @@ impl Tab {
                 .find(|entry| &entry.id == id)
                 .map(|entry| entry.name.clone())
         };
-        let left = self.select_other.overlay(
+        let edit = |id: &silico_core::document::FeatureId| {
+            edit_off
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| Some("Its feature isn't in the timeline yet".to_owned()))
+        };
+        let facts = crate::select_other::Facts {
+            names: &names,
+            edit_off: &edit,
+        };
+        let (left, asked) = self.select_other.overlay(
             &mut self.selection,
             &mut self.view,
             frame,
             painter,
             current,
-            &names,
+            &facts,
         );
         let passed;
         let frame = if left.len() == frame.left.len() {
@@ -1194,6 +1230,38 @@ impl Tab {
             // What the box took is sent from the dialog's pane, maybe drawn already.
             painter.ctx().request_repaint();
         }
+        if let Some(asked) = asked {
+            self.canvas_act(sessions, asked);
+            painter.ctx().request_repaint();
+        }
+    }
+
+    /// What the canvas's context menu asked, done as its command is elsewhere: Edit as the
+    /// feature menus' Edit feature (`crate::feature_menu::act`), Hide as H hides a body, Fit
+    /// and Home view as F6 and Home, and Clear selection as Esc clears it.
+    fn canvas_act<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        asked: crate::canvas_menu::CanvasAct,
+    ) {
+        use crate::canvas_menu::CanvasAct;
+        use crate::viewport::ViewAsk;
+        match asked {
+            CanvasAct::Edit(id) => {
+                crate::feature_menu::act(self, sessions, crate::feature_menu::Act::Edit(id));
+            }
+            CanvasAct::Hide(id) => self.toggle_shown(Hideable::Feature(id)),
+            CanvasAct::Fit => self.view.ask(ViewAsk::Fit),
+            CanvasAct::Home => self.view.ask(ViewAsk::Named(crate::navigate::HOME)),
+            CanvasAct::ClearSelection => self.selection.clear(),
+        }
+    }
+
+    /// The canvas's Select Other menu closed, if it's open: a modal or the shortcut sheet has
+    /// come up over it, and takes the keyboard's focus and its keys.
+    pub(crate) fn close_select_other(&mut self, ctx: &eframe::egui::Context) {
+        self.select_other
+            .close(&mut self.selection, &mut self.view, ctx);
     }
 
     /// What clicks toggled in the selection while the dialog's box took the canvas's picks,
