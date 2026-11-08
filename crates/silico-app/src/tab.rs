@@ -8,10 +8,12 @@ use std::sync::Arc;
 
 use silico_core::ErrorCode;
 use silico_core::command::export::{Export, Exported};
+use silico_core::command::wire::Named;
 use silico_core::command::{
-    Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, FieldSet, ModelChoice,
-    Moved, Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId, Sessions,
-    SketchEdited, SketchJoined, Status, Stepped, TextAnswer, TimelineAnswer,
+    Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, DiffAnswer, FieldSet,
+    ModelChoice, Moved, Problems, RebuildState, Replaced, Response, Revision, RolledBack, Running,
+    SessionId, SessionInfo, Sessions, SketchEdited, SketchJoined, Status, Stepped, TextAnswer,
+    TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::json::Node;
@@ -19,15 +21,135 @@ use silico_core::document::{ElementId, FeatureId, Reference};
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
 
+use crate::changes::{self, Changes};
 use crate::dialog::{Dialog, Kind, feature_node, quoted};
 use crate::sketch::{Deletion, Prefixes, SketchMode};
 
-/// What a feature's mark says: its first problem's (or warning's) message, and its
-/// suggestion, from a `check` of the model the timeline's marks came from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a feature's mark says: its first problem's (or warning's) message, its cause and
+/// the elements it names, if it has them, and how many elements are at fault in all (more
+/// than it names where there are too many to list, ARCHITECTURE.md's invariant 9), and its
+/// suggestion, from a `check` of the model the timeline's marks came from; whether it's a
+/// warning's; and the core's error or warning itself, whole, if it's one (a refusal said
+/// in words alone isn't): what its card reads its code, feature, parameter, and candidates
+/// from, and copies as the JSON an agent gets.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Said {
+    pub warning: bool,
     pub message: String,
+    pub cause: Option<String>,
+    pub elements: Vec<String>,
+    pub elements_total: u64,
     pub suggestion: Option<String>,
+    pub source: Option<Source>,
+}
+
+/// How many errors and warnings a `check` counted past those it listed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Unlisted {
+    pub errors: u64,
+    pub warnings: u64,
+}
+
+/// What the core said, kept whole: an error, or a warning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    Error(silico_core::Error),
+    Warning(silico_core::Warning),
+}
+
+impl Source {
+    /// Every field the error contract writes, borrowed.
+    fn said(&self) -> silico_core::Said<'_> {
+        match self {
+            Source::Error(error) => error.said(),
+            Source::Warning(warning) => warning.said(),
+        }
+    }
+}
+
+impl Said {
+    /// What `error` says.
+    pub fn of(error: &silico_core::Error) -> Self {
+        Said {
+            warning: false,
+            message: error.message().to_owned(),
+            cause: error.cause().map(str::to_owned),
+            elements: error.elements().to_vec(),
+            elements_total: error.elements_total(),
+            suggestion: error.suggestion().map(str::to_owned),
+            source: Some(Source::Error(error.clone())),
+        }
+    }
+
+    /// What `warning` says.
+    pub fn of_warning(warning: &silico_core::Warning) -> Self {
+        Said {
+            warning: true,
+            message: warning.message().to_owned(),
+            cause: warning.cause().map(str::to_owned),
+            elements: warning.elements().to_vec(),
+            elements_total: warning.elements_total(),
+            suggestion: warning.suggestion().map(str::to_owned),
+            source: Some(Source::Warning(warning.clone())),
+        }
+    }
+
+    /// Its code, as an agent matches on it (`reference_broken`), if the core said it.
+    pub fn code(&self) -> Option<&'static str> {
+        self.source.as_ref().map(|source| source.said().code)
+    }
+
+    /// The feature it's about, by its ID, if the core named one.
+    pub fn feature(&self) -> Option<&str> {
+        self.source
+            .as_ref()
+            .and_then(|source| source.said().feature)
+    }
+
+    /// The field at fault, if the core named one.
+    pub fn parameter(&self) -> Option<&str> {
+        self.source
+            .as_ref()
+            .and_then(|source| source.said().parameter)
+    }
+
+    /// The names it offers in place of one broken, closest first.
+    pub fn candidates(&self) -> &[String] {
+        self.source
+            .as_ref()
+            .map_or(&[], |source| source.said().candidates)
+    }
+
+    /// The core's error or warning as the command API writes it, byte for byte: the error
+    /// contract's shape (`tests/contract/error-full.json`), on one line, as an agent gets it
+    /// over MCP. None for a refusal said in words alone, or one too long to write.
+    pub fn json(&self) -> Option<String> {
+        use silico_core::command::wire::{self, Layout, ToWire};
+        let value = match self.source.as_ref()? {
+            Source::Error(error) => error.to_wire(),
+            Source::Warning(warning) => warning.to_wire(),
+        };
+        wire::write(&value, Layout::OneLine).ok()
+    }
+
+    /// Its elements as the card lists them: each it names, and, where it names fewer than
+    /// are at fault, how many in all ("Edge1, Edge2 (the first 2 of 150)"); none if it
+    /// names none.
+    pub fn elements_line(&self) -> Option<String> {
+        if self.elements.is_empty() {
+            return None;
+        }
+        let listed = self.elements.join(", ");
+        let named = self.elements.len() as u64;
+        Some(if self.elements_total > named {
+            format!(
+                "Elements: {listed} (the first {named} of {})",
+                self.elements_total
+            )
+        } else {
+            format!("Elements: {listed}")
+        })
+    }
 }
 
 /// An edit of one field of one feature (`set_field`), as the person made it.
@@ -122,6 +244,17 @@ enum Queued {
         ok: bool,
         sketch: bool,
     },
+    /// Restore (Fable's decision of 2026-11-04, section 2): the text of `revision`, the one
+    /// a reload replaced, read (`text` with `revision`), then put back as an edit.
+    Restore {
+        revision: Revision,
+    },
+    /// Restore's text read, put back: `begin` if no transaction is open, then `replace_text`
+    /// of it, an edit like any other.
+    Replace {
+        revision: Revision,
+        text: String,
+    },
 }
 
 /// A new sweep's body: not yet read, or read from the document at a revision (its tip,
@@ -155,6 +288,8 @@ pub enum Sent {
     Edit(String),
     /// `move_feature`, of the feature, before the feature (none: to the end).
     Move(FeatureId, Option<FeatureId>),
+    /// `replace_text`: Restore's edit.
+    Replace,
     Undo(Option<Revision>),
     Redo(Option<Revision>),
     Commit,
@@ -217,7 +352,9 @@ impl Edits {
                 | Queued::SketchRemove { .. }
                 | Queued::SketchJoin { .. }
                 | Queued::Load { .. }
-                | Queued::Closed { .. } => break,
+                | Queued::Closed { .. }
+                | Queued::Restore { .. }
+                | Queued::Replace { .. } => break,
             }
         }
         self.queue.push_back(Queued::Edit(edit));
@@ -297,6 +434,20 @@ enum Under {
         feature: FeatureId,
         running: Running<TextAnswer>,
     },
+    /// Restore's read of the text of `revision`, sent at the tab's revision `sent_at`.
+    Restore {
+        revision: Revision,
+        sent_at: Revision,
+        running: Running<TextAnswer>,
+    },
+    /// Restore's edit, `replace_text` of `revision`'s text, as it was sent, and whether its
+    /// `begin` was sent for it.
+    Replace {
+        revision: Revision,
+        began: bool,
+        sending: Sending,
+        running: Running<Replaced>,
+    },
 }
 
 /// The choice offered for a file changed on disk while edits are held (section 4).
@@ -311,11 +462,49 @@ pub enum DiskChoice {
 }
 
 /// A reload of the session's own (section 4): the revision the tab had, and the one the
-/// file read gave.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// file read gave; what changed between them, as `diff` answers (DESIGN.md, 6c); and
+/// Restore's refusal, said, if it was refused (the revision no longer held, after another
+/// reload).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reloaded {
     pub from: Revision,
     pub to: Revision,
+    pub changes: Changes,
+    pub refused: Option<String>,
+    /// The earlier reloads this one's banner replaced before their changes were listed
+    /// (their `diff` still asked, or refused, the file having changed again before it ran),
+    /// each from and to: their changes are never listed, nor their features marked.
+    pub unlisted: Vec<(Revision, Revision)>,
+    /// Whether the session still holds `from`'s text, as far as the tab knows: not once
+    /// the reload's `diff` was refused for not holding it (the file changed again, and a
+    /// reload queued ahead of the diff, the disk watch's own or another client's read,
+    /// replaced it), when Restore, which reads it, can only be refused too.
+    pub from_held: bool,
+}
+
+/// Show changes' two lists (DESIGN.md, 6d), each from its own `diff`, answered or refused
+/// on its own: "Their change (on disk)", from the transaction's base to the file; and "Your
+/// unsaved edits", from the base to the document then.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HeldChanges {
+    pub theirs: Changes,
+    pub mine: Changes,
+}
+
+/// What `read`, a diff asked for a list, answered, if it has: its changes listed, or its
+/// refusal said; `read` let go once it answers.
+fn took(read: &mut Option<Running<DiffAnswer>>) -> Option<Changes> {
+    let running = read.take()?;
+    match running.try_take() {
+        Ok(response) => Some(match response.result {
+            Ok(answer) => Changes::Listed(changes::listed(&answer.changes)),
+            Err(problems) => Changes::refused(&problems),
+        }),
+        Err(running) => {
+            *read = Some(running);
+            None
+        }
+    }
 }
 
 /// A row of the browser (section 8, *The browser*): a feature, by its ID and name, with the
@@ -393,6 +582,20 @@ pub struct Tab {
     /// and of the document (the gate's problems).
     pub said: BTreeMap<String, Said>,
     pub document_problems: Vec<Said>,
+    /// Every problem and warning the last `check` gave, in the document's order (the
+    /// document's own first, then each feature's in the timeline's order, its errors before
+    /// its warnings), and the timeline it answers (its revision and model): What's Wrong's
+    /// list.
+    listed: Vec<Said>,
+    /// How many errors and warnings that `check` counted past those it listed.
+    unlisted: Unlisted,
+    listed_for: Option<(Revision, Option<Revision>)>,
+    /// What's Wrong is open over the window (docs/ux/solidworks.md, §5, *Errors and
+    /// warnings*): while it is, the tab reads a `check` of its model whenever the timeline
+    /// marks anything, to list every problem.
+    pub whats_wrong: bool,
+    /// The feature the timeline is to scroll to, once (an error card's Show in timeline).
+    timeline_scroll: Option<FeatureId>,
     /// A `check` read, and whether it's of a document the gate refused (whose problems are
     /// all the document's).
     check_read: Option<(bool, Running<CheckAnswer>)>,
@@ -439,6 +642,9 @@ pub struct Tab {
     /// program's, so it shows no [`reloaded`](Self::reloaded) banner. Let go once the file
     /// is as the session holds it again.
     reload_asked: bool,
+    /// The revision the newest reload the tab saw came to. A `status` of an older revision
+    /// compared the file with the bytes that reload replaced.
+    reloaded_to: Option<Revision>,
     /// What's selected (M5.7): features of the timeline or the browser, faces and edges of
     /// the canvas, by name; and what the pointer is over.
     selection: crate::selection::Selection,
@@ -447,6 +653,20 @@ pub struct Tab {
     /// What a toast is to say for the tab (a box's count, or why it took nothing), until
     /// the app takes it.
     toast: Option<String>,
+    /// The `diff` of the reload [`reloaded`](Self::reloaded) shows, asked as the reload was
+    /// seen, from the revision the tab had to the session's now, until it answers.
+    reload_diff: Option<Running<DiffAnswer>>,
+    /// The features another program changed, each by its ID with what changed in it, as
+    /// the reloads' diffs answered (`d.outside`): marked purple in the timeline and the
+    /// browser until the person marks it seen in its properties (DESIGN.md, 6c).
+    pub outside: BTreeMap<FeatureId, String>,
+    /// Show changes (DESIGN.md, 6d): what another program wrote to the file and what the
+    /// edits held changed, each as its own `diff` answers ([`HeldChanges`]); none until
+    /// it's asked, and again once its modal closes.
+    pub held_changes: Option<HeldChanges>,
+    /// Show changes' two diffs, the file's and the edits', each until it answers.
+    theirs_diff: Option<Running<DiffAnswer>>,
+    mine_diff: Option<Running<DiffAnswer>>,
     /// What the browser's eyes hide: the tab's state, never saved (open item 29).
     pub hidden: std::collections::BTreeSet<Hideable>,
     /// The last refusal a command of the tab's answered, as said to the person, until
@@ -476,6 +696,13 @@ pub struct Tab {
     /// state, for the browser's prefixes.
     pub sketch: Option<SketchMode>,
     pub prefixes: Prefixes,
+    /// The selection as it was before the open dialog's box of names took it, put back if
+    /// the dialog is cancelled, as SolidWorks returns to the selection its command started
+    /// with.
+    before_dialog: Option<Vec<crate::selection::Item>>,
+    /// The last dialog OK'd, for the window to remember its values ([`take_oked`]
+    /// (Self::take_oked), [`crate::dialog::Remembered`]).
+    oked: Option<Dialog>,
     /// The dialogs' edits OK'd in this transaction, each one step for undo and redo.
     groups: Vec<Group>,
     /// The state sketch mode's Finish ended at: Redo is off there till the next edit, so
@@ -513,12 +740,22 @@ pub struct Tab {
     /// frame with the same painter and frame. For the crate's tests only; None otherwise.
     #[doc(hidden)]
     pub watch: Option<Watch>,
+    /// A test's hook in [`poll`](Self::poll), called once the session's `status` is read
+    /// and before any answer is taken: so a test can have commands answer between the two,
+    /// as they may in any frame. For the crate's tests only; None otherwise.
+    #[doc(hidden)]
+    pub after_status: Option<AfterStatus>,
 }
 
 /// What a test sees of each frame a tab's overlay is given, and draws with its painter:
 /// for the crate's tests only.
 #[doc(hidden)]
 pub type Watch = Box<dyn FnMut(&eframe::egui::Painter, &crate::viewport::ViewFrame)>;
+
+/// What a test does in a tab's [`poll`](Tab::poll) between its `status` read and the
+/// answers it takes: for the crate's tests only.
+#[doc(hidden)]
+pub type AfterStatus = Box<dyn FnMut()>;
 
 /// What a refusal says to the person: its first error's message and suggestion.
 pub fn said(problems: &Problems) -> String {
@@ -564,14 +801,12 @@ impl Tab {
             nothing_published: false,
             rebuild_out: false,
             said: BTreeMap::new(),
-            document_problems: problems
-                .errors()
-                .iter()
-                .map(|error| Said {
-                    message: error.message().to_owned(),
-                    suggestion: error.suggestion().map(str::to_owned),
-                })
-                .collect(),
+            document_problems: problems.errors().iter().map(Said::of).collect(),
+            listed: Vec::new(),
+            unlisted: Unlisted::default(),
+            listed_for: None,
+            whats_wrong: false,
+            timeline_scroll: None,
             check_read: None,
             check_superseded: false,
             check_first: false,
@@ -587,9 +822,15 @@ impl Tab {
             disk_choice: DiskChoice::None,
             reloaded: None,
             reload_asked: false,
+            reloaded_to: None,
             selection: crate::selection::Selection::default(),
             box_select: crate::box_select::BoxSelect::default(),
             toast: None,
+            reload_diff: None,
+            outside: BTreeMap::new(),
+            held_changes: None,
+            theirs_diff: None,
+            mine_diff: None,
             hidden: std::collections::BTreeSet::new(),
             message: None,
             close_refused: false,
@@ -603,6 +844,8 @@ impl Tab {
             dialog_began: false,
             sketch: None,
             prefixes: Prefixes::default(),
+            before_dialog: None,
+            oked: None,
             groups: Vec::new(),
             redo_fence: None,
             sketch_edited: false,
@@ -618,6 +861,7 @@ impl Tab {
             export_disowned: false,
             view: crate::viewport::View::default(),
             watch: None,
+            after_status: None,
         }
     }
 
@@ -673,6 +917,44 @@ impl Tab {
         ) {
             self.toast = Some(toast);
         }
+        if self.box_toggled() {
+            // What the box took is sent from the dialog's pane, maybe drawn already.
+            painter.ctx().request_repaint();
+        }
+    }
+
+    /// What clicks toggled in the selection while the dialog's box of names took the
+    /// canvas's picks, taken into the box (`Dialog::toggled`): a pick on the body the
+    /// dialog's feature is built into read against the box's base (the timeline's chains say
+    /// which bodies are, [`built_through`]); each the box refused, or removed as the click
+    /// added it to the selection, let go from the selection again, so the canvas shows what
+    /// the box holds. Whether any was.
+    fn box_toggled(&mut self) -> bool {
+        use crate::dialog::Taken;
+        let toggled = self.selection.take_toggled();
+        let Some(dialog) = self.dialog.as_mut() else {
+            return false;
+        };
+        let entries = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
+        let own = dialog.feature.clone();
+        for toggled in &toggled {
+            let through_own = match (&own, &toggled.body) {
+                (Some(own), Some(body)) => built_through(entries, body, own),
+                _ => false,
+            };
+            let selection = &self.selection;
+            let on_base = |base: &FeatureId| selection.read_on(&toggled.name, base);
+            match dialog.toggled(toggled, through_own, &on_base) {
+                Taken::Refused => self.selection.let_go(&toggled.name),
+                Taken::Removed if toggled.added => self.selection.let_go(&toggled.name),
+                Taken::Added | Taken::Removed | Taken::Ignored => {}
+            }
+        }
+        !toggled.is_empty()
     }
 
     /// What a toast is to say for the tab, taken once (the app shows it).
@@ -689,6 +971,12 @@ impl Tab {
     /// The selection, to change: a pick by name, a feature, a clear, its filter.
     pub fn selection_mut(&mut self) -> &mut crate::selection::Selection {
         &mut self.selection
+    }
+
+    /// Whether anything is wrong: the gate's problems, or a feature's problems or warnings,
+    /// as its timeline marks them (What's Wrong lists them).
+    pub fn anything_wrong(&self) -> bool {
+        self.timeline.as_ref().is_some_and(marked)
     }
 
     /// The errors its timeline counts: the gate's, and each feature's problems (the
@@ -833,15 +1121,17 @@ impl Tab {
             || (self.transaction && !self.quiet())
     }
 
-    /// Whether a move, a dialog's add, or sketch mode's add or edit is queued or running:
-    /// each changes the document, and may be under way before the transaction its `begin`
-    /// opens is.
+    /// Whether a move, a dialog's add, Restore's edit, or sketch mode's add or edit is queued
+    /// or running: each changes the document, and may be under way before the transaction
+    /// its `begin` opens is. Restore's read of the text it puts back changes nothing: until
+    /// it answers, a file changed on disk is no reason to offer to keep edits.
     fn changing(&self) -> bool {
         self.edits.queue.iter().any(|queued| {
             matches!(
                 queued,
                 Queued::Move { .. }
                     | Queued::Add { .. }
+                    | Queued::Replace { .. }
                     | Queued::AddSketch { .. }
                     | Queued::SketchRemove { .. }
                     | Queued::SketchJoin { .. }
@@ -852,6 +1142,7 @@ impl Tab {
                 Under::Move { .. }
                     | Under::Add { .. }
                     | Under::Base { .. }
+                    | Under::Replace { .. }
                     | Under::AddSketch { .. }
                     | Under::SketchEdit { .. }
                     | Under::SketchJoin { .. }
@@ -909,6 +1200,9 @@ impl Tab {
     /// once), every command under way polled, and the reads a change needs started.
     pub fn poll<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         let status = sessions.status(&self.id);
+        if let Some(after_status) = &mut self.after_status {
+            after_status();
+        }
         // Answered at once, of the session as it is: its revision and transaction are now.
         let mut reloaded = false;
         if let Some(session) = &status.session {
@@ -921,16 +1215,8 @@ impl Tab {
                 && !session.transaction
                 && self.quiet()
             {
-                self.resets += 1;
                 reloaded = true;
-                self.reloaded = if std::mem::take(&mut self.reload_asked) {
-                    None
-                } else {
-                    Some(Reloaded {
-                        from: self.revision,
-                        to: session.revision,
-                    })
-                };
+                self.reload_seen(sessions, self.revision, session.revision);
             }
             self.revision = session.revision;
             self.transaction = session.transaction;
@@ -977,6 +1263,9 @@ impl Tab {
             .ok()
             .map(|published| (Arc::clone(&published.model), published.revision));
         self.selection.published(model, self.published_models);
+        self.selection
+            .take_into(self.dialog.as_ref().and_then(Dialog::takes));
+        self.box_toggled();
         self.published = published.result.ok().map(|published| published.revision);
         if self.published.is_some() {
             self.nothing_published = false;
@@ -1004,6 +1293,71 @@ impl Tab {
         );
     }
 
+    /// The session's own reload seen, from `from`, the revision the tab had (the one the
+    /// reload replaced), to `to`: the views read again; the banner saying so in place of
+    /// any before it (none for a reload the person asked for, section 4); and what changed
+    /// asked of `diff`, from `from` to `to`, both by number (Fable's decisions of
+    /// 2026-11-04, *the three core gaps*, section 1, and *6d's other half*, section 2), so
+    /// it reads nothing of the file and a write landing after the reload never refuses it;
+    /// its features marked when it answers, the person's reload's too. An older reload's
+    /// diff that has answered is taken first, into its own banner; one still out is let
+    /// go, so its answer never lands in this banner. An older banner whose changes weren't
+    /// listed (its diff still out, or refused: the session no longer held its `from`, a
+    /// reload queued ahead of the diff having replaced it) is said in this one, as are
+    /// those it carried.
+    fn reload_seen<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        from: Revision,
+        to: Revision,
+    ) {
+        self.resets += 1;
+        self.reloaded_to = Some(to);
+        self.take_diffs();
+        let unlisted = match self.reloaded.take() {
+            Some(older) => {
+                let mut unlisted = older.unlisted;
+                if matches!(older.changes, Changes::Asking | Changes::Refused { .. }) {
+                    unlisted.push((older.from, older.to));
+                }
+                unlisted
+            }
+            None => Vec::new(),
+        };
+        self.reloaded = (!std::mem::take(&mut self.reload_asked)).then_some(Reloaded {
+            from,
+            to,
+            changes: Changes::Asking,
+            refused: None,
+            unlisted,
+            from_held: true,
+        });
+        self.reload_diff = Some(sessions.diff(
+            &self.id,
+            Some(Named::Revision(from)),
+            Some(Named::Revision(to)),
+        ));
+    }
+
+    /// The session's own reload, if `session`, as the answer to a command the tab sent at
+    /// revision `sent_at` that changes nothing itself (or one refused) left it, says one
+    /// came first: it says it reloaded, or its revision isn't `sent_at`. Seen as
+    /// [`poll`](Self::poll) sees one, which it can't while the command is under way.
+    fn reload_in<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        sent_at: Revision,
+        session: Option<&SessionInfo>,
+    ) {
+        let Some(session) = session else {
+            return;
+        };
+        if session.reloaded || session.revision != sent_at {
+            self.reload_seen(sessions, sent_at, session.revision);
+            self.reloaded_under_dialog(sessions);
+        }
+    }
+
     /// The session as `response` left it, if that's no older than what the tab knows.
     fn took_session<T>(&mut self, response: &Response<T>) {
         if let Some(session) = &response.session
@@ -1016,6 +1370,7 @@ impl Tab {
 
     fn take_answers<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         self.take_export();
+        self.take_diffs();
         if let Some(read) = self.timeline_read.take() {
             match read.try_take() {
                 Ok(response) => {
@@ -1048,7 +1403,7 @@ impl Tab {
         }
         let mut close = false;
         for under in std::mem::take(&mut self.under) {
-            if let Some(under) = self.take(under, &mut close) {
+            if let Some(under) = self.take(sessions, under, &mut close) {
                 self.under.push(under);
             }
         }
@@ -1062,6 +1417,117 @@ impl Tab {
             });
         }
         self.advance(sessions);
+    }
+
+    /// The reload's diff and Show changes' two, if they've answered: the reload's listed in
+    /// its banner, each feature it changed marked; Show changes' each listed in its section
+    /// of the modal, or its refusal said there, each on its own.
+    fn take_diffs(&mut self) {
+        if let Some(read) = self.reload_diff.take() {
+            match read.try_take() {
+                Ok(response) => {
+                    let changes = match response.result {
+                        Ok(answer) => {
+                            self.outside.extend(changes::marks(&answer.changes));
+                            Changes::Listed(changes::listed(&answer.changes))
+                        }
+                        Err(problems) => {
+                            if let Some(reloaded) = &mut self.reloaded {
+                                reloaded.from_held = !changes::not_held(&problems, reloaded.from);
+                            }
+                            Changes::refused(&problems)
+                        }
+                    };
+                    if let Some(reloaded) = &mut self.reloaded {
+                        reloaded.changes = changes;
+                    }
+                }
+                Err(read) => self.reload_diff = Some(read),
+            }
+        }
+        if let Some(changes) = took(&mut self.theirs_diff)
+            && let Some(held) = &mut self.held_changes
+        {
+            held.theirs = changes;
+        }
+        if let Some(changes) = took(&mut self.mine_diff)
+            && let Some(held) = &mut self.held_changes
+        {
+            held.mine = changes;
+        }
+    }
+
+    /// Show changes (DESIGN.md, 6d; Fable's decision of 2026-11-04, *6d's other half*,
+    /// section 2): two diffs asked for its modal, each from the revision the open
+    /// transaction began at: to `"disk"`, the file as the core reads it then (inside the
+    /// transaction, reloading nothing and touching no edit), what another program wrote;
+    /// and to the document now, what the edits held changed. Neither moves the session's
+    /// revision. Nothing with no transaction open.
+    pub fn show_changes<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let Some(base) = self.transaction().map(|transaction| transaction.base) else {
+            return;
+        };
+        let base = Some(Named::Revision(base));
+        self.held_changes = Some(HeldChanges::default());
+        self.theirs_diff = Some(sessions.diff(&self.id, base, Some(Named::Disk)));
+        // The edits' side is the document now (`null`), not the tab's newest revision by
+        // number: Show changes is offered only inside a transaction, where a `null` side
+        // reads no file and reloads nothing, and it names the document as it is when the
+        // diff runs, so an edit still in flight can't leave a number no longer held and the
+        // list refused (a departure from Fable's `<revision now>`: the same meaning, no
+        // race).
+        self.mine_diff = Some(sessions.diff(&self.id, base, None));
+    }
+
+    /// Show changes' modal closed: its diffs let go.
+    pub fn hide_changes(&mut self) {
+        self.held_changes = None;
+        self.theirs_diff = None;
+        self.mine_diff = None;
+    }
+
+    /// Restore (Fable's decision of 2026-11-04, section 2; DESIGN.md, 6c): the text of
+    /// `revision`, the one the reload replaced, read through `text`, then put back by
+    /// `replace_text`, inside the tab's transaction, begun first if none is open: an edit
+    /// like any other, which Undo takes back and Save writes. Sent once everything asked
+    /// before it has answered. Never while a dialog is open or the tab closes. A refusal
+    /// (the revision no longer held) is said in the reload's banner.
+    pub fn restore<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        revision: Revision,
+    ) {
+        if self.in_dialog() || self.closing() || self.restoring() {
+            return;
+        }
+        self.message = None;
+        if let Some(reloaded) = &mut self.reloaded {
+            reloaded.refused = None;
+        }
+        self.edits.queue.push_back(Queued::Restore { revision });
+        self.advance(sessions);
+    }
+
+    /// Whether a Restore is queued or running.
+    pub fn restoring(&self) -> bool {
+        self.edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::Restore { .. } | Queued::Replace { .. }))
+            || self
+                .under
+                .iter()
+                .any(|under| matches!(under, Under::Restore { .. } | Under::Replace { .. }))
+    }
+
+    /// Restore of `revision` refused: said in the banner of the reload that replaced it, if
+    /// it still shows, or else in the status bar.
+    fn restore_refused(&mut self, revision: Revision, problems: &Problems) {
+        let said = changes::refused(problems);
+        match &mut self.reloaded {
+            Some(reloaded) if reloaded.from == revision => reloaded.refused = Some(said),
+            _ => self.message = Some(said),
+        }
     }
 
     /// A timeline read refused: what it says of the published model kept, and asked again
@@ -1078,6 +1544,8 @@ impl Tab {
     fn took_timeline(&mut self, timeline: TimelineAnswer) {
         if !marked(&timeline) {
             self.said.clear();
+            self.listed.clear();
+            self.unlisted = Unlisted::default();
         }
         if timeline.problems == 0 {
             self.document_problems.clear();
@@ -1087,7 +1555,12 @@ impl Tab {
     }
 
     /// `under` polled: none if it answered (what it changed taken), or it back.
-    fn take(&mut self, under: Under, close: &mut bool) -> Option<Under> {
+    fn take<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        under: Under,
+        close: &mut bool,
+    ) -> Option<Under> {
         match under {
             Under::Begin(running) => match running.try_take() {
                 Ok(response) => {
@@ -1166,6 +1639,16 @@ impl Tab {
                 then_close,
             } => match running.try_take() {
                 Ok(response) => {
+                    // Past its revision already: the session's own reload, once the
+                    // transaction ended, seen by `status` before this answer was taken
+                    // (nothing of the tab's runs while a rollback does, so nothing else
+                    // moves it).
+                    if let Some(session) = &response.session
+                        && session.revision < self.revision
+                    {
+                        self.reload_seen(sessions, session.revision, self.revision);
+                        self.reloaded_under_dialog(sessions);
+                    }
                     self.took_session(&response);
                     // Typing queued after it is applied next: the field keeps it.
                     if response.result.is_ok() && self.edits.idle() {
@@ -1235,8 +1718,12 @@ impl Tab {
                                 dialog.adding = false;
                                 dialog.feature = Some(added.feature.id.clone());
                                 // Selected, so its mark's text is read and the property
-                                // panel shows it.
-                                self.selection.select_feature(added.feature.id);
+                                // panel shows it; but not over the elements a box of
+                                // names takes from the selection (its mark's text is read
+                                // for the dialog's feature, `read_check`).
+                                if dialog.takes().is_none() {
+                                    self.selection.select_feature(added.feature.id);
+                                }
                             }
                         }
                         Err(problems) => {
@@ -1391,7 +1878,17 @@ impl Tab {
                                     .map_err(|_| "its text doesn't read as a feature".to_owned())
                             });
                         match node.map(|node| Dialog::load(kind, feature, &node, serial)) {
-                            Ok(Some(dialog)) => self.dialog = Some(dialog),
+                            Ok(Some(dialog)) => {
+                                // Its box of names holds the feature's own: the selection
+                                // (the feature, as Edit Feature selected it) let go, so the
+                                // canvas shows what the box takes from it.
+                                if let Some(kinds) = dialog.takes() {
+                                    self.before_dialog = Some(self.selection.saved());
+                                    self.selection.clear();
+                                    self.selection.take_into(Some(kinds));
+                                }
+                                self.dialog = Some(dialog);
+                            }
                             Ok(None) => {
                                 self.message =
                                     Some(format!("Its dialog doesn't read this {}", kind.title()));
@@ -1405,6 +1902,79 @@ impl Tab {
                     serial,
                     kind,
                     feature,
+                    running,
+                }),
+            },
+            Under::Restore {
+                revision,
+                sent_at,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    // Its read names a revision, so it reads nothing of the file; but a
+                    // reload queued ahead of it (the disk watch's own, or another client's
+                    // read) may have run first, which no answer said while it waited:
+                    // another program's change, said in place of the banner Restore was
+                    // clicked on.
+                    self.reload_in(sessions, sent_at, response.session.as_ref());
+                    self.took_session(&response);
+                    match response.result {
+                        // Put back next, before anything queued after it.
+                        Ok(answer) => self.edits.queue.push_front(Queued::Replace {
+                            revision,
+                            text: answer.text,
+                        }),
+                        Err(problems) => self.restore_refused(revision, &problems),
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Restore {
+                    revision,
+                    sent_at,
+                    running,
+                }),
+            },
+            Under::Replace {
+                revision,
+                began,
+                sending,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    match response.result {
+                        Ok(_) => {
+                            // The banner's done (the prototype's `undoReload`); the property
+                            // panel's field shows the document's value again.
+                            if self
+                                .reloaded
+                                .as_ref()
+                                .is_some_and(|reloaded| reloaded.from == revision)
+                            {
+                                self.reloaded = None;
+                            }
+                            if self.edits.idle() {
+                                self.resets += 1;
+                            }
+                        }
+                        Err(problems) => {
+                            // At another revision than it was sent against: the session
+                            // reloaded first (its `begin`'s read of the file), which no
+                            // answer said while it ran.
+                            self.reload_in(sessions, sending.against, response.session.as_ref());
+                            // Its own transaction, begun for it, ended: it held nothing,
+                            // and, left open, the session would follow the file no more.
+                            self.roll_back |= began;
+                            self.restore_refused(revision, &problems);
+                        }
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Replace {
+                    revision,
+                    began,
+                    sending,
                     running,
                 }),
             },
@@ -1619,12 +2189,40 @@ impl Tab {
                         });
                     }
                 }
+                Queued::Restore { revision } => {
+                    let running = sessions.text_at(&self.id, None, Some(Named::Revision(revision)));
+                    self.under.push(Under::Restore {
+                        revision,
+                        sent_at: self.revision,
+                        running,
+                    });
+                }
+                Queued::Replace { revision, text } => {
+                    let began = !self.transaction && !self.beginning;
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::Replace);
+                    let sending = self.sending();
+                    self.under.push(Under::Replace {
+                        revision,
+                        began,
+                        sending,
+                        running: sessions.replace_text(&self.id, self.revision, text),
+                    });
+                }
                 Queued::Closed { ok, sketch } => {
+                    // Every edit sent before it has answered: what a Cancel put back of the
+                    // selection is read from the revision its undo or rollback comes to,
+                    // past this one, or, if nothing of the dialog's changed the document,
+                    // from this one.
+                    let undone = self.revision.next().unwrap_or(self.revision);
                     let Some(base) = self.dialog_base.take() else {
+                        self.read_restored_from(ok, self.revision);
                         continue;
                     };
                     if !self.transaction {
                         // Nothing of the dialog's changed the document.
+                        self.read_restored_from(ok, self.revision);
                         continue;
                     }
                     let unchanged = self.state_of(base) == self.state_of(self.revision);
@@ -1638,6 +2236,7 @@ impl Tab {
                         self.redo_fence = Some(self.state_of(at));
                     }
                     if rolls_back {
+                        self.read_restored_from(ok, undone);
                         // Its own edits began the transaction: nothing before it to keep, and
                         // no transaction left open with nothing in it (an outside change is
                         // then reloaded, section 4).
@@ -1649,12 +2248,14 @@ impl Tab {
                         });
                     } else if unchanged {
                         // Nothing of the dialog's changed the document.
+                        self.read_restored_from(ok, self.revision);
                     } else if ok {
                         self.groups.push(Group {
                             start: self.state_of(base),
                             end: self.state_of(self.revision),
                         });
                     } else {
+                        self.read_restored_from(ok, undone);
                         self.supersede_preview();
                         self.record(Sent::Undo(Some(base)));
                         self.under.push(Under::Step {
@@ -1751,6 +2352,21 @@ impl Tab {
         }
     }
 
+    /// The selection a dialog's Cancel put back ([`close_dialog`](Self::close_dialog)) read
+    /// once a model of `from` or a later one is published, as that Cancel, `ok` false, is
+    /// sent; unless another Cancel waits behind it, whose undo comes later still (and which
+    /// says when, as it's sent).
+    fn read_restored_from(&mut self, ok: bool, from: Revision) {
+        let another = self
+            .edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::Closed { ok: false, .. }));
+        if !ok && !another {
+            self.selection.read_from(from);
+        }
+    }
+
     /// Whether what's queued waits: an edit, a save, a revert, a step, or a dialog's add (or
     /// its body's read) running.
     fn blocked(&self) -> bool {
@@ -1768,6 +2384,8 @@ impl Tab {
                         | Under::AddSketch { .. }
                         | Under::SketchEdit { .. }
                         | Under::SketchJoin { .. }
+                        | Under::Restore { .. }
+                        | Under::Replace { .. }
                 )
             })
     }
@@ -2211,10 +2829,11 @@ impl Tab {
         self.rebuild_stopped() && !self.rebuild_out
     }
 
-    /// Esc with no dialog open (section 3's order): the selection cleared (sketch mode's
-    /// first, then the feature's), or, with none, a
-    /// rebuild running stopped quietly ([`stop_quietly`](Self::stop_quietly)); with
-    /// neither, the reload's banner dismissed, if one shows.
+    /// Esc with no dialog open (section 3's order, the prototype's `escChain`): sketch
+    /// mode's selection cleared, if it has one; or else the reload's purple banner
+    /// dismissed, if one shows (DESIGN.md, 6c; an amber or red one in its place has let it
+    /// go already); or else the feature's selection cleared; or else, with none of them, a
+    /// rebuild running stopped quietly ([`stop_quietly`](Self::stop_quietly)).
     pub fn escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if let Some(mode) = self
             .sketch
@@ -2222,14 +2841,12 @@ impl Tab {
             .filter(|mode| !mode.selection.is_empty())
         {
             mode.selection.clear();
+        } else if self.reloaded.is_some() {
+            self.reloaded = None;
         } else if !self.selection.is_empty() {
             self.selection.clear();
         } else if self.stoppable() {
             self.stop_quietly(sessions);
-        } else {
-            // Last, the purple banner dismissed (DESIGN.md, 6c; an amber or red one in its
-            // place has let it go already).
-            self.reloaded = None;
         }
     }
 
@@ -2260,7 +2877,18 @@ impl Tab {
     /// The choice section 4 offers once the file changed on disk while unsaved edits are
     /// held.
     fn offer_disk_choice(&mut self) {
-        let disk = self.status.as_ref().and_then(|status| status.disk);
+        // A status read before a reload the tab saw since, in an answer taken after it in
+        // the same frame (Restore's `begin`, which read the file, answering as the frame
+        // read the status), compared the file with the bytes that reload replaced: what it
+        // found says nothing of the file now, and offers no choice over the reload's banner.
+        let stale = self
+            .reloaded_to
+            .is_some_and(|reloaded_to| self.status_revision < reloaded_to);
+        let disk = self
+            .status
+            .as_ref()
+            .and_then(|status| status.disk)
+            .filter(|_| !stale);
         let changed = matches!(disk, Some(Disk::Changed | Disk::Gone));
         self.disk_choice = match (self.disk_choice, changed, self.unsaved(), disk) {
             (_, false, _, _) | (_, _, false, _) => DiskChoice::None,
@@ -2439,8 +3067,8 @@ impl Tab {
     }
 
     /// Whether a dialog of `kind` can open: none open or loading, no sketch open, the tab not
-    /// closing, the
-    /// gate taking the document, and, for one that cuts, a body to cut from.
+    /// closing, the gate taking the document, and, for one that cuts or dresses edges, a body
+    /// to cut from or whose edges to dress.
     pub fn can_open(&self, kind: Kind) -> bool {
         self.dialog.is_none()
             && self.loading.is_none()
@@ -2450,13 +3078,19 @@ impl Tab {
                 .timeline
                 .as_ref()
                 .is_some_and(|timeline| timeline.problems == 0)
-            && (!kind.cuts() || self.tip().is_some())
+            && (!(kind.cuts() || kind.dresses()) || self.tip().is_some())
     }
 
-    /// A new feature's dialog opened (section 9): its inputs at their defaults, a sweep's
-    /// sketch the one selected if it's one, and its body the tip. Its feature is added as
-    /// soon as its inputs are valid.
-    pub fn open_dialog<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, kind: Kind) {
+    /// A new feature's dialog opened (section 9): its inputs at their defaults, or those its
+    /// kind was last OK'd with, if it remembers them (`remembered`); a sweep's sketch the one
+    /// selected if it's one, and its body the tip. Its feature is added as soon as its
+    /// inputs are valid.
+    pub fn open_dialog<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        kind: Kind,
+        remembered: &crate::dialog::Remembered,
+    ) {
         if !self.can_open(kind) {
             return;
         }
@@ -2466,9 +3100,44 @@ impl Tab {
             .feature()
             .cloned()
             .filter(|id| self.is_sketch(id));
-        self.dialog = Some(Dialog::new(kind, sketch, serial));
+        let mut dialog = Dialog::new(kind, sketch, serial);
+        remembered.apply(&mut dialog);
+        if let Some(kinds) = dialog.takes() {
+            self.before_dialog = Some(self.selection.saved());
+            self.take_selection(&mut dialog, kinds);
+        }
+        self.dialog = Some(dialog);
         self.dialog_changed(sessions);
         self.advance(sessions);
+    }
+
+    /// The selection taken into `dialog`'s box of names, which takes `kinds`, as SolidWorks'
+    /// PropertyManager box takes what's selected when its command starts: what else is
+    /// selected let go and said; the rest's names as a store writes them, or, if one can't
+    /// be stored, or they're on several bodies, none, said and the selection cleared (the
+    /// canvas shows what the box holds); and the canvas's picks the box's from then.
+    fn take_selection(&mut self, dialog: &mut Dialog, kinds: crate::selection::Filter) {
+        let left_out = self.selection.keep_only(kinds).words().and_then(|words| {
+            dialog.names().map(|names| {
+                format!(
+                    "{words} left out: a {} takes {}",
+                    names.of,
+                    names.takes.plural()
+                )
+            })
+        });
+        let stored = self.selection.storable();
+        let mut bodies: Vec<FeatureId> = Vec::new();
+        for selected in self.selection.elements().filter_map(|p| p.found()) {
+            if !bodies.contains(&selected.feature) {
+                bodies.push(selected.feature.clone());
+            }
+        }
+        if stored.is_err() || bodies.len() > 1 {
+            self.selection.clear();
+        }
+        dialog.take_selection(stored, &bodies, left_out);
+        self.selection.take_into(Some(kinds));
     }
 
     /// A dialog opening: numbered, the revision it opens at marked in the queue, and what
@@ -2476,6 +3145,7 @@ impl Tab {
     fn opening(&mut self) -> u64 {
         self.message = None;
         self.refused.clear();
+        self.before_dialog = None;
         self.dialogs += 1;
         self.edits.queue.push_back(Queued::Opened {
             serial: self.dialogs,
@@ -2554,6 +3224,59 @@ impl Tab {
         }
     }
 
+    /// The feature `id` (by its ID as written) as the timeline lists it, if it does.
+    pub fn entry(&self, id: &str) -> Option<&Entry> {
+        self.timeline
+            .as_ref()?
+            .features
+            .as_ref()?
+            .iter()
+            .find(|entry| entry.id.as_str() == id)
+    }
+
+    /// Whether Edit Feature would open the feature `id`'s dialog now: it has one, and one
+    /// may open ([`can_open`](Self::can_open)).
+    pub fn can_edit(&self, id: &FeatureId) -> bool {
+        self.kind_of(id).is_some_and(|kind| self.can_open(kind))
+    }
+
+    /// An error card's Show in timeline: the feature `id` selected alone, and the timeline
+    /// scrolled to its item once it's next drawn.
+    pub fn show_in_timeline(&mut self, id: FeatureId) {
+        self.selection.select_feature(id.clone());
+        self.timeline_scroll = Some(id);
+    }
+
+    /// The feature the timeline is to scroll to, if one is.
+    pub fn timeline_scroll(&self) -> Option<&FeatureId> {
+        self.timeline_scroll.as_ref()
+    }
+
+    /// The timeline has scrolled to it (or had nothing to scroll), once.
+    pub fn timeline_scrolled(&mut self) {
+        self.timeline_scroll = None;
+    }
+
+    /// What an error card asked (`errCard`'s Edit and Show in timeline), done through
+    /// `sessions`: whether a command was started.
+    pub(crate) fn card_asked<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        asked: crate::properties::CardAct,
+    ) -> bool {
+        match asked {
+            crate::properties::CardAct::Edit(id) => {
+                // SEAM(#351): Edit Sketch for a sketch, as the timeline's double-click.
+                self.edit_feature(sessions, &id);
+                true
+            }
+            crate::properties::CardAct::Show(id) => {
+                self.show_in_timeline(id);
+                false
+            }
+        }
+    }
+
     /// The dialog kind of the feature `id`, if the timeline lists it and a dialog edits it.
     pub fn kind_of(&self, id: &FeatureId) -> Option<Kind> {
         self.timeline
@@ -2572,6 +3295,10 @@ impl Tab {
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
         };
+        // What its boxes let go of, let go from the selection too.
+        for name in dialog.take_unpicked() {
+            self.selection.let_go(&name);
+        }
         if let Some(members) = dialog.add() {
             let (serial, kind) = (dialog.serial, dialog.kind);
             self.edits.queue.push_back(Queued::Add {
@@ -2605,17 +3332,36 @@ impl Tab {
     /// back to the revision it opened at (`undo` with `to`, so edits made before it stay;
     /// rolled back if its own edits began the transaction). Neither while the tab closes:
     /// what it sent would come after the close.
+    ///
+    /// The selection the dialog's box of names took is put back as it was before by Cancel
+    /// (read again once the Cancel's model is published, never against a preview of the
+    /// dialog's edits, which may still land after it), and left as the box holds it by
+    /// OK. The dialog OK'd is kept for the window to remember its values
+    /// ([`take_oked`](Self::take_oked)).
     pub fn close_dialog<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, ok: bool) {
         if self.closing() {
             return;
         }
-        if self.dialog.take().is_none() && self.loading.take().is_none() {
+        let closed = self.dialog.take();
+        if closed.is_none() && self.loading.take().is_none() {
             return;
+        }
+        let before = self.before_dialog.take();
+        if ok {
+            self.oked = closed;
+        } else if let Some(items) = before {
+            self.selection.restore(items);
         }
         self.edits
             .queue
             .push_back(Queued::Closed { ok, sketch: false });
         self.advance(sessions);
+    }
+
+    /// The last dialog OK'd since this was last asked, if one was: the window remembers its
+    /// values for the next of its kind.
+    pub fn take_oked(&mut self) -> Option<Dialog> {
+        self.oked.take()
     }
 
     /// Whether a dialog is open, or its feature is being read for one.
@@ -2826,17 +3572,21 @@ impl Tab {
     }
 
     /// What the dialog says beneath its inputs: its feature's error (or warning), as the
-    /// preview's check gives it, then the tab's last refusal.
-    pub fn dialog_said(&self) -> Vec<String> {
+    /// preview's check gives it (its message, cause, elements, and suggestion), then the
+    /// tab's last refusal.
+    pub fn dialog_said(&self) -> Vec<Said> {
         let feature = self
             .dialog
             .as_ref()
             .and_then(|dialog| dialog.feature.as_ref());
         feature
             .and_then(|feature| self.said.get(feature.as_str()))
-            .map(|said| said.message.clone())
+            .cloned()
             .into_iter()
-            .chain(self.message.clone())
+            .chain(self.message.clone().map(|message| Said {
+                message,
+                ..Said::default()
+            }))
             .collect()
     }
 
@@ -2852,7 +3602,14 @@ impl Tab {
         if self.check_read.is_some() || self.checked == Some(asked) {
             return;
         }
-        let Some((gate, model)) = check_wanted(timeline, self.selection.feature()) else {
+        // The feature selected; or, with none, the open dialog's (a box of names keeps the
+        // selection's elements, not the feature).
+        let wanted = self.selection.feature().or_else(|| {
+            self.dialog
+                .as_ref()
+                .and_then(|dialog| dialog.feature.as_ref())
+        });
+        let Some((gate, model)) = check_wanted(timeline, wanted, self.whats_wrong) else {
             return;
         };
         // Never the current model of a revision whose rebuild was stopped: its check would
@@ -2868,35 +3625,94 @@ impl Tab {
     }
 
     /// What `answer` says of each feature, and of the document: all of a document the gate
-    /// refused (`gate`), or else those of no feature.
+    /// refused (`gate`), or else those of no feature; and every problem and warning, in the
+    /// document's order, for What's Wrong.
     fn took_check(&mut self, answer: &CheckAnswer, gate: bool) {
         let mut by_feature = BTreeMap::new();
         let mut document = Vec::new();
+        let mut listed = Vec::new();
         for error in answer.problems.errors() {
-            let said = Said {
-                message: error.message().to_owned(),
-                suggestion: error.suggestion().map(str::to_owned),
-            };
+            let said = Said::of(error);
             if gate || error.feature().is_none() {
                 document.push(said.clone());
             }
             if let Some(feature) = error.feature() {
-                by_feature.entry(feature.to_owned()).or_insert(said);
+                by_feature
+                    .entry(feature.to_owned())
+                    .or_insert_with(|| said.clone());
             }
+            listed.push(said);
         }
         for warning in answer.warnings.listed() {
+            let said = Said::of_warning(warning);
             if let Some(feature) = warning.feature() {
                 by_feature
                     .entry(feature.to_owned())
-                    .or_insert_with(|| Said {
-                        message: warning.message().to_owned(),
-                        suggestion: warning.suggestion().map(str::to_owned),
-                    });
+                    .or_insert_with(|| said.clone());
             }
+            listed.push(said);
         }
+        let entries = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
+        in_document_order(&mut listed, entries, gate);
         self.said = by_feature;
         self.document_problems = document;
+        self.listed = listed;
+        self.unlisted = Unlisted {
+            errors: answer
+                .problems
+                .total()
+                .saturating_sub(answer.problems.errors().len() as u64),
+            warnings: answer
+                .warnings
+                .total()
+                .saturating_sub(answer.warnings.listed().len() as u64),
+        };
+        self.listed_for = self.checked;
     }
+
+    /// What What's Wrong lists: every problem and warning of the model the timeline shows,
+    /// in the document's order; none if the timeline marks nothing. None while they're being
+    /// read (or no timeline is read yet).
+    pub fn listed(&self) -> Option<&[Said]> {
+        let timeline = self.timeline.as_ref()?;
+        if !marked(timeline) {
+            return Some(&[]);
+        }
+        (self.listed_for == Some((timeline.revision, timeline.model)))
+            .then_some(self.listed.as_slice())
+    }
+
+    /// How many errors and warnings the `check` [`listed`](Self::listed) answers counted
+    /// past those it lists (the core lists the first hundred of each, and counts them all).
+    pub fn unlisted(&self) -> Unlisted {
+        self.unlisted
+    }
+}
+
+/// Whether the solid of `body` is built through the feature `own`'s, as `entries` (the
+/// timeline, in order) chain them: `body` is `own`, or one of its inputs is built through
+/// it, followed back input by input. A fillet whose dialog is open is built into each body
+/// this holds for, so a pick on one is read against the fillet's base.
+fn built_through(entries: &[Entry], body: &FeatureId, own: &FeatureId) -> bool {
+    let inputs: BTreeMap<&FeatureId, &[FeatureId]> = entries
+        .iter()
+        .map(|entry| (&entry.id, entry.inputs.as_slice()))
+        .collect();
+    let mut seen: std::collections::BTreeSet<&FeatureId> = std::collections::BTreeSet::new();
+    let mut stack = vec![body];
+    while let Some(at) = stack.pop() {
+        if at == own {
+            return true;
+        }
+        if seen.insert(at) {
+            stack.extend(inputs.get(at).copied().unwrap_or_default());
+        }
+    }
+    false
 }
 
 /// The body a new sweep builds on, as FreeCAD's PartDesign takes its body's tip, from a
@@ -2957,22 +3773,41 @@ fn after_refusal(nothing_published: bool, problems: &Problems) -> (bool, bool) {
     (now, now != nothing_published || cancelled)
 }
 
-/// Whether a `check` of `timeline` is wanted, with `selected` the feature selected: for a
-/// document the gate refused (`gate`, true), of the current model, its problems all the
-/// document's; or for a selected feature `timeline` marks, of the published model (the
+/// `listed` sorted into the document's order, as `entries` (the timeline) list its
+/// features: the document's own first (all of a document the gate refused, `gate`, and any
+/// of no feature), then each feature's, in its order, then any of a feature it doesn't
+/// list; each feature's in the order the core gave them (its errors before its warnings).
+fn in_document_order(listed: &mut [Said], entries: &[Entry], gate: bool) {
+    let place: BTreeMap<&str, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(at, entry)| (entry.id.as_str(), at))
+        .collect();
+    // A stable sort: the core's order kept among equals.
+    listed.sort_by_key(|said| match said.feature() {
+        Some(feature) if !gate => place.get(feature).map_or((2, 0), |at| (1, *at)),
+        _ => (0, 0),
+    });
+}
+
+/// Whether a `check` of `timeline` is wanted, with `selected` the feature selected and
+/// `listing` whether What's Wrong is open: for a document the gate refused (`gate`, true),
+/// of the current model, its problems all the document's; or, for a selected feature
+/// `timeline` marks or for What's Wrong while it marks anything, of the published model (the
 /// current, while none is published). None for neither.
 fn check_wanted(
     timeline: &TimelineAnswer,
     selected: Option<&FeatureId>,
+    listing: bool,
 ) -> Option<(bool, CheckModel)> {
     let gate = timeline.problems > 0;
-    let opened = selected.is_some_and(|selected| {
-        timeline
-            .features
-            .iter()
-            .flatten()
-            .any(|entry| &entry.id == selected && (entry.problems > 0 || entry.warnings > 0))
-    });
+    let opened =
+        (listing && marked(timeline))
+            || selected.is_some_and(|selected| {
+                timeline.features.iter().flatten().any(|entry| {
+                    &entry.id == selected && (entry.problems > 0 || entry.warnings > 0)
+                })
+            });
     if !(gate || opened) {
         return None;
     }
@@ -3111,6 +3946,104 @@ mod tests {
     }
 
     #[test]
+    fn a_check_says_a_warnings_cause_and_elements_and_how_many_an_error_has_past_those_listed() {
+        // An error listing 2 of its 150 elements, and a warning with its cause and 1 of its
+        // 3: each kept whole for its feature's card, the warning marked as one, and each
+        // card's Elements line saying how many there are past those listed (invariant 9).
+        let error = silico_core::Error::new(silico_core::ErrorCode::KernelFailed, "Fillet failed")
+            .with_feature("f0000001")
+            .with_cause("OCCT couldn't fillet Edge1")
+            .with_elements(["Edge1", "Edge2"])
+            .with_elements_total(150)
+            .with_suggestion("try a smaller radius");
+        let warning = silico_core::Warning::new(
+            silico_core::WarningCode::EndsNotJoined,
+            "Two ends aren't joined",
+        )
+        .with_feature("s0000001")
+        .with_cause("the ends are 1e-8 mm apart")
+        .with_elements(["pa000001"])
+        .with_elements_total(3)
+        .with_suggestion("join them");
+        let mut tab = tab();
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(error.clone()),
+                warnings: silico_core::warnings::Warnings::of([warning.clone()]),
+            },
+            false,
+        );
+        let fillet = Said {
+            warning: false,
+            message: "Fillet failed".to_owned(),
+            cause: Some("OCCT couldn't fillet Edge1".to_owned()),
+            elements: vec!["Edge1".to_owned(), "Edge2".to_owned()],
+            elements_total: 150,
+            suggestion: Some("try a smaller radius".to_owned()),
+            source: Some(Source::Error(error)),
+        };
+        assert_eq!(tab.said.get("f0000001"), Some(&fillet));
+        assert_eq!(
+            fillet.elements_line().as_deref(),
+            Some("Elements: Edge1, Edge2 (the first 2 of 150)")
+        );
+        let sketch = Said {
+            warning: true,
+            message: "Two ends aren't joined".to_owned(),
+            cause: Some("the ends are 1e-8 mm apart".to_owned()),
+            elements: vec!["pa000001".to_owned()],
+            elements_total: 3,
+            suggestion: Some("join them".to_owned()),
+            source: Some(Source::Warning(warning)),
+        };
+        assert_eq!(tab.said.get("s0000001"), Some(&sketch));
+        assert_eq!(
+            sketch.elements_line().as_deref(),
+            Some("Elements: pa000001 (the first 1 of 3)")
+        );
+        // All listed: no count; none: no line.
+        let all = Said {
+            elements_total: 2,
+            ..fillet.clone()
+        };
+        assert_eq!(
+            all.elements_line().as_deref(),
+            Some("Elements: Edge1, Edge2")
+        );
+        assert_eq!(Said::default().elements_line(), None);
+    }
+
+    #[test]
+    fn a_body_is_built_through_a_feature_its_inputs_reach_back_to() {
+        // A box, a fillet of it, a second box, and a fuse of the fillet with the second box;
+        // and a body of its own. The fuse is built through the fillet and both boxes; the
+        // fillet through itself; the lone body through none of them.
+        let id = |id: &str| FeatureId::new(id).unwrap();
+        let with = |at: &str, inputs: &[&str]| Entry {
+            inputs: inputs.iter().map(|input| id(input)).collect(),
+            ..entry(at, 0, 0)
+        };
+        let entries = [
+            with("a0000001", &[]),
+            with("f0000001", &["a0000001"]),
+            with("b0000001", &[]),
+            with("r0000001", &["f0000001", "b0000001"]),
+            with("c0000001", &[]),
+        ];
+        let through = |body: &str, own: &str| built_through(&entries, &id(body), &id(own));
+        assert!(through("r0000001", "f0000001"));
+        assert!(through("r0000001", "a0000001"));
+        assert!(through("r0000001", "b0000001"));
+        assert!(through("f0000001", "f0000001"));
+        assert!(!through("f0000001", "r0000001"));
+        assert!(!through("c0000001", "f0000001"));
+        assert!(!through("b0000001", "f0000001"));
+        // A feature the timeline doesn't list yet (a new one's, before its read): itself.
+        assert!(through("n0000001", "n0000001"));
+        assert!(!through("n0000001", "f0000001"));
+    }
+
+    #[test]
     fn an_answer_newer_than_the_status_keeps_the_tab_unsaved_until_a_status_of_it_is_read() {
         // A status of revision 2 says nothing changed (an edit undone back, say); an answer
         // since brought the tab to revision 3, whose status isn't read yet: unsaved, as a
@@ -3147,6 +4080,35 @@ mod tests {
         tab.status = Some(counted(three, true, 1, 1));
         tab.status_revision = three;
         assert!(tab.undoable() && tab.redoable());
+    }
+
+    #[test]
+    fn a_disk_finding_read_before_a_reload_seen_since_offers_no_choice() {
+        // A status of revision 2 found the file changed with edits held: the choice offered.
+        // An answer since said the session reloaded the file at 3 (Restore's `begin`, in the
+        // frame that read that status): the finding compared the file with the bytes that
+        // reload replaced, so nothing is offered until a status of 3 is read; one that finds
+        // the file changed again offers it.
+        let two = Revision::from_number(2).unwrap();
+        let three = Revision::from_number(3).unwrap();
+        let mut tab = tab();
+        let mut found = status(two, true);
+        found.disk = Some(Disk::Changed);
+        tab.status = Some(found);
+        tab.status_revision = two;
+        tab.revision = two;
+        tab.offer_disk_choice();
+        assert_eq!(tab.disk_choice, DiskChoice::Offered(Disk::Changed));
+        tab.reloaded_to = Some(three);
+        tab.revision = three;
+        tab.offer_disk_choice();
+        assert_eq!(tab.disk_choice, DiskChoice::None);
+        let mut again = status(three, true);
+        again.disk = Some(Disk::Changed);
+        tab.status = Some(again);
+        tab.status_revision = three;
+        tab.offer_disk_choice();
+        assert_eq!(tab.disk_choice, DiskChoice::Offered(Disk::Changed));
     }
 
     fn entry(id: &str, problems: u64, warnings: u64) -> Entry {
@@ -3207,44 +4169,255 @@ mod tests {
         };
         // Nothing refused, nothing selected, or a healthy feature selected: none.
         assert_eq!(
-            check_wanted(&timeline(0, Some(one), features()), None),
+            check_wanted(&timeline(0, Some(one), features()), None, false),
             None
         );
         assert_eq!(
-            check_wanted(&timeline(0, Some(one), features()), Some(&a)),
+            check_wanted(&timeline(0, Some(one), features()), Some(&a), false),
             None
         );
         // A selected feature with warnings, or problems: of the published model.
         assert_eq!(
-            check_wanted(&timeline(0, Some(one), features()), Some(&b)),
+            check_wanted(&timeline(0, Some(one), features()), Some(&b), false),
             Some((false, CheckModel::Published))
         );
         let c = FeatureId::new("c0000001").unwrap();
         assert_eq!(
-            check_wanted(&timeline(0, Some(one), features()), Some(&c)),
+            check_wanted(&timeline(0, Some(one), features()), Some(&c), false),
             Some((false, CheckModel::Published))
         );
         // None published: of the current one.
         assert_eq!(
-            check_wanted(&timeline(0, None, features()), Some(&b)),
+            check_wanted(&timeline(0, None, features()), Some(&b), false),
             Some((false, CheckModel::Current { fresh: false }))
         );
         // A document the gate refused: the current model, whatever is selected.
         assert_eq!(
-            check_wanted(&timeline(2, Some(one), features()), None),
+            check_wanted(&timeline(2, Some(one), features()), None, false),
             Some((true, CheckModel::Current { fresh: false }))
         );
         assert_eq!(
-            check_wanted(&timeline(2, Some(one), features()), Some(&a)),
+            check_wanted(&timeline(2, Some(one), features()), Some(&a), false),
             Some((true, CheckModel::Current { fresh: false }))
         );
+    }
+
+    #[test]
+    fn whats_wrong_wants_a_check_whenever_the_timeline_marks_anything() {
+        let one = Revision::OPENED;
+        let marked = || vec![entry("a0000001", 0, 0), entry("b0000001", 0, 2)];
+        let clean = || vec![entry("a0000001", 0, 0), entry("b0000001", 0, 0)];
+        // A feature's warnings, nothing selected: of the published model while it's open,
+        // and none while it's not.
+        assert_eq!(
+            check_wanted(&timeline(0, Some(one), marked()), None, true),
+            Some((false, CheckModel::Published))
+        );
+        assert_eq!(
+            check_wanted(&timeline(0, Some(one), marked()), None, false),
+            None
+        );
+        // None published: of the current one.
+        assert_eq!(
+            check_wanted(&timeline(0, None, marked()), None, true),
+            Some((false, CheckModel::Current { fresh: false }))
+        );
+        // Nothing marked: nothing to list, nothing read.
+        assert_eq!(
+            check_wanted(&timeline(0, Some(one), clean()), None, true),
+            None
+        );
+    }
+
+    fn failed(message: &str, feature: Option<&str>) -> silico_core::Error {
+        let error = silico_core::Error::new(silico_core::ErrorCode::KernelFailed, message);
+        match feature {
+            Some(feature) => error.with_feature(feature),
+            None => error,
+        }
+    }
+
+    fn warned(message: &str, feature: &str) -> silico_core::Warning {
+        silico_core::Warning::new(silico_core::WarningCode::FingerprintMissing, message)
+            .with_feature(feature)
+    }
+
+    #[test]
+    fn whats_wrong_lists_every_problem_and_warning_in_the_documents_order() {
+        // The timeline: c, a, b, out of their IDs' order. The core gave a's error, b's
+        // error, a problem of no feature, c's warning, a's warning, and a warning of a
+        // feature it doesn't list.
+        let entries = [
+            entry("c0000001", 0, 1),
+            entry("a0000001", 1, 1),
+            entry("b0000001", 1, 0),
+        ];
+        let mut listed = vec![
+            Said::of(&failed("a fails", Some("a0000001"))),
+            Said::of(&failed("b fails", Some("b0000001"))),
+            Said::of(&failed("the document fails", None)),
+            Said::of_warning(&warned("c warns", "c0000001")),
+            Said::of_warning(&warned("a warns", "a0000001")),
+            Said::of_warning(&warned("z warns", "z0000001")),
+        ];
+        let said = |listed: &[Said]| -> Vec<(String, bool)> {
+            listed
+                .iter()
+                .map(|said| (said.message.clone(), said.warning))
+                .collect()
+        };
+        let mut gated = listed.clone();
+        in_document_order(&mut listed, &entries, false);
+        let want = [
+            ("the document fails", false),
+            ("c warns", true),
+            ("a fails", false),
+            ("a warns", true),
+            ("b fails", false),
+            ("z warns", true),
+        ]
+        .map(|(message, warning)| (message.to_owned(), warning));
+        assert_eq!(said(&listed), want);
+        // A document the gate refused: every problem the document's, in the core's order.
+        in_document_order(&mut gated, &entries, true);
+        assert_eq!(
+            said(&gated)
+                .iter()
+                .map(|(message, _)| message.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "a fails",
+                "b fails",
+                "the document fails",
+                "c warns",
+                "a warns",
+                "z warns"
+            ]
+        );
+    }
+
+    #[test]
+    fn whats_wrong_lists_a_check_only_of_the_timeline_it_shows() {
+        let one = Revision::OPENED;
+        let mut tab = tab();
+        tab.took_timeline(timeline(
+            0,
+            Some(one),
+            vec![entry("a0000001", 0, 1), entry("b0000001", 1, 0)],
+        ));
+        // Not read yet: being read.
+        assert_eq!(tab.listed(), None);
+        tab.checked = Some((one, Some(one)));
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(failed("b fails", Some("b0000001"))),
+                warnings: silico_core::warnings::Warnings::of([warned("a warns", "a0000001")]),
+            },
+            false,
+        );
+        let messages = |tab: &Tab| -> Option<Vec<String>> {
+            tab.listed()
+                .map(|listed| listed.iter().map(|said| said.message.clone()).collect())
+        };
+        assert_eq!(
+            messages(&tab),
+            Some(vec!["a warns".to_owned(), "b fails".to_owned()])
+        );
+        // Each kept whole, for its card's code and JSON.
+        assert_eq!(
+            tab.listed().unwrap()[1].source,
+            Some(Source::Error(failed("b fails", Some("b0000001"))))
+        );
+        // Another revision's timeline: being read again.
+        let mut moved = timeline(0, Some(one), vec![entry("b0000001", 1, 0)]);
+        moved.revision = one.next().unwrap();
+        tab.took_timeline(moved);
+        assert_eq!(messages(&tab), None);
+        // Nothing marked: nothing to list.
+        tab.took_timeline(timeline(0, Some(one), vec![entry("a0000001", 0, 0)]));
+        assert_eq!(messages(&tab), Some(Vec::new()));
+        // A check of revision 1 that answers once the timeline shows revision 2: listed for
+        // the revision it was asked of, so not for the one shown.
+        tab.checked = Some((one, Some(one)));
+        let mut later = timeline(0, Some(one), vec![entry("b0000001", 1, 0)]);
+        later.revision = one.next().unwrap();
+        tab.took_timeline(later);
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(failed("b fails", Some("b0000001"))),
+                warnings: silico_core::warnings::Warnings::none(),
+            },
+            false,
+        );
+        assert_eq!(messages(&tab), None);
+    }
+
+    #[test]
+    fn whats_wrong_counts_the_errors_and_warnings_the_core_counted_past_those_it_listed() {
+        let one = Revision::OPENED;
+        // 130 warnings: the core lists 100, and counts 30 more.
+        let mut tab = tab();
+        tab.took_timeline(timeline(0, Some(one), vec![entry("a0000001", 0, 130)]));
+        tab.checked = Some((one, Some(one)));
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(failed("a fails", Some("a0000001"))),
+                warnings: silico_core::warnings::Warnings::of(
+                    (0..130).map(|_| warned("a warns", "a0000001")),
+                ),
+            },
+            false,
+        );
+        assert_eq!(tab.listed().map(<[Said]>::len), Some(101));
+        assert_eq!(
+            tab.unlisted(),
+            Unlisted {
+                errors: 0,
+                warnings: 30
+            }
+        );
+        // A document the gate refuses for 130 boxes of no length: 100 errors listed, and 30
+        // more counted.
+        let boxes = (0..130)
+            .map(|at| {
+                format!(
+                    r#"{{"id": "f{at:07}", "type": "box", "v": 1, "name": "Box", "position": [0, 0, 0], "length": 0, "width": 1, "height": 1}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{boxes}]}}"#
+        );
+        let document = silico_core::document::read(text.as_bytes()).unwrap();
+        let invalid = silico_core::document::validate(&document).unwrap_err();
+        assert_eq!((invalid.errors().len(), invalid.total()), (100, 130));
+        tab.took_timeline(timeline(130, Some(one), vec![entry("f0000000", 0, 0)]));
+        tab.took_check(
+            &CheckAnswer {
+                problems: Problems::from(invalid),
+                warnings: silico_core::warnings::Warnings::none(),
+            },
+            true,
+        );
+        assert_eq!(tab.listed().map(<[Said]>::len), Some(100));
+        assert_eq!(
+            tab.unlisted(),
+            Unlisted {
+                errors: 30,
+                warnings: 0
+            }
+        );
+        // Nothing marked: none counted.
+        tab.took_timeline(timeline(0, Some(one), vec![entry("a0000001", 0, 0)]));
+        assert_eq!(tab.unlisted(), Unlisted::default());
     }
 
     #[test]
     fn a_timeline_unmarked_drops_the_features_text_and_one_the_gate_took_the_documents() {
         let said = || Said {
             message: "m".to_owned(),
-            suggestion: None,
+            ..Said::default()
         };
         let mut tab = tab();
         tab.said.insert("a0000001".to_owned(), said());
@@ -3347,6 +4520,85 @@ mod tests {
         tab.ended(Ok(()), false, &mut close);
         assert!(tab.groups.is_empty());
         assert!(tab.restored.is_empty());
+    }
+
+    #[test]
+    fn a_let_go_the_box_takes_isnt_let_go_again_from_a_selection_that_took_it_back() {
+        // A new fillet's box of edges takes the canvas's picks on the 2 by 1 by 1 box. Edge1
+        // clicked: in the box and the selection. Then clicked twice before the box reads
+        // the toggles: let go, then added again. The box lets it go and takes it again; the
+        // let-go, removed from the box, isn't let go from the selection a second time, so
+        // both hold Edge1, as after the first click.
+        use crate::selection::How;
+        let edge = "aaaaaaaa.box.Edge1";
+        let mut tab = tab();
+        let model = crate::selection::tests::box_model();
+        tab.selection
+            .published(Some((model, Revision::from_number(1).unwrap())), 1);
+        let dialog = Dialog::new(Kind::Fillet, None, 1);
+        tab.selection.take_into(dialog.takes());
+        tab.dialog = Some(dialog);
+        let held = |tab: &Tab| {
+            let names = tab.dialog.as_ref().and_then(Dialog::names).unwrap();
+            (tab.selection.names().join(" "), names.names.join(" "))
+        };
+        tab.selection.pick(edge, How::Toggle);
+        assert!(tab.box_toggled());
+        assert_eq!(held(&tab), (edge.to_owned(), edge.to_owned()));
+        tab.selection.pick(edge, How::Toggle);
+        tab.selection.pick(edge, How::Toggle);
+        assert!(tab.box_toggled());
+        assert_eq!(held(&tab), (edge.to_owned(), edge.to_owned()));
+        assert!(!tab.box_toggled(), "nothing toggled since");
+    }
+
+    #[test]
+    fn a_cancels_put_back_selection_is_read_from_its_undo_only_and_only_if_none_waits_behind_it() {
+        // Edge1 picked on the box at revision 1, then put back by a Cancel: held, unread.
+        // Each model published at revision 3 below is the box not named yet, so a read of
+        // the selection against it leaves Edge1 waiting; unread, Edge1 stays found.
+        use crate::selection::How;
+        let edge = "aaaaaaaa.box.Edge1";
+        let three = Revision::from_number(3).unwrap();
+        // Found, by an answer of its own (a name waiting keeps the last it had, unstored).
+        let found = |tab: &Tab| tab.selection.elements().next().unwrap().stable();
+        let put_back = || {
+            let mut tab = tab();
+            let model = crate::selection::tests::box_model();
+            tab.selection
+                .published(Some((model, Revision::from_number(1).unwrap())), 1);
+            tab.selection.pick(edge, How::Replace);
+            let saved = tab.selection.saved();
+            tab.selection.clear();
+            tab.selection.restore(saved);
+            tab
+        };
+        let unnamed = || {
+            Some((
+                Arc::new(crate::selection::tests::box_model().unnamed()),
+                three,
+            ))
+        };
+        // A Cancel, another queued behind it: not read from 3, the later Cancel's undo says
+        // when.
+        let mut tab = put_back();
+        tab.edits.queue.push_back(Queued::Closed {
+            ok: false,
+            sketch: false,
+        });
+        tab.read_restored_from(false, three);
+        tab.selection.published(unnamed(), 2);
+        assert!(found(&tab), "read though another Cancel waits");
+        // An OK: nothing put back by it, so nothing read from 3.
+        let mut tab = put_back();
+        tab.read_restored_from(true, three);
+        tab.selection.published(unnamed(), 2);
+        assert!(found(&tab), "read from an OK");
+        // A Cancel alone: read from 3.
+        let mut tab = put_back();
+        tab.read_restored_from(false, three);
+        tab.selection.published(unnamed(), 2);
+        assert!(!found(&tab), "not read from the Cancel's undo");
     }
 
     #[test]
@@ -3993,6 +5245,125 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "never answered");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    /// How many Restores, and the put-backs of their text, `tab` holds, queued or sent.
+    fn restores(tab: &Tab) -> usize {
+        let queued = tab
+            .edits
+            .queue
+            .iter()
+            .filter(|queued| matches!(queued, Queued::Restore { .. } | Queued::Replace { .. }))
+            .count();
+        let under = tab
+            .under
+            .iter()
+            .filter(|under| matches!(under, Under::Restore { .. } | Under::Replace { .. }))
+            .count();
+        queued + under
+    }
+
+    #[test]
+    fn restore_is_asked_once_never_in_a_dialog_or_a_close_and_its_put_back_resets_the_fields() {
+        // Fable's decision of 2026-11-04, section 2: Restore is never asked while a dialog is
+        // open or the tab closes, and once while one is under way; its text put back, an
+        // edit of the document other than the property panel's own, resets the panel's
+        // fields, as an undo, a redo, a revert, or a reload does.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        let one = Revision::OPENED;
+        // A dialog open, its feature's text still read: nothing asked.
+        tab.loading = Some(1);
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 0, "asked in a dialog");
+        tab.loading = None;
+        // The tab closing: nothing asked.
+        tab.edits.queue.push_back(Queued::Save { then_close: true });
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 0, "asked as the tab closes");
+        tab.edits.queue.clear();
+        // Asked: under way until its text is put back, and asked again meanwhile, nothing
+        // more.
+        let resets = tab.resets;
+        tab.restore(&sessions, one);
+        assert!(tab.restoring(), "the read asked");
+        assert_eq!(restores(&tab), 1);
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 1, "asked twice");
+        // Put back in a transaction begun for it.
+        taken_until(&mut tab, &sessions, |tab| {
+            tab.under
+                .iter()
+                .any(|under| matches!(under, Under::Replace { .. }))
+        });
+        assert!(tab.restoring(), "the text put back");
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 1, "asked while its text is put back");
+        assert!(matches!(
+            tab.under
+                .iter()
+                .find(|under| matches!(under, Under::Replace { .. })),
+            Some(Under::Replace { began: true, .. })
+        ));
+        taken_until(&mut tab, &sessions, |tab| restores(tab) == 0);
+        assert!(!tab.restoring());
+        assert_eq!(tab.sent[tab.sent.len() - 2..], [Sent::Begin, Sent::Replace]);
+        assert_eq!(tab.resets, resets + 1, "the fields reset once");
+        // Asked again, the transaction open: its put-back begins none, so a refusal of it
+        // would leave the transaction as it was.
+        assert!(tab.transaction);
+        tab.restore(&sessions, one);
+        taken_until(&mut tab, &sessions, |tab| {
+            tab.under
+                .iter()
+                .any(|under| matches!(under, Under::Replace { .. }))
+        });
+        assert!(matches!(
+            tab.under
+                .iter()
+                .find(|under| matches!(under, Under::Replace { .. })),
+            Some(Under::Replace { began: false, .. })
+        ));
+        taken_until(&mut tab, &sessions, |tab| restores(tab) == 0);
+        assert_eq!(tab.resets, resets + 2, "the fields reset again");
+    }
+
+    #[test]
+    fn restores_refusal_is_said_in_its_reloads_banner_or_else_in_the_status_bar() {
+        // DESIGN.md, 6c: Restore's refusal is said in the banner of the reload that replaced
+        // the revision it asked for, while that banner shows; a refusal of another
+        // revision's, in the status bar.
+        let (one, two, three) = (
+            Revision::from_number(1).unwrap(),
+            Revision::from_number(2).unwrap(),
+            Revision::from_number(3).unwrap(),
+        );
+        let mut tab = tab();
+        tab.reloaded = Some(Reloaded {
+            from: two,
+            to: three,
+            changes: Changes::Asking,
+            refused: None,
+            unlisted: Vec::new(),
+            from_held: true,
+        });
+        let problems = Problems::from(silico_core::Error::new(
+            silico_core::ErrorCode::Internal,
+            "revision 1 isn't held",
+        ));
+        tab.restore_refused(one, &problems);
+        assert_eq!(tab.message.as_deref(), Some("revision 1 isn't held"));
+        assert_eq!(tab.reloaded.as_ref().unwrap().refused, None);
+        tab.message = None;
+        let problems = Problems::from(silico_core::Error::new(
+            silico_core::ErrorCode::Internal,
+            "revision 2 isn't held",
+        ));
+        tab.restore_refused(two, &problems);
+        assert_eq!(
+            tab.reloaded.as_ref().unwrap().refused.as_deref(),
+            Some("revision 2 isn't held")
+        );
+        assert_eq!(tab.message, None);
     }
 
     /// `tab`'s document read (its timeline, as `read_timeline` takes it), then Rebuild

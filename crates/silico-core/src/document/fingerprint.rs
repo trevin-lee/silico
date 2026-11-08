@@ -1,8 +1,8 @@
 //! A feature's fingerprint (ARCHITECTURE.md, Fingerprints): what its solid measures, kept in
 //! the document with it, as a lockfile keeps what a dependency resolved to. A rebuild that
 //! measures otherwise is drift: a determinism bug or a kernel change, for a person to look
-//! at. Its numbers are rounded to 6 decimals (the box to whole nanometres, the document's
-//! resolution), to the nearest, ties to even, from the measure's exact value; so a diff reads
+//! at. Its numbers are rounded to 6 decimals (the centre and the box to whole nanometres,
+//! the document's resolution), to the nearest, ties to even, from the measure's exact value; so a diff reads
 //! `8000`, not `7999.999999999998`, and the same measure always writes the same text.
 
 use std::borrow::Cow;
@@ -61,14 +61,20 @@ impl JsonSchema for Measure {
     }
 }
 
-/// What a feature's solid measures: its volume and area, its tight bounding box (lowest x, y,
-/// z, then highest; none for a solid with nothing in it), and how many faces, edges, and
-/// vertices it has.
+/// What a feature's solid measures: its volume and area, its centre of mass and its tight
+/// bounding box (lowest x, y, z, then highest; both none for a solid with nothing in it), and
+/// how many faces, edges, and vertices it has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Fingerprint {
     pub volume: Measure,
     pub area: Measure,
+    // Where the material is, which the amounts and the box don't say: a feature that a kernel
+    // change moved to a look-alike place, as its mirror image, drifts on its centre.
+    /// `[x, y, z]`: the centre of mass (left out when the solid has nothing in it).
+    #[serde(default)]
+    #[schemars(with = "[Length; 3]")]
+    pub center: Option<[Length; 3]>,
     /// `[x, y, z, x, y, z]`: the lowest corner, then the highest (left out when the solid
     /// has nothing in it).
     #[serde(default)]
@@ -83,24 +89,30 @@ pub struct Fingerprint {
 }
 
 impl Fingerprint {
-    /// The fingerprint of a solid with `summary`; none if a measure isn't finite, or past
-    /// what it can hold (a box corner past i64 nanometres, about 9.2 million km, or a volume
+    /// The fingerprint of a solid with `summary`, its centre left out exactly when its box
+    /// is; none if a measure isn't finite, or past what it can hold (a centre or box corner
+    /// past i64 nanometres, about 9.2 million km, or a volume
     /// past i128 millionths of a mm³, about 1.7e32 mm³: far past anything the validation
     /// gate admits).
     pub fn of(summary: &ShapeSummary) -> Option<Self> {
-        let bbox = match summary.bounds {
-            None => None,
+        let (center, bbox) = match summary.bounds {
+            None => (None, None),
             Some([low, high]) => {
+                let mut center = [Length::default(); 3];
+                for (coordinate, value) in center.iter_mut().zip(summary.center) {
+                    *coordinate = Length::rounded(value)?;
+                }
                 let mut corners = [Length::default(); 6];
                 for (corner, value) in corners.iter_mut().zip(low.into_iter().chain(high)) {
                     *corner = Length::rounded(value)?;
                 }
-                Some(corners)
+                (Some(center), Some(corners))
             }
         };
         Some(Fingerprint {
             volume: Measure::rounded(summary.volume)?,
             area: Measure::rounded(summary.area)?,
+            center,
             bbox,
             faces: summary.faces,
             edges: summary.edges,
@@ -127,7 +139,16 @@ impl Fingerprint {
             rebuilt.volume.to_string(),
         );
         compare("area", self.area.to_string(), rebuilt.area.to_string());
-        compare("bbox", bbox_text(&self.bbox), bbox_text(&rebuilt.bbox));
+        compare(
+            "center",
+            lengths_text(self.center.as_ref().map(|c| c.as_slice())),
+            lengths_text(rebuilt.center.as_ref().map(|c| c.as_slice())),
+        );
+        compare(
+            "bbox",
+            lengths_text(self.bbox.as_ref().map(|b| b.as_slice())),
+            lengths_text(rebuilt.bbox.as_ref().map(|b| b.as_slice())),
+        );
         compare("faces", self.faces.to_string(), rebuilt.faces.to_string());
         compare("edges", self.edges.to_string(), rebuilt.edges.to_string());
         compare(
@@ -147,12 +168,12 @@ pub struct Difference {
     pub rebuilt: String,
 }
 
-/// A box as the file writes it, or `none`.
-fn bbox_text(bbox: &Option<[Length; 6]>) -> String {
-    match bbox {
-        Some(corners) => format!(
+/// A centre or a box as the file writes it, or `none`.
+fn lengths_text(lengths: Option<&[Length]>) -> String {
+    match lengths {
+        Some(lengths) => format!(
             "[{}]",
-            corners
+            lengths
                 .iter()
                 .map(Length::to_string)
                 .collect::<Vec<_>>()
@@ -229,7 +250,14 @@ mod tests {
         let fingerprint = Fingerprint::of(&summary()).unwrap();
         assert_eq!(fingerprint.volume.to_string(), "8000");
         assert_eq!(fingerprint.area.to_string(), "2800");
-        assert_eq!(bbox_text(&fingerprint.bbox), "[0, 0, 0, 40, 20, 10]");
+        assert_eq!(
+            fingerprint.center,
+            Some(nm([20_000_000, 10_000_000, 5_000_000]))
+        );
+        assert_eq!(
+            fingerprint.bbox,
+            Some(nm([0, 0, 0, 40_000_000, 20_000_000, 10_000_000]))
+        );
         assert_eq!(
             (fingerprint.faces, fingerprint.edges, fingerprint.vertices),
             (6, 12, 8)
@@ -238,12 +266,56 @@ mod tests {
             bounds: None,
             ..summary()
         };
-        assert_eq!(Fingerprint::of(&empty).unwrap().bbox, None);
+        let empty = Fingerprint::of(&empty).unwrap();
+        assert_eq!((empty.center, empty.bbox), (None, None));
         let unbounded = ShapeSummary {
             bounds: Some([[0.0; 3], [f64::INFINITY, 1.0, 1.0]]),
             ..summary()
         };
         assert_eq!(Fingerprint::of(&unbounded), None);
+    }
+
+    fn nm<const N: usize>(nm: [i64; N]) -> [Length; N] {
+        nm.map(Length::from_nm)
+    }
+
+    #[test]
+    fn the_centre_rounds_to_whole_nanometres_ties_to_even() {
+        // 1/128 mm is 7812.5 nm and 3/128 mm 23437.5 nm, exactly: ties, to the even one.
+        // 10.0000000006 mm is 10,000,000.0006 nm (down), and a hair under zero is zero.
+        let fingerprint = Fingerprint::of(&ShapeSummary {
+            center: [0.0078125, -0.0234375, 10.000_000_000_6],
+            ..summary()
+        })
+        .unwrap();
+        assert_eq!(fingerprint.center, Some(nm([7_812, -23_438, 10_000_000])));
+        let at_zero = Fingerprint::of(&ShapeSummary {
+            center: [-1e-12, -0.0, 0.000_000_499_9],
+            ..summary()
+        })
+        .unwrap();
+        assert_eq!(at_zero.center, Some(nm([0, 0, 0])));
+    }
+
+    #[test]
+    fn a_centre_that_isnt_finite_or_doesnt_fit_has_no_fingerprint() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e13] {
+            for axis in 0..3 {
+                let mut center = [1.0; 3];
+                center[axis] = bad;
+                let summary = ShapeSummary {
+                    center,
+                    ..summary()
+                };
+                assert_eq!(Fingerprint::of(&summary), None, "{center:?}");
+                // A solid with nothing in it has no centre, whatever the kernel said.
+                let empty = ShapeSummary {
+                    bounds: None,
+                    ..summary
+                };
+                assert_eq!(Fingerprint::of(&empty).unwrap().center, None);
+            }
+        }
     }
 
     #[test]
@@ -256,6 +328,7 @@ mod tests {
             faces: 7,
             edges: 13,
             vertices: 9,
+            center: None,
             bbox: None,
         };
         let fields: Vec<_> = stored
@@ -268,6 +341,7 @@ mod tests {
             [
                 ("volume", "8000".to_owned(), "7999.5".to_owned()),
                 ("area", "2800".to_owned(), "2800.000001".to_owned()),
+                ("center", "[20, 10, 5]".to_owned(), "none".to_owned()),
                 (
                     "bbox",
                     "[0, 0, 0, 40, 20, 10]".to_owned(),
@@ -277,6 +351,24 @@ mod tests {
                 ("edges", "12".to_owned(), "13".to_owned()),
                 ("vertices", "8".to_owned(), "9".to_owned()),
             ]
+        );
+        // A centre moved alone, by a nanometre: a mirrored feature's measures, the rest equal.
+        let mirrored = Fingerprint {
+            center: Some(nm([-20_000_000, 10_000_000, 5_000_001])),
+            ..stored
+        };
+        let moved: Vec<_> = stored
+            .differences(&mirrored)
+            .into_iter()
+            .map(|d| (d.field, d.stored, d.rebuilt))
+            .collect();
+        assert_eq!(
+            moved,
+            [(
+                "center",
+                "[20, 10, 5]".to_owned(),
+                "[-20, 10, 5.000001]".to_owned()
+            )]
         );
     }
 }

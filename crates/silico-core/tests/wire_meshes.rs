@@ -271,7 +271,8 @@ fn a_request_naming_features_and_held_meshes_is_read_as_it_says_and_written_back
     );
 }
 
-/// The design's example body, by its values: its arrays cut to one triangle and one edge.
+/// The design's example body, by its values: its arrays cut to one triangle, one edge, and
+/// two vertices.
 fn designs_body() -> MeshedBody {
     MeshedBody {
         feature: fid("f0000001"),
@@ -291,6 +292,7 @@ fn designs_body() -> MeshedBody {
             valid: None,
             edge_points: vec![[0.0, 0.0, 0.0], [60.0, 0.0, 0.0]],
             edge_point_counts: vec![2],
+            vertex_points: vec![[0.0, 0.0, 0.0], [60.0, 0.0, 0.0]],
         })),
         faces: vec![MeshElement {
             name: name("p0000001.pad.Face(G s0000001.sketch.Edge.na000001)"),
@@ -302,6 +304,15 @@ fn designs_body() -> MeshedBody {
             stable: true,
             count: Some(2),
         }],
+        vertices: ["pa000001", "pa000002"]
+            .map(|point| MeshElement {
+                name: name(&format!(
+                    "p0000001.pad.Vertex(M s0000001.sketch.Vertex.{point})"
+                )),
+                stable: true,
+                count: None,
+            })
+            .to_vec(),
     }
 }
 
@@ -331,7 +342,8 @@ fn a_bodys_numbers_are_as_a5_gives_them() {
     // the shortest decimal of their f32; levels as coordinates. Each decimal by hand:
     // 0.1 + 0.2 is 0.30000000000000004 in f64; 1e-12 written out in full; the f32 nearest
     // 0.1 is 0.100000001490116..., whose shortest round trip is 0.1, and 1/3's is 0.33333334;
-    // 2⁻²⁰ is 0.00000095367431640625 exactly.
+    // 2⁻²⁰ is 0.00000095367431640625 exactly. A vertex's point is written as an edge's
+    // point is: -0 as 0, -1e-12 in full.
     // 2⁻²⁰, exactly.
     let level = 0.000_000_953_674_316_406_25;
     let body = MeshedBody {
@@ -351,6 +363,7 @@ fn a_bodys_numbers_are_as_a5_gives_them() {
             valid: None,
             edge_points: vec![[-0.0, -0.0, -2.5]],
             edge_point_counts: vec![1],
+            vertex_points: vec![[-0.0, 0.1 + 0.2, -1e-12]],
         })),
         faces: vec![MeshElement {
             name: name("k7f2qx3m.pad.Face1"),
@@ -362,11 +375,16 @@ fn a_bodys_numbers_are_as_a5_gives_them() {
             stable: false,
             count: Some(1),
         }],
+        vertices: vec![MeshElement {
+            name: name("k7f2qx3m.pad.Vertex1"),
+            stable: false,
+            count: None,
+        }],
     };
     assert_eq!(
         one_line(&body),
         format!(
-            r#"{{"feature": "k7f2qx3m", "body": null, "key": "{}", "level": 0.00000095367431640625, "deflection": 0.004630340016196244, "box": [[0, -1.5, 0.30000000000000004], [0.000000000001, 0, 12345.6789012345]], "serves": [0, 0.0078125], "held": false, "positions": [[0, 0.30000000000000004, 0.000000000001]], "normals": [[0, 0.1, 0.33333334]], "triangles": [[0, 4294967295, 7]], "faces": [{{"name": "k7f2qx3m.pad.Face1", "stable": false, "triangles": 1}}], "edge_points": [[0, 0, -2.5]], "edges": [{{"name": "k7f2qx3m.pad.Edge1", "stable": false, "points": 1}}]}}"#,
+            r#"{{"feature": "k7f2qx3m", "body": null, "key": "{}", "level": 0.00000095367431640625, "deflection": 0.004630340016196244, "box": [[0, -1.5, 0.30000000000000004], [0.000000000001, 0, 12345.6789012345]], "serves": [0, 0.0078125], "held": false, "positions": [[0, 0.30000000000000004, 0.000000000001]], "normals": [[0, 0.1, 0.33333334]], "triangles": [[0, 4294967295, 7]], "faces": [{{"name": "k7f2qx3m.pad.Face1", "stable": false, "triangles": 1}}], "edge_points": [[0, 0, -2.5]], "edges": [{{"name": "k7f2qx3m.pad.Edge1", "stable": false, "points": 1}}], "vertex_points": [[0, 0.30000000000000004, -0.000000000001]], "vertices": [{{"name": "k7f2qx3m.pad.Vertex1", "stable": false}}]}}"#,
             "0".repeat(64)
         )
     );
@@ -420,6 +438,11 @@ fn a_held_body_is_named_with_no_geometry_its_counts_null() {
       "edge_points": [],
       "edges": [
         {{"name": "p0000001.pad.Edge(M s0000001.sketch.Edge.na000001)", "stable": true, "points": null}}
+      ],
+      "vertex_points": [],
+      "vertices": [
+        {{"name": "p0000001.pad.Vertex(M s0000001.sketch.Vertex.pa000001)", "stable": true}},
+        {{"name": "p0000001.pad.Vertex(M s0000001.sketch.Vertex.pa000002)", "stable": true}}
       ]
     }}
   ]

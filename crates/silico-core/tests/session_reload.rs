@@ -27,7 +27,7 @@ use crate::sessions::{HANG, answer, id, refusal};
 
 /// A block, 40 × 20 × 10, its fingerprint stored as the fake measures it (volume 8000,
 /// area 2(800 + 400 + 200) = 2800), on one line: not canonical form.
-const BLOCK: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}]}"#;
+const BLOCK: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}]}"#;
 
 /// [`BLOCK`] 41 long, as a hand edit leaves it: its fingerprint as stored, and the file the
 /// same size.
@@ -47,7 +47,7 @@ fn higher() -> String {
 
 /// [`higher`] in canonical form, by hand, with the fingerprint it rebuilds to: 40 × 20 × 11
 /// = 8800, area 2(800 + 440 + 220) = 2920, to z = 11.
-const HIGHER_FORMATTED: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 11,\n      \"fingerprint\": {\"volume\": 8800, \"area\": 2920, \"bbox\": [0, 0, 0, 40, 20, 11], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+const HIGHER_FORMATTED: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 11,\n      \"fingerprint\": {\"volume\": 8800, \"area\": 2920, \"center\": [20, 10, 5.5], \"bbox\": [0, 0, 0, 40, 20, 11], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
 
 struct Fixture {
     _dir: TempDir,

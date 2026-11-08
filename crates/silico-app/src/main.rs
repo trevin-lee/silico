@@ -10,6 +10,7 @@ use std::sync::Arc;
 use silico_app::App;
 use silico_app::recent::Recents;
 use silico_app::start::Warm;
+use silico_app::theme;
 use silico_core::command::Sessions;
 
 fn main() -> ExitCode {
@@ -28,7 +29,7 @@ fn main() -> ExitCode {
                 "Silico",
                 options(false),
                 Box::new(move |creation| {
-                    silico_app::theme::apply(&creation.egui_ctx);
+                    theme::apply(&creation.egui_ctx);
                     Ok(Box::new(silico_app::missing::Missing::new(missing)))
                 }),
             );
@@ -63,9 +64,9 @@ fn main() -> ExitCode {
     let silico = silico_beside();
     let ran = eframe::run_native(
         "Silico",
-        options(silico_app::bar::TITLE_BAR_IS_APP_BAR),
+        app_options(silico_app::bar::TITLE_BAR_IS_APP_BAR),
         Box::new(move |creation| {
-            silico_app::theme::apply(&creation.egui_ctx);
+            theme::apply(&creation.egui_ctx);
             // Open and Browse… open the platform's own file dialogs, on this window.
             let app = App::new(sessions)
                 .browsing(Box::new(silico_app::browse::Native::on(creation)))
@@ -131,6 +132,17 @@ fn options(title_bar_is_app_bar: bool) -> eframe::NativeOptions {
     }
 }
 
+/// The app's window's options: [`options`], no smaller than the panes, the bars, and a
+/// usable canvas need ([`theme::WINDOW_MIN_WIDTH`], [`theme::WINDOW_MIN_HEIGHT`]), as
+/// Fusion's window keeps a least size.
+fn app_options(title_bar_is_app_bar: bool) -> eframe::NativeOptions {
+    let mut options = options(title_bar_is_app_bar);
+    options.viewport = options
+        .viewport
+        .with_min_inner_size([theme::WINDOW_MIN_WIDTH, theme::WINDOW_MIN_HEIGHT]);
+    options
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +182,31 @@ mod tests {
             assert_eq!(viewport.fullsize_content_view, Some(app_bar), "{app_bar}");
             assert_eq!(viewport.title_shown, Some(platforms), "{app_bar}");
             assert_eq!(viewport.titlebar_shown, Some(platforms), "{app_bar}");
+        }
+    }
+
+    #[test]
+    fn the_apps_window_is_no_smaller_than_its_panes_bars_and_a_usable_canvas() {
+        // By hand from styles.css and the theme's proposals. Wide: `--browser-w` 248 and
+        // `--right-w` 296, and a canvas that holds a banner at its least, 320, 10 at each
+        // side. High: `--top-bar-h` 30; the toolbar, `--toolbar-tabs-h` 24, `--toolbar-h`
+        // 52, and its 1 border; a canvas that holds the ViewCube, 16 from its top and 92
+        // high, over the navigation bar, 32 high and 12 above and below it; egui's 1 line
+        // over the timeline; `--timeline-h` 40; and `--status-h` 24.
+        let wide = 248.0 + 296.0 + (10.0 + 320.0 + 10.0);
+        let high =
+            30.0 + (24.0 + 52.0 + 1.0) + (16.0 + 92.0 + 12.0 + 32.0 + 12.0) + 1.0 + 40.0 + 24.0;
+        assert_eq!((wide, high), (884.0, 336.0));
+        for app_bar in [true, false] {
+            let viewport = app_options(app_bar).viewport;
+            assert_eq!(
+                viewport.min_inner_size,
+                Some(eframe::egui::vec2(wide, high)),
+                "{app_bar}"
+            );
+            // The rest as `options` gives it.
+            assert_eq!(viewport.fullsize_content_view, Some(app_bar), "{app_bar}");
+            assert_eq!(viewport.inner_size, options(app_bar).viewport.inner_size);
         }
     }
 }

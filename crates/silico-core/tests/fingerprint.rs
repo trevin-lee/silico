@@ -2,7 +2,8 @@
 //! that measures otherwise is drift, naming the feature; an unchanged document rebuilds to
 //! the same bytes, and an edit rewrites exactly the fingerprints it changes. Expected values
 //! are worked by hand: the fake's measures by formula (a box's, a cylinder's, and its own
-//! boolean's, its inputs' together), rounded to 6 decimals with Python's exact decimals.
+//! boolean's, its inputs' together), rounded to 6 decimals with Python's exact decimals; a
+//! centre, each solid's middle, which the pin's, and the share of it the hole loses, share.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::example;
@@ -17,11 +18,16 @@ use silico_core::kernel::{Op, Primitive};
 use silico_core::recompute::{FeatureOutcome, Recompute, RunOutcome};
 use silico_core::{Error, document::Checked};
 
-const BLOCK: &str = r#""fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
-// π r² h and 2π r h + 2π r² for r 2.5, h 12; the box 17.5 to 22.5, 7.5 to 12.5, -1 to 11.
-const PIN: &str = r#""fingerprint": {"volume": 235.619449, "area": 227.765467, "bbox": [17.5, 7.5, -1, 22.5, 12.5, 11], "faces": 3, "edges": 3, "vertices": 2}"#;
-// The fake's cut: the block's and the pin's together.
-const HOLE: &str = r#""fingerprint": {"volume": 8235.619449, "area": 3027.765467, "bbox": [0, 0, -1, 40, 20, 11], "faces": 9, "edges": 15, "vertices": 10}"#;
+// The block's centre is its middle, (20, 10, 5).
+const BLOCK: &str = r#""fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
+// π r² h and 2π r h + 2π r² for r 2.5, h 12; its centre on its axis, (20, 10), halfway up
+// from -1 to 11; the box 17.5 to 22.5, 7.5 to 12.5, -1 to 11.
+const PIN: &str = r#""fingerprint": {"volume": 235.619449, "area": 227.765467, "center": [20, 10, 5], "bbox": [17.5, 7.5, -1, 22.5, 12.5, 11], "faces": 3, "edges": 3, "vertices": 2}"#;
+// The fake's cut: the block less the share of the pin inside its box, 10 of its 12, so
+// 8000 − (10/12) 75π = 8000 − 62.5π, its area 2800 + (10/12) 72.5π; its box the two's
+// together. Its centre: the block's moment less the share of the pin's, both about (20, 10,
+// 5), so (20, 10, 5).
+const HOLE: &str = r#""fingerprint": {"volume": 7803.650459, "area": 2989.804556, "center": [20, 10, 5], "bbox": [0, 0, -1, 40, 20, 11], "faces": 9, "edges": 15, "vertices": 10}"#;
 
 fn engine() -> Recompute<FakeKernel> {
     Recompute::new(FakeKernel::new(2).unwrap())
@@ -72,8 +78,11 @@ fn a_fingerprint_survives_a_round_trip() {
     assert_eq!(
         hole.fingerprint,
         Some(Fingerprint {
-            volume: Measure::from_millionths(8_235_619_449),
-            area: Measure::from_millionths(3_027_765_467),
+            // HOLE's: 8000 − 62.5π and 2800 + (10/12) 72.5π.
+            volume: Measure::from_millionths(7_803_650_459),
+            area: Measure::from_millionths(2_989_804_556),
+            // The block's centre, (20, 10, 5): the pin's share it loses is centred there too.
+            center: Some([20_000_000, 10_000_000, 5_000_000].map(Length::from_nm)),
             bbox: Some([0, 0, -1_000_000, 40_000_000, 20_000_000, 11_000_000].map(Length::from_nm)),
             faces: 9,
             edges: 15,
@@ -106,9 +115,12 @@ fn an_edit_rewrites_exactly_the_fingerprints_it_changes() {
         .filter(|(a, b)| a != b)
         .map(|(a, b)| (a.to_owned(), b.to_owned()))
         .collect();
-    // π 3² 12 = 339.292007, 2π 3 12 + 2π 3² = 282.743339; the box 17 to 23, 7 to 13.
-    let pin = r#""fingerprint": {"volume": 339.292007, "area": 282.743339, "bbox": [17, 7, -1, 23, 13, 11], "faces": 3, "edges": 3, "vertices": 2}"#;
-    let hole = r#""fingerprint": {"volume": 8339.292007, "area": 3082.743339, "bbox": [0, 0, -1, 40, 20, 11], "faces": 9, "edges": 15, "vertices": 10}"#;
+    // π 3² 12 = 339.292007, 2π 3 12 + 2π 3² = 282.743339; the box 17 to 23, 7 to 13. The
+    // hole, the fake's cut: the block less 10/12 of the pin, 8000 − 90π = 7717.256661, its
+    // area 2800 + (10/12) 90π = 2800 + 75π = 3035.619449. The centres don't move: the pin
+    // keeps its axis and height.
+    let pin = r#""fingerprint": {"volume": 339.292007, "area": 282.743339, "center": [20, 10, 5], "bbox": [17, 7, -1, 23, 13, 11], "faces": 3, "edges": 3, "vertices": 2}"#;
+    let hole = r#""fingerprint": {"volume": 7717.256661, "area": 3035.619449, "center": [20, 10, 5], "bbox": [0, 0, -1, 40, 20, 11], "faces": 9, "edges": 15, "vertices": 10}"#;
     assert_eq!(
         changed,
         [
@@ -228,6 +240,48 @@ fn a_box_stored_where_none_rebuilds_is_drift_too() {
         errors[0].message(),
         "feature k7f2qx3m rebuilt to other measures than its fingerprint: bbox none → [0, 0, 0, 40, 20, 10]"
     );
+}
+
+#[test]
+fn a_centre_that_moved_is_drift_naming_it_between_the_area_and_the_box() {
+    // The pin stored a nanometre off in x and a millimetre off in z: as if a kernel change had
+    // put it elsewhere with every other measure the same.
+    let text = saved(EXAMPLE).replacen(
+        r#""area": 227.765467, "center": [20, 10, 5]"#,
+        r#""area": 227.765467, "center": [20.000001, 10, 4]"#,
+        1,
+    );
+    let errors = drift(&read(text.as_bytes()).unwrap());
+    let said: Vec<_> = errors
+        .iter()
+        .map(|e| (e.feature().unwrap(), e.parameter().unwrap(), e.message()))
+        .collect();
+    assert_eq!(
+        said,
+        [(
+            "a91cw0de",
+            "fingerprint.center",
+            "feature a91cw0de rebuilt to other measures than its fingerprint: center [20.000001, 10, 4] → [20, 10, 5]"
+        )]
+    );
+}
+
+#[test]
+fn a_fingerprint_stored_before_the_centre_reads_and_drifts_on_it_and_a_save_writes_it() {
+    // A fingerprint without a centre (as saved before it was measured) reads, as none, and
+    // is drift on `center` alone: the migration is the drift rule's.
+    let document = tampered(r#""center": [20, 10, 5], "#, "");
+    assert_eq!(document.features[0].fingerprint.unwrap().center, None);
+    let errors = drift(&document);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].parameter(), Some("fingerprint.center"));
+    assert_eq!(
+        errors[0].message(),
+        "feature k7f2qx3m rebuilt to other measures than its fingerprint: center none → [20, 10, 5]"
+    );
+    // `format`'s save writes the centre as rebuilt.
+    let model = published(&engine(), Checked::new(document).unwrap());
+    assert_eq!(write(&model.saved()).unwrap(), saved(EXAMPLE));
 }
 
 #[test]

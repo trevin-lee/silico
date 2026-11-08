@@ -12,7 +12,7 @@
       "length": 10,
       "width": 10,
       "height": 10,
-      "fingerprint": {"volume": 1000, "area": 600, "bbox": [0, 0, 0, 10, 10, 10], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 1000, "area": 600, "center": [5, 5, 5], "bbox": [0, 0, 0, 10, 10, 10], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "bbbbbbbb",
@@ -23,7 +23,7 @@
       "length": 10,
       "width": 10,
       "height": 5,
-      "fingerprint": {"volume": 500, "area": 400, "bbox": [10, 0, 0, 20, 10, 5], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 500, "area": 400, "center": [15, 5, 2.5], "bbox": [10, 0, 0, 20, 10, 5], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "rrrrrrrr",
@@ -32,7 +32,7 @@
       "name": "Fusion",
       "base": "aaaaaaaa",
       "tool": "bbbbbbbb",
-      "fingerprint": {"volume": 1500, "area": 900, "bbox": [0, 0, 0, 20, 10, 10], "faces": 11, "edges": 23, "vertices": 14}
+      "fingerprint": {"volume": 1500, "area": 900, "center": [8.333333, 5, 4.166667], "bbox": [0, 0, 0, 20, 10, 10], "faces": 11, "edges": 23, "vertices": 14}
     },
     {
       "id": "ffffffff",
@@ -45,7 +45,7 @@
       ],
       "radius": 1,
       "note": "FreeCAD's testBaseFeatureAttachmentSupport",
-      "fingerprint": {"volume": 1502.146018, "area": 896.137167, "bbox": [0, 0, 0, 20, 10, 10], "faces": 12, "edges": 28, "vertices": 18}
+      "fingerprint": {"volume": 1502.146018, "area": 896.137167, "center": [8.336034, 5, 4.168176], "bbox": [0, 0, 0, 20, 10, 10], "faces": 12, "edges": 28, "vertices": 18}
     }
   ]
 }

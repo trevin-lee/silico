@@ -33,15 +33,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use re_renderer::mesh::{CpuMesh, GpuMesh, Material};
-use re_renderer::renderer::{GpuMeshInstance, MeshDrawData};
+use re_renderer::renderer::{GpuMeshInstance, MeshDrawData, PointCloudBatchFlags};
 use re_renderer::view_builder::{
     OrthographicCameraMode, Projection as ViewProjection, TargetConfiguration, ViewBuilder,
     ViewBuilderId, ViewPickingConfiguration,
 };
 use re_renderer::{
     Color32, LineDrawableBuilder, OutlineConfig, OutlineMaskPreference, PickingLayerId,
-    PickingLayerInstanceId, PickingLayerObjectId, PickingLayerProcessor, RectInt, RenderConfig,
-    RenderContext, Rgba, Rgba32Unmul, ScreenshotProcessor, Size,
+    PickingLayerInstanceId, PickingLayerObjectId, PickingLayerProcessor, PointCloudBuilder,
+    RectInt, RenderConfig, RenderContext, Rgba, Rgba32Unmul, ScreenshotProcessor, Size,
 };
 use silico_protocol::vec3::{dot, sub};
 use silico_protocol::{
@@ -87,6 +87,24 @@ const MAX_PENDING_PICKS: usize = 8;
 const CLEARANCE: f64 = 0.01;
 /// How far edges are drawn toward the eye, so an edge on a face isn't hidden by it.
 const EDGE_DEPTH_OFFSET: re_renderer::DepthOffset = 1;
+/// How far a frame's vertices' picking discs are drawn toward the eye: past the edges, so a
+/// vertex wins the pixels it shares with its faces and edges.
+const VERTEX_DEPTH_OFFSET: re_renderer::DepthOffset = 2;
+/// How far toward the eye a vertex's picking disc is drawn, of the view's height at the
+/// vertex: the approved prototype's tolerance (viewport.js, `pickAll`'s `eps`, 1.2% of the
+/// view's height), so a vertex is picked at a pixel where no face or edge there is nearer
+/// than that, as the prototype's `visible` takes it. Drawn at the vertex itself, a disc facing
+/// the eye is hidden by half of every face it bounds that turns toward the eye (a box's
+/// corner seen from outside, by the face rising to the nearest corner).
+pub const VERTEX_REACH: f64 = 0.012;
+/// The most a perspective view's disc is drawn toward the eye, of the vertex's depth: so a
+/// view as wide as 180° keeps it ahead of the eye (and of the near plane, at half the least
+/// depth a vertex is drawn at).
+const MOST_VERTEX_REACH: f64 = 0.25;
+/// The bit a vertex's picking instance has, above its number from 1: past the u32 the ID
+/// buffer's instances are (the worker's renders draw no vertices), so [`EDGE_BIT`] and the
+/// ID buffer are as they were.
+pub const VERTEX_BIT: u64 = 1 << 32;
 /// Frames to wait for the readbacks: re_renderer delivers them in a later frame, and each
 /// frame here waits for the GPU, so they come in the first or second. The bound is for a
 /// driver that never delivers them.
@@ -146,25 +164,30 @@ pub fn device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), St
         .map_err(|e| format!("no device: {e}"))
 }
 
-/// A body's face or edge, by its number from 1, as the ID buffer and the elements' names
-/// number them (`Face3`, `Edge12`).
+/// A body's face, edge, or vertex, by its number from 1, as the ID buffer and the elements'
+/// names number them (`Face3`, `Edge12`, `Vertex5`). The ID buffer has faces and edges; a
+/// frame's picking has vertices too ([`Frame::vertices`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Element {
     Face(u32),
     Edge(u32),
+    Vertex(u32),
 }
 
 impl Element {
-    /// The element a picking ID's instance is: a face's number from 1, or an edge's with
-    /// [`EDGE_BIT`]; none for anything else (0, an edge numbered 0, or past a u32), which
-    /// no instance drawn has.
+    /// The element a picking ID's instance is: a face's number from 1, an edge's with
+    /// [`EDGE_BIT`], or a vertex's with [`VERTEX_BIT`]; none for anything else (0, an edge
+    /// or a vertex numbered 0, or any other bit past a u32), which no instance drawn has.
     fn of_instance(instance: u64) -> Option<Element> {
-        let n = u32::try_from(instance).ok()?;
-        if n & EDGE_BIT != 0 {
-            let edge = n & !EDGE_BIT;
-            (edge > 0).then_some(Element::Edge(edge))
-        } else {
-            (n > 0).then_some(Element::Face(n))
+        let low = u32::try_from(instance & u64::from(u32::MAX)).ok()?;
+        match instance & !u64::from(u32::MAX) {
+            0 if low & EDGE_BIT != 0 => {
+                let edge = low & !EDGE_BIT;
+                (edge > 0).then_some(Element::Edge(edge))
+            }
+            0 => (low > 0).then_some(Element::Face(low)),
+            VERTEX_BIT => (low > 0).then_some(Element::Vertex(low)),
+            _ => None,
         }
     }
 }
@@ -224,6 +247,18 @@ pub struct Frame<'a> {
     /// The pixels to read back for picking, if any: [`Renderer::take_picking`] gives what
     /// they found, a frame or two later.
     pub picking: Option<PixelRect>,
+    /// The radius, in points, within which a vertex is picked, if vertices are picked (none
+    /// with the selection's vertex filter off, M5.7): a frame that picks then draws a disc
+    /// of it about each vertex whose point lands within it of the picking rectangle, into
+    /// the picking layer alone (invisible, writing no depth to the image), in f64 about the
+    /// camera's point as edges are, toward the eye by [`VERTEX_REACH`] of the view's height
+    /// and past the edges' depth offset, so the disc is the tolerance and wins the pixels it
+    /// shares with its faces and edges unless one is nearer than that (a vertex before an
+    /// edge before a face, with no rule of its own; a vertex hidden behind a face, never).
+    /// Its picking ID is its body's and [`VERTEX_BIT`] with its number, its pick's point its
+    /// own. Where it lands is [`project`]'s: in perspective, a vertex nearer the eye than
+    /// [`MIN_EYE_DISTANCE`] has none, and isn't picked. Finite and above 0.
+    pub vertices: Option<f32>,
     /// The colour behind the bodies, sRGB and not premultiplied, as the app's theme gives
     /// its viewport's (`VIEWPORT_BG`): opaque, its alpha 255, since the frame is composited
     /// opaque. A render's is its own ([`BACKGROUND`]).
@@ -265,13 +300,13 @@ impl Default for Outlines {
 pub struct Pick {
     /// The body's number.
     pub body: u32,
-    /// Its face or edge there.
+    /// Its face, edge, or vertex there.
     pub hit: Element,
     /// The pixel it was found at, in the frame.
     pub pixel: [u32; 2],
     /// The point seen at the pixel's centre, in the document's coordinates: the centre
     /// unprojected at the picking layer's depth there, in f64 (the depth itself is the GPU's
-    /// f32); none if the depth wasn't read back.
+    /// f32); none if the depth wasn't read back. A vertex's is its own point.
     pub point: Option<[f64; 3]>,
 }
 
@@ -532,7 +567,7 @@ impl Renderer {
                     projection: view.projection,
                 },
             );
-            (rect_int(rect), id)
+            (rect, id)
         });
         let plain = Lit::default();
         let drawn: Vec<(u32, &Lit)> = frame
@@ -549,7 +584,11 @@ impl Renderer {
                 background: srgb([red, green, blue]),
             },
             &drawn,
-            picking,
+            picking.map(|(rect, id)| Picked {
+                rect,
+                id,
+                vertices: frame.vertices,
+            }),
             None,
         );
         #[cfg(test)]
@@ -623,8 +662,15 @@ impl Renderer {
             drawn.is_some() && drawn == self.bodies.get(&body).map(|u| u.generation)
         };
         let [any, edge] = request.nearest(&ids, extent, current);
+        let bodies = &self.bodies;
         let with_point = |(i, mut pick): (u32, Pick)| {
-            if depths.len() == ids.len()
+            if let Element::Vertex(n) = pick.hit {
+                // A vertex's own point: its disc is drawn toward the eye ([`VERTEX_REACH`]).
+                pick.point = bodies.get(&pick.body).and_then(|body| {
+                    let at = usize::try_from(n).ok()?.checked_sub(1)?;
+                    body.mesh.vertex_points.get(at).copied()
+                });
+            } else if depths.len() == ids.len()
                 && let Some(&depth) = usize::try_from(i).ok().and_then(|i| depths.get(i))
             {
                 pick.point = request.point_at(pick.pixel, depth);
@@ -707,6 +753,7 @@ impl Renderer {
                 let (number, count, what) = match element {
                     Element::Face(n) => (n, mesh.face_triangles.len(), "faces"),
                     Element::Edge(n) => (n, mesh.edge_point_counts.len(), "edges"),
+                    Element::Vertex(n) => (n, mesh.vertex_points.len(), "vertices"),
                 };
                 if !usize::try_from(number).is_ok_and(|n| (1..=count).contains(&n)) {
                     return Err(InvalidParameter {
@@ -725,6 +772,9 @@ impl Renderer {
                 match element {
                     Element::Face(n) => faces.push(n),
                     Element::Edge(n) => edges.push(n),
+                    // A vertex is drawn over the frame by its caller (the app's dot), so
+                    // it's checked, and outlined by nothing here.
+                    Element::Vertex(_) => {}
                 }
             }
         }
@@ -745,6 +795,16 @@ impl Renderer {
                 parameter: "background",
                 message: format!(
                     "background [{red}, {green}, {blue}, {alpha}] must be opaque, its alpha 255: the frame is composited opaque"
+                ),
+            });
+        }
+        if let Some(radius) = frame.vertices
+            && !(radius.is_finite() && radius > 0.0)
+        {
+            return Err(InvalidParameter {
+                parameter: "vertices",
+                message: format!(
+                    "vertices {radius:?}, a radius in points, must be finite and above 0"
                 ),
             });
         }
@@ -868,9 +928,9 @@ impl Renderer {
         }
         let lit: Vec<Lit> = scene.bodies.iter().map(Lit::of_body).collect();
         let drawn: Vec<(u32, &Lit)> = scene.bodies.iter().map(|b| b.body).zip(&lit).collect();
-        let whole = RectInt {
-            min: glam::IVec2::ZERO,
-            extent: glam::UVec2::new(scene.width, scene.height),
+        let whole = PixelRect {
+            min: [0, 0],
+            size: [scene.width, scene.height],
         };
         self.ctx.begin_frame();
         let built = self.build(
@@ -881,7 +941,11 @@ impl Renderer {
                 background: srgb(BACKGROUND),
             },
             &drawn,
-            scene.ids.then_some((whole, picking)),
+            scene.ids.then_some(Picked {
+                rect: whole,
+                id: picking,
+                vertices: None,
+            }),
             Some(screenshot),
         );
         self.ctx.before_submit();
@@ -894,16 +958,17 @@ impl Renderer {
     /// frame `re_renderer`'s already begun: each face an instance moved into the view, its
     /// mesh uploaded where it has none; each edge a strip placed in the view; highlights
     /// drawn in each body's [`Lit::style`], and outlined in `colours`' outlines; the picking
-    /// rectangle and its readback's identifier, and the image's, if asked; behind it all,
-    /// `colours`' background. The command buffer that draws it into the view's target, and
-    /// the view, to composite.
+    /// rectangle and its readback's identifier, with the vertices' discs it asks for
+    /// ([`vertices`]), and the image's readback, if asked; behind it all, `colours`'
+    /// background. The command buffer that draws it into the view's target, and the view, to
+    /// composite.
     fn build(
         &mut self,
         view: &View,
         pixels_per_point: f32,
         colours: Colours,
         drawn: &[(u32, &Lit)],
-        picking: Option<(RectInt, u64)>,
+        picking: Option<Picked>,
         screenshot: Option<u64>,
     ) -> Result<(wgpu::CommandBuffer, ViewBuilder), String> {
         let Colours {
@@ -946,6 +1011,26 @@ impl Renderer {
             uploaded.faces(ctx, number, lit, view, &mut instances, uploads)?;
             edges(&mut lines, number, uploaded, lit, view, &strokes);
         }
+        // The vertices' discs, only for a picking that asks for them: a frame that doesn't
+        // pick pays nothing for them.
+        let points = match picking {
+            Some(Picked {
+                rect,
+                vertices: Some(radius),
+                ..
+            }) => {
+                let mut points = PointCloudBuilder::new(ctx);
+                let near = Near::of(rect, f64::from(radius) * f64::from(pixels_per_point));
+                let mut discs = 0usize;
+                for &(number, _) in drawn {
+                    if let Some(uploaded) = bodies.get(&number) {
+                        discs += vertices(&mut points, number, &uploaded.mesh, view, near, radius);
+                    }
+                }
+                (discs > 0).then_some(points)
+            }
+            _ => None,
+        };
         *placed = placing.elapsed();
         let highlighted = drawn.iter().any(|(_, lit)| lit.any());
         let config = TargetConfiguration {
@@ -962,12 +1047,10 @@ impl Renderer {
                 color_layer_a: srgb(outlines.selected),
                 color_layer_b: srgb(outlines.hovered),
             }),
-            picking_config: picking.map(|(picking_rect, readback_identifier)| {
-                ViewPickingConfiguration {
-                    picking_rect,
-                    readback_identifier,
-                    show_debug_view: false,
-                }
+            picking_config: picking.map(|picked| ViewPickingConfiguration {
+                picking_rect: rect_int(picked.rect),
+                readback_identifier: picked.id,
+                show_debug_view: false,
             }),
             ..Default::default()
         };
@@ -990,6 +1073,14 @@ impl Renderer {
         } else {
             // Its borrow of the context ends here.
             drop(lines);
+        }
+        if let Some(points) = points {
+            let draw = points
+                .into_draw_data()
+                .map_err(|e| format!("no draw data for the vertices: {e}"))?;
+            builder
+                .queue_draw(ctx, draw)
+                .map_err(|e| format!("couldn't queue the vertices: {e}"))?;
         }
         if let Some(screenshot) = screenshot {
             builder
@@ -1054,6 +1145,38 @@ fn outlined_as(highlighted: bool, hovered: bool) -> OutlineMaskPreference {
         OutlineMaskPreference::some(u8::from(highlighted), u8::from(hovered))
     } else {
         OutlineMaskPreference::NONE
+    }
+}
+
+/// What a view's picking asks: its rectangle, its readback's identifier, and the radius in
+/// points its vertices are picked within, if they are ([`Frame::vertices`]).
+#[derive(Debug, Clone, Copy)]
+struct Picked {
+    rect: PixelRect,
+    id: u64,
+    vertices: Option<f32>,
+}
+
+/// The pixels about a picking rectangle a vertex's disc can reach it from: the rectangle
+/// (from its corner, `size` pixels on), each side out by the disc's radius in pixels and one
+/// pixel more (a disc's edge is smoothed over about a pixel).
+#[derive(Debug, Clone, Copy)]
+struct Near {
+    low: [f64; 2],
+    high: [f64; 2],
+}
+
+impl Near {
+    fn of(rect: PixelRect, radius_px: f64) -> Near {
+        let out = radius_px + 1.0;
+        Near {
+            low: std::array::from_fn(|k| f64::from(rect.min[k]) - out),
+            high: std::array::from_fn(|k| f64::from(rect.min[k]) + f64::from(rect.size[k]) + out),
+        }
+    }
+
+    fn holds(&self, pixel: [f64; 2]) -> bool {
+        (0..2).all(|k| self.low[k] <= pixel[k] && pixel[k] <= self.high[k])
     }
 }
 
@@ -1462,6 +1585,29 @@ impl View {
         strips
     }
 
+    /// Where a vertex at `p` has its picking disc: [`View::at`], moved toward the eye by
+    /// [`VERTEX_REACH`] of the view's height there, in f64 before it's f32; along the view
+    /// (orthographic, at most halfway to the near plane) or along its line to the eye
+    /// (perspective, at most [`MOST_VERTEX_REACH`] of its depth), so it lands on the same
+    /// pixel.
+    fn disc_at(&self, p: [f64; 3]) -> glam::Vec3 {
+        let d = sub(p, self.origin);
+        let mut v = [
+            dot(self.frame.right, d),
+            dot(self.frame.up, d),
+            dot(self.frame.back, d) - self.depth,
+        ];
+        if self.perspective {
+            let toward = (VERTEX_REACH * self.span).min(MOST_VERTEX_REACH);
+            v = v.map(|c| c * (1.0 - toward));
+        } else {
+            // The near plane is at the camera (z = 0), as little as a millimetre in front of
+            // the scene: at most halfway there, so a vertex at the scene's front isn't cut.
+            v[2] = (v[2] + VERTEX_REACH * self.span).min(v[2] / 2.0);
+        }
+        vec3(v)
+    }
+
     /// `p` in the fixed camera's world, its offset from the camera's point and its rotation
     /// into the view both taken in f64 before it's f32: precise to f32's step of what's
     /// across the view, wherever the point is.
@@ -1581,39 +1727,70 @@ pub fn ray(camera: &Camera, size_px: [u32; 2], pixel: [f64; 2]) -> Option<([f64;
 /// None, too, for a camera [`Camera::check`] refuses at this size, a size of 0 on a side, a
 /// point that isn't finite, or one whose pixel isn't.
 pub fn project(camera: &Camera, size_px: [u32; 2], world: [f64; 3]) -> Option<[f64; 2]> {
-    let [width, height] = size_px;
-    if width == 0 || height == 0 || !world.iter().all(|c| c.is_finite()) {
-        return None;
+    Projector::new(camera, size_px)?.pixel(world)
+}
+
+/// [`project`]'s projection of one view, made once for many points: the camera's frame and
+/// point, and the matrix, in f64.
+struct Projector {
+    frame: CameraFrame,
+    origin: [f64; 3],
+    perspective: bool,
+    matrix: glam::DMat4,
+    size: [f64; 2],
+}
+
+impl Projector {
+    /// The projection of a view from `camera` `size_px` in pixels; none for a camera
+    /// [`Camera::check`] refuses at this size, or a size of 0 on a side.
+    fn new(camera: &Camera, size_px: [u32; 2]) -> Option<Projector> {
+        let [width, height] = size_px;
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let frame = camera.check(width, height).ok()?;
+        // About the camera's point, as [`View`] draws: the eye in perspective, the target
+        // orthographic (whose depth x and y don't depend on).
+        let (origin, far, perspective) = match camera.projection {
+            Projection::Perspective { .. } => (camera.eye, 0.0, true),
+            Projection::Orthographic { .. } => (camera.target, 1.0, false),
+        };
+        let projection = view_projection(camera.projection, size_px, far);
+        Some(Projector {
+            frame,
+            origin,
+            perspective,
+            matrix: projection.projection_from_view(size_px).as_dmat4(),
+            size: [f64::from(width), f64::from(height)],
+        })
     }
-    let frame = camera.check(width, height).ok()?;
-    // About the camera's point, as [`View`] draws: the eye in perspective, the target
-    // orthographic (whose depth x and y don't depend on).
-    let (origin, far) = match camera.projection {
-        Projection::Perspective { .. } => (camera.eye, 0.0),
-        Projection::Orthographic { .. } => (camera.target, 1.0),
-    };
-    let d = sub(world, origin);
-    let view = glam::DVec4::new(
-        dot(frame.right, d),
-        dot(frame.up, d),
-        dot(frame.back, d),
-        1.0,
-    );
-    // Its depth as the drawing's pyramid takes it ([`View::eye_frame`]); NaN where the
-    // point is so far that its offsets overflow.
-    let depth = -view.z;
-    if matches!(camera.projection, Projection::Perspective { .. })
-        && (depth.is_nan() || depth < MIN_EYE_DISTANCE)
-    {
-        return None;
+
+    /// Where `world` lands, as [`project`] says.
+    fn pixel(&self, world: [f64; 3]) -> Option<[f64; 2]> {
+        if !world.iter().all(|c| c.is_finite()) {
+            return None;
+        }
+        let frame = &self.frame;
+        let d = sub(world, self.origin);
+        let view = glam::DVec4::new(
+            dot(frame.right, d),
+            dot(frame.up, d),
+            dot(frame.back, d),
+            1.0,
+        );
+        // Its depth as the drawing's pyramid takes it ([`View::eye_frame`]); NaN where the
+        // point is so far that its offsets overflow.
+        let depth = -view.z;
+        if self.perspective && (depth.is_nan() || depth < MIN_EYE_DISTANCE) {
+            return None;
+        }
+        let clip = self.matrix * view;
+        let pixel = [
+            (clip.x / clip.w + 1.0) / 2.0 * self.size[0],
+            (1.0 - clip.y / clip.w) / 2.0 * self.size[1],
+        ];
+        pixel.iter().all(|c| c.is_finite()).then_some(pixel)
     }
-    let projection = view_projection(camera.projection, size_px, far);
-    let clip = projection.projection_from_view(size_px).as_dmat4() * view;
-    let pixel = [
-        (clip.x / clip.w + 1.0) / 2.0 * f64::from(width),
-        (1.0 - clip.y / clip.w) / 2.0 * f64::from(height),
-    ];
-    pixel.iter().all(|c| c.is_finite()).then_some(pixel)
 }
 
 /// Where a mesh stored about `centre` is drawn, for the camera at `origin` (then `depth`
@@ -2011,6 +2188,54 @@ fn edges(
     }
 }
 
+/// Body `body`'s vertices of `mesh` that land `near` a picking rectangle in `view`
+/// ([`Projector`], as [`project`] lands them: none nearer a perspective eye than
+/// [`MIN_EYE_DISTANCE`]), each a disc `radius` points wide in the picking layer alone, in a
+/// batch of the body's: invisible (its colour and alpha 0, blended, so it draws nothing and
+/// writes no depth to the image), placed in the view in f64 as edges are, toward the eye by
+/// [`VERTEX_REACH`] ([`View::disc_at`]) and by [`VERTEX_DEPTH_OFFSET`], its picking ID the
+/// body's and [`VERTEX_BIT`] with the vertex's number. How many it drew.
+fn vertices(
+    points: &mut PointCloudBuilder<'_>,
+    body: u32,
+    mesh: &Mesh,
+    view: &View,
+    near: Near,
+    radius: f32,
+) -> usize {
+    let Some(projector) = Projector::new(&view.camera, [view.width, view.height]) else {
+        return 0;
+    };
+    let mut positions = Vec::new();
+    let mut ids = Vec::new();
+    for (n, p) in (1u32..).zip(&mesh.vertex_points) {
+        if projector.pixel(*p).is_some_and(|pixel| near.holds(pixel)) {
+            positions.push(view.disc_at(*p));
+            ids.push(PickingLayerInstanceId(VERTEX_BIT | u64::from(n)));
+        }
+    }
+    if positions.is_empty() {
+        return 0;
+    }
+    let _span = tracing::debug_span!("vertex_discs", body, discs = positions.len()).entered();
+    points
+        .batch(format!("Body{body}Vertices"))
+        .world_from_obj(glam::Affine3A::IDENTITY)
+        .picking_object_id(PickingLayerObjectId(u64::from(body)))
+        .depth_offset(VERTEX_DEPTH_OFFSET)
+        .flags(
+            PointCloudBatchFlags::FLAG_PREMULTIPLIED_ALPHA
+                | PointCloudBatchFlags::FLAG_DRAW_AS_CIRCLES,
+        )
+        .add_points_slow(
+            &positions,
+            &[Size::new_ui_points(radius)],
+            &[Color32::TRANSPARENT],
+            &ids,
+        );
+    positions.len()
+}
+
 /// A box: its lowest and highest corners.
 type Bounds = ([f64; 3], [f64; 3]);
 
@@ -2273,9 +2498,74 @@ mod tests {
     };
 
     use super::{
-        Bounds, MIN_EYE_DISTANCE, OUTPUT_FORMAT, Renderer, Uploaded, View, centre_of, device,
-        face_vertices, unit, vec3, world_from_mesh,
+        Bounds, EDGE_BIT, Element, MIN_EYE_DISTANCE, Near, OUTPUT_FORMAT, PixelRect, Renderer,
+        Uploaded, VERTEX_BIT, View, centre_of, device, face_vertices, unit, vec3, world_from_mesh,
     };
+
+    #[test]
+    fn a_picking_instance_is_a_face_an_edge_or_a_vertex_by_its_bits_and_nothing_else() {
+        let edge = u64::from(EDGE_BIT);
+        for (instance, want) in [
+            (1, Some(Element::Face(1))),
+            (u64::from(EDGE_BIT - 1), Some(Element::Face(EDGE_BIT - 1))),
+            (edge | 12, Some(Element::Edge(12))),
+            (u64::from(u32::MAX), Some(Element::Edge(EDGE_BIT - 1))),
+            (VERTEX_BIT | 5, Some(Element::Vertex(5))),
+            // A vertex's number is the low u32 whole, the edge bit among it.
+            (VERTEX_BIT | edge | 3, Some(Element::Vertex(EDGE_BIT | 3))),
+            (
+                VERTEX_BIT | u64::from(u32::MAX),
+                Some(Element::Vertex(u32::MAX)),
+            ),
+            // Numbered 0: the background's, or no element.
+            (0, None),
+            (edge, None),
+            (VERTEX_BIT, None),
+            // Any other bit past a u32 is no instance drawn.
+            (2 << 32 | 5, None),
+            (3 << 32 | 5, None),
+            (1 << 63 | 5, None),
+            (u64::MAX, None),
+        ] {
+            assert_eq!(Element::of_instance(instance), want, "{instance:#x}");
+        }
+        assert_eq!(VERTEX_BIT, 0x1_0000_0000);
+    }
+
+    #[test]
+    fn a_disc_reaches_a_picking_rectangle_from_its_radius_and_a_pixel_more_out() {
+        // A 3-pixel square from (10, 20) to (13, 23), widened by 7 pixels and 1: x from 2 to
+        // 21, y from 12 to 31, both ends taken.
+        let near = Near::of(
+            PixelRect {
+                min: [10, 20],
+                size: [3, 3],
+            },
+            7.0,
+        );
+        assert_eq!((near.low, near.high), ([2.0, 12.0], [21.0, 31.0]));
+        for (pixel, holds) in [
+            ([2.0, 12.0], true),
+            ([21.0, 31.0], true),
+            ([11.5, 21.5], true),
+            ([2.0f64.next_down(), 20.0], false),
+            ([10.0, 12.0f64.next_down()], false),
+            ([21.0f64.next_up(), 20.0], false),
+            ([10.0, 31.0f64.next_up()], false),
+            ([f64::NAN, 20.0], false),
+        ] {
+            assert_eq!(near.holds(pixel), holds, "{pixel:?}");
+        }
+        // Off the frame's corner, where a rectangle may be.
+        let off = Near::of(
+            PixelRect {
+                min: [-(1 << 24), 0],
+                size: [1, 1],
+            },
+            0.5,
+        );
+        assert_eq!(off.low, [-16_777_217.5, -1.5]);
+    }
     use crate::bench::{box_mesh, front_of_a_box};
 
     /// The view `(right, up, back)` from `(1, −1, 1)` with z up, by hand: back (1, −1, 1)/√3;
@@ -2406,6 +2696,7 @@ mod tests {
             face_triangles: vec![1],
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
             valid: None,
         };
         let uploaded = Uploaded::new(Arc::new(point)).unwrap();
@@ -2856,6 +3147,7 @@ mod tests {
             face_triangles: vec![],
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
             valid: None,
         };
         for (base, corners) in (0u32..).step_by(4).zip(faces) {
@@ -2917,6 +3209,7 @@ mod tests {
             face_triangles: vec![],
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
             valid: None,
         };
         let at = |r: f64, k: u32, z: f64| {
@@ -3197,6 +3490,7 @@ mod tests {
             positions,
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
             valid: None,
         }
     }
@@ -3546,6 +3840,7 @@ mod tests {
             face_triangles: vec![2 * n],
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
             valid: None,
         };
         for k in 0..=n {
@@ -3621,6 +3916,7 @@ mod tests {
                     face_triangles: vec![2],
                     edge_points: vec![],
                     edge_point_counts: vec![],
+                    vertex_points: vec![],
                     valid: None,
                 };
                 let half = std::f64::consts::FRAC_1_SQRT_2;
@@ -3683,6 +3979,7 @@ mod tests {
                     face_triangles: vec![],
                     edge_points: vec![],
                     edge_point_counts: vec![],
+                    vertex_points: vec![],
                     valid: None,
                 };
                 let none = ids(
@@ -3748,6 +4045,7 @@ mod tests {
                         face_triangles: vec![1],
                         edge_points: vec![],
                         edge_point_counts: vec![],
+                        vertex_points: vec![],
                         valid: None,
                     };
                     let scene = scene_from(
@@ -3791,6 +4089,7 @@ mod tests {
                             face_triangles: vec![],
                             edge_points: vec![[x, 0.0, -10.0], [x, 0.0, 10.0]],
                             edge_point_counts: vec![2],
+                            vertex_points: vec![],
                             valid: None,
                         },
                         highlight_faces: vec![],
@@ -3860,6 +4159,7 @@ mod tests {
                                 face_triangles: vec![],
                                 edge_points: vec![a, b],
                                 edge_point_counts: vec![2],
+                                vertex_points: vec![],
                                 valid: None,
                             },
                         )],

@@ -132,6 +132,18 @@ impl<'m> Lookup<'m> {
         }
     }
 
+    /// A selection's lookup ([`selection`](Self::selection)) in the feature `feature`'s solid
+    /// alone, not in every body: a name is found only if that solid's map holds it, named
+    /// so far ([`Found::Pending`] till it is), and one it doesn't hold is refused as of
+    /// that solid, with candidates from it. The caller sees that `feature` has a solid
+    /// first: one that hasn't is refused once, as [`new`](Self::new) refuses it.
+    pub(crate) fn selection_in(model: &'m Model, feature: &FeatureId, kinds: Kinds) -> Self {
+        Lookup {
+            selection: true,
+            ..Lookup::new(model, Some(feature), kinds)
+        }
+    }
+
     /// The element `text` names, the request's `parameter` (`elements.0`); or none, why
     /// kept to say.
     pub(crate) fn find(&mut self, parameter: &str, text: &str) -> Option<Hit<'m>> {
@@ -312,11 +324,16 @@ impl<'m> Lookup<'m> {
         Found::Hit(id, map, element, name)
     }
 
-    /// As [`located`](Self::located) finds it in every body, but naming no map: a
-    /// selection's, whose caller may be the UI's thread.
+    /// As [`located`](Self::located) finds it, in the request's `feature`'s solid or in
+    /// every body, but naming no map: a selection's, whose caller may be the UI's thread.
     fn located_now(&self, name: &Name) -> Located<'m> {
         let model = self.model;
-        let Some(id) = model.live_body(name.feature()) else {
+        let solid = if self.asked {
+            self.solids.first().copied()
+        } else {
+            model.live_body(name.feature())
+        };
+        let Some(id) = solid else {
             return Located::Nowhere;
         };
         match model.named_so_far(id) {
@@ -689,7 +706,9 @@ mod tests {
             fillet("f0000002", "f0000001", "a0000002.box.Edge2", 0.1),
             a_box("c0000001", 40),
             pad("p0000003", r#""base": "c0000001", "#, 3),
-            a_box("d0000001", 60),
+            // Inside the pad's corner, so the cut removes some of it (S7's rule refuses one
+            // that removes nothing).
+            a_box("d0000001", 0),
             operation("k0000001", "cut", "p0000001", "d0000001"),
             a_box("e0000001", 80),
             fillet("g0000001", "e0000001", "e0000001.box.Edge1", 0.25),

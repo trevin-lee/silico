@@ -94,11 +94,15 @@ pub struct MeshedBody {
     pub faces: Vec<MeshElement>,
     /// Each edge, in the mesh's edge order: its name, its stability, and its points.
     pub edges: Vec<MeshElement>,
+    /// Each vertex, in the mesh's vertex order (its `vertex_points`'): its name and its
+    /// stability, with no count (a vertex is one point).
+    pub vertices: Vec<MeshElement>,
 }
 
-/// A mesh face or edge: its element map's own name for it, whether that name is stable,
-/// and how many of the mesh's triangles (a face) or edge points (an edge) are its, given
-/// with the geometry (none for a mesh the client holds, which has them).
+/// A mesh face, edge, or vertex: its element map's own name for it, whether that name is
+/// stable, and how many of the mesh's triangles (a face) or edge points (an edge) are its,
+/// given with the geometry (none for a mesh the client holds, which has them, and none for
+/// a vertex, which is one point of `vertex_points`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshElement {
     pub name: Arc<Name>,
@@ -257,6 +261,25 @@ pub fn meshes<K: Kernel>(
                 mesh.as_deref().map(|m| m.edge_point_counts.as_slice()),
                 solid.id,
             )?;
+            let vertices = named(map, ElementKind::Vertex, None, solid.id)?;
+            // Vertices have no counts for `named` to check: their points are checked here.
+            if let Some(mesh) = mesh.as_deref()
+                && mesh.vertex_points.len() != vertices.len()
+            {
+                return Err(Problems::from(
+                    Error::new(
+                        ErrorCode::Internal,
+                        format!(
+                            "{}'s element map names {} vertices, and its mesh, checked, {}",
+                            solid.id,
+                            vertices.len(),
+                            mesh.vertex_points.len()
+                        ),
+                    )
+                    .with_feature(solid.id.as_str())
+                    .with_suggestion(SILICO_BUG),
+                ));
+            }
             // At its floor when the kernel used more than was asked: a function of the read
             // and the solid alone, never of what the shared cache has seen.
             let serves = match (deflection > level, mesh_level(deflection)) {
@@ -282,6 +305,7 @@ pub fn meshes<K: Kernel>(
                 mesh,
                 faces,
                 edges,
+                vertices,
             })
         })
         .collect::<Result<Vec<_>, Problems>>()?;
@@ -440,9 +464,9 @@ fn named(
         .collect()
 }
 
-/// Refuses `mesh` if its faces or edges don't number `solid`'s, as the worker's: by its
-/// summary, or, for a solid never measured, its element map. It's dropped from the shared
-/// cache (render may have kept it) either way, so the next read asks again.
+/// Refuses `mesh` if its faces, edges, or vertices don't number `solid`'s, as the worker's:
+/// by its summary, or, for a solid never measured, its element map. It's dropped from the
+/// shared cache (render may have kept it) either way, so the next read asks again.
 fn consistent(
     solid: &Body,
     map: &ElementMap,
@@ -450,19 +474,25 @@ fn consistent(
     cache: &MeshCache<Key>,
     deflection: f64,
 ) -> Result<(), Problems> {
-    let (want_faces, want_edges) = match solid.built.summary() {
-        Some(summary) => (summary.faces as usize, summary.edges as usize),
-        None => (map.count(ElementKind::Face), map.count(ElementKind::Edge)),
+    let want = match solid.built.summary() {
+        Some(summary) => [summary.faces, summary.edges, summary.vertices].map(|n| n as usize),
+        None => [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex].map(|k| map.count(k)),
     };
-    let (faces, edges) = (mesh.face_triangles.len(), mesh.edge_point_counts.len());
-    if (faces, edges) == (want_faces, want_edges) {
+    let have = [
+        mesh.face_triangles.len(),
+        mesh.edge_point_counts.len(),
+        mesh.vertex_points.len(),
+    ];
+    if have == want {
         return Ok(());
     }
     cache.forget(&solid.key, deflection);
+    let [faces, edges, vertices] = have;
+    let [want_faces, want_edges, want_vertices] = want;
     Err(inconsistent(
         solid.id,
         format!(
-            "a mesh of {faces} faces and {edges} edges, for a solid of {want_faces} and {want_edges}"
+            "a mesh of {faces} faces, {edges} edges, and {vertices} vertices, for a solid of {want_faces}, {want_edges}, and {want_vertices}"
         ),
     ))
 }

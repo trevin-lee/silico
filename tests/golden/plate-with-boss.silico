@@ -32,7 +32,7 @@
       "name": "Plate",
       "sketch": "s0000001",
       "extent": {"type": "one_side", "length": 8, "reversed": false},
-      "fingerprint": {"volume": 14400, "area": 5040, "bbox": [-30, -15, 0, 30, 15, 8], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 14400, "area": 5040, "center": [0, 0, 4], "bbox": [-30, -15, 0, 30, 15, 8], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "s0000002",
@@ -60,7 +60,7 @@
       "base": "p0000001",
       "sketch": "s0000002",
       "extent": {"type": "through_all", "reversed": true},
-      "fingerprint": {"volume": 13771.681469, "area": 5234.778745, "bbox": [-30, -15, 0, 30, 15, 8], "faces": 8, "edges": 18, "vertices": 12}
+      "fingerprint": {"volume": 13771.681469, "area": 5234.778745, "center": [-0.191621, 0, 4], "bbox": [-30, -15, 0, 30, 15, 8], "faces": 8, "edges": 18, "vertices": 12}
     },
     {
       "id": "s0000003",
@@ -93,7 +93,7 @@
       "sketch": "s0000003",
       "axis": "y_axis",
       "extent": {"type": "one_side", "angle": 360, "reversed": false},
-      "fingerprint": {"volume": 14242.920367, "area": 5423.274304, "bbox": [-30, -15, 0, 30, 15, 14], "faces": 10, "edges": 21, "vertices": 14}
+      "fingerprint": {"volume": 14242.920367, "area": 5423.274304, "center": [-0.185281, 0, 4.231601], "bbox": [-30, -15, 0, 30, 15, 14], "faces": 10, "edges": 21, "vertices": 14}
     },
     {
       "id": "f0000001",
@@ -105,7 +105,7 @@
         "p0000001.pad.Edge(G s0000001.sketch.Edge.na000001)"
       ],
       "radius": 1,
-      "fingerprint": {"volume": 14230.044257, "area": 5397.09288, "bbox": [-30, -15, 0, 30, 15, 14], "faces": 11, "edges": 24, "vertices": 16}
+      "fingerprint": {"volume": 14230.044257, "area": 5397.09288, "center": [-0.185448, 0.013371, 4.228393], "bbox": [-30, -15, 0, 30, 15, 14], "faces": 11, "edges": 24, "vertices": 16}
     }
   ]
 }

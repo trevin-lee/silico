@@ -13,7 +13,7 @@ use crate::timeline::{Entry, Health};
 /// a check warns of it (`fingerprint_missing`) unless an open transaction's edits reach it.
 fn unprinted() -> String {
     let text = STORED.replace(
-        r#", "fingerprint": {"volume": 1000, "area": 600, "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
+        r#", "fingerprint": {"volume": 1000, "area": 600, "center": [105, 5, 5], "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
         "",
     );
     assert_ne!(text, STORED);

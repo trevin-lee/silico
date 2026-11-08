@@ -492,6 +492,7 @@ mod ffi {
         fn face_triangles(self: &Tessellation) -> &[u32];
         fn edge_points(self: &Tessellation) -> &[f64];
         fn edge_points_per_edge(self: &Tessellation) -> &[u32];
+        fn vertex_points(self: &Tessellation) -> &[f64];
 
         type ExportTriangulation;
         fn export_mesh(
@@ -2429,6 +2430,7 @@ fn tessellated(
         face_triangles: raw.face_triangles().to_vec(),
         edge_points: triples(raw.edge_points()),
         edge_point_counts: raw.edge_points_per_edge().to_vec(),
+        vertex_points: triples(raw.vertex_points()),
         valid: None,
     };
     // From the mesh's own counts, so what the core checks and what the worker sends agree.

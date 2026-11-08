@@ -14,7 +14,7 @@ use crate::document::json::Node;
 /// M2.1's layout.
 fn feature(length: u32) -> String {
     format!(
-        "    {{\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": {length},\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {{\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}}\n    }}"
+        "    {{\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": {length},\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {{\"volume\": 8000, \"area\": 2800, \"center\": [20, 10, 5], \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}}\n    }}"
     )
 }
 
@@ -226,8 +226,9 @@ fn two_formats_on_the_stack_are_counted_apart() {
     let before = f.transaction_now().bytes;
     f.set_length(42);
     // The second format's state (41 long, its fingerprint as rebuilt: 8200, 2860, and its
-    // box, each as many digits as 40's) held, and its record: a second FORMAT.
-    assert_eq!(f.transaction_now().bytes, before + state() + FORMAT);
+    // box, each as many digits as 40's, and its centre's x 20.5, two more than 20's) held,
+    // and its record: a second FORMAT.
+    assert_eq!(f.transaction_now().bytes, before + state() + 2 + FORMAT);
 }
 
 #[test]

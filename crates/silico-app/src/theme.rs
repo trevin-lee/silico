@@ -520,6 +520,16 @@ pub const VIEWPORT_SELECTION_EDGE_WIDTH: f32 = 3.5;
 pub const VIEWPORT_FEATURE_HOVER_TINT: Rgba8 = rgba8(0xd4dbff);
 /// How much of [`VIEWPORT_FEATURE_HOVER_TINT`] those faces take.
 pub const VIEWPORT_FEATURE_HOVER_TINT_AMOUNT: f32 = 0.4;
+/// A hovered vertex's dot (interact.js, `overlay`'s `dot`).
+pub const VIEWPORT_HOVER_VERTEX: Rgba8 = rgba8(0xffffff);
+/// A selected vertex's dot.
+pub const VIEWPORT_SELECTION_VERTEX: Rgba8 = rgba8(0x4676ff);
+/// A vertex's dot's radius, in points.
+pub const VIEWPORT_VERTEX_RADIUS: f32 = 4.5;
+/// The width of the ring about a vertex's dot, in points.
+pub const VIEWPORT_VERTEX_RING: f32 = 1.0;
+/// The ring's colour.
+pub const VIEWPORT_VERTEX_RING_COLOR: Rgba8 = rgba8(0x000000);
 /// A broken reference's candidates ([`WARNING`], `warn_fg_color`).
 pub const VIEWPORT_CANDIDATE: Rgba8 = rgba8_of(WARNING, 0xff);
 /// A candidate edge's width.
@@ -951,6 +961,9 @@ pub const TIMELINE_BADGE_RING_WIDTH: f32 = 1.5;
 pub const TIMELINE_BADGE_RING: Color32 = BOTTOM_BAR_BG;
 pub const TIMELINE_BADGE_ERROR: Color32 = ERROR_FILL;
 pub const TIMELINE_BADGE_WARNING: Color32 = WARNING;
+/// A feature another program changed (`.badge.outside`): a smaller dot, 7 at the same
+/// inset, in [`CHANGED_OUTSIDE`], in the same ring.
+pub const TIMELINE_BADGE_OUTSIDE_SIZE: f32 = 7.0;
 
 /// Where a dragged feature would drop (`.drop-before::before`): a Blue.525 line this wide,
 /// this far left of the item it would drop before, short of its top and bottom by this.
@@ -1115,6 +1128,14 @@ pub const HINT_PADDING: Margin = Margin::symmetric(10, 8);
 pub const HINT_BG: Color32 = GRAY_150;
 pub const HINT_TEXT: Color32 = TEXT_SUBDUED;
 pub const HINT_STRONG: Color32 = GRAY_800;
+/// A hint in a modal's body (`.hint-block` with `margin: 12px 0 0`): 12 above it, nothing
+/// at its sides or under it.
+pub const MODAL_HINT_MARGIN: Margin = Margin {
+    left: 0,
+    right: 0,
+    top: 12,
+    bottom: 0,
+};
 
 /// An error card (`.err-card`): 8 above and below it, `--pad` at its sides, corners `--r`;
 /// its fill, its 1 px border, its head's text and icon (`.ec-head`), and its accent
@@ -1146,6 +1167,48 @@ pub const ERROR_CARD_BODY_PADDING: Margin = Margin {
 };
 pub const ERROR_CARD_FIX_GAP: f32 = 6.0;
 pub const ERROR_CARD_FIX_MARGIN: f32 = 8.0;
+/// The body's words (`.ec-body`: an error's #ffe2e5, a warning's #ffe6c2), and the space
+/// under each of its paragraphs, the core's message and its cause (`.ec-body p { margin: 0
+/// 0 6px }`).
+pub const ERROR_CARD_BODY_TEXT: Color32 = hex(0xffe2e5);
+pub const WARNING_CARD_BODY_TEXT: Color32 = hex(0xffe6c2);
+pub const ERROR_CARD_PARAGRAPH_MARGIN: f32 = 6.0;
+/// The code chip at the head's right (`.ec-code`): 10 high in the monospace font, in the
+/// accent, on black at 30% (77 of 255), padded 4 at its sides, corners 3.
+pub const ERROR_CARD_CODE_SIZE: f32 = 10.0;
+pub const ERROR_CARD_CODE_BG: Color32 = with_alpha(GRAY_0, 77);
+pub const ERROR_CARD_CODE_PADDING: f32 = 4.0;
+pub const ERROR_CARD_CODE_CORNER_RADIUS: u8 = 3;
+/// The Feature, Elements, and Parameter rows (`.ec-kv`): `--fs-small`, its keys in the
+/// accent, 8 from their values (its columns' gap) and 2 between rows, 6 under the last.
+pub const ERROR_CARD_ROW_SIZE: f32 = HEADER_SIZE;
+pub const ERROR_CARD_ROW_GAP: f32 = 8.0;
+pub const ERROR_CARD_ROW_SPACING: f32 = 2.0;
+pub const ERROR_CARD_ROWS_MARGIN: f32 = 6.0;
+/// The feature's ID after its name (`.mono`, at `opacity: .7`).
+pub const ERROR_CARD_ID_OPACITY: f32 = 0.7;
+/// An element's chip (`.el-chip`): 10.5 high in the monospace font, white, on black at 35%
+/// (89 of 255), padded 5 at its sides, corners 3; its name cut to 32 characters and an
+/// ellipsis where it's longer than 34.
+pub const ERROR_CARD_CHIP_SIZE: f32 = 10.5;
+pub const ERROR_CARD_CHIP_BG: Color32 = with_alpha(GRAY_0, 89);
+pub const ERROR_CARD_CHIP_TEXT: Color32 = GRAY_1000;
+pub const ERROR_CARD_CHIP_PADDING: f32 = 5.0;
+pub const ERROR_CARD_CHIP_CORNER_RADIUS: u8 = 3;
+pub const ERROR_CARD_CHIP_LONGEST: usize = 34;
+pub const ERROR_CARD_CHIP_KEPT: usize = 32;
+/// The candidates (`errCard`'s heading, 10.5 in capitals in the accent, 4 above the first;
+/// `.cand`: padded 5 by 6, corners `--r-sm`, black at 25% (64 of 255), 4 under each, its
+/// name `.mono` in #ffd1d6).
+pub const ERROR_CARD_CANDIDATES_SIZE: f32 = 10.5;
+pub const ERROR_CARD_CANDIDATES_MARGIN: f32 = 4.0;
+pub const ERROR_CARD_CANDIDATE_PADDING: Margin = Margin::symmetric(6, 5);
+pub const ERROR_CARD_CANDIDATE_BG: Color32 = with_alpha(GRAY_0, 64);
+pub const ERROR_CARD_CANDIDATE_MARGIN: f32 = 4.0;
+pub const ERROR_CARD_CANDIDATE_TEXT: Color32 = hex(0xffd1d6);
+/// The card's buttons (`.ec-actions`: wrapped, 6 apart each way), each `.btn`
+/// ([`BUTTON_HEIGHT`] high).
+pub const ERROR_CARD_ACTIONS_GAP: f32 = 6.0;
 
 // ---- The docked dialog (`.selbox`, `.chip`, `.seg`, `.dlg-footer`, `.btn-secondary`) ----
 
@@ -1167,6 +1230,18 @@ pub const CHIP_GAP: f32 = 4.0;
 pub const CHIP_CORNER_RADIUS: u8 = 3;
 pub const CHIP_BG: Color32 = WIDGET_BG;
 pub const CHIP_TEXT: Color32 = GRAY_800;
+
+/// A selection box's clear button (`renderDialog`'s Clear: an `.ab-btn` 18 high and wide),
+/// beside each name a box of names lists.
+pub const SELECTION_BOX_CLEAR_SIDE: f32 = 18.0;
+
+/// What a box of names says under its names (`renderDialog`'s `.err-text` at 11 px): its
+/// refusal, in `--red`.
+pub const SELECTION_BOX_SAID: Color32 = ERROR_TEXT;
+
+/// A box of names' note under its names (what of the selection it left out), nothing
+/// wrong: the prototype's subdued text (`.subdued`, `--g550`).
+pub const SELECTION_BOX_NOTE: Color32 = TEXT_SUBDUED;
 
 /// A choice of a few (`.seg`): its fill (Gray.200), padding and gap 1; each choice 20 high,
 /// corners 3, its text Gray.550 (white hovered), the one chosen Gray.350 with white text.
@@ -1286,6 +1361,20 @@ pub const MODAL_FOOT_GAP: f32 = 6.0;
 pub const MODAL_BUTTON_HEIGHT: f32 = DIALOG_BUTTON_HEIGHT;
 pub const MODAL_BUTTON_MIN_WIDTH: f32 = 76.0;
 
+// ---- What's Wrong (`renderModal`'s `whatswrong`) ----
+
+/// What's Wrong's width (`.modal`, `style="width:560px"`), no wider than the window but 40
+/// (`max-width: calc(100vw - 40px)`), and its body's padding (`.m-body`,
+/// `style="padding:0 4px 8px"`), its cards each `--pad` in from that.
+pub const WHATS_WRONG_WIDTH: f32 = 560.0;
+pub const WHATS_WRONG_WINDOW_MARGIN: f32 = 40.0;
+pub const WHATS_WRONG_BODY_PADDING: Margin = Margin {
+    left: 4,
+    right: 4,
+    top: 0,
+    bottom: 8,
+};
+
 // ---- The shortcut sheet (`.sheet`) ----
 
 /// The sheet's width, its border in it (`.sheet { width: 920px }`), at most the window's
@@ -1343,6 +1432,34 @@ pub const BANNER_MARGIN_RIGHT: f32 = 148.0;
 /// as they fit, the words never narrower than this.
 pub const BANNER_MIN_WIDTH: f32 = 320.0;
 pub const BANNER_WORDS_MIN_WIDTH: f32 = 200.0;
+
+// ---- The window's least size ----
+
+/// The canvas's least size: room for a banner at its least width, [`BANNER_MIN_WIDTH`],
+/// [`BANNER_MARGIN`] at each side (340); and for the ViewCube, [`VIEW_CUBE_MARGIN`] from
+/// the top, over the navigation bar, [`NAVIGATION_BAR_MARGIN`] above and below it (164).
+pub const CANVAS_MIN_WIDTH: f32 = BANNER_MIN_WIDTH + 2.0 * BANNER_MARGIN;
+pub const CANVAS_MIN_HEIGHT: f32 = VIEW_CUBE_MARGIN
+    + VIEW_CUBE_SIDE
+    + NAVIGATION_BAR_MARGIN
+    + NAVIGATION_BAR_HEIGHT
+    + NAVIGATION_BAR_MARGIN;
+
+/// The window's least size (Fusion's window has one; the prototype, a page, has none): the
+/// browser's and the property panel's columns (`--browser-w`, `--right-w`) and the least
+/// canvas between them, 884; and the app bar (`--top-bar-h`), the toolbar (`--toolbar-tabs-
+/// h`, `--toolbar-h`, and its border), the least canvas, the timeline (`--timeline-h`, and
+/// the 1 egui's separator line takes above it), and the status bar (`--status-h`), 336.
+pub const WINDOW_MIN_WIDTH: f32 =
+    crate::panes::BROWSER_W + crate::panes::RIGHT_W + CANVAS_MIN_WIDTH;
+pub const WINDOW_MIN_HEIGHT: f32 = TOP_BAR_HEIGHT
+    + TOOLBAR_TABS_HEIGHT
+    + TOOLBAR_PANELS_HEIGHT
+    + BORDER_WIDTH
+    + CANVAS_MIN_HEIGHT
+    + BORDER_WIDTH
+    + TIMELINE_HEIGHT
+    + STATUS_BAR_HEIGHT;
 /// A banner's padding (`9px 10px 9px 12px`), inside its 1 px border, its corners `--r`; 10
 /// between its icon, its words, and its buttons, which are 6 apart; its icon 1 lower than
 /// its words' top (`.b-icon { margin-top: 1px }`); its second line 2 under its first, at
@@ -1379,6 +1496,23 @@ pub const BANNER_ERROR_TEXT: Color32 = DANGER_BUTTON_TEXT;
 pub const BANNER_BUTTON_BG: Color32 = with_alpha(GRAY_1000, 20);
 pub const BANNER_BUTTON_HOVER_BG: Color32 = with_alpha(GRAY_1000, 41);
 pub const BANNER_BUTTON_HOVER_TEXT: Color32 = GRAY_1000;
+/// The list of what changed under a banner's words (`.canvas-banner .diff`): 6 under them,
+/// in the small size, on rows 2 apart, its three columns 10 apart; the feature's name in
+/// [`CHANGED_OUTSIDE`] (`.k`), the rest in the banner's words' colour.
+pub const BANNER_LIST_MARGIN_TOP: f32 = 6.0;
+pub const BANNER_LIST_ROW_GAP: f32 = 2.0;
+pub const BANNER_LIST_COLUMN_GAP: f32 = 10.0;
+
+/// The card in a feature's properties saying another program changed it (`.err-card.warn`,
+/// restyled purple as `featureProps` styles it): `rgba(183,128,255,.12)`, its border
+/// `#463375`, its words `#e4d6ff`.
+pub const OUTSIDE_CARD_BG: Color32 = Color32::from_rgba_unmultiplied_const(183, 128, 255, 31);
+pub const OUTSIDE_CARD_BORDER: Color32 = hex(0x463375);
+pub const OUTSIDE_CARD_TEXT: Color32 = hex(0xe4d6ff);
+/// A ghost button's words (`.btn-ghost`): Gray.750; hovered, on its fill
+/// ([`GHOST_BUTTON_HOVER_BG`]), white.
+pub const GHOST_BUTTON_TEXT: Color32 = GRAY_750;
+pub const GHOST_BUTTON_HOVER_TEXT: Color32 = GRAY_1000;
 
 // ---- The start page (`.st-*`, `.recent-row`) ----
 
@@ -1979,9 +2113,28 @@ mod tests {
                 [0xff, 0x7a, 0x0c, 0xff],
             ),
             ("VIEWPORT_BG", VIEWPORT_BG, [0, 0, 0, 0xff]),
+            // interact.js:473-475, `overlay`'s `dot`: a hovered vertex white, a selected one
+            // #4676ff, each ringed `stroke="#000"`.
+            (
+                "VIEWPORT_HOVER_VERTEX",
+                VIEWPORT_HOVER_VERTEX,
+                [0xff, 0xff, 0xff, 0xff],
+            ),
+            (
+                "VIEWPORT_SELECTION_VERTEX",
+                VIEWPORT_SELECTION_VERTEX,
+                [0x46, 0x76, 0xff, 0xff],
+            ),
+            (
+                "VIEWPORT_VERTEX_RING_COLOR",
+                VIEWPORT_VERTEX_RING_COLOR,
+                [0, 0, 0, 0xff],
+            ),
         ] {
             assert_eq!(color, rgba, "{name}");
         }
+        // The dot's `r="4.5"` and its ring's `stroke-width="1"`.
+        assert_eq!((VIEWPORT_VERTEX_RADIUS, VIEWPORT_VERTEX_RING), (4.5, 1.0));
     }
 
     /// The app bar's and its tabs' values, typed from styles.css's `#appbar`, `.traffic`,

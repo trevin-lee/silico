@@ -12,7 +12,7 @@
       "radius1": 5,
       "radius2": 0,
       "height": 10,
-      "fingerprint": {"volume": 261.799388, "area": 254.160185, "bbox": [-5, -5, 0, 5, 5, 10], "faces": 2, "edges": 3, "vertices": 2}
+      "fingerprint": {"volume": 261.799388, "area": 254.160185, "center": [0, 0, 2.5], "bbox": [-5, -5, 0, 5, 5, 10], "faces": 2, "edges": 3, "vertices": 2}
     },
     {
       "id": "pppppppp",
@@ -22,7 +22,7 @@
       "position": [0, 0, -1],
       "radius": 1,
       "height": 12,
-      "fingerprint": {"volume": 37.699112, "area": 81.681409, "bbox": [-1, -1, -1, 1, 1, 11], "faces": 3, "edges": 3, "vertices": 2}
+      "fingerprint": {"volume": 37.699112, "area": 81.681409, "center": [0, 0, 5], "bbox": [-1, -1, -1, 1, 1, 11], "faces": 3, "edges": 3, "vertices": 2}
     },
     {
       "id": "hhhhhhhh",
@@ -31,7 +31,7 @@
       "name": "Bore",
       "base": "kkkkkkkk",
       "tool": "pppppppp",
-      "fingerprint": {"volume": 234.572251, "area": 294.25926, "bbox": [-5, -5, 0, 5, 5, 8], "faces": 3, "edges": 5, "vertices": 3}
+      "fingerprint": {"volume": 234.572251, "area": 294.25926, "center": [0, 0, 2.285714], "bbox": [-5, -5, 0, 5, 5, 8], "faces": 3, "edges": 5, "vertices": 3}
     },
     {
       "id": "ffffffff",
@@ -44,7 +44,7 @@
       ],
       "radius": 0.2,
       "note": "The bore's rim on the base cap, which a pointed cone keeps as Face3",
-      "fingerprint": {"volume": 234.515907, "area": 293.7377, "bbox": [-5, -5, 0, 5, 5, 8], "faces": 4, "edges": 7, "vertices": 4}
+      "fingerprint": {"volume": 234.515907, "area": 293.7377, "center": [0, 0, 2.286253], "bbox": [-5, -5, 0, 5, 5, 8], "faces": 4, "edges": 7, "vertices": 4}
     }
   ]
 }

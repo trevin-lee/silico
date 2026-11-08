@@ -640,9 +640,9 @@ fn an_edit_of_a_suppressed_features_extent_committed_carries_its_fingerprint_as_
 /// The golden plate's first three features, as `tests/golden/plate-with-holes.silico`
 /// holds them (read only: built here), its cut, c0000001, last, so nothing uses it.
 const PLATE: [&str; 3] = [
-    r#"{"id": "pppppppp", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, 0], "length": 60, "width": 30, "height": 5, "fingerprint": {"volume": 9000, "area": 4500, "bbox": [0, 0, 0, 60, 30, 5], "faces": 6, "edges": 12, "vertices": 8}}"#,
-    r#"{"id": "y0000001", "type": "cylinder", "v": 1, "name": "Pin 1", "position": [15, 15, -1], "radius": 1.5, "height": 7, "fingerprint": {"volume": 49.480084, "area": 80.110613, "bbox": [13.5, 13.5, -1, 16.5, 16.5, 6], "faces": 3, "edges": 3, "vertices": 2}}"#,
-    r#"{"id": "c0000001", "type": "cut", "v": 1, "name": "Hole 1", "base": "pppppppp", "tool": "y0000001", "fingerprint": {"volume": 8964.657083, "area": 4532.986723, "bbox": [0, 0, 0, 60, 30, 5], "faces": 7, "edges": 15, "vertices": 10}}"#,
+    r#"{"id": "pppppppp", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, 0], "length": 60, "width": 30, "height": 5, "fingerprint": {"volume": 9000, "area": 4500, "center": [30, 15, 2.5], "bbox": [0, 0, 0, 60, 30, 5], "faces": 6, "edges": 12, "vertices": 8}}"#,
+    r#"{"id": "y0000001", "type": "cylinder", "v": 1, "name": "Pin 1", "position": [15, 15, -1], "radius": 1.5, "height": 7, "fingerprint": {"volume": 49.480084, "area": 80.110613, "center": [15, 15, 2.5], "bbox": [13.5, 13.5, -1, 16.5, 16.5, 6], "faces": 3, "edges": 3, "vertices": 2}}"#,
+    r#"{"id": "c0000001", "type": "cut", "v": 1, "name": "Hole 1", "base": "pppppppp", "tool": "y0000001", "fingerprint": {"volume": 8964.657083, "area": 4532.986723, "center": [30.059137, 15, 2.5], "bbox": [0, 0, 0, 60, 30, 5], "faces": 7, "edges": 15, "vertices": 10}}"#,
 ];
 
 /// The lines `after` has that `before` hasn't, and those `before` has that `after` hasn't,
