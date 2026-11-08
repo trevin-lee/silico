@@ -148,7 +148,7 @@ This checks the writer, not the recipe's geometry: the input is the same B-rep o
 1. **Write with `STEPCAFControl_Writer`**, from an XCAF document built per request (`new TDocStd_Document("XmlXCAF")`, no application, no storage drivers needed), never `STEPControl_Writer`, whose product counter runs per process.
 2. **Pass `DESTEP_Parameters` to `Transfer(doc, params, STEPControl_AsIs)`**, every field the export cares about set: `WriteSchema = AP214IS`, `WriteUnit = Millimeter`, `WriteSurfaceCurMode = true` (as built: see *pcurves* below), `WriteAssembly = Auto`, `WritePrecisionMode = Average`, `WriteColor`/`WriteName` true, the rest OCCT's defaults. Never set an `Interface_Static`.
 3. **After `Transfer`, overwrite every header field** through `APIHeaderSection_MakeHeader(writer.ChangeWriter().Model())`: `SetName`, `SetTimeStamp`, `SetAuthorValue(1, …)`, `SetOrganizationValue(1, …)`, `SetPreprocessorVersion`, `SetOriginatingSystem`, `SetAuthorisation`, `SetDescriptionValue(1, …)`. The schema and the implementation level ('2;1') come from the parameters and are fixed.
-4. **Write with `WriteStream`** into memory, and return the bytes; the core writes the file (a new file renamed into place, as the 3MF does).
+4. **Write with `WriteStream`** into memory, and return the bytes; the core writes the file (a new file put into place, as the 3MF does: renamed over one it may replace, linked where it may replace none).
 5. **Encode every string before OCCT sees it** (the next section), so OCCT's escaping is never asked to guess.
 
 With 1 to 4, all 18 configurations of `probe.cpp` (`fixed` mode) and the 17 reader-probe files gave one hash per configuration, across processes, heap layouts, OCCT builds, and platforms. The header written:

@@ -1681,7 +1681,9 @@ impl<C: Kernel + 'static> Session<C> {
     /// untitled session) untouched, as
     /// the command `stop` stops: its stop settled first, so from here a cancel comes too
     /// late; the path checked again, claimed for the session, and written whole, through a
-    /// new file put into place, never over a file put there meanwhile unless `replace`.
+    /// new file put into place, never over a file put there meanwhile unless `replace`
+    /// (on a file system without hard links, but for one put there between the path's last
+    /// look and the rename).
     /// Where it wrote, through any links; or refused, nothing written and the path's claim
     /// given back.
     fn save_to(
