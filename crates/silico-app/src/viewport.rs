@@ -490,6 +490,15 @@ pub struct View {
     /// set from outside (the selection's filter, M5.7): the renderer's
     /// [`crate::renderer::Frame::vertices`]. None picks none.
     pub vertices: Option<f32>,
+    /// The broken reference's candidate whose card row the pointer is over (flow 6b), set
+    /// from outside: drawn with the hover, in [`theme::VIEWPORT_CANDIDATE`] for that frame.
+    ///
+    /// SEAM: the prototype lights every candidate while its card shows, in
+    /// [`theme::VIEWPORT_CANDIDATE`] [`theme::VIEWPORT_CANDIDATE_WIDTH`] wide, and the hovered
+    /// one [`theme::VIEWPORT_CANDIDATE_HOT_WIDTH`] wide; the renderer has two outline layers
+    /// (the selection's and the hover's) of one width, so the one hovered is lit alone, on
+    /// the hover's layer, until it has a third.
+    pub candidate: Option<(u32, Element)>,
     /// The feature hovered in the timeline (DESIGN.md, *Hover linking*): the faces it made,
     /// as each face's name says ([`Name::feature`]), are highlighted with the selection's
     /// while it's hovered.
@@ -554,6 +563,7 @@ impl Default for View {
             highlights: BTreeSet::new(),
             hovered: BTreeSet::new(),
             vertices: None,
+            candidate: None,
             linked: None,
             picking: None,
             picked: None,
@@ -1781,9 +1791,25 @@ pub fn show<P: Clients + 'static>(
         .into_iter()
         .filter(drawn)
         .collect();
-    let hovered: Vec<(u32, Element)> = view.hovered.iter().copied().filter(drawn).collect();
+    // A candidate lit takes the hover's layer, in its own colour: the pointer is over its
+    // card's row, not the canvas.
+    let candidate = view.candidate.filter(drawn);
+    let hovered: Vec<(u32, Element)> = view
+        .hovered
+        .iter()
+        .copied()
+        .chain(candidate)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(drawn)
+        .collect();
     // The vertices among them, drawn over the bodies by the pane (the renderer draws none).
     let dots = vertex_dots(&view.bodies, &highlights, &hovered);
+    let mut outlines = crate::selection::outlines();
+    if candidate.is_some() {
+        let [r, g, b, _] = theme::VIEWPORT_CANDIDATE;
+        outlines.hovered = [r, g, b];
+    }
     let picking = view.picking.take();
     let serial = match picking {
         Some(_) => {
@@ -1801,7 +1827,7 @@ pub fn show<P: Clients + 'static>(
         bodies,
         highlights,
         hovered,
-        outlines: crate::selection::outlines(),
+        outlines,
         picking,
         vertices: view.vertices,
     };

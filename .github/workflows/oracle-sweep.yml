@@ -6,13 +6,15 @@
 # part that failed (sweep, corpus, sketch-edit-sweep, sketch-extend-sweep, or setup),
 # listing the cases a sketch sweep found differing, or comments on the open one; a green
 # night closes the corpus's and setup's and comments on the sweeps' (.github/nightly-report.sh).
-# The filler (filler.yml) also starts it every four hours on idle runners, as
-# `filler: true`: its title then starts "filler", it runs on the runners labelled filler,
-# it reports only a failure, and real work cancels it (.github/cancel-filler.sh), without a
-# report. A scheduled night cancels filler first. The sketch-edit sweep (`pixi run
-# oracle-sketch-edit-sweep`: 500 generated sketches, each edited by Silico and by FreeCAD,
-# docs/ports/sketch-edit.md's *The oracle*) and the sketch-extend sweep
-# (`oracle-sketch-extend-sweep`, 500 extends) run each night; started by hand with
+# The filler (filler.yml) also starts it every four hours on idle runners, as `filler: true`:
+# its title then starts "filler", it runs on the runners labelled filler, it reports only a
+# failure, and real work cancels it (.github/cancel-filler.sh), without a report: a bench or
+# a night always, a real mutants run unless it's overdue (none in a day but those cancelled,
+# filler.yml), then only if that run's shards would wait for a runner it holds or would take,
+# so a busy VM still gets its day's sweep. A scheduled night cancels filler first. The
+# sketch-edit sweep (`pixi run oracle-sketch-edit-sweep`: 500 generated sketches, each edited
+# by Silico and by FreeCAD, docs/ports/sketch-edit.md's *The oracle*) and the sketch-extend
+# sweep (`oracle-sketch-extend-sweep`, 500 extends) run each night; started by hand with
 # `sketch_edits: true`, the run is those two alone. A run started by hand can name its
 # `seed`, to repeat a sweep (any of them) at it; the run's title names the seed it used.
 name: oracle-sweep

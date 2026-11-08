@@ -20,7 +20,7 @@ use eframe::egui::{self, Rect, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
 use crate::bar;
 use crate::icons::{ICON_SIZE, Icon, IconSize};
 use crate::modal;
-use crate::properties::{self, CardAct};
+use crate::properties::{self, CardAct, CardOut};
 use crate::tab::Tab;
 use crate::theme;
 
@@ -41,8 +41,9 @@ pub(crate) enum Asked {
     Card(CardAct),
 }
 
-/// What's Wrong over the window, of `tab`: what was asked of it.
-pub(crate) fn show(ctx: &egui::Context, tab: &Tab) -> Asked {
+/// What's Wrong over the window, of `tab`: what was asked of it, and the broken
+/// reference's candidate whose row the pointer is over, if it's over one.
+pub(crate) fn show(ctx: &egui::Context, tab: &Tab) -> (Asked, Option<String>) {
     let window = ctx.content_rect().width();
     let width = theme::WHATS_WRONG_WIDTH.min(window - theme::WHATS_WRONG_WINDOW_MARGIN);
     let (asked, backdrop) = modal::show_sized(ctx, egui::Id::new("whats-wrong"), width, |ui| {
@@ -52,14 +53,15 @@ pub(crate) fn show(ctx: &egui::Context, tab: &Tab) -> Asked {
                 node.set_label(TITLE);
             });
             if head(ui, tab.name()) {
-                return Asked::Close;
+                return (Asked::Close, None);
             }
-            body(ui, tab).map_or(Asked::None, Asked::Card)
+            let out = body(ui, tab);
+            (out.asked.map_or(Asked::None, Asked::Card), out.hovered)
         })
         .inner
     });
     match asked {
-        Asked::None if backdrop => Asked::Close,
+        (Asked::None, hovered) if backdrop => (Asked::Close, hovered),
         asked => asked,
     }
 }
@@ -117,7 +119,7 @@ fn head(ui: &mut Ui, name: &str) -> bool {
 /// taller than the window lets it: a card for each problem `tab` lists, or, with none, the
 /// prototype's hint that nothing's wrong, or, while they're read, that they are. What a
 /// card's button asked, if one was.
-fn body(ui: &mut Ui, tab: &Tab) -> Option<CardAct> {
+fn body(ui: &mut Ui, tab: &Tab) -> CardOut {
     egui::ScrollArea::vertical()
         .id_salt("whats-wrong-body")
         .max_height(ui.available_height().max(0.0))
@@ -138,14 +140,14 @@ fn body(ui: &mut Ui, tab: &Tab) -> Option<CardAct> {
 /// Each problem's card (`errCard(p)`: Edit, Show in timeline, and Copy as JSON), by the
 /// name of the feature it names, then how many errors and warnings the core counted past
 /// those it listed, as a card's "the first N of M" counts its elements; or the hint.
-fn cards(ui: &mut Ui, tab: &Tab) -> Option<CardAct> {
+fn cards(ui: &mut Ui, tab: &Tab) -> CardOut {
     let Some(listed) = tab.listed() else {
         properties::hint(ui, &[(READING, false)]);
-        return None;
+        return CardOut::default();
     };
     if listed.is_empty() {
         properties::hint(ui, &[(NOTHING_WRONG, false)]);
-        return None;
+        return CardOut::default();
     }
     let asked = properties::document_cards(ui, tab, listed, "whats-wrong");
     let unlisted = tab.unlisted();
@@ -238,7 +240,7 @@ mod tests {
     fn shown(tab: Tab, window: Vec2) -> Harness<'static, Shown> {
         let mut h = Harness::builder().with_size(window).build_ui_state(
             |ui, shown: &mut Shown| {
-                let asked = show(ui.ctx(), &shown.tab);
+                let (asked, _hovered) = show(ui.ctx(), &shown.tab);
                 if asked != Asked::None {
                     shown.asked.push(asked);
                 }
