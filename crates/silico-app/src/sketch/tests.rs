@@ -7,13 +7,13 @@
 //! (100, 500), y up), and `style`'s sizes in points (a tenth of a millimetre each here).
 
 use std::collections::BTreeMap;
-use std::f64::consts::{FRAC_PI_2, PI, TAU};
+use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI, TAU};
 
 use eframe::egui::{self, Pos2, pos2, vec2};
 use silico_core::command::sketch::{Region, SketchRead};
 use silico_core::document::{
-    Angle, Coordinate, Direction, ElementId, ElementKind, Form, Length, OriginPlane, Reference,
-    Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
+    Angle, Coordinate, Direction, ElementId, ElementKind, Form, Length, LineSide, OriginPlane,
+    Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
 };
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState, SketchStates};
 use silico_core::sketch_tools::{MeasureKind, Preview, PreviewMeasure, Relation, Shown as Showing};
@@ -4824,4 +4824,1275 @@ fn the_over_define_prompts_key_badges_are_sized_and_placed_as_the_prototypes_kbd
         assert_eq!(section.format.font_id.size, 10.5, "{words}");
         assert_eq!(section.format.color, g800, "{words}");
     }
+}
+
+// The mutants #351's run left alive in `draw`: each placement, guard, and shape worked by
+// hand.
+
+/// Where each dimension of `read` stands, in the sketch's millimetres, at [`HAND`]'s scale:
+/// 2.6 mm off (26 points), its extension lines from 0.4 mm off the geometry to 0.5 mm past
+/// the dimension's line.
+fn dimensions(read: &SketchRead) -> Vec<draw::PlacedDimension> {
+    draw::placed(read, &draw::Geometry::of(read), HAND).dimensions
+}
+
+fn glyphs(read: &SketchRead) -> Vec<draw::PlacedGlyph> {
+    draw::placed(read, &draw::Geometry::of(read), HAND).glyphs
+}
+
+fn same(a: [f64; 2], b: [f64; 2]) -> bool {
+    (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9
+}
+
+/// That `got` is `want`, a dimension's lines, arrows, text, and the text's place.
+fn assert_placed(
+    got: &draw::PlacedDimension,
+    lines: &[&[[f64; 2]]],
+    arrows: &[([f64; 2], [f64; 2])],
+    text: &str,
+    text_at: [f64; 2],
+) {
+    assert_eq!(got.lines.len(), lines.len(), "{got:?}");
+    for (got_line, want) in got.lines.iter().zip(lines) {
+        assert_eq!(got_line.len(), want.len(), "{got:?}");
+        assert!(
+            got_line.iter().zip(*want).all(|(p, q)| same(*p, *q)),
+            "{got_line:?} for {want:?}"
+        );
+    }
+    assert_eq!(got.arrows.len(), arrows.len(), "{got:?}");
+    for (got_arrow, want) in got.arrows.iter().zip(arrows) {
+        assert!(
+            same(got_arrow.0, want.0) && same(got_arrow.1, want.1),
+            "{got_arrow:?} for {want:?}"
+        );
+    }
+    assert_eq!(got.text, text);
+    assert!(same(got.text_at, text_at), "{:?}", got.text_at);
+}
+
+#[test]
+fn a_distance_stands_square_to_its_points_off_the_side_its_normal_takes_at_the_middle() {
+    // From (0, 0) to (40, 20), through the sketch's middle (20, 10): t = (2, 1)/√5, its
+    // normal (−t.y, t.x) = (−1, 2)/√5 kept, the middle neither side of it.
+    let read = under(rectangle(vec![constraint(
+        "ka000001",
+        Form::Distance {
+            a: element("pa000001"),
+            b: element("pa000003"),
+            value: mm("44.72"),
+            driving: true,
+        },
+    )]));
+    let s = 5f64.sqrt();
+    let (t, n) = ([2.0 / s, 1.0 / s], [-1.0 / s, 2.0 / s]);
+    let at = |p: [f64; 2], k: f64| add(p, mul(n, k));
+    let (a, b) = ([0.0, 0.0], [40.0, 20.0]);
+    let got = dimensions(&read);
+    assert_eq!(got.len(), 1);
+    assert_placed(
+        &got[0],
+        &[
+            &[at(a, 0.4), at(a, 3.1)],
+            &[at(b, 0.4), at(b, 3.1)],
+            &[at(a, 2.6), at(b, 2.6)],
+        ],
+        &[(at(a, 2.6), t), (at(b, 2.6), mul(t, -1.0))],
+        "44.72",
+        at([20.0, 10.0], 2.6),
+    );
+}
+
+#[test]
+fn a_length_on_a_slanted_side_stands_off_square_to_it_away_from_the_middle() {
+    // The side (0, 0) to (30, 40), t = (0.6, 0.8), its normal (−0.8, 0.6); the sketch's
+    // middle (20, 20) is on the other side of its middle (15, 20), so it stands along it.
+    let sketch = sketch_of(
+        vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 30.0, 40.0),
+            point("pa000003", 40.0, 0.0),
+        ],
+        vec![line("na000001", "pa000001", "pa000002")],
+        Vec::new(),
+    );
+    let mut read = under(sketch);
+    read.members
+        .constraints
+        .push(length("ka000001", "na000001", "50", true));
+    let n = [-0.8, 0.6];
+    let at = |p: [f64; 2], k: f64| add(p, mul(n, k));
+    let (a, b) = ([0.0, 0.0], [30.0, 40.0]);
+    let got = dimensions(&read);
+    assert_eq!(got.len(), 1);
+    assert_placed(
+        &got[0],
+        &[
+            &[at(a, 0.4), at(a, 3.1)],
+            &[at(b, 0.4), at(b, 3.1)],
+            &[at(a, 2.6), at(b, 2.6)],
+        ],
+        &[(at(a, 2.6), [0.6, 0.8]), (at(b, 2.6), [-0.6, -0.8])],
+        "50",
+        at([15.0, 20.0], 2.6),
+    );
+}
+
+#[test]
+fn a_lone_lines_length_stands_on_its_normals_side_the_middle_on_its_line() {
+    // The one line (0, 0) to (40, 0) is the sketch: its middle (20, 0) is the line's, so
+    // the dimension takes the normal (0, 1) as it is, above.
+    let sketch = sketch_of(
+        vec![point("pa000001", 0.0, 0.0), point("pa000002", 40.0, 0.0)],
+        vec![line("na000001", "pa000001", "pa000002")],
+        Vec::new(),
+    );
+    let mut read = under(sketch);
+    read.members
+        .constraints
+        .push(length("ka000001", "na000001", "40", true));
+    let got = dimensions(&read);
+    assert_eq!(got.len(), 1);
+    assert_placed(
+        &got[0],
+        &[
+            &[[0.0, 0.4], [0.0, 3.1]],
+            &[[40.0, 0.4], [40.0, 3.1]],
+            &[[0.0, 2.6], [40.0, 2.6]],
+        ],
+        &[([0.0, 2.6], [1.0, 0.0]), ([40.0, 2.6], [-1.0, 0.0])],
+        "40",
+        [20.0, 2.6],
+    );
+}
+
+#[test]
+fn a_horizontal_distance_stands_above_or_below_and_a_vertical_one_beside() {
+    // Across, (0, 0) to (40, 20): its middle (20, 10) at the sketch's, not below it, so it
+    // stands above the higher point, at 20 + 2.6 = 22.6.
+    let read = under(rectangle(vec![
+        constraint(
+            "ka000001",
+            Form::DistanceX {
+                a: element("pa000001"),
+                b: element("pa000003"),
+                value: mm("40"),
+                driving: true,
+            },
+        ),
+        // Up the left side, (0, 0) to (0, 20): its middle (0, 10) left of the sketch's,
+        // so it stands left of the leftmost point, at 0 − 2.6.
+        constraint(
+            "ka000002",
+            Form::DistanceY {
+                a: element("pa000001"),
+                b: element("pa000004"),
+                value: mm("20"),
+                driving: true,
+            },
+        ),
+    ]));
+    let got = dimensions(&read);
+    assert_eq!(got.len(), 2);
+    assert_placed(
+        &got[0],
+        &[
+            &[[0.0, 0.4], [0.0, 23.1]],
+            &[[40.0, 20.4], [40.0, 23.1]],
+            &[[0.0, 22.6], [40.0, 22.6]],
+        ],
+        &[([0.0, 22.6], [1.0, 0.0]), ([40.0, 22.6], [-1.0, 0.0])],
+        "40",
+        [20.0, 22.6],
+    );
+    assert_placed(
+        &got[1],
+        &[
+            &[[-0.4, 0.0], [-3.1, 0.0]],
+            &[[-0.4, 20.0], [-3.1, 20.0]],
+            &[[-2.6, 0.0], [-2.6, 20.0]],
+        ],
+        &[([-2.6, 0.0], [0.0, 1.0]), ([-2.6, 20.0], [0.0, -1.0])],
+        "20",
+        [-2.6, 10.0],
+    );
+}
+
+#[test]
+fn a_point_to_line_distance_runs_to_its_foot_and_points_down_for_a_point_on_the_line() {
+    let read = under(rectangle(vec![
+        // (0, 20) to the right side, x = 40: its foot (40, 20).
+        constraint(
+            "ka000001",
+            Form::PointLineDistance {
+                point: element("pa000004"),
+                line: element("na000002"),
+                value: mm("40"),
+                side: LineSide::Left,
+                driving: true,
+            },
+        ),
+        // (0, 0) on the bottom side: its foot itself, so no direction of its own: down.
+        constraint(
+            "ka000002",
+            Form::PointLineDistance {
+                point: element("pa000001"),
+                line: element("na000001"),
+                value: mm("0"),
+                side: LineSide::Left,
+                driving: true,
+            },
+        ),
+    ]));
+    let got = dimensions(&read);
+    assert_eq!(got.len(), 2);
+    assert_placed(
+        &got[0],
+        &[&[[0.0, 20.0], [40.0, 20.0]]],
+        &[([0.0, 20.0], [1.0, 0.0]), ([40.0, 20.0], [-1.0, 0.0])],
+        "40",
+        [20.0, 20.0],
+    );
+    assert_placed(
+        &got[1],
+        &[&[[0.0, 0.0], [0.0, 0.0]]],
+        &[([0.0, 0.0], [0.0, -1.0]), ([0.0, 0.0], [0.0, 1.0])],
+        "0",
+        [0.0, 0.0],
+    );
+}
+
+#[test]
+fn a_radius_runs_out_through_an_arcs_middle_and_a_lone_circles_diameter_at_45_degrees() {
+    // The arc about (0, 0) from (10, 0) to (0, 10): out through its middle, at 45°,
+    // u = (1, 1)/√2, from its centre to 2.6 mm past its rim, the arrow on the rim
+    // pointing in.
+    let sketch = sketch_of(
+        vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 10.0, 0.0),
+            point("pa000003", 0.0, 10.0),
+        ],
+        Vec::new(),
+        vec![arc("aa000001", "pa000001", "pa000002", "pa000003")],
+    );
+    let mut read = under(sketch);
+    read.members.constraints.push(constraint(
+        "ka000001",
+        Form::Radius {
+            curve: element("aa000001"),
+            value: mm("10"),
+            driving: true,
+        },
+    ));
+    let h = FRAC_1_SQRT_2;
+    let u = [h, h];
+    let got = dimensions(&read);
+    assert_eq!(got.len(), 1);
+    assert_placed(
+        &got[0],
+        &[&[[0.0, 0.0], mul(u, 12.6)]],
+        &[(mul(u, 10.0), [-h, -h])],
+        "R10",
+        mul(u, 12.6),
+    );
+    let mut circle = sketch_of(vec![point("pa000001", 5.0, 5.0)], Vec::new(), Vec::new());
+    circle.circles.push(SketchCircle {
+        id: id("ca000001"),
+        center: id("pa000001"),
+        radius: Coordinate::new(3.0).unwrap(),
+        construction: false,
+    });
+    let mut read = under(circle);
+    read.members.constraints.push(constraint(
+        "ka000001",
+        Form::Diameter {
+            curve: element("ca000001"),
+            value: mm("6"),
+            driving: true,
+        },
+    ));
+    let c = [5.0, 5.0];
+    let got = dimensions(&read);
+    assert_eq!(got.len(), 1);
+    assert_placed(
+        &got[0],
+        &[&[add(c, mul(u, -3.0)), add(c, mul(u, 5.6))]],
+        &[(add(c, mul(u, 3.0)), [-h, -h]), (add(c, mul(u, -3.0)), u)],
+        "Ø6",
+        add(c, mul(u, 5.6)),
+    );
+}
+
+#[test]
+fn a_negative_angle_runs_its_arc_clockwise_its_arrows_along_it() {
+    // The bottom side, +x from (0, 0), and the right side, +y from (40, 0), meet at
+    // (40, 0); −90° runs from +x clockwise to −y, 2.6 mm out: its k-th of 24 points at
+    // −90°·k/24. At its start the arc runs down, (0, −1); at its end, (40, −2.6), it
+    // arrives running −x, so the arrow there points back along it, +x.
+    let read = under(rectangle(vec![constraint(
+        "ka000001",
+        Form::Angle {
+            a: element("na000001"),
+            b: element("na000002"),
+            reversed: false,
+            value: Angle::parse("-90").unwrap(),
+            driving: true,
+        },
+    )]));
+    let on = |degrees: f64| {
+        let r = degrees.to_radians();
+        [40.0 + 2.6 * libm::cos(r), 2.6 * libm::sin(r)]
+    };
+    let arc: Vec<[f64; 2]> = (0..=24).map(|k| on(-90.0 * f64::from(k) / 24.0)).collect();
+    let got = dimensions(&read);
+    assert_eq!(got.len(), 1);
+    assert_placed(
+        &got[0],
+        &[&arc],
+        &[(on(0.0), [0.0, -1.0]), (on(-90.0), [1.0, 0.0])],
+        "-90°",
+        on(-45.0),
+    );
+}
+
+#[test]
+fn glyphs_on_a_point_stack_leftward_and_one_on_an_arc_stands_out_through_its_middle() {
+    // Two relations on (40, 0): the first 1.3 mm down and left, (38.7, −1.3); the next a
+    // step (1.8 mm) further left, (36.9, −1.3).
+    let read = under(rectangle(vec![
+        constraint(
+            "ka000001",
+            Form::HorizontalPoints {
+                a: element("pa000002"),
+                b: Reference::Origin,
+            },
+        ),
+        constraint(
+            "ka000002",
+            Form::VerticalPoints {
+                a: element("pa000002"),
+                b: Reference::Origin,
+            },
+        ),
+    ]));
+    let got = glyphs(&read);
+    assert_eq!(got.len(), 2);
+    assert!(same(got[0].at, [38.7, -1.3]), "{got:?}");
+    assert!(same(got[1].at, [36.9, -1.3]), "{got:?}");
+    // The arc about (0, 0) from (10, 0) to (0, 10): its glyph at 45°, 10 + 1.3 out.
+    let sketch = sketch_of(
+        vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 10.0, 0.0),
+            point("pa000003", 0.0, 10.0),
+        ],
+        vec![line("na000001", "pa000002", "pa000003")],
+        vec![arc("aa000001", "pa000001", "pa000002", "pa000003")],
+    );
+    let mut read = under(sketch);
+    read.members.constraints.push(constraint(
+        "ka000001",
+        Form::Equal {
+            a: element("aa000001"),
+            b: element("na000001"),
+        },
+    ));
+    let got = glyphs(&read);
+    assert_eq!(got.len(), 2);
+    let out = 11.3 * FRAC_1_SQRT_2;
+    assert!(same(got[0].at, [out, out]), "{got:?}");
+}
+
+#[test]
+fn the_axes_run_along_zero_only_where_its_in_view_and_no_grid_at_no_scale() {
+    let read = under(rectangle(Vec::new()));
+    let axes = |seen: &View<'_>| -> Vec<(Vec<Pos2>, egui::Color32)> {
+        drawing(&read, seen, Shown::default(), &Default::default(), &[])
+            .into_iter()
+            .filter_map(|d| match d {
+                Drawn::Stroke {
+                    kind: StrokeKind::Axis,
+                    points,
+                    colour,
+                    ..
+                } => Some((points, colour)),
+                _ => None,
+            })
+            .collect()
+    };
+    // From (−1, −1) to (11, 6): x along y = 0, (−1, 0) to (11, 0), (90, 500) to (210, 500);
+    // y along x = 0, (0, −1) to (0, 6), (100, 510) to (100, 440).
+    let seen = View {
+        visible: Some(([-1.0, -1.0], [11.0, 6.0])),
+        ..view()
+    };
+    assert_eq!(
+        axes(&seen),
+        [
+            (vec![pos2(90.0, 500.0), pos2(210.0, 500.0)], color32(AXIS_X)),
+            (
+                vec![pos2(100.0, 510.0), pos2(100.0, 440.0)],
+                color32(AXIS_Y)
+            ),
+        ]
+    );
+    // From (10, 10) to (60, 60): neither axis in view.
+    let away = View {
+        visible: Some(([10.0, 10.0], [60.0, 60.0])),
+        ..view()
+    };
+    assert!(axes(&away).is_empty());
+    // No millimetres a point: no grid lines, their spacing on the screen unknown (a 10 mm
+    // step at no scale isn't 8 points apart, however far it reaches).
+    let flat = View {
+        scale: Scale(0.0),
+        ..seen
+    };
+    let drawn = drawing(&read, &flat, Shown::default(), &Default::default(), &[]);
+    assert!(!drawn.iter().any(|d| matches!(
+        d,
+        Drawn::Stroke {
+            kind: StrokeKind::GridMinor | StrokeKind::GridMajor,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn an_arc_previews_from_its_start_to_its_end_and_a_round_place_not_a_number_is_none() {
+    // About (0, 0) from (0, 10) to (−10, 0): a quarter, counter-clockwise, from 90° to 180°,
+    // (100, 400) to (0, 500) on the screen.
+    let drawn = preview(
+        &Preview {
+            arcs: vec![silico_core::sketch_tools::PreviewArc {
+                center: [0.0, 0.0],
+                start: [0.0, 10.0],
+                end: [-10.0, 0.0],
+            }],
+            ..Preview::default()
+        },
+        &view(),
+    );
+    let Some(Drawn::Stroke { points, .. }) = drawn.first() else {
+        panic!("{drawn:?}");
+    };
+    assert!(near(points[0], pos2(100.0, 400.0)), "{points:?}");
+    assert!(
+        near(*points.last().unwrap(), pos2(0.0, 500.0)),
+        "{points:?}"
+    );
+    // Every place on the round projected to a y that's no number: none of them shown.
+    let nan = |at: [f64; 2]| Some(pos2(at[0] as f32, f32::NAN));
+    let points = round_points([0.0, 0.0], 1.0, 0.0, TAU, &nan, 0.25, 0);
+    assert!(!points.is_empty());
+    assert!(points.iter().all(Option::is_none), "{points:?}");
+}
+
+#[test]
+fn a_tiny_circle_still_takes_four_fill_segments_and_an_arc_its_share() {
+    // A hundredth of a millimetre at a tenth a point: 0.1 points, within the tolerance in
+    // one chord, but a circle takes at least 4, a half 2, a quarter 1.
+    let at = |sweep: f64| draw::curve_segments(0.01, sweep, HAND, 0.25);
+    assert_eq!(at(TAU), 4);
+    assert_eq!(at(PI), 2);
+    assert_eq!(at(FRAC_PI_2), 1);
+}
+
+#[test]
+fn segments_refuse_what_isnt_a_curve_and_take_one_for_a_curve_within_its_tolerance() {
+    // No number for a sweep, a radius below zero, or no tolerance: the most.
+    assert_eq!(segments(0.1, f64::INFINITY, 0.25), MAX_CURVE_SEGMENTS);
+    assert_eq!(segments(f64::NAN, 1.0, 0.25), MAX_CURVE_SEGMENTS);
+    assert_eq!(segments(-1.0, 1.0, 0.25), MAX_CURVE_SEGMENTS);
+    assert_eq!(segments(0.0, 1.0, 0.0), MAX_CURVE_SEGMENTS);
+    // A radius of nothing, or within the tolerance, is one chord, whatever its sweep.
+    assert_eq!(segments(0.0, 1.0, 0.25), 1);
+    assert_eq!(segments(0.1, PI, 0.25), 1);
+    assert_eq!(segments(10.0, 0.0, 0.25), 1);
+}
+
+#[test]
+fn a_region_of_exactly_the_vertex_bound_is_filled() {
+    // 195 holes at a millionth of a millimetre a point, each at the most segments, 1,024,
+    // and the outer rectangle's 4: 199,684. One more hole, of radius 0.005043 mm, 5,043
+    // points: a chord's angle 2·acos(1 − 0.25/5043) lies between 2π/316 (radius 5,058.8)
+    // and 2π/315 (radius 5,026.8), so 316 segments: 200,000 vertices, the bound, filled.
+    let mut read = pitched(15, 13, 7.0);
+    read.members.points.push(point("pz000001", 7.0, 7.0));
+    read.members.circles.push(SketchCircle {
+        id: id("cz000001"),
+        center: id("pz000001"),
+        radius: Coordinate::new(0.005043).unwrap(),
+        construction: false,
+    });
+    read.regions[0].holes.push(vec![id("cz000001")]);
+    assert_eq!(
+        draw::curve_segments(0.005043, TAU, Scale(1e-6), SKETCH_CHORD_TOLERANCE),
+        316
+    );
+    let fills = region_fills(&read, Scale(1e-6), SKETCH_CHORD_TOLERANCE);
+    assert_eq!(fills.len(), 1);
+}
+
+#[test]
+fn a_flat_sketch_takes_its_larger_span_and_a_scale_of_one_for_no_span_or_no_room() {
+    let rect = egui::Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(100.0, 100.0));
+    let fit = |points: Vec<SketchPoint>, rect: egui::Rect| {
+        Flat::fit(rect, &under(sketch_of(points, Vec::new(), Vec::new())))
+    };
+    // From (−10, −5) to (30, 15), the origin within: the 40 mm across fills the 100
+    // points less a tenth each side, 80: half a millimetre a point.
+    let close = |flat: Flat, want: f64| (flat.scale().0 - want).abs() < 1e-12;
+    let wide = fit(
+        vec![
+            point("pa000001", -10.0, -5.0),
+            point("pa000002", 30.0, 15.0),
+        ],
+        rect,
+    );
+    assert!(close(wide, 0.5), "{wide:?}");
+    // From (−5, −10) to (15, 30): the 40 mm up.
+    let tall = fit(
+        vec![
+            point("pa000001", -5.0, -10.0),
+            point("pa000002", 15.0, 30.0),
+        ],
+        rect,
+    );
+    assert!(close(tall, 0.5), "{tall:?}");
+    // Its middle, (5, 10), at the rectangle's centre; 20 points right of it, 10 mm right.
+    assert_eq!(tall.project([5.0, 10.0]), Some(pos2(50.0, 50.0)));
+    assert_eq!(tall.to_plane(pos2(70.0, 50.0)), Some([15.0, 10.0]));
+    // No points but the origin: no span, a point a millimetre.
+    assert!(close(fit(Vec::new(), rect), 1.0));
+    // No room: a point a millimetre too.
+    let none = egui::Rect::from_min_size(pos2(5.0, 5.0), egui::vec2(0.0, 0.0));
+    assert!(close(fit(vec![point("pa000001", 40.0, 20.0)], none), 1.0));
+}
+
+#[test]
+fn each_drawn_item_holds_its_own_positions() {
+    let (a, b, c) = (pos2(1.0, 2.0), pos2(3.0, 4.0), pos2(5.0, 6.0));
+    let colour = SKETCH_FULLY_DEFINED;
+    let stroke = Drawn::Stroke {
+        of: None,
+        kind: StrokeKind::Dimension,
+        points: vec![a, b],
+        colour,
+        selected: false,
+    };
+    assert_eq!(stroke.positions(), [a, b]);
+    let fill = Drawn::Fill {
+        of: None,
+        triangles: vec![[a, b, c]],
+        colour,
+    };
+    assert_eq!(fill.positions(), [a, b, c]);
+    let arrow = Drawn::Arrow {
+        of: Some(id("ka000001")),
+        tip: c,
+        toward: vec2(1.0, 0.0),
+        colour,
+        selected: false,
+    };
+    assert_eq!(arrow.positions(), [c]);
+    assert_eq!(Drawn::Origin { at: b }.positions(), [b]);
+}
+
+/// The shapes `drawn` turns into.
+fn shapes_of(drawn: Drawn) -> Vec<egui::Shape> {
+    let mut shapes = Vec::new();
+    with_painter(|painter| shapes = super::draw::to_shapes(painter, &[drawn]));
+    shapes
+}
+
+#[test]
+fn a_fill_a_selected_point_and_an_arrowhead_turn_into_their_shapes() {
+    // Two triangles: one mesh, its indices each triangle's own three vertices.
+    let (a, b, c) = (pos2(0.0, 0.0), pos2(10.0, 0.0), pos2(0.0, 10.0));
+    let shapes = shapes_of(Drawn::Fill {
+        of: None,
+        triangles: vec![[a, b, c], [b, c, a]],
+        colour: SKETCH_PROFILE_FILL,
+    });
+    let [egui::Shape::Mesh(mesh)] = shapes.as_slice() else {
+        panic!("{shapes:?}");
+    };
+    assert_eq!(mesh.indices, [0, 1, 2, 3, 4, 5]);
+    // A selected point: its 5-point square over a halo 3 points wider each side, 11.
+    let shapes = shapes_of(Drawn::Point {
+        of: None,
+        at: pos2(50.0, 50.0),
+        colour: SKETCH_FULLY_DEFINED,
+        selected: true,
+    });
+    let rects: Vec<egui::Rect> = shapes
+        .iter()
+        .map(|s| match s {
+            egui::Shape::Rect(r) => r.rect,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        rects,
+        [
+            egui::Rect::from_center_size(pos2(50.0, 50.0), vec2(11.0, 11.0)),
+            egui::Rect::from_center_size(pos2(50.0, 50.0), vec2(5.0, 5.0)),
+        ]
+    );
+    // An arrowhead at (10, 10) along +x: its base 7 points along, (17, 10), 6 wide.
+    let shapes = shapes_of(Drawn::Arrow {
+        of: Some(id("ka000001")),
+        tip: pos2(10.0, 10.0),
+        toward: vec2(1.0, 0.0),
+        colour: SKETCH_DIMENSION_TEXT,
+        selected: false,
+    });
+    let [egui::Shape::Path(path)] = shapes.as_slice() else {
+        panic!("{shapes:?}");
+    };
+    let mut corners = path.points.clone();
+    corners[1..].sort_by(|p, q| p.y.total_cmp(&q.y));
+    assert_eq!(
+        corners,
+        [pos2(10.0, 10.0), pos2(17.0, 7.0), pos2(17.0, 13.0)]
+    );
+}
+
+#[test]
+fn a_dimensions_value_is_boxed_about_it_its_text_centred() {
+    // The box: the text's width and 5 points each side, 18 high, centred at (200, 200);
+    // the text centred in it.
+    let mut text = egui::Vec2::ZERO;
+    with_painter(|painter| {
+        text = painter
+            .layout_no_wrap(
+                "40".to_owned(),
+                egui::FontId::proportional(CANVAS_TEXT_SIZE),
+                SKETCH_DIMENSION_TEXT,
+            )
+            .size();
+    });
+    assert!(text.x > 0.0);
+    let at = pos2(200.0, 200.0);
+    let shapes = shapes_of(Drawn::Label {
+        of: None,
+        kind: LabelKind::Dimension,
+        at,
+        text: "40".to_owned(),
+        colour: SKETCH_DIMENSION_TEXT,
+        selected: false,
+    });
+    let [egui::Shape::Rect(frame), egui::Shape::Text(words)] = shapes.as_slice() else {
+        panic!("{shapes:?}");
+    };
+    assert_eq!(
+        frame.rect,
+        egui::Rect::from_center_size(at, vec2(text.x + 10.0, 18.0))
+    );
+    assert!(near(words.pos, at - text / 2.0), "{:?}", words.pos);
+}
+
+/// The shapes of a glyph of `kind` at (100, 100).
+fn glyph_shapes(kind: GlyphKind, colour: egui::Color32, selected: bool) -> Vec<egui::Shape> {
+    shapes_of(Drawn::Glyph {
+        of: None,
+        kind,
+        at: pos2(100.0, 100.0),
+        colour,
+        selected,
+    })
+}
+
+#[test]
+fn a_glyph_is_its_box_its_border_by_state_and_its_icon_inside() {
+    let side = egui::Rect::from_center_size(pos2(100.0, 100.0), vec2(16.0, 16.0));
+    let rect = |s: &egui::Shape| match s {
+        egui::Shape::Rect(r) => r.clone(),
+        other => panic!("{other:?}"),
+    };
+    // Selected: a halo 3 points wider each side first, then the box, its border white.
+    let shapes = glyph_shapes(GlyphKind::Horizontal, FOCUS, true);
+    assert_eq!(rect(&shapes[0]).rect, side.expand(3.0));
+    assert_eq!(rect(&shapes[1]).rect, side);
+    assert_eq!(rect(&shapes[2]).stroke.color, SKETCH_SELECTED_STROKE);
+    // The plain glyph's gray border is the glyph's stroke; a state's colour its own.
+    let plain = glyph_shapes(GlyphKind::Horizontal, GRAY_700, false);
+    assert_eq!(rect(&plain[1]).stroke.color, SKETCH_GLYPH_STROKE);
+    let focus = glyph_shapes(GlyphKind::Horizontal, FOCUS, false);
+    assert_eq!(rect(&focus[1]).stroke.color, FOCUS);
+    // The horizontal icon's bar, the icon square's (3.5, 10) to (16.5, 10), at 0.6 about
+    // its middle (10, 10): (96.1, 100) to (103.9, 100); its left end's tick, (3.5, 7) to
+    // (3.5, 13), (96.1, 98.2) to (96.1, 101.8).
+    let line = |s: &egui::Shape| match s {
+        egui::Shape::LineSegment { points, stroke } => (*points, *stroke),
+        other => panic!("{other:?}"),
+    };
+    let (bar, stroke) = line(&focus[2]);
+    assert!(near(bar[0], pos2(96.1, 100.0)) && near(bar[1], pos2(103.9, 100.0)));
+    assert_eq!(stroke, egui::Stroke::new(1.3, FOCUS));
+    let (tick, _) = line(&focus[3]);
+    assert!(near(tick[0], pos2(96.1, 98.2)) && near(tick[1], pos2(96.1, 101.8)));
+    // The coincident icon: a ring of 5.5 at 0.6, 3.3, in the icon's stroke, and a dot of
+    // 1.8, 1.08.
+    let coincident = glyph_shapes(GlyphKind::Coincident, FOCUS, false);
+    let circle = |s: &egui::Shape| match s {
+        egui::Shape::Circle(c) => *c,
+        other => panic!("{other:?}"),
+    };
+    let ring = circle(&coincident[2]);
+    assert_eq!(ring.center, pos2(100.0, 100.0));
+    assert!((ring.radius - 3.3).abs() < 1e-5, "{ring:?}");
+    assert_eq!(ring.stroke, egui::Stroke::new(1.3, FOCUS));
+    let dot = circle(&coincident[3]);
+    assert!((dot.radius - 1.08).abs() < 1e-5, "{dot:?}");
+    // Every kind's icon, each of its parts as the prototype's icons.js draws it, inside its
+    // box.
+    for (kind, parts) in prototype_icons() {
+        let icon = &glyph_shapes(kind, FOCUS, false)[2..];
+        assert_eq!(icon.len(), parts.len(), "{kind:?}: {icon:?}");
+        for (shape, part) in icon.iter().zip(&parts) {
+            assert_icon_part(shape, part, kind);
+            assert!(
+                side.contains_rect(shape.visual_bounding_rect()),
+                "{kind:?}: {shape:?}"
+            );
+        }
+    }
+    // The symmetric icon: its axis dashed down the middle, (10, 3) to (10, 17), 8.4 points
+    // long on the screen, 2 on and 1.6 off at 0.6 (egui's dash 1.2, its gap 1): dashes from
+    // 0, 2.2, 4.4, and 6.6 down it, each 1.2. Then its six strokes.
+    let icon = &glyph_shapes(GlyphKind::Symmetric, FOCUS, false)[2..];
+    let (axis, strokes) = icon.split_at(icon.len().saturating_sub(6));
+    let top = icon_at(10.0, 3.0).y;
+    let dashes: Vec<(f32, f32)> = axis
+        .iter()
+        .map(|dash| {
+            let egui::Shape::LineSegment { points, stroke } = dash else {
+                panic!("{dash:?}");
+            };
+            assert_eq!(*stroke, egui::Stroke::new(1.3, FOCUS));
+            assert!(
+                points.iter().all(|p| (p.x - 100.0).abs() < 1e-4),
+                "{points:?}"
+            );
+            (points[0].y - top, points[1].y - top)
+        })
+        .collect();
+    assert_eq!(dashes.len(), 4, "{dashes:?}");
+    for (dash, from) in dashes.iter().zip([0.0, 2.2, 4.4, 6.6]) {
+        assert!(
+            (dash.0 - from).abs() < 1e-4 && (dash.1 - from - 1.2).abs() < 1e-4,
+            "{dashes:?}"
+        );
+    }
+    for (shape, (a, b)) in strokes.iter().zip([
+        ((6.0, 6.0), (6.0, 14.0)),
+        ((14.0, 6.0), (14.0, 14.0)),
+        ((3.5, 6.0), (6.0, 6.0)),
+        ((3.5, 14.0), (6.0, 14.0)),
+        ((14.0, 6.0), (16.5, 6.0)),
+        ((14.0, 14.0), (16.5, 14.0)),
+    ]) {
+        assert_icon_part(shape, &IconPart::Line(a, b, 1.0), GlyphKind::Symmetric);
+    }
+}
+
+/// One part of a relation's icon, in the prototype's 20-unit icon square (icons.js's
+/// `cHorizontal` and the rest): a line at an opacity, a ring, a dot, or a filled triangle.
+enum IconPart {
+    Line((f32, f32), (f32, f32), f32),
+    Ring((f32, f32), f32),
+    Dot((f32, f32), f32),
+    Triangle([(f32, f32); 3]),
+}
+
+/// The icon square's `(x, y)` on the screen, for a glyph at (100, 100): the square's middle,
+/// (10, 10), at the glyph's centre, scaled to 0.6 about it.
+fn icon_at(x: f32, y: f32) -> Pos2 {
+    pos2(100.0 + (x - 10.0) * 0.6, 100.0 + (y - 10.0) * 0.6)
+}
+
+/// Each kind's icon, part by part, typed from the prototype's icons.js (its `path`s split at
+/// each `M`, its `circle`s by their `fill`); the redundant one, an exclamation mark, is
+/// Silico's own (open item 28): a bar down the middle over a dot below it.
+fn prototype_icons() -> Vec<(GlyphKind, Vec<IconPart>)> {
+    use IconPart::{Dot, Line, Ring, Triangle};
+    vec![
+        (
+            GlyphKind::Horizontal,
+            vec![
+                Line((3.5, 10.0), (16.5, 10.0), 1.0),
+                Line((3.5, 7.0), (3.5, 13.0), 0.5),
+                Line((16.5, 7.0), (16.5, 13.0), 0.5),
+            ],
+        ),
+        (
+            GlyphKind::Vertical,
+            vec![
+                Line((10.0, 3.5), (10.0, 16.5), 1.0),
+                Line((7.0, 3.5), (13.0, 3.5), 0.5),
+                Line((7.0, 16.5), (13.0, 16.5), 0.5),
+            ],
+        ),
+        (
+            GlyphKind::Coincident,
+            vec![Ring((10.0, 10.0), 5.5), Dot((10.0, 10.0), 1.8)],
+        ),
+        (
+            GlyphKind::Midpoint,
+            vec![
+                Line((3.0, 13.0), (17.0, 13.0), 1.0),
+                Triangle([(10.0, 7.5), (13.5, 13.0), (6.5, 13.0)]),
+            ],
+        ),
+        (
+            GlyphKind::Tangent,
+            vec![Ring((10.0, 12.0), 4.5), Line((3.0, 7.5), (17.0, 7.5), 1.0)],
+        ),
+        (
+            GlyphKind::Perpendicular,
+            vec![
+                Line((4.0, 16.0), (16.0, 16.0), 1.0),
+                Line((10.0, 16.0), (10.0, 4.0), 1.0),
+            ],
+        ),
+        (
+            GlyphKind::Parallel,
+            vec![
+                Line((6.0, 16.0), (11.0, 4.0), 1.0),
+                Line((10.0, 16.0), (15.0, 4.0), 1.0),
+            ],
+        ),
+        (
+            GlyphKind::Equal,
+            vec![
+                Line((4.5, 7.5), (15.5, 7.5), 1.0),
+                Line((4.5, 12.5), (15.5, 12.5), 1.0),
+            ],
+        ),
+        (
+            GlyphKind::Redundant,
+            vec![Line((10.0, 4.0), (10.0, 12.0), 1.0), Dot((10.0, 15.5), 1.4)],
+        ),
+    ]
+}
+
+/// That `shape` is `part` of `kind`'s icon, drawn in FOCUS at (100, 100): its places at 0.6
+/// of the icon square about the glyph's centre, its lines and rings 1.3 wide (the
+/// prototype's icon stroke), at the part's opacity.
+#[track_caller]
+fn assert_icon_part(shape: &egui::Shape, part: &IconPart, kind: GlyphKind) {
+    let at = |(x, y): (f32, f32)| icon_at(x, y);
+    let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+    match (shape, part) {
+        (egui::Shape::LineSegment { points, stroke }, IconPart::Line(a, b, opacity)) => {
+            assert!(
+                near(points[0], at(*a)) && near(points[1], at(*b)),
+                "{kind:?}: {points:?} for {a:?} to {b:?}"
+            );
+            assert_eq!(
+                *stroke,
+                egui::Stroke::new(1.3, FOCUS.gamma_multiply(*opacity)),
+                "{kind:?}"
+            );
+        }
+        (egui::Shape::Circle(circle), IconPart::Ring(centre, radius)) => {
+            assert!(near(circle.center, at(*centre)), "{kind:?}: {circle:?}");
+            assert!(close(circle.radius, radius * 0.6), "{kind:?}: {circle:?}");
+            assert_eq!(circle.stroke, egui::Stroke::new(1.3, FOCUS), "{kind:?}");
+            assert_eq!(circle.fill, egui::Color32::TRANSPARENT, "{kind:?}");
+        }
+        (egui::Shape::Circle(circle), IconPart::Dot(centre, radius)) => {
+            assert!(near(circle.center, at(*centre)), "{kind:?}: {circle:?}");
+            assert!(close(circle.radius, radius * 0.6), "{kind:?}: {circle:?}");
+            assert_eq!(circle.fill, FOCUS, "{kind:?}");
+        }
+        (egui::Shape::Path(path), IconPart::Triangle(corners)) => {
+            assert_eq!(path.points.len(), 3, "{kind:?}: {path:?}");
+            assert!(
+                path.points
+                    .iter()
+                    .zip(corners)
+                    .all(|(p, corner)| near(*p, at(*corner))),
+                "{kind:?}: {path:?}"
+            );
+            assert_eq!(path.fill, FOCUS, "{kind:?}");
+        }
+        (shape, _) => panic!("{kind:?}: {shape:?} isn't its part"),
+    }
+}
+
+// The mutants #351's run left alive in `hit`.
+
+#[test]
+fn hit_takes_no_place_thats_no_number_even_at_any_tolerance_and_an_exact_one_at_none() {
+    let read = under(rectangle(Vec::new()));
+    assert_eq!(hit(&read, [f64::INFINITY, 0.0], f64::INFINITY, HAND), None);
+    assert_eq!(hit(&read, [0.0, f64::NAN], f64::INFINITY, HAND), None);
+    // At a point exactly, with no tolerance: that point.
+    assert_eq!(
+        hit(&read, [40.0, 20.0], 0.0, HAND),
+        Some(Hit {
+            id: id("pa000003"),
+            kind: ElementKind::Point,
+        })
+    );
+}
+
+#[test]
+fn a_glyphs_and_a_values_boxes_are_hit_to_their_edges_and_not_past_them() {
+    // The bottom side's horizontal: the side runs +x, so its right is −y: the glyph 0.28
+    // along it, (11.2, 0), 1.3 mm below, (11.2, −1.3), its box 16 points, 0.8 mm either
+    // way. Its length's value, "40", at (20, −2.6): two characters of 0.574 × 11.5 points,
+    // 13.202, and 5 each side, so 1.16011 mm either way across; 18 points high, 0.9 mm
+    // either way up.
+    let read = under(rectangle(vec![
+        horizontal("ka000001", "na000001"),
+        length("ka000002", "na000001", "40", true),
+    ]));
+    let found = |at: [f64; 2], tolerance: f64| hit(&read, at, tolerance, HAND).map(|h| h.id);
+    // Inside the glyph's box, off its middle both ways; 0.2 below it, out of a 0.1 reach.
+    assert_eq!(found([11.7, -1.8], 0.1), Some(id("ka000001")));
+    assert_eq!(found([11.2, -2.3], 0.1), None);
+    // Inside the value's box, 0.85 above its line, off its middle; 0.1 past either edge,
+    // out of a 0.05 reach.
+    assert_eq!(found([21.1, -1.75], 0.05), Some(id("ka000002")));
+    assert_eq!(found([21.26, -1.75], 0.05), None);
+    assert_eq!(found([20.0, -1.6], 0.05), None);
+}
+
+#[test]
+fn an_arcs_distance_is_its_rims_on_its_sweep_and_its_nearer_ends_past_it() {
+    // About (0, 0), radius 10, from 90° through 90°: from (0, 10) to (−10, 0).
+    let quarter = super::draw::Curve::Round {
+        centre: [0.0, 0.0],
+        radius: 10.0,
+        start: FRAC_PI_2,
+        sweep: FRAC_PI_2,
+    };
+    let distance = |at| super::hit::distance(quarter, at);
+    // At 135°, 1 outside the rim: 1.
+    let out = 11.0 * std::f64::consts::FRAC_1_SQRT_2;
+    assert!((distance([-out, out]) - 1.0).abs() < 1e-9);
+    // (−10, −1), just past its end: 1 from (−10, 0).
+    assert!((distance([-10.0, -1.0]) - 1.0).abs() < 1e-9);
+}
+
+// The mutants #351's run left alive in the panels (`bar`): their look, the tools' names,
+// the legend, and the state's dot, each against the prototype (docs/design/m5-ui/:
+// styles.css's `:root`, `.state-dot`, and `.legend`; sketch.js's palette). The status
+// bar's sketch words are `crate::status`'s here, and tested there.
+
+/// Every shape `draw` paints in a context showing egui's light theme, after two passes so
+/// its layout has settled, nested ones flattened, in paint order.
+fn painted_on_light(mut draw: impl FnMut(&mut egui::Ui)) -> Vec<egui::Shape> {
+    let ctx = egui::Context::default();
+    ctx.set_fonts(crate::theme::fonts());
+    ctx.set_theme(egui::Theme::Light);
+    let mut painted = Vec::new();
+    for pass in 0..2 {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| draw(ui));
+        output.textures_delta.clear();
+        if pass == 1 {
+            let mut shapes: Vec<egui::Shape> =
+                output.shapes.into_iter().map(|c| c.shape).rev().collect();
+            while let Some(shape) = shapes.pop() {
+                match shape {
+                    egui::Shape::Vec(inner) => shapes.extend(inner.into_iter().rev()),
+                    shape => painted.push(shape),
+                }
+            }
+        }
+    }
+    painted
+}
+
+/// The palette of an under-defined rectangle with no degrees of freedom left to say, and
+/// `tool` on.
+fn palette_painted(tool: Option<silico_core::sketch_tools::ToolKind>) -> Vec<egui::Shape> {
+    let mut mode = mode_on(under(rectangle(Vec::new())));
+    mode.tools.choose(tool.map(tools::Choice::Draw));
+    let view = mode.palette_view(silico_core::command::Revision::OPENED, None);
+    let mut settings = bar::Settings::default();
+    painted_on_light(|ui| bar::palette(ui, &view, &mut settings, f32::INFINITY))
+}
+
+/// The one text painted that says `words`.
+#[track_caller]
+fn painted_text<'a>(painted: &'a [egui::Shape], words: &str) -> &'a egui::epaint::TextShape {
+    let found: Vec<&egui::epaint::TextShape> = painted
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::Text(text) if text.galley.text() == words => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(found.len(), 1, "{words:?} painted {} times", found.len());
+    found[0]
+}
+
+#[test]
+fn the_panels_are_the_prototypes_floating_panels_whatever_the_windows_theme() {
+    // `--g200` (#212121) panels, `--g250` (#272626) borders, the selection `--blue`
+    // (#186add) under `--blue-text` (#f0f2ff), errors `--red` (#ff3865), and text
+    // `--g750` (#cfcfcf), `--g1000` (#ffffff) hovered or pressed.
+    let rgb = |hex: u32| {
+        let [_, r, g, b] = hex.to_be_bytes();
+        egui::Color32::from_rgb(r, g, b)
+    };
+    let visuals = bar::panel_visuals();
+    assert!(visuals.dark_mode);
+    assert_eq!(visuals.window_fill, rgb(0x212121));
+    assert_eq!(visuals.panel_fill, rgb(0x212121));
+    assert_eq!(visuals.window_stroke, egui::Stroke::new(1.0, rgb(0x272626)));
+    assert_eq!(visuals.selection.bg_fill, rgb(0x186add));
+    assert_eq!(
+        visuals.selection.stroke,
+        egui::Stroke::new(1.0, rgb(0xf0f2ff))
+    );
+    assert_eq!(visuals.error_fg_color, rgb(0xff3865));
+    let widgets = &visuals.widgets;
+    assert_eq!(
+        [
+            widgets.noninteractive.fg_stroke.color,
+            widgets.inactive.fg_stroke.color,
+            widgets.open.fg_stroke.color,
+        ],
+        [rgb(0xcfcfcf); 3]
+    );
+    assert_eq!(
+        [
+            widgets.hovered.fg_stroke.color,
+            widgets.active.fg_stroke.color,
+        ],
+        [rgb(0xffffff); 2]
+    );
+    // As the palette draws on a light window: its Show checkboxes' words in `--g750`.
+    let painted = palette_painted(None);
+    assert_eq!(
+        painted_text(&painted, "Profile").fallback_color,
+        rgb(0xcfcfcf)
+    );
+}
+
+#[test]
+fn each_tool_is_named_as_the_toolbars_name_it_and_the_palette_names_the_one_on() {
+    use silico_core::sketch_tools::ToolKind;
+    // The prototype's Line, Circle, and Point (app.js); Fusion's Center Rectangle, Center
+    // Point Arc, 3-Point Arc, and Tangent Arc; and section 9's Corner Rectangle (SolidWorks'
+    // name; Fusion's 2-Point Rectangle).
+    assert_eq!(
+        [
+            ToolKind::Line,
+            ToolKind::CornerRectangle,
+            ToolKind::CenterRectangle,
+            ToolKind::Circle,
+            ToolKind::CenterpointArc,
+            ToolKind::ThreePointArc,
+            ToolKind::TangentArc,
+            ToolKind::Point,
+        ]
+        .map(bar::tool_name),
+        [
+            "Line",
+            "Corner Rectangle",
+            "Center Rectangle",
+            "Circle",
+            "Center Point Arc",
+            "3-Point Arc",
+            "Tangent Arc",
+            "Point",
+        ]
+    );
+    // The palette's Tool: the one on, strong (`--g1000`), and its Automatic relations.
+    let painted = palette_painted(Some(ToolKind::TangentArc));
+    let name = painted_text(&painted, "Tangent Arc");
+    assert_eq!(
+        name.override_text_color
+            .unwrap_or(name.galley.job.sections[0].format.color),
+        egui::Color32::from_rgb(0xff, 0xff, 0xff)
+    );
+    painted_text(&painted, "Automatic relations");
+    // None on: the keys that choose one.
+    let painted = palette_painted(None);
+    painted_text(
+        &painted,
+        "None. Line L, Rectangle R, Circle C, Arc A, Point P, Trim T, Dimension D",
+    );
+}
+
+#[test]
+fn the_palettes_legend_is_the_prototypes_each_colour_on_its_swatch_and_construction_dashed() {
+    // sketch.js's Colours: a 10 × 3 swatch (`.legend i`) in each of `COL`'s colours beside
+    // its words, then Construction's dashed rule.
+    let painted = palette_painted(None);
+    let rgb = |hex: u32| {
+        let [_, r, g, b] = hex.to_be_bytes();
+        egui::Color32::from_rgb(r, g, b)
+    };
+    let legend = [
+        (0x7a95ff, "Under defined"),
+        (0xeeeeed, "Fully defined"),
+        (0xff3865, "Over defined, unsolvable"),
+        (0xf2c94c, "Invalid (zero length)"),
+        (0xb5b84a, "Dangling reference"),
+        (0x827f7f, "Driven dimension"),
+    ];
+    let swatches: Vec<(egui::Rect, egui::Color32)> = painted
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::Rect(rect) if rect.rect.size() == vec2(10.0, 3.0) => {
+                Some((rect.rect, rect.fill))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        swatches.iter().map(|(_, fill)| *fill).collect::<Vec<_>>(),
+        legend.map(|(hex, _)| rgb(hex))
+    );
+    for ((swatch, _), (_, words)) in swatches.iter().zip(legend) {
+        // Its words beside it, on its line.
+        let text = painted_text(&painted, words);
+        let middle = text.pos.y + text.galley.size().y / 2.0;
+        assert!(text.pos.x > swatch.right(), "{words}");
+        assert!((middle - swatch.center().y).abs() < 1.5, "{words}");
+    }
+    // Construction: a rule 2 points wide across its 10-point swatch, dashed as the canvas
+    // dashes construction (5 on, 3 off) at half that, so dashes 2.5 long from 0, 4, and 8
+    // along it, the last cut off at 10.
+    let construction = painted_text(&painted, "Construction");
+    let dashes: Vec<[Pos2; 2]> = painted
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::LineSegment { points, stroke }
+                if stroke.width == 2.0 && stroke.color == TEXT_SUBDUED =>
+            {
+                Some(*points)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dashes.len(), 3, "{dashes:?}");
+    let left = dashes[0][0].x;
+    let along: Vec<(f32, f32)> = dashes
+        .iter()
+        .map(|[a, b]| (a.x - left, b.x - left))
+        .collect();
+    for (got, want) in along.iter().zip([(0.0, 2.5), (4.0, 6.5), (8.0, 10.0)]) {
+        assert!(
+            (got.0 - want.0).abs() < 1e-4 && (got.1 - want.1).abs() < 1e-4,
+            "{along:?}"
+        );
+    }
+    let middle = construction.pos.y + construction.galley.size().y / 2.0;
+    assert!(
+        dashes
+            .iter()
+            .all(|[a, b]| a.y == b.y && (a.y - middle).abs() < 1.5)
+    );
+    assert!(construction.pos.x > left + 10.0);
+}
+
+#[test]
+fn a_states_dot_is_the_prototypes_8_point_dot_its_words_a_gap_after_it() {
+    // `.state-dot`: 8 × 8, round, in the state's colour, its room in the row its own; the
+    // words then the row's gap on (egui's item spacing).
+    let painted = palette_painted(None);
+    let dots: Vec<egui::epaint::CircleShape> = painted
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::Circle(circle) if circle.fill == SKETCH_UNDER_DEFINED => Some(*circle),
+            _ => None,
+        })
+        .collect();
+    let [dot] = dots.as_slice() else {
+        panic!("{dots:?}");
+    };
+    assert_eq!(dot.radius, 4.0);
+    let words = painted_text(&painted, "Under defined · 0 DOF");
+    let gap = egui::Style::default().spacing.item_spacing.x;
+    assert!(
+        (words.pos.x - (dot.center.x + 4.0 + gap)).abs() < 1e-3,
+        "{:?} after {dot:?}",
+        words.pos
+    );
+}
+
+// The mutants #351's run left alive in sketch mode's own (`mod.rs`): the fill found by its
+// scale, the state and its hint, and the scale at a place.
+
+#[test]
+fn a_fill_is_found_only_at_the_power_of_two_scale_it_was_worked_out_at() {
+    // At 10 points a millimetre (0.1 mm a point, the fill at 1/16: bucket −4), then 20
+    // (0.05, at 1/32: −5): each its own fill, both kept; 1/64 (−6) never worked out.
+    let mut mode = mode_on(plate());
+    frames_at(&mut mode, 10.0, 0.0, 1);
+    frames_at(&mut mode, 20.0, 0.0, 1);
+    let read = mode.drawable().unwrap().clone();
+    let at = |scale| region_fills(&read, Scale(scale), SKETCH_CHORD_TOLERANCE);
+    let (sixteenth, thirty_second) = (at(0.0625), at(0.03125));
+    assert_ne!(sixteenth, thirty_second);
+    assert_eq!(mode.fill_at(-4), Some(sixteenth.as_slice()));
+    assert_eq!(mode.fill_at(-5), Some(thirty_second.as_slice()));
+    assert_eq!(mode.fill_at(-6), None);
+}
+
+#[test]
+fn the_palette_hints_at_what_an_under_defined_sketch_needs_as_the_prototype_does() {
+    // The prototype's palette (sketch.js, its Status): under defined, "Blue curves can still
+    // move. Add relations or dimensions."; fully defined, nothing more.
+    let opened = silico_core::command::Revision::OPENED;
+    let mut read = under(rectangle(Vec::new()));
+    let mode = mode_on(read.clone());
+    assert_eq!(mode.state(), Some(SketchState::UnderDefined));
+    assert_eq!(
+        mode.palette_view(opened, None).hint,
+        Some("Blue curves can still move. Add relations or dimensions.")
+    );
+    read.states.state = SketchState::FullyDefined;
+    let mode = mode_on(read.clone());
+    assert_eq!(mode.state(), Some(SketchState::FullyDefined));
+    assert_eq!(mode.palette_view(opened, None).hint, None);
+    // Over defined, with no solution, or invalid: each a word of its own on what to do.
+    let mut said = std::collections::BTreeSet::new();
+    for state in [
+        SketchState::OverDefined,
+        SketchState::NoSolution,
+        SketchState::Invalid,
+    ] {
+        read.states.state = state;
+        let mode = mode_on(read.clone());
+        assert_eq!(mode.state(), Some(state));
+        let hint = mode.palette_view(opened, None).hint.unwrap_or_default();
+        assert!(
+            hint.ends_with('.') && hint.len() > 20,
+            "{state:?}: {hint:?}"
+        );
+        said.insert(hint);
+    }
+    assert_eq!(said.len(), 3, "{said:?}");
+    // Nothing read yet: no state, and no hint.
+    let unread = SketchMode::new(1, None);
+    assert_eq!(unread.state(), None);
+    assert_eq!(unread.palette_view(opened, None).hint, None);
+}
+
+#[test]
+fn the_scale_at_a_place_is_the_mean_step_of_a_point_right_and_a_point_down_or_none() {
+    // A plane whose x is the square of the screen's: at x = 10, a point right moves
+    // 11² − 10² = 21 mm (a point left, 19), a point down 1: their mean, 11 mm a point.
+    let squared = |p: Pos2| Some([f64::from(p.x) * f64::from(p.x), f64::from(p.y)]);
+    assert_eq!(scale_at(&squared, pos2(10.0, 0.0)), Some(Scale(11.0)));
+    // Every point to one place: no step, none.
+    let still = |_: Pos2| Some([3.0, 4.0]);
+    assert_eq!(scale_at(&still, pos2(10.0, 0.0)), None);
+    // A point right going past any length: none.
+    let edge = |p: Pos2| Some([if p.x > 10.5 { f64::INFINITY } else { 0.0 }, 0.0]);
+    assert_eq!(scale_at(&edge, pos2(10.0, 0.0)), None);
+    // A ray that misses the plane: none.
+    let misses = |_: Pos2| -> Option<[f64; 2]> { None };
+    assert_eq!(scale_at(&misses, pos2(10.0, 0.0)), None);
 }

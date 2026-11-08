@@ -2246,3 +2246,78 @@ pub(crate) fn angle(a: [f64; 2]) -> f64 {
 pub(crate) fn direction(angle: f64) -> [f64; 2] {
     [libm::cos(angle), libm::sin(angle)]
 }
+
+#[cfg(test)]
+mod tests {
+    //! The private geometry's own tests, each worked by hand.
+
+    use super::*;
+
+    #[test]
+    fn aside_is_square_to_a_segment_on_its_lower_side_and_down_for_none() {
+        // Right, (1, 0): its normal (0, 1), down the screen, kept.
+        assert_eq!(aside(Vec2::new(1.0, 0.0)), Vec2::new(0.0, 1.0));
+        // Left: its normal (0, −1) is up, so turned down.
+        assert_eq!(aside(Vec2::new(-1.0, 0.0)), Vec2::new(0.0, 1.0));
+        // Down, (0, 1): its normal (−1, 0) lies level, pointing left, so turned right.
+        assert_eq!(aside(Vec2::new(0.0, 1.0)), Vec2::new(1.0, 0.0));
+        // Up: its normal (1, 0), right, kept.
+        assert_eq!(aside(Vec2::new(0.0, -1.0)), Vec2::new(1.0, 0.0));
+        // None: straight down.
+        assert_eq!(aside(Vec2::ZERO), Vec2::new(0.0, 1.0));
+    }
+
+    #[test]
+    fn stretch_is_the_projections_larger_singular_value() {
+        // The linear part [[9/5, −4/5], [12/5, 3/5]]: x stretched by 3, then turned by
+        // (3/5, 4/5), so its singular values are 3 and 1.
+        let project = |p: [f64; 2]| {
+            Some(Pos2::new(
+                (1.8 * p[0] - 0.8 * p[1]) as f32,
+                (2.4 * p[0] + 0.6 * p[1]) as f32,
+            ))
+        };
+        let s = stretch([0.0, 0.0], 2.0, &project);
+        assert!((s - 3.0).abs() < 1e-5, "{s}");
+    }
+
+    #[test]
+    fn cross_crossing_and_unit_by_hand() {
+        // 2·11 − 3·5.
+        assert_eq!(cross([2.0, 3.0], [5.0, 11.0]), 7.0);
+        // The diagonal from (0, 0) meets x = 4 at (4, 4); parallel lines meet nowhere.
+        assert_eq!(
+            crossing([0.0, 0.0], [1.0, 1.0], [4.0, 0.0], [0.0, 1.0]),
+            Some([4.0, 4.0])
+        );
+        assert_eq!(
+            crossing([0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [2.0, 0.0]),
+            None
+        );
+        assert_eq!(unit([3.0, 4.0]), Some([0.6, 0.8]));
+        assert_eq!(unit([0.0, 0.0]), None);
+        assert_eq!(unit([f64::INFINITY, 0.0]), None);
+    }
+
+    #[test]
+    fn a_views_direction_is_none_where_the_projection_doesnt_move() {
+        let still = |_: [f64; 2]| Some(Pos2::new(5.0, 5.0));
+        let view = View {
+            project: &still,
+            scale: Scale(0.1),
+            visible: None,
+            chord_tolerance: 0.25,
+        };
+        assert_eq!(view.direction([0.0, 0.0], [1.0, 0.0]), None);
+        // Ten points a millimetre, y up: +y in the sketch is up the screen.
+        let up = |p: [f64; 2]| Some(Pos2::new((10.0 * p[0]) as f32, (-10.0 * p[1]) as f32));
+        let view = View {
+            project: &up,
+            ..view
+        };
+        assert_eq!(
+            view.direction([0.0, 0.0], [0.0, 1.0]),
+            Some(Vec2::new(0.0, -1.0))
+        );
+    }
+}
