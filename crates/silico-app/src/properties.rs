@@ -530,20 +530,32 @@ pub(crate) fn card(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -
             bottom: theme::ERROR_CARD_MARGIN as i8,
         })
         .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            // `overflow: hidden`: the card as wide as its place, whatever it holds; what's
+            // wider than its inside (an Edit with a long name, a long element's chip) cut
+            // off at its border. Drawn in a child whose width alone the card takes.
+            let inside = ui.max_rect();
+            let width = ui.available_width();
+            let mut content = ui.new_child(UiBuilder::new().max_rect(inside));
+            content.shrink_clip_rect(Rect::from_x_y_ranges(
+                inside.x_range(),
+                ui.clip_rect().y_range(),
+            ));
+            content.set_width(width);
+            content.spacing_mut().item_spacing = Vec2::ZERO;
             egui::Frame::new()
                 .inner_margin(theme::ERROR_CARD_HEAD_PADDING)
-                .show(ui, |ui| {
+                .show(&mut content, |ui| {
                     ui.set_width(ui.available_width());
                     card_head(ui, said, title, &look);
                 });
             egui::Frame::new()
                 .inner_margin(theme::ERROR_CARD_BODY_PADDING)
-                .show(ui, |ui| {
+                .show(&mut content, |ui| {
                     ui.set_width(ui.available_width());
                     asked = card_body(ui, said, message, name, offer, &look);
                 });
+            let used = content.min_rect();
+            ui.advance_cursor_after_rect(Rect::from_min_size(used.min, vec2(width, used.height())));
         });
     asked
 }
@@ -1936,6 +1948,10 @@ mod tests {
         pub const CHIP_BG: Color32 = Color32::from_rgba_unmultiplied_const(0, 0, 0, 89);
         /// `.ec-actions { display: flex; flex-wrap: wrap; gap: 6px }`.
         pub const ACTIONS_GAP: f32 = 6.0;
+        /// The card's width in the properties panel: `--right-w: 296px` less `#right`'s
+        /// `border-left: 1px`, less `margin: 8px var(--pad)` (`--pad: 12px`) at each side,
+        /// 296 − 1 − 2 × 12 = 271, whatever it holds (`overflow: hidden`).
+        pub const PANEL_WIDTH: f32 = 271.0;
     }
 
     /// `said`'s card, by `name`, offering `offer`, drawn in `place`.
@@ -2255,7 +2271,8 @@ mod tests {
         // `docProps`' card: Edit Hole, Show in timeline, and Copy as JSON, too wide together
         // for the body, wrapping (`flex-wrap: wrap; gap: 6px`): a line 22 high, the next 6
         // under it; the card's frame to 8 under the last (`.ec-body`'s padding) and its
-        // border. Then a name so long its Edit is wider than the body: first on its line.
+        // border. Then a name so long its Edit is wider than the body: first on its line,
+        // and cut off at the card's border, the card the panel's width (`overflow: hidden`).
         for name in [
             "Hole",
             "Hole through the whole block for the long mounting bolt",
@@ -2320,16 +2337,44 @@ mod tests {
             let [frame] = frames.as_slice() else {
                 panic!("{name}'s cards: {frames:?}")
             };
-            // Its right, but where an Edit wider than the body widens it (not yet clipped,
-            // as `.err-card`'s `overflow: hidden` would).
-            let sides = if items[0].0.right() > body_right {
-                near(frame.left(), card.left())
-                    && near(frame.top(), card.top())
-                    && near(frame.bottom(), card.bottom())
-            } else {
-                near_rect(*frame, card)
+            // The panel's width, an Edit wider than the body or not (`overflow: hidden`).
+            assert!(
+                near(frame.width(), ec::PANEL_WIDTH),
+                "{name}'s card {} wide, not {}",
+                frame.width(),
+                ec::PANEL_WIDTH
+            );
+            assert!(
+                near_rect(*frame, card),
+                "{name}'s card: {frame:?}, not {card:?}"
+            );
+            // An Edit wider than the body overflows it, and is cut off at the card's border.
+            let edit_rect = items[0].0;
+            if name != "Hole" {
+                assert!(
+                    edit_rect.right() > frame.right(),
+                    "{name}: {edit_rect:?} fits the card {frame:?}: the case is gone"
+                );
+            }
+            let fills: Vec<Rect> = h
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(shape) if near_rect(shape.rect, edit_rect) => {
+                        Some(clipped.clip_rect)
+                    }
+                    _ => None,
+                })
+                .collect();
+            let [clip] = fills.as_slice() else {
+                panic!("{edit}'s fills: {fills:?}")
             };
-            assert!(sides, "{name}'s card: {frame:?}, not {card:?}");
+            assert!(
+                near(clip.right(), frame.right() - ec::BORDER),
+                "{edit} clipped at {clip:?}, not at the card's border at {}",
+                frame.right() - ec::BORDER
+            );
         }
     }
 
