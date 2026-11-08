@@ -1531,7 +1531,7 @@ impl Dialog {
             ui,
             Some(Icon::of_kind(self.kind.type_name())),
             self.kind.title(),
-            Some(CLOSE),
+            Some((CLOSE, Command::Cancel)),
         );
         let rebuild = Command::Rebuild.caps(ui.ctx()).concat();
         let (footer, cancel_at, ok_at) = properties::footer_places(whole);
@@ -1590,8 +1590,13 @@ impl Dialog {
                         if let Value::Names(names) = &input.value {
                             for (place, name) in names.names.iter().enumerate() {
                                 let salt = ("dialog-name", serial, at, place);
-                                if properties::listed(ui, salt, icon_of(names.takes), name, enabled)
-                                {
+                                if properties::listed(
+                                    ui,
+                                    salt,
+                                    Icon::of_element(names.takes),
+                                    name,
+                                    enabled,
+                                ) {
                                     unpicked = Some((at, place));
                                 }
                             }
@@ -1741,7 +1746,13 @@ fn input_ui(
             // The active box, highlighted (section 9); its count, the names listed under it.
             let count = (!names.names.is_empty()).then(|| names.count());
             let empty = format!("Select {} in the canvas", names.takes.plural());
-            properties::selection_box(ui, active, icon_of(names.takes), count.as_deref(), &empty);
+            properties::selection_box(
+                ui,
+                active,
+                Icon::of_element(names.takes),
+                count.as_deref(),
+                &empty,
+            );
         }
         Value::Body(held) => {
             // The body's chip, by the name the timeline gives it; or, empty, what to do. The
@@ -1771,15 +1782,6 @@ fn input_ui(
         }
     }
     false
-}
-
-/// The icon a box of names shows its kind of element with: the selection filters'.
-fn icon_of(kind: ElementKind) -> Icon {
-    match kind {
-        ElementKind::Face | ElementKind::Solid => Icon::SelFace,
-        ElementKind::Edge => Icon::SelEdge,
-        ElementKind::Vertex => Icon::SelVertex,
-    }
 }
 
 /// The dialog's close button's label: Cancel, as its tooltip says (Cancel's own label is

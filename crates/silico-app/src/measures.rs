@@ -53,11 +53,11 @@ impl Of {
 }
 
 /// What's measured: one element, by the body it's in and the name the selection holds it
-/// by; or two, by their names, in the order picked.
+/// by; or two, by the names the selection holds them by, in the order picked.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Measured {
     One { body: FeatureId, name: Arc<Name> },
-    Two([String; 2]),
+    Two([Arc<Name>; 2]),
 }
 
 impl Measured {
@@ -79,7 +79,7 @@ impl Measured {
                 body: one.feature.clone(),
                 name: Arc::clone(&one.name),
             }),
-            [a, b] => Some(Measured::Two([a.name.to_string(), b.name.to_string()])),
+            [a, b] => Some(Measured::Two([Arc::clone(&a.name), Arc::clone(&b.name)])),
             _ => None,
         }
     }
@@ -112,8 +112,8 @@ pub struct Measures {
     /// The most entries a page of the listing asks for: [`ENTRIES_AT_MOST`], or fewer in a
     /// test of the paging.
     limit: u32,
-    /// How many reads it has started: what a test counts.
-    pub reads: u64,
+    /// How many reads it has started.
+    reads: u64,
 }
 
 impl Default for Measures {
@@ -150,6 +150,11 @@ impl Measures {
         self.of = Some(of);
         self.measured = measured;
         self.answers = answers;
+    }
+
+    /// How many reads it has started, pages of a listing each one: what a test counts.
+    pub fn reads(&self) -> u64 {
+        self.reads
     }
 
     /// What it's of, once asked.
@@ -193,6 +198,7 @@ impl Measures {
             None => {}
             Some(Measured::One { body, name }) => self.list(sessions, session, body, name, None),
             Some(Measured::Two(names)) => {
+                let names = names.map(|name| name.to_string());
                 self.reads += 2;
                 self.distance =
                     Some(sessions.distance(session, ModelChoice::Published, names.clone(), None));
@@ -339,14 +345,31 @@ mod tests {
     }
 
     fn opened() -> Opened {
+        opened_with(&[block("k7f2qx3m", 0, 4)], |_| {})
+    }
+
+    /// A box `id`, `length` by 2 by 1, from (`x`, 0, 0), as a document writes it.
+    fn block(id: &str, x: u32, length: u32) -> String {
+        format!(
+            r#"{{"id": "{id}", "type": "box", "v": 1, "name": "Block", "position": [{x}, 0, 0], "length": {length}, "width": 2, "height": 1}}"#
+        )
+    }
+
+    /// [`opened`]'s, of a document of `features`, on a fake kernel `setup` prepares.
+    fn opened_with(features: &[String], setup: impl FnOnce(&FakeKernel)) -> Opened {
         let dir = tempfile::tempdir().unwrap();
         let document = dir.path().join("part.silico");
         std::fs::write(
             &document,
-            r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}]}"#,
+            format!(
+                r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+                features.join(", ")
+            ),
         )
         .unwrap();
-        let kernel = Arc::new(FakeKernel::new(1).unwrap());
+        let fake = FakeKernel::new(1).unwrap();
+        setup(&fake);
+        let kernel = Arc::new(fake);
         let sessions = Arc::new(Sessions::with_cache_opener(Arc::clone(&kernel), |dir| {
             silico_core::cache::Cache::unsealed(dir)
         }));
@@ -357,6 +380,10 @@ mod tests {
             .result
             .unwrap();
         let published = sessions.published(&id).result.unwrap();
+        // Every feature's elements named, as the background names them.
+        for (feature, _) in published.model.features() {
+            published.model.element_map(feature);
+        }
         let mut selection = Selection::default();
         selection.published(Some((published.model, published.revision)), 1);
         Opened {
@@ -418,7 +445,7 @@ mod tests {
             ("Face1", 1, [1.0, 0.0, 0.0]),
         ] {
             opened.select(&[name]);
-            let before = measures.reads;
+            let before = measures.reads();
             let of = opened.ask(&mut measures);
             opened.polled_until(&mut measures, |m| {
                 m.answers(of)
@@ -427,7 +454,7 @@ mod tests {
             let answers = measures.answers(of).unwrap();
             let entry = answers.element.clone().unwrap().unwrap();
             assert_eq!(entry.name.to_string(), format!("k7f2qx3m.box.{name}"));
-            assert_eq!(measures.reads - before, pages, "{name}");
+            assert_eq!(measures.reads() - before, pages, "{name}");
             // The fake's vertex n is at (n, 0, 0); its face n is centred there.
             let point = entry.position.or(entry.centroid).unwrap().map(Length::mm);
             assert_eq!(point, at, "{name}");
@@ -443,7 +470,7 @@ mod tests {
         opened.select(&["Face1", "Face3"]);
         let mut measures = Measures::default();
         let of = opened.ask(&mut measures);
-        assert_eq!(measures.reads, 2);
+        assert_eq!(measures.reads(), 2);
         opened.polled_until(&mut measures, |m| !m.reading());
         let answers = measures.answers(of).unwrap();
         // The fake's faces 1 and 3 stand at (1, 0, 0) and (3, 0, 0): 2 apart.
@@ -456,7 +483,7 @@ mod tests {
         assert_eq!(answers.element, None);
         // Asked again as it is: nothing is read again.
         opened.ask(&mut measures);
-        assert_eq!(measures.reads, 2);
+        assert_eq!(measures.reads(), 2);
     }
 
     #[test]
@@ -465,11 +492,11 @@ mod tests {
         let mut measures = Measures::default();
         opened.select(&["Face1", "Face2", "Edge1"]);
         let of = opened.ask(&mut measures);
-        assert_eq!(measures.reads, 0);
+        assert_eq!(measures.reads(), 0);
         assert_eq!(measures.answers(of), Some(&Answers::default()));
         opened.select(&[]);
         opened.ask(&mut measures);
-        assert_eq!(measures.reads, 0);
+        assert_eq!(measures.reads(), 0);
         assert_eq!(Measured::of(&opened.selection), None);
     }
 
@@ -547,7 +574,7 @@ mod tests {
         for _ in 0..5 {
             measures.poll(&opened.sessions, &opened.id);
         }
-        assert_eq!(measures.reads, 2);
+        assert_eq!(measures.reads(), 2);
         assert!(!measures.reading());
     }
 }

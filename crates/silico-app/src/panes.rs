@@ -23,6 +23,7 @@ use crate::icons::{self, Icon, IconSize};
 use crate::measures::Answers;
 use crate::properties;
 use crate::selection::Picked;
+use crate::shortcuts::Command;
 use crate::tab::{Hideable, Tab};
 use crate::theme;
 
@@ -350,7 +351,12 @@ impl<P: Clients + 'static> Panes<'_, P> {
             // A dialog still being read (Edit Feature): Esc cancels it.
             tab.close_dialog(self.sessions, false);
         }
-        properties::title(ui, None, "Properties", None);
+        // The selection's views close with Clear selection (`selectionProps`' `clearSel`).
+        let selecting = tab.selection().elements().next().is_some();
+        let clear = selecting.then_some((CLEAR_SELECTION, Command::ClearSelection));
+        if properties::title(ui, None, "Properties", clear) {
+            tab.selection_mut().clear();
+        }
         let entry: Option<Entry> = tab.selection().feature().and_then(|selected| {
             tab.timeline
                 .as_ref()
@@ -391,7 +397,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
             None => {}
             Some(Viewed::Select(id)) => tab.selection_mut().select_feature(id),
             Some(Viewed::Edit(id)) => {
-                // SEAM(#351): Edit Sketch for a sketch, as the timeline's double-click.
+                // Never a sketch's: an element's name names the feature that made it in a
+                // solid, which a sketch never is.
                 tab.edit_feature(sessions, &id);
                 *self.started = true;
             }
@@ -516,15 +523,13 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
 /// The selected feature's properties (`featureProps`): its head (its type's icon, its name,
 /// its type and ID), the document's problems and its own (its error card, with Edit, as
 /// `featureProps` offers it, `noShow`), its name, editable, which is an edit of the
-/// document, and its health and ID; and, if another program changed it, what changed (the
-/// purple Changed on disk card, with Mark as seen). What an error card's button asked, if
-/// one was.
+/// document, and its health and ID, with the ID's copy button (`prop('ID', …, { copy })`);
+/// and, if another program changed it, what changed (the purple Changed on disk card, with
+/// Mark as seen). What an error card's button asked, if one was.
 ///
 /// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
 /// direction), which need its fields read, as its dialog reads them; and its Edit feature
 /// and Suppress buttons (the timeline's double-click and menu edit it already).
-/// SEAM: the ID row's copy button (`.prop .v .copy`), once the app has a clipboard command
-/// of its own.
 fn feature<P: Clients + 'static>(
     ui: &mut Ui,
     tab: &mut Tab,
@@ -617,14 +622,7 @@ fn feature<P: Clients + 'static>(
         Health::Unknown => ("Not built", theme::TEXT_SUBDUED),
     };
     properties::text_row(ui, "State", properties::body(state, colour));
-    properties::text_row(
-        ui,
-        "ID",
-        egui::text::LayoutJob::single_section(
-            entry.id.as_str().to_owned(),
-            properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
-        ),
-    );
+    properties::copy_row(ui, "ID", entry.id.as_str());
     properties::hint(
         ui,
         &[(
@@ -663,6 +661,9 @@ fn selected_elements(ui: &mut Ui, tab: &Tab) -> Option<Viewed> {
     }
 }
 
+/// The selection views' close button's label and tooltip (`selectionProps`' `clearSel`).
+const CLEAR_SELECTION: &str = "Clear selection";
+
 /// What the property panel says of a measure not answered yet: words, never a dash, as the
 /// panel says the file on disk isn't compared yet.
 const NOT_MEASURED: &str = "Not measured yet";
@@ -680,11 +681,7 @@ fn one_selected(ui: &mut Ui, tab: &Tab, picked: &Picked, answers: &Answers) -> O
         .element
         .as_ref()
         .and_then(|entry| entry.as_ref().ok());
-    let icon = match kind {
-        Some(ElementKind::Edge) => Icon::SelEdge,
-        Some(ElementKind::Vertex) => Icon::SelVertex,
-        _ => Icon::SelFace,
-    };
+    let icon = kind.map_or(Icon::SelFace, Icon::of_element);
     let title = found.map_or_else(|| "Element".to_owned(), |found| found.element.to_string());
     let what = element_words(kind, entry);
     let sub = match found {
@@ -699,16 +696,18 @@ fn one_selected(ui: &mut Ui, tab: &Tab, picked: &Picked, answers: &Answers) -> O
     let maker = found.map(|found| found.name.feature().clone());
     let mut viewed = None;
     if let Some(maker) = &maker
-        && properties::link_row(ui, "Made by", &feature_name(tab, maker))
+        && properties::link_row(ui, "Made by", &tab.name_of(maker))
     {
         viewed = Some(Viewed::Select(maker.clone()));
     }
     stability(ui, picked);
     let edit = maker
         .as_ref()
-        .map(|maker| format!("Edit {}", feature_name(tab, maker)));
+        .map(|maker| format!("Edit {}", tab.name_of(maker)));
     let mut buttons = Vec::new();
     let mut acts = Vec::new();
+    // SEAM(#351): Sketch on this face, for a planar face (`selectionProps`' `sketchOnFace`),
+    // once sketch mode is in the app.
     if kind == Some(ElementKind::Edge) {
         buttons.push(
             crate::modal::Button::new("Fillet", crate::modal::Kind::Secondary)
@@ -930,8 +929,34 @@ fn measure_rows(
 /// normal, centre, and centre-to-element distances where the core gives them; from
 /// `angle`, the angle, "(parallel)" at exactly 0 or 180, or no row where it refuses the
 /// pair. Not read yet: Distance, and Angle unless one is a vertex (which no angle takes),
-/// each [`NOT_MEASURED`]; the distance refused, the core's refusal, as a card.
+/// each [`NOT_MEASURED`]; the distance refused, the core's refusal, as a card. One waiting
+/// for a feature that didn't build: why, as a card, in place of the rows.
 fn pair_rows(ui: &mut Ui, pair: [&Picked; 2], answers: &Answers) {
+    use crate::selection::State;
+    // One waits for a feature that didn't build: nothing's measured till it builds, so why
+    // is said, as one element's Stability says it, never a measure "not measured yet" for
+    // as long as it fails.
+    let mut whys: Vec<&str> = pair
+        .iter()
+        .filter_map(|picked| match &picked.state {
+            State::Waiting { why: Some(why), .. } => Some(why.as_str()),
+            _ => None,
+        })
+        .collect();
+    whys.dedup();
+    if !whys.is_empty() {
+        for (at, why) in whys.into_iter().enumerate() {
+            let said = crate::tab::Said {
+                warning: true,
+                message: why.to_owned(),
+                ..crate::tab::Said::default()
+            };
+            ui.push_id(("waiting", at), |ui| {
+                properties::card(ui, &said, None, properties::Offer::default())
+            });
+        }
+        return;
+    }
     let value = |text: &str| properties::body(text, theme::PROPERTY_VALUE);
     let waiting = || properties::body(NOT_MEASURED, theme::TEXT_SUBDUED);
     match &answers.distance {
@@ -997,13 +1022,7 @@ fn body_name(tab: &Tab, id: &FeatureId) -> String {
         .iter()
         .find(|row| &row.id == id)
         .map(|row| row.name.clone())
-        .unwrap_or_else(|| feature_name(tab, id))
-}
-
-/// The feature `id`'s name, as the timeline lists it; its ID if it doesn't.
-fn feature_name(tab: &Tab, id: &FeatureId) -> String {
-    tab.entry(id.as_str())
-        .map_or_else(|| id.as_str().to_owned(), |entry| entry.name.clone())
+        .unwrap_or_else(|| tab.name_of(id))
 }
 
 /// An element's stability (#385's row, `selectionProps`' Stable): Stable, if a store takes
@@ -5047,5 +5066,52 @@ mod property_panel_drawn {
                 "{degrees}"
             );
         }
+    }
+
+    #[test]
+    fn each_selection_view_closes_with_clear_selection_in_its_title_and_a_feature_has_none() {
+        for names in [&["Face5"][..], &["Face5", "Face6"][..]] {
+            let mut h = drawn(selecting(names, Answers::default()));
+            // `.panel-title .ab-btn`, at the title's right, past its 6 of padding.
+            let close = h
+                .get_by_role_and_label(Role::Button, "Clear selection")
+                .rect();
+            let right = PANE.x + W - css::TITLE_PADDING_RIGHT;
+            at(
+                close.min,
+                Pos2::new(
+                    right - css::TITLE_BTN,
+                    PANE.y + (css::TITLE_H - css::TITLE_BTN) / 2.0,
+                ),
+                "Clear selection",
+            );
+            h.get_by_role_and_label(Role::Button, "Clear selection")
+                .click();
+            h.run_steps(2);
+            let tab = h.state().tab.as_ref().unwrap();
+            assert!(tab.selection().is_empty(), "{names:?}");
+            // The document's properties now, which have no close button.
+            assert!(
+                h.query_by_role_and_label(Role::Button, "Clear selection")
+                    .is_none()
+            );
+        }
+        let mut tab = part();
+        tab.selection_mut().select_feature(fid("b0000001"));
+        let h = drawn(tab);
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Clear selection")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_features_id_row_copies_its_id() {
+        let mut tab = part();
+        tab.selection_mut().select_feature(fid("b0000001"));
+        let mut h = drawn(tab);
+        h.get_by_role_and_label(Role::Button, "Copy").click();
+        h.step();
+        assert_eq!(copied(&h).as_deref(), Some("b0000001"));
     }
 }

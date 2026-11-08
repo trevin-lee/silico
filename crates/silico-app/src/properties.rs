@@ -93,8 +93,14 @@ fn truncated(ui: &mut Ui, mut job: LayoutJob) -> Response {
 /// A side panel's title (`.panel-title`, the browser's and the property panel's): `icon`,
 /// if it has one (a dialog's), and `text` in capitals, on a [`theme::TITLE_BAR_HEIGHT`]
 /// row; and at its right, if `close` names one, a close button (`.panel-title .ab-btn`)
-/// labelled so: whether it was clicked.
-pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str, close: Option<&str>) -> bool {
+/// labelled so, its tooltip the command it does (a dialog's Cancel, the selection's Clear
+/// selection) with its keys: whether it was clicked.
+pub(crate) fn title(
+    ui: &mut Ui,
+    icon: Option<Icon>,
+    text: &str,
+    close: Option<(&str, crate::shortcuts::Command)>,
+) -> bool {
     let (rect, _) = ui.allocate_exact_size(
         vec2(ui.available_width(), theme::TITLE_BAR_HEIGHT),
         Sense::hover(),
@@ -108,14 +114,14 @@ pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str, close: Option<&
     );
     let mut clicked = false;
     let words = match close {
-        Some(label) => {
+        Some((label, command)) => {
             let side = theme::PANEL_TITLE_BUTTON_SIZE;
             let button = Rect::from_min_size(
                 pos2(inner.right() - side, inner.center().y - side / 2.0),
                 Vec2::splat(side),
             );
             clicked = within(ui, button, ("title-close", text), |ui| {
-                close_button(ui, label)
+                close_button(ui, label, command)
             })
             .clicked();
             Rect::from_min_max(
@@ -152,8 +158,9 @@ pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str, close: Option<&
 }
 
 /// The title's close button (`.panel-title .ab-btn`): its × in Gray.750, white on Gray.300
-/// hovered, labelled `label`, with Cancel's tooltip.
-fn close_button(ui: &mut Ui, label: &str) -> Response {
+/// hovered, labelled `label`, its tooltip `command`'s words and keys (`data-tip`,
+/// `data-tipk`).
+fn close_button(ui: &mut Ui, label: &str, command: crate::shortcuts::Command) -> Response {
     let side = theme::PANEL_TITLE_BUTTON_SIZE;
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
@@ -178,8 +185,7 @@ fn close_button(ui: &mut Ui, label: &str) -> Response {
         ui,
         Rect::from_center_size(rect.center(), Vec2::splat(IconSize::Small.points())),
     );
-    let cancel = crate::shortcuts::Command::Cancel;
-    let said = format!("{} ({})", cancel.label(), cancel.keys_text(ui.ctx()));
+    let said = format!("{} ({})", command.label(), command.keys_text(ui.ctx()));
     response.on_hover_text(said)
 }
 
@@ -493,12 +499,29 @@ fn grouped(units: u128) -> String {
     out
 }
 
-/// A direction (a normal, an axis) as the prototype writes one (`(${normal.join(', ')})`)
-/// and the command API writes its components: each the shortest decimal that reads back as
-/// it, never an exponent, `-0` written `0`.
+/// A direction (a normal, an axis) as the prototype writes one (`(${normal.join(', ')})`):
+/// each component exactly, as JavaScript writes a number ([`script_number`]).
 pub(crate) fn direction(direction: [f64; 3]) -> String {
-    let [x, y, z] = direction.map(|c| if c == 0.0 { 0.0 } else { c });
+    let [x, y, z] = direction.map(script_number);
     format!("({x}, {y}, {z})")
+}
+
+/// `value` as JavaScript's `Number.prototype.toString` writes it: the shortest decimal that
+/// reads back as it, in an exponent's form where JavaScript uses one (under 1e-6 or from
+/// 1e21 on, its exponent signed: `6.123233995736766e-17`, `1e+21`), never rounded further;
+/// `-0` written `0`. Kernel noise in a unit vector stays readable, and exact.
+fn script_number(value: f64) -> String {
+    let value = if value == 0.0 { 0.0 } else { value };
+    let magnitude = value.abs();
+    if magnitude == 0.0 || (1e-6..1e21).contains(&magnitude) {
+        return format!("{value}");
+    }
+    // Rust's `{:e}` is the same shortest digits, its exponent unsigned when it's positive.
+    let written = format!("{value:e}");
+    match written.split_once('e') {
+        Some((digits, power)) if !power.starts_with('-') => format!("{digits}e+{power}"),
+        _ => written,
+    }
 }
 
 /// A row of a modal's list (`.prop` with `padding: 0`, as the prototype's "What changed on
@@ -2211,15 +2234,32 @@ mod tests {
     }
 
     #[test]
-    fn a_direction_is_written_as_the_command_api_writes_its_components() {
+    fn a_direction_is_written_as_the_prototypes_javascript_writes_its_components() {
         assert_eq!(direction([0.0, 0.0, 1.0]), "(0, 0, 1)");
         assert_eq!(direction([-1.0, -0.0, 0.0]), "(-1, 0, 0)");
         assert_eq!(
             direction([std::f64::consts::FRAC_1_SQRT_2, 0.0, -0.5]),
             "(0.7071067811865476, 0, -0.5)"
         );
-        // Never an exponent.
-        assert_eq!(direction([1e-7, 0.0, 1.0]), "(0.0000001, 0, 1)");
+        // Kernel noise: cos(π/2) as an f64, as `String(Math.cos(Math.PI / 2))` writes it.
+        assert_eq!(
+            direction([6.123233995736766e-17, 0.0, -1.0]),
+            "(6.123233995736766e-17, 0, -1)"
+        );
+        // JavaScript's bounds, by hand from `Number.prototype.toString`: 1e-6 is the least
+        // written plainly, and anything under it, or from 1e21 on, with an exponent.
+        for (value, written) in [
+            (1e-6, "0.000001"),
+            (-1.5e-6, "-0.0000015"),
+            (9.99e-7, "9.99e-7"),
+            (-1e-7, "-1e-7"),
+            (5e-324, "5e-324"),
+            (123_456_789_012_345_680_000.0, "123456789012345680000"),
+            (1e21, "1e+21"),
+            (-2.5e22, "-2.5e+22"),
+        ] {
+            assert_eq!(script_number(value), written, "{value:e}");
+        }
     }
 
     #[test]

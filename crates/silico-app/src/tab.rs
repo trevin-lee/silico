@@ -3520,7 +3520,7 @@ impl Tab {
     }
 
     /// The feature `id`'s name, as the timeline last listed it: its ID if it doesn't.
-    fn name_of(&self, id: &FeatureId) -> String {
+    pub(crate) fn name_of(&self, id: &FeatureId) -> String {
         self.entry(id.as_str())
             .map_or_else(|| id.as_str().to_owned(), |entry| entry.name.clone())
     }

@@ -26668,6 +26668,52 @@ fn a_measure_waited_for_shows_no_value_of_the_selection_before_it_and_one_answer
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn a_pair_waiting_on_a_feature_that_failed_says_why_and_not_that_its_not_measured_yet() {
+    // The block made 41 long fails to build: its two faces selected wait, each with why,
+    // which the Measure section says in place of its rows, as one element's Stability says
+    // it.
+    let f = fixture();
+    f.kernel.refuse(|op| match op {
+        Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx == 41.0 => {
+            Some(Error::new(ErrorCode::KernelFailed, "the block came apart"))
+        }
+        _ => None,
+    });
+    let mut h = a_measured_box(&f);
+    select_in_box(&mut h, &["Face5", "Face6"]);
+    row_until(&mut h, "Distance", "10.00 mm");
+    set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "41");
+    let whys: Vec<String> = element_states(&h)
+        .into_iter()
+        .map(|(name, why)| why.unwrap_or_else(|| panic!("{name} isn't waiting")))
+        .collect();
+    // Each in the core's words, naming its element and its place in the selection.
+    for (at, why) in whys.iter().enumerate() {
+        assert!(why.starts_with(&format!("selection.{at}, ")), "{why}");
+        assert!(why.contains("the block came apart"), "{why}");
+    }
+    let said = |h: &AppHarness, why: &str| {
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .query_all_by_label_contains(why)
+            .count()
+    };
+    step_until(&mut h, "why each waits said", |h| {
+        whys.iter().all(|why| said(h, why) > 0)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    // Each said once, in place of the rows, and never as a measure not read yet.
+    for why in &whys {
+        assert_eq!(said(&h, why), 1, "{why}");
+    }
+    assert!(!shows(&h, "Properties", "Not measured yet"));
+    assert_eq!(row_value(&h, "Distance"), None);
+    assert_eq!(row_value(&h, "Angle"), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// A fuse's history in which its base, a 1 mm cube, is the result, its Face1 and Edge1
 /// reported by nothing (Edge1 bounding Face1 alone), so both are named by their numbers,
 /// unstable (N3); the rest kept; the tool reported by nothing. By hand, as the core's
