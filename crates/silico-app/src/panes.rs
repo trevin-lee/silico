@@ -3446,8 +3446,12 @@ mod property_panel_drawn {
     }
 
     #[test]
-    fn each_dialogs_choices_draw_as_seg_where_their_words_fit_and_as_a_select_where_not() {
-        // A revolve about one of its sketch's lines, offered as itself, besides each kind's.
+    fn each_dialogs_choices_draw_as_a_select_however_few_and_short_their_words() {
+        // `renderDialog`'s Extent, `<button class="field select">` with its down icon, never
+        // `.seg`: each kind's choices, and a revolve's about one of its sketch's lines,
+        // offered as itself. A revolve's two forms and two axes among them, which side by
+        // side would fit the value column at 295 (Inter Medium at 12: One side 50.6,
+        // Symmetric 61.6, each well under half the column's 167).
         let mut about_a_line = Dialog::new(Kind::Revolve, None, 1);
         for input in &mut about_a_line.inputs {
             if let crate::dialog::Value::Choice { options, .. } = &mut input.value
@@ -3460,54 +3464,58 @@ mod property_panel_drawn {
             .into_iter()
             .map(|kind| Dialog::new(kind, None, 1))
             .chain([about_a_line]);
+        let left = PANE.x + css::PAD + css::KEY_W + css::ROW_GAP;
         let mut selects = Vec::new();
         for dialog in dialogs {
             let kind = dialog.kind.title();
             let offered = choices(&dialog);
             let h = dialog_drawn(dialog, None);
             for (key, options, chosen) in offered {
-                if let Some(select) = h.query_by_role_and_label(Role::ComboBox, key) {
-                    // A select: what's chosen shows; none of the words is laid out as `.seg`.
-                    assert_eq!(
-                        select.accesskit_node().value().as_deref(),
-                        Some(options[chosen].as_str()),
-                        "{kind}'s {key}"
-                    );
-                    for option in &options {
-                        assert!(h.query_by_label(option).is_none(), "{kind}'s {option}");
-                    }
-                    selects.push(format!("{kind} {key}"));
-                    continue;
+                let what = format!("{kind}'s {key}");
+                let node = h
+                    .query_by_role_and_label(Role::ComboBox, key)
+                    .unwrap_or_else(|| panic!("{what}: no drop-down"));
+                // Across the value column, a field high, showing what's chosen.
+                let select = node.rect();
+                assert!(
+                    near(select.left(), left) && near(select.right(), PANE.x + W - css::PAD),
+                    "{what}: {select:?}"
+                );
+                assert!(near(select.height(), css::FIELD_H), "{what}: {select:?}");
+                assert_eq!(
+                    node.accesskit_node().value().as_deref(),
+                    Some(options[chosen].as_str()),
+                    "{what}"
+                );
+                text_in(&h, &options[chosen], select);
+                // None of its words is a button of its own, and none but the chosen one's
+                // is painted.
+                for (place, option) in options.iter().enumerate() {
+                    assert!(h.query_by_label(option).is_none(), "{what}'s {option}");
+                    let painted = painted(&h)
+                        .into_iter()
+                        .filter(|shape| {
+                            matches!(shape, Shape::Text(shown) if shown.galley.text() == option)
+                        })
+                        .count();
+                    let want = usize::from(place == chosen);
+                    assert_eq!(painted, want, "{what}'s {option} painted {painted} times");
                 }
-                // `.seg`: no two choices overlap, and each one's words lie inside it.
-                let rects: Vec<Rect> = options
-                    .iter()
-                    .map(|option| h.get_by_role_and_label(Role::Button, option).rect())
-                    .collect();
-                for (at, rect) in rects.iter().enumerate() {
-                    for other in &rects[at + 1..] {
-                        assert!(
-                            rect.intersect(*other).area() <= 0.0,
-                            "{kind}'s {key}: {rect:?} and {other:?}"
-                        );
-                    }
-                    let shown = text(&h, &options[at]);
-                    let words = Rect::from_min_size(shown.pos, shown.galley.size());
-                    assert!(
-                        rect.contains_rect(words),
-                        "{kind}'s {:?}: {words:?} outside {rect:?}",
-                        options[at]
-                    );
-                }
+                selects.push(format!("{kind} {key}"));
             }
         }
-        // At 295 (the reviewer's measures, Inter Medium at 12: One side 50.6, Symmetric 61.6,
-        // Two sides 58.5, Through all 64.6, in a value column of 167): the pocket's four and
-        // the pad's three don't fit; a revolve's two forms and two axes do; its three axes,
-        // one a line's ID, don't.
         assert_eq!(
             selects,
-            ["Pad Extent", "Pocket Extent", "Revolve Axis"],
+            [
+                "Pad Extent",
+                "Pocket Extent",
+                "Revolve Axis",
+                "Revolve Extent",
+                "Groove Axis",
+                "Groove Extent",
+                "Revolve Axis",
+                "Revolve Extent",
+            ],
             "the choices drawn as selects"
         );
     }

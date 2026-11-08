@@ -4699,40 +4699,25 @@ fn input<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
     dialog(h).get_by_role_and_label(Role::TextInput, label)
 }
 
-/// Whether the dialog's choice `key` has `option` chosen: a drop-down's value, or a
-/// segmented control's button toggled, as the panel's width draws it.
+/// Whether the dialog's choice `key`, a drop-down, shows `option` chosen.
 fn chosen(h: &AppHarness, key: &str, option: &str) -> bool {
-    match dialog(h).query_by_role_and_label(Role::ComboBox, key) {
-        Some(select) => select.accesskit_node().value().as_deref() == Some(option),
-        None => {
-            dialog(h)
-                .get_by_role_and_label(Role::Button, option)
-                .accesskit_node()
-                .toggled()
-                == Some(eframe::egui::accesskit::Toggled::True)
-        }
-    }
+    dialog(h)
+        .get_by_role_and_label(Role::ComboBox, key)
+        .accesskit_node()
+        .value()
+        .as_deref()
+        == Some(option)
 }
 
-/// `option` chosen in the dialog's choice `key`: from its drop-down's menu, or its
-/// segmented control's button, as the panel's width draws it.
+/// `option` chosen in the dialog's choice `key`, from its drop-down's menu.
 fn choose(h: &mut AppHarness, key: &str, option: &str) {
-    if dialog(h)
-        .query_by_role_and_label(Role::ComboBox, key)
-        .is_some()
-    {
-        dialog(h).get_by_role_and_label(Role::ComboBox, key).click();
-        step_until(h, "the drop-down's menu", |h| {
-            h.query_all_by_role_and_label(Role::Button, option).count() == 1
-        });
-        // egui lays a new menu out unseen in its first frame, and places it in its next.
-        step(h);
-        h.get_by_role_and_label(Role::Button, option).click();
-    } else {
-        dialog(h)
-            .get_by_role_and_label(Role::Button, option)
-            .click();
-    }
+    dialog(h).get_by_role_and_label(Role::ComboBox, key).click();
+    step_until(h, "the drop-down's menu", |h| {
+        h.query_all_by_role_and_label(Role::Button, option).count() == 1
+    });
+    // egui lays a new menu out unseen in its first frame, and places it in its next.
+    step(h);
+    h.get_by_role_and_label(Role::Button, option).click();
     step(h);
     step(h);
     assert!(chosen(h, key, option), "{option} not chosen in {key}");
@@ -4990,7 +4975,6 @@ fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
             .query_by_role_and_label(Role::TextInput, "Length 2")
             .is_none()
     );
-    // Its four options don't fit the panel side by side, so they're a drop-down's.
     choose(&mut h, "Extent", "Two sides");
     step_until(&mut h, "two sides", |h| {
         dialog(h)
@@ -5991,31 +5975,26 @@ fn edit_feature_of_a_revolve_about_a_sketch_line_keeps_that_axis() {
     // name in its box.
     assert!(chosen(&h, "Axis", "nc000000"));
     assert!(!chosen(&h, "Axis", "Y axis"));
-    // And the Y axis offered beside it: a segmented control's button (`chosen` finds it), or
-    // an entry in the drop-down's menu, opened and closed again.
-    if dialog(&h)
-        .query_by_role_and_label(Role::ComboBox, "Axis")
-        .is_some()
-    {
-        dialog(&h)
-            .get_by_role_and_label(Role::ComboBox, "Axis")
-            .click();
-        step_until(&mut h, "the drop-down's menu", |h| {
-            h.query_all_by_role_and_label(Role::Button, "Y axis")
-                .count()
-                == 1
-        });
-        step(&mut h);
-        dialog(&h)
-            .get_by_role_and_label(Role::ComboBox, "Axis")
-            .click();
-        step_until(&mut h, "the drop-down's menu closed", |h| {
-            h.query_all_by_role_and_label(Role::Button, "Y axis")
-                .count()
-                == 0
-        });
-        assert!(chosen(&h, "Axis", "nc000000"));
-    }
+    // And the Y axis offered beside it, an entry in the drop-down's menu, opened and closed
+    // again.
+    dialog(&h)
+        .get_by_role_and_label(Role::ComboBox, "Axis")
+        .click();
+    step_until(&mut h, "the drop-down's menu", |h| {
+        h.query_all_by_role_and_label(Role::Button, "Y axis")
+            .count()
+            == 1
+    });
+    step(&mut h);
+    dialog(&h)
+        .get_by_role_and_label(Role::ComboBox, "Axis")
+        .click();
+    step_until(&mut h, "the drop-down's menu closed", |h| {
+        h.query_all_by_role_and_label(Role::Button, "Y axis")
+            .count()
+            == 0
+    });
+    assert!(chosen(&h, "Axis", "nc000000"));
     assert!(chosen(&h, "Extent", "Symmetric"));
     assert_eq!(input(&h, "Angle").value().as_deref(), Some("90"));
     assert!(dialog(&h).query_by_label("Triangle").is_some());

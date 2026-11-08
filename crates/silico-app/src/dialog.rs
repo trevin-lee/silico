@@ -1138,7 +1138,7 @@ impl Dialog {
 }
 
 /// `input`'s value in its row, labelled by `label` (its key's): a field with its unit, a
-/// toggle, a choice of a few, or a selection box (highlighted if it's the active one).
+/// toggle, a choice's drop-down, or a selection box (highlighted if it's the active one).
 fn input_ui(
     ui: &mut Ui,
     input: &mut Input,
@@ -1179,7 +1179,7 @@ fn input_ui(
         }
         Value::Choice { options, chosen } => {
             let shown: Vec<String> = options.iter().map(|(_, shown)| shown.clone()).collect();
-            if let Some(place) = properties::choice(ui, input.label, &shown, *chosen, enabled) {
+            if let Some(place) = properties::select(ui, input.label, &shown, *chosen, enabled) {
                 *chosen = place;
             }
         }

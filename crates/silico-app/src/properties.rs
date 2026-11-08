@@ -1240,43 +1240,11 @@ fn chip(ui: &mut Ui, icon: Icon, name: &str) -> Response {
     response
 }
 
-/// A choice among `options`, the `chosen` one shown, labelled `key`: `.seg` if each of its
-/// words fits its share of `ui`'s width ([`fits_segmented`]), else a drop-down
-/// (`.field.select`, as `renderDialog`'s Extent); the one picked, if one was. Off unless
-/// `enabled`.
-pub(crate) fn choice(
-    ui: &mut Ui,
-    key: &str,
-    options: &[String],
-    chosen: usize,
-    enabled: bool,
-) -> Option<usize> {
-    if fits_segmented(ui, options, ui.available_width()) {
-        segmented(ui, options, chosen, enabled)
-    } else {
-        select(ui, key, options, chosen, enabled)
-    }
-}
-
-/// Whether each of `options`' words, as `.seg` draws them, fits its share of a `.seg`
-/// `width` wide with [`theme::SEGMENTED_ROOM`] at each side.
-pub(crate) fn fits_segmented(ui: &Ui, options: &[String], width: f32) -> bool {
-    let count = options.len().max(1) as f32;
-    let inner = width - 2.0 * theme::SEGMENTED_PADDING;
-    let share = (inner - (count - 1.0) * theme::SEGMENTED_PADDING) / count;
-    options.iter().all(|shown| {
-        let words = ui
-            .painter()
-            .layout_job(body(shown, theme::SEGMENTED_TEXT))
-            .size()
-            .x;
-        words + 2.0 * theme::SEGMENTED_ROOM <= share
-    })
-}
-
-/// A drop-down (`.field.select`) labelled `key`, showing `options`' `chosen` one, a menu of
-/// them opened by a click: the one picked, if one was.
-fn select(
+/// A choice among `options` (a dialog's Extent or Axis), always a drop-down
+/// (`.field.select`, as `renderDialog` draws Extent, `<button class="field select">` with
+/// its down icon), labelled `key`, showing the `chosen` one, a menu of them opened by a
+/// click: the one picked, if one was. Off unless `enabled`.
+pub(crate) fn select(
     ui: &mut Ui,
     key: &str,
     options: &[String],
