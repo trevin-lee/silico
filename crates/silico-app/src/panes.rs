@@ -4038,7 +4038,7 @@ mod property_panel_drawn {
     #[test]
     fn a_document_problems_show_in_timeline_selects_its_feature_for_the_timeline_to_scroll_to() {
         // `docProps` gives every card Edit and Show in timeline: the gate's problem naming
-        // Hole, with nothing selected.
+        // Hole, with nothing selected, the timeline counting it as the gate's.
         let mut tab = part();
         let gate = silico_core::Error::new(
             silico_core::ErrorCode::InvalidInput,
@@ -4047,14 +4047,18 @@ mod property_panel_drawn {
         .with_feature("c0000001")
         .with_parameter("tool");
         tab.document_problems.push(Said::of(&gate));
+        if let Some(timeline) = tab.timeline.as_mut() {
+            timeline.problems = 1;
+        }
         let mut h = drawn(tab);
         assert!(
             h.query_by_label("Revision").is_some(),
             "the document's view"
         );
-        // On: the cut's dialog is Subtract's.
+        // Off: nothing of a document the gate refused changes but its text, though the
+        // cut's dialog is Subtract's.
         assert!(
-            !h.get_by_role_and_label(Role::Button, "Edit Hole")
+            h.get_by_role_and_label(Role::Button, "Edit Hole")
                 .accesskit_node()
                 .is_disabled()
         );
@@ -4342,7 +4346,7 @@ mod property_panel_drawn {
             assert_eq!(colour(&shown, 0), css::CAND_TEXT);
             top = row.bottom() + css::CAND_MARGIN;
         }
-        // `.ec-actions`: Edit Hole (`.btn-secondary`, Gray.300, off: its words Gray.750),
+        // `.ec-actions`: Edit Hole (`.btn-secondary`, Gray.300, on, its words Gray.750),
         // then Copy as JSON 6 after it (`.btn-ghost`: no fill, Gray.750), each 22 high.
         let edit = h.get_by_role_and_label(Role::Button, "Edit Hole").rect();
         assert!(

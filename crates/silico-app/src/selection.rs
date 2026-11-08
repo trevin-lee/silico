@@ -264,6 +264,15 @@ pub enum OnBase {
     Missing,
 }
 
+/// A name read in one feature's solid alone ([`Selection::read_on`], [`Selection::holds_in`]):
+/// kept there, with what a store writes for it or why it can't; missing, that solid holding
+/// no element by it; or unread, and why.
+enum InSolid {
+    Kept(Result<Arc<Name>, Error>),
+    Missing,
+    Unread(Error),
+}
+
 /// What [`Selection::keep_only`] let go of: how many elements of each kind, and how many
 /// features.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -536,24 +545,42 @@ impl Selection {
     /// [`OnBase::Missing`], that solid holding no element by it (`reference_broken`). Names
     /// no element map and waits for none: the UI's thread calls it.
     pub fn read_on(&self, name: &str, feature: &FeatureId) -> OnBase {
+        match self.read_in(name, feature) {
+            InSolid::Kept(stored) => OnBase::Found(stored),
+            InSolid::Missing => OnBase::Missing,
+            InSolid::Unread(why) => OnBase::Found(Err(why)),
+        }
+    }
+
+    /// `name`, picked on the published model, read in the feature `feature`'s solid alone
+    /// (the core's `resolve_in`): kept there, with what a store writes for it or why it
+    /// can't; missing, that solid holding no element by it (`reference_broken`); or unread,
+    /// and why (no model; that solid's elements not named yet, or never named; `feature`
+    /// with no solid; the name's own feature failed). Names no element map and waits for
+    /// none.
+    fn read_in(&self, name: &str, feature: &FeatureId) -> InSolid {
         let Some(model) = &self.model else {
-            return OnBase::Found(Err(Error::new(
-                ErrorCode::Conflict,
-                format!("{name} isn't answered yet: no model is built yet"),
-            )
-            .with_element(name)
-            .with_suggestion("select it again once the model has rebuilt")));
-        };
-        match rules::resolve_in(model, &[name], PARAMETER, feature) {
-            Err(error) => OnBase::Found(Err(error)),
-            Ok(answer) => match answer.kept.into_iter().next() {
-                Some(found) => OnBase::Found(found.stored),
-                None if !answer.pending.is_empty() => OnBase::Found(Err(Error::new(
+            return InSolid::Unread(
+                Error::new(
                     ErrorCode::Conflict,
-                    format!("{name} isn't answered yet: {feature}'s elements aren't named yet"),
+                    format!("{name} isn't answered yet: no model is built yet"),
                 )
                 .with_element(name)
-                .with_suggestion("select it again once the model has rebuilt"))),
+                .with_suggestion("select it again once the model has rebuilt"),
+            );
+        };
+        match rules::resolve_in(model, &[name], PARAMETER, feature) {
+            Err(error) => InSolid::Unread(error),
+            Ok(answer) => match answer.kept.into_iter().next() {
+                Some(found) => InSolid::Kept(found.stored),
+                None if !answer.pending.is_empty() => InSolid::Unread(
+                    Error::new(
+                        ErrorCode::Conflict,
+                        format!("{name} isn't answered yet: {feature}'s elements aren't named yet"),
+                    )
+                    .with_element(name)
+                    .with_suggestion("select it again once the model has rebuilt"),
+                ),
                 // Not in that solid only if that's why: any other reason (its elements
                 // never named, the name's feature failed) is said as it is.
                 None => match answer.gone.first() {
@@ -562,12 +589,12 @@ impl Selection {
                             if gone.failed.is_none()
                                 && why.code() == ErrorCode::ReferenceBroken =>
                         {
-                            OnBase::Missing
+                            InSolid::Missing
                         }
-                        Some(why) => OnBase::Found(Err(why.clone())),
-                        None => OnBase::Found(Err(unread(name, feature))),
+                        Some(why) => InSolid::Unread(why.clone()),
+                        None => InSolid::Unread(unread(name, feature)),
                     },
-                    None => OnBase::Found(Err(unread(name, feature))),
+                    None => InSolid::Unread(unread(name, feature)),
                 },
             },
         }
@@ -726,19 +753,16 @@ impl Selection {
     }
 
     /// Whether the feature `feature`'s solid holds an element by `name`, picked on the
-    /// published model (the core's `resolve_in`, as [`read_on`](Self::read_on) reads it):
-    /// whether it does, held stable or not; none if that can't be read now (no model, that
-    /// solid's elements not named yet, or `feature` with no solid). Names no element map and
-    /// waits for none: the UI's thread calls it.
-    pub fn holds_in(&self, name: &str, feature: &FeatureId) -> Option<bool> {
-        let model = self.model.as_ref()?;
-        let answer = rules::resolve_in(model, &[name], PARAMETER, feature).ok()?;
-        if !answer.kept.is_empty() {
-            Some(true)
-        } else if answer.pending.is_empty() {
-            Some(false)
-        } else {
-            None
+    /// published model, read as [`read_on`](Self::read_on) reads it: whether it does, its
+    /// name stable there or not (a boolean's box takes the body, not the name); or why that
+    /// can't be read, as `read_on` says it (no model; that solid's elements not named yet,
+    /// or never named; `feature` with no solid; the name's own feature failed). Names no
+    /// element map and waits for none: the UI's thread calls it.
+    pub fn holds_in(&self, name: &str, feature: &FeatureId) -> Result<bool, Error> {
+        match self.read_in(name, feature) {
+            InSolid::Kept(_) => Ok(true),
+            InSolid::Missing => Ok(false),
+            InSolid::Unread(why) => Err(why),
         }
     }
 

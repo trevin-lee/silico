@@ -205,10 +205,7 @@ fn unchangeable(tab: &Tab) -> Option<String> {
         .as_ref()
         .is_some_and(|timeline| timeline.problems > 0)
     {
-        return Some(
-            "The document has problems of its own: no feature changes until they're mended"
-                .to_owned(),
-        );
+        return Some(crate::tab::UNMENDED.to_owned());
     }
     None
 }
