@@ -708,6 +708,11 @@ pub struct Tab {
     exported: bool,
     /// The export out was sent from a dialog since cancelled, not the one open now.
     export_disowned: bool,
+    /// The broken reference's candidate whose card row the pointer is over (flow 6b), as
+    /// the frame before had it, which the canvas lights; and this frame's, as the cards
+    /// drawn so far have said it ([`hover_candidate`](Self::hover_candidate)).
+    candidate_hot: Option<String>,
+    candidate_next: Option<String>,
     /// The viewport's camera, meshes, and `meshes` read (M5.6).
     pub view: crate::viewport::View,
     /// A test's watch on what [`overlay`](Self::overlay) is given: called after it each
@@ -837,6 +842,8 @@ impl Tab {
             export_replacing: None,
             exported: false,
             export_disowned: false,
+            candidate_hot: None,
+            candidate_next: None,
             view: crate::viewport::View::default(),
             watch: None,
             after_status: None,
@@ -894,6 +901,15 @@ impl Tab {
             &hidden,
         ) {
             self.toast = Some(toast);
+        }
+        let candidate = self
+            .candidate_hot
+            .as_deref()
+            .and_then(|name| self.selection.lit(name, &self.view));
+        if candidate != self.view.candidate {
+            // Drawn in the next frame: asked for, the pointer maybe still.
+            self.view.candidate = candidate;
+            painter.ctx().request_repaint();
         }
         if self.box_toggled() {
             // What the box took is sent from the dialog's pane, maybe drawn already.
@@ -1911,6 +1927,8 @@ impl Tab {
                         }
                         Err(problems) => {
                             self.message = Some(said(&problems));
+                            // What a repair said it did, it didn't.
+                            self.told = None;
                             self.refused.insert(field);
                         }
                     }
@@ -3241,7 +3259,257 @@ impl Tab {
                 self.show_in_timeline(id);
                 false
             }
+            crate::properties::CardAct::Use { broken, candidate } => {
+                self.use_candidate(sessions, &broken, &candidate)
+            }
+            crate::properties::CardAct::Remove(broken) => self.remove_reference(sessions, &broken),
         }
+    }
+
+    /// The fillet or chamfer `broken` is of, as the published model's document holds it,
+    /// if that's the document the session is at, the card was read at it too, and nothing of
+    /// the tab's is under way: what a broken reference's card mends. None otherwise.
+    fn dressing(&self, broken: &crate::repair::Broken) -> Option<crate::repair::Dressing> {
+        if !self.quiet() || broken.read != self.revision {
+            return None;
+        }
+        let (model, revision) = self.selection.model()?;
+        if revision != self.revision {
+            return None;
+        }
+        crate::repair::Dressing::of(model.document(), &broken.feature)
+    }
+
+    /// The name the timeline gives the feature `id`, or its ID.
+    fn named(&self, id: &FeatureId) -> String {
+        self.entry(id.as_str())
+            .map_or_else(|| id.to_string(), |entry| entry.name.clone())
+    }
+
+    /// Whether the open dialog edits the feature `id`.
+    fn dialog_of(&self, id: &FeatureId) -> bool {
+        self.dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.as_ref() == Some(id))
+    }
+
+    /// What a card of `said` offers to mend a broken reference (flow 6b), if it's one with
+    /// candidates (`errCard` offers Use and Remove the edge only then), read at the revision
+    /// of the `check` it came from (every card's text is that check's): Remove the edge off
+    /// for the feature's last edge, saying why, unless its dialog is open (whose box of
+    /// names may be emptied, its OK off until an edge is picked, as SolidWorks' Fillet
+    /// PropertyManager has it); and the candidate whose edge the canvas's pointer is over.
+    pub(crate) fn repair(&self, said: &Said) -> Option<crate::properties::Repair> {
+        let (read, _) = self.listed_for?;
+        let broken = crate::repair::Broken::of(said, read)?;
+        if broken.candidates.is_empty() {
+            return None;
+        }
+        let remove = if self.dialog_of(&broken.feature) {
+            Ok(())
+        } else {
+            self.dressing(&broken).map_or(Ok(()), |dressing| {
+                dressing.removable(&self.named(&broken.feature))
+            })
+        };
+        let marked = self.selection.hovered().and_then(|hovered| {
+            broken
+                .candidates
+                .iter()
+                .find(|name| {
+                    self.selection.lit(name, &self.view) == Some((hovered.body, hovered.element))
+                })
+                .cloned()
+        });
+        Some(crate::properties::Repair {
+            broken,
+            remove,
+            marked,
+        })
+    }
+
+    /// The candidate whose card row the pointer is over this frame, said by a card drawn.
+    pub(crate) fn hover_candidate(&mut self, name: Option<String>) {
+        if self.candidate_next.is_none() {
+            self.candidate_next = name;
+        }
+    }
+
+    /// A new frame: the candidate the cards said last frame is the one the canvas lights.
+    /// Whether that changed, so a frame is asked for to light it.
+    pub(crate) fn take_candidate_hover(&mut self) -> bool {
+        let next = self.candidate_next.take();
+        if next == self.candidate_hot {
+            return false;
+        }
+        self.candidate_hot = next;
+        true
+    }
+
+    /// The candidate whose card row the pointer is over, as the canvas lights it.
+    pub fn candidate_hovered(&self) -> Option<&str> {
+        self.candidate_hot.as_deref()
+    }
+
+    /// A broken reference's `candidate` used in its place (`useCand`): read in the
+    /// feature's base as its dialog reads a pick (the core's `resolve_in`), and written at
+    /// the broken name's place in `edges` (`set_field` of `edges.N`, one undoable edit), the
+    /// status bar saying so; or, its dialog open, put in the broken name's place in its box
+    /// of names, which the dialog sends as its own edit. Refused, saying why, for a
+    /// candidate that can't be stored there (unstable, or not on the base), a card read at
+    /// another revision than the session's or while anything of the tab's is under way, or
+    /// a name the current model finds now. Whether a command was started.
+    pub(crate) fn use_candidate<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        broken: &crate::repair::Broken,
+        candidate: &str,
+    ) -> bool {
+        if self.closing() {
+            return false;
+        }
+        let name = self.named(&broken.feature);
+        if self.dialog_of(&broken.feature) {
+            return self.repair_in_dialog(sessions, broken, Some(candidate), &name);
+        }
+        if self.in_dialog() {
+            self.hush();
+            self.message = Some("Close the dialog before mending another feature".to_owned());
+            return false;
+        }
+        let Some(dressing) = self.dressing(broken) else {
+            self.hush();
+            self.message = Some(crate::repair::STALE.to_owned());
+            return false;
+        };
+        let read = |name: &str, base: &FeatureId| self.selection.read_on(name, base);
+        match crate::repair::used(broken, candidate, &dressing, &read, &name) {
+            Ok((edit, told)) => {
+                self.edit(sessions, edit);
+                self.told = Some(told);
+                true
+            }
+            Err(why) => {
+                self.hush();
+                self.message = Some(why);
+                false
+            }
+        }
+    }
+
+    /// A broken reference's name dropped from its feature's `edges` (`removeRef`): one
+    /// undoable edit setting `edges` without it, the status bar saying so; or, its dialog
+    /// open, let go from its box of names. Never a closed feature's last edge, which is said;
+    /// refused as Use is for a card of another revision or a name found now. Whether a
+    /// command was started.
+    pub(crate) fn remove_reference<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        broken: &crate::repair::Broken,
+    ) -> bool {
+        if self.closing() {
+            return false;
+        }
+        let name = self.named(&broken.feature);
+        if self.dialog_of(&broken.feature) {
+            return self.repair_in_dialog(sessions, broken, None, &name);
+        }
+        if self.in_dialog() {
+            self.hush();
+            self.message = Some("Close the dialog before mending another feature".to_owned());
+            return false;
+        }
+        let Some(dressing) = self.dressing(broken) else {
+            self.hush();
+            self.message = Some(crate::repair::STALE.to_owned());
+            return false;
+        };
+        let read = |name: &str, base: &FeatureId| self.selection.read_on(name, base);
+        match crate::repair::removed(broken, &dressing, &read, &name) {
+            Ok((edit, told)) => {
+                self.edit(sessions, edit);
+                self.told = Some(told);
+                true
+            }
+            Err(why) => {
+                self.hush();
+                self.message = Some(why);
+                false
+            }
+        }
+    }
+
+    /// `broken` mended in the open dialog's box of names: `candidate`, read in the box's
+    /// base, put in its place, or, for none, the name let go; then sent as the dialog sends
+    /// its edits, the status bar saying what changed, and that the dialog's Cancel takes it
+    /// back, only if something was sent (a box emptied sends nothing, its OK off until an
+    /// edge is picked). Whether a command was started.
+    fn repair_in_dialog<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        broken: &crate::repair::Broken,
+        candidate: Option<&str>,
+        name: &str,
+    ) -> bool {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return false;
+        };
+        let base = dialog
+            .names_input()
+            .and_then(|names| names.body.clone())
+            .or_else(|| {
+                self.entry(broken.feature.as_str())
+                    .and_then(|entry| entry.inputs.first().cloned())
+            });
+        let stored = match (candidate, base) {
+            (None, _) => None,
+            (Some(candidate), Some(base)) => match self.selection.read_on(candidate, &base) {
+                crate::selection::OnBase::Found(Ok(stored)) => Some(stored.to_string()),
+                crate::selection::OnBase::Found(Err(refusal)) => {
+                    self.hush();
+                    self.message = Some(said(&Problems::from(refusal)));
+                    return false;
+                }
+                crate::selection::OnBase::Missing => {
+                    self.hush();
+                    self.message = Some(format!(
+                        "{candidate} isn't on {base}, which {name} is built on: it can't take \
+                         that edge"
+                    ));
+                    return false;
+                }
+            },
+            (Some(_), None) => {
+                self.hush();
+                self.message = Some(crate::repair::STALE.to_owned());
+                return false;
+            }
+        };
+        let chamfer = self
+            .dialog
+            .as_ref()
+            .is_some_and(|d| d.kind == Kind::Chamfer);
+        let Some(dialog) = self.dialog.as_mut() else {
+            return false;
+        };
+        let used = stored.is_some();
+        if !dialog.repair(broken, stored) {
+            self.hush();
+            self.message = Some(crate::repair::STALE.to_owned());
+            return false;
+        }
+        self.hush();
+        // Sent first: an edit hushes what was said before it.
+        let started = self.dialog_changed(sessions);
+        if started {
+            let made = crate::repair::Made::Dialog;
+            self.told = Some(if used {
+                crate::repair::used_words(name, chamfer, made)
+            } else {
+                crate::repair::removed_words(name, made)
+            });
+        }
+        started
     }
 
     /// The dialog kind of the feature `id`, if the timeline lists it and a dialog edits it.
@@ -5184,6 +5452,147 @@ mod tests {
         tab.rebuild_all(sessions);
         assert_eq!(tab.rebuilds_all, 1, "sent");
         taken_until(tab, sessions, |tab| tab.check_read.is_none());
+    }
+
+    // ---- A broken reference's repair: made only of the document its card was read of ----
+
+    /// [`BLOCK`]'s block, and Round, a fillet of its Edge1 and Edge13, which no box has:
+    /// Edge13 broken, at `edges.1`.
+    const BROKEN_ROUND: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}, {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge13"], "radius": 0.1}]}"#;
+
+    /// Polled until nothing of the tab's is under way and the session's revision's model is
+    /// published, as the selection holds it.
+    fn published_quietly(tab: &mut Tab, sessions: &FakeSessions) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            tab.poll(sessions);
+            let published = tab.selection.model().map(|(_, revision)| revision);
+            if tab.quiet() && published == Some(tab.revision) {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "never published");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// A card of Round's name at `place`, `name`, read at `read`.
+    fn round_card(place: usize, name: &str, read: Revision) -> crate::repair::Broken {
+        crate::repair::Broken {
+            feature: FeatureId::new("f0000001").unwrap(),
+            place,
+            name: name.to_owned(),
+            candidates: vec!["k7f2qx3m.box.Edge12".to_owned()],
+            read,
+        }
+    }
+
+    /// `tab`'s `use_candidate` of Edge12 for `card` refused as stale: nothing sent.
+    fn refused_as_stale(
+        tab: &mut Tab,
+        sessions: &FakeSessions,
+        card: &crate::repair::Broken,
+        case: &str,
+    ) {
+        let sent = tab.sent.clone();
+        assert!(
+            !tab.use_candidate(sessions, card, "k7f2qx3m.box.Edge12"),
+            "{case}: started"
+        );
+        assert_eq!(tab.sent, sent, "{case}: sent");
+        assert_eq!(tab.message.as_deref(), Some(crate::repair::STALE), "{case}");
+        assert_eq!(tab.told, None, "{case}");
+        assert!(
+            !tab.remove_reference(sessions, card),
+            "{case}: Remove started"
+        );
+        assert_eq!(tab.sent, sent, "{case}: Remove sent");
+        assert_eq!(
+            tab.message.as_deref(),
+            Some(crate::repair::STALE),
+            "{case}: Remove"
+        );
+    }
+
+    #[test]
+    fn a_repair_is_made_only_of_a_card_read_at_the_sessions_revision_with_its_model_and_nothing_under_way()
+     {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // Every kernel request held while `holding` is set.
+        let holding = Arc::new(AtomicBool::new(false));
+        let mut hold = None;
+        let (_dir, sessions, mut tab) = opened_on(BROKEN_ROUND, |kernel| {
+            let holding = Arc::clone(&holding);
+            hold = Some(kernel.hold(move |_| holding.load(Ordering::SeqCst)));
+        });
+        let hold = hold.unwrap();
+        published_quietly(&mut tab, &sessions);
+        let opened = tab.revision;
+        assert_eq!(opened, Revision::OPENED);
+        let length = |value: &str| Edit {
+            feature: FeatureId::new("k7f2qx3m").unwrap(),
+            field: "length".to_owned(),
+            value: silico_core::document::json::read(value.as_bytes()).unwrap(),
+        };
+        // An edit of the tab's under way: the revision it makes isn't known yet.
+        tab.edit(&sessions, length("5"));
+        assert!(!tab.quiet());
+        refused_as_stale(
+            &mut tab,
+            &sessions,
+            &round_card(1, "k7f2qx3m.box.Edge13", opened),
+            "an edit under way",
+        );
+        published_quietly(&mut tab, &sessions);
+        let edited = tab.revision;
+        assert!(edited > opened);
+        // A card read at the revision before: whatever the document holds now.
+        refused_as_stale(
+            &mut tab,
+            &sessions,
+            &round_card(1, "k7f2qx3m.box.Edge13", opened),
+            "read at the revision before",
+        );
+        // The session's revision's model not published yet (its rebuild held): the card
+        // read at it, but the model the selection reads is the revision before's.
+        holding.store(true, Ordering::SeqCst);
+        tab.edit(&sessions, length("6"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !(tab.quiet() && tab.revision > edited) {
+            tab.poll(&sessions);
+            assert!(std::time::Instant::now() < deadline, "never answered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            tab.selection.model().map(|(_, revision)| revision),
+            Some(edited)
+        );
+        let now = tab.revision;
+        refused_as_stale(
+            &mut tab,
+            &sessions,
+            &round_card(1, "k7f2qx3m.box.Edge13", now),
+            "its model not published",
+        );
+        holding.store(false, Ordering::SeqCst);
+        hold.release();
+        published_quietly(&mut tab, &sessions);
+        // A name the model finds (Edge1, at its own place): never written over.
+        let now = tab.revision;
+        refused_as_stale(
+            &mut tab,
+            &sessions,
+            &round_card(0, "k7f2qx3m.box.Edge1", now),
+            "a name found",
+        );
+        // Read at the session's revision, its model published, nothing under way, its name
+        // broken: written at its place.
+        let card = round_card(1, "k7f2qx3m.box.Edge13", tab.revision);
+        assert!(tab.use_candidate(&sessions, &card, "k7f2qx3m.box.Edge12"));
+        assert_eq!(tab.sent.last(), Some(&Sent::Edit("edges.1".to_owned())));
+        assert_eq!(
+            tab.told.as_deref(),
+            Some("Round now rounds the edge you picked. Undo puts the broken reference back.")
+        );
     }
 
     #[test]

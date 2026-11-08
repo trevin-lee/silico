@@ -16,6 +16,7 @@ use silico_core::document::FeatureId;
 
 use crate::icons::{Icon, IconSize};
 use crate::modal::{self, Kind};
+use crate::repair::Broken;
 use crate::tab::Said;
 use crate::theme;
 
@@ -461,12 +462,51 @@ pub(crate) struct Offer {
 }
 
 /// What an error card's button asked: the feature's dialog opened (Edit), or the feature
-/// selected and the timeline scrolled to it (Show in timeline). Copy as JSON is done where
-/// it's clicked.
+/// selected and the timeline scrolled to it (Show in timeline); a broken reference's
+/// candidate written in its place (Use), or the broken name dropped (Remove the edge).
+/// Copy as JSON is done where it's clicked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CardAct {
     Edit(FeatureId),
     Show(FeatureId),
+    Use { broken: Broken, candidate: String },
+    Remove(Broken),
+}
+
+/// What a broken reference's card offers to mend it (flow 6b): its candidates, each with
+/// Use, and Remove the edge, on, or off and why; and the candidate the canvas's pointer is
+/// over, if it's one, its row marked as a hover marks it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Repair {
+    pub broken: Broken,
+    pub remove: Result<(), String>,
+    pub marked: Option<String>,
+}
+
+/// What a card's drawing gave: what its buttons asked, and the candidate whose row the
+/// pointer is over, which the canvas lights.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CardOut {
+    pub asked: Option<CardAct>,
+    pub hovered: Option<String>,
+}
+
+/// The cards a dialog shows (its feature's error, a refusal), each with the name of the
+/// feature it names and what it offers to mend a broken reference; and what they gave.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Cards {
+    pub said: Vec<(Said, Option<String>, Option<Repair>)>,
+    pub out: CardOut,
+}
+
+impl CardOut {
+    /// `other`'s, after this one's: the first asked, and the first hovered.
+    pub(crate) fn or(self, other: CardOut) -> CardOut {
+        CardOut {
+            asked: self.asked.or(other.asked),
+            hovered: self.hovered.or(other.hovered),
+        }
+    }
 }
 
 /// The card's colours: an error's, or a warning's (`.err-card.warn`).
@@ -511,14 +551,26 @@ impl CardLook {
 /// core's error as an agent gets it. Each part only where `said` has it: a refusal said in
 /// words alone is its message and suggestion. What a button asked, if one was.
 ///
-/// SEAM: each candidate's Use and the card's Remove the edge (a fillet's or chamfer's
-/// `edges` written with the candidate in the broken name's place, or without it), once the
-/// card can send an edit; and each candidate's why (`.cand .why`), which the core doesn't
-/// give.
+/// A broken reference's card, given `repair`, offers each candidate's Use and Remove the
+/// edge (flow 6b), and says which candidate's row the pointer is over.
+///
+/// SEAM: each candidate's why (`.cand .why`), which the core doesn't give: the first's
+/// row says only "Closest · ".
 pub(crate) fn card(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> Option<CardAct> {
+    repair_card(ui, said, name, offer, None).asked
+}
+
+/// [`card`], mending a broken reference as `repair` offers, if it's given.
+pub(crate) fn repair_card(
+    ui: &mut Ui,
+    said: &Said,
+    name: Option<&str>,
+    offer: Offer,
+    repair: Option<&Repair>,
+) -> CardOut {
     let look = CardLook::of(said.warning);
     let (title, message) = card_title(said, name);
-    let mut asked = None;
+    let mut asked = CardOut::default();
     egui::Frame::new()
         .fill(look.fill)
         .stroke(Stroke::new(theme::BORDER_WIDTH, look.border))
@@ -552,7 +604,7 @@ pub(crate) fn card(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -
                 .inner_margin(theme::ERROR_CARD_BODY_PADDING)
                 .show(&mut content, |ui| {
                     ui.set_width(ui.available_width());
-                    asked = card_body(ui, said, message, name, offer, &look);
+                    asked = card_body(ui, said, message, name, offer, &look, repair);
                 });
             let used = content.min_rect();
             ui.advance_cursor_after_rect(Rect::from_min_size(used.min, vec2(width, used.height())));
@@ -563,15 +615,16 @@ pub(crate) fn card(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -
 /// A card for each of `listed`, of `tab`'s document (`errCard(p)`, as `docProps` and the
 /// `whatswrong` modal list them): each by the name of the feature it names, with Edit
 /// (enabled where its dialog can open now) and Show in timeline where the timeline lists
-/// that feature, and Copy as JSON; each card's widgets under `salt` and its place. What a
-/// card's button asked, if one was.
+/// that feature, a broken reference's candidates and Remove the edge
+/// ([`Tab::repair`](crate::tab::Tab::repair)), and Copy as JSON; each card's widgets under
+/// `salt` and its place. What a card's button asked, if one was, and the candidate hovered.
 pub(crate) fn document_cards(
     ui: &mut Ui,
     tab: &crate::tab::Tab,
     listed: &[Said],
     salt: &str,
-) -> Option<CardAct> {
-    let mut asked = None;
+) -> CardOut {
+    let mut out = CardOut::default();
     for (place, said) in listed.iter().enumerate() {
         let entry = said.feature().and_then(|id| tab.entry(id));
         let offer = Offer {
@@ -579,12 +632,15 @@ pub(crate) fn document_cards(
             show: entry.is_some(),
         };
         let name = entry.map(|entry| entry.name.as_str());
+        let repair = tab.repair(said);
         let card = ui
-            .push_id((salt, place), |ui| card(ui, said, name, offer))
+            .push_id((salt, place), |ui| {
+                repair_card(ui, said, name, offer, repair.as_ref())
+            })
             .inner;
-        asked = asked.or(card);
+        out = out.or(card);
     }
-    asked
+    out
 }
 
 /// `text` in the body's type on a line of the body's, in `colour`, unwrapped (a label
@@ -681,7 +737,8 @@ fn card_body(
     name: Option<&str>,
     offer: Offer,
     look: &CardLook,
-) -> Option<CardAct> {
+    repair: Option<&Repair>,
+) -> CardOut {
     for paragraph in message.into_iter().chain(said.cause.as_deref()) {
         ui.add(
             Label::new(card_words(paragraph, look.words))
@@ -707,8 +764,9 @@ fn card_body(
         });
         ui.add_space(theme::ERROR_CARD_FIX_MARGIN);
     }
-    candidates(ui, said.candidates());
-    card_buttons(ui, said, name, offer)
+    let mut out = candidates(ui, said.candidates(), repair);
+    out.asked = card_buttons(ui, said, name, offer, repair).or(out.asked);
+    out
 }
 
 /// A row of the card's (`.ec-kv`): its key, what it says in the accessibility tree
@@ -940,10 +998,16 @@ fn element_chips(
 
 /// The names a broken reference's error offers in its place, closest first (`errCard`'s
 /// candidates): a heading in capitals, then each name in a row of its own (`.cand`), its
-/// name in the monospace font, cut short with an ellipsis where it doesn't fit.
-fn candidates(ui: &mut Ui, names: &[String]) {
+/// name in the monospace font, cut short with an ellipsis where it doesn't fit, the first's
+/// "Closest · " under it (`.why`); and, given `repair`, each row's Use (`.btn-secondary`)
+/// at its right, the row lit as `.cand:hover` lights it while the pointer is over it, or
+/// while the canvas's pointer is over its edge (`repair`'s `marked`, the row selected in
+/// the accessibility tree). What a Use asked, and the candidate whose row the pointer is
+/// over, given `repair`.
+fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut {
+    let mut out = CardOut::default();
     if names.is_empty() {
-        return;
+        return out;
     }
     let heading = LayoutJob::single_section(
         "CANDIDATES, CLOSEST FIRST".to_owned(),
@@ -959,36 +1023,114 @@ fn candidates(ui: &mut Ui, names: &[String]) {
     );
     ui.add(Label::new(heading).selectable(false));
     ui.add_space(theme::ERROR_CARD_CANDIDATES_MARGIN);
-    for name in names {
-        egui::Frame::new()
-            .fill(theme::ERROR_CARD_CANDIDATE_BG)
-            .corner_radius(CornerRadius::same(theme::SMALL_CORNER_RADIUS))
-            .inner_margin(theme::ERROR_CARD_CANDIDATE_PADDING)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                let mut job = LayoutJob::single_section(
-                    name.clone(),
-                    TextFormat {
-                        line_height: Some(theme::BODY_LINE_HEIGHT),
-                        ..format(
-                            theme::MONOSPACE_SIZE,
-                            theme::ERROR_CARD_CANDIDATE_TEXT,
-                            true,
-                        )
-                    },
-                );
-                job.wrap = TextWrapping::truncate_at_width(ui.available_width());
-                ui.add(Label::new(job).selectable(false))
-                    .on_hover_text(name.as_str());
+    let pad = theme::ERROR_CARD_CANDIDATE_PADDING;
+    for (at, name) in names.iter().enumerate() {
+        let width = ui.available_width();
+        let button = repair.map(|_| modal::Button::new("Use", Kind::Secondary));
+        let button_width = button
+            .as_ref()
+            .map_or(0.0, |button| modal::natural_width(ui, button));
+        let room = button
+            .as_ref()
+            .map_or(0.0, |_| button_width + theme::ERROR_CARD_CANDIDATE_GAP);
+        let mut job = LayoutJob::single_section(
+            name.clone(),
+            TextFormat {
+                line_height: Some(theme::BODY_LINE_HEIGHT),
+                ..format(
+                    theme::MONOSPACE_SIZE,
+                    theme::ERROR_CARD_CANDIDATE_TEXT,
+                    true,
+                )
+            },
+        );
+        job.wrap = TextWrapping::truncate_at_width((width - pad.sum().x - room).max(1.0));
+        let named = ui.painter().layout_job(job);
+        // SEAM: the core gives no why; the first says only that it's the closest.
+        let why = (at == 0).then(|| {
+            ui.painter().layout_job(LayoutJob::single_section(
+                CLOSEST.to_owned(),
+                TextFormat {
+                    line_height: Some(theme::BODY_LINE_HEIGHT),
+                    ..format(
+                        theme::ERROR_CARD_CANDIDATE_WHY_SIZE,
+                        theme::ERROR_CARD_ACCENT,
+                        false,
+                    )
+                },
+            ))
+        });
+        let words = named.size().y + why.as_ref().map_or(0.0, |why| why.size().y);
+        let inner = words.max(button.as_ref().map_or(0.0, |_| theme::BUTTON_HEIGHT));
+        let (rect, response) =
+            ui.allocate_exact_size(vec2(width, inner + pad.sum().y), Sense::hover());
+        let hovered = ui.rect_contains_pointer(rect);
+        let marked = repair.and_then(|repair| repair.marked.as_deref()) == Some(name.as_str());
+        let fill = if hovered || marked {
+            theme::ERROR_CARD_CANDIDATE_HOVER_BG
+        } else {
+            theme::ERROR_CARD_CANDIDATE_BG
+        };
+        ui.painter()
+            .rect_filled(rect, theme::SMALL_CORNER_RADIUS, fill);
+        let left = rect.left() + pad.leftf();
+        let top = rect.top() + pad.topf() + (inner - words) / 2.0;
+        let name_height = named.size().y;
+        ui.painter()
+            .galley(pos2(left, top), named, theme::ERROR_CARD_CANDIDATE_TEXT);
+        if let Some(why) = why {
+            ui.painter()
+                .galley(pos2(left, top + name_height), why, theme::ERROR_CARD_ACCENT);
+        }
+        let said = if at == 0 {
+            format!("{CLOSEST}{name}")
+        } else {
+            name.clone()
+        };
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
+        ui.ctx()
+            .accesskit_node_builder(response.id, |node| node.set_selected(marked));
+        let response = response.on_hover_text(name.as_str());
+        if let (Some(repair), Some(button)) = (repair, button) {
+            let place = Rect::from_min_size(
+                pos2(
+                    rect.right() - pad.rightf() - button_width,
+                    rect.center().y - theme::BUTTON_HEIGHT / 2.0,
+                ),
+                vec2(button_width, theme::BUTTON_HEIGHT),
+            );
+            let used = ui
+                .push_id(("use", at), |ui| modal::paint(ui, place, &button))
+                .inner;
+            used.widget_info(|| {
+                WidgetInfo::labeled(WidgetType::Button, true, format!("Use {name}"))
             });
+            if used.clicked() {
+                out.asked = Some(CardAct::Use {
+                    broken: repair.broken.clone(),
+                    candidate: name.clone(),
+                });
+            }
+            if hovered || response.hovered() {
+                out.hovered = Some(name.clone());
+            }
+        }
         ui.add_space(theme::ERROR_CARD_CANDIDATE_MARGIN);
     }
+    out
 }
+
+/// What the closest candidate's row says under its name (`errCard`'s `'Closest · '`).
+pub(crate) const CLOSEST: &str = "Closest · ";
+
+/// The words of a broken reference's card's Remove the edge (`errCard`'s `removeRef`).
+pub(crate) const REMOVE_THE_EDGE: &str = "Remove the edge";
 
 /// One of the card's buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Which {
     Edit,
+    Remove,
     Show,
     Copy,
 }
@@ -998,7 +1140,13 @@ enum Which {
 /// can't open now; Show in timeline (`.btn-ghost`) if offered and it names one; and Copy as
 /// JSON (`.btn-ghost`) if the core said it, which puts its JSON on the clipboard. What
 /// Edit or Show asked, if either was clicked.
-fn card_buttons(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> Option<CardAct> {
+fn card_buttons(
+    ui: &mut Ui,
+    said: &Said,
+    name: Option<&str>,
+    offer: Offer,
+    repair: Option<&Repair>,
+) -> Option<CardAct> {
     let feature = said.feature().and_then(FeatureId::new);
     let json = said.json();
     let edit_words = match name {
@@ -1014,6 +1162,13 @@ fn card_buttons(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> O
             modal::Button::new(&edit_words, Kind::Secondary)
                 .icon(Icon::Edit)
                 .enabled(on),
+        ));
+    }
+    // After Edit, as `errCard` places it; off, saying why, where it can't act.
+    if let Some(repair) = repair {
+        buttons.push((
+            Which::Remove,
+            modal::Button::new(REMOVE_THE_EDGE, Kind::Ghost).enabled(repair.remove.is_ok()),
         ));
     }
     if feature.is_some() && offer.show {
@@ -1051,6 +1206,10 @@ fn card_buttons(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> O
             Which::Copy => response
                 .on_hover_text("Copies the structured error an agent receives")
                 .clicked(),
+            Which::Remove => match repair.map(|repair| &repair.remove) {
+                Some(Err(why)) => response.on_disabled_hover_text(why.as_str()).clicked(),
+                _ => response.clicked(),
+            },
             Which::Edit | Which::Show => response.clicked(),
         };
         if !clicked {
@@ -1059,6 +1218,9 @@ fn card_buttons(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> O
         match (which, &feature, &json) {
             (Which::Edit, Some(id), _) => asked = Some(CardAct::Edit(id.clone())),
             (Which::Show, Some(id), _) => asked = Some(CardAct::Show(id.clone())),
+            (Which::Remove, _, _) => {
+                asked = repair.map(|repair| CardAct::Remove(repair.broken.clone()));
+            }
             (Which::Copy, _, Some(json)) => ui.ctx().copy_text(json.clone()),
             _ => {}
         }
