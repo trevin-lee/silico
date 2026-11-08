@@ -3858,3 +3858,277 @@ fn an_arcs_distance_is_its_rims_on_its_sweep_and_its_nearer_ends_past_it() {
     // (−10, −1), just past its end: 1 from (−10, 0).
     assert!((distance([-10.0, -1.0]) - 1.0).abs() < 1e-9);
 }
+
+// The mutants #351's run left alive in the panels (`bar`): their look, the tools' names,
+// the legend, the state's dot, and the status bar's words, each against the prototype
+// (docs/design/m5-ui/: styles.css's `:root`, `.state-dot`, and `.legend`; sketch.js's
+// palette).
+
+/// Every shape `draw` paints in a context showing egui's light theme, after two passes so
+/// its layout has settled, nested ones flattened, in paint order.
+fn painted_on_light(mut draw: impl FnMut(&mut egui::Ui)) -> Vec<egui::Shape> {
+    let ctx = egui::Context::default();
+    ctx.set_fonts(crate::theme::fonts());
+    ctx.set_theme(egui::Theme::Light);
+    let mut painted = Vec::new();
+    for pass in 0..2 {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| draw(ui));
+        output.textures_delta.clear();
+        if pass == 1 {
+            let mut shapes: Vec<egui::Shape> =
+                output.shapes.into_iter().map(|c| c.shape).rev().collect();
+            while let Some(shape) = shapes.pop() {
+                match shape {
+                    egui::Shape::Vec(inner) => shapes.extend(inner.into_iter().rev()),
+                    shape => painted.push(shape),
+                }
+            }
+        }
+    }
+    painted
+}
+
+/// The palette of an under-defined rectangle with no degrees of freedom left to say, and
+/// `tool` on.
+fn palette_painted(tool: Option<silico_core::sketch_tools::ToolKind>) -> Vec<egui::Shape> {
+    let mut mode = mode_on(under(rectangle(Vec::new())));
+    mode.tool = tool;
+    let view = mode.palette_view(silico_core::command::Revision::OPENED);
+    let mut settings = bar::Settings::default();
+    painted_on_light(|ui| bar::palette(ui, &view, &mut settings))
+}
+
+/// The one text painted that says `words`.
+#[track_caller]
+fn painted_text<'a>(painted: &'a [egui::Shape], words: &str) -> &'a egui::epaint::TextShape {
+    let found: Vec<&egui::epaint::TextShape> = painted
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::Text(text) if text.galley.text() == words => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(found.len(), 1, "{words:?} painted {} times", found.len());
+    found[0]
+}
+
+#[test]
+fn the_panels_are_the_prototypes_floating_panels_whatever_the_windows_theme() {
+    // `--g200` (#212121) panels, `--g250` (#272626) borders, the selection `--blue`
+    // (#186add) under `--blue-text` (#f0f2ff), errors `--red` (#ff3865), and text
+    // `--g750` (#cfcfcf), `--g1000` (#ffffff) hovered or pressed.
+    let rgb = |hex: u32| {
+        let [_, r, g, b] = hex.to_be_bytes();
+        egui::Color32::from_rgb(r, g, b)
+    };
+    let visuals = bar::panel_visuals();
+    assert!(visuals.dark_mode);
+    assert_eq!(visuals.window_fill, rgb(0x212121));
+    assert_eq!(visuals.panel_fill, rgb(0x212121));
+    assert_eq!(visuals.window_stroke, egui::Stroke::new(1.0, rgb(0x272626)));
+    assert_eq!(visuals.selection.bg_fill, rgb(0x186add));
+    assert_eq!(
+        visuals.selection.stroke,
+        egui::Stroke::new(1.0, rgb(0xf0f2ff))
+    );
+    assert_eq!(visuals.error_fg_color, rgb(0xff3865));
+    let widgets = &visuals.widgets;
+    assert_eq!(
+        [
+            widgets.noninteractive.fg_stroke.color,
+            widgets.inactive.fg_stroke.color,
+            widgets.open.fg_stroke.color,
+        ],
+        [rgb(0xcfcfcf); 3]
+    );
+    assert_eq!(
+        [
+            widgets.hovered.fg_stroke.color,
+            widgets.active.fg_stroke.color,
+        ],
+        [rgb(0xffffff); 2]
+    );
+    // As the palette draws on a light window: its Show checkboxes' words in `--g750`.
+    let painted = palette_painted(None);
+    assert_eq!(
+        painted_text(&painted, "Profile").fallback_color,
+        rgb(0xcfcfcf)
+    );
+}
+
+#[test]
+fn each_tool_is_named_as_the_toolbars_name_it_and_the_palette_names_the_one_on() {
+    use silico_core::sketch_tools::ToolKind;
+    // The prototype's Line, Circle, and Point (app.js); Fusion's Center Rectangle, Center
+    // Point Arc, 3-Point Arc, and Tangent Arc; and section 9's Corner Rectangle (SolidWorks'
+    // name; Fusion's 2-Point Rectangle).
+    assert_eq!(
+        [
+            ToolKind::Line,
+            ToolKind::CornerRectangle,
+            ToolKind::CenterRectangle,
+            ToolKind::Circle,
+            ToolKind::CenterpointArc,
+            ToolKind::ThreePointArc,
+            ToolKind::TangentArc,
+            ToolKind::Point,
+        ]
+        .map(bar::tool_name),
+        [
+            "Line",
+            "Corner Rectangle",
+            "Center Rectangle",
+            "Circle",
+            "Center Point Arc",
+            "3-Point Arc",
+            "Tangent Arc",
+            "Point",
+        ]
+    );
+    // The palette's Tool: the one on, strong (`--g1000`), and its Automatic relations.
+    let painted = palette_painted(Some(ToolKind::TangentArc));
+    let name = painted_text(&painted, "Tangent Arc");
+    assert_eq!(
+        name.override_text_color
+            .unwrap_or(name.galley.job.sections[0].format.color),
+        egui::Color32::from_rgb(0xff, 0xff, 0xff)
+    );
+    painted_text(&painted, "Automatic relations");
+    // None on: "None", and no Automatic relations.
+    let painted = palette_painted(None);
+    painted_text(&painted, "None");
+    assert!(!painted.iter().any(
+        |shape| matches!(shape, egui::Shape::Text(text) if text.galley.text() == "Automatic relations")
+    ));
+}
+
+#[test]
+fn the_palettes_legend_is_the_prototypes_each_colour_on_its_swatch_and_construction_dashed() {
+    // sketch.js's Colours: a 10 × 3 swatch (`.legend i`) in each of `COL`'s colours beside
+    // its words, then Construction's dashed rule.
+    let painted = palette_painted(None);
+    let rgb = |hex: u32| {
+        let [_, r, g, b] = hex.to_be_bytes();
+        egui::Color32::from_rgb(r, g, b)
+    };
+    let legend = [
+        (0x7a95ff, "Under defined"),
+        (0xeeeeed, "Fully defined"),
+        (0xff3865, "Over defined, unsolvable"),
+        (0xf2c94c, "Invalid (zero length)"),
+        (0xb5b84a, "Dangling reference"),
+        (0x827f7f, "Driven dimension"),
+    ];
+    let swatches: Vec<(egui::Rect, egui::Color32)> = painted
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::Rect(rect) if rect.rect.size() == vec2(10.0, 3.0) => {
+                Some((rect.rect, rect.fill))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        swatches.iter().map(|(_, fill)| *fill).collect::<Vec<_>>(),
+        legend.map(|(hex, _)| rgb(hex))
+    );
+    for ((swatch, _), (_, words)) in swatches.iter().zip(legend) {
+        // Its words beside it, on its line.
+        let text = painted_text(&painted, words);
+        let middle = text.pos.y + text.galley.size().y / 2.0;
+        assert!(text.pos.x > swatch.right(), "{words}");
+        assert!((middle - swatch.center().y).abs() < 1.5, "{words}");
+    }
+    // Construction: a rule 2 points wide across its 10-point swatch, dashed as the canvas
+    // dashes construction (5 on, 3 off) at half that, so dashes 2.5 long from 0, 4, and 8
+    // along it, the last cut off at 10.
+    let construction = painted_text(&painted, "Construction");
+    let dashes: Vec<[Pos2; 2]> = painted
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::LineSegment { points, stroke }
+                if stroke.width == 2.0 && stroke.color == TEXT_SUBDUED =>
+            {
+                Some(*points)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dashes.len(), 3, "{dashes:?}");
+    let left = dashes[0][0].x;
+    let along: Vec<(f32, f32)> = dashes
+        .iter()
+        .map(|[a, b]| (a.x - left, b.x - left))
+        .collect();
+    for (got, want) in along.iter().zip([(0.0, 2.5), (4.0, 6.5), (8.0, 10.0)]) {
+        assert!(
+            (got.0 - want.0).abs() < 1e-4 && (got.1 - want.1).abs() < 1e-4,
+            "{along:?}"
+        );
+    }
+    let middle = construction.pos.y + construction.galley.size().y / 2.0;
+    assert!(
+        dashes
+            .iter()
+            .all(|[a, b]| a.y == b.y && (a.y - middle).abs() < 1.5)
+    );
+    assert!(construction.pos.x > left + 10.0);
+}
+
+#[test]
+fn a_states_dot_is_the_prototypes_8_point_dot_its_words_a_gap_after_it() {
+    // `.state-dot`: 8 × 8, round, in the state's colour, its room in the row its own; the
+    // words then the row's gap on (egui's item spacing).
+    let painted = palette_painted(None);
+    let dots: Vec<egui::epaint::CircleShape> = painted
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::Circle(circle) if circle.fill == SKETCH_UNDER_DEFINED => Some(*circle),
+            _ => None,
+        })
+        .collect();
+    let [dot] = dots.as_slice() else {
+        panic!("{dots:?}");
+    };
+    assert_eq!(dot.radius, 4.0);
+    let words = painted_text(&painted, "Under defined · 0 DOF");
+    let gap = egui::Style::default().spacing.item_spacing.x;
+    assert!(
+        (words.pos.x - (dot.center.x + 4.0 + gap)).abs() < 1e-3,
+        "{:?} after {dot:?}",
+        words.pos
+    );
+}
+
+#[test]
+fn the_status_bars_sketch_words_say_whats_edited_the_pointer_and_the_state() {
+    let line = bar::StatusLine {
+        editing: "Editing Sketch1".to_owned(),
+        coordinates: Some("x 15.000 · y -5.250 mm".to_owned()),
+        state: Some(bar::StateShown {
+            words: "Fully defined".to_owned(),
+            colour: SKETCH_FULLY_DEFINED,
+        }),
+    };
+    let texts = texts_on_light(|ui| {
+        ui.horizontal(|ui| bar::status_ui(ui, &line));
+    });
+    let words: Vec<&str> = texts.iter().map(|(words, _)| words.as_str()).collect();
+    for said in ["Editing Sketch1", "x 15.000 · y -5.250 mm", "Fully defined"] {
+        assert!(words.contains(&said), "{said:?} in {words:?}");
+    }
+    assert!(texts.contains(&("Fully defined".to_owned(), SKETCH_FULLY_DEFINED)));
+    // The pointer off the canvas, and the sketch not read: a dash, and no state.
+    let off = bar::StatusLine {
+        coordinates: None,
+        state: None,
+        ..line
+    };
+    let texts = texts_on_light(|ui| {
+        ui.horizontal(|ui| bar::status_ui(ui, &off));
+    });
+    let words: Vec<&str> = texts.iter().map(|(words, _)| words.as_str()).collect();
+    assert!(words.contains(&"Editing Sketch1"), "{words:?}");
+    assert!(words.contains(&"—"), "{words:?}");
+    assert!(!words.contains(&"Fully defined"), "{words:?}");
+}
