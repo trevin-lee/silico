@@ -1400,6 +1400,195 @@ mod tests {
         assert_eq!(w.walk(&other), Walked::In);
         assert_eq!(resolve(Some(&w), &part).unwrap(), root.join("part.silico"));
     }
+
+    /// The rules for a render's PNG, with no workspace and no document held, replacing a
+    /// file there if `replace`.
+    fn png(replace: bool) -> Output<'static> {
+        Output {
+            field: "to",
+            extensions: &["png"],
+            writer: "a render",
+            replace,
+            workspace: None,
+            held: &[],
+            document: false,
+        }
+    }
+
+    /// `f`, run with what a write meets as it puts its file in place on this thread
+    /// `placing`, and then nothing again.
+    fn placing<T>(placing: Placing, f: impl FnOnce() -> T) -> T {
+        PLACING.with(|p| *p.borrow_mut() = placing);
+        let done = f();
+        PLACING.with(|p| *p.borrow_mut() = Placing::default());
+        done
+    }
+
+    /// A file put at the path a write puts its own in place at, holding `bytes`, as another
+    /// process racing it would.
+    fn put_there(bytes: &'static [u8]) -> Option<Before> {
+        Some(Box::new(move |target| {
+            std::fs::write(target, bytes).unwrap()
+        }))
+    }
+
+    /// The names in `dir`, sorted.
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_file_put_at_the_path_while_a_write_not_told_to_replace_is_written_is_kept() {
+        // Found by #409's review: a write without `replace` checked that nothing was at its
+        // path, then renamed its file into place over whatever had been put there since (in
+        // the time a write and a sync take). Another's `view.png`, put there once the path is
+        // checked and the file written, just before it's put in place: kept, the write
+        // refused as the check refuses a file already there, word for word (so a client sees
+        // one refusal either way), and nothing left beside it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("view.png");
+        let e = placing(
+            Placing {
+                before: put_there(b"theirs"),
+                ..Placing::default()
+            },
+            || write_output(&path, b"ours", &png(false)),
+        )
+        .unwrap_err();
+        assert_eq!(std::fs::read(&path).unwrap(), b"theirs");
+        assert_eq!(names(dir.path()), ["view.png"]);
+        assert_eq!(e.code(), ErrorCode::InvalidInput, "{e}");
+        assert_eq!(e.message(), format!("\"{}\" exists", path.display()));
+        assert_eq!(e.parameter(), Some("to"));
+        assert_eq!(e.suggestion(), Some(REPLACE_ADVICE));
+        assert_eq!(e, check_output(&path, &png(false)).unwrap_err());
+    }
+
+    #[test]
+    fn a_write_not_told_to_replace_where_nothing_is_written_whole_with_one_name() {
+        // Nothing put there meanwhile: written, its bytes, its permissions those std gives a
+        // file made rw-r--r-- in the same directory (so whatever the umask takes), and its
+        // one name, the one beside it it was written to removed.
+        use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("view.png");
+        let wrote = write_output(&path, b"ours", &png(false)).unwrap();
+        assert_eq!(wrote, std::fs::canonicalize(&path).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"ours");
+        let made = dir.path().join("made");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .open(&made)
+            .unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), mode(&made));
+        assert_eq!(std::fs::metadata(&path).unwrap().nlink(), 1);
+        std::fs::remove_file(&made).unwrap();
+        assert_eq!(names(dir.path()), ["view.png"]);
+    }
+
+    #[test]
+    fn a_write_told_to_replace_replaces_a_file_there_when_checked_or_put_there_since() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        // There when the path is checked: replaced, its permissions kept.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("view.png");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_output(&path, b"ours", &png(true)).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"ours");
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_eq!(meta.nlink(), 1);
+        assert_eq!(names(dir.path()), ["view.png"]);
+        // Nothing there when the path is checked, and a file put there before it's put in
+        // place: replaced all the same, as the request said to replace one.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("view.png");
+        placing(
+            Placing {
+                before: put_there(b"theirs"),
+                ..Placing::default()
+            },
+            || write_output(&path, b"ours", &png(true)),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"ours");
+        assert_eq!(names(dir.path()), ["view.png"]);
+    }
+
+    #[test]
+    fn on_a_file_system_without_hard_links_a_write_not_told_to_replace_looks_again_and_renames() {
+        // Linux's EPERM, macOS's ENOTSUP, and the EOPNOTSUPP and ENOSYS of some network and
+        // FUSE file systems, each as the link's failure: with nothing there, written whole;
+        // with a file put there before it's put in place, found by the look again, kept, and
+        // the write refused as the check refuses one. Nothing left beside it either way.
+        for code in [libc::EPERM, libc::ENOTSUP, libc::EOPNOTSUPP, libc::ENOSYS] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("view.png");
+            placing(
+                Placing {
+                    link_fails: Some(code),
+                    ..Placing::default()
+                },
+                || write_output(&path, b"ours", &png(false)),
+            )
+            .unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"ours", "{code}");
+            assert_eq!(names(dir.path()), ["view.png"], "{code}");
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("view.png");
+            let e = placing(
+                Placing {
+                    before: put_there(b"theirs"),
+                    link_fails: Some(code),
+                },
+                || write_output(&path, b"ours", &png(false)),
+            )
+            .unwrap_err();
+            assert_eq!(std::fs::read(&path).unwrap(), b"theirs", "{code}");
+            assert_eq!(names(dir.path()), ["view.png"], "{code}");
+            assert_eq!(e, exists(&path, "to"), "{code}");
+            assert_eq!(e, check_output(&path, &png(false)).unwrap_err(), "{code}");
+        }
+    }
+
+    #[test]
+    fn a_hard_link_failing_otherwise_fails_the_write_and_leaves_nothing() {
+        // Not a file system without hard links (EACCES is PermissionDenied as EPERM is, but
+        // isn't one): the write fails, saying why, nothing is written there or left beside it,
+        // and it's never renamed into place.
+        for code in [libc::EIO, libc::EACCES, libc::EXDEV] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("view.png");
+            let e = placing(
+                Placing {
+                    link_fails: Some(code),
+                    ..Placing::default()
+                },
+                || write_output(&path, b"ours", &png(false)),
+            )
+            .unwrap_err();
+            assert_eq!(e.code(), ErrorCode::IoFailed, "{code}: {e}");
+            let why = std::io::Error::from_raw_os_error(code);
+            assert!(
+                e.message().contains("couldn't link") && e.message().contains(&why.to_string()),
+                "{code}: {e}"
+            );
+            assert!(
+                names(dir.path()).is_empty(),
+                "{code}: {:?}",
+                names(dir.path())
+            );
+        }
+    }
 }
 
 /// The rules a file a command writes is held to (decision 35: `render`'s `to`,
@@ -1417,7 +1606,8 @@ pub struct Output<'a> {
     pub extensions: &'a [&'a str],
     /// What writes it, as a refusal says it (`an export`, `a render`).
     pub writer: &'a str,
-    /// Whether a file already at the path may be replaced.
+    /// Whether a file at the path may be replaced: one there when the path is checked, or
+    /// one put there while it's written.
     pub replace: bool,
     /// The workspace the path must be inside, never through a link out of it, if the
     /// sessions have one (decision 26): a relative path is relative to its root.
@@ -1433,12 +1623,13 @@ pub struct Output<'a> {
 /// any links, canonical): refused, naming the field, if the path is a document (ends in
 /// `.silico`, is one the sessions hold, or lies in a `.silico-cache/` directory), lacks the
 /// format's extension, lies outside the workspace or reaches out of it through a link, has
-/// no directory, or names a file already there that `replace` doesn't allow replacing (one
-/// replaced keeps its permissions). Whole, to a new file beside it renamed into place, as
-/// [`save`] writes, so a write cut short leaves what was there.
+/// no directory, or names a file already there, or put there while it's written, that
+/// `replace` doesn't allow replacing (one replaced keeps its permissions). Whole, to a new
+/// file beside it put into place ([`write_beside`]), as [`save_over`] writes, so a write cut
+/// short leaves what was there.
 pub fn write_output(path: &Path, bytes: &[u8], rules: &Output) -> Result<PathBuf, Error> {
     let (target, replaced) = output_target(path, rules)?;
-    write_beside(&target, replaced.as_ref(), bytes)?;
+    write_beside(&target, replaced.as_ref(), bytes, Placed::of(path, rules))?;
     Ok(target)
 }
 
@@ -1464,7 +1655,7 @@ pub fn write_output_at(
         .with_parameter(rules.field)
         .with_suggestion("nothing was written: commit again"));
     }
-    write_beside(&target, replaced.as_ref(), bytes)?;
+    write_beside(&target, replaced.as_ref(), bytes, Placed::of(path, rules))?;
     Ok(target)
 }
 
@@ -1649,6 +1840,54 @@ pub const REPLACE_ADVICE: &str = "give replace: true to replace it, or another p
 /// own way of saving it (the app's Save) takes it as that.
 pub const OWN_FILE_ADVICE: &str = "give path null to save to it, or another path";
 
+/// What [`write_beside`] does about a file it finds at its target as it puts its own in
+/// place.
+#[derive(Debug, Clone, Copy)]
+enum Placed<'a> {
+    /// Replaces it: the request said to replace a file there, so one put there since the
+    /// path was checked is replaced too, whether or not one was there then.
+    Over,
+    /// Keeps it, the write refused as [`exists`] refuses a file there when the path is
+    /// checked: `given`, the path as the request gave it, in its `field`.
+    New { given: &'a Path, field: &'a str },
+}
+
+impl<'a> Placed<'a> {
+    /// As `rules` say for `given`, the path as the request gave it.
+    fn of(given: &'a Path, rules: &Output<'a>) -> Self {
+        if rules.replace {
+            Placed::Over
+        } else {
+            Placed::New {
+                given,
+                field: rules.field,
+            }
+        }
+    }
+}
+
+/// In this crate's tests only: what a write meets on this thread as it puts its file in
+/// place ([`put_in_place`]).
+#[cfg(test)]
+#[derive(Default)]
+struct Placing {
+    /// Run with the target just before the file is put in place: where a test puts a file
+    /// there, as another process racing the write would.
+    before: Option<Before>,
+    /// The error number the hard link of a write not told to replace fails with, in place of
+    /// what the system says: a file system without hard links, or one failing otherwise.
+    link_fails: Option<i32>,
+}
+
+/// What [`Placing::before`] runs, with the target.
+#[cfg(test)]
+type Before = Box<dyn Fn(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static PLACING: std::cell::RefCell<Placing> = std::cell::RefCell::default();
+}
+
 /// The permissions [`write_beside`] makes its new file with: those of the file it replaces,
 /// if one, without its type's bits (so never more open than it while it's written), or
 /// `rw-r--r--`.
@@ -1657,13 +1896,15 @@ fn partial_mode(replaced: Option<&std::fs::Metadata>) -> u32 {
     replaced.map_or(0o644, |m| m.permissions().mode() & 0o777)
 }
 
-/// `bytes` written to `target` through a new file beside it renamed into place, with the
-/// permissions of the file it replaces, if one (or the new file's own); the directory it's
-/// renamed in synced after, as a save's is, so a power cut can't bring back the old file.
+/// `bytes` written to `target` through a new file beside it put into place as `placed`
+/// says ([`put_in_place`]), with the permissions of the file it replaces, if one (or the new
+/// file's own); the directory it's put in synced after, as a save's is, so a power cut
+/// can't bring back the old file. The new file is removed if anything fails.
 fn write_beside(
     target: &Path,
     replaced: Option<&std::fs::Metadata>,
     bytes: &[u8],
+    placed: Placed<'_>,
 ) -> Result<(), Error> {
     let mode = partial_mode(replaced);
     let dir = directory(target);
@@ -1724,17 +1965,90 @@ fn write_beside(
                 &e,
             )
         })
-        .and_then(|()| {
-            std::fs::rename(&partial, target).map_err(|e| {
-                unwritable(format!(
-                    "couldn't rename {} into place: {e}",
-                    shown_path(&partial)
-                ))
-            })
-        })
+        .and_then(|()| put_in_place(&partial, target, placed))
         .inspect(|()| directory_synced(target));
     if written.is_err() {
         let _ = std::fs::remove_file(&partial);
     }
     written
+}
+
+/// `partial`, written and synced beside `target`, put in place there as `placed` says:
+/// renamed over whatever is there ([`Placed::Over`]); or, for a write not told to replace
+/// ([`Placed::New`]), linked there, which the system refuses at once if anything is there,
+/// a file put there since the path was checked included, so that file is kept and the write
+/// refused as the check refuses one, and then its own name removed.
+fn put_in_place(partial: &Path, target: &Path, placed: Placed<'_>) -> Result<(), Error> {
+    #[cfg(test)]
+    PLACING.with(|p| {
+        if let Some(before) = &p.borrow().before {
+            before(target);
+        }
+    });
+    let renamed = || {
+        std::fs::rename(partial, target).map_err(|e| {
+            unwritable(format!(
+                "couldn't rename {} into place: {e}",
+                shown_path(partial)
+            ))
+        })
+    };
+    let Placed::New { given, field } = placed else {
+        return renamed();
+    };
+    match hard_link(partial, target) {
+        Ok(()) => {
+            // In place: its name beside it, the same file, isn't needed.
+            if let Err(e) = std::fs::remove_file(partial) {
+                tracing::warn!(
+                    partial = %partial.display(),
+                    error = %e,
+                    "the file was written, but its other name beside it, where it was written, couldn't be removed"
+                );
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(exists(given, field)),
+        // A file system without hard links (a FAT drive's, some network shares'): looked at
+        // again, then renamed into place. Only here can a file put at the target between that
+        // look and the rename still be replaced.
+        Err(e) if without_hard_links(&e) => match std::fs::symlink_metadata(target) {
+            Ok(_) => Err(exists(given, field)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => renamed(),
+            Err(e) => Err(unwritable(format!(
+                "couldn't look at {} before putting {} there: {e}",
+                shown_path(target),
+                shown_path(partial)
+            ))),
+        },
+        Err(e) => Err(unwritable(format!(
+            "couldn't link {} into place: {e}",
+            shown_path(partial)
+        ))),
+    }
+}
+
+/// `std::fs::hard_link`, or, in this crate's tests, the error a test has it fail with
+/// (`Placing::link_fails`).
+fn hard_link(partial: &Path, target: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(code) = PLACING.with(|p| p.borrow().link_fails) {
+        return Err(std::io::Error::from_raw_os_error(code));
+    }
+    std::fs::hard_link(partial, target)
+}
+
+/// The errors a hard link fails with on a file system that makes none: Linux's `EPERM`
+/// (link(2): "the filesystem containing oldpath and newpath does not support the creation
+/// of hard links", as FAT's), macOS's `ENOTSUP` (link(2): "the underlying file system does
+/// not support this call", which std gives no kind of its own: only `EOPNOTSUPP`, another
+/// number there, is `Unsupported`), and the `EOPNOTSUPP` and `ENOSYS` that some network and
+/// FUSE file systems give. By number, as `EPERM` is `PermissionDenied`, as `EACCES` is.
+const WITHOUT_HARD_LINKS: [i32; 4] = [libc::EPERM, libc::ENOTSUP, libc::EOPNOTSUPP, libc::ENOSYS];
+
+/// Whether `e`, a hard link's failure, says the file system makes none
+/// ([`WITHOUT_HARD_LINKS`]).
+fn without_hard_links(e: &std::io::Error) -> bool {
+    e.raw_os_error()
+        .is_some_and(|code| WITHOUT_HARD_LINKS.contains(&code))
 }
