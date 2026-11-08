@@ -1614,14 +1614,15 @@ impl Tab {
     /// `revision`, the one the reload replaced, read through `text`, then put back by
     /// `replace_text`, inside the tab's transaction, begun first if none is open: an edit
     /// like any other, which Undo takes back and Save writes. Sent once everything asked
-    /// before it has answered. Never while a dialog is open or the tab closes. A refusal
-    /// (the revision no longer held) is said in the reload's banner.
+    /// before it has answered. Never while a dialog or a sketch is open (its Cancel would
+    /// undo it, and its Finish take it as its own) or the tab closes. A refusal (the
+    /// revision no longer held) is said in the reload's banner.
     pub fn restore<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
         revision: Revision,
     ) {
-        if self.in_dialog() || self.closing() || self.restoring() {
+        if self.editing() || self.closing() || self.restoring() {
             return;
         }
         self.message = None;
@@ -5928,6 +5929,11 @@ mod tests {
         tab.restore(&sessions, one);
         assert_eq!(restores(&tab), 0, "asked in a dialog");
         tab.loading = None;
+        // Sketch mode open: nothing asked.
+        tab.sketch = Some(SketchMode::new(1, None));
+        tab.restore(&sessions, one);
+        assert_eq!(restores(&tab), 0, "asked in sketch mode");
+        tab.sketch = None;
         // The tab closing: nothing asked.
         tab.edits.queue.push_back(Queued::Save { then_close: true });
         tab.restore(&sessions, one);

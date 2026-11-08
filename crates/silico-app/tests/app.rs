@@ -1255,6 +1255,42 @@ fn restore_puts_the_replaced_revision_back_as_an_edit_that_undo_takes_and_save_w
 }
 
 #[test]
+fn restore_is_off_in_sketch_mode_and_on_again_once_it_is_left() {
+    // Sketch mode's Cancel would undo a Restore made inside it, and its Finish take it as
+    // its own: Restore waits for it to end, as it does for a dialog.
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    std::fs::write(&path, BLOCK_11).unwrap();
+    let restore_on = |h: &AppHarness| {
+        h.query_by_role_and_label(Role::Button, "Restore revision 1")
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
+    };
+    step_until(&mut h, "the reload's Restore on", |h| restore_on(h));
+    create_sketch(&mut h, "XY plane");
+    step_until(&mut h, "Restore off in sketch mode", |h| {
+        h.query_by_role_and_label(Role::Button, "Restore revision 1")
+            .is_some_and(|button| button.accesskit_node().is_disabled())
+    });
+    // Asked all the same, as a click would: nothing sent.
+    let sent = h.state().tabs()[0].sent.len();
+    let one = h.state().tabs()[0]
+        .reloaded
+        .as_ref()
+        .map(|reloaded| reloaded.from)
+        .unwrap();
+    let sessions = Arc::clone(&f.sessions);
+    h.state_mut().tabs_mut()[0].restore(&sessions, one);
+    assert!(!h.state().tabs()[0].restoring());
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    leave_sketch(&mut h, false);
+    step_until(&mut h, "Restore on again", |h| restore_on(h));
+    assert_eq!(text_of(&f, &h), BLOCK_11);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn restore_of_a_revision_no_longer_held_says_the_cores_refusal_and_its_candidates() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("block.silico", BLOCK_10);
@@ -18234,8 +18270,9 @@ fn a_sketchs_error_card_edit_opens_sketch_mode_as_its_double_click_does() {
     assert!(sketch_mode(&h).is_none());
     h.get_by_role_and_label(Role::Button, "Rebuilt with 1 error")
         .click();
+    // Block's card first, its file storing no fingerprint (a warning), then Top's.
     step_until(&mut h, "its card listed", |h| {
-        in_whats_wrong(h, "Feature: ") == ["Feature: Top s0000001"]
+        in_whats_wrong(h, "Feature: ") == ["Feature: Block b0000001", "Feature: Top s0000001"]
     });
     step(&mut h);
     whats_wrong(&h)
