@@ -932,7 +932,7 @@ impl<C: Kernel + 'static> Session<C> {
 
     /// `commit` with a `path` (a Save As, M5.4; docs/design/m5.0-app.md, open item 22): as
     /// [`commit`](Self::commit) saves, but to the file at `to.given`, written whole through
-    /// a new file renamed into place, even if the document is the one `begin` saw, and
+    /// a new file put into place, even if the document is the one `begin` saw, and
     /// whatever the session's own file holds now (a file changed on disk is kept there,
     /// never written over, decision 3); then the session holds the new path, its claim on
     /// it (`claim`) and on no other, its own file let go. Refused, nothing written and the
@@ -1681,8 +1681,9 @@ impl<C: Kernel + 'static> Session<C> {
     /// untitled session) untouched, as
     /// the command `stop` stops: its stop settled first, so from here a cancel comes too
     /// late; the path checked again, claimed for the session, and written whole, through a
-    /// new file renamed into place. Where it wrote, through any links; or refused, nothing
-    /// written and the path's claim given back.
+    /// new file put into place, never over a file put there meanwhile unless `replace`.
+    /// Where it wrote, through any links; or refused, nothing written and the path's claim
+    /// given back.
     fn save_to(
         &self,
         stop: &Ticket,
