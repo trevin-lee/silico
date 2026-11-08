@@ -19589,7 +19589,11 @@ fn read_with_constraints(h: &mut AppHarness, constraints: usize) {
 }
 
 /// The Modify box asked `action`, as its field or buttons ask it.
-fn modify(f: &Fixture, h: &mut AppHarness, action: silico_app::sketch::dimension::ModifyAction) {
+fn modify_dimension(
+    f: &Fixture,
+    h: &mut AppHarness,
+    action: silico_app::sketch::dimension::ModifyAction,
+) {
     let sessions = Arc::clone(&f.sessions);
     {
         let _marked = never_waits::marked();
@@ -19681,13 +19685,13 @@ fn fully_defined(f: &Fixture, h: &mut AppHarness) -> (String, String, String) {
     );
     // The right side picked at (40, 10) and placed at (55, 10): its 20, accepted.
     dimension_at(f, h, [40.0, 10.0], [55.0, 10.0], "20");
-    modify(f, h, ModifyAction::Accept);
+    modify_dimension(f, h, ModifyAction::Accept);
     settled(h);
     read_with_constraints(h, 7);
     assert_eq!(sketch_state(h), Some((SketchState::UnderDefined, 1)));
     // The top picked at (20, 20) and placed at (20, 30): its 40.
     dimension_at(f, h, [20.0, 20.0], [20.0, 30.0], "40");
-    modify(f, h, ModifyAction::Accept);
+    modify_dimension(f, h, ModifyAction::Accept);
     settled(h);
     read_with_constraints(h, 8);
     (id.as_str().to_owned(), right, top)
@@ -19781,8 +19785,8 @@ fn choose_in_prompt(h: &mut AppHarness, label: &str) {
 fn over_define(f: &Fixture, h: &mut AppHarness, x: f64, typed: &str, constraints: usize) -> String {
     use silico_app::sketch::dimension::ModifyAction;
     dimension_at(f, h, [40.0, 10.0], [x, 10.0], "20");
-    modify(f, h, ModifyAction::Typed(typed.to_owned()));
-    modify(f, h, ModifyAction::Accept);
+    modify_dimension(f, h, ModifyAction::Typed(typed.to_owned()));
+    modify_dimension(f, h, ModifyAction::Accept);
     settled(h);
     read_with_constraints(h, constraints);
     step_until(h, "the offer", |h| {
@@ -20073,7 +20077,7 @@ fn the_modify_boxs_text_typed_reaches_the_core_as_typed_and_its_refusal_is_said_
     step(&mut h);
     assert_eq!(field(&h).map(|text| text.chars().count()), Some(256));
     // " 25 ", spaces and all, as the core gets it: its reader takes them, 25.
-    modify(
+    modify_dimension(
         &f,
         &mut h,
         silico_app::sketch::dimension::ModifyAction::Typed(" 25 ".to_owned()),
@@ -20087,7 +20091,7 @@ fn the_modify_boxs_text_typed_reaches_the_core_as_typed_and_its_refusal_is_said_
             .as_deref(),
         Some(" 25 ")
     );
-    modify(
+    modify_dimension(
         &f,
         &mut h,
         silico_app::sketch::dimension::ModifyAction::Accept,
@@ -20104,12 +20108,12 @@ fn the_modify_boxs_text_typed_reaches_the_core_as_typed_and_its_refusal_is_said_
     );
     // "1e1" on the top: the exponent read exactly, 10.
     dimension_at(&f, &mut h, [20.0, 20.0], [20.0, 30.0], "40");
-    modify(
+    modify_dimension(
         &f,
         &mut h,
         silico_app::sketch::dimension::ModifyAction::Typed("1e1".to_owned()),
     );
-    modify(
+    modify_dimension(
         &f,
         &mut h,
         silico_app::sketch::dimension::ModifyAction::Accept,
@@ -20186,8 +20190,8 @@ fn a_placed_dimension_double_clicked_is_set_as_typed_and_an_over_defining_edit_o
             .is_some()
     });
     // Set to 25: `set_field` of its value, the text as typed; no offer.
-    modify(&f, &mut h, ModifyAction::Typed("25".to_owned()));
-    modify(&f, &mut h, ModifyAction::Accept);
+    modify_dimension(&f, &mut h, ModifyAction::Typed("25".to_owned()));
+    modify_dimension(&f, &mut h, ModifyAction::Accept);
     settled(&mut h);
     let field = format!("constraints.{length}.value");
     assert!(
@@ -20211,8 +20215,8 @@ fn a_placed_dimension_double_clicked_is_set_as_typed_and_an_over_defining_edit_o
     sketch_events(&f, &mut h, &[]);
     let at = label_of_dimension(&h, &length);
     sketch_events(&f, &mut h, &double_clicked_at(at));
-    modify(&f, &mut h, ModifyAction::Typed("99".to_owned()));
-    modify(&f, &mut h, ModifyAction::Accept);
+    modify_dimension(&f, &mut h, ModifyAction::Typed("99".to_owned()));
+    modify_dimension(&f, &mut h, ModifyAction::Accept);
     settled(&mut h);
     step_until(&mut h, "the edit's offer", |h| prompt(h).is_some());
     assert_eq!(
@@ -20249,7 +20253,7 @@ const BOXED: &str = r#"{
 "#;
 
 /// The boxed sketch opened in sketch mode (Edit Sketch from the browser), and read.
-fn boxed(f: &Fixture) -> AppHarness {
+fn boxed_sketch(f: &Fixture) -> AppHarness {
     let (mut h, _) = f.opened("boxed.silico", BOXED);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
     double_click(&mut h, "Browser", "Box");
@@ -20288,7 +20292,7 @@ fn a_dragged_corner_follows_the_newest_cursor_one_move_in_flight_the_ui_never_wa
     use silico_app::sketch::PointerAction::{Press, Release};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     let text = text_of(&f, &h);
     // Pressed on the corner pa000003, (50, 30), and moved to (52, 32): a drag, begun.
     sketch_events(
@@ -20385,7 +20389,7 @@ fn esc_and_a_cancel_end_a_drag_from_its_begin_leaving_the_text_and_a_fully_defin
     use silico_app::sketch::PointerAction::{Cancel, Move, Press, Release};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     let text = text_of(&f, &h);
     for (k, end) in [(1, "esc"), (2, "cancel")] {
         sketch_events(
@@ -20410,7 +20414,7 @@ fn esc_and_a_cancel_end_a_drag_from_its_begin_leaving_the_text_and_a_fully_defin
     // Every member fully defined (the fake's own answer: all fixed): pressed and moved, the
     // corner starts no drag, and its release selects it.
     let f = fixture();
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     sketch_events(
         &f,
         &mut h,
@@ -20441,7 +20445,7 @@ fn a_drag_past_the_window_follows_the_unclamped_cursor_and_one_past_reach_is_sai
     use silico_app::sketch::PointerAction::{Move, Press};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     // The pane hands over a cursor far outside the viewport, as it is: (−5000, 99999) on
     // the screen, (−510, −9949.9) on the plane.
     let outside = eframe::egui::pos2(-5000.0, 99999.0);
@@ -20507,7 +20511,7 @@ fn a_move_cancelled_mid_solve_says_nothing_and_a_move_the_core_then_refuses_ends
     use silico_core::command::{Cancellable, SessionCommand};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     sketch_events(
         &f,
         &mut h,
@@ -20549,7 +20553,7 @@ fn a_drags_end_refused_after_another_clients_edit_is_let_go_at_once_not_at_a_rea
     use silico_app::sketch::PointerAction::{Move, Press, Release};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     sketch_events(
         &f,
         &mut h,
@@ -20591,7 +20595,7 @@ fn a_drags_edit_after_an_undo_in_sketch_mode_leaves_redo_nothing_of_sketch_modes
     use silico_app::sketch::PointerAction::{Move, Press, Release};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     let drag_to = |f: &Fixture, h: &mut AppHarness, to: [f64; 2]| {
         // Pressed on a read of the session's state, as a drag begins only from one.
         step_until(h, "the read of the session's revision", |h| {
@@ -20658,7 +20662,7 @@ fn finish_while_a_released_drags_end_is_held_keeps_its_edit_and_one_undo_takes_i
     use silico_app::sketch::PointerAction::{Move, Press, Release};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     let text = text_of(&f, &h);
     sketch_events(
         &f,
@@ -20708,7 +20712,7 @@ fn finish_by_its_key_mid_drag_ends_the_drag_from_its_begin_and_leaves_no_drag_op
     use silico_app::sketch::PointerAction::{Move, Press};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     let text = text_of(&f, &h);
     sketch_events(
         &f,
@@ -20734,7 +20738,7 @@ fn cancel_after_a_released_drag_whose_end_is_held_undoes_it_with_no_conflict() {
     use silico_app::sketch::PointerAction::{Move, Press, Release};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     // A first drag, Finished: a transaction open before sketch mode opens again, so its
     // Cancel is an undo to where it opened, made against the session's revision.
     sketch_events(
@@ -20784,7 +20788,7 @@ fn delete_during_a_drag_waits_for_its_end_then_goes_against_its_revision_and_bot
     use silico_app::sketch::PointerAction::{Move, Press, Release};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     // The bottom, na000001, selected; then the corner pa000003 dragged.
     sketch_events(&f, &mut h, &clicked(30.0, 10.0));
     assert_eq!(
@@ -20917,8 +20921,8 @@ fn esc_takes_a_held_drag_before_the_over_define_prompt_and_then_the_prompts_canc
     sketch_events(&f, &mut h, &[]);
     let at = label_of_dimension(&h, "ka000005");
     sketch_events(&f, &mut h, &double_clicked_at(at));
-    modify(&f, &mut h, ModifyAction::Typed("99".to_owned()));
-    modify(&f, &mut h, ModifyAction::Accept);
+    modify_dimension(&f, &mut h, ModifyAction::Typed("99".to_owned()));
+    modify_dimension(&f, &mut h, ModifyAction::Accept);
     settled(&mut h);
     step_until(&mut h, "the offer", |h| {
         sketch_mode(h).is_some_and(|m| m.offer().is_some())
@@ -20953,7 +20957,7 @@ fn a_press_on_a_read_older_than_the_sessions_state_begins_no_drag() {
     use silico_core::document::FeatureId;
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     settled(&mut h);
     // Another client renames the sketch; the tab polled once, which learns the new
     // revision and asks its read, still to be taken: the read drawn is the one before.
@@ -21025,7 +21029,7 @@ fn esc_while_the_begin_is_unanswered_ends_the_drag_once_it_answers() {
     use silico_core::command::CheckModel;
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     let text = text_of(&f, &h);
     // Another client's fresh check, its rebuild's solve held, ahead in the session's queue.
     f.sketches.hold();
@@ -21074,7 +21078,7 @@ fn a_line_dragged_by_its_edge_moves_whole_and_a_circles_edge_passes_the_cores_pr
     use silico_core::command::DragGrab;
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     // The bottom, na000001, pressed at (30, 10.3), 0.3 mm off it: grabbed at (30, 10), on
     // it exactly, which the core's press check takes.
     sketch_events(
@@ -21155,8 +21159,8 @@ fn edit_length(f: &Fixture, h: &mut AppHarness, text: &str) {
     let at = label_of_dimension(h, "ka000005");
     sketch_events(f, h, &double_clicked_at(at));
     assert!(sketch_mode(h).unwrap().edit_box.is_some());
-    modify(f, h, ModifyAction::Typed(text.to_owned()));
-    modify(f, h, ModifyAction::Accept);
+    modify_dimension(f, h, ModifyAction::Typed(text.to_owned()));
+    modify_dimension(f, h, ModifyAction::Accept);
     settled(h);
 }
 
@@ -21268,7 +21272,7 @@ fn an_edit_taking_a_solved_sketch_to_a_refused_solve_offers_though_it_flags_noth
 fn a_right_click_in_sketch_mode_opens_its_menu_whose_cancel_sketch_leaves_it() {
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     let text = text_of(&f, &h);
     let at = to_screen([20.0, 20.0]).unwrap();
     sketch_events(
@@ -21448,7 +21452,7 @@ fn press_away(h: &mut AppHarness, from: eframe::egui::Pos2, to: eframe::egui::Po
 fn the_canvas_menu_closes_on_esc_on_a_click_or_a_drag_away_from_it_and_on_a_tool_chosen() {
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     let canvas = the_viewport(&h);
     // Esc closes it; sketch mode stays.
     open_menu(&f, &mut h, 20.0, 20.0);
@@ -21489,7 +21493,7 @@ fn the_canvas_menus_end_chain_ends_a_chain_under_way_closes_the_menu_and_keeps_s
     use silico_core::sketch_tools::ToolKind;
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     // A line's chain begun: its first click, at (70, 70), away from the box.
     h.key_press(eframe::egui::Key::L);
     step(&mut h);
@@ -21750,7 +21754,7 @@ fn a_press_moved_while_an_edit_is_under_way_begins_no_drag() {
     use silico_app::sketch::PointerAction::{Move, Press, Release};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     // The bottom, na000001, selected.
     sketch_events(&f, &mut h, &clicked(30.0, 10.0));
     settled(&mut h);
@@ -21801,7 +21805,7 @@ fn a_drag_ended_from_its_begin_after_an_undo_in_sketch_mode_keeps_what_was_undon
     use silico_app::sketch::PointerAction::{Move, Press, Release};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     let text = text_of(&f, &h);
     let pressed_on_newest = |f: &Fixture, h: &mut AppHarness, to: [f64; 2]| {
         // Pressed on a read of the session's state, as a drag begins only from one.
@@ -21923,7 +21927,7 @@ fn delete_waiting_behind_a_drag_is_sent_in_the_frame_its_end_is_answered() {
     use silico_app::sketch::PointerAction::{Move, Press, Release};
     let f = fixture();
     counting(&f);
-    let mut h = boxed(&f);
+    let mut h = boxed_sketch(&f);
     // One pass a frame, so each step polls the tab once.
     h.ctx
         .options_mut(|options| options.max_passes = std::num::NonZeroUsize::MIN);
