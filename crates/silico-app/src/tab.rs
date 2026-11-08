@@ -3235,10 +3235,16 @@ impl Tab {
             .find(|entry| entry.id.as_str() == id)
     }
 
-    /// Whether Edit Feature would open the feature `id`'s dialog now: it has one, and one
-    /// may open ([`can_open`](Self::can_open)).
+    /// Whether an error card's Edit would open the feature `id` now: for a sketch, Edit
+    /// Sketch, if sketch mode may open ([`can_sketch`](Self::can_sketch)); for anything
+    /// else, Edit Feature, if it has a dialog and one may open
+    /// ([`can_open`](Self::can_open)).
     pub fn can_edit(&self, id: &FeatureId) -> bool {
-        self.kind_of(id).is_some_and(|kind| self.can_open(kind))
+        if self.is_sketch(id) {
+            self.can_sketch()
+        } else {
+            self.kind_of(id).is_some_and(|kind| self.can_open(kind))
+        }
     }
 
     /// An error card's Show in timeline: the feature `id` selected alone, and the timeline

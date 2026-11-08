@@ -18275,6 +18275,15 @@ fn a_sketchs_error_card_edit_opens_sketch_mode_as_its_double_click_does() {
         in_whats_wrong(h, "Feature: ") == ["Feature: Block b0000001", "Feature: Top s0000001"]
     });
     step(&mut h);
+    // Offered: sketch mode may open (no dialog, no sketch, the gate taking the document).
+    let edit_off = |h: &AppHarness| {
+        whats_wrong(h)
+            .unwrap()
+            .get_by_role_and_label(Role::Button, "Edit Top")
+            .accesskit_node()
+            .is_disabled()
+    };
+    assert!(!edit_off(&h), "Edit Top offered");
     whats_wrong(&h)
         .unwrap()
         .get_by_role_and_label(Role::Button, "Edit Top")
