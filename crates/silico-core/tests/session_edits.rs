@@ -27,11 +27,11 @@ use crate::sessions::{answer, id, refusal};
 
 /// A block, 40 × 20 × 10, its fingerprint stored as the fake measures it (volume 8000,
 /// area 2(800 + 400 + 200) = 2800), on one line: not canonical form.
-const BLOCK: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}]}"#;
+const BLOCK: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}]}"#;
 
 /// [`BLOCK`] 41 long, saved: in canonical form, by hand, its fingerprint the new box's:
 /// 41 × 20 × 10 = 8200, area 2(820 + 410 + 200) = 2860, to x = 41.
-const BLOCK_41: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 41,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8200, \"area\": 2860, \"bbox\": [0, 0, 0, 41, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+const BLOCK_41: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 41,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8200, \"area\": 2860, \"center\": [20.5, 10, 5], \"bbox\": [0, 0, 0, 41, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
 
 /// A block, a lug clear of it, and their fuse, none with a fingerprint.
 const FUSED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10}, {"id": "f0000001", "type": "fuse", "v": 1, "name": "Both", "base": "k7f2qx3m", "tool": "b0000001", "note": "Kept together"}]}"#;
@@ -321,8 +321,8 @@ fn inside_a_transaction_an_edit_changes_only_what_the_session_holds() {
     assert_eq!(
         f.text(),
         BLOCK_41.replace(
-            r#""volume": 8200, "area": 2860, "bbox": [0, 0, 0, 41, 20, 10]"#,
-            r#""volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10]"#
+            r#""volume": 8200, "area": 2860, "center": [20.5, 10, 5], "bbox": [0, 0, 0, 41, 20, 10]"#,
+            r#""volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10]"#
         )
     );
     let committed = answer(f.sessions.commit(&f.id)).result.unwrap();
@@ -1226,8 +1226,8 @@ fn block_canonical() -> String {
     BLOCK_41
         .replace("\"length\": 41,", "\"length\": 40,")
         .replace(
-            r#""volume": 8200, "area": 2860, "bbox": [0, 0, 0, 41, 20, 10]"#,
-            r#""volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10]"#,
+            r#""volume": 8200, "area": 2860, "center": [20.5, 10, 5], "bbox": [0, 0, 0, 41, 20, 10]"#,
+            r#""volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10]"#,
         )
 }
 
@@ -1496,7 +1496,7 @@ fn a_feature_added_and_removed_outside_a_transaction_each_save_their_commit() {
     // 1 × 2 × 3 = 6, area 2(2 + 3 + 6) = 22, to (101, 2, 3).
     let with_lug = block_canonical().replace(
         "\n    }\n  ]\n}\n",
-        "\n    },\n    {\n      \"id\": \"b0000001\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Lug\",\n      \"position\": [100, 0, 0],\n      \"length\": 1,\n      \"width\": 2,\n      \"height\": 3,\n      \"fingerprint\": {\"volume\": 6, \"area\": 22, \"bbox\": [100, 0, 0, 101, 2, 3], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n",
+        "\n    },\n    {\n      \"id\": \"b0000001\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Lug\",\n      \"position\": [100, 0, 0],\n      \"length\": 1,\n      \"width\": 2,\n      \"height\": 3,\n      \"fingerprint\": {\"volume\": 6, \"area\": 22, \"center\": [100.5, 1, 1.5], \"bbox\": [100, 0, 0, 101, 2, 3], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n",
     );
     assert_eq!(f.file(), with_lug);
     let removed = answer(
@@ -1783,7 +1783,7 @@ fn a_feature_added_outside_a_transaction_comes_back_as_saved_fingerprint_and_all
     // to (101, 2, 3); as the saved file holds it.
     assert_eq!(
         document::write_feature(&added.feature).unwrap(),
-        "{\n  \"id\": \"b0000002\",\n  \"type\": \"box\",\n  \"v\": 1,\n  \"name\": \"Lug\",\n  \"position\": [100, 0, 0],\n  \"length\": 1,\n  \"width\": 2,\n  \"height\": 3,\n  \"fingerprint\": {\"volume\": 6, \"area\": 22, \"bbox\": [100, 0, 0, 101, 2, 3], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n}"
+        "{\n  \"id\": \"b0000002\",\n  \"type\": \"box\",\n  \"v\": 1,\n  \"name\": \"Lug\",\n  \"position\": [100, 0, 0],\n  \"length\": 1,\n  \"width\": 2,\n  \"height\": 3,\n  \"fingerprint\": {\"volume\": 6, \"area\": 22, \"center\": [100.5, 1, 1.5], \"bbox\": [100, 0, 0, 101, 2, 3], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n}"
     );
     let saved = document::read(f.file().as_bytes()).unwrap();
     assert_eq!(saved.features[1], added.feature);

@@ -144,6 +144,40 @@ pub fn resolve<S: AsRef<str>>(
         model,
         names.iter().map(|name| (name.as_ref(), Carry::Pick)),
         parameter,
+        None,
+    )
+}
+
+/// `names`, a pick on `model` read as [`resolve`] reads it, but each name looked for in the
+/// feature `feature`'s solid alone, not in every body: a pick read against the solid a
+/// feature builds on, as SolidWorks reads a feature's picks on the model rolled back to
+/// before it (a fillet's dialog, open on a fillet that later features build on, reads an
+/// edge picked on the body as it's built now against the fillet's base). A name that solid's
+/// map holds is kept, its body `feature`, held by a stable name of that map's, else flagged
+/// with the store's refusal; one it doesn't hold is gone (`reference_broken`, naming no
+/// element of `feature`'s solid, with the likeliest of its names as candidates); one whose
+/// map isn't named yet is pending. Refused if `feature` has no solid (the first reason why,
+/// as `elements` says it), and, at `parameter`, past [`MAX_SELECTED`] names. The same
+/// threads may call it.
+pub fn resolve_in<S: AsRef<str>>(
+    model: &Model,
+    names: &[S],
+    parameter: &str,
+    feature: &FeatureId,
+) -> Result<Resolved, Error> {
+    let _span = tracing::info_span!("selection_resolve_in", names = names.len()).entered();
+    if let Err(problems) = crate::command::elements::built(model, feature, false) {
+        return Err(problems.errors().first().cloned().unwrap_or_else(|| {
+            Error::new(ErrorCode::Internal, format!("{feature} has no solid"))
+                .with_feature(feature.as_str())
+                .with_suggestion(crate::worker::SILICO_BUG)
+        }));
+    }
+    read(
+        model,
+        names.iter().map(|name| (name.as_ref(), Carry::Pick)),
+        parameter,
+        Some(feature),
     )
 }
 
@@ -166,6 +200,7 @@ pub fn refresh<S: AsRef<str>>(
         model,
         names.iter().map(|name| (name.as_ref(), Carry::Refresh)),
         parameter,
+        None,
     )
 }
 
@@ -188,6 +223,7 @@ pub fn read_each<S: AsRef<str>>(
         model,
         names.iter().map(|(name, carry)| (name.as_ref(), *carry)),
         parameter,
+        None,
     )
 }
 
@@ -203,10 +239,13 @@ pub enum Carry {
     Refresh,
 }
 
+/// `names` read against `model`, each as it came to it, in the feature `solid`'s solid
+/// alone, or, for none, in every body.
 fn read<'a>(
     model: &Model,
     names: impl ExactSizeIterator<Item = (&'a str, Carry)>,
     parameter: &str,
+    solid: Option<&FeatureId>,
 ) -> Result<Resolved, Error> {
     if names.len() > MAX_SELECTED {
         return Err(Error::new(
@@ -219,7 +258,10 @@ fn read<'a>(
         .with_parameter(parameter)
         .with_suggestion(format!("select at most {MAX_SELECTED} elements")));
     }
-    let mut lookup = Lookup::selection(model, SELECTED);
+    let mut lookup = match solid {
+        Some(feature) => Lookup::selection_in(model, feature, SELECTED),
+        None => Lookup::selection(model, SELECTED),
+    };
     let mut resolved = Resolved {
         kept: Vec::new(),
         gone: Vec::new(),
@@ -711,7 +753,8 @@ mod tests {
         history
     }
 
-    /// A fake whose fuses of a tool `history` picks give the base back with that history.
+    /// A fake whose fuses of a tool `history` picks give a box a mm³ larger than the base
+    /// back with that history.
     fn forging(
         history: impl Fn(&str) -> Option<History> + Send + Sync + 'static,
     ) -> impl FnOnce(&FakeKernel) {
@@ -721,12 +764,11 @@ mod tests {
                     op: BooleanOp::Fuse,
                     base,
                     tool,
-                } => history(&FakeKernel::describe(tool)?).map(|history| {
-                    silico_protocol::Reply::Built(BuiltData {
-                        shape: base.clone(),
-                        history,
-                    })
-                }),
+                } => {
+                    let shape = FakeKernel::resized(base, 1.0)?;
+                    history(&FakeKernel::describe(tool)?)
+                        .map(|history| silico_protocol::Reply::Built(BuiltData { shape, history }))
+                }
                 _ => None,
             })
         }
@@ -1532,11 +1574,13 @@ mod tests {
             operation("qqqqqqqq", "fuse", "xxxxxxxx", "yyyyyyyy"),
             operation("ssssssss", "fuse", "rrrrrrrr", "qqqqqqqq"),
         ];
-        // The second fuse's tool is the first `qqqqqqqq` gives back: the 2 mm cube.
+        // The third fuse's tool is what `qqqqqqqq` gives back: the forged box, made where it
+        // is (`FakeKernel::resized`), where every box the document makes but the first is
+        // moved into place.
         let model = rebuilt(
             &features,
             forging(|tool| {
-                Some(if tool.contains("box(2,") {
+                Some(if tool.starts_with("box(") {
                     aliasing_fuse()
                 } else {
                     numbering_fuse()
@@ -1571,5 +1615,78 @@ mod tests {
             .map(|g| (g.name.as_str(), g.place))
             .collect();
         assert_eq!(gone, [(names[0], 0), (names[1], 1)]);
+    }
+
+    #[test]
+    fn a_pick_read_in_one_features_solid_finds_only_what_that_solid_holds() {
+        // A box, a fillet of its Edge3, a second box, and a fuse of the fillet with it: the
+        // fuse is the body, and holds the first box's Edge5 (kept by the fillet and the
+        // fuse) and the second box's Edge1, by those names. Read in every body, both are in
+        // the fuse. Read in the first box's solid, Edge5 is there, the box its body, stored
+        // as picked; the second box's edge isn't, `reference_broken` as of that solid; in the
+        // fillet's, Edge5 is the fillet's. A repeat is read once.
+        let features = [
+            a_box("aaaaaaaa", 0, 1),
+            fillet("ffffffff", "aaaaaaaa", "aaaaaaaa.box.Edge3"),
+            a_box("bbbbbbbb", 5, 1),
+            operation("rrrrrrrr", "fuse", "ffffffff", "bbbbbbbb"),
+        ];
+        let names = [
+            "aaaaaaaa.box.Edge5",
+            "bbbbbbbb.box.Edge1",
+            "aaaaaaaa.box.Edge5",
+        ];
+        let id = |id: &str| FeatureId::new(id).unwrap();
+        let edge = |index| element(ElementKind::Edge, index);
+        let stored = |name: &str| Some(name.to_owned());
+        let model = model(&features);
+        let everywhere = resolve(&model, &names, "selection").unwrap();
+        assert_eq!(
+            kept(&everywhere),
+            [
+                (names[0].to_owned(), "rrrrrrrr", edge(5), stored(names[0])),
+                // The tool's edges come after the base's 12 in the fake's fuse.
+                (names[1].to_owned(), "rrrrrrrr", edge(13), stored(names[1])),
+            ]
+        );
+        let in_box = resolve_in(&model, &names, "selection", &id("aaaaaaaa")).unwrap();
+        assert_eq!(
+            kept(&in_box),
+            [(names[0].to_owned(), "aaaaaaaa", edge(5), stored(names[0]))]
+        );
+        assert_eq!(
+            gone(&in_box),
+            [(
+                names[1],
+                vec![(
+                    ErrorCode::ReferenceBroken,
+                    "selection.1, \"bbbbbbbb.box.Edge1\", names no element of aaaaaaaa's solid"
+                )]
+            )]
+        );
+        assert_eq!(in_box.gone[0].place, 1);
+        assert!(in_box.pending.is_empty());
+        let in_fillet = resolve_in(&model, &names[..1], "selection", &id("ffffffff")).unwrap();
+        assert_eq!(
+            kept(&in_fillet),
+            [(names[0].to_owned(), "ffffffff", edge(5), stored(names[0]))]
+        );
+        // Published, its names not named yet: pending, and no map named for it.
+        let unnamed = model.unnamed();
+        let waiting = resolve_in(&unnamed, &names, "selection", &id("aaaaaaaa")).unwrap();
+        assert!(waiting.kept.is_empty() && waiting.gone.is_empty());
+        let pending: Vec<(&str, usize)> = waiting
+            .pending
+            .iter()
+            .map(|p| (p.name.as_str(), p.place))
+            .collect();
+        assert_eq!(pending, [(names[0], 0), (names[1], 1)]);
+        for (feature, _) in unnamed.features() {
+            assert!(unnamed.named_so_far(feature).is_none(), "{feature} named");
+        }
+        // A feature with no solid: refused, as `elements` refuses it.
+        let refused = resolve_in(&model, &names, "selection", &id("zzzzzzzz")).unwrap_err();
+        assert_eq!(refused.code(), ErrorCode::InvalidInput);
+        assert_eq!(refused.message(), "the document has no feature zzzzzzzz");
     }
 }

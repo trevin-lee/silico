@@ -28,14 +28,15 @@ const DOCUMENTS: &[&str] = &[
 {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
 {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"},
 {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "m3tq8v0z", "edges": ["m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge2)"], "radius": 0.5}]}"#,
-    // Every primitive, a cone pointed at either end among them, fused in turn.
+    // Every primitive, a cone pointed at either end among them, fused in turn, and the
+    // fuse in common with a sphere at its box's corner (so the common takes some of it).
     r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
 {"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 1, "width": 2, "height": 3},
 {"id": "c0000001", "type": "cone", "v": 1, "name": "C", "position": [5, 0, 0], "radius1": 2, "radius2": 0, "height": 3},
 {"id": "f0000001", "type": "fuse", "v": 1, "name": "F", "base": "b0000001", "tool": "c0000001"},
 {"id": "c0000002", "type": "cone", "v": 1, "name": "C2", "position": [9, 0, 0], "radius1": 0, "radius2": 2, "height": 3},
 {"id": "f0000002", "type": "fuse", "v": 1, "name": "F2", "base": "f0000001", "tool": "c0000002"},
-{"id": "s0000001", "type": "sphere", "v": 1, "name": "S", "position": [13, 0, 0], "radius": 1},
+{"id": "s0000001", "type": "sphere", "v": 1, "name": "S", "position": [0, 0, 0], "radius": 1},
 {"id": "f0000003", "type": "common", "v": 1, "name": "F3", "base": "f0000002", "tool": "s0000001"},
 {"id": "t0000001", "type": "torus", "v": 1, "name": "T", "position": [20, 0, 0], "radius1": 3, "radius2": 1},
 {"id": "f0000004", "type": "fuse", "v": 1, "name": "F4", "base": "f0000003", "tool": "t0000001"},

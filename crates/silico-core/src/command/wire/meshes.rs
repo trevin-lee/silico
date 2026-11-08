@@ -189,6 +189,17 @@ fn elements(elements: &[MeshElement], key: &'static str) -> Json<'static> {
     }))
 }
 
+/// Each vertex of a body: its name and its stability (its point is `vertex_points`', in
+/// the same order).
+fn vertices(vertices: &[MeshElement]) -> Json<'static> {
+    Json::array(vertices.iter().map(|v| {
+        Json::object([
+            ("name", Json::string(v.name.to_string())),
+            ("stable", Json::bool(v.stable)),
+        ])
+    }))
+}
+
 impl ToWire for MeshedBody {
     fn to_wire(&self) -> Json<'_> {
         self.owned_wire()
@@ -198,7 +209,7 @@ impl ToWire for MeshedBody {
 impl MeshedBody {
     /// A body's mesh, owning its text, as a response writes one body at a time: what it's
     /// of, its level and what it serves, and, unless the client holds it, its geometry, each
-    /// face and edge named either way.
+    /// face, edge, and vertex named either way.
     fn owned_wire(&self) -> Json<'static> {
         #[cfg(test)]
         tests::BODIES_MADE.with(|made| made.set(made.get() + 1));
@@ -249,6 +260,15 @@ impl MeshedBody {
                 ),
             ),
             ("edges", elements(&self.edges, "points")),
+            (
+                "vertex_points",
+                Json::array(
+                    mesh.into_iter()
+                        .flat_map(|m| &m.vertex_points)
+                        .map(|p| point(*p)),
+                ),
+            ),
+            ("vertices", vertices(&self.vertices)),
         ])
     }
 }
@@ -313,6 +333,7 @@ pub(crate) fn least_length(read: &MeshesRead) -> u64 {
                 list(m.normals.len()),
                 list(m.triangles.len()),
                 list(m.edge_points.len()),
+                list(m.vertex_points.len()),
             ]
             .into_iter()
             .fold(0u64, u64::saturating_add)
@@ -412,6 +433,16 @@ pub struct MeshEdgeSchema {
     pub points: Option<u32>,
 }
 
+/// A vertex of a body's mesh.
+#[derive(JsonSchema)]
+#[schemars(rename = "MeshVertex", transform = wire_shape)]
+pub struct MeshVertexSchema {
+    /// Its name, by the element map.
+    pub name: String,
+    /// Whether `name` is stable.
+    pub stable: bool,
+}
+
 /// A body's display mesh.
 #[derive(JsonSchema)]
 #[schemars(rename = "MeshedBody", transform = wire_shape)]
@@ -454,6 +485,12 @@ pub struct MeshedBodySchema {
     pub edge_points: Vec<[f64; 3]>,
     /// Each edge, in the solid's own order (`Edge1` first).
     pub edges: Vec<MeshEdgeSchema>,
+    /// Each vertex's point, exact (the solid's, not a mesh's), in `vertices`' order; empty
+    /// when the body is held.
+    pub vertex_points: Vec<[f64; 3]>,
+    /// Each vertex, in the solid's own order (`Vertex1` first), given whether or not the
+    /// body is held.
+    pub vertices: Vec<MeshVertexSchema>,
 }
 
 /// `meshes`' result.
@@ -526,6 +563,7 @@ mod tests {
             valid: None,
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
         };
         MeshedBody {
             feature: FeatureId::new(feature).unwrap(),
@@ -543,6 +581,7 @@ mod tests {
                 count: Some(triangles as u32),
             }],
             edges: vec![],
+            vertices: Vec::new(),
         }
     }
 
@@ -727,6 +766,7 @@ mod tests {
             let each = (0.25 / deflection).round().max(1.0) as u32;
             let faces = counts.faces as usize;
             let edges = counts.edges as usize;
+            let vertices = counts.vertices as usize;
             Some(Reply::MeshAt(MeshAt {
                 mesh: Mesh {
                     positions: vec![[0.0, 0.0, 0.0], [40.0, 0.0, 0.0], [0.0, 20.0, 10.0]],
@@ -736,6 +776,7 @@ mod tests {
                     valid: None,
                     edge_points: vec![[0.0; 3]; 2 * edges],
                     edge_point_counts: vec![2; edges],
+                    vertex_points: vec![[0.0; 3]; vertices],
                 },
                 deflection: *deflection,
             }))
@@ -856,6 +897,7 @@ mod tests {
                 valid: None,
                 edge_points: vec![[0.0, 0.0, 0.0], [60.0, 0.0, 0.0]],
                 edge_point_counts: vec![2],
+                vertex_points: vec![],
             })),
             ..body("f0000001", 1)
         };

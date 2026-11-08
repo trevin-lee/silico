@@ -79,6 +79,7 @@ fn of(camera: Camera, width: u32, height: u32) -> Meshes {
     }
 }
 
+/// A mesh of `faces` faces and `edges` edges, and the example cut's ten vertices.
 fn faces_and_edges(faces: usize, edges: usize) -> Mesh {
     Mesh {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
@@ -87,6 +88,7 @@ fn faces_and_edges(faces: usize, edges: usize) -> Mesh {
         face_triangles: vec![1; faces],
         edge_points: vec![[0.0, 0.0, 0.0]; 2 * edges],
         edge_point_counts: vec![2; edges],
+        vertex_points: vec![[0.0; 3]; 10],
         valid: None,
     }
 }

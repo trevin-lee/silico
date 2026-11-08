@@ -140,6 +140,10 @@ fn meshes_through_mcp_is_the_cores_envelope_byte_for_byte_and_held_carries_no_ge
     assert_eq!(body["triangles"], json!(vec![[0, 1, 2]; 6]));
     assert_eq!(body["faces"].as_array().unwrap().len(), 6);
     assert_eq!(body["edges"].as_array().unwrap().len(), 12);
+    // A box's eight vertices, each on the fake's mesh at its box's high corner.
+    assert_eq!(body["vertices"].as_array().unwrap().len(), 8);
+    assert_eq!(body["vertices"][7]["name"], "k7f2qx3m.box.Vertex8");
+    assert_eq!(body["vertex_points"], json!(vec![[40, 20, 10]; 8]));
     // Given back as written: held, its geometry left out, its names given.
     let held = format!(
         r#"[{{"key": {}, "deflection": {}}}]"#,
@@ -148,9 +152,16 @@ fn meshes_through_mcp_is_the_cores_envelope_byte_for_byte_and_held_carries_no_ge
     let second = both(&mut c, "meshes", &meshes(&held));
     let again = &second["result"]["bodies"][0];
     assert_eq!(again["held"], true, "{second}");
-    for array in ["positions", "normals", "triangles", "edge_points"] {
+    for array in [
+        "positions",
+        "normals",
+        "triangles",
+        "edge_points",
+        "vertex_points",
+    ] {
         assert_eq!(again[array], json!([]), "{array}");
     }
+    assert_eq!(again["vertices"], body["vertices"]);
     assert_eq!(again["faces"][0]["name"], body["faces"][0]["name"]);
     assert_eq!(again["faces"][0]["triangles"], Value::Null);
     assert_eq!(again["edges"][11]["points"], Value::Null);

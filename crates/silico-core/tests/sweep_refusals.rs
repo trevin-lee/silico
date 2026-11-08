@@ -244,6 +244,79 @@ fn one_solid_passes_and_two_or_none_are_refused_naming_the_count() {
 }
 
 #[test]
+fn a_result_lost_or_parted_gives_each_features_own_advice() {
+    // What to try, in each feature's words, when the result is no solid or several: a sweep
+    // that adds was lost by OCCT with its base, one that cuts took all of its base; an M2
+    // boolean's tool is to move or shrink for either, and to move when it parts its base.
+    use silico_core::sweep::check_boolean_change;
+    use silico_protocol::BooleanOp;
+    let lost = Measured {
+        solids: 0,
+        volume: 0.0,
+        ..cube()
+    };
+    for (kind, advice) in [
+        (
+            SweepFeature::Pad,
+            "OCCT lost both shapes: move the sketch slightly",
+        ),
+        (
+            SweepFeature::Revolve,
+            "OCCT lost both shapes: move the sketch slightly",
+        ),
+        (
+            SweepFeature::Pocket,
+            "move the sketch or shorten the cut, so it leaves some of its base",
+        ),
+        (
+            SweepFeature::Groove,
+            "move the sketch or shorten the cut, so it leaves some of its base",
+        ),
+    ] {
+        let refused = check(kind, cube(), lost).unwrap_err();
+        assert_eq!(refused.suggestion(), Some(advice), "{kind:?}");
+    }
+    let boolean = |op, after: Measured| {
+        check_boolean_change(&fid(FEATURE), op, &fid(BASE), &cube(), &after).unwrap_err()
+    };
+    let parted = Measured {
+        solids: 2,
+        ..result(900.0)
+    };
+    for op in [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Common] {
+        let none = boolean(op, lost);
+        assert_eq!(none.code(), ErrorCode::KernelFailed);
+        assert_eq!(
+            none.message(),
+            format!(
+                "{} p0000001 leaves nothing of its base b0000001: the result is no solid",
+                op.word()
+            )
+        );
+        assert_eq!(
+            none.suggestion(),
+            Some("move or shrink the tool, so the result keeps some of its base"),
+            "{op:?}"
+        );
+        let two = boolean(op, parted);
+        assert_eq!(two.code(), ErrorCode::KernelFailed);
+        assert_eq!(
+            two.suggestion(),
+            Some("move the tool so the result is one piece"),
+            "{op:?}"
+        );
+    }
+    assert_eq!(
+        boolean(BooleanOp::Fuse, parted).message(),
+        "fuse p0000001 doesn't reach its base b0000001: the result is 2 solids"
+    );
+    assert_eq!(
+        boolean(BooleanOp::Cut, parted).message(),
+        "cut p0000001 cuts its base b0000001 in two: the result is 2 solids"
+    );
+}
+
+#[test]
 fn each_feature_knows_whether_it_adds() {
     let adds: Vec<bool> = SweepFeature::ALL.iter().map(|k| k.adds()).collect();
     assert_eq!(adds, [true, false, true, false]);
@@ -441,6 +514,97 @@ fn a_change_under_the_precision_is_said_as_the_change_and_the_limit() {
     // No change at all keeps the words it had: the volume is the base's.
     let same = check(SweepFeature::Pocket, base, result(8e15)).unwrap_err();
     assert!(same.message().contains("the result's volume is the base's"));
+}
+
+#[test]
+fn an_m2_booleans_change_more_than_a_billionth_of_its_base_passes_and_no_more_is_refused() {
+    // S7's limit for M2 booleans, as S9's test holds it for sweeps: on 1000 mm³, a billionth
+    // is 1e-6 mm³. A cut and a common take from their base, a fuse adds to it: a hair over
+    // the limit the right way passes, a hair under is refused, and the wrong way is refused
+    // however far. `boolean_change_holds` agrees with `check_boolean_change` every time.
+    use silico_core::sweep::{boolean_change_holds, check_boolean_change};
+    use silico_protocol::BooleanOp;
+    for (op, sign) in [
+        (BooleanOp::Cut, -1.0),
+        (BooleanOp::Common, -1.0),
+        (BooleanOp::Fuse, 1.0),
+    ] {
+        for (change, holds) in [
+            (1.01e-6, true),
+            (0.99e-6, false),
+            (-1.01e-6, false),
+            (-1.0, false),
+            (0.0, false),
+        ] {
+            let after = result(1000.0 + sign * change);
+            let checked = check_boolean_change(&fid(FEATURE), op, &fid(BASE), &cube(), &after);
+            assert_eq!(checked.is_ok(), holds, "{op:?} by {change}: {checked:?}");
+            assert_eq!(
+                boolean_change_holds(op, &cube(), &after),
+                holds,
+                "{op:?} by {change}"
+            );
+            if let Err(e) = checked {
+                assert_eq!(e.code(), ErrorCode::KernelFailed);
+                assert_eq!(e.feature(), Some(FEATURE));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_change_the_wrong_way_says_both_volumes() {
+    // A fuse whose result measures less than its base, and a cut whose result measures
+    // more, as a broken result or a forged reply would: refused by S7's rule, saying both
+    // volumes and which way, not that they're the same. A sketch feature the same.
+    use silico_core::sweep::check_boolean_change;
+    use silico_protocol::BooleanOp;
+    let fused = check_boolean_change(
+        &fid(FEATURE),
+        BooleanOp::Fuse,
+        &fid(BASE),
+        &cube(),
+        &result(999.5),
+    )
+    .unwrap_err();
+    assert_eq!(
+        fused.message(),
+        "fuse p0000001 adds nothing to its base b0000001: the result's volume, 999.5 mm³, is less than the base's, 1000 mm³ (10 faces, 20 edges, and 12 vertices, against the base's 6, 12, and 8)"
+    );
+    let cut = check_boolean_change(
+        &fid(FEATURE),
+        BooleanOp::Cut,
+        &fid(BASE),
+        &cube(),
+        &result(1001.0),
+    )
+    .unwrap_err();
+    assert_eq!(
+        cut.message(),
+        "cut p0000001 removes nothing from its base b0000001: the result's volume, 1001 mm³, is more than the base's, 1000 mm³ (10 faces, 20 edges, and 12 vertices, against the base's 6, 12, and 8)"
+    );
+    let pad = check(SweepFeature::Pad, cube(), result(999.5)).unwrap_err();
+    assert!(
+        pad.message()
+            .contains("the result's volume, 999.5 mm³, is less than the base's, 1000 mm³"),
+        "{}",
+        pad.message()
+    );
+    // The same volume keeps its words.
+    let same = check_boolean_change(
+        &fid(FEATURE),
+        BooleanOp::Common,
+        &fid(BASE),
+        &cube(),
+        &result(1000.0),
+    )
+    .unwrap_err();
+    assert!(
+        same.message()
+            .contains("common p0000001 removes nothing from its base b0000001: the result's volume is the base's, 1000 mm³"),
+        "{}",
+        same.message()
+    );
 }
 
 #[test]

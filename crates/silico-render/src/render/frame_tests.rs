@@ -51,6 +51,7 @@ fn frame<'a>(
         hovered: &[],
         outlines: Outlines::DEFAULT,
         picking,
+        vertices: None,
         background: VIEWPORT_BG,
     }
 }
@@ -719,6 +720,12 @@ fn a_hostile_upload_is_refused_and_the_body_keeps_its_mesh() {
             let mut miscounted = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
             miscounted.face_triangles[0] = 3;
             hostile.push(miscounted);
+            // A vertex's point as an edge's: not finite, or past the coordinates' bound.
+            for bad in [f64::NAN, f64::INFINITY, -2e12] {
+                let mut vertex = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+                vertex.vertex_points[7][2] = bad;
+                hostile.push(vertex);
+            }
             for mesh in hostile {
                 let Err(RenderFailure::Invalid(invalid)) = r.upload(1, &Arc::new(mesh)) else {
                     panic!("a hostile mesh uploaded");
@@ -743,6 +750,7 @@ fn a_hostile_upload_is_refused_and_the_body_keeps_its_mesh() {
                 face_triangles: vec![],
                 edge_points: vec![],
                 edge_point_counts: vec![],
+                vertex_points: vec![],
                 valid: None,
             };
             r.upload(1, &Arc::new(empty)).unwrap();
@@ -2275,6 +2283,7 @@ fn an_edge_past_the_frames_side_by_less_than_its_stroke_at_two_pixels_a_point_is
                 face_triangles: vec![],
                 edge_points: vec![[33.25, 0.0, -10.0], [33.25, 0.0, 10.0]],
                 edge_point_counts: vec![2],
+                vertex_points: vec![],
                 valid: None,
             });
             r.upload(1, &edge).unwrap();
@@ -2515,6 +2524,436 @@ fn a_hovered_edge_alone_is_outlined_and_a_frame_with_nothing_lit_makes_no_outlin
                 count(&every, GREEN) > 0,
                 "the highlighted face isn't outlined"
             );
+        },
+    );
+}
+
+// ---- Vertices (M5.7): picked by a disc in the picking layer alone ----
+
+/// The design's corner (M5.7 part 3, §4): a box 0 to 20 mm on each axis, orthographic about
+/// (10, 10, 10) from along (1, 1, 1), z up, 80 mm over 800 × 800 pixels at a pixel a point
+/// (10 pixels a mm). By hand, right = (−1, 1, 0)/√2 and up = (−1, −1, 2)/√6, so the corner
+/// (20, 0, 20), its offset d = (10, −10, 10), lands at right·d = −20/√2 = −14.1421 mm and
+/// up·d = 20/√6 = 8.1650 mm: pixel (400 − 141.421, 400 − 81.650) = (258.58, 318.35). It is
+/// `Vertex5` in OCCT's box order. The top face (`Face6`, z = 20) lies between its edges along
+/// −x and along +y, whose images leave it 30° above and below +x: a step along +x stays on
+/// the top face at the corner's own depth (a = b along x and y keeps (1, 1, 1)·d), and a
+/// pixel's centre half a row below it on the face that rises toward the eye, to (20, 20, 20):
+/// the disc wins there by its reach toward the eye (0.012 × 80 = 0.96 mm), not by its depth
+/// offset alone.
+fn corner_camera(projection: Projection) -> Camera {
+    Camera {
+        projection,
+        eye: [110.0, 110.0, 110.0],
+        target: [10.0, 10.0, 10.0],
+        up: [0.0, 0.0, 1.0],
+    }
+}
+
+const CORNER_SIZE: [u32; 2] = [800, 800];
+
+/// The pixel the corner (20, 0, 20) lands on: (400 − 200/√2, 400 − 200/√6).
+fn corner_pixel() -> [f64; 2] {
+    [400.0 - 200.0 / 2f64.sqrt(), 400.0 - 200.0 / 6f64.sqrt()]
+}
+
+/// A frame of the corner's box, body 1, picking the one pixel `at`, its vertices picked
+/// within `vertices` points.
+fn corner_frame<'a>(camera: &'a Camera, at: [i32; 2], vertices: Option<f32>) -> Frame<'a> {
+    Frame {
+        size_px: CORNER_SIZE,
+        vertices,
+        ..frame(camera, &[1], &[], Some(rect(at, [1, 1])))
+    }
+}
+
+#[test]
+fn a_corner_is_picked_within_its_disc_before_the_top_face_and_past_it_the_face_is() {
+    on_lavapipe(
+        "render::frame_tests::a_corner_is_picked_within_its_disc_before_the_top_face_and_past_it_the_face_is",
+        |r| {
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [20.0; 3])))
+                .unwrap();
+            let camera = corner_camera(Projection::Orthographic { view_height: 80.0 });
+            let want = corner_pixel();
+            assert!((want[0] - 258.5786).abs() < 1e-4 && (want[1] - 318.3503).abs() < 1e-4);
+            assert_pixel(project(&camera, CORNER_SIZE, [20.0, 0.0, 20.0]), want, 1e-4);
+            let corner = Element::Vertex(5);
+            let top = Element::Face(6);
+            // The pixel (258, 318), its centre 0.17 pixels from the corner's; 6 pixels along
+            // +x, 5.92 from it, inside the 7-point disc (and 3 from each edge, past their
+            // 1-point half width); 8 along, 7.92 from it, outside: the top face.
+            for (at, want) in [
+                ([258, 318], corner),
+                ([264, 318], corner),
+                ([266, 318], top),
+            ] {
+                assert_eq!(
+                    hit(r, &corner_frame(&camera, at, Some(7.0))),
+                    Some((1, want, at.map(|c| u32::try_from(c).unwrap()))),
+                    "{at:?}"
+                );
+            }
+            // The vertex's point is its own, exactly (its disc is drawn toward the eye).
+            let picked = pick(r, &corner_frame(&camera, [264, 318], Some(7.0)));
+            assert_eq!(picked.hit.unwrap().point, Some([20.0, 0.0, 20.0]));
+            // With vertices filtered off the disc is left out, and hides nothing: 3 pixels
+            // along +x is the top face (1.33 and 1.59 pixels from the two edges, past their
+            // half width), and the corner's own pixel an edge or the face, never a vertex.
+            assert_eq!(
+                hit(r, &corner_frame(&camera, [261, 318], None)),
+                Some((1, top, [261, 318]))
+            );
+            assert_eq!(
+                hit(r, &corner_frame(&camera, [261, 318], Some(7.0))),
+                Some((1, corner, [261, 318]))
+            );
+            let bare = hit(r, &corner_frame(&camera, [258, 318], None));
+            assert!(
+                matches!(bare, Some((1, Element::Edge(_) | Element::Face(_), _))),
+                "{bare:?}"
+            );
+            // A smaller disc is a smaller tolerance: 4 points leaves the pixel 5.92 away to
+            // the face, and two pixels a point doubles it in pixels, reaching it again.
+            assert_eq!(
+                hit(r, &corner_frame(&camera, [264, 318], Some(4.0))),
+                Some((1, top, [264, 318]))
+            );
+            assert_eq!(
+                hit(
+                    r,
+                    &Frame {
+                        pixels_per_point: 2.0,
+                        ..corner_frame(&camera, [264, 318], Some(4.0))
+                    }
+                ),
+                Some((1, corner, [264, 318]))
+            );
+            // Its reach is the radius in points times the pixels a point, 5 × 2 = 10 pixels,
+            // the discs near the picking taken within that and a pixel more; not 5 + 2 = 7,
+            // within 8: the pixel 9 along, 8.92 from the corner, is the corner's.
+            assert_eq!(
+                hit(
+                    r,
+                    &Frame {
+                        pixels_per_point: 2.0,
+                        ..corner_frame(&camera, [267, 318], Some(5.0))
+                    }
+                ),
+                Some((1, corner, [267, 318]))
+            );
+        },
+    );
+}
+
+/// The corner nearest the eye, (20, 20, 20), at the corner camera's offset from its target
+/// d = (10, 10, 10): right·d = 0 and up·d = (−10 − 10 + 20)/√6 = 0, so it lands at the image's
+/// centre, (400, 400), and the pixel (400, 400) has its centre 0.71 pixels from it. It is the
+/// scene's front: the orthographic camera stands its margin (1 mm, past 1% of the reach
+/// 10√3 = 17.32 mm) in front of it. At 100 mm high the disc's reach, 0.012 × 100 = 1.2 mm,
+/// is past that margin, and a disc moved all of it would be cut by the near plane and leave
+/// the corner to its edges and faces; at 80 mm, 0.96 mm, it is not.
+#[test]
+fn the_corner_nearest_an_orthographic_eye_is_picked_however_high_the_view() {
+    on_lavapipe(
+        "render::frame_tests::the_corner_nearest_an_orthographic_eye_is_picked_however_high_the_view",
+        |r| {
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [20.0; 3])))
+                .unwrap();
+            // (x1, y1, z1): `Vertex7` in the box's order ([`box_mesh`]).
+            let front = Element::Vertex(7);
+            for view_height in [80.0, 100.0, 400.0, 4000.0] {
+                let camera = corner_camera(Projection::Orthographic { view_height });
+                assert_pixel(
+                    project(&camera, CORNER_SIZE, [20.0, 20.0, 20.0]),
+                    [400.0, 400.0],
+                    1e-9,
+                );
+                let picked = pick(r, &corner_frame(&camera, [400, 400], Some(7.0)));
+                let hit = picked.hit.unwrap();
+                assert_eq!(
+                    (hit.body, hit.hit),
+                    (1, front),
+                    "a view {view_height} mm high"
+                );
+                assert_eq!(hit.point, Some([20.0, 20.0, 20.0]));
+            }
+        },
+    );
+}
+
+#[test]
+fn a_vertex_nearer_a_perspective_eye_than_it_draws_is_never_picked() {
+    on_lavapipe(
+        "render::frame_tests::a_vertex_nearer_a_perspective_eye_than_it_draws_is_never_picked",
+        |r| {
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [20.0; 3])))
+                .unwrap();
+            // The eye along (1, −1, 1) from the corner (20, 0, 20), looking at it: the corner
+            // at the image's centre. 0.75 nm off, the corner is nearer than the 1 nm the
+            // drawing cuts at (and past the near plane, half that, so a disc there would be
+            // drawn): none projects and none is picked. 2 nm off, it's drawn and picked.
+            let u = [1.0, -1.0, 1.0].map(|c: f64| c / 3f64.sqrt());
+            let looking = |off: f64| Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 60.0,
+                },
+                eye: [20.0 + u[0] * off, u[1] * off, 20.0 + u[2] * off],
+                target: [20.0 - u[0], -u[1], 20.0 - u[2]],
+                up: [0.0, 0.0, 1.0],
+            };
+            let near = looking(0.75 * MIN_EYE_DISTANCE);
+            assert_eq!(project(&near, CORNER_SIZE, [20.0, 0.0, 20.0]), None);
+            // The faces about the corner cut away there, the box is seen through them from
+            // inside: the centre's line of sight, (20, 0, 20) − t(1, −1, 1)/√3, meets the far
+            // corner (0, 20, 0), Vertex4, at t = 20√3, which is picked; never Vertex5. Without
+            // the discs, a face there.
+            let without = hit(r, &corner_frame(&near, [400, 400], None));
+            assert!(
+                matches!(without, Some((1, Element::Face(_), _))),
+                "{without:?}"
+            );
+            assert_eq!(
+                hit(r, &corner_frame(&near, [400, 400], Some(7.0))),
+                Some((1, Element::Vertex(4), [400, 400]))
+            );
+            let far = looking(2.0 * MIN_EYE_DISTANCE);
+            assert_pixel(
+                project(&far, CORNER_SIZE, [20.0, 0.0, 20.0]),
+                [400.0, 400.0],
+                1e-6,
+            );
+            assert_eq!(
+                hit(r, &corner_frame(&far, [400, 400], Some(7.0))),
+                Some((1, Element::Vertex(5), [400, 400]))
+            );
+        },
+    );
+}
+
+#[test]
+fn a_vertex_disc_draws_nothing_of_the_image() {
+    on_lavapipe(
+        "render::frame_tests::a_vertex_disc_draws_nothing_of_the_image",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            // From the front, the corner (0, 0, 10) lands at (9.09, 20.73): the picking
+            // there with its vertices' discs, and without, draw the same pixels, and the
+            // discs pick it.
+            let at_corner = Some(rect([9, 20], [1, 1]));
+            let with = Frame {
+                vertices: Some(7.0),
+                ..frame(&camera, &[1], &[], at_corner)
+            };
+            let commands = r.prepare(&with).unwrap();
+            let discs = composited(r, Some(commands));
+            let commands = r
+                .prepare(&Frame {
+                    vertices: None,
+                    ..with
+                })
+                .unwrap();
+            assert_eq!(composited(r, Some(commands)), discs);
+            assert_eq!(hit(r, &with), Some((1, Element::Vertex(1), [9, 20])));
+        },
+    );
+}
+
+#[test]
+fn a_frames_vertices_and_its_vertex_highlights_are_checked() {
+    on_lavapipe(
+        "render::frame_tests::a_frames_vertices_and_its_vertex_highlights_are_checked",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let good = frame(&camera, &[1], &[], Some(ON_THE_FACE));
+            for radius in [0.0, -0.0, -7.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let hostile = Frame {
+                    vertices: Some(radius),
+                    ..good
+                };
+                assert_eq!(refused(r, &hostile), "vertices", "{radius}");
+            }
+            // Any finite radius above 0 is drawn: a subnormal's disc covers nothing.
+            for radius in [f32::MIN_POSITIVE / 2.0, 7.0, 1e6] {
+                r.prepare(&Frame {
+                    vertices: Some(radius),
+                    ..good
+                })
+                .unwrap();
+            }
+            // A vertex highlighted or hovered must be the body's, as a face is: drawn by the
+            // caller, never outlined here, so it changes no pixel and no picking ID.
+            for vertex in [0, 9, u32::MAX] {
+                let lit = [(1, Element::Vertex(vertex))];
+                assert_eq!(
+                    refused(r, &frame(&camera, &[1], &lit, None)),
+                    "highlights",
+                    "{vertex}"
+                );
+                assert_eq!(
+                    refused(
+                        r,
+                        &Frame {
+                            hovered: &lit,
+                            ..good
+                        }
+                    ),
+                    "hovered",
+                    "{vertex}"
+                );
+            }
+            let lit = [(1, Element::Vertex(8))];
+            let commands = r.prepare(&frame(&camera, &[1], &lit, None)).unwrap();
+            let marked = composited(r, Some(commands));
+            let commands = r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
+            assert_eq!(composited(r, Some(commands)), marked);
+            assert_eq!(
+                hit(
+                    r,
+                    &Frame {
+                        hovered: &lit,
+                        ..frame(&camera, &[1], &lit, Some(ON_THE_FACE))
+                    }
+                ),
+                Some((1, Element::Face(3), [32, 26]))
+            );
+        },
+    );
+}
+
+#[test]
+fn a_vertex_behind_a_face_is_picked_within_the_reach_toward_the_eye_and_not_past_it() {
+    on_lavapipe(
+        "render::frame_tests::a_vertex_behind_a_face_is_picked_within_the_reach_toward_the_eye_and_not_past_it",
+        |r| {
+            // The front view's box, its vertices put behind its front face (y = 0) at
+            // (10, y, 5) and (30, y, 5): at columns 32 + (10 − 21) × 12/11 = 20 and
+            // 32 + 9 × 12/11 = 41.82, row 24 + 2 × 12/11 = 26.18. The view is 44 mm high,
+            // so the reach toward the eye is 0.012 × 44 = 0.528 mm: 0.5 behind is picked,
+            // 0.56 behind isn't (the face is), nor is the back face's middle, 20 behind.
+            let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+            mesh.vertex_points = vec![[10.0, 0.5, 5.0], [30.0, 0.56, 5.0], [20.0, 20.0, 5.0]];
+            r.upload(1, &Arc::new(mesh)).unwrap();
+            let camera = front();
+            let at = |x: i32| Frame {
+                vertices: Some(7.0),
+                ..frame(&camera, &[1], &[], Some(rect([x, 26], [1, 1])))
+            };
+            assert_eq!(hit(r, &at(20)), Some((1, Element::Vertex(1), [20, 26])));
+            assert_eq!(hit(r, &at(41)), Some((1, Element::Face(3), [41, 26])));
+            assert_eq!(hit(r, &at(32)), Some((1, Element::Face(3), [32, 26])));
+        },
+    );
+}
+
+#[test]
+fn a_vertex_behind_a_face_in_perspective_is_picked_within_its_reach_along_its_line_and_not_past_it()
+{
+    on_lavapipe(
+        "render::frame_tests::a_vertex_behind_a_face_in_perspective_is_picked_within_its_reach_along_its_line_and_not_past_it",
+        |r| {
+            // The front face (y = 0) seen square on from (20, −100, 5), 60° high: a vertex at
+            // (20, y, 5) lands on the image's centre, (32, 24), 100 + y along the view. Its
+            // disc goes toward the eye by 0.012 × 2 tan 30° = 0.013856 of that, so it lies
+            // before the face, 100 along, while (100 + y)(1 − 0.013856) < 100: y < 1.405 mm.
+            // 1.2 behind is picked; 1.6 behind, the face is.
+            let camera = Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 60.0,
+                },
+                eye: [20.0, -100.0, 5.0],
+                target: [20.0, 0.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            assert_pixel(
+                project(&camera, [WIDTH, HEIGHT], [20.0, 1.2, 5.0]),
+                [32.0, 24.0],
+                1e-9,
+            );
+            for (behind, want) in [(1.2, Element::Vertex(1)), (1.6, Element::Face(3))] {
+                let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+                mesh.vertex_points = vec![[20.0, behind, 5.0]];
+                r.upload(1, &Arc::new(mesh)).unwrap();
+                let asking = Frame {
+                    vertices: Some(7.0),
+                    ..frame(&camera, &[1], &[], Some(rect([32, 24], [1, 1])))
+                };
+                assert_eq!(
+                    hit(r, &asking),
+                    Some((1, want, [32, 24])),
+                    "{behind} behind"
+                );
+            }
+        },
+    );
+}
+
+// ---- Hostile vertices ----
+
+#[test]
+fn a_crowd_of_vertices_on_one_pixel_picks_one_of_them_and_the_frame_still_draws() {
+    on_lavapipe(
+        "render::frame_tests::a_crowd_of_vertices_on_one_pixel_picks_one_of_them_and_the_frame_still_draws",
+        |r| {
+            // 200,000 vertices on the front face's centre, (21, 0, 7), and one more off the
+            // frame: the picking draws a disc for each near its square, and picks a vertex
+            // there (whichever the GPU drew last of those at one depth); the frames after,
+            // with no picking, draw none.
+            let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+            mesh.vertex_points = vec![[21.0, 0.0, 7.0]; 200_000];
+            mesh.vertex_points.push([1e9, 0.0, 7.0]);
+            r.upload(1, &Arc::new(mesh)).unwrap();
+            let camera = front();
+            let asking = Frame {
+                vertices: Some(7.0),
+                ..frame(&camera, &[1], &[], Some(rect([32, 24], [1, 1])))
+            };
+            let found = hit(r, &asking);
+            assert!(
+                matches!(found, Some((1, Element::Vertex(1..=200_000), [32, 24]))),
+                "{found:?}"
+            );
+            assert_eq!(
+                hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE))),
+                Some((1, Element::Face(3), [32, 26]))
+            );
+        },
+    );
+}
+
+#[test]
+fn a_perspective_as_wide_as_170_degrees_draws_a_disc_toward_the_eye_a_quarter_of_its_depth_at_most()
+{
+    on_lavapipe(
+        "render::frame_tests::a_perspective_as_wide_as_170_degrees_draws_a_disc_toward_the_eye_a_quarter_of_its_depth_at_most",
+        |r| {
+            // From (20, −10, 5), looking along +y at the front face's middle (y = 0, 10 mm
+            // off), 170° wide: the view's height at a depth d is 2 tan 85° d = 22.86 d, so
+            // 1.2% of it is 0.274 d, past the most, a quarter. A vertex 3.5 mm behind the
+            // face, 13.5 mm off, has its disc 10.125 mm off, behind the face (0.274 d would
+            // put it at 9.80, ahead of it): the face is picked. One 2.6 behind, 12.6 off, has
+            // its disc at 9.45: picked.
+            let camera = Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 170.0,
+                },
+                eye: [20.0, -10.0, 5.0],
+                target: [20.0, 0.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            let centre = Some(rect([32, 24], [1, 1]));
+            for (behind, want) in [(3.5, Element::Face(3)), (2.6, Element::Vertex(1))] {
+                let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+                mesh.vertex_points = vec![[20.0, behind, 5.0]];
+                r.upload(1, &Arc::new(mesh)).unwrap();
+                let asking = Frame {
+                    vertices: Some(7.0),
+                    ..frame(&camera, &[1], &[], centre)
+                };
+                assert_eq!(hit(r, &asking), Some((1, want, [32, 24])), "{behind}");
+            }
         },
     );
 }

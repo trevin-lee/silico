@@ -443,8 +443,25 @@ fn every_map_a_recompute_publishes_names_each_element_once_for_hostile_layouts()
         "boxes touching at a corner, fused",
         "a cut that splits the body in two",
     ];
+    // Layouts whose boolean changes nothing are refused since M2 booleans took S7's rule
+    // (docs/ports/booleans.md), naming the boolean, in S7's words.
+    let nothing = [
+        "coincident boxes fused (one step for both)",
+        "coincident boxes common",
+        "a cut that removes nothing",
+    ];
     for (case, features) in layouts() {
         let model = publish(&engine, document(&features));
+        if nothing.contains(&case) {
+            match model.outcome(&id("rrrrrrrr")) {
+                Some(FeatureOutcome::Failed(e))
+                    if e.code() == silico_core::ErrorCode::KernelFailed
+                        && e.feature() == Some("rrrrrrrr")
+                        && e.message().contains("nothing") => {}
+                other => failures.push(format!("{case}: not refused as a no-op: {other:?}")),
+            }
+            continue;
+        }
         if several.contains(&case) {
             match model.outcome(&id("rrrrrrrr")) {
                 Some(FeatureOutcome::Failed(e))

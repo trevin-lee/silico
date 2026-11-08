@@ -297,9 +297,10 @@ fn thousands_of_edits_undos_and_redos_at_a_bound_of_two_states_keep_the_count_an
         let file = f.file();
         assert!(
             file.contains(&format!(
-                "\"fingerprint\": {{\"volume\": {}, \"area\": {}, \"bbox\": [0, 0, 0, {length}, 20, 10]",
+                "\"fingerprint\": {{\"volume\": {}, \"area\": {}, \"center\": [{}, 10, 5], \"bbox\": [0, 0, 0, {length}, 20, 10]",
                 200 * length,
-                60 * length + 400
+                60 * length + 400,
+                f64::from(length) / 2.0
             )),
             "{file}"
         );

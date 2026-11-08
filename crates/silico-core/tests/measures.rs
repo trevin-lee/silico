@@ -429,7 +429,7 @@ fn an_unstable_name_is_taken_as_a_measure_answers_once_and_stores_it_nowhere() {
             base,
             ..
         } => Some(Reply::Built(BuiltData {
-            shape: base.clone(),
+            shape: FakeKernel::resized(base, 1.0)?,
             history: history.clone(),
         })),
         _ => None,

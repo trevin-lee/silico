@@ -36,8 +36,11 @@ fn cut(id: &str, base: &str, tool: &str) -> String {
     )
 }
 
-/// The same document's pocket is refused by a fresh engine, but built by one that ran an
-/// M2 cut of the same step first: the check never runs on a result already kept.
+/// The same document's pocket is refused by a fresh engine, and by one that ran an M2 cut
+/// of the same step first and built it: the check runs on a result already kept, in the
+/// pocket's own words, naming it. The earlier cut built because its measure failed then (a
+/// worker that crashed, which isn't kept: the next rebuild measures it again), so its change
+/// went unjudged (`checked`), as an M2 boolean's does unmeasured.
 #[test]
 fn a_pockets_check_holds_whatever_ran_before() {
     let cube_above = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
@@ -50,12 +53,23 @@ fn a_pockets_check_holds_whatever_ran_before() {
     let fresh = engine();
     let model = published(&fresh, &pocket_doc);
     let fresh_outcome = model.outcome(&id("qqqqqqqq")).cloned();
-    assert!(
-        matches!(fresh_outcome, Some(FeatureOutcome::Failed(_))),
-        "{fresh_outcome:?}"
-    );
+    pocket_refused(&model);
 
-    let warm = engine();
+    let kernel = FakeKernel::new(2).unwrap();
+    let crashing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let crashes = Arc::clone(&crashing);
+    kernel.refuse(move |op| match op {
+        silico_protocol::Op::Summarize { .. }
+            if crashes.load(std::sync::atomic::Ordering::SeqCst) =>
+        {
+            Some(silico_core::Error::new(
+                silico_core::ErrorCode::WorkerCrashed,
+                "the worker crashed measuring it",
+            ))
+        }
+        _ => None,
+    });
+    let warm = Recompute::new(kernel).with_sketches(FakeSketches::new());
     let first = published(
         &warm,
         &[
@@ -73,36 +87,54 @@ fn a_pockets_check_holds_whatever_ran_before() {
         "{:?}",
         first.features()
     );
+    crashing.store(false, std::sync::atomic::Ordering::SeqCst);
     let model = published(&warm, &pocket_doc);
     let warm_outcome = model.outcome(&id("qqqqqqqq")).cloned();
+    assert_eq!(
+        warm_outcome, fresh_outcome,
+        "same document, fresh engine and warm"
+    );
+    pocket_refused(&model);
+}
+
+/// That `model`'s pocket `qqqqqqqq` is refused, removing nothing from its cube, naming
+/// itself.
+fn pocket_refused(model: &Model) {
+    let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("qqqqqqqq")) else {
+        panic!("{:?}", model.outcome(&id("qqqqqqqq")));
+    };
+    assert_eq!(error.feature(), Some("qqqqqqqq"), "{error:?}");
     assert!(
-        matches!(warm_outcome, Some(FeatureOutcome::Failed(_))),
-        "same document, fresh engine: {fresh_outcome:?}; warm engine: {warm_outcome:?}"
+        error
+            .message()
+            .starts_with("pocket qqqqqqqq removes nothing from its base bbbbbbbb"),
+        "{error:?}"
     );
 }
 
-/// An M2 cut that removes nothing builds, unless a pocket elsewhere in the document shares
-/// its step, when it fails in the pocket's words.
+/// An M2 cut whose measure fails builds, its change unjudged, whatever a pocket elsewhere in
+/// the document sharing its step comes to: the pocket fails in its own name, unmeasured.
 #[test]
 fn an_m2_cut_isnt_refused_by_an_unrelated_pockets_check() {
+    let kernel = FakeKernel::new(2).unwrap();
+    kernel.refuse(|op| match op {
+        silico_protocol::Op::Summarize { shape } => {
+            let made = FakeKernel::describe(shape)?;
+            (made.starts_with("cut(") && made.matches("cut(").count() == 1).then(|| {
+                silico_core::Error::new(
+                    silico_core::ErrorCode::KernelFailed,
+                    "the cut couldn't be measured",
+                )
+            })
+        }
+        _ => None,
+    });
+    let engine = Recompute::new(kernel).with_sketches(FakeSketches::new());
     let cube_above = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
     let cube_twin = box_at("dddddddd", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
     let sketch = rectangle("ssssssss", "xy", [0.0, 0.0], 4.0, 2.0);
-    let alone = published(
-        &engine(),
-        &[
-            &cube_above,
-            &sketch,
-            &pad("pppppppp", None, "ssssssss", REVERSED),
-            &cut("cccccccc", "bbbbbbbb", "pppppppp"),
-        ],
-    );
-    assert!(matches!(
-        alone.outcome(&id("cccccccc")),
-        Some(FeatureOutcome::Built { .. })
-    ));
     let with_pocket = published(
-        &engine(),
+        &engine,
         &[
             &cube_above,
             &cube_twin,
@@ -117,11 +149,70 @@ fn an_m2_cut_isnt_refused_by_an_unrelated_pockets_check() {
         matches!(outcome, Some(FeatureOutcome::Built { .. })),
         "{outcome:?}"
     );
-    // The premise: the pocket sharing the cut's step is refused, removing nothing.
     let Some(FeatureOutcome::Failed(error)) = with_pocket.outcome(&id("qqqqqqqq")) else {
         panic!("{:?}", with_pocket.outcome(&id("qqqqqqqq")));
     };
-    assert!(error.message().contains("removes nothing"), "{error:?}");
+    assert_eq!(error.feature(), Some("qqqqqqqq"), "{error:?}");
+    assert!(
+        error.message().contains("the cut couldn't be measured"),
+        "{error:?}"
+    );
+}
+
+/// That the M2 cut of the proofs, removing nothing, is refused in a cut's words, naming
+/// itself, never a pocket's.
+fn cut_refused_in_its_own_words(model: &Model) {
+    let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("cccccccc")) else {
+        panic!("{:?}", model.outcome(&id("cccccccc")));
+    };
+    assert_eq!(error.feature(), Some("cccccccc"), "{error:?}");
+    assert!(
+        error
+            .message()
+            .starts_with("cut cccccccc removes nothing from its base bbbbbbbb"),
+        "{error:?}"
+    );
+}
+
+/// An M2 cut that removes nothing is refused in its own words, alone and where a pocket
+/// elsewhere in the document shares its step and is refused in its.
+#[test]
+fn an_m2_cut_sharing_a_pockets_step_is_refused_in_its_own_words() {
+    let cube_above = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
+    let cube_twin = box_at("dddddddd", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
+    let sketch = rectangle("ssssssss", "xy", [0.0, 0.0], 4.0, 2.0);
+    let alone = published(
+        &engine(),
+        &[
+            &cube_above,
+            &sketch,
+            &pad("pppppppp", None, "ssssssss", REVERSED),
+            &cut("cccccccc", "bbbbbbbb", "pppppppp"),
+        ],
+    );
+    cut_refused_in_its_own_words(&alone);
+    let with_pocket = published(
+        &engine(),
+        &[
+            &cube_above,
+            &cube_twin,
+            &sketch,
+            &pad("pppppppp", None, "ssssssss", REVERSED),
+            &cut("cccccccc", "bbbbbbbb", "pppppppp"),
+            &pocket("qqqqqqqq", "dddddddd", "ssssssss", TEN),
+        ],
+    );
+    cut_refused_in_its_own_words(&with_pocket);
+    // The pocket sharing the cut's step is refused in its own words, removing nothing.
+    let Some(FeatureOutcome::Failed(error)) = with_pocket.outcome(&id("qqqqqqqq")) else {
+        panic!("{:?}", with_pocket.outcome(&id("qqqqqqqq")));
+    };
+    assert!(
+        error
+            .message()
+            .starts_with("pocket qqqqqqqq removes nothing from its base dddddddd"),
+        "{error:?}"
+    );
 }
 
 /// The pocket of the proofs, missing its cube: refused, its error said once, naming it.

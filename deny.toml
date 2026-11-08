@@ -36,14 +36,14 @@ deny = [
 ]
 
 [licenses]
-# Compatible with Silico's GPL-3.0-or-later.
+# Compatible with Silico's AGPL-3.0-or-later.
 allow = [
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSL-1.0",
     # Silico's own crates.
-    "GPL-3.0-or-later",
+    "AGPL-3.0-or-later",
     "CC0-1.0",
     # A permissive data license: webpki-roots (Mozilla's list of certificate authorities),
     # used by Rerun's network code (silico-view only).
