@@ -1444,8 +1444,10 @@ impl<P: Clients + 'static> App<P> {
         false
     }
 
-    /// The Save panel's pick, `path`, for `session`'s document: saved as it (`commit` with
-    /// the path and `replace`, the panel having asked about a file there), then closed if
+    /// The Save panel's pick, `path`, for `session`'s document: saved as it, `.silico`
+    /// added if its name hasn't it ([`browse::document_path`]) (`commit` with the path, and
+    /// `replace` if the panel asked about a file there: if it was picked as it is, but not
+    /// if `.silico` was added, so a file by that name is asked about), then closed if
     /// `then_close`, if its tab is still open and not closing (Don't save chosen while a
     /// panel of the portal's was open); else nothing. Its own file picked is a Save (the core
     /// refuses a Save As to it, and the tab saves instead). Whether a command was started.
@@ -1457,9 +1459,10 @@ impl<P: Clients + 'static> App<P> {
         else {
             return false;
         };
+        let (path, added) = browse::document_path(path);
         // Its own file picked (by any path to it) is refused by the core as its own, which
         // the tab then takes as a Save.
-        tab.save_as(&self.sessions, path, true, then_close);
+        tab.save_as(&self.sessions, path, !added, then_close);
         true
     }
 
@@ -2199,7 +2202,9 @@ impl<P: Clients + 'static> App<P> {
                         // A relative path is in the document's folder.
                         && let Some(path) = export::beside(tab.path.as_deref(), &typed)
                     {
-                        let path = path.to_string_lossy().into_owned();
+                        // A document's name: `.silico` added if it hasn't it. A file there
+                        // by that name is asked about.
+                        let (path, _) = browse::document_path(path.to_string_lossy().into_owned());
                         tab.save_as(&self.sessions, path, false, then_close);
                     }
                     *started = true;
