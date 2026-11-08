@@ -240,7 +240,7 @@ mod tests {
     fn shown(tab: Tab, window: Vec2) -> Harness<'static, Shown> {
         let mut h = Harness::builder().with_size(window).build_ui_state(
             |ui, shown: &mut Shown| {
-                let asked = show(ui.ctx(), &shown.tab);
+                let (asked, _hovered) = show(ui.ctx(), &shown.tab);
                 if asked != Asked::None {
                     shown.asked.push(asked);
                 }
