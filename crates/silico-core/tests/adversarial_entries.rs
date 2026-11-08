@@ -1313,7 +1313,7 @@ fn an_element_nothing_names_is_unstable_and_stable_filters_on_it() {
             base,
             ..
         } => Some(Reply::Built(BuiltData {
-            shape: base.clone(),
+            shape: FakeKernel::resized(base, 1.0)?,
             history: history.clone(),
         })),
         _ => None,

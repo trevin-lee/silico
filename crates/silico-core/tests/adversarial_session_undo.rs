@@ -28,7 +28,7 @@ const HEAD: &str =
 /// The block's feature on one line, `length` long, its fingerprint stored for a length of 40.
 fn block_line(length: u32) -> String {
     format!(
-        r#"{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": {length}, "width": 20, "height": 10, "fingerprint": {{"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}}}"#
+        r#"{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": {length}, "width": 20, "height": 10, "fingerprint": {{"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}}}"#
     )
 }
 
@@ -37,12 +37,14 @@ fn block() -> String {
     format!("{HEAD}{}]}}", block_line(40))
 }
 
-/// The block's fingerprint member for a length of `length`, by formula.
+/// The block's fingerprint member for a length of `length`, by formula (its centre its
+/// middle).
 fn fingerprint(length: u32) -> String {
     format!(
-        r#""fingerprint": {{"volume": {}, "area": {}, "bbox": [0, 0, 0, {length}, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#""fingerprint": {{"volume": {}, "area": {}, "center": [{}, 10, 5], "bbox": [0, 0, 0, {length}, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
         200 * length,
-        60 * length + 400
+        60 * length + 400,
+        f64::from(length) / 2.0
     )
 }
 
@@ -165,7 +167,7 @@ fn lug(length: &str) -> String {
     format!(
         r#"{{"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0],
 {length}
-"width": 10, "height": 10, "fingerprint": {{"volume": 1000, "area": 600, "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}}}}"#
+"width": 10, "height": 10, "fingerprint": {{"volume": 1000, "area": 600, "center": [105, 5, 5], "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}}}}"#
     )
 }
 

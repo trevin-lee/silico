@@ -90,6 +90,7 @@ fn a_reply_costs_at_most_a_few_times_its_size_to_read() {
             face_triangles: vec![],
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
             valid: None,
         };
         f(&mut mesh);
@@ -126,6 +127,7 @@ fn refusing_a_mesh_of_unmeshed_faces_costs_a_few_times_its_size() {
         face_triangles: vec![0; 1_000_000],
         edge_points: vec![],
         edge_point_counts: vec![],
+        vertex_points: vec![],
         valid: Some(false),
     };
     let wire = postcard::to_allocvec(&Reply::Mesh(mesh)).unwrap();

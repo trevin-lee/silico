@@ -72,6 +72,7 @@ crates/silico-core/src/sketch.rs | savable | replace savable -> Result<(), Error
 crates/silico-core/src/sweep.rs | nearest_distances | replace > with >= | #90
 crates/silico-core/src/sweep.rs | significant | replace || with && | #84
 crates/silico-core/src/sweep.rs | significant | replace || with && | #84
+crates/silico-core/src/sweep.rs | judged | replace < with <= | #386
 crates/silico-kernel/src/lib.rs | make_faces | replace > with >= | #44
 crates/silico-oracle/src/features.rs | run | replace || with && | #84
 crates/silico-protocol/src/faces.rs | check_area | replace > with >= | #44
@@ -309,6 +310,8 @@ crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, 
 crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::pane_ui | replace / with * | #298
 crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width -> f32 with -1.0 | #298
 crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width -> f32 with 0.0 | #298
+# Equivalent: gap_width returns BORDER, which is 1.0 (panes.rs), so returning 1.0 changes nothing.
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width -> f32 with 1.0 | #403
 crates/silico-app/src/panes.rs | viewport | replace viewport with () | #298
 crates/silico-app/src/panes.rs | mark | replace - with + | #298
 crates/silico-app/src/panes.rs | mark | replace - with / | #298
@@ -621,3 +624,22 @@ crates/silico-app/src/selection.rs | Selection::published | replace match guard 
 # its `name` takes `picked.name` from `..picked`, the same value.
 crates/silico-app/src/selection.rs | Selection::took | delete field name from struct Picked expression | #385
 crates/silico-app/src/selection.rs | Selection::took | delete field name from struct Picked expression | #385
+# A closed export dialog's form (#395, whose `match` of what was asked replaced an `if
+# matches!` of the same arm): left in `App::export` once its dialog goes, it's never read.
+# Every read of it is the dialog's own, while `asking` is `Export` of its session (drawn,
+# its Browse… asked and answered, an answer landing only while that's still asked), or a
+# Save As moving its folder (`saved_as`), which changes nothing read; and Export… makes a
+# new form each time it opens the dialog. The arm only lets the form go sooner.
+crates/silico-app/src/app.rs | App<P>::ask | delete match arm Some(Asking::Export(_)) | #395
+# A name's Remove clicked in a dialog's box of names (#393): `unpicked` holds the place
+# the click came from, set while the box's names are listed, in that frame, from their
+# own enumeration, so it's always below their count when it's read after the list: no
+# frame changes the names between. `<=` differs only at a place equal to the count,
+# which never comes; the guard only keeps `remove` from a place that isn't there.
+crates/silico-app/src/dialog.rs | Dialog::ui | replace < with <= | #393
+# What's Wrong's card asked for Edit (#397): `started` only asks egui for the next frame at
+# once, and a card's Edit or Show in timeline is only ever asked in a frame with input in it
+# (its click, or the key or accessibility action that presses it), which egui already
+# repaints at once (`InputState::wants_repaint_after`: events not empty). `&=` changes no
+# frame asked for, and nothing else reads `started`.
+crates/silico-app/src/app.rs | App<P>::after_drawing | replace |= with &= | #397

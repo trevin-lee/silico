@@ -4,8 +4,8 @@
 //! shapes it's known to miss that on), read from its rebuild's summary, so it asks the
 //! kernel nothing: volume and area as the feature's rebuilt fingerprint holds them, as
 //! `format` writes it, to a millionth of a mm³ and mm² (a stored fingerprint that differs
-//! is `check`'s drift); the centre, which no fingerprint holds, rounded to the nanometre,
-//! as a fingerprint's box is. `distance` between two elements by name, the least as OCCT
+//! is `check`'s drift); the centre rounded to the nanometre, as the fingerprint's `center`
+//! holds it. `distance` between two elements by name, the least as OCCT
 //! measures it, with their centres', normal, and centre-to-element distances; and `angle`
 //! between two, from their geometry.
 

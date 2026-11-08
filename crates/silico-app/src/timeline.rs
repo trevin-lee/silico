@@ -2,7 +2,8 @@
 //! timeline*; the approved prototype, docs/design/m5-ui/DESIGN.md, *The idea in one line*
 //! and *egui mapping*, and its `.tl-*` rules): a panel [`theme::TIMELINE_HEIGHT`] high,
 //! its label, each feature in order as its kind's icon on a 30 point item, and at its right
-//! how many errors and features there are. The rebuild runs visibly along it: the running
+//! how many errors and features there are, the errors a button that opens What's Wrong
+//! (`crate::whats_wrong`). The rebuild runs visibly along it: the running
 //! step's item spins, the items not yet known built are dimmed, and once it ends each item
 //! shows its health, a failed one red ([`step_of_each`]). A click selects a feature, a
 //! double-click (or Edit Feature in its menu) opens its dialog (a sketch's, Edit Sketch,
@@ -11,7 +12,7 @@
 //!
 //! Left out, each for a reason: the rollback bar (the core has no rollback; Fusion's marker
 //! is out of M5, DESIGN.md flags Onshape's as a proposal), the gear's timeline options (none
-//! exist), a click on the errors opening What's Wrong (not built yet), and the reverse of
+//! exist), and the reverse of
 //! the hover linking, a face hovered outlining its feature here (`.hovered-from-canvas`):
 //! SEAM, the outline's look, from `tab.selection().hovered_feature()` (M5.7: the feature
 //! that made what the pointer is over in the canvas).
@@ -35,6 +36,9 @@ use crate::theme;
 
 /// The pane's name, as the accessibility tree labels it.
 pub const LABEL: &str = "Timeline";
+
+/// The track's name, as the accessibility tree labels it (the prototype's `aria-label`).
+pub const TRACK_LABEL: &str = "Features in order";
 
 /// What a feature's item shows of the rebuild.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,11 +269,12 @@ pub(crate) fn show<P: Clients + 'static>(
         .resizable(false)
         .frame(egui::Frame::NONE.fill(theme::BOTTOM_BAR_BG))
         .show(ui, |ui| {
+            let rect = ui.max_rect();
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Pane);
                 node.set_label(LABEL);
+                node.set_bounds(crate::panes::bounds(rect));
             });
-            let rect = ui.max_rect();
             let inner = rect.shrink2(vec2(theme::TIMELINE_PADDING, 0.0));
             title(ui, inner);
             let left = inner.left() + theme::TIMELINE_LABEL_WIDTH + theme::TIMELINE_GAP;
@@ -348,7 +353,8 @@ fn features<P: Clients + 'static>(
         tab.view.linked = None;
         return;
     };
-    let (track, summary_rect, said) = summary_at(ui, rect, summary(tab.errors(), entries.len()));
+    let (track, summary_rect, said, errors) =
+        summary_at(ui, rect, summary(tab.errors(), entries.len()));
     let rebuild = tab.status.as_ref().map(|status| &status.rebuild);
     let steps = step_of_each(entries, timeline.revision, rebuild);
     let mut asked = Asked::default();
@@ -360,6 +366,12 @@ fn features<P: Clients + 'static>(
         );
     } else {
         ui.scope_builder(UiBuilder::new().max_rect(track), |ui| {
+            // The track's items apart from the summary's button (`.tl-track`; a group, the
+            // toolbar's role being the toolbar's panels').
+            ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                node.set_role(egui::accesskit::Role::Group);
+                node.set_label(TRACK_LABEL);
+            });
             egui::ScrollArea::horizontal()
                 .id_salt("timeline-track")
                 .scroll_source(egui::scroll_area::ScrollSource {
@@ -375,7 +387,15 @@ fn features<P: Clients + 'static>(
                 });
         });
     }
+    // After the items, so they come first in the pane.
+    if let Some((button, words)) = errors
+        && errors_button(ui, button, &words)
+    {
+        tab.whats_wrong = true;
+    }
     summary_label(ui, summary_rect, &said);
+    // Scrolled to once, whether its item was there or not.
+    tab.timeline_scrolled();
     if steps.contains(&Step::Running) {
         // The spinner turns only while a step runs.
         ui.ctx().request_repaint();
@@ -427,14 +447,16 @@ pub fn summary_places(right: f32, errors: Option<f32>, features: f32) -> Summary
 }
 
 /// The summary drawn at `rect`'s right (`.tl-right`): its errors in the error's red with the
-/// error's icon, then its features: the rect left for the track, the summary's, and what
-/// it says, for its label in the accessibility tree ([`summary_label`]), added after the
-/// items so it's last in the pane.
+/// error's icon, a button (`button.st-item`, Gray.300 under it and white while the pointer
+/// is over it) that opens What's Wrong, then its features: the rect left for the track, the
+/// summary's, what it says, for its label in the accessibility tree ([`summary_label`]),
+/// added after the items so it's last in the pane, and the errors' button's place and
+/// words, if there are errors ([`errors_button`]).
 fn summary_at(
     ui: &mut Ui,
     rect: Rect,
     (errors, features): (Option<String>, String),
-) -> (Rect, Rect, String) {
+) -> (Rect, Rect, String, Option<(Rect, String)>) {
     let font = egui::FontId::proportional(theme::HEADER_SIZE);
     let painter = ui.painter().clone();
     let centre = rect.center().y;
@@ -448,22 +470,36 @@ fn summary_at(
         count.size().x,
     );
     let mut spans = vec![(places.features, count, theme::TIMELINE_SUMMARY)];
+    let mut button = None;
     if let (Some(galley), Some((text, icon))) = (wrong, places.errors) {
         let side = crate::icons::ICON_SIZE;
-        Icon::Error
-            .image(IconSize::Small)
-            .tint(theme::TIMELINE_SUMMARY_ERRORS)
-            .paint_at(
-                ui,
-                Rect::from_min_size(pos2(icon, centre - side / 2.0), Vec2::splat(side)),
+        let place = Rect::from_x_y_ranges(
+            places.left..=text + galley.size().x + theme::TIMELINE_SUMMARY_PADDING,
+            centre - theme::STATUS_ITEM_HEIGHT / 2.0..=centre + theme::STATUS_ITEM_HEIGHT / 2.0,
+        );
+        let ink = if ui.rect_contains_pointer(place) {
+            painter.rect_filled(
+                place,
+                theme::SMALL_CORNER_RADIUS,
+                theme::STATUS_ITEM_HOVER_BG,
             );
-        spans.push((text, galley, theme::TIMELINE_SUMMARY_ERRORS));
+            theme::STATUS_ITEM_HOVER_TEXT
+        } else {
+            theme::TIMELINE_SUMMARY_ERRORS
+        };
+        Icon::Error.image(IconSize::Small).tint(ink).paint_at(
+            ui,
+            Rect::from_min_size(pos2(icon, centre - side / 2.0), Vec2::splat(side)),
+        );
+        button = Some((place, galley.text().to_owned()));
+        spans.push((text, galley, ink));
     }
     let mut whole = Rect::NOTHING;
     for (x, galley, colour) in spans {
         let at = pos2(x, centre - galley.size().y / 2.0);
         whole = whole.union(Rect::from_min_size(at, galley.size()));
-        painter.galley(at, galley, colour);
+        // In the colour given, the errors' white while hovered.
+        painter.galley_with_override_text_color(at, galley, colour);
     }
     let said = match errors {
         Some(errors) => format!("{errors} · {features}"),
@@ -473,7 +509,23 @@ fn summary_at(
         rect.left()..=(places.left - theme::TIMELINE_GAP).max(rect.left()),
         rect.y_range(),
     );
-    (track, whole, said)
+    (track, whole, said, button)
+}
+
+/// The summary's errors at `place`, saying `words`, as a button for the accessibility tree
+/// and the pointer, with What's wrong's tooltip from the registry: whether it was clicked.
+fn errors_button(ui: &Ui, place: Rect, words: &str) -> bool {
+    let response = ui.interact(place, egui::Id::new("timeline-errors"), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, words));
+    theme::focus_ring(
+        ui,
+        &response,
+        place,
+        theme::SMALL_CORNER_RADIUS,
+        egui::StrokeKind::Outside,
+    );
+    let command = crate::shortcuts::Command::WhatsWrong;
+    crate::bar::tooltip(response, command.label(), None, command.entry().description).clicked()
 }
 
 /// The summary's label for the accessibility tree, at `rect`, saying `said`.
@@ -505,6 +557,10 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
         if hovered {
             asked.hovered = Some(entry.id.clone());
         }
+        if tab.timeline_scroll() == Some(&entry.id) {
+            // An error card's Show in timeline: its item brought into the track's view.
+            ui.scroll_to_rect(rect, Some(Align::Center));
+        }
         let sketch = entry.kind == "sketch";
         let look = look(*step, sketch, hovered, selected);
         paint(ui, rect, Icon::of_kind(entry.kind), &look);
@@ -528,6 +584,20 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
                 health,
                 said.map(|said| said.message.as_str()),
                 MarkLook::Badge,
+            );
+        } else if let Some(text) = tab.outside.get(&entry.id) {
+            // Changed by another program, with no health mark (`.badge.outside`).
+            let side = theme::TIMELINE_BADGE_OUTSIDE_SIZE;
+            let corner = pos2(
+                rect.right() - theme::TIMELINE_BADGE_INSET - side,
+                rect.top() + theme::TIMELINE_BADGE_INSET,
+            );
+            panes::outside_mark(
+                ui,
+                id.with("outside"),
+                Rect::from_min_size(corner, Vec2::splat(side)),
+                text,
+                Some(theme::TIMELINE_BADGE_RING),
             );
         }
         if response.dragged() {
@@ -557,6 +627,9 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
         let mut tip = description;
         if let Some(said) = said {
             tip = format!("{tip} — {}", said.message);
+        }
+        if let Some(text) = tab.outside.get(&entry.id) {
+            tip = format!("{tip} — changed on disk: {text}");
         }
         if editable {
             tip.push_str(". Double-click to edit.");
@@ -1082,6 +1155,8 @@ mod tests {
         pub const RIGHT_GAP: f32 = 2.0;
         pub const ST_PADDING: f32 = 8.0;
         pub const ST_GAP: f32 = 6.0;
+        /// `.st-item { height: 20px }`, centred in `.tl-right` (`align-items: center`).
+        pub const ST_H: f32 = 20.0;
     }
 
     /// Where the timeline's scope starts in the harness's window (away from the origin, so a
@@ -1401,6 +1476,46 @@ mod tests {
     }
 
     #[test]
+    fn a_feature_another_program_changed_has_the_purple_badge_where_it_has_no_health_mark() {
+        // `.tl-item .badge.outside`: `--purple` (#b780ff), 7 square, 1 in from the item's
+        // top right, in its `--g150` ring 1.5 outside it; labelled with what changed. A
+        // feature with a health mark shows that mark alone.
+        const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+        const OUTSIDE: f32 = 7.0;
+        let mut tab = tab_of(Some(&features()), 0);
+        for id in ["b0000001", "p0000001"] {
+            tab.outside
+                .insert(FeatureId::new(id).unwrap(), "height 10 → 11".to_owned());
+        }
+        let h = drawn(tab);
+        let block = item(0);
+        let centre = Pos2::new(
+            block.right() - css::BADGE_INSET - OUTSIDE / 2.0,
+            block.top() + css::BADGE_INSET + OUTSIDE / 2.0,
+        );
+        let drawn: Vec<(Pos2, f32, Color32)> = circles(&h, block)
+            .into_iter()
+            .map(|circle| (circle.center, circle.radius, circle.fill))
+            .collect();
+        assert_eq!(drawn.len(), 2, "the block's badge: {drawn:?}");
+        let ring = (OUTSIDE / 2.0 + css::BADGE_RING, css::G150);
+        let dot = (OUTSIDE / 2.0, PURPLE);
+        for (got, (radius, colour)) in drawn.iter().zip([ring, dot]) {
+            assert!(
+                near_pos(got.0, centre) && near(got.1, radius) && got.2 == colour,
+                "the block's badge: {drawn:?}, not {radius} at {centre:?} in {colour:?}"
+            );
+        }
+        let said = h.get_by_label("changed on disk: height 10 → 11").rect();
+        assert!(
+            near_pos(said.center(), centre) && near(said.width(), OUTSIDE),
+            "{said:?}"
+        );
+        // The failed pad: its error's badge only.
+        badge(&h, item(2), css::RED_FILL, "the pad");
+    }
+
+    #[test]
     fn the_items_are_drawn_as_tl_item_in_each_state() {
         let mut tab = tab_of(Some(&features()), 0);
         tab.selection_mut()
@@ -1612,6 +1727,118 @@ mod tests {
             clips[0],
             track_left()
         );
+    }
+
+    #[test]
+    fn the_summarys_errors_are_a_button_that_opens_whats_wrong() {
+        use eframe::egui::accesskit::Role;
+        // The prototype's `.tl-right button.st-item.err-text` (`data-act="whatsWrong"`): one
+        // of the document's own and the pad's.
+        let mut h = drawn(tab_of(Some(&features()), 1));
+        assert!(!h.state().tab.as_ref().unwrap().whats_wrong);
+        h.get_by_role_and_label(Role::Button, "2 errors").click();
+        h.run_steps(2);
+        assert!(h.state().tab.as_ref().unwrap().whats_wrong);
+        // Not one of the track's items, which come first.
+        let track = h.get_by_role_and_label(Role::Group, TRACK_LABEL);
+        assert!(track.query_by_label("2 errors").is_none());
+        assert!(track.query_by_label("p0000001").is_some());
+        // With none, no button.
+        let clean = [entry("b0000001", "box", &[], Health::Healthy)];
+        let h = drawn(tab_of(Some(&clean), 0));
+        assert!(h.query_by_label_contains("error").is_none());
+    }
+
+    #[test]
+    fn the_summarys_errors_button_is_st_item_20_high_padded_8_and_lit_when_hovered() {
+        use eframe::egui::accesskit::Role;
+        let mut h = drawn(tab_of(Some(&features()), 1));
+        // `button.st-item`: from 8 before its icon to 8 after its words, 20 high on the
+        // content's middle.
+        let count = text(&h, "5 features");
+        let right = panel().right() - css::PADDING;
+        assert!(near(count.pos.x + count.galley.size().x, right));
+        let words = text(&h, "2 errors");
+        let words = Rect::from_min_size(words.pos, words.galley.size());
+        let icon_left = words.left() - css::ST_GAP - css::ICON;
+        let place = Rect::from_min_max(
+            Pos2::new(icon_left - css::ST_PADDING, middle() - css::ST_H / 2.0),
+            Pos2::new(words.right() + css::ST_PADDING, middle() + css::ST_H / 2.0),
+        );
+        let button = h.get_by_role_and_label(Role::Button, "2 errors").rect();
+        assert!(near_rect(button, place), "{button:?}, not {place:?}");
+        // Not hovered: no fill.
+        assert!(fills_at(&h, place).is_empty());
+        // `button.st-item:hover`: `--g300` under it, `--r-sm` round, its icon and words
+        // `--g1000`.
+        h.input_mut()
+            .events
+            .push(Event::PointerMoved(place.center()));
+        h.run_steps(2);
+        assert_eq!(
+            fills_at(&h, place),
+            [(css::G300, CornerRadius::same(css::R_SM))]
+        );
+        let icon = Rect::from_min_size(
+            Pos2::new(icon_left, middle() - css::ICON / 2.0),
+            Vec2::splat(css::ICON),
+        );
+        assert_eq!(icon_at(&h, icon), Some(css::G1000), "the icon, hovered");
+        assert_eq!(
+            colour(&text(&h, "2 errors")),
+            css::G1000,
+            "the words, hovered"
+        );
+        // Off it, by its edge: red again, unlit.
+        h.input_mut().events.push(Event::PointerMoved(Pos2::new(
+            place.center().x,
+            place.top() - 2.0,
+        )));
+        h.run_steps(2);
+        assert!(fills_at(&h, place).is_empty());
+        assert_eq!(colour(&text(&h, "2 errors")), css::RED);
+    }
+
+    #[test]
+    fn show_in_timeline_selects_the_feature_and_scrolls_its_item_into_the_track() {
+        use egui_kittest::kittest::NodeT;
+        // 40 items, 40 × 30 and 39 gaps of 4, about 1356 wide: past the 800 wide panel, so
+        // the last starts out of view at its right.
+        let mut many = features();
+        for n in 0..35 {
+            many.push(entry(&format!("x{n:07}"), "box", &[], Health::Healthy));
+        }
+        let last = many[39].id.clone();
+        let mut h = drawn(tab_of(Some(&many), 0));
+        let shown = |h: &Harness<'_, Shown>| h.get_by_label(last.as_str()).rect();
+        let before = shown(&h);
+        assert!(
+            before.left() > panel().right(),
+            "{before:?} in view already"
+        );
+        let toggled = |h: &Harness<'_, Shown>| {
+            h.get_by_label(last.as_str())
+                .accesskit_node()
+                .toggled()
+                .map(|toggled| toggled == eframe::egui::accesskit::Toggled::True)
+        };
+        assert_eq!(toggled(&h), Some(false));
+        h.state_mut()
+            .tab
+            .as_mut()
+            .unwrap()
+            .show_in_timeline(last.clone());
+        h.run_steps(4);
+        // Selected, and on the track, between its left and the panel's right.
+        let tab = h.state().tab.as_ref().unwrap();
+        assert_eq!(tab.selection().feature(), Some(&last));
+        assert_eq!(tab.timeline_scroll(), None, "scrolled to once");
+        let after = shown(&h);
+        assert!(
+            after.left() >= track_left() && after.right() <= panel().right() - css::PADDING,
+            "{after:?} out of the track"
+        );
+        assert_eq!(toggled(&h), Some(true));
     }
 
     /// A drag from `from` to `to`, held: pressed at `from`, moved past the drag threshold,

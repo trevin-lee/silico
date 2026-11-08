@@ -291,3 +291,45 @@ fn the_plate_with_a_boss_measures_what_its_features_make_by_hand() {
     }
     assert!(text.contains("\"p0000001.pad.Edge(G s0000001.sketch.Edge.na000001)\""));
 }
+
+#[test]
+fn the_golden_models_centres_are_where_their_material_is_by_hand() {
+    // Each fingerprint's centre of mass, worked by hand and held to the nanometre the file
+    // writes: the plate 60 × 30 × 5 at its middle, (30, 15, 2.5); its first hole, r 1.5
+    // through its 5 at (15, 15), takes V_h = 11.25π from it, so x = (9000 · 30 − 15 V_h) /
+    // (9000 − V_h) = 30.0591371 (y and z unchanged, the hole being centred on both); the
+    // fused boxes, a 10 mm cube at (5, 5, 5) and a 10 × 10 × 5 slab beside it at
+    // (15, 5, 2.5), (1000 · 5 + 500 · 15) / 1500 = 8.333333 and (5000 + 1250) / 1500 =
+    // 4.166667; and the plate with a boss's pad, 60 × 30 × 8 about the origin, (0, 0, 4).
+    use std::f64::consts::PI;
+    let centre = |model: &str, feature: &str| {
+        let text = std::fs::read_to_string(golden().join(model)).unwrap();
+        let document = silico_core::document::read(text.as_bytes()).unwrap();
+        document
+            .features
+            .iter()
+            .find(|f| f.id.as_str() == feature)
+            .and_then(|f| f.fingerprint.as_ref())
+            .and_then(|f| f.center)
+            .map(|c| c.map(silico_core::document::Length::nm))
+            .unwrap_or_else(|| panic!("{model}: {feature} has no centre"))
+    };
+    let nm = |mm: f64| (mm * 1e6).round() as i64;
+    let hole = 11.25 * PI;
+    for (model, feature, want) in [
+        ("plate-with-holes.silico", "pppppppp", [30.0, 15.0, 2.5]),
+        (
+            "plate-with-holes.silico",
+            "c0000001",
+            [(9000.0 * 30.0 - 15.0 * hole) / (9000.0 - hole), 15.0, 2.5],
+        ),
+        (
+            "fused-boxes.silico",
+            "rrrrrrrr",
+            [12.5 / 1.5, 5.0, 6.25 / 1.5],
+        ),
+        ("plate-with-boss.silico", "p0000001", [0.0, 0.0, 4.0]),
+    ] {
+        assert_eq!(centre(model, feature), want.map(nm), "{model}: {feature}");
+    }
+}

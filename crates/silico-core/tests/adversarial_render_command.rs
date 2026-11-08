@@ -968,6 +968,7 @@ fn one_face_of(triangles: usize, deflection: f64) -> Reply {
             face_triangles: vec![u32::try_from(triangles).unwrap()],
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
             valid: None,
         },
         deflection,
@@ -1146,6 +1147,7 @@ fn faces_and_edges(faces: usize, edges: usize) -> Mesh {
         face_triangles: vec![1; faces],
         edge_points: vec![[0.0; 3]; edges],
         edge_point_counts: vec![1; edges],
+        vertex_points: vec![],
         valid: None,
     }
 }

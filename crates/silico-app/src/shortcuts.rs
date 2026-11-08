@@ -21,7 +21,8 @@
 //! - F5, SolidWorks' key for its filter toolbar, which the app hasn't: the app takes it
 //!   itself and says where the filters are (`App::keys`), as the prototype's F5 is no
 //!   command of its `CMD` and isn't on its sheet.
-//! - SEAM: F2 Rename, Delete, and S Search commands, once they're built.
+//! - SEAM: F2 Rename, Delete, and S Search commands, once they're built; Search reaches
+//!   What's wrong, which has no keys, by its name, as the prototype's does.
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Ui};
 
@@ -40,6 +41,7 @@ pub enum Command {
     Rebuild,
     RebuildAll,
     Stop,
+    WhatsWrong,
     Fit,
     Home,
     Front,
@@ -242,6 +244,15 @@ const STOP: Entry = entry(
     &[ESCAPE],
     None,
 );
+/// No keys: the status bar's errors, the timeline's, and the browser's document row open it
+/// (the prototype's `whatsWrong`, which its search reaches by name).
+const WHATS_WRONG: Entry = entry(
+    Command::WhatsWrong,
+    "What's wrong",
+    Group::Rebuild,
+    &[],
+    Some("Every problem in the document"),
+);
 const FIT: Entry = entry(
     Command::Fit,
     "Fit",
@@ -352,8 +363,6 @@ const FILTER_EDGE: Entry = entry(
     &[Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::E))],
     Some("Toggles whether edges can be selected"),
 );
-/// Vertices aren't picked yet (M5.7's part 3): the filter is kept, and matters once they
-/// are.
 const FILTER_VERTEX: Entry = entry(
     Command::FilterVertex,
     "Vertices",
@@ -379,7 +388,7 @@ const SHORTCUTS: Entry = entry(
 );
 
 /// Every command, in the order the sheet lists each group's.
-pub const REGISTRY: [Entry; 30] = [
+pub const REGISTRY: [Entry; 31] = [
     NEW,
     OPEN,
     SAVE,
@@ -390,6 +399,7 @@ pub const REGISTRY: [Entry; 30] = [
     REBUILD,
     REBUILD_ALL,
     STOP,
+    WHATS_WRONG,
     FIT,
     HOME,
     FRONT,
@@ -426,6 +436,7 @@ impl Command {
             Command::Rebuild => &REBUILD,
             Command::RebuildAll => &REBUILD_ALL,
             Command::Stop => &STOP,
+            Command::WhatsWrong => &WHATS_WRONG,
             Command::Fit => &FIT,
             Command::Home => &HOME,
             Command::Front => &FRONT,
@@ -679,6 +690,35 @@ mod tests {
         assert_eq!(Command::Front.keys_text(&nix), "Ctrl+1");
         assert_eq!(Command::Redo.shown(&nix), Some(command(Key::Y)));
         assert_eq!(Command::Redo.shown(&mac), Some(key(SHIFT_COMMAND, Key::Z)));
+    }
+
+    #[test]
+    fn whats_wrong_is_a_rebuild_command_with_no_keys_left_off_the_sheet() {
+        // js/app.js's `CMD.whatsWrong`: "What's wrong", no keys, the Rebuild group, "Every
+        // problem in the document"; after Stop rebuild, as the prototype orders its group.
+        let entry = Command::WhatsWrong.entry();
+        assert_eq!(entry.label, "What's wrong");
+        assert_eq!(entry.group, Group::Rebuild);
+        assert!(entry.keys.is_empty());
+        assert_eq!(entry.description, Some("Every problem in the document"));
+        let rebuild: Vec<Command> = REGISTRY
+            .iter()
+            .filter(|entry| entry.group == Group::Rebuild)
+            .map(|entry| entry.command)
+            .collect();
+        assert_eq!(
+            rebuild,
+            [
+                Command::Rebuild,
+                Command::RebuildAll,
+                Command::Stop,
+                Command::WhatsWrong
+            ]
+        );
+        assert_eq!(
+            Command::WhatsWrong.caps(&on(OperatingSystem::Nix)),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

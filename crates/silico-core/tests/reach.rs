@@ -87,7 +87,7 @@ fn a_tool_reaches_what_consumes_it_and_nothing_before() {
 fn a_name_a_note_and_a_fingerprint_reach_nothing() {
     let after = edited(
         r#""name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#,
-        r#""name": "Block, renamed", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "note": "a note", "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#""name": "Block, renamed", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "note": "a note", "fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
     );
     assert_eq!(reached(&part(), &after), ids(&[]));
 }

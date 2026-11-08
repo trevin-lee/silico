@@ -1,7 +1,7 @@
 //! The status bar along the window's bottom (docs/design/m5-ui/DESIGN.md, *The idea in one
 //! line*, *Layout*, and *egui mapping*; its `#status` and `.st-*` rules and `renderStatus`):
-//! the rebuild in words, with a dot or a spinner in its state's colour, and Stop and Rebuild
-//! beside it; then what the person points at; then, at the right, the file changed on disk,
+//! the rebuild in words, with a dot or a spinner in its state's colour (rebuilt with errors,
+//! a button that opens What's Wrong), and Stop and Rebuild beside it; then what the person points at; then, at the right, the file changed on disk,
 //! whether the document is saved, its units, and the shortcut sheet's button (`crate::sheet`).
 //! With no document open,
 //! how the warm start stands (decision 10) in the rebuild's place.
@@ -15,7 +15,6 @@
 //! - the pointer's coordinates in the middle: SEAM(#351), sketch mode's (see [`middle`]);
 //!   and the hovered face's surface type and feature (`Face6 · Planar · Pad`): SEAM, an
 //!   `elements` read of it.
-//! - What's Wrong, which `Rebuilt with 2 errors` opens in the prototype: not built yet.
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
@@ -123,6 +122,8 @@ pub struct Asked {
     pub disk: bool,
     /// Shortcuts: the shortcut sheet opened.
     pub shortcuts: bool,
+    /// Rebuilt with errors: What's Wrong opened.
+    pub whats_wrong: bool,
 }
 
 /// The bar for `tab`, the tab shown, and `message`, the window's refusal, if it has one.
@@ -292,7 +293,23 @@ fn left_parts(ui: &mut Ui, bar: &Bar, asked: &mut Asked) {
                 theme::STATUS_TEXT,
             );
         }
-        Said::Rebuilt { .. } | Said::Faulted => {
+        Said::Rebuilt { .. } => {
+            // A button (`button.st-item`), as the prototype's `whatsWrong`.
+            let errors = item_with(
+                ui,
+                Some(Mark::Icon(Icon::Error)),
+                plain(&words, theme::ERROR_TEXT),
+                true,
+            );
+            asked.whats_wrong = crate::bar::tooltip(
+                errors,
+                Command::WhatsWrong.label(),
+                None,
+                Some("Lists every problem, with what to do"),
+            )
+            .clicked();
+        }
+        Said::Faulted => {
             item(ui, Some(Mark::Icon(Icon::Error)), &words, theme::ERROR_TEXT);
         }
     }
@@ -409,19 +426,56 @@ fn item(ui: &mut Ui, mark: Option<Mark>, text: &str, colour: Color32) -> Respons
 
 /// An item of `job`'s text, labelled for the accessibility tree with it.
 fn item_job(ui: &mut Ui, mark: Option<Mark>, job: LayoutJob) -> Response {
+    item_with(ui, mark, job, false)
+}
+
+/// [`item_job`], a button if `button` (`button.st-item`): Gray.300 under it and its words
+/// and mark Gray.1000 while hovered.
+fn item_with(ui: &mut Ui, mark: Option<Mark>, job: LayoutJob, button: bool) -> Response {
+    let text = job.text.clone();
+    let marked = mark.map_or(0.0, |mark| mark.width() + theme::STATUS_ITEM_GAP);
+    let width = ui.painter().layout_job(job.clone()).size().x;
+    let size = vec2(
+        2.0 * theme::STATUS_ITEM_PADDING + marked + width,
+        theme::STATUS_ITEM_HEIGHT,
+    );
+    let sense = if button {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    let kind = if button {
+        WidgetType::Button
+    } else {
+        WidgetType::Label
+    };
+    response.widget_info(|| WidgetInfo::labeled(kind, true, &text));
+    let mut job = job;
+    if button && response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            theme::SMALL_CORNER_RADIUS,
+            theme::STATUS_ITEM_HOVER_BG,
+        );
+        for section in &mut job.sections {
+            section.format.color = theme::STATUS_ITEM_HOVER_TEXT;
+        }
+    }
+    if button {
+        theme::focus_ring(
+            ui,
+            &response,
+            rect,
+            theme::SMALL_CORNER_RADIUS,
+            StrokeKind::Outside,
+        );
+    }
     let colour = job
         .sections
         .first()
         .map_or(theme::STATUS_TEXT, |section| section.format.color);
-    let text = job.text.clone();
     let galley = ui.painter().layout_job(job);
-    let marked = mark.map_or(0.0, |mark| mark.width() + theme::STATUS_ITEM_GAP);
-    let size = vec2(
-        2.0 * theme::STATUS_ITEM_PADDING + marked + galley.size().x,
-        theme::STATUS_ITEM_HEIGHT,
-    );
-    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
     let left = rect.left() + theme::STATUS_ITEM_PADDING;
     if let Some(mark) = mark {
         paint_mark(
@@ -963,6 +1017,51 @@ mod tests {
             selection: Vec::new(),
             disk,
             saved: Some(saved),
+        }
+    }
+
+    /// The bar of `said` drawn, what it asked kept (each frame's added).
+    fn asking(said: Said) -> Harness<'static, (Bar, Asked)> {
+        let shown = bar_of(said, (false, false), Saved::Saved, None);
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(BAR.right() + 40.0, BAR.bottom() + 40.0))
+            .build_ui_state(
+                |ui, (shown, asked): &mut (Bar, Asked)| {
+                    ui.scope_builder(UiBuilder::new().max_rect(BAR), |ui| {
+                        asked.whats_wrong |= bar(ui, shown).whats_wrong;
+                    });
+                },
+                (shown, Asked::default()),
+            );
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        h
+    }
+
+    #[test]
+    fn rebuilt_with_errors_is_a_button_that_opens_whats_wrong() {
+        // The prototype's `button.st-item.err-text` (`data-act="whatsWrong"`).
+        let mut h = asking(Said::Rebuilt {
+            revision: 4,
+            errors: 2,
+        });
+        assert!(!h.state().1.whats_wrong);
+        h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+            .click();
+        h.run_steps(2);
+        assert!(h.state().1.whats_wrong);
+        // Rebuilt with none, and a fault: words alone.
+        for said in [
+            Said::Rebuilt {
+                revision: 4,
+                errors: 0,
+            },
+            Said::Faulted,
+        ] {
+            let words = said.words();
+            let h = asking(said);
+            assert!(h.query_by_role_and_label(Role::Label, &words).is_some());
+            assert!(h.query_by_role_and_label(Role::Button, &words).is_none());
         }
     }
 

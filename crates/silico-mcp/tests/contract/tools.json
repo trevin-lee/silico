@@ -6060,7 +6060,7 @@
           },
           "Fingerprint": {
             "additionalProperties": false,
-            "description": "What a feature's solid measures: its volume and area, its tight bounding box (lowest x, y,\nz, then highest; none for a solid with nothing in it), and how many faces, edges, and\nvertices it has.",
+            "description": "What a feature's solid measures: its volume and area, its centre of mass and its tight\nbounding box (lowest x, y, z, then highest; both none for a solid with nothing in it), and\nhow many faces, edges, and vertices it has.",
             "properties": {
               "area": {
                 "$ref": "#/$defs/Measure"
@@ -6072,6 +6072,15 @@
                 },
                 "maxItems": 6,
                 "minItems": 6,
+                "type": "array"
+              },
+              "center": {
+                "description": "`[x, y, z]`: the centre of mass (left out when the solid has nothing in it).",
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
                 "type": "array"
               },
               "edges": {
@@ -8477,7 +8486,7 @@
           },
           "Fingerprint": {
             "additionalProperties": false,
-            "description": "What a feature's solid measures: its volume and area, its tight bounding box (lowest x, y,\nz, then highest; none for a solid with nothing in it), and how many faces, edges, and\nvertices it has.",
+            "description": "What a feature's solid measures: its volume and area, its centre of mass and its tight\nbounding box (lowest x, y, z, then highest; both none for a solid with nothing in it), and\nhow many faces, edges, and vertices it has.",
             "properties": {
               "area": {
                 "$ref": "#/$defs/Measure"
@@ -8489,6 +8498,15 @@
                 },
                 "maxItems": 6,
                 "minItems": 6,
+                "type": "array"
+              },
+              "center": {
+                "description": "`[x, y, z]`: the centre of mass (left out when the solid has nothing in it).",
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
                 "type": "array"
               },
               "edges": {
@@ -19641,6 +19659,25 @@
             ],
             "type": "object"
           },
+          "MeshVertex": {
+            "additionalProperties": false,
+            "description": "A vertex of a body's mesh.",
+            "properties": {
+              "name": {
+                "description": "Its name, by the element map.",
+                "type": "string"
+              },
+              "stable": {
+                "description": "Whether `name` is stable.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "stable"
+            ],
+            "type": "object"
+          },
           "MeshedBody": {
             "additionalProperties": false,
             "description": "A body's display mesh.",
@@ -19762,6 +19799,25 @@
                   "type": "array"
                 },
                 "type": "array"
+              },
+              "vertex_points": {
+                "description": "Each vertex's point, exact (the solid's, not a mesh's), in `vertices`' order; empty\nwhen the body is held.",
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              "vertices": {
+                "description": "Each vertex, in the solid's own order (`Vertex1` first), given whether or not the\nbody is held.",
+                "items": {
+                  "$ref": "#/$defs/MeshVertex"
+                },
+                "type": "array"
               }
             },
             "required": [
@@ -19778,7 +19834,9 @@
               "normals",
               "positions",
               "serves",
-              "triangles"
+              "triangles",
+              "vertex_points",
+              "vertices"
             ],
             "type": "object"
           },

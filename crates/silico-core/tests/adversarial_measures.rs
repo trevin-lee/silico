@@ -921,7 +921,7 @@ fn the_vertex_two_edges_meet_at_is_named_by_its_own_name_though_unstable() {
             base,
             ..
         } => Some(Reply::Built(BuiltData {
-            shape: base.clone(),
+            shape: FakeKernel::resized(base, -0.5)?,
             history: cut.clone(),
         })),
         Op::Boolean {
@@ -929,7 +929,7 @@ fn the_vertex_two_edges_meet_at_is_named_by_its_own_name_though_unstable() {
             base,
             ..
         } => Some(Reply::Built(BuiltData {
-            shape: base.clone(),
+            shape: FakeKernel::resized(base, 1.0)?,
             history: fuse.clone(),
         })),
         // Every element at once: the edges given, the faces and vertices the fake's.

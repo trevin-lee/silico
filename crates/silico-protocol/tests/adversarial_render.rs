@@ -458,6 +458,7 @@ fn mesh_strategy() -> impl Strategy<Value = Mesh> {
                         face_triangles,
                         edge_points,
                         edge_point_counts,
+                        vertex_points: vec![],
                         valid: None,
                     }
                 },
@@ -646,6 +647,7 @@ fn a_boxs_farthest_corner_bounds_its_points_reach_from_anywhere() {
                 face_triangles: vec![],
                 edge_points: vec![],
                 edge_point_counts: vec![],
+                vertex_points: vec![],
                 valid: None,
             };
             let bounds = points_box(&mesh).unwrap();

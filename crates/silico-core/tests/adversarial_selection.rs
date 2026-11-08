@@ -189,7 +189,8 @@ fn aliasing_fuse() -> History {
     history
 }
 
-/// A fake whose fuses give the base back with the history `history` picks for the tool.
+/// A fake whose fuses give a box a mm³ larger than the base back with the history
+/// `history` picks for the tool.
 fn forging(
     history: impl Fn(&str) -> Option<History> + Send + Sync + 'static,
 ) -> impl FnOnce(&FakeKernel) {
@@ -199,12 +200,11 @@ fn forging(
                 op: BooleanOp::Fuse,
                 base,
                 tool,
-            } => history(&FakeKernel::describe(tool)?).map(|history| {
-                silico_protocol::Reply::Built(BuiltData {
-                    shape: base.clone(),
-                    history,
-                })
-            }),
+            } => {
+                let shape = FakeKernel::resized(base, 1.0)?;
+                history(&FakeKernel::describe(tool)?)
+                    .map(|history| silico_protocol::Reply::Built(BuiltData { shape, history }))
+            }
             _ => None,
         })
     }

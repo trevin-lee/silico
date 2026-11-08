@@ -1120,13 +1120,35 @@ fn refusals(kernel: &FakeKernel) {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Expected {
-    Built { step: String, shape: ShapeData },
+    Built {
+        step: String,
+        shape: ShapeData,
+    },
+    /// Its step built, but its check refused it (S7's rule, for an M2 boolean that changes
+    /// nothing): `kernel_failed`, its result there for what's made from it to start on
+    /// before the verdict lands.
+    Refused {
+        shape: ShapeData,
+        /// Words its refusal says (`refusal`).
+        said: &'static str,
+    },
     Failed(ErrorCode),
     Blocked(usize),
 }
 
-/// A step, whether its inputs all built (so it runs, or has a result), and its error's code.
-type Evaluated = (RefStep, bool, Option<ErrorCode>);
+/// Whether a step runs: its inputs all built and none refused (it does, unless kept); its
+/// inputs all made but one refused, or made only so (it may, if it starts before the
+/// verdict lands: a feature's users start as soon as its step is made, beside its measure);
+/// or not.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Runs {
+    Yes,
+    Maybe,
+    No,
+}
+
+/// A step, whether it runs, and its error's code.
+type Evaluated = (RefStep, Runs, Option<ErrorCode>);
 
 struct Reference {
     kernel: FakeKernel,
@@ -1162,13 +1184,47 @@ impl Reference {
         result
     }
 
-    /// Each feature's outcome, and every step the document has, with whether its inputs
-    /// all built (so it runs, or has a result) and its own result's code.
-    fn evaluate(&mut self, kinds: &[Kind], values: &[Values]) -> (Vec<Expected>, Vec<Evaluated>) {
+    /// Why `op`'s `result` is refused for its change to `base`, by S7's rule, worked from the
+    /// reference kernel's own measures, if it is (words its refusal says): a volume no solid
+    /// has (the base's at or below 0, the result's below 0), or a fuse that adds no more than
+    /// 1e-9 of the base's volume to it, a cut or common that takes no more than that (design
+    /// S7; docs/ports/booleans.md).
+    fn refusal(&self, op: BooleanOp, base: &ShapeData, result: &ShapeData) -> Option<&'static str> {
+        let volume = |shape: &ShapeData| {
+            self.kernel
+                .submit(Generation(0), KernelRequest::summarize(shape))
+                .wait()
+                .done()
+                .unwrap()
+                .unwrap()
+                .volume
+        };
+        let (before, after) = (volume(base), volume(result));
+        if !(before.is_finite() && before > 0.0 && after.is_finite() && after >= 0.0) {
+            return Some("which no solid has");
+        }
+        let change = match op {
+            BooleanOp::Fuse => after - before,
+            _ => before - after,
+        };
+        (change <= 1e-9 * before).then_some("nothing")
+    }
+
+    /// Each feature's outcome, and every step the document has, with whether it runs and
+    /// its own result's code.
+    fn evaluate(
+        &mut self,
+        kinds: &[Kind],
+        values: &[Values],
+        known: &BTreeSet<String>,
+    ) -> (Vec<Expected>, Vec<Evaluated>) {
         let g = Generation(0);
         let mut outcomes: Vec<Expected> = Vec::new();
         let mut steps: Vec<Evaluated> = Vec::new();
         let mut last: Vec<String> = Vec::new();
+        // The results of features blocked on a refused one whose step may be made all the
+        // same, before the verdict lands.
+        let mut maybe: BTreeMap<usize, ShapeData> = BTreeMap::new();
         for (kind, v) in kinds.iter().zip(values) {
             match kind {
                 Kind::Primitive => {
@@ -1185,7 +1241,7 @@ impl Reference {
                             identity: make.clone(),
                             name: Op::MakePrimitive(primitive).name(),
                         },
-                        true,
+                        Runs::Yes,
                         made.as_ref().err().copied(),
                     ));
                     let mut identity = make.clone();
@@ -1212,7 +1268,7 @@ impl Reference {
                                 identity: moved.clone(),
                                 name: "Translate",
                             },
-                            ran,
+                            if ran { Runs::Yes } else { Runs::No },
                             result.as_ref().and_then(|r| r.as_ref().err().copied()),
                         ));
                         if let Some(result) = result {
@@ -1233,49 +1289,76 @@ impl Reference {
                     let (op, _) = op_of(v.op);
                     let identity = format!("{op:?}[{}][{}]", last[*base], last[*tool]);
                     let root = |u: usize| match &outcomes[u] {
-                        Expected::Failed(_) => Some(u),
+                        Expected::Failed(_) | Expected::Refused { .. } => Some(u),
                         Expected::Blocked(on) => Some(*on),
                         Expected::Built { .. } => None,
                     };
                     let blocked = root(*base).or_else(|| root(*tool));
-                    let inputs_built = matches!(
-                        (&outcomes[*base], &outcomes[*tool]),
-                        (Expected::Built { .. }, Expected::Built { .. })
-                    );
+                    // Each input's result, if it has one: built, or made but refused (or made
+                    // only before a verdict, `maybe`).
+                    let made = |u: usize| match &outcomes[u] {
+                        Expected::Built { shape, .. } => Some((shape.clone(), false)),
+                        Expected::Refused { shape, .. } => Some((shape.clone(), true)),
+                        Expected::Blocked(_) => maybe.get(&u).map(|s| (s.clone(), true)),
+                        Expected::Failed(_) => None,
+                    };
+                    // Whether an input's result is there for this step to start on: built, or
+                    // made but its refusal not yet known (its refused feature's step not kept
+                    // from an earlier rebuild, whose verdict the plan reads before anything
+                    // starts).
+                    let startable = |u: usize| match &outcomes[u] {
+                        Expected::Built { .. } => Some(false),
+                        Expected::Refused { .. } => (!known.contains(&last[u])).then_some(true),
+                        Expected::Blocked(on) => {
+                            (maybe.contains_key(&u) && !known.contains(&last[*on])).then_some(true)
+                        }
+                        Expected::Failed(_) => None,
+                    };
+                    let runs = match (startable(*base), startable(*tool)) {
+                        (Some(false), Some(false)) => Runs::Yes,
+                        (Some(_), Some(_)) => Runs::Maybe,
+                        _ => Runs::No,
+                    };
                     let mut code = None;
-                    let outcome = match (&outcomes[*base], &outcomes[*tool], blocked) {
-                        (
-                            Expected::Built { shape: a, .. },
-                            Expected::Built { shape: b, .. },
-                            None,
-                        ) => {
-                            let (a, b) = (a.clone(), b.clone());
-                            match self.result(&identity, |k| {
+                    let outcome = match (made(*base), made(*tool)) {
+                        (Some((a, _)), Some((b, _))) => {
+                            let result = self.result(&identity, |k| {
                                 k.submit(g, KernelRequest::boolean(op, &a, &b))
                                     .wait()
                                     .done()
                                     .unwrap()
                                     .map(|b| b.shape)
-                            }) {
-                                Ok(shape) => Expected::Built {
-                                    step: identity.clone(),
-                                    shape,
+                            });
+                            match (result, blocked) {
+                                (Ok(shape), Some(on)) => {
+                                    maybe.insert(outcomes.len(), shape);
+                                    Expected::Blocked(on)
+                                }
+                                (Ok(shape), None) => match self.refusal(op, &a, &shape) {
+                                    None => Expected::Built {
+                                        step: identity.clone(),
+                                        shape,
+                                    },
+                                    Some(said) => Expected::Refused { shape, said },
                                 },
-                                Err(c) => {
+                                (Err(c), Some(on)) => {
+                                    code = Some(c);
+                                    Expected::Blocked(on)
+                                }
+                                (Err(c), None) => {
                                     code = Some(c);
                                     Expected::Failed(c)
                                 }
                             }
                         }
-                        (_, _, Some(on)) => Expected::Blocked(on),
-                        _ => panic!("inputs built but blocked"),
+                        _ => Expected::Blocked(blocked.expect("an input that isn't built")),
                     };
                     steps.push((
                         RefStep {
                             identity: identity.clone(),
                             name: op.name(),
                         },
-                        inputs_built,
+                        runs,
                         code,
                     ));
                     outcomes.push(outcome);
@@ -1309,6 +1392,12 @@ fn check_model(model: &Model, kinds: &[Kind], expected: &[Expected]) -> Result<(
                 prop_assert_eq!(e.code(), *code, "feature {}", i);
                 let named = fid(i);
                 prop_assert_eq!(e.feature(), Some(named.as_str()));
+            }
+            (FeatureOutcome::Failed(e), Expected::Refused { said, .. }) => {
+                prop_assert_eq!(e.code(), ErrorCode::KernelFailed, "feature {}", i);
+                let named = fid(i);
+                prop_assert_eq!(e.feature(), Some(named.as_str()));
+                prop_assert!(e.message().contains(*said), "feature {}: {:?}", i, e);
             }
             (FeatureOutcome::Blocked { on }, Expected::Blocked(root)) => {
                 prop_assert_eq!(on, &id(&fid(*root)), "feature {}", i);
@@ -1351,7 +1440,7 @@ fn check_model(model: &Model, kinds: &[Kind], expected: &[Expected]) -> Result<(
     prop_assert_eq!(model.bodies(), bodies.as_slice());
     let failures = expected
         .iter()
-        .filter(|w| matches!(w, Expected::Failed(_)))
+        .filter(|w| matches!(w, Expected::Failed(_) | Expected::Refused { .. }))
         .count();
     prop_assert_eq!(model.errors().count(), failures);
     Ok(())
@@ -1376,27 +1465,48 @@ proptest! {
         let mut previous_plan: BTreeSet<String> = BTreeSet::new();
         for values in &edits {
             let values = &values[..kinds.len()];
-            let (expected, steps) = reference.evaluate(&kinds, values);
+            let (expected, steps) = reference.evaluate(&kinds, values, &known);
             let before = engine.kernel().calls().len();
             let model = published(&engine, text_of(&kinds, values));
             check_model(&model, &kinds, &expected)?;
-            // The calls: each step whose inputs built and that has no result kept, once.
+            // The calls: each step that runs and has no result kept, once; and of the steps
+            // that may run (made from a refused feature's result before its verdict lands),
+            // any, once.
             let mut want: Vec<&str> = Vec::new();
+            let mut may: Vec<&str> = Vec::new();
             let mut seen = BTreeSet::new();
             for (step, runs, _) in &steps {
-                if *runs && !known.contains(&step.identity) && seen.insert(step.identity.clone()) {
-                    want.push(step.name);
+                if *runs != Runs::No
+                    && !known.contains(&step.identity)
+                    && seen.insert(step.identity.clone())
+                {
+                    if *runs == Runs::Yes {
+                        want.push(step.name);
+                    } else {
+                        may.push(step.name);
+                    }
                 }
             }
-            want.sort_unstable();
             let mut got = calls_since(&engine, before);
-            got.sort_unstable();
-            prop_assert_eq!(&got, &want, "calls");
+            for name in &want {
+                let at = got.iter().position(|g| g == name);
+                prop_assert!(at.is_some(), "calls: {:?} didn't run among {:?}", name, got);
+                if let Some(at) = at {
+                    got.remove(at);
+                }
+            }
+            for name in got {
+                let at = may.iter().position(|m| *m == name);
+                prop_assert!(at.is_some(), "calls: {:?} ran, which nothing needs", name);
+                if let Some(at) = at {
+                    may.remove(at);
+                }
+            }
             let plan: BTreeSet<String> = steps.iter().map(|(s, _, _)| s.identity.clone()).collect();
             known.extend(
                 steps
                     .iter()
-                    .filter(|(_, runs, code)| *runs && kept_code(*code))
+                    .filter(|(_, runs, code)| *runs == Runs::Yes && kept_code(*code))
                     .map(|(s, _, _)| s.identity.clone()),
             );
             known.retain(|identity| plan.contains(identity) || previous_plan.contains(identity));

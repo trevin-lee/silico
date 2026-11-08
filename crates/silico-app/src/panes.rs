@@ -75,19 +75,60 @@ impl Pane {
 }
 
 /// Fusion's layout: the browser, the canvas, and the property panel side by side (the
-/// timeline, a panel of its own, is under them: `crate::timeline`).
+/// timeline, a panel of its own, is under them: `crate::timeline`), sized for each frame's
+/// width by [`fit`].
 pub fn layout() -> Tree<Pane> {
     let mut tiles = Tiles::default();
     let browser = tiles.insert_pane(Pane::Browser);
     let viewport = tiles.insert_pane(Pane::Viewport);
     let properties = tiles.insert_pane(Pane::Properties);
     let root = tiles.insert_horizontal_tile(vec![browser, viewport, properties]);
-    if let Some(Tile::Container(egui_tiles::Container::Linear(linear))) = tiles.get_mut(root) {
-        linear.shares.set_share(browser, 1.0);
-        linear.shares.set_share(viewport, 3.0);
-        linear.shares.set_share(properties, 1.0);
-    }
     Tree::new("silico-window", root, tiles)
+}
+
+/// The side panes' widths, as the prototype's `#main` lays them out (styles.css: `grid-
+/// template-columns: var(--browser-w) 1fr var(--right-w)`, `--browser-w: 248px`, `--right-
+/// w: 296px`), each with its 1px border inside it (`#browser`'s `border-right`, `#right`'s
+/// `border-left`, `box-sizing: border-box`): the border is the tiles' gap, 1 wide
+/// (`Behavior::gap_width`), so each pane's own rect is the column less that 1.
+pub(crate) const BROWSER_W: f32 = 248.0;
+pub(crate) const RIGHT_W: f32 = 296.0;
+
+/// A side pane's border (`#browser`'s `border-right`, `#right`'s `border-left`): the tiles'
+/// gap ([`Panes`]' `gap_width`), taken from its column's width in [`fit`].
+const BORDER: f32 = 1.0;
+
+/// The tree's panes sized for a width of `width`: the browser `--browser-w` wide and the
+/// property panel `--right-w`, each with its border, and the canvas (`1fr`) the rest. A
+/// window narrower than the two side panes does as the prototype's grid does: the canvas
+/// shrinks to nothing (`#canvas-wrap`'s `min-width: 0`), and the panes keep their widths,
+/// the property panel running past the window's right edge, where it's cut off.
+///
+/// `egui_tiles` shares its width out in proportion to each child's share, so each share
+/// is the pane's width itself: shares that sum to the width shared give each its own.
+/// The panes aren't resizable ([`Panes`]' `is_container_resizable`), as the prototype's
+/// aren't.
+// SEAM: the browser collapsed to a 28px strip (`#main.browser-collapsed`, interact.js's
+// `toggleBrowser`; design section 8), once its strip and chevron are built.
+pub fn fit(tree: &mut Tree<Pane>, width: f32) {
+    let sides = BROWSER_W + RIGHT_W;
+    let width = width.max(sides);
+    tree.set_width(width);
+    let pane = |tree: &Tree<Pane>, pane| tree.tiles.find_pane(&pane);
+    let (Some(root), Some(browser), Some(viewport), Some(properties)) = (
+        tree.root(),
+        pane(tree, Pane::Browser),
+        pane(tree, Pane::Viewport),
+        pane(tree, Pane::Properties),
+    ) else {
+        return;
+    };
+    if let Some(Tile::Container(egui_tiles::Container::Linear(linear))) = tree.tiles.get_mut(root) {
+        // The two gaps are the side panes' borders.
+        linear.shares.set_share(browser, BROWSER_W - BORDER);
+        linear.shares.set_share(viewport, width - sides);
+        linear.shares.set_share(properties, RIGHT_W - BORDER);
+    }
 }
 
 /// What the panes draw from and change: the tab shown, and the sessions its commands go to.
@@ -108,9 +149,11 @@ pub struct Panes<'a, P: Clients + 'static> {
 impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
     fn pane_ui(&mut self, ui: &mut Ui, _tile_id: TileId, pane: &mut Pane) -> UiResponse {
         let label = pane.label();
+        let rect = ui.max_rect();
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
             node.set_role(egui::accesskit::Role::Pane);
             node.set_label(label);
+            node.set_bounds(bounds(rect));
         });
         if *pane == Pane::Viewport {
             // The canvas reaches the pane's edges.
@@ -132,7 +175,12 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
     }
 
     fn gap_width(&self, _style: &egui::Style) -> f32 {
-        1.0
+        BORDER
+    }
+
+    fn is_container_resizable(&self, _tiles: &Tiles<Pane>, _tile_id: TileId) -> bool {
+        // The prototype's columns are fixed (`fit`): no splitter between them.
+        false
     }
 
     fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
@@ -140,6 +188,17 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
             all_panes_must_have_tabs: false,
             ..Default::default()
         }
+    }
+}
+
+/// A pane's place, `rect`, as the accessibility tree gives it (in points, as egui's
+/// widgets give theirs).
+pub(crate) fn bounds(rect: egui::Rect) -> egui::accesskit::Rect {
+    egui::accesskit::Rect {
+        x0: rect.min.x.into(),
+        y0: rect.min.y.into(),
+        x1: rect.max.x.into(),
+        y1: rect.max.y.into(),
     }
 }
 
@@ -201,6 +260,16 @@ impl<P: Clients + 'static> Panes<'_, P> {
             tab.edit_sketch_or_feature(self.sessions, &id);
             *self.started = true;
         }
+        if asked.root {
+            // The document's row (§5: "a click on the tree's top node lists them all"):
+            // What's Wrong if anything is, else the document's own properties, as the
+            // prototype's `rootRow`.
+            if tab.anything_wrong() {
+                tab.whats_wrong = true;
+            } else {
+                tab.selection_mut().clear();
+            }
+        }
     }
 
     /// The property panel (DESIGN.md, *Layout*: one right panel, four jobs): the feature
@@ -240,17 +309,24 @@ impl<P: Clients + 'static> Panes<'_, P> {
         let name = &mut *self.name;
         let started = &mut *self.started;
         let elements = tab.selection().elements().next().is_some();
-        egui::ScrollArea::vertical()
+        let asked = egui::ScrollArea::vertical()
             .id_salt("properties")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 match entry {
-                    _ if elements => selected_elements(ui, tab),
+                    _ if elements => {
+                        selected_elements(ui, tab);
+                        None
+                    }
                     Some(entry) => feature(ui, tab, &entry, sessions, name, started),
                     None => document(ui, tab),
                 }
-            });
+            })
+            .inner;
+        if let Some(asked) = asked {
+            *self.started |= tab.card_asked(sessions, asked);
+        }
     }
 
     /// The open dialog, docked in the property panel (open item 27): drawn, what's changed
@@ -270,7 +346,17 @@ impl<P: Clients + 'static> Panes<'_, P> {
             .flat_map(|dialog| dialog.inputs.iter().map(|input| input.part.field()))
             .filter(|field| tab.field_refused(field))
             .collect();
-        let said = tab.dialog_said();
+        let said: Vec<(crate::tab::Said, Option<String>)> = tab
+            .dialog_said()
+            .into_iter()
+            .map(|said| {
+                let name = said
+                    .feature()
+                    .and_then(|id| tab.entry(id))
+                    .map(|entry| entry.name.clone());
+                (said, name)
+            })
+            .collect();
         let preview = preview_of(tab);
         let Some(mut dialog) = tab.dialog.take() else {
             return;
@@ -335,16 +421,17 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
 }
 
 /// The selected feature's properties (`featureProps`): its head (its type's icon, its name,
-/// its type and ID), the document's problems and its own (its mark's text and suggestion),
-/// its name, editable, which is an edit of the document, and its health and ID.
+/// its type and ID), the document's problems and its own (its error card, with Edit, as
+/// `featureProps` offers it, `noShow`), its name, editable, which is an edit of the
+/// document, and its health and ID; and, if another program changed it, what changed (the
+/// purple Changed on disk card, with Mark as seen). What an error card's button asked, if
+/// one was.
 ///
 /// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
 /// direction), which need its fields read, as its dialog reads them; and its Edit feature
 /// and Suppress buttons (the timeline's double-click and menu edit it already).
 /// SEAM: the ID row's copy button (`.prop .v .copy`), once the app has a clipboard command
-/// of its own; and the purple Changed on disk card (`d.outside`: what an agent's edit
-/// changed in this feature, with Mark as seen), which needs the reload's changes by feature
-/// and field, which the core doesn't give yet.
+/// of its own.
 fn feature<P: Clients + 'static>(
     ui: &mut Ui,
     tab: &mut Tab,
@@ -352,7 +439,7 @@ fn feature<P: Clients + 'static>(
     sessions: &Arc<Sessions<P>>,
     name: &mut Option<NameField>,
     started: &mut bool,
-) {
+) -> Option<properties::CardAct> {
     let mut sub = properties::body(
         &format!("{} · ", crate::timeline::kind_words(entry.kind)),
         theme::PROPERTY_HEAD_SUB,
@@ -366,10 +453,25 @@ fn feature<P: Clients + 'static>(
         properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_HEAD_SUB, true),
     );
     properties::head(ui, Icon::of_kind(entry.kind), &entry.name, sub);
-    problems(ui, tab);
-    if let Some(said) = tab.said.get(entry.id.as_str()) {
-        let warning = entry.health != Health::Error;
-        properties::card(ui, warning, &said.message, said.suggestion.as_deref());
+    let mut asked = problems(ui, tab);
+    // Coloured by the problem's own severity, as the prototype's `errCard` is, not by
+    // the feature's health in the timeline.
+    if let Some(said) = tab.said.get(entry.id.as_str()).cloned() {
+        let offer = properties::Offer {
+            edit: Some(tab.can_edit(&entry.id)),
+            show: false,
+        };
+        asked = asked.or(ui
+            .push_id("feature-card", |ui| {
+                properties::card(ui, &said, Some(&entry.name), offer)
+            })
+            .inner);
+    }
+    // Changed by another program (`d.outside`): what changed, until it's marked seen.
+    if let Some(text) = tab.outside.get(&entry.id).cloned()
+        && properties::outside_card(ui, &text)
+    {
+        tab.outside.remove(&entry.id);
     }
     // The text typed, kept for this document's feature alone (two documents may hold
     // features of one ID), and only while it's ahead of the document: the document's
@@ -445,6 +547,7 @@ fn feature<P: Clients + 'static>(
             false,
         )],
     );
+    asked
 }
 
 /// The selection's faces and edges (`selectionProps`, M5.7), each under its kind: its name
@@ -515,15 +618,21 @@ fn selected_element(ui: &mut Ui, picked: &crate::selection::Picked) {
     };
     properties::text_row(ui, "Stability", properties::body(state, colour));
     if let Some((message, suggestion)) = said {
-        properties::card(ui, true, &message, suggestion);
+        let said = crate::tab::Said {
+            warning: true,
+            message,
+            suggestion: suggestion.map(str::to_owned),
+            ..crate::tab::Said::default()
+        };
+        properties::card(ui, &said, None, properties::Offer::default());
     }
 }
 
-/// The document's problems, as the gate found them: a card each.
-fn problems(ui: &mut Ui, tab: &Tab) {
-    for said in &tab.document_problems {
-        properties::card(ui, false, &said.message, said.suggestion.as_deref());
-    }
+/// The document's problems, as the gate found them: a card each (`docProps`' `errCard(e)`,
+/// with Edit and Show in timeline for a feature it names). What a card's button asked, if
+/// one was.
+fn problems(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
+    properties::document_cards(ui, tab, &tab.document_problems, "document-problem")
 }
 
 /// The document's properties, with nothing selected (`docProps`): its head (its file's name
@@ -532,7 +641,7 @@ fn problems(ui: &mut Ui, tab: &Tab) {
 ///
 /// SEAM: the model's measures (`docProps`' Volume, Area, Size, and Faces), which need a
 /// `mass_properties` read of its bodies the app doesn't make yet; its bodies are counted.
-fn document(ui: &mut Ui, tab: &Tab) {
+fn document(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
     properties::head(
         ui,
         Icon::Doc,
@@ -544,7 +653,7 @@ fn document(ui: &mut Ui, tab: &Tab) {
             properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_HEAD_SUB, true),
         ),
     );
-    problems(ui, tab);
+    let asked = problems(ui, tab);
     properties::section(ui, "Document");
     let mut revision = properties::body(&tab.revision.number().to_string(), theme::PROPERTY_VALUE);
     if let Some(model) = tab.published.filter(|model| *model != tab.revision) {
@@ -613,6 +722,7 @@ fn document(ui: &mut Ui, tab: &Tab) {
         ui,
         &[("Double-click a feature in the timeline to edit it.", false)],
     );
+    asked
 }
 
 /// The document's units, as its header holds them: `mm · 1 nm resolution`.
@@ -631,12 +741,13 @@ fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxErr
 }
 
 /// What the browser's rows asked for this frame, done once they're drawn: eyes clicked, a
-/// row selected, and a sketch's Edit Sketch.
+/// row selected, a sketch's Edit Sketch, and the document's row clicked.
 #[derive(Default)]
 struct Asked {
     toggled: Vec<Hideable>,
     selected: Option<FeatureId>,
     edit: Option<FeatureId>,
+    root: bool,
 }
 
 /// The origin's rows, each by its name with its icon (Fusion's Origin folder: its point,
@@ -702,8 +813,11 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
             meta: tab.unsaved().then_some("unsaved"),
             mark: failed.then_some((Health::Error, root_text)),
             failed: false,
+            outside: None,
+            clicks: true,
         },
     );
+    asked.root |= answer.row.clicked();
     root.take(&ctx, &answer);
     if !root.open {
         return;
@@ -728,6 +842,8 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                         meta: None,
                         mark: None,
                         failed: false,
+                        outside: None,
+                        clicks: false,
                     },
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
@@ -798,6 +914,10 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                         // A sketch's own failure reddens its name (`.row.err`); a body's
                         // mark is its chain's.
                         failed: sketches && each.health == Health::Error,
+                        // Changed by another program (`d.outside`), its purple dot where it
+                        // has no health mark.
+                        outside: tab.outside.get(&each.id).map(String::as_str),
+                        clicks: false,
                     },
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
@@ -870,6 +990,8 @@ fn header(ui: &mut Ui, name: &str, meta: Option<&str>) -> bool {
             meta,
             mark: None,
             failed: false,
+            outside: None,
+            clicks: false,
         },
     );
     openness.take(&ctx, &answer);
@@ -937,6 +1059,12 @@ struct Line<'a> {
     mark: Option<(Health, Option<&'a str>)>,
     /// Whether its name is the error's red (`.row.err`).
     failed: bool,
+    /// What another program changed in it, if it did (`d.outside`): a purple dot at its
+    /// right where it has no mark (`.state-dot`).
+    outside: Option<&'a str>,
+    /// Whether it takes a click though it isn't selectable (the document's row, whose click
+    /// opens What's Wrong).
+    clicks: bool,
 }
 
 /// What a row answered: the row's response, its caret's state, and its eye's response.
@@ -993,7 +1121,7 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         Sense::hover(),
     );
     let id = line.id;
-    let sense = if line.selected.is_some() {
+    let sense = if line.selected.is_some() || line.clicks {
         Sense::click()
     } else {
         Sense::hover()
@@ -1133,6 +1261,10 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         let at = place(right - icons::ICON_SIZE, icons::ICON_SIZE);
         health_mark(ui, id.with("mark"), at, health, text, MarkLook::Glyph);
         right -= icons::ICON_SIZE + gap;
+    } else if let Some(text) = line.outside {
+        let at = place(right - theme::STATE_DOT_SIZE, theme::STATE_DOT_SIZE);
+        outside_mark(ui, id.with("outside"), at, text, None);
+        right -= theme::STATE_DOT_SIZE + gap;
     }
     if let Some(meta) = line.meta {
         let colour = if selected {
@@ -1171,6 +1303,34 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         open: caret.map(|(_, open)| open),
         eye: eye.map(|(eye, _)| eye),
     }
+}
+
+/// The mark of a feature another program changed (`d.outside`), the browser's and the
+/// timeline's alike: a purple dot filling `rect` (`.state-dot`, or the timeline's
+/// `.badge.outside`, in a ring of `ring`'s colour 1.5 outside it), labelled with what
+/// changed (`changed on disk: radius 5 → 3`) for the accessibility tree, and with the
+/// prototype's words as its hover text.
+pub(crate) fn outside_mark(
+    ui: &mut Ui,
+    id: egui::Id,
+    rect: egui::Rect,
+    text: &str,
+    ring: Option<Color32>,
+) {
+    let radius = rect.width().min(rect.height()) / 2.0;
+    let painter = ui.painter();
+    if let Some(ring) = ring {
+        painter.circle_filled(
+            rect.center(),
+            radius + theme::TIMELINE_BADGE_RING_WIDTH,
+            ring,
+        );
+    }
+    painter.circle_filled(rect.center(), radius, theme::CHANGED_OUTSIDE);
+    let response = ui.interact(rect, id, Sense::hover());
+    let said = format!("changed on disk: {text}");
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
+    response.on_hover_text("Changed on disk since you opened it");
 }
 
 /// How a health mark is drawn: the browser's, the error's or the warning's icon at a row's
@@ -1556,7 +1716,7 @@ mod tests {
             "c0000001".to_owned(),
             Said {
                 message: "The cut removes nothing".to_owned(),
-                suggestion: None,
+                ..Said::default()
             },
         );
         tab
@@ -1564,6 +1724,11 @@ mod tests {
 
     /// The browser pane, at [`PANE`], drawn from `tab` in the app's theme.
     fn drawn(tab: Tab) -> Harness<'static, Shown> {
+        drawn_at(tab, W)
+    }
+
+    /// `tab`'s properties drawn in a pane `width` wide.
+    fn drawn_at(tab: Tab, width: f32) -> Harness<'static, Shown> {
         let shown = Shown {
             tab: Some(tab),
             sessions: Arc::new(Sessions::with_cache_opener(
@@ -1575,10 +1740,10 @@ mod tests {
             drawing: crate::viewport::Drawing::default(),
         };
         let mut h = Harness::builder()
-            .with_size(Vec2::new(PANE.x + W + 40.0, PANE.y + HEIGHT + 40.0))
+            .with_size(Vec2::new(PANE.x + width + 40.0, PANE.y + HEIGHT + 40.0))
             .build_ui_state(
-                |ui, shown: &mut Shown| {
-                    let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
+                move |ui, shown: &mut Shown| {
+                    let pane = Rect::from_min_size(PANE, Vec2::new(width, HEIGHT));
                     ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
                         Panes {
                             tab: shown.tab.as_mut(),
@@ -1887,6 +2052,40 @@ mod tests {
     }
 
     #[test]
+    fn a_click_on_the_documents_row_opens_whats_wrong_if_anything_is() {
+        // The prototype's `rootRow`: the cut failed and the shell warned, so What's Wrong.
+        let mut h = drawn(modelled());
+        assert!(!tab_of(&mut h).whats_wrong);
+        h.get_by_label("Part").click();
+        h.run_steps(2);
+        assert!(tab_of(&mut h).whats_wrong);
+        // A warning alone is wrong enough.
+        let features = [
+            entry("b0000001", "box", &[], Health::Healthy),
+            entry("s0000001", "box", &[], Health::Warning),
+        ];
+        let mut h = drawn(part(&features, 0, Vec::new(), Vec::new()));
+        h.get_by_label("Part").click();
+        h.run_steps(2);
+        assert!(tab_of(&mut h).whats_wrong);
+        // Nothing wrong: the document's own properties, the selection let go.
+        let features = [entry("b0000001", "box", &[], Health::Healthy)];
+        let mut tab = part(&features, 0, Vec::new(), Vec::new());
+        tab.selection_mut().select_feature(fid("b0000001"));
+        let mut h = drawn(tab);
+        h.get_by_label("Part").click();
+        h.run_steps(2);
+        let tab = tab_of(&mut h);
+        assert!(!tab.whats_wrong);
+        assert!(tab.selection().is_empty());
+        // Its caret still only opens and closes it.
+        h.get_by_label("Collapse Part").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Expand Part").is_some());
+        assert!(!tab_of(&mut h).whats_wrong);
+    }
+
+    #[test]
     fn the_documents_row_is_drawn_as_the_prototypes_root_row() {
         let features = [
             entry("b0000001", "box", &[], Health::Healthy),
@@ -1925,7 +2124,7 @@ mod tests {
         tab.timeline.as_mut().unwrap().problems = 1;
         tab.document_problems.push(Said {
             message: "Two features share the ID block".to_owned(),
-            suggestion: None,
+            ..Said::default()
         });
         h.run_steps(2);
         let mark = mark_of(&root);
@@ -2010,6 +2209,62 @@ mod tests {
     /// A row expected: its name, its top below the pane's, its name's ink, and its mark's
     /// tint and what it says, if it has one.
     type Expected<'a> = (&'a str, f32, Color32, Option<(Color32, &'a str)>);
+
+    #[test]
+    fn a_row_another_program_changed_has_its_purple_dot_where_it_has_no_health_mark() {
+        // The prototype's row (`o.mark === 'outside'`): a `.state-dot` (8 square, round) in
+        // `--purple` (#b780ff) at the row's right, the name cut 4 (`.row`'s gap) before it;
+        // a row with a health mark shows that mark alone.
+        const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+        const DOT: f32 = 8.0;
+        let mut tab = modelled();
+        // Named long enough to be cut short by the dot.
+        let long = "Block with a name long enough to run past the browser's edge";
+        tab.browser.bodies[0].name = long.to_owned();
+        for id in ["b0000001", "c0000001"] {
+            tab.outside.insert(fid(id), "height 10 → 11".to_owned());
+        }
+        let h = drawn(tab);
+        let down = |n: f32| css::TITLE_H + n * css::ROW_H;
+        let block = parts(down(10.0), 2);
+        let dot = Rect::from_min_size(
+            Pos2::new(block.end - DOT, block.row.center().y - DOT / 2.0),
+            Vec2::splat(DOT),
+        );
+        let circles: Vec<(Pos2, f32, Color32)> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Circle(circle) if block.row.contains(circle.center) => {
+                    Some((circle.center, circle.radius, circle.fill))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(circles[..], [(centre, radius, PURPLE)]
+                if near_pos(centre, dot.center()) && near(radius, DOT / 2.0)),
+            "the block's dot: {circles:?}, not {DOT} across at {:?}",
+            dot.center()
+        );
+        assert!(labelled_at(&h, "changed on disk: height 10 → 11", dot));
+        named(
+            &h,
+            long,
+            &block,
+            block.name,
+            css::G700,
+            dot.left() - css::ROW_GAP,
+        );
+        // The failed cut: its error's mark, no dot.
+        let cut = parts(down(11.0), 2);
+        assert_eq!(icon_at(&h, mark_of(&cut)), Some(css::RED));
+        assert!(
+            !painted(&h).iter().any(
+                |shape| matches!(shape, Shape::Circle(circle) if cut.row.contains(circle.center))
+            ),
+            "the cut's dot"
+        );
+    }
 
     #[test]
     fn the_rows_are_drawn_as_the_prototypes_rows_with_their_eyes_icons_names_and_marks() {
@@ -2098,6 +2353,8 @@ mod tests {
                             meta: Some("XY"),
                             mark: Some((Health::Warning, None)),
                             failed: false,
+                            outside: None,
+                            clicks: false,
                         },
                     );
                 });
@@ -2211,7 +2468,7 @@ mod tests {
         let features = [entry("p0000001", "sketch", &[], Health::Healthy)];
         let problem = || Said {
             message: "The pad's sketch is open".to_owned(),
-            suggestion: None,
+            ..Said::default()
         };
         let down = |n: f32| css::TITLE_H + n * css::ROW_H;
         let none_yet = "None yet. A pad or a primitive makes one.";
@@ -2362,6 +2619,41 @@ mod property_panel_drawn {
         pub const EC_BODY_BOTTOM: f32 = 8.0;
         pub const EC_FIX_GAP: f32 = 6.0;
         pub const EC_FIX_MARGIN: f32 = 8.0;
+        /// `.ec-body { color: #ffe2e5 }`; `.ec-body p { margin: 0 0 6px }`.
+        pub const EC_BODY_TEXT: Color32 = Color32::from_rgb(0xff, 0xe2, 0xe5);
+        pub const EC_P_MARGIN: f32 = 6.0;
+        /// `.ec-code`: `font-size: 10px` (`--mono`), `background: rgba(0,0,0,.3)` (255 × .3 =
+        /// 76.5, 77), `padding: 0 4px; border-radius: 3px`; on the head's line (`--lh`).
+        pub const EC_CODE_FS: f32 = 10.0;
+        pub const EC_CODE_BG: Color32 = Color32::from_rgba_unmultiplied_const(0, 0, 0, 77);
+        pub const EC_CODE_PADDING: f32 = 4.0;
+        pub const EC_CODE_RADIUS: u8 = 3;
+        /// `.ec-kv`: `gap: 2px 8px; font-size: var(--fs-small); margin-bottom: 6px`.
+        pub const EC_KV_ROW_GAP: f32 = 2.0;
+        pub const EC_KV_COLUMN_GAP: f32 = 8.0;
+        pub const EC_KV_MARGIN: f32 = 6.0;
+        /// `.mono { opacity: .7 }` after the feature's name: an alpha of 255 × .7 = 178.5,
+        /// 179.
+        pub const EC_ID_ALPHA: u8 = 179;
+        /// `.el-chip`: `font-size: 10.5px` (`--mono`), `padding: 0 5px; border-radius: 3px;
+        /// background: rgba(0,0,0,.35)` (255 × .35 = 89.25, 89), white.
+        pub const EL_CHIP_FS: f32 = 10.5;
+        pub const EL_CHIP_PADDING: f32 = 5.0;
+        pub const EL_CHIP_RADIUS: u8 = 3;
+        pub const EL_CHIP_BG: Color32 = Color32::from_rgba_unmultiplied_const(0, 0, 0, 89);
+        /// The candidates' heading (`font-size: 10.5px; margin-bottom: 4px; letter-spacing:
+        /// .5px`, in capitals); `.cand`: `padding: 5px 6px; border-radius: var(--r-sm);
+        /// background: rgba(0,0,0,.25)` (255 × .25 = 63.75, 64); `margin-bottom: 4px`.
+        pub const CANDS_FS: f32 = 10.5;
+        pub const CANDS_MARGIN: f32 = 4.0;
+        pub const CAND_PADDING_X: f32 = 6.0;
+        pub const CAND_PADDING_Y: f32 = 5.0;
+        pub const CAND_BG: Color32 = Color32::from_rgba_unmultiplied_const(0, 0, 0, 64);
+        pub const CAND_MARGIN: f32 = 4.0;
+        pub const CAND_TEXT: Color32 = Color32::from_rgb(0xff, 0xd1, 0xd6);
+        /// `.ec-actions { gap: 6px }`; `.btn { height: 22px }`.
+        pub const EC_ACTIONS_GAP: f32 = 6.0;
+        pub const BTN_H: f32 = 22.0;
         /// `.field`: `height: 22px`, Gray.200, corners `--r-sm`.
         pub const FIELD_H: f32 = 22.0;
         /// `.dlg-footer`: `padding: 8px var(--pad); gap: 6px; border-top: 1px`; its `.btn`
@@ -2447,12 +2739,18 @@ mod property_panel_drawn {
             Said {
                 message: "The cut removes nothing".to_owned(),
                 suggestion: Some("Move the pin".to_owned()),
+                ..Said::default()
             },
         );
         tab
     }
 
     fn drawn(tab: Tab) -> Harness<'static, Shown> {
+        drawn_at(tab, W)
+    }
+
+    /// `tab`'s properties drawn in a pane `width` wide.
+    fn drawn_at(tab: Tab, width: f32) -> Harness<'static, Shown> {
         let shown = Shown {
             tab: Some(tab),
             sessions: Arc::new(Sessions::with_cache_opener(
@@ -2464,10 +2762,10 @@ mod property_panel_drawn {
             drawing: crate::viewport::Drawing::default(),
         };
         let mut h = Harness::builder()
-            .with_size(Vec2::new(PANE.x + W + 40.0, PANE.y + HEIGHT + 40.0))
+            .with_size(Vec2::new(PANE.x + width + 40.0, PANE.y + HEIGHT + 40.0))
             .build_ui_state(
-                |ui, shown: &mut Shown| {
-                    let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
+                move |ui, shown: &mut Shown| {
+                    let pane = Rect::from_min_size(PANE, Vec2::new(width, HEIGHT));
                     ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
                         Panes {
                             tab: shown.tab.as_mut(),
@@ -3306,5 +3604,489 @@ mod property_panel_drawn {
             .click();
         h.run_steps(2);
         assert_eq!(h.state().1, Action::Cancel);
+    }
+
+    // ---- The error card (`errCard`) ----
+
+    /// A broken reference's error, by hand: Hole's, naming two of the five edges at fault,
+    /// its field, its cause, what to do, and two names in the broken ones' place.
+    fn broken() -> silico_core::Error {
+        silico_core::Error::new(
+            silico_core::ErrorCode::ReferenceBroken,
+            "An edge the fillet names is gone",
+        )
+        .with_feature("c0000001")
+        .with_elements(["Edge3", "Edge5"])
+        .with_elements_total(5)
+        .with_parameter("edges")
+        .with_cause("Edge3 and Edge5 aren't in its base")
+        .with_suggestion("Pick the edges again")
+        .with_candidates(["Edge2", "Edge4"])
+    }
+
+    /// [`broken`] as the command API writes it, typed by hand from the error contract
+    /// (`tests/contract/error-full.json`'s fields, in its order), on one line as MCP sends it.
+    const BROKEN_JSON: &str = r#"{"code": "reference_broken", "message": "An edge the fillet names is gone", "feature": "c0000001", "elements": ["Edge3", "Edge5"], "elements_total": 5, "parameter": "edges", "cause": "Edge3 and Edge5 aren't in its base", "suggestion": "Pick the edges again", "candidates": ["Edge2", "Edge4"], "advice": null}"#;
+
+    /// [`part`] with Hole selected, its card [`broken`]'s.
+    fn broken_hole() -> Tab {
+        let mut tab = part();
+        tab.said.insert("c0000001".to_owned(), Said::of(&broken()));
+        tab.selection_mut().select_feature(fid("c0000001"));
+        tab
+    }
+
+    /// The text the frame just stepped copied, if it copied any.
+    fn copied<S>(h: &Harness<'_, S>) -> Option<String> {
+        h.output()
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn an_error_card_says_its_code_feature_elements_parameter_and_candidates() {
+        let h = drawn(broken_hole());
+        // `errCard`, its parts in its order: the title, the feature's name, and the code;
+        // the message (`.ec-body p`); the cause; Feature (the name, then the ID), Elements
+        // (two of five), Parameter; the suggestion; the candidates under their heading.
+        let code = h.get_by_label("reference_broken").rect().top();
+        let titles: Vec<f32> = h
+            .query_all_by_label("Hole")
+            .map(|node| node.rect().top())
+            .filter(|top| near(*top, code))
+            .collect();
+        assert_eq!(titles.len(), 1, "the title on the code's line: {titles:?}");
+        let lines = [
+            "reference_broken",
+            "An edge the fillet names is gone",
+            "Edge3 and Edge5 aren't in its base",
+            "Feature: Hole c0000001",
+            "Elements: Edge3, Edge5 (the first 2 of 5)",
+            "Parameter: edges",
+            "Pick the edges again",
+            "CANDIDATES, CLOSEST FIRST",
+            "Edge2",
+            "Edge4",
+        ];
+        let tops: Vec<f32> = lines
+            .iter()
+            .map(|line| h.get_by_label(line).rect().top())
+            .collect();
+        // Each under the one before.
+        for pair in tops.windows(2) {
+            assert!(pair[0] < pair[1], "{lines:?} out of order: {tops:?}");
+        }
+        // `featureProps` gives `noShow`: Edit, off (a cut has no dialog), and Copy as JSON.
+        let edit = h.get_by_role_and_label(Role::Button, "Edit Hole");
+        assert!(edit.accesskit_node().is_disabled());
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Show in timeline")
+                .is_none()
+        );
+        let copy = h.get_by_role_and_label(Role::Button, "Copy as JSON");
+        assert!(!copy.accesskit_node().is_disabled());
+        // Every element named: no count.
+        let mut tab = part();
+        let all = silico_core::Error::new(silico_core::ErrorCode::KernelFailed, "Fillet failed")
+            .with_feature("c0000001")
+            .with_elements(["Edge3"]);
+        tab.said.insert("c0000001".to_owned(), Said::of(&all));
+        tab.selection_mut().select_feature(fid("c0000001"));
+        let h = drawn(tab);
+        assert!(h.query_by_label("Elements: Edge3").is_some());
+        assert!(h.query_by_label("kernel_failed").is_some());
+        assert!(h.query_by_label_contains("Parameter").is_none());
+        assert!(h.query_by_label_contains("CANDIDATES").is_none());
+    }
+
+    #[test]
+    fn copy_as_json_puts_the_cores_error_on_the_clipboard_as_an_agent_gets_it() {
+        let mut h = drawn(broken_hole());
+        h.get_by_role_and_label(Role::Button, "Copy as JSON")
+            .click();
+        h.step();
+        assert_eq!(copied(&h).as_deref(), Some(BROKEN_JSON));
+        // A warning's, as an error's, its code a warning's.
+        let warning = silico_core::Warning::new(
+            silico_core::WarningCode::FingerprintMissing,
+            "Hole stores no fingerprint",
+        )
+        .with_feature("c0000001");
+        let said = Said::of_warning(&warning);
+        assert_eq!(
+            said.json().as_deref(),
+            Some(
+                r#"{"code": "fingerprint_missing", "message": "Hole stores no fingerprint", "feature": "c0000001", "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": null, "candidates": [], "advice": null}"#
+            )
+        );
+        // A refusal said in words alone has none to copy.
+        let words = Said {
+            message: "refused".to_owned(),
+            ..Said::default()
+        };
+        assert_eq!(words.json(), None);
+    }
+
+    #[test]
+    fn an_error_cards_edit_opens_its_features_dialog_as_edit_feature_does() {
+        let mut tab = part();
+        let failed =
+            silico_core::Error::new(silico_core::ErrorCode::KernelFailed, "The block failed")
+                .with_feature("b0000001");
+        tab.said.insert("b0000001".to_owned(), Said::of(&failed));
+        tab.selection_mut().select_feature(fid("b0000001"));
+        let mut h = drawn(tab);
+        assert!(!h.state().tab.as_ref().unwrap().in_dialog());
+        let edit = h.get_by_role_and_label(Role::Button, "Edit Block");
+        assert!(!edit.accesskit_node().is_disabled());
+        edit.click();
+        h.step();
+        // Edit Feature's read of the box, under way: the dialog opens once it answers.
+        let shown = h.state();
+        assert!(shown.tab.as_ref().unwrap().in_dialog());
+        assert!(shown.started);
+    }
+
+    #[test]
+    fn a_document_problems_show_in_timeline_selects_its_feature_for_the_timeline_to_scroll_to() {
+        // `docProps` gives every card Edit and Show in timeline: the gate's problem naming
+        // Hole, with nothing selected.
+        let mut tab = part();
+        let gate = silico_core::Error::new(
+            silico_core::ErrorCode::InvalidInput,
+            "Hole's tool names no feature",
+        )
+        .with_feature("c0000001")
+        .with_parameter("tool");
+        tab.document_problems.push(Said::of(&gate));
+        let mut h = drawn(tab);
+        assert!(
+            h.query_by_label("Revision").is_some(),
+            "the document's view"
+        );
+        assert!(
+            h.get_by_role_and_label(Role::Button, "Edit Hole")
+                .accesskit_node()
+                .is_disabled()
+        );
+        h.get_by_role_and_label(Role::Button, "Show in timeline")
+            .click();
+        h.step();
+        let tab = h.state().tab.as_ref().unwrap();
+        assert_eq!(tab.selection().feature(), Some(&fid("c0000001")));
+        assert_eq!(tab.timeline_scroll(), Some(&fid("c0000001")));
+        assert!(!h.state().started, "a selection sends nothing");
+    }
+
+    /// The pane's width in the app's 1280 × 800 window (its fixture's screenshots): the
+    /// tiles' shares, not yet `--right-w`.
+    const APP_W: f32 = 248.0;
+
+    #[test]
+    fn an_error_cards_message_wraps_across_the_body_and_its_title_beside_the_code() {
+        // The core's message, long and with long words, under a title on the code's line.
+        let message = "edges.1, \"k7f2qx3m.box.Edge5\", names no element of m3tq8v0z's \
+                       solid: it isn't one of the elements that solid is made from";
+        for width in [W, APP_W] {
+            let mut tab = part();
+            let error = silico_core::Error::new(silico_core::ErrorCode::ReferenceBroken, message)
+                .with_feature("c0000001");
+            tab.said.insert("c0000001".to_owned(), Said::of(&error));
+            tab.selection_mut().select_feature(fid("c0000001"));
+            let h = drawn_at(tab, width);
+            // The card's inside: the pane less `--pad` and the border at each side.
+            let inner_left = PANE.x + css::PAD + css::BORDER;
+            let inner_right = PANE.x + width - css::PAD - css::BORDER;
+            // `.ec-body p`: wrapped at the body's whole width, `padding: 0 10px 0 32px`.
+            let body = inner_right - inner_left - css::EC_BODY_LEFT - css::EC_HEAD_SIDE;
+            let said = text(&h, message);
+            assert!(
+                (said.galley.job.wrap.max_width - body).abs() <= 1.0,
+                "at {width}: the message wraps at {}, not {body}",
+                said.galley.job.wrap.max_width
+            );
+            assert!(said.galley.rows.len() > 1, "at {width}: it wraps");
+            assert!(said.galley.size().x <= body + 0.5, "at {width}");
+            assert!(
+                near(said.pos.x, inner_left + css::EC_BODY_LEFT),
+                "at {width}"
+            );
+            // `.ec-code`: its right edge at the head's 10 px right padding, on the title's
+            // line; the title, `flex: 1`, wraps at what the icon, both gaps, and the chip
+            // leave.
+            let code = text(&h, "reference_broken");
+            let chip_width = code.galley.size().x + 2.0 * css::EC_CODE_PADDING;
+            let line = code.pos.y + code.galley.size().y / 2.0 - css::LH / 2.0;
+            let title = text_in(
+                &h,
+                "Hole",
+                Rect::from_min_max(
+                    Pos2::new(inner_left, line - 0.5),
+                    Pos2::new(inner_right, line + 0.5),
+                ),
+            );
+            let chip = Rect::from_min_max(
+                Pos2::new(inner_right - css::EC_HEAD_SIDE - chip_width, line),
+                Pos2::new(inner_right - css::EC_HEAD_SIDE, line + css::LH),
+            );
+            assert_eq!(
+                fills_at(&h, chip),
+                [(
+                    css::EC_CODE_BG,
+                    CornerRadius::same(css::EC_CODE_RADIUS),
+                    Stroke::NONE
+                )],
+                "at {width}: the chip"
+            );
+            let row = inner_right
+                - inner_left
+                - 2.0 * css::EC_HEAD_SIDE
+                - css::ICON
+                - 2.0 * css::EC_HEAD_GAP
+                - chip_width;
+            assert!(
+                (title.galley.job.wrap.max_width - row).abs() <= 1.0,
+                "at {width}: the title wraps at {}, not {row}",
+                title.galley.job.wrap.max_width
+            );
+            assert!(
+                near(
+                    title.pos.x,
+                    inner_left + css::EC_HEAD_SIDE + css::ICON + css::EC_HEAD_GAP
+                ),
+                "at {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_error_card_is_drawn_as_err_card_with_its_code_rows_candidates_and_buttons() {
+        let h = drawn(broken_hole());
+        let y = title_and_head(&h, "Hole", "Subtract · c0000001", body(css::FS_SMALL));
+        let card_top = y + css::CARD_MARGIN;
+        let inner = Pos2::new(PANE.x + css::PAD + css::BORDER, card_top + css::BORDER);
+        let inner_right = PANE.x + W - css::PAD - css::BORDER;
+        // `.ec-head`: the title, the feature's name, from the icon's right, white, and the
+        // code chip flush with the head's right padding, on the head's first line.
+        let head_top = inner.y + css::EC_HEAD_TOP;
+        let title = text_in(
+            &h,
+            "Hole",
+            Rect::from_min_max(
+                Pos2::new(inner.x, head_top),
+                Pos2::new(inner_right, head_top + css::LH),
+            ),
+        );
+        at(
+            title.pos,
+            Pos2::new(
+                inner.x + css::EC_HEAD_SIDE + css::ICON + css::EC_HEAD_GAP,
+                head_top,
+            ),
+            "the title",
+        );
+        assert_eq!(title.galley.job.sections[0].format.font_id, body(css::FS));
+        assert_eq!(colour(&title, 0), css::G1000);
+        let code = text(&h, "reference_broken");
+        assert_eq!(
+            code.galley.job.sections[0].format.font_id,
+            FontId::new(css::EC_CODE_FS, FontFamily::Monospace)
+        );
+        assert_eq!(colour(&code, 0), css::CARD_ACCENT);
+        let chip = Rect::from_min_max(
+            Pos2::new(
+                inner_right - css::EC_HEAD_SIDE - code.galley.size().x - 2.0 * css::EC_CODE_PADDING,
+                head_top,
+            ),
+            Pos2::new(inner_right - css::EC_HEAD_SIDE, head_top + css::LH),
+        );
+        assert_eq!(
+            fills_at(&h, chip),
+            [(
+                css::EC_CODE_BG,
+                CornerRadius::same(css::EC_CODE_RADIUS),
+                Stroke::NONE
+            )]
+        );
+        at(
+            code.pos,
+            Pos2::new(
+                chip.left() + css::EC_CODE_PADDING,
+                chip.center().y - code.galley.size().y / 2.0,
+            ),
+            "the code",
+        );
+        // The title wraps short of the chip, `gap: 8px` before it.
+        assert!(title.pos.x + title.galley.size().x <= chip.left() - css::EC_HEAD_GAP + 0.5);
+        // `.ec-body p`: the message, 32 in, in the body's colour, then the cause 6 under it,
+        // 6 above the rows.
+        let body_left = inner.x + css::EC_BODY_LEFT;
+        let body_top = head_top + title.galley.size().y + css::EC_HEAD_BOTTOM;
+        let message = text(&h, "An edge the fillet names is gone");
+        at(message.pos, Pos2::new(body_left, body_top), "the message");
+        assert_eq!(message.galley.job.sections[0].format.font_id, body(css::FS));
+        assert_eq!(colour(&message, 0), css::EC_BODY_TEXT);
+        let cause_top = body_top + message.galley.size().y + css::EC_P_MARGIN;
+        let cause = text(&h, "Edge3 and Edge5 aren't in its base");
+        at(cause.pos, Pos2::new(body_left, cause_top), "the cause");
+        assert_eq!(cause.galley.job.sections[0].format.font_id, body(css::FS));
+        assert_eq!(colour(&cause, 0), css::EC_BODY_TEXT);
+        // `.ec-kv`: each key in the accent at `--fs-small`, the values 8 after the widest.
+        let rows_top = cause_top + cause.galley.size().y + css::EC_P_MARGIN;
+        let keys: Vec<TextShape> = ["Feature", "Elements", "Parameter"]
+            .iter()
+            .map(|key| text(&h, key))
+            .collect();
+        let column = keys
+            .iter()
+            .map(|key| key.galley.size().x)
+            .fold(0.0, f32::max);
+        let values = body_left + column + css::EC_KV_COLUMN_GAP;
+        for key in &keys {
+            assert_eq!(
+                key.galley.job.sections[0].format.font_id,
+                body(css::FS_SMALL)
+            );
+            assert_eq!(colour(key, 0), css::CARD_ACCENT, "{}", key.galley.text());
+            assert!(near(key.pos.x, body_left), "{}", key.galley.text());
+        }
+        at(keys[0].pos, Pos2::new(body_left, rows_top), "Feature");
+        // Feature: the name in the body's colour, then the ID in `.mono` at 70%.
+        let feature = text(&h, "Hole c0000001");
+        at(feature.pos, Pos2::new(values, rows_top), "the feature");
+        assert_eq!(
+            feature.galley.job.sections[0].format.font_id,
+            body(css::FS_SMALL)
+        );
+        assert_eq!(colour(&feature, 0), css::EC_BODY_TEXT);
+        assert_eq!(feature.galley.job.sections[1].format.font_id, mono());
+        assert_eq!(colour(&feature, 1).a(), css::EC_ID_ALPHA);
+        // Elements, 2 under Feature: each a chip on the row's line.
+        let elements_top = rows_top + css::LH + css::EC_KV_ROW_GAP;
+        at(keys[1].pos, Pos2::new(body_left, elements_top), "Elements");
+        let edge3 = text(&h, "Edge3");
+        assert_eq!(
+            edge3.galley.job.sections[0].format.font_id,
+            FontId::new(css::EL_CHIP_FS, FontFamily::Monospace)
+        );
+        assert_eq!(colour(&edge3, 0), css::G1000);
+        let chip_height = edge3.galley.size().y;
+        let chip = Rect::from_min_size(
+            Pos2::new(values, elements_top + (css::LH - chip_height) / 2.0),
+            Vec2::new(
+                edge3.galley.size().x + 2.0 * css::EL_CHIP_PADDING,
+                chip_height,
+            ),
+        );
+        assert_eq!(
+            fills_at(&h, chip),
+            [(
+                css::EL_CHIP_BG,
+                CornerRadius::same(css::EL_CHIP_RADIUS),
+                Stroke::NONE
+            )]
+        );
+        at(
+            edge3.pos,
+            Pos2::new(chip.left() + css::EL_CHIP_PADDING, chip.top()),
+            "Edge3",
+        );
+        let edge5 = text(&h, "Edge5");
+        assert!(near(edge5.pos.y, edge3.pos.y) && edge5.pos.x > chip.right());
+        // Parameter, 2 under the Elements' last line.
+        let more = text(&h, "the first 2 of 5");
+        let elements_bottom = more.pos.y.max(elements_top) + css::LH;
+        let parameter_top = elements_bottom + css::EC_KV_ROW_GAP;
+        at(
+            keys[2].pos,
+            Pos2::new(body_left, parameter_top),
+            "Parameter",
+        );
+        let parameter = text(&h, "edges");
+        at(parameter.pos, Pos2::new(values, parameter_top), "edges");
+        // `.ec-fix`, 6 under the rows; the candidates' heading 8 under it.
+        let fix = parameter_top + css::LH + css::EC_KV_MARGIN;
+        let arrow = text(&h, "→");
+        at(arrow.pos, Pos2::new(body_left, fix), "→");
+        let heading = text(&h, "CANDIDATES, CLOSEST FIRST");
+        let heading_top = fix + css::LH + css::EC_FIX_MARGIN;
+        at(
+            heading.pos,
+            Pos2::new(body_left, heading_top),
+            "the heading",
+        );
+        assert_eq!(
+            heading.galley.job.sections[0].format.font_id,
+            body(css::CANDS_FS)
+        );
+        assert_eq!(
+            heading.galley.job.sections[0].format.extra_letter_spacing,
+            css::CAPITALS_SPACING
+        );
+        assert_eq!(colour(&heading, 0), css::CARD_ACCENT);
+        // `.cand`s: across the body, a line and its padding high, 4 apart.
+        let body_right = inner_right - css::EC_HEAD_SIDE;
+        let mut top = heading_top + css::LH + css::CANDS_MARGIN;
+        for name in ["Edge2", "Edge4"] {
+            let row = Rect::from_min_max(
+                Pos2::new(body_left, top),
+                Pos2::new(body_right, top + 2.0 * css::CAND_PADDING_Y + css::LH),
+            );
+            assert_eq!(
+                fills_at(&h, row),
+                [(css::CAND_BG, CornerRadius::same(css::R_SM), Stroke::NONE)],
+                "{name}'s row"
+            );
+            let shown = text(&h, name);
+            at(
+                shown.pos,
+                Pos2::new(body_left + css::CAND_PADDING_X, top + css::CAND_PADDING_Y),
+                name,
+            );
+            assert_eq!(shown.galley.job.sections[0].format.font_id, mono());
+            assert_eq!(colour(&shown, 0), css::CAND_TEXT);
+            top = row.bottom() + css::CAND_MARGIN;
+        }
+        // `.ec-actions`: Edit Hole (`.btn-secondary`, Gray.300, off: its words Gray.750),
+        // then Copy as JSON 6 after it (`.btn-ghost`: no fill, Gray.750), each 22 high.
+        let edit = h.get_by_role_and_label(Role::Button, "Edit Hole").rect();
+        assert!(
+            near(edit.left(), body_left) && near(edit.top(), top),
+            "{edit:?}"
+        );
+        assert!(near(edit.height(), css::BTN_H));
+        assert_eq!(
+            fills_at(&h, edit),
+            [(css::G300, CornerRadius::same(css::R_SM), Stroke::NONE)]
+        );
+        let copy = h.get_by_role_and_label(Role::Button, "Copy as JSON").rect();
+        assert!(
+            near(copy.left(), edit.right() + css::EC_ACTIONS_GAP) && near(copy.top(), top),
+            "{copy:?}"
+        );
+        assert!(near(copy.height(), css::BTN_H));
+        assert!(fills_at(&h, copy).is_empty(), "a ghost has no fill");
+        assert_eq!(colour(&text(&h, "Copy as JSON"), 0), css::G750);
+        // The card's frame, to 8 under the buttons (`.ec-body`'s padding) and its border.
+        let card = Rect::from_min_max(
+            Pos2::new(PANE.x + css::PAD, card_top),
+            Pos2::new(
+                PANE.x + W - css::PAD,
+                top + css::BTN_H + css::EC_BODY_BOTTOM + css::BORDER,
+            ),
+        );
+        assert_eq!(
+            fills_at(&h, card),
+            [(
+                css::ALERT_RED_BG,
+                CornerRadius::same(css::R),
+                Stroke::new(css::BORDER, css::CARD_BORDER)
+            )]
+        );
     }
 }

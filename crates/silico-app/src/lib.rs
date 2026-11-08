@@ -11,6 +11,7 @@ mod banner;
 pub mod bar;
 pub mod box_select;
 pub mod browse;
+pub mod changes;
 pub mod dialog;
 pub mod export;
 pub mod icons;
@@ -33,5 +34,6 @@ pub mod timeline;
 pub mod toolbar;
 pub mod viewport;
 mod wake;
+mod whats_wrong;
 
 pub use app::App;

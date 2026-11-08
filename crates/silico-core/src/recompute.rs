@@ -329,16 +329,21 @@ pub struct Model {
     /// element of every feature before replying doubled the cost of a long timeline on the
     /// fake), or, asked for sooner, then, with those of the features it's made from. They're
     /// a function of the model's own data alone, so they're the same whenever they're
-    /// named.
-    maps: Vec<OnceLock<Option<Arc<ElementMap>>>>,
+    /// named. Shared, as `entries` and `live` are, with every copy of the model, a clone or
+    /// one [`rebound`](Self::rebound) to its saved document: each has the same steps and
+    /// outcomes, so the same names, and the background's naming of the model it publishes
+    /// reaches the copy a save publishes too, which no one else names. A copy whose
+    /// outcomes differ is given slots of its own ([`unnamed`](Self::unnamed)).
+    maps: Arc<[OnceLock<Option<Arc<ElementMap>>>]>,
     /// Each feature's solid's elements as entries (`elements` and `query`'s), built from its
     /// description and its names the first time they're read, once for the model, so paging
     /// through a large solid costs one build and a copy of each page, not a build a page.
-    entries: Vec<OnceLock<Result<Arc<[Entry]>, Error>>>,
+    /// Of its outcomes and names alone, never its document, so shared as `maps` is.
+    entries: Arc<[OnceLock<Entries>]>,
     /// Each feature's live body, by index ([`Model::live_body`]): built the first time a
     /// name is looked for in every body, once for the model, from `bodies` and `naming`,
-    /// which nothing changes once it's built.
-    live: OnceLock<Vec<Option<usize>>>,
+    /// which nothing changes once it's built; shared as `maps` is.
+    live: Arc<OnceLock<Vec<Option<usize>>>>,
     /// The engine's maps named so far.
     known: NamedMaps,
     /// Each sketch's diagnosis, paired with its solve's outcome, by its ID, from the answer
@@ -372,6 +377,10 @@ thread_local! {
     /// What [`live_visits`] says.
     static LIVE_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
+
+/// A feature's solid's elements as entries, or why they couldn't be built
+/// ([`Model::entries`]).
+type Entries = Result<Arc<[Entry]>, Error>;
 
 /// Element maps named so far, by naming key: shared by the engine and the models it
 /// publishes, so a feature named alike in an earlier model isn't named again.
@@ -581,11 +590,38 @@ impl Model {
     /// This model with none of its elements named yet, as it is when it's published and
     /// before the background has named any: so a test can read it as a client that asks
     /// at once does, with no race against that naming (the app's tests read it as its
-    /// selection does a model published a moment ago).
+    /// selection does a model published a moment ago). Its slots are its own, shared with
+    /// no other model, so naming either names nothing of the other.
     #[cfg(any(test, feature = "fake"))]
     pub fn unnamed(&self) -> Model {
         Model {
             maps: (0..self.features.len()).map(|_| OnceLock::new()).collect(),
+            entries: (0..self.features.len()).map(|_| OnceLock::new()).collect(),
+            live: Arc::default(),
+            ..self.clone()
+        }
+    }
+
+    /// This model with the feature `id`'s elements settled as never named (its solid built,
+    /// but its names couldn't be made: Silico's own bug, which no document reaches on the
+    /// fake), every other feature's as named so far: so a test can read a solid whose names
+    /// couldn't be made, as a client of the published model would find it.
+    #[cfg(any(test, feature = "fake"))]
+    pub fn unnamable(&self, id: &FeatureId) -> Model {
+        let maps = self
+            .features
+            .iter()
+            .zip(self.maps.iter())
+            .map(|((feature, _), map)| {
+                if feature == id {
+                    OnceLock::from(None)
+                } else {
+                    map.clone()
+                }
+            })
+            .collect();
+        Model {
+            maps,
             entries: (0..self.features.len()).map(|_| OnceLock::new()).collect(),
             ..self.clone()
         }
@@ -724,7 +760,10 @@ impl Model {
     /// document that differs from the one it was built from only in what a save writes from
     /// it (its fingerprints, with no sketch's solve written), whose rebuild would take every
     /// step from those this one took: a session's save (a commit, an edit's, `format`'s),
-    /// whose model is the saved revision's (the design's section 4).
+    /// whose model is the saved revision's (the design's section 4). Its names, entries, and
+    /// live bodies are this model's, shared (its `maps`, `entries`, and `live`): of the
+    /// same steps and outcomes, never the document, so the same; named in the background as
+    /// this one is, though only this one is the engine's.
     pub(crate) fn rebound(&self, source: Arc<Checked>) -> Model {
         Model {
             source,
@@ -1696,6 +1735,48 @@ struct Engine<K> {
     /// which other engines may share. Taken only by the
     /// recompute whose turn it is.
     solvers: Mutex<SketchSolvers>,
+    /// A test's hold on the background's naming of each model the engine publishes.
+    #[cfg(test)]
+    naming_hold: NamingHold,
+}
+
+/// A test's hold on an engine's background naming ([`Recompute::hold_naming`]): while
+/// it's held, the background waits before naming the model it published; and the models
+/// whose naming has ended, so a test can wait for one, with no sleep.
+#[cfg(test)]
+#[derive(Default)]
+struct NamingHold {
+    state: Mutex<NamingHeld>,
+    /// Told as the hold is released, and as a model's naming ends.
+    changed: Condvar,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct NamingHeld {
+    held: bool,
+    /// Each model whose background naming has ended, in the order they ended.
+    ended: Vec<Arc<Model>>,
+}
+
+#[cfg(test)]
+impl NamingHold {
+    /// Waits while the hold is held.
+    fn wait_released(&self) {
+        let mut state = lock(&self.state);
+        while state.held {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// `model`'s naming has ended.
+    fn ended(&self, model: &Arc<Model>) {
+        lock(&self.state).ended.push(Arc::clone(model));
+        self.changed.notify_all();
+    }
 }
 
 /// Starts a sketch solver.
@@ -2117,6 +2198,8 @@ impl<K: Kernel + 'static> Recompute<K> {
                 cache: cache.map_or_else(OnceLock::new, OnceLock::from),
                 sketch_turn: Condvar::new(),
                 solvers: Mutex::new(SketchSolvers::workers()),
+                #[cfg(test)]
+                naming_hold: NamingHold::default(),
                 state: Mutex::new(EngineState {
                     generation,
                     newest_started: generation,
@@ -2159,6 +2242,34 @@ impl<K: Kernel + 'static> Recompute<K> {
     /// The model the newest finished recompute published, if any has.
     pub fn published(&self) -> Option<Arc<Model>> {
         lock(&self.engine.state).published.clone()
+    }
+
+    /// Holds the background's naming of each model published from now on until
+    /// [`release_naming`](Self::release_naming): a test's way to read a model, and the
+    /// copies made of it, before the background has named any of its elements.
+    #[cfg(test)]
+    pub(crate) fn hold_naming(&self) {
+        lock(&self.engine.naming_hold.state).held = true;
+    }
+
+    /// Lets the background's naming held by [`hold_naming`](Self::hold_naming) go on.
+    #[cfg(test)]
+    pub(crate) fn release_naming(&self) {
+        lock(&self.engine.naming_hold.state).held = false;
+        self.engine.naming_hold.changed.notify_all();
+    }
+
+    /// Waits up to `timeout` for the background's naming of `model`, one this engine
+    /// published, to end: whether it has.
+    #[cfg(test)]
+    pub(crate) fn wait_naming_ended(&self, model: &Arc<Model>, timeout: Duration) -> bool {
+        let hold = &self.engine.naming_hold;
+        let state = lock(&hold.state);
+        hold.changed
+            .wait_timeout_while(state, timeout, |state| {
+                !state.ended.iter().any(|ended| Arc::ptr_eq(ended, model))
+            })
+            .is_ok_and(|(_, waited)| !waited.timed_out())
     }
 
     /// Starts rebuilding `document` in the background, superseding the recompute running,
@@ -2241,6 +2352,8 @@ impl<K: Kernel + 'static> Recompute<K> {
                 // name) or the engine is dropped, but not for a cancel or a newer recompute
                 // that publishes nothing, which leave this model the one clients have.
                 if let Some(model) = published {
+                    #[cfg(test)]
+                    engine.naming_hold.wait_released();
                     let _naming = tracing::debug_span!("name_elements").entered();
                     model.name_all(|| {
                         let state = lock(&engine.state);
@@ -2250,6 +2363,8 @@ impl<K: Kernel + 'static> Recompute<K> {
                                 .as_ref()
                                 .is_some_and(|newest| Arc::ptr_eq(newest, &model))
                     });
+                    #[cfg(test)]
+                    engine.naming_hold.ended(&model);
                 }
             });
         if let Err(e) = started {
@@ -2597,7 +2712,8 @@ struct SweepCheck {
 }
 
 /// What a feature's result is checked for once it's built: a sweep feature's one solid and
-/// change of volume (design S5, S7), or an M2 boolean's one solid (D2). Each feature's own,
+/// change of volume (design S5, S7), or an M2 boolean's one solid (D2) and change of volume
+/// (S7's rule). Each feature's own,
 /// decided when its outcome is (`model`), from its solid's stored measures and history and
 /// its base's, however they were had (made, kept in memory, or read from the cache): a step
 /// is shared by every feature alike (its key holds no ID), so a check by step would be the
@@ -3267,26 +3383,34 @@ impl Plan {
             Some(Ok(built)) => built,
             _ => return None,
         };
-        match check {
-            Check::Boolean { .. } => {
-                Some(built.history.as_ref().map_or(1, |h| h.result.solids) <= 1)
+        // The base's measures: a sweep's and a boolean's base is its first input.
+        let before = || {
+            let base = planned
+                .uses
+                .first()
+                .and_then(|&b| self.features.get(b))
+                .and_then(Planned::key)?;
+            match done.get(&base) {
+                Some(Ok(base)) => measured_of(base),
+                _ => None,
             }
-            Check::Sweep(sweep) => {
-                let base = planned
-                    .uses
-                    .first()
-                    .and_then(|&b| self.features.get(b))
-                    .and_then(Planned::key)?;
-                let before = match done.get(&base) {
-                    Some(Ok(base)) => measured_of(base)?,
-                    _ => return None,
-                };
-                Some(crate::sweep::result_holds(
-                    sweep.kind,
-                    &before,
+        };
+        match check {
+            Check::Boolean { op, .. } => {
+                if built.history.as_ref().map_or(1, |h| h.result.solids) > 1 {
+                    return Some(false);
+                }
+                Some(crate::sweep::boolean_change_holds(
+                    *op,
+                    &before()?,
                     &measured_of(built)?,
                 ))
             }
+            Check::Sweep(sweep) => Some(crate::sweep::result_holds(
+                sweep.kind,
+                &before()?,
+                &measured_of(built)?,
+            )),
         }
     }
 
@@ -5648,7 +5772,7 @@ fn model(
         naming,
         maps,
         entries,
-        live: OnceLock::new(),
+        live: Arc::default(),
         known,
         diagnoses: Arc::new(diagnoses),
         frames: Arc::new(frames),
@@ -5846,8 +5970,11 @@ fn naming_key(key: Key, id: &FeatureId, how: &Naming, inputs: &[NamingKey]) -> N
 /// `outcome`, `planned`'s, as its result's check decides it (`Check`): a built feature
 /// whose solid fails it is failed, in its own words, so what uses it is blocked on it. Read
 /// from the solid's stored summary and history and its base's (`features`, decided before
-/// it), the same whether the solid was made, kept, or read from the cache; a solid that
-/// couldn't be measured can't be checked, and fails with why (`unmeasured`).
+/// it), the same whether the solid was made, kept, or read from the cache. A sweep feature's
+/// solid that couldn't be measured can't be checked, and fails with why (`unmeasured`); an
+/// M2 boolean's is built unchecked for its change, and says why, as before S7's rule reached
+/// M2 booleans. A solid with no measure and no word why is Silico's fault, and fails as one
+/// either way.
 fn checked(
     planned: &Planned,
     outcome: FeatureOutcome,
@@ -5857,44 +5984,76 @@ fn checked(
     let (FeatureOutcome::Built { key, built }, Some(check)) = (&outcome, &planned.check) else {
         return outcome;
     };
+    // Its base's measures and its own, or why they couldn't be had: a sweep's and a
+    // boolean's base is its first input.
+    let measures = || -> Result<_, Unmeasured> {
+        let base = planned
+            .uses
+            .first()
+            .and_then(|&b| features.get(b))
+            .and_then(|(_, outcome)| match outcome {
+                FeatureOutcome::Built { key, built } => Some((*key, built)),
+                _ => None,
+            });
+        let base_key = base.map(|(key, _)| key);
+        let base = base.and_then(|(_, built)| measured_of(built));
+        match (base, measured_of(built)) {
+            (Some(before), Some(after)) => Ok((before, after)),
+            _ => Err(
+                match unmeasured
+                    .get(key)
+                    .or_else(|| base_key.and_then(|k| unmeasured.get(&k)))
+                {
+                    Some(why) => Unmeasured::Said(why.clone().with_feature(planned.id.as_str())),
+                    None => Unmeasured::Bug(
+                        silico_bug("a feature's solid or its base's wasn't measured")
+                            .with_feature(planned.id.as_str()),
+                    ),
+                },
+            ),
+        }
+    };
     let decided = match check {
         Check::Boolean { op, base, tool } => {
             let solids = built.history.as_ref().map_or(1, |h| h.result.solids);
-            crate::sweep::check_boolean_solids(&planned.id, *op, base, tool, solids)
+            // Its change judged where both solids were measured: an M2 boolean whose solid or
+            // base couldn't be, and that says why (`unmeasured`), is built, as before S7's
+            // rule reached it; a measure missing for no reason is Silico's fault.
+            crate::sweep::check_boolean_solids(&planned.id, *op, base, tool, solids).and_then(
+                |()| match measures() {
+                    Ok((before, after)) => {
+                        crate::sweep::check_boolean_change(&planned.id, *op, base, &before, &after)
+                    }
+                    Err(Unmeasured::Said(_)) => Ok(()),
+                    Err(Unmeasured::Bug(error)) => Err(error),
+                },
+            )
         }
-        Check::Sweep(sweep) => {
-            let base = planned
-                .uses
-                .first()
-                .and_then(|&b| features.get(b))
-                .and_then(|(_, outcome)| match outcome {
-                    FeatureOutcome::Built { key, built } => Some((*key, built)),
-                    _ => None,
-                });
-            let base_key = base.map(|(key, _)| key);
-            let base = base.and_then(|(_, built)| measured_of(built));
-            match (base, measured_of(built)) {
-                (Some(before), Some(after)) => crate::sweep::check_result(
-                    &sweep.feature,
-                    sweep.kind,
-                    &sweep.base,
-                    &before,
-                    &after,
-                ),
-                _ => Err(unmeasured
-                    .get(key)
-                    .or_else(|| base_key.and_then(|k| unmeasured.get(&k)))
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        silico_bug("a sketch feature's solid or its base's wasn't measured")
-                    })
-                    .with_feature(planned.id.as_str())),
-            }
-        }
+        Check::Sweep(sweep) => measures()
+            .map_err(Unmeasured::error)
+            .and_then(|(before, after)| {
+                crate::sweep::check_result(&sweep.feature, sweep.kind, &sweep.base, &before, &after)
+            }),
     };
     match decided {
         Ok(()) => outcome,
         Err(error) => FeatureOutcome::Failed(error),
+    }
+}
+
+/// Why a checked feature's measures, or its base's, couldn't be had ([`checked`]).
+enum Unmeasured {
+    /// The measure failed, or was refused, and said so (`unmeasured`).
+    Said(Error),
+    /// No measure and no word why: Silico's fault.
+    Bug(Error),
+}
+
+impl Unmeasured {
+    fn error(self) -> Error {
+        match self {
+            Unmeasured::Said(error) | Unmeasured::Bug(error) => error,
+        }
     }
 }
 
@@ -5943,8 +6102,9 @@ fn feature_outcome(
 impl Model {
     /// This model with feature `id`'s outcome replaced by `outcome`: a test's stand-in for
     /// outcomes no document reaches on the fake (Silico's own bug naming a base's elements).
+    /// Its slots its own ([`Model::unnamed`]): its outcomes aren't this model's.
     pub(crate) fn with_outcome(&self, id: &FeatureId, outcome: FeatureOutcome) -> Model {
-        let mut model = self.clone();
+        let mut model = self.unnamed();
         for (feature, held) in &mut model.features {
             if feature == id {
                 *held = outcome.clone();
@@ -5956,8 +6116,9 @@ impl Model {
     /// This model with feature `id`'s solid measured as `summary` says, if it built: a
     /// test's stand-in for measures past what a fingerprint holds, which no solid the gate
     /// admits has (a kilometre each way is 1e18 mm³, and a volume holds to 1.7e32).
+    /// Its slots its own ([`Model::unnamed`]): its outcomes aren't this model's.
     pub(crate) fn measured_as(&self, id: &FeatureId, summary: ShapeSummary) -> Model {
-        let mut model = self.clone();
+        let mut model = self.unnamed();
         for (feature, outcome) in &mut model.features {
             if feature == id
                 && let FeatureOutcome::Built { built, .. } = outcome
@@ -7290,6 +7451,111 @@ mod tests {
     }
 
     #[test]
+    fn a_models_saved_copy_made_before_it_was_named_is_named_by_the_background_with_it() {
+        // An edit's save publishes the model rebound to its saved document: a copy made as
+        // the model is published, before the background has named any of its elements. The
+        // background names the model the engine published, never the copy; a copy that
+        // kept slots of its own read "not named yet" for good, and a pick on it by name
+        // stayed pending (the app's, of a face, then dropped by the next rebuild as an
+        // element gone). The copy is read only as a client that mustn't wait reads it,
+        // never naming anything itself.
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+        engine.hold_naming();
+        let model = published(engine.start(Arc::new(boxes(2, |_| false))));
+        let saved = Arc::new(Checked::new(model.saved()).unwrap());
+        let copy = model.rebound(saved);
+        let ids: Vec<FeatureId> = copy.features().iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(ids.len(), 2);
+        let pick = ["b0000001.box.Face1"];
+        // Held: nothing named yet, of the model or its copy, and the pick pending.
+        for id in &ids {
+            assert!(model.named_so_far(id).is_none(), "{id}");
+            assert!(copy.named_so_far(id).is_none(), "{id}");
+            assert!(copy.named_element_map(id).is_none(), "{id}");
+        }
+        let resolved = crate::selection::resolve(&copy, &pick, "selection").unwrap();
+        assert!(resolved.kept.is_empty(), "{resolved:?}");
+        assert_eq!(resolved.pending.len(), 1, "{resolved:?}");
+        // Released, the background names the model it published; the copy reads the same
+        // maps, the very ones, without naming them itself.
+        engine.release_naming();
+        assert!(engine.wait_naming_ended(&model, Duration::from_secs(60)));
+        for id in &ids {
+            let named = model.named_element_map(id).unwrap();
+            let read = copy.named_element_map(id).unwrap();
+            assert!(std::ptr::eq(named, read), "{id}");
+            assert!(std::ptr::eq(copy.named_so_far(id).unwrap().unwrap(), named));
+        }
+        // And the pick finds the face: the second box's own Face1.
+        let resolved = crate::selection::resolve(&copy, &pick, "selection").unwrap();
+        assert!(resolved.pending.is_empty(), "{resolved:?}");
+        assert!(resolved.gone.is_empty(), "{resolved:?}");
+        assert_eq!(resolved.kept.len(), 1, "{resolved:?}");
+        let kept = &resolved.kept[0];
+        assert_eq!(kept.feature, FeatureId::new("b0000001").unwrap());
+        assert_eq!(kept.element, silico_protocol::ElementRef::face(1));
+        assert_eq!(kept.kind(), silico_protocol::ElementKind::Face);
+        assert_eq!(kept.name.to_string(), pick[0]);
+    }
+
+    #[test]
+    fn a_models_unnamed_copy_shares_nothing_named_with_it() {
+        // `unnamed` (and the test models made from it) gives a copy slots of its own: the
+        // model named, the copy still has nothing named, and naming the copy names nothing
+        // of a fresh copy of the model's; nor is its live bodies' index the model's.
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+        let model = published(engine.start(Arc::new(boxes(2, |_| false))));
+        model.name_all(|| true);
+        for (id, _) in model.features() {
+            model.live_body(id);
+        }
+        assert!(model.live.get().is_some());
+        let unnamed = model.unnamed();
+        let other = model.unnamed();
+        assert!(unnamed.live.get().is_none());
+        for (id, _) in model.features() {
+            assert!(model.named_element_map(id).is_some(), "{id}");
+            assert!(unnamed.named_so_far(id).is_none(), "{id}");
+        }
+        unnamed.name_all(|| true);
+        for (id, _) in model.features() {
+            assert!(unnamed.named_element_map(id).is_some(), "{id}");
+            assert!(other.named_so_far(id).is_none(), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_models_unnamable_copy_lists_none_of_that_features_elements_whatever_the_model_listed() {
+        // `unnamable` settles one feature's names as never made: its elements can't be
+        // listed, the fault saying why, though the model it's copied from listed them
+        // already; every other feature's are listed as the model's are.
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+        let model = published(engine.start(Arc::new(boxes(2, |_| false))));
+        let ids: Vec<FeatureId> = model.features().iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(ids.len(), 2);
+        for id in &ids {
+            assert!(!model.entries(id).unwrap().unwrap().is_empty(), "{id}");
+        }
+        let unnamable = model.unnamable(&ids[0]);
+        assert_eq!(unnamable.named_so_far(&ids[0]), Some(None));
+        let Some(Err(fault)) = unnamable.entries(&ids[0]) else {
+            panic!("{:?}", unnamable.entries(&ids[0]))
+        };
+        assert_eq!(fault.code(), ErrorCode::Internal);
+        assert_eq!(fault.message(), "b0000000's elements couldn't be listed");
+        assert_eq!(
+            fault.cause(),
+            Some("its solid built, but its elements couldn't be named")
+        );
+        assert_eq!(
+            unnamable.entries(&ids[1]).unwrap().unwrap(),
+            model.entries(&ids[1]).unwrap().unwrap()
+        );
+        // The model's own are as they were.
+        assert!(!model.entries(&ids[0]).unwrap().unwrap().is_empty());
+    }
+
+    #[test]
     fn a_fresh_recompute_makes_its_profiles_and_names_anew_and_they_are_the_engines_after() {
         // `start_fresh` reads nothing kept: not the engine's profiles (made again from the
         // sketch solved again), nor the maps it has named (named again from the histories
@@ -8139,5 +8405,137 @@ mod tests {
             taken(&solvers).unwrap();
             assert_eq!(starts.load(Ordering::SeqCst), 2, "panics: {panics}");
         }
+    }
+}
+
+#[cfg(test)]
+mod checked_tests {
+    use super::*;
+
+    /// An M2 cut `kkkkkkkk` of feature 0 (1 mm³) by feature 1, built, its solid `measured`
+    /// at `volume` or not.
+    fn cut_to(
+        volume: f64,
+        measured: bool,
+    ) -> (Planned, FeatureOutcome, Vec<(FeatureId, FeatureOutcome)>) {
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let summary = ShapeSummary {
+            volume: 1.0,
+            area: 6.0,
+            center: [0.5; 3],
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            bounds: Some([[0.0; 3], [1.0; 3]]),
+            valid: true,
+        };
+        let solid = |volume: f64, measured: bool| {
+            Built::new(
+                ShapeData::unchecked(silico_protocol::Blob::inline(vec![0])),
+                None,
+                measured.then(|| ShapeSummary {
+                    volume,
+                    ..summary.clone()
+                }),
+            )
+        };
+        let planned = Planned {
+            id: fid("kkkkkkkk"),
+            steps: vec![Key([2; 32])],
+            uses: vec![0, 1],
+            naming: None,
+            naming_key: None,
+            sketch: None,
+            sweeps: None,
+            on_face: OnFace::No,
+            refused: None,
+            check: Some(Check::Boolean {
+                op: BooleanOp::Cut,
+                base: fid("bbbbbbbb"),
+                tool: fid("tttttttt"),
+            }),
+            suppressed: false,
+        };
+        let outcome = FeatureOutcome::Built {
+            key: Key([2; 32]),
+            built: Arc::new(solid(volume, measured)),
+        };
+        let inputs = vec![
+            (
+                fid("bbbbbbbb"),
+                FeatureOutcome::Built {
+                    key: Key([0; 32]),
+                    built: Arc::new(solid(1.0, true)),
+                },
+            ),
+            (
+                fid("tttttttt"),
+                FeatureOutcome::Built {
+                    key: Key([1; 32]),
+                    built: Arc::new(solid(1.0, true)),
+                },
+            ),
+        ];
+        (planned, outcome, inputs)
+    }
+
+    /// [`cut_to`] at half its base's volume.
+    fn cut(measured: bool) -> (Planned, FeatureOutcome, Vec<(FeatureId, FeatureOutcome)>) {
+        cut_to(0.5, measured)
+    }
+
+    #[test]
+    fn an_m2_boolean_whose_measure_failed_saying_why_is_built() {
+        let (planned, outcome, inputs) = cut(false);
+        let mut unmeasured = BTreeMap::new();
+        unmeasured.insert(
+            Key([2; 32]),
+            Error::new(ErrorCode::KernelFailed, "the cut couldn't be measured"),
+        );
+        let decided = checked(&planned, outcome, &inputs, &unmeasured);
+        assert!(
+            matches!(decided, FeatureOutcome::Built { .. }),
+            "{decided:?}"
+        );
+    }
+
+    #[test]
+    fn an_m2_boolean_with_no_measure_and_no_word_why_fails_as_silicos_fault() {
+        let (planned, outcome, inputs) = cut(false);
+        let decided = checked(&planned, outcome, &inputs, &BTreeMap::new());
+        let FeatureOutcome::Failed(error) = decided else {
+            panic!("{decided:?}");
+        };
+        assert_eq!(error.code(), ErrorCode::Internal, "{error:?}");
+        assert_eq!(error.feature(), Some("kkkkkkkk"));
+        assert_eq!(
+            error.message(),
+            "a feature's solid or its base's wasn't measured"
+        );
+    }
+
+    #[test]
+    fn an_m2_boolean_measured_is_judged_by_s7s_rule() {
+        // Measured, its volume half its base's: it removes something, and is built.
+        let (planned, outcome, inputs) = cut(true);
+        let decided = checked(&planned, outcome, &inputs, &BTreeMap::new());
+        assert!(
+            matches!(decided, FeatureOutcome::Built { .. }),
+            "{decided:?}"
+        );
+        // Measured, its volume its base's: it removes nothing, and is refused, naming it.
+        let (planned, outcome, inputs) = cut_to(1.0, true);
+        let decided = checked(&planned, outcome, &inputs, &BTreeMap::new());
+        let FeatureOutcome::Failed(error) = decided else {
+            panic!("{decided:?}");
+        };
+        assert_eq!(error.code(), ErrorCode::KernelFailed, "{error:?}");
+        assert_eq!(error.feature(), Some("kkkkkkkk"));
+        assert!(
+            error
+                .message()
+                .starts_with("cut kkkkkkkk removes nothing from its base bbbbbbbb"),
+            "{error:?}"
+        );
     }
 }

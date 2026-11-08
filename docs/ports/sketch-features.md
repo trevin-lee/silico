@@ -158,7 +158,7 @@ Each confirmed against its diff.
 | `0e22ada9dd` (2022-07), `e5b2d8c874` (2024-10) | *TwoLengths* with *Midplane* centred on (L + L2)/2, which no one expected. Removed. | `symmetric` and `two_sides` are separate forms. |
 | `b2520d489a` (2023-06) | Pad's and pocket's own "too small" checks refused valid negative lengths. | Moot: no negative lengths. |
 | `d43fe277a7` (2024-01), `8fff92618c` (2024-05) | A refactor passed `parallelFace` by value, so an extrusion's top face lost `;:G0`, and fillets on a pad's top broke. | The ends are OCCT's own `LastShape` (S4), never found by plane. |
-| `f8c47b55cb` (2024-05), `406c3ba42c` (2025-09) | `AllowCompound` added, then made the default: a body may hold several solids. | A sketch feature's result of more than one solid is refused (S5), and decision 3 refuses a pad of several regions; M2's booleans still accept a compound. |
+| `f8c47b55cb` (2024-05), `406c3ba42c` (2025-09) | `AllowCompound` added, then made the default: a body may hold several solids. | A sketch feature's result of more than one solid is refused (S5), and decision 3 refuses a pad of several regions; M2's booleans hold to one solid too (D2, `check_boolean_solids`). |
 | `ecf7e51ab3` (2024-05) | The TNP port removed the pre-TNP pocket code, and with it the "no material to be removed" error: a pocket with no base became its tool. | A pocket needs a base. |
 | `12619b2c2d` (2024-05) | The multiple-solid checks lost in the TNP port restored. | As above. |
 | `e490531510` (2024-07) | `RefineModel` true by default. | No refine yet; oracle cases set `Refine = False`. |

@@ -2241,7 +2241,7 @@
       },
       "Fingerprint": {
         "additionalProperties": false,
-        "description": "What a feature's solid measures: its volume and area, its tight bounding box (lowest x, y,\nz, then highest; none for a solid with nothing in it), and how many faces, edges, and\nvertices it has.",
+        "description": "What a feature's solid measures: its volume and area, its centre of mass and its tight\nbounding box (lowest x, y, z, then highest; both none for a solid with nothing in it), and\nhow many faces, edges, and vertices it has.",
         "properties": {
           "area": {
             "$ref": "#/$defs/Measure"
@@ -2253,6 +2253,15 @@
             },
             "maxItems": 6,
             "minItems": 6,
+            "type": "array"
+          },
+          "center": {
+            "description": "`[x, y, z]`: the centre of mass (left out when the solid has nothing in it).",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 3,
+            "minItems": 3,
             "type": "array"
           },
           "edges": {
