@@ -2089,16 +2089,16 @@ impl<P: Clients + 'static> App<P> {
         });
         // Named by the revision it puts back (Fable's decision of 2026-11-04, section 2:
         // never "my version", which may be another program's earlier save). Off while a
-        // dialog is open, the tab closes, a Restore is under way, once it was refused, or
-        // once the session is known not to hold that revision (said, as Restore's read
-        // could only be refused).
+        // dialog or a sketch is open, the tab closes, a Restore is under way, once it was
+        // refused, or once the session is known not to hold that revision (said, as
+        // Restore's read could only be refused).
         let restore = format!("Restore revision {}", reloaded.from.number());
         let gone = format!(
             "Silico no longer holds revision {}: the file changed again before what changed \
              was read, so it can't be put back",
             reloaded.from.number()
         );
-        let on = !tab.in_dialog()
+        let on = !tab.editing()
             && !tab.closing()
             && !tab.restoring()
             && reloaded.refused.is_none()
