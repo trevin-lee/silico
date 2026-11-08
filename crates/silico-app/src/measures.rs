@@ -577,4 +577,154 @@ mod tests {
         assert_eq!(measures.reads(), 2);
         assert!(!measures.reading());
     }
+
+    #[test]
+    fn an_element_held_by_its_alias_is_found_by_it_in_its_bodys_listing() {
+        use silico_core::kernel::{BooleanOp, BuiltData};
+        // The selection's tests' two fuses, a cube 1 long fused plainly with a box 2 long,
+        // then with a box 4 long from the origin, which aliases: the last fuse's Face1 has
+        // two stable names, the 1 mm cube's Face1's (kept whole) and the 4 mm box's. One
+        // is the face's own; a pick of the other is held by it, an alias, which the listing
+        // gives among the entry's aliases.
+        let fuse = |id: &str, base: &str, tool: &str| {
+            format!(
+                r#"{{"id": "{id}", "type": "fuse", "v": 1, "name": "Op", "base": "{base}", "tool": "{tool}"}}"#
+            )
+        };
+        let unit = |id: &str, x: u32, length: u32| {
+            format!(
+                r#"{{"id": "{id}", "type": "box", "v": 1, "name": "Block", "position": [{x}, 0, 0], "length": {length}, "width": 1, "height": 1}}"#
+            )
+        };
+        let mut opened = opened_with(
+            &[
+                unit("aaaaaaaa", 0, 1),
+                unit("bbbbbbbb", 5, 2),
+                fuse("rrrrrrrr", "aaaaaaaa", "bbbbbbbb"),
+                unit("cccccccc", 0, 4),
+                fuse("ssssssss", "rrrrrrrr", "cccccccc"),
+            ],
+            |kernel| {
+                kernel.answer_instead(|op| match op {
+                    Op::Boolean {
+                        op: BooleanOp::Fuse,
+                        base,
+                        tool,
+                    } => Some(silico_protocol::Reply::Built(BuiltData {
+                        shape: FakeKernel::resized(base, 1.0)?,
+                        history: crate::selection::tests::fusing(&FakeKernel::describe(tool)?),
+                    })),
+                    _ => None,
+                });
+            },
+        );
+        let mut measures = Measures::default();
+        let mut by_alias = 0;
+        for name in ["aaaaaaaa.box.Face1", "cccccccc.box.Face1"] {
+            opened.selection.pick(name, How::Replace);
+            let held = Arc::clone(
+                &opened
+                    .selection
+                    .elements()
+                    .next()
+                    .unwrap()
+                    .found()
+                    .unwrap()
+                    .name,
+            );
+            assert_eq!(held.to_string(), name, "a stable name is held as picked");
+            let of = opened.ask(&mut measures);
+            opened.polled_until(&mut measures, |m| !m.reading());
+            let answers = measures.answers(of).unwrap();
+            let entry = answers.element.clone().unwrap().unwrap();
+            assert_eq!(entry.feature.as_str(), "ssssssss", "{name}");
+            let names: Vec<String> = std::iter::once(entry.name.to_string())
+                .chain(entry.aliases.iter().map(|alias| alias.name.to_string()))
+                .collect();
+            let mut sorted = names.clone();
+            sorted.sort();
+            assert_eq!(sorted, ["aaaaaaaa.box.Face1", "cccccccc.box.Face1"]);
+            if *entry.name != *held {
+                by_alias += 1;
+            }
+        }
+        assert_eq!(
+            by_alias, 1,
+            "one of the two picks is held by the face's alias"
+        );
+    }
+
+    #[test]
+    fn a_listing_refused_is_the_elements_answer_and_one_never_found_is_said_as_a_bug() {
+        let mut opened = opened_with(&[block("k7f2qx3m", 0, 4), block("a91cw0de", 10, 3)], |_| {});
+        opened.selection.pick("a91cw0de.box.Face1", How::Replace);
+        let name = Arc::clone(
+            &opened
+                .selection
+                .elements()
+                .next()
+                .unwrap()
+                .found()
+                .unwrap()
+                .name,
+        );
+        let of = Of::now(&opened.selection).unwrap();
+        let mut measures = Measures::default();
+        // Its listing refused: a body the document hasn't, as `elements` refuses it.
+        let missing = FeatureId::new("zzzzzzzz").unwrap();
+        measures.ask(
+            &opened.sessions,
+            &opened.id,
+            Some(of),
+            Some(Measured::One {
+                body: missing,
+                name: Arc::clone(&name),
+            }),
+        );
+        opened.polled_until(&mut measures, |m| !m.reading());
+        let refused = measures
+            .answers(of)
+            .unwrap()
+            .element
+            .clone()
+            .unwrap()
+            .unwrap_err();
+        let error = &refused.errors()[0];
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        assert_eq!(error.message(), "the document has no feature zzzzzzzz");
+        assert_eq!(measures.reads(), 1);
+        // Read in the other block's listing, which doesn't hold it: every page read, then
+        // said as Silico's bug, naming it.
+        let another = Of {
+            version: of.version + 1,
+            ..of
+        };
+        let mut measures = Measures::paged(5);
+        measures.ask(
+            &opened.sessions,
+            &opened.id,
+            Some(another),
+            Some(Measured::One {
+                body: FeatureId::new("k7f2qx3m").unwrap(),
+                name,
+            }),
+        );
+        opened.polled_until(&mut measures, |m| !m.reading());
+        let unlisted = measures
+            .answers(another)
+            .unwrap()
+            .element
+            .clone()
+            .unwrap()
+            .unwrap_err();
+        let error = &unlisted.errors()[0];
+        assert_eq!(error.code(), ErrorCode::Internal);
+        assert_eq!(
+            error.message(),
+            "a91cw0de.box.Face1 was found in k7f2qx3m's solid, but its listing doesn't hold it"
+        );
+        assert_eq!(error.elements(), ["a91cw0de.box.Face1"]);
+        // The block's 26 entries, 5 a page: 6 pages.
+        assert_eq!(measures.reads(), 6);
+    }
 }

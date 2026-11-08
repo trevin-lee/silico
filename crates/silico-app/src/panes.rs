@@ -5069,6 +5069,39 @@ mod property_panel_drawn {
     }
 
     #[test]
+    fn a_refused_measure_is_the_cores_card_in_place_of_its_rows() {
+        // A distance the kernel couldn't find, in the core's words (`distance`'s design):
+        // its card, with its code, and no Distance row; the angle, answered, still shown.
+        let refused = |code, message: &str| Problems::from(silico_core::Error::new(code, message));
+        let distance = "the kernel couldn't find the least distance between these elements";
+        let answers = Answers {
+            element: None,
+            distance: Some(Err(refused(silico_core::ErrorCode::KernelFailed, distance))),
+            angle: Some(Ok(silico_core::command::measure::AngleAnswer {
+                angle: silico_core::document::Angle::rounded(90.0).unwrap(),
+                vertex: None,
+            })),
+        };
+        let h = drawn(selecting(&["Face5", "Face6"], answers));
+        assert!(h.query_by_label(distance).is_some());
+        assert!(h.query_by_label("kernel_failed").is_some());
+        assert!(h.query_by_label("Distance").is_none());
+        assert!(h.query_by_label(NOT_MEASURED).is_none());
+        assert!(h.query_by_label("90.00°").is_some());
+        // An element's listing refused: its card in place of MEASURES' rows.
+        let listing = "the document has no feature aaaaaaaa";
+        let answers = Answers {
+            element: Some(Err(refused(silico_core::ErrorCode::InvalidInput, listing))),
+            ..Answers::default()
+        };
+        let h = drawn(selecting(&["Face5"], answers));
+        assert!(h.query_by_label(listing).is_some());
+        assert!(h.query_by_label("invalid_input").is_some());
+        assert!(h.query_by_label("Area").is_none());
+        assert!(h.query_by_label(NOT_MEASURED).is_none());
+    }
+
+    #[test]
     fn each_selection_view_closes_with_clear_selection_in_its_title_and_a_feature_has_none() {
         for names in [&["Face5"][..], &["Face5", "Face6"][..]] {
             let mut h = drawn(selecting(names, Answers::default()));

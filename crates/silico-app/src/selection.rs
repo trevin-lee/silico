@@ -2518,7 +2518,7 @@ pub(crate) mod tests {
 
     /// The history of a fuse whose tool is `tool` (the fake's description of it), as the
     /// core's carried-text proof gives them.
-    fn fusing(tool: &str) -> History {
+    pub(crate) fn fusing(tool: &str) -> History {
         if tool.contains("box(3,") {
             renumbering_fuse()
         } else if tool.contains("box(2,") {
