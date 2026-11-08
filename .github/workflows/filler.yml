@@ -7,20 +7,20 @@
 # shards, or a filler run's) is queued and could start: a runner of its lane is free, or
 # between jobs. One queued behind a lane whose every runner is busy (a long run's shards
 # waiting on its own) doesn't stop it: that CPU would sit idle meanwhile, on the runners only
-# filler uses (silico-22, -23), and a real run starting cancels filler as before (its plan,
-# cancel-filler.sh); a queued shard of a run already going doesn't, so the shards it starts
-# count filler's CPU as spare when they choose their threads (.github/shard-threads.sh). Nor
-# does it start while a mutants run or a sweep is starting (no shard or sweep job yet); a
-# queued gate or control job takes other runners, so it doesn't stop filler. A filler mutants
-# run going doesn't stop another: each takes what's free when it starts (2026-10-27: one at a
-# time, a run of one shard kept the rest idle); but a filler sweep and filler mutants never
-# run together. Free runners aren't idle CPU: the VM is saturated by about six shards. So it
-# fills only when more than a fifth of the VM's CPUs are idle (over 15 seconds; this job runs
-# on the VM), with as many shards as the idle CPUs feed at a filler shard's share (a quarter
-# of the VM) and the free runners labelled filler (silico-5 to -12, -22 and -23) hold. Filler
-# shards run only there, at the idle scheduling class on runners whose cgroups are at the idle
-# CPU weight (mutants.yml), so they hold no runner a gate could use and take no CPU a gate
-# wants.
+# filler uses (silico-22, -23), and a real run starting cancels filler mutants as before, and
+# an exploration or sweep whose runner its shards need (its plan, cancel-filler.sh); a queued
+# shard of a run already going doesn't, so the shards it starts count filler's CPU as spare
+# when they choose their threads (.github/shard-threads.sh). Nor does it start while a
+# mutants run or a sweep is starting (no shard or sweep job yet); a queued gate or control
+# job takes other runners, so it doesn't stop filler. A filler mutants run going doesn't stop
+# another: each takes what's free when it starts (2026-10-27: one at a time, a run of one
+# shard kept the rest idle); but a filler sweep and filler mutants never run together. Free
+# runners aren't idle CPU: the VM is saturated by about six shards. So it fills only when
+# more than a fifth of the VM's CPUs are idle (over 15 seconds; this job runs on the VM),
+# with as many shards as the idle CPUs feed at a filler shard's share (a quarter of the VM)
+# and the free runners labelled filler (silico-5 to -12, -22 and -23) hold. Filler shards run
+# only there, at the idle scheduling class on runners whose cgroups are at the idle CPU
+# weight (mutants.yml), so they hold no runner a gate could use and take no CPU a gate wants.
 # In order:
 #   a. Main's new commits: mutants in what main changed in its source since the commit the
 #      last filler `a` run tested (or since main's parent, at first).
@@ -44,10 +44,14 @@
 # (silico-13, -14), which runs only short jobs.
 # The proptest exploration (proptest-explore.yml) is filler too, started by its own schedule
 # when there's room (.github/proptest-room.sh, these rules for one run), and cancelled by
-# real work the same way: one starting holds this back as a mutants run starting does, and
-# a sweep due waits for one going to end, as it waits for filler mutants. Each has a
+# real work as a filler sweep is: one starting holds this back as a mutants run starting
+# does, and a sweep due waits for one going to end, as it waits for filler mutants. Each has a
 # once-a-day minimum, overdue after a day without one, which goes on a busy VM (the sweep
-# here, c; the exploration, proptest-room.sh); both overdue, the sweep goes first.
+# here, c; the exploration, proptest-room.sh); both overdue, the sweep goes first. The bench
+# and a night's sweep cancel either, as they cancel every filler run; a real mutants run
+# starting cancels one overdue only if its shards would wait for a runner the one holds or
+# would take (cancel-filler.sh), since on a busy VM real runs start several times a day, and
+# cancelled by each, the minimum would never be met.
 #
 #   gh workflow run filler.yml --ref main -f dry=true   (says what it would start)
 name: filler
@@ -174,7 +178,9 @@ jobs:
           # (each takes one job, then registers again). One whose every runner is busy, a long
           # run's shards queued behind its own, waits whatever filler does, so filler fills the
           # idle CPU meanwhile on silico-22 and -23, which no lane uses; a real run starting
-          # still cancels it (its plan, cancel-filler.sh). Each label's runners: .github/lanes.sh.
+          # still cancels filler mutants there (its plan, cancel-filler.sh), though not an
+          # overdue sweep, whose runner its shards can't take. Each label's runners:
+          # .github/lanes.sh.
           . .github/lanes.sh
           # Runners running a job now, of any run going, by number (pve-silico-N-...).
           running=" $(awk -F '\t' '$1 == "in_progress" { if (match($2, /^pve-silico-[0-9]+-/)) { n = substr($2, 12, RLENGTH - 12); print n } }' <<<"$jobs" | tr '\n' ' ')"
