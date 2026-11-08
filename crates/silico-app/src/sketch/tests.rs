@@ -3221,7 +3221,7 @@ fn a_negative_angle_runs_its_arc_clockwise_its_arrows_along_it() {
     )]));
     let on = |degrees: f64| {
         let r = degrees.to_radians();
-        [40.0 + 2.6 * r.cos(), 2.6 * r.sin()]
+        [40.0 + 2.6 * libm::cos(r), 2.6 * libm::sin(r)]
     };
     let arc: Vec<[f64; 2]> = (0..=24).map(|k| on(-90.0 * f64::from(k) / 24.0)).collect();
     let got = dimensions(&read);
