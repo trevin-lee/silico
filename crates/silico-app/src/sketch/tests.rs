@@ -3802,3 +3802,59 @@ fn assert_icon_part(shape: &egui::Shape, part: &IconPart, kind: GlyphKind) {
         (shape, _) => panic!("{kind:?}: {shape:?} isn't its part"),
     }
 }
+
+// The mutants #351's run left alive in `hit`.
+
+#[test]
+fn hit_takes_no_place_thats_no_number_even_at_any_tolerance_and_an_exact_one_at_none() {
+    let read = under(rectangle(Vec::new()));
+    assert_eq!(hit(&read, [f64::INFINITY, 0.0], f64::INFINITY, HAND), None);
+    assert_eq!(hit(&read, [0.0, f64::NAN], f64::INFINITY, HAND), None);
+    // At a point exactly, with no tolerance: that point.
+    assert_eq!(
+        hit(&read, [40.0, 20.0], 0.0, HAND),
+        Some(Hit {
+            id: id("pa000003"),
+            kind: ElementKind::Point,
+        })
+    );
+}
+
+#[test]
+fn a_glyphs_and_a_values_boxes_are_hit_to_their_edges_and_not_past_them() {
+    // The bottom side's horizontal: the side runs +x, so its right is −y: the glyph 0.28
+    // along it, (11.2, 0), 1.3 mm below, (11.2, −1.3), its box 16 points, 0.8 mm either
+    // way. Its length's value, "40", at (20, −2.6): two characters of 0.574 × 11.5 points,
+    // 13.202, and 5 each side, so 1.16011 mm either way across; 18 points high, 0.9 mm
+    // either way up.
+    let read = under(rectangle(vec![
+        horizontal("ka000001", "na000001"),
+        length("ka000002", "na000001", "40", true),
+    ]));
+    let found = |at: [f64; 2], tolerance: f64| hit(&read, at, tolerance, HAND).map(|h| h.id);
+    // Inside the glyph's box, off its middle both ways; 0.2 below it, out of a 0.1 reach.
+    assert_eq!(found([11.7, -1.8], 0.1), Some(id("ka000001")));
+    assert_eq!(found([11.2, -2.3], 0.1), None);
+    // Inside the value's box, 0.85 above its line, off its middle; 0.1 past either edge,
+    // out of a 0.05 reach.
+    assert_eq!(found([21.1, -1.75], 0.05), Some(id("ka000002")));
+    assert_eq!(found([21.26, -1.75], 0.05), None);
+    assert_eq!(found([20.0, -1.6], 0.05), None);
+}
+
+#[test]
+fn an_arcs_distance_is_its_rims_on_its_sweep_and_its_nearer_ends_past_it() {
+    // About (0, 0), radius 10, from 90° through 90°: from (0, 10) to (−10, 0).
+    let quarter = super::draw::Curve::Round {
+        centre: [0.0, 0.0],
+        radius: 10.0,
+        start: FRAC_PI_2,
+        sweep: FRAC_PI_2,
+    };
+    let distance = |at| super::hit::distance(quarter, at);
+    // At 135°, 1 outside the rim: 1.
+    let out = 11.0 * std::f64::consts::FRAC_1_SQRT_2;
+    assert!((distance([-out, out]) - 1.0).abs() < 1e-9);
+    // (−10, −1), just past its end: 1 from (−10, 0).
+    assert!((distance([-10.0, -1.0]) - 1.0).abs() < 1e-9);
+}

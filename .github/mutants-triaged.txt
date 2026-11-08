@@ -635,3 +635,9 @@ crates/silico-app/src/app.rs | App<P>::after_drawing | replace |= with &= | #397
 # to 1), where the sweep, above 0, over it is infinite, at least the cap: the cap either way.
 crates/silico-app/src/sketch/draw.rs | aside | replace < with <= | #351
 crates/silico-app/src/sketch/draw.rs | segments | replace || with && | #351
+# Sketch mode's hit-testing (#351): a tolerance that's no number or below 0 finds nothing
+# either way. Every distance `hit` compares with it is a length (a point's, a box's, a
+# curve's, or a segment's), never below 0, or no number, which no comparison takes, so
+# `d <= tolerance` holds for none; `tolerance.is_nan() && tolerance < 0.0`, never true,
+# only takes away the early return from a search that then finds nothing.
+crates/silico-app/src/sketch/hit.rs | hit | replace || with && | #351
