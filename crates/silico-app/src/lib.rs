@@ -14,6 +14,7 @@ pub mod browse;
 pub mod changes;
 pub mod dialog;
 pub mod export;
+pub mod feature_menu;
 pub mod icons;
 pub mod missing;
 mod modal;

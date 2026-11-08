@@ -609,7 +609,11 @@ impl<P: Clients + 'static> App<P> {
             self.waker_set = true;
         }
         self.poll();
+        // A name being typed, clicked away from: sent before any control the click lands on
+        // acts, so it comes first in the tab's queue.
+        let renamed = self.rename_clicked_away(ui.ctx());
         let (mut started, dialog_key) = self.keys(ui);
+        started |= renamed;
         started |= self.take_browsed();
         self.app_bar(ui, &mut started);
         if self.start_shown() {
@@ -700,6 +704,29 @@ impl<P: Clients + 'static> App<P> {
             ui.ctx().request_repaint();
         }
         self.after_drawing(ui, started);
+    }
+
+    /// The active tab's rename field, if a press of the pointer this frame lands away from
+    /// it: its name finished there and then, before the window's controls are drawn, so
+    /// what the click does (a dialog opened, a save, an undo) comes after it. Whether the
+    /// name was sent.
+    fn rename_clicked_away(&mut self, ctx: &egui::Context) -> bool {
+        self.send_rename_if(|renaming| crate::feature_menu::clicked_away(ctx, renaming))
+    }
+
+    /// The active tab's name being typed in its own field, if `now` says so of it: sent as
+    /// Enter sends it ([`Tab::finish_rename`]), its field closed. Whether it was sent.
+    fn send_rename_if(&mut self, now: impl FnOnce(&crate::feature_menu::Renaming) -> bool) -> bool {
+        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
+            return false;
+        };
+        if !tab.renaming.as_ref().is_some_and(now) {
+            return false;
+        }
+        let Some(renaming) = tab.renaming.take() else {
+            return false;
+        };
+        tab.finish_rename(&self.sessions, renaming.feature, &renaming.text)
     }
 
     /// What the start page's `act` asks: a new untitled part, Open's panel, a recent
@@ -1020,7 +1047,10 @@ impl<P: Clients + 'static> App<P> {
     /// stopped (§5, *Rebuild*), and H hides or shows the selected body or sketch, outside a
     /// text field. Outside a text field too, `?` opens the shortcut sheet; F6 fits the shown
     /// tab's view, Home gives its home view, and Ctrl+1 to Ctrl+7 its standard views
-    /// (SolidWorks' numbering); and Ctrl+Shift+B rebuilds everything, ignoring the cache.
+    /// (SolidWorks' numbering); Ctrl+Shift+B rebuilds everything, ignoring the cache; and,
+    /// with a feature selected, F2 types its name over in its own field and Del (or ⌫)
+    /// deletes it (the prototype's `keydown`), Esc dropping a name being typed and the
+    /// document's commands (Save, Close, Undo, and the rest) sending it before they act.
     /// With a modal open (the sheet too), none acts: Esc is the modal's Cancel (the sheet's
     /// close), and Enter its OK. With a dialog open, Enter and Esc are the dialog's, taken
     /// here and given to it once its inputs have taken this frame's typing (`Panes::dialog`,
@@ -1055,6 +1085,41 @@ impl<P: Clients + 'static> App<P> {
             }
             return (false, None);
         }
+        let renamed = self.rename_before_command(ui.ctx());
+        let (started, dialog_key) = self.command_keys(ui);
+        (started || renamed, dialog_key)
+    }
+
+    /// The commands' shortcuts that act on a document, which send a name being typed in
+    /// its own field first, as a click away does (SolidWorks commits a name typed in place
+    /// when another command is invoked): Esc drops it instead, and the rest never act
+    /// while it's typed.
+    const COMMANDS_AFTER_RENAME: [Command; 9] = [
+        Command::New,
+        Command::Open,
+        Command::Save,
+        Command::SaveAs,
+        Command::Close,
+        Command::Undo,
+        Command::Redo,
+        Command::Rebuild,
+        Command::RebuildAll,
+    ];
+
+    /// The active tab's rename field, which has had the focus, if a shortcut of
+    /// [`COMMANDS_AFTER_RENAME`](Self::COMMANDS_AFTER_RENAME) was pressed this frame: its
+    /// name sent there and then, through the path Enter takes, so the command acts on the
+    /// renamed document. Whether the name was sent.
+    fn rename_before_command(&mut self, ctx: &egui::Context) -> bool {
+        let asked = Self::COMMANDS_AFTER_RENAME
+            .iter()
+            .any(|&command| shortcuts::pressed(ctx, command));
+        asked && self.send_rename_if(crate::feature_menu::Renaming::focused)
+    }
+
+    /// The keyboard's commands with no modal open: [`keys`](Self::keys)'s, a name being
+    /// typed already sent where one asks it.
+    fn command_keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
         // Never a letter typed, nor a key a text field moves its cursor with (Home).
         let typing = ui.ctx().text_edit_focused();
         if !typing && shortcuts::take(ui, Command::Shortcuts) {
@@ -1111,9 +1176,14 @@ impl<P: Clients + 'static> App<P> {
         );
         let rebuild_all = shortcuts::take(ui, Command::RebuildAll) && !typing;
         let rebuild = shortcuts::take(ui, Command::Rebuild);
-        let stop = shortcuts::take(ui, Command::Stop);
+        // Esc with a menu open (a feature's right-click menu, a drop-down) closes the menu
+        // alone, as the prototype's `keydown` has it: left for the menu to take.
+        let stop = !egui::Popup::is_any_open(ui.ctx()) && shortcuts::take(ui, Command::Stop);
         // H hides or shows the selection (DESIGN.md, *Keyboard*), never a letter typed.
         let hide = !typing && shortcuts::take(ui, Command::Hide);
+        // F2 renames the selected feature, and Del (or ⌫) deletes it: never a field's keys.
+        let rename = !typing && shortcuts::take(ui, Command::Rename);
+        let delete = !typing && shortcuts::take(ui, Command::Delete);
         // The view's keys, never a field's (Home moves its cursor).
         let view = if typing {
             None
@@ -1165,6 +1235,40 @@ impl<P: Clients + 'static> App<P> {
             // mode's, left by Finish or Cancel).
             self.toast = Some((FILTERS_SAID.to_owned(), ui.input(|input| input.time)));
         }
+        let selected = tab.selection().feature().cloned();
+        // Each only where its menu item would be on: else its reason is said, as the item's
+        // hover says it.
+        let place = tab.selected_in;
+        let can = |tab: &Tab, id: &silico_core::document::FeatureId, item| {
+            let entry = tab.entry(id.as_str())?;
+            Some(crate::feature_menu::off(tab, entry, item, place))
+        };
+        if rename && let Some(id) = selected.clone() {
+            match can(tab, &id, crate::feature_menu::Item::Rename) {
+                Some(None) => tab.start_rename(id, place),
+                Some(Some(why)) => tab.message = Some(why),
+                None => {}
+            }
+        }
+        let mut deleted = false;
+        if delete && let Some(id) = selected {
+            match can(tab, &id, crate::feature_menu::Item::Delete) {
+                Some(None) => {
+                    tab.remove_feature(&self.sessions, id);
+                    deleted = true;
+                }
+                Some(Some(why)) => tab.message = Some(why),
+                None => {}
+            }
+        }
+        // Esc with a feature's name being typed: the name dropped, nothing sent, and nothing
+        // further down Esc's chain done (the field lost its focus to the Esc already).
+        let stop = if stop && tab.renaming.is_some() {
+            tab.renaming = None;
+            false
+        } else {
+            stop
+        };
         if let Some(ask) = view {
             tab.view.ask(ask);
         }
@@ -1210,7 +1314,7 @@ impl<P: Clients + 'static> App<P> {
             self.close(id);
         }
         (
-            save || undo || redo || stop || close || enter || rebuild || rebuild_all,
+            save || undo || redo || stop || close || enter || rebuild || rebuild_all || deleted,
             dialog_key,
         )
     }
@@ -2684,6 +2788,69 @@ mod tests {
         }
         let numbers: Vec<u64> = app.opening.iter().map(|opening| opening.number).collect();
         assert_eq!(numbers, [0, 1]);
+    }
+
+    #[test]
+    fn a_commands_shortcut_before_the_rename_field_has_had_the_focus_leaves_the_field_open() {
+        use eframe::egui::{Context, Event, Key, Modifiers, RawInput};
+        use silico_core::command::{Revision, TimelineAnswer};
+        use silico_core::document::FeatureId;
+        use silico_core::timeline::{Entry, Health};
+
+        use crate::feature_menu::Place;
+
+        let (mut app, dir) = app();
+        let one = answered(&app, &dir, 1, "one.silico", true);
+        app.take_opens(vec![one]);
+        let block = FeatureId::new("k7f2qx3m").unwrap();
+        let tab = &mut app.tabs[0];
+        tab.timeline = Some(TimelineAnswer {
+            revision: Revision::OPENED,
+            model: Some(Revision::OPENED),
+            problems: 0,
+            features: Some(vec![Entry {
+                id: block.clone(),
+                kind: "box",
+                name: "Block".to_owned(),
+                suppressed: false,
+                inputs: Vec::new(),
+                health: Health::Healthy,
+                problems: 0,
+                warnings: 0,
+            }]),
+            bodies: Vec::new(),
+        });
+        // F2 on the block: its field asked for, not yet drawn, so it hasn't had the focus and
+        // nothing can have been typed in it.
+        tab.start_rename(block.clone(), Place::Timeline);
+        assert!(!tab.renaming.as_ref().unwrap().focused());
+        // Ctrl+S in the next frame, before the field is drawn: nothing typed to send, so the
+        // field stays open for the name F2 asked for, and the save goes on.
+        let ctrl_s = Event::Key {
+            key: Key::S,
+            physical_key: Some(Key::S),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::CTRL | Modifiers::COMMAND,
+        };
+        let ctx = Context::default();
+        let mut sent = None;
+        ctx.run_ui(
+            RawInput {
+                events: vec![ctrl_s],
+                ..Default::default()
+            },
+            |ui| sent = Some(app.rename_before_command(ui.ctx())),
+        )
+        .textures_delta
+        .clear();
+        assert_eq!(sent, Some(false));
+        let renaming = app.tabs[0].renaming.as_ref();
+        assert_eq!(
+            renaming.map(|renaming| (&renaming.feature, renaming.text.as_str())),
+            Some((&block, "Block")),
+            "the field closed"
+        );
     }
 
     #[test]

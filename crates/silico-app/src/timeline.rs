@@ -6,8 +6,11 @@
 //! (`crate::whats_wrong`). The rebuild runs visibly along it: the running
 //! step's item spins, the items not yet known built are dimmed, and once it ends each item
 //! shows its health, a failed one red ([`step_of_each`]). A click selects a feature, a
-//! double-click (or Edit Feature in its menu) opens its dialog, a drag moves it
+//! double-click (or Edit feature in its menu) opens its dialog, a drag moves it
 //! (`move_feature`), and hovering it tints the faces it made in the viewport (`View::linked`).
+//! Its right-click menu is the feature's commands (`crate::feature_menu`): Edit feature,
+//! Rename (whose field opens over the item), Suppress or Unsuppress, Find in browser, and
+//! Delete.
 //!
 //! Left out, each for a reason: the rollback bar (the core has no rollback; Fusion's marker
 //! is out of M5, DESIGN.md flags Onshape's as a proposal), the gear's timeline options (none
@@ -28,6 +31,7 @@ use silico_core::document::FeatureId;
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
 
+use crate::feature_menu;
 use crate::icons::{Icon, IconSize};
 use crate::panes::{self, MarkLook};
 use crate::tab::Tab;
@@ -328,6 +332,12 @@ struct Asked {
     edit: Option<FeatureId>,
     hovered: Option<FeatureId>,
     moved: Option<(FeatureId, Option<FeatureId>)>,
+    /// What a feature's menu asked.
+    act: Option<feature_menu::Act>,
+    /// A rename field's name, sent (Enter, or a click away): the feature and the name.
+    renamed: Option<(FeatureId, String)>,
+    /// Whether the rename field was drawn.
+    renaming: bool,
 }
 
 /// The track and the summary, in `rect`, for `tab`.
@@ -357,6 +367,8 @@ fn features<P: Clients + 'static>(
     let rebuild = tab.status.as_ref().map(|status| &status.rebuild);
     let steps = step_of_each(entries, timeline.revision, rebuild);
     let mut asked = Asked::default();
+    // The rename field's, taken while the items are drawn, as they read the tab.
+    let mut renaming = tab.renaming.take();
     if entries.is_empty() {
         words(
             ui,
@@ -381,7 +393,7 @@ fn features<P: Clients + 'static>(
                 .show(ui, |ui| {
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing = vec2(theme::TIMELINE_ITEM_GAP, 0.0);
-                        items(ui, tab, entries, &steps, &mut asked);
+                        items(ui, tab, entries, &steps, &mut asked, &mut renaming);
                     });
                 });
         });
@@ -400,8 +412,27 @@ fn features<P: Clients + 'static>(
         ui.ctx().request_repaint();
     }
     tab.view.linked = asked.hovered;
+    // A field whose feature is gone (deleted, or undone away) goes with it.
+    let is_timelines =
+        |renaming: &feature_menu::Renaming| renaming.place == feature_menu::Place::Timeline;
+    if renaming.as_ref().is_some_and(is_timelines) && !asked.renaming {
+        renaming = None;
+    }
+    if asked.renamed.is_some() {
+        renaming = None;
+    }
+    if tab.renaming.is_none() {
+        tab.renaming = renaming;
+    }
+    if let Some((feature, typed)) = asked.renamed {
+        *started |= tab.finish_rename(sessions, feature, &typed);
+    }
     if let Some(id) = asked.selected {
+        tab.selected_in = feature_menu::Place::Timeline;
         tab.selection_mut().select_feature(id);
+    }
+    if let Some(act) = asked.act {
+        *started |= feature_menu::act(tab, sessions, act);
     }
     if let Some((feature, before)) = asked.moved {
         tab.move_feature(sessions, feature, before);
@@ -535,7 +566,14 @@ fn summary_label(ui: &Ui, rect: Rect, said: &str) {
 }
 
 /// Each feature's item, in order, and a drag's drop line.
-fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut Asked) {
+fn items(
+    ui: &mut Ui,
+    tab: &Tab,
+    entries: &[Entry],
+    steps: &[Step],
+    asked: &mut Asked,
+    renaming: &mut Option<feature_menu::Renaming>,
+) {
     let mut rects = Vec::with_capacity(entries.len());
     let mut dragged = None;
     let mut dropped = None;
@@ -614,14 +652,36 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
             asked.edit = Some(entry.id.clone());
         }
         response.context_menu(|ui| {
-            if ui
-                .add_enabled(editable, egui::Button::new("Edit Feature"))
-                .clicked()
-            {
-                asked.edit = Some(entry.id.clone());
-                ui.close();
+            // Selected as it's opened, as the prototype's `contextmenu` selects it.
+            if !selected {
+                asked.selected = Some(entry.id.clone());
+            }
+            if let Some(act) = feature_menu::menu(ui, tab, entry, feature_menu::Place::Timeline) {
+                asked.act = Some(act);
             }
         });
+        if let Some(field) = renaming.as_mut().filter(|renaming| {
+            renaming.place == feature_menu::Place::Timeline && renaming.feature == entry.id
+        }) {
+            asked.renaming = true;
+            // Over the item, at its left, on a layer of its own above the panels.
+            let at = pos2(
+                rect.left(),
+                rect.top() - theme::FIELD_HEIGHT - theme::TIMELINE_RENAME_GAP,
+            );
+            let size = vec2(theme::TIMELINE_RENAME_WIDTH, theme::FIELD_HEIGHT);
+            let done = egui::Area::new(id.with("rename"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(at)
+                .show(ui.ctx(), |ui| {
+                    let place = Rect::from_min_size(ui.max_rect().min, size);
+                    feature_menu::field(ui, field, place, &entry.name)
+                })
+                .inner;
+            if let feature_menu::Field::Done(name) = done {
+                asked.renamed = Some((entry.id.clone(), name));
+            }
+        }
         let said = tab.said.get(entry.id.as_str());
         let mut tip = description;
         if let Some(said) = said {
@@ -1887,5 +1947,49 @@ mod tests {
         );
         // Nothing is moved until it's dropped.
         assert!(!h.state().started);
+    }
+
+    #[test]
+    fn a_rename_field_opens_over_its_item_and_what_it_or_the_menu_sends_is_polled() {
+        use eframe::egui::Key;
+        use eframe::egui::accesskit::Role;
+        let mut h = drawn(tab_of(Some(&features()), 0));
+        // F2, or the menu's Rename, on the block: its field over its item, at the item's left
+        // and 4 above it, 180 wide and as high as `.modify-box input` (22): the app's own
+        // place, the prototype's `prompt` giving none. To half a point: egui puts an area on
+        // the pixel grid.
+        h.state_mut().tab.as_mut().unwrap().start_rename(
+            FeatureId::new("b0000001").unwrap(),
+            feature_menu::Place::Timeline,
+        );
+        h.run_steps(4);
+        let field = h.get_by_role(Role::TextInput).rect();
+        let block = item(0);
+        let want = Rect::from_min_size(
+            Pos2::new(block.left(), block.top() - 4.0 - 22.0),
+            Vec2::new(180.0, 22.0),
+        );
+        assert!(
+            (field.min - want.min).abs().max_elem() <= 0.5 && near(field.width(), want.width()),
+            "the field at {field:?}, not {want:?}"
+        );
+        assert!(near(field.height(), want.height()), "{field:?}");
+        assert!(h.get_by_role(Role::TextInput).is_focused());
+        // A name typed, then Enter: sent, and the next frame asked for, to poll it.
+        h.get_by_role(Role::TextInput).type_text("Plate");
+        h.run_steps(2);
+        assert!(!h.state().started, "sent as it's typed");
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+        assert!(h.state().started, "the name sent, never polled");
+        assert!(h.state().tab.as_ref().unwrap().renaming.is_none());
+
+        // The menu's Suppress on the pad: sent, and polled the same.
+        let mut h = drawn(tab_of(Some(&features()), 0));
+        h.get_by_label("p0000001").click_secondary();
+        h.run_steps(2);
+        h.get_by_role_and_label(Role::Button, "Suppress").click();
+        h.run_steps(2);
+        assert!(h.state().started, "the suppression sent, never polled");
     }
 }
