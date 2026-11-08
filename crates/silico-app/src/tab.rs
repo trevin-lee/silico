@@ -3266,8 +3266,8 @@ impl Tab {
     ) -> bool {
         match asked {
             crate::properties::CardAct::Edit(id) => {
-                // SEAM(#351): Edit Sketch for a sketch, as the timeline's double-click.
-                self.edit_feature(sessions, &id);
+                // Edit Sketch for a sketch, as the timeline's double-click.
+                self.edit_sketch_or_feature(sessions, &id);
                 true
             }
             crate::properties::CardAct::Show(id) => {

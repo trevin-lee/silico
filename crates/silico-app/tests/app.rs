@@ -18221,6 +18221,36 @@ fn a_face_sketch_whose_face_broke_opens_says_its_plane_problem_and_draws_flat() 
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn a_sketchs_error_card_edit_opens_sketch_mode_as_its_double_click_does() {
+    // The face sketch's broken plane is its error: its card's Edit is Edit Sketch, not
+    // Edit Feature (which no dialog of a sketch's answers).
+    let f = fixture();
+    let (mut h, path) = f.opened("face.silico", ON_A_FACE);
+    step_until(&mut h, "its error", |h| {
+        h.query_by_role_and_label(Role::Button, "Rebuilt with 1 error")
+            .is_some()
+    });
+    assert!(sketch_mode(&h).is_none());
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 1 error")
+        .click();
+    step_until(&mut h, "its card listed", |h| {
+        in_whats_wrong(h, "Feature: ") == ["Feature: Top s0000001"]
+    });
+    step(&mut h);
+    whats_wrong(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Edit Top")
+        .click();
+    step_until(&mut h, "sketch mode on Top", |h| {
+        whats_wrong(h).is_none()
+            && sketch_mode(h).is_some_and(|mode| mode.sketch == Some(sketch_id("s0000001")))
+    });
+    assert!(!dialog_open(&h));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), ON_A_FACE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// The fake, each box's faces described as OCCT's planes (docs/ports/attacher.md, *Worked
 /// frames*: Face1 −X, Face2 +X, Face3 −Y, Face4 +Y, Face5 −Z, Face6 +Z), through the origin.
 fn planar_boxes(kernel: &FakeKernel) {
