@@ -21,7 +21,8 @@ use silico_app::recent::Recents;
 use silico_app::start::Warm;
 use silico_app::tab::Sent;
 use silico_core::cache::Cache;
-use silico_core::command::{CheckAnswer, CheckModel, ModelChoice, Running, Sessions};
+use silico_core::command::wire::Named;
+use silico_core::command::{CheckAnswer, CheckModel, ModelChoice, Revision, Running, Sessions};
 use silico_core::disk::{Clock, Found, Reader};
 use silico_core::document::json::{self, Plain};
 use silico_core::fake::never_waits;
@@ -296,6 +297,146 @@ fn every_pane_has_its_label() {
             "{pane}"
         );
     }
+}
+
+/// The prototype's `#main` (styles.css): `grid-template-columns: var(--browser-w) 1fr
+/// var(--right-w)`, `--browser-w: 248px`, `--right-w: 296px`, every box `border-box`, with
+/// `#browser`'s `border-right: 1px` and `#right`'s `border-left: 1px` inside them; `#main`
+/// fills the window's width between the toolbar and the timeline, with no padding.
+#[test]
+fn the_panes_are_the_prototypes_columns_the_browser_248_the_properties_296_and_the_canvas_the_rest()
+{
+    // The harness draws the app inside a margin of 8 (egui_kittest's `run_ui`:
+    // `Frame::central_panel(..).outer_margin(8.0)`), so a harness 16 more each way gives the
+    // app the window it's named for, its top left at (8, 8).
+    const MARGIN: f32 = 8.0;
+    // (window width and height, the canvas's x and width, the right panel's x), from the
+    // window's left, by hand: the browser 0 to 248 (its border 247 to 248), the right
+    // panel's border the 1 before its panel, the canvas between. At 1280: 1280 − 248 − 296 =
+    // 736, the border at 248 + 736 = 984, the panel from 985 (1280 − 295). At 1600: 1600 −
+    // 544 = 1056, the panel from 1305. At 500, under the side columns' 544: `1fr` is nothing
+    // (`#canvas-wrap`'s `min-width: 0`), the panel's border at 248, the panel from 249 to
+    // 544, past the window's right edge. At the window's least size, 884 by 336 (main.rs):
+    // 884 − 544 = 340, the panel from 589 (884 − 295).
+    for (window, window_h, canvas_w, right_x) in [
+        (1280.0, 800.0, 736.0, 985.0),
+        (1600.0, 800.0, 1056.0, 1305.0),
+        (500.0, 800.0, 0.0, 249.0),
+        (884.0, 336.0, 340.0, 589.0),
+    ] {
+        // Sessions of its own for each window: one holds the file it opened.
+        let f = fixture();
+        let path = f.file("example.silico", EXAMPLE);
+        let app = App::new(Arc::clone(&f.sessions));
+        let mut h = {
+            let _marked = never_waits::marked();
+            Harness::builder()
+                .with_size((window + 2.0 * MARGIN, window_h + 2.0 * MARGIN))
+                .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+        };
+        h.state_mut().open(path.to_str().unwrap(), false);
+        step_until(&mut h, "the panes", |h| {
+            h.query_by_role_and_label(Role::Pane, "Viewport").is_some()
+        });
+        step(&mut h);
+        let pane = |label| {
+            h.get_by_role_and_label(Role::Pane, label)
+                .rect()
+                .translate(-eframe::egui::vec2(MARGIN, MARGIN))
+        };
+        let (browser, canvas, right) = (pane("Browser"), pane("Viewport"), pane("Properties"));
+        let at = format!("at {window} by {window_h}");
+        assert_eq!((browser.left(), browser.width()), (0.0, 247.0), "{at}");
+        assert_eq!((canvas.left(), canvas.width()), (248.0, canvas_w), "{at}");
+        assert_eq!((right.left(), right.width()), (right_x, 295.0), "{at}");
+        // Their top the toolbar's bottom: `--top-bar-h` 30, then the toolbar's
+        // `--toolbar-tabs-h` 24, `--toolbar-h` 52, and its `border-bottom` 1.
+        assert_eq!(browser.top(), 30.0 + 24.0 + 52.0 + 1.0, "{at}");
+        // Side by side, the three the same height, down to the timeline, which runs the
+        // window's width: to 1 above its 40, egui's separator line, the timeline's border,
+        // drawn outside its panel (where `#timeline`'s `border-top` is inside its 40); the
+        // status bar, `--status-h` 24, under it.
+        let timeline = pane("Timeline");
+        for rect in [canvas, right] {
+            assert_eq!(rect.y_range(), browser.y_range(), "{at}");
+        }
+        assert_eq!(browser.bottom() + 1.0, timeline.top(), "{at}");
+        assert_eq!((timeline.left(), timeline.right()), (0.0, window), "{at}");
+        assert_eq!(timeline.bottom(), window_h - 24.0, "{at}");
+        // The viewport draws in its pane's rect, once it has drawn a frame.
+        if canvas_w > 0.0 {
+            step_until(&mut h, "the viewport's frame", |h| {
+                view(h).frame().is_some()
+            });
+            assert_eq!(
+                the_viewport(&h),
+                h.get_by_role_and_label(Role::Pane, "Viewport").rect(),
+                "{at}"
+            );
+        }
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+/// The prototype's columns are fixed (`#main`'s `grid-template-columns`, no splitter): either
+/// border, the browser's (247 to 248) or the properties' (984 to 985 at 1280), hovered shows
+/// no resize cursor (`#browser` and `#right` set none), and a drag along it moves neither,
+/// by hand the same 247, 736, and 295 wide after as before.
+#[test]
+fn a_drag_on_a_panes_border_resizes_no_column() {
+    use eframe::egui::{Event, Modifiers, PointerButton, pos2, vec2};
+    const MARGIN: f32 = 8.0;
+    let f = fixture();
+    let path = f.file("example.silico", EXAMPLE);
+    let app = App::new(Arc::clone(&f.sessions));
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0 + 2.0 * MARGIN, 800.0 + 2.0 * MARGIN))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(&mut h, "the panes", |h| {
+        h.query_by_role_and_label(Role::Pane, "Viewport").is_some()
+    });
+    step(&mut h);
+    let widths = |h: &Harness<'_, App<Fake>>| {
+        ["Browser", "Viewport", "Properties"]
+            .map(|label| h.get_by_role_and_label(Role::Pane, label).rect().width())
+    };
+    assert_eq!(widths(&h), [247.0, 736.0, 295.0]);
+    let middle = MARGIN + 30.0 + 24.0 + 52.0 + 1.0 + 200.0;
+    for border in [247.5, 984.5] {
+        let from = pos2(MARGIN + border, middle);
+        h.hover_at(from);
+        step(&mut h);
+        assert_ne!(
+            h.output().platform_output.cursor_icon,
+            eframe::egui::CursorIcon::ResizeHorizontal,
+            "the border at {border}"
+        );
+        h.event(Event::PointerButton {
+            pos: from,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        step(&mut h);
+        for i in 1..=8u8 {
+            h.hover_at(from + vec2(10.0 * f32::from(i), 0.0));
+            step(&mut h);
+        }
+        h.event(Event::PointerButton {
+            pos: from + vec2(80.0, 0.0),
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+        step(&mut h);
+        step(&mut h);
+        assert_eq!(widths(&h), [247.0, 736.0, 295.0], "the border at {border}");
+    }
+    assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
@@ -621,7 +762,8 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
     });
     assert!(anywhere(
         &h,
-        "Revision 1 → 2. You had no unsaved edits, so nothing of yours was lost."
+        "Revision 1 → 2. You had no unsaved edits, so nothing of yours was lost. Changed \
+         features are marked ● until you look at them."
     ));
     // It stays until it's dismissed.
     for _ in 0..10 {
@@ -662,6 +804,30 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
         assert!(!anywhere(&h, reloaded), "the purple banner came back");
     }
     assert_eq!(never_waits::waits(), 0);
+}
+
+/// The first cell of the row (a banner's, or a modal's list) one of whose later cells
+/// reads `text`: the label at its top, leftmost, left of it, outside the side panes.
+fn row_feature(h: &AppHarness, text: &str) -> String {
+    let cell = h.get_by_label(text).rect();
+    h.root()
+        .query_all(egui_kittest::kittest::by().recursive(true))
+        .filter(|node| {
+            ["Timeline", "Browser", "Properties"]
+                .iter()
+                .all(|pane| !in_pane(node, pane))
+        })
+        .filter_map(|node| {
+            let node = node.accesskit_node();
+            let label = node.label().or_else(|| node.value())?;
+            let rect = node.bounding_box()?;
+            ((rect.y0 - f64::from(cell.top())).abs() < 0.5
+                && rect.x0 < f64::from(cell.left()) - 0.5)
+                .then_some((rect.x0, label))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, label)| label)
+        .unwrap_or_else(|| panic!("no row reads {text}"))
 }
 
 /// The purple banner's title for the example's reload.
@@ -769,29 +935,1057 @@ fn a_reload_the_person_asked_for_shows_no_purple_banner() {
 }
 
 #[test]
-fn esc_dismisses_the_purple_banner_once_nothing_else_takes_it() {
+fn esc_dismisses_the_purple_banner_before_it_clears_the_selection() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     written_outside(&mut h, &path, "Bore");
     step_until(&mut h, "the reload announced", |h| anywhere(h, RELOADED));
-    // A feature selected: the first Esc clears the selection, the banner staying.
+    // A feature selected: the first Esc dismisses the banner, the selection staying (the
+    // prototype's `escChain`: the reloaded banner before the selection).
     select(&mut h, "Pin");
     step_until(&mut h, "settled", |h| {
         let tab = &h.state().tabs()[0];
         tab.edits.idle() && !tab.stoppable()
     });
     h.key_press(eframe::egui::Key::Escape);
-    step(&mut h);
-    assert!(h.state().tabs()[0].selection().is_empty());
+    step_until(&mut h, "dismissed", |h| !anywhere(h, RELOADED));
     for _ in 0..5 {
         step(&mut h);
     }
-    assert!(anywhere(&h, RELOADED));
-    // Nothing else to take it: the next dismisses the banner.
+    let selected = h.state().tabs()[0].selection().feature().cloned();
+    assert!(selected.is_some(), "the first Esc cleared the selection");
+    assert!(!anywhere(&h, RELOADED));
+    // The next clears the selection.
     h.key_press(eframe::egui::Key::Escape);
-    step_until(&mut h, "dismissed", |h| !anywhere(h, RELOADED));
+    step(&mut h);
+    assert!(h.state().tabs()[0].selection().is_empty());
     assert_eq!(never_waits::waits(), 0);
+}
+
+/// The example with its Pin's radius 5, as an agent's edits start from it.
+fn pinned() -> String {
+    EXAMPLE.replace(r#""radius": 2.5"#, r#""radius": 5"#)
+}
+
+/// [`pinned`] as an agent leaves it: the Pin's radius 3, and the Hole's note for an M6 bolt.
+fn agents_pin() -> String {
+    pinned()
+        .replace(r#""radius": 5"#, r#""radius": 3"#)
+        .replace("an M5 bolt", "an M6 bolt")
+}
+
+/// The note's change, as the banner lists it and the marks say it: each value as the file
+/// writes it, quoted.
+const NOTE_CHANGE: &str = r#""Clearance for an M5 bolt" → "Clearance for an M6 bolt""#;
+
+#[test]
+fn a_reload_lists_what_changed_by_feature_and_field_each_value_as_the_file_writes_it() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", &pinned());
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    std::fs::write(&path, agents_pin()).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "5 → 3"));
+    assert!(anywhere(&h, RELOADED));
+    // Each row: the feature's name, the field, and its values as the file writes them.
+    for label in ["Pin", "radius", "5 → 3", "Hole", "note", NOTE_CHANGE] {
+        assert!(seen(&h, label), "{label}");
+    }
+    assert_eq!(h.query_all_by_label("5 → 3").count(), 1);
+    assert_eq!(h.query_all_by_label(NOTE_CHANGE).count(), 1);
+    // Named by the revision it puts back, never "my version".
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Restore revision 1")
+            .is_some()
+    );
+    assert!(h.query_by_label_contains("my version").is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether any node is labelled `label`, however many are.
+fn seen(h: &AppHarness, label: &str) -> bool {
+    h.query_all_by_label(label).next().is_some()
+}
+
+/// The reload's second line, from revision `from` to `to`, its dot written as the
+/// prototype's `.state-dot` is drawn here.
+fn reloaded_sub(from: u64, to: u64) -> String {
+    format!(
+        "Revision {from} → {to}. You had no unsaved edits, so nothing of yours was lost. \
+         Changed features are marked ● until you look at them."
+    )
+}
+
+/// Two blocks, each with the fingerprint it rebuilds to on the fake kernel: Block, 40 × 20
+/// × 10 (volume 8000, area 2(800 + 400 + 200) = 2800, centre its middle, (20, 10, 5)), and
+/// Plate, 10 × 10 × 2 from x = 50 (volume 200, area 2(100 + 20 + 20) = 280, centre (55, 5,
+/// 1)), so neither is marked with a warning.
+const BLOCK_AND_PLATE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}},
+    {"id": "p2t8wn4c", "type": "box", "v": 1, "name": "Plate", "position": [50, 0, 0], "length": 10, "width": 10, "height": 2, "fingerprint": {"volume": 200, "area": 280, "center": [55, 5, 1], "bbox": [50, 0, 0, 60, 10, 2], "faces": 6, "edges": 12, "vertices": 8}}
+  ]
+}
+"#;
+
+/// [`BLOCK_AND_PLATE`] as an agent leaves it: Block named Base, and Plate named Lid.
+fn blocks_renamed() -> String {
+    BLOCK_AND_PLATE
+        .replace(r#""name": "Block""#, r#""name": "Base""#)
+        .replace(r#""name": "Plate""#, r#""name": "Lid""#)
+}
+
+/// The marks of the two renames, as the accessibility tree reads them.
+const BASE_MARK: &str = r#"changed on disk: name "Block" → "Base""#;
+const LID_MARK: &str = r#"changed on disk: name "Plate" → "Lid""#;
+
+/// How many of `pane`'s features are marked changed on disk.
+fn outside_marks(h: &AppHarness, pane: &str) -> usize {
+    h.get_by_role_and_label(Role::Pane, pane)
+        .query_all_by_label_contains("changed on disk:")
+        .count()
+}
+
+#[test]
+fn the_changed_features_are_marked_in_purple_until_marked_seen_and_esc_dismisses_the_banner() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
+    assert_eq!(outside_marks(&h, "Timeline"), 0);
+    std::fs::write(&path, blocks_renamed()).unwrap();
+    step_until(&mut h, "the marks", |h| {
+        shows(h, "Timeline", BASE_MARK) && shows(h, "Timeline", LID_MARK)
+    });
+    assert!(anywhere(&h, &reloaded_sub(1, 2)));
+    // Both bodies, so the browser marks both too, and nothing else.
+    step_until(&mut h, "the browser's marks", |h| {
+        shows(h, "Browser", BASE_MARK) && shows(h, "Browser", LID_MARK)
+    });
+    assert_eq!(outside_marks(&h, "Timeline"), 2);
+    assert_eq!(outside_marks(&h, "Browser"), 2);
+    assert!(seen(&h, r#""Block" → "Base""#) && seen(&h, r#""Plate" → "Lid""#));
+    // Selected, and hovered: its properties say what changed, and the mark stays (the
+    // prototype's `selectFeature`: seen on select, cleared by the button).
+    select(&mut h, "Base");
+    assert!(shows(&h, "Properties", "Changed on disk"));
+    assert!(shows(&h, "Properties", r#"name "Block" → "Base""#));
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label("Base")
+        .hover();
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(
+        shows(&h, "Timeline", BASE_MARK),
+        "the mark went on a look alone"
+    );
+    // Mark as seen: its marks gone, the Lid's kept.
+    h.get_by_role_and_label(Role::Button, "Mark as seen")
+        .click();
+    step_until(&mut h, "Base's marks gone", |h| {
+        !shows(h, "Timeline", BASE_MARK) && !shows(h, "Browser", BASE_MARK)
+    });
+    assert!(!shows(&h, "Properties", "Changed on disk"));
+    assert_eq!(outside_marks(&h, "Timeline"), 1);
+    assert!(shows(&h, "Browser", LID_MARK));
+    // Esc: the banner first, then the selection (the prototype's `escChain`); nothing
+    // modal, and the marks stay. Once nothing of the tab's is under way, so no rebuild
+    // still running takes the Esc first.
+    step_until(&mut h, "settled", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.edits.idle() && !tab.stoppable()
+    });
+    let title = "Reloaded blocks.silico: another program changed it on disk";
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "dismissed", |h| !anywhere(h, title));
+    assert!(h.state().tabs()[0].selection().feature().is_some());
+    assert!(!seen(&h, r#""Plate" → "Lid""#));
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert!(shows(&h, "Timeline", LID_MARK) && shows(&h, "Browser", LID_MARK));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_reload_lists_features_added_removed_and_moved_each_in_its_words() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    // The two blocks and a Peg, 4 × 4 × 4 from x = 70 (volume 64, area 6 × 16 = 96, centre
+    // (72, 2, 2)).
+    let peg = r#"    {"id": "g5r9x3k1", "type": "box", "v": 1, "name": "Peg", "position": [70, 0, 0], "length": 4, "width": 4, "height": 4, "fingerprint": {"volume": 64, "area": 96, "center": [72, 2, 2], "bbox": [70, 0, 0, 74, 4, 4], "faces": 6, "edges": 12, "vertices": 8}}"#;
+    let lines: Vec<&str> = BLOCK_AND_PLATE.lines().collect();
+    let (block, plate) = (lines[5].trim_end_matches(','), lines[6]);
+    let document = |features: [&str; 3]| {
+        format!(
+            "{}\n{}\n  ]\n}}\n",
+            lines[..5].join("\n"),
+            features
+                .map(|feature| feature.trim_end_matches(','))
+                .join(",\n")
+        )
+    };
+    let (mut h, path) = f.opened("blocks.silico", &document([block, plate, peg]));
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Peg"));
+    // The Plate moved before the Block, the Peg removed, and a Lid added last, 40 × 20 × 2
+    // on the Block (volume 1600, area 2(800 + 80 + 40) = 1840, centre (20, 10, 11)): places
+    // by hand, from 1, the Block 1 → 2, the Plate 2 → 1, the Lid at 3, the Peg from 3.
+    let lid = r#"    {"id": "q4m7d2e9", "type": "box", "v": 1, "name": "Lid", "position": [0, 0, 10], "length": 40, "width": 20, "height": 2, "fingerprint": {"volume": 1600, "area": 1840, "center": [20, 10, 11], "bbox": [0, 0, 10, 40, 20, 12], "faces": 6, "edges": 12, "vertices": 8}}"#;
+    std::fs::write(&path, document([plate, block, lid])).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "at place 3"));
+    for label in [
+        "moved",
+        "place 2 → 1",
+        "place 1 → 2",
+        "added",
+        "at place 3",
+        "removed",
+        "from place 3",
+        "Peg",
+    ] {
+        assert!(seen(&h, label), "{label}");
+    }
+    assert_eq!(h.query_all_by_label("moved").count(), 2);
+    // Each row its own feature's: the Plate moved up, the Block down, the Lid added, the
+    // Peg removed.
+    for (text, feature) in [
+        ("place 2 → 1", "Plate"),
+        ("place 1 → 2", "Block"),
+        ("at place 3", "Lid"),
+        ("from place 3", "Peg"),
+    ] {
+        assert_eq!(row_feature(&h, text), feature, "{text}");
+    }
+    // Each feature still there marked with its words; the Peg, gone, has nothing to mark.
+    let marks = [
+        "changed on disk: moved place 2 → 1",
+        "changed on disk: moved place 1 → 2",
+        "changed on disk: added at place 3",
+    ];
+    step_until(&mut h, "the marks", |h| {
+        marks.iter().all(|mark| shows(h, "Timeline", mark))
+    });
+    assert_eq!(outside_marks(&h, "Timeline"), 3);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A block, 40 × 20 × 10, in canonical form, with the fingerprint it rebuilds to on the
+/// fake kernel: volume 40 × 20 × 10 = 8000, area 2(800 + 400 + 200) = 2800, centre its
+/// middle, (20, 10, 5), to z = 10.
+const BLOCK_10: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"center\": [20, 10, 5], \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+
+/// The agent's change: the block 11 high, its fingerprint volume 40 × 20 × 11 = 8800, area
+/// 2(800 + 440 + 220) = 2920, centre (20, 10, 5.5), to z = 11.
+const BLOCK_11: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 11,\n      \"fingerprint\": {\"volume\": 8800, \"area\": 2920, \"center\": [20, 10, 5.5], \"bbox\": [0, 0, 0, 40, 20, 11], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+
+/// [`BLOCK_10`] `height` high, with the fingerprint it rebuilds to on the fake kernel:
+/// volume 40 × 20 × `height`, area 2(800 + 40 `height` + 20 `height`), centre its middle,
+/// (20, 10, `height` / 2), to z = `height`.
+fn block_high(height: u32) -> String {
+    BLOCK_10
+        .replace("\"height\": 10", &format!("\"height\": {height}"))
+        .replace("\"volume\": 8000", &format!("\"volume\": {}", 800 * height))
+        .replace(
+            "\"area\": 2800",
+            &format!("\"area\": {}", 1600 + 120 * height),
+        )
+        .replace(
+            "[20, 10, 5]",
+            &format!("[20, 10, {}]", f64::from(height) / 2.0),
+        )
+        .replace("40, 20, 10]", &format!("40, 20, {height}]"))
+}
+
+/// Whether the session's transaction holds a document other than the one `begin` saw.
+fn changed(f: &Fixture, h: &AppHarness) -> bool {
+    let id = h.state().tabs()[0].id;
+    f.sessions
+        .status(&id)
+        .result
+        .unwrap()
+        .transaction
+        .is_some_and(|transaction| transaction.changed)
+}
+
+#[test]
+fn restore_puts_the_replaced_revision_back_as_an_edit_that_undo_takes_and_save_writes() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    std::fs::write(&path, BLOCK_11).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "height"));
+    assert!(!changed(&f, &h));
+    h.get_by_role_and_label(Role::Button, "Restore revision 1")
+        .click();
+    step_until(&mut h, "restored", |h| {
+        anywhere(h, "block.silico *") && h.state().tabs()[0].edits.idle()
+    });
+    // The text the reload replaced, byte for byte, as an edit inside a transaction begun
+    // for it: unsaved, the banner gone, the file still the agent's.
+    assert_eq!(text_of(&f, &h), BLOCK_10);
+    assert!(changed(&f, &h));
+    let sent = &h.state().tabs()[0].sent;
+    assert_eq!(&sent[sent.len() - 2..], [Sent::Begin, Sent::Replace]);
+    step_until(&mut h, "unsaved shown", |h| {
+        status_said(h, "Unsaved").as_deref() == Some("Unsaved")
+    });
+    assert!(!anywhere(
+        &h,
+        "Reloaded block.silico: another program changed it on disk"
+    ));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), BLOCK_11);
+    // Ctrl+Z: the reloaded text back, nothing changed from it.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step_until(&mut h, "undone", |h| text_of(&f, h) == BLOCK_11);
+    step_until(&mut h, "unchanged", |h| !changed(&f, h));
+    // Redone, then saved: the file is the restored bytes.
+    step_until(&mut h, "Redo on", |h| {
+        !h.get_by_role_and_label(Role::Button, "Redo")
+            .accesskit_node()
+            .is_disabled()
+    });
+    h.get_by_role_and_label(Role::Button, "Redo").click();
+    step_until(&mut h, "redone", |h| text_of(&f, h) == BLOCK_10);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "saved", |h| !anywhere(h, "block.silico *"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), BLOCK_10);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn restore_of_a_revision_no_longer_held_says_the_cores_refusal_and_its_candidates() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    std::fs::write(&path, BLOCK_11).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "height"));
+    let id = h.state().tabs()[0].id;
+    // The session's queue held, so the banner still offers revision 1, and the file written
+    // again, with a read of the document now queued ahead of Restore's (as the disk watch's
+    // own reload, or another client's read, would be): it reads the file first, reloading
+    // it at revision 3. Restore's read of revision 1 names a revision, so it reads nothing
+    // of the file itself.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let third = BLOCK_11.replace("\"height\": 11", "\"height\": 12");
+    std::fs::write(&path, &third).unwrap();
+    let ahead = f.sessions.text(&id, None);
+    step_until(&mut h, "the change found", |h| {
+        disk(h) == Some(silico_core::disk::Disk::Changed)
+    });
+    h.get_by_role_and_label(Role::Button, "Restore revision 1")
+        .click();
+    step(&mut h);
+    hold.release();
+    let _ = check.wait();
+    let ahead = ahead.wait();
+    assert_eq!(ahead.session.unwrap().revision.number(), 3);
+    // The core's refusal said: revision 1 replaced by the second reload, the session
+    // holding 2 (what that reload replaced) and 3 (now).
+    let refused = format!(
+        "session {id} doesn't hold the text of revision 1: it holds revisions 2 and 3 \
+         (candidates: 2, 3)"
+    );
+    step_until(&mut h, "the refusal said", |h| anywhere(h, &refused));
+    // The second reload, which Restore's read came after, announced in the first's place,
+    // with what it changed: the height, 11 then 12.
+    step_until(&mut h, "the second reload listed", |h| seen(h, "11 → 12"));
+    assert!(anywhere(&h, RELOADED.replace("example", "block").as_str()));
+    assert!(anywhere(&h, &reloaded_sub(2, 3)));
+    assert!(!anywhere(&h, &reloaded_sub(1, 2)));
+    assert_eq!(row_feature(&h, "11 → 12"), "Block");
+    assert!(!seen(&h, "10 → 11"));
+    // Nothing restored: the third text, no transaction; the banner offers revision 2 now.
+    assert_eq!(text_of(&f, &h), third);
+    assert!(!h.state().tabs()[0].transaction);
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Restore revision 1")
+            .is_none()
+    );
+    assert!(
+        !h.get_by_role_and_label(Role::Button, "Restore revision 2")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// When the frame that takes Restore's refusal read the session's `status`, the two orders
+/// a frame may see: before the `begin` sent for Restore's edit ran (revision 2, no
+/// transaction open, the file found changed), `begin` and `replace_text` then answering
+/// before that frame takes its answers; or after `replace_text` had answered (revision 3,
+/// the transaction `begin` opened, the file as the session holds it).
+#[derive(Debug, Clone, Copy)]
+enum StatusRead {
+    BeforeBegin,
+    AfterReplace,
+}
+
+#[test]
+fn restore_refused_by_a_reload_before_its_begin_leaves_no_transaction_and_follows_the_file() {
+    // Each order forced, so both run every time: the first is the one the frame's status
+    // read races `begin` into, which once left no banner.
+    for read in [StatusRead::BeforeBegin, StatusRead::AfterReplace] {
+        restore_refused_by_a_reload_before_its_begin(read);
+    }
+}
+
+fn restore_refused_by_a_reload_before_its_begin(read: StatusRead) {
+    use silico_core::command::{RunningCommand, SessionCommand};
+    let at = format!("{read:?}");
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    std::fs::write(&path, BLOCK_11).unwrap();
+    step_until(&mut h, "the changes listed", |h| seen(h, "10 → 11"));
+    let id = h.state().tabs()[0].id;
+    // Restore's read held behind a check, then let run alone: a second check queued
+    // behind it is held, so once that one runs, the read has answered, and the `begin`
+    // and `replace_text` the tab sends for it wait behind the second.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_role_and_label(Role::Button, "Restore revision 1")
+        .click();
+    step(&mut h);
+    hold.release();
+    let _ = check.wait();
+    let second = f.kernel.hold(|_| true);
+    let held = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    until("the second check running", || {
+        f.sessions.status(&id).result.unwrap().running
+            == Some(RunningCommand::Command(SessionCommand::Check))
+    });
+    step_until(&mut h, "the begin sent", |h| {
+        h.state().tabs()[0]
+            .sent
+            .ends_with(&[Sent::Begin, Sent::Replace])
+    });
+    // A read queued behind them: once it answers, `begin` and `replace_text` have. Inside
+    // the transaction `begin` opens, it reads nothing of the file.
+    let behind = f.sessions.text(&id, None);
+    // The file written again before `begin` runs: its read reloads it, at revision 3, so
+    // the edit, sent against 2, is refused.
+    let third = block_high(12);
+    std::fs::write(&path, &third).unwrap();
+    step_until(&mut h, "the change found", |h| {
+        disk(h) == Some(silico_core::disk::Disk::Changed)
+    });
+    let session = |f: &Fixture| {
+        let status = f.sessions.status(&id);
+        (
+            status.session.unwrap().revision.number(),
+            status.result.unwrap().transaction.is_some(),
+        )
+    };
+    match read {
+        StatusRead::BeforeBegin => {
+            // The next frame's status read, then, before it takes any answer, the second
+            // check let go and every command behind it answered.
+            let sessions = Arc::clone(&f.sessions);
+            let ran = Arc::new(AtomicBool::new(false));
+            let told = Arc::clone(&ran);
+            let mut gate = Some((second, held, behind));
+            h.state_mut().tabs_mut()[0].after_status = Some(Box::new(move || {
+                let Some((second, held, mut behind)) = gate.take() else {
+                    return;
+                };
+                let status = sessions.status(&id);
+                assert_eq!(status.session.unwrap().revision.number(), 2);
+                assert!(status.result.unwrap().transaction.is_none());
+                second.release();
+                // Polled, not waited on: this is the frame's thread.
+                let deadline = Instant::now() + WAIT;
+                loop {
+                    match behind.try_take() {
+                        Ok(_) => break,
+                        Err(running) => behind = running,
+                    }
+                    assert!(Instant::now() < deadline, "never answered behind the edit");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                drop(held);
+                told.store(true, Ordering::SeqCst);
+            }));
+            step(&mut h);
+            assert!(ran.load(Ordering::SeqCst), "{at}: the hook never ran");
+            h.state_mut().tabs_mut()[0].after_status = None;
+            // The status that frame read found the file changed: read before `begin`'s
+            // read of the file, after which it's as the session holds it.
+            assert_eq!(disk(&h), Some(silico_core::disk::Disk::Changed), "{at}");
+        }
+        StatusRead::AfterReplace => {
+            second.release();
+            let _ = held.wait();
+            let _ = behind.wait();
+            // Before any frame: the reload `begin` read, and its transaction open.
+            assert_eq!(session(&f), (3, true), "{at}");
+            step(&mut h);
+            assert_eq!(disk(&h), Some(silico_core::disk::Disk::Unchanged), "{at}");
+        }
+    }
+    // Either way, that frame took the refusal: the reload it came after announced, 2 to 3.
+    let banner = h.state().tabs()[0]
+        .reloaded
+        .as_ref()
+        .map(|reloaded| (reloaded.from.number(), reloaded.to.number()));
+    assert_eq!(banner, Some((2, 3)), "{at}");
+    // The reload announced in the first's place, with what it changed.
+    step_until(&mut h, "the second reload listed", |h| seen(h, "11 → 12"));
+    assert!(anywhere(&h, &reloaded_sub(2, 3)), "{at}");
+    // The transaction `begin` opened for the edit rolled back: nothing held, and the
+    // session follows the file again.
+    step_until(&mut h, "settled", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.edits.idle() && !tab.unsettled() && !tab.transaction
+    });
+    assert!(
+        f.sessions.status(&id).result.unwrap().transaction.is_none(),
+        "{at}"
+    );
+    assert_eq!(text_of(&f, &h), third, "{at}");
+    assert!(!anywhere(&h, "block.silico *"), "{at}");
+    // Another program's next write: reloaded, and announced, from the rollback's revision,
+    // 4, to 5.
+    let fourth = block_high(13);
+    std::fs::write(&path, &fourth).unwrap();
+    step_until(&mut h, "the third reload listed", |h| seen(h, "12 → 13"));
+    assert!(anywhere(&h, &reloaded_sub(4, 5)), "{at}");
+    assert_eq!(text_of(&f, &h), fourth, "{at}");
+    assert_eq!(never_waits::waits(), 0, "{at}");
+}
+
+/// The session's revision now, as `status` gives it (its file compared on disk as it's
+/// asked, so a change found is reloaded), with no frame stepped.
+fn revision_now(f: &Fixture, h: &AppHarness) -> u64 {
+    let id = h.state().tabs()[0].id;
+    f.sessions.status(&id).session.unwrap().revision.number()
+}
+
+#[test]
+fn a_reload_overtaken_before_its_changes_were_read_is_said_in_the_next_banner() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let id = h.state().tabs()[0].id;
+    // Reloaded by the session with no frame stepped; then its queue held, the file written
+    // again, and a read of the document now queued, as the disk watch's own reload would be
+    // (Fable's residual, *6d's other half*, section 5). Then frames: the tab sees the
+    // first reload and asks its diff, 1 → 2, which waits behind that read.
+    std::fs::write(&path, BLOCK_11).unwrap();
+    until("the first reload", || revision_now(&f, &h) == 2);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let third = block_high(12);
+    std::fs::write(&path, &third).unwrap();
+    let ahead = f.sessions.text(&id, None);
+    step_until(&mut h, "the first reload announced", |h| {
+        anywhere(h, &reloaded_sub(1, 2))
+    });
+    // The read ahead reloads the file at 3, so revision 1 is no longer held, and the diff
+    // from it is refused, though it reads nothing of the file itself.
+    hold.release();
+    let _ = check.wait();
+    assert_eq!(ahead.wait().session.unwrap().revision.number(), 3);
+    step_until(&mut h, "the second reload listed", |h| seen(h, "11 → 12"));
+    assert!(anywhere(&h, &reloaded_sub(2, 3)));
+    // The first one's changes, never read, said so; its features unmarked.
+    assert!(anywhere(
+        &h,
+        "An earlier change, revision 1 → 2, couldn't be listed: the file changed again \
+         before it was read, so its features aren't marked."
+    ));
+    assert!(!seen(&h, "10 → 11"));
+    step_until(&mut h, "the mark", |h| outside_marks(h, "Timeline") == 1);
+    let mark = showing(&h, "Timeline", "changed on disk:").unwrap();
+    assert!(
+        mark.starts_with("changed on disk: height 11 → 12"),
+        "{mark}"
+    );
+    assert!(!mark.contains("10 → 11"), "{mark}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_reloads_diff_names_both_revisions_so_a_write_after_the_reload_never_refuses_it() {
+    let reader = Arc::new(HeldReader::default());
+    let f = fixture_reading(Some(reader.reader()));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let id = h.state().tabs()[0].id;
+    // Reloaded by the session with no frame stepped; then its queue held, and frames: the
+    // tab sees the reload, 1 → 2, and asks its diff, which waits behind the hold.
+    std::fs::write(&path, BLOCK_11).unwrap();
+    until("the first reload", || revision_now(&f, &h) == 2);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    step_until(&mut h, "the first reload announced", |h| {
+        anywhere(h, &reloaded_sub(1, 2))
+    });
+    // The disk watch held, so nothing finds the next write and queues a reload until it's
+    // let go; then the file written again, before the diff runs. Asked from 1 to 2 by
+    // number, the diff reads nothing of the file; asked to the document now, it would read
+    // it first, reload it at 3, and be refused, revision 1 no longer held.
+    reader.hold(&mut h);
+    std::fs::write(&path, block_high(12)).unwrap();
+    hold.release();
+    let _ = check.wait();
+    // A read queued behind the diff, of a revision too: answered, the diff has, and the
+    // session is still at 2.
+    let two = Revision::from_number(2).unwrap();
+    let behind = f
+        .sessions
+        .text_at(&id, None, Some(Named::Revision(two)))
+        .wait();
+    assert_eq!(behind.session.unwrap().revision, two, "the diff reloaded");
+    // The first reload's banner lists what it changed, the height 10 then 11, and Restore
+    // of revision 1 is on.
+    step_until(&mut h, "the first reload listed", |h| seen(h, "10 → 11"));
+    // Its rows, the height and the fingerprint written with it: volume 40 × 20 × 10 = 8000
+    // then 40 × 20 × 11 = 8800 (and the box's top, z 10 then 11, as the height's).
+    assert!(anywhere(&h, &reloaded_sub(1, 2)));
+    assert_eq!(h.query_all_by_label("10 → 11").count(), 2);
+    assert_eq!(row_feature(&h, "8000 → 8800"), "Block");
+    assert!(
+        !h.get_by_role_and_label(Role::Button, "Restore revision 1")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // The watch let go: it finds the second write, and the session's own reload follows,
+    // announced 2 → 3 with what it changed, the first listed, so nothing said unlisted.
+    reader.open();
+    step_until(&mut h, "the second reload listed", |h| seen(h, "11 → 12"));
+    assert!(anywhere(&h, &reloaded_sub(2, 3)));
+    assert!(h.query_by_label_contains("couldn't be listed").is_none());
+    assert_eq!(text_of(&f, &h), block_high(12));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`BLOCK_AND_PLATE`] with only Block renamed, to Base.
+fn block_renamed() -> String {
+    BLOCK_AND_PLATE.replace(r#""name": "Block""#, r#""name": "Base""#)
+}
+
+#[test]
+fn the_marks_of_each_reload_accumulate_until_each_is_marked_seen() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
+    std::fs::write(&path, block_renamed()).unwrap();
+    step_until(&mut h, "the first reload marked", |h| {
+        anywhere(h, &reloaded_sub(1, 2)) && shows(h, "Timeline", BASE_MARK)
+    });
+    assert_eq!(outside_marks(&h, "Timeline"), 1);
+    // The second reload changes only the Plate: its banner lists that alone, and the
+    // Base's mark, from the first, stays beside the Lid's (the prototype's
+    // `Object.assign(d.outside, c.marks)`).
+    std::fs::write(&path, blocks_renamed()).unwrap();
+    step_until(&mut h, "the second reload marked", |h| {
+        anywhere(h, &reloaded_sub(2, 3)) && shows(h, "Timeline", LID_MARK)
+    });
+    assert!(seen(&h, r#""Plate" → "Lid""#));
+    assert!(!seen(&h, r#""Block" → "Base""#));
+    assert!(shows(&h, "Timeline", BASE_MARK));
+    assert_eq!(outside_marks(&h, "Timeline"), 2);
+    step_until(&mut h, "the browser's marks", |h| {
+        outside_marks(h, "Browser") == 2
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_diff_answered_after_a_newer_reload_marks_its_features_but_is_never_listed_in_its_banner() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
+    let id = h.state().tabs()[0].id;
+    // Reloaded with no frame stepped; then one frame, whose poll asks the diff from 1.
+    std::fs::write(&path, block_renamed()).unwrap();
+    until("the first reload", || revision_now(&f, &h) == 2);
+    step(&mut h);
+    assert!(anywhere(&h, &reloaded_sub(1, 2)));
+    // A read queued behind that diff, waited on off any frame: the diff has answered, its
+    // answer there for the tab to take.
+    let _ = f.sessions.text(&id, None).wait();
+    // Reloaded again, still with no frame stepped: the next frame sees the newer reload
+    // with the older diff's answer waiting.
+    std::fs::write(&path, blocks_renamed()).unwrap();
+    until("the second reload", || revision_now(&f, &h) == 3);
+    step_until(&mut h, "the second reload listed", |h| {
+        seen(h, r#""Plate" → "Lid""#)
+    });
+    assert!(anywhere(&h, &reloaded_sub(2, 3)));
+    // The older answer, the Block's rename, isn't this banner's.
+    assert!(!seen(&h, r#""Block" → "Base""#));
+    assert_eq!(row_feature(&h, r#""Plate" → "Lid""#), "Lid");
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(!seen(&h, r#""Block" → "Base""#));
+    // But it isn't lost: taken into its own banner before the newer one replaced it, its
+    // feature is marked beside the newer one's, and nothing says it couldn't be listed.
+    step_until(&mut h, "both marks", |h| {
+        shows(h, "Timeline", BASE_MARK) && shows(h, "Timeline", LID_MARK)
+    });
+    assert_eq!(outside_marks(&h, "Timeline"), 2);
+    assert!(h.query_by_label_contains("couldn't be listed").is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
+    let changed = "blocks.silico changed on disk while you have unsaved edits.";
+    let reloaded = "Reloaded blocks.silico: another program changed it on disk";
+    // An edit held, the Plate renamed on disk, and Reload: the person's reload shows no
+    // banner (#381), but what came in is marked.
+    select(&mut h, "Block");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| h.state().tabs()[0].transaction);
+    let lid = BLOCK_AND_PLATE.replace(r#""name": "Plate""#, r#""name": "Lid""#);
+    std::fs::write(&path, &lid).unwrap();
+    step_until(&mut h, "the change announced", |h| anywhere(h, changed));
+    h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
+        .click();
+    step_until(&mut h, "reloaded and marked", |h| {
+        shows(h, "Timeline", LID_MARK) && !anywhere(h, "blocks.silico *")
+    });
+    assert_eq!(outside_marks(&h, "Timeline"), 1);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(!anywhere(&h, reloaded), "the purple banner after Reload");
+    }
+    // Again, the reload landing before the tab takes the rollback's answer: no frame
+    // stepped from the click's until the session has rolled back and reloaded.
+    select(&mut h, "Block");
+    type_name(&mut h, "t");
+    step_until(&mut h, "the edit held again", |h| {
+        h.state().tabs()[0].transaction && h.state().tabs()[0].edits.idle()
+    });
+    let cap = BLOCK_AND_PLATE.replace(r#""name": "Plate""#, r#""name": "Cap""#);
+    std::fs::write(&path, &cap).unwrap();
+    step_until(&mut h, "the second change announced", |h| {
+        anywhere(h, changed)
+    });
+    let before = revision_now(&f, &h);
+    h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
+        .click();
+    step(&mut h);
+    until("rolled back and reloaded", || {
+        revision_now(&f, &h) == before + 2
+    });
+    let capped = r#"changed on disk: name "Lid" → "Cap""#;
+    step_until(&mut h, "marked again", |h| shows(h, "Timeline", capped));
+    assert_eq!(outside_marks(&h, "Timeline"), 1);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(
+            !anywhere(&h, reloaded),
+            "the purple banner after the second Reload"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn restore_is_off_and_says_why_once_the_reloads_diff_finds_its_revision_gone() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("block.silico", BLOCK_10);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let id = h.state().tabs()[0].id;
+    // The first reload seen, its diff held behind a check, and behind a read of the
+    // document now queued after the file was written again, as the disk watch's own
+    // reload would be.
+    std::fs::write(&path, BLOCK_11).unwrap();
+    until("the first reload", || revision_now(&f, &h) == 2);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    std::fs::write(&path, block_high(12)).unwrap();
+    let ahead = f.sessions.text(&id, None);
+    step_until(&mut h, "the first reload announced", |h| {
+        anywhere(h, &reloaded_sub(1, 2))
+    });
+    // The Block's dialog opened, its read of the feature waiting behind the hold too: the
+    // read ahead reloads the file, so the diff from 1 is refused, while the tab's read is
+    // under way, so no newer banner takes this one's place.
+    double_click(&mut h, "Timeline", "Block");
+    hold.release();
+    let _ = check.wait();
+    assert_eq!(ahead.wait().session.unwrap().revision.number(), 3);
+    let refused = format!(
+        "session {id} doesn't hold the text of revision 1: it holds revisions 2 and 3 \
+         (candidates: 2, 3)"
+    );
+    step_until(&mut h, "the diff's refusal said, the dialog open", |h| {
+        anywhere(h, &refused) && dialog_open(h)
+    });
+    // The dialog cancelled, having changed nothing: the banner still the first reload's.
+    settled(&mut h);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].transaction);
+    assert!(anywhere(&h, &reloaded_sub(1, 2)));
+    // Restore of revision 1 could only be refused: off, saying why.
+    let restore = h.get_by_role_and_label(Role::Button, "Restore revision 1");
+    assert!(restore.accesskit_node().is_disabled());
+    restore.hover();
+    let why = "Silico no longer holds revision 1: the file changed again before what \
+               changed was read, so it can't be put back";
+    step_until(&mut h, "its tooltip", |h| anywhere(h, why));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn show_changes_lists_what_changed_on_disk_and_the_edits_held_each_in_its_section() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "Pins")
+    });
+    std::fs::write(
+        &path,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#),
+    )
+    .unwrap();
+    let said = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, said));
+    // The prototype's order: Show changes, Reload, Keep.
+    let buttons = ["Show changes", "Reload, discard my edits", "Keep my edits…"]
+        .map(|label| h.get_by_role_and_label(Role::Button, label).rect().left());
+    assert!(buttons[0] < buttons[1] && buttons[1] < buttons[2]);
+    // Its two diffs held behind a check: each section says it's reading, then lists them.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_role_and_label(Role::Button, "Show changes")
+        .click();
+    step_until(&mut h, "the modal", |h| anywhere(h, "What changed on disk"));
+    assert_eq!(h.query_all_by_label("Reading what changed…").count(), 2);
+    hold.release();
+    let _ = check.wait();
+    // In the prototype's two columns, each change on one row: the other program's, its
+    // feature's name (as the file names it) in the key's, what changed in the value's; the
+    // edits held, "Edit" in the key's, named as the document now names it.
+    let theirs = r#"name · "Hole" → "Drill""#;
+    let edit = r#"Pins · name · "Pin" → "Pins""#;
+    step_until(&mut h, "both listed", |h| {
+        anywhere(h, theirs) && anywhere(h, edit)
+    });
+    assert!(!seen(&h, "Reading what changed…"));
+    assert_eq!(row_feature(&h, theirs), "Drill");
+    assert_eq!(row_feature(&h, edit), "Edit");
+    let (key, value) = (h.get_by_label("Edit").rect(), h.get_by_label(edit).rect());
+    assert!(key.right() < value.left());
+    let (key, value) = (
+        h.get_by_label("Drill").rect(),
+        h.get_by_label(theirs).rect(),
+    );
+    assert!(key.right() < value.left());
+    let top = |label: &str| h.get_by_label(label).rect().top();
+    assert!(top("Their change (on disk)") < top(theirs));
+    assert!(top(theirs) < top("Your unsaved edits"));
+    assert!(top("Your unsaved edits") < top(edit));
+    // Its hint, in words true of Silico: the core's diff, not textconv.
+    assert!(anywhere(
+        &h,
+        "A feature-level summary of the two documents, as Silico's diff reads them."
+    ));
+    // Closed: the banner still offers the choice.
+    h.get_by_role_and_label(Role::Button, "Close").click();
+    step_until(&mut h, "closed", |h| !anywhere(h, "What changed on disk"));
+    assert!(anywhere(&h, said));
+    assert!(h.state().tabs()[0].held_changes.is_none());
+    // Opened again, its Reload theirs (the prototype's `reloadDiscard`, as the banner's
+    // Reload): the file's text, the edit dropped, the modal and the banner gone.
+    h.get_by_role_and_label(Role::Button, "Show changes")
+        .click();
+    step_until(&mut h, "the modal again", |h| {
+        anywhere(h, "What changed on disk")
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let reload = h.get_by_role_and_label(Role::Button, "Reload theirs");
+    assert!(!reload.accesskit_node().is_disabled(), "Reload theirs off");
+    reload.click();
+    step_until(&mut h, "theirs reloaded", |h| {
+        shows(h, "Timeline", "Drill")
+            && shows(h, "Timeline", "Pin")
+            && !anywhere(h, "example.silico *")
+    });
+    assert!(!shows(&h, "Timeline", "Pins"));
+    assert!(!anywhere(&h, "What changed on disk"));
+    assert!(!anywhere(&h, said));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn show_changes_lists_their_radius_and_your_height_and_the_revision_never_moves() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", &pinned());
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    // The person's edit, in the Block's dialog: its height 10 → 12, the field focused with
+    // its cursor at the end, the "10" erased with Backspace, then "1" and "2" typed.
+    double_click(&mut h, "Timeline", "Block");
+    step_until(&mut h, "its dialog, loaded", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Box").is_some()
+            && input(h, "Height").value().as_deref() == Some("10")
+    });
+    settled(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    input(&h, "Height").focus();
+    step(&mut h);
+    for _ in 0..2 {
+        h.key_press(eframe::egui::Key::Backspace);
+        step(&mut h);
+    }
+    assert_eq!(input(&h, "Height").value().as_deref(), Some(""));
+    type_into(&mut h, "Height", "12");
+    settled(&mut h);
+    assert_eq!(input(&h, "Height").value().as_deref(), Some("12"));
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // An agent's change on disk: the Pin's radius 5 → 3.
+    std::fs::write(&path, pinned().replace(r#""radius": 5"#, r#""radius": 3"#)).unwrap();
+    let said = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, said));
+    let id = h.state().tabs()[0].id;
+    let before = f.sessions.status(&id);
+    let revision = before.session.unwrap().revision;
+    let transaction = before.result.unwrap().transaction;
+    assert!(transaction.is_some());
+    h.get_by_role_and_label(Role::Button, "Show changes")
+        .click();
+    // Fable's two lists (*6d's other half*, section 2): the file's change from the base,
+    // and the edits' from the base, each its one change.
+    let theirs = "radius · 5 → 3";
+    let mine = "Block · height · 10 → 12";
+    step_until(&mut h, "both lists", |h| {
+        anywhere(h, theirs) && anywhere(h, mine)
+    });
+    assert_eq!(row_feature(&h, theirs), "Pin");
+    assert_eq!(row_feature(&h, mine), "Edit");
+    // Each half alone in its list: the edit isn't theirs, nor their change the edits'.
+    assert!(!seen(&h, "height · 10 → 12"));
+    assert!(!seen(&h, "Pin · radius · 5 → 3"));
+    let top = |label: &str| h.get_by_label(label).rect().top();
+    assert!(top("Their change (on disk)") < top(theirs));
+    assert!(top(theirs) < top("Your unsaved edits"));
+    assert!(top("Your unsaved edits") < top(mine));
+    // Neither read moved the session: its revision, its transaction's counts, and its
+    // finding on disk as they were, the modal still open.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, "What changed on disk"));
+    let after = f.sessions.status(&id);
+    assert_eq!(after.session.unwrap().revision, revision);
+    let after = after.result.unwrap();
+    assert_eq!(after.transaction, transaction);
+    assert_eq!(after.disk, Some(silico_core::disk::Disk::Changed));
+    assert_eq!(h.state().tabs()[0].revision, revision);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn show_changes_says_the_readers_message_for_a_file_that_doesnt_read_in_its_own_section() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "Pins")
+    });
+    // Another program's file, an object begun and never ended.
+    std::fs::write(&path, "{").unwrap();
+    let said = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, said));
+    let revision = h.state().tabs()[0].revision;
+    h.get_by_role_and_label(Role::Button, "Show changes")
+        .click();
+    // Their section: the core's refusal of the side, and under it the reader's message,
+    // worked by hand: past the `{`, at line 1, column 2, a key is looked for, and the text
+    // has ended. The edits' section answered on its own.
+    let refused = "to, the file on disk, doesn't read as a document, so it can't be compared";
+    let reader = "the document isn't valid JSON: expected a key, found the end of the text, at \
+                  line 1, column 2";
+    let edit = r#"Pins · name · "Pin" → "Pins""#;
+    step_until(&mut h, "both sections answered", |h| {
+        anywhere(h, reader) && anywhere(h, edit)
+    });
+    assert!(anywhere(&h, refused));
+    assert!(!seen(&h, "Reading what changed…"));
+    let top = |label: &str| h.get_by_label(label).rect().top();
+    assert!(top("Their change (on disk)") < top(refused));
+    assert!(top(refused) < top(reader));
+    assert!(top(reader) < top("Your unsaved edits"));
+    assert!(top("Your unsaved edits") < top(edit));
+    // Nothing reloaded: the edit still held.
+    assert_eq!(h.state().tabs()[0].revision, revision);
+    assert!(anywhere(&h, "example.silico *"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks() {
+    on_lavapipe(
+        "the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks",
+        || {
+            let f = fixture_reading(Some(Arc::new(real)));
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            h.set_render_every_step(true);
+            // The app's fonts, look, and icons, as main.rs sets them, so the shot has words.
+            silico_app::theme::apply(&h.ctx);
+            let path = f.file("blocks.silico", BLOCK_AND_PLATE);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            step_until(&mut h, "its features", |h| {
+                h.state()
+                    .tabs()
+                    .first()
+                    .is_some_and(|tab| tab.timeline.is_some())
+                    && shows(h, "Timeline", "Plate")
+            });
+            std::fs::write(&path, blocks_renamed()).unwrap();
+            step_until(&mut h, "the changes listed and marked", |h| {
+                seen(h, r#""Plate" → "Lid""#)
+                    && shows(h, "Timeline", BASE_MARK)
+                    && shows(h, "Browser", LID_MARK)
+            });
+            meshes_settled(&mut h);
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            // The two rows under the words, and the marks in the timeline and the browser.
+            let words = h.get_by_label(&reloaded_sub(1, 2)).rect();
+            let base = h.get_by_label(r#""Block" → "Base""#).rect();
+            let lid = h.get_by_label(r#""Plate" → "Lid""#).rect();
+            assert!(words.bottom() < base.top() && base.bottom() < lid.top());
+            assert_eq!(outside_marks(&h, "Timeline"), 2);
+            assert_eq!(outside_marks(&h, "Browser"), 2);
+            let image = h.render().unwrap();
+            if let Some(shot) = std::env::var_os("SILICO_APP_RELOAD_SHOT") {
+                image.save(shot).unwrap();
+            }
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
 }
 
 /// The session's own read of its file, as `silico_core::disk` reads it, for a test that
@@ -1459,6 +2653,15 @@ fn a_file_deleted_with_edits_held_is_announced_as_gone() {
             "example.silico is gone from disk while you have unsaved edits.",
         )
     });
+    // As the prototype's banner for a file gone: no Show changes, there being no file to
+    // compare; the edits kept or dropped.
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Show changes")
+            .is_none()
+    );
+    let buttons = ["Reload, discard my edits", "Keep my edits…"]
+        .map(|label| h.get_by_role_and_label(Role::Button, label).rect().left());
+    assert!(buttons[0] < buttons[1]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -8969,6 +10172,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     hovered: Vec::new(),
                     outlines: silico_app::renderer::Outlines::DEFAULT,
                     picking: None,
+                    vertices: None,
                 };
                 assert!(ViewRenderer::prepare(renderer, &data.frame()).is_ok());
                 ViewRenderer::forget(renderer, 1);
@@ -13216,13 +14420,12 @@ fn the_toolbar_holds_solids_panels_their_buttons_in_the_prototypes_order_and_siz
         ["Faces", "Edges", "Vertices", "SELECT"]
     );
     // On: Create Sketch (sketch mode can open), every dialog (the example has a body, so
-    // the cuts too), and the drop-downs; off: what isn't built.
+    // the cuts, the fillet, and the chamfer too), and the drop-downs; off: what isn't built.
     let mut on: Vec<&str> = CREATE_ROW.to_vec();
     on.push("CREATE");
     assert_eq!(on_of(&panel("CREATE")), on);
-    for label in ["MODIFY", "INSPECT"] {
-        assert_eq!(on_of(&panel(label)), [label]);
-    }
+    assert_eq!(on_of(&panel("MODIFY")), ["Fillet", "Chamfer", "MODIFY"]);
+    assert_eq!(on_of(&panel("INSPECT")), ["INSPECT"]);
     // SELECT's filters toggle the selection's filter (M5.7), each pressed while its kind is
     // taken: all three at first.
     assert_eq!(
@@ -13301,16 +14504,8 @@ fn each_toolbar_button_names_its_command_and_says_what_it_does_or_that_it_isnt_b
             "Create Sketch",
             vec!["Sketches on an origin plane"],
         ),
-        (
-            "MODIFY",
-            "Fillet",
-            vec!["Rounds the selected edges. Not built yet"],
-        ),
-        (
-            "MODIFY",
-            "Chamfer",
-            vec!["Bevels the selected edges. Not built yet"],
-        ),
+        ("MODIFY", "Fillet", vec!["Rounds the selected edges"]),
+        ("MODIFY", "Chamfer", vec!["Bevels the selected edges"]),
         ("MODIFY", "Union", vec!["Not built yet"]),
         (
             "INSPECT",
@@ -13407,7 +14602,8 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         h.query_by_role(Role::Dialog).is_none()
     });
     settled(&mut h);
-    // interact.js:171: the edge tools, and the booleans under a heading, none built.
+    // interact.js:171: the edge tools, and the booleans under a heading, the edge tools
+    // built.
     open(&mut h, "MODIFY");
     let menu = h.get_by_role_and_label(Role::Menu, "MODIFY");
     assert_eq!(
@@ -13415,13 +14611,13 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         ["Fillet", "Chamfer", "Union", "Subtract", "Intersect"]
     );
     assert!(menu.query_by_label("COMBINE").is_some());
-    assert!(on_of(&menu).is_empty());
-    // An entry not built says so after the prototype's line, as its button does.
+    assert_eq!(on_of(&menu), ["Fillet", "Chamfer"]);
+    // An entry not built says so, as its button does (Union has no line of its own).
     h.get_by_role_and_label(Role::Menu, "MODIFY")
-        .get_by_label("Fillet")
+        .get_by_label("Union")
         .hover();
     step_until(&mut h, "its tooltip", |h| {
-        h.query_by_role_and_label(Role::Label, "Rounds the selected edges. Not built yet")
+        h.query_by_role_and_label(Role::Label, "Not built yet")
             .is_some()
     });
     open(&mut h, "INSPECT");
@@ -14404,9 +15600,13 @@ fn item_state(h: &AppHarness, name: &str) -> Option<String> {
         .and_then(|node| node.accesskit_node().description())
 }
 
-/// The timeline's items' names, in order.
+/// The timeline's items' names, in order: the track's, not the summary's errors.
 fn items(h: &AppHarness) -> Vec<String> {
-    labels(h, "Timeline", Role::Button)
+    timeline(h)
+        .get_by_role_and_label(Role::Group, silico_app::timeline::TRACK_LABEL)
+        .query_all_by_role(Role::Button)
+        .filter_map(|node| node.accesskit_node().label())
+        .collect()
 }
 
 /// The kernel refuses the pocket's cut.
@@ -16214,6 +17414,16 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
             }),
             // The pointer's: the viewport takes them, no key (their own tests: the middle
             // button's pan and orbit, the wheel's zoom).
+            Command::WhatsWrong => {
+                // No keys: the status bar's errors open it, a button whose tooltip is the
+                // registry's (What's Wrong's own test covers the timeline and the browser).
+                assert!(entry.keys.is_empty());
+                let f = fixture();
+                let mut h = three_blocks(&f);
+                h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+                    .click();
+                step_until(&mut h, "What's Wrong open", |h| whats_wrong(h).is_some());
+            }
             Command::Orbit | Command::Pan | Command::Zoom => assert!(
                 entry
                     .keys
@@ -17262,6 +18472,36 @@ fn a_face_sketch_whose_face_broke_opens_says_its_plane_problem_and_draws_flat() 
             "{item:?}"
         );
     }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), ON_A_FACE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketchs_error_card_edit_opens_sketch_mode_as_its_double_click_does() {
+    // The face sketch's broken plane is its error: its card's Edit is Edit Sketch, not
+    // Edit Feature (which no dialog of a sketch's answers).
+    let f = fixture();
+    let (mut h, path) = f.opened("face.silico", ON_A_FACE);
+    step_until(&mut h, "its error", |h| {
+        h.query_by_role_and_label(Role::Button, "Rebuilt with 1 error")
+            .is_some()
+    });
+    assert!(sketch_mode(&h).is_none());
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 1 error")
+        .click();
+    step_until(&mut h, "its card listed", |h| {
+        in_whats_wrong(h, "Feature: ") == ["Feature: Top s0000001"]
+    });
+    step(&mut h);
+    whats_wrong(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Edit Top")
+        .click();
+    step_until(&mut h, "sketch mode on Top", |h| {
+        whats_wrong(h).is_none()
+            && sketch_mode(h).is_some_and(|mode| mode.sketch == Some(sketch_id("s0000001")))
+    });
+    assert!(!dialog_open(&h));
     assert_eq!(std::fs::read_to_string(path).unwrap(), ON_A_FACE);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -23642,6 +24882,22 @@ fn selected_until(h: &mut AppHarness, want: &[&str]) {
     });
 }
 
+/// Steps frames until the selection is `want`, each found as a face on the model published
+/// now (not waiting for its body's names): bounded as [`step_until`] is.
+#[track_caller]
+fn found_as_faces_until(h: &mut AppHarness, want: &[&str]) {
+    use silico_app::selection::State;
+    step_until(h, &format!("{want:?} found as faces"), |h| {
+        selected_names(h) == want
+            && h.state().tabs()[0].selection().elements().all(|picked| {
+                matches!(
+                    &picked.state,
+                    State::Found(found) if found.kind() == silico_core::kernel::ElementKind::Face
+                )
+            })
+    });
+}
+
 /// The body whose feature is `id`, by its number.
 fn body_of(h: &AppHarness, id: &str) -> u32 {
     view(h)
@@ -24064,7 +25320,8 @@ fn an_unstable_name_is_selectable_shown_with_its_reason_and_refused_by_a_store()
             ..
         } => Some(silico_protocol::Reply::Built(
             silico_core::kernel::BuiltData {
-                shape: base.clone(),
+                // A box a mm³ larger than the base, so the fuse changes it (S7's rule).
+                shape: FakeKernel::resized(base, 1.0)?,
                 history: numbering_fuse(),
             },
         )),
@@ -24098,6 +25355,27 @@ fn an_unstable_name_is_selectable_shown_with_its_reason_and_refused_by_a_store()
         "{:?}",
         labels(&h, "Properties", Role::Label)
     );
+    // Its card a warning's (`.err-card.warn`: `--alert-warn-bg`, rgba(223, 119, 0, .18),
+    // bordered #5c3a08), with the refusal's suggestion after its arrow, in the core's words
+    // (by hand from selection.rs's refusal of an unstable face).
+    let fix = "name the face as its feature now names it: the candidates are the likeliest, \
+               none taken for it";
+    let fix_at = h
+        .get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_label(fix)
+        .rect();
+    let warn = eframe::egui::Color32::from_rgba_unmultiplied(223, 119, 0, 46);
+    let warn_border = eframe::egui::Color32::from_rgb(0x5c, 0x3a, 0x08);
+    let cards: Vec<_> = painted(&h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Rect(card) if card.rect.contains_rect(fix_at) => {
+                Some((card.fill, card.stroke.color))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(cards.contains(&(warn, warn_border)), "{cards:?}");
     let refusal = h.state().tabs()[0].selection().storable().unwrap_err();
     assert_eq!(refusal.code(), ErrorCode::ReferenceBroken);
     assert_eq!(refusal.message(), why);
@@ -24360,7 +25638,8 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
 }
 
 /// The fake answers each fuse with `history` of the tool's description (`box(2, …)` for a
-/// tool 2 long), giving the base back.
+/// tool 2 long), giving a box a mm³ larger than the base back, so the fuse changes its base
+/// as S7's rule asks.
 fn fusing(f: &Fixture, history: fn(&str) -> silico_core::kernel::History) {
     f.kernel.answer_instead(move |op| match op {
         Op::Boolean {
@@ -24369,7 +25648,7 @@ fn fusing(f: &Fixture, history: fn(&str) -> silico_core::kernel::History) {
             tool,
         } => Some(silico_protocol::Reply::Built(
             silico_core::kernel::BuiltData {
-                shape: base.clone(),
+                shape: FakeKernel::resized(base, 1.0)?,
                 history: history(&FakeKernel::describe(tool)?),
             },
         )),
@@ -24470,7 +25749,14 @@ fn a_model_published_before_its_meshes_are_read_names_no_pick_and_draws_no_eleme
     // another face.
     assert_eq!(highlighted(&record), []);
     // Let go, and a click on the face numbered 2 of the old meshes: named from neither
-    // model, it waits.
+    // model, it waits. The edit above is another client's, announced in the purple banner,
+    // so the first Esc dismisses it, the face staying (the prototype's `escChain`), and the
+    // second lets the face go.
+    assert!(h.state().tabs()[0].reloaded.is_some());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(h.state().tabs()[0].reloaded.is_none());
+    assert_eq!(selected_names(&h), ["aaaaaaaa.box.Face2"]);
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     assert!(selected_names(&h).is_empty());
@@ -24767,6 +26053,20 @@ fn published_of_with_meshes_held(
     field: &str,
     value: &str,
 ) {
+    published_of_with_meshes_held_once(f, h, id, field, value, |_| true);
+}
+
+/// [`published_of_with_meshes_held`], its frame taken only once the session's published
+/// model is `ready` (its names settled, say): so the app reads the model in that frame as
+/// it is then.
+fn published_of_with_meshes_held_once(
+    f: &Fixture,
+    h: &mut AppHarness,
+    id: &str,
+    field: &str,
+    value: &str,
+    ready: impl Fn(&silico_core::recompute::Model) -> bool,
+) {
     let (models, revision) = models_and_revision(f, h);
     let session = h.state().tabs()[0].id;
     let edited = f
@@ -24787,12 +26087,11 @@ fn published_of_with_meshes_held(
         .published(&session)
         .result
         .ok()
-        .map(|published| published.revision)
-        != Some(after)
+        .is_none_or(|published| published.revision != after || !ready(&published.model))
     {
         assert!(
             Instant::now() < deadline,
-            "the edit's model was never published"
+            "the edit's model was never published, or never ready"
         );
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -24987,9 +26286,17 @@ fn what_a_rebuild_left_gone_is_said_over_a_click_let_go_by_the_same_model() {
         .selection_mut()
         .pick("rrrrrrrr.fuse.Face1", How::Replace);
     assert_eq!(selected_names(&h), ["rrrrrrrr.fuse.Face1"]);
+    // Found as a face on the tool 2 long, once the background has named it: so it's a face
+    // that's gone, not an element the selection never had an answer for.
+    found_as_faces_until(&mut h, &["rrrrrrrr.fuse.Face1"]);
     click_canvas(&mut h, at, true);
-    // The tool 3 long: the click is let go, and the face is gone; what's said is that.
-    published_of_with_meshes_held(&f, &mut h, "bbbbbbbb", "length", "3");
+    // The tool 3 long, its frame taken once the background has named the fuse in it: in
+    // that one frame, the click is let go and the face is gone; what's said is that, the
+    // carry's word said over the click's.
+    let fuse = silico_core::document::FeatureId::new("rrrrrrrr").unwrap();
+    published_of_with_meshes_held_once(&f, &mut h, "bbbbbbbb", "length", "3", |model| {
+        model.named_element_map(&fuse).is_some()
+    });
     assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
     let said = selection_said(&h).unwrap();
     assert!(
@@ -25753,4 +27060,1381 @@ fn x_e_and_v_filter_the_selection_once_the_sketch_is_left() {
     assert_eq!(kinds(&h), (true, false, false));
     assert!(sketch_mode(&h).is_none());
     assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The fillet dialog (M5.8): its edges from the canvas selection ----
+
+/// MODIFY's `kind` clicked in its row, and its dialog open.
+fn modify(h: &mut AppHarness, kind: &str) {
+    h.get_by_role_and_label(Role::Toolbar, "MODIFY")
+        .get_by_label(kind)
+        .click();
+    step_until(h, "the dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, kind).is_some()
+    });
+}
+
+/// Edge `n` of body `body` found under the canvas's centre from now on, and clicked there,
+/// Ctrl held if `ctrl`.
+fn click_edge(h: &mut AppHarness, record: &Record, body: u32, n: u32, ctrl: bool) {
+    use silico_app::renderer::Element::Edge;
+    let at = the_viewport(h).center();
+    let centre = pixel_at(h, at);
+    answering(record, None, Some((body, Edge(n), centre)));
+    click_canvas(h, at, ctrl);
+}
+
+/// The names the open dialog's box of names holds.
+fn boxed(h: &AppHarness) -> Vec<String> {
+    h.state().tabs()[0]
+        .dialog
+        .as_ref()
+        .and_then(|dialog| dialog.names())
+        .map(|names| names.names.clone())
+        .unwrap_or_default()
+}
+
+#[track_caller]
+fn boxed_until(h: &mut AppHarness, want: &[&str]) {
+    step_until(h, &format!("{want:?} in the box"), |h| boxed(h) == want);
+}
+
+/// What the open dialog's box of names says under it, if anything.
+fn box_said(h: &AppHarness) -> Option<String> {
+    h.state().tabs()[0]
+        .dialog
+        .as_ref()
+        .and_then(|dialog| dialog.names())
+        .and_then(|names| names.said.as_ref())
+        .map(|said| said.text().to_owned())
+}
+
+/// The open dialog's box of names' body, the feature's `base`, as it holds it.
+fn box_body(h: &AppHarness) -> Option<String> {
+    h.state().tabs()[0]
+        .dialog
+        .as_ref()
+        .and_then(|dialog| dialog.names())
+        .and_then(|names| names.body.as_ref())
+        .map(ToString::to_string)
+}
+
+/// The line of `text` that holds the feature of type `kind`, as the document writes it,
+/// without its indent and its comma.
+fn feature_line(text: &str, kind: &str) -> String {
+    text.lines()
+        .find(|line| line.contains(&format!(r#""type": "{kind}""#)))
+        .unwrap()
+        .trim()
+        .trim_end_matches(',')
+        .to_owned()
+}
+
+/// `text` read as JSON.
+fn plain(text: &str) -> Plain {
+    Plain::of(&json::read(text.as_bytes()).unwrap())
+}
+
+/// The field `field` of the feature named `name`, as the session's document holds it.
+fn written(f: &Fixture, h: &AppHarness, name: &str, field: &str) -> Option<Plain> {
+    fields_of(&text_of(f, h), name)?
+        .into_iter()
+        .find(|(key, _)| key == field)
+        .map(|(_, value)| value)
+}
+
+/// The ID the open dialog's feature was given.
+fn dialog_feature(h: &AppHarness) -> String {
+    h.state().tabs()[0]
+        .dialog
+        .as_ref()
+        .and_then(|dialog| dialog.feature.as_ref())
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn a_fillet_dialog_fed_the_selection_of_two_edges_writes_a_fillet_naming_them() {
+    // M5.8's done test. Two of the box's edges selected in the canvas, then MODIFY's Fillet:
+    // its box takes them, listed by name, and its radius is the first, 1 mm (Silico's own
+    // choice: nothing was OK'd before); the feature it adds is the line below, written by
+    // hand, its ID the core's.
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let before = text_of(&f, &h);
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    click_edge(&mut h, &record, 1, 5, true);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    // Listed: the count in the box, each name under it with its remove button.
+    assert!(dialog(&h).query_by_label("2 edges").is_some());
+    for name in ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"] {
+        assert!(dialog(&h).query_by_label(name).is_some(), "{name}");
+        assert!(
+            dialog(&h)
+                .query_by_role_and_label(Role::Button, &format!("Remove {name}"))
+                .is_some(),
+            "{name}"
+        );
+    }
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("1"));
+    // The selection stays, the edges highlighted.
+    assert_eq!(
+        selected_names(&h),
+        ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]
+    );
+    let id = dialog_feature(&h);
+    assert!(ok_enabled(&h));
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    let text = text_of(&f, &h);
+    // The feature as its JSON line, written by hand, but its ID and version, the core's.
+    assert_eq!(
+        fields_of(&text, "Fillet"),
+        Some(expected(
+            r#"{"type": "fillet", "name": "Fillet", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"], "radius": 1}"#
+        ))
+    );
+    // And the document's text, byte for byte, as the canonical writer lays it out (a line
+    // too long for one line is broken member by member), the box as it was.
+    let want = format!(
+        r#"{{
+  "silico": 1,
+  "units": {{"length": "mm", "resolution": "1nm"}},
+  "naming": 5,
+  "features": [
+    {{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
+    {{
+      "id": "{id}",
+      "type": "fillet",
+      "v": 1,
+      "name": "Fillet",
+      "base": "k7f2qx3m",
+      "edges": [
+        "k7f2qx3m.box.Edge3",
+        "k7f2qx3m.box.Edge5"
+      ],
+      "radius": 1
+    }}
+  ]
+}}
+"#
+    );
+    assert_eq!(text, want);
+    assert!(before.contains(feature_line(&text, "box").as_str()));
+    assert_eq!(h.state().tabs()[0].sent, [Sent::Begin, Sent::Add]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_the_fillet_dialog_a_ctrl_click_adds_an_edge_and_a_click_on_a_listed_edge_removes_it() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    click_edge(&mut h, &record, 1, 5, true);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    // Ctrl-click a third: added to the box and the selection, and written.
+    click_edge(&mut h, &record, 1, 7, true);
+    boxed_until(
+        &mut h,
+        &[
+            "k7f2qx3m.box.Edge3",
+            "k7f2qx3m.box.Edge5",
+            "k7f2qx3m.box.Edge7",
+        ],
+    );
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(
+            r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5", "k7f2qx3m.box.Edge7"]"#
+        ))
+    );
+    assert!(dialog(&h).query_by_label("3 edges").is_some());
+    // A plain click on a listed edge: removed from both, as SolidWorks' box takes a click.
+    click_edge(&mut h, &record, 1, 5, false);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]);
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]"#))
+    );
+    // A face under the pointer, no edge: the box takes edges alone, so nothing is picked
+    // (its pick answered before the renderer's answer changes: nothing, not even a face
+    // the box would refuse, said); nor does a click on nothing clear the box.
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]);
+    assert_eq!(box_said(&h), None);
+    answering(&record, None, None);
+    click_canvas(&mut h, at, false);
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert_eq!(box_said(&h), None);
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]);
+    assert_eq!(
+        selected_names(&h),
+        ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]
+    );
+    // A listed edge's remove button: let go of from the box and the selection.
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Remove k7f2qx3m.box.Edge3")
+        .click();
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge7"]);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge7"]);
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(r#"["k7f2qx3m.box.Edge7"]"#))
+    );
+    // Closed, the canvas picks as before: a plain click replaces the selection.
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_the_fillet_dialog_a_box_over_faces_and_edges_toggles_only_the_edges_into_its_box() {
+    use eframe::egui::Modifiers;
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3"]);
+    // Nothing under the pointer: a plain window from (-2, -2) to (42, 12) mm, round the
+    // whole part, its faces and all 12 edges inside. The fillet's box takes edges, so the
+    // box takes the edges alone, and toggles each, as a click in the box does: Edge3, in
+    // the box already, let go; the other 11 added after it, by number, as the box takes
+    // them. A Replace would have kept Edge3 and told the dialog nothing.
+    answering(&record, None, None);
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 12.0));
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    let toggled = box_edges(&[1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    let want: Vec<&str> = toggled.iter().map(String::as_str).collect();
+    boxed_until(&mut h, &want);
+    selected_until(&mut h, &want);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Window selection: 12 edges")
+    );
+    assert_eq!(box_said(&h), None);
+    settled(&mut h);
+    let written_edges = format!(
+        "[{}]",
+        want.iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(&written_edges))
+    );
+    // Shift held, the same window again: toggled, not added, so all 11 let go and Edge3
+    // back, alone.
+    box_drag(&mut h, low, high, Modifiers::SHIFT);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    // A plain drag pressed on Edge5 picks it as a click does, toggled into the box: added
+    // after Edge3, not replacing it.
+    let from = on_canvas(&h, 20.0, 0.0);
+    answering(&record, None, Some((1, Edge(5), pixel_at(&h, from))));
+    let to = on_canvas(&h, 45.0, -5.0);
+    box_drag(&mut h, from, to, Modifiers::NONE);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_fillet_dialog_refuses_an_unstable_selected_name_saying_why_and_writes_nothing() {
+    let f = fixture();
+    f.kernel.answer_instead(|op| match op {
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                // A box a mm³ larger than the base, so the fuse changes it (S7's rule).
+                shape: FakeKernel::resized(base, 1.0)?,
+                history: numbering_fuse(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, record) = f.drawn("fused.silico", FUSED);
+    meshes_settled(&mut h);
+    let body = body_of(&h, "rrrrrrrr");
+    let before = text_of(&f, &h);
+    // The fuse's Edge1, which the fuse's history doesn't report (the base's first edge
+    // isn't kept, the tool's none): named by its number, unstable, and selectable.
+    click_edge(&mut h, &record, body, 1, false);
+    selected_until(&mut h, &["rrrrrrrr.fuse.Edge1"]);
+    // Refused as a fillet's reference refuses it, in references.rs's words (N3, by hand),
+    // at its place in the selection; and its suggestion after it, in brackets, as the tab
+    // says a refusal: the whole line written by hand.
+    let why = "selection.0, \"rrrrrrrr.fuse.Edge1\", names an edge, whose name is unstable (it \
+               came about as another element did, or is its number): an edit could make it \
+               another element";
+    let refusal = h.state().tabs()[0].selection().storable().unwrap_err();
+    assert_eq!(refusal.message(), why);
+    let said = "selection.0, \"rrrrrrrr.fuse.Edge1\", names an edge, whose name is unstable (it \
+                came about as another element did, or is its number): an edit could make it \
+                another element (name the edge as its feature now names it: the candidates \
+                are the likeliest, none taken for it)";
+    modify(&mut h, "Fillet");
+    step_until(&mut h, "the refusal in the dialog", |h| {
+        dialog(h).query_by_label(said).is_some()
+    });
+    // Nothing taken, nothing written; the selection let go, as the box holds nothing.
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert!(boxed(&h).is_empty());
+    assert!(!ok_enabled(&h));
+    assert!(
+        dialog(&h)
+            .query_by_label("Select edges in the canvas")
+            .is_some()
+    );
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert_eq!(h.state().tabs()[0].sent, []);
+    assert_eq!(text_of(&f, &h), before);
+    // Clicked again with the dialog open: refused the same way, at its place in the pick,
+    // and let go from the selection again.
+    click_edge(&mut h, &record, body, 1, true);
+    step_until(&mut h, "the refusal in the dialog", |h| {
+        dialog(h).query_by_label(said).is_some()
+    });
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert!(boxed(&h).is_empty());
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert_eq!(h.state().tabs()[0].sent, []);
+    assert_eq!(text_of(&f, &h), before);
+    // A stable edge, the base's Edge2, kept by the fuse: taken, the refusal gone.
+    click_edge(&mut h, &record, body, 2, true);
+    boxed_until(&mut h, &["aaaaaaaa.box.Edge2"]);
+    assert!(dialog(&h).query_by_label(said).is_none());
+    added(&mut h);
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(r#"["aaaaaaaa.box.Edge2"]"#))
+    );
+    assert_eq!(
+        written(&f, &h, "Fillet", "base"),
+        Some(plain(r#""rrrrrrrr""#))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A fillet's history, as OCCT's consumes the edges it rounds: its base, a box, is the
+/// result, each face, edge, and vertex kept by its own number but the edges `rounded`,
+/// which nothing reports (the result's of those numbers are named by their numbers).
+fn consuming_fillet(rounded: &[u32]) -> silico_core::kernel::History {
+    use silico_core::kernel::{ElementCounts, ElementFate, History, InputHistory, Topology};
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        ..ElementFate::default()
+    };
+    History {
+        inputs: vec![InputHistory {
+            faces: (1..=6).map(kept).collect(),
+            edges: (1..=12)
+                .map(|n| {
+                    if rounded.contains(&n) {
+                        ElementFate::default()
+                    } else {
+                        kept(n)
+                    }
+                })
+                .collect(),
+            vertices: (1..=8).map(kept).collect(),
+        }],
+        result: ElementCounts {
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![]; 6],
+            outer_edges: vec![vec![]; 6],
+            edge_vertices: vec![vec![]; 12],
+            solid_faces: vec![(1..=6).collect()],
+        },
+    }
+}
+
+/// The fake kernel's fillets of a box consume the edges they round, as OCCT's do.
+fn fillets_consume_their_edges(f: &Fixture) {
+    f.kernel.answer_instead(|op| match op {
+        Op::Fillet { shape, edges, .. } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                shape: shape.clone(),
+                history: consuming_fillet(edges),
+            },
+        )),
+        _ => None,
+    });
+}
+
+#[test]
+fn a_fillet_dialogs_cancel_after_earlier_unsaved_edits_leaves_the_text_as_before_it() {
+    let f = fixture();
+    meshes_a_real_box(&f);
+    fillets_consume_their_edges(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    // An edit before the dialog, in the transaction: the box renamed.
+    select(&mut h, "Block");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let before = text_of(&f, &h);
+    assert!(before.contains(r#""name": "BlockK""#));
+    let opened_at = h.state().tabs()[0].revision;
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    // Its radius typed (a 2 after the 1: 12), and a second edge taken: both written.
+    type_into(&mut h, "Radius", "2");
+    click_edge(&mut h, &record, 1, 5, true);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    settled(&mut h);
+    assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("12")));
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]"#))
+    );
+    // The preview consumed both edges: gone from the selection, unsaid, the box holding
+    // them.
+    step_until(&mut h, "the consumed edges let go", |h| {
+        selected_names(h).is_empty()
+    });
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    let tab = &h.state().tabs()[0];
+    assert!(tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
+    assert!(!tab.sent.contains(&Sent::Rollback));
+    // The selection is as it was before the dialog opened, as SolidWorks returns to the
+    // selection its command started with: Edge3 alone (Edge5 was picked into the box), found
+    // again in the box the Cancel's undo gave back, nothing said of it.
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Edge3"]);
+    assert!(
+        h.state().tabs()[0]
+            .selection()
+            .elements()
+            .all(|p| p.stable())
+    );
+    assert_eq!(h.state().tabs()[0].selection().said(), None);
+    // Read again in the model the undo published, not held as put back: drawn on its
+    // meshes.
+    meshes_settled(&mut h);
+    step(&mut h);
+    let block = body_of(&h, "k7f2qx3m");
+    assert_eq!(
+        highlighted(&record),
+        [(block, silico_app::renderer::Element::Edge(3))]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_fillet_too_large_shows_the_kernels_refusal_naming_its_edge_and_the_rest_still_draws() {
+    // The fake kernel refuses a fillet past 5 mm as OCCT refuses one it can't build, naming
+    // the edges it was asked for (`Refusal::EdgesFailed`).
+    let f = fixture();
+    meshes_a_real_box(&f);
+    f.kernel.refuse_as_worker(|op| match op {
+        Op::Fillet { edges, radius, .. } if *radius > 5.0 => Some(silico_protocol::Failure::new(
+            silico_protocol::Refusal::EdgesFailed {
+                dressing: silico_protocol::DressingKind::Fillet,
+                edges: edges.clone(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, record) = f.drawn("blocks.silico", TWO_BLOCKS);
+    meshes_settled(&mut h);
+    let block = body_of(&h, "k7f2qx3m");
+    click_edge(&mut h, &record, block, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    // 1 mm builds.
+    assert_eq!(h.state().tabs()[0].errors(), 0);
+    // 13 mm (a 3 after the 1) doesn't: the kernel's refusal in the dialog, as the core
+    // gives it, its message, its cause naming the edge, the edge among its elements, and
+    // its suggestion (refusal.rs's and worker.rs's words, by hand). The fake kernel's
+    // errors name an edge by its number in the base (`Edge3`), as FreeCAD does; a worker's
+    // name it as the document does (`KernelRequest::with_edge_names`).
+    type_into(&mut h, "Radius", "3");
+    let lines = [
+        "Fillet failed",
+        "OCCT couldn't fillet Edge3",
+        "Elements: Edge3",
+        "if the fillet runs past a face beside the edge, try a smaller radius; if not, try \
+         another radius, or leave the edge out: OCCT can't fillet some edges at any size",
+    ];
+    step_until(&mut h, "the refusal in the dialog", |h| {
+        lines
+            .iter()
+            .all(|line| dialog(h).query_by_label(line).is_some())
+    });
+    assert_eq!(h.state().tabs()[0].errors(), 1);
+    // The rest of the model still draws: the other block's body, read with its meshes.
+    meshes_settled(&mut h);
+    step(&mut h);
+    let other = body_of(&h, "a91cw0de");
+    let drawn = record.lock().unwrap().frames.last().unwrap().bodies.clone();
+    assert!(drawn.contains(&other), "{drawn:?}");
+    // OK keeps it with its error, as SolidWorks saves a part with rebuild errors.
+    assert!(ok_enabled(&h));
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("13")));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_stay_lit() {
+    on_lavapipe(
+        "on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_stay_lit",
+        || {
+            use silico_app::renderer::Element::Edge;
+            let f = fixture();
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            h.set_render_every_step(true);
+            silico_app::theme::apply(&h.ctx);
+            let path = f.file("box.silico", A_BOX);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            // From the front, as the selection's lavapipe test looks: a point (x, 0, z) of
+            // the front face is seen (x − 20) mm right of the pane's centre and (z − 5) mm
+            // above it, a mm being the pane's height over 20.
+            view_mut(&mut h).set_camera(silico_protocol::Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 20.0 },
+                eye: [20.0, -100.0, 5.0],
+                target: [20.0, 10.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            });
+            meshes_settled(&mut h);
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            let rect = the_viewport(&h);
+            let mm = rect.height() / 20.0;
+            let seen = |x: f32, z: f32| {
+                rect.center() + eframe::egui::vec2((x - 20.0) * mm, -(z - 5.0) * mm)
+            };
+            let select_at = |h: &mut AppHarness, at, ctrl, want: &[&str]| {
+                click_canvas(h, at, ctrl);
+                for _ in 0..12 {
+                    if selected_names(h) == want {
+                        break;
+                    }
+                    step(h);
+                }
+                assert_eq!(selected_names(h), want, "at {at:?}");
+            };
+            // The front face's top edge (z = 10) from 2 points below its line, and, Ctrl
+            // held, its bottom edge (z = 0) from 2 points above: inside the 3-point band
+            // of each, so each edge, not the face. Edge3 and Edge1 in the fixture's
+            // numbering (`silico_render::bench::box_mesh`: the front face's bottom, right,
+            // top, left first).
+            select_at(
+                &mut h,
+                seen(30.0, 10.0) + eframe::egui::vec2(0.0, 2.0),
+                false,
+                &["k7f2qx3m.box.Edge3"],
+            );
+            select_at(
+                &mut h,
+                seen(30.0, 0.0) - eframe::egui::vec2(0.0, 2.0),
+                true,
+                &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge1"],
+            );
+            modify(&mut h, "Fillet");
+            added(&mut h);
+            settled(&mut h);
+            meshes_settled(&mut h);
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            // Listed in the box, and lit on the preview's body (the fake keeps every
+            // element of the box, so both edges are there by their names).
+            assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge1"]);
+            assert!(dialog(&h).query_by_label("2 edges").is_some());
+            let lit: Vec<silico_app::renderer::Element> = view(&h)
+                .highlights
+                .iter()
+                .map(|(_, element)| *element)
+                .collect();
+            assert_eq!(lit, [Edge(1), Edge(3)]);
+            if let Some(shot) = std::env::var_os("SILICO_APP_FILLET_SHOT") {
+                h.render().unwrap().save(shot).unwrap();
+            }
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
+}
+
+/// The dialog's input `label` emptied of `old` (the cursor at its end, Backspace takes one
+/// character each) and `new` typed in, one keystroke a frame.
+fn retype(h: &mut AppHarness, label: &str, old: &str, new: &str) {
+    input(h, label).focus();
+    step(h);
+    for _ in 0..old.len() {
+        h.key_press(eframe::egui::Key::Backspace);
+        step(h);
+    }
+    input(h, label).type_text(new);
+    step(h);
+    assert_eq!(input(h, label).value().as_deref(), Some(new));
+}
+
+/// Edit Feature on the timeline's `name`, from its context menu.
+fn edit_from_the_timeline(h: &mut AppHarness, name: &str) {
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label(name)
+        .click_secondary();
+    step(h);
+    step(h);
+    h.get_by_label("Edit Feature").click();
+}
+
+/// The dialog's Cancel clicked, and the dialog closed.
+fn cancel_dialog(h: &mut AppHarness) {
+    dialog(h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(h, "the dialog closed", |h| !dialog_open(h));
+    settled(h);
+}
+
+const BOX_ROUND: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "radius": 0.5}
+  ]
+}
+"#;
+
+#[test]
+fn a_fillets_radius_opens_at_the_last_okd_cancel_leaves_it_and_edit_feature_shows_its_own() {
+    // SolidWorks' Fillet PropertyManager "remembers its last used state" (docs/ux/
+    // solidworks.md, §5): the first fillet at Silico's first 1 mm, OK'd at 2.5; the next
+    // opens at 2.5; one cancelled at 7 leaves 2.5; Edit Feature on Round shows its own 0.5;
+    // a chamfer opens at its own first value, 1.
+    let f = fixture();
+    let (mut h, record) = f.drawn("round.silico", BOX_ROUND);
+    meshes_settled(&mut h);
+    let body = body_of(&h, "f0000001");
+    click_edge(&mut h, &record, body, 5, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge5"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("1"));
+    retype(&mut h, "Radius", "1", "2.5");
+    settled(&mut h);
+    assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("2.5")));
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // Opened again: at 2.5, the value OK'd.
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("2.5"));
+    retype(&mut h, "Radius", "2.5", "7");
+    settled(&mut h);
+    cancel_dialog(&mut h);
+    // Cancelled at 7: still 2.5.
+    modify(&mut h, "Fillet");
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("2.5"));
+    cancel_dialog(&mut h);
+    // Edit Feature: the feature's own radius, not the one remembered.
+    edit_from_the_timeline(&mut h, "Round");
+    step_until(&mut h, "Round's dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Fillet").is_some()
+    });
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("0.5"));
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3"]);
+    cancel_dialog(&mut h);
+    // A chamfer remembers its own: none OK'd yet, so its first, 1.
+    modify(&mut h, "Chamfer");
+    assert_eq!(input(&h, "Distance").value().as_deref(), Some("1"));
+    cancel_dialog(&mut h);
+    // And the fillet's is kept still.
+    modify(&mut h, "Fillet");
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("2.5"));
+    cancel_dialog(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+const MID_CHAIN: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "radius": 1},
+    {"id": "a91cw0de", "type": "box", "v": 1, "name": "Tool", "position": [80, 0, 0], "length": 10, "width": 10, "height": 10},
+    {"id": "r0000001", "type": "fuse", "v": 1, "name": "Joined", "base": "f0000001", "tool": "a91cw0de"}
+  ]
+}
+"#;
+
+#[test]
+fn edit_feature_on_a_fillet_a_later_feature_builds_on_takes_its_bases_edges_from_the_body() {
+    // Round fillets the box's Edge3, and Joined fuses Round with Tool: the body is Joined's,
+    // and the canvas draws it. Round's dialog reads a pick there against its base, the box,
+    // as SolidWorks reads a feature's picks on the model rolled back to before it.
+    let f = fixture();
+    let (mut h, record) = f.drawn("chain.silico", MID_CHAIN);
+    meshes_settled(&mut h);
+    let body = body_of(&h, "r0000001");
+    edit_from_the_timeline(&mut h, "Round");
+    step_until(&mut h, "Round's dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Fillet").is_some()
+    });
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3"]);
+    assert_eq!(box_body(&h).as_deref(), Some("k7f2qx3m"));
+    // The box's Edge5, picked on Joined's body (kept by the fillet and the fuse): taken,
+    // written, the base the box still.
+    click_edge(&mut h, &record, body, 5, false);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    settled(&mut h);
+    assert_eq!(box_said(&h), None);
+    assert_eq!(
+        written(&f, &h, "Round", "edges"),
+        Some(plain(r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]"#))
+    );
+    assert_eq!(
+        written(&f, &h, "Round", "base"),
+        Some(plain(r#""k7f2qx3m""#))
+    );
+    // Tool's Edge1, Joined's Edge13 (the fake's fuse numbers the tool's edges after the
+    // base's 12): not on the box, so refused, said, and let go from the selection again.
+    let after = "a91cw0de.box.Edge1 isn't on k7f2qx3m, which this fillet is built on: select \
+                 one of k7f2qx3m's edges";
+    click_edge(&mut h, &record, body, 13, true);
+    step_until(&mut h, "the refusal in the dialog", |h| {
+        dialog(h).query_by_label(after).is_some()
+    });
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert_eq!(box_said(&h).as_deref(), Some(after));
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Edge5"]);
+    // Every name removed, then the box's Edge7 picked on Joined's body: taken, the base the
+    // box still, nothing refused.
+    for name in ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"] {
+        dialog(&h)
+            .get_by_role_and_label(Role::Button, &format!("Remove {name}"))
+            .click();
+        step_until(&mut h, "the name removed", |h| {
+            !boxed(h).iter().any(|held| held == name)
+        });
+        // Drawn without it, so the next button is found where it's drawn now.
+        step(&mut h);
+    }
+    assert!(boxed(&h).is_empty());
+    click_edge(&mut h, &record, body, 7, true);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge7"]);
+    settled(&mut h);
+    assert_eq!(box_body(&h).as_deref(), Some("k7f2qx3m"));
+    assert_eq!(box_said(&h), None);
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(
+        written(&f, &h, "Round", "edges"),
+        Some(plain(r#"["k7f2qx3m.box.Edge7"]"#))
+    );
+    assert_eq!(
+        written(&f, &h, "Round", "base"),
+        Some(plain(r#""k7f2qx3m""#))
+    );
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Round"),
+        Some(expected(
+            r#"{"type": "fillet", "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge7"], "radius": 1}"#
+        ))
+    );
+    assert_eq!(h.state().tabs()[0].errors(), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_fillet_dialog_opened_on_a_face_and_an_edge_takes_the_edge_and_notes_the_face_left_out() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    click_edge(&mut h, &record, 1, 3, true);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3", "k7f2qx3m.box.Edge3"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    let note = "1 face left out: a fillet takes edges";
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3"]);
+    assert_eq!(box_said(&h).as_deref(), Some(note));
+    assert!(dialog(&h).query_by_label(note).is_some());
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Edge3"]);
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(r#"["k7f2qx3m.box.Edge3"]"#))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_fillet_dialog_opened_on_two_bodies_edges_takes_none_says_why_and_clears_the_selection() {
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("blocks.silico", TWO_BLOCKS);
+    meshes_settled(&mut h);
+    let (block, other) = (body_of(&h, "k7f2qx3m"), body_of(&h, "a91cw0de"));
+    click_edge(&mut h, &record, block, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    click_edge(&mut h, &record, other, 1, true);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3", "a91cw0de.box.Edge1"]);
+    modify(&mut h, "Fillet");
+    let why = "The selected edges are on 2 bodies, k7f2qx3m and a91cw0de: a fillet takes one \
+               body's edges";
+    step_until(&mut h, "the refusal in the dialog", |h| {
+        dialog(h).query_by_label(why).is_some()
+    });
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert!(boxed(&h).is_empty());
+    assert_eq!(box_said(&h).as_deref(), Some(why));
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert!(!ok_enabled(&h));
+    assert_eq!(h.state().tabs()[0].sent, []);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_on_an_edge_the_box_lists_removes_it_though_the_timeline_replaced_the_selection() {
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    click_edge(&mut h, &record, 1, 5, true);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    // The timeline's Block clicked: the selection is the feature alone.
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label("Block")
+        .click();
+    let block = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
+    step_until(&mut h, "the body selected", |h| {
+        h.state().tabs()[0].selection().feature() == Some(&block)
+    });
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    // One click on Edge5, which the box lists and the selection doesn't hold: removed from
+    // the box, and not left in the selection.
+    click_edge(&mut h, &record, 1, 5, false);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3"]);
+    assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+    assert_eq!(h.state().tabs()[0].selection().feature(), Some(&block));
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(r#"["k7f2qx3m.box.Edge3"]"#))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The chamfer dialog (M5.8) ----
+
+#[test]
+fn a_chamfer_dialog_fed_the_selection_of_an_edge_writes_a_chamfer_of_its_distance() {
+    // The document's chamfer has one size, a distance alike along both faces
+    // (`ChamferSize`): its first, 1 mm (Silico's own choice), then a typed one (a 2 before
+    // the 1).
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    modify(&mut h, "Chamfer");
+    added(&mut h);
+    settled(&mut h);
+    assert!(dialog(&h).query_by_label("1 edge").is_some());
+    assert!(dialog(&h).query_by_label("k7f2qx3m.box.Edge3").is_some());
+    assert_eq!(input(&h, "Distance").value().as_deref(), Some("1"));
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Chamfer"),
+        Some(expected(
+            r#"{"type": "chamfer", "name": "Chamfer", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": 1}}"#
+        ))
+    );
+    type_into(&mut h, "Distance", "2");
+    settled(&mut h);
+    let id = dialog_feature(&h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    let text = text_of(&f, &h);
+    assert_eq!(
+        fields_of(&text, "Chamfer"),
+        Some(expected(
+            r#"{"type": "chamfer", "name": "Chamfer", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": 12}}"#
+        ))
+    );
+    assert!(text.contains(&format!(r#""id": "{id}""#)));
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [Sent::Begin, Sent::Add, Sent::Edit("size".to_owned())]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- What's Wrong ----
+
+/// Three blocks side by side: the first and the third short enough for the kernel to refuse
+/// ([`refuses_the_short_blocks`]), the second built, warned only of its missing fingerprint
+/// (the document stores none: `fingerprint_missing`). Their IDs are out of their order (c,
+/// a, b), so a list in the IDs' order isn't the document's.
+const THREE_BLOCKS: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "c0000001", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
+    {"id": "a0000001", "type": "box", "v": 1, "name": "Second", "position": [20, 0, 0], "length": 20, "width": 10, "height": 10},
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Third", "position": [50, 0, 0], "length": 10, "width": 10, "height": 10}
+  ]
+}
+"#;
+
+/// The kernel refuses every block under 15 mm long: THREE_BLOCKS' first and third.
+fn refuses_the_short_blocks(f: &Fixture) {
+    f.kernel.refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx < 15.0)
+            .then(|| Error::new(ErrorCode::KernelFailed, "the block came apart"))
+    });
+}
+
+/// THREE_BLOCKS open, rebuilt with its two errors.
+fn three_blocks(f: &Fixture) -> AppHarness {
+    refuses_the_short_blocks(f);
+    let (mut h, _) = f.opened("blocks.silico", THREE_BLOCKS);
+    step_until(&mut h, "rebuilt with its two errors", |h| {
+        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt with 2 errors")
+    });
+    h
+}
+
+/// What's Wrong, if it's open.
+fn whats_wrong(h: &AppHarness) -> Option<egui_kittest::Node<'_>> {
+    h.query_by_role_and_label(Role::Dialog, "What's wrong")
+}
+
+/// The labels in What's Wrong that hold `part`, in its order: none if it's closed.
+fn in_whats_wrong(h: &AppHarness, part: &str) -> Vec<String> {
+    whats_wrong(h)
+        .map(|open| {
+            open.query_all_by_label_contains(part)
+                .filter_map(|node| {
+                    let node = node.accesskit_node();
+                    node.value().or_else(|| node.label())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn whats_wrong_lists_two_failures_and_a_warning_in_the_documents_order_each_its_card() {
+    let f = fixture();
+    let mut h = three_blocks(&f);
+    assert!(whats_wrong(&h).is_none());
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+        .click();
+    step_until(&mut h, "three listed", |h| {
+        in_whats_wrong(h, "Feature: ").len() == 3
+    });
+    step(&mut h);
+    // Its head names the document; each card names its feature, by name and ID, in the
+    // document's order (not its IDs'): First's error, Second's warning, Third's error.
+    assert!(
+        whats_wrong(&h)
+            .unwrap()
+            .query_by_label("What's wrong in blocks.silico")
+            .is_some()
+    );
+    assert_eq!(
+        in_whats_wrong(&h, "Feature: "),
+        [
+            "Feature: First c0000001",
+            "Feature: Second a0000001",
+            "Feature: Third b0000001"
+        ]
+    );
+    // Each card's code and message, the fake's refusal and the core's warning as written by
+    // hand, under that card's head: below the card before's Feature row, above its own.
+    let open = whats_wrong(&h).unwrap();
+    let top = |label: &str| -> Vec<f32> {
+        open.query_all_by_label(label)
+            .map(|node| node.rect().top())
+            .collect()
+    };
+    let rows: Vec<f32> = open
+        .query_all_by_label_contains("Feature: ")
+        .map(|node| node.rect().top())
+        .collect();
+    assert!(rows[0] < rows[1] && rows[1] < rows[2], "{rows:?}");
+    let apart = "the block came apart";
+    let unprinted = "a0000001 built, but its file stores no fingerprint, so a change in what it \
+                     builds isn't caught as drift";
+    for (label, count) in [
+        ("kernel_failed", 2),
+        ("fingerprint_missing", 1),
+        (apart, 2),
+        (unprinted, 1),
+    ] {
+        assert_eq!(top(label).len(), count, "{label:?}");
+    }
+    for (card, (code, message)) in [
+        ("kernel_failed", apart),
+        ("fingerprint_missing", unprinted),
+        ("kernel_failed", apart),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let above = card.checked_sub(1).map_or(f32::NEG_INFINITY, |at| rows[at]);
+        for label in [code, message] {
+            assert_eq!(
+                top(label)
+                    .into_iter()
+                    .filter(|at| above < *at && *at < rows[card])
+                    .count(),
+                1,
+                "card {card}'s {label:?}: {rows:?}"
+            );
+        }
+    }
+    // Every card offers Edit, Show in timeline, and Copy as JSON (`errCard(p)`).
+    for button in ["Edit First", "Edit Second", "Edit Third"] {
+        assert!(
+            open.query_by_role_and_label(Role::Button, button).is_some(),
+            "{button}"
+        );
+    }
+    for button in ["Show in timeline", "Copy as JSON"] {
+        assert_eq!(
+            open.query_all_by_role_and_label(Role::Button, button)
+                .count(),
+            3,
+            "{button}"
+        );
+    }
+    // Show in timeline closes it and selects Third.
+    open.query_all_by_role_and_label(Role::Button, "Show in timeline")
+        .nth(2)
+        .unwrap()
+        .click();
+    step_until(&mut h, "Third selected", |h| {
+        whats_wrong(h).is_none()
+            && timeline(h).get_by_label("Third").accesskit_node().toggled()
+                == Some(eframe::egui::accesskit::Toggled::True)
+    });
+    // Edit closes it and opens First's dialog, as Edit Feature does.
+    timeline(&h)
+        .get_by_role_and_label(Role::Button, "2 errors")
+        .click();
+    step_until(&mut h, "listed again", |h| {
+        in_whats_wrong(h, "Feature: ").len() == 3
+    });
+    step(&mut h);
+    whats_wrong(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Edit First")
+        .click();
+    step_until(&mut h, "First's dialog", |h| {
+        whats_wrong(h).is_none() && dialog_open(h) && dialog(h).query_by_label("BOX").is_some()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn whats_wrong_opens_from_the_status_bar_the_timeline_and_the_documents_row_and_esc_or_close_shut_it()
+ {
+    let f = fixture();
+    let mut h = three_blocks(&f);
+    let shut = |h: &mut AppHarness, by: &str| {
+        step_until(h, &format!("shut by {by}"), |h| whats_wrong(h).is_none());
+        assert_eq!(h.state().tabs().len(), 1, "{by} shut only What's Wrong");
+    };
+    // The status bar's "Rebuilt with 2 errors"; Esc.
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+        .click();
+    step_until(&mut h, "opened from the status bar", |h| {
+        whats_wrong(h).is_some()
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    shut(&mut h, "Esc");
+    // The timeline's "2 errors"; its Close.
+    timeline(&h)
+        .get_by_role_and_label(Role::Button, "2 errors")
+        .click();
+    // Listed, so it's done growing: a modal is centred on its size.
+    step_until(&mut h, "opened from the timeline, its three listed", |h| {
+        in_whats_wrong(h, "Feature: ").len() == 3
+    });
+    step(&mut h);
+    whats_wrong(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Close")
+        .click();
+    shut(&mut h, "Close");
+    // A click on the browser's document row; Esc.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("blocks")
+        .click();
+    step_until(&mut h, "opened from the document's row", |h| {
+        whats_wrong(h).is_some()
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    shut(&mut h, "Esc");
+    // The registry's What's wrong, which they open: its tooltip's title.
+    assert_eq!(
+        silico_app::shortcuts::Command::WhatsWrong.label(),
+        "What's wrong"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn whats_wrong_lists_the_first_hundred_warnings_and_counts_the_thirty_past_them() {
+    // 130 blocks, none with a fingerprint: 130 `fingerprint_missing` warnings, of which the
+    // core lists the first 100.
+    let f = fixture();
+    let blocks = (0..130)
+        .map(|at| {
+            format!(
+                r#"    {{"id": "f{at:07}", "type": "box", "v": 1, "name": "Block {at}", "position": [{x}, 0, 0], "length": 10, "width": 10, "height": 10}}"#,
+                x = at * 20
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let text = format!(
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n{blocks}\n  ]\n}}\n"
+    );
+    let (mut h, _) = f.opened("many.silico", &text);
+    step_until(&mut h, "the timeline warned", |h| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_ref())
+            .is_some_and(|features| features.iter().all(|entry| entry.warnings == 1))
+    });
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("many")
+        .click();
+    step_until(&mut h, "a hundred listed", |h| {
+        in_whats_wrong(h, "Feature: ").len() == 100
+    });
+    step(&mut h);
+    let open = whats_wrong(&h).unwrap();
+    assert_eq!(open.query_all_by_label("fingerprint_missing").count(), 100);
+    // The first hundred, in the document's order: Block 0 to Block 99.
+    let features = in_whats_wrong(&h, "Feature: ");
+    assert_eq!(features[0], "Feature: Block 0 f0000000");
+    assert_eq!(features[99], "Feature: Block 99 f0000099");
+    // Then the thirty past them, counted; no errors to count.
+    assert!(open.query_by_label("and 30 more warnings").is_some());
+    assert_eq!(open.query_all_by_label_contains(" more error").count(), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_lavapipe_a_features_card_is_titled_by_its_name_and_its_message_wraps_across_the_body() {
+    on_lavapipe(
+        "on_lavapipe_a_features_card_is_titled_by_its_name_and_its_message_wraps_across_the_body",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            refuses_the_short_blocks(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            h.set_render_every_step(true);
+            silico_app::theme::apply(&h.ctx);
+            let path = f.file("blocks.silico", THREE_BLOCKS);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            step_until(&mut h, "rebuilt with its two errors", |h| {
+                status_said(h, "Rebuilt").as_deref() == Some("Rebuilt with 2 errors")
+            });
+            meshes_settled(&mut h);
+            select(&mut h, "Second");
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            // The head: the feature's name beside the code; the core's message under them,
+            // in the body, starting at the body's left.
+            let pane = h.get_by_role_and_label(Role::Pane, "Properties");
+            let code = pane.get_by_label("fingerprint_missing").rect();
+            let title = pane
+                .query_all_by_label("Second")
+                .map(|node| node.rect())
+                .find(|rect| (rect.top() - code.top()).abs() <= 0.5)
+                .expect("the title on the code's line");
+            let message = pane
+                .query_all_by_label_contains("built, but its file stores no fingerprint")
+                .next()
+                .expect("the message")
+                .rect();
+            assert!(message.top() >= code.bottom(), "{message:?} under {code:?}");
+            assert!(message.left() < code.left() && title.right() < code.left());
+            if let Some(shot) = std::env::var_os("SILICO_APP_CARD_SHOT") {
+                h.render().unwrap().save(shot).unwrap();
+            }
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
+}
+
+#[test]
+fn on_lavapipe_whats_wrong_shows_two_error_cards_and_a_warnings() {
+    on_lavapipe(
+        "on_lavapipe_whats_wrong_shows_two_error_cards_and_a_warnings",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            refuses_the_short_blocks(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            h.set_render_every_step(true);
+            silico_app::theme::apply(&h.ctx);
+            let path = f.file("blocks.silico", THREE_BLOCKS);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            step_until(&mut h, "rebuilt with its two errors", |h| {
+                status_said(h, "Rebuilt").as_deref() == Some("Rebuilt with 2 errors")
+            });
+            meshes_settled(&mut h);
+            h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+                .click();
+            step_until(&mut h, "three listed", |h| {
+                in_whats_wrong(h, "Feature: ").len() == 3
+            });
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            assert_eq!(
+                whats_wrong(&h)
+                    .unwrap()
+                    .query_all_by_label("kernel_failed")
+                    .count(),
+                2
+            );
+            if let Some(shot) = std::env::var_os("SILICO_APP_WHATS_WRONG_SHOT") {
+                h.render().unwrap().save(shot).unwrap();
+            }
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
 }

@@ -155,6 +155,7 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 - An extrude shows a shaded preview as soon as its PropertyManager opens; the view can be rotated, panned, and zoomed without losing it; dragging a handle shows a dynamic preview ([Shaded and Dynamic Previews](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_shaded_dynamic_previews.htm)).
 - A slow preview of a supported command (combine, shell, patterns, fillets, chamfers) can be cancelled with Esc; the status bar says "Press <ESC> to cancel Preview" ([Interrupt Regeneration of Parts](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Interrupt_Regeneration_of_Parts.htm)).
 - The help doesn't say what a PropertyManager shows when its preview fails (a fillet too large) before OK.
+- The Fillet PropertyManager "remembers its last used state" ([Fillet PropertyManager, 2016](https://help.solidworks.com/2016/english/solidworks/sldworks/hidd_dve_fillet_dlg2.htm); [2019](https://help.solidworks.com/2019/English/SolidWorks/sldworks/c_fillet_propertymanager.htm); read 2026-11-04). The Chamfer PropertyManager's page says nothing of it ([Chamfer PropertyManager, 2021](https://help.solidworks.com/2021/English/SolidWorks/sldworks/r_chamfer_pm.htm)): Silico follows the fillet's rule for both, each opening with the values it was last OK'd with in the app's run (Cancel changes nothing; Edit Feature shows the feature's own). Neither page gives a first value: Silico's first radius and distance, 1 mm, are its own choice.
 
 ### Editing upstream
 

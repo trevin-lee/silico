@@ -2,8 +2,9 @@
 //! under a document of 50,000 features, a cancel landing while steps settle, a cancel
 //! during a sketch's solve, and random timelines with random refusals. Expected values come
 //! from hand counts and from a naive evaluator written here (each feature in timeline
-//! order: a refused primitive failed or faulted, a boolean using one not built blocked,
-//! anything else built), never from the recompute under test.
+//! order: a refused primitive failed or faulted, a boolean using one not built blocked, one
+//! that changes nothing by the fake kernel's volumes failed, anything else built), never
+//! from the recompute under test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::model;
@@ -19,7 +20,9 @@ use recompute::{document, engine};
 use silico_core::command::wire::{Layout, ToWire, write};
 use silico_core::command::{Progress, Rebuild, RebuildState, Revision};
 use silico_core::fake::{FakeKernel, FakeSketches};
-use silico_core::kernel::{Op, Primitive};
+use silico_core::kernel::{
+    BooleanOp, Generation, Kernel as _, KernelRequest, Op, Primitive, ShapeData,
+};
 use silico_core::recompute::{
     FeatureStates, Recompute, RunOutcome, StepCount, StepCounter, StepState,
 };
@@ -346,24 +349,101 @@ fn timeline() -> impl Strategy<Value = Vec<Made>> {
         })
 }
 
+/// Box `i` of a timeline as the rebuild makes it on `kernel` ([`texts`]): 1 by 1 by `i + 1`,
+/// moved `10 i` along x (the box at the origin not moved).
+fn made_box(kernel: &FakeKernel, i: usize) -> ShapeData {
+    let g = Generation(0);
+    let size = Primitive::Box {
+        dx: 1.0,
+        dy: 1.0,
+        dz: (i + 1) as f64,
+    };
+    let made = kernel
+        .submit(g, KernelRequest::make(size).unwrap())
+        .wait()
+        .done()
+        .unwrap()
+        .unwrap();
+    if i == 0 {
+        return made;
+    }
+    kernel
+        .submit(
+            g,
+            KernelRequest::translate(&made, [(i * 10) as f64, 0.0, 0.0]).unwrap(),
+        )
+        .wait()
+        .done()
+        .unwrap()
+        .unwrap()
+        .shape
+}
+
+/// `shape`'s volume by the fake kernel's own model.
+fn volume(kernel: &FakeKernel, shape: &ShapeData) -> f64 {
+    kernel
+        .submit(Generation(0), KernelRequest::summarize(shape))
+        .wait()
+        .done()
+        .unwrap()
+        .unwrap()
+        .volume
+}
+
+/// Whether an M2 boolean whose base measures `before` and whose result measures `after`
+/// changes its base, as design S7 has it, worked here on its own terms: a base of no volume
+/// (or none a solid has) and a result below none change nothing that can be told; a fuse must
+/// add, a cut take away, more than 1e-9 of the base's volume (no more is nothing).
+fn changes(cut: bool, before: f64, after: f64) -> bool {
+    if !(before.is_finite() && before > 0.0 && after.is_finite() && after >= 0.0) {
+        return false;
+    }
+    let change = if cut { before - after } else { after - before };
+    change > 1e-9 * before
+}
+
 /// The naive evaluator: each feature in order, a box as its fate, a boolean blocked if
-/// either input isn't built.
+/// either input isn't built, and failed if, by the fake kernel's volumes, it changes its
+/// base by nothing ([`changes`]). The fake's model (`fake.rs`): a fuse adds both inputs'
+/// volumes, so it changes nothing only with a tool of none; a cut takes from its base the
+/// share of its tool's box inside the base's box, and these boxes sit apart along x, so a
+/// cut of one box by another takes nothing (a cut's or fuse's box, both inputs' together,
+/// may hold another box, which a cut by it does take from).
 fn expected(timeline: &[Made]) -> Vec<StepState> {
+    let kernel = FakeKernel::new(1).unwrap();
     let mut states: Vec<StepState> = Vec::new();
-    for made in timeline {
-        let state = match made {
-            Made::Box(Fate::Made) => Built,
-            Made::Box(Fate::Refused) => Failed,
-            Made::Box(Fate::Crashed) => Faulted,
-            Made::Boolean { base, tool, .. } => {
-                if states[*base] == Built && states[*tool] == Built {
-                    Built
-                } else {
-                    Blocked
+    // Each built feature's result, by the fake kernel.
+    let mut shapes: Vec<Option<ShapeData>> = Vec::new();
+    for (i, made) in timeline.iter().enumerate() {
+        let (state, shape) = match made {
+            Made::Box(Fate::Made) => (Built, Some(made_box(&kernel, i))),
+            Made::Box(Fate::Refused) => (Failed, None),
+            Made::Box(Fate::Crashed) => (Faulted, None),
+            Made::Boolean { cut, base, tool } => match (&shapes[*base], &shapes[*tool]) {
+                (Some(a), Some(b)) => {
+                    let op = if *cut {
+                        BooleanOp::Cut
+                    } else {
+                        BooleanOp::Fuse
+                    };
+                    let result = kernel
+                        .submit(Generation(0), KernelRequest::boolean(op, a, b))
+                        .wait()
+                        .done()
+                        .unwrap()
+                        .unwrap()
+                        .shape;
+                    if changes(*cut, volume(&kernel, a), volume(&kernel, &result)) {
+                        (Built, Some(result))
+                    } else {
+                        (Failed, None)
+                    }
                 }
-            }
+                _ => (Blocked, None),
+            },
         };
         states.push(state);
+        shapes.push(shape);
     }
     states
 }
@@ -446,6 +526,44 @@ proptest! {
         prop_assert_eq!(listed, ids);
         prop_assert_eq!(states_of(&now.features), expected(&timeline));
     }
+}
+
+#[test]
+fn a_cut_of_one_box_by_another_apart_from_it_removes_nothing_and_fails() {
+    // The proptest's least failing case, its volumes by hand: box i is 1 by 1 by i + 1 at
+    // x = 10 i, so box 0 fills [0, 1]³ (1 mm³) and box 1 [10, 11] × [0, 1] × [0, 2] (2 mm³).
+    // The fake cuts from its base the share of its tool's box inside the base's box: here
+    // x overlaps on [10, 1], empty, so a share of 0, and the cut measures 1 mm³, its base's.
+    // It removes 0, no more than 1e-9 × 1 mm³: nothing, refused (S7), so failed; the six
+    // boxes built.
+    let mut timeline = vec![Made::Box(Fate::Made); 6];
+    timeline.push(Made::Boolean {
+        cut: true,
+        base: 0,
+        tool: 1,
+    });
+    let hand = [Built, Built, Built, Built, Built, Built, Failed];
+    assert_eq!(expected(&timeline), hand);
+    let texts = texts(&timeline);
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let engine = engine(2);
+    let run = engine.start(document(&refs));
+    let progress = run.progress();
+    let Ok(RunOutcome::Published(model)) = run.wait() else {
+        panic!("not published");
+    };
+    assert_eq!(states_of(&progress.now().features), hand);
+    let cut = silico_core::document::FeatureId::new("f0000006").unwrap();
+    let Some(silico_core::recompute::FeatureOutcome::Failed(error)) = model.outcome(&cut) else {
+        panic!("{:?}", model.outcome(&cut));
+    };
+    assert_eq!(error.code(), ErrorCode::KernelFailed);
+    assert!(
+        error
+            .message()
+            .contains("removes nothing from its base f0000000"),
+        "{error:?}"
+    );
 }
 
 /// An engine on the fake kernel and the fake sketch solver.

@@ -1,7 +1,8 @@
 //! M5.5: `command::meshes` of a real solid, rebuilt and meshed on kernel workers
 //! (docs/design/m5.0-app.md, `meshes`): a box's front-view display mesh, every expected value
 //! by hand from the box (60 by 40 by 50 at the origin, in OCCT's box order: faces x = 0,
-//! x = 60, y = 0, y = 40, z = 0, z = 50; twelve straight edges).
+//! x = 60, y = 0, y = 40, z = 0, z = 50; twelve straight edges; eight corners, (0, 0, 50)
+//! first).
 
 use super::model::{checked, published};
 
@@ -106,4 +107,34 @@ fn a_boxs_front_view_mesh_holds_its_six_faces_two_triangles_each_named_as_the_el
         .collect();
     assert_eq!(edges, want);
     assert_eq!(mesh.edge_points.len(), 24);
+    // Eight vertices, named Vertex1 to Vertex8, stable, with no count; their points the
+    // box's corners exactly, in FreeCAD's (OCCT's) box order: x low then high, y low then
+    // high within it, z high then low within that (a Part box's Vertex1 is (0, 0, H),
+    // Vertex2 the origin).
+    let vertices: Vec<(String, bool, Option<u32>)> = body
+        .vertices
+        .iter()
+        .map(|v| (v.name.to_string(), v.stable, v.count))
+        .collect();
+    let want: Vec<(String, bool, Option<u32>)> = (1..=8)
+        .map(|i| (format!("b0000001.box.Vertex{i}"), true, None))
+        .collect();
+    assert_eq!(vertices, want);
+    assert_eq!(
+        mesh.vertex_points,
+        [
+            [0.0, 0.0, 50.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 40.0, 50.0],
+            [0.0, 40.0, 0.0],
+            [60.0, 0.0, 50.0],
+            [60.0, 0.0, 0.0],
+            [60.0, 40.0, 50.0],
+            [60.0, 40.0, 0.0],
+        ]
+    );
+    // Each an end of the edges the map says meet there: Vertex1 (0, 0, 50) ends Edge1, the
+    // edge along z at x = 0, y = 0 (from (0, 0, 50) down to the origin, FreeCAD's Edge1).
+    let edge1 = mesh.edges().next().unwrap();
+    assert!(edge1.contains(&mesh.vertex_points[0]) && edge1.contains(&mesh.vertex_points[1]));
 }

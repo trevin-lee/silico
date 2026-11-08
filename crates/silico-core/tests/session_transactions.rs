@@ -21,13 +21,13 @@ use crate::lateness::{Lateness, allowance};
 use crate::sessions::{answer, id, refusal};
 
 /// The box's fingerprint as the fake measures it, by formula.
-const FINGERPRINT: &str = r#""fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
+const FINGERPRINT: &str = r#""fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
 
 /// A block, its fingerprint stored with its volume `volume`, and a lug clear of it with
 /// none stored, on one line each: not canonical form.
 fn stored(volume: &str) -> String {
     format!(
-        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {{"volume": {volume}, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}}}, {{"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10}}]}}"#
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {{"volume": {volume}, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}}}, {{"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10}}]}}"#
     )
 }
 
@@ -46,10 +46,10 @@ fn canonical(block: &str, lug: Option<&str>) -> String {
 }
 
 /// The lug's fingerprint, by formula: 10 × 10 × 10 = 1000, area 600, at x = 100.
-const LUG: &str = r#""fingerprint": {"volume": 1000, "area": 600, "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
+const LUG: &str = r#""fingerprint": {"volume": 1000, "area": 600, "center": [105, 5, 5], "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
 
 /// The block's fingerprint stored 1e-6 mm³ over what it measures.
-const DRIFTED: &str = r#""fingerprint": {"volume": 8000.000001, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
+const DRIFTED: &str = r#""fingerprint": {"volume": 8000.000001, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
 
 struct Fixture {
     dir: TempDir,
@@ -645,7 +645,7 @@ fn format_after_an_edit_in_a_transaction_on_a_hand_written_file_writes_what_the_
     assert!(!again.changed);
     let committed = answer(f.sessions.commit(&s1)).result.unwrap();
     assert!(committed.written);
-    let lug = r#""fingerprint": {"volume": 1200, "area": 680, "bbox": [100, 0, 0, 112, 10, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
+    let lug = r#""fingerprint": {"volume": 1200, "area": 680, "center": [106, 5, 5], "bbox": [100, 0, 0, 112, 10, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
     let want = canonical(FINGERPRINT, Some(lug)).replace(
         r#""length": 10,
       "width": 10,

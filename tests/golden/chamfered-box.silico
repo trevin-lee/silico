@@ -12,7 +12,7 @@
       "length": 10,
       "width": 10,
       "height": 10,
-      "fingerprint": {"volume": 1000, "area": 600, "bbox": [0, 0, 0, 10, 10, 10], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 1000, "area": 600, "center": [5, 5, 5], "bbox": [0, 0, 0, 10, 10, 10], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "cccccccc",
@@ -26,7 +26,7 @@
         "aaaaaaaa.box.Edge7"
       ],
       "size": {"distance": 1},
-      "fingerprint": {"volume": 985, "area": 579.426407, "bbox": [0, 0, 0, 10, 10, 10], "faces": 9, "edges": 21, "vertices": 14}
+      "fingerprint": {"volume": 985, "area": 579.426407, "center": [4.976311, 5.023689, 5], "bbox": [0, 0, 0, 10, 10, 10], "faces": 9, "edges": 21, "vertices": 14}
     },
     {
       "id": "ffffffff",
@@ -39,7 +39,7 @@
       ],
       "radius": 0.5,
       "note": "An edge of Edge7's chamfer, FreeCAD's testPartDesignTNPChamfer. The box's vertical edges are alike, so its measures can't tell this edge from its twins: silico-kernel's tests/references.rs holds which edge it is",
-      "fingerprint": {"volume": 984.946214, "area": 579.200505, "bbox": [0, 0, 0, 10, 10, 10], "faces": 10, "edges": 24, "vertices": 16}
+      "fingerprint": {"volume": 984.946214, "area": 579.200505, "center": [4.976039, 5.023472, 5], "bbox": [0, 0, 0, 10, 10, 10], "faces": 10, "edges": 24, "vertices": 16}
     }
   ]
 }

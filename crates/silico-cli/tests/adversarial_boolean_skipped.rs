@@ -1,9 +1,14 @@
 //! break-it for OCCT's skipped-pair warning, which the kernel logs and doesn't refuse
 //! (docs/ports/booleans.md): a document a user could write, a pointed cone with a padded rod
 //! resting on its tip, cut, for which OCCT raises it with a right result. The rod touches
-//! the cone at one point and nowhere else, so the cut is the cone whole: 125π/3 =
+//! the cone at one point and nowhere else: the rod is x² + (z − 7)² ≤ 4 (its axis along y
+//! through (0, 7) in xz), so z ≥ 7 − √(4 − x²) ≥ 5, equal only at x = 0, and the cone
+//! (apex (0, 0, 5)) has z ≤ 5, at 5 only at its apex; they share the point (0, 0, 5) alone,
+//! an overlap of volume 0, so the cut is the cone whole: 125π/3 =
 //! 130.899694 (by hand; FreeCAD 1.1.3, on the same OCCT, gives 130.8996939 for the same
-//! solids). Exit codes from docs/cli.md: 0 clean, 1 the document has problems.
+//! solids), which removes nothing: the cut is refused by S7's rule, which M2 booleans take
+//! (docs/ports/booleans.md), in its words, never the warning's. Exit codes from
+//! docs/cli.md: 0 clean, 1 the document has problems.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "common/run.rs"]
@@ -84,10 +89,12 @@ impl Drop for Scratch {
 }
 
 #[test]
-fn a_rod_padded_onto_a_pointed_cones_tip_cuts_and_formats_clean() {
+fn a_rod_padded_onto_a_pointed_cones_tip_is_refused_as_removing_nothing_never_for_the_warning() {
     // BREAKS (fixed): while the warning was refused, `silico fmt` exited 1, the cut a
     // `kernel_failed` naming the cone's Face1, for a cut whose right result is the cone
-    // whole, which `fmt` fingerprints.
+    // whole. Since M2 booleans take S7's rule, that cut is refused as removing nothing, in
+    // S7's words, naming no element: the warning still refuses nothing. The cone and the rod
+    // are fingerprinted; the cut isn't.
     let scratch = Scratch::new("rod-on-point");
     let file = scratch.0.join("part.silico");
     std::fs::write(&file, ROD_ON_THE_POINT.trim_start()).unwrap();
@@ -108,12 +115,21 @@ fn a_rod_padded_onto_a_pointed_cones_tip_cuts_and_formats_clean() {
         .stdin(Stdio::null());
     let out = run::output(cmd);
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(out.status.code(), Some(0), "{stderr}");
-    let text = std::fs::read_to_string(&file).unwrap();
-    // The cut's fingerprint: the cone's volume, 125π/3, to the format's six places.
-    let cut = text.split("\"id\": \"hhhhhhhh\"").nth(1).unwrap();
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    // S7's words, the cone's volume, 125π/3, as the base's and the result's.
     assert!(
-        cut.contains(r#""fingerprint": {"volume": 130.899694,"#),
+        stderr.contains(
+            "kernel_failed: cut hhhhhhhh removes nothing from its base kkkkkkkk: the result's volume is the base's, 130.89969"
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Face1 (feature"), "{stderr}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let cut = text.split("\"id\": \"hhhhhhhh\"").nth(1).unwrap();
+    assert!(!cut.contains("fingerprint"), "{text}");
+    let cone = text.split("\"id\": \"kkkkkkkk\"").nth(1).unwrap();
+    assert!(
+        cone.contains(r#""fingerprint": {"volume": 130.899694,"#),
         "{text}"
     );
 }

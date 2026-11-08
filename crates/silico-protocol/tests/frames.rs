@@ -319,6 +319,7 @@ fn every_op() -> Vec<Op> {
                     face_triangles: vec![1, 0],
                     edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
                     edge_point_counts: vec![2],
+                    vertex_points: vec![],
                     valid: Some(true),
                 },
                 highlight_faces: vec![1],
@@ -570,6 +571,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             face_triangles: vec![1],
             edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
             edge_point_counts: vec![2, 0],
+            vertex_points: vec![],
             valid: None,
         })),
         Ok(Reply::Done),
@@ -768,6 +770,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                 face_triangles: vec![1],
                 edge_points: vec![],
                 edge_point_counts: vec![],
+                vertex_points: vec![],
                 valid: Some(true),
             },
             deflection: 1.7e-2,
@@ -1307,6 +1310,7 @@ fn each_triangle_belongs_to_the_face_its_counts_say() {
         face_triangles,
         edge_points: vec![],
         edge_point_counts: vec![],
+        vertex_points: vec![],
         valid: None,
     };
     // Two triangles on face 0, none on face 1, three on face 2.
@@ -1327,6 +1331,7 @@ fn a_mesh_is_validated_before_use() {
         face_triangles: vec![1],
         edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
         edge_point_counts: vec![2, 0, 1],
+        vertex_points: vec![],
         valid: None,
     };
     assert_eq!(
@@ -1365,6 +1370,20 @@ fn a_mesh_is_validated_before_use() {
     let mut not_finite = good.clone();
     not_finite.edge_points[1][2] = f64::NAN;
     assert!(not_finite.validate().unwrap_err().contains("finite"));
+    // A vertex's point, too, naming which (from 1, as `Vertex2` is named); the largest
+    // finite is taken.
+    let mut vertices = good.clone();
+    vertices.vertex_points = vec![[0.0, 0.0, 0.0], [f64::MAX, -f64::MAX, 1.0]];
+    assert_eq!(vertices.validate(), Ok(()));
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut not_finite = vertices.clone();
+        not_finite.vertex_points[1][2] = bad;
+        assert_eq!(
+            not_finite.validate(),
+            Err("Vertex2's point isn't finite".to_owned()),
+            "{bad}"
+        );
+    }
     let mut normal_not_finite = good.clone();
     normal_not_finite.normals[2][0] = f32::INFINITY;
     assert!(
@@ -1427,6 +1446,7 @@ fn counted(face_triangles: Vec<u32>, valid: Option<bool>) -> Mesh {
         face_triangles,
         edge_points: vec![],
         edge_point_counts: vec![],
+        vertex_points: vec![],
         valid,
     }
 }

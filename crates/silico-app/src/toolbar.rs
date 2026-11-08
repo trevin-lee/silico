@@ -235,13 +235,13 @@ const FILLET: Command = command(
     "Fillet",
     Icon::Fillet,
     Some("Rounds the selected edges"),
-    Does::NotBuilt,
+    Does::Dialog(Kind::Fillet),
 );
 const CHAMFER: Command = command(
     "Chamfer",
     Icon::Chamfer,
     Some("Bevels the selected edges"),
-    Does::NotBuilt,
+    Does::Dialog(Kind::Chamfer),
 );
 const UNION: Command = command("Union", Icon::Union, None, Does::NotBuilt);
 const SUBTRACT: Command = command("Subtract", Icon::Subtract, None, Does::NotBuilt);
@@ -1105,13 +1105,42 @@ mod tests {
     use super::*;
 
     /// A dialog's command is labelled with its kind's title, which the dialog's heading
-    /// and the tests find it by; every kind is in CREATE's drop-down once, and the sweeps
-    /// in its row too (app.js:394), the primitives not.
+    /// and the tests find it by; every kind but the dressings is in CREATE's drop-down once,
+    /// and the sweeps in its row too (app.js:394), the primitives not; the dressings are in
+    /// MODIFY's row and drop-down once each (app.js:397, interact.js:176).
     #[test]
     fn every_dialog_is_in_creates_drop_down_under_its_title_and_the_sweeps_in_its_row() {
         let create = &SOLID[0];
         let menu = create.menu.unwrap_or_default();
-        for kind in Kind::ALL {
+        let modify = &SOLID[1];
+        assert_eq!(modify.label, "MODIFY");
+        for kind in Kind::ALL.into_iter().filter(|kind| kind.dresses()) {
+            let commands = |entries: Vec<&Command>| {
+                entries
+                    .into_iter()
+                    .filter(|command| command.does == Does::Dialog(kind))
+                    .map(|command| command.label)
+                    .collect::<Vec<_>>()
+            };
+            let in_menu = commands(
+                modify
+                    .menu
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        Entry::Command(command) => Some(command),
+                        _ => None,
+                    })
+                    .collect(),
+            );
+            assert_eq!(in_menu, [kind.title()], "{kind:?}");
+            assert_eq!(
+                commands(modify.row.iter().collect()),
+                [kind.title()],
+                "{kind:?}"
+            );
+        }
+        for kind in Kind::ALL.into_iter().filter(|kind| !kind.dresses()) {
             let in_menu: Vec<_> = menu
                 .iter()
                 .filter_map(|entry| match entry {
@@ -1671,7 +1700,14 @@ mod tests {
         // whose dialog can't open, and what isn't built. SELECT's filters, each on (every
         // kind taken, as the filter starts), are `.tb-btn.toggle-on`: white on Gray.250, a
         // 2 point blue line inside its foot (`box-shadow: inset 0 -2px 0 var(--blue)`).
-        let on = ["Create Sketch", "Pad", "Revolve", "Groove"];
+        let on = [
+            "Create Sketch",
+            "Pad",
+            "Revolve",
+            "Groove",
+            "Fillet",
+            "Chamfer",
+        ];
         let toggles = ["Faces", "Edges", "Vertices"];
         let icon = |rect: Rect| Rect::from_center_size(rect.center(), Vec2::splat(css::ICON_LG));
         for (label, rect) in laid.iter().flat_map(|panel| panel.buttons.iter()) {

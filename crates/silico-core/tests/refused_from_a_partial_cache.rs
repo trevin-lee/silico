@@ -243,43 +243,89 @@ fn a_refused_pockets_faces_and_sweep_still_queued_when_its_cached_cuts_measure_l
     check(&model, &fresh);
 }
 
+/// Every entry in the cache gained since `had` that isn't a cut removed, and how many.
+fn drop_all_but_the_cuts(scratch: &Scratch, had: &BTreeSet<PathBuf>) -> usize {
+    let mut dropped = 0;
+    for path in scratch.entries().difference(had).filter(|p| !is_cut(p)) {
+        std::fs::remove_file(path).unwrap();
+        dropped += 1;
+    }
+    dropped
+}
+
+/// Whether the cache holds a shape of `cuts` cuts, the fake writing each of a shape's steps
+/// on a line of its own: a pocket's cut on `cuts − 1` pockets.
+fn cached_cuts(scratch: &Scratch, cuts: usize) -> bool {
+    let cut = b"\ncut ";
+    scratch.entries().iter().any(|path| {
+        std::fs::read(path)
+            .is_ok_and(|bytes| bytes.windows(cut.len()).filter(|w| *w == cut).count() == cuts)
+    })
+}
+
+/// A fake kernel that holds the measure of the first pocket's cut (a cut of the box alone),
+/// so the pockets made from it are built, measured, and kept on disk before its verdict.
+fn holding_the_first_cuts_measure() -> (FakeKernel, silico_core::fake::Hold) {
+    let kernel = FakeKernel::new(2).unwrap();
+    let hold = kernel.hold(|op| match op {
+        Op::Summarize { shape } => FakeKernel::describe(shape)
+            .is_some_and(|made| made.starts_with("cut(") && made.matches("cut(").count() == 1),
+        _ => false,
+    });
+    (kernel, hold)
+}
+
 /// The council's round 5 (tests): a refused pocket made from another refused one, its cut
 /// cached (its verdict known when the recompute starts) but its own sweep missing, is
 /// blocked on the first, and none of its steps is built: they serve a feature made from a
-/// refused one, which nothing reads (`needed`'s `made_from_dead`).
+/// refused one, which nothing reads (`needed`'s `made_from_dead`). The cut of the second
+/// is cached by a run in which it was made and measured before the first's measure landed
+/// (held here; a measure is a job of its own, and a pocket's users start as soon as its cut
+/// is made): its premise once came from an M2 cut sharing the first's step and built, which
+/// S7's rule for M2 booleans makes refused too.
 #[test]
 fn a_refused_pocket_on_a_refused_pocket_builds_none_of_its_own_missing_steps() {
     const REVERSED: &str = r#"{"type": "one_side", "length": 10, "reversed": true}"#;
     let scratch = Scratch::new("made-from-dead");
     let cube = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
-    let twin = box_at("cccccccc", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
     let sketch = rectangle("ssssssss", "xy", [0.0, 0.0], 4.0, 2.0);
+    // A baseless pad, reversed: the first pocket's faces and prism, kept.
     let pad = pad("pppppppp", None, "ssssssss", REVERSED);
-    // An M2 cut of the twin by the pad: the same step as the pocket of the cube below,
-    // built, so its result is cached with its measures.
-    let cut = r#"{"id": "kkkkkkkk", "type": "cut", "v": 1, "name": "K", "base": "cccccccc", "tool": "pppppppp"}"#;
-    let on_cut = pocket("rrrrrrrr", "kkkkkkkk", "ssssssss", &one_side("3"));
-    // Run 1: the cut built; a 3 mm pocket on it refused (it misses), its cut cached.
+    let first_pocket = pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN);
+    let on_it = pocket("rrrrrrrr", "qqqqqqqq", "ssssssss", &one_side("3"));
     let first = scratch.engine(FakeKernel::new(2).unwrap());
-    let base = vec![cube.clone(), twin, sketch.clone(), pad, cut.to_owned()];
-    published(&first, &refs(&base));
-    let had = scratch.entries();
-    let mut with_pocket = base.clone();
-    with_pocket.push(on_cut.clone());
-    let model = published(&first, &refs(&with_pocket));
-    refused(&model, "rrrrrrrr");
+    published(&first, &refs(&[cube.clone(), sketch.clone(), pad]));
     drop(first);
-    // Its sweep's entry lost; its cut's kept.
-    assert_eq!(drop_all_but_the_cut(&scratch, &had), 1);
-    // Run 2: the pocket of the cube (refused: the cached cut's step) and the same 3 mm
-    // pocket on it, made from it: its cut cached and refused, its sweep missing.
+    let had = scratch.entries();
+    // Run 1: the first pocket's measure held until the second's cut, made from it and
+    // measured, is on disk; then both refused (each misses), the second dead too.
+    let (kernel, hold) = holding_the_first_cuts_measure();
+    let engine = scratch.engine(kernel);
+    let document = vec![cube, sketch, first_pocket, on_it];
+    let pending = engine.start(checked_document(&refs(&document)));
+    let deadline = std::time::Instant::now() + WAIT;
+    while !cached_cuts(&scratch, 2) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the second cut wasn't kept"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    hold.release();
+    let Ok(Ok(RunOutcome::Published(model))) = pending.wait_timeout(WAIT) else {
+        panic!("not published");
+    };
+    refused(&model, "qqqqqqqq");
+    assert_eq!(
+        model.outcome(&id("rrrrrrrr")),
+        Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
+    );
+    drop(engine);
+    // The second's sweep's entry lost; both cuts kept.
+    assert_eq!(drop_all_but_the_cuts(&scratch, &had), 1);
+    // Run 2: the first pocket refused before anything starts (its cut cached), the second
+    // made from it, its cut cached and refused, its sweep missing: nothing is built.
     let second = scratch.engine(FakeKernel::new(2).unwrap());
-    let document = vec![
-        cube,
-        sketch,
-        pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
-        on_cut.replace("kkkkkkkk", "qqqqqqqq"),
-    ];
     let model = published(&second, &refs(&document));
     assert_eq!(
         model.outcome(&id("rrrrrrrr")),
@@ -300,57 +346,48 @@ fn a_refused_pocket_on_a_refused_pocket_builds_none_of_its_own_missing_steps() {
 /// The council's round 6 (tests): the same one level down. A refused pocket on a pocket
 /// that is dead (made from a refused one) but not refused itself builds none of its own
 /// steps either: `made_from_dead` asks whether a feature it's made from is dead, not only
-/// refused.
+/// refused. Its cuts cached as above, made and measured before the first pocket's measure
+/// landed.
 #[test]
 fn a_refused_pocket_on_a_dead_but_unrefused_pocket_builds_none_of_its_own_missing_steps() {
     const REVERSED: &str = r#"{"type": "one_side", "length": 10, "reversed": true}"#;
     const UP3: &str = r#"{"type": "one_side", "length": 3, "reversed": true}"#;
     let scratch = Scratch::new("made-from-dead-transitive");
     let cube = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
-    let twin = box_at("cccccccc", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
     let sketch = rectangle("ssssssss", "xy", [0.0, 0.0], 4.0, 2.0);
     let pad = pad("pppppppp", None, "ssssssss", REVERSED);
-    let cut = r#"{"id": "kkkkkkkk", "type": "cut", "v": 1, "name": "K", "base": "cccccccc", "tool": "pppppppp"}"#;
-    // A pocket up into the cut, which removes some of it: built.
-    let mid = pocket("dddddddd", "kkkkkkkk", "ssssssss", UP3);
+    let first_pocket = pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN);
+    // A pocket up into the first, which removes some of it: its own check holds.
+    let mid = pocket("dddddddd", "qqqqqqqq", "ssssssss", UP3);
     // A pocket down from it, which misses: refused.
     let on_mid = pocket("rrrrrrrr", "dddddddd", "ssssssss", &one_side("3"));
     let first = scratch.engine(FakeKernel::new(2).unwrap());
-    let base = vec![
-        cube.clone(),
-        twin,
-        sketch.clone(),
-        pad,
-        cut.to_owned(),
-        mid.clone(),
-    ];
-    let built = published(&first, &refs(&base));
-    // The middle pocket's cut holds: in run 2 it's dead (made from a refused pocket), not
-    // refused itself, the case this test is for.
-    assert!(
-        matches!(
-            built.outcome(&id("dddddddd")),
-            Some(FeatureOutcome::Built { .. })
-        ),
-        "{:?}",
-        built.outcome(&id("dddddddd"))
-    );
-    let had = scratch.entries();
-    let mut with_pocket = base.clone();
-    with_pocket.push(on_mid.clone());
-    refused(&published(&first, &refs(&with_pocket)), "rrrrrrrr");
+    published(&first, &refs(&[cube.clone(), sketch.clone(), pad]));
     drop(first);
-    assert_eq!(drop_all_but_the_cut(&scratch, &had), 1);
+    let had = scratch.entries();
+    let (kernel, hold) = holding_the_first_cuts_measure();
+    let engine = scratch.engine(kernel);
+    let document = vec![cube, sketch, first_pocket, mid, on_mid];
+    let pending = engine.start(checked_document(&refs(&document)));
+    let deadline = std::time::Instant::now() + WAIT;
+    while !cached_cuts(&scratch, 3) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the third cut wasn't kept"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    hold.release();
+    let Ok(Ok(RunOutcome::Published(model))) = pending.wait_timeout(WAIT) else {
+        panic!("not published");
+    };
+    refused(&model, "qqqqqqqq");
+    drop(engine);
+    // The two later pockets' sweeps' entries lost; the three cuts kept.
+    assert_eq!(drop_all_but_the_cuts(&scratch, &had), 2);
     // The pocket of the cube refused; the pocket on it dead, not refused (its cached cut
     // holds); the pocket on that refused, its cut cached, its sweep lost.
     let second = scratch.engine(FakeKernel::new(2).unwrap());
-    let document = vec![
-        cube,
-        sketch,
-        pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
-        mid.replace("kkkkkkkk", "qqqqqqqq"),
-        on_mid,
-    ];
     let model = published(&second, &refs(&document));
     for blocked in ["dddddddd", "rrrrrrrr"] {
         assert_eq!(

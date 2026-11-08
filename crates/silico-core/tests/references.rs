@@ -610,7 +610,10 @@ fn a_merge_of_a_kind_change_and_a_new_fillet_on_other_lines_breaks_the_fillet() 
     // writes it, so a line merge takes both without a conflict: the merged fillet names a
     // box's edge the cylinder doesn't have, and breaks, never filleting the cylinder's.
     let write = |text: &str| silico_core::document::write(&read(text.as_bytes()).unwrap()).unwrap();
-    let block_cylinder = primitive("k7f2qx3m", "cylinder");
+    // A cylinder of radius 25, so the hole's pin (2.5 round, 22.4 from its axis) is in it
+    // and the cut removes some of it (S7's rule refuses one that removes nothing).
+    let block_cylinder =
+        primitive("k7f2qx3m", "cylinder").replace(r#""radius": 10"#, r#""radius": 25"#);
     let base = write(&document(&[]));
     let ours = write(&document(&[]).replace(BLOCK, &block_cylinder));
     let theirs = write(&document(&[&fillet(

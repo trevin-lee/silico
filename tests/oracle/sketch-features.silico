@@ -267,7 +267,7 @@
       "width": 10,
       "height": 10,
       "note": "testPartDesignElementMapPocket's box, FreeCAD's AdditiveBox (10 mm), from z = -10 so its top is the XY plane.",
-      "fingerprint": {"volume": 1000, "area": 600, "bbox": [0, 0, -10, 10, 10, 0], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 1000, "area": 600, "center": [5, 5, -5], "bbox": [0, 0, -10, 10, 10, 0], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "s0000009",
@@ -543,7 +543,7 @@
       "width": 100,
       "height": 60,
       "note": "A block from -50 to 20 along XY's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XY runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [-15, 0, 0], "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000004",
@@ -565,7 +565,7 @@
       "width": 100,
       "height": 60,
       "note": "A block from -50 to 20 along XY's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XY runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [-15, 0, 0], "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000005",
@@ -587,7 +587,7 @@
       "width": 100,
       "height": 60,
       "note": "A block from -50 to 20 along XY's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XY runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [-15, 0, 0], "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000006",
@@ -609,7 +609,7 @@
       "width": 100,
       "height": 60,
       "note": "A block from -50 to 20 along XY's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XY runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [-15, 0, 0], "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000007",
@@ -631,7 +631,7 @@
       "width": 100,
       "height": 60,
       "note": "A block from -50 to 20 along XY's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XY runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [-15, 0, 0], "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000008",
@@ -653,7 +653,7 @@
       "width": 100,
       "height": 60,
       "note": "A block from -50 to 20 along XY's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XY runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [-15, 0, 0], "bbox": [-50, -50, -30, 20, 50, 30], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000009",
@@ -675,7 +675,7 @@
       "width": 60,
       "height": 100,
       "note": "A block from -50 to 20 along XZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XZ runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [-15, 0, 0], "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000010",
@@ -697,7 +697,7 @@
       "width": 60,
       "height": 100,
       "note": "A block from -50 to 20 along XZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XZ runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [-15, 0, 0], "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000011",
@@ -719,7 +719,7 @@
       "width": 60,
       "height": 100,
       "note": "A block from -50 to 20 along XZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XZ runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [-15, 0, 0], "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000012",
@@ -741,7 +741,7 @@
       "width": 60,
       "height": 100,
       "note": "A block from -50 to 20 along XZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XZ runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [-15, 0, 0], "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000013",
@@ -763,7 +763,7 @@
       "width": 60,
       "height": 100,
       "note": "A block from -50 to 20 along XZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XZ runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [-15, 0, 0], "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000014",
@@ -785,7 +785,7 @@
       "width": 60,
       "height": 100,
       "note": "A block from -50 to 20 along XZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on XZ runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [-15, 0, 0], "bbox": [-50, -30, -50, 20, 30, 50], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000015",
@@ -807,7 +807,7 @@
       "width": 70,
       "height": 100,
       "note": "A block from -50 to 20 along YZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on YZ runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [0, -15, 0], "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000016",
@@ -829,7 +829,7 @@
       "width": 70,
       "height": 100,
       "note": "A block from -50 to 20 along YZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on YZ runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [0, -15, 0], "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000017",
@@ -851,7 +851,7 @@
       "width": 70,
       "height": 100,
       "note": "A block from -50 to 20 along YZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on YZ runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [0, -15, 0], "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000018",
@@ -873,7 +873,7 @@
       "width": 70,
       "height": 100,
       "note": "A block from -50 to 20 along YZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on YZ runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [0, -15, 0], "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000019",
@@ -895,7 +895,7 @@
       "width": 70,
       "height": 100,
       "note": "A block from -50 to 20 along YZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on YZ runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [0, -15, 0], "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000020",
@@ -917,7 +917,7 @@
       "width": 70,
       "height": 100,
       "note": "A block from -50 to 20 along YZ's x, -50 to 50 along its y, and -30 to 30 along its normal: the rectangle on YZ runs out through its side at x = 20.",
-      "fingerprint": {"volume": 420000, "area": 34400, "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 420000, "area": 34400, "center": [0, -15, 0], "bbox": [-30, -50, -50, 30, 20, 50], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "q0000021",
@@ -1511,7 +1511,7 @@
       "width": 10,
       "height": 10,
       "note": "A 10 mm cube at the origin.",
-      "fingerprint": {"volume": 1000, "area": 600, "bbox": [0, 0, 0, 10, 10, 10], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 1000, "area": 600, "center": [5, 5, 5], "bbox": [0, 0, 0, 10, 10, 10], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "s0000022",
@@ -1556,7 +1556,7 @@
       "width": 20,
       "height": 10,
       "note": "A 20 by 20 by 10 block from z = 5, above the XY plane.",
-      "fingerprint": {"volume": 4000, "area": 1600, "bbox": [0, 0, 5, 20, 20, 15], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 4000, "area": 1600, "center": [10, 10, 10], "bbox": [0, 0, 5, 20, 20, 15], "faces": 6, "edges": 12, "vertices": 8}
     },
     {
       "id": "s0000023",

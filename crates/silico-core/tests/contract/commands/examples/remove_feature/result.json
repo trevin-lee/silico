@@ -10,7 +10,7 @@
     ],
     "size": {"distance": 1},
     "note": "A block's edge, kept by the cut and the fillet under its own name",
-    "fingerprint": {"volume": 7797.770072, "area": 2907.692109, "bbox": [0, 0, 0, 40, 20, 10], "faces": 9, "edges": 20, "vertices": 13}
+    "fingerprint": {"volume": 7797.770072, "area": 2907.692109, "center": [20.01261, 10.006198, 4.999448], "bbox": [0, 0, 0, 40, 20, 10], "faces": 9, "edges": 20, "vertices": 13}
   },
   "index": 4,
   "rewired": [],

@@ -1699,6 +1699,7 @@ mod tests {
             face_triangles: vec![1],
             edge_points: vec![],
             edge_point_counts: vec![],
+            vertex_points: vec![],
             // Validity is sent only with a face left unmeshed.
             valid: None,
         }

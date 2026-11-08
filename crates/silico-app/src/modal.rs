@@ -32,12 +32,16 @@ pub(crate) enum Kind {
     Danger,
     /// `.canvas-banner .btn-secondary`: a button on a banner whose words are this colour.
     Banner(Color32),
+    /// `.btn-ghost`: no fill until hovered (Mark as seen, and an error card's Show in
+    /// timeline and Copy as JSON).
+    Ghost,
 }
 
-/// A button: its words (its label), its kind, its key cap if it shows one, and whether it's
-/// on.
+/// A button: its icon before its words, if it has one, its words (its label), its kind, its
+/// key cap if it shows one, and whether it's on.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Button<'a> {
+    pub icon: Option<Icon>,
     pub text: &'a str,
     pub kind: Kind,
     pub cap: Option<&'a str>,
@@ -45,13 +49,22 @@ pub(crate) struct Button<'a> {
 }
 
 impl<'a> Button<'a> {
-    /// A button of `kind` saying `text`, on, with no key cap.
+    /// A button of `kind` saying `text`, on, with no icon and no key cap.
     pub(crate) fn new(text: &'a str, kind: Kind) -> Self {
         Button {
+            icon: None,
             text,
             kind,
             cap: None,
             enabled: true,
+        }
+    }
+
+    /// With `icon` before its words (`.btn svg`, [`theme::BUTTON_GAP`] from them).
+    pub(crate) fn icon(self, icon: Icon) -> Self {
+        Button {
+            icon: Some(icon),
+            ..self
         }
     }
 
@@ -309,7 +322,12 @@ pub(crate) fn natural_width(ui: &Ui, button: &Button<'_>) -> f32 {
     let cap = button.cap.map_or(0.0, |cap| {
         cap_space() + cap_width(&cap_galley(ui, cap, Color32::WHITE))
     });
-    words + cap + 2.0 * theme::BUTTON_PADDING
+    words + cap + icon_room(button) + 2.0 * theme::BUTTON_PADDING
+}
+
+/// The room `button`'s icon takes before its words, its gap included: none without one.
+fn icon_room(button: &Button<'_>) -> f32 {
+    button.icon.map_or(0.0, |_| ICON_SIZE + theme::BUTTON_GAP)
 }
 
 /// The space between a button's words and its key cap: the button's gap and the cap's margin
@@ -348,6 +366,9 @@ pub(crate) fn colours(kind: Kind, enabled: bool, hovered: bool) -> (Color32, Col
             theme::BANNER_BUTTON_HOVER_TEXT,
         ),
         (Kind::Banner(ink), true, false) => (theme::BANNER_BUTTON_BG, ink),
+        (Kind::Ghost, false, _) => (Color32::TRANSPARENT, theme::TEXT_DISABLED),
+        (Kind::Ghost, true, true) => (theme::GHOST_BUTTON_HOVER_BG, theme::GHOST_BUTTON_HOVER_TEXT),
+        (Kind::Ghost, true, false) => (Color32::TRANSPARENT, theme::GHOST_BUTTON_TEXT),
     }
 }
 
@@ -375,11 +396,24 @@ pub(crate) fn paint(ui: &mut Ui, rect: Rect, button: &Button<'_>) -> Response {
             let words = ui.painter().layout_job(properties::body(button.text, ink));
             let cap = button.cap.map(|cap| cap_galley(ui, cap, ink));
             let cap_room = cap.as_ref().map_or(0.0, |cap| cap_space() + cap_width(cap));
-            let content = words.size().x + cap_room;
+            let icon_room = icon_room(button);
+            let content = icon_room + words.size().x + cap_room;
             let left = rect.center().x - content / 2.0;
             let middle = rect.center().y;
-            ui.painter()
-                .galley(pos2(left, middle - words.size().y / 2.0), words, ink);
+            if let Some(icon) = button.icon {
+                icon.image(IconSize::Small).tint(ink).paint_at(
+                    ui,
+                    Rect::from_min_size(
+                        pos2(left, middle - ICON_SIZE / 2.0),
+                        Vec2::splat(ICON_SIZE),
+                    ),
+                );
+            }
+            ui.painter().galley(
+                pos2(left + icon_room, middle - words.size().y / 2.0),
+                words,
+                ink,
+            );
             if let Some(cap) = cap {
                 let width = cap_width(&cap);
                 let cap_rect = Rect::from_min_size(
@@ -1410,5 +1444,57 @@ pub(crate) mod tests {
         // One cap at its least, one wider; Export with its cap wider than 76.
         assert_eq!(clamped, [true, true], "the caps' widths");
         assert!(widget(&h, Role::Button, "Export").width() > css::FOOT_BTN_MIN_W + 1.0);
+    }
+
+    #[test]
+    fn a_buttons_icon_is_10_in_its_words_6_after_it_and_the_button_as_wide_as_both_padded() {
+        // An error card's Edit (`errCard`: `<button class="btn btn-secondary">${icon('edit')}
+        // Edit …`): `.btn { padding: 0 10px; gap: 6px; align-items: center }`, `svg.i` 14
+        // square; with nothing to widen it, as wide as its icon, its gap, and its words,
+        // padded. Its icon and words `.btn-secondary`'s Gray.750, each centred down it.
+        const WORDS: &str = "Edit Hole";
+        let place = Pos2::new(40.0, 30.0);
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(300.0, 100.0))
+            .build_ui(move |ui| {
+                let button = Button::new(WORDS, Kind::Secondary).icon(Icon::Edit);
+                let width = natural_width(ui, &button);
+                paint(
+                    ui,
+                    Rect::from_min_size(place, Vec2::new(width, css::BTN_H)),
+                    &button,
+                );
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let words = text_shape(&h, WORDS);
+        let wide = words.galley.size().x;
+        let button = widget(&h, Role::Button, WORDS);
+        sized(
+            button,
+            Rect::from_min_size(
+                place,
+                Vec2::new(
+                    css::BTN_PADDING + css::ICON + css::BTN_GAP + wide + css::BTN_PADDING,
+                    css::BTN_H,
+                ),
+            ),
+            "the button",
+        );
+        let middle = place.y + css::BTN_H / 2.0;
+        let icon = Rect::from_min_size(
+            Pos2::new(place.x + css::BTN_PADDING, middle - css::ICON / 2.0),
+            Vec2::splat(css::ICON),
+        );
+        assert_eq!(icon_at(&h, icon), Some(css::SECONDARY.1), "the icon");
+        at(
+            words.pos,
+            Pos2::new(
+                icon.right() + css::BTN_GAP,
+                middle - words.galley.size().y / 2.0,
+            ),
+            "the words",
+        );
+        assert_eq!(colour(&words), css::SECONDARY.1);
     }
 }

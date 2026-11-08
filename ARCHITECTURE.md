@@ -130,7 +130,7 @@ A `.silico` file is strict JSON describing the feature timeline. Silico rebuilds
       "id": "a91cw0de", "type": "pad", "v": 1, "name": "body", "sketch": "k7f2qx3m",
       "extent": {"type": "one_side", "length": 10, "reversed": false},
       "note": "Wall thickness matches the motor mount interface",
-      "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}
+      "fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}
     }
   ]
 }
@@ -143,7 +143,7 @@ A `.silico` file is strict JSON describing the feature timeline. Silico rebuilds
 - **The naming scheme** the document's element names were written under is declared in the `naming` header (5, M4.0). A document of another scheme is refused, naming it, so a name is never read under a scheme other than its own; a document saved before the header recorded it is read as scheme 5.
 - **Parameters** are named, typed values with units, stored at the top of the document. Expressions reference them. This is the data model only. How parameters are presented and edited (a spreadsheet, a parameter panel, inline in dimension fields) is a separate UX decision.
 - **Sketches store solved coordinates.** On load they are the solver's initial guess. If the constraints changed, for example after a hand edit, the sketch is re-solved and `silico fmt` writes the corrected coordinates back.
-- **Fingerprints** record volume, area, bounding box, and face/edge/vertex counts for each feature, much as a lockfile does. A rebuild that doesn't match its fingerprint is flagged loudly, and CI fails on drift. Fingerprints also make PR diffs meaningful. As with a lockfile, an edit by hand or in a merge leaves the fingerprints it affects stale until `format` (or `silico fmt`) accepts them, naming each; a commit writes new fingerprints only for the features its edits reached (docs/design/m4.1-command-api.md, decision 28), and a feature that fails to build keeps its last fingerprint, unless the session's edits reached it: then it's saved with none, since a fingerprint measured from other values is no record of it (decision 28, amended).
+- **Fingerprints** record volume, area, center of mass, bounding box, and face/edge/vertex counts for each feature, much as a lockfile does. The center says where the material is, which the amounts and the box don't: a feature that a kernel change moved onto a look-alike place, as its mirror image, drifts on it. A rebuild that doesn't match its fingerprint is flagged loudly, and CI fails on drift. Fingerprints also make PR diffs meaningful. As with a lockfile, an edit by hand or in a merge leaves the fingerprints it affects stale until `format` (or `silico fmt`) accepts them, naming each; a commit writes new fingerprints only for the features its edits reached (docs/design/m4.1-command-api.md, decision 28), and a feature that fails to build keeps its last fingerprint, unless the session's edits reached it: then it's saved with none, since a fingerprint measured from other values is no record of it (decision 28, amended).
 - **Features are versioned** with `v`. Changing a feature's behavior bumps its version. Old documents keep rebuilding with the old behavior until they're explicitly upgraded. Until the first release, every feature's `v` stays 1, as the schema's `silico` does: no document has shipped, so a behavior change is agreed with the maintainer instead of bumping it.
 - **Notes** are a data field, not comments, so they survive UI saves and are visible in the UI and through MCP.
 - **Canonical form.** Keys are written in schema order, numbers as described in *Numbers in the file*, one leaf entity per line, LF line endings, and a trailing newline. `silico fmt` produces canonical form, and every save writes it.
@@ -216,7 +216,7 @@ Silico has one maintainer and mostly agent-written code. Tests stand in for line
 
 - **Unit tests** cover every behavior change. Expected values must come from an independent source, not from the code under test.
 - **Oracle tests** (`tests/oracle/`, protected): run the same operation in Silico and in headless FreeCAD, and compare volume, area, bounding box, center of mass, topology counts, and validity.
-- **Golden corpus** (`tests/golden/`, protected): real models with fingerprints. Rebuilds must match.
+- **Golden corpus** (`tests/golden/`, protected): real models with fingerprints (volume, area, center of mass, box, and counts). Rebuilds must match.
 - **Ported FreeCAD tests** for every subsystem that has them.
 - **Determinism tests:** rebuild twice and compare bytes.
 - **Property tests** (proptest) biased toward edge values, **fuzzing** (cargo-fuzz) for everything that parses input, and `/break-it` for hostile inputs.
@@ -240,7 +240,7 @@ FreeCAD's spreadsheet *capability* (named parameters driving the model) is in st
 
 ## License
 
-GPL-3.0-or-later. Silico's dependencies are LGPL (FreeCAD, OCCT, PlaneGCS, OndselSolver) and MIT/Apache (egui, wgpu, Rerun crates), and all of these licenses are compatible with GPL.
+AGPL-3.0-or-later ([LICENSE](LICENSE)). Silico's dependencies are LGPL (FreeCAD, OCCT, PlaneGCS, OndselSolver) and MIT/Apache (egui, wgpu, Rerun crates), all compatible with AGPL-3.0; the fonts in `silico-font` are OFL-1.1, distributed alongside the code under their own license. Code taken from them keeps its own license and notice: PlaneGCS in `third_party/planegcs` (LGPL-2.1-or-later, `LICENSE.FreeCAD`), the fonts' OFL texts, Rerun's MIT notice on the style constants `silico-app`'s theme takes from `re_ui`, and three.js's MIT notice beside the copy the prototype in `docs/design/m5-ui/` vendors. `deny.toml` admits only licenses compatible with Silico's.
 
 ## Open questions
 

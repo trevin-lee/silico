@@ -14,7 +14,9 @@
 //! Five runs of each size: the view still and the pointer moving (a hover), and the view
 //! orbiting under it (a hover while orbiting, which also places every face again), each
 //! with nothing outlined, and with a selection of ten faces and a hovered one outlined (the
-//! outline pass the app draws a selection with); the view still with the whole body
+//! outline pass the app draws a selection with), and with nothing outlined but the
+//! vertices picked too (M5.7: each vertex's point projected, and a disc drawn into the
+//! picking layer for each near the square); the view still with the whole body
 //! outlined (every face highlighted: a body's row selected in the browser); and first, as
 //! the baseline, the view still with nothing outlined and nothing picked. Each line gives
 //! the frames' median and 95th percentile, how many picks were answered, and how many
@@ -94,10 +96,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut out = String::new();
     out += &format!("adapter {}\n", adapter.get_info().name);
     out += &format!(
-        "part {} faces {} triangles {} edges\n",
+        "part {} faces {} triangles {} edges {} vertices\n",
         mesh.face_triangles.len(),
         mesh.triangles.len(),
-        mesh.edge_point_counts.len()
+        mesh.edge_point_counts.len(),
+        mesh.vertex_points.len()
     );
     out += "scope renderer only: each frame waits on the GPU; the app's answer comes about 2 frames after its ask\n";
     // Ten faces selected, spread over the part's numbering, and one hovered; and every face
@@ -112,14 +115,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         // The still view with nothing outlined and no picking first: what the picking costs
         // is the difference.
         let runs = [
-            (false, Outlined::Nothing, false),
-            (false, Outlined::Nothing, true),
-            (false, Outlined::Ten, true),
-            (true, Outlined::Nothing, true),
-            (true, Outlined::Ten, true),
-            (false, Outlined::Whole, true),
+            (false, Outlined::Nothing, false, false),
+            (false, Outlined::Nothing, true, false),
+            (false, Outlined::Nothing, true, true),
+            (false, Outlined::Ten, true, false),
+            (true, Outlined::Nothing, true, false),
+            (true, Outlined::Nothing, true, true),
+            (true, Outlined::Ten, true, false),
+            (false, Outlined::Whole, true, false),
         ];
-        for (orbiting, outlined, asking) in runs {
+        for (orbiting, outlined, asking, vertices) in runs {
             {
                 let none: &[(u32, Element)] = &[];
                 let (highlights, hover) = match outlined {
@@ -151,6 +156,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                             hovered: hover,
                             outlines: Outlines::DEFAULT,
                             picking: asking.then_some(picking),
+                            // The selection's 7-point vertex discs (M5.7).
+                            vertices: vertices.then_some(7.0),
                             // The app's viewport colour (its theme's VIEWPORT_BG).
                             background: [0x00, 0x00, 0x00, 0xff],
                         })
@@ -188,7 +195,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 late.sort_unstable();
                 let ms = |d: Duration| d.as_secs_f64() * 1e3;
                 out += &format!(
-                    "size {width}x{height} view {} outlines {} picking {} renderer_frame_median_ms {:.2} renderer_frame_p95_ms {:.2} picks_answered {answered}/{FRAMES} hits {hits} frames_late_median {} frames_late_max {}\n",
+                    "size {width}x{height} view {} outlines {} picking {} vertices {} renderer_frame_median_ms {:.2} renderer_frame_p95_ms {:.2} picks_answered {answered}/{FRAMES} hits {hits} frames_late_median {} frames_late_max {}\n",
                     if orbiting { "orbiting" } else { "still" },
                     match outlined {
                         Outlined::Nothing => "off",
@@ -196,6 +203,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         Outlined::Whole => "whole_body",
                     },
                     if asking { "on" } else { "off" },
+                    if vertices { "on" } else { "off" },
                     ms(times[FRAMES / 2]),
                     ms(times[FRAMES * 95 / 100]),
                     late.get(late.len() / 2).copied().unwrap_or(0),

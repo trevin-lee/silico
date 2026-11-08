@@ -878,9 +878,9 @@ fn is_cylinder(op: &Op) -> bool {
 /// they didn't touch (and these don't): 9000, area 3400. But the block's volume is
 /// stored 1e-6 mm³ over what it measures: drift, which no edit below reaches.
 const STORED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [
-  {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000.000001, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}},
-  {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10, "fingerprint": {"volume": 1000, "area": 600, "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}},
-  {"id": "f0000001", "type": "fuse", "v": 1, "name": "Both", "base": "k7f2qx3m", "tool": "b0000001", "fingerprint": {"volume": 9000, "area": 3400, "bbox": [0, 0, 0, 110, 20, 10], "faces": 12, "edges": 24, "vertices": 16}}
+  {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000.000001, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}},
+  {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10, "fingerprint": {"volume": 1000, "area": 600, "center": [105, 5, 5], "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}},
+  {"id": "f0000001", "type": "fuse", "v": 1, "name": "Both", "base": "k7f2qx3m", "tool": "b0000001", "fingerprint": {"volume": 9000, "area": 3400, "center": [29.444444, 9.444444, 5], "bbox": [0, 0, 0, 110, 20, 10], "faces": 12, "edges": 24, "vertices": 16}}
 ]}
 "#;
 
@@ -897,7 +897,7 @@ fn longer() -> String {
 /// [`longer`] committed: the block's fingerprint as stored, drift and all; the lug's
 /// and the fuse's new, by hand: the lug 20 × 10 × 10 = 2000, area 2(200 + 200 + 100) =
 /// 1000, to x = 120; the fuse 8000 + 2000 = 10000, area 2800 + 1000 = 3800.
-const COMMITTED: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000.000001, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\n      \"id\": \"b0000001\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Lug\",\n      \"position\": [100, 0, 0],\n      \"length\": 20,\n      \"width\": 10,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 2000, \"area\": 1000, \"bbox\": [100, 0, 0, 120, 10, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\n      \"id\": \"f0000001\",\n      \"type\": \"fuse\",\n      \"v\": 1,\n      \"name\": \"Both\",\n      \"base\": \"k7f2qx3m\",\n      \"tool\": \"b0000001\",\n      \"fingerprint\": {\"volume\": 10000, \"area\": 3800, \"bbox\": [0, 0, 0, 120, 20, 10], \"faces\": 12, \"edges\": 24, \"vertices\": 16}\n    }\n  ]\n}\n";
+const COMMITTED: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000.000001, \"area\": 2800, \"center\": [20, 10, 5], \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\n      \"id\": \"b0000001\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Lug\",\n      \"position\": [100, 0, 0],\n      \"length\": 20,\n      \"width\": 10,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 2000, \"area\": 1000, \"center\": [110, 5, 5], \"bbox\": [100, 0, 0, 120, 10, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\n      \"id\": \"f0000001\",\n      \"type\": \"fuse\",\n      \"v\": 1,\n      \"name\": \"Both\",\n      \"base\": \"k7f2qx3m\",\n      \"tool\": \"b0000001\",\n      \"fingerprint\": {\"volume\": 10000, \"area\": 3800, \"center\": [38, 9, 5], \"bbox\": [0, 0, 0, 120, 20, 10], \"faces\": 12, \"edges\": 24, \"vertices\": 16}\n    }\n  ]\n}\n";
 
 /// The one drift `problems` hold: the block's volume, stored 1e-6 over.
 #[track_caller]
@@ -924,6 +924,72 @@ fn the_blocks_drift(problems: &Problems) {
         Some(
             "if this feature or one it uses was edited by hand or in a merge since it was saved, run format (or silico fmt) to accept its new fingerprint; if not, this is a determinism bug or a change in the kernel: find which before accepting it"
         )
+    );
+}
+
+#[test]
+fn an_edits_saved_model_is_named_by_the_background_with_no_client_asking() {
+    // An edit outside a transaction saves, and publishes its rebuild's model rebound to the
+    // saved document: a copy, not the model the engine published and the background names.
+    // Its names settle all the same, with no client asking: read as the app's selection
+    // reads them, never naming anything (`named_element_map`, `selection::resolve`), a
+    // pick of the block's face by name is found once the background has named the engine's
+    // model, and is pending till then.
+    let f = opened(BOX);
+    let session = f.session();
+    lock(&session.rebuilds).engine.hold_naming();
+    let revision = session.held.read().revision;
+    let set = f
+        .sessions
+        .set_field(
+            &f.id,
+            revision,
+            id("k7f2qx3m"),
+            "length".to_owned(),
+            crate::document::json::read(b"41").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    assert!(set.commit.unwrap().written);
+    let published = f.sessions.published(&f.id).result.unwrap();
+    assert_eq!(published.revision.number(), 2);
+    let saved = published.model;
+    let built = lock(&session.rebuilds).engine.published().unwrap();
+    // The saved revision's model is the edit's, rebound: another model, of the saved text.
+    assert!(!Arc::ptr_eq(&saved, &built));
+    assert_eq!(saved.generation(), built.generation());
+    assert_eq!(
+        saved.document().features[0].fingerprint.unwrap().volume,
+        Measure::from_millionths(8_200_000_000)
+    );
+    let block = id("k7f2qx3m");
+    let pick = ["k7f2qx3m.box.Face1"];
+    assert!(saved.named_element_map(&block).is_none());
+    assert!(saved.named_so_far(&block).is_none());
+    let resolved = crate::selection::resolve(&saved, &pick, "selection").unwrap();
+    assert_eq!(resolved.pending.len(), 1, "{resolved:?}");
+    assert!(resolved.kept.is_empty(), "{resolved:?}");
+    lock(&session.rebuilds).engine.release_naming();
+    // Waited for on the engine's model, the one it names; never on the saved copy. (The
+    // background's naming takes no lock of the session's.)
+    assert!(
+        lock(&session.rebuilds)
+            .engine
+            .wait_naming_ended(&built, WAIT)
+    );
+    assert!(std::ptr::eq(
+        saved.named_element_map(&block).unwrap(),
+        built.named_element_map(&block).unwrap()
+    ));
+    let resolved = crate::selection::resolve(&saved, &pick, "selection").unwrap();
+    assert!(resolved.pending.is_empty(), "{resolved:?}");
+    assert!(resolved.gone.is_empty(), "{resolved:?}");
+    assert_eq!(resolved.kept.len(), 1, "{resolved:?}");
+    assert_eq!(resolved.kept[0].feature, block);
+    assert_eq!(
+        resolved.kept[0].element,
+        silico_protocol::ElementRef::face(1)
     );
 }
 
@@ -999,7 +1065,7 @@ fn a_check_says_no_drift_of_what_edits_reached() {
 #[test]
 fn a_notes_edit_reaches_nothing_and_its_commit_writes_no_fingerprint() {
     // The lug has no fingerprint stored: a commit that reached it would write one.
-    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}, {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10}]}"#;
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}, {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10}]}"#;
     let noted = text.replace(
         r#""name": "Block", "#,
         r#""name": "Block", "note": "Mount face", "#,
@@ -1013,7 +1079,7 @@ fn a_notes_edit_reaches_nothing_and_its_commit_writes_no_fingerprint() {
     assert!(committed.problems.is_empty(), "{:?}", committed.problems);
     assert_eq!(
         f.file(),
-        "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"note\": \"Mount face\",\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\"id\": \"b0000001\", \"type\": \"box\", \"v\": 1, \"name\": \"Lug\", \"position\": [100, 0, 0], \"length\": 10, \"width\": 10, \"height\": 10}\n  ]\n}\n"
+        "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"note\": \"Mount face\",\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"center\": [20, 10, 5], \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\"id\": \"b0000001\", \"type\": \"box\", \"v\": 1, \"name\": \"Lug\", \"position\": [100, 0, 0], \"length\": 10, \"width\": 10, \"height\": 10}\n  ]\n}\n"
     );
 }
 
@@ -1156,7 +1222,7 @@ fn a_reached_feature_that_failed_stays_reached_after_its_commit() {
 
 /// [`STORED`] committed with the lug 20 long, which failed: the block as stored, the lug
 /// and the fuse, which the edit reached, saved with no fingerprint.
-const REACHED_FAILED: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000.000001, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\"id\": \"b0000001\", \"type\": \"box\", \"v\": 1, \"name\": \"Lug\", \"position\": [100, 0, 0], \"length\": 20, \"width\": 10, \"height\": 10},\n    {\"id\": \"f0000001\", \"type\": \"fuse\", \"v\": 1, \"name\": \"Both\", \"base\": \"k7f2qx3m\", \"tool\": \"b0000001\"}\n  ]\n}\n";
+const REACHED_FAILED: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000.000001, \"area\": 2800, \"center\": [20, 10, 5], \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\"id\": \"b0000001\", \"type\": \"box\", \"v\": 1, \"name\": \"Lug\", \"position\": [100, 0, 0], \"length\": 20, \"width\": 10, \"height\": 10},\n    {\"id\": \"f0000001\", \"type\": \"fuse\", \"v\": 1, \"name\": \"Both\", \"base\": \"k7f2qx3m\", \"tool\": \"b0000001\"}\n  ]\n}\n";
 
 /// Each feature's stored volume and area in the document `text`, in timeline order: none
 /// for one saved without a fingerprint.
@@ -2046,9 +2112,9 @@ fn an_edit_after_text_that_didnt_read_was_mended_reaches_what_it_changed() {
     // to x = 120; the lug as stored.
     let saved = f.file();
     for fingerprint in [
-        r#""fingerprint": {"volume": 12000, "area": 4000, "bbox": [0, 0, 0, 60, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
-        r#""fingerprint": {"volume": 1000, "area": 600, "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
-        r#""fingerprint": {"volume": 14000, "area": 5000, "bbox": [0, 0, 0, 120, 20, 10], "faces": 12, "edges": 24, "vertices": 16}"#,
+        r#""fingerprint": {"volume": 12000, "area": 4000, "center": [30, 10, 5], "bbox": [0, 0, 0, 60, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
+        r#""fingerprint": {"volume": 1000, "area": 600, "center": [105, 5, 5], "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
+        r#""fingerprint": {"volume": 14000, "area": 5000, "center": [41.428571, 9.285714, 5], "bbox": [0, 0, 0, 120, 20, 10], "faces": 12, "edges": 24, "vertices": 16}"#,
     ] {
         assert!(saved.contains(fingerprint), "{fingerprint} in {saved}");
     }
@@ -2587,7 +2653,7 @@ fn a_rollback_of_a_closed_session_starts_no_rebuild() {
 
 /// A 10 mm cube, its fingerprint stored as the fake measures it: 10³ = 1000 mm³, area
 /// 6 × 100 = 600.
-const CUBE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Cube", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10, "fingerprint": {"volume": 1000, "area": 600, "bbox": [0, 0, 0, 10, 10, 10], "faces": 6, "edges": 12, "vertices": 8}}]}"#;
+const CUBE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Cube", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10, "fingerprint": {"volume": 1000, "area": 600, "center": [5, 5, 5], "bbox": [0, 0, 0, 10, 10, 10], "faces": 6, "edges": 12, "vertices": 8}}]}"#;
 
 /// `f`'s model of the revision it's at, built by a check and published, put back with
 /// the cube measured 1e40 mm³: 1e46 millionths, past the 1.7e38 an i128 holds, so no
