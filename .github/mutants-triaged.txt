@@ -641,3 +641,8 @@ crates/silico-app/src/sketch/draw.rs | segments | replace || with && | #351
 # `d <= tolerance` holds for none; `tolerance.is_nan() && tolerance < 0.0`, never true,
 # only takes away the early return from a search that then finds nothing.
 crates/silico-app/src/sketch/hit.rs | hit | replace || with && | #351
+# `keys`' answer (#351's Delete and Finish Sketch in sketch mode, as #298's): it only asks
+# egui for the next frame at once, which egui asks for itself after any input event, and a
+# key press is one, so no frame comes later for it.
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #351
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #351

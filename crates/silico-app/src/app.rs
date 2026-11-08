@@ -2947,4 +2947,52 @@ mod tests {
                 .any(|(text, _)| text == "Reading what changed…")
         );
     }
+
+    // ---- #351's mutants: what sketch mode's panels say of the frame ----
+
+    #[test]
+    fn sketch_modes_panels_asked_nothing_leave_whether_a_command_was_started_as_it_was() {
+        // `started` says whether the frame started a command, so its next frame is asked for
+        // at once: the sketch bar and the palette, Finish Sketch and Cancel unclicked, start
+        // none, and never take back one started before them.
+        let (mut app, dir) = app();
+        let open = answered(&app, &dir, 1, "one.silico", true);
+        let id = session(&open);
+        app.take_opens(vec![open]);
+        app.tabs_mut()[0].sketch = Some(crate::sketch::SketchMode::new(1, None));
+        app.active = Some(id);
+        let ctx = eframe::egui::Context::default();
+        ctx.set_fonts(theme::fonts());
+        // A first pass, in which the panels' areas only take their sizes.
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+            app.sketch_canvas(ui, &mut false);
+        });
+        output.textures_delta.clear();
+        for before in [false, true] {
+            let mut after = None;
+            let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+                let mut started = before;
+                app.sketch_canvas(ui, &mut started);
+                after = Some(started);
+            });
+            output.textures_delta.clear();
+            assert_eq!(after, Some(before), "started {before}");
+            // Drawn, so not passed over: the sketch bar's Finish Sketch among what's painted.
+            fn texts(shape: &eframe::egui::Shape, into: &mut Vec<String>) {
+                match shape {
+                    eframe::egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| texts(s, into)),
+                    eframe::egui::Shape::Text(text) => into.push(text.galley.text().to_owned()),
+                    _ => {}
+                }
+            }
+            let mut painted = Vec::new();
+            for clipped in &output.shapes {
+                texts(&clipped.shape, &mut painted);
+            }
+            assert!(
+                painted.iter().any(|text| text == "Finish Sketch"),
+                "{painted:?}"
+            );
+        }
+    }
 }
