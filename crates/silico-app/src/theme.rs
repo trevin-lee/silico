@@ -689,6 +689,34 @@ pub const POPUP_SHADOW: Shadow = Shadow {
     color: with_alpha(GRAY_0, 153),
 };
 
+// ---- Select Other's list (`.menu.select-other`; DESIGN.md's *Menus*, M5.7) ----
+// Its frame and rows are a menu's, as the feature menus draw them ([`MENU_PADDING`],
+// [`MENU_MIN_WIDTH`], [`MENU_ITEM_HEIGHT`] and the rest).
+
+/// Select Other's foot (`.menu.select-other .foot`): 10.5 high, Gray.550, under a Gray.250
+/// rule 4 below the rows, padded 4 over, 8 at the sides, 2 under, its keys as key caps.
+pub const MENU_FOOT_TEXT: Color32 = TEXT_SUBDUED;
+pub const MENU_FOOT_SIZE: f32 = 10.5;
+pub const MENU_FOOT_RULE: Color32 = PANEL_BORDER;
+pub const MENU_FOOT_MARGIN_TOP: f32 = 4.0;
+pub const MENU_FOOT_PADDING: Margin = Margin {
+    left: 8,
+    right: 8,
+    top: 4,
+    bottom: 2,
+};
+/// How far right of and below its right click the canvas's context menu opens, in points:
+/// so the click's own point stays the canvas's, and a right click there again opens another
+/// there (the prototype's `onContext` opens one wherever the canvas is right-clicked).
+pub const CONTEXT_MENU_GAP: f32 = 1.0;
+/// Where Select Other's list opens from the right click that asked for it, in points: 28
+/// right and 18 up (interact.js, `openSelectOther`'s `e.clientX + 28, e.clientY - 18`).
+pub const SELECT_OTHER_OFFSET: [f32; 2] = [28.0, -18.0];
+/// How many of Select Other's rows show at once: past them its list scrolls, so a crowd
+/// under one pixel stays inside the window (the prototype lists every row; its scenes have
+/// a few).
+pub const SELECT_OTHER_ROWS: usize = 16;
+
 /// A tooltip's padding: 6 over and under, 8 at the sides (the prototype's `.tooltip`). egui
 /// draws its own tooltips in a menu's frame ([`MENU_PADDING`], [`NORMAL_CORNER_RADIUS`],
 /// [`POPUP_SHADOW`]); these are for where the app draws one.

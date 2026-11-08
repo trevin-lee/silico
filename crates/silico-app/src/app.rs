@@ -1198,6 +1198,19 @@ impl<P: Clients + 'static> App<P> {
             }
             return (false, None);
         }
+        if let Some(tab) = self
+            .active_place()
+            .and_then(|at| self.tabs.get_mut(at))
+            .filter(|tab| tab.select_other().is_open())
+        {
+            // Select Other's menu takes the keys while it's open and its tab shown (the
+            // prototype's menus): Esc closes it, Tab and the arrows step it, Enter chooses; no
+            // other document's command acts under it, as none does under a modal.
+            for key in crate::select_other::keys(ui.ctx()) {
+                tab.select_other_key(key);
+            }
+            return (false, None);
+        }
         // Before Ctrl+S, which a Ctrl+Shift+S also is, its Shift aside.
         let save_as = shortcuts::take(ui, Command::SaveAs);
         if save_as

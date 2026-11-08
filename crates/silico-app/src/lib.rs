@@ -24,6 +24,7 @@ mod properties;
 pub mod recent;
 pub mod renderer;
 mod repair;
+pub mod select_other;
 pub mod selection;
 mod sheet;
 pub mod shortcuts;

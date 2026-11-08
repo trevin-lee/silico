@@ -800,6 +800,9 @@ pub struct Tab {
     selection: crate::selection::Selection,
     /// The canvas's box selection (M5.7): a left drag, on geometry or empty space.
     box_select: crate::box_select::BoxSelect,
+    /// The canvas's Select Other (M5.7): its right click's menu, and the list of what's
+    /// under the pointer.
+    select_other: crate::select_other::SelectOther,
     /// What a toast is to say for the tab (a box's count, or why it took nothing), until
     /// the app takes it.
     toast: Option<String>,
@@ -1015,6 +1018,7 @@ impl Tab {
             reloaded_to: None,
             selection: crate::selection::Selection::default(),
             box_select: crate::box_select::BoxSelect::default(),
+            select_other: crate::select_other::SelectOther::default(),
             toast: None,
             reload_diff: None,
             outside: BTreeMap::new(),
@@ -1084,7 +1088,14 @@ impl Tab {
     /// geometry what's under its press, and a drag from empty space a box
     /// (`crate::box_select`), each read against the published model the tab last polled,
     /// which asks the session nothing more. The box select comes after the selection, so
-    /// it reads the hover this frame's answer gave.
+    /// it reads the hover this frame's answer gave. A right click opens Select Other's menu
+    /// (`crate::select_other`), first of them: while it's open it holds the hover and the
+    /// wheel, and a left press that closes it is given to neither.
+    /// SEAM(#351): sketch mode claims them first, while a sketch is open
+    /// (`if self.in_sketch() { self.selection.canvas_claimed(); self.box_select =
+    /// Default::default(); return self.sketch.overlay(sessions, painter, frame) }`, a click
+    /// of the selection's waiting and a box drawn let go), its face pick for Create Sketch
+    /// reading [`selection`](Self::selection)'s hover and pick.
     pub fn overlay<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -1111,13 +1122,47 @@ impl Tab {
             self.sketch_frame(sessions, painter, &input);
             return;
         }
-        self.selection.overlay(&mut self.view, frame, painter.ctx());
         // The bodies are of the model the selection is read against: the one published
         // last, as counted.
         let current = matches!(
             (self.published, self.view.bodies_of()),
             (Some(revision), Some(of)) if of == (self.published_models, revision)
         );
+        // Select Other first (`crate::select_other`): while its menu is open it holds the
+        // hover and the wheel, and a left press that closes it is its own, given to neither
+        // the selection nor the box. SEAM(#351): sketch mode claims the canvas before this,
+        // so Select Other, the selection's, never opens in a sketch (one open as a sketch
+        // opens is closed there, `self.select_other.close(..)`).
+        let entries = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
+        let names = |id: &silico_core::document::FeatureId| {
+            entries
+                .iter()
+                .find(|entry| &entry.id == id)
+                .map(|entry| entry.name.clone())
+        };
+        let left = self.select_other.overlay(
+            &mut self.selection,
+            &mut self.view,
+            frame,
+            painter,
+            current,
+            &names,
+        );
+        let passed;
+        let frame = if left.len() == frame.left.len() {
+            frame
+        } else {
+            passed = crate::viewport::ViewFrame {
+                left,
+                ..frame.clone()
+            };
+            &passed
+        };
+        self.selection.overlay(&mut self.view, frame, painter.ctx());
         let hidden: std::collections::BTreeSet<silico_core::document::FeatureId> = self
             .hidden
             .iter()
@@ -1215,6 +1260,17 @@ impl Tab {
     /// What a toast is to say for the tab, taken once (the app shows it).
     pub fn take_toast(&mut self) -> Option<String> {
         self.toast.take()
+    }
+
+    /// The canvas's Select Other (M5.7): the menu open, if one is, and its rows.
+    pub fn select_other(&self) -> &crate::select_other::SelectOther {
+        &self.select_other
+    }
+
+    /// `key` for Select Other's menu, taken by the window's keys while it's open, before
+    /// the pane draws: applied in this frame's overlay.
+    pub(crate) fn select_other_key(&mut self, key: crate::select_other::MenuKey) {
+        self.select_other.key(key);
     }
 
     /// What's selected (M5.7), and what the pointer is over in the canvas: one selection,

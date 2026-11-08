@@ -1645,6 +1645,7 @@ mod tests {
             pointer_px: pointer,
             left: Vec::new(),
             secondary: Vec::new(),
+            drawn: Vec::new(),
             now: std::time::Instant::now(),
         }
     }

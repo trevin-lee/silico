@@ -32425,3 +32425,408 @@ fn on_lavapipe_a_hovered_candidate_lights_its_edge_beside_the_broken_fillets_car
         },
     );
 }
+
+// ---- Select Other (M5.7) ----
+
+/// The box from above, as Select Other's tests see it: orthographic onto (20, 10, 5) from
+/// z = 100, +y up, 40 mm high. A point (x, y) lands (w / 2 + (x − 20) mm, h / 2 − (y − 10) mm)
+/// pixels from the canvas's corner, a millimetre being its height in pixels over 40; its
+/// depth from the eye is 100 − z, the top (Face6, z = 10) at 90 and the bottom (Face5) at 100.
+/// Its edges in the bench's order ([`silico_render::bench::box_mesh`]): Edge11 the top's
+/// along y at x = 40, Edge10 the bottom's there, Edge7 and Edge5 the top's and the bottom's
+/// along x at y = 20, Edge6 the side's along z at (40, 20); Vertex7 the corner (40, 20, 10),
+/// Vertex8 (40, 20, 0).
+fn box_from_above(f: &Fixture) -> (AppHarness, Record) {
+    meshes_a_real_box(f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 40.0 },
+        eye: [20.0, 10.0, 100.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 1.0, 0.0],
+    });
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    step_until(&mut h, "the meshes read", |h| {
+        !view(h).reading() && meshes_current(h)
+    });
+    // Its timeline read, so a row says the feature's name.
+    step_until(&mut h, "the timeline", |h| {
+        h.state().tabs()[0].timeline.is_some()
+    });
+    (h, record)
+}
+
+/// The canvas's point, in points, at the centre of the pixel `by` pixels on from the one
+/// (x, y) lands in seen [`box_from_above`]: `by` [−2, 0] from a point on an edge's line is 1.5
+/// to 2.5 pixels off it.
+fn above_at(h: &AppHarness, x: f64, y: f64, by: [f64; 2]) -> eframe::egui::Pos2 {
+    let frame = view(h).frame().unwrap();
+    let [w, height] = frame.size_px.map(f64::from);
+    let mm = height / 40.0;
+    let px = (w / 2.0 + (x - 20.0) * mm).floor() + by[0] + 0.5;
+    let py = (height / 2.0 - (y - 10.0) * mm).floor() + by[1] + 0.5;
+    let ppp = f64::from(frame.pixels_per_point);
+    frame.rect.min + eframe::egui::vec2((px / ppp) as f32, (py / ppp) as f32)
+}
+
+fn select_other(h: &AppHarness) -> &silico_app::select_other::SelectOther {
+    h.state().tabs()[0].select_other()
+}
+
+/// What each of the open list's rows says, in order.
+fn rows_said(h: &AppHarness) -> Vec<String> {
+    select_other(h)
+        .rows()
+        .iter()
+        .map(silico_app::select_other::Row::said)
+        .collect()
+}
+
+/// A right click at `at`, then its menu's *Select Other…* (saying `count`) chosen: the list
+/// open.
+fn list_at(h: &mut AppHarness, at: eframe::egui::Pos2, count: &str) {
+    use silico_app::select_other::Phase;
+    right_click(h, at, at, eframe::egui::Modifiers::NONE);
+    let item = format!("Select Other… {count}");
+    step_until(h, "the context menu", |h| anywhere(h, &item));
+    assert_eq!(select_other(h).phase(), Some(Phase::Context));
+    h.get_by_label(&item).click();
+    step_until(h, "the list", |h| {
+        select_other(h).phase() == Some(Phase::List)
+    });
+    // The pointer back where it was clicked, off the list: what's lit is the list's own.
+    // And frames for egui to lay it out: a new area's first frame is an invisible sizing
+    // pass, drawn and placed as it will be only from the next.
+    h.hover_at(at);
+    for _ in 0..3 {
+        step(h);
+    }
+}
+
+/// The name the selection's hover holds.
+fn hover_name(h: &AppHarness) -> Option<String> {
+    h.state().tabs()[0]
+        .selection()
+        .hovered()
+        .map(|hovered| hovered.name.to_string())
+}
+
+/// What the last frame drew hovered.
+fn drawn_hovered(record: &Record) -> Vec<(u32, silico_app::renderer::Element)> {
+    record
+        .lock()
+        .unwrap()
+        .frames
+        .last()
+        .unwrap()
+        .hovered
+        .clone()
+}
+
+/// The four under the top 2 pixels in from its right edge, nearest first, by hand: the
+/// top's edge there (90, less the reach toward the eye, 0.48 mm), the top (90), and behind
+/// it the bottom's edge and the bottom (100).
+const BY_THE_RIGHT_EDGE: [&str; 4] = [
+    "Edge11 Edge · Block",
+    "Face6 Face · Block",
+    "Edge10 Edge · Block · hidden",
+    "Face5 Face · Block · hidden",
+];
+
+#[test]
+fn select_other_lists_whats_under_a_right_click_and_its_rows_light_the_hover_as_stepped() {
+    use eframe::egui::{Key, Modifiers, MouseWheelUnit};
+    use silico_app::renderer::Element::{Edge, Face};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    // Its context menu says how many are under the pointer; its list, each, nearest first,
+    // in the menu's node, and the first lit: the hover, outlined in the canvas.
+    list_at(&mut h, at, "4 under the pointer");
+    assert_eq!(rows_said(&h), BY_THE_RIGHT_EDGE);
+    let menu = h.get_by_role_and_label(Role::Menu, "Select Other");
+    for row in BY_THE_RIGHT_EDGE {
+        assert!(menu.query_by_label(row).is_some(), "{row}");
+    }
+    assert_eq!(select_other(&h).lit(), Some(0));
+    assert_eq!(hover_name(&h).as_deref(), Some("k7f2qx3m.box.Edge11"));
+    assert!(h.state().tabs()[0].selection().hover_held());
+    step(&mut h);
+    assert_eq!(drawn_hovered(&record), [(1, Edge(11))]);
+    // No hover is asked of the renderer while it's open, wherever the pointer goes.
+    let frames = record.lock().unwrap().frames.len();
+    for by in [[-40.0, 0.0], [-80.0, 30.0]] {
+        h.hover_at(above_at(&h, 40.0, 10.0, by));
+        step(&mut h);
+    }
+    // Tab steps on, Shift+Tab back, round the ends; the arrows the same.
+    let lit = |h: &mut AppHarness| {
+        step(h);
+        step(h);
+        (select_other(h).lit(), hover_name(h))
+    };
+    h.key_press(Key::Tab);
+    assert_eq!(
+        lit(&mut h),
+        (Some(1), Some("k7f2qx3m.box.Face6".to_owned()))
+    );
+    assert_eq!(drawn_hovered(&record), [(1, Face(6))]);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    assert_eq!(lit(&mut h).0, Some(0));
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    assert_eq!(
+        lit(&mut h),
+        (Some(3), Some("k7f2qx3m.box.Face5".to_owned()))
+    );
+    h.key_press(Key::Tab);
+    assert_eq!(lit(&mut h).0, Some(0));
+    h.key_press(Key::ArrowDown);
+    assert_eq!(lit(&mut h).0, Some(1));
+    h.key_press(Key::ArrowUp);
+    assert_eq!(lit(&mut h).0, Some(0));
+    // The wheel rolled down a line steps on; up, back.
+    let camera = view(&h).camera().clone();
+    wheel(&mut h, at, MouseWheelUnit::Line, -1.0);
+    assert_eq!(
+        lit(&mut h),
+        (Some(1), Some("k7f2qx3m.box.Face6".to_owned()))
+    );
+    wheel(&mut h, at, MouseWheelUnit::Line, 1.0);
+    assert_eq!(lit(&mut h).0, Some(0));
+    // The pointer onto a row lights it; resting there, Tab still steps on from it.
+    h.get_by_label("Edge10 Edge · Block · hidden").hover();
+    assert_eq!(
+        lit(&mut h),
+        (Some(2), Some("k7f2qx3m.box.Edge10".to_owned()))
+    );
+    assert_eq!(drawn_hovered(&record), [(1, Edge(10))]);
+    h.key_press(Key::Tab);
+    assert_eq!(lit(&mut h).0, Some(3));
+    // Nothing asked a pick, nor did the wheel zoom.
+    assert!(
+        record.lock().unwrap().frames[frames..]
+            .iter()
+            .all(|frame| frame.picking.is_none())
+    );
+    assert_eq!(view(&h).camera(), &camera);
+    assert!(selected_names(&h).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_row_chosen_is_a_click_replacing_the_selection_and_with_ctrl_toggling_it() {
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    // A click on the bottom's row, hidden behind the top: selected alone, the menu closed
+    // and the hover let go.
+    list_at(&mut h, at, "4 under the pointer");
+    h.get_by_label("Face5 Face · Block · hidden").click();
+    selected_until(&mut h, &["k7f2qx3m.box.Face5"]);
+    assert!(!select_other(&h).is_open());
+    assert!(!h.state().tabs()[0].selection().hover_held());
+    // Ctrl held on the top's edge's row: added.
+    list_at(&mut h, at, "4 under the pointer");
+    h.event(eframe::egui::Event::ModifiersChanged(Modifiers::COMMAND));
+    h.get_by_label("Edge11 Edge · Block").click();
+    h.event(eframe::egui::Event::ModifiersChanged(Modifiers::NONE));
+    selected_until(&mut h, &["k7f2qx3m.box.Face5", "k7f2qx3m.box.Edge11"]);
+    // Ctrl+Enter on the lit row, the first, toggles it: removed.
+    list_at(&mut h, at, "4 under the pointer");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    selected_until(&mut h, &["k7f2qx3m.box.Face5"]);
+    assert!(!select_other(&h).is_open());
+    // Enter, stepped to the top: it alone.
+    list_at(&mut h, at, "4 under the pointer");
+    h.key_press(Key::Tab);
+    step(&mut h);
+    h.key_press(Key::Enter);
+    selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_a_press_off_it_and_a_rebuild_each_close_select_other_and_change_nothing_else() {
+    use eframe::egui::Key;
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    list_at(&mut h, at, "4 under the pointer");
+    h.get_by_label("Face5 Face · Block · hidden").click();
+    selected_until(&mut h, &["k7f2qx3m.box.Face5"]);
+    // Esc closes the list first, the selection kept; the next Esc clears it.
+    list_at(&mut h, at, "4 under the pointer");
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(!select_other(&h).is_open());
+    assert!(hover_name(&h).is_none());
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face5"]);
+    h.key_press(Key::Escape);
+    step(&mut h);
+    assert!(selected_names(&h).is_empty());
+    // Esc closes the context menu too.
+    right_click(&mut h, at, at, eframe::egui::Modifiers::NONE);
+    assert!(select_other(&h).is_open());
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(!select_other(&h).is_open());
+    // A click on the canvas off the menu closes it and selects nothing, though the top is
+    // under it; the next click selects.
+    let off = above_at(&h, 5.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(6), pixel_at(&h, off))), None);
+    list_at(&mut h, at, "4 under the pointer");
+    click_canvas(&mut h, off, false);
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert!(!select_other(&h).is_open());
+    assert!(selected_names(&h).is_empty());
+    click_canvas(&mut h, off, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
+    // Another model published (the box made taller by another client): closed.
+    list_at(&mut h, at, "4 under the pointer");
+    set_through_the_core(&f, &mut h, "k7f2qx3m", "height", "12");
+    assert!(!select_other(&h).is_open());
+    assert!(!h.state().tabs()[0].selection().hover_held());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn while_select_other_is_open_the_wheel_steps_it_and_doesnt_zoom_and_after_it_zooms() {
+    use eframe::egui::MouseWheelUnit;
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    list_at(&mut h, at, "4 under the pointer");
+    let camera = view(&h).camera().clone();
+    for _ in 0..3 {
+        wheel(&mut h, at, MouseWheelUnit::Line, -1.0);
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &camera);
+    assert_eq!(select_other(&h).lit(), Some(3));
+    // Points, as a trackpad's: a line's worth steps once.
+    let line = h
+        .ctx
+        .options(|options| options.input_options.line_scroll_speed);
+    wheel(&mut h, at, MouseWheelUnit::Point, -line / 2.0);
+    step(&mut h);
+    assert_eq!(select_other(&h).lit(), Some(3));
+    wheel(&mut h, at, MouseWheelUnit::Point, -line / 2.0);
+    step(&mut h);
+    assert_eq!(select_other(&h).lit(), Some(0));
+    assert_eq!(view(&h).camera(), &camera);
+    // Closed, the wheel zooms again.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(!select_other(&h).is_open());
+    wheel(&mut h, at, MouseWheelUnit::Line, 1.0);
+    step(&mut h);
+    assert!(ortho_height(view(&h).camera()) < ortho_height(&camera));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn select_other_lists_every_kind_whatever_the_filters_and_none_of_a_hidden_body() {
+    use silico_app::selection::Filter;
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    // Every filter off: the canvas picks nothing, but the list holds every kind under the
+    // pointer, 2 pixels in from the corner (40, 20): the corner, Vertex7 (2.1 to 3.5 pixels
+    // off), and the three edges that meet there (1.5 to 2.5 off; Edge6 seen end on, at its
+    // top), at 90 less the reach, the vertex first, then by number; the top; then behind it
+    // the bottom's corner and edges, and the bottom.
+    h.state_mut().tabs_mut()[0].selection_mut().filter = Filter {
+        faces: false,
+        edges: false,
+        vertices: false,
+    };
+    let at = above_at(&h, 40.0, 20.0, [-2.0, 2.0]);
+    list_at(&mut h, at, "9 under the pointer");
+    assert_eq!(
+        rows_said(&h),
+        [
+            "Vertex7 Vertex · Block",
+            "Edge6 Edge · Block",
+            "Edge7 Edge · Block",
+            "Edge11 Edge · Block",
+            "Face6 Face · Block",
+            "Vertex8 Vertex · Block · hidden",
+            "Edge5 Edge · Block · hidden",
+            "Edge10 Edge · Block · hidden",
+            "Face5 Face · Block · hidden",
+        ]
+    );
+    // The vertex lit is the hover, drawn as its dot; chosen, it's selected though the
+    // filter is off: reaching what the filters keep from the pointer is Select Other's
+    // point.
+    step(&mut h);
+    assert_eq!(hover_name(&h).as_deref(), Some("k7f2qx3m.box.Vertex7"));
+    h.get_by_label("Vertex7 Vertex · Block").click();
+    selected_until(&mut h, &["k7f2qx3m.box.Vertex7"]);
+    // The body hidden in the browser: nothing drawn, nothing under the pointer, and the
+    // menu's item off.
+    let id = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
+    h.state_mut().tabs_mut()[0]
+        .hidden
+        .insert(silico_app::tab::Hideable::Feature(id));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    right_click(&mut h, at, at, eframe::egui::Modifiers::NONE);
+    step_until(&mut h, "the context menu", |h| {
+        anywhere(h, "Select Other… nothing under the pointer")
+    });
+    assert!(select_other(&h).rows().is_empty());
+    let item = h.get_by_label("Select Other… nothing under the pointer");
+    assert!(item.accesskit_node().is_disabled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_the_fillet_dialog_a_row_chosen_toggles_into_its_box_as_a_click_does_and_a_face_is_refused() {
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3"]);
+    step_until(&mut h, "the meshes read", |h| {
+        !view(h).reading() && meshes_current(h)
+    });
+    // The top's edge chosen: toggled into the box, as a click on it would be.
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    list_at(&mut h, at, "4 under the pointer");
+    let edge = select_other(&h).rows()[0].clone();
+    assert_eq!(edge.label, "Edge11");
+    h.get_by_label(&edge.said()).click();
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge11"]);
+    settled(&mut h);
+    // The top chosen: the box takes edges, so it refuses it, saying so, and holds what it
+    // did.
+    step_until(&mut h, "the meshes read", |h| {
+        !view(h).reading() && meshes_current(h)
+    });
+    list_at(&mut h, at, "4 under the pointer");
+    let top = select_other(&h).rows()[1].clone();
+    assert_eq!(top.label, "Face6");
+    h.get_by_label(&top.said()).click();
+    step_until(&mut h, "the refusal", |h| box_said(h).is_some());
+    let said = box_said(&h).unwrap();
+    assert!(
+        said.contains("Face6") && said.contains("takes edges"),
+        "{said}"
+    );
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge11"]);
+    assert_eq!(never_waits::waits(), 0);
+}

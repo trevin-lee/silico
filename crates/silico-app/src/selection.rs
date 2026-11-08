@@ -415,6 +415,9 @@ pub struct Selection {
     toggled: Vec<Toggled>,
     /// The version and bodies table the highlights were last worked out for.
     drawn: Option<(u64, u64)>,
+    /// Whether a menu over the canvas holds the hover (Select Other's,
+    /// `crate::select_other`): the pointer's isn't asked meanwhile.
+    hover_held: bool,
 }
 
 impl Selection {
@@ -684,9 +687,37 @@ impl Selection {
         }
     }
 
-    /// What the pointer is over in the canvas, if anything.
+    /// What the pointer is over in the canvas, if anything; or, while a menu holds the hover
+    /// ([`hold_hover`](Self::hold_hover)), the row it lights.
     pub fn hovered(&self) -> Option<&Hovered> {
         self.hovered.as_ref()
+    }
+
+    /// The hover held by a menu over the canvas (Select Other's, `crate::select_other`), for
+    /// as long as it's open: the pointer's hover isn't asked, nor is an answer to one taken.
+    /// With `to` (a row of the menu: its body, element, name, and whether that's stable),
+    /// that's what's hovered, read against the published model as a hover the pointer finds
+    /// is; with none, what's hovered stays as it was.
+    pub(crate) fn hold_hover(&mut self, to: Option<(u32, Element, Arc<Name>, bool)>) {
+        self.hover_held = true;
+        if let Some((body, element, name, stable)) = to {
+            self.hover_on(body, element, name, stable);
+        }
+    }
+
+    /// The hover let go by the menu that held it ([`hold_hover`](Self::hold_hover)): nothing
+    /// is hovered, and the pointer's hover is asked again at once.
+    pub(crate) fn release_hover(&mut self) {
+        if self.hover_held {
+            self.hover_held = false;
+            self.hovered = None;
+            self.hover_asked = None;
+        }
+    }
+
+    /// Whether a menu holds the hover.
+    pub fn hover_held(&self) -> bool {
+        self.hover_held
     }
 
     /// The feature that made what the pointer is over (the timeline outlines it, DESIGN.md's
@@ -1250,7 +1281,10 @@ impl Selection {
                 // An answer to a pick asked before the click: neither the click's nor, now,
                 // the hover's.
                 Some(_) => {}
-                None if current && self.stale_to.is_none_or(|stale| picking.frame > stale) => {
+                None if current
+                    && !self.hover_held
+                    && self.stale_to.is_none_or(|stale| picking.frame > stale) =>
+                {
                     self.hover_answered(&picking, view.bodies());
                 }
                 None => {}
@@ -1324,6 +1358,7 @@ impl Selection {
         self.press = None;
         self.hovered = None;
         self.hover_asked = None;
+        self.hover_held = false;
     }
 
     /// What's hovered let go if the camera or the bodies changed since the last frame: the
@@ -1338,7 +1373,10 @@ impl Selection {
         };
         if self.seen.as_ref() != Some(&now) {
             if let Some(seen) = &self.seen {
-                self.hovered = None;
+                // A menu's row stays lit: it's an element, not what's under the pointer.
+                if !self.hover_held {
+                    self.hovered = None;
+                }
                 self.stale_to = view.last_asked();
                 if seen.camera != now.camera && self.click.take().is_some() {
                     tracing::debug!("the camera moved under a click waiting for its pick: let go");
@@ -1411,6 +1449,10 @@ impl Selection {
                 return;
             }
         }
+        if self.hover_held {
+            // A menu lights its own row: the pointer's isn't asked.
+            return;
+        }
         let Some(pointer) = frame.pointer_px else {
             self.hovered = None;
             self.hover_asked = None;
@@ -1451,6 +1493,12 @@ impl Selection {
             self.hovered = None;
             return;
         };
+        self.hover_on(body, element, name, stable);
+    }
+
+    /// `element` of body `body` hovered, by `name` (`stable` or not), read against the
+    /// published model when it's another element than the one hovered before.
+    fn hover_on(&mut self, body: u32, element: Element, name: Arc<Name>, stable: bool) {
         if self
             .hovered
             .as_ref()
@@ -2022,6 +2070,7 @@ pub(crate) mod tests {
             pointer_px: None,
             left,
             secondary: Vec::new(),
+            drawn: Vec::new(),
             now: Instant::now(),
         }
     }
