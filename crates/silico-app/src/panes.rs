@@ -13,14 +13,13 @@ use silico_core::command::{SessionId, Sessions};
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
 use silico_core::document::Units;
-use silico_core::document::json::Node;
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
 
 use crate::dialog::Action;
 use crate::icons::{self, Icon, IconSize};
 use crate::properties;
-use crate::tab::{Edit, Hideable, Tab};
+use crate::tab::{Hideable, Tab};
 use crate::theme;
 
 /// The property panel's Name field, while it's typed in: the document's feature it's of,
@@ -229,22 +228,52 @@ impl<P: Clients + 'static> Panes<'_, P> {
             return;
         };
         let mut asked = Asked::default();
-        if tab.selection().scroll_target().is_some() {
-            // A body picked in the canvas: its row shown, its group opened (section 9,
-            // *Browser and canvas*: the browser expands and scrolls to it).
-            for key in ["root", "Bodies"] {
+        let browsers = |renaming: &crate::feature_menu::Renaming| {
+            renaming.place == crate::feature_menu::Place::Browser
+        };
+        let shown = tab.selection().scroll_target().cloned().or_else(|| {
+            tab.renaming
+                .as_ref()
+                .filter(|renaming| browsers(renaming))
+                .map(|renaming| renaming.feature.clone())
+        });
+        if let Some(shown) = shown {
+            // A body picked in the canvas, or a row found from the timeline or renamed:
+            // its row shown, its group opened (section 9, *Browser and canvas*: the browser
+            // expands and scrolls to it).
+            let group = if tab.browser.sketches.iter().any(|row| row.id == shown) {
+                "Sketches"
+            } else {
+                "Bodies"
+            };
+            for key in ["root", group] {
                 Openness::load(ui.ctx(), key).opened(ui.ctx());
             }
         }
+        // The rename field's, taken while the rows are drawn, as they read the tab.
+        let mut renaming = tab.renaming.take();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
-                tree(ui, tab, &mut asked);
+                tree(ui, tab, &mut asked, &mut renaming);
                 ui.add_space(theme::BROWSER_PADDING_BOTTOM);
             });
         // Scrolled to once, whether its row was there or not.
         tab.selection_mut().scrolled();
+        // A field whose row is gone (its feature deleted, its body consumed) goes with it.
+        if renaming.as_ref().is_some_and(browsers) && !asked.renaming {
+            renaming = None;
+        }
+        if asked.renamed.is_some() {
+            renaming = None;
+        }
+        if tab.renaming.is_none() {
+            tab.renaming = renaming;
+        }
+        if let Some((feature, typed)) = asked.renamed {
+            *self.started |= tab.finish_rename(self.sessions, feature, &typed);
+        }
         for what in asked.toggled {
             tab.toggle_shown(what);
         }
@@ -253,7 +282,19 @@ impl<P: Clients + 'static> Panes<'_, P> {
         {
             // A sketch chosen here fills an open dialog's selection box (section 9).
             tab.pick(&id);
+            tab.selected_in = crate::feature_menu::Place::Browser;
             tab.selection_mut().select_feature(id);
+        }
+        if let Some(id) = asked.menu_selected
+            && tab.selection().feature() != Some(&id)
+        {
+            // Selected as its menu opens, as the timeline's right-click selects: never an
+            // open dialog's pick, which a click alone makes.
+            tab.selected_in = crate::feature_menu::Place::Browser;
+            tab.selection_mut().select_feature(id);
+        }
+        if let Some(act) = asked.act {
+            *self.started |= crate::feature_menu::act(tab, self.sessions, act);
         }
         if let Some(id) = asked.edit {
             // Edit Sketch for a sketch, a feature's dialog for any other.
@@ -309,7 +350,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
         let name = &mut *self.name;
         let started = &mut *self.started;
         let elements = tab.selection().elements().next().is_some();
-        let asked = egui::ScrollArea::vertical()
+        let out = egui::ScrollArea::vertical()
             .id_salt("properties")
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -317,14 +358,15 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 match entry {
                     _ if elements => {
                         selected_elements(ui, tab);
-                        None
+                        properties::CardOut::default()
                     }
                     Some(entry) => feature(ui, tab, &entry, sessions, name, started),
                     None => document(ui, tab),
                 }
             })
             .inner;
-        if let Some(asked) = asked {
+        tab.hover_candidate(out.hovered);
+        if let Some(asked) = out.asked {
             *self.started |= tab.card_asked(sessions, asked);
         }
     }
@@ -346,7 +388,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             .flat_map(|dialog| dialog.inputs.iter().map(|input| input.part.field()))
             .filter(|field| tab.field_refused(field))
             .collect();
-        let said: Vec<(crate::tab::Said, Option<String>)> = tab
+        let said: Vec<_> = tab
             .dialog_said()
             .into_iter()
             .map(|said| {
@@ -354,7 +396,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
                     .feature()
                     .and_then(|id| tab.entry(id))
                     .map(|entry| entry.name.clone());
-                (said, name)
+                let repair = tab.repair(&said);
+                (said, name, repair)
             })
             .collect();
         let preview = preview_of(tab);
@@ -370,16 +413,24 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 .map(|row| row.name.clone())
         };
         let refused = |field: &str| refused.contains(&field);
+        let mut cards = properties::Cards {
+            said,
+            out: properties::CardOut::default(),
+        };
         let mut action = ui
             .scope_builder(UiBuilder::new().id_salt(("dialog", dialog.serial)), |ui| {
                 ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                     node.set_role(egui::accesskit::Role::Dialog);
                     node.set_label(title);
                 });
-                dialog.ui(ui, &said, preview, &named, &refused, enabled)
+                dialog.ui(ui, &mut cards, preview, &named, &refused, enabled)
             })
             .inner;
         tab.dialog = Some(dialog);
+        tab.hover_candidate(cards.out.hovered);
+        if let Some(asked) = cards.out.asked {
+            *self.started |= tab.card_asked(sessions, asked);
+        }
         *self.started |= tab.dialog_changed(sessions);
         match key {
             Some(egui::Key::Enter) if tab.can_ok() => action = Action::Ok,
@@ -439,7 +490,7 @@ fn feature<P: Clients + 'static>(
     sessions: &Arc<Sessions<P>>,
     name: &mut Option<NameField>,
     started: &mut bool,
-) -> Option<properties::CardAct> {
+) -> properties::CardOut {
     let mut sub = properties::body(
         &format!("{} · ", crate::timeline::kind_words(entry.kind)),
         theme::PROPERTY_HEAD_SUB,
@@ -461,9 +512,10 @@ fn feature<P: Clients + 'static>(
             edit: Some(tab.can_edit(&entry.id)),
             show: false,
         };
+        let repair = tab.repair(&said);
         asked = asked.or(ui
             .push_id("feature-card", |ui| {
-                properties::card(ui, &said, Some(&entry.name), offer)
+                properties::repair_card(ui, &said, Some(&entry.name), offer, repair.as_ref())
             })
             .inner);
     }
@@ -508,17 +560,8 @@ fn feature<P: Clients + 'static>(
     if text != typed {
         // Each change an edit, coalesced in the tab (section 3); an empty name too, for
         // the core to refuse and the tab to say why.
-        if let Ok(value) = name_value(&text) {
-            tab.edit(
-                sessions,
-                Edit {
-                    feature: entry.id.clone(),
-                    field: "name".to_owned(),
-                    value,
-                },
-            );
-            *started = true;
-        }
+        tab.rename(sessions, entry.id.clone(), &text);
+        *started = true;
         field.typed.push(text.clone());
     }
     field.text = text;
@@ -631,7 +674,7 @@ fn selected_element(ui: &mut Ui, picked: &crate::selection::Picked) {
 /// The document's problems, as the gate found them: a card each (`docProps`' `errCard(e)`,
 /// with Edit and Show in timeline for a feature it names). What a card's button asked, if
 /// one was.
-fn problems(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
+fn problems(ui: &mut Ui, tab: &Tab) -> properties::CardOut {
     properties::document_cards(ui, tab, &tab.document_problems, "document-problem")
 }
 
@@ -641,7 +684,7 @@ fn problems(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
 ///
 /// SEAM: the model's measures (`docProps`' Volume, Area, Size, and Faces), which need a
 /// `mass_properties` read of its bodies the app doesn't make yet; its bodies are counted.
-fn document(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
+fn document(ui: &mut Ui, tab: &Tab) -> properties::CardOut {
     properties::head(
         ui,
         Icon::Doc,
@@ -735,19 +778,21 @@ fn units() -> String {
     format!("{} · {number} {unit} resolution", Units::LENGTH)
 }
 
-/// A feature's name as the document reads a string (`set_field`'s value).
-fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxError> {
-    silico_core::document::json::read(crate::dialog::quoted(name).as_bytes())
-}
-
 /// What the browser's rows asked for this frame, done once they're drawn: eyes clicked, a
-/// row selected, a sketch's Edit Sketch, and the document's row clicked.
+/// row selected (by a click, or by its menu's opening), a sketch's Edit Sketch, the
+/// document's row clicked, what a row's menu asked, and a rename field's name sent.
 #[derive(Default)]
 struct Asked {
     toggled: Vec<Hideable>,
     selected: Option<FeatureId>,
+    /// A row right-clicked, selected as its menu opens.
+    menu_selected: Option<FeatureId>,
     edit: Option<FeatureId>,
     root: bool,
+    act: Option<crate::feature_menu::Act>,
+    renamed: Option<(FeatureId, String)>,
+    /// Whether the rename field was drawn.
+    renaming: bool,
 }
 
 /// The origin's rows, each by its name with its icon (Fusion's Origin folder: its point,
@@ -768,7 +813,8 @@ fn sketch_prefix(tab: &Tab, id: &FeatureId) -> Option<&'static str> {
     tab.prefixes.prefix(id)
 }
 
-/// Whether a sketch's row asks for Edit Sketch: a double-click, or its context menu's.
+/// Whether a sketch's row asks for Edit Sketch by a double-click (its context menu's is the
+/// feature's menu's).
 fn sketch_edit_asked(tab: &Tab, row: &egui::Response) -> bool {
     crate::sketch::edit_asked(Some(row), tab.can_sketch())
 }
@@ -782,8 +828,14 @@ fn prefix_colour(prefix: &str) -> Color32 {
     }
 }
 
-/// The browser's tree, for `tab`: what its rows ask is put in `asked`.
-fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
+/// The browser's tree, for `tab`: what its rows ask is put in `asked`, and a feature's name
+/// typed in `renaming`'s field, over its row.
+fn tree(
+    ui: &mut Ui,
+    tab: &Tab,
+    asked: &mut Asked,
+    renaming: &mut Option<crate::feature_menu::Renaming>,
+) {
     let ctx = ui.ctx().clone();
     let name = tab.name();
     let root_name = name.strip_suffix(".silico").unwrap_or(name);
@@ -843,12 +895,16 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                         mark: None,
                         failed: false,
                         outside: None,
-                        clicks: false,
+                        // Its menu's right-click: every item off, for it isn't a feature.
+                        clicks: true,
                     },
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
                     asked.toggled.push(what);
                 }
+                answer
+                    .row
+                    .context_menu(|ui| crate::feature_menu::origin_menu(ui, name));
             }
         });
     }
@@ -924,6 +980,33 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                     asked.toggled.push(what);
                 } else if answer.row.clicked() {
                     asked.selected = Some(each.id.clone());
+                }
+                if let Some(entry) = tab.entry(each.id.as_str()) {
+                    answer.row.context_menu(|ui| {
+                        // Selected as it's opened, as the prototype's `contextmenu` selects it.
+                        if tab.selection().feature() != Some(&each.id) {
+                            asked.menu_selected = Some(each.id.clone());
+                        }
+                        let place = crate::feature_menu::Place::Browser;
+                        if let Some(act) = crate::feature_menu::menu(ui, tab, entry, place) {
+                            asked.act = Some(act);
+                        }
+                    });
+                    if let Some(field) = renaming.as_mut().filter(|renaming| {
+                        renaming.place == crate::feature_menu::Place::Browser
+                            && renaming.feature == each.id
+                    }) {
+                        asked.renaming = true;
+                        let at = egui::Rect::from_center_size(
+                            answer.name.center(),
+                            Vec2::new(answer.name.width(), theme::FIELD_HEIGHT),
+                        );
+                        if let crate::feature_menu::Field::Done(name) =
+                            crate::feature_menu::field(ui, field, at, &entry.name)
+                        {
+                            asked.renamed = Some((each.id.clone(), name));
+                        }
+                    }
                 }
                 if tab.selection().scroll_target() == Some(&each.id) {
                     answer.row.scroll_to_me(None);
@@ -1067,12 +1150,14 @@ struct Line<'a> {
     clicks: bool,
 }
 
-/// What a row answered: the row's response, its caret's state, and its eye's response.
+/// What a row answered: the row's response, its caret's state, its eye's response, and
+/// where its name is (between its icon, or prefix, and its meta or mark).
 struct RowAnswer {
     row: egui::Response,
     /// Whether its caret is open, its click this frame taken.
     open: Option<bool>,
     eye: Option<egui::Response>,
+    name: egui::Rect,
 }
 
 /// The colours of a row's name and its icon (`.row`, `:hover`, `.selected`, `.err`,
@@ -1302,6 +1387,7 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         row: response,
         open: caret.map(|(_, open)| open),
         eye: eye.map(|(eye, _)| eye),
+        name: egui::Rect::from_x_y_ranges(x..=right.max(x), rect.y_range()),
     }
 }
 
@@ -1553,7 +1639,7 @@ mod tests {
             "tab\there",
             "Ω",
         ] {
-            let node = name_value(name).unwrap();
+            let node = crate::tab::name_value(name).unwrap();
             assert_eq!(node.value.as_str(), Some(name), "{name:?}");
         }
     }
@@ -2520,6 +2606,54 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn a_row_found_opens_its_own_group_and_what_a_rename_or_a_menu_sends_is_polled() {
+        use eframe::egui::Key;
+        let mut h = drawn(modelled());
+        // Both groups folded: no row of either shown.
+        for group in ["Bodies", "Sketches"] {
+            h.get_by_label(&format!("Collapse {group}")).click();
+            h.run_steps(2);
+        }
+        assert!(!has(&h, "Hide Block") && !has(&h, "Hide Profile"));
+        // Section 9, *Browser and canvas*: the browser expands and scrolls to a row found
+        // (Find in browser): a body's in Bodies, which opens, the sketches left folded.
+        tab_of(&mut h)
+            .selection_mut()
+            .find_in_browser(fid("b0000001"));
+        h.run_steps(3);
+        assert!(has(&h, "Hide Block"), "the block's row");
+        assert!(has(&h, "Expand Sketches") && !has(&h, "Hide Profile"));
+        // A sketch's in Sketches.
+        tab_of(&mut h)
+            .selection_mut()
+            .find_in_browser(fid("p0000001"));
+        h.run_steps(3);
+        assert!(has(&h, "Hide Profile"), "the sketch's row");
+
+        // F2 on the block: its row's field; a name typed, then Enter, sent, and the next
+        // frame asked for, to poll it.
+        assert!(!h.state().started);
+        tab_of(&mut h).start_rename(fid("b0000001"), crate::feature_menu::Place::Browser);
+        h.run_steps(3);
+        assert!(h.get_by_role(Role::TextInput).is_focused());
+        h.get_by_role(Role::TextInput).type_text("Plate");
+        h.run_steps(2);
+        assert!(!h.state().started, "sent as it's typed");
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+        assert!(h.state().started, "the name sent, never polled");
+        assert!(tab_of(&mut h).renaming.is_none());
+
+        // The menu's Suppress on the shell's row: sent, and polled the same.
+        let mut h = drawn(modelled());
+        h.get_by_label("Shell").click_secondary();
+        h.run_steps(2);
+        h.get_by_role_and_label(Role::Button, "Suppress").click();
+        h.run_steps(2);
+        assert!(h.state().started, "the suppression sent, never polled");
+    }
 }
 
 #[cfg(test)]
@@ -3215,9 +3349,10 @@ mod property_panel_drawn {
             .build_ui(move |ui| {
                 let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
                 ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
+                    let mut cards = properties::Cards::default();
                     dialog
                         .borrow_mut()
-                        .ui(ui, &[], None, &|_| None, &|_| false, true);
+                        .ui(ui, &mut cards, None, &|_| None, &|_| false, true);
                 });
             });
         theme::apply(&h.ctx);
@@ -3291,7 +3426,8 @@ mod property_panel_drawn {
                 move |ui, (dialog, action): &mut (Dialog, Action)| {
                     let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
                     ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
-                        let done = dialog.ui(ui, &[], preview, &|_| None, &|_| false, true);
+                        let mut cards = properties::Cards::default();
+                        let done = dialog.ui(ui, &mut cards, preview, &|_| None, &|_| false, true);
                         if done != Action::None {
                             *action = done;
                         }
@@ -3322,8 +3458,12 @@ mod property_panel_drawn {
     }
 
     #[test]
-    fn each_dialogs_choices_draw_as_seg_where_their_words_fit_and_as_a_select_where_not() {
-        // A revolve about one of its sketch's lines, offered as itself, besides each kind's.
+    fn each_dialogs_choices_draw_as_a_select_however_few_and_short_their_words() {
+        // `renderDialog`'s Extent, `<button class="field select">` with its down icon, never
+        // `.seg`: each kind's choices, and a revolve's about one of its sketch's lines,
+        // offered as itself. A revolve's two forms and two axes among them, which side by
+        // side would fit the value column at 295 (Inter Medium at 12: One side 50.6,
+        // Symmetric 61.6, each well under half the column's 167).
         let mut about_a_line = Dialog::new(Kind::Revolve, None, 1);
         for input in &mut about_a_line.inputs {
             if let crate::dialog::Value::Choice { options, .. } = &mut input.value
@@ -3336,54 +3476,58 @@ mod property_panel_drawn {
             .into_iter()
             .map(|kind| Dialog::new(kind, None, 1))
             .chain([about_a_line]);
+        let left = PANE.x + css::PAD + css::KEY_W + css::ROW_GAP;
         let mut selects = Vec::new();
         for dialog in dialogs {
             let kind = dialog.kind.title();
             let offered = choices(&dialog);
             let h = dialog_drawn(dialog, None);
             for (key, options, chosen) in offered {
-                if let Some(select) = h.query_by_role_and_label(Role::ComboBox, key) {
-                    // A select: what's chosen shows; none of the words is laid out as `.seg`.
-                    assert_eq!(
-                        select.accesskit_node().value().as_deref(),
-                        Some(options[chosen].as_str()),
-                        "{kind}'s {key}"
-                    );
-                    for option in &options {
-                        assert!(h.query_by_label(option).is_none(), "{kind}'s {option}");
-                    }
-                    selects.push(format!("{kind} {key}"));
-                    continue;
+                let what = format!("{kind}'s {key}");
+                let node = h
+                    .query_by_role_and_label(Role::ComboBox, key)
+                    .unwrap_or_else(|| panic!("{what}: no drop-down"));
+                // Across the value column, a field high, showing what's chosen.
+                let select = node.rect();
+                assert!(
+                    near(select.left(), left) && near(select.right(), PANE.x + W - css::PAD),
+                    "{what}: {select:?}"
+                );
+                assert!(near(select.height(), css::FIELD_H), "{what}: {select:?}");
+                assert_eq!(
+                    node.accesskit_node().value().as_deref(),
+                    Some(options[chosen].as_str()),
+                    "{what}"
+                );
+                text_in(&h, &options[chosen], select);
+                // None of its words is a button of its own, and none but the chosen one's
+                // is painted.
+                for (place, option) in options.iter().enumerate() {
+                    assert!(h.query_by_label(option).is_none(), "{what}'s {option}");
+                    let painted = painted(&h)
+                        .into_iter()
+                        .filter(|shape| {
+                            matches!(shape, Shape::Text(shown) if shown.galley.text() == option)
+                        })
+                        .count();
+                    let want = usize::from(place == chosen);
+                    assert_eq!(painted, want, "{what}'s {option} painted {painted} times");
                 }
-                // `.seg`: no two choices overlap, and each one's words lie inside it.
-                let rects: Vec<Rect> = options
-                    .iter()
-                    .map(|option| h.get_by_role_and_label(Role::Button, option).rect())
-                    .collect();
-                for (at, rect) in rects.iter().enumerate() {
-                    for other in &rects[at + 1..] {
-                        assert!(
-                            rect.intersect(*other).area() <= 0.0,
-                            "{kind}'s {key}: {rect:?} and {other:?}"
-                        );
-                    }
-                    let shown = text(&h, &options[at]);
-                    let words = Rect::from_min_size(shown.pos, shown.galley.size());
-                    assert!(
-                        rect.contains_rect(words),
-                        "{kind}'s {:?}: {words:?} outside {rect:?}",
-                        options[at]
-                    );
-                }
+                selects.push(format!("{kind} {key}"));
             }
         }
-        // At 295 (the reviewer's measures, Inter Medium at 12: One side 50.6, Symmetric 61.6,
-        // Two sides 58.5, Through all 64.6, in a value column of 167): the pocket's four and
-        // the pad's three don't fit; a revolve's two forms and two axes do; its three axes,
-        // one a line's ID, don't.
         assert_eq!(
             selects,
-            ["Pad Extent", "Pocket Extent", "Revolve Axis"],
+            [
+                "Pad Extent",
+                "Pocket Extent",
+                "Revolve Axis",
+                "Revolve Extent",
+                "Groove Axis",
+                "Groove Extent",
+                "Revolve Axis",
+                "Revolve Extent",
+            ],
             "the choices drawn as selects"
         );
     }
@@ -3670,7 +3814,7 @@ mod property_panel_drawn {
             "Parameter: edges",
             "Pick the edges again",
             "CANDIDATES, CLOSEST FIRST",
-            "Edge2",
+            "Closest · Edge2",
             "Edge4",
         ];
         let tops: Vec<f32> = lines
@@ -4029,13 +4173,18 @@ mod property_panel_drawn {
             css::CAPITALS_SPACING
         );
         assert_eq!(colour(&heading, 0), css::CARD_ACCENT);
-        // `.cand`s: across the body, a line and its padding high, 4 apart.
+        // `.cand`s: across the body, its lines and its padding high, 4 apart: the first
+        // two lines, its name and, under it, `.why`'s "Closest · " (10.5, in the accent, on
+        // the body's 16 px line); the second its name alone.
         let body_right = inner_right - css::EC_HEAD_SIDE;
         let mut top = heading_top + css::LH + css::CANDS_MARGIN;
-        for name in ["Edge2", "Edge4"] {
+        for (name, lines) in [("Edge2", 2.0), ("Edge4", 1.0)] {
             let row = Rect::from_min_max(
                 Pos2::new(body_left, top),
-                Pos2::new(body_right, top + 2.0 * css::CAND_PADDING_Y + css::LH),
+                Pos2::new(
+                    body_right,
+                    top + 2.0 * css::CAND_PADDING_Y + lines * css::LH,
+                ),
             );
             assert_eq!(
                 fills_at(&h, row),
@@ -4050,6 +4199,22 @@ mod property_panel_drawn {
             );
             assert_eq!(shown.galley.job.sections[0].format.font_id, mono());
             assert_eq!(colour(&shown, 0), css::CAND_TEXT);
+            if lines > 1.0 {
+                let why = text(&h, "Closest · ");
+                at(
+                    why.pos,
+                    Pos2::new(
+                        body_left + css::CAND_PADDING_X,
+                        top + css::CAND_PADDING_Y + css::LH,
+                    ),
+                    "Closest · ",
+                );
+                assert_eq!(
+                    why.galley.job.sections[0].format.font_id,
+                    body(css::CANDS_FS)
+                );
+                assert_eq!(colour(&why, 0), css::CARD_ACCENT);
+            }
             top = row.bottom() + css::CAND_MARGIN;
         }
         // `.ec-actions`: Edit Hole (`.btn-secondary`, Gray.300, off: its words Gray.750),

@@ -13,10 +13,12 @@
 #
 # Real runs come first. The filler (.github/workflows/filler.yml) starts runs of its own on
 # idle CPU, marked by the `filler` input, whose shards run only on the runners labelled
-# filler, at the idle scheduling class. A real run's plan cancels every filler run, of this
-# workflow or the oracle sweep, queued or running (.github/cancel-filler.sh), so its shards
-# take their runners. A cancelled or cut-off filler run keeps what its shards finished:
-# each uploads its harvest, and the summary gathers it.
+# filler, at the idle scheduling class. A real run's plan cancels every filler run of this
+# workflow, queued or running, so its shards take their runners, and every proptest
+# exploration and filler oracle sweep but one overdue, whose once-a-day minimum is owed: that
+# one only if the shards would wait for a runner of their lane otherwise, so on a busy VM it
+# still gets its day (.github/cancel-filler.sh). A cancelled or cut-off filler run keeps what
+# its shards finished: each uploads its harvest, and the summary gathers it.
 name: mutants
 # The ref, base, packages, files, and regex, so concurrent runs can be told apart
 # (review-tests finds its run by this title). A filler run's starts "filler a" or "filler
@@ -126,9 +128,6 @@ jobs:
           "" | true) ;;
           *) echo "::error::long must be empty or true, not '$LONG'"; exit 1 ;;
           esac
-          # A real run takes precedence over filler: it cancels every filler run. Its own
-          # shards then queue for the runners that frees, like any other run's.
-          if [ -z "$FILLER" ]; then bash .github/cancel-filler.sh; fi
           # Enough shards that none runs past about 12 hours, half a job's limit (the shard's
           # timeout-minutes, 24 hours): 80 mutants each, at 540 seconds a mutant, a margin over
           # the most a loaded VM took (#242's run 40627599832, 2026-10-28: 450 and 520 seconds
@@ -179,6 +178,15 @@ jobs:
           if [ -z "$FILLER" ] && [ -z "$LONG" ] && [ "${needed:-0}" -gt 6 ]; then
             echo "::error::$mutants mutants need $needed shards, more than a run that gates a merge may hold (6): dispatch it with long=true, or narrow it (base, files, re, tests)"
             exit 1
+          fi
+          # A real run takes precedence over filler: it cancels every filler mutants run, and
+          # every exploration and filler sweep but one overdue (its once-a-day minimum owed)
+          # that its shards don't need the runner of (.github/cancel-filler.sh), so it's called
+          # once the shards are known, with the label they ask for (the shard's runs-on, below).
+          # Its own shards then queue for the runners that frees, like any other run's.
+          if [ -z "$FILLER" ]; then
+            if [ -n "$LONG" ]; then lane=mutants; else lane=mutants-pr; fi
+            bash .github/cancel-filler.sh --lane "$lane" --shards "$shards"
           fi
           echo "count=$shards" >>"$GITHUB_OUTPUT"
           echo "shards=[$(seq -s, 0 $((shards - 1)))]" >>"$GITHUB_OUTPUT"

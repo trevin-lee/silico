@@ -29,15 +29,18 @@
 #
 # It's filler (filler.yml): its title starts "filler", it runs on a runner labelled filler at
 # the idle scheduling class, with filler's Cargo home and build (target-filler/), and real
-# work cancels it (.github/cancel-filler.sh), without a report. A scheduled run starts only
-# while there's room for it (.github/proptest-room.sh: no bench or oracle sweep going or
-# filler's sweep due, no real mutants run starting or waiting for a runner, a free runner
-# labelled filler, more than a fifth of the VM's CPUs idle); the filler waits for one going
-# before it starts a sweep. Once a day at least: overdue (no exploration passed or failed in
-# a day having run a round, its step "Rounds ran"), it goes whatever CPU is idle and beside a
-# sweep merely due, though never ahead of a gate or a real mutants run waiting, nor of an
-# overdue sweep; its tests then take 2 threads, a real shard's on a busy VM, and its slow
-# proptests run alone (PROPTEST_EXPLORE_SLOW_ALONE, tests/proptest-explore.sh).
+# work cancels it (.github/cancel-filler.sh), without a report: a bench or a night's sweep
+# always, a real mutants run unless it's overdue (below), then only if that run's shards
+# would wait for a runner it holds or would take, so a busy VM, where real runs start several
+# times a day, still gets its day's exploration. A scheduled run starts only while there's
+# room for it (.github/proptest-room.sh: no bench or oracle sweep going or filler's sweep
+# due, no real mutants run starting or waiting for a runner, a free runner labelled filler,
+# more than a fifth of the VM's CPUs idle); the filler waits for one going before it starts a
+# sweep. Once a day at least: overdue (no exploration passed or failed in a day having run a
+# round, its step "Rounds ran"), it goes whatever CPU is idle and beside a sweep merely due,
+# though never ahead of a gate or a real mutants run waiting, nor of an overdue sweep; its
+# tests then take 2 threads, a real shard's on a busy VM, and its slow proptests run alone
+# (PROPTEST_EXPLORE_SLOW_ALONE, tests/proptest-explore.sh).
 #
 #   gh workflow run proptest-explore.yml --ref main                 (new seeds)
 #   gh workflow run proptest-explore.yml --ref main -f seed=SEED    (one round at SEED, to repeat it)
