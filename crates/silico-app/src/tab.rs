@@ -5218,7 +5218,7 @@ mod tests {
     fn a_feature_this_timeline_no_longer_marks_says_nothing_though_another_is_still_marked() {
         let said = |message: &str| Said {
             message: message.to_owned(),
-            suggestion: None,
+            ..Said::default()
         };
         let mut tab = tab();
         tab.said.insert("a0000001".to_owned(), said("warned"));
