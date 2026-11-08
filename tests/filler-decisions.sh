@@ -152,10 +152,15 @@ exploring() {
     job 290 explore queued "" self-hosted,linux,x64,filler
   fi
 }
-# A filler sweep going (run 400), its sweep job running on silico-$1.
+# A filler sweep going (run 400), its sweep job running on silico-$1, or, with none given,
+# queued for a runner labelled filler.
 sweeping() {
   run 400 oracle-sweep.yml in_progress "filler oracle sweep, seed 400" 0
-  job 400 sweep in_progress "pve-silico-$1-1" self-hosted,linux,x64,filler
+  if [ -n "${1-}" ]; then
+    job 400 sweep in_progress "pve-silico-$1-1" self-hosted,linux,x64,filler
+  else
+    job 400 sweep queued "" self-hosted,linux,x64,filler
+  fi
 }
 # A real mutants run's plan going (run 7100), on silico-14, a runner labelled control: the run
 # that calls cancel-filler.sh with its lane and shards.
@@ -491,7 +496,7 @@ exploring 8
 cancel_filler --lane mutants-pr --shards 2
 # Busy: 8 (the exploration), 10 to 12, 15 to 17, 20, 21 (real); free: 5, 6, 7 (filler mutants,
 # cancelled), and 9.
-check logged "4 runners labelled mutants-pr free once filler mutants are cancelled, for 2 shards"
+check logged "4 runners labelled mutants-pr free once filler mutants are cancelled, 0 jobs waiting for one: 4 spare for 2 shards"
 check logged "Keeping the exploration 290, overdue"
 check only_called "run cancel 8000"
 
@@ -511,7 +516,7 @@ shards_on 10 11 12 15 16 17 20 21
 filler_mutants 5 6 7
 exploring 8
 cancel_filler --lane mutants-pr --shards 5
-check logged "4 runners labelled mutants-pr free once filler mutants are cancelled, for 5 shards"
+check logged "4 runners labelled mutants-pr free once filler mutants are cancelled, 0 jobs waiting for one: 4 spare for 5 shards"
 check only_called "run cancel 8000" "run cancel 290"
 
 begin "the lane all busy with real work but the overdue exploration's runner: it's cancelled" 0
@@ -521,7 +526,7 @@ shards_on 5 6 7 9 10 11 12 15 16 17 20 21
 filler_mutants 22 23
 exploring 8
 cancel_filler --lane mutants-pr --shards 2
-check logged "0 runners labelled mutants-pr free once filler mutants are cancelled, for 2 shards"
+check logged "0 runners labelled mutants-pr free once filler mutants are cancelled, 0 jobs waiting for one: 0 spare for 2 shards"
 check only_called "run cancel 8000" "run cancel 290"
 
 begin "the lane all busy, the overdue exploration on silico-22, which the lane hasn't: it's kept" 0
@@ -555,7 +560,7 @@ planning
 shards_on 6 7 8 9 10 11 12 15 16 17 20 21
 exploring 5
 cancel_filler --lane mutants --shards 1
-check logged "0 runners labelled mutants free once filler mutants are cancelled, for 1 shards"
+check logged "0 runners labelled mutants free once filler mutants are cancelled, 0 jobs waiting for one: 0 spare for 1 shards"
 check quiet
 
 begin "an exploration not overdue is cancelled, every runner free" 0
@@ -574,7 +579,7 @@ filler_mutants 22 23
 sweeping 9
 cancel_filler --lane mutants-pr --shards 2
 # Free: 13 but 9.
-check logged "12 runners labelled mutants-pr free once filler mutants are cancelled, for 2 shards"
+check logged "12 runners labelled mutants-pr free once filler mutants are cancelled, 0 jobs waiting for one: 12 spare for 2 shards"
 check logged "Keeping the filler sweep 400, overdue"
 check only_called "run cancel 8000"
 
@@ -623,6 +628,120 @@ shards_on 10 11 12 15 16 17 20 21
 filler_mutants 5 6 7
 exploring 8
 failing "actions/runs/230/jobs"
+check cancel_filler --lane mutants-pr --shards 2
+check logged "::warning::couldn't tell whether the exploration 290 is overdue: cancelled, as real work comes first"
+check only_called "run cancel 8000" "run cancel 290"
+
+begin "an exploration started by hand, waiting for a runner, as many spare as shards: it's cancelled, as it would take one" 0
+explored success 30
+planning
+shards_on 8 9 10 11 12 15 16 17 20 21
+filler_mutants 5 6 7
+# Started by hand, it skips the room (proptest-explore.yml) and queues at once.
+run 290 proptest-explore.yml in_progress "filler proptest exploration" 0
+job 290 room completed "" self-hosted,linux,x64,control skipped 0
+job 290 explore queued "" self-hosted,linux,x64,filler
+cancel_filler --lane mutants-pr --shards 3
+# Free: 5, 6, 7 (filler mutants, cancelled); the exploration's job asks for filler, not
+# mutants-pr, so isn't counted waiting, but would take one of them.
+check logged "3 runners labelled mutants-pr free once filler mutants are cancelled, 0 jobs waiting for one: 3 spare for 3 shards"
+check only_called "run cancel 8000" "run cancel 290"
+
+begin "an exploration started by hand, waiting for a runner, one more spare than shards: it's kept" 0
+explored success 30
+planning
+shards_on 8 9 10 11 12 15 16 17 20 21
+filler_mutants 5 6 7
+run 290 proptest-explore.yml in_progress "filler proptest exploration" 0
+job 290 room completed "" self-hosted,linux,x64,control skipped 0
+job 290 explore queued "" self-hosted,linux,x64,filler
+cancel_filler --lane mutants-pr --shards 2
+check logged "Keeping the exploration 290, overdue: the lane has a runner spare for it and each shard"
+check only_called "run cancel 8000"
+
+begin "an overdue filler sweep waiting for a runner, as many spare as shards: it's cancelled" 0
+swept 25
+planning
+shards_on 8 9 10 11 12 15 16 17 20 21
+sweeping
+cancel_filler --lane mutants-pr --shards 3
+# Free: 5, 6, 7.
+check only_called "run cancel 400"
+
+begin "an overdue sweep and exploration both waiting, one more spare than shards: the first kept takes it, the other is cancelled" 0
+explored success 30
+swept 25
+planning
+shards_on 8 9 10 11 12 15 16 17 20 21
+sweeping
+run 290 proptest-explore.yml in_progress "filler proptest exploration" 0
+job 290 explore queued "" self-hosted,linux,x64,filler
+cancel_filler --lane mutants-pr --shards 2
+# Spare: 5, 6, 7. The sweep, listed first, is kept and will take one; then 2 are spare for 2
+# shards, none for the exploration.
+check logged "Keeping the filler sweep 400, overdue: the lane has a runner spare for it and each shard"
+check only_called "run cancel 290"
+
+begin "another real run's shard waiting for the lane: one fewer spare, and the overdue exploration on silico-8 is cancelled" 0
+explored success 30
+planning
+shards_on 9 10 11 12 15 16 17 20 21
+filler_mutants 5 6
+exploring 8
+run 7200 mutants.yml in_progress "mutants ghi since main" 1
+job 7200 plan completed pve-silico-13-1 self-hosted,linux,x64,control success 1
+job 7200 "shard (0)" queued "" self-hosted,linux,x64,mutants-pr
+cancel_filler --lane mutants-pr --shards 3
+# Free: 5, 6 (filler mutants, cancelled), and 7; waiting: run 7200's shard.
+check logged "3 runners labelled mutants-pr free once filler mutants are cancelled, 1 jobs waiting for one: 2 spare for 3 shards"
+check only_called "run cancel 8000" "run cancel 290"
+
+begin "another real run's shard waiting for the lane, and a gate, which asks for other runners: the overdue exploration is kept for 2 shards" 0
+explored success 30
+planning
+shards_on 9 10 11 12 15 16 17 20 21
+filler_mutants 5 6
+exploring 8
+run 7200 mutants.yml in_progress "mutants ghi since main" 1
+job 7200 plan completed pve-silico-13-1 self-hosted,linux,x64,control success 1
+job 7200 "shard (0)" queued "" self-hosted,linux,x64,mutants-pr
+run 6000 gate.yml queued "feat: x" 0
+job 6000 gate queued "" self-hosted,linux,x64,pve,gate
+cancel_filler --lane mutants-pr --shards 2
+check logged "3 runners labelled mutants-pr free once filler mutants are cancelled, 1 jobs waiting for one: 2 spare for 2 shards"
+check only_called "run cancel 8000"
+
+begin "a job that ended on a runner of the lane leaves it free: the overdue exploration is kept, as many spare as shards" 0
+explored success 30
+planning
+shards_on 10 11 12 15 16 17 20 21
+job 7000 "shard (9)" completed pve-silico-9-1 self-hosted,linux,x64,mutants-pr success 1
+filler_mutants 5 6 7
+exploring 8
+cancel_filler --lane mutants-pr --shards 4
+# Free: 5, 6, 7 (filler mutants, cancelled), and 9.
+check logged "4 runners labelled mutants-pr free once filler mutants are cancelled, 0 jobs waiting for one: 4 spare for 4 shards"
+check only_called "run cancel 8000"
+
+begin "a filler mutants run GitHub wouldn't cancel: the overdue exploration is cancelled, warned of, and the real run goes on" 0
+explored success 30
+planning
+shards_on 10 11 12 15 16 17 20 21
+filler_mutants 5 6 7
+exploring 8
+failing "run cancel 8000"
+check cancel_filler --lane mutants-pr --shards 2
+check logged "::warning::couldn't cancel filler run 8000"
+check logged "::warning::couldn't tell whether the shards need the overdue exploration 290's runner: cancelled, as real work comes first"
+check only_called "run cancel 290"
+
+begin "a failed list of the past explorations: the exploration is cancelled, warned of, and the real run goes on" 0
+explored success 30
+planning
+shards_on 10 11 12 15 16 17 20 21
+filler_mutants 5 6 7
+exploring 8
+failing "proptest-explore.yml --branch"
 check cancel_filler --lane mutants-pr --shards 2
 check logged "::warning::couldn't tell whether the exploration 290 is overdue: cancelled, as real work comes first"
 check only_called "run cancel 8000" "run cancel 290"
