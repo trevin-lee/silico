@@ -18477,7 +18477,11 @@ fn timeline_tip(h: &mut AppHarness, name: &str, kind: &str) -> String {
     let start = format!("{kind} · ");
     let tip = |h: &AppHarness| {
         h.query_all_by_label_contains(&start)
-            .filter_map(|node| node.accesskit_node().label())
+            .filter_map(|node| {
+                // A label's text is its value.
+                let node = node.accesskit_node();
+                node.value().or_else(|| node.label())
+            })
             .find(|label| {
                 label
                     .strip_prefix(&start)
@@ -18550,19 +18554,36 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
             off("Delete Del"),
         ]
     );
-    // Clicked, the off items do nothing.
-    menu_click(&mut h, "TRIANGLE", "Delete");
-    menu_on(&mut h, "Timeline", "Triangle");
-    menu_click(&mut h, "TRIANGLE", "Suppress");
-    for _ in 0..5 {
-        step(&mut h);
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    // Clicked, the off items do nothing (a click in a menu closes it, an off item's too):
+    // no dialog, no field, nothing sent, and the same sketch still open.
+    let sent = h.state().tabs()[0].sent.clone();
+    for (item, of) in [
+        ("Delete", "Triangle"),
+        ("Suppress", "Triangle"),
+        ("Rename", "Triangle"),
+        ("Edit Sketch", "Triangle"),
+        ("Edit feature", "Plate"),
+        ("Rename", "Plate"),
+        ("Suppress", "Plate"),
+        ("Delete", "Plate"),
+    ] {
+        menu_on(&mut h, "Timeline", of);
+        menu_click(&mut h, &of.to_uppercase(), item);
+        for _ in 0..3 {
+            step(&mut h);
+        }
+        assert!(!dialog_open(&h), "{item} of {of}");
+        assert!(h.state().tabs()[0].renaming.is_none(), "{item} of {of}");
+        assert_eq!(h.state().tabs()[0].sent, sent, "{item} of {of}");
+        assert_eq!(
+            sketch_mode(&h).and_then(|mode| mode.sketch.clone()),
+            Some(sketch_id("s0000001")),
+            "{item} of {of}"
+        );
     }
-    assert!(
-        !h.state().tabs()[0]
-            .sent
-            .iter()
-            .any(|sent| matches!(sent, Sent::Suppress(..) | Sent::Remove(_)))
-    );
     assert!(text_of(&f, &h).contains("s0000001"));
     // Esc with no menu open: the sketch's selection let go first, sketch mode kept.
     assert!(!sketch_mode(&h).unwrap().selection.is_empty());
@@ -18586,21 +18607,80 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
     step(&mut h);
     step(&mut h);
     assert!(h.state().tabs()[0].renaming.is_none());
+    // The box's menu on again, every item.
+    menu_on(&mut h, "Timeline", "Plate");
+    assert_eq!(
+        menu_items(&h, "PLATE"),
+        [
+            on("Edit feature double-click"),
+            on("Rename F2"),
+            on("Suppress"),
+            on("Find in browser"),
+            on("Delete Del"),
+        ]
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
     menu_on(&mut h, "Timeline", "Triangle");
     assert_eq!(
         menu_items(&h, "TRIANGLE"),
         [
-            (String::from("Edit Sketch double-click"), None),
-            (String::from("Rename F2"), None),
-            (String::from("Suppress"), None),
-            (String::from("Find in browser"), None),
-            (String::from("Delete Del"), None),
+            on("Edit Sketch double-click"),
+            on("Rename F2"),
+            on("Suppress"),
+            on("Find in browser"),
+            on("Delete Del"),
         ]
     );
     menu_click(&mut h, "TRIANGLE", "Edit Sketch");
     step_until(&mut h, "sketch mode again", |h| sketch_mode(h).is_some());
     assert_eq!(sketch_mode(&h).unwrap().sketch, Some(sketch_id("s0000001")));
     assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_name_being_typed_as_sketch_mode_opens_is_sent_first_its_field_closed_and_cancel_keeps_it() {
+    // #398's case for a dialog: the click that opens it finishes the name first
+    // (`App::rename_clicked_away`, before any control acts) and closes its field, so the
+    // dialog opens after the rename and its Cancel keeps the name. Sketch mode opens by a
+    // click too, a sketch's double-click or its menu's Edit Sketch, and its Cancel undoes to
+    // where it opened in the same way: the same holds, and no field is left open.
+    for by_menu in [false, true] {
+        let f = fixture();
+        let mut h = opened_themed(&f, "sketched.silico", SKETCHED);
+        step_until(&mut h, "its features", |h| shows(h, "Timeline", "Washer"));
+        f2_typed(&mut h, "Washer", "Dowel");
+        if by_menu {
+            // The right-click's press finishes the name, before the menu opens.
+            menu_on(&mut h, "Timeline", "Triangle");
+            assert!(rename_field(&h, "Washer").is_none(), "the field closed");
+            menu_click(&mut h, "TRIANGLE", "Edit Sketch");
+        } else {
+            double_click(&mut h, "Browser", "Triangle");
+        }
+        step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+        assert!(rename_field(&h, "Washer").is_none(), "the field closed");
+        assert!(h.state().tabs()[0].renaming.is_none());
+        sketch_read(&mut h);
+        settled(&mut h);
+        let sent = &h.state().tabs()[0].sent;
+        assert!(
+            sent.contains(&Sent::Edit("name".to_owned())),
+            "by the menu {by_menu}: {sent:?}"
+        );
+        assert!(names_of(&text_of(&f, &h)).contains(&"Dowel".to_owned()));
+        // Cancel undoes to where sketch mode opened, after the rename: the name kept.
+        leave_sketch(&mut h, false);
+        assert_eq!(
+            names_of(&text_of(&f, &h)),
+            ["Dowel", "Plate", "Triangle"],
+            "by the menu {by_menu}"
+        );
+        assert!(shows(&h, "Timeline", "Dowel"), "by the menu {by_menu}");
+        assert!(rename_field(&h, "Dowel").is_none() && rename_field(&h, "Washer").is_none());
+        assert_eq!(never_waits::waits(), 0);
+    }
 }
 
 /// One sketch, Loose, of one point.
