@@ -620,6 +620,12 @@ impl<P: Clients + 'static> App<P> {
             self.waker_set = true;
         }
         self.poll();
+        // The candidate a card's row was hovered on last frame, lit in the canvas from now.
+        for tab in &mut self.tabs {
+            if tab.take_candidate_hover() {
+                ui.ctx().request_repaint();
+            }
+        }
         // A name being typed, clicked away from: sent before any control the click lands on
         // acts, so it comes first in the tab's queue.
         let renamed = self.rename_clicked_away(ui.ctx());
@@ -804,12 +810,20 @@ impl<P: Clients + 'static> App<P> {
         // What's Wrong, the shown tab's, the same.
         let sessions = Arc::clone(&self.sessions);
         if let Some(tab) = self.whats_wrong_shown() {
-            match crate::whats_wrong::show(ui.ctx(), tab) {
+            let (asked, hovered) = crate::whats_wrong::show(ui.ctx(), tab);
+            tab.hover_candidate(hovered);
+            match asked {
                 crate::whats_wrong::Asked::None => {}
                 crate::whats_wrong::Asked::Close => tab.whats_wrong = false,
                 crate::whats_wrong::Asked::Card(asked) => {
-                    // Edit and Show in timeline each close it, as the prototype's do.
-                    tab.whats_wrong = false;
+                    // Edit and Show in timeline each close it, as the prototype's do; Use and
+                    // Remove the edge leave it open (`useCand` and `removeRef` close nothing).
+                    if matches!(
+                        asked,
+                        crate::properties::CardAct::Edit(_) | crate::properties::CardAct::Show(_)
+                    ) {
+                        tab.whats_wrong = false;
+                    }
                     started |= tab.card_asked(&sessions, asked);
                 }
             }
@@ -1490,8 +1504,10 @@ impl<P: Clients + 'static> App<P> {
         false
     }
 
-    /// The Save panel's pick, `path`, for `session`'s document: saved as it (`commit` with
-    /// the path and `replace`, the panel having asked about a file there), then closed if
+    /// The Save panel's pick, `path`, for `session`'s document: saved as it, `.silico`
+    /// added if its name hasn't it ([`browse::document_path`]) (`commit` with the path, and
+    /// `replace` if the panel asked about a file there: if it was picked as it is, but not
+    /// if `.silico` was added, so a file by that name is asked about), then closed if
     /// `then_close`, if its tab is still open and not closing (Don't save chosen while a
     /// panel of the portal's was open); else nothing. Its own file picked is a Save (the core
     /// refuses a Save As to it, and the tab saves instead). Whether a command was started.
@@ -1503,9 +1519,10 @@ impl<P: Clients + 'static> App<P> {
         else {
             return false;
         };
+        let (path, added) = browse::document_path(path);
         // Its own file picked (by any path to it) is refused by the core as its own, which
         // the tab then takes as a Save.
-        tab.save_as(&self.sessions, path, true, then_close);
+        tab.save_as(&self.sessions, path, !added, then_close);
         true
     }
 
@@ -2283,7 +2300,9 @@ impl<P: Clients + 'static> App<P> {
                         // A relative path is in the document's folder.
                         && let Some(path) = export::beside(tab.path.as_deref(), &typed)
                     {
-                        let path = path.to_string_lossy().into_owned();
+                        // A document's name: `.silico` added if it hasn't it. A file there
+                        // by that name is asked about.
+                        let (path, _) = browse::document_path(path.to_string_lossy().into_owned());
                         tab.save_as(&self.sessions, path, false, then_close);
                     }
                     *started = true;

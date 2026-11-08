@@ -4172,13 +4172,18 @@ fn path_field(h: &AppHarness) -> egui_kittest::Node<'_> {
 
 /// File > Save As…, `path` typed into its dialog, and Save.
 fn save_as(h: &mut AppHarness, path: &Path) {
+    save_as_of(h, "example.silico", path);
+}
+
+/// File > Save As… of the tab named `name`, `path` typed into its dialog, and Save.
+fn save_as_of(h: &mut AppHarness, name: &str, path: &Path) {
+    let title = format!("Save {name} as");
     h.get_by_label("File").click();
     step(h);
     step(h);
     h.get_by_role_and_label(Role::Button, "Save As…").click();
     step_until(h, "the Save As dialog", |h| {
-        h.query_by_label_contains("Save example.silico as")
-            .is_some()
+        h.query_by_label_contains(&title).is_some()
     });
     h.get_by_role_and_label(Role::TextInput, "Path").focus();
     step(h);
@@ -4191,9 +4196,90 @@ fn save_as(h: &mut AppHarness, path: &Path) {
         .unwrap()
         .click_accesskit();
     step_until(h, "the Save As dialog gone", |h| {
-        h.query_by_label_contains("Save example.silico as")
-            .is_none()
+        h.query_by_label_contains(&title).is_none()
     });
+}
+
+#[test]
+fn a_typed_save_as_adds_silico_to_a_name_without_it_and_keeps_one_in_any_case() {
+    let f = fixture();
+    let (mut h, old) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let dir = f.dir.path();
+    let mut name = "example.silico".to_owned();
+    for (typed, written) in [
+        // As SolidWorks' Save As adds its type's extension: to a bare name, and after
+        // another extension, the name's whole.
+        ("part", "part.silico"),
+        ("part.v2", "part.v2.silico"),
+        // `.silico` already: as typed.
+        ("kept.silico", "kept.silico"),
+        // In another case: as typed, as macOS's save panel keeps an allowed extension.
+        ("upper.SILICO", "upper.SILICO"),
+    ] {
+        save_as_of(&mut h, &name, &dir.join(typed));
+        let want = dir.join(written);
+        step_until(&mut h, written, |h| {
+            h.state().tabs()[0].path.as_deref() == want.to_str() && h.state().tabs()[0].edits.idle()
+        });
+        assert_eq!(
+            std::fs::read_to_string(&want).unwrap(),
+            text_of(&f, &h),
+            "{typed}"
+        );
+        name = written.to_owned();
+    }
+    // No file by a name typed without `.silico`, nor with it added to one that had it.
+    for unwritten in [
+        "part",
+        "part.v2",
+        "kept.silico.silico",
+        "upper.SILICO.silico",
+    ] {
+        assert!(!dir.join(unwritten).exists(), "{unwritten} written");
+    }
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_typed_save_as_asks_before_replacing_the_file_its_name_with_silico_added_names() {
+    let f = fixture();
+    let (mut h, old) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    let there = f.file("there.silico", "an older copy");
+    let typed = f.dir.path().join("there");
+    save_as(&mut h, &typed);
+    // Asked of `there.silico`, the file the save would write.
+    let asked = format!("{} already exists. Replace it?", there.to_str().unwrap());
+    step_until(&mut h, "the question", |h| anywhere(h, &asked));
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the question gone", |h| !anywhere(h, &asked));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(std::fs::read_to_string(&there).unwrap(), "an older copy");
+    assert!(!typed.exists());
+    assert_eq!(h.state().tabs()[0].path.as_deref(), old.to_str());
+    assert!(anywhere(&h, "example.silico *"));
+    // Again, and Replace: `there.silico` replaced, the tab following it.
+    save_as(&mut h, &typed);
+    step_until(&mut h, "the question again", |h| anywhere(h, &asked));
+    h.get_by_role_and_label(Role::Button, "Replace")
+        .click_accesskit();
+    step_until(&mut h, "the tab of the file replaced", |h| {
+        h.state().tabs()[0].path.as_deref() == there.to_str() && !anywhere(h, "there.silico *")
+    });
+    assert_eq!(names_in(&there), ["Block", "Pinx", "Hole"]);
+    assert!(!typed.exists());
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
@@ -4349,13 +4435,14 @@ fn a_save_as_the_core_refuses_is_said_and_the_tab_stays_on_its_file() {
     step_until(&mut h, "unsaved", |h| {
         h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
     });
-    let json = f.dir.path().join("copy.json");
-    save_as(&mut h, &json);
+    // In a folder that isn't there.
+    let absent = f.dir.path().join("absent").join("copy.silico");
+    save_as(&mut h, &absent);
     step_until(&mut h, "the refusal said", |h| {
-        h.query_by_label_contains("doesn't end in .silico")
+        h.query_by_label_contains("its directory can't be reached")
             .is_some()
     });
-    assert!(!json.exists());
+    assert!(!absent.exists());
     assert_eq!(h.state().tabs()[0].path.as_deref(), old.to_str());
     assert!(anywhere(&h, "example.silico *"));
     assert_eq!(never_waits::waits(), 0);
@@ -4735,40 +4822,25 @@ fn input<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
     dialog(h).get_by_role_and_label(Role::TextInput, label)
 }
 
-/// Whether the dialog's choice `key` has `option` chosen: a drop-down's value, or a
-/// segmented control's button toggled, as the panel's width draws it.
+/// Whether the dialog's choice `key`, a drop-down, shows `option` chosen.
 fn chosen(h: &AppHarness, key: &str, option: &str) -> bool {
-    match dialog(h).query_by_role_and_label(Role::ComboBox, key) {
-        Some(select) => select.accesskit_node().value().as_deref() == Some(option),
-        None => {
-            dialog(h)
-                .get_by_role_and_label(Role::Button, option)
-                .accesskit_node()
-                .toggled()
-                == Some(eframe::egui::accesskit::Toggled::True)
-        }
-    }
+    dialog(h)
+        .get_by_role_and_label(Role::ComboBox, key)
+        .accesskit_node()
+        .value()
+        .as_deref()
+        == Some(option)
 }
 
-/// `option` chosen in the dialog's choice `key`: from its drop-down's menu, or its
-/// segmented control's button, as the panel's width draws it.
+/// `option` chosen in the dialog's choice `key`, from its drop-down's menu.
 fn choose(h: &mut AppHarness, key: &str, option: &str) {
-    if dialog(h)
-        .query_by_role_and_label(Role::ComboBox, key)
-        .is_some()
-    {
-        dialog(h).get_by_role_and_label(Role::ComboBox, key).click();
-        step_until(h, "the drop-down's menu", |h| {
-            h.query_all_by_role_and_label(Role::Button, option).count() == 1
-        });
-        // egui lays a new menu out unseen in its first frame, and places it in its next.
-        step(h);
-        h.get_by_role_and_label(Role::Button, option).click();
-    } else {
-        dialog(h)
-            .get_by_role_and_label(Role::Button, option)
-            .click();
-    }
+    dialog(h).get_by_role_and_label(Role::ComboBox, key).click();
+    step_until(h, "the drop-down's menu", |h| {
+        h.query_all_by_role_and_label(Role::Button, option).count() == 1
+    });
+    // egui lays a new menu out unseen in its first frame, and places it in its next.
+    step(h);
+    h.get_by_role_and_label(Role::Button, option).click();
     step(h);
     step(h);
     assert!(chosen(h, key, option), "{option} not chosen in {key}");
@@ -5026,7 +5098,6 @@ fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
             .query_by_role_and_label(Role::TextInput, "Length 2")
             .is_none()
     );
-    // Its four options don't fit the panel side by side, so they're a drop-down's.
     choose(&mut h, "Extent", "Two sides");
     step_until(&mut h, "two sides", |h| {
         dialog(h)
@@ -6027,31 +6098,26 @@ fn edit_feature_of_a_revolve_about_a_sketch_line_keeps_that_axis() {
     // name in its box.
     assert!(chosen(&h, "Axis", "nc000000"));
     assert!(!chosen(&h, "Axis", "Y axis"));
-    // And the Y axis offered beside it: a segmented control's button (`chosen` finds it), or
-    // an entry in the drop-down's menu, opened and closed again.
-    if dialog(&h)
-        .query_by_role_and_label(Role::ComboBox, "Axis")
-        .is_some()
-    {
-        dialog(&h)
-            .get_by_role_and_label(Role::ComboBox, "Axis")
-            .click();
-        step_until(&mut h, "the drop-down's menu", |h| {
-            h.query_all_by_role_and_label(Role::Button, "Y axis")
-                .count()
-                == 1
-        });
-        step(&mut h);
-        dialog(&h)
-            .get_by_role_and_label(Role::ComboBox, "Axis")
-            .click();
-        step_until(&mut h, "the drop-down's menu closed", |h| {
-            h.query_all_by_role_and_label(Role::Button, "Y axis")
-                .count()
-                == 0
-        });
-        assert!(chosen(&h, "Axis", "nc000000"));
-    }
+    // And the Y axis offered beside it, an entry in the drop-down's menu, opened and closed
+    // again.
+    dialog(&h)
+        .get_by_role_and_label(Role::ComboBox, "Axis")
+        .click();
+    step_until(&mut h, "the drop-down's menu", |h| {
+        h.query_all_by_role_and_label(Role::Button, "Y axis")
+            .count()
+            == 1
+    });
+    step(&mut h);
+    dialog(&h)
+        .get_by_role_and_label(Role::ComboBox, "Axis")
+        .click();
+    step_until(&mut h, "the drop-down's menu closed", |h| {
+        h.query_all_by_role_and_label(Role::Button, "Y axis")
+            .count()
+            == 0
+    });
+    assert!(chosen(&h, "Axis", "nc000000"));
     assert!(chosen(&h, "Extent", "Symmetric"));
     assert_eq!(input(&h, "Angle").value().as_deref(), Some("90"));
     assert!(dialog(&h).query_by_label("Triangle").is_some());
@@ -11860,6 +11926,70 @@ fn save_as_asks_the_save_panel_and_its_pick_is_saved_replacing_a_file_there() {
     let asked = format!("{} already exists. Replace it?", there.to_str().unwrap());
     assert!(!anywhere(&h, &asked));
     assert_eq!(std::fs::read_to_string(&there).unwrap(), held);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_save_panels_name_without_silico_is_saved_with_it_and_a_file_by_that_name_asked_about() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let (mut h, old) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let dir = f.dir.path();
+    // `part` picked: saved as `part.silico`, the tab following it.
+    file_menu_item(&mut h, "Save As…");
+    save_panel_asked(&mut h, &browser, 1);
+    let part = dir.join("part.silico");
+    browser.answer(Some(&dir.join("part")));
+    step_until(&mut h, "the tab of part.silico", |h| {
+        h.state().tabs()[0].path.as_deref() == part.to_str() && h.state().tabs()[0].edits.idle()
+    });
+    assert_eq!(std::fs::read_to_string(&part).unwrap(), text_of(&f, &h));
+    assert!(!dir.join("part").exists());
+    // `there` picked, `there.silico` there: the panel asked only about `there`, so the app
+    // asks about `there.silico`; Cancel writes nothing.
+    let there = f.file("there.silico", "an older copy");
+    let asked = format!("{} already exists. Replace it?", there.to_str().unwrap());
+    file_menu_item(&mut h, "Save As…");
+    save_panel_asked(&mut h, &browser, 2);
+    browser.answer(Some(&dir.join("there")));
+    step_until(&mut h, "the question", |h| anywhere(h, &asked));
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the question gone", |h| !anywhere(h, &asked));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(std::fs::read_to_string(&there).unwrap(), "an older copy");
+    assert_eq!(h.state().tabs()[0].path.as_deref(), part.to_str());
+    // Again, and Replace: `there.silico` replaced, the tab following it.
+    file_menu_item(&mut h, "Save As…");
+    save_panel_asked(&mut h, &browser, 3);
+    browser.answer(Some(&dir.join("there")));
+    step_until(&mut h, "the question again", |h| anywhere(h, &asked));
+    h.get_by_role_and_label(Role::Button, "Replace")
+        .click_accesskit();
+    step_until(&mut h, "the tab of the file replaced", |h| {
+        h.state().tabs()[0].path.as_deref() == there.to_str() && h.state().tabs()[0].edits.idle()
+    });
+    assert_eq!(std::fs::read_to_string(&there).unwrap(), text_of(&f, &h));
+    assert!(!dir.join("there").exists());
+    // `upper.SILICO` picked, a file there: kept as it is, so replaced with no question of
+    // the app's, the panel having asked.
+    let upper = f.file("upper.SILICO", "an older copy");
+    file_menu_item(&mut h, "Save As…");
+    save_panel_asked(&mut h, &browser, 4);
+    browser.answer(Some(&upper));
+    step_until(&mut h, "the tab of upper.SILICO", |h| {
+        h.state().tabs()[0].path.as_deref() == upper.to_str() && h.state().tabs()[0].edits.idle()
+    });
+    assert!(!anywhere(
+        &h,
+        &format!("{} already exists. Replace it?", upper.to_str().unwrap())
+    ));
+    assert_eq!(std::fs::read_to_string(&upper).unwrap(), text_of(&f, &h));
+    assert!(!dir.join("upper.SILICO.silico").exists());
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -25441,4 +25571,780 @@ fn a_browser_rename_scrolled_out_of_view_then_clicked_away_to_a_dialog_comes_bef
     assert_eq!(names[..3], ["Front", "Dowel", "Block 2"]);
     assert!(shows(&h, "Browser", "Dowel"));
     assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- A broken reference's candidates (flow 6b) ----
+
+/// The M2.1 example with Inside corner, a fillet of the cut's two edges kept from the
+/// block, Edge1 and Edge5 (each named as the block names it: the fake's cut keeps every
+/// edge of its base, so the cut's Edge N is the block's Edge N).
+const CORNER: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"},
+    {"id": "f0000001", "type": "fillet", "v": 1, "name": "Inside corner", "base": "m3tq8v0z", "edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"], "radius": 1}
+  ]
+}
+"#;
+
+/// [`CORNER`] with Inside corner rounding the block's Edge5 alone.
+fn corner_alone() -> String {
+    CORNER.replace(
+        r#""edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]"#,
+        r#""edges": ["k7f2qx3m.box.Edge5"]"#,
+    )
+}
+
+/// [`swallowing`] the block's Edge5, each body meshed as a real 40 × 20 × 10 box if
+/// `real`.
+fn swallowing_edge5_meshed(f: &Fixture, real: bool) {
+    swallowing(f, &[5], real);
+}
+
+/// The upstream edit that breaks Inside corner's names: a pin of radius 30 swallows each of
+/// the block's edges `swallowed` (Edge5, say), which the cut no longer keeps (its history
+/// says so: every other element of the block kept, by its own number; the pin's none; the
+/// cut's Edge5 made of nothing, so named by its number alone, unstable). The cut's shape
+/// is a box a mm³ smaller than the block (a cut that left its base unchanged would be
+/// refused), so it's meshed and described as a box is. With a narrower pin, the
+/// fake's own cut. If `real`, each body meshed as a real 40 × 20 × 10 box, as
+/// [`meshes_a_real_box`] meshes it (for a frame drawn on lavapipe).
+fn swallowing(f: &Fixture, swallowed: &'static [u32], real: bool) {
+    use silico_core::kernel::{
+        BooleanOp, BuiltData, ElementCounts, ElementFate, History, InputHistory, Topology,
+    };
+    f.kernel.answer_instead(move |op| match op {
+        Op::Tessellate {
+            deflection,
+            at_least_the_floor,
+            ..
+        } if real => {
+            let mesh = silico_render::bench::box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+            Some(if *at_least_the_floor {
+                silico_protocol::Reply::MeshAt(silico_protocol::MeshAt {
+                    mesh,
+                    deflection: *deflection,
+                })
+            } else {
+                silico_protocol::Reply::Mesh(mesh)
+            })
+        }
+        Op::Boolean {
+            op: BooleanOp::Cut,
+            base,
+            tool,
+        } if FakeKernel::describe(tool).is_some_and(|tool| tool.contains("30")) => {
+            let tool = FakeKernel::counts(tool).unwrap();
+            let kept = |n: u32| ElementFate {
+                kept: Some(n),
+                ..ElementFate::default()
+            };
+            let none = |n: u32| vec![ElementFate::default(); n as usize];
+            let edges = (1..=12)
+                .map(|n| {
+                    if swallowed.contains(&n) {
+                        ElementFate::default()
+                    } else {
+                        kept(n)
+                    }
+                })
+                .collect();
+            let history = History {
+                inputs: vec![
+                    InputHistory {
+                        faces: (1..=6).map(kept).collect(),
+                        edges,
+                        vertices: (1..=8).map(kept).collect(),
+                    },
+                    InputHistory {
+                        faces: none(tool.faces),
+                        edges: none(tool.edges),
+                        vertices: none(tool.vertices),
+                    },
+                ],
+                result: ElementCounts {
+                    faces: 6,
+                    edges: 12,
+                    vertices: 8,
+                    solids: 1,
+                },
+                ends: Default::default(),
+                topology: Topology {
+                    face_edges: vec![vec![]; 6],
+                    outer_edges: vec![vec![]; 6],
+                    edge_vertices: vec![vec![]; 12],
+                    solid_faces: vec![(1..=6).collect()],
+                },
+            };
+            Some(silico_protocol::Reply::Built(BuiltData {
+                // A box a mm³ smaller than the block, so the cut takes from it (S7's rule).
+                shape: FakeKernel::resized(base, -1.0)?,
+                history,
+            }))
+        }
+        _ => None,
+    });
+}
+
+/// The pin made radius 30 through the tab (one undoable edit), and frames stepped until
+/// the model it publishes has Inside corner's `errors` (one for each name broken).
+fn pin_widened(f: &Fixture, h: &mut AppHarness, errors: u64) {
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.edit(
+            &sessions,
+            silico_app::tab::Edit {
+                feature: silico_core::document::FeatureId::new("a91cw0de").unwrap(),
+                field: "radius".to_owned(),
+                value: json::read(b"30").unwrap(),
+            },
+        );
+    }
+    settled(h);
+    step_until(h, "Inside corner broken", |h| {
+        h.state().tabs()[0].errors() == errors
+    });
+    meshes_settled(h);
+}
+
+/// The candidate rows a card in `pane` lists, in order: each row's words ("Closest · " and
+/// the name, or the name).
+fn candidate_rows(h: &AppHarness, pane: &str) -> Vec<String> {
+    labels(h, pane, Role::Label)
+        .into_iter()
+        .filter(|label| {
+            let name = label.strip_prefix("Closest · ").unwrap_or(label);
+            name.starts_with("k7f2qx3m.") && !name.contains(' ')
+        })
+        .collect()
+}
+
+/// [`CORNER`] (or `text`) open and drawn, Inside corner built; then its Edge5 broken by the
+/// pin widened, and Inside corner selected, its card read with its candidates.
+fn corner_broken(f: &Fixture, text: &str) -> (AppHarness, Record) {
+    corner_broken_swallowing(f, text, &[5])
+}
+
+/// [`corner_broken`], the pin widened swallowing each of the block's edges `swallowed`.
+fn corner_broken_swallowing(
+    f: &Fixture,
+    text: &str,
+    swallowed: &'static [u32],
+) -> (AppHarness, Record) {
+    swallowing(f, swallowed, false);
+    let (mut h, record) = f.drawn("corner.silico", text);
+    meshes_settled(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].errors(), 0, "Inside corner built");
+    pin_widened(f, &mut h, swallowed.len() as u64);
+    select(&mut h, "Inside corner");
+    step_until(&mut h, "its candidates", |h| {
+        !candidate_rows(h, "Properties").is_empty()
+    });
+    (h, record)
+}
+
+/// The core's candidates for the broken Edge5, closest first, by hand: no stable edge of
+/// the cut shares what Edge5's name is made from (the block's Edge5 itself), so the nearest
+/// by number of the block's own edges the cut still has, Edge4 and Edge6, each 1 away, by
+/// name (references.rs's `Index::nearest`).
+const EDGE4: &str = "k7f2qx3m.box.Edge4";
+const EDGE6: &str = "k7f2qx3m.box.Edge6";
+
+#[test]
+fn a_broken_edges_card_lists_the_cores_candidates_closest_first_and_use_writes_one_in_its_place() {
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    assert_eq!(
+        candidate_rows(&h, "Properties"),
+        [format!("Closest · {EDGE4}"), EDGE6.to_owned()]
+    );
+    // The core's own candidates, as it says them: the same, in the same order.
+    let said = h.state().tabs()[0].said.get("f0000001").unwrap().clone();
+    assert_eq!(said.candidates(), [EDGE4, EDGE6]);
+    assert_eq!(said.parameter(), Some("edges.1"));
+    let before = text_of(&f, &h);
+    assert_eq!(before.matches(r#""k7f2qx3m.box.Edge5""#).count(), 1);
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE4}"))
+        .click();
+    step(&mut h);
+    settled(&mut h);
+    // Edge4's name at Edge5's place, nothing else changed: by hand.
+    let used = text_of(&f, &h);
+    assert_eq!(
+        used,
+        before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE4}""#))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit("edges.1".to_owned()))
+    );
+    // It builds, and the status bar says what changed (`useCand`'s toast).
+    step_until(&mut h, "Inside corner built", |h| {
+        h.state().tabs()[0].errors() == 0 && !h.state().tabs()[0].applying()
+    });
+    assert_eq!(
+        status_said(&h, "Inside corner now").as_deref(),
+        Some("Inside corner now rounds the edge you picked. Undo puts the broken reference back.")
+    );
+    // Undo puts the broken name back, byte for byte, and its error with it.
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    step_until(&mut h, "broken again", |h| {
+        h.state().tabs()[0].errors() == 1
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn remove_the_edge_drops_the_broken_name_alone_and_undo_puts_it_back() {
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    let before = text_of(&f, &h);
+    let remove = h
+        .get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Remove the edge");
+    assert!(!remove.accesskit_node().is_disabled());
+    remove.click();
+    step(&mut h);
+    settled(&mut h);
+    // `edges` without Edge5, as the document writes a name to a line: by hand.
+    let removed = text_of(&f, &h);
+    assert_eq!(
+        removed,
+        before.replace(",\n        \"k7f2qx3m.box.Edge5\"", "")
+    );
+    assert_ne!(removed, before);
+    assert_eq!(
+        written(&f, &h, "Inside corner", "edges"),
+        Some(plain(r#"["k7f2qx3m.box.Edge1"]"#))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit("edges".to_owned()))
+    );
+    step_until(&mut h, "Inside corner built", |h| {
+        h.state().tabs()[0].errors() == 0 && !h.state().tabs()[0].applying()
+    });
+    assert_eq!(
+        status_said(&h, "Inside corner no").as_deref(),
+        Some("Inside corner no longer names the broken edge. Undo puts the broken reference back.")
+    );
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn remove_the_edge_is_off_for_a_fillets_last_edge_saying_why_and_writes_nothing() {
+    // The gate refuses a fillet that names no edge, and SolidWorks' Fillet PropertyManager
+    // is completed by picking edges again once its missing ones are cleared: so the last
+    // edge isn't removed; Use, or suppressing or deleting the fillet, are said instead.
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, &corner_alone());
+    assert_eq!(
+        candidate_rows(&h, "Properties"),
+        [format!("Closest · {EDGE4}"), EDGE6.to_owned()]
+    );
+    let before = text_of(&f, &h);
+    let sent = h.state().tabs()[0].sent.clone();
+    let why = "Inside corner names no other edge, and a fillet names at least one: use a \
+               candidate in its place, or suppress or delete Inside corner";
+    let remove = h
+        .get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Remove the edge");
+    assert!(remove.accesskit_node().is_disabled());
+    remove.hover();
+    step_until(&mut h, "why it's off", |h| anywhere(h, why));
+    remove_clicked_anyway(&mut h);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Remove the edge clicked where it's drawn, whether it's on or not.
+fn remove_clicked_anyway(h: &mut AppHarness) {
+    let at = h
+        .get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Remove the edge")
+        .rect()
+        .center();
+    click_at(h, at);
+}
+
+#[test]
+fn hovering_a_candidates_row_lights_its_edge_and_hovering_its_edge_marks_the_row() {
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    let (mut h, record) = corner_broken(&f, CORNER);
+    // The broken fillet builds nothing: the cut's body is drawn, its edges numbered as the
+    // block's (the fake's cut keeps them by number), so Edge4 is its Edge(4).
+    let body = body_of(&h, "m3tq8v0z");
+    assert_eq!(view(&h).candidate, None);
+    // The pointer over Edge4's row: lit in the next frames, on the hover's layer in the
+    // candidates' orange (DESIGN.md: `#ff7a0c`).
+    let at = candidate_row(&h, &format!("Closest · {EDGE4}")).0.center();
+    h.hover_at(at);
+    step_until(&mut h, "Edge4 lit", |_| {
+        let told = record.lock().unwrap();
+        told.frames
+            .last()
+            .is_some_and(|frame| frame.hovered == [(body, Edge(4))])
+    });
+    assert_eq!(view(&h).candidate, Some((body, Edge(4))));
+    assert_eq!(h.state().tabs()[0].candidate_hovered(), Some(EDGE4));
+    let outlines = record.lock().unwrap().frames.last().unwrap().outlines;
+    assert_eq!(outlines.hovered, [0xff, 0x7a, 0x0c]);
+    // Edge6's row next: Edge6 lit alone.
+    let at = candidate_row(&h, EDGE6).0.center();
+    h.hover_at(at);
+    step_until(&mut h, "Edge6 lit", |h| {
+        view(h).candidate == Some((body, Edge(6)))
+    });
+    // Off the rows, onto the canvas over Edge6: nothing lit from a row, the canvas's hover
+    // drawn in white again, and Edge6's row marked.
+    let canvas = the_viewport(&h).center();
+    answering(&record, None, Some((body, Edge(6), pixel_at(&h, canvas))));
+    h.hover_at(canvas);
+    step_until(&mut h, "Edge6's row marked", |h| {
+        candidate_row(h, EDGE6).1 == Some(true)
+    });
+    assert_eq!(
+        candidate_row(&h, &format!("Closest · {EDGE4}")).1,
+        Some(false)
+    );
+    step_until(&mut h, "nothing lit from a row", |h| {
+        view(h).candidate.is_none()
+    });
+    step(&mut h);
+    let last = record.lock().unwrap().frames.last().unwrap().clone();
+    assert_eq!(last.hovered, [(body, Edge(6))]);
+    assert_eq!(last.outlines.hovered, [255, 255, 255]);
+    // Over Edge4 in the canvas: Edge4's row marked, Edge6's not.
+    answering(&record, None, Some((body, Edge(4), pixel_at(&h, canvas))));
+    h.hover_at(canvas + eframe::egui::vec2(1.0, 0.0));
+    step_until(&mut h, "Edge4's row marked", |h| {
+        candidate_row(h, &format!("Closest · {EDGE4}")).1 == Some(true)
+    });
+    assert_eq!(candidate_row(&h, EDGE6).1, Some(false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The candidate row in the property panel whose words are `words`: where it is, and
+/// whether it's marked (selected, in the accessibility tree).
+fn candidate_row(h: &AppHarness, words: &str) -> (eframe::egui::Rect, Option<bool>) {
+    let row = h
+        .get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_label(words);
+    (row.rect(), row.accesskit_node().is_selected())
+}
+
+#[test]
+fn the_fillets_own_dialog_shows_its_candidates_and_use_puts_one_in_its_box_in_the_broken_ones_place()
+ {
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    let before = text_of(&f, &h);
+    edit_from_the_timeline(&mut h, "Inside corner");
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]);
+    step_until(&mut h, "the candidates in the dialog", |h| {
+        dialog(h)
+            .query_by_label(&format!("Closest · {EDGE4}"))
+            .is_some()
+    });
+    assert!(dialog(&h).query_by_label(EDGE6).is_some());
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE4}"))
+        .click();
+    // In the broken name's place in the box, and sent as the dialog's own edit.
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge1", EDGE4]);
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Inside corner", "edges"),
+        Some(plain(&format!(r#"["k7f2qx3m.box.Edge1", "{EDGE4}"]"#)))
+    );
+    // In the dialog, Undo is off: its Cancel puts the broken name back, and after OK one
+    // Undo does.
+    assert_eq!(
+        status_said(&h, "Inside corner now").as_deref(),
+        Some(IN_THE_DIALOG_USED)
+    );
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(
+        text_of(&f, &h),
+        before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE4}""#))
+    );
+    // One undo takes the dialog's edits back, the broken name with them.
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_the_fillets_dialog_remove_the_edge_empties_its_box_and_ok_waits_for_an_edge() {
+    // SolidWorks' Fillet PropertyManager, its missing references cleared, is completed by
+    // picking edges again: the box may empty, OK off until it holds one.
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, &corner_alone());
+    let before = text_of(&f, &h);
+    edit_from_the_timeline(&mut h, "Inside corner");
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge5"]);
+    step_until(&mut h, "Remove the edge in the dialog", |h| {
+        dialog(h)
+            .query_by_role_and_label(Role::Button, "Remove the edge")
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
+    });
+    let sent = h.state().tabs()[0].sent.clone();
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Remove the edge")
+        .click();
+    boxed_until(&mut h, &[]);
+    settled(&mut h);
+    assert!(!ok_enabled(&h));
+    // The box emptied sends nothing (`edges` names at least one): nothing is said done.
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(h.state().tabs()[0].told, None);
+    assert_eq!(status_said(&h, "Inside corner no longer"), None);
+    cancel_dialog(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn whats_wrong_lists_the_candidates_and_use_there_writes_one_and_leaves_it_open() {
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    let before = text_of(&f, &h);
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 1 error")
+        .click();
+    step_until(&mut h, "its candidates in What's Wrong", |h| {
+        in_whats_wrong(h, "k7f2qx3m.box.Edge").contains(&format!("Closest · {EDGE4}"))
+    });
+    let rows: Vec<String> = in_whats_wrong(&h, "k7f2qx3m.box.Edge")
+        .into_iter()
+        .filter(|label| {
+            let name = label.strip_prefix("Closest · ").unwrap_or(label);
+            !name.contains(' ')
+        })
+        .collect();
+    assert_eq!(rows, [format!("Closest · {EDGE4}"), EDGE6.to_owned()]);
+    step(&mut h);
+    whats_wrong(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE6}"))
+        .click();
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(
+        text_of(&f, &h),
+        before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE6}""#))
+    );
+    // Open still, as `useCand` leaves it, listing the block's warning alone now.
+    step_until(&mut h, "Inside corner's card gone", |h| {
+        whats_wrong(h).is_some() && in_whats_wrong(h, "Feature: ") == ["Feature: Block k7f2qx3m"]
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// What the status bar says once a candidate is used in Inside corner's own dialog.
+const IN_THE_DIALOG_USED: &str = "Inside corner now rounds the edge you picked. Cancel puts \
+                                  the broken reference back, as Undo does once the dialog is \
+                                  OK'd.";
+
+#[test]
+fn use_in_the_fillets_dialog_then_cancel_puts_the_text_back_byte_for_byte() {
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    let before = text_of(&f, &h);
+    edit_from_the_timeline(&mut h, "Inside corner");
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]);
+    step_until(&mut h, "the candidates in the dialog", |h| {
+        dialog(h)
+            .query_by_role_and_label(Role::Button, &format!("Use {EDGE6}"))
+            .is_some()
+    });
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE6}"))
+        .click();
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge1", EDGE6]);
+    settled(&mut h);
+    // Sent as the dialog's edit, said done, and how it's taken back.
+    assert_eq!(
+        written(&f, &h, "Inside corner", "edges"),
+        Some(plain(&format!(r#"["k7f2qx3m.box.Edge1", "{EDGE6}"]"#)))
+    );
+    assert_eq!(
+        status_said(&h, "Inside corner now").as_deref(),
+        Some(IN_THE_DIALOG_USED)
+    );
+    cancel_dialog(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    step_until(&mut h, "broken again", |h| {
+        h.state().tabs()[0].errors() == 1
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn two_broken_edges_each_take_the_candidate_used_at_their_own_place() {
+    // The pin swallows the block's Edge5 and Edge7; Inside corner rounds Edge1, Edge5, and
+    // Edge7. Its card is its first error's, Edge5's at `edges.1`, whose candidates are the
+    // block's edges the cut keeps nearest by number, Edge4 and Edge6; once it's mended, the
+    // card is Edge7's at `edges.2`, nearest Edge6 and Edge8.
+    let f = fixture();
+    let three = CORNER.replace(
+        r#""edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]"#,
+        r#""edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5", "k7f2qx3m.box.Edge7"]"#,
+    );
+    let (mut h, _record) = corner_broken_swallowing(&f, &three, &[5, 7]);
+    let before = text_of(&f, &h);
+    assert_eq!(
+        h.state().tabs()[0]
+            .said
+            .get("f0000001")
+            .and_then(|said| said.parameter()),
+        Some("edges.1")
+    );
+    assert_eq!(
+        candidate_rows(&h, "Properties"),
+        [format!("Closest · {EDGE4}"), EDGE6.to_owned()]
+    );
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE4}"))
+        .click();
+    step(&mut h);
+    settled(&mut h);
+    let first = before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE4}""#));
+    assert_ne!(first, before);
+    assert_eq!(text_of(&f, &h), first);
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit("edges.1".to_owned()))
+    );
+    // Edge7's card next, read of the revision Use made.
+    const EDGE8: &str = "k7f2qx3m.box.Edge8";
+    step_until(&mut h, "Edge7's card", |h| {
+        h.state().tabs()[0]
+            .said
+            .get("f0000001")
+            .and_then(|said| said.parameter())
+            == Some("edges.2")
+            && candidate_rows(h, "Properties") == [format!("Closest · {EDGE6}"), EDGE8.to_owned()]
+    });
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE8}"))
+        .click();
+    step(&mut h);
+    settled(&mut h);
+    let second = first.replace(r#""k7f2qx3m.box.Edge7""#, &format!(r#""{EDGE8}""#));
+    assert_ne!(second, first);
+    assert_eq!(text_of(&f, &h), second);
+    assert_eq!(
+        written(&f, &h, "Inside corner", "edges"),
+        Some(plain(&format!(
+            r#"["k7f2qx3m.box.Edge1", "{EDGE4}", "{EDGE8}"]"#
+        )))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit("edges.2".to_owned()))
+    );
+    step_until(&mut h, "Inside corner built", |h| {
+        h.state().tabs()[0].errors() == 0 && !h.state().tabs()[0].applying()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn use_on_a_card_read_before_an_undo_mended_its_name_writes_nothing_and_says_why() {
+    // The card is the check's of the revision the pin widened made. Undo takes the pin
+    // back, so Edge5 is found again; the undo's model is published before the tab reads
+    // its timeline and check again (no frame is drawn till then: the reads held), so the
+    // card still offers Edge4. Use then writes nothing over the Edge5 that is whole again.
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    let id = h.state().tabs()[0].id;
+    step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
+    let card_read = h.state().tabs()[0].revision;
+    assert_eq!(
+        h.state().tabs()[0].timeline.as_ref().map(|t| t.revision),
+        Some(card_read)
+    );
+    // Undo, as Ctrl+Z sends it, sent with no frame drawn: a frame would read the timeline
+    // again as soon as the undo answers.
+    h.state_mut().tabs_mut()[0].step(&f.sessions, true);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let revision = f
+            .sessions
+            .status(&id)
+            .session
+            .map(|session| session.revision);
+        let published = f.sessions.published(&id).result.ok().map(|p| p.revision);
+        if revision.is_some_and(|revision| revision > card_read) && published == revision {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the undo's model never published"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mended = text_of(&f, &h);
+    assert_eq!(mended.matches(r#""k7f2qx3m.box.Edge5""#).count(), 1);
+    // The tab's card is the one read before the undo.
+    assert_eq!(
+        h.state().tabs()[0].timeline.as_ref().map(|t| t.revision),
+        Some(card_read)
+    );
+    let sent = h.state().tabs()[0].sent.clone();
+    // The click in one frame, the pointer's move, press, and release together: the frame
+    // that takes the undo's answer, before the next takes the timeline's.
+    let at = h
+        .get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE4}"))
+        .rect()
+        .center();
+    {
+        use eframe::egui::{Event, Modifiers, PointerButton};
+        let events = &mut h.input_mut().events;
+        events.push(Event::PointerMoved(at));
+        for pressed in [true, false] {
+            events.push(Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+    }
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].message.as_deref(),
+        Some("The model has changed since this card was read: try again once it has rebuilt")
+    );
+    assert_eq!(h.state().tabs()[0].told, None);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(text_of(&f, &h), mended);
+    step_until(&mut h, "Inside corner built", |h| {
+        h.state().tabs()[0].errors() == 0 && !h.state().tabs()[0].applying()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_lavapipe_a_hovered_candidate_lights_its_edge_beside_the_broken_fillets_card() {
+    use silico_app::renderer::Element::Edge;
+    on_lavapipe(
+        "on_lavapipe_a_hovered_candidate_lights_its_edge_beside_the_broken_fillets_card",
+        || {
+            let f = fixture();
+            swallowing_edge5_meshed(&f, true);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            h.set_render_every_step(true);
+            silico_app::theme::apply(&h.ctx);
+            // Opened with the pin already widened (an upstream edit made before it was
+            // saved): the broken fillet builds nothing, so the cut's body is drawn, whose
+            // elements the real box's mesh has, as a built fillet's it wouldn't.
+            let widened = CORNER.replace(r#""radius": 2.5"#, r#""radius": 30"#);
+            let path = f.file("corner.silico", &widened);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            step_until(&mut h, "Inside corner broken", |h| {
+                h.state()
+                    .tabs()
+                    .first()
+                    .is_some_and(|tab| tab.errors() == 1)
+            });
+            meshes_settled(&mut h);
+            // From the front (−y), above and to the left, onto the block's centre, the whole
+            // block in view, so its front left edge (the fixture's Edge4) is.
+            view_mut(&mut h).set_camera(silico_protocol::Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 50.0 },
+                eye: [-40.0, -100.0, 50.0],
+                target: [20.0, 10.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            });
+            meshes_settled(&mut h);
+            select(&mut h, "Inside corner");
+            step_until(&mut h, "its candidates", |h| {
+                !candidate_rows(h, "Properties").is_empty()
+            });
+            // Edge4, the block's front left edge (x = 0, y = 0, z from 0 to 10), seen by
+            // hand: the camera looks along d = target − eye = (60, 110, −45); its right is
+            // d × up = (110, −60, 0), of length √15700 = 125.300, and its up right × d =
+            // (2700, 4950, 15700), of length √278282500 = 16681.8. A point p is seen
+            // (p − target)·right / 125.300 mm right of the pane's centre and
+            // (p − target)·up / 16681.8 mm above it, the pane 50 mm high. Edge4's points less
+            // the target are (−20, −10, z − 5): −1600 / 125.300 = −12.769 mm right, and
+            // (−103500 + 15700 (z − 5)) / 16681.8 mm up, −8.557 at z = 2.5 to −3.851 at
+            // z = 7.5. So its middle half is seen 12.769 mm left of the centre, from 3.851 to
+            // 8.557 mm below it: a band 3 points either side of that line is searched for
+            // the candidates' orange (`#ff7a0c`).
+            let rect = the_viewport(&h);
+            let mm = rect.height() / 50.0;
+            let ppp = h.ctx.pixels_per_point();
+            let x = rect.center().x - 12.769 * mm;
+            let (top, bottom) = (rect.center().y + 3.851 * mm, rect.center().y + 8.557 * mm);
+            let orange = [0xff, 0x7a, 0x0c];
+            let lit = |pixel: &dyn Fn(u32, u32) -> [u8; 4]| -> usize {
+                let near = |rgba: [u8; 4]| (0..3).all(|c| rgba[c].abs_diff(orange[c]) <= 3);
+                let (x0, x1) = (((x - 3.0) * ppp) as u32, ((x + 3.0) * ppp) as u32);
+                let (y0, y1) = ((top * ppp) as u32, (bottom * ppp) as u32);
+                (y0..y1)
+                    .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+                    .filter(|&(x, y)| near(pixel(x, y)))
+                    .count()
+            };
+            let unlit = h.render().unwrap();
+            assert_eq!(
+                lit(&|x, y| unlit.get_pixel(x, y).0),
+                0,
+                "orange along Edge4 before any hover"
+            );
+            let at = candidate_row(&h, &format!("Closest · {EDGE4}")).0.center();
+            h.hover_at(at);
+            let body = body_of(&h, "m3tq8v0z");
+            step_until(&mut h, "Edge4 lit", |h| {
+                view(h).candidate == Some((body, Edge(4)))
+            });
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            if let Some(shot) = std::env::var_os("SILICO_APP_CANDIDATES_SHOT") {
+                image.save(shot).unwrap();
+            }
+            // Down most of the band's 4.7 mm: lit along the edge, not at a point.
+            let along = lit(&|x, y| image.get_pixel(x, y).0);
+            assert!(
+                along as f32 >= 3.0 * mm * ppp,
+                "{along} orange pixels along Edge4, x {x}, y {top} to {bottom}"
+            );
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
 }

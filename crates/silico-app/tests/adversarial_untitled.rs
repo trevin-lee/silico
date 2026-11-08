@@ -444,13 +444,13 @@ fn a_save_panels_pick_the_core_refuses_is_said_and_the_part_keeps_its_edits() {
     step(&mut h);
     new_part(&mut h);
     add_box(&mut h, "Untitled");
-    // Not a .silico (a portal's panel needn't add it), a folder, and one in a rebuild cache.
+    // One in a folder that isn't there, a folder, and one in a rebuild cache.
     let folder = f.dir.path().join("folder.silico");
     std::fs::create_dir(&folder).unwrap();
     let cache = f.dir.path().join(".silico-cache");
     std::fs::create_dir(&cache).unwrap();
     for (at, picked) in [
-        f.dir.path().join("part.txt"),
+        f.dir.path().join("absent").join("part.silico"),
         folder.clone(),
         cache.join("part.silico"),
     ]
@@ -468,6 +468,20 @@ fn a_save_panels_pick_the_core_refuses_is_said_and_the_part_keeps_its_edits() {
         assert!(tab.unsaved(), "{}", picked.display());
         assert!(!picked.is_file(), "{}", picked.display());
     }
+    // Not a .silico (a portal's panel needn't add it): not refused, but saved with `.silico`
+    // added, and nothing written by the name picked.
+    let picked = f.dir.path().join("part.txt");
+    let written = f.dir.path().join("part.txt.silico");
+    press_keys(&mut h, Modifiers::COMMAND, Key::S);
+    asked_times(&mut h, &browser, 4);
+    browser.answer(Some(&picked));
+    step_until(&mut h, "saved", |h| {
+        h.state().tabs().iter().any(|tab| {
+            tab.path.as_deref() == written.to_str() && !tab.unsaved() && tab.edits.idle()
+        })
+    });
+    assert!(written.is_file());
+    assert!(!picked.exists());
     assert_eq!(never_waits::waits(), 0);
 }
 

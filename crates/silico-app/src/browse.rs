@@ -225,11 +225,37 @@ pub(crate) fn clicked(response: egui::Response) -> bool {
     response.clicked()
 }
 
+/// A Silico document's extension (no dot).
+pub const EXTENSION: &str = "silico";
+
 /// A Silico document's filter.
 pub const DOCUMENTS: Filter = Filter {
     name: "Silico document",
-    extensions: &["silico"],
+    extensions: &[EXTENSION],
 };
+
+/// `path` as Save As writes a document to it, decided by its extension alone: as it is if
+/// that's `.silico`, else with `.silico` added after its whole name, as SolidWorks' Save As
+/// adds its type's extension (`part` and `part.v2` become `part.silico` and
+/// `part.v2.silico`). `.silico` in another case (`part.SILICO`) is kept as it is, as macOS's
+/// own save panel keeps an allowed extension typed in another case (it matches extensions
+/// whatever their case) and as the core reads a document's. A path naming no file (`sub/`,
+/// `..`) is as it is, for the save to refuse. The path, and whether `.silico` was added.
+pub fn document_path(path: String) -> (String, bool) {
+    let name = path
+        .rsplit(std::path::is_separator)
+        .next()
+        .unwrap_or_default();
+    let names_a_file = !matches!(name, "" | "." | "..");
+    let ends_in_silico = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(EXTENSION));
+    if !names_a_file || ends_in_silico {
+        return (path, false);
+    }
+    (format!("{path}.{EXTENSION}"), true)
+}
 
 /// Export's filters: the format chosen's first.
 pub fn export_filters(step: bool) -> Vec<Filter> {
@@ -288,6 +314,39 @@ mod tests {
             Some(here.join("sub").join("deeper"))
         );
         assert!(folder_of("sub/bracket.silico").unwrap().is_absolute());
+    }
+
+    #[test]
+    fn a_document_saved_as_a_name_without_silico_has_it_added_and_one_in_any_case_is_kept() {
+        let path = |given: &str| document_path(given.to_owned());
+        // No extension, or another: `.silico` added after the whole name.
+        assert_eq!(path("part"), ("part.silico".to_owned(), true));
+        assert_eq!(path("part.v2"), ("part.v2.silico".to_owned(), true));
+        assert_eq!(path("/work/part"), ("/work/part.silico".to_owned(), true));
+        assert_eq!(
+            path("/work.d/part.step"),
+            ("/work.d/part.step.silico".to_owned(), true)
+        );
+        // A folder's dot isn't the name's.
+        assert_eq!(
+            path("/work.silico/part"),
+            ("/work.silico/part.silico".to_owned(), true)
+        );
+        // A name whose one dot begins it (a hidden file's) has no extension.
+        assert_eq!(path(".hidden"), (".hidden.silico".to_owned(), true));
+        // `.silico`, in any case: as it is.
+        for kept in [
+            "part.silico",
+            "/work/part.v2.silico",
+            "part.SILICO",
+            "part.Silico",
+        ] {
+            assert_eq!(path(kept), (kept.to_owned(), false), "{kept}");
+        }
+        // No file named: as it is, for the save to refuse.
+        for folder in ["", "sub/", "/work/", "..", "/work/.", "/work/.."] {
+            assert_eq!(path(folder), (folder.to_owned(), false), "{folder:?}");
+        }
     }
 
     #[test]

@@ -1244,6 +1244,13 @@ pub const ERROR_CARD_CANDIDATE_PADDING: Margin = Margin::symmetric(6, 5);
 pub const ERROR_CARD_CANDIDATE_BG: Color32 = with_alpha(GRAY_0, 64);
 pub const ERROR_CARD_CANDIDATE_MARGIN: f32 = 4.0;
 pub const ERROR_CARD_CANDIDATE_TEXT: Color32 = hex(0xffd1d6);
+/// A candidate's row while the pointer is over it, or over its edge in the canvas
+/// (`.cand:hover`: white at 8%, 20 of 255).
+pub const ERROR_CARD_CANDIDATE_HOVER_BG: Color32 = with_alpha(GRAY_1000, 20);
+/// The gap between a candidate's name and its Use (`.cand`'s `gap: 8px`).
+pub const ERROR_CARD_CANDIDATE_GAP: f32 = 8.0;
+/// A candidate's why under its name (`.cand .why`: 10.5, in the accent).
+pub const ERROR_CARD_CANDIDATE_WHY_SIZE: f32 = 10.5;
 /// The card's buttons (`.ec-actions`: wrapped, 6 apart each way), each `.btn`
 /// ([`BUTTON_HEIGHT`] high).
 pub const ERROR_CARD_ACTIONS_GAP: f32 = 6.0;
@@ -1292,15 +1299,12 @@ pub const SEGMENTED_HOVER_TEXT: Color32 = TEXT_STRONG;
 pub const SEGMENTED_ON_BG: Color32 = GRAY_350;
 pub const SEGMENTED_ON_TEXT: Color32 = TEXT_STRONG;
 
-/// A choice of several as a drop-down (`.field.select`), where its words don't fit `.seg`:
-/// a field's fill and corners, padded 6 at each side, its words Gray.800, its arrow 10
-/// square in Gray.550. A choice stays `.seg` only while each of its words fits its share
-/// with [`SEGMENTED_ROOM`] at each side (a proposal: `.seg` sets none, its words centred).
+/// A dialog's choice of several, a drop-down (`.field.select`): a field's fill and corners,
+/// padded 6 at each side, its words Gray.800, its arrow 10 square in Gray.550.
 pub const SELECT_PADDING: f32 = 6.0;
 pub const SELECT_TEXT: Color32 = GRAY_800;
 pub const SELECT_ARROW: Color32 = TEXT_SUBDUED;
 pub const SELECT_ARROW_SIZE: f32 = 10.0;
-pub const SEGMENTED_ROOM: f32 = 4.0;
 
 /// The preview's line in a dialog (`.dlg-status`): 8 above it, `--pad` at its sides; padded
 /// 6 by 8, corners `--r-sm`, Gray.150; its words `--fs-small` Gray.550, Gray.750 while it
