@@ -4132,3 +4132,79 @@ fn the_status_bars_sketch_words_say_whats_edited_the_pointer_and_the_state() {
     assert!(words.contains(&"—"), "{words:?}");
     assert!(!words.contains(&"Fully defined"), "{words:?}");
 }
+
+// The mutants #351's run left alive in sketch mode's own (`mod.rs`): the fill found by its
+// scale, the state and its hint, and the scale at a place.
+
+#[test]
+fn a_fill_is_found_only_at_the_power_of_two_scale_it_was_worked_out_at() {
+    // At 10 points a millimetre (0.1 mm a point, the fill at 1/16: bucket −4), then 20
+    // (0.05, at 1/32: −5): each its own fill, both kept; 1/64 (−6) never worked out.
+    let mut mode = mode_on(plate());
+    frames_at(&mut mode, 10.0, 0.0, 1);
+    frames_at(&mut mode, 20.0, 0.0, 1);
+    let read = mode.drawable().unwrap().clone();
+    let at = |scale| region_fills(&read, Scale(scale), SKETCH_CHORD_TOLERANCE);
+    let (sixteenth, thirty_second) = (at(0.0625), at(0.03125));
+    assert_ne!(sixteenth, thirty_second);
+    assert_eq!(mode.fill_at(-4), Some(sixteenth.as_slice()));
+    assert_eq!(mode.fill_at(-5), Some(thirty_second.as_slice()));
+    assert_eq!(mode.fill_at(-6), None);
+}
+
+#[test]
+fn the_palette_hints_at_what_an_under_defined_sketch_needs_as_the_prototype_does() {
+    // The prototype's palette (sketch.js, its Status): under defined, "Blue curves can still
+    // move. Add relations or dimensions."; fully defined, nothing more.
+    let opened = silico_core::command::Revision::OPENED;
+    let mut read = under(rectangle(Vec::new()));
+    let mode = mode_on(read.clone());
+    assert_eq!(mode.state(), Some(SketchState::UnderDefined));
+    assert_eq!(
+        mode.palette_view(opened).hint,
+        Some("Blue curves can still move. Add relations or dimensions.")
+    );
+    read.states.state = SketchState::FullyDefined;
+    let mode = mode_on(read.clone());
+    assert_eq!(mode.state(), Some(SketchState::FullyDefined));
+    assert_eq!(mode.palette_view(opened).hint, None);
+    // Over defined, with no solution, or invalid: each a word of its own on what to do.
+    let mut said = std::collections::BTreeSet::new();
+    for state in [
+        SketchState::OverDefined,
+        SketchState::NoSolution,
+        SketchState::Invalid,
+    ] {
+        read.states.state = state;
+        let mode = mode_on(read.clone());
+        assert_eq!(mode.state(), Some(state));
+        let hint = mode.palette_view(opened).hint.unwrap_or_default();
+        assert!(
+            hint.ends_with('.') && hint.len() > 20,
+            "{state:?}: {hint:?}"
+        );
+        said.insert(hint);
+    }
+    assert_eq!(said.len(), 3, "{said:?}");
+    // Nothing read yet: no state, and no hint.
+    let unread = SketchMode::new(1, None);
+    assert_eq!(unread.state(), None);
+    assert_eq!(unread.palette_view(opened).hint, None);
+}
+
+#[test]
+fn the_scale_at_a_place_is_the_mean_step_of_a_point_right_and_a_point_down_or_none() {
+    // A plane whose x is the square of the screen's: at x = 10, a point right moves
+    // 11² − 10² = 21 mm (a point left, 19), a point down 1: their mean, 11 mm a point.
+    let squared = |p: Pos2| Some([f64::from(p.x) * f64::from(p.x), f64::from(p.y)]);
+    assert_eq!(scale_at(&squared, pos2(10.0, 0.0)), Some(Scale(11.0)));
+    // Every point to one place: no step, none.
+    let still = |_: Pos2| Some([3.0, 4.0]);
+    assert_eq!(scale_at(&still, pos2(10.0, 0.0)), None);
+    // A point right going past any length: none.
+    let edge = |p: Pos2| Some([if p.x > 10.5 { f64::INFINITY } else { 0.0 }, 0.0]);
+    assert_eq!(scale_at(&edge, pos2(10.0, 0.0)), None);
+    // A ray that misses the plane: none.
+    let misses = |_: Pos2| -> Option<[f64; 2]> { None };
+    assert_eq!(scale_at(&misses, pos2(10.0, 0.0)), None);
+}
