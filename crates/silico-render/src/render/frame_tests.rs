@@ -16,8 +16,9 @@ use super::tests::on_lavapipe;
 use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjection};
 
 use super::{
-    BACKGROUND, Element, Frame, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines,
-    PendingPick, Pick, Pickable, Picking, PixelRect, RenderFailure, Renderer, hits, project, ray,
+    BACKGROUND, Element, Frame, HIT_EDGE_POINTS, HIT_VERTEX_POINTS, MAX_PENDING_PICKS,
+    MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines, PendingPick, Pick, Pickable, Picking, PixelRect,
+    RenderFailure, Renderer, hits, project, ray,
 };
 use crate::bench::{box_mesh, front_of_a_box};
 
@@ -2974,14 +2975,15 @@ fn taken(picking: &Picking, centre: [u32; 2]) -> Option<(u32, Element)> {
 }
 
 #[test]
-fn the_casts_first_is_what_the_renderer_picks_at_pixels_clear_of_ties() {
+fn the_casts_first_is_what_the_renderer_picks_but_where_the_square_and_the_stroke_reach_past_it() {
     on_lavapipe(
-        "render::frame_tests::the_casts_first_is_what_the_renderer_picks_at_pixels_clear_of_ties",
+        "render::frame_tests::the_casts_first_is_what_the_renderer_picks_but_where_the_square_and_the_stroke_reach_past_it",
         |r| {
             // The 20 mm cube in the bench's numbering (`box_mesh`: Face6 its top, Face3 its
             // front, Edge7 along x at y = z = 20, Edge11 along y at x = z = 20, Vertex7 the
             // corner (20, 20, 20)), drawn and cast on alike. Each pixel's square is the
-            // selection's (3 pixels about it) and its vertices are picked at 7 points; the
+            // selection's, the prototype's 6 points about it (`HIT_EDGE_POINTS`, the cast's
+            // edge threshold too), and its vertices are picked at the cast's 7 points; the
             // cast is at the pixel's centre.
             let mesh = Arc::new(box_mesh([0.0; 3], [20.0; 3]));
             r.upload(1, &mesh).unwrap();
@@ -3045,22 +3047,83 @@ fn the_casts_first_is_what_the_renderer_picks_at_pixels_clear_of_ties() {
                     Some(Face(3)),
                 ),
             ];
-            for (camera, size, at, want) in cases {
-                let picking = rect([at[0] - 3, at[1] - 3], [7, 7]);
+            // What the renderer picks at `at` as the selection takes it, and the cast's first.
+            let mut both = |camera: &Camera, size: [u32; 2], at: [i32; 2]| {
+                let band = HIT_EDGE_POINTS as i32;
+                let side = 2 * band.unsigned_abs() + 1;
+                let picking = rect([at[0] - band, at[1] - band], [side, side]);
                 let asking = Frame {
                     size_px: size,
-                    vertices: Some(7.0),
+                    vertices: Some(HIT_VERTEX_POINTS as f32),
                     ..frame(camera, &[1], &[], Some(picking))
                 };
                 let centre = at.map(|c| u32::try_from(c).unwrap());
                 let gpu = taken(&pick(r, &asking), centre);
-                assert_eq!(gpu, want.map(|e| (1, e)), "the renderer at {at:?}");
                 let pointer = at.map(|c| f64::from(c) + 0.5);
                 let cast = hits(camera, size, 1.0, &[(1, &pickable)], pointer);
-                let first = cast.first().map(|hit| (hit.body, hit.element));
-                assert_eq!(first, gpu, "the cast at {at:?}: {cast:?}");
                 assert!(cast.first().is_none_or(|hit| !hit.hidden), "{cast:?}");
+                (gpu, cast.first().map(|hit| (hit.body, hit.element)))
+            };
+            for (camera, size, at, want) in cases {
+                let (gpu, cast) = both(camera, size, at);
+                assert_eq!(gpu, want.map(|e| (1, e)), "the renderer at {at:?}");
+                assert_eq!(cast, gpu, "the cast at {at:?}");
             }
+            // Where they part: the hover takes an edge drawn anywhere in its square, and the
+            // edge is drawn 2 points wide about its line, so it reaches an edge whose line is
+            // up to 6 points out along a row or a column, and a point more for the stroke's
+            // half; the cast takes one nearer the pointer than 6 points, measured to its line.
+            // From above (40 mm over 400 rows, 10 pixels a millimetre), the top's edge at
+            // x = 20 is column 300, and the pixel 293's centre is 6.5 pixels off it: the
+            // square reaches pixel 299, whose centre is half a pixel off the line, drawn
+            // over, so the renderer gives the edge; the cast, past its 6, the top.
+            let above = Camera {
+                projection: Projection::Orthographic { view_height: 40.0 },
+                eye: [10.0, 10.0, 100.0],
+                target: [10.0, 10.0, 10.0],
+                up: [0.0, 1.0, 0.0],
+            };
+            assert_eq!(
+                project(&above, square, [20.0, 15.0, 20.0]).map(|p| p[0].round()),
+                Some(300.0)
+            );
+            assert_eq!(
+                both(&above, square, [293, 150]),
+                (Some((1, Edge(11))), Some((1, Face(6))))
+            );
+            // 5.5 pixels off, both the edge; 7.5 off, the square's last pixel is 1.5 off the
+            // line, not drawn over: both the top.
+            assert_eq!(
+                both(&above, square, [294, 150]),
+                (Some((1, Edge(11))), Some((1, Edge(11))))
+            );
+            assert_eq!(
+                both(&above, square, [292, 150]),
+                (Some((1, Face(6))), Some((1, Face(6))))
+            );
+            // Where the face beside the edge rises toward the eye, it hides the stroke on its
+            // side: the oblique view's back edge is at row 58.58, and at row 59's centre, 0.92
+            // pixels below it (0.092 mm down the image), the top is 0.092 mm nearer the eye
+            // than the edge's line (its depth falls a millimetre a millimetre down the image),
+            // far more than the edge's depth offset. So the renderer gives the edge only to a
+            // square reaching row 58, above the line: from the pixel 64 up (5.92 off it), not
+            // from 65 (6.92 off), where both give the top. The cast lists the edge within 6
+            // pixels, but first only within its reach toward the eye, 0.48 mm (1.2% of 40):
+            // at 62 (3.92 off) the top is 0.392 nearer, and the edge comes first; at 64 (5.92
+            // off) the top is 0.592 nearer, past the reach, so the top comes first, the edge
+            // after it, while the hover takes the edge.
+            assert_eq!(
+                both(&oblique, square, [200, 62]),
+                (Some((1, Edge(7))), Some((1, Edge(7))))
+            );
+            assert_eq!(
+                both(&oblique, square, [200, 64]),
+                (Some((1, Edge(7))), Some((1, Face(6))))
+            );
+            assert_eq!(
+                both(&oblique, square, [200, 65]),
+                (Some((1, Face(6))), Some((1, Face(6))))
+            );
         },
     );
 }

@@ -8,7 +8,7 @@ use silico_protocol::{Camera, MAX_RENDER_COORDINATE, Mesh, Projection};
 
 use super::{
     Element, HIT_EDGE_POINTS, HIT_VERTEX_POINTS, Hit, MAX_HITS, MIN_EYE_DISTANCE, Pickable,
-    VERTEX_REACH, hits, project,
+    VERTEX_REACH, hits, project, ray,
 };
 use crate::bench::box_mesh;
 
@@ -91,7 +91,7 @@ fn select_others_order_on_a_box_seen_from_above_is_the_one_worked_by_hand() {
     assert!((landed[0] - 298.0).abs() < 1e-4 && (landed[1] - 150.0).abs() < 1e-4);
     // Over (19.8, 15), 2 pixels in from x = 20: the edges there, Edge6 (x = 20, z = 20) and
     // Edge8 (x = 20, z = 0), are 2 pixels off, within 6; no vertex within 7 (the nearest,
-    // (20, 0) and (20, 20), are 50 pixels off). The ray meets the top, Face6, at depth 80,
+    // (20, 20), is 50 pixels off, and (20, 0) 150). The ray meets the top, Face6, at depth 80,
     // and the bottom, Face5, at 100; the sides x = 20 and y = 20 lie along it (seen edge
     // on). Each edge at its point nearest the pointer, (20, 15), 0.48 mm toward the eye
     // (1.2% of 40), so Edge6 at 79.52 before Face6 at 80; Edge8 and Face5 behind Face6.
@@ -166,6 +166,299 @@ fn the_thresholds_are_the_prototypes_in_points_at_the_frames_pixels_per_point() 
     let off = hits(&camera, SIZE, 1.0, &bodies, along(7.0));
     assert!(!off.iter().any(|h| h.element == Vertex(7)), "{off:?}");
     assert_eq!(off[0].element, Edge(6));
+    // At two pixels a point, 7 points are 14 pixels: the vertex 6.9 points (13.8 pixels) off
+    // is taken, 7.1 (14.2) isn't; the edges, 9.76 and 10.04 pixels off, within 12, both times.
+    let doubled = hits(&camera, SIZE, 2.0, &bodies, along(13.8));
+    assert_eq!(doubled[0].element, Vertex(7), "{doubled:?}");
+    let doubled = hits(&camera, SIZE, 2.0, &bodies, along(14.2));
+    assert!(
+        !doubled.iter().any(|h| h.element == Vertex(7)),
+        "{doubled:?}"
+    );
+    assert_eq!(doubled[0].element, Edge(6));
+}
+
+#[test]
+fn an_edge_or_a_vertex_exactly_at_its_threshold_isnt_taken_and_a_hair_inside_is() {
+    use Element::{Edge, Face, Vertex};
+    // The prototype's `< 6` and `< 7`, strictly. Seen from above, every point of the top's
+    // edge at x = 20 lands in one column, X (an orthographic view's columns don't depend on
+    // y or z), so a pointer at X − 6, on a row the edge spans, is 6 pixels from it exactly in
+    // f64 (X and X − 6 share an exponent: the subtraction is exact both ways).
+    let cube = Pickable::new(Arc::new(freecad_box(20.0, 20.0, 20.0)));
+    let camera = from_above();
+    let bodies = [(1, &cube)];
+    let column = project(&camera, SIZE, [20.0, 15.0, 20.0]).unwrap()[0];
+    let at = hits(&camera, SIZE, 1.0, &bodies, [column - 6.0, 150.0]);
+    assert_eq!(listed(&at), [(Face(6), false), (Face(5), true)]);
+    let inside = hits(&camera, SIZE, 1.0, &bodies, [column - 6.0 + 1e-9, 150.0]);
+    assert_eq!(
+        listed(&inside),
+        [
+            (Edge(6), false),
+            (Face(6), false),
+            (Edge(8), true),
+            (Face(5), true)
+        ]
+    );
+    // The corner (20, 20, 20), Vertex7, 7 pixels to its right exactly, on its row: on the
+    // top's back edge (Edge12, y = 20), 7 pixels from the side's (Edge6, x = 20).
+    let corner = project(&camera, SIZE, [20.0, 20.0, 20.0]).unwrap();
+    let at = hits(&camera, SIZE, 1.0, &bodies, [corner[0] - 7.0, corner[1]]);
+    assert!(!at.iter().any(|h| h.element == Vertex(7)), "{at:?}");
+    assert!(!at.iter().any(|h| h.element == Edge(6)), "{at:?}");
+    assert_eq!(at[0].element, Edge(12));
+    let inside = hits(
+        &camera,
+        SIZE,
+        1.0,
+        &bodies,
+        [corner[0] - 7.0 + 1e-9, corner[1]],
+    );
+    assert_eq!(inside[0].element, Vertex(7), "{inside:?}");
+}
+
+#[test]
+fn an_edge_or_a_vertex_just_outside_the_silhouette_is_taken_through_the_bodys_grown_box() {
+    use Element::{Edge, Vertex};
+    // Over (20.3, 15), 3 pixels outside the top's edge at x = 20: the ray misses the box, so
+    // no face is met, but the edges along x = 20 are 3 pixels off: Edge6 (z = 20) at 80 less
+    // its reach, and Edge8 (z = 0) at 100 less it, hidden by the top, which the ray through
+    // its own point, (20, 15), meets at its edge, at 80.
+    let cube = Pickable::new(Arc::new(freecad_box(20.0, 20.0, 20.0)));
+    let camera = from_above();
+    let bodies = [(1, &cube)];
+    let under = hits(&camera, SIZE, 1.0, &bodies, above_px(20.3, 15.0));
+    assert_eq!(listed(&under), [(Edge(6), false), (Edge(8), true)]);
+    assert_at(&under[0], [20.0, 15.0, 20.0], 80.0);
+    assert_at(&under[1], [20.0, 15.0, 0.0], 100.0);
+    // Over (20.3, 20.3), off the corner: Vertex7 (20, 20, 20) 4.24 pixels off, and the edges
+    // that meet there, Edge6, Edge12, and Edge7 seen end on, as far; then the bottom's corner,
+    // Vertex8, and its edges, Edge8 and Edge11, each hidden by the top's corner.
+    let under = hits(&camera, SIZE, 1.0, &bodies, above_px(20.3, 20.3));
+    assert_eq!(
+        listed(&under),
+        [
+            (Vertex(7), false),
+            (Edge(6), false),
+            (Edge(7), false),
+            (Edge(12), false),
+            (Vertex(8), true),
+            (Edge(8), true),
+            (Edge(11), true),
+        ]
+    );
+    assert_at(&under[0], [20.0, 20.0, 20.0], 80.0);
+}
+
+/// A face of four corners and two triangles, their corners' numbers among its own.
+type Quad = ([[f64; 3]; 4], [[u32; 3]; 2]);
+
+/// A square face, two triangles, `z` = `at` over x and y from `low` to `high`.
+fn square_at(at: f64, low: f64, high: f64) -> Quad {
+    (
+        [
+            [low, low, at],
+            [high, low, at],
+            [high, high, at],
+            [low, high, at],
+        ],
+        [[0, 1, 2], [0, 2, 3]],
+    )
+}
+
+/// A mesh of `faces`, each its corners and its triangles (their corners' numbers among its
+/// own), numbered from 1 in order; no edges or vertices.
+fn mesh_of(faces: &[Quad]) -> Mesh {
+    let mut positions = Vec::new();
+    let mut triangles = Vec::new();
+    for (corners, own) in faces {
+        let first = u32::try_from(positions.len()).unwrap();
+        positions.extend_from_slice(corners);
+        triangles.extend(own.iter().map(|t| t.map(|c| c + first)));
+    }
+    Mesh {
+        normals: vec![[0.0, 0.0, 1.0]; positions.len()],
+        positions,
+        triangles,
+        face_triangles: vec![2; faces.len()],
+        valid: None,
+        edge_points: vec![],
+        edge_point_counts: vec![],
+        vertex_points: vec![],
+    }
+}
+
+#[test]
+fn an_orthographic_vertexs_reach_is_at_most_halfway_to_the_near_plane_as_its_disc_is_drawn() {
+    use Element::{Face, Vertex};
+    // Zoomed out: from (10, 10, 100) onto (10, 10, 10), 4000 mm high over 400 rows, so 1.2%
+    // of the view's height is 48 mm. Face1, z = 20, and Face2, z = 0, each over x and y from
+    // −5 to 25; Vertex1 at (10, 10, 0), on Face2, under the pointer (the image's centre).
+    // The renderer sets its camera past the bodies (their box's farthest corner from the
+    // target, √(15² + 15² + 10²) = 23.4521 mm, and a millimetre: 24.4521 in front of the
+    // target), so the vertex is 34.4521 mm in front of the near plane, and its disc is drawn
+    // halfway there, 17.2260 mm toward the eye, not 48: at z = 17.226, under Face1. Its key
+    // is 100 − 17.2260 = 82.7740, behind Face1 at 80, which hides it on its own ray. With
+    // the 48 mm uncapped it would be listed first, at 52, and not hidden.
+    let mut mesh = mesh_of(&[square_at(20.0, -5.0, 25.0), square_at(0.0, -5.0, 25.0)]);
+    mesh.vertex_points = vec![[10.0, 10.0, 0.0]];
+    let body = Pickable::new(Arc::new(mesh));
+    let camera = Camera {
+        projection: Projection::Orthographic {
+            view_height: 4000.0,
+        },
+        ..from_above()
+    };
+    let under = hits(&camera, SIZE, 1.0, &[(1, &body)], [200.0, 200.0]);
+    assert_eq!(
+        listed(&under),
+        [(Face(1), false), (Vertex(1), true), (Face(2), true)]
+    );
+    assert_at(&under[0], [10.0, 10.0, 20.0], 80.0);
+    assert_at(&under[1], [10.0, 10.0, 0.0], 100.0);
+    let ahead = 550f64.sqrt() + 1.0 + 10.0;
+    assert!((ahead / 2.0 - 17.226_039).abs() < 1e-6, "{ahead}");
+}
+
+/// In perspective from the origin along −z, +y up, `field_of_view` high, 100 by 100 pixels:
+/// at row 50 + r, the ray's y is −r / 50 · tan(fov / 2) of its depth.
+fn from_the_origin_at(field_of_view: f64) -> Camera {
+    Camera {
+        projection: Projection::Perspective { field_of_view },
+        ..from_the_origin()
+    }
+}
+
+/// A floor tilted toward the eye, z = −10 − 0.3 y for y from −20 to 0 (x from −20 to 20),
+/// Face1, and its far edge along x at (y, z) = (0, −10), Edge1, on the view's axis.
+fn tilted_floor() -> Mesh {
+    let z = |y: f64| -10.0 - 0.3 * y;
+    let corners = [
+        [-20.0, 0.0, z(0.0)],
+        [20.0, 0.0, z(0.0)],
+        [20.0, -20.0, z(-20.0)],
+        [-20.0, -20.0, z(-20.0)],
+    ];
+    let mut mesh = mesh_of(&[(corners, [[0, 1, 2], [0, 2, 3]])]);
+    mesh.edge_points = vec![[-20.0, 0.0, -10.0], [20.0, 0.0, -10.0]];
+    mesh.edge_point_counts = vec![2];
+    mesh
+}
+
+#[test]
+fn a_perspective_faces_depth_off_the_axis_is_along_the_view_not_the_ray() {
+    use Element::{Face, Vertex};
+    // 90 degrees, the pointer at (90, 50), 38.66° off the axis (its ray's x 0.8 of its
+    // depth): Face1, z = −10, met at (8, 0, −10), 12.806 along the ray but depth 10 along the
+    // view. Vertex1 on the same ray 2 mm behind it, at (9.6, 0, −12), depth 12, less its reach
+    // (1.2% of 2 tan 45° of its depth, 0.288) is 11.712: behind the face at 10, hidden. Taken
+    // by the ray's 12.806, the face would come after the vertex, and not hide it.
+    let mut mesh = mesh_of(&[square_at(-10.0, -20.0, 20.0)]);
+    mesh.vertex_points = vec![[9.6, 0.0, -12.0]];
+    let body = Pickable::new(Arc::new(mesh));
+    let under = hits(
+        &from_the_origin(),
+        [100, 100],
+        1.0,
+        &[(1, &body)],
+        [90.0, 50.0],
+    );
+    assert_eq!(listed(&under), [(Face(1), false), (Vertex(1), true)]);
+    // Off the axis the ray's direction carries f32's rounding of the field of view: a part
+    // in 10^7 of 8 mm.
+    for k in 0..3 {
+        assert!(
+            (under[0].point[k] - [8.0, 0.0, -10.0][k]).abs() < 1e-5,
+            "{under:?}"
+        );
+    }
+    assert!((under[0].depth - 10.0).abs() < 1e-5, "{under:?}");
+    assert!((under[1].depth - 12.0).abs() < 1e-9, "{under:?}");
+}
+
+#[test]
+fn a_perspective_edges_reach_is_of_its_depth_and_at_most_a_quarter_of_it() {
+    use Element::{Edge, Face};
+    let floor = Pickable::new(Arc::new(tilted_floor()));
+    let bodies = [(1, &floor)];
+    let at = |camera: &Camera, row: f64| -> Vec<(Element, bool)> {
+        listed(&hits(camera, [100, 100], 1.0, &bodies, [50.0, row]))
+    };
+    // 90 degrees: Edge1 at depth 10, its reach 1.2% of 2 tan 45° of that, 0.24, so its key
+    // 9.76. At row 52 the ray (y −0.04 of its depth) meets the floor at depth s where s =
+    // 10 − 0.3 · 0.04 s: 10 / 1.012 = 9.8814, behind the edge's key: the edge first. At row 55
+    // (y −0.1) at 10 / 1.03 = 9.7087, before it: the floor first. Its reach not of its depth
+    // (0.024), the floor would come first at row 52 too.
+    let right = from_the_origin_at(90.0);
+    assert_eq!(at(&right, 52.0), [(Edge(1), false), (Face(1), false)]);
+    assert_eq!(at(&right, 55.0), [(Face(1), false), (Edge(1), false)]);
+    // 170 degrees: 1.2% of 2 tan 85° is 0.2743, past the most, a quarter: the key 7.5. At row
+    // 55 (y −0.1 tan 85° = −1.14301 of the depth) the floor is met at 10 / 1.342902 = 7.4466,
+    // before it: the floor first (with 0.2743, the key 7.2568, the edge would be). At row 54
+    // (y −0.914404) at 10 / 1.274321 = 7.8473, behind it: the edge first.
+    let wide = from_the_origin_at(170.0);
+    assert_eq!(at(&wide, 55.0), [(Face(1), false), (Edge(1), false)]);
+    assert_eq!(at(&wide, 54.0), [(Edge(1), false), (Face(1), false)]);
+    let tan = libm::tan(85f64.to_radians());
+    assert!((VERTEX_REACH * 2.0 * tan - 0.274_321).abs() < 1e-6);
+}
+
+/// How many triangles the cast tests on this thread from now on.
+fn tested_from_here() -> impl Fn() -> u64 {
+    let start = super::TRIANGLES_TESTED.with(std::cell::Cell::get);
+    move || super::TRIANGLES_TESTED.with(std::cell::Cell::get) - start
+}
+
+#[test]
+fn a_crowd_hidden_behind_a_face_of_eighty_thousand_triangles_is_cast_on_a_few_of_them() {
+    use Element::{Face, Vertex};
+    // A grid of 200 by 200 squares over (0, 0)–(20, 20) at z = 20, one face of 80,000
+    // triangles, and a thousand vertices at (15, 15, 0) under it, seen from above at (15, 15):
+    // the face first, at 80, then the nearest 255 vertices (at 100 less their reach), each
+    // hidden by the face. Each of those 255 casts, and the pointer's, meets the triangles
+    // about its ray through the tree, a few chunks of 8 of them, never the face's whole row
+    // of 80,000 (20 million, cast face by face).
+    let n = 200u32;
+    let step = 20.0 / f64::from(n);
+    let positions: Vec<[f64; 3]> = (0..=n)
+        .flat_map(|j| (0..=n).map(move |i| [f64::from(i) * step, f64::from(j) * step, 20.0]))
+        .collect();
+    let corner = |i: u32, j: u32| j * (n + 1) + i;
+    let triangles: Vec<[u32; 3]> = (0..n)
+        .flat_map(|j| {
+            (0..n).flat_map(move |i| {
+                [
+                    [corner(i, j), corner(i + 1, j), corner(i + 1, j + 1)],
+                    [corner(i, j), corner(i + 1, j + 1), corner(i, j + 1)],
+                ]
+            })
+        })
+        .collect();
+    let mesh = Mesh {
+        normals: vec![[0.0, 0.0, 1.0]; positions.len()],
+        positions,
+        face_triangles: vec![u32::try_from(triangles.len()).unwrap()],
+        triangles,
+        valid: None,
+        edge_points: vec![],
+        edge_point_counts: vec![],
+        vertex_points: vec![[15.0, 15.0, 0.0]; 1000],
+    };
+    let grid = Pickable::new(Arc::new(mesh));
+    let tested = tested_from_here();
+    let under = hits(
+        &from_above(),
+        SIZE,
+        1.0,
+        &[(1, &grid)],
+        above_px(15.0, 15.0).map(|c| c + 0.25),
+    );
+    let mut want = vec![(Face(1), false)];
+    want.extend((1..=255).map(|n| (Vertex(n), true)));
+    assert_eq!(listed(&under), want);
+    let tested = tested();
+    assert!(tested <= 256 * 64, "{tested} triangles tested");
 }
 
 /// Orthographic from above the box's front, looking down at 45 degrees: from (10, −90, 110)
@@ -533,10 +826,12 @@ fn side() -> impl proptest::strategy::Strategy<Value = f64> {
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig { cases: 1000, ..Default::default() })]
 
-    /// Whatever the box, camera, and pointer: no panic, the same list each time, each hit
-    /// one of the box's elements, at a finite point, once; each face's point on the pointer's
-    /// pixel and each edge's and vertex's within its threshold of it, by the renderer's own
-    /// projection (`project`); the faces nearest first, the nearest of them alone unhidden.
+    /// Whatever the box, camera, and pointer (most of them looking nowhere near the box: the
+    /// hostile cases): no panic, the same list each time, each hit one of the box's
+    /// elements, at a finite point, once; each face's point on the pointer's pixel and each
+    /// edge's and vertex's within its threshold of it, by the renderer's own projection
+    /// (`project`); the faces nearest first. What's found is checked, both ways, by the next
+    /// test, whose cameras look at the box.
     #[test]
     fn any_cast_is_sane_and_agrees_with_the_projection(
         low in [coordinate(), coordinate(), coordinate()],
@@ -611,10 +906,198 @@ proptest::proptest! {
         for pair in faces.windows(2) {
             proptest::prop_assert!(pair[0].depth <= pair[1].depth, "{:?}", faces);
         }
-        if let Some(first) = faces.first() {
-            for face in &faces {
-                proptest::prop_assert_eq!(face.hidden, face.depth > first.depth, "{:?}", face);
+    }
+
+    /// A camera looking at the box from outside it (its target in the box, its eye 1.5 to 20
+    /// of the box's diagonal away, the box filling 0.3 to 4 of the view's height), the
+    /// pointer within 10 pixels of a point of the box as it lands: each hit within its
+    /// threshold of the pointer, as before; and the reverse, every vertex `project` lands
+    /// within 7 points of the pointer listed, and every edge whose ends' landings make a
+    /// segment within 6 points of it (the whole box is in front of the eye, so its edges
+    /// are drawn whole). The faces by the box's own geometry, worked here, not by the cast:
+    /// a line meets a box (slab by slab) entering through one face and leaving through
+    /// another, so the faces listed are those two, the one it enters first and not hidden,
+    /// the one it leaves hidden; none where the line clearly misses the box. A line within
+    /// rounding of an edge or a corner of the box, where it meets more, is left out of that.
+    #[test]
+    fn a_cast_at_a_box_lists_whats_near_the_pointer_both_ways_and_the_faces_the_ray_crosses(
+        low in [offset(), offset(), offset()],
+        size in [resolved_side(), resolved_side(), resolved_side()],
+        aim in [0.1..0.9f64, 0.1..0.9f64, 0.1..0.9f64],
+        from in [-1.0..1.0f64, -1.0..1.0f64, -1.0..1.0f64],
+        away in 1.5..20.0f64,
+        perspective in proptest::bool::ANY,
+        fill in 0.3..4.0f64,
+        seen in [0.0..1.0f64, 0.0..1.0f64, 0.0..1.0f64],
+        nudge in [-10.0..10.0f64, -10.0..10.0f64],
+        ppp in proptest::prop_oneof![proptest::strategy::Just(1.0f32), 0.5..4.0f32],
+    ) {
+        let norm = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let length = norm(from);
+        if length < 0.1 {
+            return Ok(());
+        }
+        let toward: [f64; 3] = from.map(|c| c / length);
+        let mesh = freecad_box(size[0], size[1], size[2]);
+        let moved = |p: &[f64; 3]| std::array::from_fn(|k| p[k] + low[k]);
+        let mesh = Mesh {
+            positions: mesh.positions.iter().map(moved).collect(),
+            edge_points: mesh.edge_points.iter().map(moved).collect(),
+            vertex_points: mesh.vertex_points.iter().map(moved).collect(),
+            ..mesh
+        };
+        let body = Pickable::new(Arc::new(mesh.clone()));
+        let diagonal = norm(size);
+        let target: [f64; 3] = std::array::from_fn(|k| low[k] + aim[k] * size[k]);
+        let eye: [f64; 3] = std::array::from_fn(|k| target[k] + toward[k] * away * diagonal);
+        let up = if toward[2].abs() > 0.9 { [0.0, 1.0, 0.0] } else { [0.0, 0.0, 1.0] };
+        let height = diagonal / fill;
+        let camera = Camera {
+            projection: if perspective {
+                let angle = 2.0 * libm::atan(height / 2.0 / (away * diagonal));
+                Projection::Perspective { field_of_view: angle.to_degrees().clamp(1.0, 170.0) }
+            } else {
+                Projection::Orthographic { view_height: height }
+            },
+            eye,
+            target,
+            up,
+        };
+        let size_px = [64u32, 48u32];
+        let point: [f64; 3] = std::array::from_fn(|k| low[k] + seen[k] * size[k]);
+        let Some(lands) = project(&camera, size_px, point) else {
+            return Ok(());
+        };
+        let pointer = [
+            (lands[0] + nudge[0]).clamp(0.0, 63.999),
+            (lands[1] + nudge[1]).clamp(0.0, 47.999),
+        ];
+        let under = hits(&camera, size_px, ppp, &[(1, &body)], pointer);
+        proptest::prop_assert_eq!(&under, &hits(&camera, size_px, ppp, &[(1, &body)], pointer));
+        let ppp = f64::from(ppp);
+        let off = |at: [f64; 2]| {
+            let (dx, dy) = (at[0] - pointer[0], at[1] - pointer[1]);
+            (dx * dx + dy * dy).sqrt()
+        };
+        for hit in &under {
+            proptest::prop_assert!(hit.depth.is_finite() && hit.point.iter().all(|c| c.is_finite()));
+            // Give or take the point's own rounding (a hundred parts in 2^52 of its largest
+            // coordinate, or the eye's), in pixels at its depth.
+            let scale = hit.point.iter().chain(&eye).map(|c| c.abs()).fold(1.0, f64::max);
+            let pixel_mm = match camera.projection {
+                Projection::Perspective { field_of_view } => {
+                    2.0 * libm::tan(field_of_view.to_radians() / 2.0) * hit.depth / 48.0
+                }
+                Projection::Orthographic { view_height } => view_height / 48.0,
+            };
+            let slack = 1e-3 + scale * 1e-14 / pixel_mm;
+            let within = match hit.element {
+                Element::Face(_) => slack,
+                Element::Edge(_) => HIT_EDGE_POINTS * ppp + slack,
+                Element::Vertex(_) => HIT_VERTEX_POINTS * ppp + slack,
+            };
+            if let Some(at) = project(&camera, size_px, hit.point) {
+                proptest::prop_assert!(off(at) <= within, "{:?} lands {} off", hit, off(at));
             }
         }
+        let listed = |element: Element| under.iter().any(|hit| hit.element == element);
+        // The reverse: what lands near enough is listed.
+        for (number, vertex) in (1u32..).zip(&mesh.vertex_points) {
+            if let Some(at) = project(&camera, size_px, *vertex)
+                && off(at) < HIT_VERTEX_POINTS * ppp - 1e-6
+            {
+                proptest::prop_assert!(listed(Element::Vertex(number)), "Vertex{} lands {} off: {:?}", number, off(at), under);
+            }
+        }
+        for (number, ends) in (1u32..).zip(mesh.edge_points.chunks(2)) {
+            let (Some(a), Some(b)) = (project(&camera, size_px, ends[0]), project(&camera, size_px, ends[1])) else {
+                continue;
+            };
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let length = d[0] * d[0] + d[1] * d[1];
+            let s = if length == 0.0 {
+                0.0
+            } else {
+                (((pointer[0] - a[0]) * d[0] + (pointer[1] - a[1]) * d[1]) / length).clamp(0.0, 1.0)
+            };
+            let nearest = off([a[0] + d[0] * s, a[1] + d[1] * s]);
+            if nearest < HIT_EDGE_POINTS * ppp - 1e-6 {
+                proptest::prop_assert!(listed(Element::Edge(number)), "Edge{} is {} off: {:?}", number, nearest, under);
+            }
+        }
+        // The faces, by where the pointer's line crosses the box's slabs.
+        let Some((origin, direction)) = ray(&camera, size_px, pointer) else {
+            return Ok(());
+        };
+        let (mut box_low, mut box_high) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for p in &mesh.positions {
+            for k in 0..3 {
+                box_low[k] = box_low[k].min(p[k]);
+                box_high[k] = box_high[k].max(p[k]);
+            }
+        }
+        let scale = low.iter().chain(&eye).map(|c| c.abs()).fold(1.0, f64::max);
+        let tolerance = 1e-5 * diagonal + 1e-12 * scale;
+        let mut enters: Vec<(f64, u32)> = Vec::new();
+        let mut leaves: Vec<(f64, u32)> = Vec::new();
+        let mut misses = false;
+        let mut unclear = false;
+        for k in 0..3 {
+            let (lo, hi, o, d) = (box_low[k], box_high[k], origin[k], direction[k]);
+            let low_face = 2 * u32::try_from(k).unwrap() + 1;
+            if d.abs() < 1e-12 {
+                // Along the slab: inside it or not, clearly.
+                if o < lo - tolerance || o > hi + tolerance {
+                    misses = true;
+                } else if o < lo + tolerance || o > hi - tolerance {
+                    unclear = true;
+                }
+                continue;
+            }
+            let (t_low, t_high) = ((lo - o) / d, (hi - o) / d);
+            if d > 0.0 {
+                enters.push((t_low, low_face));
+                leaves.push((t_high, low_face + 1));
+            } else {
+                enters.push((t_high, low_face + 1));
+                leaves.push((t_low, low_face));
+            }
+        }
+        enters.sort_by(|a, b| b.0.total_cmp(&a.0));
+        leaves.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let faces: Vec<(Element, bool)> = under
+            .iter()
+            .filter(|hit| matches!(hit.element, Element::Face(_)))
+            .map(|hit| (hit.element, hit.hidden))
+            .collect();
+        let close = |pair: &[(f64, u32)]| pair.len() > 1 && (pair[0].0 - pair[1].0).abs() <= tolerance;
+        if unclear || close(&enters) || close(&leaves) {
+            return Ok(());
+        }
+        let (Some(&(enter, entry)), Some(&(leave, exit))) = (enters.first(), leaves.first()) else {
+            return Ok(());
+        };
+        if misses || leave < enter - tolerance {
+            proptest::prop_assert!(faces.is_empty(), "the line misses the box: {:?}", under);
+        } else if leave > enter + tolerance {
+            proptest::prop_assert_eq!(
+                &faces,
+                &vec![(Element::Face(entry), false), (Element::Face(exit), true)],
+                "entering through Face{} at {}, leaving through Face{} at {}: {:?}",
+                entry, enter, exit, leave, under
+            );
+        }
     }
+}
+
+/// An offset of the box: none, small, large, or as far as a billion millimetres.
+fn offset() -> impl proptest::strategy::Strategy<Value = f64> {
+    use proptest::prelude::*;
+    prop_oneof![Just(0.0), -1e3..1e3f64, -1e6..1e6f64, Just(1e9), Just(-1e9)]
+}
+
+/// A side of a box resolved at any [`offset`]: a micron to a hundred metres.
+fn resolved_side() -> impl proptest::strategy::Strategy<Value = f64> {
+    use proptest::prelude::*;
+    prop_oneof![Just(1e-3), 1e-2..1e3f64, Just(1e5)]
 }
