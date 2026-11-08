@@ -813,6 +813,8 @@ mod tests {
         const MH_BOTTOM: f32 = 2.0;
         const MH_FS: f32 = 10.0;
         const MSEP_MARGIN: f32 = 4.0;
+        /// `.menu .mh`: `text-transform: uppercase; letter-spacing: .5px`.
+        const MH_SPACING: f32 = 0.5;
 
         fn shown(item: Item, label: &str, sub: Option<&'static str>, caps: &[&str]) -> Shown {
             Shown {
@@ -956,6 +958,13 @@ mod tests {
                 sub.pos.x,
                 edit.pos.x + edit.galley.size().x + MI_GAP + SUB_MARGIN
             ));
+            // In the item's middle, as its words are (`.mi`: `align-items: center`).
+            assert!(
+                near(sub.pos.y + sub.galley.size().y / 2.0, items[0].center().y),
+                "double-click at {:?}, its item {:?}",
+                sub.pos,
+                items[0]
+            );
             // The keys as caps, 16 high, at the item's right less its padding, unstroked,
             // their border `.kbd`'s, Gray.350.
             for (rect, key) in [(items[1], "F2"), (items[4], "Del")] {
@@ -1121,6 +1130,258 @@ mod tests {
                 "Rename, as wide as the widest",
             );
             assert!(near(delete.width(), want));
+        }
+
+        #[test]
+        fn a_long_name_widens_the_menu_to_its_head_in_spaced_capitals_8_in_at_each_side() {
+            let name = "Mounting plate for the left bracket";
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(800.0, 400.0))
+                .build_ui(|ui| {
+                    draw(
+                        ui,
+                        name,
+                        vec![
+                            shown(Item::Rename, "Rename", None, &["F2"]),
+                            shown(Item::Delete, "Delete", None, &["Del"]),
+                        ],
+                    );
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(4);
+            // `.menu .mh`: the name in capitals, 10 high, `letter-spacing: .5px`.
+            let capitals = "MOUNTING PLATE FOR THE LEFT BRACKET";
+            let head = text_shape(&h, capitals);
+            font(&head, MH_FS, "the head");
+            assert_eq!(
+                head.galley.job.sections[0].format.extra_letter_spacing,
+                MH_SPACING
+            );
+            // A menu is as wide as its widest line (`.menu` is `position: fixed`, so it
+            // shrinks to fit its lines): here the head's, its words and `.mh`'s `padding: 6px
+            // 8px 2px`, 8 at each side; past `.menu`'s least, and every item as wide.
+            let width = head.galley.size().x + 2.0 * MI_PAD;
+            assert!(
+                width > MENU_MIN_W - 2.0 * (MENU_PAD + css::BORDER),
+                "{width}"
+            );
+            let head_rect = widget(&h, Role::Label, capitals);
+            assert!(
+                near(head_rect.width(), width),
+                "{head_rect:?}, not {width} wide"
+            );
+            assert!(
+                near(head.pos.x, head_rect.left() + MI_PAD),
+                "{:?}",
+                head.pos
+            );
+            for label in ["Rename F2", "Delete Del"] {
+                let item = widget(&h, Role::Button, label);
+                assert!(
+                    near(item.width(), width),
+                    "{label}: {item:?}, not {width} wide"
+                );
+                assert!(near(item.left(), head_rect.left()), "{label}: {item:?}");
+            }
+        }
+    }
+
+    fn entry(id: &str, kind: &'static str, suppressed: bool) -> Entry {
+        Entry {
+            id: fid(id),
+            kind,
+            name: id.to_owned(),
+            suppressed,
+            inputs: Vec::new(),
+            health: if suppressed {
+                Health::Suppressed
+            } else {
+                Health::Healthy
+            },
+            problems: 0,
+            warnings: 0,
+        }
+    }
+
+    #[test]
+    fn each_items_words_are_the_prototypes_for_the_feature_and_the_place_its_menu_is_in() {
+        // js/interact.js's `contextmenu`: "Edit Sketch" for a sketch, else "Edit feature";
+        // "Unsuppress" for a feature suppressed, else "Suppress"; "Find in browser" on a
+        // timeline item, "Find in timeline" on a browser row; Rename; and Delete.
+        let words = |entry: &Entry, place: Place| ITEMS.map(|item| label(item, entry, place));
+        assert_eq!(
+            words(&entry("s0000001", "sketch", false), Place::Timeline),
+            [
+                "Edit Sketch",
+                "Rename",
+                "Suppress",
+                "Find in browser",
+                "Delete"
+            ]
+        );
+        assert_eq!(
+            words(&entry("s0000001", "sketch", true), Place::Browser),
+            [
+                "Edit Sketch",
+                "Rename",
+                "Unsuppress",
+                "Find in timeline",
+                "Delete"
+            ]
+        );
+        assert_eq!(
+            words(&entry("p0000001", "pad", false), Place::Browser),
+            [
+                "Edit feature",
+                "Rename",
+                "Suppress",
+                "Find in timeline",
+                "Delete"
+            ]
+        );
+        assert_eq!(
+            words(&entry("p0000001", "pad", true), Place::Timeline),
+            [
+                "Edit feature",
+                "Rename",
+                "Unsuppress",
+                "Find in browser",
+                "Delete"
+            ]
+        );
+    }
+
+    /// A rename field typed in, as the browser's and the timeline's draw theirs: the field of
+    /// the feature named Block, 180 by 22, with a button after it to take the focus.
+    mod typing {
+        use eframe::egui::{self, Event, ImeEvent, Key, Modifiers, Pos2, Rect, Vec2};
+        use egui::accesskit::Role;
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+
+        use super::super::{Field, Place, Renaming, field};
+        use super::fid;
+        use crate::theme;
+
+        struct Typing {
+            renaming: Renaming,
+            /// What the field came to once it finished: drawn no more, as a pane drops it.
+            done: Option<String>,
+        }
+
+        fn opened(name: &str) -> Harness<'static, Typing> {
+            let renaming = Renaming::new(fid("a0000001"), Place::Browser, name.to_owned());
+            // Not drawn yet: it hasn't had the focus.
+            assert!(!renaming.focused());
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(400.0, 200.0))
+                .build_ui_state(
+                    |ui, typing: &mut Typing| {
+                        if typing.done.is_none() {
+                            let rect =
+                                Rect::from_min_size(Pos2::new(20.0, 20.0), Vec2::new(180.0, 22.0));
+                            let name = typing.renaming.text.clone();
+                            if let Field::Done(typed) = field(ui, &mut typing.renaming, rect, &name)
+                            {
+                                typing.done = Some(typed);
+                            }
+                        }
+                        ui.put(
+                            Rect::from_min_size(Pos2::new(20.0, 80.0), Vec2::new(80.0, 22.0)),
+                            egui::Button::new("Other"),
+                        );
+                    },
+                    Typing {
+                        renaming,
+                        done: None,
+                    },
+                );
+            theme::apply(&h.ctx);
+            h.run_steps(3);
+            // Given the focus as it's drawn, its name shown whole.
+            assert!(h.state().renaming.focused(), "the focus");
+            assert!(text_field(&h).is_focused());
+            assert_eq!(value(&h), name);
+            h
+        }
+
+        fn text_field<'a>(h: &'a Harness<'_, Typing>) -> egui_kittest::Node<'a> {
+            h.get_by_role(Role::TextInput)
+        }
+
+        fn value(h: &Harness<'_, Typing>) -> String {
+            text_field(h).value().unwrap_or_default()
+        }
+
+        #[test]
+        fn the_first_keystroke_types_over_the_name_and_a_click_in_it_keeps_it() {
+            // The name selected whole as its field opens (the prototype's `prompt`, a
+            // browser's own, its default text selected): the first letter typed replaces it.
+            let mut h = opened("Block");
+            text_field(&h).type_text("D");
+            h.run_steps(2);
+            assert_eq!(value(&h), "D");
+            text_field(&h).type_text("owel");
+            h.run_steps(2);
+            assert_eq!(value(&h), "Dowel", "typed over once, then typed after");
+
+            // A click in it puts the cursor where it's clicked, as a text field's click does
+            // (its middle, past the name's end): what's typed after goes there.
+            let mut h = opened("Block");
+            text_field(&h).click();
+            h.run_steps(2);
+            assert_eq!(value(&h), "Block");
+            text_field(&h).type_text("x");
+            h.run_steps(2);
+            assert_eq!(value(&h), "Blockx");
+
+            // An input method's empty composition is none (egui's `ImeEvent::Preedit`: empty,
+            // "the IME has been dismissed"; its TextEdit ignores an empty one with nothing
+            // composed): the name stays, typed over still.
+            let mut h = opened("Block");
+            for empty in [
+                ImeEvent::Preedit {
+                    text: String::new(),
+                    active_range_chars: None,
+                },
+                ImeEvent::Commit(String::new()),
+            ] {
+                h.event(Event::Ime(empty));
+                h.run_steps(2);
+                assert_eq!(value(&h), "Block");
+            }
+            text_field(&h).type_text("D");
+            h.run_steps(2);
+            assert_eq!(value(&h), "D");
+
+            // A modified ⌫ deletes the name selected whole, as ⌫ does.
+            let mut h = opened("Block one");
+            h.key_press_modifiers(Modifiers::ALT, Key::Backspace);
+            h.run_steps(2);
+            assert_eq!(value(&h), "");
+            assert_eq!(h.state().done, None, "still typed in");
+        }
+
+        #[test]
+        fn the_focus_leaving_the_field_finishes_the_name() {
+            // SolidWorks keeps a name typed in its tree when the focus leaves it: Tab to the
+            // next control finishes it, as Enter does.
+            let mut h = opened("Block");
+            text_field(&h).type_text("Dowel");
+            h.run_steps(2);
+            assert_eq!(h.state().done, None);
+            h.key_press(Key::Tab);
+            h.run_steps(3);
+            assert_eq!(h.state().done.as_deref(), Some("Dowel"));
+            // The focus given to the next control by a screen reader (its Focus action, taken
+            // as that control is drawn, after the field, so the field loses it between
+            // frames): finished the same, never asking the focus back.
+            let mut h = opened("Block");
+            text_field(&h).type_text("Dowel");
+            h.run_steps(2);
+            h.get_by_label("Other").focus();
+            h.run_steps(3);
+            assert_eq!(h.state().done.as_deref(), Some("Dowel"));
         }
     }
 

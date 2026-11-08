@@ -806,6 +806,127 @@ mod tests {
     }
 
     #[test]
+    fn pressed_finds_an_exact_chord_only_freshly_with_exactly_its_modifiers_and_a_key_as_egui_does()
+    {
+        // Ctrl as the platform's keyboard sends it off macOS: Ctrl, and Command with it.
+        let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+        let key = |key: Key, modifiers: Modifiers, pressed: bool| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        let down = |pressed: Key, modifiers: Modifiers| key(pressed, modifiers, true);
+        let up = |released: Key, modifiers: Modifiers| key(released, modifiers, false);
+        // Whether `command` was pressed in a frame of `events` on `ctx`, whose keys held
+        // down from frames before make a press of one of them egui's repeat of it.
+        let frame = |ctx: &egui::Context, command: Command, events: Vec<egui::Event>| {
+            let mut found = false;
+            ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| found = pressed(ui.ctx(), command),
+            )
+            .textures_delta
+            .clear();
+            found
+        };
+        // The same, in a frame of its own, no key held before it.
+        let pressed_in = |command: Command, events: Vec<egui::Event>| {
+            frame(&on(OperatingSystem::Nix), command, events)
+        };
+        // `Chord::Exact`: the key alone, freshly pressed. Rename's F2 (the prototype's
+        // `CMD.rename`), and Delete's ⌫ and Del, either of them.
+        assert!(pressed_in(
+            Command::Rename,
+            vec![down(Key::F2, Modifiers::NONE)]
+        ));
+        assert!(pressed_in(
+            Command::Delete,
+            vec![down(Key::Backspace, Modifiers::NONE)]
+        ));
+        assert!(pressed_in(
+            Command::Delete,
+            vec![down(Key::Delete, Modifiers::NONE)]
+        ));
+        // Its near misses: a modifier with it (Shift and Alt too, which egui's own match puts
+        // aside), its release, another key, and the system's repeat of the key held down.
+        for modifiers in [Modifiers::SHIFT, Modifiers::ALT, ctrl, Modifiers::MAC_CMD] {
+            assert!(
+                !pressed_in(Command::Rename, vec![down(Key::F2, modifiers)]),
+                "F2 with {modifiers:?}"
+            );
+            assert!(
+                !pressed_in(Command::Delete, vec![down(Key::Backspace, modifiers)]),
+                "⌫ with {modifiers:?}"
+            );
+        }
+        assert!(!pressed_in(
+            Command::Rename,
+            vec![up(Key::F2, Modifiers::NONE)]
+        ));
+        assert!(!pressed_in(
+            Command::Rename,
+            vec![down(Key::F3, Modifiers::NONE)]
+        ));
+        assert!(!pressed_in(
+            Command::Delete,
+            vec![down(Key::D, Modifiers::NONE)]
+        ));
+        let held = on(OperatingSystem::Nix);
+        assert!(frame(
+            &held,
+            Command::Rename,
+            vec![down(Key::F2, Modifiers::NONE)]
+        ));
+        assert!(
+            !frame(&held, Command::Rename, vec![down(Key::F2, Modifiers::NONE)]),
+            "the repeat of F2 held down"
+        );
+        // Let go and pressed again: fresh.
+        assert!(frame(
+            &held,
+            Command::Rename,
+            vec![up(Key::F2, Modifiers::NONE), down(Key::F2, Modifiers::NONE)]
+        ));
+        // A near miss before the chord in the frame hides it from none.
+        assert!(pressed_in(
+            Command::Rename,
+            vec![
+                down(Key::F2, Modifiers::SHIFT),
+                up(Key::F2, Modifiers::SHIFT),
+                down(Key::F2, Modifiers::NONE)
+            ]
+        ));
+        // `Chord::Key`, as egui's `consume_shortcut` matches it: Save's Ctrl+S, an extra Shift
+        // aside (so Save As is taken first) and a repeat too; never S alone, its release, or
+        // Ctrl with another key.
+        assert!(pressed_in(Command::Save, vec![down(Key::S, ctrl)]));
+        assert!(pressed_in(
+            Command::Save,
+            vec![down(Key::S, ctrl | Modifiers::SHIFT)]
+        ));
+        let held = on(OperatingSystem::Nix);
+        assert!(frame(&held, Command::Save, vec![down(Key::S, ctrl)]));
+        assert!(
+            frame(&held, Command::Save, vec![down(Key::S, ctrl)]),
+            "the repeat of Ctrl+S held down"
+        );
+        assert!(!pressed_in(
+            Command::Save,
+            vec![down(Key::S, Modifiers::NONE)]
+        ));
+        assert!(!pressed_in(Command::Save, vec![up(Key::S, ctrl)]));
+        assert!(!pressed_in(Command::Save, vec![down(Key::O, ctrl)]));
+        // Nothing pressed, nothing found.
+        assert!(!pressed_in(Command::Save, Vec::new()));
+        assert!(!pressed_in(Command::Rename, Vec::new()));
+    }
+
+    #[test]
     fn whats_wrong_is_a_rebuild_command_with_no_keys_left_off_the_sheet() {
         // js/app.js's `CMD.whatsWrong`: "What's wrong", no keys, the Rebuild group, "Every
         // problem in the document"; after Stop rebuild, as the prototype orders its group.
