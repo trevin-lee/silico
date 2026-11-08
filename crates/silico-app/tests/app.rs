@@ -18305,6 +18305,67 @@ fn delete_and_backspace_in_one_frame_delete_the_selection_once() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// One sketch, Loose, of one point.
+const ONE_SKETCH: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Loose", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn a_lone_sketchs_prefix_is_read_once_kept_and_drawn_before_its_name_in_the_browser() {
+    use silico_protocol::Solved;
+    // The fake solves the point free to move: under defined, `(–)`.
+    let f = fixture();
+    f.sketches.answer(|system| {
+        Ok(Solved {
+            dofs: 2,
+            free: system.unknowns.clone(),
+            ..FakeSketches::as_sent(system)
+        })
+    });
+    let (mut h, _) = f.opened("one.silico", ONE_SKETCH);
+    let loose = sketch_id("s0000001");
+    step_until(&mut h, "its prefix", |h| {
+        h.state().tabs()[0].prefixes.prefix(&loose) == Some("(–)")
+    });
+    // Read once for the model, and kept, however many frames pass.
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    let tab = &h.state().tabs()[0];
+    assert_eq!(tab.prefixes.reads, 1);
+    assert_eq!(tab.prefixes.prefix(&loose), Some("(–)"));
+    // Its browser row draws it (`.row .prefix.under`, `--sk-under` #7a95ff) before its name.
+    let row = h
+        .get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Loose")
+        .rect();
+    let texts = texts_in(&h, row);
+    assert!(
+        texts.contains(&(
+            "(–)".to_owned(),
+            eframe::egui::Color32::from_rgb(0x7a, 0x95, 0xff)
+        )),
+        "{texts:?}"
+    );
+    let left = |words: &str| {
+        painted_in(&h, row)
+            .into_iter()
+            .find_map(|shape| match shape {
+                eframe::egui::Shape::Text(text) if text.galley.text() == words => Some(text.pos.x),
+                _ => None,
+            })
+    };
+    let (prefix, name) = (left("(–)").unwrap(), left("Loose").unwrap());
+    assert!(prefix < name, "{prefix} and {name}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// A box, and a sketch on its top face: a face the fake doesn't describe as a plane, so the
 /// sketch's plane is broken.
 const ON_A_FACE: &str = r#"{
