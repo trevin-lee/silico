@@ -18196,8 +18196,9 @@ fn triangle_in_sketch_mode(f: &Fixture) -> AppHarness {
     h
 }
 
-/// The rectangles the last frame painted filled `--g200` and bordered in `border`, inside
-/// the canvas.
+/// The rectangles the last frame painted filled `--g200` and bordered in `border`, standing
+/// in the canvas (from their top left: a palette taller than the canvas's room runs past its
+/// bottom).
 fn floating_frames(h: &AppHarness, border: eframe::egui::Color32) -> Vec<eframe::egui::Rect> {
     let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
     painted(h)
@@ -18206,7 +18207,7 @@ fn floating_frames(h: &AppHarness, border: eframe::egui::Color32) -> Vec<eframe:
             eframe::egui::Shape::Rect(rect)
                 if rect.fill == G200
                     && rect.stroke.color == border
-                    && canvas.expand(0.5).contains_rect(rect.rect) =>
+                    && canvas.expand(0.5).contains(rect.rect.left_top()) =>
             {
                 Some(rect.rect)
             }
