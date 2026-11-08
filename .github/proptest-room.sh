@@ -29,9 +29,11 @@
 # back, so its job never queues to race one for the next runner freed). Its tests then take a
 # real shard's share of threads, 2, and its slow proptests run alone (proptest-explore.yml,
 # tests/proptest-explore.sh).
-# Once it starts, real work that starts cancels it, as it does every filler run
-# (cancel-filler.sh). A failed look at GitHub's runs fails this, and with it the run: no
-# exploration starts unchecked.
+# Once it starts, a bench or a night's sweep starting cancels it, as they cancel every filler
+# run, and so does a real mutants run starting, unless it's overdue: then only if that run's
+# shards would wait for a runner of their lane otherwise (cancel-filler.sh), so a busy VM,
+# where real runs start several times a day, still gets its day's exploration. A failed look
+# at GitHub's runs fails this, and with it the run: no exploration starts unchecked.
 #
 # Needs GH_TOKEN (actions: read), GH_REPO, and BRANCH, the branch filler runs on (main).
 set -euo pipefail
@@ -63,20 +65,9 @@ if awk -F '\t' '$2 == "bench.yml" || $2 == "oracle-sweep.yml" { found = 1 } END 
   decide false "Not started: a bench or an oracle sweep is going."
 fi
 
-# Overdue: no explore job passed or failed in a day having run a round (one cancelled, or
-# skipped for want of room, doesn't count, nor one whose starved build left no time for a
-# round, which ends passed: its step "Rounds ran" is skipped, proptest-explore.yml), of the
-# runs made in two (a run can wait, then run, for hours).
-runs=$(gh run list --workflow proptest-explore.yml --branch "$BRANCH" --limit 50 --json databaseId,createdAt \
-  --jq ".[] | select(now - (.createdAt | fromdateiso8601) < $((2 * day))) | .databaseId")
-explored=0
-for run in $runs; do
-  ended=$(gh api "repos/$GH_REPO/actions/runs/$run/jobs?per_page=100" --jq \
-    "[.jobs[] | select(.name == \"explore\" and (.conclusion == \"success\" or .conclusion == \"failure\")
-       and any(.steps[]?; .name == \"Rounds ran\" and .conclusion == \"success\")
-       and now - (.completed_at | fromdateiso8601) < $day)] | length")
-  explored=$((explored + ended))
-done
+# Overdue: no explore job passed or failed in a day having run a round (explored,
+# .github/lanes.sh, which a real mutants run's cancelling of filler asks too).
+explored=$(explored "$day")
 if [ "$explored" -eq 0 ]; then
   overdue=true
   report "Overdue: no exploration has passed or failed in a day."

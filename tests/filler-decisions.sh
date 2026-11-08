@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# The filler's decisions (.github/workflows/filler.yml's Fill step, .github/proptest-room.sh)
-# run against made-up states of the CI: GitHub's runs and jobs, served by a stub `gh` that
-# applies each call's --jq to them with jq; the VM's CPUs (nproc, and /proc/stat, read from a
-# file the stub `sleep` advances, as 15 seconds would). Each case says what the decision must
-# start, cancel, or answer, and why, as it reports it. And a failed look at GitHub fails
-# each, starting nothing. Needs bash, jq, and awk; no network. `pixi run test` runs it.
+# The filler's decisions (.github/workflows/filler.yml's Fill step, .github/proptest-room.sh),
+# and what real work cancels of it (.github/cancel-filler.sh), run against made-up states of
+# the CI: GitHub's runs and jobs, served by a stub `gh` that applies each call's --jq to them
+# with jq; the VM's CPUs (nproc, and /proc/stat, read from a file the stub `sleep` advances, as
+# 15 seconds would). Each case says what the decision must start, cancel, or answer, and why,
+# as it reports it. And a failed look at GitHub fails each, starting nothing, but for
+# cancel-filler.sh, which never fails real work: it cancels what it can't tell is needed.
+# Needs bash, jq, and awk; no network. `pixi run test` runs it.
 #
 #   pixi run test-ci-decisions   (or bash tests/filler-decisions.sh)
 set -euo pipefail
@@ -14,7 +16,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/silico-filler-decisions.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 # The scripts as CI runs them, from a checkout of .github: the Fill step's script, cut from
-# filler.yml, and proptest-room.sh, each reading the fake /proc/stat.
+# filler.yml, and proptest-room.sh, each reading the fake /proc/stat; and cancel-filler.sh.
 mkdir -p "$tmp/checkout/.github" "$tmp/bin"
 cp "$repo/.github/gh.sh" "$repo/.github/lanes.sh" "$repo/.github/cancel-filler.sh" "$tmp/checkout/.github/"
 awk '/^      - name: Fill$/ { step = 1 } step && /^        run: \|$/ { body = 1; next } body { sub(/^          /, ""); print }' \
@@ -23,7 +25,7 @@ grep -q 'skip()' "$tmp/checkout/.github/fill.sh" || { echo "couldn't cut the Fil
 sed "s#/proc/stat#$tmp/stat#" "$repo/.github/proptest-room.sh" >"$tmp/checkout/.github/proptest-room.sh"
 
 # The stub gh. Runs come from runs.jsonl (id, path, status, conclusion, display_title,
-# created_at), jobs from jobs.jsonl (run, name, status, runner_name, labels, conclusion,
+# created_at; each on main), jobs from jobs.jsonl (run, name, status, runner_name, labels, conclusion,
 # completed_at, steps); what it would change on GitHub goes to calls. A call whose arguments
 # hold the text in the file fail fails, as GitHub not answering would.
 cat >"$tmp/bin/gh" <<'EOF'
@@ -51,7 +53,8 @@ case "$1 $2" in
     shift
   done
   json=$(runs | jq --arg path ".github/workflows/$workflow" '[.[] | select(.path == $path)] | sort_by(.created_at) | reverse
-    | map({databaseId: .id, status, conclusion: (.conclusion // ""), displayTitle: .display_title, createdAt: .created_at})') ;;
+    | map({databaseId: .id, status, conclusion: (.conclusion // ""), displayTitle: .display_title, createdAt: .created_at,
+      headBranch: "main"})') ;;
 api*)
   case $2 in
   */actions/runs\?status=*)
@@ -138,6 +141,28 @@ filler_mutants() {
     i=$((i + 1))
   done
 }
+# An exploration going (run 290), its explore job running on silico-$1, or, with none given,
+# queued for a runner labelled filler.
+exploring() {
+  run 290 proptest-explore.yml in_progress "filler proptest exploration" 0
+  job 290 room completed pve-silico-13-1 self-hosted,linux,x64,control success 0
+  if [ -n "${1-}" ]; then
+    job 290 explore in_progress "pve-silico-$1-1" self-hosted,linux,x64,filler
+  else
+    job 290 explore queued "" self-hosted,linux,x64,filler
+  fi
+}
+# A filler sweep going (run 400), its sweep job running on silico-$1.
+sweeping() {
+  run 400 oracle-sweep.yml in_progress "filler oracle sweep, seed 400" 0
+  job 400 sweep in_progress "pve-silico-$1-1" self-hosted,linux,x64,filler
+}
+# A real mutants run's plan going (run 7100), on silico-14, a runner labelled control: the run
+# that calls cancel-filler.sh with its lane and shards.
+planning() {
+  run 7100 mutants.yml in_progress "mutants def since main" 0
+  job 7100 plan in_progress pve-silico-14-1 self-hosted,linux,x64,control
+}
 # GitHub failing every call whose arguments hold $1.
 failing() { printf '%s' "$1" >"$STATE/fail"; }
 
@@ -151,6 +176,13 @@ room() {
     GITHUB_RUN_ID=1 GITHUB_STEP_SUMMARY=$STATE/summary GITHUB_OUTPUT=$STATE/output bash .github/proptest-room.sh >"$STATE/log" 2>&1) ||
     { echo "proptest-room.sh failed:" >&2; cat "$STATE/log" >&2; return 1; }
 }
+# cancel-filler.sh with arguments $@: a real mutants run's plan's (--lane LABEL --shards N),
+# the filler's (workflow files), or none, the bench's and a night's sweep's.
+cancel_filler() {
+  (cd "$tmp/checkout" && PATH="$tmp/bin:$PATH" STATE=$STATE GH_TOKEN=x GH_REPO=o/r \
+    bash .github/cancel-filler.sh "$@" >"$STATE/log" 2>&1) ||
+    { echo "cancel-filler.sh failed:" >&2; cat "$STATE/log" >&2; return 1; }
+}
 
 failed=0
 case_name=
@@ -160,11 +192,14 @@ check() {
     sed 's/^/  summary: /' "$STATE/summary" >&2
     sed 's/^/  calls: /' "$STATE/calls" >&2
     sed 's/^/  output: /' "$STATE/output" >&2
+    if [ -f "$STATE/log" ]; then sed 's/^/  log: /' "$STATE/log" >&2; fi
     failed=1
   fi
 }
 said() { grep -qF -- "$1" "$STATE/summary"; }
 called() { grep -qxF -- "$1" "$STATE/calls"; }
+# What the decision changed on GitHub was these calls, and only these, in any order.
+only_called() { [ "$(sort "$STATE/calls")" = "$(printf '%s\n' "$@" | sort)" ]; }
 quiet() { [ ! -s "$STATE/calls" ]; }
 logged() { grep -qF -- "$1" "$STATE/log"; }
 unanswered() { ! grep -q '^go=' "$STATE/output"; }
@@ -441,6 +476,176 @@ explored success 3
 room
 check said "Room: 0 of 10 runners labelled filler busy, 20 of 30 CPUs idle."
 check answered true false
+
+# cancel-filler.sh: what real work cancels. The lanes (.github/lanes.sh): mutants-pr, silico-5
+# to -12, -15 to -17, -20, -21; mutants, -9 to -12 and -15 to -17; filler, -5 to -12, -22, -23.
+# An exploration is overdue here when none ended, having run a round, in a day (explored 30:
+# the last one 30 hours ago); a sweep when none ended in a day but those cancelled (swept 25).
+
+begin "a real run of 2 shards, the overdue exploration on silico-8, 4 of its lane free once filler mutants are cancelled: they're cancelled, it's kept" 0
+explored success 30
+planning
+shards_on 10 11 12 15 16 17 20 21
+filler_mutants 5 6 7
+exploring 8
+cancel_filler --lane mutants-pr --shards 2
+# Busy: 8 (the exploration), 10 to 12, 15 to 17, 20, 21 (real); free: 5, 6, 7 (filler mutants,
+# cancelled), and 9.
+check logged "4 runners labelled mutants-pr free once filler mutants are cancelled, for 2 shards"
+check logged "Keeping the exploration 290, overdue"
+check only_called "run cancel 8000"
+
+begin "as many runners free as shards: the overdue exploration is kept" 0
+explored success 30
+planning
+shards_on 10 11 12 15 16 17 20 21
+filler_mutants 5 6 7
+exploring 8
+cancel_filler --lane mutants-pr --shards 4
+check only_called "run cancel 8000"
+
+begin "one runner fewer free than shards, the overdue exploration on one of their lane: it's cancelled" 0
+explored success 30
+planning
+shards_on 10 11 12 15 16 17 20 21
+filler_mutants 5 6 7
+exploring 8
+cancel_filler --lane mutants-pr --shards 5
+check logged "4 runners labelled mutants-pr free once filler mutants are cancelled, for 5 shards"
+check only_called "run cancel 8000" "run cancel 290"
+
+begin "the lane all busy with real work but the overdue exploration's runner: it's cancelled" 0
+explored success 30
+planning
+shards_on 5 6 7 9 10 11 12 15 16 17 20 21
+filler_mutants 22 23
+exploring 8
+cancel_filler --lane mutants-pr --shards 2
+check logged "0 runners labelled mutants-pr free once filler mutants are cancelled, for 2 shards"
+check only_called "run cancel 8000" "run cancel 290"
+
+begin "the lane all busy, the overdue exploration on silico-22, which the lane hasn't: it's kept" 0
+explored success 30
+planning
+shards_on 5 6 7 8 9 10 11 12 15 16 17 20 21
+exploring 22
+cancel_filler --lane mutants-pr --shards 2
+check logged "Keeping the exploration 290, overdue: it's on a runner the shards' lane hasn't"
+check quiet
+
+begin "the lane all busy, the overdue exploration queued for a runner: it's cancelled" 0
+explored success 30
+planning
+shards_on 5 6 7 8 9 10 11 12 15 16 17 20 21
+exploring
+cancel_filler --lane mutants-pr --shards 1
+check only_called "run cancel 290"
+
+begin "a merge-lane run, its lane busy, the overdue exploration on silico-5: it's cancelled" 0
+explored success 30
+planning
+shards_on 6 7 8 9 10 11 12 15 16 17 20 21
+exploring 5
+cancel_filler --lane mutants-pr --shards 1
+check only_called "run cancel 290"
+
+begin "a long run, its lane busy, the overdue exploration on silico-5, which the long lane hasn't: it's kept" 0
+explored success 30
+planning
+shards_on 6 7 8 9 10 11 12 15 16 17 20 21
+exploring 5
+cancel_filler --lane mutants --shards 1
+check logged "0 runners labelled mutants free once filler mutants are cancelled, for 1 shards"
+check quiet
+
+begin "an exploration not overdue is cancelled, every runner free" 0
+explored success 3
+planning
+exploring 22
+cancel_filler --lane mutants-pr --shards 1
+check logged "Cancelling filler run 290: the exploration isn't overdue"
+check only_called "run cancel 290"
+
+begin "an overdue filler sweep (one cancelled today doesn't count), runners free: it's kept" 0
+swept 25
+swept 2 cancelled
+planning
+filler_mutants 22 23
+sweeping 9
+cancel_filler --lane mutants-pr --shards 2
+# Free: 13 but 9.
+check logged "12 runners labelled mutants-pr free once filler mutants are cancelled, for 2 shards"
+check logged "Keeping the filler sweep 400, overdue"
+check only_called "run cancel 8000"
+
+begin "an overdue filler sweep, the lane all busy but its runner: it's cancelled" 0
+swept 25
+planning
+shards_on 5 6 7 8 10 11 12 15 16 17 20 21
+sweeping 9
+cancel_filler --lane mutants-pr --shards 1
+check only_called "run cancel 400"
+
+begin "a filler sweep not overdue is cancelled, every runner free" 0
+swept 5
+planning
+sweeping 22
+cancel_filler --lane mutants-pr --shards 1
+check logged "Cancelling filler run 400: the filler sweep isn't overdue"
+check only_called "run cancel 400"
+
+begin "a failed look at the runs going: the overdue exploration is cancelled, warned of, and the real run goes on" 0
+explored success 30
+planning
+shards_on 10 11 12 15 16 17 20 21
+filler_mutants 5 6 7
+exploring 8
+failing "runs?status=queued"
+check cancel_filler --lane mutants-pr --shards 2
+check logged "::warning::couldn't tell whether the shards need the overdue exploration 290's runner: cancelled, as real work comes first"
+check only_called "run cancel 8000" "run cancel 290"
+
+begin "a failed look at a run's jobs: the overdue exploration is cancelled, warned of, and the real run goes on" 0
+explored success 30
+planning
+shards_on 10 11 12 15 16 17 20 21
+filler_mutants 5 6 7
+exploring 8
+failing "actions/runs/7000/jobs"
+check cancel_filler --lane mutants-pr --shards 2
+check logged "::warning::couldn't tell whether the shards need the overdue exploration 290's runner"
+check only_called "run cancel 8000" "run cancel 290"
+
+begin "a failed look at the past explorations: the exploration is cancelled, warned of, and the real run goes on" 0
+explored success 30
+planning
+shards_on 10 11 12 15 16 17 20 21
+filler_mutants 5 6 7
+exploring 8
+failing "actions/runs/230/jobs"
+check cancel_filler --lane mutants-pr --shards 2
+check logged "::warning::couldn't tell whether the exploration 290 is overdue: cancelled, as real work comes first"
+check only_called "run cancel 8000" "run cancel 290"
+
+begin "the bench's call, with no arguments: every filler run cancelled, overdue or not, and nothing else" 0
+explored success 30
+swept 25
+shards_on 10
+run 500 oracle-sweep.yml in_progress "oracle sweeps and corpus, seed 500" 0
+filler_mutants 22
+exploring 8
+sweeping 9
+cancel_filler
+check only_called "run cancel 8000" "run cancel 290" "run cancel 400"
+
+begin "the filler's call, for filler mutants alone: only they are cancelled" 0
+explored success 30
+swept 25
+filler_mutants 22
+exploring 8
+sweeping 9
+cancel_filler mutants.yml
+check only_called "run cancel 8000"
 
 if [ "$failed" -ne 0 ]; then
   echo "filler-decisions: some cases failed" >&2
