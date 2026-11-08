@@ -646,3 +646,11 @@ crates/silico-app/src/sketch/hit.rs | hit | replace || with && | #351
 # key press is one, so no frame comes later for it.
 crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #351
 crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #351
+# A rename's first edit (#398): a modified ⌫ or Del while the name is still selected whole.
+# The guard leaves it to egui's TextEdit, which deletes the selection with any modifier
+# (`check_for_mutating_key_press`: `delete_selected`, or ⌘'s paragraph deletion, which
+# spans it); with `true`, the field clears the name first, the same. Either way the name is
+# gone and nothing is left to type over; Shift+Del on Windows never arrives (egui-winit
+# sends Cut alone). Tried by hand in the app's field: Alt+⌫ and Shift+⌫, alone or with a ←
+# in the same frame, in the field's first focused frame and after, leave "" both ways.
+crates/silico-app/src/feature_menu.rs | first_edit | replace match guard modifiers.is_none() with true | #398

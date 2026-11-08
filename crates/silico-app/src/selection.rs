@@ -690,6 +690,13 @@ impl Selection {
         self.click = None;
     }
 
+    /// Feature `id` selected alone, and its browser row scrolled to once, its group opened
+    /// (the timeline's Find in browser).
+    pub fn find_in_browser(&mut self, id: FeatureId) {
+        self.select_feature(id.clone());
+        self.scroll = Some(id);
+    }
+
     /// Everything let go (Esc, a click on empty canvas, SELECT's Clear selection), a click
     /// waiting for its pick too, so its answer doesn't select after it.
     pub fn clear(&mut self) {
