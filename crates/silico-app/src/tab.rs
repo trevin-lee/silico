@@ -5523,4 +5523,74 @@ mod tests {
             assert_eq!(tab.published_models, 1);
         }
     }
+
+    // ---- #351's mutants: sketch mode's own steps counted, its tool, and its name ----
+
+    #[test]
+    fn a_refused_undo_in_sketch_mode_gives_its_redo_nothing_to_give_back() {
+        // An undo in sketch mode with nothing to undo (no transaction is open): refused, and
+        // said; none of the mode's own edits undone, so none for its Redo.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        assert!(!tab.transaction);
+        tab.sketch = Some(SketchMode::new(3, None));
+        tab.step(&sessions, true);
+        assert!(tab.stepping(), "nothing asked");
+        taken_until(&mut tab, &sessions, |tab| !tab.stepping());
+        assert!(tab.message.is_some(), "the undo wasn't refused");
+        assert_eq!(tab.sketch.as_ref().map(|mode| mode.undone), Some(0));
+    }
+
+    #[test]
+    fn a_tool_chosen_in_sketch_mode_is_the_modes_its_preview_let_go_and_none_outside_it() {
+        use silico_core::sketch_tools::{Preview, ToolKind};
+        let mut tab = tab();
+        // Outside sketch mode: nothing.
+        tab.sketch_tool(Some(ToolKind::Line));
+        assert!(tab.sketch.is_none());
+        let mut mode = SketchMode::new(1, None);
+        mode.preview.pointer = Some([1.0, 2.0]);
+        mode.preview.points.push([1.0, 2.0]);
+        tab.sketch = Some(mode);
+        tab.sketch_tool(Some(ToolKind::Circle));
+        let mode = tab.sketch.as_ref().unwrap();
+        assert_eq!(mode.tool, Some(ToolKind::Circle));
+        assert_eq!(mode.preview, Preview::default());
+        // Esc's: none.
+        tab.sketch.as_mut().unwrap().preview.pointer = Some([3.0, 4.0]);
+        tab.sketch_tool(None);
+        let mode = tab.sketch.as_ref().unwrap();
+        assert_eq!(mode.tool, None);
+        assert_eq!(mode.preview, Preview::default());
+    }
+
+    #[test]
+    fn the_sketch_open_is_named_by_its_own_browser_row_and_sketch_till_its_listed() {
+        let row = |id: &str, name: &str| Row {
+            id: FeatureId::new(id).unwrap(),
+            name: name.to_owned(),
+            health: Health::Healthy,
+            marked_by: None,
+        };
+        let mut tab = tab();
+        tab.browser.sketches = vec![row("s0000001", "Loose"), row("s0000002", "Tight")];
+        // Edit Sketch on the second: its own row's name, never the other's.
+        tab.sketch = Some(SketchMode::new(
+            1,
+            Some(FeatureId::new("s0000002").unwrap()),
+        ));
+        assert_eq!(tab.sketch_name(), "Tight");
+        tab.sketch = Some(SketchMode::new(
+            2,
+            Some(FeatureId::new("s0000001").unwrap()),
+        ));
+        assert_eq!(tab.sketch_name(), "Loose");
+        // Create Sketch's, still to be added; and one added but not yet listed.
+        tab.sketch = Some(SketchMode::new(3, None));
+        assert_eq!(tab.sketch_name(), "Sketch");
+        tab.sketch = Some(SketchMode::new(
+            4,
+            Some(FeatureId::new("s0000009").unwrap()),
+        ));
+        assert_eq!(tab.sketch_name(), "Sketch");
+    }
 }
