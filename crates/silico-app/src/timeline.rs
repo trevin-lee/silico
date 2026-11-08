@@ -1948,4 +1948,48 @@ mod tests {
         // Nothing is moved until it's dropped.
         assert!(!h.state().started);
     }
+
+    #[test]
+    fn a_rename_field_opens_over_its_item_and_what_it_or_the_menu_sends_is_polled() {
+        use eframe::egui::Key;
+        use eframe::egui::accesskit::Role;
+        let mut h = drawn(tab_of(Some(&features()), 0));
+        // F2, or the menu's Rename, on the block: its field over its item, at the item's left
+        // and 4 above it, 180 wide and as high as `.modify-box input` (22): the app's own
+        // place, the prototype's `prompt` giving none. To half a point: egui puts an area on
+        // the pixel grid.
+        h.state_mut().tab.as_mut().unwrap().start_rename(
+            FeatureId::new("b0000001").unwrap(),
+            feature_menu::Place::Timeline,
+        );
+        h.run_steps(4);
+        let field = h.get_by_role(Role::TextInput).rect();
+        let block = item(0);
+        let want = Rect::from_min_size(
+            Pos2::new(block.left(), block.top() - 4.0 - 22.0),
+            Vec2::new(180.0, 22.0),
+        );
+        assert!(
+            (field.min - want.min).abs().max_elem() <= 0.5 && near(field.width(), want.width()),
+            "the field at {field:?}, not {want:?}"
+        );
+        assert!(near(field.height(), want.height()), "{field:?}");
+        assert!(h.get_by_role(Role::TextInput).is_focused());
+        // A name typed, then Enter: sent, and the next frame asked for, to poll it.
+        h.get_by_role(Role::TextInput).type_text("Plate");
+        h.run_steps(2);
+        assert!(!h.state().started, "sent as it's typed");
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+        assert!(h.state().started, "the name sent, never polled");
+        assert!(h.state().tab.as_ref().unwrap().renaming.is_none());
+
+        // The menu's Suppress on the pad: sent, and polled the same.
+        let mut h = drawn(tab_of(Some(&features()), 0));
+        h.get_by_label("p0000001").click_secondary();
+        h.run_steps(2);
+        h.get_by_role_and_label(Role::Button, "Suppress").click();
+        h.run_steps(2);
+        assert!(h.state().started, "the suppression sent, never polled");
+    }
 }

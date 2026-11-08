@@ -2791,6 +2791,69 @@ mod tests {
     }
 
     #[test]
+    fn a_commands_shortcut_before_the_rename_field_has_had_the_focus_leaves_the_field_open() {
+        use eframe::egui::{Context, Event, Key, Modifiers, RawInput};
+        use silico_core::command::{Revision, TimelineAnswer};
+        use silico_core::document::FeatureId;
+        use silico_core::timeline::{Entry, Health};
+
+        use crate::feature_menu::Place;
+
+        let (mut app, dir) = app();
+        let one = answered(&app, &dir, 1, "one.silico", true);
+        app.take_opens(vec![one]);
+        let block = FeatureId::new("k7f2qx3m").unwrap();
+        let tab = &mut app.tabs[0];
+        tab.timeline = Some(TimelineAnswer {
+            revision: Revision::OPENED,
+            model: Some(Revision::OPENED),
+            problems: 0,
+            features: Some(vec![Entry {
+                id: block.clone(),
+                kind: "box",
+                name: "Block".to_owned(),
+                suppressed: false,
+                inputs: Vec::new(),
+                health: Health::Healthy,
+                problems: 0,
+                warnings: 0,
+            }]),
+            bodies: Vec::new(),
+        });
+        // F2 on the block: its field asked for, not yet drawn, so it hasn't had the focus and
+        // nothing can have been typed in it.
+        tab.start_rename(block.clone(), Place::Timeline);
+        assert!(!tab.renaming.as_ref().unwrap().focused());
+        // Ctrl+S in the next frame, before the field is drawn: nothing typed to send, so the
+        // field stays open for the name F2 asked for, and the save goes on.
+        let ctrl_s = Event::Key {
+            key: Key::S,
+            physical_key: Some(Key::S),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::CTRL | Modifiers::COMMAND,
+        };
+        let ctx = Context::default();
+        let mut sent = None;
+        ctx.run_ui(
+            RawInput {
+                events: vec![ctrl_s],
+                ..Default::default()
+            },
+            |ui| sent = Some(app.rename_before_command(ui.ctx())),
+        )
+        .textures_delta
+        .clear();
+        assert_eq!(sent, Some(false));
+        let renaming = app.tabs[0].renaming.as_ref();
+        assert_eq!(
+            renaming.map(|renaming| (&renaming.feature, renaming.text.as_str())),
+            Some((&block, "Block")),
+            "the field closed"
+        );
+    }
+
+    #[test]
     fn x_e_and_v_are_the_filters_outside_a_sketch_and_left_for_it_inside_one() {
         use eframe::egui::{Event, Key, Modifiers};
         use egui_kittest::Harness;

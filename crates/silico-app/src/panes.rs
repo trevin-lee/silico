@@ -2596,6 +2596,54 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn a_row_found_opens_its_own_group_and_what_a_rename_or_a_menu_sends_is_polled() {
+        use eframe::egui::Key;
+        let mut h = drawn(modelled());
+        // Both groups folded: no row of either shown.
+        for group in ["Bodies", "Sketches"] {
+            h.get_by_label(&format!("Collapse {group}")).click();
+            h.run_steps(2);
+        }
+        assert!(!has(&h, "Hide Block") && !has(&h, "Hide Profile"));
+        // Section 9, *Browser and canvas*: the browser expands and scrolls to a row found
+        // (Find in browser): a body's in Bodies, which opens, the sketches left folded.
+        tab_of(&mut h)
+            .selection_mut()
+            .find_in_browser(fid("b0000001"));
+        h.run_steps(3);
+        assert!(has(&h, "Hide Block"), "the block's row");
+        assert!(has(&h, "Expand Sketches") && !has(&h, "Hide Profile"));
+        // A sketch's in Sketches.
+        tab_of(&mut h)
+            .selection_mut()
+            .find_in_browser(fid("p0000001"));
+        h.run_steps(3);
+        assert!(has(&h, "Hide Profile"), "the sketch's row");
+
+        // F2 on the block: its row's field; a name typed, then Enter, sent, and the next
+        // frame asked for, to poll it.
+        assert!(!h.state().started);
+        tab_of(&mut h).start_rename(fid("b0000001"), crate::feature_menu::Place::Browser);
+        h.run_steps(3);
+        assert!(h.get_by_role(Role::TextInput).is_focused());
+        h.get_by_role(Role::TextInput).type_text("Plate");
+        h.run_steps(2);
+        assert!(!h.state().started, "sent as it's typed");
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+        assert!(h.state().started, "the name sent, never polled");
+        assert!(tab_of(&mut h).renaming.is_none());
+
+        // The menu's Suppress on the shell's row: sent, and polled the same.
+        let mut h = drawn(modelled());
+        h.get_by_label("Shell").click_secondary();
+        h.run_steps(2);
+        h.get_by_role_and_label(Role::Button, "Suppress").click();
+        h.run_steps(2);
+        assert!(h.state().started, "the suppression sent, never polled");
+    }
 }
 
 #[cfg(test)]

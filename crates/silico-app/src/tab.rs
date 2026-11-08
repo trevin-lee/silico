@@ -5275,6 +5275,71 @@ mod tests {
     }
 
     #[test]
+    fn a_rename_opens_where_asked_else_on_the_timeline_and_never_in_a_dialog_or_a_close() {
+        use crate::feature_menu::Place;
+        let block = FeatureId::new("a0000001").unwrap();
+        let cut = FeatureId::new("b0000001").unwrap();
+        // A block and the cut that consumed it: the browser lists bodies by the feature that
+        // ends their chain, so the cut has a row, and the block none.
+        let ready = || {
+            let mut tab = tab();
+            tab.timeline = Some(timeline(
+                0,
+                Some(Revision::OPENED),
+                vec![entry("a0000001", 0, 0), entry("b0000001", 0, 0)],
+            ));
+            tab.browser = Browser {
+                bodies: vec![Row {
+                    id: cut.clone(),
+                    name: "b0000001".to_owned(),
+                    health: Health::Healthy,
+                    marked_by: None,
+                }],
+                sketches: Vec::new(),
+            };
+            tab
+        };
+        // Nothing to rename under an open dialog (its Cancel undoes to where it opened) or in
+        // a tab closing (its edits would be dropped), from the timeline or the browser.
+        let mut in_dialog = ready();
+        in_dialog.loading = Some(1);
+        let mut closing = ready();
+        closing
+            .edits
+            .queue
+            .push_back(Queued::Save { then_close: true });
+        for (what, mut tab) in [("in a dialog", in_dialog), ("closing", closing)] {
+            for place in [Place::Timeline, Place::Browser] {
+                tab.start_rename(cut.clone(), place);
+                assert_eq!(tab.renaming, None, "{what}, at {place:?}");
+                assert_eq!(tab.selection().feature(), None, "{what}, at {place:?}");
+            }
+        }
+        // The cut's in its browser row, as asked, the browser scrolled to it; its name typed
+        // over.
+        let mut tab = ready();
+        tab.start_rename(cut.clone(), Place::Browser);
+        let renaming = tab.renaming.clone().unwrap();
+        assert_eq!(
+            (&renaming.feature, renaming.place, renaming.text.as_str()),
+            (&cut, Place::Browser, "b0000001")
+        );
+        assert_eq!(tab.selection().scroll_target(), Some(&cut));
+        assert_eq!(tab.timeline_scroll(), None);
+        // The block, asked in the browser, which has no row for it: its timeline item's, the
+        // timeline scrolled to it.
+        let mut tab = ready();
+        tab.start_rename(block.clone(), Place::Browser);
+        let renaming = tab.renaming.clone().unwrap();
+        assert_eq!(
+            (&renaming.feature, renaming.place),
+            (&block, Place::Timeline)
+        );
+        assert_eq!(tab.selection().feature(), Some(&block));
+        assert_eq!(tab.timeline_scroll(), Some(&block));
+    }
+
+    #[test]
     fn with_nothing_published_poll_after_poll_counts_no_model_and_the_first_published_once() {
         // Every request of the kernel held: the rebuild publishes nothing, and the tab's count
         // of the models it has seen published stays 0, poll after poll; once released, the
