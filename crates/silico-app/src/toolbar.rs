@@ -8,7 +8,8 @@
 //! Only what the app can do is on: the feature dialogs (M5.8), SELECT's filters and
 //! clearing the selection (M5.7), and, in SKETCH, sketch mode's tools (the drawing tools,
 //! trim, split, and Smart Dimension, the one on drawn on, `.tb-btn.on`) and Construction
-//! (drawn pressed while on, `.toggle-on`, as the filters are).
+//! (drawn pressed while on, `.toggle-on`, as the filters are). A dialog's command that's off
+//! for want of what the part has says why in its tooltip (a boolean's "Needs two bodies").
 //! The prototype's other commands keep their places, drawn off, their tooltips saying they
 //! aren't built yet. What the toolbar shows comes in a [`Shown`], and what was clicked goes
 //! back as an [`Act`], so a test drives it with a stub, and sketch mode's state (whether a
@@ -42,6 +43,9 @@ pub struct Shown<'a> {
     pub create_sketch: Option<bool>,
     /// Whether a feature's dialog of each kind can open now.
     pub can_open: &'a dyn Fn(Kind) -> bool,
+    /// Why a feature's dialog of each kind can't open, if the part lacks what it needs
+    /// (a boolean's two bodies): its button's tooltip says it while it's off.
+    pub why_closed: &'a dyn Fn(Kind) -> Option<&'static str>,
     /// Whether anything is selected, for SELECT's Clear selection.
     pub selected: bool,
     /// In a sketch, the tool on, if one is.
@@ -243,9 +247,19 @@ const CHAMFER: Command = command(
     Some("Bevels the selected edges"),
     Does::Dialog(Kind::Chamfer),
 );
-const UNION: Command = command("Union", Icon::Union, None, Does::NotBuilt);
-const SUBTRACT: Command = command("Subtract", Icon::Subtract, None, Does::NotBuilt);
-const INTERSECT: Command = command("Intersect", Icon::Intersect, None, Does::NotBuilt);
+const UNION: Command = command("Union", Icon::Union, None, Does::Dialog(Kind::Union));
+const SUBTRACT: Command = command(
+    "Subtract",
+    Icon::Subtract,
+    None,
+    Does::Dialog(Kind::Subtract),
+);
+const INTERSECT: Command = command(
+    "Intersect",
+    Icon::Intersect,
+    None,
+    Does::Dialog(Kind::Intersect),
+);
 const MEASURE: Command = command(
     "Measure",
     Icon::Measure,
@@ -528,12 +542,27 @@ impl Command {
         }
     }
 
-    /// Its tooltip's line: the prototype's, and that it isn't built yet if it isn't.
+    /// Its tooltip's line: the prototype's, and that it isn't built yet if it isn't, or,
+    /// off for want of what the part has, why.
     fn said(&self, shown: &Shown<'_>) -> Option<String> {
-        match (self.description, self.built(shown)) {
-            (description, true) => description.map(str::to_owned),
-            (Some(description), false) => Some(format!("{description}. {NOT_BUILT}")),
-            (None, false) => Some(NOT_BUILT.to_owned()),
+        let why = self.why_off(shown);
+        let after = if self.built(shown) {
+            why
+        } else {
+            Some(NOT_BUILT)
+        };
+        match (self.description, after) {
+            (description, None) => description.map(str::to_owned),
+            (Some(description), Some(after)) => Some(format!("{description}. {after}")),
+            (None, Some(after)) => Some(after.to_owned()),
+        }
+    }
+
+    /// Why it's off, if it's a dialog's that can't open for want of what the part has.
+    fn why_off(&self, shown: &Shown<'_>) -> Option<&'static str> {
+        match self.does {
+            Does::Dialog(kind) if !self.enabled(shown) => (shown.why_closed)(kind),
+            _ => None,
         }
     }
 }
@@ -983,7 +1012,12 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                     }
                 }
                 Does::Dialog(_) => {
-                    if ui.add_enabled(enabled, item).clicked() {
+                    let item = ui.add_enabled(enabled, item);
+                    let item = match command.why_off(shown) {
+                        Some(why) => item.on_disabled_hover_text(why),
+                        None => item,
+                    };
+                    if item.clicked() {
                         *act = command.act();
                         ui.close();
                     }
@@ -1105,16 +1139,16 @@ mod tests {
     use super::*;
 
     /// A dialog's command is labelled with its kind's title, which the dialog's heading
-    /// and the tests find it by; every kind but the dressings is in CREATE's drop-down once,
-    /// and the sweeps in its row too (app.js:394), the primitives not; the dressings are in
-    /// MODIFY's row and drop-down once each (app.js:397, interact.js:176).
+    /// and the tests find it by; every kind but MODIFY's is in CREATE's drop-down once,
+    /// and the sweeps in its row too (app.js:394), the primitives not; the dressings and the
+    /// booleans are in MODIFY's row and drop-down once each (app.js:397, interact.js:176).
     #[test]
     fn every_dialog_is_in_creates_drop_down_under_its_title_and_the_sweeps_in_its_row() {
         let create = &SOLID[0];
         let menu = create.menu.unwrap_or_default();
         let modify = &SOLID[1];
         assert_eq!(modify.label, "MODIFY");
-        for kind in Kind::ALL.into_iter().filter(|kind| kind.dresses()) {
+        for kind in Kind::ALL.into_iter().filter(|kind| kind.modifies()) {
             let commands = |entries: Vec<&Command>| {
                 entries
                     .into_iter()
@@ -1140,7 +1174,7 @@ mod tests {
                 "{kind:?}"
             );
         }
-        for kind in Kind::ALL.into_iter().filter(|kind| !kind.dresses()) {
+        for kind in Kind::ALL.into_iter().filter(|kind| !kind.modifies()) {
             let in_menu: Vec<_> = menu
                 .iter()
                 .filter_map(|entry| match entry {
@@ -1269,6 +1303,7 @@ mod tests {
                         in_sketch: *in_sketch,
                         create_sketch: Some(true),
                         can_open: &can_open,
+                        why_closed: &|_| None,
                         selected: false,
                         tool: tool.get(),
                         construction: construction.get(),
@@ -1707,6 +1742,9 @@ mod tests {
             "Groove",
             "Fillet",
             "Chamfer",
+            "Union",
+            "Subtract",
+            "Intersect",
         ];
         let toggles = ["Faces", "Edges", "Vertices"];
         let icon = |rect: Rect| Rect::from_center_size(rect.center(), Vec2::splat(css::ICON_LG));
@@ -2097,6 +2135,7 @@ mod tests {
                     in_sketch: false,
                     create_sketch: Some(true),
                     can_open: &can_open,
+                    why_closed: &|_| None,
                     selected: false,
                     filter: Filter::default(),
                     tool: None,

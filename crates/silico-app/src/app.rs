@@ -1968,13 +1968,15 @@ impl<P: Clients + 'static> App<P> {
             .and_then(|active| self.tabs.iter_mut().find(|tab| tab.id == active));
         let act = {
             let shown = tab.as_deref();
-            let can_open = |kind| shown.is_some_and(|tab| tab.can_open(kind));
+            let can_open = |kind| shown.is_some_and(|tab| tab.can_create(kind));
+            let why_closed = |kind| shown.and_then(|tab| tab.why_closed(kind));
             toolbar::show(
                 ui,
                 &toolbar::Shown {
                     in_sketch: shown.is_some_and(Tab::in_sketch),
                     create_sketch: Some(shown.is_some_and(Tab::can_sketch)),
                     can_open: &can_open,
+                    why_closed: &why_closed,
                     selected: shown
                         .is_some_and(|tab| !tab.selection().is_empty() && !tab.in_dialog()),
                     filter: shown.map_or_else(crate::selection::Filter::default, |tab| {

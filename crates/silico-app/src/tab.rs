@@ -350,6 +350,9 @@ struct Sending {
 /// How many of the commands it sent a tab keeps in its record ([`Tab::sent`]): the newest.
 pub const SENT_KEPT: usize = 256;
 
+/// Why a boolean's command is off in a part of fewer than two bodies ([`Tab::why_closed`]).
+pub const NEEDS_TWO_BODIES: &str = "Needs two bodies";
+
 /// A command a tab sent that changes its transaction, as it sent it: what a test reads
 /// as the call record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1141,6 +1144,30 @@ impl Tab {
             .and_then(|timeline| timeline.features.as_deref())
             .unwrap_or_default();
         let own = dialog.feature.clone();
+        if dialog.takes_bodies() {
+            // A box of one body: each body picked once, in the order picked (a box drawn over
+            // a body's edges picks it once), and the selection the bodies the boxes hold.
+            let mut seen: Vec<&FeatureId> = Vec::new();
+            for toggled in &toggled {
+                if let Some(body) = &toggled.body {
+                    if seen.contains(&body) {
+                        continue;
+                    }
+                    seen.push(body);
+                }
+                let through_own = match (&own, &toggled.body) {
+                    (Some(own), Some(body)) => built_through(entries, body, own),
+                    _ => false,
+                };
+                let selection = &self.selection;
+                let holds = |body: &FeatureId| selection.holds_in(&toggled.name, body);
+                dialog.took_body(toggled, through_own, &holds);
+            }
+            if !toggled.is_empty() {
+                self.selection.select_features(dialog.bodies());
+            }
+            return !toggled.is_empty();
+        }
         for toggled in &toggled {
             let through_own = match (&own, &toggled.body) {
                 (Some(own), Some(body)) => built_through(entries, body, own),
@@ -2317,7 +2344,9 @@ impl Tab {
                                 // canvas shows what the box takes from it.
                                 if let Some(kinds) = dialog.takes() {
                                     self.before_dialog = Some(self.selection.saved());
-                                    self.selection.clear();
+                                    // A boolean's boxes hold its bodies: selected, so the
+                                    // canvas lights what of them it shows.
+                                    self.selection.select_features(dialog.bodies());
                                     self.selection.take_into(Some(kinds));
                                 }
                                 self.dialog = Some(dialog);
@@ -3895,6 +3924,22 @@ impl Tab {
             && (!(kind.cuts() || kind.dresses()) || self.tip().is_some())
     }
 
+    /// Whether a new feature's dialog of `kind` can open (its command, on the toolbar): as
+    /// any dialog can ([`can_open`](Self::can_open)), and, for a boolean, with two bodies to
+    /// combine, as the browser lists them (the bodies it could pick). An existing boolean's
+    /// Edit Feature needs none: it consumes the bodies it combines.
+    pub fn can_create(&self, kind: Kind) -> bool {
+        self.can_open(kind) && (!kind.combines() || self.browser.bodies.len() >= 2)
+    }
+
+    /// Why a new feature's dialog of `kind` can't open, if it's for want of what the part
+    /// has, said in its command's tooltip: a boolean with fewer than two bodies, once the
+    /// timeline is read.
+    pub fn why_closed(&self, kind: Kind) -> Option<&'static str> {
+        (kind.combines() && self.timeline.is_some() && self.browser.bodies.len() < 2)
+            .then_some(NEEDS_TWO_BODIES)
+    }
+
     /// A new feature's dialog opened (section 9): its inputs at their defaults, or those its
     /// kind was last OK'd with, if it remembers them (`remembered`); a sweep's sketch the one
     /// selected if it's one, and its body the tip. Its feature is added as soon as its
@@ -3905,7 +3950,7 @@ impl Tab {
         kind: Kind,
         remembered: &crate::dialog::Remembered,
     ) {
-        if !self.can_open(kind) {
+        if !self.can_create(kind) {
             return;
         }
         let serial = self.opening();
@@ -3918,7 +3963,11 @@ impl Tab {
         remembered.apply(&mut dialog);
         if let Some(kinds) = dialog.takes() {
             self.before_dialog = Some(self.selection.saved());
-            self.take_selection(&mut dialog, kinds);
+            if dialog.takes_bodies() {
+                self.take_bodies(&mut dialog, kinds);
+            } else {
+                self.take_selection(&mut dialog, kinds);
+            }
         }
         self.dialog = Some(dialog);
         self.dialog_changed(sessions);
@@ -3951,6 +4000,43 @@ impl Tab {
             self.selection.clear();
         }
         dialog.take_selection(stored, &bodies, left_out);
+        self.selection.take_into(Some(kinds));
+    }
+
+    /// The selection taken into `dialog`'s boxes of one body, which take `kinds` from the
+    /// canvas: the bodies selected (the browser's body rows), in the order selected, the
+    /// first its target and the second its tool; what else is selected (a face, an edge, or
+    /// a vertex, which fills no body box, as SolidWorks' help doesn't say one does; another
+    /// feature; a third body) left out, and said; the selection then the bodies the boxes
+    /// hold, and the canvas's picks the boxes' from then.
+    fn take_bodies(&mut self, dialog: &mut Dialog, kinds: crate::selection::Filter) {
+        let mut bodies: Vec<FeatureId> = Vec::new();
+        let mut left = crate::selection::LeftOut::default();
+        for item in self.selection.items() {
+            match item {
+                crate::selection::Item::Feature(id)
+                    if bodies.len() < 2
+                        && !bodies.contains(id)
+                        && self.browser.bodies.iter().any(|row| &row.id == id) =>
+                {
+                    bodies.push(id.clone());
+                }
+                crate::selection::Item::Feature(_) => left.features += 1,
+                crate::selection::Item::Element(picked) => {
+                    if let Some(found) = picked.found() {
+                        *left.elements.entry(found.kind()).or_default() += 1;
+                    }
+                }
+            }
+        }
+        let left_out = left.words().map(|words| {
+            format!(
+                "{words} left out: {} takes two bodies",
+                dialog.kind.a_noun()
+            )
+        });
+        dialog.take_bodies(&bodies, left_out);
+        self.selection.select_features(dialog.bodies());
         self.selection.take_into(Some(kinds));
     }
 
@@ -4872,6 +4958,33 @@ impl Tab {
             Deletion::Join(point) => Queued::SketchJoin { sketch, point },
         });
         self.advance(sessions);
+    }
+
+    /// The browser's row of the feature `id` chosen while the dialog's active box takes a
+    /// body: taken into it, if it's a body's row (one the dialog's own feature isn't built
+    /// into), or refused, said under it; and the selection the bodies the boxes hold. Whether
+    /// the box took the row (taken or refused), so it isn't selected as itself: false if no
+    /// box of one body is active.
+    pub fn pick_body(&mut self, id: &FeatureId) -> bool {
+        let Some(dialog) = self.dialog.as_mut() else {
+            return false;
+        };
+        if !dialog.takes_bodies() {
+            return false;
+        }
+        let is_body = self.browser.bodies.iter().any(|row| &row.id == id);
+        let entries = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
+        let through_own = dialog
+            .feature
+            .as_ref()
+            .is_some_and(|own| built_through(entries, id, own));
+        dialog.took_row(id, is_body, through_own);
+        self.selection.select_features(dialog.bodies());
+        true
     }
 
     /// The sketch `id` chosen in the browser: the dialog's selection box takes it, if the

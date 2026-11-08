@@ -713,6 +713,35 @@ impl Selection {
         self.click = None;
     }
 
+    /// The features `ids` selected, in order, and nothing else (a boolean's dialog's boxes:
+    /// each body they hold, lit whole in the canvas and marked in the browser). A click in
+    /// the canvas waiting for its pick is let go: it came before.
+    pub fn select_features(&mut self, ids: Vec<FeatureId>) {
+        let items: Vec<Item> = ids.into_iter().map(Item::Feature).collect();
+        if items != self.items {
+            self.set(items);
+        }
+        self.said = None;
+        self.click = None;
+    }
+
+    /// Whether the feature `feature`'s solid holds an element by `name`, picked on the
+    /// published model (the core's `resolve_in`, as [`read_on`](Self::read_on) reads it):
+    /// whether it does, held stable or not; none if that can't be read now (no model, that
+    /// solid's elements not named yet, or `feature` with no solid). Names no element map and
+    /// waits for none: the UI's thread calls it.
+    pub fn holds_in(&self, name: &str, feature: &FeatureId) -> Option<bool> {
+        let model = self.model.as_ref()?;
+        let answer = rules::resolve_in(model, &[name], PARAMETER, feature).ok()?;
+        if !answer.kept.is_empty() {
+            Some(true)
+        } else if answer.pending.is_empty() {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
     /// Feature `id` selected alone, and its browser row scrolled to once, its group opened
     /// (the timeline's Find in browser).
     pub fn find_in_browser(&mut self, id: FeatureId) {
