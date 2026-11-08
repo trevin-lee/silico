@@ -893,10 +893,13 @@ fn a_million_valid_features_validate_promptly() {
     //
     // The growth: a million's CPU over a hundred thousand's, divided by the probe's over the
     // same sizes. About 1 for a validation that grows as the probe does (a sort and a search
-    // each); about 10 for one quadratic in the count (100 against the probe's 10); at most 3.
+    // each); about 10 for one quadratic in the count (100 against the probe's 10); at most 3,
+    // three times linear, as the ratio before it allowed (30 against 10). 1.1 to 2.5 in 40
+    // runs on loaded gate runners (2026-11-08), where that ratio ran up to about 29.
     //
     // The cost: a million's CPU at most VALIDATE_PER_PROBE times its probe's, so a
-    // validation ten times slower fails it, as the earlier 15 s bound meant.
+    // validation three times slower fails it on the gate, as the 15 s bound before it did
+    // there, and one ten times slower everywhere.
     let (small, large) = (valid_features(100_000), valid_features(1_000_000));
     let measured = least_cpu_against_probe([&small, &large], validate);
     let [small_result, large_result] = measured.results;
@@ -911,7 +914,6 @@ fn a_million_valid_features_validate_promptly() {
         "a million features grew {growth:.2} times as much as the probe from a hundred thousand ({large_cpu:?} against {small_cpu:?}; the probe {large_probe:?} against {small_probe:?})"
     );
     let per_probe = large_cpu.as_secs_f64() / large_probe.as_secs_f64();
-    eprintln!("CALIB growth={growth:.3} per_probe={per_probe:.3} cpu={small_cpu:?}/{large_cpu:?} probe={small_probe:?}/{large_probe:?}");
     assert!(
         per_probe <= VALIDATE_PER_PROBE,
         "a million features took {per_probe:.1} times the probe's CPU, more than {VALIDATE_PER_PROBE} ({large_cpu:?} against {large_probe:?})"
@@ -919,8 +921,14 @@ fn a_million_valid_features_validate_promptly() {
 }
 
 /// The most a million valid features' validation may take in CPU time, as a multiple of
-/// its probe's ([`probe`]). CALIBRATION.
-const VALIDATE_PER_PROBE: f64 = 0.0;
+/// its probe's ([`probe`]): between what the gate's runners measure of it and what they
+/// measure of a validation three times slower, about 1.45 times clear of each. Measured on
+/// a loaded gate runner, 20 runs each (2026-11-08, gates 42525746494 and 42525748593):
+/// 15.3 to 22.1 times, and 47.0 to 63.7 for a validation run three times over; the Mac's
+/// debug build, loaded, 8.0 to 8.9, and 87 for one run ten times over. So a validation three
+/// times slower fails it on the gate, as the 15 s bound before it did there, and one ten
+/// times slower everywhere.
+const VALIDATE_PER_PROBE: f64 = 32.0;
 
 /// What [`least_cpu_against_probe`] measured: the least CPU time of each document's
 /// validation, and of the probe at each, and the validation's last results.
@@ -934,21 +942,17 @@ struct AgainstProbe<T> {
 /// then the other), five times, the least of each in this thread's CPU time: load only adds
 /// time, so the least is the nearest to each's own cost, and a burst of it can't stretch
 /// one measure and not the one beside it.
-fn least_cpu_against_probe<T>(
-    docs: [&Document; 2],
-    f: impl Fn(&Document) -> T,
-) -> AgainstProbe<T> {
-    let keys = docs.map(probe_keys);
+fn least_cpu_against_probe<T>(docs: [&Document; 2], f: impl Fn(&Document) -> T) -> AgainstProbe<T> {
     let mut cpu = [Duration::MAX; 2];
     let mut probes = [Duration::MAX; 2];
     let mut last: [Option<T>; 2] = [None, None];
     for _ in 0..5 {
-        for k in 0..2 {
+        for (k, &doc) in docs.iter().enumerate() {
             let start = cpu_time::ThreadTime::now();
-            std::hint::black_box(probe(&keys[k]));
+            std::hint::black_box(probe(doc));
             probes[k] = probes[k].min(start.elapsed());
             let start = cpu_time::ThreadTime::now();
-            let out = f(docs[k]);
+            let out = f(doc);
             cpu[k] = cpu[k].min(start.elapsed());
             last[k] = Some(out);
         }
@@ -961,45 +965,42 @@ fn least_cpu_against_probe<T>(
     }
 }
 
-/// Each feature's ID and the IDs it takes (a fuse's base and tool), as std's keys: the ID's
-/// eight bytes read as a number, which the probe sorts and searches.
-fn probe_keys(doc: &Document) -> Vec<(u64, [u64; 2])> {
-    let key = |id: &FeatureId| {
-        let mut bytes = [0u8; 8];
-        for (b, c) in bytes.iter_mut().zip(id.as_str().bytes()) {
-            *b = c;
-        }
-        u64::from_le_bytes(bytes)
+/// An ID's eight bytes read as a number: the probe's key, in its own code, not the gate's.
+fn probe_key(id: &FeatureId) -> u64 {
+    let mut bytes = [0u8; 8];
+    for (b, c) in bytes.iter_mut().zip(id.as_str().bytes()) {
+        *b = c;
+    }
+    u64::from_le_bytes(bytes)
+}
+
+/// The probe: work of validation's own shape on `doc`'s own features, in std's code alone,
+/// none of the gate's. Each feature's ID read where the document holds it (so the probe
+/// walks the same memory the gate does, which load slows alike) and keyed with its place,
+/// sorted; then each feature's ID and the IDs it takes (a fuse's base and tool), each read
+/// again where it's held, searched in them. How many were found, so none of it is
+/// optimised away.
+fn probe(doc: &Document) -> usize {
+    let mut by_key: Vec<(u64, usize)> = doc
+        .features
+        .iter()
+        .enumerate()
+        .map(|(index, feature)| (probe_key(&feature.id), index))
+        .collect();
+    by_key.sort_unstable();
+    let found = |id: &FeatureId| {
+        let key = probe_key(id);
+        let at = by_key.partition_point(|&(k, _)| k < key);
+        usize::from(by_key.get(at).is_some_and(|&(k, _)| k == key))
     };
     doc.features
         .iter()
         .map(|feature| {
-            let takes = match &feature.operation {
-                Operation::Fuse { base, tool } => [key(base), key(tool)],
-                _ => [u64::MAX; 2],
-            };
-            (key(&feature.id), takes)
-        })
-        .collect()
-}
-
-/// The probe: work of validation's own shape in std's code alone, none of the gate's. Each
-/// feature's key and place, sorted; then each feature's own key and the keys it takes,
-/// searched in them. How many were found, so none of it is optimised away.
-fn probe(keys: &[(u64, [u64; 2])]) -> usize {
-    let mut by_key: Vec<(u64, usize)> = keys
-        .iter()
-        .enumerate()
-        .map(|(index, &(key, _))| (key, index))
-        .collect();
-    by_key.sort_unstable();
-    let found = |key: u64| {
-        let at = by_key.partition_point(|&(k, _)| k < key);
-        by_key.get(at).is_some_and(|&(k, _)| k == key)
-    };
-    keys.iter()
-        .map(|&(key, takes)| {
-            usize::from(found(key)) + takes.iter().filter(|&&t| found(t)).count()
+            found(&feature.id)
+                + match &feature.operation {
+                    Operation::Fuse { base, tool } => found(base) + found(tool),
+                    _ => 0,
+                }
         })
         .sum()
 }
