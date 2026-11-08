@@ -19,6 +19,7 @@ pub mod export;
 pub mod feature_menu;
 pub mod icons;
 mod menu;
+pub mod measures;
 pub mod missing;
 mod modal;
 pub mod navigate;

@@ -183,8 +183,9 @@ fn close_button(ui: &mut Ui, label: &str) -> Response {
     response.on_hover_text(said)
 }
 
-/// The head (`.prop-head`): `icon` in its box, `title` over `sub`.
-pub(crate) fn head(ui: &mut Ui, icon: Icon, title: &str, sub: LayoutJob) {
+/// The head (`.prop-head`): `icon` in its box, `title` over `sub`. Its title's line and its
+/// sub-line's, each as wide as the head's words may be.
+pub(crate) fn head(ui: &mut Ui, icon: Icon, title: &str, sub: LayoutJob) -> [Rect; 2] {
     let words = 2.0 * theme::BODY_LINE_HEIGHT;
     let (rect, _) = ui.allocate_exact_size(
         vec2(
@@ -216,23 +217,22 @@ pub(crate) fn head(ui: &mut Ui, icon: Icon, title: &str, sub: LayoutJob) {
     let line =
         |at: f32| Rect::from_min_max(pos2(left, at), pos2(right, at + theme::BODY_LINE_HEIGHT));
     // Painted, not labelled: the document's name is its tab's, and a feature's its Name
-    // field's, so the accessibility tree has each once.
-    for (at, mut job) in [
-        (
-            top,
-            LayoutJob::single_section(
-                title.to_owned(),
-                format(theme::TITLE_SIZE, theme::PROPERTY_HEAD_TITLE, false),
-            ),
+    // field's, so the accessibility tree has each once (a selection's head, which no other
+    // widget says, is labelled by its caller, over the lines given back).
+    let lines = [line(top), line(top + theme::BODY_LINE_HEIGHT)];
+    for (line, mut job) in lines.into_iter().zip([
+        LayoutJob::single_section(
+            title.to_owned(),
+            format(theme::TITLE_SIZE, theme::PROPERTY_HEAD_TITLE, false),
         ),
-        (top + theme::BODY_LINE_HEIGHT, sub),
-    ] {
-        let line = line(at);
+        sub,
+    ]) {
         job.wrap = TextWrapping::truncate_at_width(line.width());
         let galley = ui.painter().layout_job(job);
         let at = pos2(line.left(), line.center().y - galley.size().y / 2.0);
         ui.painter().galley(at, galley, theme::PROPERTY_HEAD_TITLE);
     }
+    lines
 }
 
 /// A section's header (`.section`): `text` in capitals, and the rule after it.
@@ -304,6 +304,201 @@ pub(crate) fn row<R>(ui: &mut Ui, key: &str, value: impl FnOnce(&mut Ui, egui::I
 /// A row whose value is `value`'s text, cut short where it doesn't fit.
 pub(crate) fn text_row(ui: &mut Ui, key: &str, value: LayoutJob) {
     row(ui, key, |ui, _| truncated(ui, value));
+}
+
+/// A row whose value is `value` in the monospace type (`.prop .v .mono`), cut short where it
+/// doesn't fit, its whole its tooltip; and at the value's right (`.prop .v .copy`, `margin-
+/// left: auto`, [`theme::PROPERTY_COPY_GAP`] after the text) the copy icon, Gray.550, white
+/// hovered, a button labelled Copy, which puts `value` on the clipboard as it's written.
+pub(crate) fn copy_row(ui: &mut Ui, key: &str, value: &str) {
+    row(ui, key, |ui, _| {
+        let whole = ui.max_rect();
+        let side = IconSize::Small.points();
+        let button = Rect::from_center_size(
+            pos2(whole.right() - side / 2.0, whole.center().y),
+            Vec2::splat(side),
+        );
+        let mut job = LayoutJob::single_section(
+            value.to_owned(),
+            format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
+        );
+        let room = whole.width() - side - theme::PROPERTY_COPY_GAP;
+        job.wrap = TextWrapping::truncate_at_width(room.max(0.0));
+        ui.add(Label::new(job).selectable(false))
+            .on_hover_text(value);
+        let response = ui.interact(button, ui.id().with("copy"), Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Copy"));
+        let ink = if response.hovered() {
+            theme::TEXT_STRONG
+        } else {
+            theme::TEXT_SUBDUED
+        };
+        Icon::Copy
+            .image(IconSize::Small)
+            .tint(ink)
+            .paint_at(ui, button);
+        if response
+            .on_hover_text("Copy, as an agent would write it")
+            .clicked()
+        {
+            ui.ctx().copy_text(value.to_owned());
+        }
+    });
+}
+
+/// A row whose value is a link (`.link`): `text` in `--info`, white and underlined hovered,
+/// cut short where it doesn't fit, labelled `text` as a link. Whether it was clicked.
+pub(crate) fn link_row(ui: &mut Ui, key: &str, text: &str) -> bool {
+    row(ui, key, |ui, _| {
+        let room = ui.available_width();
+        let laid = |ink: Color32, underline: Stroke| {
+            let mut job = LayoutJob::single_section(
+                text.to_owned(),
+                TextFormat {
+                    underline,
+                    ..format(theme::BODY_SIZE, ink, false)
+                },
+            );
+            job.wrap = TextWrapping::truncate_at_width(room);
+            job
+        };
+        let size = ui
+            .painter()
+            .layout_job(laid(theme::INFO, Stroke::NONE))
+            .size();
+        let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, text));
+        let job = if response.hovered() {
+            laid(
+                theme::TEXT_STRONG,
+                Stroke::new(theme::BORDER_WIDTH, theme::TEXT_STRONG),
+            )
+        } else {
+            laid(theme::INFO, Stroke::NONE)
+        };
+        let galley = ui.painter().layout_job(job);
+        ui.painter().galley(
+            pos2(rect.left(), rect.center().y - galley.size().y / 2.0),
+            galley,
+            theme::INFO,
+        );
+        response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+    })
+}
+
+/// A row of buttons under a view's rows (`selectionProps`' `display: flex; gap: 6px;
+/// padding: 10px var(--pad); flex-wrap: wrap`): each as a modal paints it, in a line until
+/// the next doesn't fit, [`theme::PROPERTY_BUTTONS_GAP`] apart each way. Which was clicked,
+/// if one was (an off one never is).
+pub(crate) fn buttons(ui: &mut Ui, buttons: &[modal::Button<'_>]) -> Option<usize> {
+    if buttons.is_empty() {
+        return None;
+    }
+    let widths: Vec<f32> = buttons
+        .iter()
+        .map(|button| modal::natural_width(ui, button))
+        .collect();
+    let outer = ui.available_width();
+    let (places, height) = wrapped(
+        &widths,
+        (outer - 2.0 * pad()).max(0.0),
+        theme::PROPERTY_BUTTONS_GAP,
+    );
+    let (whole, _) = ui.allocate_exact_size(
+        vec2(outer, height + 2.0 * theme::PROPERTY_BUTTONS_PADDING),
+        Sense::hover(),
+    );
+    let origin = whole.min.to_vec2() + vec2(pad(), theme::PROPERTY_BUTTONS_PADDING);
+    // Painted in a child of their own, so the row's cursor stays under its padding.
+    let salt = ("buttons", buttons.first().map(|button| button.text));
+    let mut row = ui.new_child(UiBuilder::new().id_salt(salt).max_rect(whole));
+    let mut clicked = None;
+    for (at, (button, place)) in buttons.iter().zip(places).enumerate() {
+        if modal::paint(&mut row, place.translate(origin), button).clicked() {
+            clicked = Some(at);
+        }
+    }
+    clicked
+}
+
+/// Where buttons `widths` wide go as `flex-wrap` places them in a box `width` wide, `gap`
+/// apart each way, from the box's top left: each in a line until the next doesn't fit.
+/// Each one's place, and the height they take.
+fn wrapped(widths: &[f32], width: f32, gap: f32) -> (Vec<Rect>, f32) {
+    let (mut x, mut y) = (0.0f32, 0.0f32);
+    let mut places = Vec::with_capacity(widths.len());
+    for &wide in widths {
+        if x > 0.0 && x + wide > width {
+            x = 0.0;
+            y += theme::BUTTON_HEIGHT + gap;
+        }
+        places.push(Rect::from_min_size(
+            pos2(x, y),
+            vec2(wide, theme::BUTTON_HEIGHT),
+        ));
+        x += wide + gap;
+    }
+    (places, y + theme::BUTTON_HEIGHT)
+}
+
+/// `steps` of a quantity a unit of which is `per` steps (a length's nanometres a mm, an
+/// area's millionths a mm², an angle's nanodegrees a degree), as the prototype's `fmtF`
+/// writes a measure (app.js: `toLocaleString('en-US', {minimumFractionDigits: 2,
+/// maximumFractionDigits: 2})`): to exactly two decimals, rounded half away from zero as
+/// `Intl.NumberFormat` rounds, its whole part grouped by threes with commas, `-` only
+/// before what doesn't round to 0. Worked from the core's exact steps, never a float, so
+/// it's the value the core gives, rounded once.
+pub(crate) fn fixed(steps: i128, per: i128) -> String {
+    written(steps, per, true)
+}
+
+/// [`fixed`], but as the prototype's `fmt` writes a value (`minimumFractionDigits: 0`):
+/// at most two decimals, none of them a trailing 0.
+pub(crate) fn trimmed(steps: i128, per: i128) -> String {
+    written(steps, per, false)
+}
+
+/// [`fixed`] if `both` decimals are always written, else [`trimmed`].
+fn written(steps: i128, per: i128, both: bool) -> String {
+    let step = (per / 100).max(1);
+    let (whole, rest) = (steps / step, steps % step);
+    let hundredths = if 2 * rest.abs() >= step {
+        whole + steps.signum()
+    } else {
+        whole
+    };
+    let sign = if hundredths < 0 { "-" } else { "" };
+    let magnitude = hundredths.unsigned_abs();
+    let units = grouped(magnitude / 100);
+    match (both, magnitude % 100) {
+        (true, part) => format!("{sign}{units}.{part:02}"),
+        (false, 0) => format!("{sign}{units}"),
+        (false, part) if part.is_multiple_of(10) => format!("{sign}{units}.{}", part / 10),
+        (false, part) => format!("{sign}{units}.{part:02}"),
+    }
+}
+
+/// `units`' digits, grouped by threes from the right with commas (`en-US`'s grouping).
+fn grouped(units: u128) -> String {
+    let digits = units.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// A direction (a normal, an axis) as the prototype writes one (`(${normal.join(', ')})`)
+/// and the command API writes its components: each the shortest decimal that reads back as
+/// it, never an exponent, `-0` written `0`.
+pub(crate) fn direction(direction: [f64; 3]) -> String {
+    let [x, y, z] = direction.map(|c| if c == 0.0 { 0.0 } else { c });
+    format!("({x}, {y}, {z})")
 }
 
 /// A row of a modal's list (`.prop` with `padding: 0`, as the prototype's "What changed on
@@ -1264,22 +1459,15 @@ fn card_buttons(
     }
     // Placed as `flex-wrap` places them: in a line until the next doesn't fit.
     let width = ui.available_width();
-    let gap = theme::ERROR_CARD_ACTIONS_GAP;
-    let (mut x, mut y) = (0.0f32, 0.0f32);
-    let mut places = Vec::with_capacity(buttons.len());
-    for (_, button) in &buttons {
-        let wide = modal::natural_width(ui, button);
-        if x > 0.0 && x + wide > width {
-            x = 0.0;
-            y += theme::BUTTON_HEIGHT + gap;
-        }
-        places.push((x, y, wide));
-        x += wide + gap;
-    }
-    let (whole, _) = ui.allocate_exact_size(vec2(width, y + theme::BUTTON_HEIGHT), Sense::hover());
+    let widths: Vec<f32> = buttons
+        .iter()
+        .map(|(_, button)| modal::natural_width(ui, button))
+        .collect();
+    let (places, height) = wrapped(&widths, width, theme::ERROR_CARD_ACTIONS_GAP);
+    let (whole, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let mut asked = None;
-    for ((which, button), (x, y, wide)) in buttons.iter().zip(places) {
-        let rect = Rect::from_min_size(whole.min + vec2(x, y), vec2(wide, theme::BUTTON_HEIGHT));
+    for ((which, button), place) in buttons.iter().zip(places) {
+        let rect = place.translate(whole.min.to_vec2());
         let response = modal::paint(ui, rect, button);
         let clicked = match which {
             Which::Copy => response
@@ -1987,6 +2175,51 @@ mod tests {
             "Another feature's: made from k7f2qx3m.box.Edge4, which is numbered 1 from \
              k7f2qx3m.box.Edge5"
         );
+    }
+
+    #[test]
+    fn a_measure_is_written_as_fmt_f_writes_it_and_a_value_as_fmt_does() {
+        // By hand, as `Number(n).toLocaleString('en-US', {minimumFractionDigits: d,
+        // maximumFractionDigits: 2})` writes the exact decimal: half away from zero, the
+        // whole part grouped by threes, no sign on what rounds to 0. In nanometres a mm.
+        const MM: i128 = 1_000_000;
+        for (nm, fixed_words, trimmed_words) in [
+            (0, "0.00", "0"),
+            (10_000_000, "10.00", "10"),
+            (15_707_963, "15.71", "15.71"),
+            // A half: away from zero, either way (`Intl`'s halfExpand).
+            (125_000, "0.13", "0.13"),
+            (-125_000, "-0.13", "-0.13"),
+            (124_999, "0.12", "0.12"),
+            (2_500_000, "2.50", "2.5"),
+            (2_005_000, "2.01", "2.01"),
+            (2_004_999, "2.00", "2"),
+            // Under half a hundredth either side of 0: 0, unsigned.
+            (-4_999, "0.00", "0"),
+            (-5_000, "-0.01", "-0.01"),
+            (999_995_000, "1,000.00", "1,000"),
+            (1_234_567_891_000, "1,234,567.89", "1,234,567.89"),
+            (-1_234_000_000, "-1,234.00", "-1,234"),
+            (100_000_000_000, "100,000.00", "100,000"),
+        ] {
+            assert_eq!(fixed(nm, MM), fixed_words, "{nm} nm");
+            assert_eq!(trimmed(nm, MM), trimmed_words, "{nm} nm");
+        }
+        // Nanodegrees a degree: 89.999999999° to two decimals is 90.00°.
+        assert_eq!(fixed(89_999_999_999, 1_000_000_000), "90.00");
+        assert_eq!(fixed(45_005_000_000, 1_000_000_000), "45.01");
+    }
+
+    #[test]
+    fn a_direction_is_written_as_the_command_api_writes_its_components() {
+        assert_eq!(direction([0.0, 0.0, 1.0]), "(0, 0, 1)");
+        assert_eq!(direction([-1.0, -0.0, 0.0]), "(-1, 0, 0)");
+        assert_eq!(
+            direction([std::f64::consts::FRAC_1_SQRT_2, 0.0, -0.5]),
+            "(0.7071067811865476, 0, -0.5)"
+        );
+        // Never an exponent.
+        assert_eq!(direction([1e-7, 0.0, 1.0]), "(0.0000001, 0, 1)");
     }
 
     #[test]

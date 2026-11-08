@@ -26177,35 +26177,493 @@ fn a_picked_faces_row_is_scrolled_to_once_so_its_group_closed_after_stays_closed
     assert_eq!(never_waits::waits(), 0);
 }
 
-#[test]
-fn the_properties_of_a_selected_face_edge_and_vertex_are_under_its_kind() {
-    // The selection view's section names each element's kind (`selectionProps`'s heading):
-    // FACE, EDGE, VERTEX, each in capitals as a section is.
-    use silico_app::selection::How;
-    let f = fixture();
+// ---- The selection view's measures (`selectionProps`) ----
+
+/// A_BOX's 40 by 20 by 10 block described as OCCT describes `BRepPrimAPI_MakeBox`'s box,
+/// by hand: its faces x = 0, x = 40, y = 0, y = 20, z = 0, z = 10 (each its outward unit
+/// normal, its area, and its centre); its edges as FreeCAD numbers a box's (Edge1 from the
+/// origin up z, Edge9 from it along x, Edge12 along x at y = 20, z = 10); its vertices
+/// (0, 0, 0), (0, 0, 10), (0, 20, 0), (0, 20, 10), then the same at x = 40. The fake's own
+/// description makes every face of type other and every edge 1 long.
+fn describes_a_real_box(f: &Fixture) {
+    use silico_core::kernel::{
+        Description, EdgeCurve, EdgeDescription, FaceDescription, Op, Surface,
+    };
+    let face = |normal: [f64; 3], area: f64, centroid: [f64; 3]| FaceDescription {
+        surface: Surface::Plane {
+            normal,
+            location: centroid,
+        },
+        area,
+        centroid,
+    };
+    let line = |start: [f64; 3], end: [f64; 3]| EdgeDescription {
+        curve: EdgeCurve::Line,
+        length: (0..3).map(|k| (end[k] - start[k]).abs()).sum(),
+        start,
+        end,
+        middle: [0, 1, 2].map(|k| (start[k] + end[k]) / 2.0),
+    };
+    let description = Description {
+        faces: vec![
+            face([-1.0, 0.0, 0.0], 200.0, [0.0, 10.0, 5.0]),
+            face([1.0, 0.0, 0.0], 200.0, [40.0, 10.0, 5.0]),
+            face([0.0, -1.0, 0.0], 400.0, [20.0, 0.0, 5.0]),
+            face([0.0, 1.0, 0.0], 400.0, [20.0, 20.0, 5.0]),
+            face([0.0, 0.0, -1.0], 800.0, [20.0, 10.0, 0.0]),
+            face([0.0, 0.0, 1.0], 800.0, [20.0, 10.0, 10.0]),
+        ],
+        edges: vec![
+            line([0.0, 0.0, 0.0], [0.0, 0.0, 10.0]),
+            line([0.0, 0.0, 10.0], [0.0, 20.0, 10.0]),
+            line([0.0, 20.0, 0.0], [0.0, 20.0, 10.0]),
+            line([0.0, 0.0, 0.0], [0.0, 20.0, 0.0]),
+            line([40.0, 0.0, 0.0], [40.0, 0.0, 10.0]),
+            line([40.0, 0.0, 10.0], [40.0, 20.0, 10.0]),
+            line([40.0, 20.0, 0.0], [40.0, 20.0, 10.0]),
+            line([40.0, 0.0, 0.0], [40.0, 20.0, 0.0]),
+            line([0.0, 0.0, 0.0], [40.0, 0.0, 0.0]),
+            line([0.0, 0.0, 10.0], [40.0, 0.0, 10.0]),
+            line([0.0, 20.0, 0.0], [40.0, 20.0, 0.0]),
+            line([0.0, 20.0, 10.0], [40.0, 20.0, 10.0]),
+        ],
+        vertices: vec![
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 10.0],
+            [0.0, 20.0, 0.0],
+            [0.0, 20.0, 10.0],
+            [40.0, 0.0, 0.0],
+            [40.0, 0.0, 10.0],
+            [40.0, 20.0, 0.0],
+            [40.0, 20.0, 10.0],
+        ],
+    };
+    f.kernel.answer_instead(move |op| match op {
+        Op::DescribeAll { shape } if FakeKernel::describe(shape)?.starts_with("box(") => {
+            Some(silico_protocol::Reply::DescribedAll(description.clone()))
+        }
+        _ => None,
+    });
+}
+
+/// The least distances between the block's elements the tests measure, by hand from its
+/// geometry (`describes_a_real_box`), each with a pair of points where it's met: its bottom
+/// and top faces 10 apart (its height); its x = 0 face and its bottom, which meet along
+/// Edge4, 0; its top face and Vertex1, the origin, 10. The fake's own puts each element at
+/// its number on the x axis.
+fn measures_the_box(f: &Fixture) {
+    use silico_core::kernel::{ElementKind, ElementRef, Op};
+    let face = |index| ElementRef {
+        kind: ElementKind::Face,
+        index,
+    };
+    let vertex1 = ElementRef {
+        kind: ElementKind::Vertex,
+        index: 1,
+    };
+    f.kernel.answer_instead(move |op| {
+        let Op::Distance { first, second, .. } = op else {
+            return None;
+        };
+        let (distance, from, to) = match (*first, *second) {
+            (a, b) if (a, b) == (face(5), face(6)) => (10.0, [0.0; 3], [0.0, 0.0, 10.0]),
+            (a, b) if (a, b) == (face(1), face(5)) => (0.0, [0.0; 3], [0.0; 3]),
+            (a, b) if (a, b) == (face(6), vertex1) => (10.0, [0.0, 0.0, 10.0], [0.0; 3]),
+            _ => return None,
+        };
+        Some(silico_protocol::Reply::Distance(
+            silico_protocol::Distance {
+                distance,
+                from,
+                to,
+                solutions: 1,
+            },
+        ))
+    });
+}
+
+/// A_BOX open, its block described and measured as OCCT would ([`describes_a_real_box`],
+/// [`measures_the_box`]), its model published and drawn.
+fn a_measured_box(f: &Fixture) -> AppHarness {
+    describes_a_real_box(f);
+    measures_the_box(f);
     let (mut h, _) = f.opened("box.silico", A_BOX);
     step_until(&mut h, "the model published", |h| {
         h.state().tabs()[0].published.is_some()
     });
     step(&mut h);
-    let section = |h: &AppHarness, kind: &str| {
-        h.get_by_role_and_label(Role::Pane, "Properties")
-            .query_by_label(kind)
-            .is_some()
-    };
-    for (name, kind) in [
-        ("k7f2qx3m.box.Face3", "FACE"),
-        ("k7f2qx3m.box.Edge5", "EDGE"),
-        ("k7f2qx3m.box.Vertex2", "VERTEX"),
+    h
+}
+
+/// The block's elements `names` selected, as picks in the order given (by their names after
+/// `k7f2qx3m.box.`), and frames stepped until the selection holds them.
+fn select_in_box(h: &mut AppHarness, names: &[&str]) {
+    use silico_app::selection::How;
+    let full: Vec<String> = names
+        .iter()
+        .map(|name| format!("k7f2qx3m.box.{name}"))
+        .collect();
+    let selection = h.state_mut().tabs_mut()[0].selection_mut();
+    selection.clear();
+    for name in &full {
+        selection.pick(name, How::Toggle);
+    }
+    let want: Vec<&str> = full.iter().map(String::as_str).collect();
+    selected_until(h, &want);
+}
+
+/// The text the property panel shows on row `key`'s line, right of its key: its value (a
+/// label's text or a link's), if the row is there.
+fn row_value(h: &AppHarness, key: &str) -> Option<String> {
+    let pane = h.get_by_role_and_label(Role::Pane, "Properties");
+    let key_at = pane
+        .query_all_by_label(key)
+        .find(|node| node.accesskit_node().role() == Role::Label)?
+        .rect();
+    [Role::Label, Role::Link].into_iter().find_map(|role| {
+        pane.query_all_by_role(role).find_map(|node| {
+            let at = node.rect();
+            let on_line = (at.center().y - key_at.center().y).abs() < 2.0;
+            (on_line && at.left() > key_at.right()).then(|| {
+                let node = node.accesskit_node();
+                node.value().or_else(|| node.label()).unwrap_or_default()
+            })
+        })
+    })
+}
+
+/// Frames stepped until row `key` shows `value`.
+#[track_caller]
+fn row_until(h: &mut AppHarness, key: &str, value: &str) {
+    step_until(h, &format!("{key}: {value}"), |h| {
+        row_value(h, key).as_deref() == Some(value)
+    });
+}
+
+#[test]
+fn a_selected_face_edge_and_vertex_show_their_kind_their_measures_and_their_name() {
+    // `selectionProps` for one element: its head (its number in the block's solid over what
+    // it is, on Block), MEASURES, and NAME. The values by hand from the 40 by 20 by 10
+    // block: the top face 40 × 20 = 800 mm², facing +z; Edge12 along x, 40 long; Vertex8 at
+    // the far corner.
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    for (name, sub, rows) in [
+        (
+            "Face6",
+            "Planar face · Block",
+            &[("Area", "800.00 mm²"), ("Normal", "(0, 0, 1)")][..],
+        ),
+        ("Edge12", "Line edge · Block", &[("Length", "40.00 mm")][..]),
+        (
+            "Vertex8",
+            "Vertex · Block",
+            &[("Position", "(40, 20, 10) mm")][..],
+        ),
     ] {
-        h.state_mut().tabs_mut()[0]
-            .selection_mut()
-            .pick(name, How::Replace);
-        assert_eq!(selected_names(&h), [name]);
+        select_in_box(&mut h, &[name]);
+        for (key, value) in rows {
+            row_until(&mut h, key, value);
+        }
+        assert!(shows(&h, "Properties", name), "{name}'s head");
+        assert!(shows(&h, "Properties", sub), "{name}: {sub}");
+        assert!(shows(&h, "Properties", "MEASURES"));
+        assert!(shows(&h, "Properties", "NAME"));
+        assert_eq!(
+            row_value(&h, "Stable name").as_deref(),
+            Some(format!("k7f2qx3m.box.{name}").as_str())
+        );
+        assert_eq!(row_value(&h, "Made by").as_deref(), Some("Block"));
+        assert_eq!(row_value(&h, "Stability").as_deref(), Some("Stable"));
+        // A radius is a circle's, and an area a face's: neither here but where it applies.
+        assert_eq!(row_value(&h, "Radius"), None, "{name}");
+        // Fillet for an edge alone; Edit for the feature that made each.
+        let fillet = h
+            .get_by_role_and_label(Role::Pane, "Properties")
+            .query_by_role_and_label(Role::Button, "Fillet")
+            .is_some();
+        assert_eq!(fillet, name.starts_with("Edge"), "{name}");
+        assert!(
+            h.get_by_role_and_label(Role::Pane, "Properties")
+                .query_by_role_and_label(Role::Button, "Edit Block")
+                .is_some()
+        );
+        assert!(
+            h.get_by_role_and_label(Role::Pane, "Properties")
+                .query_all_by_label_contains("-click adds or removes. Right-click › Select Other")
+                .next()
+                .is_some()
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A_PIN: a cylinder 2.5 in radius and 12 high, on the origin.
+const A_PIN: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [0, 0, 0], "radius": 2.5, "height": 12}
+  ]
+}
+"#;
+
+#[test]
+fn a_selected_rim_is_a_circle_edge_with_its_length_and_radius_and_its_wall_a_cylinder() {
+    // The pin described as OCCT describes a cylinder, in the fake's numbering of it (its
+    // Edge1 the seam, from Vertex1 to Vertex2; Edge2 the circle Face2 is bounded by, at
+    // Vertex1; Edge3 Face3's, at Vertex2): its wall 2π · 2.5 · 12 = 60π mm², its top and
+    // bottom π · 2.5² each, its rims 2π · 2.5 = 5π long, each closed at its vertex.
+    use silico_core::kernel::{
+        Axis, Description, EdgeCurve, EdgeDescription, FaceDescription, Op, Surface,
+    };
+    use std::f64::consts::PI;
+    let f = fixture();
+    let axis = |z: f64| Axis {
+        origin: [0.0, 0.0, z],
+        direction: [0.0, 0.0, 1.0],
+    };
+    let cap = |z: f64, nz: f64| FaceDescription {
+        surface: Surface::Plane {
+            normal: [0.0, 0.0, nz],
+            location: [0.0, 0.0, z],
+        },
+        area: PI * 6.25,
+        centroid: [0.0, 0.0, z],
+    };
+    let rim = |z: f64| EdgeDescription {
+        curve: EdgeCurve::Circle {
+            axis: axis(z),
+            radius: 2.5,
+        },
+        length: 5.0 * PI,
+        start: [2.5, 0.0, z],
+        end: [2.5, 0.0, z],
+        middle: [-2.5, 0.0, z],
+    };
+    let description = Description {
+        faces: vec![
+            FaceDescription {
+                surface: Surface::Cylinder {
+                    axis: axis(0.0),
+                    radius: 2.5,
+                },
+                area: 60.0 * PI,
+                centroid: [0.0, 0.0, 6.0],
+            },
+            cap(12.0, 1.0),
+            cap(0.0, -1.0),
+        ],
+        edges: vec![
+            EdgeDescription {
+                curve: EdgeCurve::Line,
+                length: 12.0,
+                start: [2.5, 0.0, 12.0],
+                end: [2.5, 0.0, 0.0],
+                middle: [2.5, 0.0, 6.0],
+            },
+            rim(12.0),
+            rim(0.0),
+        ],
+        vertices: vec![[2.5, 0.0, 12.0], [2.5, 0.0, 0.0]],
+    };
+    f.kernel.answer_instead(move |op| match op {
+        Op::DescribeAll { .. } => Some(silico_protocol::Reply::DescribedAll(description.clone())),
+        _ => None,
+    });
+    let (mut h, _) = f.opened("pin.silico", A_PIN);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    use silico_app::selection::How;
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .pick("a91cw0de.cylinder.Edge2", How::Replace);
+    // 5π = 15.70796… mm; the radius 2.5.
+    row_until(&mut h, "Length", "15.71 mm");
+    assert_eq!(row_value(&h, "Radius").as_deref(), Some("2.50 mm"));
+    assert!(shows(&h, "Properties", "Circle edge · Pin"));
+    // The wall: 60π = 188.4955… mm², its radius, and its axis up z.
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .pick("a91cw0de.cylinder.Face1", How::Replace);
+    row_until(&mut h, "Area", "188.50 mm²");
+    assert_eq!(row_value(&h, "Radius").as_deref(), Some("2.50 mm"));
+    assert_eq!(row_value(&h, "Axis").as_deref(), Some("(0, 0, 1)"));
+    assert_eq!(row_value(&h, "Normal"), None);
+    assert!(shows(&h, "Properties", "Cylindrical face · Pin"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn copy_puts_the_stable_name_on_the_clipboard_and_copy_names_their_json_array() {
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Copy")
+        .click();
+    step(&mut h);
+    assert_eq!(copied(&h).as_deref(), Some("k7f2qx3m.box.Face6"));
+    // Three selected: their names as an agent writes a fillet's `edges`, in the order picked.
+    select_in_box(&mut h, &["Edge9", "Face6", "Vertex1"]);
+    step(&mut h);
+    assert!(shows(&h, "Properties", "3 selected"));
+    assert!(shows(&h, "Properties", "1 face, 1 edge, 1 vertex"));
+    assert!(shows(&h, "Properties", "SELECTION"));
+    assert_eq!(
+        row_value(&h, "Edge9").as_deref(),
+        Some("k7f2qx3m.box.Edge9")
+    );
+    assert_eq!(
+        row_value(&h, "Vertex1").as_deref(),
+        Some("k7f2qx3m.box.Vertex1")
+    );
+    // Three have no measure between them.
+    assert!(!shows(&h, "Properties", "MEASURE"));
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Copy names")
+        .click();
+    step(&mut h);
+    assert_eq!(
+        copied(&h).as_deref(),
+        Some(r#"["k7f2qx3m.box.Edge9", "k7f2qx3m.box.Face6", "k7f2qx3m.box.Vertex1"]"#)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn made_by_selects_its_feature_edit_opens_its_dialog_and_fillet_starts_with_the_edge() {
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    let block = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
+    // Made by: Block, a link that selects it.
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Made by", "Block");
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Link, "Block")
+        .click();
+    step_until(&mut h, "Block selected", |h| {
+        h.state().tabs()[0].selection().feature() == Some(&block)
+    });
+    // Edit Block: the box's dialog, as Edit Feature opens it.
+    select_in_box(&mut h, &["Face6"]);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Edit Block")
+        .click();
+    step_until(&mut h, "Block's dialog", |h| {
+        h.state().tabs()[0].dialog.as_ref().is_some_and(|dialog| {
+            dialog.kind == silico_app::dialog::Kind::Box && dialog.feature.as_ref() == Some(&block)
+        })
+    });
+    h.state_mut().tabs_mut()[0].close_dialog(&f.sessions, false);
+    step_until(&mut h, "the dialog closed", |h| {
+        !h.state().tabs()[0].in_dialog()
+    });
+    // Fillet, with Edge12 selected: the fillet's dialog, its edges box holding Edge12, as the
+    // toolbar's Fillet takes the selection.
+    select_in_box(&mut h, &["Edge12"]);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Fillet")
+        .click();
+    step_until(&mut h, "the fillet's dialog with Edge12", |h| {
+        h.state().tabs()[0].dialog.as_ref().is_some_and(|dialog| {
+            dialog.kind == silico_app::dialog::Kind::Fillet
+                && dialog
+                    .names()
+                    .is_some_and(|names| names.names == ["k7f2qx3m.box.Edge12"])
+        })
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn two_faces_show_their_distance_normal_distance_and_angle_and_a_pair_angle_refuses_no_angle() {
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    // The bottom and the top: 10 apart (the block's height), each way, facing apart: the
+    // core's wedge of two faces facing apart is 0, parallel.
+    select_in_box(&mut h, &["Face5", "Face6"]);
+    row_until(&mut h, "Distance", "10.00 mm");
+    row_until(&mut h, "Angle", "0° (parallel)");
+    assert_eq!(
+        row_value(&h, "Normal distance").as_deref(),
+        Some("10.00 mm")
+    );
+    assert!(shows(&h, "Properties", "2 selected"));
+    assert!(shows(&h, "Properties", "2 faces"));
+    assert!(shows(&h, "Properties", "MEASURE"));
+    // Above SELECTION.
+    let top = |h: &AppHarness, label: &str| {
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .get_by_label(label)
+            .rect()
+            .top()
+    };
+    assert!(top(&h, "MEASURE") < top(&h, "SELECTION"));
+    // The x = 0 face and the bottom: they meet, at 90°, so no normal distance.
+    select_in_box(&mut h, &["Face1", "Face5"]);
+    row_until(&mut h, "Angle", "90.00°");
+    assert_eq!(row_value(&h, "Distance").as_deref(), Some("0.00 mm"));
+    assert_eq!(row_value(&h, "Normal distance"), None);
+    // The top and Vertex1: `angle` refuses a vertex, so there's no Angle row and nothing said
+    // of it; the vertex is its own centre, 10 from the face.
+    select_in_box(&mut h, &["Face6", "Vertex1"]);
+    row_until(&mut h, "Distance", "10.00 mm");
+    row_until(&mut h, "Center to element", "10.00 mm");
+    for _ in 0..5 {
         step(&mut h);
+    }
+    assert_eq!(row_value(&h, "Angle"), None);
+    assert!(!shows(&h, "Properties", "invalid_input"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_measure_waited_for_shows_no_value_of_the_selection_before_it_and_one_answered_late_none() {
+    // Held deterministically by the fake: the distance between the x = 0 face and the bottom.
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    let between_1_and_5 = |op: &silico_core::kernel::Op| {
+        matches!(
+            op,
+            silico_core::kernel::Op::Distance { first, second, .. }
+                if (first.index, second.index) == (1, 5)
+        )
+    };
+    select_in_box(&mut h, &["Face5", "Face6"]);
+    row_until(&mut h, "Distance", "10.00 mm");
+    let hold = f.kernel.hold(between_1_and_5);
+    select_in_box(&mut h, &["Face1", "Face5"]);
+    // Its angle answers (it asks no kernel), its distance doesn't: never the last pair's.
+    row_until(&mut h, "Angle", "90.00°");
+    for _ in 0..10 {
         step(&mut h);
-        assert!(section(&h, kind), "{name}: no {kind}");
-        assert!(!section(&h, "ELEMENT"), "{name}");
+        assert_eq!(
+            row_value(&h, "Distance").as_deref(),
+            Some("Not measured yet")
+        );
+        assert_eq!(row_value(&h, "Normal distance"), None);
+    }
+    hold.release();
+    row_until(&mut h, "Distance", "0.00 mm");
+    // Held again, and the selection changed before it answers: the pair after it is shown,
+    // and the held one's answer, once let go, is never shown for it.
+    let hold = f.kernel.hold(between_1_and_5);
+    select_in_box(&mut h, &["Face6"]);
+    select_in_box(&mut h, &["Face1", "Face5"]);
+    step(&mut h);
+    select_in_box(&mut h, &["Face6", "Vertex1"]);
+    row_until(&mut h, "Distance", "10.00 mm");
+    hold.release();
+    for _ in 0..10 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(row_value(&h, "Distance").as_deref(), Some("10.00 mm"));
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -26300,7 +26758,7 @@ fn an_unstable_name_is_selectable_shown_with_its_reason_and_refused_by_a_store()
                (it came about as another element did, or is its number): an edit could make \
                it another element";
     step(&mut h);
-    assert!(shows(&h, "Properties", "1 element selected"));
+    assert!(shows(&h, "Properties", "Face1"));
     assert!(shows(&h, "Properties", "rrrrrrrr.fuse.Face1"));
     assert!(shows(&h, "Properties", "Unstable"));
     assert!(
@@ -26585,7 +27043,7 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
                     .is_some_and(|hovered| hovered.name.to_string() == "k7f2qx3m.box.Face3")
             });
             step(&mut h);
-            assert!(shows(&h, "Properties", "2 elements selected"));
+            assert!(shows(&h, "Properties", "2 selected"));
             if let Some(shot) = std::env::var_os("SILICO_APP_SELECTION_SHOT") {
                 h.render().unwrap().save(shot).unwrap();
             }
