@@ -18178,6 +18178,195 @@ fn each_sketch_is_read_for_its_browser_prefix_by_its_state_as_solidworks_prefixe
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- #351's mutants: sketch mode's panels placed, its idle frames, and its Delete ----
+
+/// The prototype's `--g200` (floating panels), `--g250` (their border), and `--blue` (the
+/// sketch bar's border).
+const G200: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x21, 0x21, 0x21);
+const G250: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x27, 0x26, 0x26);
+const BLUE: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x18, 0x6a, 0xdd);
+
+/// Triangle open in sketch mode, read, and everything answered.
+fn triangle_in_sketch_mode(f: &Fixture) -> AppHarness {
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    settled(&mut h);
+    h
+}
+
+/// The rectangles the last frame painted filled `--g200` and bordered in `border`, standing
+/// in the canvas (from their top left: a palette taller than the canvas's room runs past its
+/// bottom).
+fn floating_frames(h: &AppHarness, border: eframe::egui::Color32) -> Vec<eframe::egui::Rect> {
+    let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
+    painted(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Rect(rect)
+                if rect.fill == G200
+                    && rect.stroke.color == border
+                    && canvas.expand(0.5).contains(rect.rect.left_top()) =>
+            {
+                Some(rect.rect)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_sketch_bar_and_the_palette_float_over_the_canvas_where_the_prototype_floats_them() {
+    // styles.css: `.sketch-bar` across the canvas's middle, 10 below its top (`left: 50%;
+    // top: 10px; transform: translateX(-50%)`), bordered `--blue`; `.palette` 12 in from the
+    // canvas's right and 118 down (`right: 12px; top: 118px`), 212 wide, so its left 224 in,
+    // bordered `--g250`. Each `--g200`.
+    let f = fixture();
+    let mut h = triangle_in_sketch_mode(&f);
+    // The bar is centred on its width, which its state's words set once read.
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
+    let bars = floating_frames(&h, BLUE);
+    let [bar] = bars.as_slice() else {
+        panic!("{bars:?}");
+    };
+    assert!(
+        (bar.center().x - canvas.center().x).abs() <= 0.5,
+        "{bar:?} in {canvas:?}"
+    );
+    assert_eq!(bar.top(), canvas.top() + 10.0, "{bar:?} in {canvas:?}");
+    let palettes = floating_frames(&h, G250);
+    let [palette] = palettes.as_slice() else {
+        panic!("{palettes:?}");
+    };
+    assert_eq!(palette.left(), canvas.right() - 12.0 - 212.0, "{palette:?}");
+    assert_eq!(palette.top(), canvas.top() + 118.0, "{palette:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_mode_left_alone_asks_for_no_frame_sooner_than_the_idle_one() {
+    // Nothing pending and no input: each frame asks for the next at the idle interval (less
+    // the quarter second a harness's frame takes, which egui takes off it), never at once
+    // (the bar asked nothing).
+    let f = fixture();
+    let mut h = triangle_in_sketch_mode(&f);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    let frame = Duration::from_millis(250);
+    for _ in 0..5 {
+        step(&mut h);
+        let delay = repaint_delay(&h);
+        assert!(
+            delay.is_some_and(|delay| delay >= IDLE_FRAME - frame && delay <= IDLE_FRAME),
+            "{delay:?}"
+        );
+    }
+    assert!(sketch_mode(&h).is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn delete_and_backspace_in_one_frame_delete_the_selection_once() {
+    let f = fixture();
+    let mut h = triangle_in_sketch_mode(&f);
+    select_member(&mut h, "na000000", silico_core::document::ElementKind::Line);
+    // Both pressed in the one frame (the harness's own presses take a frame each), then
+    // both let go in the next.
+    use eframe::egui::{Event, Key, Modifiers};
+    for pressed in [true, false] {
+        for key in [Key::Delete, Key::Backspace] {
+            h.input_mut().events.push(Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        step(&mut h);
+    }
+    settled(&mut h);
+    let removes = h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter(|sent| **sent == Sent::SketchEdit("sketch_remove"))
+        .count();
+    assert_eq!(removes, 1);
+    let text = text_of(&f, &h);
+    assert!(!text.contains("na000000"), "{text}");
+    assert!(
+        text.contains("nb000000") && text.contains("nc000000"),
+        "{text}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// One sketch, Loose, of one point.
+const ONE_SKETCH: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Loose", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn a_lone_sketchs_prefix_is_read_once_kept_and_drawn_before_its_name_in_the_browser() {
+    use silico_protocol::Solved;
+    // The fake solves the point free to move: under defined, `(–)`.
+    let f = fixture();
+    f.sketches.answer(|system| {
+        Ok(Solved {
+            dofs: 2,
+            free: system.unknowns.clone(),
+            ..FakeSketches::as_sent(system)
+        })
+    });
+    let (mut h, _) = f.opened("one.silico", ONE_SKETCH);
+    let loose = sketch_id("s0000001");
+    step_until(&mut h, "its prefix", |h| {
+        h.state().tabs()[0].prefixes.prefix(&loose) == Some("(–)")
+    });
+    // Read once for the model, and kept, however many frames pass.
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    let tab = &h.state().tabs()[0];
+    assert_eq!(tab.prefixes.reads, 1);
+    assert_eq!(tab.prefixes.prefix(&loose), Some("(–)"));
+    // Its browser row draws it (`.row .prefix.under`, `--sk-under` #7a95ff) before its name.
+    let row = h
+        .get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Loose")
+        .rect();
+    let texts = texts_in(&h, row);
+    assert!(
+        texts.contains(&(
+            "(–)".to_owned(),
+            eframe::egui::Color32::from_rgb(0x7a, 0x95, 0xff)
+        )),
+        "{texts:?}"
+    );
+    let left = |words: &str| {
+        painted_in(&h, row)
+            .into_iter()
+            .find_map(|shape| match shape {
+                eframe::egui::Shape::Text(text) if text.galley.text() == words => Some(text.pos.x),
+                _ => None,
+            })
+    };
+    let (prefix, name) = (left("(–)").unwrap(), left("Loose").unwrap());
+    assert!(prefix < name, "{prefix} and {name}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// A box, and a sketch on its top face: a face the fake doesn't describe as a plane, so the
 /// sketch's plane is broken.
 const ON_A_FACE: &str = r#"{
