@@ -322,6 +322,38 @@ fn a_line_along_the_x_axis_is_picked_with_the_pointer_on_it_anywhere_along_it() 
 }
 
 #[test]
+fn a_line_within_a_tenth_of_a_micrometre_of_an_axis_is_picked_for_it() {
+    // As the Point tool's T4: (10, ±0.5e-7)-(50, ±0.5e-7) covers the x axis, so a pick 0.1
+    // on its far side takes the line; at ±2e-7 it doesn't, and the axis, nearer, is taken.
+    for (y, covered) in [
+        (0.5e-7, true),
+        (-0.5e-7, true),
+        (2e-7, false),
+        (-2e-7, false),
+    ] {
+        let mut d = Dim::new(with_line(empty(), "zz000001", [10.0, y], [50.0, y]));
+        d.click(20.0, -0.1 * y.signum());
+        let want = if covered {
+            r("zz000001")
+        } else {
+            Reference::XAxis
+        };
+        assert_eq!(d.tool.preview().picks, vec![want], "at y {y}");
+    }
+}
+
+#[test]
+fn a_pick_as_near_a_line_beside_an_axis_as_the_axis_takes_the_line() {
+    // (10, 0.5)-(50, 0.5) and a pick at (20, 0.25), exactly 0.25 from it and from the x
+    // axis: the line, whatever its ID (the review's T6).
+    for name in ["aa000001", "zz000001"] {
+        let mut d = Dim::new(with_line(empty(), name, [10.0, 0.5], [50.0, 0.5]));
+        d.click(20.0, 0.25);
+        assert_eq!(d.tool.preview().picks, vec![r(name)], "{name}");
+    }
+}
+
+#[test]
 fn an_axis_is_picked_where_no_line_of_the_sketch_lies_on_it() {
     // Past the end of a line along an axis, (70, 0) and (0, 70) are 20 from the line and 0
     // from the axis: the axis. And with the line 0.3 off the axis, (10, 0.3) to (50, 0.3)
