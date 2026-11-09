@@ -19,6 +19,7 @@ pub mod dimension;
 pub mod drag;
 pub mod draw;
 pub mod hit;
+pub mod screen;
 pub mod style;
 pub mod tools;
 
@@ -163,8 +164,7 @@ pub fn frame_events(
     viewport_origin: Pos2,
 ) -> Vec<PointerEvent> {
     use crate::viewport::LeftKind;
-    let point =
-        |at_px: [f32; 2]| viewport_origin + Vec2::new(at_px[0], at_px[1]) / pixels_per_point;
+    let point = |at_px: [f32; 2]| at_points(at_px, pixels_per_point, viewport_origin);
     let mut events: Vec<(u32, PointerEvent)> = left
         .iter()
         .map(|event| {
@@ -204,6 +204,13 @@ pub fn frame_events(
     events.into_iter().map(|(_, event)| event).collect()
 }
 
+/// A place the pane measures in physical pixels from the viewport's top left, `at_px`, on
+/// the screen in points, the viewport's top left at `viewport_origin`: as
+/// [`frame_events`] takes each event's, and the pointer's.
+pub fn at_points(at_px: [f32; 2], pixels_per_point: f32, viewport_origin: Pos2) -> Pos2 {
+    viewport_origin + Vec2::new(at_px[0], at_px[1]) / pixels_per_point
+}
+
 /// What the viewport gives sketch mode each frame: the left button's events, the pointer
 /// (none off the viewport), a projection from the sketch's millimetres to screen points
 /// (none for a place it can't show), and the way back, from screen points to the sketch's
@@ -224,12 +231,10 @@ pub enum Deletion {
 }
 
 /// What a frame's drawing was of: the read (by how many it has taken), the selection, what's
-/// shown, and the view, by where it puts three places of the plane, its scale, its chord
-/// tolerance, its
-/// rectangle, and the part of the plane in it. A frame with the same key draws the same for
-/// an affine view (the flat one, an orthographic camera), whose three places fix it; a
-/// perspective one could move and keep them, so when the perspective viewport is wired, the
-/// view is to be keyed on its camera.
+/// shown, and the view, by where it puts four places of the plane, its scale, its chord
+/// tolerance, its rectangle, and the part of the plane in it. A frame with the same key
+/// draws the same: a view of the plane, flat, orthographic, or in perspective, is a
+/// projective map of it, which four places, no three in a line, fix.
 #[derive(Debug, Clone, PartialEq)]
 struct DrawnOf {
     read: u64,
@@ -237,7 +242,7 @@ struct DrawnOf {
     drag: Option<u64>,
     selected: BTreeSet<ElementId>,
     shown: Shown,
-    probes: [Option<Pos2>; 3],
+    probes: [Option<Pos2>; 4],
     scale: Scale,
     chord_tolerance: u32,
     clip: Rect,
@@ -800,7 +805,7 @@ impl SketchMode {
             drag: dragged.map(|(.., frames)| frames),
             selected: self.selection.iter().map(|hit| hit.id.clone()).collect(),
             shown: self.shown(),
-            probes: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]].map(|p| (view.project)(p)),
+            probes: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]].map(|p| (view.project)(p)),
             scale: view.scale,
             chord_tolerance: view.chord_tolerance.to_bits(),
             clip,

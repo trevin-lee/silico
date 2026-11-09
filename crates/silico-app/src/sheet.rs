@@ -29,14 +29,12 @@ pub(crate) const FILTER_LABEL: &str = "Filter shortcuts";
 /// What the sheet says when the filter finds nothing.
 pub(crate) const NOTHING_FOUND: &str = "No shortcut matches.";
 
-/// The note under the columns: its strong words, then the rest.
-///
-/// SEAM(#351): sketch mode puts "ends a drag, then a sketch tool's chain, then" first, as
-/// the prototype's note has it, once Esc does those.
+/// The note under the columns (the prototype's, js/app.js's shortcut sheet): its strong
+/// words, then the rest.
 const NOTE: [&str; 2] = [
     "Esc does the nearest thing first:",
-    " stops a dialog's preview, then cancels the dialog, then clears the selection, then \
-     stops the rebuild.",
+    " ends a drag, then a sketch tool's chain, then stops a dialog's preview, then cancels \
+     the dialog, then clears the selection, then stops the rebuild.",
 ];
 
 /// The sheet while it's open: what's typed in its filter.
@@ -577,10 +575,14 @@ mod tests {
         let h = sheet("");
         let frame = frame_of(&h);
         assert!(near(frame.width(), css::SHEET_W), "{frame:?}");
-        at(
-            frame.center(),
-            (WINDOW / 2.0).to_pos2(),
-            "the sheet's middle",
+        // Centred: across, exactly (920 and 1280 are both even); down, its top where egui
+        // puts a window, half the room left over it, on a whole point (its height is odd).
+        let off = frame.center() - (WINDOW / 2.0).to_pos2();
+        assert_eq!(off.x, 0.0, "{frame:?}");
+        assert_eq!(
+            frame.min.y,
+            (WINDOW.y / 2.0 - frame.height() / 2.0).round(),
+            "{frame:?}"
         );
         let inside = frame.shrink(css::BORDER);
         // The head's middle: 12 under its top, half the filter's 24 down.
@@ -652,11 +654,12 @@ mod tests {
         let height =
             |rows: f32| css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN + rows * css::ROW_H;
         // By hand: File 5 rows (135), Edit 4 (113: Undo, Redo, Rename, Delete), Rebuild 3
-        // (91), View 12 (289), Selection 5 (135), Dialogs 2 (69), Help 1 (47). The least
-        // height that takes three columns, filled in order: 367, File, Edit, and Rebuild's
-        // (135 + 14 + 113 + 14 + 91); View alone (289, with Selection 438); Selection,
-        // Dialogs, and Help (279). Any less leaves Rebuild out of the first, and Rebuild
-        // and View (394) out of one column: four.
+        // (91), View 12 (289), Selection 5 (135), Dialogs 2 (69), Sketch 9 (223), Help 1
+        // (47). The least height that takes three columns, filled in order, is 438: below it
+        // View can't take Selection (289 + 14 + 135 = 438), and Selection to Help (135 + 14 +
+        // 69 + 14 + 223 + 14 + 47 = 516) take two more. At 438, File, Edit, and Rebuild (135 +
+        // 14 + 113 + 14 + 91 = 367); View and Selection (438); Dialogs, Sketch, and Help (69 +
+        // 14 + 223 + 14 + 47 = 367).
         let placed = [
             ("FILE", 0, 0.0),
             ("EDIT", 0, height(5.0) + css::GROUP_GAP),
@@ -666,9 +669,10 @@ mod tests {
                 height(5.0) + height(4.0) + 2.0 * css::GROUP_GAP,
             ),
             ("VIEW", 1, 0.0),
-            ("SELECTION", 2, 0.0),
-            ("DIALOGS", 2, height(5.0) + css::GROUP_GAP),
-            ("HELP", 2, height(5.0) + height(2.0) + 2.0 * css::GROUP_GAP),
+            ("SELECTION", 1, height(12.0) + css::GROUP_GAP),
+            ("DIALOGS", 2, 0.0),
+            ("SKETCH", 2, height(2.0) + css::GROUP_GAP),
+            ("HELP", 2, height(2.0) + height(9.0) + 2.0 * css::GROUP_GAP),
         ];
         for (name, at_column, down) in placed {
             let shown = texts(&h, name);
@@ -816,11 +820,11 @@ mod tests {
         let h = sheet("");
         let inside = frame_of(&h).shrink(css::BORDER);
         let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
-        // The tallest column: File's, Edit's, and Rebuild's, their 12 rows and two gaps
-        // (367, by hand; View's alone is 289).
+        // The tallest column: View's and Selection's, their 17 rows and a gap (438, by hand;
+        // File's, Edit's, and Rebuild's are 367, as are Dialogs', Sketch's, and Help's).
         let title = css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN;
-        let tallest = top + 3.0 * title + 12.0 * css::ROW_H + 2.0 * css::GROUP_GAP;
-        assert!(near(tallest - top, 367.0));
+        let tallest = top + 2.0 * title + 17.0 * css::ROW_H + css::GROUP_GAP;
+        assert!(near(tallest - top, 438.0));
         let rule = tallest + css::NOTE_TOP;
         let ruled = painted(&h).into_iter().any(|shape| match shape {
             egui::Shape::LineSegment { points, stroke } => {
@@ -842,6 +846,13 @@ mod tests {
             note.pos
         );
         font(&note, css::FS_SMALL, "the note");
+        // Its words, typed from js/app.js's `.note`.
+        assert_eq!(
+            note.galley.text(),
+            "Esc does the nearest thing first: ends a drag, then a sketch tool's chain, then \
+             stops a dialog's preview, then cancels the dialog, then clears the selection, then \
+             stops the rebuild."
+        );
         let sections = &note.galley.job.sections;
         assert_eq!(sections[0].format.color, css::G1000, "its strong words");
         assert_eq!(sections[1].format.color, css::G550, "the rest");
@@ -970,6 +981,7 @@ mod tests {
             ("VIEW", 12.0),
             ("SELECTION", 5.0),
             ("DIALOGS", 2.0),
+            ("SKETCH", 9.0),
             ("HELP", 1.0),
         ] {
             let shown = texts(&h, name);
@@ -1094,22 +1106,80 @@ mod tests {
     }
 
     #[test]
-    fn selections_note_is_at_its_titles_right_as_the_prototype_writes_it() {
-        // The prototype's `notes`: Selection's "outside sketches", in the third column, at
+    fn selections_and_sketchs_notes_are_at_their_titles_right_as_the_prototype_writes_them() {
+        // The prototype's `notes`: Selection's "outside sketches", in the second column under
+        // View, and Sketch's "while a sketch is open", in the third under Dialogs, each at
         // the right of its title's line, as written (no capitals, no spacing).
         let h = sheet("");
         let inside = frame_of(&h).shrink(css::BORDER);
         let body = inside.shrink2(Vec2::new(css::BODY_SIDE, 0.0));
+        let column = (body.width() - 2.0 * css::COLUMN_GAP) / 3.0;
         let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
-        let note = text_shape(&h, "outside sketches");
+        let height =
+            |rows: f32| css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN + rows * css::ROW_H;
+        for (words, right, down) in [
+            (
+                "outside sketches",
+                body.left() + 2.0 * column + css::COLUMN_GAP,
+                height(12.0) + css::GROUP_GAP,
+            ),
+            (
+                "while a sketch is open",
+                body.right(),
+                height(2.0) + css::GROUP_GAP,
+            ),
+        ] {
+            let note = text_shape(&h, words);
+            assert!(
+                near(note.pos.x + note.galley.size().x, right),
+                "{words}: {:?}",
+                note.pos
+            );
+            assert!(near(note.pos.y, top + down), "{words}: {:?}", note.pos);
+            font(&note, css::TITLE_FS, words);
+            assert_eq!(colour(&note), css::G550);
+            assert_eq!(note.galley.job.sections[0].format.extra_letter_spacing, 0.0);
+        }
+    }
+
+    #[test]
+    fn x_is_listed_under_selection_as_faces_and_under_sketch_as_construction() {
+        // One key in two groups that never apply at once (the registry's one exception):
+        // the sheet lists each row with its own X, Faces in Selection's column (the second,
+        // under View) and Construction in Sketch's (the third, under Dialogs, above Help).
+        let h = sheet("");
+        let one = |text: &str| {
+            let mut found = texts(&h, text);
+            assert_eq!(found.len(), 1, "{text}");
+            found.remove(0)
+        };
+        let middle = |shown: &TextShape| shown.pos.y + shown.galley.size().y / 2.0;
+        let (selection, sketch, help) = (one("SELECTION"), one("SKETCH"), one("HELP"));
+        let (faces, construction) = (one("Faces"), one("Construction"));
+        assert!(near(faces.pos.x, selection.pos.x), "{:?}", faces.pos);
+        assert!(faces.pos.y > selection.pos.y, "{:?}", faces.pos);
         assert!(
-            near(note.pos.x + note.galley.size().x, body.right()),
+            near(construction.pos.x, sketch.pos.x),
             "{:?}",
-            note.pos
+            construction.pos
         );
-        assert!(near(note.pos.y, top));
-        font(&note, css::TITLE_FS, "Selection's note");
-        assert_eq!(colour(&note), css::G550);
-        assert_eq!(note.galley.job.sections[0].format.extra_letter_spacing, 0.0);
+        assert!(
+            sketch.pos.y < construction.pos.y && construction.pos.y < help.pos.y,
+            "{:?}",
+            construction.pos
+        );
+        assert!(selection.pos.x < sketch.pos.x);
+        // Two X caps, one on each row's line (within its 22), right of its name.
+        let caps = texts(&h, "X");
+        assert_eq!(caps.len(), 2);
+        for row in [&faces, &construction] {
+            let on_line: Vec<&TextShape> = caps
+                .iter()
+                .filter(|cap| {
+                    (middle(cap) - middle(row)).abs() < css::ROW_H / 2.0 && cap.pos.x > row.pos.x
+                })
+                .collect();
+            assert_eq!(on_line.len(), 1, "{:?}", row.galley.text());
+        }
     }
 }

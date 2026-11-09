@@ -1266,8 +1266,8 @@ impl Selection {
         }
     }
 
-    /// The canvas claimed by a mode that takes its clicks and pointer (sketch mode,
-    /// SEAM(#351)), for as long as it holds it: a click waiting for its pick let go (it was
+    /// The canvas claimed by a mode that takes its clicks and pointer (sketch mode, in
+    /// `Tab::overlay`), for as long as it holds it: a click waiting for its pick let go (it was
     /// the selection's, and is answered on a canvas the mode now draws), the press and the
     /// hover too.
     pub fn canvas_claimed(&mut self) {

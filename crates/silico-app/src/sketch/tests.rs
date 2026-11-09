@@ -64,7 +64,7 @@ fn mm(text: &str) -> Length {
 /// A 40 × 20 rectangle with its lower left corner at the origin: pa000001 (0, 0), pa000002
 /// (40, 0), pa000003 (40, 20), pa000004 (0, 20), and its sides na000001 to na000004 from
 /// each corner to the next, counter-clockwise; with `constraints`.
-fn rectangle(constraints: Vec<SketchConstraint>) -> Sketch {
+pub(crate) fn rectangle(constraints: Vec<SketchConstraint>) -> Sketch {
     Sketch {
         plane: OriginPlane::Xy.into(),
         points: vec![
@@ -2760,7 +2760,9 @@ fn the_bar_and_the_palette_are_drawn_dark_on_a_window_showing_the_light_theme() 
     let mut texts = texts_on_light(|ui| {
         bar::sketch_bar(ui, &bar);
     });
-    texts.extend(texts_on_light(|ui| bar::palette(ui, &view, &mut settings)));
+    texts.extend(texts_on_light(|ui| {
+        bar::palette(ui, &view, &mut settings, f32::INFINITY)
+    }));
     assert!(texts.iter().any(|(words, _)| words == "Cancel"));
     assert!(texts.iter().any(|(words, _)| words == "Profile"));
     // Every text but Look At, which is off (faded on purpose till the viewport's camera),
@@ -2768,6 +2770,46 @@ fn the_bar_and_the_palette_are_drawn_dark_on_a_window_showing_the_light_theme() 
     for (words, colour) in texts.iter().filter(|(words, _)| words != "Look At") {
         let ratio = contrast(*colour, FLOATING_BG);
         assert!(ratio >= 3.0, "{words:?} in {colour:?}: {ratio}");
+    }
+}
+
+#[test]
+fn the_bars_finish_sketch_tooltip_is_the_registrys_its_name_keys_and_line() {
+    use egui_kittest::kittest::Queryable;
+    let bar = mode_on(under(rectangle(Vec::new()))).bar_view("Sketch1", true);
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(vec2(800.0, 300.0))
+        .build_ui(move |ui| {
+            bar::sketch_bar(ui, &bar);
+        });
+    h.ctx.set_os(egui::os::OperatingSystem::Nix);
+    h.run_steps(2);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Finish Sketch")
+        .hover();
+    // The toolbar's Finish Sketch's words (js/app.js: `data-tipk="Mod Enter"`,
+    // `data-tipd="Keeps your changes and rebuilds"`), Mod Ctrl off macOS and Enter ↵.
+    let painted = |h: &egui_kittest::Harness<'_>| -> Vec<String> {
+        h.output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    };
+    for _ in 0..60 {
+        h.run_steps(1);
+        if painted(&h)
+            .iter()
+            .any(|text| text == "Keeps your changes and rebuilds")
+        {
+            break;
+        }
+    }
+    let texts = painted(&h);
+    for want in ["Keeps your changes and rebuilds", "Ctrl", "↵"] {
+        assert!(texts.iter().any(|text| text == want), "{want}: {texts:?}");
     }
 }
 
@@ -3637,7 +3679,7 @@ fn a_fields_frame_takes_the_prototypes_fill_and_border_for_its_kind_hover_focus_
 /// The palette's words, as drawn.
 fn palette_words(view: &bar::PaletteView) -> Vec<String> {
     let mut settings = bar::Settings::default();
-    texts_on_light(|ui| bar::palette(ui, view, &mut settings))
+    texts_on_light(|ui| bar::palette(ui, view, &mut settings, f32::INFINITY))
         .into_iter()
         .map(|(words, _)| words)
         .collect()
@@ -3852,7 +3894,10 @@ fn modify_harness(
         placing: false,
     };
     let harness = egui_kittest::Harness::new_ui(move |ui| {
-        if let Some(action) = dimension::modify_box(ui.ctx(), &view) {
+        // A viewport far wider than the box, and the palette far from it: neither moves it.
+        let viewport = egui::Rect::from_min_max(pos2(-1.0e4, -1.0e4), pos2(1.0e4, 1.0e4));
+        let palette = egui::Rect::from_min_size(pos2(9.0e3, 9.0e3), vec2(10.0, 10.0));
+        if let Some(action) = dimension::modify_box(ui.ctx(), &view, viewport, palette) {
             seen.borrow_mut().push(action);
         }
     });
@@ -3878,7 +3923,7 @@ fn the_modify_boxs_accept_waits_on_the_core_and_its_hint_says_so() {
         let (mut h, _) = modify_harness(waiting);
         h.run();
         assert_eq!(
-            h.get_by_label("✓").accesskit_node().is_disabled(),
+            h.get_by_label("Accept").accesskit_node().is_disabled(),
             waiting,
             "{waiting}"
         );
@@ -4426,13 +4471,223 @@ fn a_right_click_opens_the_canvas_menu_there_unless_smart_dimension_takes_it_for
 }
 
 #[test]
+fn clear_of_the_palette_whatever_the_box_and_wherever_its_text() {
+    use super::dimension::clear_of_palette;
+    use egui::Rect;
+    // A viewport 1000 by 600, the palette 212 wide at its right, past its bottom; boxes of
+    // 200 by 50: worked by hand.
+    let within = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 600.0));
+    let palette = Rect::from_min_max(pos2(776.0, 118.0), pos2(988.0, 900.0));
+    let size = vec2(200.0, 50.0);
+    // Clear already: where it's wanted.
+    assert_eq!(
+        clear_of_palette(pos2(100.0, 100.0), size, within, palette),
+        pos2(100.0, 100.0)
+    );
+    // Over the palette: left of it, 8 from it (776 − 8 − 200).
+    assert_eq!(
+        clear_of_palette(pos2(700.0, 300.0), size, within, palette),
+        pos2(568.0, 300.0)
+    );
+    // Its text under the palette's middle: the same.
+    assert_eq!(
+        clear_of_palette(pos2(850.0, 300.0), size, within, palette),
+        pos2(568.0, 300.0)
+    );
+    // Past the viewport's left and bottom: inside it, at its edges.
+    assert_eq!(
+        clear_of_palette(pos2(-50.0, 580.0), size, within, palette),
+        pos2(0.0, 550.0)
+    );
+    // Past its right, above the palette: inside it, left to 800, and clear above.
+    assert_eq!(
+        clear_of_palette(pos2(900.0, 20.0), size, within, palette),
+        pos2(800.0, 20.0)
+    );
+    // Past its right, beside the palette: inside, then left of the palette.
+    assert_eq!(
+        clear_of_palette(pos2(990.0, 200.0), size, within, palette),
+        pos2(568.0, 200.0)
+    );
+    // A viewport with no room left of the palette: up above it (118 − 8 − 50).
+    let narrow = Rect::from_min_max(pos2(700.0, 0.0), pos2(1000.0, 600.0));
+    assert_eq!(
+        clear_of_palette(pos2(720.0, 300.0), size, narrow, palette),
+        pos2(720.0, 60.0)
+    );
+    // Nor above it: at the viewport's left, as near its place as it can be.
+    let low = Rect::from_min_max(pos2(700.0, 100.0), pos2(1000.0, 600.0));
+    assert_eq!(
+        clear_of_palette(pos2(720.0, 300.0), size, low, palette),
+        pos2(700.0, 300.0)
+    );
+    // A box wider than the viewport: at its left.
+    let small = Rect::from_min_max(pos2(0.0, 0.0), pos2(150.0, 600.0));
+    assert_eq!(
+        clear_of_palette(pos2(40.0, 10.0), size, small, palette),
+        pos2(0.0, 10.0)
+    );
+}
+
+#[test]
+fn the_canvas_menus_corner_is_its_clicks_pixels_at_fractional_scales() {
+    use super::bar::menu_corner;
+    // 100.5 points: 125.625 pixels at 1.25, the 125th's corner at 100; 150.75 at 1.5, the
+    // 150th's at 100. 50.3: 62.875 at 1.25, the 62nd's at 49.6; 75.45 at 1.5, at 50.
+    assert_eq!(
+        menu_corner(pos2(100.5, 50.3), 1.25),
+        pos2(100.0, 62.0 / 1.25)
+    );
+    assert_eq!(menu_corner(pos2(100.5, 50.3), 1.5), pos2(100.0, 50.0));
+    // On a pixel's corner already: there.
+    assert_eq!(
+        menu_corner(pos2(100.8, 40.0), 1.25),
+        pos2(126.0 / 1.25, 40.0)
+    );
+}
+
+#[test]
+fn a_press_is_on_the_menu_by_the_pixel_it_is_in_among_the_pixels_the_menu_covers() {
+    use super::bar::on_menu;
+    use egui::Rect;
+    // At 1.25: a menu from 100.8125 (egui's 1/32-point rounding of the 126th pixel's
+    // corner, 100.8) to 180.8125 across, its pixels the 126th to the 225th; from 49.6 to
+    // 120 down, the 62nd to the 149th.
+    let menu = Rect::from_min_max(pos2(100.8125, 49.6), pos2(180.8125, 120.0));
+    // In the 126th pixel, though before the rect's edge in points: on it.
+    assert!(on_menu(pos2(100.801, 60.0), menu, 1.25));
+    assert!(!menu.contains(pos2(100.801, 60.0)));
+    // In the 125th: off it.
+    assert!(!on_menu(pos2(100.79, 60.0), menu, 1.25));
+    // The 225th, its last: on; the 226th: off.
+    assert!(on_menu(pos2(180.79, 60.0), menu, 1.25));
+    assert!(!on_menu(pos2(180.81, 60.0), menu, 1.25));
+    // Down: the 62nd and 149th on, the 61st and 150th off.
+    assert!(on_menu(pos2(120.0, 49.61), menu, 1.25));
+    assert!(on_menu(pos2(120.0, 119.99), menu, 1.25));
+    assert!(!on_menu(pos2(120.0, 49.59), menu, 1.25));
+    assert!(!on_menu(pos2(120.0, 120.01), menu, 1.25));
+    // At 1.5, 751's corner, 500.6667, rounds to 500.65625: a press at 500.66, in the
+    // 750th pixel, is off it, though after the rect's edge in points.
+    let menu = Rect::from_min_max(pos2(500.65625, 400.0), pos2(600.0, 500.0));
+    assert!(menu.contains(pos2(500.66, 450.0)));
+    assert!(!on_menu(pos2(500.66, 450.0), menu, 1.5));
+    assert!(on_menu(pos2(500.67, 450.0), menu, 1.5));
+}
+
+#[test]
+fn a_press_off_the_menu_closes_it_but_none_before_the_release_of_the_click_that_opens_it() {
+    use super::bar::pressed_off_menu;
+    use egui::{Event, Modifiers, PointerButton, Rect};
+    let button = |at: Pos2, button, pressed| Event::PointerButton {
+        pos: at,
+        button,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    let right = PointerButton::Secondary;
+    let left = PointerButton::Primary;
+    let menu = Rect::from_min_max(pos2(100.0, 50.0), pos2(180.0, 120.0));
+    // A click pressed 3 points up and left of where it let go, the menu at the release.
+    let click = [
+        button(pos2(97.0, 47.0), right, true),
+        Event::PointerMoved(pos2(100.0, 50.0)),
+        button(pos2(100.0, 50.0), right, false),
+    ];
+    // In the frame it opens: its own press closes nothing.
+    assert!(!pressed_off_menu(&click, menu, 2.0, true));
+    // Open since a frame before: the same press is off it.
+    assert!(pressed_off_menu(&click, menu, 2.0, false));
+    // Any press after the click's release counts, a right one too, off it; on it, none.
+    let mut after = click.to_vec();
+    after.push(button(pos2(90.0, 40.0), left, true));
+    assert!(pressed_off_menu(&after, menu, 2.0, true));
+    let mut after = click.to_vec();
+    after.push(button(pos2(300.0, 300.0), right, true));
+    assert!(pressed_off_menu(&after, menu, 2.0, true));
+    let mut after = click.to_vec();
+    after.push(button(pos2(120.0, 60.0), left, true));
+    assert!(!pressed_off_menu(&after, menu, 2.0, true));
+    // A slow frame that took a tool's click (Line's, pressed and let go off where the menu
+    // opens) before the right-click: that press came before the menu was there, and closes
+    // nothing, as no press of any button before the opening release does.
+    let left_first = [
+        button(pos2(90.0, 40.0), left, true),
+        button(pos2(90.0, 40.0), left, false),
+        click[0].clone(),
+        click[2].clone(),
+    ];
+    assert!(!pressed_off_menu(&left_first, menu, 2.0, true));
+    // A middle press too, held across the right-click.
+    let middle_first = [
+        button(pos2(300.0, 300.0), PointerButton::Middle, true),
+        click[0].clone(),
+        click[2].clone(),
+    ];
+    assert!(!pressed_off_menu(&middle_first, menu, 2.0, true));
+    // But a press after the opening release, off the menu, still closes it, in the same
+    // frame; once the menu is open a frame, every press off it does.
+    let mut then_off = left_first.to_vec();
+    then_off.push(button(pos2(90.0, 40.0), left, true));
+    assert!(pressed_off_menu(&then_off, menu, 2.0, true));
+    assert!(pressed_off_menu(&left_first, menu, 2.0, false));
+    // Releases and moves alone close nothing.
+    let released = [
+        button(pos2(10.0, 10.0), left, false),
+        Event::PointerMoved(pos2(0.0, 0.0)),
+    ];
+    assert!(!pressed_off_menu(&released, menu, 2.0, false));
+}
+
+#[test]
+fn a_drag_is_under_way_from_its_press_until_its_end_answers_but_not_while_it_waits_for_its_read() {
+    let begin = under(rectangle(Vec::new()));
+    let sketch = || silico_core::document::FeatureId::new("s0000001").unwrap();
+    let grab = || silico_core::command::DragGrab::Point(id("pa000003"));
+    let pressed = || {
+        drag::Drag::pressed(
+            sketch(),
+            grab(),
+            begin.clone(),
+            Revision::OPENED,
+            Pos2::ZERO,
+        )
+    };
+    // Held: under way, moved or not.
+    let mut held = pressed();
+    assert!(held.under_way());
+    held.moved = true;
+    assert!(held.under_way());
+    // Released after it moved, its begin still to go: under way (its begin, then its end).
+    held.release(Some([52.0, 32.0]));
+    assert!(held.wants_begin() && held.under_way());
+    // Released without moving, or cancelled before its begin went out: over, not under way.
+    let mut clicked = pressed();
+    clicked.release(Some([50.0, 30.0]));
+    assert!(clicked.over() && !clicked.under_way());
+    let mut cancelled = pressed();
+    cancelled.moved = true;
+    cancelled.cancel();
+    assert!(cancelled.over() && !cancelled.under_way());
+    // Its end answered, the read of its edit still to come: not under way, though not over.
+    let ended = drag::Drag::ended_at(
+        sketch(),
+        grab(),
+        begin.clone(),
+        begin.clone(),
+        Revision::OPENED.next().unwrap(),
+    );
+    assert!(!ended.over() && !ended.under_way());
+}
+
+#[test]
 fn the_palette_says_how_the_tool_on_is_used_and_how_trim_trims_each_way() {
     // The palette's Tool section, under the tool's name: how it's used, in the prototype's
     // words for the line, and the help's for trim's two ways (docs/ux/solidworks.md, §4).
     let mut mode = mode_on(under(rectangle(Vec::new())));
     let words = |mode: &SketchMode, settings: &mut bar::Settings| -> Vec<String> {
         let view = mode.palette_view(silico_core::command::Revision::OPENED, None);
-        texts_on_light(|ui| bar::palette(ui, &view, settings))
+        texts_on_light(|ui| bar::palette(ui, &view, settings, f32::INFINITY))
             .into_iter()
             .map(|(words, _)| words)
             .collect()
@@ -4462,6 +4717,113 @@ fn the_palette_says_how_the_tool_on_is_used_and_how_trim_trims_each_way() {
                 == "Click a curve to trim it to its closest cuts. Drag from one to extend it."),
         "{said:?}"
     );
+}
+
+// ---- #379's mutants: the over-define prompt's key badges, against `.kbd` ----
+
+/// Every shape the over-define prompt paints once it has settled (its modal faded in, at
+/// the app's fonts), in the order painted, nested lists opened in place.
+fn offer_prompt_shapes(view: &dimension::OfferView) -> Vec<egui::Shape> {
+    fn open(shape: egui::Shape, into: &mut Vec<egui::Shape>) {
+        match shape {
+            egui::Shape::Vec(inner) => inner.into_iter().for_each(|shape| open(shape, into)),
+            shape => into.push(shape),
+        }
+    }
+    let ctx = egui::Context::default();
+    ctx.set_fonts(crate::theme::fonts());
+    let mut shapes = Vec::new();
+    for second in 0..5 {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(f64::from(second)),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            dimension::offer_prompt(ui.ctx(), view);
+        });
+        output.textures_delta.clear();
+        shapes.clear();
+        for clipped in output.shapes {
+            open(clipped.shape, &mut shapes);
+        }
+    }
+    shapes
+}
+
+#[test]
+fn the_over_define_prompts_key_badges_are_sized_and_placed_as_the_prototypes_kbd() {
+    use egui::epaint::{RectShape, TextShape};
+    // The prototype's `.kbd` (styles.css), `* { box-sizing: border-box }`: `min-width:
+    // 16px; padding: 0 4px; height: 16px; border-radius: 3px; background: var(--g250);
+    // border: 1px solid var(--g350); border-bottom-width: 2px; color: var(--g800);
+    // font-size: 10.5px; text-align: center`.
+    let g250 = egui::Color32::from_rgb(0x27, 0x26, 0x26);
+    let g350 = egui::Color32::from_rgb(0x52, 0x51, 0x51);
+    let g800 = egui::Color32::from_rgb(0xe0, 0xdf, 0xdf);
+    let view = dimension::OfferView {
+        sketch: "Sketch1".to_owned(),
+        value: Some("20 mm".to_owned()),
+        flagged: vec!["ka000002".to_owned()],
+    };
+    let shapes = offer_prompt_shapes(&view);
+    // Each badge: its border's colour under the whole of it, then its fill, then its key.
+    let badges: Vec<(&RectShape, &RectShape, &TextShape)> = shapes
+        .windows(3)
+        .filter_map(|three| match three {
+            [
+                egui::Shape::Rect(outer),
+                egui::Shape::Rect(inner),
+                egui::Shape::Text(key),
+            ] if outer.fill == g350 && inner.fill == g250 => Some((outer, inner, key)),
+            _ => None,
+        })
+        .collect();
+    let keys: Vec<&str> = badges.iter().map(|(_, _, key)| key.galley.text()).collect();
+    assert_eq!(keys, ["1", "2", "Esc"]);
+    let near = |a: f32, b: f32| (a - b).abs() <= egui::emath::GUI_ROUNDING;
+    for (outer, inner, key) in badges {
+        let words = key.galley.text();
+        let text = key.galley.size();
+        // Border-box: as wide as its text, 4 of padding and 1 of border each side, but no
+        // narrower than 16; 16 high.
+        let width = (text.x + 2.0 * 4.0 + 2.0 * 1.0).max(16.0);
+        // Esc's three letters are wider than 6, so its badge is its text's width, not the
+        // least.
+        if words == "Esc" {
+            assert!(text.x + 2.0 * 4.0 + 2.0 * 1.0 > 16.0, "{text:?}");
+        }
+        assert!(
+            near(outer.rect.width(), width),
+            "{words}: {outer:?}, {text:?}"
+        );
+        assert!(near(outer.rect.height(), 16.0), "{words}: {outer:?}");
+        assert_eq!(outer.corner_radius, egui::CornerRadius::same(3), "{words}");
+        // Inside the border: 1 in at the top and the sides, 2 at the foot, its corners the
+        // radius less the border.
+        let inside = egui::Rect::from_min_max(
+            outer.rect.min + vec2(1.0, 1.0),
+            outer.rect.max - vec2(1.0, 2.0),
+        );
+        assert!(
+            near(inner.rect.min.x, inside.min.x)
+                && near(inner.rect.min.y, inside.min.y)
+                && near(inner.rect.max.x, inside.max.x)
+                && near(inner.rect.max.y, inside.max.y),
+            "{words}: {inner:?} against {inside:?}"
+        );
+        assert_eq!(inner.corner_radius, egui::CornerRadius::same(2), "{words}");
+        // The key centred in what's inside the border, at 10.5, in Gray.800.
+        let centre = key.pos + text / 2.0;
+        assert!(
+            near(centre.x, inside.center().x) && near(centre.y, inside.center().y),
+            "{words}: {centre:?} against {:?}",
+            inside.center()
+        );
+        let section = &key.galley.job.sections[0];
+        assert_eq!(section.format.font_id.size, 10.5, "{words}");
+        assert_eq!(section.format.color, g800, "{words}");
+    }
 }
 
 // The mutants #351's run left alive in `draw`: each placement, guard, and shape worked by
@@ -5517,9 +5879,9 @@ fn an_arcs_distance_is_its_rims_on_its_sweep_and_its_nearer_ends_past_it() {
 }
 
 // The mutants #351's run left alive in the panels (`bar`): their look, the tools' names,
-// the legend, the state's dot, and the status bar's words, each against the prototype
-// (docs/design/m5-ui/: styles.css's `:root`, `.state-dot`, and `.legend`; sketch.js's
-// palette).
+// the legend, and the state's dot, each against the prototype (docs/design/m5-ui/:
+// styles.css's `:root`, `.state-dot`, and `.legend`; sketch.js's palette). The status
+// bar's sketch words are `crate::status`'s here, and tested there.
 
 /// Every shape `draw` paints in a context showing egui's light theme, after two passes so
 /// its layout has settled, nested ones flattened, in paint order.
@@ -5552,7 +5914,7 @@ fn palette_painted(tool: Option<silico_core::sketch_tools::ToolKind>) -> Vec<egu
     mode.tools.choose(tool.map(tools::Choice::Draw));
     let view = mode.palette_view(silico_core::command::Revision::OPENED, None);
     let mut settings = bar::Settings::default();
-    painted_on_light(|ui| bar::palette(ui, &view, &mut settings))
+    painted_on_light(|ui| bar::palette(ui, &view, &mut settings, f32::INFINITY))
 }
 
 /// The one text painted that says `words`.
@@ -5755,39 +6117,6 @@ fn a_states_dot_is_the_prototypes_8_point_dot_its_words_a_gap_after_it() {
         "{:?} after {dot:?}",
         words.pos
     );
-}
-
-#[test]
-fn the_status_bars_sketch_words_say_whats_edited_the_pointer_and_the_state() {
-    let line = bar::StatusLine {
-        editing: "Editing Sketch1".to_owned(),
-        coordinates: Some("x 15.000 · y -5.250 mm".to_owned()),
-        state: Some(bar::StateShown {
-            words: "Fully defined".to_owned(),
-            colour: SKETCH_FULLY_DEFINED,
-        }),
-    };
-    let texts = texts_on_light(|ui| {
-        ui.horizontal(|ui| bar::status_ui(ui, &line));
-    });
-    let words: Vec<&str> = texts.iter().map(|(words, _)| words.as_str()).collect();
-    for said in ["Editing Sketch1", "x 15.000 · y -5.250 mm", "Fully defined"] {
-        assert!(words.contains(&said), "{said:?} in {words:?}");
-    }
-    assert!(texts.contains(&("Fully defined".to_owned(), SKETCH_FULLY_DEFINED)));
-    // The pointer off the canvas, and the sketch not read: a dash, and no state.
-    let off = bar::StatusLine {
-        coordinates: None,
-        state: None,
-        ..line
-    };
-    let texts = texts_on_light(|ui| {
-        ui.horizontal(|ui| bar::status_ui(ui, &off));
-    });
-    let words: Vec<&str> = texts.iter().map(|(words, _)| words.as_str()).collect();
-    assert!(words.contains(&"Editing Sketch1"), "{words:?}");
-    assert!(words.contains(&"—"), "{words:?}");
-    assert!(!words.contains(&"Fully defined"), "{words:?}");
 }
 
 // The mutants #351's run left alive in sketch mode's own (`mod.rs`): the fill found by its

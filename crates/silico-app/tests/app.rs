@@ -10380,6 +10380,11 @@ impl Fixture {
     /// The app with `text` open, at two physical pixels a point, its viewport marked and its
     /// tab watched, every overlay's call kept.
     fn overlaid(&self, text: &str) -> (AppHarness, Overlays) {
+        self.overlaid_at(text, 2.0)
+    }
+
+    /// [`overlaid`](Self::overlaid), at `pixels_per_point`.
+    fn overlaid_at(&self, text: &str, pixels_per_point: f32) -> (AppHarness, Overlays) {
         let path = self.file("example.silico", text);
         let seen = Overlays::default();
         let app =
@@ -10388,7 +10393,7 @@ impl Fixture {
             let _marked = never_waits::marked();
             Harness::builder()
                 .with_size((1280.0, 800.0))
-                .with_pixels_per_point(2.0)
+                .with_pixels_per_point(pixels_per_point)
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
@@ -14834,6 +14839,8 @@ struct ToolbarStub {
     create_sketch: Option<bool>,
     off: Vec<silico_app::dialog::Kind>,
     selected: bool,
+    tool: Option<silico_app::sketch::tools::Choice>,
+    construction: bool,
     filter: silico_app::selection::Filter,
     acts: Vec<silico_app::toolbar::Act>,
 }
@@ -14845,6 +14852,8 @@ impl ToolbarStub {
             create_sketch: None,
             off: Vec::new(),
             selected: false,
+            tool: None,
+            construction: false,
             filter: silico_app::selection::Filter::default(),
             acts: Vec::new(),
         }
@@ -14870,6 +14879,8 @@ fn toolbar_with(
                     create_sketch: stub.create_sketch,
                     can_open: &can_open,
                     selected: stub.selected,
+                    tool: stub.tool,
+                    construction: stub.construction,
                     filter: stub.filter,
                 };
                 // The whole window, as the app's frame has it, not the harness's panel inside
@@ -14923,7 +14934,8 @@ fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
     );
     assert!(h.query_by_label("Finish Sketch").is_none());
     // A sketch open (#351's `tab.in_sketch()`): SKETCH after SOLID, and shown; its panels
-    // (app.js:384), none of their tools built in the toolbar yet; Finish Sketch, on.
+    // (app.js:384), sketch mode's tools and Construction on, the rest not built yet;
+    // Finish Sketch, on.
     h.state_mut().in_sketch = true;
     h.step();
     h.step();
@@ -14969,12 +14981,23 @@ fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
         ]
     );
     assert_eq!(panel(&h, "INSPECT"), ["Measure", "INSPECT"]);
-    for label in ["CREATE", "MODIFY", "CONSTRAINTS", "INSPECT"] {
-        assert_eq!(
-            on_of(&h.get_by_role_and_label(Role::Toolbar, label)),
-            [label]
-        );
-    }
+    let on =
+        |h: &ToolbarHarness, label: &str| on_of(&h.get_by_role_and_label(Role::Toolbar, label));
+    assert_eq!(
+        on(&h, "CREATE"),
+        [
+            "Line",
+            "Rectangle",
+            "Circle",
+            "Arc",
+            "Point",
+            "Construction",
+            "CREATE"
+        ]
+    );
+    assert_eq!(on(&h, "MODIFY"), ["Trim", "Split", "MODIFY"]);
+    assert_eq!(on(&h, "CONSTRAINTS"), ["Smart Dimension", "CONSTRAINTS"]);
+    assert_eq!(on(&h, "INSPECT"), ["INSPECT"]);
     // `.tb-finish`: at the panels' right end, inside `.tb-panels`' 6 and its own 8; 30
     // high, centred in the 52 of panels under the 24 of tabs.
     let finish = h.get_by_role_and_label(Role::Button, "Finish Sketch");
@@ -16007,6 +16030,34 @@ fn a_move_asked_while_a_dialog_is_open_is_refused_and_said() {
     );
     assert_eq!(h.state().tabs()[0].sent.len(), sent);
     assert_eq!(items(&h), ["Block", "Pin", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_move_asked_in_sketch_mode_is_refused_and_said_and_sends_nothing() {
+    // A move made in sketch mode would land inside its range: Cancel would drop it
+    // unasked, and Finish fold it into the sketch's one undo step.
+    let f = fixture();
+    let mut h = triangle_opened(&f);
+    assert_eq!(items(&h), ["Washer", "Plate", "Triangle"]);
+    let sent = h.state().tabs()[0].sent.len();
+    let washer = timeline(&h).get_by_label("Washer").rect();
+    drag_item(
+        &mut h,
+        "Plate",
+        washer.left_center() + eframe::egui::vec2(3.0, 0.0),
+    );
+    step(&mut h);
+    // Said in the status bar, where the timeline's other refusals are.
+    assert!(
+        h.query_all_by_label("Finish or cancel the sketch before moving a feature")
+            .next()
+            .is_some()
+    );
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert_eq!(items(&h), ["Washer", "Plate", "Triangle"]);
+    assert!(sketch_mode(&h).is_some());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -17152,6 +17203,77 @@ fn ctrl_shift_b_does_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn a_rebuild_everything_check_an_edit_overtook_marks_nothing_once_it_answers() {
+    use std::sync::atomic::AtomicUsize;
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "rebuilt", |h| {
+        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
+    });
+    settled(&mut h);
+    // The next box made is refused, once: Rebuild everything makes the Block again, and its
+    // check marks it.
+    let refused = Arc::new(AtomicUsize::new(0));
+    let once = Arc::clone(&refused);
+    f.kernel.refuse(move |op| {
+        (is_box(op) && once.fetch_add(1, Ordering::SeqCst) == 0)
+            .then(|| Error::new(ErrorCode::KernelFailed, "the block came apart"))
+    });
+    let id = h.state().tabs()[0].id;
+    // Its check sent, its box held, so no frame takes its answer before the edit is sent.
+    let hold = f.kernel.hold(is_box);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 1);
+    assert!(f.kernel.wait_running(1, WAIT));
+    assert!(h.state().tabs()[0].checking());
+    hold.release();
+    // Its check answered by the session, the box refused, before any frame takes it.
+    let deadline = Instant::now() + WAIT;
+    while refused.load(Ordering::SeqCst) == 0
+        || f.sessions
+            .status(&id)
+            .result
+            .as_ref()
+            .map_or(true, |status| status.running.is_some())
+    {
+        assert!(Instant::now() < deadline, "the check never answered");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // An edit sent before the tab takes that answer: the Block 41 long, which builds (the
+    // refusal was once).
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.edit(
+            &sessions,
+            silico_app::tab::Edit {
+                feature: silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+                field: "length".to_owned(),
+                value: json::read(b"41").unwrap(),
+            },
+        );
+    }
+    // The old check's answer is taken, and its mark never shown, frame after frame, until
+    // the edit's own check has answered (which may say what the document's text lacks, as
+    // the first did: no fingerprints).
+    let marked = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .said
+            .values()
+            .any(|said| said.message == "the block came apart")
+    };
+    for frame in 0..30 {
+        step(&mut h);
+        assert!(!marked(&h), "frame {frame}: {:?}", h.state().tabs()[0].said);
+    }
+    settled(&mut h);
+    assert!(!marked(&h));
+    assert!(!h.state().tabs()[0].checking());
+    assert_eq!(never_waits::waits(), 0);
+}
+
 // ---- Each command's keys do what its button or menu item does ----
 
 /// A question's modal (Open's, Save As's) asked by `chord`, then by `click`: each
@@ -17226,6 +17348,70 @@ fn same_view(command: Command, part: impl Fn(&AppHarness) -> egui_kittest::Node<
         part(&h).click();
         step(&mut h);
         assert_eq!(view(&h).camera(), &keyed, "{command:?}");
+    }
+}
+
+/// SKETCHED's Triangle, opened in sketch mode from the browser, and read.
+fn triangle_opened(f: &Fixture) -> AppHarness {
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    h
+}
+
+/// The SKETCH tab's button labelled `label`, in its panels.
+fn sketch_button<'h>(h: &'h AppHarness, label: &'h str) -> egui_kittest::Node<'h> {
+    ["CREATE", "MODIFY", "CONSTRAINTS"]
+        .into_iter()
+        .find_map(|panel| {
+            h.query_by_role_and_label(Role::Toolbar, panel)?
+                .query_by_role_and_label(Role::Button, label)
+        })
+        .unwrap_or_else(|| panic!("no {label} in SKETCH's panels"))
+}
+
+/// The toolbar's Finish Sketch, at the panels' right (the sketch bar's is in the canvas,
+/// below it).
+fn toolbar_finish(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.query_all_by_role_and_label(Role::Button, "Finish Sketch")
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+}
+
+/// In sketch mode, what the SKETCH button labelled `label` turns on, by `chords` and by the
+/// button: from off, on, then off again, each way; `on` saying whether it is, and the button
+/// shown pressed or not with it.
+fn same_toggle(
+    h: &mut AppHarness,
+    label: &str,
+    chords: Vec<Chord>,
+    on: impl Fn(&AppHarness) -> bool,
+) {
+    let pressed = |h: &AppHarness| toggled(&sketch_button(h, label));
+    assert_eq!(
+        (on(h), pressed(h)),
+        (false, Some(false)),
+        "{label} at first"
+    );
+    for chord in chords {
+        for by_keys in [true, false] {
+            for want in [true, false] {
+                if by_keys {
+                    press_chord(h, chord);
+                } else {
+                    sketch_button(h, label).click();
+                }
+                step(h);
+                step(h);
+                assert_eq!(on(h), want, "{label}, by its keys: {by_keys}");
+                assert_eq!(
+                    pressed(h),
+                    Some(want),
+                    "{label} drawn, by its keys: {by_keys}"
+                );
+            }
+        }
     }
 }
 
@@ -17564,6 +17750,75 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                         assert_eq!(boxes(&h), kept, "{command:?}, by its keys: {by_keys}");
                     }
                 }
+            }
+            Command::Line
+            | Command::Rectangle
+            | Command::Circle
+            | Command::Arc
+            | Command::Point
+            | Command::Trim
+            | Command::Dimension => {
+                use silico_app::sketch::tools::Choice;
+                use silico_core::sketch_tools::ToolKind;
+                // The prototype's tools (app.js's `CMD`, interact.js's `setTool`): the
+                // rectangle the corner one and the arc the 3-point one, Fusion's first.
+                let choice = match command {
+                    Command::Line => Choice::Draw(ToolKind::Line),
+                    Command::Rectangle => Choice::Draw(ToolKind::CornerRectangle),
+                    Command::Circle => Choice::Draw(ToolKind::Circle),
+                    Command::Arc => Choice::Draw(ToolKind::ThreePointArc),
+                    Command::Point => Choice::Draw(ToolKind::Point),
+                    Command::Trim => Choice::Trim,
+                    _ => Choice::Dimension,
+                };
+                let f = fixture();
+                let mut h = triangle_opened(&f);
+                let tool = |h: &AppHarness| sketch_mode(h).unwrap().tools.choice();
+                same_toggle(&mut h, entry.label, keys_of(command), |h| {
+                    tool(h)
+                        .map(|chosen| assert_eq!(chosen, choice, "{command:?}"))
+                        .is_some()
+                });
+                assert_eq!(never_waits::waits(), 0);
+            }
+            Command::Construction => {
+                let f = fixture();
+                let mut h = triangle_opened(&f);
+                same_toggle(&mut h, entry.label, keys_of(command), |h| {
+                    sketch_mode(h).unwrap().settings.construction
+                });
+                assert_eq!(never_waits::waits(), 0);
+            }
+            Command::FinishSketch => {
+                use silico_app::sketch::tools::Choice;
+                use silico_core::sketch_tools::ToolKind;
+                let f = fixture();
+                let mut h = triangle_opened(&f);
+                let points = |h: &AppHarness| sketch_of_text(&f, h, "s0000001").points.len();
+                for chord in keys_of(command) {
+                    for by_keys in [true, false] {
+                        // A point added, so Finish (it's kept) differs from Cancel (it's
+                        // dropped).
+                        let before = points(&h);
+                        h.state_mut().tabs_mut()[0].sketch_toggle(Choice::Draw(ToolKind::Point));
+                        sketch_events(&f, &mut h, &clicked(30.0 + before as f64, 5.0));
+                        settled(&mut h);
+                        assert_eq!(points(&h), before + 1);
+                        if by_keys {
+                            press_chord(&mut h, chord);
+                        } else {
+                            toolbar_finish(&h).click();
+                        }
+                        step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+                        settled(&mut h);
+                        assert_eq!(points(&h), before + 1, "kept, by its keys: {by_keys}");
+                        // Open again, for the next.
+                        let sessions = Arc::clone(&f.sessions);
+                        h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &sketch_id("s0000001"));
+                        sketch_read(&mut h);
+                    }
+                }
+                assert_eq!(never_waits::waits(), 0);
             }
             Command::Rename => {
                 // By its keys, then by the timeline's menu item labelled as the registry
@@ -19525,8 +19780,9 @@ fn finish_or_cancel_back_at_where_it_opened_by_an_undo_changes_nothing_of_the_un
 
 // ---- Sketch tools (M5.11b; section 9, *Sketching*) ----
 
-/// The projection the tools are driven through until the pane's overlay gives its own
-/// (#351): ten points a millimetre, the origin at (100, 500), y up.
+/// The projection the tools are driven through by hand ([`sketch_events`]), which the pane's
+/// own overlay is made to match ([`hand_camera`]): ten points a millimetre, the origin at
+/// (100, 500), y up.
 fn to_screen(at: [f64; 2]) -> Option<eframe::egui::Pos2> {
     Some(eframe::egui::pos2(
         (100.0 + 10.0 * at[0]) as f32,
@@ -19571,9 +19827,11 @@ fn dragged(from: [f64; 2], to: [f64; 2]) -> Vec<silico_app::sketch::PointerEvent
 }
 
 /// `events` given to the first tab's sketch mode as one frame of the viewport's overlay
-/// gives them (`Tab::sketch_frame`, which the pane calls once #351 wires it), on a thread
-/// marked so a wait there counts, the pointer at the last; then one frame of the app's.
+/// gives them (`Tab::sketch_frame`, which the pane's `Tab::overlay` calls), through
+/// [`to_screen`], on a thread marked so a wait there counts, the pointer at the last; then
+/// one frame of the app's, whose pane draws through the same projection ([`hand_camera`]).
 fn sketch_events(f: &Fixture, h: &mut AppHarness, events: &[silico_app::sketch::PointerEvent]) {
+    hand_camera(h);
     {
         let _marked = never_waits::marked();
         let ctx = eframe::egui::Context::default();
@@ -19593,6 +19851,32 @@ fn sketch_events(f: &Fixture, h: &mut AppHarness, events: &[silico_app::sketch::
         output.textures_delta.clear();
     }
     step(h);
+}
+
+/// The viewport's camera set so the pane's own overlay, which draws sketch mode every frame
+/// through the renderer's projection, draws XY as [`to_screen`] does: orthographic, straight
+/// down, a tenth of a millimetre a point, the image's centre over the sketch's place
+/// `to_sketch` gives it. Nothing until the pane has drawn a frame.
+fn hand_camera(h: &mut AppHarness) {
+    let Some(frame) = view(h).frame() else {
+        return;
+    };
+    let ppp = f64::from(frame.pixels_per_point);
+    let [width, height] = frame.size_px.map(f64::from);
+    // The image's centre on the screen, in f64, and where `to_sketch` puts it.
+    let centre = [
+        f64::from(frame.rect.left()) + width / 2.0 / ppp,
+        f64::from(frame.rect.top()) + height / 2.0 / ppp,
+    ];
+    let [x, y] = [(centre[0] - 100.0) / 10.0, (500.0 - centre[1]) / 10.0];
+    view_mut(h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic {
+            view_height: height / ppp / 10.0,
+        },
+        eye: [x, y, 1000.0],
+        target: [x, y, 0.0],
+        up: [0.0, 1.0, 0.0],
+    });
 }
 
 /// The sketch `id` as the session's document holds it.
@@ -19799,6 +20083,46 @@ fn a_line_chain_ends_by_enter_esc_leaves_the_tool_then_the_selection_and_its_let
     // Nothing more was added: the click Esc ended was a chain's first.
     settled(&mut h);
     assert_eq!(adds_sent(&h), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether a label `words` is in the status bar: on the line of its Shortcuts button.
+fn in_status_bar(h: &AppHarness, words: &str) -> bool {
+    let bar = h.get_by_role_and_label(Role::Button, "Shortcuts").rect();
+    h.query_all_by_label(words)
+        .any(|node| bar.y_range().contains(node.rect().center().y))
+}
+
+#[test]
+fn in_sketch_mode_the_status_bar_says_the_sketch_the_pointer_on_it_and_its_state_and_none_of_it_outside()
+ {
+    let f = fixture();
+    let mut h = triangle_opened(&f);
+    // The fixture's fake solver answers each sketch as sent with no freedoms
+    // (`FakeSketches::as_sent`'s `dofs: 0`): fully defined.
+    let state = "Fully defined";
+    step_until(&mut h, "its line", |h| {
+        in_status_bar(h, "Editing Triangle") && in_status_bar(h, state)
+    });
+    // Off the canvas: a dash.
+    assert!(in_status_bar(&h, "—"));
+    // The pointer over the canvas, the view as `to_screen` draws it: its place on XY.
+    hand_camera(&mut h);
+    step(&mut h);
+    let at = the_viewport(&h).center().round();
+    h.hover_at(at);
+    step(&mut h);
+    step(&mut h);
+    let [x, y] = to_sketch(at).unwrap();
+    let words = format!("x {x:.3} · y {y:.3} mm");
+    assert!(in_status_bar(&h, &words), "{words}");
+    assert!(!in_status_bar(&h, "—"));
+    // Finished: none of it.
+    leave_sketch(&mut h, true);
+    step(&mut h);
+    for gone in ["Editing Triangle", state, words.as_str(), "—"] {
+        assert!(!in_status_bar(&h, gone), "{gone}");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -20967,6 +21291,55 @@ fn boxed_sketch(f: &Fixture) -> AppHarness {
     h
 }
 
+#[test]
+fn closing_the_tab_mid_drag_asks_first_though_the_drags_transaction_hasnt_answered() {
+    use silico_app::sketch::PointerAction::{Move, Press};
+    let f = fixture();
+    // Freedoms counted, so the corner is free to drag.
+    counting(&f);
+    let mut h = boxed_sketch(&f);
+    assert!(!h.state().tabs()[0].unsaved());
+    // The corner pa000003 pressed and moved: one frame of the overlay, as `sketch_events`
+    // gives it, and none of the app's after it, so the drag's `begin` and `drag_begin` are
+    // sent and neither answer taken: no transaction open yet.
+    hand_camera(&mut h);
+    {
+        let _marked = never_waits::marked();
+        let ctx = eframe::egui::Context::default();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        let events = [pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)];
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let input = silico_app::sketch::FrameInput {
+                events: &events,
+                pointer: events.last().map(|event| event.at),
+                project: &to_screen,
+                to_plane: &to_sketch,
+            };
+            tab.sketch_frame(&sessions, &painter, &input);
+        });
+        output.textures_delta.clear();
+    }
+    assert_eq!(drag_sends(&h, "drag_begin"), 1);
+    assert!(the_drag(&h).is_some_and(|drag| drag.in_flight()));
+    assert!(!h.state().tabs()[0].transaction);
+    // What Close asks on: the drag holds an edit under way.
+    assert!(h.state().tabs()[0].unsaved());
+    // And the window's Close asks. Its tab, unsaved since the drag began, is drawn in the
+    // next frame with its " *", which moves its close button right by the asterisk's
+    // width; so the close button is pressed as itself (a keyboard's or a screen reader's
+    // press), wherever that frame draws it, not at the last frame's place.
+    h.get_by_label("Close boxed.silico").click_accesskit();
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question, or the tab closed", |h| {
+        anywhere(h, question) || h.state().tabs().is_empty()
+    });
+    assert!(anywhere(&h, question));
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// Sketch mode's drag.
 fn the_drag(h: &AppHarness) -> Option<&silico_app::sketch::drag::Drag> {
     h.state().tabs()[0].drag.as_ref()
@@ -21029,13 +21402,15 @@ fn a_dragged_corner_follows_the_newest_cursor_one_move_in_flight_the_ui_never_wa
         })
         .flat_map(silico_app::sketch::draw::Drawn::positions)
         .collect();
-    assert_eq!(
-        points,
-        [
-            to_screen([50.0, 30.0]).unwrap(),
-            to_screen([52.05, 32.03]).unwrap()
-        ]
-    );
+    // Drawn by the pane, through the renderer's f32 projection: to a thousandth of a point.
+    let expected = [
+        to_screen([50.0, 30.0]).unwrap(),
+        to_screen([52.05, 32.03]).unwrap(),
+    ];
+    assert_eq!(points.len(), 2, "{points:?}");
+    for (got, expected) in points.iter().zip(expected) {
+        assert!((*got - expected).length() < 1e-3, "{points:?}");
+    }
     // The sketch worker held: one move sent, solving; three more cursors over frames that
     // go on, none sent, and the UI thread never waiting on the held move.
     f.sketches.hold();
@@ -22222,6 +22597,1196 @@ fn the_canvas_menus_end_chain_ends_a_chain_under_way_closes_the_menu_and_keeps_s
     assert!(mode.menu_at.is_none());
     assert!(!mode.tools.busy());
     assert_eq!(mode.tools.choice(), Some(Choice::Draw(ToolKind::Line)));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Sketch mode through the pane (M5.11's wiring: `Tab::overlay`) ----
+
+/// Where the top views below centre the image: (40, 20) on XY.
+const TOP_TARGET: [f64; 2] = [40.0, 20.0];
+/// Their height, in millimetres.
+const TOP_HEIGHT: f64 = 100.0;
+
+/// The viewport's camera straight down on XY, orthographic, [`TOP_HEIGHT`] high, its
+/// image's centre over [`TOP_TARGET`], x right and y up the image; and frames until the
+/// pane's frame has it.
+fn top_view(h: &mut AppHarness) {
+    let [x, y] = TOP_TARGET;
+    let camera = silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic {
+            view_height: TOP_HEIGHT,
+        },
+        eye: [x, y, 1000.0],
+        target: [x, y, 0.0],
+        up: [0.0, 1.0, 0.0],
+    };
+    view_mut(h).set_camera(camera.clone());
+    step_until(h, "the top view drawn", |h| {
+        view(h).frame().is_some_and(|frame| frame.camera == camera)
+    });
+}
+
+/// Where [`top_view`] shows XY's place `at`, worked by hand from the pane's frame: the
+/// image's `size_px` high over [`TOP_HEIGHT`], its centre over [`TOP_TARGET`], then from
+/// physical pixels to points from the viewport's top left.
+fn top_screen(h: &AppHarness, at: [f64; 2]) -> eframe::egui::Pos2 {
+    let frame = view(h).frame().unwrap();
+    let ppp = f64::from(frame.pixels_per_point);
+    let [width, height] = frame.size_px.map(f64::from);
+    let mm = TOP_HEIGHT / height;
+    let pixel = [
+        width / 2.0 + (at[0] - TOP_TARGET[0]) / mm,
+        height / 2.0 - (at[1] - TOP_TARGET[1]) / mm,
+    ];
+    eframe::egui::pos2(
+        (f64::from(frame.rect.left()) + pixel[0] / ppp) as f32,
+        (f64::from(frame.rect.top()) + pixel[1] / ppp) as f32,
+    )
+}
+
+/// The left button pressed at XY's place `at` in [`top_view`], on the screen, as the
+/// window's pointer gives it; a frame.
+fn pane_press(h: &mut AppHarness, at: [f64; 2]) {
+    let at = top_screen(h, at);
+    let none = eframe::egui::Modifiers::NONE;
+    h.hover_at(at);
+    button_event(h, at, eframe::egui::PointerButton::Primary, true, none);
+    step(h);
+}
+
+/// The pointer moved to `at`; a frame.
+fn pane_move(h: &mut AppHarness, at: [f64; 2]) {
+    let at = top_screen(h, at);
+    h.hover_at(at);
+    step(h);
+}
+
+/// The left button let go at `at`; a frame.
+fn pane_release(h: &mut AppHarness, at: [f64; 2]) {
+    let at = top_screen(h, at);
+    let none = eframe::egui::Modifiers::NONE;
+    h.hover_at(at);
+    button_event(h, at, eframe::egui::PointerButton::Primary, false, none);
+    step(h);
+}
+
+/// A click at `at`: pressed and let go a frame apart.
+fn pane_click(h: &mut AppHarness, at: [f64; 2]) {
+    pane_press(h, at);
+    pane_release(h, at);
+}
+
+/// The one point of `sketch` within `within` of (x, y), its ID.
+fn point_near(sketch: &silico_core::document::Sketch, x: f64, y: f64, within: f64) -> String {
+    let found: Vec<&str> = sketch
+        .points
+        .iter()
+        .filter(|p| (p.x.mm() - x).abs() <= within && (p.y.mm() - y).abs() <= within)
+        .map(|p| p.id.as_str())
+        .collect();
+    assert_eq!(found.len(), 1, "one point near ({x}, {y}) in {sketch:?}");
+    found[0].to_owned()
+}
+
+/// What a click through the pane comes to on the plane: the pointer's place in f32
+/// points, a ray, and the renderer's f32 projection. A ten-thousandth of a millimetre.
+const THROUGH_THE_PANE: f64 = 1e-4;
+
+/// [`assert_rectangle_in`], each corner within [`THROUGH_THE_PANE`] of where it was asked.
+fn assert_rectangle_near(sketch: &silico_core::document::Sketch, lo: [f64; 2], hi: [f64; 2]) {
+    let corner = |x, y| point_near(sketch, x, y, THROUGH_THE_PANE);
+    let a = corner(lo[0], lo[1]);
+    let b = corner(hi[0], lo[1]);
+    let c = corner(hi[0], hi[1]);
+    let d = corner(lo[0], hi[1]);
+    for (from, to, horizontal) in [
+        (&a, &b, true),
+        (&b, &c, false),
+        (&c, &d, true),
+        (&d, &a, false),
+    ] {
+        let side = line_between(sketch, from, to).unwrap_or_else(|| panic!("{from} to {to}"));
+        assert!(holds_direction(sketch, &side, horizontal), "{side}");
+        assert!(!holds_direction(sketch, &side, !horizontal), "{side}");
+    }
+}
+
+#[test]
+fn a_rectangle_dragged_through_the_panes_left_events_at_two_pixels_a_point_is_four_lines_two_level_two_plumb()
+ {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let (mut h, _) = f.overlaid(EXAMPLE);
+    assert_eq!(h.ctx.pixels_per_point(), 2.0);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    top_view(&mut h);
+    h.key_press(eframe::egui::Key::R);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Draw(ToolKind::CornerRectangle))
+    );
+    // Pressed at (25, 12), dragged through (40, 20), let go at (55, 28): the pane's own
+    // events, at its physical pixels, through `Tab::overlay`, and nothing by hand.
+    let (from, to) = ([25.0, 12.0], [55.0, 28.0]);
+    pane_press(&mut h, from);
+    pane_move(&mut h, [40.0, 20.0]);
+    pane_move(&mut h, to);
+    // The pointer read on the plane, for the status bar.
+    let pointer = sketch_mode(&h).unwrap().pointer.unwrap();
+    assert!((pointer[0] - to[0]).abs() < THROUGH_THE_PANE, "{pointer:?}");
+    assert!((pointer[1] - to[1]).abs() < THROUGH_THE_PANE, "{pointer:?}");
+    pane_release(&mut h, to);
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 1);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!((sketch.points.len(), sketch.lines.len()), (4, 4));
+    assert_eq!(sketch.constraints.len(), 4, "{:?}", sketch.constraints);
+    assert_rectangle_near(&sketch, from, to);
+    // And it reads back so: four lines, two horizontals and two verticals.
+    read_with_lines(&mut h, 4);
+    let read = sketch_mode(&h).unwrap().drawable().unwrap().clone();
+    let directions = |level: bool| {
+        read.members
+            .lines
+            .iter()
+            .filter(|line| holds_direction(&read.members, line.id.as_str(), level))
+            .count()
+    };
+    assert_eq!((directions(true), directions(false)), (2, 2));
+    // Drawn where the renderer would draw it: each corner's point at its place on the screen
+    // (a thousandth of a point).
+    step(&mut h);
+    for corner in [from, [to[0], from[1]], to, [from[0], to[1]]] {
+        let point = point_near(&read.members, corner[0], corner[1], THROUGH_THE_PANE);
+        let drawn: Vec<eframe::egui::Pos2> = sketch_mode(&h)
+            .unwrap()
+            .last_drawn()
+            .iter()
+            .filter(|d| {
+                matches!(d, silico_app::sketch::draw::Drawn::Point { .. })
+                    && d.of().is_some_and(|i| i.as_str() == point)
+            })
+            .flat_map(silico_app::sketch::draw::Drawn::positions)
+            .collect();
+        assert_eq!(drawn.len(), 1, "{drawn:?}");
+        let expected = top_screen(&h, corner);
+        assert!(
+            (drawn[0] - expected).length() < 1e-2,
+            "{drawn:?} {expected:?}"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dimension_placed_through_the_pane_picks_the_side_clicked_and_opens_its_modify_box_there() {
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    // The right side, na000002 from (50, 10) to (50, 30), clicked at its middle; then the
+    // place, 10 to its right: its length, 20, in the Modify box at the place.
+    pane_click(&mut h, [50.0, 20.0]);
+    pane_click(&mut h, [60.0, 20.0]);
+    let place = top_screen(&h, [60.0, 20.0]);
+    step_until(&mut h, "the Modify box open", |h| {
+        sketch_mode(h).and_then(|mode| mode.modify_view()).is_some()
+    });
+    let view = sketch_mode(&h).unwrap().modify_view().unwrap();
+    let measured: f64 = view.text.parse().unwrap();
+    assert!((measured - 20.0).abs() < THROUGH_THE_PANE, "{}", view.text);
+    assert!(view.placing);
+    // Shown where the place was clicked, as the pane projects it (a hundredth of a point).
+    assert!((view.at - place).length() < 1e-2, "{:?} {place:?}", view.at);
+    modify_dimension(&f, &mut h, ModifyAction::Typed("20".to_owned()));
+    modify_dimension(&f, &mut h, ModifyAction::Accept);
+    settled(&mut h);
+    read_with_constraints(&mut h, 5);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let lengths = lengths(&sketch);
+    assert_eq!(lengths.len(), 1, "{lengths:?}");
+    let (_, line, value, driving) = &lengths[0];
+    assert_eq!(
+        (line.as_str(), value.as_str(), *driving),
+        ("na000002", "20", true)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_corner_dragged_through_the_pane_follows_the_cursor_and_ends_in_one_edit_there() {
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    let text = text_of(&f, &h);
+    // The free corner pa000003, (50, 30), pressed and moved to (52, 32): a drag, begun, its
+    // first frame as the fake answers (the cursor plus a thousandth of where it began).
+    pane_press(&mut h, [50.0, 30.0]);
+    pane_move(&mut h, [52.0, 32.0]);
+    assert_eq!(drag_sends(&h, "drag_begin"), 1);
+    step_until(&mut h, "the first frame", |h| {
+        the_drag(h).is_some_and(|d| d.frames >= 1)
+    });
+    let shown = shown_at(&h, "pa000003").unwrap();
+    assert!((shown[0] - 52.05).abs() < THROUGH_THE_PANE, "{shown:?}");
+    assert!((shown[1] - 32.03).abs() < THROUGH_THE_PANE, "{shown:?}");
+    // Its ghost, where it began, drawn faintly behind it: the point twice, at both places.
+    step(&mut h);
+    let drawn: Vec<eframe::egui::Pos2> = sketch_mode(&h)
+        .unwrap()
+        .last_drawn()
+        .iter()
+        .filter(|d| {
+            matches!(d, silico_app::sketch::draw::Drawn::Point { .. })
+                && d.of().is_some_and(|i| i.as_str() == "pa000003")
+        })
+        .flat_map(silico_app::sketch::draw::Drawn::positions)
+        .collect();
+    assert_eq!(drawn.len(), 2, "{drawn:?}");
+    assert!((drawn[0] - top_screen(&h, [50.0, 30.0])).length() < 1e-2);
+    assert!((drawn[1] - top_screen(&h, [52.05, 32.03])).length() < 1e-2);
+    // Let go there: one `drag_end`, the corner written where its last frame put it.
+    pane_release(&mut h, [52.0, 32.0]);
+    settled(&mut h);
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    point_near(&sketch, 52.05, 32.03, THROUGH_THE_PANE);
+    point_near(&sketch, 10.0, 10.0, 0.0);
+    assert_ne!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drag_held_when_its_tab_is_hidden_ends_from_its_begin_and_its_corner_is_where_it_was_on_return()
+{
+    let f = fixture();
+    counting(&f);
+    let (mut h, seen) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    let text = text_of(&f, &h);
+    let first = h.state().tabs()[0].id;
+    // The corner pressed and dragged to (60, 40), begun and drawn there, still held.
+    pane_press(&mut h, [50.0, 30.0]);
+    pane_move(&mut h, [60.0, 40.0]);
+    step_until(&mut h, "the first frame", |h| {
+        the_drag(h).is_some_and(|d| d.frames >= 1)
+    });
+    assert!(the_drag(&h).unwrap().held());
+    left_taken(&seen);
+    // Another document opened over it, the button still held: the first tab's press ends in
+    // a Cancel given through its own overlay, which ends the drag from its begin state.
+    let other = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(other.to_str().unwrap(), false);
+    step_until(&mut h, "the second tab", |h| h.state().tabs().len() == 2);
+    let events = left_taken(&seen);
+    let cancels: Vec<_> = events
+        .iter()
+        .filter(|e| e.session == first)
+        .map(|e| e.event.kind)
+        .collect();
+    assert_eq!(
+        cancels,
+        [silico_app::viewport::LeftKind::Cancel],
+        "{events:?}"
+    );
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    // Let go and moved in the second tab: nothing of the first's.
+    pane_release(&mut h, [62.0, 42.0]);
+    pane_move(&mut h, [64.0, 44.0]);
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), text);
+    // Back on the first: the corner where it was, read and drawn, with no drag.
+    h.get_by_role_and_label(Role::Button, "example.silico")
+        .click();
+    step_until(&mut h, "the first shown", |h| left_shown(h) == Some(first));
+    top_view(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(the_drag(&h).is_none());
+    let read = sketch_mode(&h).unwrap().drawable().unwrap().clone();
+    point_near(&read.members, 50.0, 30.0, 0.0);
+    let drawn: Vec<eframe::egui::Pos2> = sketch_mode(&h)
+        .unwrap()
+        .last_drawn()
+        .iter()
+        .filter(|d| {
+            matches!(d, silico_app::sketch::draw::Drawn::Point { .. })
+                && d.of().is_some_and(|i| i.as_str() == "pa000003")
+        })
+        .flat_map(silico_app::sketch::draw::Drawn::positions)
+        .collect();
+    assert_eq!(drawn.len(), 1, "{drawn:?}");
+    assert!((drawn[0] - top_screen(&h, [50.0, 30.0])).length() < 1e-2);
+    assert_eq!(drag_sends(&h, "drag_begin"), 1);
+    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The members sketch mode has selected, by ID.
+fn selected(h: &AppHarness) -> Vec<String> {
+    sketch_mode(h)
+        .unwrap()
+        .selected_ids()
+        .iter()
+        .map(|i| i.as_str().to_owned())
+        .collect()
+}
+
+#[test]
+fn esc_on_a_press_of_a_free_corner_lets_the_press_go_so_its_release_selects_nothing() {
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    let corner = [50.0, 30.0];
+    // Unheld, a click on the free corner selects it: what the Esc below takes away.
+    pane_click(&mut h, corner);
+    assert_eq!(selected(&h), ["pa000003"]);
+    pane_click(&mut h, [30.0, 45.0]);
+    assert!(selected(&h).is_empty());
+    // Pressed, Esc, let go where it was pressed: a drag's press, let go, selects nothing.
+    pane_press(&mut h, corner);
+    assert!(the_drag(&h).is_some_and(|d| d.held() && d.shown().is_none()));
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(the_drag(&h).is_none());
+    pane_release(&mut h, corner);
+    step(&mut h);
+    assert!(selected(&h).is_empty(), "{:?}", selected(&h));
+    assert_eq!(drag_sends(&h, "drag_begin"), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_on_an_unmoved_held_press_is_the_presss_alone_the_selection_kept_and_no_drag_after() {
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    // The bottom side, na000001, selected by a click at its middle.
+    pane_click(&mut h, [30.0, 10.0]);
+    assert_eq!(selected(&h), ["na000001"]);
+    // The free corner pressed, not moved: Esc ends the press, and nothing else (the
+    // selection is Esc's next, and it stays).
+    let corner = [50.0, 30.0];
+    pane_press(&mut h, corner);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(the_drag(&h).is_none());
+    assert_eq!(selected(&h), ["na000001"]);
+    // Moved past the drag threshold and let go, still the same press: no drag begins, and
+    // the release selects nothing.
+    pane_move(&mut h, [55.0, 35.0]);
+    pane_release(&mut h, [55.0, 35.0]);
+    settled(&mut h);
+    assert!(the_drag(&h).is_none());
+    assert_eq!(drag_sends(&h, "drag_begin"), 0);
+    assert_eq!(selected(&h), ["na000001"]);
+    // A second Esc clears it, as with no press.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(selected(&h).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The right button pressed and let go at `at`: in one frame (`together`), or a frame apart.
+fn right_click_at(h: &mut AppHarness, at: eframe::egui::Pos2, together: bool) {
+    let right = eframe::egui::PointerButton::Secondary;
+    let none = eframe::egui::Modifiers::NONE;
+    h.hover_at(at);
+    button_event(h, at, right, true, none);
+    if !together {
+        step(h);
+    }
+    button_event(h, at, right, false, none);
+    step(h);
+}
+
+#[test]
+fn a_right_click_on_the_canvas_opens_the_sketch_menu_at_it_and_its_own_release_leaves_it_open() {
+    let f = fixture();
+    let (mut h, _) = f.overlaid(EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    top_view(&mut h);
+    for together in [true, false] {
+        let at = top_screen(&h, [30.0, 15.0]);
+        right_click_at(&mut h, at, together);
+        // Handed on through `ViewFrame.secondary`, and opened at the click in that frame:
+        // its press and release, let go in it, don't close it.
+        assert_eq!(sketch_mode(&h).unwrap().menu_at, Some(at), "{together}");
+        assert!(sketch_menu(&h).is_some(), "{together}");
+        for _ in 0..3 {
+            step(&mut h);
+        }
+        assert!(sketch_menu(&h).is_some(), "{together}");
+        // At the click: its first item just below and right of it.
+        let item = sketch_menu(&h)
+            .unwrap()
+            .get_by_role_and_label(Role::Button, "End chain")
+            .rect();
+        let off = item.min - at;
+        assert!(
+            (0.0..24.0).contains(&off.x) && (0.0..24.0).contains(&off.y),
+            "{item:?} {at:?}"
+        );
+        // A left click away closes it, and is the canvas's click too.
+        pane_click(&mut h, [60.0, 35.0]);
+        step(&mut h);
+        assert!(sketch_menu(&h).is_none(), "{together}");
+        assert_eq!(sketch_mode(&h).unwrap().menu_at, None);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- M5.11's wiring fixes: the Modify box clear of the palette, Properties after the
+// over-define prompt's Cancel, and the canvas menu at fractional scales ----
+
+/// The Sketch Palette's place on the screen, as last drawn: its area's, the app's
+/// `sketch_palette` of the tab shown.
+fn palette_rect(h: &AppHarness) -> eframe::egui::Rect {
+    let tab = h.state().tabs()[0].id.to_string();
+    let id = eframe::egui::Id::new(("sketch_palette", tab));
+    eframe::egui::AreaState::load(&h.ctx, id).unwrap().rect()
+}
+
+#[test]
+fn a_dimension_whose_text_is_under_the_palette_opens_its_modify_box_whole_in_the_viewport_and_clear_of_the_palette()
+ {
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed_sketch(&f);
+    step(&mut h);
+    hand_camera(&mut h);
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    let palette = palette_rect(&h);
+    let viewport = view(&h).frame().unwrap().rect;
+    // The place, 40 points into the palette, level with the right side's middle (y 20, at
+    // 300 on the screen by the hand camera): the side's length, its text under the palette.
+    let under = eframe::egui::pos2(palette.left() + 40.0, to_screen([0.0, 20.0]).unwrap().y);
+    assert!(
+        palette.contains(under) && viewport.contains(under),
+        "{under:?} {palette:?}"
+    );
+    let place = to_sketch(under).unwrap();
+    sketch_events(&f, &mut h, &clicked(50.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(place[0], place[1]));
+    step_until(&mut h, "the Modify box open", |h| {
+        sketch_mode(h).and_then(|mode| mode.modify_view()).is_some()
+    });
+    let shown = sketch_mode(&h).unwrap().modify_view().unwrap();
+    assert!(palette.contains(shown.at), "{:?} {palette:?}", shown.at);
+    // Sized in its first frame, unseen, then placed.
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let dialog = h.get_by_role_and_label(Role::Dialog, "Modify dimension");
+    let area = eframe::egui::Id::new(("sketch_modify", shown.opened));
+    let parts = [
+        (
+            "the box",
+            eframe::egui::AreaState::load(&h.ctx, area).unwrap().rect(),
+        ),
+        (
+            "its field",
+            dialog.get_by_label("Value in millimetres").rect(),
+        ),
+        (
+            "its ✓",
+            dialog.get_by_role_and_label(Role::Button, "Accept").rect(),
+        ),
+        (
+            "its ✕",
+            dialog.get_by_role_and_label(Role::Button, "Cancel").rect(),
+        ),
+        (
+            "its hint",
+            h.get_by_label("A plain number in mm · Enter accepts")
+                .rect(),
+        ),
+    ];
+    // egui puts an area's corner on a pixel: within half of one of the viewport.
+    let half = 0.5 / h.ctx.pixels_per_point();
+    for (what, rect) in parts {
+        assert!(
+            !rect.intersects(palette),
+            "{what} {rect:?} under {palette:?}"
+        );
+        assert!(
+            rect.right() <= palette.left() - 8.0 + half,
+            "{what} {rect:?} not left of {palette:?}"
+        );
+        assert!(
+            viewport.expand(half).contains_rect(rect),
+            "{what} {rect:?} outside {viewport:?}"
+        );
+    }
+    // Still the dimension's box: its value, and Enter places it.
+    assert_eq!(shown.text, "20");
+    modify_dimension(&f, &mut h, ModifyAction::Accept);
+    settled(&mut h);
+    read_with_constraints(&mut h, 5);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The boxed sketch beside a block with no fingerprint, whose warning marks the timeline
+/// whatever the sketch's state.
+const BOXED_BESIDE_A_BLOCK: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [-100, -100, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Box", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 50, "y": 30, "construction": false}, {"id": "pa000004", "x": 10, "y": 30, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}]}
+  ]
+}
+"#;
+
+/// The problems and warnings the tab's newest timeline marks feature `id` with.
+fn marks(h: &AppHarness, id: &str) -> Option<(u64, u64)> {
+    h.state().tabs()[0]
+        .timeline
+        .as_ref()
+        .and_then(|timeline| timeline.features.as_ref())
+        .and_then(|features| features.iter().find(|e| e.id.as_str() == id))
+        .map(|entry| (entry.problems, entry.warnings))
+}
+
+#[test]
+fn after_the_over_define_prompts_cancel_properties_says_what_the_newest_read_says_not_the_conflict()
+{
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("boxed.silico", BOXED_BESIDE_A_BLOCK);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    // The sketch's properties (main's panel gives its ID, no longer "Type: sketch").
+    step_until(&mut h, "the sketch in Properties", |h| {
+        property(h, "ID").as_deref() == Some("s0000001")
+    });
+    // The block's warning marks the timeline, so a read that marks nothing never clears
+    // what was said wholesale.
+    assert!(marks(&h, "k7f2qx3m").is_some_and(|(_, warnings)| warnings > 0));
+    // The right side's length as 99, which no sketch here takes: over defined, offered.
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(50.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(60.0, 20.0));
+    step_until(&mut h, "the Modify box open", |h| {
+        sketch_mode(h).and_then(|mode| mode.modify_view()).is_some()
+    });
+    modify_dimension(&f, &mut h, ModifyAction::Typed("99".to_owned()));
+    modify_dimension(&f, &mut h, ModifyAction::Accept);
+    settled(&mut h);
+    step_until(&mut h, "the prompt", |h| prompt(h).is_some());
+    step_until(&mut h, "Properties says the conflict", |h| {
+        showing(h, "Properties", "conflict").is_some()
+    });
+    // Cancel (Esc, the prompt's): `undo`, then the read of the revision it made.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    step_until(&mut h, "the sketch unmarked by the newest read", |h| {
+        marks(h, "s0000001") == Some((0, 0)) && prompt(h).is_none()
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    // The block still marked: the timeline marks something, the sketch nothing.
+    assert!(marks(&h, "k7f2qx3m").is_some_and(|(_, warnings)| warnings > 0));
+    assert_eq!(property(&h, "ID").as_deref(), Some("s0000001"));
+    assert_eq!(showing(&h, "Properties", "conflict"), None);
+    assert!(!h.state().tabs()[0].said.contains_key("s0000001"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The right button pressed at `from` and let go at `to` in one frame.
+fn right_click_moved(h: &mut AppHarness, from: eframe::egui::Pos2, to: eframe::egui::Pos2) {
+    let right = eframe::egui::PointerButton::Secondary;
+    let none = eframe::egui::Modifiers::NONE;
+    h.hover_at(from);
+    button_event(h, from, right, true, none);
+    h.event(eframe::egui::Event::PointerMoved(to));
+    button_event(h, to, right, false, none);
+    step(h);
+}
+
+/// The left button pressed and let go at `at`, a frame apart.
+fn left_click_at(h: &mut AppHarness, at: eframe::egui::Pos2) {
+    let left = eframe::egui::PointerButton::Primary;
+    let none = eframe::egui::Modifiers::NONE;
+    h.hover_at(at);
+    button_event(h, at, left, true, none);
+    step(h);
+    button_event(h, at, left, false, none);
+    step(h);
+}
+
+#[test]
+fn at_one_and_a_quarter_and_one_and_a_half_pixels_a_point_the_sketch_menu_stays_open_for_its_own_press_and_one_on_its_edge_pixel()
+ {
+    use eframe::egui::pos2;
+    for ppp in [1.25_f32, 1.5] {
+        let f = fixture();
+        let (mut h, _) = f.overlaid_at(EXAMPLE, ppp);
+        assert_eq!(h.ctx.pixels_per_point(), ppp);
+        step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+        create_sketch(&mut h, "XY plane");
+        sketch_read(&mut h);
+        // Pressed at (500.5, 400.5) and let go 3 points right and down, in one frame (a
+        // slow frame's click): the press, before the menu's corner, opened it, and leaves
+        // it open.
+        let (from, to) = (pos2(500.5, 400.5), pos2(503.5, 403.5));
+        right_click_moved(&mut h, from, to);
+        let opened = sketch_mode(&h).unwrap().menu_at.unwrap();
+        assert!((opened - to).length() < 1e-3, "{ppp} {opened:?}");
+        for _ in 0..3 {
+            step(&mut h);
+        }
+        assert!(sketch_menu(&h).is_some(), "{ppp}");
+        left_click_at(&mut h, pos2(400.0, 300.0));
+        assert!(sketch_menu(&h).is_none(), "{ppp}");
+        // Opened at (501, 401), a frame apart: its corner is the click's pixel's, which
+        // egui's 1/32-point rounding moves off the pixel's edge in points (at 1.25, past the
+        // press; at 1.5, before it). Pixels worked by hand: 626 and 501 at 1.25, 751 and
+        // 601 at 1.5.
+        let at = pos2(501.0, 401.0);
+        let right = eframe::egui::PointerButton::Secondary;
+        let none = eframe::egui::Modifiers::NONE;
+        h.hover_at(at);
+        button_event(&h, at, right, true, none);
+        step(&mut h);
+        button_event(&h, at, right, false, none);
+        step(&mut h);
+        step(&mut h);
+        assert!(sketch_menu(&h).is_some(), "{ppp}");
+        let [x, y]: [f32; 2] = if ppp == 1.25 {
+            [626.0, 501.0]
+        } else {
+            [751.0, 601.0]
+        };
+        let tab = h.state().tabs()[0].id.to_string();
+        let menu =
+            eframe::egui::AreaState::load(&h.ctx, eframe::egui::Id::new(("sketch_menu", tab)))
+                .unwrap()
+                .rect();
+        assert!(
+            (menu.left() - x / ppp).abs() <= 1.0 / 32.0,
+            "{ppp} {menu:?}"
+        );
+        assert!((menu.top() - y / ppp).abs() <= 1.0 / 32.0, "{ppp} {menu:?}");
+        // A hundredth of a pixel into its left edge's pixel, and into its top edge's: on it.
+        for press in [
+            pos2((x + 0.01) / ppp, menu.center().y),
+            pos2(menu.center().x, (y + 0.01) / ppp),
+        ] {
+            left_click_at(&mut h, press);
+            step(&mut h);
+            assert!(sketch_menu(&h).is_some(), "{ppp} {press:?} {menu:?}");
+            assert!(sketch_mode(&h).unwrap().menu_at.is_some(), "{ppp}");
+        }
+        // A hundredth of a pixel before its left edge's pixel: off it, and it closes.
+        let press = pos2((x - 0.01) / ppp, menu.center().y);
+        left_click_at(&mut h, press);
+        step(&mut h);
+        assert!(sketch_menu(&h).is_none(), "{ppp} {press:?} {menu:?}");
+        assert_eq!(sketch_mode(&h).unwrap().menu_at, None, "{ppp}");
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+// ---- M5.11's wiring, the prototype's look: the Modify box's icons, the over-define
+// prompt's head, rows, and keys, and the Sketch Palette inside the viewport ----
+
+#[test]
+fn the_modify_boxs_buttons_are_its_icons_named_accept_and_cancel_with_no_glyph_drawn() {
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed_sketch(&f);
+    step(&mut h);
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(50.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(60.0, 20.0));
+    step_until(&mut h, "the Modify box drawn", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Modify dimension")
+            .is_some()
+    });
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let dialog = h.get_by_role_and_label(Role::Dialog, "Modify dimension");
+    // Its two buttons by their names, as the prototype's `aria-label`s, each 22 square.
+    for name in ["Accept", "Cancel"] {
+        let button = dialog.get_by_role_and_label(Role::Button, name).rect();
+        assert!(
+            (button.width() - 22.0).abs() < 1e-3 && (button.height() - 22.0).abs() < 1e-3,
+            "{name} {button:?}"
+        );
+    }
+    // Drawn as icons: no ✓ or ✕ among all the text the frame draws, and no font's stand-in
+    // for one ("?") among the text it draws in the box (the status bar's Shortcuts key,
+    // main's, is a "?" of its own, outside it).
+    let field = dialog.get_by_role(Role::TextInput).rect();
+    let area = ["Accept", "Cancel"]
+        .into_iter()
+        .map(|name| dialog.get_by_role_and_label(Role::Button, name).rect())
+        .fold(field, |area, button| area.union(button));
+    let texts: Vec<(String, bool)> = painted(&h)
+        .iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) => Some((
+                text.galley.text().to_owned(),
+                area.intersects(text.visual_bounding_rect()),
+            )),
+            _ => None,
+        })
+        .collect();
+    for glyph in ["✓", "✕"] {
+        assert!(
+            !texts.iter().any(|(t, _)| t == glyph),
+            "{glyph} in {texts:?}"
+        );
+    }
+    assert!(
+        !texts.iter().any(|(t, in_box)| t == "?" && *in_box),
+        "? in the box: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|(t, in_box)| t == "20" && *in_box),
+        "{texts:?}"
+    );
+    // Cancel skips: the measured value placed, the box closed.
+    dialog.get_by_role_and_label(Role::Button, "Cancel").click();
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "the box closed", |h| {
+        sketch_mode(h).and_then(|mode| mode.modify_view()).is_none()
+    });
+    read_with_constraints(&mut h, 5);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_over_define_prompts_rows_share_their_edges_its_keys_are_16_high_at_their_tops_and_its_head_has_the_warning()
+ {
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed_sketch(&f);
+    step(&mut h);
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(50.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(60.0, 20.0));
+    step_until(&mut h, "the Modify box open", |h| {
+        sketch_mode(h).and_then(|mode| mode.modify_view()).is_some()
+    });
+    modify_dimension(&f, &mut h, ModifyAction::Typed("99".to_owned()));
+    modify_dimension(&f, &mut h, ModifyAction::Accept);
+    settled(&mut h);
+    // Laid out: a modal is centred, so it moves as it's first sized.
+    let rows = |h: &AppHarness| {
+        prompt(h).map(|p| {
+            ["Make it driven", "Leave it driving", "Cancel"]
+                .map(|title| p.get_by_role_and_label(Role::Button, title).rect())
+        })
+    };
+    let last = std::cell::Cell::new(rows(&h));
+    step_until(&mut h, "the prompt laid out", |h| {
+        let now = rows(h);
+        now.is_some() && now == last.replace(now)
+    });
+    let rows = rows(&h).unwrap();
+    let prompt = prompt(&h).unwrap();
+    // The prototype's 440 wide: its rows the width inside its 16-point sides and border,
+    // 406, each with the same left and right edges.
+    for row in &rows {
+        assert!((row.width() - 406.0).abs() < 1e-3, "{rows:?}");
+        assert!((row.left() - rows[0].left()).abs() < 1e-3, "{rows:?}");
+        assert!((row.right() - rows[0].right()).abs() < 1e-3, "{rows:?}");
+    }
+    // Each key's badge 16 high (`.kbd`), at its row's top inside its border and padding
+    // (1 + 8), and its right inside them (1 + 10).
+    for (row, key) in rows.iter().zip(["1", "2", "Esc"]) {
+        let badge = prompt.get_by_label(key).rect();
+        assert!((badge.height() - 16.0).abs() < 1e-3, "{key} {badge:?}");
+        assert!(badge.width() >= 16.0 - 1e-3, "{key} {badge:?}");
+        assert!(
+            (badge.top() - (row.top() + 9.0)).abs() < 1e-3,
+            "{key} {badge:?} {row:?}"
+        );
+        assert!(
+            (badge.right() - (row.right() - 11.0)).abs() < 1e-3,
+            "{key} {badge:?} {row:?}"
+        );
+    }
+    // The second row's words wrap beside its badge: the row taller than a line's two.
+    assert!(rows[1].height() > rows[2].height() + 8.0, "{rows:?}");
+    // The head: the title, after the warning's icon (an image, no text).
+    let title = prompt
+        .get_by_label("This dimension over-defines Box")
+        .rect();
+    assert!(
+        title.left() >= rows[0].left() + 14.0 + 8.0 - 1e-3,
+        "{title:?} {rows:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The app at `size` points, in the app's look, with `text` open from `name`, its timeline read.
+fn opened_sized(f: &Fixture, name: &str, text: &str, size: (f32, f32)) -> AppHarness {
+    let path = f.file(name, text);
+    let app = App::new(Arc::clone(&f.sessions));
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size(size)
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    // The app's look, as main.rs gives it and `Fixture::app` does.
+    silico_app::theme::apply(&h.ctx);
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(&mut h, "the timeline read", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.timeline.is_some())
+    });
+    h
+}
+
+#[test]
+fn in_a_short_window_the_sketch_palette_stays_inside_the_viewport_and_its_last_section_scrolls_into_it()
+ {
+    let f = fixture();
+    let mut h = opened_sized(&f, "boxed.silico", BOXED, (1280.0, 560.0));
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let viewport = view(&h).frame().unwrap().rect;
+    let palette = palette_rect(&h);
+    // Inside the viewport, its bottom at most the prototype's 12 above the viewport's.
+    assert!(viewport.contains_rect(palette), "{palette:?} {viewport:?}");
+    // 212 wide, 12 from the viewport's right, and at least 12 from its bottom: to half a
+    // pixel, as egui puts an area's corner on one.
+    let half = 0.5 / h.ctx.pixels_per_point();
+    assert!((palette.width() - 212.0).abs() < 1e-3, "{palette:?}");
+    let right = viewport.right() - 12.0;
+    assert!(
+        (palette.right() - right).abs() <= half,
+        "{palette:?} {viewport:?}"
+    );
+    // Its sections past it: 12 from the viewport's bottom.
+    let bottom = viewport.bottom() - 12.0;
+    assert!(
+        (palette.bottom() - bottom).abs() <= half,
+        "{palette:?} {viewport:?}"
+    );
+    // Its title stays; the legend's last row, Construction, is below it, out of sight.
+    let title = h.get_by_label("SKETCH PALETTE").rect();
+    let last = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .get_by_label("Construction")
+            .rect()
+    };
+    assert!(
+        last(&h).bottom() > palette.bottom(),
+        "{:?} {palette:?}",
+        last(&h)
+    );
+    // Scrolled over the palette: the legend's last row comes into it, the title where it was.
+    h.hover_at(palette.center());
+    for _ in 0..10 {
+        h.event(eframe::egui::Event::MouseWheel {
+            unit: eframe::egui::MouseWheelUnit::Point,
+            delta: eframe::egui::vec2(0.0, -200.0),
+            phase: eframe::egui::TouchPhase::Move,
+            modifiers: eframe::egui::Modifiers::NONE,
+        });
+        step(&mut h);
+    }
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    let shown = last(&h);
+    assert!(palette.contains_rect(shown), "{shown:?} {palette:?}");
+    assert_eq!(palette_rect(&h), palette);
+    assert_eq!(h.get_by_label("SKETCH PALETTE").rect(), title);
+    // The window made taller: the palette grows to the new cap, not held at its last size.
+    h.set_size(eframe::egui::vec2(1280.0, 640.0));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let viewport = view(&h).frame().unwrap().rect;
+    let taller = palette_rect(&h);
+    assert!(
+        taller.height() > palette.height() + 40.0,
+        "{taller:?} {palette:?}"
+    );
+    let bottom = viewport.bottom() - 12.0;
+    assert!(
+        (taller.bottom() - bottom).abs() <= half,
+        "{taller:?} {viewport:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// How many undos and redos the tab has sent.
+fn steps_sent(h: &AppHarness) -> usize {
+    h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter(|sent| matches!(sent, Sent::Undo(_) | Sent::Redo(_)))
+        .count()
+}
+
+/// Ctrl+Z, then Ctrl+Y, each its own frame.
+fn undo_redo_keys(h: &mut AppHarness) {
+    for key in [eframe::egui::Key::Z, eframe::egui::Key::Y] {
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+        step(h);
+    }
+}
+
+#[test]
+fn mid_drag_undo_and_redo_are_off_and_their_keys_send_nothing_and_once_it_ends_both_are_back() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed_sketch(&f);
+    // Two corners dragged, each one edit, and the second undone: an edit to undo and one
+    // to redo, both offered.
+    for (from, to) in [([50.0, 30.0], [52.0, 32.0]), ([10.0, 10.0], [12.0, 12.0])] {
+        sketch_events(
+            &f,
+            &mut h,
+            &[
+                pointer(Press, from[0], from[1]),
+                pointer(Move, to[0], to[1]),
+            ],
+        );
+        drag_frames(&mut h, 1);
+        sketch_events(&f, &mut h, &[pointer(Release, to[0], to[1])]);
+        settled(&mut h);
+        step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    }
+    step_until(&mut h, "Undo offered", |h| offered(h, "Undo"));
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "both offered", |h| {
+        offered(h, "Undo") && offered(h, "Redo")
+    });
+    // The second corner, back at (10, 10), pressed and dragged: neither is offered, by
+    // button or key, while the drag is under way.
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 10.0, 10.0), pointer(Move, 14.0, 14.0)],
+    );
+    drag_frames(&mut h, 1);
+    assert!(the_drag(&h).is_some_and(|d| d.in_flight()));
+    let sent = steps_sent(&h);
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!offered(&h, "Undo") && !offered(&h, "Redo"));
+        let tab = &h.state().tabs()[0];
+        assert!(!tab.undoable() && !tab.redoable());
+    }
+    undo_redo_keys(&mut h);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(steps_sent(&h), sent);
+    assert!(the_drag(&h).is_some_and(|d| d.in_flight()));
+    // Esc ends it from its begin state: nothing changed, and both are back.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    step_until(&mut h, "both offered again", |h| {
+        offered(h, "Undo") && offered(h, "Redo")
+    });
+    assert_eq!(steps_sent(&h), sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn after_the_over_define_prompts_cancel_redo_is_off_and_its_key_sends_nothing_but_an_ordinary_undo_offers_it()
+ {
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (id, _, top) = fully_defined(&f, &mut h);
+    let before = text_of(&f, &h);
+    // A third length, over defining it, then the prompt's Cancel (Esc): its `undo`.
+    over_define(&f, &mut h, 65.0, "35", 9);
+    step_until(&mut h, "the prompt", |h| prompt(h).is_some());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    assert_eq!(text_of(&f, &h), before);
+    step_until(&mut h, "the prompt closed", |h| prompt(h).is_none());
+    // The session holds the dimension to redo, as a status of the undo's revision counts
+    // it; Redo stays off all the same, as SolidWorks' Cancel leaves nothing to redo.
+    step_until(&mut h, "a status of the undo", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.transaction().is_some_and(|t| t.redo == 1) && offered(h, "Undo")
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!offered(&h, "Redo"));
+        assert!(!h.state().tabs()[0].redoable());
+    }
+    let sent = steps_sent(&h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(steps_sent(&h), sent);
+    assert_eq!(text_of(&f, &h), before);
+    // An ordinary undo (the top's length) offers Redo, which gives it back, and no further:
+    // the conflicting dimension never comes back.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(steps_sent(&h), sent + 1);
+    assert!(
+        lengths(&sketch_of_text(&f, &h, &id))
+            .iter()
+            .all(|l| l.1 != top)
+    );
+    step_until(&mut h, "Redo offered", |h| offered(h, "Redo"));
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(steps_sent(&h), sent + 2);
+    assert_eq!(text_of(&f, &h), before);
+    step_until(&mut h, "a status of the redo", |h| {
+        h.state().tabs()[0]
+            .transaction()
+            .is_some_and(|t| t.redo == 1)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!offered(&h, "Redo"));
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The boxed sketch padded: its rebuild after a drag asks the kernel for the pad.
+const BOXED_PADDED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Box", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 50, "y": 30, "construction": false}, {"id": "pa000004", "x": 10, "y": 30, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}]},
+    {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}
+  ]
+}
+"#;
+
+#[test]
+fn a_released_drags_edit_is_undone_though_the_rebuild_after_it_is_stopped_before_its_read() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("padded.silico", BOXED_PADDED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    let text = text_of(&f, &h);
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    drag_frames(&mut h, 1);
+    // Every kernel request held from here: the drag's end, the sketch worker's, answers;
+    // the rebuild after it, which pads the moved sketch, doesn't.
+    let hold = f.kernel.hold(|_| true);
+    sketch_events(&f, &mut h, &[pointer(Release, 52.0, 32.0)]);
+    step_until(&mut h, "the drag's end answered", |h| {
+        the_drag(h).is_some_and(|d| d.ended() && !d.in_flight())
+    });
+    assert_ne!(text_of(&f, &h), text);
+    // Stop, before the rebuild publishes: the read of the drag's edit never comes.
+    let stop_on = |h: &AppHarness| {
+        h.query_all_by_role_and_label(Role::Button, "Stop")
+            .last()
+            .is_some_and(|stop| !stop.accesskit_node().is_disabled())
+    };
+    step_until(&mut h, "Stop on", stop_on);
+    h.query_all_by_role_and_label(Role::Button, "Stop")
+        .last()
+        .unwrap()
+        .click();
+    step_until(&mut h, "the rebuild stopped, a status of the edit", |h| {
+        rebuild_stopped(h)
+            && h.state().tabs()[0]
+                .transaction()
+                .is_some_and(|t| t.undo == 1)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    // The drag waits still for that read, but its edit has landed: Undo is offered, and
+    // Ctrl+Z sends it.
+    assert!(the_drag(&h).is_some_and(|d| !d.under_way()));
+    assert!(offered(&h, "Undo"));
+    let sent = steps_sent(&h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    assert_eq!(steps_sent(&h), sent + 1);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    hold.release();
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), text);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -23900,6 +25465,91 @@ fn an_export_form_opened_while_untitled_takes_a_relative_path_in_the_folder_of_i
     );
     assert!(out.is_file());
     assert!(!f.dir.path().join("out.step").exists());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #379's mutants: Enter with Shift or Alt in sketch mode, and the canvas menu opened
+// by a right-click pressed away from where it's let go ----
+
+#[test]
+fn enter_with_shift_or_alt_held_in_sketch_mode_leaves_the_chain_under_way() {
+    use eframe::egui::Event;
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    h.key_press(Key::L);
+    step(&mut h);
+    // A chain's first click, at (60, 30), clear of the triangle: under way.
+    sketch_events(&f, &mut h, &clicked(60.0, 30.0));
+    assert!(sketch_mode(&h).unwrap().tools.busy());
+    // Enter with Shift, or with Alt, each held across its own frames as a window tells
+    // them: another key's, not the plain Enter that ends a chain (section 9, *Line*).
+    for held in [Modifiers::SHIFT, Modifiers::ALT] {
+        let enter = |pressed| Event::Key {
+            key: Key::Enter,
+            pressed,
+            modifiers: held,
+            repeat: false,
+            physical_key: None,
+        };
+        h.event(Event::ModifiersChanged(held));
+        step(&mut h);
+        h.event(enter(true));
+        step(&mut h);
+        h.event(enter(false));
+        step(&mut h);
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+        step(&mut h);
+        assert!(sketch_mode(&h).unwrap().tools.busy(), "{held:?}");
+    }
+    // Enter alone then ends it.
+    h.key_press(Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    assert!(!sketch_mode(&h).unwrap().tools.busy());
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_click_pressed_away_from_its_release_in_one_frame_opens_the_sketch_menu_and_leaves_it_open()
+ {
+    let f = fixture();
+    let (mut h, _) = f.overlaid(EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    top_view(&mut h);
+    let right = eframe::egui::PointerButton::Secondary;
+    let none = eframe::egui::Modifiers::NONE;
+    // Pressed 3 points up and left of where it's let go, within egui's click distance, and
+    // both in one frame: the click, handed on at its release, opens the menu there, so its
+    // press is off the menu; but it came before the menu was there, and closes nothing.
+    // (Put in the frame's input directly: the harness's queue gives a button's each event
+    // a frame of its own.)
+    let at = top_screen(&h, [30.0, 15.0]);
+    let from = at - eframe::egui::vec2(3.0, 3.0);
+    for (pos, pressed) in [(from, true), (at, false)] {
+        h.input_mut()
+            .events
+            .push(eframe::egui::Event::PointerMoved(pos));
+        h.input_mut()
+            .events
+            .push(eframe::egui::Event::PointerButton {
+                pos,
+                button: right,
+                pressed,
+                modifiers: none,
+            });
+    }
+    step(&mut h);
+    assert_eq!(sketch_mode(&h).unwrap().menu_at, Some(at));
+    assert!(sketch_menu(&h).is_some());
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(sketch_menu(&h).is_some());
+    assert_eq!(sketch_mode(&h).unwrap().menu_at, Some(at));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -26085,6 +27735,76 @@ fn a_press_after_the_camera_moved_under_a_still_pointer_isnt_decided_by_the_hove
         "{:?}",
         h.state().toast()
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #394's filter keys with sketch mode: X, E, and V filter only with no sketch open ----
+
+#[test]
+fn x_with_a_sketch_open_is_construction_and_e_and_v_leave_the_filter_be() {
+    use eframe::egui::Key;
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    let filter = |h: &AppHarness| h.state().tabs()[0].selection().filter;
+    let every = silico_app::selection::Filter::default();
+    assert_eq!(filter(&h), every);
+    assert!(!sketch_mode(&h).unwrap().settings.construction);
+    // X: Construction on, the filter as it was; again, off.
+    h.key_press(Key::X);
+    step(&mut h);
+    assert!(sketch_mode(&h).unwrap().settings.construction);
+    assert_eq!(filter(&h), every);
+    h.key_press(Key::X);
+    step(&mut h);
+    assert!(!sketch_mode(&h).unwrap().settings.construction);
+    assert_eq!(filter(&h), every);
+    // E and V: nothing of the filter's, nor of Construction's.
+    for key in [Key::E, Key::V] {
+        h.key_press(key);
+        step(&mut h);
+        assert_eq!(filter(&h), every, "{key:?}");
+        assert!(!sketch_mode(&h).unwrap().settings.construction, "{key:?}");
+    }
+    // A filter set before the sketch opened is kept through its X, E, and V too.
+    let faces_off = silico_app::selection::Filter {
+        faces: false,
+        ..every
+    };
+    h.state_mut().tabs_mut()[0].selection_mut().filter = faces_off;
+    for key in [Key::X, Key::E, Key::V] {
+        h.key_press(key);
+        step(&mut h);
+    }
+    assert_eq!(filter(&h), faces_off);
+    assert!(sketch_mode(&h).unwrap().settings.construction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn x_e_and_v_filter_the_selection_once_the_sketch_is_left() {
+    use eframe::egui::Key;
+    let f = fixture();
+    let mut h = triangle_sketch(&f);
+    leave_sketch(&mut h, false);
+    let kinds = |h: &AppHarness| {
+        let filter = h.state().tabs()[0].selection().filter;
+        (filter.faces, filter.edges, filter.vertices)
+    };
+    assert_eq!(kinds(&h), (true, true, true));
+    // No sketch open: X faces, E edges, V vertices, each toggled in turn; no sketch opened.
+    h.key_press(Key::X);
+    step(&mut h);
+    assert_eq!(kinds(&h), (false, true, true));
+    h.key_press(Key::E);
+    step(&mut h);
+    assert_eq!(kinds(&h), (false, false, true));
+    h.key_press(Key::V);
+    step(&mut h);
+    assert_eq!(kinds(&h), (false, false, false));
+    h.key_press(Key::X);
+    step(&mut h);
+    assert_eq!(kinds(&h), (true, false, false));
+    assert!(sketch_mode(&h).is_none());
     assert_eq!(never_waits::waits(), 0);
 }
 

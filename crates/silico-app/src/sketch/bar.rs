@@ -5,11 +5,14 @@
 //! out by a small function of its own, given what it shows and giving back what was asked,
 //! apart from sketch mode's state and actions.
 
-use eframe::egui::{self, Color32, CornerRadius, Margin, RichText, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{
+    self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2,
+};
 use silico_core::sketch_tools::ToolKind;
 
 use super::style::*;
 use super::tools::{Choice, TrimMode};
+use crate::shortcuts::Command;
 
 /// The palette's layout: its title row's height; a section's heading's text size and its
 /// small text's; and a state's dot's radius, in points.
@@ -17,6 +20,8 @@ const TITLE_HEIGHT: f32 = 26.0;
 const HEAD_SIZE: f32 = 10.0;
 const SMALL_SIZE: f32 = 11.0;
 const DOT_RADIUS: f32 = 4.0;
+/// The palette's border's width, inside its width as the prototype's `box-sizing` has it.
+const BORDER: f32 = 1.0;
 
 /// What the sketch bar was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,19 +94,15 @@ pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
                 {
                     action = BarAction::Cancel;
                 }
-                let finish = egui::Button::new(RichText::new("Finish Sketch").color(ON_SELECTION))
+                // Its name, keys, and line the registry's, as the toolbar's Finish Sketch
+                // and the shortcut sheet give them.
+                let command = Command::FinishSketch;
+                let finish = egui::Button::new(RichText::new(command.label()).color(ON_SELECTION))
                     .fill(accent);
-                let key = ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
-                    egui::Modifiers::COMMAND,
-                    egui::Key::Enter,
-                ));
-                if ui
-                    .add_enabled(view.enabled, finish)
-                    .on_hover_text(format!(
-                        "Finish Sketch ({key}): keeps your changes and rebuilds"
-                    ))
-                    .clicked()
-                {
+                let response = ui.add_enabled(view.enabled, finish);
+                let keys = command.shown(ui.ctx());
+                let line = command.entry().description;
+                if crate::bar::tooltip(response, command.label(), keys, line).clicked() {
                     action = BarAction::Finish;
                 }
             });
@@ -248,12 +249,14 @@ fn usage(choice: Choice, trim: TrimMode) -> &'static str {
 }
 
 /// The Sketch Palette (the prototype's `.palette`): its title, then Status, Tool, Show,
-/// and the colours' legend, each a section; Look At off until the viewport's camera.
-pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
+/// and the colours' legend, each a section; Look At off until the viewport's camera. At
+/// most `max_height` tall: its title stays, and its sections scroll beneath it when they
+/// don't fit.
+pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings, max_height: f32) {
     dark(ui);
     egui::Frame::new()
         .fill(FLOATING_BG)
-        .stroke(Stroke::new(1.0, PANEL_BORDER))
+        .stroke(Stroke::new(BORDER, PANEL_BORDER))
         .corner_radius(CornerRadius::same(6))
         .shadow(egui::Shadow {
             offset: [0, 6],
@@ -262,16 +265,15 @@ pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
             color: Color32::from_black_alpha(140),
         })
         .show(ui, |ui| {
-            ui.set_width(SKETCH_PALETTE_WIDTH);
+            // The prototype's width, its border inside it.
+            let width = SKETCH_PALETTE_WIDTH - 2.0 * BORDER;
+            ui.set_width(width);
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Group);
                 node.set_label("Sketch Palette");
             });
             ui.spacing_mut().item_spacing.y = 2.0;
-            let (title, _) = ui.allocate_exact_size(
-                Vec2::new(SKETCH_PALETTE_WIDTH, TITLE_HEIGHT),
-                Sense::hover(),
-            );
+            let (title, _) = ui.allocate_exact_size(Vec2::new(width, TITLE_HEIGHT), Sense::hover());
             ui.put(
                 title.shrink2(Vec2::new(10.0, 0.0)),
                 egui::Label::new(
@@ -280,19 +282,32 @@ pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
                         .color(TEXT_STRONG),
                 ),
             );
-            section(ui, "Status", |ui| status_section(ui, view));
-            section(ui, "Tool", |ui| tool_section(ui, view, settings));
-            section(ui, "Show", |ui| {
-                ui.checkbox(&mut settings.show_profile, "Profile");
-                ui.checkbox(&mut settings.show_points, "Points");
-                ui.checkbox(&mut settings.show_dimensions, "Dimensions");
-                ui.checkbox(&mut settings.show_constraints, "Constraints");
-                ui.add_enabled(
-                    false,
-                    egui::Button::new("Look At").fill(Color32::TRANSPARENT),
-                );
-            });
-            section(ui, "Colours", legend);
+            // What's left beneath the title and the space after it, and inside the border:
+            // at least nothing.
+            let spacing = ui.spacing().item_spacing.y;
+            let body = (max_height - 2.0 * BORDER - TITLE_HEIGHT - spacing).max(0.0);
+            egui::ScrollArea::vertical()
+                .id_salt("sketch_palette_body")
+                .max_height(body)
+                // Its height the cap's whenever its sections pass it, not the area's last
+                // (an area's room is its size the frame before, so it would never grow).
+                .min_scrolled_height(body)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    section(ui, "Status", |ui| status_section(ui, view));
+                    section(ui, "Tool", |ui| tool_section(ui, view, settings));
+                    section(ui, "Show", |ui| {
+                        ui.checkbox(&mut settings.show_profile, "Profile");
+                        ui.checkbox(&mut settings.show_points, "Points");
+                        ui.checkbox(&mut settings.show_dimensions, "Dimensions");
+                        ui.checkbox(&mut settings.show_constraints, "Constraints");
+                        ui.add_enabled(
+                            false,
+                            egui::Button::new("Look At").fill(Color32::TRANSPARENT),
+                        );
+                    });
+                    section(ui, "Colours", legend);
+                });
         });
 }
 
@@ -386,6 +401,57 @@ pub fn canvas_menu(ui: &mut Ui, busy: bool) -> MenuAction {
     action
 }
 
+/// Where the canvas menu opened by a right-click at `at` stands: the top left of the
+/// physical pixel the click is in, at `pixels_per_point`, so the menu's first pixel is the
+/// click's (egui would round a corner between pixels to the nearer, which may be past it).
+pub fn menu_corner(at: Pos2, pixels_per_point: f32) -> Pos2 {
+    let pixel = |c: f32| (c * pixels_per_point).floor() / pixels_per_point;
+    Pos2::new(pixel(at.x), pixel(at.y))
+}
+
+/// Whether a press at `at` is on the menu `menu`, both in physical pixels at
+/// `pixels_per_point`: the pixel the press is in, among those the menu covers (from the
+/// pixel its edge rounds to, as egui draws an area, to the one before its far edge's).
+pub fn on_menu(at: Pos2, menu: Rect, pixels_per_point: f32) -> bool {
+    let pixel = |c: f32| (c * pixels_per_point).floor();
+    let edge = |c: f32| (c * pixels_per_point).round();
+    let across = |c: f32, low: f32, high: f32| (edge(low)..edge(high)).contains(&pixel(c));
+    across(at.x, menu.left(), menu.right()) && across(at.y, menu.top(), menu.bottom())
+}
+
+/// Whether this frame's `events` press a button off the menu `menu` ([`on_menu`]), which
+/// closes it. In the frame the menu opens (`opening`), every press before the last right
+/// release (the click that opened it, wherever in its click distance it was pressed, and
+/// any press of any button a slow frame took before it, a tool's click among them) came
+/// before the menu was there, and closes nothing; only one after it does.
+pub fn pressed_off_menu(
+    events: &[egui::Event],
+    menu: Rect,
+    pixels_per_point: f32,
+    opening: bool,
+) -> bool {
+    use egui::{Event, PointerButton};
+    let released = events.iter().rposition(|event| {
+        matches!(
+            event,
+            Event::PointerButton {
+                button: PointerButton::Secondary,
+                pressed: false,
+                ..
+            }
+        )
+    });
+    events.iter().enumerate().any(|(place, event)| match event {
+        Event::PointerButton {
+            pos, pressed: true, ..
+        } => {
+            let before_it = opening && released.is_some_and(|released| place < released);
+            !before_it && !on_menu(*pos, menu, pixels_per_point)
+        }
+        _ => false,
+    })
+}
+
 /// The palette's Status: the state, with its dot, a word on it, the read's refusal, and the
 /// plane's problem.
 fn status_section(ui: &mut Ui, view: &PaletteView) {
@@ -476,22 +542,11 @@ fn state_dot(ui: &mut Ui, colour: Color32) {
 
 /// What the status bar says of an open sketch (docs/ux/solidworks.md, §2: the pointer's
 /// coordinates, the state, and "Editing"): what's edited, the pointer on the plane by its
-/// axes' letters (none off the canvas), and the state.
+/// axes' letters (none off the canvas), and the state. The status bar draws it
+/// (`crate::status`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusLine {
     pub editing: String,
     pub coordinates: Option<String>,
     pub state: Option<StateShown>,
-}
-
-/// The status bar's sketch content, for the status bar to place: what's edited, the
-/// coordinates (a dash without them), and the state, in its colour.
-pub fn status_ui(ui: &mut Ui, line: &StatusLine) {
-    ui.label(&line.editing);
-    ui.separator();
-    ui.label(line.coordinates.as_deref().unwrap_or("—"));
-    if let Some(state) = &line.state {
-        ui.separator();
-        ui.label(RichText::new(&state.words).color(state.colour));
-    }
 }

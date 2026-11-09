@@ -134,28 +134,30 @@ fn enter_is_ok(ui: &mut Ui) -> bool {
     })
 }
 
-/// Sketch mode's tools' keys (the prototype's, DESIGN.md *Keyboard*): L line, R rectangle,
-/// C circle, A arc (the 3-point arc, Fusion's first), P point, T trim, and D Smart
-/// Dimension.
-const SKETCH_KEYS: [(Key, sketch::tools::Choice); 7] = {
+/// Sketch mode's tools' commands in the registry (the prototype's keys, DESIGN.md
+/// *Keyboard*: L line, R rectangle, C circle, A arc, P point, T trim, and D Smart
+/// Dimension), each the tool its SKETCH tab's button chooses (`crate::toolbar`).
+const SKETCH_TOOLS: [(Command, sketch::tools::Choice); 7] = {
     use silico_core::sketch_tools::ToolKind;
     use sketch::tools::Choice;
     [
-        (Key::L, Choice::Draw(ToolKind::Line)),
-        (Key::R, Choice::Draw(ToolKind::CornerRectangle)),
-        (Key::C, Choice::Draw(ToolKind::Circle)),
-        (Key::A, Choice::Draw(ToolKind::ThreePointArc)),
-        (Key::P, Choice::Draw(ToolKind::Point)),
-        (Key::T, Choice::Trim),
-        (Key::D, Choice::Dimension),
+        (Command::Line, Choice::Draw(ToolKind::Line)),
+        (Command::Rectangle, Choice::Draw(ToolKind::CornerRectangle)),
+        (Command::Circle, Choice::Draw(ToolKind::Circle)),
+        (Command::Arc, Choice::Draw(ToolKind::ThreePointArc)),
+        (Command::Point, Choice::Draw(ToolKind::Point)),
+        (Command::Trim, Choice::Trim),
+        (Command::Dimension, Choice::Dimension),
     ]
 };
 
 /// Where sketch mode's panels stand in the canvas, as the prototype's: the sketch bar below
-/// its top, centred; the palette at its right, below the ViewCube.
+/// its top, centred; the palette at its right, below the ViewCube, as far from the canvas's
+/// right (and, at most, its bottom) as `PALETTE_MARGIN`.
 const SKETCH_BAR_FROM_TOP: f32 = 10.0;
+const PALETTE_MARGIN: f32 = 12.0;
 const PALETTE_FROM_CORNER: egui::Vec2 =
-    egui::Vec2::new(-12.0 - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
+    egui::Vec2::new(-PALETTE_MARGIN - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
 
 /// What the app is asking the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1262,42 +1264,34 @@ impl<P: Clients + 'static> App<P> {
             .active_place()
             .and_then(|at| self.tabs.get(at))
             .is_some_and(Tab::in_sketch);
-        // Ctrl+Enter (⌘↵) finishes the sketch (the prototype's key, as the toolbar's Finish
-        // Sketch names it).
-        let finish = in_sketch
-            && ui.input_mut(|input| {
-                input.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter))
-            });
+        // Ctrl+Enter (⌘↵) finishes the sketch, as the toolbar's Finish Sketch does.
+        let finish = in_sketch && shortcuts::take(ui, Command::FinishSketch);
         // Del (or ⌫) in sketch mode deletes the sketch's selection, never a feature (the
         // prototype's `keydown` gives a sketch its own keys and goes no further).
         let (sketch_delete, delete) = (delete && in_sketch, delete && !in_sketch);
-        // Sketch mode's keys (the prototype's, DESIGN.md *Keyboard*), unless a field is being
-        // typed in: a tool's letter chooses it, or leaves it if it's on; X Construction; and
-        // Enter ends a chain.
-        // Only a plain letter: Shift or Alt with it is another key's.
-        let sketch_keys = in_sketch
-            && !typing
-            && ui.input(|input| !input.modifiers.shift && !input.modifiers.alt);
+        // Sketch mode's keys (the registry's Sketch group), unless a field is being typed in:
+        // a tool's letter chooses it, or leaves it if it's on, as its button does; X
+        // Construction, as its button; and Enter ends a chain.
+        let sketch_keys = in_sketch && !typing;
         let letter = sketch_keys
             .then(|| {
-                ui.input_mut(|input| {
-                    SKETCH_KEYS
-                        .iter()
-                        .find(|(key, _)| input.consume_key(Modifiers::NONE, *key))
-                        .map(|(_, choice)| *choice)
-                })
+                SKETCH_TOOLS
+                    .iter()
+                    .find(|(command, _)| shortcuts::take(ui, *command))
+                    .map(|(_, choice)| *choice)
             })
             .flatten();
-        let construction =
-            sketch_keys && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::X));
-        let sketch_enter =
-            sketch_keys && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
-        // SEAM(#351): `in_sketch` once the sketch's own keys are in (the wiring's X is
-        // Construction); until then the filters are taken in a sketch too.
+        let construction = sketch_keys && shortcuts::take(ui, Command::Construction);
+        // Only a plain Enter: Shift or Alt with it is another key's.
+        let sketch_enter = sketch_keys
+            && ui.input(|input| !input.modifiers.shift && !input.modifiers.alt)
+            && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
+        // The selection filters' X, E, and V, only with no sketch open: a sketch's X is
+        // Construction, taken above, and its picking is its own.
         let filters = if typing {
             Vec::new()
         } else {
-            filter_keys(ui, false)
+            filter_keys(ui, in_sketch)
         };
         // F5: where the filters are (the prototype's, no command of the registry's).
         let filters_said =
@@ -1356,14 +1350,11 @@ impl<P: Clients + 'static> App<P> {
             tab.view.ask(ask);
         }
         let sessions = &self.sessions;
-        if let Some(choice) = letter
-            && let Some(mode) = tab.sketch.as_ref()
-        {
-            let on = mode.tools.choice() == Some(choice);
-            tab.sketch_choose((!on).then_some(choice));
+        if let Some(choice) = letter {
+            tab.sketch_toggle(choice);
         }
-        if construction && let Some(mode) = tab.sketch.as_mut() {
-            mode.settings.construction = !mode.settings.construction;
+        if construction {
+            tab.sketch_toggle_construction();
         }
         if sketch_enter {
             tab.sketch_enter(sessions);
@@ -1969,7 +1960,8 @@ impl<P: Clients + 'static> App<P> {
     /// The toolbar (section 8; `toolbar`): the Design workspace's SOLID tab and its panels,
     /// CREATE's tools each opening its feature's dialog (M5.8): the primitives, and the
     /// features that sweep a sketch's profile (those that cut, only with a body to cut); and
-    /// SELECT's Clear selection.
+    /// SELECT's Clear selection. In a sketch, SKETCH's: a tool chosen, or left if it's on,
+    /// Construction turned on or off, as their keys do, and Finish Sketch.
     fn toolbar(&mut self, ui: &mut Ui, started: &mut bool) {
         let mut tab = self
             .active
@@ -1988,6 +1980,12 @@ impl<P: Clients + 'static> App<P> {
                     filter: shown.map_or_else(crate::selection::Filter::default, |tab| {
                         tab.selection().filter
                     }),
+                    tool: shown
+                        .and_then(|tab| tab.sketch.as_ref())
+                        .and_then(|mode| mode.tools.choice()),
+                    construction: shown
+                        .and_then(|tab| tab.sketch.as_ref())
+                        .is_some_and(|mode| mode.settings.construction),
                 },
             )
         };
@@ -2015,6 +2013,8 @@ impl<P: Clients + 'static> App<P> {
                 tab.finish_sketch(&self.sessions, true);
                 *started = true;
             }
+            Some(toolbar::Act::SketchTool(choice)) => tab.sketch_toggle(choice),
+            Some(toolbar::Act::Construction) => tab.sketch_toggle_construction(),
             None => {}
         }
     }
@@ -2099,19 +2099,27 @@ impl<P: Clients + 'static> App<P> {
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
             .pivot(egui::Align2::CENTER_TOP)
             .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar));
-        // Pinned at the canvas's top right, under the ViewCube, as the prototype's is.
-        egui::Area::new(egui::Id::new(("sketch_palette", id.to_string())))
-            .fixed_pos(canvas.right_top() + PALETTE_FROM_CORNER)
+        // Pinned at the canvas's top right, under the ViewCube, as the prototype's is, and
+        // kept above the canvas's bottom by the prototype's margin: its body scrolls if it
+        // doesn't fit.
+        let palette_at = canvas.right_top() + PALETTE_FROM_CORNER;
+        let palette_height = canvas.bottom() - PALETTE_MARGIN - palette_at.y;
+        let palette = egui::Area::new(egui::Id::new(("sketch_palette", id.to_string())))
+            .fixed_pos(palette_at)
             .show(ui.ctx(), |ui| {
-                sketch::bar::palette(ui, &view, &mut mode.settings)
-            });
+                sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
+            })
+            .response
+            .rect;
         match action {
             BarAction::None => {}
             BarAction::Finish => tab.finish_sketch(sessions, true),
             BarAction::Cancel => tab.finish_sketch(sessions, false),
         }
         *started |= action != BarAction::None;
-        if let Some(asked) = modify.and_then(|view| sketch::dimension::modify_box(ui.ctx(), &view))
+        // Whole in the canvas, and clear of the palette.
+        if let Some(asked) =
+            modify.and_then(|view| sketch::dimension::modify_box(ui.ctx(), &view, canvas, palette))
         {
             tab.sketch_modify(sessions, asked);
             *started = true;
@@ -2121,8 +2129,12 @@ impl<P: Clients + 'static> App<P> {
         // click, there or off the canvas).
         if let Some((at, busy)) = menu {
             let mut asked = sketch::bar::MenuAction::None;
-            let shown = egui::Area::new(egui::Id::new(("sketch_menu", id.to_string())))
-                .fixed_pos(at)
+            let ppp = ui.ctx().pixels_per_point();
+            let area = egui::Id::new(("sketch_menu", id.to_string()));
+            let layer = egui::LayerId::new(egui::Order::Foreground, area);
+            let opening = !ui.ctx().memory(|m| m.areas().visible_last_frame(&layer));
+            let shown = egui::Area::new(area)
+                .fixed_pos(sketch::bar::menu_corner(at, ppp))
                 .order(egui::Order::Foreground)
                 .show(ui.ctx(), |ui| {
                     *ui.visuals_mut() = sketch::bar::panel_visuals();
@@ -2141,12 +2153,8 @@ impl<P: Clients + 'static> App<P> {
                 sketch::bar::MenuAction::Cancel => tab.finish_sketch(sessions, false),
             }
             let menu_rect = shown.response.rect;
-            let away = ui.input(|i| {
-                i.pointer.any_pressed()
-                    && i.pointer
-                        .press_origin()
-                        .is_some_and(|origin| !menu_rect.contains(origin))
-            });
+            let away =
+                ui.input(|i| sketch::bar::pressed_off_menu(&i.events, menu_rect, ppp, opening));
             if (asked != sketch::bar::MenuAction::None || away)
                 && let Some(mode) = tab.sketch.as_mut()
             {

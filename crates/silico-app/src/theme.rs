@@ -848,6 +848,9 @@ pub const TOOLBAR_BUTTON_ICON: Color32 = TEXT_DEFAULT;
 pub const TOOLBAR_BUTTON_HOVER_BG: Color32 = WIDGET_BG;
 pub const TOOLBAR_BUTTON_HOVER_ICON: Color32 = TEXT_STRONG;
 pub const TOOLBAR_BUTTON_DISABLED_ICON: Color32 = TEXT_DISABLED;
+/// A sketch tool on (`.tb-btn.on`: Blue.900 on Blue.500).
+pub const TOOLBAR_BUTTON_ON_BG: Color32 = SELECTION_BG;
+pub const TOOLBAR_BUTTON_ON_ICON: Color32 = ON_SELECTION;
 /// A toggle button that's on (`.tb-btn.toggle-on`, SELECT's filters): white on Gray.250,
 /// marked along its foot by a 2-point line in the selection's blue (`box-shadow: inset 0
 /// -2px 0 var(--blue)`).
@@ -1096,6 +1099,9 @@ pub const STATUS_ITEM_PADDING: f32 = 8.0;
 pub const STATUS_ITEM_GAP: f32 = 6.0;
 pub const STATUS_ITEM_HOVER_BG: Color32 = WIDGET_BG;
 pub const STATUS_ITEM_HOVER_TEXT: Color32 = TEXT_STRONG;
+/// In sketch mode, the pointer's coordinates' item's least width (`statusText`'s
+/// `min-width: 150px`).
+pub const STATUS_COORDINATES_WIDTH: f32 = 150.0;
 
 /// A separator (`.st-sep`: 1 by 12, Gray.250), and the margin at each side of the one after
 /// Stop and Rebuild (`margin: 0 6px`).
@@ -2272,6 +2278,8 @@ mod tests {
         // `.tb-btn`: 30 square, `--r-sm`.
         assert_eq!(TOOLBAR_BUTTON_SIZE, 30.0);
         assert_eq!(TOOLBAR_BUTTON_CORNER_RADIUS, 4);
+        // `.tb-btn.toggle-on`: `box-shadow: inset 0 -2px 0`.
+        assert_eq!(TOOLBAR_BUTTON_TOGGLED_MARK_WIDTH, 2.0);
         // `.tb-label`: `font-size: 10px; line-height: 14px; gap: 2px; padding: 1px 4px;
         // border-radius: 3px; margin-top: 1px`, its `svg` 8 square.
         assert_eq!(TOOLBAR_LABEL_SIZE, 10.0);
@@ -2321,6 +2329,25 @@ mod tests {
                 "TOOLBAR_BUTTON_DISABLED_ICON",
                 TOOLBAR_BUTTON_DISABLED_ICON,
                 0x646363,
+            ),
+            // `.tb-btn.on`, `--blue-text` on `--blue`; `.toggle-on`, `--g1000` on `--g250`
+            // over an inset line of `--blue`.
+            ("TOOLBAR_BUTTON_ON_BG", TOOLBAR_BUTTON_ON_BG, 0x186add),
+            ("TOOLBAR_BUTTON_ON_ICON", TOOLBAR_BUTTON_ON_ICON, 0xf0f2ff),
+            (
+                "TOOLBAR_BUTTON_TOGGLED_BG",
+                TOOLBAR_BUTTON_TOGGLED_BG,
+                0x272626,
+            ),
+            (
+                "TOOLBAR_BUTTON_TOGGLED_ICON",
+                TOOLBAR_BUTTON_TOGGLED_ICON,
+                0xffffff,
+            ),
+            (
+                "TOOLBAR_BUTTON_TOGGLED_MARK",
+                TOOLBAR_BUTTON_TOGGLED_MARK,
+                0x186add,
             ),
             // `.tb-label`, `--g550`; `:hover`, `--g1000` on `--g250`.
             ("TOOLBAR_LABEL_TEXT", TOOLBAR_LABEL_TEXT, 0x939090),

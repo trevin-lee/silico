@@ -594,6 +594,23 @@ crates/silico-app/src/sketch/tools.rs | trim_event | replace - with / | #364
 # `past_end`'s press past an arc's end, `from > sweep` as `>=`: at `from == sweep` the
 # nearer end is its end, `sweep`, which `from` already is.
 crates/silico-app/src/sketch/tools.rs | past_end | replace > with >= | #364
+# The Sketch Palette's border, at each side (#379): `BORDER` is 1, so `2.0 / 1.0` is
+# `2.0 * 1.0`, in its width and in the height its body may take.
+crates/silico-app/src/sketch/bar.rs | palette | replace * with / | #379
+crates/silico-app/src/sketch/bar.rs | palette | replace * with / | #379
+# The canvas menu's opening frame (#379): `place < released` as `<=` adds only the place of
+# the last right release itself, and the arm it's in matches presses alone, never that
+# release.
+crates/silico-app/src/sketch/bar.rs | pressed_off_menu | replace < with <= | #379
+# A pixel's ray met with the sketch's plane (#379): `across == 0` makes `t` a division by
+# zero, never finite, so `across == 0 && !finite` is `across == 0`; and a non-finite `t`
+# with `across` not 0 makes every coordinate of the point met infinite or NaN, so the
+# place on the plane isn't finite, and `finite(at)` gives none, as the guard does.
+crates/silico-app/src/sketch/screen.rs | Placed::on_plane | replace || with && | #379
+# The sketch's coordinates held to 150 wide (#379): at a shortfall of exactly 0,
+# `add_space(0.0)` moves nothing; it only stretches the left parts' bounds to the gap past
+# the coordinates, which nothing draws or reads (the status bar's panel is its own size).
+crates/silico-app/src/status.rs | sketch_line | replace > with >= | #379
 # A key cap's inner corner (#392) takes the ellipse's gradient for its normal only when both
 # its radii are more than none; `rx >= 0.0` for `rx > 0.0` differs only where rx is 0 and ry
 # more. Each corner's ry is the radius less its top or bottom border, rx the radius less its
@@ -660,11 +677,12 @@ crates/silico-app/src/sketch/draw.rs | segments | replace || with && | #351
 # `d <= tolerance` holds for none; `tolerance.is_nan() && tolerance < 0.0`, never true,
 # only takes away the early return from a search that then finds nothing.
 crates/silico-app/src/sketch/hit.rs | hit | replace || with && | #351
-# `keys`' answer (#351's Delete and Finish Sketch in sketch mode, as #298's): it only asks
-# egui for the next frame at once, which egui asks for itself after any input event, and a
-# key press is one, so no frame comes later for it.
-crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #351
-crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #351
+# `command_keys`' answer (#351's Delete and Finish Sketch in sketch mode, as #298's): it only
+# asks egui for the next frame at once, which egui asks for itself after any input event
+# (`InputState::wants_repaint_after`, read at the pass's start, before a key is consumed),
+# and a key press is one, so no frame comes later for it.
+crates/silico-app/src/app.rs | App<P>::command_keys | replace || with && | #351
+crates/silico-app/src/app.rs | App<P>::command_keys | replace || with && | #351
 # A rename's first edit (#398): a modified ⌫ or Del while the name is still selected whole.
 # The guard leaves it to egui's TextEdit, which deletes the selection with any modifier
 # (`check_for_mutating_key_press`: `delete_selected`, or ⌘'s paragraph deletion, which
