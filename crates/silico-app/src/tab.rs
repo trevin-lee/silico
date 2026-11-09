@@ -2307,12 +2307,7 @@ impl Tab {
                                 }
                             }
                         }
-                        Err(problems) => {
-                            if let Some(dialog) = dialog {
-                                dialog.adding = false;
-                            }
-                            self.message = Some(said(&problems));
-                        }
+                        Err(problems) => self.add_refused(serial, &problems),
                     }
                     None
                 }
@@ -4863,13 +4858,13 @@ impl Tab {
         let Some(feature) = dialog.feature.clone() else {
             return false;
         };
+        let sketch_field = crate::dialog::Part::Sketch.field();
+        let sketch_sent = dialog.sent(sketch_field).cloned();
         let changes = dialog.changes(waiting);
         // A new sweep's sketch picked after its add: its base follows, to where an add from
         // that sketch would build (#443's review, H1), worked out from the newest timeline as
         // the add's was. A sweep's own dialog (Edit Feature) keeps the base it has.
-        let picked = changes
-            .iter()
-            .any(|(field, _)| *field == crate::dialog::Part::Sketch.field());
+        let picked = changes.iter().any(|(field, _)| *field == sketch_field);
         let moved = match (
             dialog.made && dialog.kind.sweeps() && picked,
             dialog.sketch(),
@@ -4891,7 +4886,10 @@ impl Tab {
                     why,
                     read: None,
                 });
-                changes.retain(|(field, _)| *field != crate::dialog::Part::Sketch.field());
+                // Held back: taken as unsent, so picked again once the body may be taken
+                // (another client's edit lifting the refusal), it's sent.
+                changes.retain(|(field, _)| *field != sketch_field);
+                dialog.unsend(sketch_field, sketch_sent);
                 None
             }
             Some((_, Ok(base))) => {
@@ -5499,6 +5497,30 @@ impl Tab {
         });
     }
 
+    /// The add of the dialog of `serial` refused, `problems` saying why, which is said. Made
+    /// against a revision the session has moved on from (another client's edit came first):
+    /// let go ([`Dialog::forget_add`]), so the next pass sends it again, at the revision now.
+    /// Any other refusal leaves it unsent till an input changes; either way OK stays off
+    /// while no feature is made ([`ok_for`](Self::ok_for)).
+    fn add_refused(&mut self, serial: u64, problems: &Problems) {
+        let stale = problems.errors().iter().any(|error| {
+            error.code() == silico_core::ErrorCode::Conflict
+                && error.parameter() == Some("revision")
+        });
+        if let Some(dialog) = self
+            .dialog
+            .as_mut()
+            .filter(|dialog| dialog.serial == serial)
+        {
+            if stale {
+                dialog.forget_add();
+            } else {
+                dialog.adding = false;
+            }
+        }
+        self.message = Some(said(problems));
+    }
+
     /// Whether the dialog's inputs let it be OK'd: valid, no edit of one refused, and its
     /// add not unanswered (what's typed meanwhile is sent after it). While the tab closes,
     /// [`close_dialog`](Self::close_dialog) takes neither OK nor Cancel.
@@ -5509,9 +5531,10 @@ impl Tab {
     }
 
     /// Whether `dialog`, the tab's open one (taken out of the tab to be drawn, or not), can
-    /// be OK'd: valid, its add not unanswered, no box holding what isn't sent, no edit of an
-    /// input refused, and a sweep's base neither refused nor waiting (its sketch and its base
-    /// are one change). The one rule the button and Enter take.
+    /// be OK'd: valid, a new feature's add answered with its feature (not refused, nor still
+    /// to answer), no box holding what isn't sent, no edit of an input refused, and a sweep's
+    /// base neither refused nor waiting (its sketch and its base are one change). The one
+    /// rule the button and Enter take.
     pub(crate) fn ok_for(&self, dialog: &Dialog) -> bool {
         let refused = |field: &str| {
             dialog
@@ -5519,7 +5542,9 @@ impl Tab {
                 .as_ref()
                 .is_some_and(|feature| self.refused.contains(&(feature.clone(), field.to_owned())))
         };
-        !dialog.adding
+        // A new feature's dialog whose add the core refused has none to OK.
+        (!dialog.made || dialog.feature.is_some())
+            && !dialog.adding
             && !dialog.holding()
             && dialog.valid()
             && !dialog
@@ -6985,7 +7010,7 @@ mod tests {
         tab.dialog = Some(dialog);
         let refusing = TimelineAnswer {
             revision: revision(3),
-            ..timeline(0, Some(revision(3)), joined(true))
+            ..timeline(0, Some(revision(2)), joined(true))
         };
         tab.base_read(1, Kind::Pocket, members, Ok(refusing));
         assert!(tab.edits.queue.is_empty(), "nothing added");
@@ -7032,6 +7057,129 @@ mod tests {
         assert_eq!(other.base_refused, None);
     }
 
+    /// A session on the fake kernel, its document a box, and a tab of it: what
+    /// `dialog_changed` sends to, as a frame's tab does.
+    fn session_tab() -> (
+        tempfile::TempDir,
+        Arc<Sessions<Arc<silico_core::fake::FakeKernel>>>,
+        Tab,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("part.silico");
+        std::fs::write(
+            &document,
+            r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}]}"#,
+        )
+        .unwrap();
+        let kernel = Arc::new(silico_core::fake::FakeKernel::new(1).unwrap());
+        let sessions = Arc::new(Sessions::with_cache_opener(kernel, |dir| {
+            silico_core::cache::Cache::unsealed(dir)
+        }));
+        let opened = sessions.open(&document, false).wait();
+        let id = opened.session.unwrap().id;
+        let tab = Tab::opened(
+            id,
+            document.to_str().unwrap().to_owned(),
+            &opened.result.unwrap().problems,
+        );
+        (dir, sessions, tab)
+    }
+
+    #[test]
+    fn dialog_changed_keeps_a_reads_refusal_till_the_tabs_timeline_reaches_the_read() {
+        // #443's review (round 5, M8): through `dialog_changed`, as each frame asks it. A
+        // Pocket's dialog from Sketch2, its add's own read at revision 3 refusing the Block
+        // (Joined suppressed there). The tab's timeline at revision 2 (Joined unsuppressed, the
+        // Block taken), the session already at 5: frame after frame the read's refusal
+        // stands, nothing queued, nothing read, no add. The timeline at 4, taking the Block:
+        // lifted, and the add sent again. The timeline at 3 itself, refusing the Block: the
+        // check's own refusal, not the read's.
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let revision = |n: u64| Revision::from_number(n).unwrap();
+        let at = |n: u64, suppressed: bool| TimelineAnswer {
+            revision: revision(n),
+            ..timeline(0, Some(revision(n - 1)), joined(suppressed))
+        };
+        let refused_by_the_read = |tab: &mut Tab| {
+            let mut dialog = Dialog::new(Kind::Pocket, Some(fid("s0000002")), 1);
+            let members = dialog.add().unwrap();
+            tab.dialog = Some(dialog);
+            tab.base_read(1, Kind::Pocket, members, Ok(at(3, true)));
+        };
+        let (_dir, sessions, mut tab) = session_tab();
+        tab.revision = revision(5);
+        tab.timeline = Some(at(2, false));
+        refused_by_the_read(&mut tab);
+        for _ in 0..3 {
+            assert!(!tab.dialog_changed(&sessions));
+            let dialog = tab.dialog.as_ref().unwrap();
+            assert_eq!(
+                dialog.base_refused.as_ref().map(|refused| refused.read),
+                Some(Some(revision(3)))
+            );
+            assert!(!dialog.adding);
+            assert!(tab.edits.queue.is_empty());
+            assert!(tab.under.is_empty());
+        }
+        tab.timeline = Some(at(4, false));
+        tab.dialog_changed(&sessions);
+        let dialog = tab.dialog.as_ref().unwrap();
+        assert_eq!(dialog.base_refused, None);
+        assert!(dialog.adding, "the add sent again");
+        // The timeline at the read's own revision: the check decides, and refuses.
+        let (_dir, sessions, mut tab) = session_tab();
+        tab.revision = revision(5);
+        tab.timeline = Some(at(2, false));
+        refused_by_the_read(&mut tab);
+        tab.timeline = Some(at(3, true));
+        assert!(!tab.dialog_changed(&sessions));
+        let dialog = tab.dialog.as_ref().unwrap();
+        assert_eq!(
+            dialog.base_refused.as_ref().map(|refused| refused.read),
+            Some(None)
+        );
+        assert!(!dialog.adding);
+    }
+
+    #[test]
+    fn a_new_features_add_refused_leaves_ok_off_and_a_stale_one_is_sent_again() {
+        // #443's review (round 5, L16): a Pocket's add refused by the core. Not stale: OK off
+        // (no feature to OK), nothing sent again till an input changes. Stale (made against a
+        // revision the session moved on from): OK off too, and its add sent on the next pass.
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let refusal = |stale: bool| {
+            let error = silico_core::Error::new(
+                if stale {
+                    silico_core::ErrorCode::Conflict
+                } else {
+                    silico_core::ErrorCode::InvalidInput
+                },
+                "refused",
+            );
+            Problems::from(if stale {
+                error.with_parameter("revision")
+            } else {
+                error
+            })
+        };
+        for stale in [false, true] {
+            let mut tab = tab();
+            let mut dialog = Dialog::new(Kind::Pocket, Some(fid("s0000009")), 4);
+            dialog.add().unwrap();
+            tab.dialog = Some(dialog);
+            assert!(!tab.can_ok(), "adding");
+            tab.add_refused(4, &refusal(stale));
+            assert!(!tab.can_ok(), "stale: {stale}");
+            let dialog = tab.dialog.as_mut().unwrap();
+            assert!(!dialog.adding);
+            assert_eq!(dialog.add().is_some(), stale, "stale: {stale}");
+            assert_eq!(
+                tab.message.as_deref().map(|said| said.contains("refused")),
+                Some(true)
+            );
+        }
+    }
+
     #[test]
     fn a_reads_refusal_is_marked_as_the_reads_and_outlasts_an_older_timelines_check() {
         // #443's review: the refusal the add's own read gives is the read's (`read`, its
@@ -7049,7 +7197,7 @@ mod tests {
             members,
             Ok(TimelineAnswer {
                 revision: revision(5),
-                ..timeline(0, Some(revision(5)), joined(true))
+                ..timeline(0, Some(revision(4)), joined(true))
             }),
         );
         let dialog = tab.dialog.as_mut().unwrap();

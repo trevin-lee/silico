@@ -499,6 +499,11 @@ impl<P: Clients + 'static> Panes<'_, P> {
             *self.started |= tab.card_asked(sessions, asked);
         }
         *self.started |= tab.dialog_changed(sessions);
+        // The button's click, asked of the inputs before this frame's edits were sent, taken
+        // as Enter is: only if OK still holds after them.
+        if action == Action::Ok && !tab.can_ok() {
+            action = Action::None;
+        }
         match key {
             Some(egui::Key::Enter) if tab.can_ok() => action = Action::Ok,
             Some(egui::Key::Escape) if tab.dialog_escape(sessions) => action = Action::Cancel,

@@ -488,9 +488,10 @@ pub struct BaseRefused {
 
 /// What the tab lets an open dialog do: anything at all (`enabled`, none while its tab
 /// closes), and OK (`ok`: the tab's one rule, `Tab::ok_for`, asked of the dialog as its
-/// inputs are once drawn this frame, as Enter asks it of them after, so an edit that makes
-/// an input invalid turns the button off in the frame it's made, and the button and the key
-/// can't disagree).
+/// inputs are once drawn this frame, so an edit that makes an input invalid turns the button
+/// off in the frame it's made). A click on the button, as Enter, is taken only if the rule
+/// still holds once the tab has sent what this frame's inputs ask (`Tab::dialog_changed`): so
+/// neither closes a dialog whose add or base edit this frame queued.
 #[derive(Clone, Copy)]
 pub(crate) struct Allowed<'a> {
     pub enabled: bool,
@@ -1049,11 +1050,27 @@ impl Dialog {
     }
 
     /// A new feature's add, sent and refused before it was (a sweep's base its own read
-    /// refused), let go: no longer adding, and nothing taken as sent, so the next time its
-    /// inputs may be added, they are.
+    /// refused), or refused by the core as made against a revision the session has moved on
+    /// from, let go: no longer adding, and nothing taken as sent, so the next time its inputs
+    /// may be added, they are.
     pub fn forget_add(&mut self) {
         self.adding = false;
         self.sent.clear();
+    }
+
+    /// The text of `field` last taken as sent, if any was.
+    pub fn sent(&self, field: &str) -> Option<&String> {
+        self.sent.get(field)
+    }
+
+    /// `field` taken as last sent as `was` again (none: never sent): an edit
+    /// [`changes`](Self::changes) gave that the tab held back, so the next pass offers it
+    /// again.
+    pub fn unsend(&mut self, field: &'static str, was: Option<String>) {
+        match was {
+            Some(text) => self.sent.insert(field, text),
+            None => self.sent.remove(field),
+        };
     }
 
     /// The sketch its sketch box holds, if it has one and it's filled.
