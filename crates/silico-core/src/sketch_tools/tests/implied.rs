@@ -1156,6 +1156,26 @@ fn a_line_beside_a_level_line_named_as_the_tools_unnamed_line_keeps_its_horizont
     assert_eq!(types(&d), ["horizontal"], "{:?}", d.adds());
 }
 
+/// T16's sketch: n0000001 (0, 20)-(110, 20) and n0000002 (40, 20)-(80, 20), each held
+/// `horizontal`, so each one's ends are a Y class of their own; and n0000003 (50, 10)-(50,
+/// 30), held by nothing, whose middle, (50, 20), both level lines run through. None fixed.
+fn two_level_lines_and_a_cross() -> Sketch {
+    let mut s = with_line(empty(), "n0000001", [0.0, 20.0], [110.0, 20.0]);
+    s = with_line(s, "n0000002", [40.0, 20.0], [80.0, 20.0]);
+    s = with_line(s, "n0000003", [50.0, 10.0], [50.0, 30.0]);
+    constrained(
+        s,
+        vec![
+            Form::Horizontal {
+                line: el("n0000001"),
+            },
+            Form::Horizontal {
+                line: el("n0000002"),
+            },
+        ],
+    )
+}
+
 #[test]
 fn a_lines_end_at_a_middle_is_judged_after_its_new_starts_relations() {
     // #431 round 3, T16 (docs/ports/sketch-tools.md: the start point's relations, then the
@@ -1173,21 +1193,7 @@ fn a_lines_end_at_a_middle_is_judged_after_its_new_starts_relations() {
     //   the view's classes alone, without the start's, the two were apart and it stayed:
     //   three `on`s.
     // The segment's `horizontal` goes too, its ends in one class. Two `on`s, the start's.
-    let mut s = with_line(empty(), "n0000001", [0.0, 20.0], [110.0, 20.0]);
-    s = with_line(s, "n0000002", [40.0, 20.0], [80.0, 20.0]);
-    s = with_line(s, "n0000003", [50.0, 10.0], [50.0, 30.0]);
-    let s = constrained(
-        s,
-        vec![
-            Form::Horizontal {
-                line: el("n0000001"),
-            },
-            Form::Horizontal {
-                line: el("n0000002"),
-            },
-        ],
-    );
-    let mut d = Drive::new(ToolKind::Line, s);
+    let mut d = Drive::new(ToolKind::Line, two_level_lines_and_a_cross());
     d.drag([50.0, 20.0], [60.0, 20.0]);
     let ons = d.made[0]
         .constraints
@@ -1203,6 +1209,74 @@ fn a_lines_end_at_a_middle_is_judged_after_its_new_starts_relations() {
             "line (50, 20)-(60, 20)",
             "midpoint (50, 20) line #(50, 10)-#(50, 30)",
             "on (50, 20) line #(0, 20)-#(110, 20)",
+            "on (50, 20) line #(40, 20)-#(80, 20)",
+            "midpoint (60, 20) line #(40, 20)-#(80, 20)",
+        ])]
+    );
+}
+
+#[test]
+fn a_line_from_the_origin_to_a_middle_on_the_x_axis_keeps_its_ends_on() {
+    // #431 round 4, T17: the keep path of a new start's relations. n0000001 (30, -10)-(30,
+    // 10), held by nothing. A line dragged from the origin to (30, 0):
+    // - its start, a new point at the origin, level and plumb with it, so in the origin's
+    //   classes, fixed;
+    // - its end, n0000001's middle, through which the x axis runs: `midpoint` of a line
+    //   whose ends share no class, so it joins none; its `on` of the x axis would join its
+    //   own Y class, free, to the origin's: not implied, kept, with the start's relations
+    //   merged first as without. Judged as the start itself (its unnamed ID), it would be in
+    //   the origin's class already, and the `on` would go;
+    // - the segment's `horizontal`: its ends both in the origin's Y class: goes.
+    let s = with_line(empty(), "n0000001", [30.0, -10.0], [30.0, 10.0]);
+    let mut d = Drive::new(ToolKind::Line, s);
+    d.drag([0.0, 0.0], [30.0, 0.0]);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (0, 0)",
+            "point (30, 0)",
+            "line (0, 0)-(30, 0)",
+            "horizontal_points (0, 0) origin",
+            "vertical_points (0, 0) origin",
+            "midpoint (30, 0) line #(30, -10)-#(30, 10)",
+            "on (30, 0) x_axis",
+        ])]
+    );
+}
+
+#[test]
+fn a_lines_end_at_a_middle_is_judged_after_its_starts_midpoint_as_well_as_its_ons() {
+    // #431 round 4, T19. n0000001 (0, 20)-(100, 20) and n0000002 (40, 20)-(80, 20), each held
+    // `horizontal`, none fixed. A line dragged from (50, 20) to (60, 20):
+    // - its start, n0000001's middle, through which n0000002 runs: `midpoint` of n0000001
+    //   puts it in n0000001's Y class; its `on` n0000002 joins that to n0000002's: kept;
+    // - its end, n0000002's middle, through which n0000001 runs: `midpoint` of n0000002 puts
+    //   it in n0000002's class, now one with n0000001's, so its `on` n0000001 is implied and
+    //   goes. With the start's `on` merged but not its `midpoint`, n0000001's class would
+    //   still be apart, and it would stay;
+    // - the segment's `horizontal`, its ends in one class: goes. One `on`, the start's.
+    let s = with_line(empty(), "n0000001", [0.0, 20.0], [100.0, 20.0]);
+    let s = with_line(s, "n0000002", [40.0, 20.0], [80.0, 20.0]);
+    let s = constrained(
+        s,
+        vec![
+            Form::Horizontal {
+                line: el("n0000001"),
+            },
+            Form::Horizontal {
+                line: el("n0000002"),
+            },
+        ],
+    );
+    let mut d = Drive::new(ToolKind::Line, s);
+    d.drag([50.0, 20.0], [60.0, 20.0]);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (50, 20)",
+            "point (60, 20)",
+            "line (50, 20)-(60, 20)",
+            "midpoint (50, 20) line #(0, 20)-#(100, 20)",
             "on (50, 20) line #(40, 20)-#(80, 20)",
             "midpoint (60, 20) line #(40, 20)-#(80, 20)",
         ])]
