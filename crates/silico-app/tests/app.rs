@@ -5149,6 +5149,68 @@ fn ok_clicked_in_the_frame_an_input_turns_invalid_leaves_the_dialog_open() {
 }
 
 #[test]
+fn ok_clicked_in_the_frame_a_new_features_inputs_turn_valid_waits_for_its_add() {
+    // #443's review (round 5, L13): a Pad's dialog, its Length emptied and its sketch then
+    // chosen, so nothing to add yet; then "5" typed and OK clicked, both given to one frame,
+    // OK by its accessibility action. That frame's inputs send the add, and the click, taken
+    // only if OK still holds once they're sent (a new feature's OK waits for its add), does
+    // nothing: the dialog stays open, and the add answers into it.
+    use eframe::egui::{Event, Key, accesskit};
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    create(&mut h, "Pad");
+    settled(&mut h);
+    input(&h, "Length").focus();
+    step(&mut h);
+    for _ in 0..4 {
+        h.key_press(Key::Backspace);
+        step(&mut h);
+    }
+    assert_eq!(input(&h, "Length").value().as_deref(), Some(""));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    settled(&mut h);
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.sketch().is_some()
+                && dialog.feature.is_none()
+                && !dialog.adding)
+    );
+    input(&h, "Length").focus();
+    step(&mut h);
+    let (target_node, target_tree) = dialog(&h)
+        .get_by_role_and_label(Role::Button, "OK")
+        .accesskit_node()
+        .locate();
+    h.input_mut().events.extend([
+        Event::Text("5".to_owned()),
+        Event::AccessKitActionRequest(accesskit::ActionRequest {
+            target_node,
+            target_tree,
+            action: accesskit::Action::Click,
+            data: None,
+        }),
+    ]);
+    step(&mut h);
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("5"));
+    assert!(dialog_open(&h));
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    assert!(dialog_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
     let f = fixture();
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
@@ -27529,14 +27591,18 @@ fn joined_unsuppressed() -> String {
 }
 
 #[test]
-fn a_refusal_from_the_adds_own_read_is_said_and_kept_till_the_sketch_changes() {
+fn a_refusal_from_the_adds_own_read_is_said_and_stands_while_the_tabs_timeline_is_older() {
     // #443's review. A Pocket's dialog open, its sketch box empty, over the document with
     // Joined unsuppressed (the Block's chain ends at Joined). Another client suppresses
     // Joined, and in the very next frame Sketch2 is chosen: the dialog's check before the
     // add, against the tab's timeline still of the revision before, passes, and the add is
     // queued; its own read of the session's document refuses the Block (`Under::Base`).
     // Nothing is added (no add is sent at all), OK is off, and the dialog says why, frame
-    // after frame. Loose picked instead lets it go, and is added on the tip.
+    // after frame: the read's refusal while the tab's timeline is older than the read, the
+    // check's own once it isn't. Loose picked instead lets it go, and is added on the tip.
+    // Then (round 5, L17) Sketch2 picked again, its body refused, so not sent; another
+    // client unsuppressing Joined lifts the refusal, and Sketch2 picked once more is sent:
+    // the pocket's sketch is Sketch2.
     let f = fixture();
     describes_a_real_box(&f);
     measures_the_box(&f);
@@ -27602,6 +27668,46 @@ fn a_refusal_from_the_adds_own_read_is_said_and_kept_till_the_sketch_changes() {
         fields_of(&text_of(&f, &h), "Pocket"),
         Some(sweep_fields("Pocket", "j0000001", "s0000009"))
     );
+    assert!(ok_enabled(&h));
+    let sketch_of = |h: &AppHarness| {
+        fields_of(&text_of(&f, h), "Pocket")
+            .unwrap()
+            .into_iter()
+            .find(|(key, _)| key == "sketch")
+            .map(|(_, value)| format!("{value:?}"))
+            .unwrap()
+    };
+    let pick_sketch2 = |h: &mut AppHarness| {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label("Sketch2")
+            .click();
+        step(h);
+    };
+    pick_sketch2(&mut h);
+    step_until(&mut h, "the reason shown again", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    settled(&mut h);
+    assert!(sketch_of(&h).contains("s0000009"), "{}", sketch_of(&h));
+    f.sessions
+        .set_field(
+            &id,
+            h.state().tabs()[0].revision,
+            silico_core::document::FeatureId::new("j0000001").unwrap(),
+            "suppressed".to_owned(),
+            json::read(b"false").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the refusal lifted", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_none()
+    });
+    pick_sketch2(&mut h);
+    step_until(&mut h, "Sketch2 sent", |h| {
+        sketch_of(h).contains("s0000002")
+    });
+    settled(&mut h);
     assert!(ok_enabled(&h));
     assert_eq!(never_waits::waits(), 0);
 }
