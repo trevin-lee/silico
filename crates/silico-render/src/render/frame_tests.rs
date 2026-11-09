@@ -16,7 +16,7 @@ use super::tests::on_lavapipe;
 use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjection};
 
 use super::{
-    BACKGROUND, Element, Frame, HIT_EDGE_POINTS, HIT_VERTEX_POINTS, MAX_PENDING_PICKS,
+    BACKGROUND, EDGE, Element, Frame, HIT_EDGE_POINTS, HIT_VERTEX_POINTS, MAX_PENDING_PICKS,
     MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines, PendingPick, Pick, Pickable, Picking, PixelRect,
     RenderFailure, Renderer, hits, project, ray,
 };
@@ -59,8 +59,13 @@ fn frame<'a>(
     }
 }
 
-/// The app's viewport's background, #000000 (its theme's `VIEWPORT_BG`).
-const VIEWPORT_BG: [u8; 4] = [0, 0, 0, 255];
+/// An opaque black behind the bodies, as the app's viewport's was before its gradient: the
+/// app's frames have none now ([`NO_BACKGROUND`]).
+const VIEWPORT_BG: Option<[u8; 3]> = Some([0, 0, 0]);
+
+/// No background: the app's frames' (its theme's `VIEWPORT_FRAME_BG`), composited over the
+/// gradient it paints under them.
+const NO_BACKGROUND: Option<[u8; 3]> = None;
 
 fn rect(min: [i32; 2], size: [u32; 2]) -> PixelRect {
     PixelRect { min, size }
@@ -419,6 +424,16 @@ fn frames_prepared_and_never_submitted_leave_the_next_one_whole() {
 /// A target of the renderer's format, `frame` composited into it after the frame's command
 /// buffer (if the frame was prepared): its pixels, RGBA, rows top to bottom.
 fn composited(r: &mut Renderer, commands: Option<wgpu::CommandBuffer>) -> Vec<[u8; 4]> {
+    composited_over(r, commands, wgpu::Color::TRANSPARENT)
+}
+
+/// [`composited`], into a pass cleared to `under` first, as egui's pass holds what it
+/// painted under the frame.
+fn composited_over(
+    r: &mut Renderer,
+    commands: Option<wgpu::CommandBuffer>,
+    under: wgpu::Color,
+) -> Vec<[u8; 4]> {
     let device = r.ctx.device.clone();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("composite target"),
@@ -451,7 +466,7 @@ fn composited(r: &mut Renderer, commands: Option<wgpu::CommandBuffer>) -> Vec<[u
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    load: wgpu::LoadOp::Clear(under),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -509,7 +524,7 @@ fn a_frame_is_composited_into_the_pass_and_a_refused_one_not_at_all() {
             // The corner is the frame's background, opaque; the centre is the front face, not
             // it.
             let corner = at(1, 1);
-            assert_eq!(corner, VIEWPORT_BG);
+            assert_eq!(corner, [0, 0, 0, 255]);
             assert_ne!(at(32, 26), corner);
             assert_eq!(at(32, 26)[3], 255);
             // Composited again, without another frame: the same frame.
@@ -533,15 +548,10 @@ fn a_frames_background_is_the_colour_it_gives_and_a_renders_its_own() {
             // Each colour at the corner, off the box, to 1 of 255 (sRGB to linear and back);
             // the box's front face at the centre the same whatever's behind it.
             let mut centres = vec![];
-            for background in [
-                VIEWPORT_BG,
-                [255, 255, 255, 255],
-                [12, 200, 77, 255],
-                [230, 233, 237, 255],
-            ] {
+            for background in [[0, 0, 0], [255, 255, 255], [12, 200, 77], [230, 233, 237]] {
                 let commands = r
                     .prepare(&Frame {
-                        background,
+                        background: Some(background),
                         ..frame(&camera, &[1], &[], None)
                     })
                     .unwrap();
@@ -549,23 +559,41 @@ fn a_frames_background_is_the_colour_it_gives_and_a_renders_its_own() {
                 let at = |x: u32, y: u32| pixels[usize::try_from(y * WIDTH + x).unwrap()];
                 for (x, y) in [(1, 1), (62, 46), (32, 5)] {
                     let got = at(x, y);
-                    for k in 0..4 {
+                    for k in 0..3 {
                         assert!(
                             got[k].abs_diff(background[k]) <= 1,
                             "{background:?} at ({x}, {y}): {got:?}"
                         );
                     }
+                    assert_eq!(got[3], 255, "{background:?} at ({x}, {y}): {got:?}");
                 }
                 centres.push(at(32, 26));
             }
             assert!(centres.windows(2).all(|w| w[0] == w[1]), "{centres:?}");
-            // One not opaque is refused, naming it: the frame is composited opaque.
-            for alpha in [0, 128, 254] {
-                let translucent = Frame {
-                    background: [12, 200, 77, alpha],
-                    ..frame(&camera, &[1], &[], None)
+            // None: composited over what the pass holds, each colour cleared there showing
+            // off the box exactly (the frame's alpha 0 there, so the pass's own bytes), the
+            // box's front face over it as opaque as with a background of its own.
+            for under in [[0x1e, 0x1f, 0x22], [0x3a, 0x3c, 0x41], [12, 200, 77]] {
+                let commands = r
+                    .prepare(&Frame {
+                        background: NO_BACKGROUND,
+                        ..frame(&camera, &[1], &[], None)
+                    })
+                    .unwrap();
+                let [red, green, blue] = under.map(|c| f64::from(c) / 255.0);
+                let clear = wgpu::Color {
+                    r: red,
+                    g: green,
+                    b: blue,
+                    a: 1.0,
                 };
-                assert_eq!(refused(r, &translucent), "background");
+                let pixels = composited_over(r, Some(commands), clear);
+                let at = |x: u32, y: u32| pixels[usize::try_from(y * WIDTH + x).unwrap()];
+                let [red, green, blue] = under;
+                for (x, y) in [(1, 1), (62, 46), (32, 5)] {
+                    assert_eq!(at(x, y), [red, green, blue, 255], "{under:?} at ({x}, {y})");
+                }
+                assert_eq!(at(32, 26), centres[0], "{under:?}: the face");
             }
             // A render keeps its own, the light grey.
             let [red, green, blue] = BACKGROUND;
@@ -576,6 +604,79 @@ fn a_frames_background_is_the_colour_it_gives_and_a_renders_its_own() {
             let mut rgb = vec![0; reader.output_buffer_size().unwrap()];
             reader.next_frame(&mut rgb).unwrap();
             assert_eq!(rgb[..3], [red, green, blue]);
+        },
+    );
+}
+
+#[test]
+fn a_frame_with_no_background_blends_an_edges_rim_over_the_pass_premultiplied_once() {
+    // The box's top edge (Edge3, z = 10) along row 20.73, 2 points wide: rows 19.73 to
+    // 21.73, so row 20 is under it whole and row 19 only its feathered outer rim, over
+    // nothing (the front face starts at row 20.73), columns 14 to 48 clear of the box's
+    // sides. The edge's colour is EDGE, #282828. With no background, the frame holds that
+    // rim premultiplied: its alpha α its coverage, its colour EDGE · α. Composited over a
+    // pass cleared to an opaque `under`, each channel is then EDGE · α + under · (1 − α), α
+    // read over nothing (the frame's alpha there), to 1.5 of 255 for the 8-bit rounding of
+    // the frame, the composite, and α. Blended as alpha to coverage, the rim's colour is
+    // multiplied by α a second time: at α = 30/255, EDGE's 40 is 4.7 premultiplied once,
+    // but 1.0 twice (40 to linear, 0.0212, times α, 0.0025, back to sRGB, 8.2, times α), a
+    // dark fringe.
+    on_lavapipe(
+        "render::frame_tests::a_frame_with_no_background_blends_an_edges_rim_over_the_pass_premultiplied_once",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let none = || Frame {
+                background: NO_BACKGROUND,
+                ..frame(&camera, &[1], &[], None)
+            };
+            let commands = r.prepare(&none()).unwrap();
+            let over_nothing = composited(r, Some(commands));
+            let pixel = |pixels: &[[u8; 4]], x: u32, y: u32| {
+                pixels[usize::try_from(y * WIDTH + x).unwrap()]
+            };
+            for under in [[0x1e, 0x1f, 0x22], [200, 200, 200], [12, 200, 77]] {
+                let commands = r.prepare(&none()).unwrap();
+                let [red, green, blue] = under.map(|c| f64::from(c) / 255.0);
+                let clear = wgpu::Color {
+                    r: red,
+                    g: green,
+                    b: blue,
+                    a: 1.0,
+                };
+                let over = composited_over(r, Some(commands), clear);
+                for x in 14..=48 {
+                    // The edge whole: its own colour, opaque.
+                    let line = pixel(&over, x, 20);
+                    for k in 0..3 {
+                        assert!(
+                            line[k].abs_diff(EDGE[k]) <= 1,
+                            "{under:?}: ({x}, 20) {line:?}"
+                        );
+                    }
+                    let rim = pixel(&over_nothing, x, 19);
+                    let alpha = f64::from(rim[3]) / 255.0;
+                    assert!(
+                        rim[3] > 10 && rim[3] < 245,
+                        "({x}, 19) over nothing {rim:?}: not the rim"
+                    );
+                    let got = pixel(&over, x, 19);
+                    assert_eq!(got[3], 255, "{under:?}: ({x}, 19) {got:?}");
+                    for k in 0..3 {
+                        let want = f64::from(EDGE[k]) * alpha + f64::from(under[k]) * (1.0 - alpha);
+                        assert!(
+                            (f64::from(got[k]) - want).abs() <= 1.5,
+                            "{under:?}: ({x}, 19) {got:?}, channel {k}, against {want} (α {alpha})"
+                        );
+                        // Over nothing, the rim premultiplied once.
+                        let once = f64::from(EDGE[k]) * alpha;
+                        assert!(
+                            (f64::from(rim[k]) - once).abs() <= 1.5,
+                            "({x}, 19) over nothing {rim:?}, channel {k}, against {once}"
+                        );
+                    }
+                }
+            }
         },
     );
 }
@@ -4207,6 +4308,9 @@ fn a_body_behind_a_perspective_eye_has_no_edge_drawn_again_for_picking_though_it
 
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
 
+/// [`VIEWPORT_BG`] as a pixel of the frame: opaque black.
+const BLACK: [u8; 4] = [0, 0, 0, 255];
+
 /// z of row 26.5, a pixel's centre on the front face: 7 − 2.5 × 11/12.
 const ROW_26_Z: f64 = 7.0 - 2.5 * 11.0 / 12.0;
 
@@ -4341,7 +4445,7 @@ fn a_line_over_the_background_and_one_on_an_edge_are_drawn_over_them() {
             );
             assert_eq!(
                 pixel(&image(r, &frame(&camera, &[1], &[], None)), 32, 15),
-                VIEWPORT_BG
+                BLACK
             );
             assert_magenta_row(&over, 15, 12, 49);
             // Along the front face's top edge (Edge3, z = 10, row 20.73): the edge's dark
@@ -4537,7 +4641,7 @@ fn a_line_ten_kilometres_out_is_drawn_on_its_pixel_not_where_f32_would_put_it() 
                 let got = pixel(&drawn, 45, y);
                 assert!(within(got, MAGENTA, 8), "(45, {y}): {got:?}");
                 for x in [42, 43] {
-                    assert_eq!(pixel(&drawn, x, y), VIEWPORT_BG, "({x}, {y})");
+                    assert_eq!(pixel(&drawn, x, y), BLACK, "({x}, {y})");
                 }
             }
         },
