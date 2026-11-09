@@ -796,11 +796,13 @@ proptest! {
 fn a_million_features_all_refused_validate_promptly() {
     // Every feature a boolean of the first box with a missing tool, all sharing one ID:
     // each refused three ways (its ID, base consumed, tool missing), named by place.
-    // Promptly, measured as the valid million below is ([`cpu_against_probe`]), for the same
-    // reasons: its growth from a hundred thousand the median's, at most 30 (10 by its count,
-    // a refusal quadratic in the count about 100); its cost the least's, at most
-    // REFUSED_PER_PROBE times the probe's least beside it; and at most REFUSED_MOST of CPU.
-    // CALIBRATION.
+    // Promptly, measured as the valid million below is ([`cpu_against_probe`]), for the
+    // same reasons: its growth from a hundred thousand the median's, at most 30, about 10
+    // by its count, where a refusal quadratic in the count would be about 100 (9.1 to 11.7
+    // in 20 runs on loaded gate runners, 2026-11-08, gate 42546134628, where the least's
+    // ran to 15.6); its cost the least's, at most REFUSED_PER_PROBE times the probe's least
+    // beside it; and at most 7.5 s of CPU, the bound it had alone before, three times the
+    // slowest of those runs (2.4 s), against a slowdown the probe shares.
     let refused = |n: usize| {
         let mut features = vec![feature("aaaaaaaa", "A", unit_box())];
         features.extend((0..n).map(|_| feature("aaaaaaaa", "F", cut("aaaaaaaa", MISSING))));
@@ -834,11 +836,18 @@ fn a_million_features_all_refused_validate_promptly() {
 }
 
 /// The most a million refused features' validation may take in CPU time, as a multiple of
-/// its probe's ([`probe`]), each the least of five runs. CALIBRATION.
-const REFUSED_PER_PROBE: f64 = 1000.0;
+/// its probe's ([`probe`]), each the least of five runs: between what the gate's runners
+/// measure of it and what they measure of a validation three times slower, about 1.57 times
+/// clear of each. Measured on loaded gate runners, 20 runs each (2026-11-08): 1.58 to 2.16
+/// times (gate 42546134628), and 5.34 to 6.25 for a validation run three times over (gate
+/// 42546137103). So a refusal three times slower fails it on the gate, as the valid
+/// million's bound does, and one ten times slower everywhere.
+const REFUSED_PER_PROBE: f64 = 3.4;
 
-/// The most a million refused features' validation may take in CPU time. CALIBRATION.
-const REFUSED_MOST: Duration = Duration::from_secs(1000);
+/// The most a million refused features' validation may take in CPU time: the 7.5 s it was
+/// bounded by alone before, half the valid million's 15 s then, as it costs about half as
+/// much on the Mac (0.78 s against 1.56 s, a debug build).
+const REFUSED_MOST: Duration = Duration::from_millis(7500);
 
 /// `n` valid features with distinct IDs: every third fuses the two before it, which no one
 /// else takes.
