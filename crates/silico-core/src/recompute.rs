@@ -51,7 +51,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
@@ -1048,7 +1048,9 @@ pub struct Run {
 /// reading it never waits on the recompute's work. A diagnostic, not a result (section
 /// 10): which step finishes first depends on scheduling. Clones share the count. Each
 /// change is told to whoever waits for one ([`changed_since`](Self::changed_since)): the
-/// session's watcher of its rebuild, which wakes the client as the count changes.
+/// session's watcher of its rebuild, which wakes the client as the count changes. Its clock
+/// (`elapsed`) starts as it's made, on the monotonic clock: a recompute's, as it's asked for
+/// ([`Recompute::begin`]).
 #[derive(Clone, Default)]
 pub struct StepCounter(Arc<(Mutex<Counted>, Condvar)>);
 
@@ -1074,6 +1076,11 @@ pub struct StepCount {
     /// start (each `queued`), and kept once it ends. A diagnostic, as `done` is: which
     /// feature runs first depends on scheduling.
     pub features: FeatureStates,
+    /// How long the recompute has run, on the monotonic clock: from its being asked for
+    /// ([`Recompute::begin`], before its thread starts) to its count's end (its model
+    /// published, or its failure or stop), so far while it runs, and fixed once it ends. A
+    /// diagnostic, a clock, never a result (section 10).
+    pub elapsed: Duration,
 }
 
 /// What's become of a feature's steps in a rebuild (`status.rebuild.features`, issue #367):
@@ -1236,9 +1243,12 @@ enum Settled {
     Superseded,
 }
 
-#[derive(Default)]
 struct Counted {
     count: StepCount,
+    /// When the recompute was asked for, on the monotonic clock: when its counter was made
+    /// ([`Recompute::begin`]). `count.elapsed` is read from it while the count runs, and
+    /// fixed from it as the count ends.
+    started: Instant,
     /// Where each feature is listed in `count.features`, by its place in the document: none
     /// for a suppressed feature.
     slots: Vec<Option<usize>>,
@@ -1269,6 +1279,37 @@ struct Counted {
     firm: Vec<bool>,
 }
 
+impl Default for Counted {
+    /// Nothing counted yet, its clock started now.
+    fn default() -> Self {
+        Counted {
+            count: StepCount::default(),
+            started: Instant::now(),
+            slots: Vec::new(),
+            rounds: 0,
+            labels: BTreeMap::new(),
+            settled: BTreeSet::new(),
+            running: Vec::new(),
+            changes: 0,
+            unchecked: BTreeSet::new(),
+            held: BTreeMap::new(),
+            firm: Vec::new(),
+        }
+    }
+}
+
+impl Counted {
+    /// The count as it's read: its `elapsed` the time so far while it runs, fixed once it
+    /// has ended ([`StepCounter::ended`]).
+    fn read(&self) -> StepCount {
+        let mut count = self.count.clone();
+        if !count.ended {
+            count.elapsed = self.started.elapsed();
+        }
+        count
+    }
+}
+
 /// Each feature's state as a round's plan finds it ([`Plan::states`]), by place in the
 /// document, with the count's view of what may yet change it.
 #[derive(Debug, Default)]
@@ -1285,7 +1326,7 @@ struct Found {
 impl StepCounter {
     /// The count now.
     pub fn now(&self) -> StepCount {
-        lock(&self.0.0).count.clone()
+        lock(&self.0.0).read()
     }
 
     /// The count once it has changed since the change numbered `seen` (0: the recompute's
@@ -1300,7 +1341,7 @@ impl StepCounter {
         while !counted.count.ended && counted.changes == seen {
             counted = told.wait(counted).unwrap_or_else(PoisonError::into_inner);
         }
-        (counted.count.clone(), counted.changes)
+        (counted.read(), counted.changes)
     }
 
     /// The count changed as `change` changes it: counted, and told to whoever waits.
@@ -1466,8 +1507,8 @@ impl StepCounter {
         }
     }
 
-    /// The recompute ended: every step settled, if it finished. Of one that has ended, it
-    /// changes nothing.
+    /// The recompute ended: every step settled, if it finished, and the time it ran fixed.
+    /// Of one that has ended, it changes nothing.
     fn ended(&self, finished: bool) {
         {
             let mut counted = lock(&self.0.0);
@@ -1479,11 +1520,13 @@ impl StepCounter {
             if !finished {
                 counted.count.features.none_running();
             }
+            let elapsed = counted.started.elapsed();
             let count = &mut counted.count;
             if finished {
                 count.done = count.steps;
             }
             count.running = None;
+            count.elapsed = elapsed;
             count.ended = true;
         }
         // Told, not counted: the watcher tells the end once it's recorded.
@@ -2295,6 +2338,7 @@ impl<K: Kernel + 'static> Recompute<K> {
     /// ([`start_fresh`](Self::start_fresh) for [`Reads::Nothing`]).
     pub(crate) fn begin(&self, document: Arc<Checked>, reads: Reads) -> Run {
         let (reply, outcome) = mpsc::sync_channel(1);
+        // Its clock starts here, as it's asked for, before its thread starts.
         let progress = StepCounter::default();
         progress.listing(&document);
         let (generation, later) = {
@@ -6239,6 +6283,59 @@ mod tests {
         let (again, _) = answer.recv_timeout(wait).unwrap();
         assert!(again.ended);
         waiter.join().unwrap();
+    }
+
+    #[test]
+    fn a_counts_clock_runs_from_its_making_and_is_fixed_at_its_end() {
+        // Bounds by the test's own monotonic clock, read around the counter's making and
+        // each reading; time let pass by spinning on that clock, never by a sleep.
+        let spin_past = |from: Instant, gap: Duration| {
+            while from.elapsed() < gap {
+                std::thread::yield_now();
+            }
+        };
+        let before = Instant::now();
+        let counter = StepCounter::default();
+        let made = Instant::now();
+        // Running: the time so far, at least what passed since it was made, at most what
+        // passed since before.
+        spin_past(made, Duration::from_millis(5));
+        let running = counter.now();
+        let wall = before.elapsed();
+        assert!(!running.ended);
+        assert!(
+            running.elapsed >= Duration::from_millis(5) && running.elapsed <= wall,
+            "{:?}, not 5 ms to {wall:?}",
+            running.elapsed
+        );
+        // It grows: read 2 ms after the first reading answered, at least 2 ms more.
+        let answered = Instant::now();
+        spin_past(answered, Duration::from_millis(2));
+        let later = counter.now();
+        assert!(later.elapsed >= running.elapsed + Duration::from_millis(2));
+        // A waiter is given the time so far too.
+        counter.planned(1, [], BTreeMap::new(), &Found::default());
+        let (planned, _) = counter.changed_since(0);
+        assert!(planned.elapsed >= later.elapsed);
+        // Ended: fixed between what passed since it was made before the end, and what
+        // passed since before after it.
+        let ending = Instant::now();
+        counter.ended(true);
+        let wall = before.elapsed();
+        let fixed = counter.now();
+        assert!(fixed.ended);
+        assert!(
+            fixed.elapsed >= ending.duration_since(made) && fixed.elapsed <= wall,
+            "{:?}, not {:?} to {wall:?}",
+            fixed.elapsed,
+            ending.duration_since(made)
+        );
+        // However long after, and however read, and an end said again changes nothing.
+        spin_past(Instant::now(), Duration::from_millis(2));
+        assert_eq!(counter.now().elapsed, fixed.elapsed);
+        assert_eq!(counter.changed_since(0).0.elapsed, fixed.elapsed);
+        counter.ended(false);
+        assert_eq!(counter.now(), fixed);
     }
 
     #[test]

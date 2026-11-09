@@ -13,6 +13,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
@@ -964,6 +965,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
                 .into_iter()
                 .map(|(feature, state)| (id(feature), state))
                 .collect(),
+                elapsed: Duration::from_millis(412),
             }),
         },
         drag: None,
@@ -974,24 +976,48 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     let text = written(&status);
     assert_eq!(
         text,
-        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4, \"changed\": true, \"undo\": 3, \"redo\": 0, \"dropped\": 0, \"bytes\": 61530},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\n    \"revision\": 6,\n    \"state\": \"running\",\n    \"done\": 3,\n    \"steps\": 9,\n    \"features\": [\n      {\"feature\": \"s0000001\", \"state\": \"built\"},\n      {\"feature\": \"p0000001\", \"state\": \"running\"},\n      {\"feature\": \"s0000002\", \"state\": \"built\"},\n      {\"feature\": \"h0000001\", \"state\": \"queued\"},\n      {\"feature\": \"s0000003\", \"state\": \"built\"},\n      {\"feature\": \"h0000002\", \"state\": \"queued\"},\n      {\"feature\": \"f0000001\", \"state\": \"queued\"}\n    ]\n  },\n  \"drag\": null,\n  \"disk\": \"unchanged\"\n}\n"
+        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4, \"changed\": true, \"undo\": 3, \"redo\": 0, \"dropped\": 0, \"bytes\": 61530},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\n    \"revision\": 6,\n    \"state\": \"running\",\n    \"done\": 3,\n    \"steps\": 9,\n    \"elapsed_ms\": 412,\n    \"features\": [\n      {\"feature\": \"s0000001\", \"state\": \"built\"},\n      {\"feature\": \"p0000001\", \"state\": \"running\"},\n      {\"feature\": \"s0000002\", \"state\": \"built\"},\n      {\"feature\": \"h0000001\", \"state\": \"queued\"},\n      {\"feature\": \"s0000003\", \"state\": \"built\"},\n      {\"feature\": \"h0000002\", \"state\": \"queued\"},\n      {\"feature\": \"f0000001\", \"state\": \"queued\"}\n    ]\n  },\n  \"drag\": null,\n  \"disk\": \"unchanged\"\n}\n"
     );
     // Its read, `distance`, a read of the published model (M4.5's): it holds.
     holds(&schema_of("status", "result"), &text, "the design's");
     let designed = &design("### `status` (M4.2)", "### `cancel` (M4.2)")[1];
     assert_eq!(designed.clone() + "\n", text, "the design's");
     assert_eq!(text, example("status/result"));
-    // Progress is a count: a fraction, or a negative, isn't one.
+    // Progress is a count: a fraction, or a negative, isn't one; nor is a rebuild's time, a
+    // whole number of milliseconds, which is always there.
     // A feature's state is one of the six (issue #367): not `cancelled` or `cached`, which
     // the decision left out, and never a feature's place for its ID.
     for (from, to) in [
         ("\"done\": 3", "\"done\": 2.5"),
         ("\"steps\": 9", "\"steps\": -1"),
+        ("\"elapsed_ms\": 412", "\"elapsed_ms\": 412.5"),
+        ("\"elapsed_ms\": 412", "\"elapsed_ms\": -1"),
+        ("\"elapsed_ms\": 412", "\"elapsed_ms\": \"412 ms\""),
+        ("    \"elapsed_ms\": 412,\n", ""),
         ("\"state\": \"queued\"}", "\"state\": \"cancelled\"}"),
         ("\"state\": \"built\"}", "\"state\": \"cached\"}"),
         ("\"feature\": \"p0000001\"", "\"feature\": 1"),
     ] {
         fails(&schema_of("status", "result"), &text.replace(from, to), to);
+    }
+    // Whole milliseconds, floored: 412.999 ms is 412, under a millisecond 0; and a clock past
+    // what a u64 of milliseconds holds, the most it holds.
+    for (elapsed, written_ms) in [
+        (Duration::from_micros(412_999), "412"),
+        (Duration::from_micros(999), "0"),
+        (Duration::MAX, "18446744073709551615"),
+    ] {
+        let mut timed = status.clone();
+        if let Some(progress) = &mut timed.rebuild.progress {
+            progress.elapsed = elapsed;
+        }
+        let line = one_line(&timed);
+        assert!(
+            line.contains(&format!(
+                r#""done": 3, "steps": 9, "elapsed_ms": {written_ms}, "features": ["#
+            )),
+            "{line}"
+        );
     }
     // A session's own, on the fake kernel: a box, nothing running, nothing rebuilt, and no
     // comparison of its file ended before this first status, which starts one.
@@ -1000,7 +1026,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     let text = written(f.sessions.status(&request.session).result.as_ref().unwrap());
     assert_eq!(
         text,
-        "{\n  \"features\": 1,\n  \"gated\": true,\n  \"transaction\": null,\n  \"running\": null,\n  \"reads\": [],\n  \"rebuild\": {\"revision\": 1, \"state\": \"none\", \"done\": null, \"steps\": null, \"features\": null},\n  \"drag\": null,\n  \"disk\": null\n}\n"
+        "{\n  \"features\": 1,\n  \"gated\": true,\n  \"transaction\": null,\n  \"running\": null,\n  \"reads\": [],\n  \"rebuild\": {\"revision\": 1, \"state\": \"none\", \"done\": null, \"steps\": null, \"elapsed_ms\": null, \"features\": null},\n  \"drag\": null,\n  \"disk\": null\n}\n"
     );
     holds(&schema_of("status", "result"), &text, "a box's");
     // A document the reader refuses: no features, not gated.
@@ -1020,7 +1046,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     };
     assert_eq!(
         one_line(&other),
-        r#"{"features": null, "gated": false, "transaction": null, "running": null, "reads": ["elements", "query"], "rebuild": {"revision": 9, "state": "none", "done": null, "steps": null, "features": null}, "drag": null, "disk": null}"#
+        r#"{"features": null, "gated": false, "transaction": null, "running": null, "reads": ["elements", "query"], "rebuild": {"revision": 9, "state": "none", "done": null, "steps": null, "elapsed_ms": null, "features": null}, "drag": null, "disk": null}"#
     );
     holds(&schema_of("status", "result"), &written(&other), "unread");
     // The session's own reload (M5.0's A3), and each finding on disk, each the word the
@@ -1352,7 +1378,7 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
     }
     let base = |running: &str, reads: &str| {
         format!(
-            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none", "done": null, "steps": null, "features": null}}, "drag": null, "disk": null}}"#
+            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none", "done": null, "steps": null, "elapsed_ms": null, "features": null}}, "drag": null, "disk": null}}"#
         )
     };
     holds(&status, &base(r#""check""#, ""), "check running");

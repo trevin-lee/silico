@@ -132,10 +132,14 @@ fn fifty_thousand_features_are_each_listed_running_and_written_at_a_fixed_size_e
     assert_eq!((count.done, count.steps), (0, 1));
     let listed: Vec<&str> = count.features.iter().map(|(f, _)| f.as_str()).collect();
     assert_eq!((listed[0], listed[N - 1]), ("b0000000", "b0049999"));
+    // Its clock pinned, as no run can pin it: 412 ms, three digits.
     let rebuild = Rebuild {
         revision: Revision::OPENED,
         state: RebuildState::Running,
-        progress: Some(Progress::from(&count)),
+        progress: Some(Progress {
+            elapsed: Duration::from_millis(412),
+            ..Progress::from(&count)
+        }),
     };
     let text = write(&rebuild.to_wire(), Layout::Canonical).unwrap();
     let empty = Rebuild {
@@ -143,6 +147,7 @@ fn fifty_thousand_features_are_each_listed_running_and_written_at_a_fixed_size_e
         state: RebuildState::Running,
         progress: Some(Progress {
             features: FeatureStates::default(),
+            elapsed: Duration::from_millis(412),
             ..Progress::from(&count)
         }),
     };
@@ -155,13 +160,13 @@ fn fifty_thousand_features_are_each_listed_running_and_written_at_a_fixed_size_e
     // An empty list is written `[]`, the rebuild on one line; a full one lays the rebuild
     // out a member to a line, by hand: `{\n` (2), `  "revision": 1,\n` (17),
     // `  "state": "running",\n` (22), `  "done": 0,\n` (13), `  "steps": 1,\n` (14),
-    // `  "features": [\n` (16), the entries (49 each, the last with no comma), `  ]\n` (4),
-    // and `}` (1): 88 bytes and 49 a feature.
+    // `  "elapsed_ms": 412,\n` (21), `  "features": [\n` (16), the entries (49 each, the
+    // last with no comma), `  ]\n` (4), and `}` (1): 109 bytes and 49 a feature.
     assert_eq!(
         none,
-        r#"{"revision": 1, "state": "running", "done": 0, "steps": 1, "features": []}"#
+        r#"{"revision": 1, "state": "running", "done": 0, "steps": 1, "elapsed_ms": 412, "features": []}"#
     );
-    assert_eq!(text.len(), 88 + N * 49);
+    assert_eq!(text.len(), 109 + N * 49);
     engine.cancel();
     assert!(matches!(run.wait(), Ok(RunOutcome::Superseded)));
     hold.release();
