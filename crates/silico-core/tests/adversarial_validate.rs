@@ -883,26 +883,146 @@ fn valid_features(n: u64) -> Document {
 
 #[test]
 fn a_million_valid_features_validate_promptly() {
-    // Promptly: in time that grows as the count does, not as its square. Measured as the
-    // ratio of this thread's CPU time for a million features to that for a hundred
-    // thousand, the least of three runs of each, in turn: about 10 by its count, a little
-    // more for its sorted maps' depth; a validation quadratic in the count would be about
-    // 100. A ratio, so a loaded machine, which stretches both alike, can't fail it (a gate's
-    // million once took 7.3 s of CPU against an absolute 5 s). And at most 15 s of CPU,
-    // against a slowdown by a constant the ratio can't see: twice the worst seen on CI's
-    // overcommitted VM (7.3 s, gate 39813098861), where the Mac's debug build takes 1.56 s,
-    // so a validation ten times slower fails it.
+    // Promptly: in time that grows as the count does, not as its square, and with no
+    // constant slowdown, in this thread's CPU time. A loaded machine stretches CPU time
+    // itself (the CI VM's threads are SMT siblings sharing caches, and the VM is kept busy: a
+    // million once took 15.7 s of CPU, gate 41268777382, where the Mac's debug build takes
+    // 1.56 s), so each size is run five times, in turn with the probe ([`cpu_against_probe`]),
+    // and each bound reads the statistic that suits it.
+    //
+    // The growth: a million's median CPU over a hundred thousand's, at most 30: 10 by its
+    // count, more for its sorted keys' depth and the cache a million outgrows (15 to 27 on
+    // loaded gate runners, against the Mac's 14), where a validation quadratic in the count
+    // would be about 100. The median, not the least: from the same runs on loaded gate
+    // runners the least's ratio reached 35.7 (the hundred thousand's luckiest run still in
+    // cache), the median's 27.2, 15.2 to 27.2 in 20 runs (2026-11-08, gate 42534849064),
+    // and 16.4 to 23.5 in 20 more (gate 42539931034). Taken against the probe's own growth
+    // it spread more, not less: the probe's doesn't follow validation's.
+    //
+    // The cost: a million's least CPU at most VALIDATE_PER_PROBE times the probe's least
+    // beside it ([`probe`]), which load stretches too, if not quite alike: so a validation
+    // three times slower fails it on the gate, as the 15 s bound before it did there, and
+    // one ten times slower everywhere (the gate's heaviest load yet, 13.8 s for the
+    // million, measured up to 31.3; heavier could near 38). And at most 60 s of CPU, four
+    // times the most a loaded gate has taken, against a slowdown the probe shares (its IDs'
+    // `as_str`, std's sort and search).
     let (small, large) = (valid_features(100_000), valid_features(1_000_000));
-    let ([small_cpu, large_cpu], [small, large]) = least_cpu([&small, &large], validate);
-    assert_eq!(small, Ok(()));
-    assert_eq!(large, Ok(()));
-    let ratio = large_cpu.as_secs_f64() / small_cpu.as_secs_f64();
+    let measured = cpu_against_probe([&small, &large], validate);
+    let [small_result, large_result] = measured.results;
+    assert_eq!(small_result, Ok(()));
+    assert_eq!(large_result, Ok(()));
+    let [small_median, large_median] = measured.median;
+    let ratio = large_median.as_secs_f64() / small_median.as_secs_f64();
     assert!(
         ratio < 30.0,
-        "a million features took {ratio:.1} times the CPU of a hundred thousand ({large_cpu:?} against {small_cpu:?})"
+        "a million features took {ratio:.1} times the median CPU of a hundred thousand ({large_median:?} against {small_median:?})"
+    );
+    let (large_cpu, large_probe) = (measured.least[1], measured.probe[1]);
+    let per_probe = large_cpu.as_secs_f64() / large_probe.as_secs_f64();
+    assert!(
+        per_probe <= VALIDATE_PER_PROBE,
+        "a million features took {per_probe:.1} times the probe's CPU, more than {VALIDATE_PER_PROBE} ({large_cpu:?} against {large_probe:?})"
     );
     assert!(
-        large_cpu <= Duration::from_secs(15),
-        "a million features took {large_cpu:?} of CPU, more than 15 s"
+        large_cpu <= Duration::from_secs(60),
+        "a million features took {large_cpu:?} of CPU, more than 60 s"
     );
+}
+
+/// The most a million valid features' validation may take in CPU time, as a multiple of
+/// its probe's ([`probe`]), each the least of five runs: between what the gate's runners
+/// measure of it and what they measure of a validation three times slower, about 1.2 times
+/// clear of each. Measured on loaded gate runners, 20 runs a round (2026-11-08): 15.3 to
+/// 31.3 times over four rounds (gates 42525746494, 42531595559, 42534849064, 42539931034;
+/// a million taking up to 13.8 s), and 47.0 to 63.7 for a validation run three times over
+/// (gate 42525748593); the Mac's debug build, loaded, 8.0 to 8.9, and 87 for one run ten
+/// times over. So a validation three times slower fails it on the gate, as the 15 s bound
+/// before it did there, and one ten times slower everywhere.
+const VALIDATE_PER_PROBE: f64 = 38.0;
+
+/// What [`cpu_against_probe`] measured, of the same five interleaved runs: the least and
+/// the median CPU time of each document's validation, the least of the probe's at each, and
+/// the validation's last results.
+struct AgainstProbe<T> {
+    least: [Duration; 2],
+    median: [Duration; 2],
+    probe: [Duration; 2],
+    results: [T; 2],
+}
+
+/// `f` on each of `docs` and [`probe`] on each, in turn (probe, `f`, for one document
+/// then the other), five times, in this thread's CPU time; each run's time kept, so both
+/// statistics come from the same runs. The least is the nearest to a run's own cost, since
+/// load only adds time: right for a cost, set against the probe's least beside it. The
+/// median is right for a ratio of two sizes: the least favours the smaller, whose few lucky
+/// runs find it still in cache, as the larger never is.
+/// The probe runs at both sizes, though only the larger's is read: it warms the smaller's
+/// memory for its validation alike every run, which can only raise the ratio, and keeps the
+/// runs as they were calibrated.
+fn cpu_against_probe<T>(docs: [&Document; 2], f: impl Fn(&Document) -> T) -> AgainstProbe<T> {
+    const RUNS: usize = 5;
+    let mut runs: [Vec<Duration>; 2] = [Vec::with_capacity(RUNS), Vec::with_capacity(RUNS)];
+    let mut probes = [Duration::MAX; 2];
+    let mut last: [Option<T>; 2] = [None, None];
+    for _ in 0..RUNS {
+        for (k, &doc) in docs.iter().enumerate() {
+            let start = cpu_time::ThreadTime::now();
+            std::hint::black_box(probe(doc));
+            probes[k] = probes[k].min(start.elapsed());
+            let start = cpu_time::ThreadTime::now();
+            let out = f(doc);
+            runs[k].push(start.elapsed());
+            last[k] = Some(out);
+        }
+    }
+    for times in &mut runs {
+        times.sort_unstable();
+    }
+    let [a, b] = last;
+    AgainstProbe {
+        least: runs.each_ref().map(|times| times[0]),
+        median: runs.each_ref().map(|times| times[RUNS / 2]),
+        probe: probes,
+        results: [a.unwrap(), b.unwrap()],
+    }
+}
+
+/// An ID's eight bytes read as a number: the probe's key, in its own code, not the gate's.
+fn probe_key(id: &FeatureId) -> u64 {
+    let mut bytes = [0u8; 8];
+    for (b, c) in bytes.iter_mut().zip(id.as_str().bytes()) {
+        *b = c;
+    }
+    u64::from_le_bytes(bytes)
+}
+
+/// The probe: work of validation's own shape on `doc`'s own features, in std's code alone,
+/// none of the gate's. Each feature's ID read where the document holds it (so the probe
+/// walks the memory the gate does, as load slows it) and keyed with its place,
+/// sorted; then each feature's ID and the IDs it takes (a fuse's base and tool), each read
+/// again where it's held, searched in them. How many were found, so none of it is
+/// optimised away.
+fn probe(doc: &Document) -> usize {
+    let mut by_key: Vec<(u64, usize)> = doc
+        .features
+        .iter()
+        .enumerate()
+        .map(|(index, feature)| (probe_key(&feature.id), index))
+        .collect();
+    by_key.sort_unstable();
+    let found = |id: &FeatureId| {
+        let key = probe_key(id);
+        let at = by_key.partition_point(|&(k, _)| k < key);
+        usize::from(by_key.get(at).is_some_and(|&(k, _)| k == key))
+    };
+    doc.features
+        .iter()
+        .map(|feature| {
+            found(&feature.id)
+                + match &feature.operation {
+                    Operation::Fuse { base, tool } => found(base) + found(tool),
+                    _ => 0,
+                }
+        })
+        .sum()
 }
