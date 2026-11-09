@@ -69,7 +69,7 @@
 //!   that over-defines is applied and offered the three) is judged by [`offer`] too, as a
 //!   [`PlacementKind::Edit`]: an edit changes a value and no row, so it's offered where it
 //!   newly set a constraint in conflict (any, with nothing between the two reads; else the
-//!   dimension itself) or newly had the solve refused. SolidWorks' help gives the prompt only
+//!   dimension itself) or, with nothing between, newly had the solve refused. SolidWorks' help gives the prompt only
 //!   "when you add an over defining dimension", and says nothing of a value changed to
 //!   over-define (docs/study/smart-dimension.md, §8); Silico applies the edit (SD7) and
 //!   offers the same three.
@@ -157,9 +157,8 @@ pub struct DimensionPreview {
 }
 
 /// A dimension placed, or its value edited, once the core answered the change: the sketch,
-/// the constraint's ID, the revision the change made, and, of the read it was made on, its
-/// revision and what [`offer`]'s rule reads of it: whether it was a refusal the prompt is for,
-/// and, by the change, its freedoms or its constraints in conflict.
+/// the constraint's ID, the revision the change made, the revision of the read it was made
+/// on, and the change, with what [`offer`]'s rule reads of that read ([`PlacementKind`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
     pub sketch: FeatureId,
@@ -167,27 +166,66 @@ pub struct Placement {
     pub revision: Revision,
     /// The revision of the read it was made on.
     pub read: Revision,
-    /// Whether the read it was made on was a refusal the prompt is for: over defined or no
-    /// solution, its solve refused ([`prompted_refusal`]).
-    pub before_prompted_refusal: bool,
     pub kind: PlacementKind,
 }
 
-/// Which change a [`Placement`] is, with what [`offer`] reads of the read it was made on.
+/// Which change a [`Placement`] is, with what [`offer`] reads of the read it was made on:
+/// whether it was a refusal the prompt is for (over defined or no solution, its solve
+/// refused), and, by the change, its freedoms or its constraints in conflict. Each is made
+/// from that read's states by the core's own constructor, [`add_on`](Self::add_on) or
+/// [`edit_on`](Self::edit_on), for Smart Dimension's adds and the app's edits alike.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlacementKind {
     /// The dimension added (`sketch_add`, as Smart Dimension places it), on a read with
     /// `dofs` degrees of freedom, where they count its constraints ([`freedoms`]). A driving
     /// dimension adds an equation, so one that leaves them where they were (or higher) is
     /// dependent, and offered.
-    Add { dofs: Option<i32> },
+    Add {
+        before_prompted_refusal: bool,
+        dofs: Option<i32>,
+    },
     /// The dimension's value edited (`set_field` of its `value`), on a read that listed the
-    /// constraints `before_conflicting` in conflict ([`conflicting`]). An edit changes a
-    /// value and no row, so it's offered where it newly sets a constraint in conflict, or
-    /// newly has the solve refused.
+    /// constraints `before_conflicting` in conflict. An edit changes a value and no row, so
+    /// it's offered where it newly sets a constraint in conflict, or newly has the solve
+    /// refused.
     Edit {
+        before_prompted_refusal: bool,
         before_conflicting: BTreeSet<ElementId>,
     },
+}
+
+impl PlacementKind {
+    /// A dimension added on a read in `states`: whether they're a refusal the prompt is for,
+    /// and their freedoms where they count the constraints.
+    pub fn add_on(states: &SketchStates) -> Self {
+        PlacementKind::Add {
+            before_prompted_refusal: prompted_refusal(states),
+            dofs: freedoms(states),
+        }
+    }
+
+    /// A dimension's value edited on a read in `states`: whether they're a refusal the
+    /// prompt is for, and the constraints they list in conflict.
+    pub fn edit_on(states: &SketchStates) -> Self {
+        PlacementKind::Edit {
+            before_prompted_refusal: prompted_refusal(states),
+            before_conflicting: conflicting(states),
+        }
+    }
+
+    /// Whether the read it was made on was a refusal the prompt is for.
+    fn before_prompted_refusal(&self) -> bool {
+        match self {
+            PlacementKind::Add {
+                before_prompted_refusal,
+                ..
+            }
+            | PlacementKind::Edit {
+                before_prompted_refusal,
+                ..
+            } => *before_prompted_refusal,
+        }
+    }
 }
 
 /// Smart Dimension, between events. Not `Clone`, as a sketch tool isn't.
@@ -233,17 +271,16 @@ struct Modify {
 }
 
 /// The last dimension placed: its add's token, its constraint, the revision the add made
-/// once answered, the read it was placed on (its revision, whether it was a refusal the
-/// prompt is for, its degrees of freedom where they count its constraints), and whether its
-/// offer is settled (a read of its revision has come with none) or open.
+/// once answered, the read it was placed on (its revision, and what [`offer`] reads of it,
+/// [`PlacementKind::add_on`]'s), and whether its offer is settled (a read of its revision
+/// has come with none) or open.
 #[derive(Debug, Clone)]
 struct Placed {
     token: AddToken,
     constraint: ElementId,
     revision: Option<Revision>,
     read: Revision,
-    before_prompted_refusal: bool,
-    dofs: Option<i32>,
+    kind: PlacementKind,
     /// Its read has come with no offer: another dimension may be placed.
     settled: bool,
     /// Its read has come with an offer, which holds the tool until it's released.
@@ -258,8 +295,7 @@ impl Placed {
             constraint: self.constraint.clone(),
             revision: self.revision?,
             read: self.read,
-            before_prompted_refusal: self.before_prompted_refusal,
-            kind: PlacementKind::Add { dofs: self.dofs },
+            kind: self.kind.clone(),
         })
     }
 }
@@ -847,8 +883,7 @@ impl SmartDimension {
             constraint: id,
             revision: None,
             read,
-            before_prompted_refusal: prompted_refusal(states),
-            dofs: freedoms(states),
+            kind: PlacementKind::add_on(states),
             settled: false,
             offer: None,
         });
@@ -1466,8 +1501,8 @@ fn prompted(state: SketchState) -> bool {
 
 /// Whether `states` are a refusal the over-defining prompt is for: over defined or with no
 /// solution, the solve refused. What a [`Placement`] records of the read it was made on, for
-/// Smart Dimension's adds and the app's edits alike.
-pub fn prompted_refusal(states: &SketchStates) -> bool {
+/// Smart Dimension's adds and the app's edits alike ([`PlacementKind`]'s constructors).
+fn prompted_refusal(states: &SketchStates) -> bool {
     states.solve_problem.is_some() && prompted(states.state)
 }
 
@@ -1486,7 +1521,7 @@ pub fn freedoms(states: &SketchStates) -> Option<i32> {
 
 /// The constraints `states` list in conflict: what a [`PlacementKind::Edit`] records of the
 /// read it was made on.
-pub fn conflicting(states: &SketchStates) -> BTreeSet<ElementId> {
+fn conflicting(states: &SketchStates) -> BTreeSet<ElementId> {
     states
         .constraints
         .iter()
@@ -1571,9 +1606,10 @@ fn offer_of(
         .and_then(|c| c.form.driving())?;
     let state = *states.constraints.get(&placement.constraint)?;
     let adjacent = placement.read.next() == Some(placement.revision);
-    let newly_refused = adjacent && prompted_refusal(states) && !placement.before_prompted_refusal;
-    let by_its_row = match &placement.kind {
-        PlacementKind::Add { dofs } => {
+    let newly_refused =
+        adjacent && prompted_refusal(states) && !placement.kind.before_prompted_refusal();
+    let by_the_change = match &placement.kind {
+        PlacementKind::Add { dofs, .. } => {
             let dependent = adjacent
                 && matches!(
                     (dofs, freedoms(states)),
@@ -1581,7 +1617,9 @@ fn offer_of(
                 );
             dependent || state.flagged()
         }
-        PlacementKind::Edit { before_conflicting } => {
+        PlacementKind::Edit {
+            before_conflicting, ..
+        } => {
             let newly_conflicting = |id: &ElementId, s: ConstraintState| {
                 s == ConstraintState::Conflicting && !before_conflicting.contains(id)
             };
@@ -1595,7 +1633,7 @@ fn offer_of(
             }
         }
     };
-    (driving && (newly_refused || by_its_row)).then(|| Offer {
+    (driving && (newly_refused || by_the_change)).then(|| Offer {
         constraint: placement.constraint.clone(),
         state,
         sketch_state: states.state,

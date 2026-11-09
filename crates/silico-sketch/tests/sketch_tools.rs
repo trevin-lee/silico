@@ -23,8 +23,7 @@ use silico_core::sketch::{SketchSolver, SketchWorker};
 use silico_core::sketch_states::{ConstraintState, SketchState};
 use silico_core::sketch_tools::{
     Context, DimensionEvent, Event, Modifiers, NewIds, Offer, OfferChoice, OfferRequest, Placement,
-    PlacementKind, SketchTool, SmartDimension, ToolKind, conflicting, freedoms, offer,
-    prompted_refusal, read_typed,
+    PlacementKind, SketchTool, SmartDimension, ToolKind, offer, read_typed,
 };
 use tempfile::TempDir;
 
@@ -1080,14 +1079,9 @@ fn placement_of(
         constraint: element(id),
         revision: made,
         read: at,
-        before_prompted_refusal: prompted_refusal(&before.states),
         kind: match change {
-            Change::Add => PlacementKind::Add {
-                dofs: freedoms(&before.states),
-            },
-            Change::Edit => PlacementKind::Edit {
-                before_conflicting: conflicting(&before.states),
-            },
+            Change::Add => PlacementKind::add_on(&before.states),
+            Change::Edit => PlacementKind::edit_on(&before.states),
         },
     }
 }

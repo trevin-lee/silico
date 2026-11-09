@@ -16,7 +16,9 @@ use silico_core::document::{
     Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
 };
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState, SketchStates};
-use silico_core::sketch_tools::{MeasureKind, Preview, PreviewMeasure, Relation, Shown as Showing};
+use silico_core::sketch_tools::{
+    MeasureKind, PlacementKind, Preview, PreviewMeasure, Relation, Shown as Showing,
+};
 
 use super::draw::{
     Drawn, Flat, GlyphKind, LabelKind, MAX_CURVE_SEGMENTS, Scale, Shown, StrokeKind, View, drawing,
@@ -3821,8 +3823,10 @@ fn edited_right() -> dimension::Edited {
         sketch: sketch_feature(),
         constraint: id("ka000002"),
         read: one,
-        before_prompted_refusal: false,
-        before_conflicting: Default::default(),
+        kind: PlacementKind::Edit {
+            before_prompted_refusal: false,
+            before_conflicting: Default::default(),
+        },
         made: one.next(),
     }
 }
@@ -3858,8 +3862,10 @@ fn an_edit_records_of_its_read_whether_it_was_a_refusal_prompted_for_and_what_co
             sketch: sketch_feature(),
             constraint: id("ka000002"),
             read: one,
-            before_prompted_refusal: true,
-            before_conflicting: [id("ka000002")].into_iter().collect(),
+            kind: PlacementKind::Edit {
+                before_prompted_refusal: true,
+                before_conflicting: [id("ka000002")].into_iter().collect(),
+            },
             made: None,
         }
     );
@@ -3870,15 +3876,26 @@ fn an_edit_records_of_its_read_whether_it_was_a_refusal_prompted_for_and_what_co
         .constraints
         .insert(id("ka000002"), ConstraintState::Satisfied);
     let edited = dimension::Edited::of(&solved, one, id("ka000002"));
-    assert!(!edited.before_prompted_refusal);
-    assert!(edited.before_conflicting.is_empty());
+    assert_eq!(
+        edited.kind,
+        PlacementKind::Edit {
+            before_prompted_refusal: false,
+            before_conflicting: Default::default(),
+        }
+    );
     let mut invalid = read;
     invalid.states.state = SketchState::Invalid;
     invalid.states.solve_problem = Some(silico_core::Error::new(
         silico_core::ErrorCode::InvalidInput,
         "untranslated",
     ));
-    assert!(!dimension::Edited::of(&invalid, one, id("ka000002")).before_prompted_refusal);
+    assert!(matches!(
+        dimension::Edited::of(&invalid, one, id("ka000002")).kind,
+        PlacementKind::Edit {
+            before_prompted_refusal: false,
+            ..
+        }
+    ));
 }
 
 #[test]

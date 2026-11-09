@@ -3167,7 +3167,13 @@ fn a_dimension_that_leaves_a_sketchs_freedoms_where_they_were_is_offered_where_t
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
-    assert_eq!(placement.kind, PlacementKind::Add { dofs: Some(1000) });
+    assert_eq!(
+        placement.kind,
+        PlacementKind::Add {
+            before_prompted_refusal: false,
+            dofs: Some(1000)
+        }
+    );
     let made = placement.revision;
     let read = |dofs: i32, refused: Option<ErrorCode>| {
         let (own, of) = match refused {
@@ -3573,8 +3579,10 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
             constraint: k,
             revision: made,
             read: Revision::OPENED,
-            before_prompted_refusal: false,
-            kind: PlacementKind::Add { dofs: Some(0) },
+            kind: PlacementKind::Add {
+                before_prompted_refusal: false,
+                dofs: Some(0)
+            },
         })
     );
     tool.refused(token);
@@ -3591,7 +3599,13 @@ fn an_add_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_ca
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
     assert_eq!(placement.constraint, id("t0000101"));
-    assert!(!placement.before_prompted_refusal);
+    assert!(matches!(
+        placement.kind,
+        PlacementKind::Add {
+            before_prompted_refusal: false,
+            ..
+        }
+    ));
     let made = Revision::OPENED.next().unwrap();
     assert_eq!(placement.revision, made);
     for sketch_state in [SketchState::OverDefined, SketchState::NoSolution] {
@@ -3654,7 +3668,10 @@ fn an_add_on_a_solved_sketch_is_offered_by_its_freedoms_whatever_the_contest_new
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
     let made = placement.revision;
-    let PlacementKind::Add { dofs: Some(dofs) } = placement.kind else {
+    let PlacementKind::Add {
+        dofs: Some(dofs), ..
+    } = placement.kind
+    else {
         panic!("{placement:?}")
     };
     let solved = |states: &[(&str, ConstraintState)], freedoms: i32, of: SketchState| {
@@ -3713,7 +3730,10 @@ fn no_offer_where_the_add_took_a_freedom_flagged_nothing_of_its_own_nor_newly_re
     );
     same.states.solve_problem = Some(Error::new(ErrorCode::OverConstrained, "conflict"));
     let earlier = Placement {
-        before_prompted_refusal: true,
+        kind: PlacementKind::Add {
+            before_prompted_refusal: true,
+            dofs: Some(1000),
+        },
         ..placement.clone()
     };
     assert_eq!(offer(&same, made, &earlier), None);
@@ -3783,8 +3803,11 @@ fn what_a_dimension_is_placed_on_is_the_reads() {
         d.click(20.0, 10.0).click(20.0, 30.0).escape();
         let placement = d.tool.placement().unwrap();
         assert_eq!(
-            (placement.before_prompted_refusal, placement.kind),
-            (prompted, PlacementKind::Add { dofs }),
+            placement.kind,
+            PlacementKind::Add {
+                before_prompted_refusal: prompted,
+                dofs
+            },
             "{of:?} {problem:?}"
         );
     }
@@ -3876,7 +3899,10 @@ fn an_edit_that_leaves_the_sketch_as_it_was_offers_nothing() {
         );
         // The same read after an add on a read with those freedoms: dependent, offered.
         let add = Placement {
-            kind: PlacementKind::Add { dofs: Some(dofs) },
+            kind: PlacementKind::Add {
+                before_prompted_refusal: false,
+                dofs: Some(dofs),
+            },
             ..edit.clone()
         };
         assert!(
@@ -4086,6 +4112,7 @@ fn an_edit_is_offered_where_it_newly_sets_a_constraint_in_conflict_or_newly_refu
     // whichever client's change came between.
     let in_conflict_before = Placement {
         kind: PlacementKind::Edit {
+            before_prompted_refusal: true,
             before_conflicting: [id("k0000009"), id("t0000101")].into_iter().collect(),
         },
         ..between
@@ -4096,7 +4123,10 @@ fn an_edit_is_offered_where_it_newly_sets_a_constraint_in_conflict_or_newly_refu
     );
     // An add's is judged by its own flag alone, as before: offered.
     let added = Placement {
-        kind: PlacementKind::Add { dofs: Some(0) },
+        kind: PlacementKind::Add {
+            before_prompted_refusal: true,
+            dofs: Some(0),
+        },
         ..in_conflict_before
     };
     assert!(offer(&flags_it, added.revision, &added).is_some());
@@ -4148,10 +4178,7 @@ fn edit_on(before: &SketchStates) -> (Sketch, Placement) {
     let edit = Placement {
         revision: added.revision.next().unwrap(),
         read: added.revision,
-        before_prompted_refusal: prompted_refusal(before),
-        kind: PlacementKind::Edit {
-            before_conflicting: conflicting(before),
-        },
+        kind: PlacementKind::edit_on(before),
         ..added
     };
     (sketch, edit)
