@@ -2320,4 +2320,27 @@ mod tests {
             Some(Vec2::new(0.0, -1.0))
         );
     }
+
+    #[test]
+    fn a_views_direction_is_a_unit_vector_where_the_projection_stretches() {
+        // A plane seen at an angle: x stretched to 20 points a millimetre, y 10. A step of
+        // 0.1 mm along +x moves 2 points, (2, 0): a unit, (1, 0). Along (1, 1)/√2 it moves
+        // (√2, 1/√2), √(5/2) long: a unit, (2, 1)/√5.
+        let stretched = |p: [f64; 2]| Some(Pos2::new((20.0 * p[0]) as f32, (10.0 * p[1]) as f32));
+        let view = View {
+            project: &stretched,
+            scale: Scale(0.1),
+            visible: None,
+            chord_tolerance: 0.25,
+        };
+        let close = |got: Option<Vec2>, want: [f32; 2]| {
+            got.is_some_and(|d| (d.x - want[0]).abs() < 1e-6 && (d.y - want[1]).abs() < 1e-6)
+        };
+        let along = view.direction([0.0, 0.0], [1.0, 0.0]);
+        assert!(close(along, [1.0, 0.0]), "{along:?}");
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let slant = view.direction([0.0, 0.0], [h, h]);
+        let r5 = 5.0_f32.sqrt();
+        assert!(close(slant, [2.0 / r5, 1.0 / r5]), "{slant:?}");
+    }
 }
