@@ -6,7 +6,7 @@ It follows docs/design/m5.0-app.md (§3, §4, §8, §9, §12) and the two UX stu
 
 ## The idea in one line
 
-**The canvas is the part, and the timeline is the rebuild.** Everything else is quiet Rerun chrome around those two. A rebuild runs visibly *along the timeline*: each feature's icon spins while its step runs, dims while queued, and turns red if it fails. The status bar repeats the same thing in words, with Stop beside it. An agent's edit, which arrives through the file, gets its own colour (purple) on the features it changed. A person can always tell three things at a glance: what is built, what is building, and who changed what.
+**The canvas is the part, and the timeline is the rebuild.** Everything else is quiet Rerun chrome around those two. A rebuild runs visibly *along the timeline*: each feature's icon spins while its step runs, dims while queued, and turns red if it fails. The status bar repeats the same thing in words, with Stop beside it. An agent's edit, which arrives through the file, gets its own colour (the info tone, re_ui's info blue) on the features it changed. A person can always tell three things at a glance: what is built, what is building, and who changed what.
 
 ## Screens and states
 
@@ -47,7 +47,7 @@ The blank canvas (1b) is still the right look for a **new, empty part**: grid, a
 ┌ app bar 30 ─ ●●● ⌂ ≡File 💾 ↶ ↷ │ bracket.silico* × │ +                 Prototype▾  🔍 ? ┐
 ├ toolbar ─ DESIGN │ SOLID [SKETCH]                                                      ┤
 │           CREATE ▾ │ MODIFY ▾ │ INSPECT ▾ │ SELECT ▾ (face/edge/vertex toggles)  [Finish Sketch] │
-├ BROWSER 248 ┬──────────────── canvas (black) ─────────────────┬ PROPERTIES 296 ┤
+├ BROWSER 248 ┬──────────────── canvas (grey) ──────────────────┬ PROPERTIES 296 ┤
 │ ▾ bracket   │ [banner: changed on disk …]          ⌂ ▾ [cube] │ selection /     │
 │  › Origin   │                                                 │ feature /       │
 │  ▾ Bodies   │                part                [palette]    │ document /      │
@@ -84,13 +84,13 @@ The blank canvas (1b) is still the right look for a **new, empty part**: grid, a
 - Clean, dense feature rows and a calm document list on the start page.
 
 **Rerun (the look)**
-- re_ui 0.38.1's dark palette and tokens, Inter Medium as the only face, 24 px list rows, 11 px uppercase section headers, 1 px Gray.250 panel borders, a black viewport, the light **primary** button (Rerun's, not blue) for OK, blue reserved for selection and "active".
+- re_ui 0.38.1's dark palette and tokens, Inter Medium as the only face, 24 px list rows, 11 px uppercase section headers, 1 px Gray.250 panel borders, a dark grey gradient canvas (Fusion's, Trevin's change of 2026-11-09, below; it was a black viewport), the light **primary** button (Rerun's, not blue) for OK, blue reserved for selection and "active".
 
 **Never FreeCAD**: no task panel combo views, no workbench switcher, no tree-as-history, no modal property editor.
 
 ## Agents as equal clients
 
-- **Disk changed, nothing unsaved** (6c): the session reloads on its own (§4). A purple banner says so, lists what changed by feature and field, and the changed features carry a purple dot in the timeline and browser until looked at. Nothing modal; Esc dismisses the banner.
+- **Disk changed, nothing unsaved** (6c): the session reloads on its own (§4). An info banner (re_ui's info blue on the banners' dark card, the reload glyph) says so, lists what changed by feature and field, and the changed features carry an info-blue dot in the timeline and browser until looked at. *Changed (Trevin, 2026-11-09):* the purple and the ± glyph didn't fit the theme; they're the info tone and the reload glyph now, the dot's light blue kept apart from the selection's saturated blue. Nothing modal; Esc dismisses the banner.
 - **Disk changed with unsaved edits** (6d): an amber banner explains who could have written the file (an agent through `silico serve`, git, an editor; the app can't know which) and offers **Show changes**, **Reload, discard my edits**, and **Keep my edits…**. Keeping them holds Save (a `conflict` per decision 2) and offers Save As; the status bar keeps a *Changed on disk* chip until resolved.
 - **Errors carry the agent's words**: every error card shows the structured error's code, message, elements, parameter, and suggestion, and has *Copy as JSON*, the exact object an agent gets. Selected elements show their stable name with a copy button, so a person can hand an agent "this face" in its own terms.
 - **Command search** (`S`) lists the same commands MCP exposes.
@@ -101,7 +101,7 @@ All colours are re_ui 0.38.1 dark-theme values (resolved through `color_table.ro
 
 | Token | Value | re_ui source | Use |
 |---|---|---|---|
-| viewport | `#000000` | Gray.0, `viewport_background` | canvas |
+| canvas | `#141517` at the top to `#2a2c30` at the bottom | Fusion's dark theme (*changed*: Trevin, 2026-11-09, then darkened by him the same day; was Gray.0 `#000000`, `viewport_background`) | the viewport behind the part |
 | bar / panel | `#0d0d0d` | Gray.100, `top_bar_color`, `panel_bg_color` | app bar, toolbar, side panels |
 | bottom bar | `#171717` | Gray.150, `bottom_bar_color` | timeline, status |
 | floating / field | `#212121` | Gray.200, `floating_color`, `text_edit_bg_color` | menus, dialogs, inputs, nav bar |
@@ -187,7 +187,7 @@ The sheet (`?`) is generated from the same command registry as menus, tooltips a
 3. **V is claimed twice**: §8 "V toggles the selection's visibility" (Fusion) and §9 "V filters vertices" (SolidWorks). The prototype keeps V for vertices and moves hide/show to **H**. Agree?
 4. **Ctrl+Q** (SolidWorks' forced rebuild) quits on macOS. The prototype uses ⇧⌘B / Ctrl+Shift+B on every platform. Agree?
 5. **Error red and focus blue**: re_ui's `#ab0116` and Blue.400 fail contrast as text and focus rings on black. Use Red.550 for error text and Blue.525 for focus, keeping `#ab0116` for fills?
-6. **Three colours re_ui lacks**: invalid yellow, dangling olive, and the purple "changed outside". Fine as constants in `theme.rs`?
+6. **Two colours re_ui lacks**: invalid yellow and dangling olive. Fine as constants in `theme.rs`? (The purple "changed outside" was a third, until Trevin's change of 2026-11-09 gave it the info tone.)
 7. **Under-defined blue vs selection blue** in sketches: both blue. The prototype marks a picked sketch entity with a wider halo and white stroke. Or use SolidWorks' green for selected sketch entities?
 8. **A monospace font** for IDs and element names (`p0000001.pad.Face(…)`): the toolkit study allows one "when something needs one". Which (JetBrains Mono, IBM Plex Mono, both OFL), or Inter with tabular figures only?
 9. **Icons**: SVG through `egui_extras`' `svg` loader (resvg, offline) or painted by Silico's own code? The set here is 70 simple 20×20 strokes either way.
@@ -212,3 +212,7 @@ Prototype limits: only `bracket.silico` is modelled; element names are illustrat
 ## Approval (2026-11-01)
 
 Trevin: "looks good, build it". The open questions are taken as recommended above: a start page for no document; F6 Fit; H hide/show; ⇧⌘B full rebuild; brighter error red and focus blue for text; the halo for selected sketch entities; the three extra colours as theme.rs constants. The rest go to the port PRs' judgement under these defaults. The proposals that need core changes (a per-feature change summary, "Restore my version" across a reload) are designed separately before they're built.
+
+## Changes since approval
+
+**The canvas (Trevin, 2026-11-09).** "The background of the part shouldn't be pitch black, it looks like the void." The canvas is Fusion's dark-theme canvas instead of Gray.0: a vertical gradient, soft charcoal `#141517` along its top to a lighter `#2a2c30` along its bottom (styles.css's `--canvas-top` and `--canvas-bottom`), the dark UI around it and the grey part still standing out. Trevin darkened it the same day, after seeing it in the app: the first values, `#1e1f22` to `#3a3c41`, were "too light". The WebGL canvas is cleared transparent over it (viewport.js's `setClearColor(0x000000, 0)`, for the viewport and the start page's thumbnails), as the app paints the gradient with egui's painter under `re_renderer`'s frame, which has no background of its own there. The values are theme.rs's `VIEWPORT_BG_TOP` and `VIEWPORT_BG_BOTTOM`, one constant each, to be adjusted from a screenshot. Agents' renders (`render`'s PNGs) keep their own flat light grey: they're read for the part, not the app's look.

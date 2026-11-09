@@ -3351,8 +3351,8 @@ pub(crate) mod tests {
     #[test]
     fn the_edge_filter_sets_whether_the_frames_edges_are_picked() {
         // On, as the filter starts: the frame draws each edge near its square again toward
-        // the eye (N5). Off (E), not, so a concave edge's faces are picked to its line; and
-        // while a box takes faces alone (a dialog's), not either, whatever the filter.
+        // the eye (N5). Off (E), not, so an edge is picked where it's drawn alone; and while
+        // a box takes faces alone (a dialog's), not either, whatever the filter.
         let mut selection = Selection::default();
         let mut view = View::default();
         assert!(view.edges);

@@ -1314,7 +1314,7 @@ fn an_agents_commit_reloads_with_no_edits_held_and_is_announced_with_edits_held(
 }
 
 #[test]
-fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtaken() {
+fn a_reload_with_nothing_held_is_announced_in_the_info_tone_until_dismissed_or_overtaken() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
@@ -1343,7 +1343,7 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
     h.get_by_role_and_label(Role::Button, "Dismiss").click();
     step_until(&mut h, "dismissed", |h| !anywhere(h, reloaded));
     // Reloaded again, then changed on disk with an edit held: the amber banner takes its
-    // place, and once the edits are kept the purple one doesn't come back.
+    // place, and once the edits are kept the info one doesn't come back.
     std::fs::write(
         &path,
         EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#),
@@ -1371,7 +1371,7 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
     for _ in 0..10 {
         step(&mut h);
         assert!(!anywhere(&h, changed), "the amber banner came back");
-        assert!(!anywhere(&h, reloaded), "the purple banner came back");
+        assert!(!anywhere(&h, reloaded), "the info banner came back");
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -1400,15 +1400,15 @@ fn row_feature(h: &AppHarness, text: &str) -> String {
         .unwrap_or_else(|| panic!("no row reads {text}"))
 }
 
-/// The purple banner's title for the example's reload.
+/// The info banner's title for the example's reload.
 const RELOADED: &str = "Reloaded example.silico: another program changed it on disk";
 
-/// Frames stepped, the purple banner absent after each.
+/// Frames stepped, the info banner absent after each.
 #[track_caller]
 fn never_reloaded(h: &mut AppHarness, after: &str) {
     for _ in 0..10 {
         step(h);
-        assert!(!anywhere(h, RELOADED), "the purple banner after {after}");
+        assert!(!anywhere(h, RELOADED), "the info banner after {after}");
     }
 }
 
@@ -1424,7 +1424,7 @@ fn written_outside(h: &mut AppHarness, path: &Path, name: &str) {
 }
 
 #[test]
-fn the_purple_banner_comes_only_from_the_sessions_own_reload() {
+fn the_info_banner_comes_only_from_the_sessions_own_reload() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
@@ -1454,7 +1454,7 @@ fn the_purple_banner_comes_only_from_the_sessions_own_reload() {
 }
 
 #[test]
-fn a_reload_the_person_asked_for_shows_no_purple_banner() {
+fn a_reload_the_person_asked_for_shows_no_info_banner() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
@@ -1505,7 +1505,7 @@ fn a_reload_the_person_asked_for_shows_no_purple_banner() {
 }
 
 #[test]
-fn esc_dismisses_the_purple_banner_before_it_clears_the_selection() {
+fn esc_dismisses_the_info_banner_before_it_clears_the_selection() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
@@ -1620,7 +1620,8 @@ fn outside_marks(h: &AppHarness, pane: &str) -> usize {
 }
 
 #[test]
-fn the_changed_features_are_marked_in_purple_until_marked_seen_and_esc_dismisses_the_banner() {
+fn the_changed_features_are_marked_in_the_info_tone_until_marked_seen_and_esc_dismisses_the_banner()
+{
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
@@ -2258,7 +2259,7 @@ fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
     assert_eq!(outside_marks(&h, "Timeline"), 1);
     for _ in 0..10 {
         step(&mut h);
-        assert!(!anywhere(&h, reloaded), "the purple banner after Reload");
+        assert!(!anywhere(&h, reloaded), "the info banner after Reload");
     }
     // Again, the reload landing before the tab takes the rollback's answer: no frame
     // stepped from the click's until the session has rolled back and reloaded.
@@ -2286,7 +2287,7 @@ fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
         step(&mut h);
         assert!(
             !anywhere(&h, reloaded),
-            "the purple banner after the second Reload"
+            "the info banner after the second Reload"
         );
     }
     assert_eq!(never_waits::waits(), 0);
@@ -10488,18 +10489,67 @@ fn cube_buttons(h: &AppHarness) -> std::collections::BTreeMap<String, eframe::eg
         .collect()
 }
 
-/// The ViewCube's faces as drawn last frame: each polygon's corners and fill, in order.
-fn cube_faces(h: &AppHarness) -> Vec<(Vec<eframe::egui::Pos2>, eframe::egui::Color32)> {
+/// What the ViewCube drew last frame: every shape clipped to its rectangle, in order.
+fn cube_shapes(h: &AppHarness) -> Vec<eframe::egui::Shape> {
     let cube = silico_app::viewport::view_cube_rect(the_viewport(h));
     h.output()
         .shapes
         .iter()
         .filter(|clipped| clipped.clip_rect == cube)
-        .filter_map(|clipped| match &clipped.shape {
-            eframe::egui::Shape::Path(path) => Some((path.points.clone(), path.fill)),
+        .map(|clipped| clipped.shape.clone())
+        .collect()
+}
+
+/// The ViewCube's polygons as drawn last frame: each one's corners and fill, in order, and
+/// that none is stroked (its edges are drawn once, as lines).
+fn cube_faces(h: &AppHarness) -> Vec<(Vec<eframe::egui::Pos2>, eframe::egui::Color32)> {
+    cube_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Path(path) => {
+                assert_eq!(path.stroke.width, 0.0, "a face stroked: {path:?}");
+                Some((path.points.clone(), path.fill))
+            }
             _ => None,
         })
         .collect()
+}
+
+/// The ViewCube's lines as drawn last frame: each one's ends and stroke, in order.
+fn cube_lines(h: &AppHarness) -> Vec<([eframe::egui::Pos2; 2], eframe::egui::Stroke)> {
+    cube_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::LineSegment { points, stroke } => Some((points, stroke)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The prototype's faces' fills (viewport.js's `buildCube`), its border's (`label`'s
+/// `strokeStyle`), and its edges' (`#827f7f`).
+const CUBE_FRONT: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x30, 0x30, 0x30);
+const CUBE_BACK: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x26, 0x26, 0x26);
+const CUBE_SIDE: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x2c, 0x2b, 0x2b);
+const CUBE_TOP: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x36, 0x35, 0x35);
+const CUBE_BOTTOM: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x21, 0x21, 0x21);
+const CUBE_BORDER: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x52, 0x51, 0x51);
+const CUBE_EDGE: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x82, 0x7f, 0x7f);
+/// The axis stubs' colours (viewport.js's `buildCube`, `ax`: `#ff6981`, `#00b266`, `#7a95ff`).
+const CUBE_AXIS_X: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0xff, 0x69, 0x81);
+const CUBE_AXIS_Y: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x00, 0xb2, 0x66);
+const CUBE_AXIS_Z: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x7a, 0x95, 0xff);
+
+/// `got` holds the points `corners`, in any order, each within 1e-3.
+#[track_caller]
+fn same_corners(got: &[eframe::egui::Pos2], corners: &[eframe::egui::Pos2], what: &str) {
+    assert_eq!(got.len(), corners.len(), "{what}: {got:?}");
+    for corner in corners {
+        assert!(
+            got.iter().any(|p| (*p - *corner).length() < 1e-3),
+            "{what}: no {corner:?} in {got:?}"
+        );
+    }
 }
 
 #[track_caller]
@@ -10515,17 +10565,27 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     // From (1, −1, 1) onto the cut's box's centre, z up: the view's right is (1, 1, 0)/√2
     // and its up (−1, 1, 2)/√6, so the cube's point (x, y, z), its faces at ±1, is drawn
     // at ((x + y)/√2, −(−x + y + 2z)/√6) · s from the cube's centre, y down, s half its
-    // edge, 0.28 of its 92-point side (the prototype's `CUBE`): 0.28 · 92 = 25.76, so
-    // s/√2 = 18.215, s/√6 = 10.516, s·√2 = 36.430, 2s/√6 = 21.033, and 4s/√6 = 42.066
-    // (the front's label at (−18.215, 10.516) from the centre, the right's at (18.215,
-    // 10.516), the top's at (0, −21.033); the top front left corner at (−36.430, −21.033),
-    // the top back right at (36.430, −21.033), the bottom front right at (0, 42.066), the
-    // top back left at (0, −42.066), and the bottom front left and back right at
-    // (∓36.430, 21.033)). The front, right, and top face the view, each at
-    // 1/√3 (over a quarter, so each is labelled where its centre is drawn), shaded 0.6 of
-    // the fill edge-on rising to all of it square-on: 0.6 + 0.4/√3. The corners facing it
-    // more than a tenth, 1 or 1/3, are clickable at theirs: the top front right (at the
-    // cube's centre), the top front left, the top back right, and the bottom front right.
+    // edge, 1/3.5 of its 92-point side (the prototype's `CUBE`, its cube camera 3.5 of the
+    // cube's units across, the cube 2): 92/3.5 = 26.286, so s/√2 = 18.587, s/√6 = 10.731,
+    // s·√2 = 37.174, 2s/√6 = 21.462, and 4s/√6 = 42.924 (the front's label at (−18.587,
+    // 10.731) from the centre, the right's at (18.587, 10.731), the top's at (0, −21.462);
+    // the top front left corner at (−37.174, −21.462), the top back right at (37.174,
+    // −21.462), the bottom front right at (0, 42.924), the top back left at (0, −42.924),
+    // and the bottom front left and back right at (∓37.174, 21.462)). The front, right,
+    // and top face the view, each at
+    // 1/√3 (over a quarter, so each is labelled and clickable where its centre is drawn),
+    // each drawn as the prototype's texture paints it: the border's #525151 over the whole
+    // face, then its own fill over all but the rim, 3/128 of its side, so its corners at
+    // ±(1 − 6/128) = ±61/64 of a half side from its centre. The corners facing it more than
+    // a tenth, 1 or 1/3, are clickable at theirs: the top front right (at the cube's
+    // centre), the top front left, the top back right, and the bottom front right; none is
+    // drawn as a dot. The cube's edges are drawn once each, over the faces, in #827f7f, 1
+    // wide: the nine of a face drawn (the three between the back, left, and bottom, none
+    // drawn, aren't). Over them, the axis stubs, 1 wide in the axes' colours, from
+    // (−1.02, −1.02, −1.02), 1.02 times the bottom front left corner's place, 1.4 along
+    // each axis, but where the cube is in front: the x stub to (0.38, −1.02, −1.02) and the
+    // z stub to (−1.02, −1.02, 0.38), each whole (toward the eye each runs to y < −1), and
+    // the y stub only to (−1.02, −0.98, −1.02), behind the cube past it.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
@@ -10538,7 +10598,7 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     step(&mut h);
     step(&mut h);
     let cube = silico_app::viewport::view_cube_rect(the_viewport(&h));
-    let s = 0.28 * 92.0;
+    let s = 92.0 / 3.5;
     let (r2, r6) = (2f32.sqrt(), 6f32.sqrt());
     let at = |x: f32, y: f32| cube.center() + eframe::egui::vec2(x, y) * s;
     // The cube's corners as drawn: (1, −1, 1) at the centre; (−1, −1, 1), (1, 1, 1),
@@ -10577,13 +10637,11 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     }
     at_point(buttons["Home"].min, home.min, "Home's corner");
     at_point(buttons["Home"].max, home.max, "Home's far corner");
-    let fill = h.ctx.global_style().visuals.widgets.inactive.bg_fill;
-    let shade = fill.gamma_multiply(0.6 + 0.4 * (1.0 / 3f64.sqrt()) as f32);
-    assert_ne!(shade, fill);
     let faces = cube_faces(&h);
     let expected = [
         (
             "front",
+            CUBE_FRONT,
             [
                 top_front_right,
                 top_front_left,
@@ -10593,6 +10651,7 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
         ),
         (
             "right",
+            CUBE_SIDE,
             [
                 top_back_right,
                 bottom_back_right,
@@ -10602,6 +10661,7 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
         ),
         (
             "top",
+            CUBE_TOP,
             [
                 top_back_right,
                 top_front_right,
@@ -10610,52 +10670,758 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
             ],
         ),
     ];
-    assert_eq!(faces.len(), expected.len(), "{faces:?}");
-    for ((points, colour), (face, corners)) in faces.iter().zip(expected) {
-        assert_eq!(points.len(), 4, "{face}");
-        for (got, corner) in points.iter().zip(corners) {
-            at_point(*got, corner, face);
+    assert_eq!(faces.len(), 2 * expected.len(), "{faces:?}");
+    let inside = 61.0 / 64.0;
+    for (drawn, (face, fill, corners)) in faces.chunks(2).zip(expected) {
+        let centre = corners
+            .iter()
+            .fold(eframe::egui::Vec2::ZERO, |sum, c| sum + c.to_vec2())
+            / 4.0;
+        let inset: Vec<_> = corners
+            .iter()
+            .map(|c| (centre + (c.to_vec2() - centre) * inside).to_pos2())
+            .collect();
+        same_corners(&drawn[0].0, &corners, face);
+        assert_eq!(drawn[0].1, CUBE_BORDER, "{face}'s border");
+        same_corners(&drawn[1].0, &inset, face);
+        assert_eq!(drawn[1].1, fill, "{face}'s fill");
+    }
+    // The nine edges, each once.
+    let edges = [
+        (top_front_right, top_front_left),
+        (top_front_left, bottom_front_left),
+        (bottom_front_left, bottom_front_right),
+        (bottom_front_right, top_front_right),
+        (top_front_right, top_back_right),
+        (top_back_right, bottom_back_right),
+        (bottom_back_right, bottom_front_right),
+        (top_back_right, top_back_left),
+        (top_back_left, top_front_left),
+    ];
+    let all = cube_lines(&h);
+    let (lines, stubs): (Vec<_>, Vec<_>) = all
+        .iter()
+        .partition(|(_, stroke)| stroke.color == CUBE_EDGE);
+    assert_eq!(lines.len(), edges.len(), "{lines:?}");
+    for (a, b) in edges {
+        let drawn = lines
+            .iter()
+            .filter(|([p, q], _)| {
+                ((*p - a).length() < 1e-3 && (*q - b).length() < 1e-3)
+                    || ((*p - b).length() < 1e-3 && (*q - a).length() < 1e-3)
+            })
+            .count();
+        assert_eq!(drawn, 1, "the edge {a:?} to {b:?}: {lines:?}");
+    }
+    for (_, stroke) in &lines {
+        assert_eq!(*stroke, eframe::egui::Stroke::new(1.0, CUBE_EDGE));
+    }
+    // The stubs, each after every edge, x then y then z: the point (x, y, z) drawn at
+    // ((x + y)/√2, −(−x + y + 2z)/√6) · s from the cube's centre.
+    let place = |[x, y, z]: [f32; 3]| at((x + y) / r2, -(-x + y + 2.0 * z) / r6);
+    let from = [-1.02, -1.02, -1.02];
+    let expected_stubs = [
+        (CUBE_AXIS_X, place(from), place([0.38, -1.02, -1.02])),
+        (CUBE_AXIS_Y, place(from), place([-1.02, -0.98, -1.02])),
+        (CUBE_AXIS_Z, place(from), place([-1.02, -1.02, 0.38])),
+    ];
+    assert_eq!(stubs.len(), expected_stubs.len(), "{stubs:?}");
+    for (([p, q], stroke), (colour, a, b)) in stubs.iter().zip(expected_stubs) {
+        assert_eq!(*stroke, eframe::egui::Stroke::new(1.0, colour));
+        at_point(*p, a, "a stub's start");
+        at_point(*q, b, "a stub's end");
+    }
+    let last_edge = all
+        .iter()
+        .rposition(|(_, stroke)| stroke.color == CUBE_EDGE);
+    let first_stub = all.iter().position(|(_, stroke)| stroke.color != CUBE_EDGE);
+    assert!(last_edge < first_stub, "{all:?}");
+    // No dot at any corner.
+    assert!(
+        !cube_shapes(&h)
+            .iter()
+            .any(|shape| matches!(shape, eframe::egui::Shape::Circle(_))),
+        "a dot drawn"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_face_turned_a_quarter_toward_the_view_is_drawn_and_left_unlabelled_and_one_just_over_labelled()
+{
+    // From (0, −√15, 1) onto the origin: the view's back is (0, −√15, 1)/4, so the top
+    // faces it at exactly a quarter (as f64 rounds it, checked), drawn but too oblique to
+    // label or click; the front at √15/4, labelled. The left and right are edge-on and the
+    // back and bottom face away, none drawn. The four front corners face it more than a
+    // tenth, (√15 ± 1)/(4√3); the back ones face away. The front and the top are drawn, each
+    // its border and its fill, the front's label after them; the top has none. From
+    // (0, −a, 1), the top faces the view at 1/√(a² + 1): a = 3.86 just over a quarter,
+    // 0.25079, labelled and clicked; a = 3.88 just under, 0.24958, not. The same corners
+    // face it more than a tenth, (a ± 1)/(√(a² + 1)·√3), 0.70 and 0.41 or so.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let corners = [
+        "Bottom front left",
+        "Bottom front right",
+        "Top front left",
+        "Top front right",
+    ];
+    for (eye, top, labelled) in [
+        ([0.0, -15f64.sqrt(), 1.0], 0.25, false),
+        ([0.0, -3.86, 1.0], 0.250_79, true),
+        ([0.0, -3.88, 1.0], 0.249_58, false),
+    ] {
+        let camera = silico_protocol::Camera {
+            projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+            eye,
+            target: [0.0; 3],
+            up: [0.0, 0.0, 1.0],
+        };
+        let faced = camera.frame().unwrap().back[2];
+        if top == 0.25 {
+            assert_eq!(faced, 0.25);
+        } else {
+            assert!((faced - top).abs() < 1e-5, "{eye:?}: {faced}");
         }
-        assert_eq!(*colour, shade, "{face}");
+        view_mut(&mut h).set_camera(camera);
+        step(&mut h);
+        step(&mut h);
+        let mut buttons: Vec<&str> = corners.to_vec();
+        buttons.extend(["Front", "Home"]);
+        if labelled {
+            buttons.push("Top");
+        }
+        buttons.sort_unstable();
+        assert_eq!(
+            cube_buttons(&h)
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            buttons,
+            "{eye:?}"
+        );
+        let mut drawn = vec!["border", "front", "label", "border", "top"];
+        if labelled {
+            drawn.push("label");
+        }
+        assert_eq!(cube_drawn(&h), drawn, "{eye:?}");
     }
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
-fn a_face_turned_a_quarter_toward_the_view_is_drawn_and_left_unlabelled() {
-    // From (0, −√15, 1) onto the origin: the view's back is (0, −√15, 1)/4, so the top
-    // faces it at exactly a quarter (as f64 rounds it, checked), drawn but too oblique to
-    // label or click; the front at √15/4, labelled. The left and right are edge-on and the
-    // back and bottom face away, none drawn. The four front corners face it more than a
-    // tenth, (√15 ± 1)/(4√3); the back ones face away.
+fn a_face_facing_the_view_by_the_edge_on_limit_is_drawn_with_none_of_its_own_edges() {
+    // From (0, −1, 10⁻⁹) onto the origin: the eye's offset is 1 long as f64 rounds it, so the
+    // view's back is (0, −1, 10⁻⁹) exactly (checked) and the top faces it at 10⁻⁹, the most a
+    // face may and still be edge-on, not drawn. The front, square on, is drawn with its four
+    // edges and its label; the left and right are edge-on, the back and bottom face away. No
+    // edge of the top's is drawn but the one it shares with the front.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     let camera = silico_protocol::Camera {
         projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
-        eye: [0.0, -15f64.sqrt(), 1.0],
+        eye: [0.0, -1.0, 1e-9],
         target: [0.0; 3],
         up: [0.0, 0.0, 1.0],
     };
-    assert_eq!(camera.frame().unwrap().back[2], 0.25);
+    assert_eq!(camera.frame().unwrap().back, [0.0, -1.0, 1e-9]);
     view_mut(&mut h).set_camera(camera);
     step(&mut h);
     step(&mut h);
-    assert_eq!(
-        cube_buttons(&h)
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        [
-            "Bottom front left",
-            "Bottom front right",
-            "Front",
-            "Home",
-            "Top front left",
-            "Top front right"
-        ]
+    assert_eq!(cube_drawn(&h), ["border", "front", "label"]);
+    let edges: Vec<_> = cube_lines(&h)
+        .into_iter()
+        .filter(|(_, stroke)| stroke.color == CUBE_EDGE)
+        .collect();
+    assert_eq!(edges.len(), 4, "{edges:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// What the ViewCube drew last frame before its edges, in order: each polygon by its fill
+/// (a border, or a face's), and each label (a mesh).
+fn cube_drawn(h: &AppHarness) -> Vec<&'static str> {
+    cube_shapes(h)
+        .iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Path(p) => Some(match p.fill {
+                CUBE_BORDER => "border",
+                CUBE_FRONT => "front",
+                CUBE_BACK => "back",
+                CUBE_SIDE => "side",
+                CUBE_TOP => "top",
+                CUBE_BOTTOM => "bottom",
+                _ => "another fill",
+            }),
+            eframe::egui::Shape::Mesh(_) => Some("label"),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A face of the ViewCube as the prototype's texture lies on it (viewport.js's
+/// `buildCube`: three.js's `BoxGeometry`, its +x face RIGHT, −x LEFT, +y TOP, −y BOTTOM,
+/// +z FRONT, −z BACK, each texture's left to right along `BoxGeometry`'s u and its top to
+/// bottom along −v, the box turned a quarter about x, so its y is z and its z is −y): its
+/// word, its fill, its outward normal, and its words' right and up across it. The bottom's
+/// are turned a half turn from the prototype's, whose bottom view looks with −y up: the
+/// app's (`NamedView::up`) looks with +y up, and each face reads upright from its own view.
+struct LabelledFace {
+    word: &'static str,
+    fill: eframe::egui::Color32,
+    normal: [f64; 3],
+    right: [f64; 3],
+    up: [f64; 3],
+}
+
+const LABELLED_FACES: [LabelledFace; 6] = [
+    LabelledFace {
+        word: "FRONT",
+        fill: CUBE_FRONT,
+        normal: [0.0, -1.0, 0.0],
+        right: [1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    LabelledFace {
+        word: "BACK",
+        fill: CUBE_BACK,
+        normal: [0.0, 1.0, 0.0],
+        right: [-1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    LabelledFace {
+        word: "LEFT",
+        fill: CUBE_SIDE,
+        normal: [-1.0, 0.0, 0.0],
+        right: [0.0, -1.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    LabelledFace {
+        word: "RIGHT",
+        fill: CUBE_SIDE,
+        normal: [1.0, 0.0, 0.0],
+        right: [0.0, 1.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    LabelledFace {
+        word: "TOP",
+        fill: CUBE_TOP,
+        normal: [0.0, 0.0, 1.0],
+        right: [1.0, 0.0, 0.0],
+        up: [0.0, 1.0, 0.0],
+    },
+    LabelledFace {
+        word: "BOTTOM",
+        fill: CUBE_BOTTOM,
+        normal: [0.0, 0.0, -1.0],
+        right: [-1.0, 0.0, 0.0],
+        up: [0.0, 1.0, 0.0],
+    },
+];
+
+/// The ViewCube's labels as drawn last frame, each with the fill of the face drawn before it.
+fn cube_labels(h: &AppHarness) -> Vec<(eframe::egui::Color32, Arc<eframe::egui::Mesh>)> {
+    let mut fill = None;
+    let mut labels = Vec::new();
+    for shape in cube_shapes(h) {
+        match shape {
+            eframe::egui::Shape::Path(path) if path.fill != CUBE_BORDER => fill = Some(path.fill),
+            eframe::egui::Shape::Mesh(mesh) => labels.push((fill.expect("a label first"), mesh)),
+            _ => {}
+        }
+    }
+    labels
+}
+
+/// A view of the cube for the labels' test: from `way` onto the origin with `up` its up, its
+/// right and up on screen by hand, the faces it labels, in the cube's order, and how many of
+/// the cube's edges it draws (each of a face drawn, once).
+struct CubeView {
+    name: &'static str,
+    way: [f64; 3],
+    up: [f64; 3],
+    right: [f64; 3],
+    screen_up: [f64; 3],
+    labelled: &'static [&'static str],
+    edges: usize,
+}
+
+/// The size the ViewCube's labels are laid out at: Inter Medium 21/128 of a face's side
+/// (viewport.js's `label`: `21px` on its 128), the side two half sides of 92/3.5 points
+/// (the cube camera's 3.5 units across the 92-point `CUBE`), so 21/64 · 92/3.5 = 8.625
+/// points, computed in the app's order (in f64 to a half side, then f32).
+fn cube_label_size() -> f32 {
+    let per_unit = (92.0f64 * (1.0 / 3.5)) as f32;
+    21.0f32 / 128.0 * 2.0 * per_unit
+}
+
+/// The ViewCube's label `word` as egui lays it out at the labels' size
+/// ([`cube_label_size`]).
+fn cube_label_galley(h: &AppHarness, word: &str) -> Arc<eframe::egui::Galley> {
+    h.ctx.fonts_mut(|fonts| {
+        fonts.layout_no_wrap(
+            word.to_owned(),
+            eframe::egui::FontId::proportional(cube_label_size()),
+            eframe::egui::Color32::WHITE,
+        )
+    })
+}
+
+/// `mesh`, the ViewCube's label `word`, samples its glyphs where the font atlas holds them:
+/// laid out at the labels' size ([`cube_label_size`]), each glyph's quad, in turn, has its
+/// four corners' texture coordinates, times the atlas's size now, at its texels' corners
+/// (`uv_rect`'s `min` and `max`), to a thousandth of a texel.
+#[track_caller]
+fn samples_its_glyphs(h: &AppHarness, word: &str, mesh: &eframe::egui::Mesh, what: &str) {
+    let galley = cube_label_galley(h, word);
+    let [width, height] = h
+        .ctx
+        .fonts(|fonts| fonts.font_image_size())
+        .map(|n| n as f32);
+    let glyphs: Vec<_> = galley
+        .rows
+        .iter()
+        .flat_map(|row| &row.glyphs)
+        .filter(|glyph| !glyph.uv_rect.is_nothing())
+        .collect();
+    assert_eq!(glyphs.len(), word.len(), "{what}: {word}");
+    assert_eq!(mesh.vertices.len(), 4 * glyphs.len(), "{what}: {word}");
+    for (quad, glyph) in mesh.vertices.chunks(4).zip(glyphs) {
+        let [x0, y0] = glyph.uv_rect.min.map(f32::from);
+        let [x1, y1] = glyph.uv_rect.max.map(f32::from);
+        let texels: Vec<_> = quad
+            .iter()
+            .map(|vertex| eframe::egui::pos2(vertex.uv.x * width, vertex.uv.y * height))
+            .collect();
+        same_corners(
+            &texels,
+            &[
+                eframe::egui::pos2(x0, y0),
+                eframe::egui::pos2(x1, y0),
+                eframe::egui::pos2(x0, y1),
+                eframe::egui::pos2(x1, y1),
+            ],
+            &format!("{what}: {word}'s {:?}", glyph.chr),
+        );
+    }
+}
+
+#[test]
+fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_square_on() {
+    // Each view from `way` onto the origin, `up` its up, its right and up worked by hand
+    // (right = up × back, then up = back × right); the cube's point p drawn at
+    // (p · right, −p · up) · s from the cube's centre, y down, s = 92/3.5. A face's point
+    // (u, v), each in half sides, u along its words' right and v down them, is drawn at
+    // c + u·a + v·b: c its centre's place, a its right's, b its down's (its up's negated);
+    // it's inside the face for |u|, |v| < 1. Faced more than a quarter, a face is labelled
+    // and clicked. Each edge of a face drawn is drawn once, after every face and label: 4
+    // square on, 7 with the front and the top, 9 at home.
+    let r2 = 2f64.sqrt();
+    let r6 = 6f64.sqrt();
+    let n = 15.44f64.sqrt();
+    let views = [
+        CubeView {
+            name: "home",
+            way: [1.0, -1.0, 1.0],
+            up: [0.0, 0.0, 1.0],
+            right: [1.0 / r2, 1.0 / r2, 0.0],
+            screen_up: [-1.0 / r6, 1.0 / r6, 2.0 / r6],
+            labelled: &["FRONT", "RIGHT", "TOP"],
+            edges: 9,
+        },
+        // The top faced 1/√15.44 = 0.2545, just over a quarter; the front 3.8/√15.44.
+        CubeView {
+            name: "near edge-on",
+            way: [0.0, -3.8, 1.0],
+            up: [0.0, 0.0, 1.0],
+            right: [1.0, 0.0, 0.0],
+            screen_up: [0.0, 1.0 / n, 3.8 / n],
+            labelled: &["FRONT", "TOP"],
+            edges: 7,
+        },
+        CubeView {
+            name: "front",
+            way: [0.0, -1.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            right: [1.0, 0.0, 0.0],
+            screen_up: [0.0, 0.0, 1.0],
+            labelled: &["FRONT"],
+            edges: 4,
+        },
+        CubeView {
+            name: "back",
+            way: [0.0, 1.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            right: [-1.0, 0.0, 0.0],
+            screen_up: [0.0, 0.0, 1.0],
+            labelled: &["BACK"],
+            edges: 4,
+        },
+        CubeView {
+            name: "left",
+            way: [-1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            right: [0.0, -1.0, 0.0],
+            screen_up: [0.0, 0.0, 1.0],
+            labelled: &["LEFT"],
+            edges: 4,
+        },
+        CubeView {
+            name: "right",
+            way: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            right: [0.0, 1.0, 0.0],
+            screen_up: [0.0, 0.0, 1.0],
+            labelled: &["RIGHT"],
+            edges: 4,
+        },
+        CubeView {
+            name: "top",
+            way: [0.0, 0.0, 1.0],
+            up: [0.0, 1.0, 0.0],
+            right: [1.0, 0.0, 0.0],
+            screen_up: [0.0, 1.0, 0.0],
+            labelled: &["TOP"],
+            edges: 4,
+        },
+        CubeView {
+            name: "bottom",
+            way: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            right: [-1.0, 0.0, 0.0],
+            screen_up: [0.0, 1.0, 0.0],
+            labelled: &["BOTTOM"],
+            edges: 4,
+        },
+    ];
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let s = 92.0 / 3.5;
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    // Each word's extent in its face's units, the same at every view.
+    let mut extents: std::collections::BTreeMap<&str, [f64; 4]> = Default::default();
+    assert!(1.0 / n > 0.25 && 1.0 / n < 0.26, "{}", 1.0 / n);
+    for CubeView {
+        name,
+        way,
+        up,
+        right,
+        screen_up,
+        labelled,
+        edges,
+    } in views
+    {
+        view_mut(&mut h).set_camera(silico_protocol::Camera {
+            projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+            eye: way.map(|c| 100.0 * c),
+            target: [0.0; 3],
+            up,
+        });
+        step(&mut h);
+        step(&mut h);
+        // A picture of the cube to look at, if one is asked for.
+        if let Some(shot) = std::env::var_os("SILICO_APP_CUBE_SHOT").filter(|_| name == "home") {
+            h.render().unwrap().save(shot).unwrap();
+        }
+        let cube = silico_app::viewport::view_cube_rect(the_viewport(&h));
+        let centre = [f64::from(cube.center().x), f64::from(cube.center().y)];
+        let place = |p: [f64; 3]| [dot(p, right) * s, -dot(p, screen_up) * s];
+        // The edges, once each, each after every face and label (so drawn over them).
+        let shapes = cube_shapes(&h);
+        let edge = |shape: &eframe::egui::Shape| matches!(shape, eframe::egui::Shape::LineSegment { stroke, .. } if stroke.color == CUBE_EDGE);
+        assert_eq!(
+            shapes.iter().filter(|shape| edge(shape)).count(),
+            edges,
+            "{name}: {shapes:?}"
+        );
+        let last_face = shapes.iter().rposition(|shape| {
+            matches!(
+                shape,
+                eframe::egui::Shape::Path(_) | eframe::egui::Shape::Mesh(_)
+            )
+        });
+        let first_line = shapes
+            .iter()
+            .position(|shape| matches!(shape, eframe::egui::Shape::LineSegment { .. }));
+        assert!(
+            last_face.is_some() && last_face < first_line,
+            "{name}: a line under a face: {shapes:?}"
+        );
+        // Each face labelled is clicked, and only those.
+        let buttons = cube_buttons(&h);
+        for face in &LABELLED_FACES {
+            let button = format!("{}{}", &face.word[..1], face.word[1..].to_lowercase());
+            assert_eq!(
+                buttons.contains_key(&button),
+                labelled.contains(&face.word),
+                "{name}: {button} in {:?}",
+                buttons.keys()
+            );
+        }
+        let labels = cube_labels(&h);
+        let words: Vec<&str> = labelled.to_vec();
+        assert_eq!(labels.len(), words.len(), "{name}: {labels:?}");
+        for ((fill, mesh), word) in labels.iter().zip(words) {
+            let face = LABELLED_FACES.iter().find(|f| f.word == word).unwrap();
+            assert_eq!(*fill, face.fill, "{name}: {word}'s face");
+            assert_eq!(
+                mesh.texture_id,
+                eframe::egui::TextureId::default(),
+                "{name}"
+            );
+            samples_its_glyphs(&h, word, mesh, name);
+            let c = place(face.normal);
+            let a = place(face.right);
+            let b = place(face.up.map(|x| -x));
+            let det = a[0] * b[1] - a[1] * b[0];
+            let mut extent = [f64::MAX, f64::MIN, f64::MAX, f64::MIN];
+            let mut on_face = Vec::new();
+            for vertex in &mesh.vertices {
+                let d = [
+                    f64::from(vertex.pos.x) - centre[0] - c[0],
+                    f64::from(vertex.pos.y) - centre[1] - c[1],
+                ];
+                let u = (d[0] * b[1] - d[1] * b[0]) / det;
+                let v = (a[0] * d[1] - a[1] * d[0]) / det;
+                assert!(
+                    u.abs() < 1.0 && v.abs() < 1.0,
+                    "{name}: {word}'s vertex {:?} at ({u}, {v}) on its face",
+                    vertex.pos
+                );
+                extent = [
+                    extent[0].min(u),
+                    extent[1].max(u),
+                    extent[2].min(v),
+                    extent[3].max(v),
+                ];
+                on_face.push((vertex, u, v));
+            }
+            // A word, not a speck: across a fifth of the face at least, its capitals a
+            // twelfth of it high at least (21/128 of its side is the type's size).
+            let (wide, high) = (extent[1] - extent[0], extent[3] - extent[2]);
+            assert!(wide > 0.4 && wide < 1.9, "{name}: {word} {extent:?}");
+            assert!(high > 0.15 && high < 0.6, "{name}: {word} {extent:?}");
+            // Where the prototype puts it: its words' middle (their line's, as egui lays
+            // them out) at the face's centre across it, and 2/128 of its side below it,
+            // v = 2 · 2/128 = 1/32 half sides; so its glyphs' extent is theirs about that
+            // middle, in half sides of 92/3.5 points, to a thousandth. Their boxes are on
+            // whole pixels, a pixel 0.038 of a half side, so their own middle can be a
+            // hundredth or two from the line's: it's their extent that's checked, which a
+            // label with no drop misses by 1/32.
+            let galley = cube_label_galley(&h, word);
+            let line = galley.rect.center();
+            let per_unit = f64::from((92.0f64 * (1.0 / 3.5)) as f32);
+            let mut laid_out = [f64::MAX, f64::MIN, f64::MAX, f64::MIN];
+            for row in &galley.rows {
+                for vertex in &row.visuals.mesh.vertices {
+                    let at = row.pos + vertex.pos.to_vec2();
+                    let u = f64::from(at.x - line.x) / per_unit;
+                    let v = 1.0 / 32.0 + f64::from(at.y - line.y) / per_unit;
+                    laid_out = [
+                        laid_out[0].min(u),
+                        laid_out[1].max(u),
+                        laid_out[2].min(v),
+                        laid_out[3].max(v),
+                    ];
+                }
+            }
+            for k in 0..4 {
+                assert!(
+                    (laid_out[k] - extent[k]).abs() < 1e-3,
+                    "{name}: {word} {extent:?}, laid out at {laid_out:?}"
+                );
+            }
+            // The same in the face's units from every view: it lies on the face.
+            let seen = extents.entry(word).or_insert(extent);
+            for k in 0..4 {
+                assert!(
+                    (seen[k] - extent[k]).abs() < 1e-3,
+                    "{name}: {word} {extent:?} against {seen:?}"
+                );
+            }
+            // Square on, it reads upright and unmirrored: each glyph's atlas corner nearest
+            // its top left is drawn left of and above the one nearest its bottom right.
+            if labelled.len() == 1 {
+                let key = |p: &(&eframe::egui::epaint::Vertex, f64, f64)| p.0.uv.x + p.0.uv.y;
+                for quad in on_face.chunks(4) {
+                    let first = quad
+                        .iter()
+                        .min_by(|p, q| key(p).total_cmp(&key(q)))
+                        .unwrap();
+                    let last = quad
+                        .iter()
+                        .max_by(|p, q| key(p).total_cmp(&key(q)))
+                        .unwrap();
+                    assert!(
+                        first.0.pos.x < last.0.pos.x && first.0.pos.y < last.0.pos.y,
+                        "{name}: {word} turned or mirrored: {quad:?}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(extents.len(), 6, "{extents:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_view_cube_label_samples_its_glyphs_where_the_atlas_holds_them_as_its_pass_ends() {
+    // The font atlas grows while a pass lays out text it hasn't yet (its height doubled),
+    // and a mesh's texture coordinates are a part of its size: so a label's are taken as the
+    // pass ends, once everything's laid out. Here, at each pass's end, before the labels'
+    // meshes are made (egui's own callbacks run before the plugins added after them, the
+    // labels' among them), text is laid out at sizes not yet used until the atlas grows, as
+    // a pane drawn after the cube might: each label at home, FRONT, RIGHT, and TOP, still
+    // samples its glyphs where the grown atlas holds them. Made where its face is drawn, a
+    // label's coordinates would be parts of the atlas before it grew, its glyphs' rows at
+    // twice their place or more.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+        eye: [100.0, -100.0, 100.0],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 1.0],
+    });
+    step(&mut h);
+    step(&mut h);
+    let before = h.ctx.fonts(|fonts| fonts.font_image_size());
+    let next_size = Arc::new(Mutex::new(100.0f32));
+    let grown = Arc::new(Mutex::new(0usize));
+    {
+        let (next_size, grown) = (Arc::clone(&next_size), Arc::clone(&grown));
+        h.ctx.on_end_pass(
+            "the atlas grown after the cube",
+            Arc::new(move |ui: &mut eframe::egui::Ui| {
+                let height = |ui: &eframe::egui::Ui| ui.ctx().fonts(|f| f.font_image_size()[1]);
+                let start = height(ui);
+                for _ in 0..256 {
+                    let size = {
+                        let mut next = next_size.lock().unwrap();
+                        *next += 1.0;
+                        *next
+                    };
+                    let _ = ui.painter().layout_no_wrap(
+                        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".to_owned(),
+                        eframe::egui::FontId::proportional(size),
+                        eframe::egui::Color32::WHITE,
+                    );
+                    if height(ui) > start {
+                        *grown.lock().unwrap() += 1;
+                        return;
+                    }
+                }
+            }),
+        );
+    }
+    step(&mut h);
+    let after = h.ctx.fonts(|fonts| fonts.font_image_size());
+    assert!(*grown.lock().unwrap() > 0, "the atlas never grew");
+    assert!(after[1] > before[1], "{before:?} to {after:?}");
+    let labels = cube_labels(&h);
+    assert_eq!(labels.len(), 3, "{labels:?}");
+    for ((_, mesh), word) in labels.iter().zip(["FRONT", "RIGHT", "TOP"]) {
+        samples_its_glyphs(&h, word, mesh, "the atlas grown");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_view_cube_and_the_navigation_bar_have_their_bounds_where_theyre_drawn() {
+    // The ViewCube's group: the cube (92 square, 16 from the canvas's top and right below
+    // Home's 20-point row) and Home (44 by 18 at its top left, in that row). The navigation
+    // bar's toolbar: finite, holding each of its tools, inside its 220 by 32 place 12 above
+    // the canvas's bottom centre. Neither sensed alone gets egui's own: the cube senses
+    // nothing as a group, and the bar's scope is given bounds only as it begins, none.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let canvas = the_viewport(&h);
+    let cube = eframe::egui::Rect::from_min_size(
+        eframe::egui::pos2(canvas.right() - 16.0 - 92.0, canvas.top() + 16.0 + 20.0),
+        eframe::egui::vec2(92.0, 92.0),
     );
-    assert_eq!(cube_faces(&h).len(), 2);
+    let home = eframe::egui::Rect::from_min_size(
+        cube.left_top() - eframe::egui::vec2(0.0, 20.0),
+        eframe::egui::vec2(44.0, 18.0),
+    );
+    let group = h.get_by_role_and_label(Role::Group, "ViewCube").rect();
+    let whole = cube.union(home);
+    at_point(group.min, whole.min, "the ViewCube's corner");
+    at_point(group.max, whole.max, "the ViewCube's far corner");
+    let place = eframe::egui::Rect::from_center_size(
+        eframe::egui::pos2(canvas.center().x, canvas.bottom() - 28.0),
+        eframe::egui::vec2(220.0, 32.0),
+    );
+    let bar = h
+        .get_by_role_and_label(Role::Toolbar, "Navigation bar")
+        .rect();
+    for k in [bar.min.x, bar.min.y, bar.max.x, bar.max.y] {
+        assert!(k.is_finite(), "{bar:?}");
+    }
+    assert!(bar.width() > 0.0 && bar.height() > 0.0, "{bar:?}");
+    assert!(
+        place.expand(0.5).contains_rect(bar),
+        "{bar:?} outside {place:?}"
+    );
+    for word in ["Orbit", "Pan", "Zoom", "Fit"] {
+        let tool = h
+            .get_by_role_and_label(Role::Toolbar, "Navigation bar")
+            .get_by_label(word)
+            .rect();
+        assert!(bar.contains_rect(tool), "{word}: {tool:?} outside {bar:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_canvas_is_a_gradient_from_charcoal_at_its_top_to_grey_at_its_bottom_under_the_bodies() {
+    // Trevin's (2026-11-09, darkened the same day), styles.css's `--canvas-top` and
+    // `--canvas-bottom`: a mesh over the whole canvas, #141517 along its top and #2a2c30
+    // along its bottom, painted before the bodies' frame (a test's renderer marks where
+    // that's presented).
+    let f = fixture();
+    let (mut h, _seen) = f.overlaid(EXAMPLE);
+    step(&mut h);
+    let canvas = the_viewport(&h);
+    let shapes = painted(&h);
+    let top = eframe::egui::Color32::from_rgb(0x14, 0x15, 0x17);
+    let bottom = eframe::egui::Color32::from_rgb(0x2a, 0x2c, 0x30);
+    let gradient = shapes
+        .iter()
+        .position(|shape| match shape {
+            eframe::egui::Shape::Mesh(mesh) => {
+                mesh.vertices.len() == 4
+                    && [canvas.left_top(), canvas.right_top()]
+                        .iter()
+                        .all(|corner| {
+                            mesh.vertices
+                                .iter()
+                                .any(|v| v.pos == *corner && v.color == top)
+                        })
+                    && [canvas.left_bottom(), canvas.right_bottom()]
+                        .iter()
+                        .all(|corner| {
+                            mesh.vertices
+                                .iter()
+                                .any(|v| v.pos == *corner && v.color == bottom)
+                        })
+            }
+            _ => false,
+        })
+        .expect("no gradient over the canvas");
+    let eframe::egui::Shape::Mesh(mesh) = &shapes[gradient] else {
+        unreachable!()
+    };
+    assert_eq!(mesh.indices.len(), 6, "{mesh:?}");
+    let bodies = shapes
+        .iter()
+        .position(|shape| matches!(shape, eframe::egui::Shape::Rect(r) if r.fill == BODIES_MARK))
+        .expect("no bodies' mark");
+    assert!(gradient < bodies, "{gradient} {bodies}");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -11136,9 +11902,15 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
             );
             // Composited into egui's own image: 20 mm over the pane's height, the face
             // z = 0..10 about its centre's z = 5, so 2.5 mm above the pane's centre is on the
-            // face and 7.5 mm above it is past its top edge, the renderer's background; and
-            // the centre isn't the pane's own colour, which shows where nothing composites.
+            // face and 7.5 mm above it is past its top edge, where the renderer draws nothing
+            // over the canvas: its gradient shows there, as along the canvas's top and bottom
+            // rows (a quarter of the way across, clear of the cube and the bar), and not on
+            // the face.
             let image = h.render().unwrap();
+            // A picture of the canvas to look at, if one is asked for.
+            if let Some(shot) = std::env::var_os("SILICO_APP_CANVAS_SHOT") {
+                image.save(shot).unwrap();
+            }
             let rect = the_viewport(&h);
             let ppp = h.ctx.pixels_per_point();
             let mm = rect.height() / 20.0;
@@ -11152,9 +11924,35 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
             let on_face = pixel(centre.x, centre.y - 2.5 * mm);
             let past_it = pixel(centre.x, centre.y - 7.5 * mm);
             assert!(differs(on_face, past_it), "{on_face:?} against {past_it:?}");
-            let pane = h.ctx.global_style().visuals.extreme_bg_color.to_array();
-            let middle = pixel(centre.x, centre.y);
-            assert!(differs(middle, pane), "{middle:?}: the pane's own colour");
+            // Trevin's (2026-11-09, darkened the same day): #141517 along the canvas's top
+            // to #2a2c30 along its bottom, blended in sRGB as egui blends a mesh's colours
+            // (and CSS a `linear-gradient`'s), so at a pixel row's middle a part t of the
+            // way down, top + t · (bottom − top), to 2 of 255 for egui's dithering.
+            let (top, bottom) = ([20.0f32, 21.0, 23.0], [42.0f32, 44.0, 48.0]);
+            let (top_px, height_px) = (rect.top() * ppp, rect.height() * ppp);
+            let column = ((rect.left() + rect.width() * 0.25) * ppp) as u32;
+            let first = top_px.ceil() as u32;
+            let last = (rect.bottom() * ppp).floor() as u32 - 1;
+            let above = ((centre.y - 7.5 * mm) * ppp) as u32;
+            let on = ((centre.y - 2.5 * mm) * ppp) as u32;
+            let shade = |row: u32| {
+                let t = (row as f32 + 0.5 - top_px) / height_px;
+                [0, 1, 2].map(|k| top[k] + t * (bottom[k] - top[k]))
+            };
+            for row in [first, above, last] {
+                let got = image.get_pixel(column, row).0;
+                let want = shade(row);
+                assert!(
+                    (0..3).all(|k| (f32::from(got[k]) - want[k]).abs() <= 2.0) && got[3] == 255,
+                    "row {row}: {got:?} against {want:?}"
+                );
+            }
+            let face = image.get_pixel(column, on).0;
+            let canvas = shade(on).map(|c| c.round() as u8);
+            assert!(
+                differs(face, [canvas[0], canvas[1], canvas[2], 255]),
+                "{face:?}: the canvas"
+            );
             // The pane's renderer trait reaches silico-render's own: a frame drawing body 1
             // is prepared while body 1 is held, and once the trait has forgotten it, refused,
             // as silico-render refuses a frame drawing a body it doesn't hold.
@@ -11349,9 +12147,13 @@ fn the_overlay_sees_the_frame_and_paints_over_the_bodies_and_under_the_view_cube
         "overlay",
         &|shape| matches!(shape, eframe::egui::Shape::Circle(c) if c.fill == OVERLAY_MARK),
     );
-    // The ViewCube's Front face's label, and the navigation bar's Fit.
+    // The ViewCube's front face (its fill, viewport.js's `#303030`), and the navigation
+    // bar's Fit.
     let text = |word: &'static str| move |shape: &eframe::egui::Shape| matches!(shape, eframe::egui::Shape::Text(t) if t.galley.text() == word);
-    let cube = place("ViewCube's Front", &text("Front"));
+    let cube = place(
+        "ViewCube's Front",
+        &|shape| matches!(shape, eframe::egui::Shape::Path(p) if p.fill == CUBE_FRONT),
+    );
     let bar = place("bar's Fit", &text("Fit"));
     assert!(bodies < overlay, "{bodies} {overlay}");
     assert!(overlay < cube && overlay < bar, "{overlay} {cube} {bar}");
@@ -29062,7 +29864,7 @@ fn a_model_published_before_its_meshes_are_read_names_no_pick_and_draws_no_eleme
     // another face.
     assert_eq!(highlighted(&record), []);
     // Let go, and a click on the face numbered 2 of the old meshes: named from neither
-    // model, it waits. The edit above is another client's, announced in the purple banner,
+    // model, it waits. The edit above is another client's, announced in the info banner,
     // so the first Esc dismisses it, the face staying (the prototype's `escChain`), and the
     // second lets the face go.
     assert!(h.state().tabs()[0].reloaded.is_some());

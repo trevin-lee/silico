@@ -3,7 +3,7 @@
 //! `js/interact.js`, drawn by `renderBanner` and the `diff` modal in `js/app.js`):
 //! each of `diff`'s changes as a row of the banner's list (the feature's name, its field,
 //! and what the field went from and to, each value as the file writes it), and as the text
-//! of the feature's purple mark. Worked out once, when `diff` answers, never each frame.
+//! of the feature's info-blue mark. Worked out once, when `diff` answers, never each frame.
 
 use std::collections::BTreeMap;
 
@@ -27,7 +27,7 @@ pub const MARKED: usize = 3;
 /// shown as `[…]` or `{…}`, never written out (a sketch's whole list, say).
 const WRITTEN_VALUES: usize = 32;
 
-/// One row of the list (`.canvas-banner .diff`): the feature's name (`.k`, purple), the
+/// One row of the list (`.canvas-banner .diff`): the feature's name (`.k`, the info tone), the
 /// field (a `set_field` path, or the word for a change of the feature's place), and what it
 /// went from and to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,7 +198,7 @@ pub fn listed(changes: &[Change]) -> Listed {
     }
 }
 
-/// The text of each changed feature's purple mark (`d.outside`), by its ID: its field and
+/// The text of each changed feature's info-blue mark (`d.outside`), by its ID: its field and
 /// what it went from and to (`radius 5 → 3`), its first [`MARKED`] changes, then how many
 /// more. A feature removed has no row to mark, so none.
 pub fn marks(changes: &[Change]) -> BTreeMap<FeatureId, String> {

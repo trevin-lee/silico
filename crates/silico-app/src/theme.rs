@@ -341,9 +341,10 @@ pub const ALERT_WARNING_BG: Color32 = hex_alpha(0xdf7700, 46);
 pub const ALERT_WARNING_TEXT: Color32 = hex(0xffd28a);
 /// "Rebuilt" and ready dots (`success_text_color`, Green.700).
 pub const SUCCESS: Color32 = hex(0x00da7e);
-/// What an agent or another program changed on disk (Purple.600; approved, `re_ui` has no
-/// such token).
-pub const CHANGED_OUTSIDE: Color32 = hex(0xb780ff);
+/// What an agent or another program changed on disk (the prototype's `--outside`): the info
+/// tone, [`INFO`], light and unsaturated, apart from the selection's saturated Blue.500
+/// (Trevin's change of 2026-11-09: the purple it was didn't fit the theme).
+pub const CHANGED_OUTSIDE: Color32 = INFO;
 /// Links and information (`info_text_color`, Blue.700; the prototype's `--info`).
 pub const INFO: Color32 = hex(0xadbbff);
 
@@ -490,8 +491,17 @@ pub const SKETCH_BAR_HEIGHT: f32 = 32.0;
 
 // ---- The viewport: plain values the app passes to the renderer's frames ----
 
-/// The canvas (`viewport_background`, Gray.0).
-pub const VIEWPORT_BG: Rgba8 = rgba8_of(GRAY_0, 0xff);
+/// The canvas: a vertical gradient, soft charcoal along its top to a lighter grey along its
+/// bottom, as Fusion's dark theme's canvas is (Trevin's change of 2026-11-09, DESIGN.md's
+/// *Changes since approval*: a black canvas "looks like the void"), in place of `re_ui`'s
+/// `viewport_background`, Gray.0, then darkened by him the same day once he saw it: its
+/// first ends, #1e1f22 and #3a3c41, were "too light". Each end its own constant, to be set
+/// from a screenshot.
+pub const VIEWPORT_BG_TOP: Rgba8 = rgba8(0x141517);
+pub const VIEWPORT_BG_BOTTOM: Rgba8 = rgba8(0x2a2c30);
+/// The renderer's frames' own background: none, so they're composited over the canvas's
+/// gradient, painted under them, which shows wherever no body is.
+pub const VIEWPORT_FRAME_BG: Option<[u8; 3]> = None;
 /// A body's colour (the prototype's; `re_ui` has none).
 pub const VIEWPORT_BODY: Rgba8 = rgba8(0xb9c0ca);
 /// A body's edges (the prototype's).
@@ -738,6 +748,34 @@ pub const TOOLTIP_SHADOW: Shadow = Shadow {
 pub const VIEW_CUBE_SIDE: f32 = 92.0;
 pub const VIEW_CUBE_MARGIN: f32 = 16.0;
 pub const VIEW_CUBE_HOME_HEIGHT: f32 = 20.0;
+
+/// The ViewCube's faces' fills (viewport.js's `buildCube`): the right and left alike
+/// (Gray.300), the top lightest, the bottom darkest (Gray.200), the front and back between.
+pub const VIEW_CUBE_SIDE_FILL: Color32 = GRAY_300;
+pub const VIEW_CUBE_TOP_FILL: Color32 = hex(0x363535);
+pub const VIEW_CUBE_BOTTOM_FILL: Color32 = GRAY_200;
+pub const VIEW_CUBE_FRONT_FILL: Color32 = hex(0x303030);
+pub const VIEW_CUBE_BACK_FILL: Color32 = hex(0x262626);
+/// The border just inside each face's edge, and its width as a part of the face's side: the
+/// prototype's face is a 128 px texture stroked 3 px wide at its rim in Gray.350
+/// (viewport.js's `label`: `strokeRect(1.5, 1.5, 125, 125)`, `lineWidth = 3`).
+pub const VIEW_CUBE_BORDER: Color32 = GRAY_350;
+pub const VIEW_CUBE_BORDER_WIDTH: f32 = 3.0 / 128.0;
+/// A face's label: its words in capitals in Gray.750, Inter Medium 21 px high on the
+/// face's 128, given as a part of the face's side, and its middle 2 px of the 128 below the
+/// face's (viewport.js's `label`: `fillText(text, 64, 66)`, its baseline `middle`).
+pub const VIEW_CUBE_LABEL: Color32 = GRAY_750;
+pub const VIEW_CUBE_LABEL_SIZE: f32 = 21.0 / 128.0;
+pub const VIEW_CUBE_LABEL_DROP: f32 = 2.0 / 128.0;
+/// The cube's edges, each drawn once over its faces: a WebGL line's 1 pixel, here 1 point,
+/// in Gray.500 (viewport.js's `buildCube`, its `EdgesGeometry` in `#827f7f`).
+pub const VIEW_CUBE_EDGE: Stroke = Stroke {
+    width: 1.0,
+    color: GRAY_500,
+};
+/// The cube's axis stubs at its corner, each in its axis's colour ([`AXIS_X`], [`AXIS_Y`],
+/// [`AXIS_Z`]), a WebGL line's 1 pixel, here 1 point (viewport.js's `buildCube`, `ax`).
+pub const VIEW_CUBE_STUB_WIDTH: f32 = 1.0;
 
 /// The navigation bar's width and height, and its margin from the canvas's bottom (the
 /// prototype's `.nav-bar`, 12 from the bottom). Its height is a 24 high button, 3 of padding,
@@ -1576,10 +1614,12 @@ pub const BANNER_TITLE: Color32 = TEXT_STRONG;
 pub const BANNER_WARNING_BG: Color32 = hex(0x2a1d0b);
 pub const BANNER_WARNING_BORDER: Color32 = hex(0x6b4310);
 pub const BANNER_WARNING_TEXT: Color32 = ALERT_WARNING_TEXT;
-/// A banner saying the session reloaded its file (`.canvas-banner.info`): purple.
-pub const BANNER_INFO_BG: Color32 = hex(0x17142a);
-pub const BANNER_INFO_BORDER: Color32 = hex(0x463375);
-pub const BANNER_INFO_TEXT: Color32 = hex(0xe4d6ff);
+/// A banner saying the session reloaded its file (`.canvas-banner.info`): the info tone on
+/// a dark card as the other banners' (`--info-card-bg`, `--info-card-border`,
+/// `--info-card-text`; Trevin's change of 2026-11-09, from purple).
+pub const BANNER_INFO_BG: Color32 = hex(0x111a2d);
+pub const BANNER_INFO_BORDER: Color32 = hex(0x2b3c66);
+pub const BANNER_INFO_TEXT: Color32 = hex(0xdce3ff);
 /// A banner saying the file is gone (`.canvas-banner.err`).
 pub const BANNER_ERROR_BG: Color32 = hex(0x2a0a12);
 pub const BANNER_ERROR_BORDER: Color32 = hex(0x6e1228);
@@ -1596,12 +1636,13 @@ pub const BANNER_LIST_MARGIN_TOP: f32 = 6.0;
 pub const BANNER_LIST_ROW_GAP: f32 = 2.0;
 pub const BANNER_LIST_COLUMN_GAP: f32 = 10.0;
 
-/// The card in a feature's properties saying another program changed it (`.err-card.warn`,
-/// restyled purple as `featureProps` styles it): `rgba(183,128,255,.12)`, its border
-/// `#463375`, its words `#e4d6ff`.
-pub const OUTSIDE_CARD_BG: Color32 = Color32::from_rgba_unmultiplied_const(183, 128, 255, 31);
-pub const OUTSIDE_CARD_BORDER: Color32 = hex(0x463375);
-pub const OUTSIDE_CARD_TEXT: Color32 = hex(0xe4d6ff);
+/// The card in a feature's properties saying another program changed it (`.err-card.info`):
+/// the info banner's card, its head ([`INFO`]) and words (Trevin's change of 2026-11-09,
+/// from purple).
+pub const OUTSIDE_CARD_BG: Color32 = BANNER_INFO_BG;
+pub const OUTSIDE_CARD_BORDER: Color32 = BANNER_INFO_BORDER;
+pub const OUTSIDE_CARD_HEAD: Color32 = INFO;
+pub const OUTSIDE_CARD_TEXT: Color32 = BANNER_INFO_TEXT;
 /// A ghost button's words (`.btn-ghost`): Gray.750; hovered, on its fill
 /// ([`GHOST_BUTTON_HOVER_BG`]), white.
 pub const GHOST_BUTTON_TEXT: Color32 = GRAY_750;
@@ -1730,7 +1771,10 @@ pub fn style(mut base: egui::Style) -> egui::Style {
     visuals.panel_fill = PANEL_BG;
     visuals.window_fill = FLOATING_BG;
     visuals.faint_bg_color = BOTTOM_BAR_BG;
-    visuals.extreme_bg_color = color32(VIEWPORT_BG);
+    // egui's own darkest ground (a scroll bar's trough, a progress bar's, a dark frame's),
+    // Gray.0 as the canvas was; the canvas is its gradient now (`VIEWPORT_BG_TOP`,
+    // `VIEWPORT_BG_BOTTOM`).
+    visuals.extreme_bg_color = GRAY_0;
     visuals.text_edit_bg_color = Some(FIELD_BG);
     visuals.code_bg_color = FIELD_BG;
     visuals.weak_text_color = Some(TEXT_SUBDUED);
@@ -2193,7 +2237,9 @@ mod tests {
             assert_eq!(color, opaque(hex), "{name}");
         }
         // viewport.js:587, viewport.js:183's `#646363`, and DESIGN.md's candidates and
-        // canvas.
+        // canvas: styles.css's `--canvas-top` and `--canvas-bottom` (Trevin's of 2026-11-09),
+        // and nothing behind the renderer's bodies (viewport.js's `setClearColor(0x000000,
+        // 0)`).
         for (name, color, rgba) in [
             (
                 "BOX_SELECT_STROKE",
@@ -2205,7 +2251,12 @@ mod tests {
                 VIEWPORT_CANDIDATE,
                 [0xff, 0x7a, 0x0c, 0xff],
             ),
-            ("VIEWPORT_BG", VIEWPORT_BG, [0, 0, 0, 0xff]),
+            ("VIEWPORT_BG_TOP", VIEWPORT_BG_TOP, [0x14, 0x15, 0x17, 0xff]),
+            (
+                "VIEWPORT_BG_BOTTOM",
+                VIEWPORT_BG_BOTTOM,
+                [0x2a, 0x2c, 0x30, 0xff],
+            ),
             // interact.js's `overlay`, its `dot`: a hovered vertex white, a selected one
             // #4676ff, each ringed `stroke="#000"`.
             (
@@ -2226,6 +2277,7 @@ mod tests {
         ] {
             assert_eq!(color, rgba, "{name}");
         }
+        assert_eq!(VIEWPORT_FRAME_BG, None);
         // The dot's `r="4.5"` and its ring's `stroke-width="1"`.
         assert_eq!((VIEWPORT_VERTEX_RADIUS, VIEWPORT_VERTEX_RING), (4.5, 1.0));
     }
@@ -2604,6 +2656,37 @@ mod tests {
             ),
             ([0, 6], 18, 0)
         );
+    }
+
+    /// The ViewCube's look, typed from viewport.js's `label` and `buildCube`.
+    #[test]
+    fn the_view_cubes_look_is_the_prototypes() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `names`: RIGHT and LEFT `#2c2b2b`, TOP `#363535`, BOTTOM `#212121`, FRONT
+        // `#303030`, BACK `#262626`; `strokeStyle = '#525151'`, `fillStyle = '#cfcfcf'`;
+        // the edges' `color: '#827f7f'`.
+        for (name, color, hex) in [
+            ("VIEW_CUBE_SIDE_FILL", VIEW_CUBE_SIDE_FILL, 0x2c2b2b),
+            ("VIEW_CUBE_TOP_FILL", VIEW_CUBE_TOP_FILL, 0x363535),
+            ("VIEW_CUBE_BOTTOM_FILL", VIEW_CUBE_BOTTOM_FILL, 0x212121),
+            ("VIEW_CUBE_FRONT_FILL", VIEW_CUBE_FRONT_FILL, 0x303030),
+            ("VIEW_CUBE_BACK_FILL", VIEW_CUBE_BACK_FILL, 0x262626),
+            ("VIEW_CUBE_BORDER", VIEW_CUBE_BORDER, 0x525151),
+            ("VIEW_CUBE_LABEL", VIEW_CUBE_LABEL, 0xcfcfcf),
+            ("VIEW_CUBE_EDGE", VIEW_CUBE_EDGE.color, 0x827f7f),
+        ] {
+            assert_eq!(color, opaque(hex), "{name}");
+        }
+        // A 128 px face: `lineWidth = 3`, `21px`, and the words' middle at 66, 2 below 64.
+        assert_eq!(VIEW_CUBE_BORDER_WIDTH * 128.0, 3.0);
+        assert_eq!(VIEW_CUBE_LABEL_SIZE * 128.0, 21.0);
+        assert_eq!(VIEW_CUBE_LABEL_DROP * 128.0, 2.0);
+        // A WebGL line's one pixel, the edges' and the axis stubs'.
+        assert_eq!(VIEW_CUBE_EDGE.width, 1.0);
+        assert_eq!(VIEW_CUBE_STUB_WIDTH, 1.0);
     }
 
     // ---- A key cap's border, as `.kbd` draws it (border 1/1/2/1, radius 3, border-box) ----
