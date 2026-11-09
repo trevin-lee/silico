@@ -10534,6 +10534,10 @@ const CUBE_TOP: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x36, 0x
 const CUBE_BOTTOM: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x21, 0x21, 0x21);
 const CUBE_BORDER: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x52, 0x51, 0x51);
 const CUBE_EDGE: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x82, 0x7f, 0x7f);
+/// The axis stubs' colours (viewport.js's `buildCube`, `ax`: `#ff6981`, `#00b266`, `#7a95ff`).
+const CUBE_AXIS_X: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0xff, 0x69, 0x81);
+const CUBE_AXIS_Y: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x00, 0xb2, 0x66);
+const CUBE_AXIS_Z: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x7a, 0x95, 0xff);
 
 /// `got` holds the points `corners`, in any order, each within 1e-3.
 #[track_caller]
@@ -10560,13 +10564,14 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     // From (1, −1, 1) onto the cut's box's centre, z up: the view's right is (1, 1, 0)/√2
     // and its up (−1, 1, 2)/√6, so the cube's point (x, y, z), its faces at ±1, is drawn
     // at ((x + y)/√2, −(−x + y + 2z)/√6) · s from the cube's centre, y down, s half its
-    // edge, 0.28 of its 92-point side (the prototype's `CUBE`): 0.28 · 92 = 25.76, so
-    // s/√2 = 18.215, s/√6 = 10.516, s·√2 = 36.430, 2s/√6 = 21.033, and 4s/√6 = 42.066
-    // (the front's label at (−18.215, 10.516) from the centre, the right's at (18.215,
-    // 10.516), the top's at (0, −21.033); the top front left corner at (−36.430, −21.033),
-    // the top back right at (36.430, −21.033), the bottom front right at (0, 42.066), the
-    // top back left at (0, −42.066), and the bottom front left and back right at
-    // (∓36.430, 21.033)). The front, right, and top face the view, each at
+    // edge, 1/3.5 of its 92-point side (the prototype's `CUBE`, its cube camera 3.5 of the
+    // cube's units across, the cube 2): 92/3.5 = 26.286, so s/√2 = 18.587, s/√6 = 10.731,
+    // s·√2 = 37.174, 2s/√6 = 21.462, and 4s/√6 = 42.924 (the front's label at (−18.587,
+    // 10.731) from the centre, the right's at (18.587, 10.731), the top's at (0, −21.462);
+    // the top front left corner at (−37.174, −21.462), the top back right at (37.174,
+    // −21.462), the bottom front right at (0, 42.924), the top back left at (0, −42.924),
+    // and the bottom front left and back right at (∓37.174, 21.462)). The front, right,
+    // and top face the view, each at
     // 1/√3 (over a quarter, so each is labelled and clickable where its centre is drawn),
     // each drawn as the prototype's texture paints it: the border's #525151 over the whole
     // face, then its own fill over all but the rim, 3/128 of its side, so its corners at
@@ -10575,7 +10580,11 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     // centre), the top front left, the top back right, and the bottom front right; none is
     // drawn as a dot. The cube's edges are drawn once each, over the faces, in #827f7f, 1
     // wide: the nine of a face drawn (the three between the back, left, and bottom, none
-    // drawn, aren't).
+    // drawn, aren't). Over them, the axis stubs, 1 wide in the axes' colours, from
+    // (−1.02, −1.02, −1.02), 1.02 times the bottom front left corner's place, 1.4 along
+    // each axis, but where the cube is in front: the x stub to (0.38, −1.02, −1.02) and the
+    // z stub to (−1.02, −1.02, 0.38), each whole (toward the eye each runs to y < −1), and
+    // the y stub only to (−1.02, −0.98, −1.02), behind the cube past it.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
@@ -10588,7 +10597,7 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     step(&mut h);
     step(&mut h);
     let cube = silico_app::viewport::view_cube_rect(the_viewport(&h));
-    let s = 0.28 * 92.0;
+    let s = 92.0 / 3.5;
     let (r2, r6) = (2f32.sqrt(), 6f32.sqrt());
     let at = |x: f32, y: f32| cube.center() + eframe::egui::vec2(x, y) * s;
     // The cube's corners as drawn: (1, −1, 1) at the centre; (−1, −1, 1), (1, 1, 1),
@@ -10688,7 +10697,10 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
         (top_back_right, top_back_left),
         (top_back_left, top_front_left),
     ];
-    let lines = cube_lines(&h);
+    let all = cube_lines(&h);
+    let (lines, stubs): (Vec<_>, Vec<_>) = all
+        .iter()
+        .partition(|(_, stroke)| stroke.color == CUBE_EDGE);
     assert_eq!(lines.len(), edges.len(), "{lines:?}");
     for (a, b) in edges {
         let drawn = lines
@@ -10703,6 +10715,26 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     for (_, stroke) in &lines {
         assert_eq!(*stroke, eframe::egui::Stroke::new(1.0, CUBE_EDGE));
     }
+    // The stubs, each after every edge, x then y then z: the point (x, y, z) drawn at
+    // ((x + y)/√2, −(−x + y + 2z)/√6) · s from the cube's centre.
+    let place = |[x, y, z]: [f32; 3]| at((x + y) / r2, -(-x + y + 2.0 * z) / r6);
+    let from = [-1.02, -1.02, -1.02];
+    let expected_stubs = [
+        (CUBE_AXIS_X, place(from), place([0.38, -1.02, -1.02])),
+        (CUBE_AXIS_Y, place(from), place([-1.02, -0.98, -1.02])),
+        (CUBE_AXIS_Z, place(from), place([-1.02, -1.02, 0.38])),
+    ];
+    assert_eq!(stubs.len(), expected_stubs.len(), "{stubs:?}");
+    for (([p, q], stroke), (colour, a, b)) in stubs.iter().zip(expected_stubs) {
+        assert_eq!(*stroke, eframe::egui::Stroke::new(1.0, colour));
+        at_point(*p, a, "a stub's start");
+        at_point(*q, b, "a stub's end");
+    }
+    let last_edge = all
+        .iter()
+        .rposition(|(_, stroke)| stroke.color == CUBE_EDGE);
+    let first_stub = all.iter().position(|(_, stroke)| stroke.color != CUBE_EDGE);
+    assert!(last_edge < first_stub, "{all:?}");
     // No dot at any corner.
     assert!(
         !cube_shapes(&h)
@@ -10714,44 +10746,66 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
 }
 
 #[test]
-fn a_face_turned_a_quarter_toward_the_view_is_drawn_and_left_unlabelled() {
+fn a_face_turned_a_quarter_toward_the_view_is_drawn_and_left_unlabelled_and_one_just_over_labelled()
+{
     // From (0, −√15, 1) onto the origin: the view's back is (0, −√15, 1)/4, so the top
     // faces it at exactly a quarter (as f64 rounds it, checked), drawn but too oblique to
     // label or click; the front at √15/4, labelled. The left and right are edge-on and the
     // back and bottom face away, none drawn. The four front corners face it more than a
     // tenth, (√15 ± 1)/(4√3); the back ones face away. The front and the top are drawn, each
-    // its border and its fill, the front's label after them; the top has none.
+    // its border and its fill, the front's label after them; the top has none. From
+    // (0, −a, 1), the top faces the view at 1/√(a² + 1): a = 3.86 just over a quarter,
+    // 0.25079, labelled and clicked; a = 3.88 just under, 0.24958, not. The same corners
+    // face it more than a tenth, (a ± 1)/(√(a² + 1)·√3), 0.70 and 0.41 or so.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
-    let camera = silico_protocol::Camera {
-        projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
-        eye: [0.0, -15f64.sqrt(), 1.0],
-        target: [0.0; 3],
-        up: [0.0, 0.0, 1.0],
-    };
-    assert_eq!(camera.frame().unwrap().back[2], 0.25);
-    view_mut(&mut h).set_camera(camera);
-    step(&mut h);
-    step(&mut h);
-    assert_eq!(
-        cube_buttons(&h)
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        [
-            "Bottom front left",
-            "Bottom front right",
-            "Front",
-            "Home",
-            "Top front left",
-            "Top front right"
-        ]
-    );
-    assert_eq!(
-        cube_drawn(&h),
-        ["border", "front", "label", "border", "top"]
-    );
+    let corners = [
+        "Bottom front left",
+        "Bottom front right",
+        "Top front left",
+        "Top front right",
+    ];
+    for (eye, top, labelled) in [
+        ([0.0, -15f64.sqrt(), 1.0], 0.25, false),
+        ([0.0, -3.86, 1.0], 0.250_79, true),
+        ([0.0, -3.88, 1.0], 0.249_58, false),
+    ] {
+        let camera = silico_protocol::Camera {
+            projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+            eye,
+            target: [0.0; 3],
+            up: [0.0, 0.0, 1.0],
+        };
+        let faced = camera.frame().unwrap().back[2];
+        if top == 0.25 {
+            assert_eq!(faced, 0.25);
+        } else {
+            assert!((faced - top).abs() < 1e-5, "{eye:?}: {faced}");
+        }
+        view_mut(&mut h).set_camera(camera);
+        step(&mut h);
+        step(&mut h);
+        let mut buttons: Vec<&str> = corners.to_vec();
+        buttons.extend(["Front", "Home"]);
+        if labelled {
+            buttons.push("Top");
+        }
+        buttons.sort_unstable();
+        assert_eq!(
+            cube_buttons(&h)
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            buttons,
+            "{eye:?}"
+        );
+        let mut drawn = vec!["border", "front", "label", "border", "top"];
+        if labelled {
+            drawn.push("label");
+        }
+        assert_eq!(cube_drawn(&h), drawn, "{eye:?}");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -10851,7 +10905,8 @@ fn cube_labels(h: &AppHarness) -> Vec<(eframe::egui::Color32, Arc<eframe::egui::
 }
 
 /// A view of the cube for the labels' test: from `way` onto the origin with `up` its up, its
-/// right and up on screen by hand, and the faces it labels, in the cube's order.
+/// right and up on screen by hand, the faces it labels, in the cube's order, and how many of
+/// the cube's edges it draws (each of a face drawn, once).
 struct CubeView {
     name: &'static str,
     way: [f64; 3],
@@ -10859,16 +10914,79 @@ struct CubeView {
     right: [f64; 3],
     screen_up: [f64; 3],
     labelled: &'static [&'static str],
+    edges: usize,
+}
+
+/// The size the ViewCube's labels are laid out at: Inter Medium 21/128 of a face's side
+/// (viewport.js's `label`: `21px` on its 128), the side two half sides of 92/3.5 points
+/// (the cube camera's 3.5 units across the 92-point `CUBE`), so 21/64 · 92/3.5 = 8.625
+/// points, computed in the app's order (in f64 to a half side, then f32).
+fn cube_label_size() -> f32 {
+    let per_unit = (92.0f64 * (1.0 / 3.5)) as f32;
+    21.0f32 / 128.0 * 2.0 * per_unit
+}
+
+/// The ViewCube's label `word` as egui lays it out at the labels' size
+/// ([`cube_label_size`]).
+fn cube_label_galley(h: &AppHarness, word: &str) -> Arc<eframe::egui::Galley> {
+    h.ctx.fonts_mut(|fonts| {
+        fonts.layout_no_wrap(
+            word.to_owned(),
+            eframe::egui::FontId::proportional(cube_label_size()),
+            eframe::egui::Color32::WHITE,
+        )
+    })
+}
+
+/// `mesh`, the ViewCube's label `word`, samples its glyphs where the font atlas holds them:
+/// laid out at the labels' size ([`cube_label_size`]), each glyph's quad, in turn, has its
+/// four corners' texture coordinates, times the atlas's size now, at its texels' corners
+/// (`uv_rect`'s `min` and `max`), to a thousandth of a texel.
+#[track_caller]
+fn samples_its_glyphs(h: &AppHarness, word: &str, mesh: &eframe::egui::Mesh, what: &str) {
+    let galley = cube_label_galley(h, word);
+    let [width, height] = h
+        .ctx
+        .fonts(|fonts| fonts.font_image_size())
+        .map(|n| n as f32);
+    let glyphs: Vec<_> = galley
+        .rows
+        .iter()
+        .flat_map(|row| &row.glyphs)
+        .filter(|glyph| !glyph.uv_rect.is_nothing())
+        .collect();
+    assert_eq!(glyphs.len(), word.len(), "{what}: {word}");
+    assert_eq!(mesh.vertices.len(), 4 * glyphs.len(), "{what}: {word}");
+    for (quad, glyph) in mesh.vertices.chunks(4).zip(glyphs) {
+        let [x0, y0] = glyph.uv_rect.min.map(f32::from);
+        let [x1, y1] = glyph.uv_rect.max.map(f32::from);
+        let texels: Vec<_> = quad
+            .iter()
+            .map(|vertex| eframe::egui::pos2(vertex.uv.x * width, vertex.uv.y * height))
+            .collect();
+        same_corners(
+            &texels,
+            &[
+                eframe::egui::pos2(x0, y0),
+                eframe::egui::pos2(x1, y0),
+                eframe::egui::pos2(x0, y1),
+                eframe::egui::pos2(x1, y1),
+            ],
+            &format!("{what}: {word}'s {:?}", glyph.chr),
+        );
+    }
 }
 
 #[test]
 fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_square_on() {
     // Each view from `way` onto the origin, `up` its up, its right and up worked by hand
     // (right = up × back, then up = back × right); the cube's point p drawn at
-    // (p · right, −p · up) · s from the cube's centre, y down, s = 0.28 · 92. A face's point
+    // (p · right, −p · up) · s from the cube's centre, y down, s = 92/3.5. A face's point
     // (u, v), each in half sides, u along its words' right and v down them, is drawn at
     // c + u·a + v·b: c its centre's place, a its right's, b its down's (its up's negated);
-    // it's inside the face for |u|, |v| < 1. Faced more than a quarter, a face is labelled.
+    // it's inside the face for |u|, |v| < 1. Faced more than a quarter, a face is labelled
+    // and clicked. Each edge of a face drawn is drawn once, after every face and label: 4
+    // square on, 7 with the front and the top, 9 at home.
     let r2 = 2f64.sqrt();
     let r6 = 6f64.sqrt();
     let n = 15.44f64.sqrt();
@@ -10880,6 +10998,7 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
             right: [1.0 / r2, 1.0 / r2, 0.0],
             screen_up: [-1.0 / r6, 1.0 / r6, 2.0 / r6],
             labelled: &["FRONT", "RIGHT", "TOP"],
+            edges: 9,
         },
         // The top faced 1/√15.44 = 0.2545, just over a quarter; the front 3.8/√15.44.
         CubeView {
@@ -10889,6 +11008,7 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
             right: [1.0, 0.0, 0.0],
             screen_up: [0.0, 1.0 / n, 3.8 / n],
             labelled: &["FRONT", "TOP"],
+            edges: 7,
         },
         CubeView {
             name: "front",
@@ -10897,6 +11017,7 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
             right: [1.0, 0.0, 0.0],
             screen_up: [0.0, 0.0, 1.0],
             labelled: &["FRONT"],
+            edges: 4,
         },
         CubeView {
             name: "back",
@@ -10905,6 +11026,7 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
             right: [-1.0, 0.0, 0.0],
             screen_up: [0.0, 0.0, 1.0],
             labelled: &["BACK"],
+            edges: 4,
         },
         CubeView {
             name: "left",
@@ -10913,6 +11035,7 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
             right: [0.0, -1.0, 0.0],
             screen_up: [0.0, 0.0, 1.0],
             labelled: &["LEFT"],
+            edges: 4,
         },
         CubeView {
             name: "right",
@@ -10921,6 +11044,7 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
             right: [0.0, 1.0, 0.0],
             screen_up: [0.0, 0.0, 1.0],
             labelled: &["RIGHT"],
+            edges: 4,
         },
         CubeView {
             name: "top",
@@ -10929,6 +11053,7 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
             right: [1.0, 0.0, 0.0],
             screen_up: [0.0, 1.0, 0.0],
             labelled: &["TOP"],
+            edges: 4,
         },
         CubeView {
             name: "bottom",
@@ -10937,12 +11062,13 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
             right: [-1.0, 0.0, 0.0],
             screen_up: [0.0, 1.0, 0.0],
             labelled: &["BOTTOM"],
+            edges: 4,
         },
     ];
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
-    let s = 0.28 * 92.0;
+    let s = 92.0 / 3.5;
     let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     // Each word's extent in its face's units, the same at every view.
     let mut extents: std::collections::BTreeMap<&str, [f64; 4]> = Default::default();
@@ -10954,6 +11080,7 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
         right,
         screen_up,
         labelled,
+        edges,
     } in views
     {
         view_mut(&mut h).set_camera(silico_protocol::Camera {
@@ -10971,6 +11098,38 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
         let cube = silico_app::viewport::view_cube_rect(the_viewport(&h));
         let centre = [f64::from(cube.center().x), f64::from(cube.center().y)];
         let place = |p: [f64; 3]| [dot(p, right) * s, -dot(p, screen_up) * s];
+        // The edges, once each, each after every face and label (so drawn over them).
+        let shapes = cube_shapes(&h);
+        let edge = |shape: &eframe::egui::Shape| matches!(shape, eframe::egui::Shape::LineSegment { stroke, .. } if stroke.color == CUBE_EDGE);
+        assert_eq!(
+            shapes.iter().filter(|shape| edge(shape)).count(),
+            edges,
+            "{name}: {shapes:?}"
+        );
+        let last_face = shapes.iter().rposition(|shape| {
+            matches!(
+                shape,
+                eframe::egui::Shape::Path(_) | eframe::egui::Shape::Mesh(_)
+            )
+        });
+        let first_line = shapes
+            .iter()
+            .position(|shape| matches!(shape, eframe::egui::Shape::LineSegment { .. }));
+        assert!(
+            last_face.is_some() && last_face < first_line,
+            "{name}: a line under a face: {shapes:?}"
+        );
+        // Each face labelled is clicked, and only those.
+        let buttons = cube_buttons(&h);
+        for face in &LABELLED_FACES {
+            let button = format!("{}{}", &face.word[..1], face.word[1..].to_lowercase());
+            assert_eq!(
+                buttons.contains_key(&button),
+                labelled.contains(&face.word),
+                "{name}: {button} in {:?}",
+                buttons.keys()
+            );
+        }
         let labels = cube_labels(&h);
         let words: Vec<&str> = labelled.to_vec();
         assert_eq!(labels.len(), words.len(), "{name}: {labels:?}");
@@ -10982,7 +11141,7 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
                 eframe::egui::TextureId::default(),
                 "{name}"
             );
-            assert!(mesh.vertices.len() >= 4 * word.len(), "{name}: {word}");
+            samples_its_glyphs(&h, word, mesh, name);
             let c = place(face.normal);
             let a = place(face.right);
             let b = place(face.up.map(|x| -x));
@@ -11010,17 +11169,40 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
                 on_face.push((vertex, u, v));
             }
             // A word, not a speck: across a fifth of the face at least, its capitals a
-            // twelfth of it high at least (21/128 of its side is the type's size), about its
-            // middle, 2/128 of its side below the face's: v = 1/32.
+            // twelfth of it high at least (21/128 of its side is the type's size).
             let (wide, high) = (extent[1] - extent[0], extent[3] - extent[2]);
             assert!(wide > 0.4 && wide < 1.9, "{name}: {word} {extent:?}");
             assert!(high > 0.15 && high < 0.6, "{name}: {word} {extent:?}");
-            let middle = [(extent[0] + extent[1]) / 2.0, (extent[2] + extent[3]) / 2.0];
-            assert!(middle[0].abs() < 0.06, "{name}: {word} {extent:?}");
-            assert!(
-                (middle[1] - 1.0 / 32.0).abs() < 0.06,
-                "{name}: {word} {extent:?}"
-            );
+            // Where the prototype puts it: its words' middle (their line's, as egui lays
+            // them out) at the face's centre across it, and 2/128 of its side below it,
+            // v = 2 · 2/128 = 1/32 half sides; so its glyphs' extent is theirs about that
+            // middle, in half sides of 92/3.5 points, to a thousandth. Their boxes are on
+            // whole pixels, a pixel 0.038 of a half side, so their own middle can be a
+            // hundredth or two from the line's: it's their extent that's checked, which a
+            // label with no drop misses by 1/32.
+            let galley = cube_label_galley(&h, word);
+            let line = galley.rect.center();
+            let per_unit = f64::from((92.0f64 * (1.0 / 3.5)) as f32);
+            let mut laid_out = [f64::MAX, f64::MIN, f64::MAX, f64::MIN];
+            for row in &galley.rows {
+                for vertex in &row.visuals.mesh.vertices {
+                    let at = row.pos + vertex.pos.to_vec2();
+                    let u = f64::from(at.x - line.x) / per_unit;
+                    let v = 1.0 / 32.0 + f64::from(at.y - line.y) / per_unit;
+                    laid_out = [
+                        laid_out[0].min(u),
+                        laid_out[1].max(u),
+                        laid_out[2].min(v),
+                        laid_out[3].max(v),
+                    ];
+                }
+            }
+            for k in 0..4 {
+                assert!(
+                    (laid_out[k] - extent[k]).abs() < 1e-3,
+                    "{name}: {word} {extent:?}, laid out at {laid_out:?}"
+                );
+            }
             // The same in the face's units from every view: it lies on the face.
             let seen = extents.entry(word).or_insert(extent);
             for k in 0..4 {
@@ -11051,6 +11233,69 @@ fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_squa
         }
     }
     assert_eq!(extents.len(), 6, "{extents:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_view_cube_label_samples_its_glyphs_where_the_atlas_holds_them_as_its_pass_ends() {
+    // The font atlas grows while a pass lays out text it hasn't yet (its height doubled),
+    // and a mesh's texture coordinates are a part of its size: so a label's are taken as the
+    // pass ends, once everything's laid out. Here, at each pass's end, before the labels'
+    // meshes are made (egui's own callbacks run before the plugins added after them, the
+    // labels' among them), text is laid out at sizes not yet used until the atlas grows, as
+    // a pane drawn after the cube might: each label at home, FRONT, RIGHT, and TOP, still
+    // samples its glyphs where the grown atlas holds them. Made where its face is drawn, a
+    // label's coordinates would be parts of the atlas before it grew, its glyphs' rows at
+    // twice their place or more.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+        eye: [100.0, -100.0, 100.0],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 1.0],
+    });
+    step(&mut h);
+    step(&mut h);
+    let before = h.ctx.fonts(|fonts| fonts.font_image_size());
+    let next_size = Arc::new(Mutex::new(100.0f32));
+    let grown = Arc::new(Mutex::new(0usize));
+    {
+        let (next_size, grown) = (Arc::clone(&next_size), Arc::clone(&grown));
+        h.ctx.on_end_pass(
+            "the atlas grown after the cube",
+            Arc::new(move |ui: &mut eframe::egui::Ui| {
+                let height = |ui: &eframe::egui::Ui| ui.ctx().fonts(|f| f.font_image_size()[1]);
+                let start = height(ui);
+                for _ in 0..256 {
+                    let size = {
+                        let mut next = next_size.lock().unwrap();
+                        *next += 1.0;
+                        *next
+                    };
+                    let _ = ui.painter().layout_no_wrap(
+                        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".to_owned(),
+                        eframe::egui::FontId::proportional(size),
+                        eframe::egui::Color32::WHITE,
+                    );
+                    if height(ui) > start {
+                        *grown.lock().unwrap() += 1;
+                        return;
+                    }
+                }
+            }),
+        );
+    }
+    step(&mut h);
+    let after = h.ctx.fonts(|fonts| fonts.font_image_size());
+    assert!(*grown.lock().unwrap() > 0, "the atlas never grew");
+    assert!(after[1] > before[1], "{before:?} to {after:?}");
+    let labels = cube_labels(&h);
+    assert_eq!(labels.len(), 3, "{labels:?}");
+    for ((_, mesh), word) in labels.iter().zip(["FRONT", "RIGHT", "TOP"]) {
+        samples_its_glyphs(&h, word, mesh, "the atlas grown");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 

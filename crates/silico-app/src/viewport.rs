@@ -2033,6 +2033,87 @@ const CUBE_FACE_SHOWN: f64 = 1e-9;
 /// How far a face must face the view for its label to be drawn and its click taken.
 const CUBE_FACE_LABELLED: f64 = 0.25;
 
+/// The cube's half side as a part of the ViewCube's side: the prototype's cube camera spans
+/// 3.5 of the cube's units across the square it's drawn in, the cube 2 of them
+/// (viewport.js's `buildCube`: `OrthographicCamera(-1.75, 1.75, 1.75, -1.75, …)` and
+/// `BoxGeometry(2, 2, 2)`).
+const CUBE_HALF_SIDE: f64 = 1.0 / 3.5;
+
+/// The cube's axis stubs (viewport.js's `buildCube`, `ax`): from just outside its bottom
+/// front left corner, 1.02 half sides from its centre on each axis, 1.4 half sides along x,
+/// y, and z, each in its axis's colour, in the document's axes as the cube's faces are.
+const CUBE_STUB_FROM: [f64; 3] = [-1.02, -1.02, -1.02];
+const CUBE_STUB_LENGTH: f64 = 1.4;
+
+/// Narrows `s`, an interval of s, to where c + m·s ≤ 0: false if nothing's left.
+fn keep_where_not_above_zero(s: &mut [f64; 2], c: f64, m: f64) -> bool {
+    if m > 0.0 {
+        s[1] = s[1].min(-c / m);
+    } else if m < 0.0 {
+        s[0] = s[0].max(-c / m);
+    } else if c > 0.0 {
+        return false;
+    }
+    s[0] <= s[1]
+}
+
+/// The part of the segment from `from` to `from + along` (s from 0 to 1 along it) the cube
+/// hides from a view looking along −`back`, as the cube is drawn, orthographic: where the
+/// ray from the point toward the eye, along `back`, meets the cube (its points at most 1
+/// from its centre on each axis). The cube is convex, so that's one interval of s, or none:
+/// the s for which some t ≥ 0 puts `from + s·along + t·back` in the cube, each axis
+/// bounding t from below and above by a line in s (or s itself, an axis the view is square
+/// to), and every lower bound at most every upper one.
+fn hidden_by_cube(from: [f64; 3], along: [f64; 3], back: [f64; 3]) -> Option<[f64; 2]> {
+    let mut s = [0.0, 1.0];
+    // t ≥ c + m·s, and t ≤ c + m·s, each as (c, m): t ≥ 0 first.
+    let mut lower = vec![(0.0, 0.0)];
+    let mut upper = Vec::new();
+    for k in 0..3 {
+        let (a, d, b) = (from[k], along[k], back[k]);
+        if b == 0.0 {
+            // −1 ≤ a + d·s ≤ 1.
+            if !keep_where_not_above_zero(&mut s, a - 1.0, d)
+                || !keep_where_not_above_zero(&mut s, -1.0 - a, -d)
+            {
+                return None;
+            }
+        } else {
+            // a + d·s + t·b from −1 to 1: t between (−1 − a − d·s)/b and (1 − a − d·s)/b.
+            let near = ((-1.0 - a) / b, -d / b);
+            let far = ((1.0 - a) / b, -d / b);
+            let (low, high) = if b > 0.0 { (near, far) } else { (far, near) };
+            lower.push(low);
+            upper.push(high);
+        }
+    }
+    if upper.is_empty() {
+        // No way to look along: nothing's hidden.
+        return None;
+    }
+    for &(lc, lm) in &lower {
+        for &(uc, um) in &upper {
+            if !keep_where_not_above_zero(&mut s, lc - uc, lm - um) {
+                return None;
+            }
+        }
+    }
+    Some(s)
+}
+
+/// The parts of the segment from `from` to `from + along` the cube doesn't hide from a view
+/// looking along −`back` ([`hidden_by_cube`]), each by its s from 0 to 1: the whole, or what's
+/// before and after the part it hides, each only if it's of some length.
+fn seen_past_cube(from: [f64; 3], along: [f64; 3], back: [f64; 3]) -> Vec<[f64; 2]> {
+    match hidden_by_cube(from, along, back) {
+        None => vec![[0.0, 1.0]],
+        Some([start, end]) => [[0.0, start], [end, 1.0]]
+            .into_iter()
+            .filter(|[a, b]| a < b)
+            .collect(),
+    }
+}
+
 /// A face's fill (viewport.js's `buildCube`).
 fn cube_face_fill(view: NamedView) -> egui::Color32 {
     match view {
@@ -2275,7 +2356,8 @@ fn view_cube_home_rect(rect: Rect) -> Rect {
 /// The ViewCube, at the canvas's top right (section 8; fusion.md, *ViewCube and Navigation
 /// Bar*): the cube as the camera sees it, drawn as the prototype's (viewport.js's
 /// `buildCube` and `label`): each face it faces filled in its own grey inside a border, its
-/// label in capitals lying on it, and each edge of a face drawn once over them. A face's
+/// label in capitals lying on it, each edge of a face drawn once over them, and the axis
+/// stubs at its bottom front left corner, but where the cube is in front of them. A face's
 /// click gives its orthographic view, a corner's its isometric one, a left drag orbits, and
 /// Home gives the home view; its menu switches the projection, which the views it gives
 /// keep.
@@ -2305,7 +2387,7 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
             view.drag = None;
         }
         let mut parts = vec![cube];
-        let scale = f64::from(side) * 0.28;
+        let scale = f64::from(side) * CUBE_HALF_SIDE;
         let offset = |v: [f64; 3]| {
             let x = silico_protocol::vec3::dot(v, frame.right) * scale;
             let y = -silico_protocol::vec3::dot(v, frame.up) * scale;
@@ -2346,6 +2428,27 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
             {
                 let [start, end] = edge.ends;
                 painter.line_segment([at(start), at(end)], theme::VIEW_CUBE_EDGE);
+            }
+        }
+        // The axis stubs at its corner, over its edges, each but where the cube is in front
+        // of it (the prototype's are depth tested), and none seen end on, a point.
+        for (k, colour) in [theme::AXIS_X, theme::AXIS_Y, theme::AXIS_Z]
+            .into_iter()
+            .enumerate()
+        {
+            let mut along = [0.0; 3];
+            along[k] = CUBE_STUB_LENGTH;
+            let point = |s: f64| {
+                let mut p = CUBE_STUB_FROM;
+                p[k] += s * along[k];
+                at(p)
+            };
+            let stroke = Stroke::new(theme::VIEW_CUBE_STUB_WIDTH, theme::color32(colour));
+            for [a, b] in seen_past_cube(CUBE_STUB_FROM, along, frame.back) {
+                let ends = [point(a), point(b)];
+                if ends[0] != ends[1] {
+                    painter.line_segment(ends, stroke);
+                }
             }
         }
         for named in silico_core::views::NAMED_VIEWS {
@@ -3862,5 +3965,85 @@ mod tests {
         );
         assert_eq!(mesh.indices, [0, 1, 2, 0, 2, 3]);
         assert_eq!(mesh.texture_id, egui::TextureId::default());
+    }
+
+    /// `got` is the interval `want`, each end to 1e-12.
+    #[track_caller]
+    fn same_interval(got: Option<[f64; 2]>, want: [f64; 2]) {
+        let got = got.unwrap_or_else(|| panic!("nothing hidden, against {want:?}"));
+        assert!(
+            (got[0] - want[0]).abs() < 1e-12 && (got[1] - want[1]).abs() < 1e-12,
+            "{got:?} against {want:?}"
+        );
+    }
+
+    /// The axis stubs, from (−1.02, −1.02, −1.02), 1.4 along each axis, hidden where the
+    /// ray from a point toward the eye meets the cube, by hand. From the home view's way,
+    /// (1, −1, 1)/√3, the x stub's point (−1.02 + 1.4·s, −1.02, −1.02) moves to y < −1 toward
+    /// the eye, never in the cube: seen whole, as is the z stub. The y stub's (−1.02, y,
+    /// −1.02) moves by u = t/√3 to (−1.02 + u, y − u, −1.02 + u): in the cube for u from 0.02
+    /// to 2.02 and from y − 1 to y + 1, some u for y + 1 ≥ 0.02, so hidden from y = −0.98,
+    /// s = 0.04/1.4 = 1/35, to its end, and seen from 0 to 1/35. From the back and above,
+    /// (0, 1, 1)/√2, the x stub moves by u = t/√2 to (x, −1.02 + u, −1.02 + u), in the cube
+    /// for u from 0.02 to 2.02 if its x is too, from s = 0.02/1.4 = 1/70: seen from 0 to
+    /// 1/70. Square on from the front, (0, −1, 0), each stub's point moves away from the
+    /// cube, or stays 0.02 outside it: none hidden.
+    #[test]
+    fn the_cubes_axis_stubs_are_hidden_where_the_cube_is_in_front_of_them() {
+        let third = 1.0 / 3f64.sqrt();
+        let home = [third, -third, third];
+        let stub = |k: usize| {
+            let mut along = [0.0; 3];
+            along[k] = CUBE_STUB_LENGTH;
+            along
+        };
+        assert_eq!(CUBE_STUB_FROM, [-1.02; 3]);
+        assert_eq!(CUBE_STUB_LENGTH, 1.4);
+        assert_eq!(hidden_by_cube(CUBE_STUB_FROM, stub(0), home), None);
+        assert_eq!(hidden_by_cube(CUBE_STUB_FROM, stub(2), home), None);
+        same_interval(
+            hidden_by_cube(CUBE_STUB_FROM, stub(1), home),
+            [1.0 / 35.0, 1.0],
+        );
+        assert_eq!(seen_past_cube(CUBE_STUB_FROM, stub(0), home), [[0.0, 1.0]]);
+        let seen = seen_past_cube(CUBE_STUB_FROM, stub(1), home);
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0][0], 0.0);
+        assert!((seen[0][1] - 1.0 / 35.0).abs() < 1e-12, "{seen:?}");
+        let half = 1.0 / 2f64.sqrt();
+        let back_above = [0.0, half, half];
+        same_interval(
+            hidden_by_cube(CUBE_STUB_FROM, stub(0), back_above),
+            [1.0 / 70.0, 1.0],
+        );
+        for k in 0..3 {
+            assert_eq!(
+                hidden_by_cube(CUBE_STUB_FROM, stub(k), [0.0, -1.0, 0.0]),
+                None,
+                "{k}"
+            );
+        }
+        // A segment through the cube's middle, along x at y = z = 0 from −2 to 2, seen from
+        // the front: hidden where it's in the cube, x from −1 to 1, s from 1/4 to 3/4, and
+        // seen either side of that.
+        let through = ([-2.0, 0.0, 0.0], [4.0, 0.0, 0.0]);
+        same_interval(
+            hidden_by_cube(through.0, through.1, [0.0, -1.0, 0.0]),
+            [0.25, 0.75],
+        );
+        assert_eq!(
+            seen_past_cube(through.0, through.1, [0.0, -1.0, 0.0]),
+            [[0.0, 0.25], [0.75, 1.0]]
+        );
+        // The same segment 0.5 in front of the cube: never hidden.
+        assert_eq!(
+            hidden_by_cube([-2.0, -1.5, 0.0], [4.0, 0.0, 0.0], [0.0, -1.0, 0.0]),
+            None
+        );
+        // And 0.5 behind it: hidden where the cube's in front, s from 1/4 to 3/4.
+        same_interval(
+            hidden_by_cube([-2.0, 1.5, 0.0], [4.0, 0.0, 0.0], [0.0, -1.0, 0.0]),
+            [0.25, 0.75],
+        );
     }
 }

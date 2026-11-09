@@ -770,6 +770,9 @@ pub const VIEW_CUBE_EDGE: Stroke = Stroke {
     width: 1.0,
     color: GRAY_500,
 };
+/// The cube's axis stubs at its corner, each in its axis's colour ([`AXIS_X`], [`AXIS_Y`],
+/// [`AXIS_Z`]), a WebGL line's 1 pixel, here 1 point (viewport.js's `buildCube`, `ax`).
+pub const VIEW_CUBE_STUB_WIDTH: f32 = 1.0;
 
 /// The navigation bar's width and height, and its margin from the canvas's bottom (the
 /// prototype's `.nav-bar`, 12 from the bottom). Its height is a 24 high button, 3 of padding,
@@ -2675,8 +2678,9 @@ mod tests {
         assert_eq!(VIEW_CUBE_BORDER_WIDTH * 128.0, 3.0);
         assert_eq!(VIEW_CUBE_LABEL_SIZE * 128.0, 21.0);
         assert_eq!(VIEW_CUBE_LABEL_DROP * 128.0, 2.0);
-        // A WebGL line's one pixel.
+        // A WebGL line's one pixel, the edges' and the axis stubs'.
         assert_eq!(VIEW_CUBE_EDGE.width, 1.0);
+        assert_eq!(VIEW_CUBE_STUB_WIDTH, 1.0);
     }
 
     // ---- A key cap's border, as `.kbd` draws it (border 1/1/2/1, radius 3, border-box) ----
