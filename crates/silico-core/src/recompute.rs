@@ -1252,9 +1252,10 @@ struct Counted {
     /// it was stopped ([`stopped_after`](Self::stopped_after)), and fixed as the count ends.
     started: Instant,
     /// How long after `started` it was stopped (cancelled, superseded by a newer recompute,
-    /// or its engine dropped), if it was, before its count ended: its clock's end, though
-    /// its thread may still be draining the requests it has running
-    /// ([`StepCounter::stopped`]). `count.elapsed` is this from then on.
+    /// or its engine dropped), if it was: its clock's end, though its thread may still be
+    /// draining the requests it has running ([`StepCounter::stopped`]). `count.elapsed` is
+    /// this from then on, while the count runs; a stop after its end is recorded but never
+    /// read, the end having fixed its time.
     stopped_after: Option<Duration>,
     /// Where each feature is listed in `count.features`, by its place in the document: none
     /// for a suppressed feature.
@@ -1565,8 +1566,9 @@ impl Counted {
     /// The step `key` of `plan` settled as `outcome` says ([`StepCounter::settled`]).
     fn settle(&mut self, key: Key, outcome: Settled, plan: &Plan) {
         // A superseded step isn't settled (built, failed, kept, or never to run): the next
-        // rebuild resumes it. So a stopped recompute's `done` stays as it was at its stop,
-        // however many steps it drains after.
+        // rebuild resumes it. So a step a stopped recompute drains to its supersede isn't
+        // counted (one that made its result, or was found never to run, as the stop came,
+        // still is).
         if outcome != Settled::Superseded && self.settled.insert(key) {
             self.count.done = self.settled.len().min(self.count.steps);
         }
@@ -6283,7 +6285,8 @@ mod tests {
         // again, nothing changes; ended, its time is its stop's.
         let before = Instant::now();
         let counter = StepCounter::default();
-        spin_past(before, Duration::from_millis(5));
+        let made = Instant::now();
+        spin_past(made, Duration::from_millis(5));
         counter.stopped();
         let after = before.elapsed();
         let at_stop = counter.now();

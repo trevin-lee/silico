@@ -279,8 +279,10 @@ impl FakeKernel {
     /// was superseded meanwhile, it comes to [`Outcome::Superseded`], and otherwise it runs.
     /// It models a superseded request still inside the pool's grace (counted from its start,
     /// at most `pool::STOP_AFTER`), with no limit of its own, so its caller is still waiting
-    /// on it after the supersede. Release or drop it before the engine or sessions waiting
-    /// on what it holds are dropped: they wait for their runs, which wait for it.
+    /// on it after the supersede. Release or drop it before sessions waiting on what it
+    /// holds are dropped (their drop joins their rebuilds' watchers, which wait for the
+    /// runs, which wait for it); an engine dropped first leaves its run's thread waiting on
+    /// it until it's released.
     pub fn hold_past_supersede(&self, picks: impl Fn(&Op) -> bool + Send + Sync + 'static) -> Hold {
         self.holding(picks, true)
     }
