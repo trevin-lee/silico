@@ -2,11 +2,11 @@
 //! already implies*; #278's G as amended, Fable, 2026-11-08): what a tool leaves out of the
 //! relations it infers, before the pointer shows them, so what's shown is what's added.
 //!
-//! Two partitions over the sketch's points and the origin: **Y**, the points level with each
-//! other, and **X**, the points plumb with each other, each a union-find keyed by [`Key`]. A
-//! class is **fixed** when it holds the origin, or a point the read marks fully defined. They
-//! are built from the sketch's constraints (the read's and the pending adds', as the view
-//! merges them), each read for the equation it asserts:
+//! Two partitions over the sketch's points and the origin: **Y**, the points sharing a y
+//! (level with each other), and **X**, the points sharing an x (plumb), each a union-find
+//! keyed by [`Key`]. A class is **fixed** when it holds the origin, or a point the read marks
+//! fully defined. They're built from the sketch's constraints (the read's and the pending
+//! adds', as the view merges them), each read for the equation it asserts:
 //!
 //! - Y: `horizontal(L)` joins L's ends; `horizontal_points(a, b)` joins a and b;
 //!   `on(p, x_axis)` joins p and the origin; a driving `distance_y(a, b)` of exactly 0 joins
@@ -19,20 +19,23 @@
 //!   each join.
 //!
 //! Nothing else is read: what the other forms imply is PlaneGCS's to judge, and the read
-//! reports it. Then a relation a tool infers is judged, in the order the gesture makes them,
-//! each kept merged before the next:
+//! reports it. Then a relation a tool infers is judged ([`Implied::admit`]), in the order the
+//! gesture makes them, each kept merged before the next:
 //!
 //! - **Rule E.** One asserting two points level (`horizontal`, `horizontal_points`, an `on` of
-//!   the x axis or of a level line) is left out when they're already in one Y class, or both
-//!   their Y classes are fixed. X likewise.
+//!   the x shared or of a level line) is left out when they're already in one Y class, or both
+//!   their Y classes are fixed. X likewise. A `midpoint` asserts both its point's coordinates,
+//!   which no class holds whole: it's only partly implied, and never left out.
 //! - **Rule F.** An inferred `perpendicular`, `parallel`, or `tangent_at` is left out when
-//!   every point it reads is fixed in both X and Y.
+//!   every point it reads is fixed in both X and Y (a line's two ends, an arc's or a circle's
+//!   centre, and a `tangent_at`'s point).
 //!
 //! A relation left out reads only values already fixed, or asserts an equality already held,
 //! so the solver would have called it redundant or conflicting. The tool's own relations (a
 //! rectangle's sides, a centre rectangle's `symmetric`, a tangent arc's `tangent_at`) are
 //! never judged. Classes are compared by membership, and IDs are keys only: the result is a
-//! function of the sketch, its read, and the gesture, never of the order IDs sort in.
+//! function of the sketch, its read, and the gesture, never of the order IDs sort in or
+//! classes join in.
 
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,10 +48,11 @@ use crate::sketch_states::{MemberState, SketchStates};
 /// `states`: the sketch already implies it, by Rule E or Rule F. What the tools judge each
 /// relation they infer by; public so the rule can be checked against PlaneGCS (a relation
 /// it leaves out, added, is redundant or conflicting there, or leaves the freedoms as they
-/// were). A form the rules don't read (a dimension, `equal`, ...) is never implied.
+/// were). A form the rules don't read (a dimension, `equal`, a `midpoint`, ...) is never
+/// implied.
 pub fn implied_by(sketch: &Sketch, states: &SketchStates, form: &Form) -> bool {
     let implied = Implied::of(sketch, states);
-    implied.implies(&implied.rel(form))
+    implied.implies(&implied.rel(form, &Key::of))
 }
 
 /// The classes of a tool's newest view, built once for it, the first time a relation is
@@ -96,7 +100,7 @@ pub(super) enum Key {
 impl Key {
     /// The point `reference` names, if it names one: the origin, or an element (a point, if
     /// the sketch holds it as one; the forms read here name only points there).
-    fn of(reference: &Reference) -> Option<Key> {
+    pub(super) fn of(reference: &Reference) -> Option<Key> {
         match reference {
             Reference::Origin => Some(Key::Origin),
             Reference::Element(id) => Some(Key::Point(id.clone())),
@@ -105,15 +109,16 @@ impl Key {
     }
 }
 
-/// Which partition: points level with each other (equal y), or plumb (equal x).
+/// Which partition: the points sharing a y (level with each other), or sharing an x
+/// (plumb).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Axis {
-    Level,
-    Plumb,
+pub(super) enum Shared {
+    Y,
+    X,
 }
 
-impl Axis {
-    const BOTH: [Axis; 2] = [Axis::Level, Axis::Plumb];
+impl Shared {
+    const BOTH: [Shared; 2] = [Shared::Y, Shared::X];
 }
 
 /// One partition, a union-find by size: each key's slot, each slot's parent toward its
@@ -226,11 +231,14 @@ impl Classes {
 
 /// A relation, as the classes read it.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum Rel {
-    /// Two points level (`axis` Level) or plumb.
-    Same(Axis, Key, Key),
-    /// A point on a line, or its middle: in the line's class while the line is level or plumb.
+pub(super) enum ClassRel {
+    /// Two points sharing a y (`Shared::Y`) or an x.
+    Same(Shared, Key, Key),
+    /// A point on a line: in the line's class while the line is level or plumb.
     OnLine(Key, ElementId),
+    /// A point at a line's middle: in the line's class as one on it is, and only partly
+    /// implied (its place along the line no class holds), so never left out.
+    Midpoint(Key, ElementId),
     /// A relation that reads these points' values and asserts nothing the classes hold: a
     /// `perpendicular`, `parallel`, or `tangent_at` (Rule F).
     Reads(Vec<Key>),
@@ -297,8 +305,8 @@ impl Implied {
                 .or_insert(Key::Point(center.clone()));
         }
         for constraint in &sketch.constraints {
-            let rel = implied.rel(&constraint.form);
-            implied.assert(&rel);
+            let rel = implied.rel(&constraint.form, &Key::of);
+            implied.merge(&rel);
         }
         implied
     }
@@ -314,92 +322,90 @@ impl Implied {
             self.ends.entry(end.clone()).or_default().push(id.clone());
         }
         self.lines.insert(id.clone(), (a.clone(), b.clone()));
-        for axis in Axis::BOTH {
-            if self.classes(axis).same(&a, &b) {
-                for (p, end) in self.flatten(axis, id) {
-                    self.join(axis, p, end);
+        for shared in Shared::BOTH {
+            if self.classes(shared).same(&a, &b) {
+                for (p, end) in self.flatten(shared, id) {
+                    self.join(shared, p, end);
                 }
             }
         }
     }
 
-    /// What `form` asserts, as the classes read it, against the classes as they stand (an
-    /// `on` of a level line is an equality only while the line is level).
-    pub(super) fn rel(&self, form: &Form) -> Rel {
-        let key = Key::of;
-        let pair = |axis, a: &Reference, b: &Reference| match (key(a), key(b)) {
-            (Some(a), Some(b)) => Rel::Same(axis, a, b),
-            _ => Rel::Other,
+    /// What `form` asserts, as the classes read it, each point it names known by `key`'s
+    /// [`Key`] for it (a gesture's points not yet named as [`Key::Fresh`]): it reads no
+    /// classes, only which lines and curves the sketch has.
+    pub(super) fn rel(&self, form: &Form, key: &dyn Fn(&Reference) -> Option<Key>) -> ClassRel {
+        let pair = |shared, a: &Reference, b: &Reference| match (key(a), key(b)) {
+            (Some(a), Some(b)) => ClassRel::Same(shared, a, b),
+            _ => ClassRel::Other,
         };
         match form {
-            Form::Horizontal { line } => self.line_ends(Axis::Level, line),
-            Form::Vertical { line } => self.line_ends(Axis::Plumb, line),
-            Form::HorizontalPoints { a, b } => pair(Axis::Level, a, b),
-            Form::VerticalPoints { a, b } => pair(Axis::Plumb, a, b),
+            Form::Horizontal { line } => self.line_ends(Shared::Y, line),
+            Form::Vertical { line } => self.line_ends(Shared::X, line),
+            Form::HorizontalPoints { a, b } => pair(Shared::Y, a, b),
+            Form::VerticalPoints { a, b } => pair(Shared::X, a, b),
             Form::DistanceY {
                 a,
                 b,
                 value,
                 driving: true,
-            } if *value == Length::default() => pair(Axis::Level, a, b),
+            } if *value == Length::default() => pair(Shared::Y, a, b),
             Form::DistanceX {
                 a,
                 b,
                 value,
                 driving: true,
-            } if *value == Length::default() => pair(Axis::Plumb, a, b),
-            Form::On { point, curve } => match key(point) {
-                Some(p) => self.on(p, curve),
-                None => Rel::Other,
+            } if *value == Length::default() => pair(Shared::X, a, b),
+            Form::On { point, curve } => match (key(point), curve) {
+                (Some(p), Reference::XAxis) => ClassRel::Same(Shared::Y, p, Key::Origin),
+                (Some(p), Reference::YAxis) => ClassRel::Same(Shared::X, p, Key::Origin),
+                (Some(p), Reference::Element(line)) if self.lines.contains_key(line) => {
+                    ClassRel::OnLine(p, line.clone())
+                }
+                _ => ClassRel::Other,
             },
             Form::Midpoint {
                 point,
                 line: Reference::Element(line),
             } => match key(point) {
-                Some(p) if self.lines.contains_key(line) => Rel::OnLine(p, line.clone()),
-                _ => Rel::Other,
+                Some(p) if self.lines.contains_key(line) => ClassRel::Midpoint(p, line.clone()),
+                _ => ClassRel::Other,
             },
-            Form::Perpendicular { a, b }
-            | Form::Parallel { a, b }
-            | Form::TangentAt { a, b, .. } => match (self.reads(a), self.reads(b)) {
-                (Some(mut a), Some(b)) => {
-                    a.extend(b);
-                    Rel::Reads(a)
+            Form::Perpendicular { a, b } | Form::Parallel { a, b } => {
+                match (self.reads(a), self.reads(b)) {
+                    (Some(mut a), Some(b)) => {
+                        a.extend(b);
+                        ClassRel::Reads(a)
+                    }
+                    _ => ClassRel::Other,
                 }
-                _ => Rel::Other,
-            },
-            _ => Rel::Other,
-        }
-    }
-
-    /// The point `p` on `curve`: level with the origin on the x axis, plumb with it on the y
-    /// axis, on a line of the sketch; anything else (a circle, an arc) nothing to the
-    /// classes.
-    pub(super) fn on(&self, p: Key, curve: &Reference) -> Rel {
-        match curve {
-            Reference::XAxis => Rel::Same(Axis::Level, p, Key::Origin),
-            Reference::YAxis => Rel::Same(Axis::Plumb, p, Key::Origin),
-            Reference::Element(line) if self.lines.contains_key(line) => {
-                Rel::OnLine(p, line.clone())
             }
-            _ => Rel::Other,
+            Form::TangentAt { a, b, at, .. } => match (self.reads(a), self.reads(b), key(at)) {
+                (Some(mut a), Some(b), Some(at)) => {
+                    a.extend(b);
+                    a.push(at);
+                    ClassRel::Reads(a)
+                }
+                _ => ClassRel::Other,
+            },
+            _ => ClassRel::Other,
         }
     }
 
-    /// A line's ends made level or plumb, if it's a line of the sketch.
-    fn line_ends(&self, axis: Axis, line: &Reference) -> Rel {
+    /// A line's ends made level or plumb, if it's a line the classes know.
+    fn line_ends(&self, shared: Shared, line: &Reference) -> ClassRel {
         match line {
             Reference::Element(id) => match self.lines.get(id) {
-                Some((a, b)) => Rel::Same(axis, a.clone(), b.clone()),
-                None => Rel::Other,
+                Some((a, b)) => ClassRel::Same(shared, a.clone(), b.clone()),
+                None => ClassRel::Other,
             },
-            _ => Rel::Other,
+            _ => ClassRel::Other,
         }
     }
 
     /// The points a relation of `curve`'s direction reads: a line's two ends, an arc's or a
     /// circle's centre; none for anything else (an axis, or a curve the sketch hasn't).
-    pub(super) fn reads(&self, curve: &Reference) -> Option<Vec<Key>> {
+    fn reads(&self, curve: &Reference) -> Option<Vec<Key>> {
         let Reference::Element(id) = curve else {
             return None;
         };
@@ -411,61 +417,72 @@ impl Implied {
 
     /// Whether the classes already imply `rel` (Rule E), or it reads only values they hold
     /// fixed (Rule F): a relation the tool leaves out.
-    pub(super) fn implies(&self, rel: &Rel) -> bool {
+    pub(super) fn implies(&self, rel: &ClassRel) -> bool {
         match rel {
-            Rel::Same(axis, a, b) => {
-                let classes = self.classes(*axis);
+            ClassRel::Same(shared, a, b) => {
+                let classes = self.classes(*shared);
                 classes.same(a, b) || (classes.is_fixed(a) && classes.is_fixed(b))
             }
-            Rel::OnLine(p, line) => {
+            ClassRel::OnLine(p, line) => {
                 let Some((end, other)) = self.lines.get(line) else {
                     return false;
                 };
-                Axis::BOTH.into_iter().any(|axis| {
-                    self.classes(axis).same(end, other)
-                        && self.implies(&Rel::Same(axis, p.clone(), end.clone()))
+                Shared::BOTH.into_iter().any(|shared| {
+                    self.classes(shared).same(end, other)
+                        && self.implies(&ClassRel::Same(shared, p.clone(), end.clone()))
                 })
             }
-            Rel::Reads(keys) => {
+            ClassRel::Reads(keys) => {
                 !keys.is_empty()
                     && keys
                         .iter()
                         .all(|k| self.y.is_fixed(k) && self.x.is_fixed(k))
             }
-            Rel::Other => false,
+            ClassRel::Midpoint(..) | ClassRel::Other => false,
         }
     }
 
+    /// `rel`, a relation a tool infers, judged: whether it's kept (the classes don't already
+    /// imply it), merged into them if it is, so the gesture's next relation is judged with
+    /// it held.
+    pub(super) fn admit(&mut self, rel: &ClassRel) -> bool {
+        if self.implies(rel) {
+            return false;
+        }
+        self.merge(rel);
+        true
+    }
+
     /// `rel` held: merged into the classes, and what it lets through the lines joined.
-    pub(super) fn assert(&mut self, rel: &Rel) {
+    pub(super) fn merge(&mut self, rel: &ClassRel) {
         match rel {
-            Rel::Same(axis, a, b) => self.join(*axis, a.clone(), b.clone()),
-            Rel::OnLine(p, line) => {
+            ClassRel::Same(shared, a, b) => self.join(*shared, a.clone(), b.clone()),
+            ClassRel::OnLine(p, line) | ClassRel::Midpoint(p, line) => {
                 let Some((end, _)) = self.lines.get(line).cloned() else {
                     return;
                 };
                 #[cfg(test)]
                 super::infer::work::visit();
                 self.on.entry(line.clone()).or_default().push(p.clone());
-                for axis in Axis::BOTH {
-                    if self.flat(axis).contains(line) {
-                        self.join(axis, p.clone(), end.clone());
+                for shared in Shared::BOTH {
+                    if self.flat(shared).contains(line) {
+                        self.join(shared, p.clone(), end.clone());
                     }
                 }
             }
-            Rel::Reads(_) | Rel::Other => {}
+            ClassRel::Reads(_) | ClassRel::Other => {}
         }
     }
 
-    /// `a`'s and `b`'s classes in `axis` made one, and each join that lets through the
+    /// `a`'s and `b`'s classes in `shared` made one, and each join that lets through the
     /// lines: a line whose ends that puts in one class is taken up (each line once), and each
     /// point on it joined to it, and so on, until nothing more joins. Only the lines ending at
     /// a point of the smaller class are looked at, so each point's lines are looked at as
     /// often as its class at least doubles.
-    fn join(&mut self, axis: Axis, a: Key, b: Key) {
+    fn join(&mut self, shared: Shared, a: Key, b: Key) {
         let mut work = vec![(a, b)];
         while let Some((a, b)) = work.pop() {
-            let Some(moved) = self.classes_mut(axis).join(&a, &b) else {
+            let Some(moved) = self.classes_mut(shared).join(&a, &b) else {
                 continue;
             };
             let mut taken = Vec::new();
@@ -474,23 +491,23 @@ impl Implied {
                     #[cfg(test)]
                     super::infer::work::visit();
                     if let Some((e, f)) = self.lines.get(line)
-                        && !self.flat(axis).contains(line)
-                        && self.classes(axis).same(e, f)
+                        && !self.flat(shared).contains(line)
+                        && self.classes(shared).same(e, f)
                     {
                         taken.push(line.clone());
                     }
                 }
             }
             for line in taken {
-                work.extend(self.flatten(axis, &line));
+                work.extend(self.flatten(shared, &line));
             }
         }
     }
 
-    /// The line `line` held level (Y) or plumb (X) in `axis`, if it wasn't already: the
+    /// The line `line` held level (Y) or plumb (X) in `shared`, if it wasn't already: the
     /// joins each point on it then needs, to its first end.
-    fn flatten(&mut self, axis: Axis, line: &ElementId) -> Vec<(Key, Key)> {
-        if !self.flat_mut(axis).insert(line.clone()) {
+    fn flatten(&mut self, shared: Shared, line: &ElementId) -> Vec<(Key, Key)> {
+        if !self.flat_mut(shared).insert(line.clone()) {
             return Vec::new();
         }
         let Some((end, _)) = self.lines.get(line) else {
@@ -508,31 +525,31 @@ impl Implied {
             .collect()
     }
 
-    fn classes(&self, axis: Axis) -> &Classes {
-        match axis {
-            Axis::Level => &self.y,
-            Axis::Plumb => &self.x,
+    fn classes(&self, shared: Shared) -> &Classes {
+        match shared {
+            Shared::Y => &self.y,
+            Shared::X => &self.x,
         }
     }
 
-    fn classes_mut(&mut self, axis: Axis) -> &mut Classes {
-        match axis {
-            Axis::Level => &mut self.y,
-            Axis::Plumb => &mut self.x,
+    fn classes_mut(&mut self, shared: Shared) -> &mut Classes {
+        match shared {
+            Shared::Y => &mut self.y,
+            Shared::X => &mut self.x,
         }
     }
 
-    fn flat(&self, axis: Axis) -> &BTreeSet<ElementId> {
-        match axis {
-            Axis::Level => &self.flat_y,
-            Axis::Plumb => &self.flat_x,
+    fn flat(&self, shared: Shared) -> &BTreeSet<ElementId> {
+        match shared {
+            Shared::Y => &self.flat_y,
+            Shared::X => &self.flat_x,
         }
     }
 
-    fn flat_mut(&mut self, axis: Axis) -> &mut BTreeSet<ElementId> {
-        match axis {
-            Axis::Level => &mut self.flat_y,
-            Axis::Plumb => &mut self.flat_x,
+    fn flat_mut(&mut self, shared: Shared) -> &mut BTreeSet<ElementId> {
+        match shared {
+            Shared::Y => &mut self.flat_y,
+            Shared::X => &mut self.flat_x,
         }
     }
 }

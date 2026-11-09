@@ -588,7 +588,7 @@ impl Fixture {
         } else {
             &mut self.ids
         };
-        let outcome = tool.handle(&context, &read.states, ids, event.clone());
+        let outcome = tool.handle(&context, ids, event.clone());
         assert_eq!(outcome.message, None, "{event:?}");
         if let (Some(members), Some(token)) = (outcome.add, outcome.token) {
             let made = self.sketch_add(&members);
@@ -862,7 +862,7 @@ fn each_equal_horizontal_distance_after_the_first_is_offered() {
             construction: false,
             states: &read.states,
         };
-        tool.settle(&context, &read.states);
+        tool.settle(&context);
         assert_eq!(tool.busy(), n > 0, "{n}");
         assert_eq!(tool.open_offer().is_some(), n > 0, "{n}");
         tool.dismiss_offer();

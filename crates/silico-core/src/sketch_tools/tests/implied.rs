@@ -506,6 +506,32 @@ fn plumb(a: &str, b: &str) -> Form {
 }
 
 #[test]
+fn implied_by_keeps_a_midpoint_only_partly_implied_as_the_tools_do() {
+    // N (10, 0)-(50, 0) `on` the x axis at both ends, and (30, 0) `on` it too: all three in
+    // the origin's Y class. A `midpoint` of (30, 0) and N asserts its y, which the class
+    // holds, and its x, which nothing holds: only partly implied, so kept, as the Point tool
+    // keeps its `midpoint` at a line's middle (`a_point_at_the_middle_of_a_line_on_the_axis_is
+    // _its_midpoint_alone`), never left out.
+    let mut s = with_line(empty(), "n0000001", [10.0, 0.0], [50.0, 0.0]);
+    s.points.push(point("q0000001", 30.0, 0.0));
+    let s = constrained(
+        s,
+        vec![
+            on("f0000001", Reference::XAxis),
+            on("t0000001", Reference::XAxis),
+            on("q0000001", Reference::XAxis),
+        ],
+    );
+    let midpoint = Form::Midpoint {
+        point: el("q0000001"),
+        line: el("n0000001"),
+    };
+    assert!(!implied_by(&s, &fixing(&[]), &midpoint));
+    // Its y alone, as `horizontal_points` with an end, is implied: the class holds it.
+    assert!(implied_by(&s, &fixing(&[]), &level("q0000001", "f0000001")));
+}
+
+#[test]
 fn a_line_from_the_origin_up_the_y_axis_has_no_vertical() {
     // (0, 0), then (0, 40), then Enter: the start at the origin, level and plumb with it;
     // the end on the y axis, plumb with it. Both in the origin's X class, so the line's
@@ -676,6 +702,52 @@ fn a_driving_x_distance_of_zero_holds_two_points_plumb_and_no_other_does() {
         &distance(false, 0, false),
         &states,
         &plumb(a, b)
+    ));
+}
+
+#[test]
+fn a_tangent_at_between_two_arcs_is_not_implied_by_their_centres_alone() {
+    // Two arcs about (0, 0) and (20, 0), of radius 10, meeting at (10, 0): a `tangent_at` of
+    // the two there reads the point they meet at as well as their centres. With both centres
+    // fully defined and the point free, it asserts something no class holds, so it isn't
+    // implied (Rule F reads every point a relation reads); with the point fixed too, it is.
+    let mut s = empty();
+    for (name, x, y) in [
+        ("c0000001", 0.0, 0.0),
+        ("c0000002", 20.0, 0.0),
+        ("j0000001", 10.0, 0.0),
+        ("e0000001", 0.0, 10.0),
+        ("e0000002", 30.0, 0.0),
+    ] {
+        s.points.push(point(name, x, y));
+    }
+    for (name, center, start, end) in [
+        ("a0000001", "c0000001", "j0000001", "e0000001"),
+        ("a0000002", "c0000002", "e0000002", "j0000001"),
+    ] {
+        s.arcs.push(crate::document::SketchArc {
+            id: id(name),
+            center: id(center),
+            start: id(start),
+            end: id(end),
+            construction: false,
+        });
+    }
+    let tangent = Form::TangentAt {
+        a: el("a0000001"),
+        b: el("a0000002"),
+        at: el("j0000001"),
+        direction: crate::document::Direction::Opposite,
+    };
+    assert!(!implied_by(
+        &s,
+        &fixing(&["c0000001", "c0000002"]),
+        &tangent
+    ));
+    assert!(implied_by(
+        &s,
+        &fixing(&["c0000001", "c0000002", "j0000001"]),
+        &tangent
     ));
 }
 

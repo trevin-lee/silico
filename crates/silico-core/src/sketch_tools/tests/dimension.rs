@@ -56,9 +56,7 @@ impl Dim {
             construction: false,
             states: &self.states,
         };
-        let outcome = self
-            .tool
-            .handle(&context, &self.states, &mut self.ids, event);
+        let outcome = self.tool.handle(&context, &mut self.ids, event);
         if let Some(members) = &outcome.add {
             self.revision = self.revision.next().unwrap();
             self.tool.added(outcome.token.unwrap(), self.revision);
@@ -1704,17 +1702,17 @@ fn a_dimension_placed_before_a_read_shows_it_keeps_its_id_taken() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Lowest;
     let mut made = Vec::new();
     for (pick, place) in [([20.0, 10.0], [20.0, 20.0]), ([20.0, 40.0], [20.0, 50.0])] {
         for at in [pick, place] {
-            tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
-            tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+            tool.handle(&context, &mut ids, DimensionEvent::Press(at));
+            tool.handle(&context, &mut ids, DimensionEvent::Release(at));
         }
-        let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+        let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
         made.push(out.add.unwrap().constraints[0].id.clone());
         // No read of its revision comes: its offer dismissed, so the next is placed.
         tool.dismiss_offer();
@@ -1734,14 +1732,10 @@ fn another_sketch_starts_the_tool_afresh() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
-    d.tool.handle(
-        &context,
-        &under(),
-        &mut d.ids,
-        DimensionEvent::Move([50.0, 50.0]),
-    );
+    d.tool
+        .handle(&context, &mut d.ids, DimensionEvent::Move([50.0, 50.0]));
     assert!(d.tool.preview().picks.is_empty());
     assert!(!d.tool.busy());
 }
@@ -1796,15 +1790,15 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
-        tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+        tool.handle(&context, &mut ids, DimensionEvent::Press(at));
+        tool.handle(&context, &mut ids, DimensionEvent::Release(at));
     }
-    let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+    let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
     assert_eq!(out.message, None);
     assert_eq!(
         out.add.unwrap().constraints[0].form,
@@ -1818,16 +1812,11 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
     // dismissed, as no read of its revision comes.)
     tool.dismiss_offer();
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
-        tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+        tool.handle(&context, &mut ids, DimensionEvent::Press(at));
+        tool.handle(&context, &mut ids, DimensionEvent::Release(at));
     }
-    tool.handle(
-        &context,
-        &under(),
-        &mut ids,
-        DimensionEvent::Typed("0".to_owned()),
-    );
-    let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Enter);
+    tool.handle(&context, &mut ids, DimensionEvent::Typed("0".to_owned()));
+    let out = tool.handle(&context, &mut ids, DimensionEvent::Enter);
     assert_eq!(out.add, None);
     let Some(Message::ValueRefused(error)) = out.message else {
         panic!("{out:?}");
@@ -2794,14 +2783,10 @@ fn another_sketch_forgets_the_placement() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
-    d.tool.handle(
-        &context,
-        &under(),
-        &mut d.ids,
-        DimensionEvent::Move([50.0, 50.0]),
-    );
+    d.tool
+        .handle(&context, &mut d.ids, DimensionEvent::Move([50.0, 50.0]));
     assert_eq!(d.tool.placement(), None);
 }
 
@@ -2891,9 +2876,9 @@ fn settle_takes_a_read_with_no_event() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
-    let out = d.tool.settle(&context, &under());
+    let out = d.tool.settle(&context);
     assert_eq!(out, Outcome::default());
     assert!(!d.tool.busy());
     d.click(20.0, 10.0).click(15.0, 15.0).click(25.0, 13.0);
@@ -2906,9 +2891,9 @@ fn settle_takes_a_read_with_no_event() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
-    let out = d.tool.settle(&context, &under());
+    let out = d.tool.settle(&context);
     assert_eq!(out.message, Some(Message::DimensionChanged));
     assert_eq!(out.add, None);
     assert_eq!(d.tool.preview().modify, None);
@@ -3133,13 +3118,12 @@ fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
-    let mut send = |tool: &mut SmartDimension, event: DimensionEvent| {
-        tool.handle(&context, &under(), &mut ids, event)
-    };
+    let mut send =
+        |tool: &mut SmartDimension, event: DimensionEvent| tool.handle(&context, &mut ids, event);
     for at in [[20.0, 10.0], [20.0, 30.0]] {
         send(&mut tool, DimensionEvent::Press(at));
         send(&mut tool, DimensionEvent::Release(at));
@@ -3233,17 +3217,17 @@ fn a_placement_not_yet_answered_holds_the_next() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
     let click = |tool: &mut SmartDimension, ids: &mut Counter, at: [f64; 2]| {
-        tool.handle(&context, &under(), ids, DimensionEvent::Press(at));
-        tool.handle(&context, &under(), ids, DimensionEvent::Release(at))
+        tool.handle(&context, ids, DimensionEvent::Press(at));
+        tool.handle(&context, ids, DimensionEvent::Release(at))
     };
     click(&mut tool, &mut ids, [20.0, 10.0]);
     click(&mut tool, &mut ids, [20.0, 30.0]);
-    let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+    let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
     assert!(out.add.is_some());
     click(&mut tool, &mut ids, [15.0, 15.0]);
     let out = click(&mut tool, &mut ids, [30.0, 30.0]);
@@ -3325,15 +3309,15 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
-            states: no_states(),
+            states: &under(),
         };
         let mut tool = SmartDimension::new();
         let mut ids = Counter(0);
         for at in [[20.0, 10.0], [20.0, 30.0]] {
-            tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
-            tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+            tool.handle(&context, &mut ids, DimensionEvent::Press(at));
+            tool.handle(&context, &mut ids, DimensionEvent::Release(at));
         }
-        let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+        let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
         let members = out.add.unwrap();
         let k = members.constraints[0].id.clone();
         tool.added(out.token.unwrap(), three);
@@ -3347,9 +3331,9 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
-            states: no_states(),
+            states: &states,
         };
-        tool.settle(&context, &states);
+        tool.settle(&context);
         let placement = tool.placement().unwrap();
         assert_eq!(placement.read, one, "{state:?}");
         assert_eq!(placement.revision, three, "{state:?}");
@@ -3529,14 +3513,14 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
     let mut tool = SmartDimension::new();
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(&context, &under(), &mut d.ids, DimensionEvent::Press(at));
-        tool.handle(&context, &under(), &mut d.ids, DimensionEvent::Release(at));
+        tool.handle(&context, &mut d.ids, DimensionEvent::Press(at));
+        tool.handle(&context, &mut d.ids, DimensionEvent::Release(at));
     }
-    let out = tool.handle(&context, &under(), &mut d.ids, DimensionEvent::Escape);
+    let out = tool.handle(&context, &mut d.ids, DimensionEvent::Escape);
     let token = out.token.unwrap();
     let k = out.add.unwrap().constraints[0].id.clone();
     assert_eq!(tool.placement(), None);

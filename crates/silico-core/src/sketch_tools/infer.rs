@@ -33,7 +33,7 @@ use silico_protocol::{LENGTH_TOLERANCE, arc_from_points};
 use super::geometry::{
     add, angle_between, cross, distance, dot, left, scale, sub, to_segment, unit,
 };
-use super::implied::{Axis, Implied, Key, Rel, ViewClasses};
+use super::implied::{Implied, Key, ViewClasses};
 use super::{Relation, Shown, Xy};
 use crate::document::sketch_edit::{Geo, Members, crossings, lies_along};
 use crate::document::{Direction, ElementId, Form, Reference, Sketch};
@@ -360,34 +360,6 @@ impl Placed {
         placed
     }
 
-    /// Its relations merged into `implied`, the point it places known by `key`: the classes a
-    /// gesture's later relations are judged against.
-    pub(super) fn assert_into(&self, implied: &mut Implied, key: &Key) {
-        let mut rels = match &self.target {
-            Target::Shared(_) | Target::Free => Vec::new(),
-            Target::Origin => vec![
-                Rel::Same(Axis::Level, key.clone(), Key::Origin),
-                Rel::Same(Axis::Plumb, key.clone(), Key::Origin),
-            ],
-            Target::Midpoint(line, ons) => {
-                let mut rels = vec![Rel::OnLine(key.clone(), line.clone())];
-                rels.extend(ons.iter().map(|on| implied.on(key.clone(), on)));
-                rels
-            }
-            Target::On(curve) => vec![implied.on(key.clone(), curve)],
-            Target::Crossing(a, b) => vec![implied.on(key.clone(), a), implied.on(key.clone(), b)],
-        };
-        if let Some(q) = &self.level_with {
-            rels.push(Rel::Same(Axis::Level, key.clone(), Key::Point(q.clone())));
-        }
-        if let Some(q) = &self.above {
-            rels.push(Rel::Same(Axis::Plumb, key.clone(), Key::Point(q.clone())));
-        }
-        for rel in &rels {
-            implied.assert(rel);
-        }
-    }
-
     /// The relations a new point placed so keeps, `point` being its ID.
     pub(super) fn relations(&self, point: &ElementId) -> Vec<Form> {
         let p = || Reference::Element(point.clone());
@@ -495,6 +467,39 @@ pub(super) struct Pointer<'v, 's> {
     pub(super) classes: &'v ViewClasses,
 }
 
+/// IDs for a gesture's point or line not named yet, none a point or curve of the view: what
+/// its relations are written with to be judged ([`Implied::rel`]), each of its points read
+/// as a [`Key::Fresh`] (its start's, its end's).
+pub(super) struct Unnamed {
+    pub(super) start: ElementId,
+    pub(super) end: ElementId,
+    pub(super) line: ElementId,
+}
+
+impl Unnamed {
+    /// The first three IDs of `zz000000`, `zz000001`, ... that `view` doesn't hold as a point
+    /// or a curve: none only if it holds all million (more than the gate takes).
+    pub(super) fn of(view: &View<'_>) -> Option<Unnamed> {
+        let mut free = (0u32..1_000_000)
+            .filter_map(|k| ElementId::new(&format!("zz{k:06}")))
+            .filter(|id| view.point(id).is_none() && !view.has_curve(id));
+        Some(Unnamed {
+            start: free.next()?,
+            end: free.next()?,
+            line: free.next()?,
+        })
+    }
+
+    /// The point `reference` names, the gesture's own as fresh.
+    pub(super) fn key(&self, reference: &Reference) -> Option<Key> {
+        match reference {
+            Reference::Element(id) if *id == self.start => Some(Key::Fresh(0)),
+            Reference::Element(id) if *id == self.end => Some(Key::Fresh(1)),
+            other => Key::of(other),
+        }
+    }
+}
+
 /// Where two curves near the pointer cross: how far from it, the place, whether one of the
 /// two is an axis, and the pair, in [`Reference`]'s order.
 struct Crossing {
@@ -591,21 +596,28 @@ impl Pointer<'_, '_> {
     /// and each `on` kept merged before the next: an `on` of the x axis at the middle of a
     /// level line along it, or of a line level with it, goes.
     fn ons_not_implied(&self, line: &ElementId, ons: Vec<Reference>) -> Vec<Reference> {
-        if ons.is_empty() {
+        let Some(unnamed) = Unnamed::of(self.view).filter(|_| !ons.is_empty()) else {
             return ons;
-        }
+        };
+        let key = |reference: &Reference| unnamed.key(reference);
         let mut implied = self.implied().clone();
-        let point = Key::Fresh(0);
-        implied.assert(&Rel::OnLine(point.clone(), line.clone()));
-        let mut kept = Vec::new();
-        for curve in ons {
-            let rel = implied.on(point.clone(), &curve);
-            if !implied.implies(&rel) {
-                implied.assert(&rel);
-                kept.push(curve);
-            }
-        }
-        kept
+        let point = Reference::Element(unnamed.start.clone());
+        let midpoint = Form::Midpoint {
+            point: point.clone(),
+            line: Reference::Element(line.clone()),
+        };
+        let midpoint = implied.rel(&midpoint, &key);
+        implied.merge(&midpoint);
+        ons.into_iter()
+            .filter(|curve| {
+                let on = Form::On {
+                    point: point.clone(),
+                    curve: curve.clone(),
+                };
+                let rel = implied.rel(&on, &key);
+                implied.admit(&rel)
+            })
+            .collect()
     }
 
     /// What a click at `at` picks to dimension (Smart Dimension): a point of the sketch

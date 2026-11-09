@@ -7,8 +7,7 @@
 
 use super::build::Builder;
 use super::geometry::distance;
-use super::implied::{Axis, Key, Rel};
-use super::infer::{Align, Along, Placed, Pointer, View, along, one_place, onto};
+use super::infer::{Align, Along, Placed, Pointer, Unnamed, View, along, one_place, onto};
 use super::{
     Event, MeasureKind, Message, Outcome, Preview, PreviewMeasure, Shown, Step, Xy, within_reach,
 };
@@ -301,58 +300,54 @@ fn end_of(step: &Step<'_, '_, '_>, start: &Start, at: Xy) -> End {
 }
 
 /// Of `along`, in order, the directions the sketch doesn't already fix (#278's G as amended,
-/// [`Implied`]): the classes seeded from the view, then the start's relations (a new
-/// start's) and the end's (a new end's), then each direction judged (Rule E for horizontal
-/// and vertical, Rule F for tangent, perpendicular, and parallel), each kept merged before
-/// the next. So the preview and the add, which both take a segment's end from here, show and
-/// add the same.
+/// [`Implied`](super::implied::Implied)): the view's classes, copied, with the start's
+/// relations (a new start's) and the end's (a new end's) merged, then the segment, then each
+/// direction's form judged (Rule E for horizontal and vertical, Rule F for tangent,
+/// perpendicular, and parallel), each kept merged before the next. The forms are the ones the
+/// add writes ([`Placed::relations`], [`Along::form`]), the gesture's members named by
+/// [`Unnamed`] till it has IDs. So the preview and the add, which both take a segment's end
+/// from here, show and add the same.
 fn not_implied(
     pointer: &Pointer<'_, '_>,
     start: &Start,
     end: &Placed,
     along: Vec<Along>,
 ) -> Vec<Along> {
-    if along.is_empty() {
+    let Some(unnamed) = Unnamed::of(pointer.view).filter(|_| !along.is_empty()) else {
         return along;
-    }
+    };
+    let key = |reference: &Reference| unnamed.key(reference);
     let mut implied = pointer.implied().clone();
-    let a = match start {
-        Start::Point(id, _) => Key::Point(id.clone()),
-        Start::New(placed) => {
-            let key = Key::Fresh(0);
-            placed.assert_into(&mut implied, &key);
-            key
+    let mut named = |placed: &Placed, id: &ElementId| {
+        for form in placed.relations(id) {
+            let rel = implied.rel(&form, &key);
+            implied.merge(&rel);
         }
+        id.clone()
     };
-    let b = match end.shared() {
-        Some(id) => Key::Point(id.clone()),
-        None => {
-            let key = Key::Fresh(1);
-            end.assert_into(&mut implied, &key);
-            key
-        }
+    let start_id = match start {
+        Start::Point(id, _) => id.clone(),
+        Start::New(placed) => named(placed, &unnamed.start),
     };
-    let mut kept = Vec::new();
-    for direction in along {
-        let rel = match &direction {
-            Along::Horizontal => Rel::Same(Axis::Level, a.clone(), b.clone()),
-            Along::Vertical => Rel::Same(Axis::Plumb, a.clone(), b.clone()),
-            Along::Tangent(curve) | Along::Perpendicular(curve) | Along::Parallel(curve) => {
-                match implied.reads(&Reference::Element(curve.clone())) {
-                    Some(mut keys) => {
-                        keys.extend([a.clone(), b.clone()]);
-                        Rel::Reads(keys)
-                    }
-                    None => Rel::Other,
-                }
-            }
-        };
-        if !implied.implies(&rel) {
-            implied.assert(&rel);
-            kept.push(direction);
-        }
-    }
-    kept
+    let end_id = match end.shared() {
+        Some(id) => id.clone(),
+        None => named(end, &unnamed.end),
+    };
+    let ends = (
+        key(&Reference::Element(start_id.clone())),
+        key(&Reference::Element(end_id)),
+    );
+    let (Some(a), Some(b)) = ends else {
+        return along;
+    };
+    implied.line(&unnamed.line, a, b);
+    along
+        .into_iter()
+        .filter(|direction| {
+            let rel = implied.rel(&direction.form(&unnamed.line, &start_id), &key);
+            implied.admit(&rel)
+        })
+        .collect()
 }
 
 /// The segment from `start` to the pointer at `at`: its members, its end's ID and place,

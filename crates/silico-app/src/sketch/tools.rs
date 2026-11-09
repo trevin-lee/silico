@@ -309,7 +309,7 @@ impl Tools {
         let Some(Active::Dimension(tool)) = &mut self.active else {
             return;
         };
-        let outcome = tool.settle(&input.context(), &input.read.states);
+        let outcome = tool.settle(&input.context());
         self.dimension_took(outcome);
     }
 
@@ -330,12 +330,7 @@ impl Tools {
         if matches!(event, DimensionEvent::Typed(_)) {
             self.said = None;
         }
-        let outcome = tool.handle(
-            &input.context(),
-            &input.read.states,
-            self.ids.as_mut(),
-            event,
-        );
+        let outcome = tool.handle(&input.context(), self.ids.as_mut(), event);
         self.dimension_took(outcome);
     }
 
