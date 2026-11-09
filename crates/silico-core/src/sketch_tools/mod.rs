@@ -147,9 +147,11 @@ pub struct Context<'a> {
     /// construction either way, every other point not), and the relations inferred are the
     /// same. Smart Dimension, which adds no curve, doesn't read it.
     pub construction: bool,
-    /// The newest read's states: its points' (fully defined or not) are what a tool reads to
-    /// leave out an inferred relation the sketch already fixes (#278's G as amended,
-    /// `implied`). A sketch of free points has none to give: an empty read's are right.
+    /// The newest read's states: its points' (fully defined or not) are what a drawing tool
+    /// reads to leave out an inferred relation the sketch already fixes (#278's G as amended,
+    /// `implied`), and its constraints' and the sketch's are what Smart Dimension reads to
+    /// judge whether the dimension it placed over-defines the sketch, and so offers what it
+    /// may become (SD7). A sketch of free points has none to give: an empty read's are right.
     pub states: &'a SketchStates,
 }
 
