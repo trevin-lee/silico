@@ -5,8 +5,9 @@
 //! wait on a command there is counted.
 //!
 //! These are tests/app.rs's pure-UI helpers, made generic. They move here, and app.rs takes
-//! them from here, once the PRs open on app.rs have landed (a follow-up): until then app.rs
-//! keeps its own.
+//! them from here, by #441, once the PRs open on app.rs have landed: until then app.rs keeps
+//! its own, and a helper here that does otherwise than app.rs's has a name of its own
+//! (`click_as_a_person`, `SLICE_WAIT`), so the move is a delete.
 #![allow(dead_code)]
 
 use std::path::Path;
@@ -23,8 +24,11 @@ use silico_core::kernel::Clients;
 /// The app in a harness.
 pub type AppUi<P> = Harness<'static, App<P>>;
 
-/// Long enough for anything a real worker does on a loaded machine, a first start included.
-pub const WAIT: Duration = Duration::from_secs(120);
+/// Long enough for anything a real worker does on a loaded machine, a first start included:
+/// longer than app.rs's `WAIT` (60 s, for its fake kernel's answers), since here every
+/// answer is a real kernel's, sketch worker's, or STEP worker's, and every frame is drawn on
+/// lavapipe.
+pub const SLICE_WAIT: Duration = Duration::from_secs(120);
 
 /// One frame, on the marked thread.
 pub fn step<P: Clients + 'static>(h: &mut AppUi<P>) {
@@ -32,14 +36,14 @@ pub fn step<P: Clients + 'static>(h: &mut AppUi<P>) {
     h.step();
 }
 
-/// Frames stepped until `done` holds, within [`WAIT`].
+/// Frames stepped until `done` holds, within [`SLICE_WAIT`].
 #[track_caller]
 pub fn step_until<P: Clients + 'static>(
     h: &mut AppUi<P>,
     what: &str,
     done: impl Fn(&AppUi<P>) -> bool,
 ) {
-    let deadline = Instant::now() + WAIT;
+    let deadline = Instant::now() + SLICE_WAIT;
     loop {
         step(h);
         if done(h) {
@@ -68,13 +72,6 @@ pub fn everything<P: Clients + 'static>(h: &AppUi<P>) -> Vec<String> {
             node.label().or_else(|| node.value())
         })
         .collect()
-}
-
-/// Whether `pane` holds a node labelled `label` (a label's text, too).
-pub fn shows<P: Clients + 'static>(h: &AppUi<P>, pane: &str, label: &str) -> bool {
-    h.get_by_role_and_label(Role::Pane, pane)
-        .query_by_label(label)
-        .is_some()
 }
 
 /// Whether the window holds a node labelled `label`, anywhere.
@@ -138,30 +135,60 @@ pub fn open_export<P: Clients + 'static>(h: &mut AppUi<P>, title: &str) {
     step_until(h, "the export dialog", |h| anywhere(h, title));
 }
 
-/// The export dialog's field `label` emptied (its cursor at its end once focused, a
-/// Backspace for each character), then `text` typed at once.
-pub fn set_field<P: Clients + 'static>(h: &mut AppUi<P>, label: &str, text: &str) {
-    h.get_by_role_and_label(Role::TextInput, label).focus();
-    step(h);
-    let length = h
-        .get_by_role_and_label(Role::TextInput, label)
-        .value()
-        .unwrap()
-        .chars()
-        .count();
-    for _ in 0..length {
-        h.key_press(Key::Backspace);
+/// Where a text field is found: anywhere in the window, in the feature dialog, or in the
+/// node of `role` labelled `label` (the Modify box, say).
+#[derive(Debug, Clone, Copy)]
+pub enum In<'s> {
+    Window,
+    Dialog,
+    Node(Role, &'s str),
+}
+
+/// The text field labelled `label`, where `within` says.
+pub fn field<'a, P: Clients + 'static>(
+    h: &'a AppUi<P>,
+    within: In<'a>,
+    label: &'a str,
+) -> egui_kittest::Node<'a> {
+    match within {
+        In::Window => h.get_by_role_and_label(Role::TextInput, label),
+        In::Dialog => dialog(h).get_by_role_and_label(Role::TextInput, label),
+        In::Node(role, name) => h
+            .get_by_role_and_label(role, name)
+            .get_by_role_and_label(Role::TextInput, label),
+    }
+}
+
+/// The text field labelled `label` (where `within` says) typed over with `text`, as a person
+/// does it: focused if it isn't, then Home and a Delete for each character it holds, read
+/// from the field itself, in one frame, and `text` typed in; stepped until it reads `text`.
+pub fn type_over<P: Clients + 'static>(h: &mut AppUi<P>, within: In<'_>, label: &str, text: &str) {
+    if !field(h, within, label).is_focused() {
+        field(h, within, label).focus();
         step(h);
     }
-    h.get_by_role_and_label(Role::TextInput, label)
-        .type_text(text);
+    let held = field(h, within, label)
+        .value()
+        .unwrap_or_default()
+        .chars()
+        .count();
+    let key = |key| Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    h.input_mut().events.push(key(Key::Home));
+    for _ in 0..held {
+        h.input_mut().events.push(key(Key::Delete));
+    }
     step(h);
-    assert_eq!(
-        h.get_by_role_and_label(Role::TextInput, label)
-            .value()
-            .as_deref(),
-        Some(text)
-    );
+    field(h, within, label).type_text(text);
+    step(h);
+    step_until(h, "the field typed over", |h| {
+        field(h, within, label).value().as_deref() == Some(text)
+    });
 }
 
 /// The button `label` clicked, through the accessibility tree (a modal's layout moves as
@@ -233,20 +260,6 @@ pub fn choose<P: Clients + 'static>(h: &mut AppUi<P>, key: &str, option: &str) {
     step(h);
     step(h);
     assert!(chosen(h, key, option), "{option} not chosen in {key}");
-}
-
-/// The dialog's input `label` emptied of `old` (the cursor at its end, Backspace takes one
-/// character each) and `new` typed in, one keystroke a frame.
-pub fn retype<P: Clients + 'static>(h: &mut AppUi<P>, label: &str, old: &str, new: &str) {
-    input(h, label).focus();
-    step(h);
-    for _ in 0..old.len() {
-        h.key_press(Key::Backspace);
-        step(h);
-    }
-    input(h, label).type_text(new);
-    step(h);
-    assert_eq!(input(h, label).value().as_deref(), Some(new));
 }
 
 /// The dialog's checkbox labelled `label` clicked (dialog.rs's `Value::Toggle`, named as its
@@ -426,7 +439,7 @@ pub fn pause<P: Clients + 'static>(h: &mut AppUi<P>) {
 
 /// A left click at `at`, Ctrl (Cmd) held if `ctrl`, after a [`pause`]: the pointer moved
 /// there a frame, then its press one frame and its release the next.
-pub fn click_at<P: Clients + 'static>(h: &mut AppUi<P>, at: Pos2, ctrl: bool) {
+pub fn click_as_a_person<P: Clients + 'static>(h: &mut AppUi<P>, at: Pos2, ctrl: bool) {
     pause(h);
     let held = if ctrl {
         Modifiers::COMMAND

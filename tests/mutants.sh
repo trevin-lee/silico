@@ -96,7 +96,8 @@ tests_of() {
   for t in "$@"; do tests="${tests:+$tests | }test(=$t)"; done
   echo "package($package) & ($tests)"
 }
-# Left out of mutants and of the exploration alike: the wall clock's tests and the GiB ones.
+# Left out of mutants and of the exploration alike: the wall clock's tests, the GiB ones, and
+# the app's acceptance test.
 skipped="$(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}") | $(tests_of silico-render "${render_scale[@]}") | $(tests_of silico-app "${app_acceptance[@]}")"
 # The slow proptests, for mutants to leave out too and the exploration to run alone: empty
 # when there are none, as `package(p) & ()` is no filter.

@@ -722,7 +722,13 @@ pub struct Tab {
     /// The newest `timeline`, and the browser's rows worked out from it.
     pub timeline: Option<TimelineAnswer>,
     pub browser: Browser,
+    /// How many models had been seen published ([`published_models`](Self::published_models))
+    /// when the read `timeline` holds was asked: so its model is that one, or a newer one.
+    /// What a test reads, to know the timeline is of a model it saw published.
+    pub timeline_after: u64,
     timeline_read: Option<Running<TimelineAnswer>>,
+    /// `timeline_after` for the read out.
+    timeline_read_after: u64,
     /// Whether the timeline read out was cancelled by what the tab sent since
     /// ([`supersede_preview`](Self::supersede_preview)), until it answers: the rebuild it
     /// waited on, if it did, is stopped by that cancel, the tab's own, never by a stop.
@@ -997,7 +1003,9 @@ impl Tab {
             published_models: 0,
             timeline: None,
             browser: Browser::default(),
+            timeline_after: 0,
             timeline_read: None,
+            timeline_read_after: 0,
             timeline_superseded: false,
             timeline_asked: None,
             nothing_published: false,
@@ -1873,7 +1881,10 @@ impl Tab {
                     self.rebuild_out = false;
                     self.timeline_superseded = false;
                     match response.result {
-                        Ok(timeline) => self.took_timeline(timeline),
+                        Ok(timeline) => {
+                            self.timeline_after = self.timeline_read_after;
+                            self.took_timeline(timeline);
+                        }
                         Err(problems) => self.took_refusal(&problems),
                     }
                 }
@@ -3838,6 +3849,7 @@ impl Tab {
         self.timeline_asked = Some((self.revision, self.published));
         self.check_first = self.check_read.is_some();
         self.timeline_read = Some(sessions.timeline(&self.id, ModelChoice::Current));
+        self.timeline_read_after = self.published_models;
         self.timeline_superseded = false;
         self.rebuild_out = true;
         self.rebuilds += 1;
@@ -4015,6 +4027,7 @@ impl Tab {
         self.timeline_asked = Some(asked);
         self.check_first = self.check_read.is_some();
         self.timeline_read = Some(sessions.timeline(&self.id, model));
+        self.timeline_read_after = self.published_models;
     }
 
     /// Whether the timeline is read of the current model, as a dialog's preview: a dialog

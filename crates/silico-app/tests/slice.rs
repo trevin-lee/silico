@@ -43,8 +43,8 @@
 //!
 //! **Needs** the workers built beside the test (`cargo build --workspace --bins`, or
 //! `pixi run test`: `-p silico-app` alone builds none of them), lavapipe (pixi's), and the
-//! FreeCAD oracle (`pixi install -e oracle`). Its name holds "oracle" for nextest's longer
-//! limit (.config/nextest.toml).
+//! FreeCAD oracle (`pixi install -e oracle`). nextest gives it a longer limit by its name
+//! (.config/nextest.toml), which tests/mutants.sh also lists.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 // The bracket's features as the MCP session added them.
@@ -63,7 +63,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use eframe::egui::accesskit::Role;
-use eframe::egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect};
+use eframe::egui::{Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use serde_json::Value;
@@ -76,14 +76,9 @@ use silico_core::pool::KernelPool;
 use silico_core::sketch_states::{ConstraintState, SketchState};
 use silico_render::render::project;
 
-use hand::{
-    FILLET_R, HOLE, HOLE_R, PI, Sum, bracket, centred, chords, drilled, enclosed, legs, measured,
-    on_circle, rounding,
-};
-use threemf::{model, printable};
+use hand::{FILLET_R, HOLE_R, PI, bracket, centred, chords, measured};
+use threemf::model;
 use ui::*;
-
-type H = AppUi<KernelPool>;
 
 /// The export's tolerance: the dialog's default, FreeCAD's, the session's.
 const TOLERANCE: f64 = 0.1;
@@ -95,7 +90,7 @@ const NAME: &str =
 
 /// Where the open sketch's place `at` (its millimetres) is on the screen, as the last frame's
 /// camera shows it: a read of the frame, the projection the renderer draws with.
-fn seen(h: &H, at: [f64; 2]) -> Pos2 {
+fn seen(h: &AppUi<KernelPool>, at: [f64; 2]) -> Pos2 {
     let read = sketch_mode(h).unwrap().drawable().unwrap();
     let screen = Screen::of(read, frame(h).unwrap()).unwrap();
     screen.project(at).unwrap()
@@ -104,8 +99,8 @@ fn seen(h: &H, at: [f64; 2]) -> Pos2 {
 /// The rectangles of what the app draws over the canvas: in sketch mode the sketch bar and
 /// the Sketch Palette, each by its own bounds in the tree; and the ViewCube and the
 /// navigation bar, each by the bounds of what it holds (their groups have none of their
-/// own: finding N2's other half). A click there is theirs.
-fn overlays(h: &H) -> Vec<(&'static str, Rect)> {
+/// own yet). A click there is theirs.
+fn overlays(h: &AppUi<KernelPool>) -> Vec<(&'static str, Rect)> {
     let mut found = Vec::new();
     for (role, label) in [
         (Role::Toolbar, "Sketch bar"),
@@ -139,7 +134,7 @@ fn overlays(h: &H) -> Vec<(&'static str, Rect)> {
 
 /// The canvas less what the overlays take from its sides: each overlay taken off the side
 /// it stands on, the one that leaves the most room.
-fn free(h: &H) -> Rect {
+fn free(h: &AppUi<KernelPool>) -> Rect {
     let mut room = frame(h).unwrap().rect;
     for (_, o) in overlays(h) {
         let cuts = [
@@ -161,7 +156,7 @@ fn free(h: &H) -> Rect {
 
 /// Whether the screen place `at` is on the canvas, a margin of `room` points clear of its
 /// edges and of every overlay.
-fn clear(h: &H, at: Pos2, room: f32) -> bool {
+fn clear(h: &AppUi<KernelPool>, at: Pos2, room: f32) -> bool {
     let canvas = frame(h).unwrap().rect.shrink(room);
     canvas.contains(at)
         && overlays(h)
@@ -173,7 +168,7 @@ fn clear(h: &H, at: Pos2, room: f32) -> bool {
 /// and clear of the overlays: the canvas dragged with the middle button, from the middle of
 /// the room the overlays leave, so the places' middle comes there; then the wheel, a notch at
 /// a time there, zooming out while any is under something. How many notches it took.
-fn clear_view(h: &mut H, places: &[[f64; 2]]) -> u32 {
+fn clear_view(h: &mut AppUi<KernelPool>, places: &[[f64; 2]]) -> u32 {
     let lo = places
         .iter()
         .fold([f64::INFINITY; 2], |m, p| [m[0].min(p[0]), m[1].min(p[1])]);
@@ -201,8 +196,8 @@ fn clear_view(h: &mut H, places: &[[f64; 2]]) -> u32 {
 }
 
 /// Frames stepped until the viewport's camera has stayed the same over two of them.
-fn settle_frame(h: &mut H) {
-    let camera = |h: &H| frame(h).map(|f| (f.camera.clone(), f.rect));
+fn settle_frame(h: &mut AppUi<KernelPool>) {
+    let camera = |h: &AppUi<KernelPool>| frame(h).map(|f| (f.camera.clone(), f.rect));
     let last = std::cell::RefCell::new(camera(h));
     step_until(h, "the view still", |h| {
         let now = camera(h);
@@ -213,9 +208,9 @@ fn settle_frame(h: &mut H) {
 
 /// A standard view chosen by its key, Command and `key` (Command+1, Front), and stepped
 /// until the frame shows it: looking along `looking` (Front along +Y).
-fn standard_view(h: &mut H, key: Key, looking: [f64; 3]) {
+fn standard_view(h: &mut AppUi<KernelPool>, key: Key, looking: [f64; 3]) {
     h.key_press_modifiers(Modifiers::COMMAND, key);
-    let along = |h: &H| {
+    let along = |h: &AppUi<KernelPool>| {
         frame(h).is_some_and(|f| {
             let d: [f64; 3] = std::array::from_fn(|k| f.camera.target[k] - f.camera.eye[k]);
             let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
@@ -229,20 +224,24 @@ fn standard_view(h: &mut H, key: Key, looking: [f64; 3]) {
 }
 
 /// A click at the open sketch's place `at`, where the frame shows it, clear of the overlays.
-fn sketch_click(h: &mut H, at: [f64; 2]) {
+fn sketch_click(h: &mut AppUi<KernelPool>, at: [f64; 2]) {
     let place = seen(h, at);
     assert!(
         clear(h, place, 4.0),
         "{at:?} at {place:?}, under {:?}",
         overlays(h)
     );
-    click_at(h, place, false);
+    click_as_a_person(h, place, false);
 }
 
 /// Stepped until sketch mode's newest read holds what `holds` asks of its members; failing,
 /// saying what the read holds.
-fn read_until(h: &mut H, what: &str, holds: impl Fn(&silico_core::document::Sketch) -> bool) {
-    let deadline = Instant::now() + WAIT;
+fn read_until(
+    h: &mut AppUi<KernelPool>,
+    what: &str,
+    holds: impl Fn(&silico_core::document::Sketch) -> bool,
+) {
+    let deadline = Instant::now() + SLICE_WAIT;
     loop {
         step(h);
         let read = sketch_mode(h).and_then(|mode| mode.drawable());
@@ -272,7 +271,7 @@ fn read_until(h: &mut H, what: &str, holds: impl Fn(&silico_core::document::Sket
 }
 
 /// The Modify box's field.
-fn modify_field(h: &H) -> Option<egui_kittest::Node<'_>> {
+fn modify_field(h: &AppUi<KernelPool>) -> Option<egui_kittest::Node<'_>> {
     h.query_by_role_and_label(Role::Dialog, "Modify dimension")
         .and_then(|d| d.query_by_label("Value in millimetres"))
 }
@@ -281,38 +280,26 @@ fn modify_field(h: &H) -> Option<egui_kittest::Node<'_>> {
 /// once open, typed over with `value` (Home, a Delete for each character it holds, then the
 /// value), and Enter; stepped until the read has `constraints` constraints, and checked
 /// that no over-define prompt opened.
-fn dimension(h: &mut H, pick: &[[f64; 2]], place: [f64; 2], value: &str, constraints: usize) {
+fn dimension(
+    h: &mut AppUi<KernelPool>,
+    pick: &[[f64; 2]],
+    place: [f64; 2],
+    value: &str,
+    constraints: usize,
+) {
     for at in pick {
         sketch_click(h, *at);
     }
     sketch_click(h, place);
-    // Open, holding the keyboard as it opens, in every sketch (N4's fix): nothing clicked.
+    // Open, holding the keyboard as it opens, in every sketch (#425): nothing clicked.
     step_until(h, "the Modify box open, holding the keyboard", |h| {
         modify_field(h).is_some_and(|field| field.is_focused())
     });
-    let held = modify_field(h)
-        .unwrap()
-        .value()
-        .unwrap_or_default()
-        .chars()
-        .count();
-    let key = |key| Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: Modifiers::NONE,
-    };
-    h.input_mut().events.push(key(Key::Home));
-    for _ in 0..held {
-        h.input_mut().events.push(key(Key::Delete));
-    }
-    modify_field(h).unwrap().type_text(value);
-    step(h);
-    step(h);
-    assert_eq!(
-        modify_field(h).and_then(|f| f.value()).as_deref(),
-        Some(value)
+    type_over(
+        h,
+        In::Node(Role::Dialog, "Modify dimension"),
+        "Value in millimetres",
+        value,
     );
     h.key_press(Key::Enter);
     step(h);
@@ -326,8 +313,8 @@ fn dimension(h: &mut H, pick: &[[f64; 2]], place: [f64; 2], value: &str, constra
     for _ in 0..3 {
         step(h);
     }
-    // G5's risk: the solve's diagnosis flags a relation the tools inferred, and the tool
-    // offers to undo a dimension that over-defines nothing.
+    // The risk #431 fixed: the solve's diagnosis flags a relation the tools inferred, and
+    // the tool offers to undo a dimension that over-defines nothing.
     let offer = sketch_mode(h).unwrap().offer().is_some();
     assert!(
         prompt(h).is_none() && !offer,
@@ -339,8 +326,29 @@ fn dimension(h: &mut H, pick: &[[f64; 2]], place: [f64; 2], value: &str, constra
     );
 }
 
+/// The open sketch's members, as its newest read holds them.
+fn members(h: &AppUi<KernelPool>) -> &silico_core::document::Sketch {
+    &sketch_mode(h).unwrap().drawable().unwrap().members
+}
+
+/// How many relations the tools inferred drawing the open sketch, `what`, recorded with
+/// their forms and what the solve's diagnosis flags.
+fn drawn(h: &AppUi<KernelPool>, what: &str) -> usize {
+    let forms: Vec<&str> = members(h)
+        .constraints
+        .iter()
+        .map(|c| c.form.type_name())
+        .collect();
+    record(&format!(
+        "{what}, drawn: {} relations inferred: {forms:?}; flagged: {:?}",
+        forms.len(),
+        flagged(h)
+    ));
+    forms.len()
+}
+
 /// The newest read's constraints that its diagnosis flags, by their form's type.
-fn flagged(h: &H) -> Vec<(String, ConstraintState)> {
+fn flagged(h: &AppUi<KernelPool>) -> Vec<(String, ConstraintState)> {
     let read = sketch_mode(h).unwrap().drawable().unwrap();
     read.states
         .constraints
@@ -358,8 +366,32 @@ fn flagged(h: &H) -> Vec<(String, ConstraintState)> {
         .collect()
 }
 
-/// The open sketch fully defined, with no freedom left: its read's state, and the palette's.
-fn fully_defined(h: &mut H) {
+/// The words of the Sketch Palette's Status beside its dot: the first text under its STATUS
+/// heading, above its TOOL heading (the palette's Colours legend lists every state's words,
+/// "Fully defined" always among them, so the palette as a whole says nothing of the state).
+fn palette_status(h: &AppUi<KernelPool>) -> String {
+    let palette = h.get_by_role_and_label(Role::Group, "Sketch Palette");
+    let top = palette.get_by_label("STATUS").rect().max.y;
+    let bottom = palette.get_by_label("TOOL").rect().min.y;
+    let mut under: Vec<(f32, String)> = palette
+        .query_all_by_role(Role::Label)
+        .filter_map(|node| {
+            let text = node.accesskit_node().value()?;
+            let y = node.rect().min.y;
+            (y >= top && y < bottom).then(|| (y, text.to_string()))
+        })
+        .collect();
+    under.sort_by(|a, b| a.0.total_cmp(&b.0));
+    under
+        .into_iter()
+        .next()
+        .map(|(_, label)| label)
+        .unwrap_or_default()
+}
+
+/// The open sketch fully defined, with no freedom left: its read's state, and the palette's
+/// Status.
+fn fully_defined(h: &mut AppUi<KernelPool>) {
     step_until(h, "fully defined", |h| {
         sketch_mode(h)
             .and_then(|mode| mode.drawable())
@@ -368,11 +400,20 @@ fn fully_defined(h: &mut H) {
             })
     });
     step(h);
+    assert_eq!(palette_status(h), "Fully defined");
+}
+
+/// The open sketch, drawn and not yet dimensioned, under defined: the palette's Status says
+/// so, with the freedoms its read leaves.
+fn under_defined(h: &mut AppUi<KernelPool>) {
+    step(h);
+    let dofs = sketch_mode(h)
+        .and_then(|mode| mode.drawable())
+        .map(|read| read.states.dofs);
+    let status = palette_status(h);
     assert!(
-        h.get_by_role_and_label(Role::Group, "Sketch Palette")
-            .query_all_by_label("Fully defined")
-            .count()
-            >= 1
+        status.starts_with("Under defined ·") && dofs.is_some_and(|d| d > 0),
+        "{status:?}, {dofs:?} freedoms"
     );
 }
 
@@ -404,9 +445,18 @@ fn geometry(sketch: &silico_core::document::Sketch) -> Geometry {
 
 // --- The timeline ------------------------------------------------------------------------
 
-/// The timeline's entries, as the tab last read them: each ID, type, name, problems and
-/// warnings.
-fn entries(h: &H) -> Vec<(String, &'static str, String, u64, u64)> {
+/// A timeline entry, as the tab last read it.
+#[derive(Debug)]
+struct Entry {
+    id: String,
+    kind: &'static str,
+    name: String,
+    problems: u64,
+    warnings: u64,
+}
+
+/// The timeline's entries, as the tab last read them.
+fn entries(h: &AppUi<KernelPool>) -> Vec<Entry> {
     h.state().tabs()[0]
         .timeline
         .as_ref()
@@ -414,14 +464,12 @@ fn entries(h: &H) -> Vec<(String, &'static str, String, u64, u64)> {
         .map(|features| {
             features
                 .iter()
-                .map(|e| {
-                    (
-                        e.id.to_string(),
-                        e.kind,
-                        e.name.clone(),
-                        e.problems,
-                        e.warnings,
-                    )
+                .map(|e| Entry {
+                    id: e.id.to_string(),
+                    kind: e.kind,
+                    name: e.name.clone(),
+                    problems: e.problems,
+                    warnings: e.warnings,
                 })
                 .collect()
         })
@@ -429,37 +477,31 @@ fn entries(h: &H) -> Vec<(String, &'static str, String, u64, u64)> {
 }
 
 /// Every feature on the timeline built with no problem, and the document none: settled.
-fn healthy(h: &mut H, features: usize) {
+fn healthy(h: &mut AppUi<KernelPool>, features: usize) {
     settled(h);
     step_until(h, "every feature read", |h| entries(h).len() == features);
     let timeline = h.state().tabs()[0].timeline.as_ref().unwrap();
     assert_eq!(timeline.problems, 0);
-    for (id, kind, name, problems, _) in entries(h) {
-        assert_eq!(problems, 0, "{name} ({kind} {id})");
+    for e in entries(h) {
+        assert_eq!(e.problems, 0, "{} ({} {})", e.name, e.kind, e.id);
     }
 }
 
 /// The feature named `from` renamed `to` with F2 on the timeline, and Enter.
-fn rename(h: &mut H, from: &str, to: &str) {
-    let id = entries(h)
-        .into_iter()
-        .find(|(_, _, name, _, _)| name == from)
-        .unwrap()
-        .0;
+fn rename(h: &mut AppUi<KernelPool>, from: &str, to: &str) {
+    let id = entries(h).into_iter().find(|e| e.name == from).unwrap().id;
     f2_typed(h, from, to);
     h.key_press(Key::Enter);
     step_until(h, "renamed", |h| {
         h.state().tabs()[0].edits.idle()
-            && entries(h)
-                .iter()
-                .any(|(i, _, name, _, _)| *i == id && name == to)
+            && entries(h).iter().any(|e| e.id == id && e.name == to)
             && rename_field(h, to).is_none()
     });
     settled(h);
 }
 
 /// The browser's row `name` clicked.
-fn in_browser(h: &mut H, name: &str) {
+fn in_browser(h: &mut AppUi<KernelPool>, name: &str) {
     h.get_by_role_and_label(Role::Pane, "Browser")
         .get_by_label(name)
         .click();
@@ -468,7 +510,7 @@ fn in_browser(h: &mut H, name: &str) {
 }
 
 /// The dialog's OK clicked, and the dialog closed, everything answered.
-fn ok(h: &mut H) {
+fn ok(h: &mut AppUi<KernelPool>) {
     settled(h);
     assert!(ok_enabled(h));
     dialog(h).get_by_role_and_label(Role::Button, "OK").click();
@@ -478,7 +520,7 @@ fn ok(h: &mut H) {
 
 /// A sweep (Pad, Pocket) of the sketch named `sketch`: chosen in the browser, its dialog
 /// opened from CREATE, its add answered.
-fn sweep(h: &mut H, kind: &str, sketch: &str) {
+fn sweep(h: &mut AppUi<KernelPool>, kind: &str, sketch: &str) {
     in_browser(h, sketch);
     create(h, kind);
     added(h);
@@ -491,18 +533,10 @@ fn sweep(h: &mut H, kind: &str, sketch: &str) {
 /// formatted (`write`) by a core session of its own on the real kernel, as bracket.rs's
 /// timeline test does: the document they save, each solid's fingerprint stored.
 fn recorded(dir: &Path) -> Value {
-    use features::*;
     let dir = dir.join("recorded");
     std::fs::create_dir(&dir).unwrap();
     let path = dir.join("bracket.silico");
-    let text = format!(
-        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
-        [
-            S0000001, P0000001, S0000002, H0000001, S0000003, H0000002, F0000001
-        ]
-        .join(", ")
-    );
-    std::fs::write(&path, text).unwrap();
+    std::fs::write(&path, features::whole()).unwrap();
     let secret = dir.join("secret");
     let sessions = Sessions::with_cache_opener(KernelPool::start(), move |cache| {
         Cache::with_secret(cache, &secret)
@@ -552,17 +586,17 @@ fn stored(sketch: &Value) -> Geometry {
 
 /// A fingerprint against the hand: its volume, area and centre to the measure's bounds,
 /// its box and its counts exactly.
-fn by_hand(what: &str, fingerprint: &Value, hand: &Sum, area: f64, counts: [u64; 3]) {
+fn by_hand(what: &str, fingerprint: &Value, hand: &hand::Solid) {
     measured(
         &format!("{what}'s volume"),
         &fingerprint["volume"],
-        hand.volume,
+        hand.sum.volume,
     );
-    measured(&format!("{what}'s area"), &fingerprint["area"], area);
+    measured(&format!("{what}'s area"), &fingerprint["area"], hand.area);
     centred(
         &format!("{what}'s centre"),
         &fingerprint["center"],
-        hand.centre(),
+        hand.sum.centre(),
     );
     assert_eq!(
         fingerprint["bbox"],
@@ -570,7 +604,7 @@ fn by_hand(what: &str, fingerprint: &Value, hand: &Sum, area: f64, counts: [u64;
         "{what}"
     );
     let got = ["faces", "edges", "vertices"].map(|k| fingerprint[k].as_u64().unwrap());
-    assert_eq!(got, counts, "{what}'s faces, edges and vertices");
+    assert_eq!(got, hand.counts, "{what}'s faces, edges and vertices");
 }
 
 #[test]
@@ -590,7 +624,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         let state = lavapipe_render_state();
         let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
         let app = App::new(Arc::clone(&sessions)).presenting(Box::new(present));
-        let mut h: H = {
+        let mut h: AppUi<KernelPool> = {
             let _marked = never_waits::marked();
             Harness::builder()
                 .with_size((1280.0, 800.0))
@@ -652,26 +686,8 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         }
         read_until(h, "the L's six lines", |s| s.lines.len() == 6);
         settled(h);
-        let inferred = sketch_mode(h)
-            .unwrap()
-            .drawable()
-            .unwrap()
-            .members
-            .constraints
-            .len();
-        record(&format!(
-            "sketch 1, drawn: {inferred} relations inferred: {:?}; flagged: {:?}",
-            sketch_mode(h)
-                .unwrap()
-                .drawable()
-                .unwrap()
-                .members
-                .constraints
-                .iter()
-                .map(|c| c.form.type_name())
-                .collect::<Vec<_>>(),
-            flagged(h)
-        ));
+        let inferred = drawn(h, "sketch 1");
+        under_defined(h);
         // D, Smart Dimension: each line picked, its length placed beside it, typed.
         h.key_press(Key::D);
         step(h);
@@ -679,7 +695,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
             dimension(h, &[*pick], *place, value, inferred + k + 1);
         }
         fully_defined(h);
-        let read = sketch_mode(h).unwrap().drawable().unwrap().members.clone();
+        let read = members(h).clone();
         let (points, _) = geometry(&read);
         let mut spec = corners.to_vec();
         spec.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -691,21 +707,21 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
             .unwrap()
             .id
             .clone();
-        // #278's G as amended (G5): the L's inferred relations hold nothing twice, so no
+        // #278's G as amended (#431): the L's inferred relations hold nothing twice, so no
         // constraint is flagged and the sketch has no `constraints_redundant` warning; and
         // no offer opened for any of its dimensions (`dimension`'s check).
         let flags = flagged(h);
         assert!(flags.is_empty(), "sketch 1 flags {flags:?}");
         leave_sketch(h, true);
         healthy(h, 1);
-        let warnings: u64 = entries(h).iter().map(|e| e.4).sum();
+        let warnings: u64 = entries(h).iter().map(|e| e.warnings).sum();
         assert_eq!(warnings, 0, "sketch 1's warnings: {:?}", entries(h));
         rename(h, "Sketch1", "Bracket profile");
         phase("sketch 1");
 
         // --- The pad: Length 40, Reversed (+Y: XZ's normal is −Y).
         sweep(h, "Pad", "Bracket profile");
-        retype(h, "Length", "10", "40");
+        type_over(h, In::Dialog, "Length", "40");
         tick(h, "Reversed");
         ok(h);
         healthy(h, 2);
@@ -787,19 +803,15 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         meshes_settled(h);
         standard_view(h, Key::Num7, [-1.0, 1.0, -1.0]);
         meshes_settled(h);
-        let pad = entries(h)
-            .into_iter()
-            .find(|(_, kind, _, _, _)| *kind == "pad")
-            .unwrap()
-            .0;
+        let pad = entries(h).into_iter().find(|e| e.kind == "pad").unwrap().id;
         let corner = format!("{pad}.pad.Edge(G {s1}.sketch.Vertex.{corner_point})");
-        let screen_of = |h: &H, p: [f64; 3]| {
+        let screen_of = |h: &AppUi<KernelPool>, p: [f64; 3]| {
             let frame = frame(h).unwrap();
             let px = project(&frame.camera, frame.size_px, p).unwrap();
             let ppp = frame.pixels_per_point;
             frame.rect.min + eframe::egui::vec2(px[0] as f32 / ppp, px[1] as f32 / ppp)
         };
-        // The inside corner, a concave edge, clicked at its middle (N5, fixed by #424: each
+        // The inside corner, a concave edge, clicked at its middle (pickable since #424: each
         // edge is drawn again for picking 2 pixels of depth toward the eye, so the faces it
         // joins, rising toward the eye from it, no longer hide it), and the click answered.
         let before = selected_names(h);
@@ -809,7 +821,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
             "the corner at {at:?}, under {:?}",
             overlays(h)
         );
-        click_at(h, at, false);
+        click_as_a_person(h, at, false);
         step_until(h, "the click on the corner answered", |h| {
             selected_names(h) != before
         });
@@ -826,33 +838,55 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         modify(h, "Fillet");
         added(h);
         assert_eq!(boxed(h), [corner.as_str()]);
-        retype(h, "Radius", "1", "5");
+        type_over(h, In::Dialog, "Radius", "5");
         ok(h);
         healthy(h, 7);
         rename(h, "Fillet", "Inside corner");
         phase("the fillet");
 
-        // --- Saved as bracket.silico (the typed Save As: the harness has no native
-        // dialogs), then Rebuild everything (Command+Shift+B): every step built anew from
-        // the stored, nanometre-rounded coordinates, with no problem, so no drift.
+        // --- Saved as bracket.silico in the test's folder (the typed Save As: the harness
+        // has no native dialogs), then Rebuild everything (Command+Shift+B): every step
+        // built anew from the stored, nanometre-rounded coordinates. Its verdict read whole:
+        // the model it built published (another, though of the same revision), its check's
+        // answer taken, with nothing to say of any feature (no problem, no warning, so no
+        // drift) or of the document; then the timeline read of that model, every feature
+        // built with no problem and no warning.
         let path = dir.join("bracket.silico");
         save_as_of(h, "Untitled", &path);
         settled(h);
         assert!(path.is_file());
+        let models = h.state().tabs()[0].published_models;
         h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
         step_until(h, "rebuilt everything", |h| {
             let tab = &h.state().tabs()[0];
-            tab.rebuilds_all == 1 && tab.can_rebuild_all()
+            tab.rebuilds_all == 1 && tab.can_rebuild_all() && tab.published_models > models
         });
+        let rebuilt = h.state().tabs()[0].published_models;
+        step_until(h, "the timeline of the model rebuilt", |h| {
+            h.state().tabs()[0].timeline_after >= rebuilt
+        });
+        let tab = &h.state().tabs()[0];
+        assert!(
+            tab.said.is_empty(),
+            "Rebuild everything's check: {:?}",
+            tab.said
+        );
+        assert!(
+            tab.document_problems.is_empty(),
+            "Rebuild everything's check: {:?}",
+            tab.document_problems
+        );
         healthy(h, 7);
-        assert!(h.state().tabs()[0].document_problems.is_empty());
+        for e in entries(h) {
+            assert_eq!(e.warnings, 0, "{} ({} {})", e.name, e.kind, e.id);
+        }
         meshes_settled(h);
         phase("save and rebuild everything");
 
         // --- Exported through the dialog: a 3MF at its default, 0.1 mm, beside the
         // document; a STEP; and a STEP to bracket.stp.
         let title = "Export bracket.silico";
-        let exported = |h: &mut H, file: &Path| {
+        let exported = |h: &mut AppUi<KernelPool>, file: &Path| {
             press(h, "Export");
             step_until(h, "exported", |h| !anywhere(h, title) && file.is_file());
             settled(h);
@@ -872,7 +906,12 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         phase("the STEP's export");
         open_export(h, title);
         press(h, "STEP");
-        set_field(h, "Path", dir.join("bracket.stp").to_str().unwrap());
+        type_over(
+            h,
+            In::Window,
+            "Path",
+            dir.join("bracket.stp").to_str().unwrap(),
+        );
         exported(h, &dir.join("bracket.stp"));
         phase("the .stp's export");
         let built = started.elapsed();
@@ -892,6 +931,10 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         for (k, (a, b)) in ours.iter().zip(&theirs).enumerate() {
             assert_eq!(a["type"], b["type"], "solid {k}");
             assert_eq!(a["name"], b["name"], "solid {k}");
+            // What each was asked for: the pad's length and the pockets' through all, each
+            // reversed; the fillet's radius.
+            assert_eq!(a["extent"], b["extent"], "{}'s extent", a["name"]);
+            assert_eq!(a["radius"], b["radius"], "{}'s radius", a["name"]);
             let (fa, fb) = (&a["fingerprint"], &b["fingerprint"]);
             for field in [
                 "volume", "area", "center", "bbox", "faces", "edges", "vertices",
@@ -900,30 +943,15 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
             }
             assert_eq!(fa, fb, "{}", a["name"]);
         }
-        // --- And by hand. The legs: 60 · 40 · 5 + 5 · 40 · 45 = 21,000 mm³; 2 · 525 +
-        // 220 · 40 = 9,850 mm²; the L-prism's 8 faces, 18 edges, 12 vertices.
-        // The base's holes: two cylinders of 37.8125π less; each takes two discs of
-        // π · 2.75² and adds a wall of 2π · 2.75 · 5, 12.375π more; each hole a wall, two
-        // rims and a seam, two vertices on the seam.
-        // The upright's: as many again. The fillet: the spandrel, (1 − π/4) · 5² · 40, more;
-        // 5 · 40 from each leg's inner face less and a quarter cylinder, 100π, more, each end
-        // face gaining 25(1 − π/4): 9,500 + 137π; a face for the corner's edge, its two lines
-        // and two arcs for the edge, four vertices for its two.
-        let mut base = legs(40.0);
-        for y in [12.0, 28.0] {
-            base.add(-HOLE, [40.0, y, 2.5]);
-        }
-        let hands: [(&Sum, f64, [u64; 3]); 4] = [
-            (&legs(40.0), 9850.0, [8, 18, 12]),
-            (&base, 9850.0 + 24.75 * PI, [10, 24, 16]),
-            (&drilled(), 9850.0 + 49.5 * PI, [12, 30, 20]),
-            (&bracket(), 9500.0 + 137.0 * PI, [13, 33, 22]),
-        ];
-        assert!((bracket().volume - (22000.0 - 401.25 * PI)).abs() < 1e-9);
-        for (k, (hand, area, counts)) in hands.iter().enumerate() {
+        // --- And by hand, each of the four ([`hand::solids`], shared with bracket.rs, each
+        // derivation there): the legs; the base's holes pocketed; the upright's too; the
+        // inside corner filleted.
+        let hands = hand::solids();
+        assert!((hands[3].sum.volume - (22000.0 - 401.25 * PI)).abs() < 1e-9);
+        for (k, hand) in hands.iter().enumerate() {
             for (whose, solid) in [("the app's", ours[k]), ("the session's", theirs[k])] {
                 let what = format!("{whose} {}", solid["name"]);
-                by_hand(&what, &solid["fingerprint"], hand, *area, *counts);
+                by_hand(&what, &solid["fingerprint"], hand);
             }
         }
         // --- The sketches: each stores the session's points and radii, exactly.
@@ -935,6 +963,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         };
         let (our_sketches, their_sketches) = (sketches(&saved), sketches(&reference));
         assert_eq!(our_sketches.len(), 3);
+        assert_eq!(their_sketches.len(), 3);
         for (a, b) in our_sketches.iter().zip(&their_sketches) {
             assert_eq!(a["name"], b["name"]);
             assert_eq!(a["plane"], b["plane"], "{}", a["name"]);
@@ -952,53 +981,24 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         assert_eq!(fillet["radius"], 5);
         assert_eq!(fillet["base"], ours[2]["id"]);
 
-        // --- The 3MF, as bracket.rs checks it: one object, the bracket, printable; meshed
-        // at 0.1 mm, each rim 126 chords and each fillet arc 32 (OCCT's rule by hand), so
-        // 8 · 126 + 2 · 33 + 2 · 5 = 1,084 vertices and, closed and of genus 4, 2 · 1,084 + 12
-        // = 2,180 triangles; its box the part's exactly; and its volume the part's and its
-        // chords' segments', within the 32-bit rounding.
+        // --- The 3MF, as bracket.rs checks it ([`hand::the_bracket_s_mesh`]): one object,
+        // the bracket, printable; meshed at 0.1 mm, each rim 126 chords and each fillet arc
+        // 32 (OCCT's rule by hand), so 8 · 126 + 2 · 33 + 2 · 5 = 1,084 vertices and, closed
+        // and of genus 4, 2 · 1,084 + 12 = 2,180 triangles; its box the part's exactly; and
+        // its volume the part's and its chords' segments', within the 32-bit rounding.
         let archive = std::fs::read(dir.join("bracket.3mf")).unwrap();
         let meshes = model(&archive);
         assert_eq!(meshes.len(), 1, "one object, the bracket's");
         let mesh = &meshes[0];
         assert_eq!(mesh.name, "Inside corner");
-        let mesh_volume = printable(mesh);
-        let rim = chords(2.0 * PI, HOLE_R, TOLERANCE);
-        let arc = chords(PI / 2.0, FILLET_R, TOLERANCE);
-        assert_eq!((rim, arc), (126, 32));
-        let any = |_: &[f64; 3]| true;
-        for y in [12.0, 28.0] {
-            for at in [0.0, 5.0] {
-                let v = &mesh.vertices;
-                assert_eq!(on_circle(v, 2, at, [40.0, y, at], HOLE_R, any), rim);
-                assert_eq!(on_circle(v, 0, at, [at, y, 35.0], HOLE_R, any), rim);
-            }
-        }
-        let inside = |v: &[f64; 3]| v[0] <= 10.0 && v[2] <= 10.0;
-        for y in [0.0, 40.0] {
-            assert_eq!(
-                on_circle(&mesh.vertices, 1, y, [10.0, y, 10.0], FILLET_R, inside),
-                arc + 1
-            );
-        }
-        let vertices = 8 * rim + 2 * (arc + 1) + 2 * 5;
-        assert_eq!(mesh.vertices.len(), vertices);
-        assert_eq!(mesh.triangles.len(), 2 * vertices + 12);
-        let mut low = [f64::INFINITY; 3];
-        let mut high = [f64::NEG_INFINITY; 3];
-        for p in &mesh.vertices {
-            for i in 0..3 {
-                low[i] = low[i].min(p[i]);
-                high[i] = high[i].max(p[i]);
-            }
-        }
-        assert_eq!((low, high), ([0.0; 3], [60.0, 40.0, 50.0]));
-        let volume = 22000.0 - 401.25 * PI;
-        let enclosed = enclosed(volume, rim, arc);
-        assert!(
-            (mesh_volume - enclosed).abs() <= rounding(),
-            "the mesh encloses {mesh_volume} mm³; by hand {enclosed}"
+        let (rim, arc) = (
+            chords(2.0 * PI, HOLE_R, TOLERANCE),
+            chords(PI / 2.0, FILLET_R, TOLERANCE),
         );
+        assert_eq!((rim, arc), (126, 32));
+        hand::the_bracket_s_mesh(mesh, TOLERANCE);
+        assert_eq!((mesh.vertices.len(), mesh.triangles.len()), (1084, 2180));
+        let volume = 22000.0 - 401.25 * PI;
 
         // --- The STEP, read back by FreeCAD as silico-oracle's STEP tests read theirs:
         // `Part.read`, its volume and area the bracket's by hand within the measure's bound
@@ -1083,7 +1083,7 @@ struct Holes {
 /// says, to fully defined; its geometry checked against the spec's, and what the solve's
 /// diagnosis flags, returned to record.
 fn sketch_holes(
-    h: &mut H,
+    h: &mut AppUi<KernelPool>,
     centres: [[f64; 2]; 2],
     along: [f64; 2],
     holes: Holes,
@@ -1105,25 +1105,8 @@ fn sketch_holes(
         read_until(h, "the circle", |s| s.circles.len() == k + 1);
         settled(h);
     }
-    let inferred = sketch_mode(h)
-        .unwrap()
-        .drawable()
-        .unwrap()
-        .members
-        .constraints
-        .len();
-    record(&format!(
-        "drawn: {:?}",
-        sketch_mode(h)
-            .unwrap()
-            .drawable()
-            .unwrap()
-            .members
-            .constraints
-            .iter()
-            .map(|c| c.form.type_name())
-            .collect::<Vec<_>>()
-    ));
+    let inferred = drawn(h, "a sketch of holes");
+    under_defined(h);
     h.key_press(Key::D);
     step(h);
     let mut count = inferred;
@@ -1138,7 +1121,7 @@ fn sketch_holes(
     count += 1;
     dimension(h, &centres, holes.between.0, holes.between.1, count);
     fully_defined(h);
-    let read = sketch_mode(h).unwrap().drawable().unwrap().members.clone();
+    let read = members(h).clone();
     let (points, circles) = geometry(&read);
     let mut spec = centres.to_vec();
     spec.sort_by(|a, b| a.partial_cmp(b).unwrap());
