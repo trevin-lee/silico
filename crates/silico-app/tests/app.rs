@@ -26383,6 +26383,12 @@ fn a_selected_face_edge_and_vertex_show_their_kind_their_measures_and_their_name
             .query_by_role_and_label(Role::Button, "Fillet")
             .is_some();
         assert_eq!(fillet, name.starts_with("Edge"), "{name}");
+        // Sketch on this face for a planar face alone (each of the block's is one).
+        let sketch_on = h
+            .get_by_role_and_label(Role::Pane, "Properties")
+            .query_by_role_and_label(Role::Button, "Sketch on this face")
+            .is_some();
+        assert_eq!(sketch_on, name.starts_with("Face"), "{name}");
         assert!(
             h.get_by_role_and_label(Role::Pane, "Properties")
                 .query_by_role_and_label(Role::Button, "Edit Block")
@@ -26493,6 +26499,22 @@ fn a_selected_rim_is_a_circle_edge_with_its_length_and_radius_and_its_wall_a_cyl
     assert_eq!(row_value(&h, "Axis").as_deref(), Some("(0, 0, 1)"));
     assert_eq!(row_value(&h, "Normal"), None);
     assert!(shows(&h, "Properties", "Cylindrical face · Pin"));
+    // A face, but no plane: nothing to sketch on.
+    assert!(
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .query_by_role_and_label(Role::Button, "Sketch on this face")
+            .is_none()
+    );
+    // Its top is one: π · 2.5² = 19.634… mm², facing +z.
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .pick("a91cw0de.cylinder.Face2", How::Replace);
+    row_until(&mut h, "Area", "19.63 mm²");
+    assert!(
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .query_by_role_and_label(Role::Button, "Sketch on this face")
+            .is_some()
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -26754,6 +26776,37 @@ fn one_element_waiting_on_a_feature_that_failed_says_so_in_its_measures_never_no
     );
     set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "40");
     row_until(&mut h, "Area", "800.00 mm²");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_on_this_face_creates_a_sketch_on_the_picked_face_by_the_name_it_holds() {
+    // The block's top selected, a plane facing +z: Sketch on this face adds an empty sketch
+    // on it, by the name the pick holds, its x +x (the attacher's default for a normal along
+    // z, filled in by the core), and opens sketch mode on it. Cancel leaves the document as
+    // it was. (Off while sketch mode can't open: the property panel's own test.)
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Sketch on this face")
+        .click();
+    step_until(&mut h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Sketch1"),
+        Some(empty_sketch(
+            "Sketch1",
+            r#"{"face": "k7f2qx3m.box.Face6", "x": "+x", "reversed": false}"#
+        ))
+    );
+    sketch_read(&mut h);
+    assert!(sketch_mode(&h).unwrap().plane_problem().is_none());
+    leave_sketch(&mut h, false);
+    assert_eq!(text_of(&f, &h), A_BOX);
     assert_eq!(never_waits::waits(), 0);
 }
 

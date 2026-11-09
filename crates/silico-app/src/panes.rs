@@ -406,6 +406,10 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 tab.open_dialog(sessions, crate::dialog::Kind::Fillet, self.remembered);
                 *self.started = true;
             }
+            Some(Viewed::SketchOn(face)) => {
+                tab.create_sketch_on_face(sessions, &face);
+                *self.started = true;
+            }
         }
     }
 
@@ -634,12 +638,14 @@ fn feature<P: Clients + 'static>(
 }
 
 /// What the selection view asked (`selectionProps`' link and buttons): a feature selected
-/// (Made by), its dialog opened (Edit), or Fillet started with the selection.
+/// (Made by), its dialog opened (Edit), Fillet started with the selection, or a sketch
+/// created on the planar face by this name (Sketch on this face).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Viewed {
     Select(FeatureId),
     Edit(FeatureId),
     Fillet,
+    SketchOn(String),
 }
 
 /// The selection's faces, edges, and vertices (`selectionProps`, M5.7): one element's view
@@ -672,13 +678,18 @@ const NOT_MEASURED: &str = "Not measured yet";
 /// for as long as that lasts, never "not measured yet" (its Stability card says why).
 const NOT_BUILT: &str = "Not measured: its feature didn't build";
 
+/// The planar face's button that creates a sketch on it (`selectionProps`' `sketchOnFace`).
+const SKETCH_ON_FACE: &str = "Sketch on this face";
+
 /// One element selected (`selectionProps`' first view): its head (its kind's icon, its
 /// number in its body's solid, and what it is, on which body); MEASURES, from its entry
 /// as `elements` lists it ([`measure_rows`]); NAME: its name as an agent writes it, with a
 /// copy button, the feature that made it, a link that selects it, and its stability, as
-/// [`stability`] says it; then Fillet for an edge (the toolbar's, with the selection) and
-/// Edit for its maker (Edit Feature's), and the hint.
+/// [`stability`] says it; then Sketch on this face for a planar face (Create Sketch on it,
+/// [`Tab::create_sketch_on_face`]), Fillet for an edge (the toolbar's, with the selection),
+/// and Edit for its maker (Edit Feature's), and the hint.
 fn one_selected(ui: &mut Ui, tab: &Tab, picked: &Picked, answers: &Answers) -> Option<Viewed> {
+    use silico_core::command::elements::ElementType;
     let found = picked.found();
     let kind = found.map(silico_core::selection::Selected::kind);
     let entry = answers
@@ -710,8 +721,18 @@ fn one_selected(ui: &mut Ui, tab: &Tab, picked: &Picked, answers: &Answers) -> O
         .map(|maker| format!("Edit {}", tab.name_of(maker)));
     let mut buttons = Vec::new();
     let mut acts = Vec::new();
-    // SEAM(#351): Sketch on this face, for a planar face (`selectionProps`' `sketchOnFace`),
-    // once sketch mode is in the app.
+    // A face `elements` says is a plane (`selectionProps`' `sketchOnFace`), by the name the
+    // pick holds: the core judges it again, and a refusal is said, sketch mode left.
+    if kind == Some(ElementKind::Face)
+        && entry.is_some_and(|entry| entry.r#type == ElementType::Plane)
+    {
+        buttons.push(
+            crate::modal::Button::new(SKETCH_ON_FACE, crate::modal::Kind::Secondary)
+                .icon(Icon::Sketch)
+                .enabled(tab.can_sketch()),
+        );
+        acts.push(Viewed::SketchOn(picked.name.clone()));
+    }
     if kind == Some(ElementKind::Edge) {
         buttons.push(
             crate::modal::Button::new("Fillet", crate::modal::Kind::Secondary)
@@ -4895,11 +4916,26 @@ mod property_panel_drawn {
         y = row_at(&h, "Made by", "Block", y, body(css::FS), css::INFO);
         assert!(h.query_by_role_and_label(Role::Link, "Block").is_some());
         y = row_at(&h, "Stability", "Stable", y, body(css::FS), css::GREEN);
-        // A face's one button, Edit Block (`.btn-ghost`, no fill), 10 under the rows.
+        // A planar face's buttons, 10 under the rows (app.js:582): Sketch on this face
+        // (`.btn-secondary`, Gray.300) first, then Edit Block (`.btn-ghost`, no fill), 6
+        // after it.
+        let sketch = h
+            .get_by_role_and_label(Role::Button, "Sketch on this face")
+            .rect();
+        at(
+            sketch.min,
+            Pos2::new(PANE.x + css::PAD, y + css::BUTTONS_PADDING),
+            "Sketch on this face",
+        );
+        assert!(near(sketch.height(), css::BTN_H));
+        assert_eq!(
+            fills_at(&h, sketch),
+            [(css::G300, CornerRadius::same(css::R_SM), Stroke::NONE)]
+        );
         let edit = h.get_by_role_and_label(Role::Button, "Edit Block").rect();
         at(
             edit.min,
-            Pos2::new(PANE.x + css::PAD, y + css::BUTTONS_PADDING),
+            Pos2::new(sketch.right() + css::BUTTONS_GAP, sketch.top()),
             "Edit Block",
         );
         assert!(near(edit.height(), css::BTN_H));
@@ -4924,6 +4960,19 @@ mod property_panel_drawn {
         h.get_by_role_and_label(Role::Button, "Copy").click();
         h.step();
         assert_eq!(copied(&h).as_deref(), Some("aaaaaaaa.box.Face5"));
+        // Sketch on this face on while sketch mode can open, and off while it can't
+        // (`Tab::can_sketch`): here, the document has a problem the gate found.
+        let sketch_off = |h: &Harness<'static, Shown>| {
+            h.get_by_role_and_label(Role::Button, "Sketch on this face")
+                .accesskit_node()
+                .is_disabled()
+        };
+        assert!(!sketch_off(&h));
+        let tab = h.state_mut().tab.as_mut().unwrap();
+        tab.timeline.as_mut().unwrap().problems = 1;
+        assert!(!tab.can_sketch());
+        h.run_steps(2);
+        assert!(sketch_off(&h));
     }
 
     #[test]
