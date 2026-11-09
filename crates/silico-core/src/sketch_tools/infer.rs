@@ -3,10 +3,10 @@
 //! would put a point, the point it would share or the relation it would leave there, the
 //! points it's level with or above, and the direction a line would take.
 //!
-//! The pointer looks, nearest first within each kind, ties in [`Reference`]'s order (the
-//! sketch's own curves by ID, then the axes: Silico's rule; among the sketch's own curves a
-//! tie goes by ID, the document's own order, and against the origin or an axis a tie never
-//! turns on an ID), in this order:
+//! The pointer looks, nearest first within each kind, ties in [`Reference`]'s order
+//! (Silico's rule): a curve of the sketch against the origin or an axis, the sketch's curve,
+//! never by an ID; among the sketch's own curves, by ID, the document's own order. In this
+//! order:
 //! 1. a point of the sketch, shared (D2), always, whatever the setting and Ctrl (#278's F);
 //! 2. with relations inferred: the origin (#278's A), then a line's middle (with an `on` of
 //!    each other curve through it exactly, #278's G, but an axis the line lies along: the
@@ -660,8 +660,8 @@ impl Pointer<'_, '_> {
     /// place (one place, as the kernel and [`crossings`] take it), the one whose pair has no
     /// axis, then the pair first in that order. So where curves of the sketch cross on an
     /// axis, which crosses them there too by other arithmetic, an ulp or so off, the point is
-    /// on the sketch's own two; among the sketch's own curves a tie goes by ID, the
-    /// document's own order, and against an axis a tie never turns on an ID.
+    /// on the sketch's own two. A sketch curve against the origin or an axis: the sketch
+    /// curve, never by an ID; among the sketch's own curves: by ID, the document's own order.
     fn crossing_near(&self, at: Xy, near: &[Near]) -> Option<(Xy, Reference, Reference)> {
         let mut nearest_first: Vec<&Near> = near.iter().collect();
         nearest_first.sort_by(|a, b| {
