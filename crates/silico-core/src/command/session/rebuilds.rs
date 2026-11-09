@@ -120,7 +120,8 @@ impl<C: Kernel + 'static> Rebuilds<C> {
     /// What `status` reports of `revision`'s rebuild, the session's, whose document the gate
     /// took if `gated`: [`state`](Self::state)'s, or, for a document the gate refused,
     /// `none`, but for an edit's candidate running, which is built whatever the document
-    /// held is. Its progress is left for the caller to read ([`Newest::of`]).
+    /// held is. Its progress is for the caller to read ([`Newest::of`]) before letting this
+    /// lock go, so no rebuild starts between the state and its count (`status_in`).
     pub(super) fn reported(&self, revision: Revision, gated: bool) -> Rebuild {
         if gated
             || self
@@ -203,8 +204,9 @@ impl<C: Kernel + 'static> Rebuilds<C> {
     }
 
     /// What's become of `revision`'s rebuild (`status`): an edit's candidate running counts
-    /// as `revision`'s, the session's revision until its save. Its progress is left for the
-    /// caller to read ([`Newest::of`]), once this lock is let go.
+    /// as `revision`'s, the session's revision until its save. Its progress is for the
+    /// caller to read ([`Newest::of`]) before letting this lock go, so no rebuild starts
+    /// between the state and its count (`status_in`).
     pub(super) fn state(&self, revision: Revision) -> Rebuild {
         let running = self
             .running

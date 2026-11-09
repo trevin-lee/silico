@@ -1078,8 +1078,10 @@ pub struct StepCount {
     pub features: FeatureStates,
     /// How long the recompute has run, on the monotonic clock: from its being asked for
     /// ([`Recompute::begin`], before its thread starts) to its count's end (its model
-    /// published, or its failure or stop), so far while it runs, and fixed once it ends. A
-    /// diagnostic, a clock, never a result (section 10).
+    /// published, or its failure), or to its stop (a cancel, a newer recompute, or its
+    /// engine's drop), though its thread may yet drain the requests it has running then;
+    /// so far while it runs, and fixed once it ends or stops. A diagnostic, a clock, never a
+    /// result (section 10).
     pub elapsed: Duration,
 }
 
@@ -1246,9 +1248,15 @@ enum Settled {
 struct Counted {
     count: StepCount,
     /// When the recompute was asked for, on the monotonic clock: when its counter was made
-    /// ([`Recompute::begin`]). `count.elapsed` is read from it while the count runs, and
-    /// fixed from it as the count ends.
+    /// ([`Recompute::begin`]). `count.elapsed` is read from it while the count runs, unless
+    /// it was stopped ([`stopped_after`](Self::stopped_after)), and fixed as the count ends.
     started: Instant,
+    /// How long after `started` it was stopped (cancelled, superseded by a newer recompute,
+    /// or its engine dropped), if it was: its clock's end, though its thread may still be
+    /// draining the requests it has running ([`StepCounter::stopped`]). `count.elapsed` is
+    /// this from then on, while the count runs; a stop after its end is recorded but never
+    /// read, the end having fixed its time.
+    stopped_after: Option<Duration>,
     /// Where each feature is listed in `count.features`, by its place in the document: none
     /// for a suppressed feature.
     slots: Vec<Option<usize>>,
@@ -1285,6 +1293,7 @@ impl Default for Counted {
         Counted {
             count: StepCount::default(),
             started: Instant::now(),
+            stopped_after: None,
             slots: Vec::new(),
             rounds: 0,
             labels: BTreeMap::new(),
@@ -1300,13 +1309,18 @@ impl Default for Counted {
 
 impl Counted {
     /// The count as it's read: its `elapsed` the time so far while it runs, fixed once it
-    /// has ended ([`StepCounter::ended`]).
+    /// has ended ([`StepCounter::ended`]) or stopped ([`StepCounter::stopped`]).
     fn read(&self) -> StepCount {
         let mut count = self.count.clone();
         if !count.ended {
-            count.elapsed = self.started.elapsed();
+            count.elapsed = self.clock();
         }
         count
+    }
+
+    /// How long the recompute has run: to its stop, if it was stopped, else so far.
+    fn clock(&self) -> Duration {
+        self.stopped_after.unwrap_or_else(|| self.started.elapsed())
     }
 }
 
@@ -1520,7 +1534,7 @@ impl StepCounter {
             if !finished {
                 counted.count.features.none_running();
             }
-            let elapsed = counted.started.elapsed();
+            let elapsed = counted.clock();
             let count = &mut counted.count;
             if finished {
                 count.done = count.steps;
@@ -1532,12 +1546,30 @@ impl StepCounter {
         // Told, not counted: the watcher tells the end once it's recorded.
         self.0.1.notify_all();
     }
+
+    /// The recompute was stopped (cancelled, superseded by a newer one, or its engine
+    /// dropped): its clock ends now, though its thread may yet drain the requests it has
+    /// running, so a stopped recompute's time never runs on beside `status`'s `stopped`, or
+    /// its `done` when the revision keeps the model it had. Of one stopped already, it
+    /// changes nothing (its first stop stands); of one that has ended, nothing either, its
+    /// end having fixed its time ([`read`](Counted::read) and [`ended`](Self::ended) read
+    /// the stop only while it runs).
+    fn stopped(&self) {
+        let mut counted = lock(&self.0.0);
+        if counted.stopped_after.is_none() {
+            counted.stopped_after = Some(counted.started.elapsed());
+        }
+    }
 }
 
 impl Counted {
     /// The step `key` of `plan` settled as `outcome` says ([`StepCounter::settled`]).
     fn settle(&mut self, key: Key, outcome: Settled, plan: &Plan) {
-        if self.settled.insert(key) {
+        // A superseded step isn't settled (built, failed, kept, or never to run): the next
+        // rebuild resumes it. So a step a stopped recompute drains to its supersede isn't
+        // counted (one that made its result, or was found never to run, as the stop came,
+        // still is).
+        if outcome != Settled::Superseded && self.settled.insert(key) {
             self.count.done = self.settled.len().min(self.count.steps);
         }
         if outcome != Settled::Unrun {
@@ -2023,6 +2055,10 @@ struct EngineState {
     generation: Generation,
     /// The newest recompute's generation, whether or not it was cancelled since.
     newest_started: Generation,
+    /// The newest recompute's count, whose clock a cancel, a newer recompute, or the
+    /// engine's drop stops ([`StepCounter::stopped`]); kept after its run ends (a stop then
+    /// changes nothing); none before the first.
+    newest_progress: Option<StepCounter>,
     /// Whether the newest recompute was cancelled when no newer generation was left to
     /// supersede it with: it publishes nothing.
     cancelled: bool,
@@ -2246,6 +2282,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                 state: Mutex::new(EngineState {
                     generation,
                     newest_started: generation,
+                    newest_progress: None,
                     cancelled: false,
                     dropped: false,
                     results: BTreeMap::new(),
@@ -2341,7 +2378,7 @@ impl<K: Kernel + 'static> Recompute<K> {
         // Its clock starts here, as it's asked for, before its thread starts.
         let progress = StepCounter::default();
         progress.listing(&document);
-        let (generation, later) = {
+        let (generation, later, older) = {
             let mut state = lock(&self.engine.state);
             let newest = state.generation.0.max(self.engine.kernel.generation().0);
             let Some(next) = newest.checked_add(1) else {
@@ -2356,9 +2393,17 @@ impl<K: Kernel + 'static> Recompute<K> {
             state.generation = Generation(next);
             state.newest_started = Generation(next);
             state.cancelled = false;
+            let older = state.newest_progress.replace(progress.clone());
             let later = state.stop_older_solve(Generation(next));
-            (state.generation, later)
+            (state.generation, later, older)
         };
+        // The one this supersedes stopped, its clock with it: after the engine's lock, as a
+        // count another thread shares is never locked under it. Should its thread see the
+        // newer generation and end first, its own end has fixed its time, and this changes
+        // nothing.
+        if let Some(older) = older {
+            older.stopped();
+        }
         if let Some((after, number)) = later {
             Engine::stop_later(&self.engine, after, number);
         }
@@ -2431,6 +2476,7 @@ impl<K: Kernel + 'static> Recompute<K> {
     /// may be ending).
     fn supersede(&self, at_once: bool) {
         let mut state = lock(&self.engine.state);
+        let newest = state.newest_progress.clone();
         let next = state.generation.0.checked_add(1);
         let later = match next {
             Some(next) => {
@@ -2451,6 +2497,10 @@ impl<K: Kernel + 'static> Recompute<K> {
             }
         };
         drop(state);
+        // Its clock stopped with it (after the engine's lock, as in `begin`).
+        if let Some(newest) = newest {
+            newest.stopped();
+        }
         if let Some((after, number)) = later {
             Engine::stop_later(&self.engine, after, number);
         }
@@ -6220,6 +6270,114 @@ mod tests {
         )
     }
 
+    /// Spins until `gap` has passed since `from` on the test's own monotonic clock: time let
+    /// pass, never slept.
+    fn spin_past(from: Instant, gap: Duration) {
+        while from.elapsed() < gap {
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn a_stopped_counts_clock_ends_at_its_stop_and_its_end_keeps_that_time() {
+        // Stopped: its clock read at its stop from then on, though it hasn't ended, between
+        // what the test's clock measures before its making and just after the stop; stopped
+        // again, nothing changes; ended, its time is its stop's.
+        let before = Instant::now();
+        let counter = StepCounter::default();
+        let made = Instant::now();
+        spin_past(made, Duration::from_millis(5));
+        counter.stopped();
+        let after = before.elapsed();
+        let at_stop = counter.now();
+        assert!(!at_stop.ended);
+        assert!(at_stop.elapsed >= Duration::from_millis(5));
+        assert!(
+            at_stop.elapsed <= after,
+            "{:?} past {after:?}",
+            at_stop.elapsed
+        );
+        spin_past(Instant::now(), Duration::from_millis(20));
+        counter.stopped();
+        assert_eq!(counter.now().elapsed, at_stop.elapsed);
+        counter.ended(false);
+        let ended = counter.now();
+        assert!(ended.ended);
+        assert_eq!(ended.elapsed, at_stop.elapsed);
+        // Ended first: a stop after its end leaves the time its end fixed.
+        let finished = StepCounter::default();
+        finished.ended(true);
+        let end = finished.now().elapsed;
+        spin_past(Instant::now(), Duration::from_millis(20));
+        finished.stopped();
+        assert_eq!(finished.now().elapsed, end);
+    }
+
+    #[test]
+    fn a_superseded_or_cancelled_runs_clock_ends_as_it_stops_though_its_step_is_still_held() {
+        // A run held at its box past its supersede (as the pool lets a running request go on
+        // for its grace): superseded by a newer run, then, another time, cancelled. Each
+        // one's clock ends as it's stopped, though its box is still held and its count
+        // hasn't ended: at most what the test's clock measures from before its start to just
+        // after the stop; read again 20 ms on, the same; and its count's end, once the box is
+        // let go, keeps it, its `done` as it was at the stop (the drained box isn't settled).
+        let wait = Duration::from_secs(60);
+        let block = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
+        let checked = |text: &str| {
+            Arc::new(Checked::new(crate::document::read(text.as_bytes()).unwrap()).unwrap())
+        };
+        for superseded in [true, false] {
+            let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+            let hold = engine.kernel().hold_past_supersede(|op| {
+                matches!(op, crate::kernel::Op::MakePrimitive(Primitive::Box { .. }))
+            });
+            let before = Instant::now();
+            let first = engine.start(checked(block));
+            assert!(engine.kernel().wait_running(1, wait));
+            spin_past(before, Duration::from_millis(5));
+            let newer = superseded.then(|| {
+                engine.start(checked(
+                    &block.replace(r#""length": 40"#, r#""length": 41"#),
+                ))
+            });
+            if !superseded {
+                engine.cancel();
+            }
+            let after = before.elapsed();
+            let progress = first.progress();
+            let at_stop = progress.now();
+            assert!(
+                !at_stop.ended,
+                "superseded {superseded}: its box is still held"
+            );
+            assert!(
+                at_stop.elapsed <= after,
+                "{:?} past {after:?}",
+                at_stop.elapsed
+            );
+            spin_past(Instant::now(), Duration::from_millis(20));
+            assert_eq!(progress.now().elapsed, at_stop.elapsed);
+            hold.release();
+            assert!(matches!(
+                first.wait_timeout(wait),
+                Ok(Ok(RunOutcome::Superseded))
+            ));
+            let ended = progress.now();
+            assert!(ended.ended);
+            assert_eq!(
+                (ended.elapsed, ended.done),
+                (at_stop.elapsed, at_stop.done),
+                "superseded {superseded}: its end kept its stop's time and done"
+            );
+            if let Some(newer) = newer {
+                assert!(matches!(
+                    newer.wait_timeout(wait),
+                    Ok(Ok(RunOutcome::Published(_)))
+                ));
+            }
+        }
+    }
+
     #[test]
     fn a_step_counts_change_is_waited_for_and_nothing_else_ends_the_wait() {
         // `changed_since`: a waiter returns once the count changes (a plan, a step's or a
@@ -6289,11 +6447,6 @@ mod tests {
     fn a_counts_clock_runs_from_its_making_and_is_fixed_at_its_end() {
         // Bounds by the test's own monotonic clock, read around the counter's making and
         // each reading; time let pass by spinning on that clock, never by a sleep.
-        let spin_past = |from: Instant, gap: Duration| {
-            while from.elapsed() < gap {
-                std::thread::yield_now();
-            }
-        };
         let before = Instant::now();
         let counter = StepCounter::default();
         let made = Instant::now();

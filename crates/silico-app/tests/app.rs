@@ -2275,11 +2275,23 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
     step_until(&mut h, "the timeline read", |h| {
         shows(h, "Timeline", "Hole")
     });
-    // Idle again: the frame asked for is a disk comparison's interval away.
-    for _ in 0..5 {
+    // Idle again once the reads the timeline's answer started (its check, the published
+    // model's) have answered, each asking the frame after it, in as many frames as a loaded
+    // machine takes: the wakes settle within the deadline (an endless round of reads never
+    // does), and then every frame no wake explains asks for a disk comparison's interval,
+    // never the display's rate.
+    quiet_wakes(&mut h);
+    step_until(&mut h, "idle again", |h| idle(delay(h)));
+    for _ in 0..10 {
+        let woken = h.state().wakes();
         step(&mut h);
+        std::thread::sleep(Duration::from_millis(2));
+        assert!(
+            idle(delay(&h)) || h.state().wakes() != woken,
+            "{:?}",
+            delay(&h)
+        );
     }
-    assert!(idle(delay(&h)), "{:?}", delay(&h));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -10302,6 +10314,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     hovered: Vec::new(),
                     outlines: silico_app::renderer::Outlines::DEFAULT,
                     picking: None,
+                    edges: true,
                     vertices: None,
                 };
                 assert!(ViewRenderer::prepare(renderer, &data.frame()).is_ok());
@@ -23834,6 +23847,16 @@ fn mid_drag_undo_and_redo_are_off_and_their_keys_send_nothing_and_once_it_ends_b
     step_until(&mut h, "both offered", |h| {
         offered(h, "Undo") && offered(h, "Redo")
     });
+    // A drag begins only from a read of the state the session is at, and the undo's read is
+    // sent once its rebuild publishes and answered off the UI thread, which may be frames
+    // after both are offered: so it's waited for, frame by frame, before the press.
+    step_until(&mut h, "the read of the undo's revision", |h| {
+        let tab = &h.state().tabs()[0];
+        sketch_mode(h)
+            .and_then(|mode| mode.read.as_ref())
+            .and_then(|read| read.model)
+            == Some(tab.revision)
+    });
     // The second corner, back at (10, 10), pressed and dragged: neither is offered, by
     // button or key, while the drag is under way.
     sketch_events(
@@ -28337,6 +28360,33 @@ fn a_box_cancelled_by_the_focus_going_selects_nothing() {
     h.event(Event::WindowFocused(true));
     box_release(&mut h, left_high, Modifiers::NONE);
     assert_eq!(selected_names(&h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_edge_and_vertex_filters_reach_the_frames_the_viewport_draws() {
+    use eframe::egui::Key;
+    // Each frame the viewport hands the renderer picks edges (drawing each near its square
+    // again toward the eye, N5) and vertices (in discs 7 points across) as the filter takes
+    // them: both as it starts; E, no edges; V, no vertices either; E again, edges.
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    let last = |h: &mut AppHarness| {
+        step(h);
+        step(h);
+        let told = record.lock().unwrap();
+        let frame = told.frames.last().unwrap();
+        (frame.edges, frame.vertices)
+    };
+    assert_eq!(last(&mut h), (true, Some(7.0)));
+    for (key, want) in [
+        (Key::E, (false, Some(7.0))),
+        (Key::V, (false, None)),
+        (Key::E, (true, None)),
+    ] {
+        h.key_press(key);
+        assert_eq!(last(&mut h), want, "{key:?}");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 
