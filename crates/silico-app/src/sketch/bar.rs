@@ -1,9 +1,10 @@
 //! Sketch mode's own panels in the canvas, as the approved prototype lays them out
 //! (docs/design/m5-ui/, `js/sketch.js`'s `renderCanvasUI` and `statusText`): the sketch bar at
 //! the canvas's top (the sketch, its plane, its state, Cancel, and Finish Sketch), the
-//! Sketch Palette at its right, and what the status bar says of the sketch. Each is laid
-//! out by a small function of its own, given what it shows and giving back what was asked,
-//! apart from sketch mode's state and actions.
+//! Sketch Palette at its right, what the status bar says of the sketch, and the canvas's
+//! right-click menu (drawn as every menu is, `crate::menu`). Each is laid out by a small
+//! function of its own, given what it shows and giving back what was asked, apart from
+//! sketch mode's state and actions.
 
 use eframe::egui::{
     self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2,

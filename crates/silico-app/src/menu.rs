@@ -1,8 +1,10 @@
 //! A menu's lines as the approved prototype draws them (docs/design/m5-ui: styles.css's
 //! `.menu`, `.menu .mi`, `.menu .mh`, `.menu .msep`; app.js's `renderFloating`, which every
 //! menu of the prototype goes through): one way to draw them, which every menu the app draws
-//! over the window takes, a feature's (`crate::feature_menu`) and the canvas's
-//! (`crate::canvas_menu`, `crate::select_other`), so their widths and their look can't part.
+//! over the window takes, a feature's (`crate::feature_menu`), the canvas's
+//! (`crate::canvas_menu`, `crate::select_other`), and sketch mode's on the canvas
+//! (`crate::sketch::bar::canvas_menu`), so their widths and their look can't part. Each item
+//! is named for a screen reader by its words and dim words, its keys its keyboard shortcut.
 //!
 //! An item (`.mi`, 24 high, `padding: 0 8px`, `gap: 8px`): its icon, or a spacer as wide
 //! (`<span style="width:14px">`); its words; its dim words after them (the `subdued` span,

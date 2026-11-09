@@ -189,7 +189,7 @@ pub struct Drawn {
     pub pointed: Option<usize>,
     pub clicked: Option<usize>,
     pub plane: Option<OriginPlane>,
-    pub planes: Option<egui::LayerId>,
+    pub planes_layer: Option<egui::LayerId>,
 }
 
 impl CanvasMenu {
@@ -314,10 +314,12 @@ impl CanvasMenu {
     }
 
     /// It drawn, its item `lit` lit; Create Sketch's planes open beside it (egui's submenu,
-    /// as CREATE's drop-down opens them), while the pointer is on it or they are, or from
-    /// `open_planes` (the app's Enter on it chose it, `crate::select_other`), marked shown
-    /// first so egui keeps them open. What was pointed at, clicked, or chosen.
-    pub fn draw(&self, ui: &mut Ui, lit: Option<usize>, open_planes: bool) -> Drawn {
+    /// as CREATE's drop-down opens them), while the pointer is on it or they are, or while
+    /// `planes_open` (the app's Enter on it chose it, `crate::select_other`, until the keys
+    /// or the pointer move to another item): then asked open each frame, marked shown first,
+    /// so egui keeps them open with the pointer resting on another item. What was pointed
+    /// at, clicked, or chosen.
+    pub fn draw(&self, ui: &mut Ui, lit: Option<usize>, planes_open: bool) -> Drawn {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         let width = self.width(ui);
         if let Some(head) = &self.head {
@@ -341,7 +343,7 @@ impl CanvasMenu {
             }
             if shown.item == CanvasItem::CreateSketch && shown.off.is_none() {
                 let submenu = egui::containers::menu::SubMenu::id_from_widget_id(response.id);
-                if open_planes {
+                if planes_open {
                     // Marked shown first: egui 0.36.2's `MenuState::from_id` lets an open
                     // item go that wasn't shown the frame before, as a submenu never opened
                     // wasn't, and Enter is the app's key, not a click egui's submenu sees.
@@ -356,7 +358,7 @@ impl CanvasMenu {
                     crate::toolbar::planes,
                 );
                 if let Some(planes) = planes {
-                    drawn.planes = Some(planes.response.layer_id);
+                    drawn.planes_layer = Some(planes.response.layer_id);
                     drawn.plane = planes.inner;
                 }
             }
@@ -409,20 +411,21 @@ mod tests {
         }
     }
 
-    /// Each item as a screen reader has it, its name then its keyboard shortcut, and whether
+    /// Each item as a screen reader has it: its name, its keyboard shortcut, and whether
     /// it's on.
-    fn said(menu: &CanvasMenu, ctx: &egui::Context) -> Vec<(String, bool)> {
+    fn said(menu: &CanvasMenu, ctx: &egui::Context) -> Vec<(String, Option<String>, bool)> {
         menu.items
             .iter()
             .map(|shown| {
                 let line = shown.line(false);
-                let said = match line.shortcut(ctx) {
-                    Some(keys) => format!("{} {keys}", line.said()),
-                    None => line.said(),
-                };
-                (said, shown.off.is_none())
+                (line.said(), line.shortcut(ctx), shown.off.is_none())
             })
             .collect()
+    }
+
+    /// An item as [`said`] gives it.
+    fn item(said: &str, keys: Option<&str>, on: bool) -> (String, Option<String>, bool) {
+        (said.to_owned(), keys.map(str::to_owned), on)
     }
 
     #[test]
@@ -440,9 +443,9 @@ mod tests {
         assert_eq!(
             said(&over, &ctx),
             [
-                ("Select Other… 4 under the pointer".to_owned(), true),
-                ("Edit Block".to_owned(), true),
-                ("Hide Plate".to_owned(), true),
+                item("Select Other… 4 under the pointer", None, true),
+                item("Edit Block", None, true),
+                item("Hide Plate", None, true),
             ]
         );
         assert_eq!(
@@ -463,11 +466,11 @@ mod tests {
         assert_eq!(
             said(&off, &ctx),
             [
-                ("Fit F6".to_owned(), true),
-                ("Home view Home".to_owned(), true),
-                ("Select Other… nothing under the pointer".to_owned(), false),
-                ("Clear selection Esc".to_owned(), false),
-                ("Create Sketch".to_owned(), true),
+                item("Fit", Some("F6"), true),
+                item("Home view", Some("Home"), true),
+                item("Select Other… nothing under the pointer", None, false),
+                item("Clear selection", Some("Esc"), false),
+                item("Create Sketch", None, true),
             ]
         );
         assert!(off.separated(3) && !off.separated(2) && !off.separated(4));
@@ -617,24 +620,21 @@ mod tests {
                 },
             })
         };
-        let face = |stored: Result<&str, &str>| Under {
+        // The top, its stored name the store's, or none with the store's refusal.
+        let face = |refused: Option<&str>| Under {
             plane: Some(Planar {
-                stored: stored.map(|_| top()).map_err(str::to_owned),
+                stored: refused.map_or_else(|| Ok(top()), |why| Err(why.to_owned())),
             }),
             ..under()
         };
-        let over = CanvasMenu::new(
-            Some(&face(Ok("k7f2qx3m.box.Face6"))),
-            &context(true, false),
-            &ctx,
-        );
+        let over = CanvasMenu::new(Some(&face(None)), &context(true, false), &ctx);
         assert_eq!(
             said(&over, &ctx),
             [
-                ("Select Other… 4 under the pointer".to_owned(), true),
-                ("Edit Block".to_owned(), true),
-                ("Sketch on this face".to_owned(), true),
-                ("Hide Plate".to_owned(), true),
+                item("Select Other… 4 under the pointer", None, true),
+                item("Edit Block", None, true),
+                item("Sketch on this face", None, true),
+                item("Hide Plate", None, true),
             ]
         );
         assert_eq!(over.items[2].item, CanvasItem::SketchOnFace(Some(top())));
@@ -648,20 +648,16 @@ mod tests {
         };
         let why = "Close the open dialog first";
         assert_eq!(
-            off(
-                &face(Ok("k7f2qx3m.box.Face6")),
-                &unsketchable(context(true, false))
-            )
-            .as_deref(),
+            off(&face(None), &unsketchable(context(true, false))).as_deref(),
             Some(why)
         );
         let unstable = "k7f2qx3m.box.Face6 is unstable";
         assert_eq!(
-            off(&face(Err(unstable)), &context(true, false)).as_deref(),
+            off(&face(Some(unstable)), &context(true, false)).as_deref(),
             Some(unstable)
         );
         assert_eq!(
-            off(&face(Err(unstable)), &unsketchable(context(true, false))).as_deref(),
+            off(&face(Some(unstable)), &unsketchable(context(true, false))).as_deref(),
             Some(why)
         );
         // A face not known to be a plane (another type, or not read yet), an edge, or a
