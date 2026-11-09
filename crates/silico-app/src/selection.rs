@@ -778,6 +778,23 @@ impl Selection {
         self.click = None;
     }
 
+    /// Feature `id` taken out of the selection, the rest kept (a Ctrl-click, Cmd on macOS, on
+    /// its selected timeline item or browser row: Trevin's ask of 2026-11-09). A click in the
+    /// canvas waiting for its pick is let go: it came before.
+    pub fn deselect_feature(&mut self, id: &FeatureId) {
+        if self.has_feature(id) {
+            let rest = self
+                .items
+                .iter()
+                .filter(|item| !matches!(item, Item::Feature(each) if each == id))
+                .cloned()
+                .collect();
+            self.set(rest);
+        }
+        self.said = None;
+        self.click = None;
+    }
+
     /// The features `ids` selected, in order, and nothing else (a boolean's dialog's boxes:
     /// each body they hold, lit whole in the canvas and marked in the browser). A click in
     /// the canvas waiting for its pick is let go: it came before.
@@ -2915,6 +2932,37 @@ pub(crate) mod tests {
         selection.published(Some((fused(3, 4), revision(2))), 2);
         assert!(selection.is_empty());
         assert_eq!(selection.said(), None);
+    }
+
+    #[test]
+    fn deselect_feature_takes_that_feature_out_and_keeps_the_rest_as_they_were() {
+        // Trevin's ask of 2026-11-09: a Ctrl-click on a selected feature takes it out. Of
+        // three features and an element, the second feature goes; the rest stay, in order,
+        // and the selection's version moves, so what reads it reads it again.
+        let mut selection = Selection::default();
+        selection.select_features(vec![fid("aaaaaaaa"), fid("bbbbbbbb"), fid("cccccccc")]);
+        selection.items.push(picked("k7f2qx3m.box.Edge9"));
+        let before = selection.version();
+        selection.deselect_feature(&fid("bbbbbbbb"));
+        assert_eq!(
+            selection.items(),
+            [
+                Item::Feature(fid("aaaaaaaa")),
+                Item::Feature(fid("cccccccc")),
+                picked("k7f2qx3m.box.Edge9"),
+            ]
+        );
+        assert_ne!(selection.version(), before);
+        // A feature not selected: nothing changes, nor the version.
+        let unchanged = selection.version();
+        selection.deselect_feature(&fid("dddddddd"));
+        assert_eq!(selection.items().len(), 3);
+        assert_eq!(selection.version(), unchanged);
+        // The last feature out of a selection of one: nothing selected.
+        let mut one = Selection::default();
+        one.select_feature(fid("aaaaaaaa"));
+        one.deselect_feature(&fid("aaaaaaaa"));
+        assert!(one.is_empty());
     }
 
     #[test]

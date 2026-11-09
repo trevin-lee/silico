@@ -49,6 +49,7 @@ pub enum Command {
     FindInTimeline,
     Rebuild,
     RebuildAll,
+    Reload,
     Stop,
     WhatsWrong,
     Fit,
@@ -315,6 +316,17 @@ const REBUILD_ALL: Entry = entry(
     &[key(SHIFT_COMMAND, Key::B)],
     Some("Every feature, ignoring the cache"),
 );
+/// Trevin's ask of 2026-11-09: the part's file read from disk again now, then every feature
+/// rebuilt, as Rebuild everything rebuilds them; asked first if it would drop unsaved
+/// edits. ⌘R on macOS, Ctrl+R elsewhere; R alone is sketch mode's Rectangle. The File
+/// menu's Reload too.
+const RELOAD: Entry = entry(
+    Command::Reload,
+    "Reload",
+    Group::Rebuild,
+    &[command(Key::R)],
+    Some("Reads the file from disk again, then rebuilds every feature"),
+);
 const STOP: Entry = entry(
     Command::Stop,
     "Stop rebuild",
@@ -531,7 +543,7 @@ const SHORTCUTS: Entry = entry(
 );
 
 /// Every command, in the order the sheet lists each group's.
-pub const REGISTRY: [Entry; 45] = [
+pub const REGISTRY: [Entry; 46] = [
     NEW,
     OPEN,
     SAVE,
@@ -546,6 +558,7 @@ pub const REGISTRY: [Entry; 45] = [
     FIND_IN_TIMELINE,
     REBUILD,
     REBUILD_ALL,
+    RELOAD,
     STOP,
     WHATS_WRONG,
     FIT,
@@ -597,6 +610,7 @@ impl Command {
             Command::FindInTimeline => &FIND_IN_TIMELINE,
             Command::Rebuild => &REBUILD,
             Command::RebuildAll => &REBUILD_ALL,
+            Command::Reload => &RELOAD,
             Command::Stop => &STOP,
             Command::WhatsWrong => &WHATS_WRONG,
             Command::Fit => &FIT,
@@ -1178,6 +1192,7 @@ mod tests {
             [
                 Command::Rebuild,
                 Command::RebuildAll,
+                Command::Reload,
                 Command::Stop,
                 Command::WhatsWrong
             ]
@@ -1211,5 +1226,68 @@ mod tests {
         assert_eq!(found(&nix, "cache"), [Command::RebuildAll]);
         assert_eq!(found(&nix, "middle-drag"), [Command::Orbit, Command::Pan]);
         assert!(found(&nix, "no such thing").is_empty());
+    }
+
+    #[test]
+    fn reload_is_command_r_beside_rebuild_and_r_alone_stays_sketch_modes_rectangle() {
+        // Trevin's ask of 2026-11-09: ⌘R on macOS, Ctrl+R elsewhere, in the Rebuild group
+        // after Rebuild everything; R alone is sketch mode's Rectangle (the prototype's
+        // `sRect`), and neither is the other.
+        assert_eq!(Command::Reload.label(), "Reload");
+        assert_eq!(Command::Reload.entry().group, Group::Rebuild);
+        let at = |command: Command| {
+            REGISTRY
+                .iter()
+                .position(|entry| entry.command == command)
+                .unwrap()
+        };
+        assert_eq!(at(Command::Reload), at(Command::RebuildAll) + 1);
+        assert_eq!(Command::Reload.caps(&on(OperatingSystem::Mac)), ["⌘", "R"]);
+        assert_eq!(
+            Command::Reload.caps(&on(OperatingSystem::Nix)),
+            ["Ctrl", "R"]
+        );
+        assert_eq!(
+            Command::Reload.caps(&on(OperatingSystem::Windows)),
+            ["Ctrl", "R"]
+        );
+        assert_eq!(Command::Rectangle.caps(&on(OperatingSystem::Mac)), ["R"]);
+        let key = |modifiers: Modifiers| egui::Event::Key {
+            key: Key::R,
+            physical_key: Some(Key::R),
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let pressed_on = |os: OperatingSystem, command: Command, modifiers: Modifiers| {
+            let ctx = on(os);
+            let mut found = false;
+            ctx.run_ui(
+                egui::RawInput {
+                    events: vec![key(modifiers)],
+                    ..Default::default()
+                },
+                |ui| found = pressed(ui.ctx(), command),
+            )
+            .textures_delta
+            .clear();
+            found
+        };
+        // ⌘R as macOS sends it, Ctrl+R as the others do (Ctrl, and Command with it).
+        let mac_command = Modifiers::MAC_CMD | Modifiers::COMMAND;
+        let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+        for (os, command) in [
+            (OperatingSystem::Mac, mac_command),
+            (OperatingSystem::Nix, ctrl),
+            (OperatingSystem::Windows, ctrl),
+        ] {
+            assert!(pressed_on(os, Command::Reload, command), "{os:?}");
+            assert!(!pressed_on(os, Command::Rectangle, command), "{os:?}");
+            assert!(
+                pressed_on(os, Command::Rectangle, Modifiers::NONE),
+                "{os:?}"
+            );
+            assert!(!pressed_on(os, Command::Reload, Modifiers::NONE), "{os:?}");
+        }
     }
 }

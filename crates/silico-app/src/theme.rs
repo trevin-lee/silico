@@ -733,17 +733,17 @@ pub const TOOLTIP_SHADOW: Shadow = Shadow {
 
 /// The ViewCube's side, and its margin from the canvas's top and right (the prototype's
 /// viewport.js:101, `CUBE` and `CUBE_M`); the Home button sits above it, this high. The
-/// prototype's Home is a 22 high button 4 to the cube's left (app.js:782), which the
-/// viewport's overlay places.
+/// prototype's Home is a 22 high button 4 to the cube's left (app.js's `renderCanvasUI`,
+/// `home3d`), which the viewport's overlay places.
 pub const VIEW_CUBE_SIDE: f32 = 92.0;
 pub const VIEW_CUBE_MARGIN: f32 = 16.0;
 pub const VIEW_CUBE_HOME_HEIGHT: f32 = 20.0;
 
 /// The navigation bar's width and height, and its margin from the canvas's bottom (the
 /// prototype's `.nav-bar`, 12 from the bottom). Its height is a 24 high button, 3 of padding,
-/// and a 1 border, each above and below; its width, its seven buttons as app.js:771 lays
-/// them out (five of 26, the display menu's 42, and the grid's 26), its separator (7), the
-/// 1 between each, and the same padding and border at each side.
+/// and a 1 border, each above and below; its width, its seven buttons as app.js's
+/// `renderCanvasUI` lays them out (five of 26, the display menu's 42, and the grid's 26),
+/// its separator (7), the 1 between each, and the same padding and border at each side.
 pub const NAVIGATION_BAR_WIDTH: f32 = 220.0;
 pub const NAVIGATION_BAR_HEIGHT: f32 = 32.0;
 pub const NAVIGATION_BAR_MARGIN: f32 = 12.0;
@@ -1527,13 +1527,24 @@ pub const CANVAS_MIN_HEIGHT: f32 = VIEW_CUBE_MARGIN
     + NAVIGATION_BAR_HEIGHT
     + NAVIGATION_BAR_MARGIN;
 
+/// The toolbar's least width: its widest row, sketch mode's (SKETCH's CREATE, MODIFY,
+/// CONSTRAINTS, and INSPECT, from its left after `.tb-panels`' 6, then Finish Sketch in
+/// `.tb-finish`'s 8 at each side and the row's 6 at its right), 881.5 in the app's fonts;
+/// rounded up to the 8-point grid the prototype's columns are on (248, 296), 888. The test
+/// `at_the_windows_least_width_the_app_bar_toolbar_and_status_bar_fit` lays it out there.
+pub const TOOLBAR_MIN_WIDTH: f32 = 888.0;
+
 /// The window's least size (Fusion's window has one; the prototype, a page, has none): the
-/// browser's and the property panel's columns (`--browser-w`, `--right-w`) and the least
-/// canvas between them, 884; and the app bar (`--top-bar-h`), the toolbar (`--toolbar-tabs-
-/// h`, `--toolbar-h`, and its border), the least canvas, the timeline (`--timeline-h`, and
-/// the 1 egui's separator line takes above it), and the status bar (`--status-h`), 336.
-pub const WINDOW_MIN_WIDTH: f32 =
-    crate::panes::BROWSER_W + crate::panes::RIGHT_W + CANVAS_MIN_WIDTH;
+/// wider of the toolbar's least ([`TOOLBAR_MIN_WIDTH`], 888) and the side panes' columns at
+/// their leasts (`crate::pane_widths`' `BROWSER_MIN_W` and `PROPERTIES_MIN_W`, 200 and 232)
+/// with the least canvas between them, 772: 888, at which the panes keep the prototype's
+/// widths and a narrower window gives back only what panes dragged wider take; and the app
+/// bar (`--top-bar-h`), the toolbar (`--toolbar-tabs-h`, `--toolbar-h`, and its border), the
+/// least canvas, the timeline (`--timeline-h`, and the 1 egui's separator line takes above
+/// it), and the status bar (`--status-h`), 336.
+pub const WINDOW_MIN_WIDTH: f32 = TOOLBAR_MIN_WIDTH.max(
+    crate::pane_widths::BROWSER_MIN_W + crate::pane_widths::PROPERTIES_MIN_W + CANVAS_MIN_WIDTH,
+);
 pub const WINDOW_MIN_HEIGHT: f32 = TOP_BAR_HEIGHT
     + TOOLBAR_TABS_HEIGHT
     + TOOLBAR_PANELS_HEIGHT
@@ -2195,7 +2206,7 @@ mod tests {
                 [0xff, 0x7a, 0x0c, 0xff],
             ),
             ("VIEWPORT_BG", VIEWPORT_BG, [0, 0, 0, 0xff]),
-            // interact.js:473-475, `overlay`'s `dot`: a hovered vertex white, a selected one
+            // interact.js's `overlay`, its `dot`: a hovered vertex white, a selected one
             // #4676ff, each ringed `stroke="#000"`.
             (
                 "VIEWPORT_HOVER_VERTEX",

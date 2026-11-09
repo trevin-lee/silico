@@ -76,9 +76,9 @@ impl Step {
 }
 
 /// A feature's type in words, as the prototype says it (`FEATURE_KIND` in `js/app.js`) for
-/// the types it lists, and as the toolbar's commands name the rest (the primitives, and
-/// Union, Subtract, and Intersect for the booleans); the type as written for one neither
-/// names.
+/// the types it lists (the primitives a file holds among them), and as the toolbar's
+/// commands name the rest (Revolve, Groove, and Union, Subtract, and Intersect for the
+/// booleans); the type as written for one neither names.
 pub fn kind_words(kind: &str) -> &str {
     match kind {
         "sketch" => "Sketch",
@@ -330,6 +330,10 @@ fn words(ui: &mut Ui, rect: Rect, words: &str) {
 #[derive(Default)]
 struct Asked {
     selected: Option<FeatureId>,
+    /// A selected item Ctrl-clicked (Cmd on macOS): taken out of the selection.
+    deselected: Option<FeatureId>,
+    /// The track's empty space clicked: the selection cleared.
+    cleared: bool,
     edit: Option<FeatureId>,
     hovered: Option<FeatureId>,
     moved: Option<(FeatureId, Option<FeatureId>)>,
@@ -384,6 +388,12 @@ fn features<P: Clients + 'static>(
                 node.set_role(egui::accesskit::Role::Group);
                 node.set_label(TRACK_LABEL);
             });
+            // The track's empty space, under its items, which take a click on them first:
+            // a click there lets the selection go (Trevin's ask of 2026-11-09), as one on the
+            // canvas's empty space does.
+            // Clickable, not focusable: no stop of its own for Tab, nor a node unnamed.
+            let empty = ui.interact(track, ui.id().with("empty"), Sense::CLICK);
+            asked.cleared = empty.clicked();
             egui::ScrollArea::horizontal()
                 .id_salt("timeline-track")
                 .scroll_source(egui::scroll_area::ScrollSource {
@@ -431,6 +441,12 @@ fn features<P: Clients + 'static>(
     if let Some(id) = asked.selected {
         tab.selected_in = feature_menu::Place::Timeline;
         tab.selection_mut().select_feature(id);
+    } else if tab.in_dialog() {
+        // A dialog's boxes hold what the selection shows: neither is let go here.
+    } else if let Some(id) = asked.deselected {
+        tab.selection_mut().deselect_feature(&id);
+    } else if asked.cleared {
+        tab.selection_mut().clear();
     }
     if let Some(act) = asked.act {
         *started |= feature_menu::act(tab, sessions, act);
@@ -650,7 +666,11 @@ fn items(
             kind => crate::dialog::Kind::of(kind).is_some(),
         };
         if response.clicked() {
-            asked.selected = Some(entry.id.clone());
+            if selected && ui.input(|input| input.modifiers.command) {
+                asked.deselected = Some(entry.id.clone());
+            } else {
+                asked.selected = Some(entry.id.clone());
+            }
         }
         if response.double_clicked() {
             asked.edit = Some(entry.id.clone());
@@ -1085,7 +1105,8 @@ mod tests {
 
     #[test]
     fn a_features_type_is_said_as_the_prototype_says_it() {
-        // `FEATURE_KIND` in js/app.js; the toolbar's names for the rest.
+        // `FEATURE_KIND` in js/app.js (the primitives among them); the toolbar's names for
+        // the rest.
         for (kind, words) in [
             ("sketch", "Sketch"),
             ("pad", "Pad"),

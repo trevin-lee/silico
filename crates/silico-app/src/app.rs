@@ -24,6 +24,7 @@ use crate::changes::{self, Changes};
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::modal::{self, Button, Kind};
+use crate::pane_widths::{KeptWidths, Widths};
 use crate::panes::{self, Pane, Panes};
 use crate::properties;
 use crate::recent::Recents;
@@ -54,6 +55,10 @@ pub const IDLE_FRAME: Duration = DISK_CHECK_INTERVAL.saturating_add(IDLE_MARGIN)
 /// toolbar, which the app has none of (DESIGN.md, open question 2).
 pub const FILTERS_SAID: &str =
     "F5 shows the selection filters. They live in the toolbar, under SELECT.";
+
+/// What Reload says with a feature dialog open (⌘R, Ctrl+R elsewhere): as Rebuild everything
+/// does nothing in a dialog, the dialog's OK or Cancel comes first.
+pub const RELOAD_IN_DIALOG: &str = "Finish or cancel the dialog first: Reload drops what it holds.";
 
 /// The selection filters' keys pressed this frame, X, E, and V (`crate::shortcuts`), each
 /// taken and its kind given, in that order; none taken while a sketch is open (`in_sketch`),
@@ -188,6 +193,9 @@ enum Asking {
     /// What changed on disk while `session`'s edits are held (DESIGN.md, 6d's Show
     /// changes): the tab's `held_changes`.
     Changes(SessionId),
+    /// Whether to drop `session`'s unsaved edits to reload its file (Reload, Trevin's ask of
+    /// 2026-11-09), naming them: the tab's `held_changes`' own.
+    Reload(SessionId),
 }
 
 /// What a native dialog's answer goes to.
@@ -338,6 +346,8 @@ pub struct App<P: Clients + 'static> {
     tab_in_view: Option<SessionId>,
     /// The documents opened lately, if the app keeps a list.
     recents: Option<Recents>,
+    /// The side panes' widths, as dragged, and where they're kept, if anywhere.
+    columns: crate::columns::Columns,
     /// The warm start's state, if the app warms its workers.
     warm: Option<Warm>,
     /// The `silico` an MCP client is told to run (Copy MCP config).
@@ -446,6 +456,7 @@ impl<P: Clients + 'static> App<P> {
             home: false,
             tab_in_view: None,
             recents: None,
+            columns: crate::columns::Columns::new(),
             warm: None,
             silico: "silico".to_owned(),
             documents: directories::UserDirs::new()
@@ -476,6 +487,26 @@ impl<P: Clients + 'static> App<P> {
     pub fn remembering(mut self, recents: Recents) -> Self {
         self.recents = Some(recents);
         self
+    }
+
+    /// The app, laying its side panes out at the widths `widths` keeps once it has read them,
+    /// and keeping there those each drag of a border leaves.
+    #[must_use]
+    pub fn keeping_widths(mut self, widths: KeptWidths) -> Self {
+        self.columns.keeping(widths);
+        self
+    }
+
+    /// The side panes' widths, as dragged (or read, or the prototype's), each its border
+    /// included: what [`keeping_widths`](Self::keeping_widths)' file keeps.
+    pub fn pane_widths(&self) -> Widths {
+        self.columns.chosen()
+    }
+
+    /// Where the side panes' widths are kept: nowhere (read at once, the prototype's) unless
+    /// [`keeping_widths`](Self::keeping_widths) gave a file.
+    pub fn kept_widths(&self) -> &KeptWidths {
+        self.columns.kept()
     }
 
     /// The app, its status bar saying how `warm`, its workers' warm start, stands while no
@@ -643,10 +674,12 @@ impl<P: Clients + 'static> App<P> {
                 wakes.fetch_add(1, Ordering::SeqCst);
                 ctx.request_repaint();
             });
-            // And the threads that keep the recent documents and warm the workers.
+            // And the threads that keep the recent documents and the panes' widths, and warm
+            // the workers.
             if let Some(recents) = &self.recents {
                 recents.waking(ui.ctx());
             }
+            self.columns.waking(ui.ctx());
             if let Some(warm) = &self.warm {
                 warm.waking(ui.ctx());
             }
@@ -725,6 +758,7 @@ impl<P: Clients + 'static> App<P> {
                 name,
                 drawing,
                 remembered,
+                columns,
                 ..
             } = self;
             let mut panes = Panes {
@@ -736,8 +770,12 @@ impl<P: Clients + 'static> App<P> {
                 dialog_key,
                 remembered,
             };
-            panes::fit(tree, ui.available_width());
+            let area = ui.available_rect_before_wrap();
+            let laid = columns.laid(area.width());
+            panes::fit(tree, &laid);
             tree.ui(&mut panes, ui);
+            // Over the panes' borders, after them, so a press there drags the border.
+            columns.handles(ui, area, laid);
             // Over the canvas, drawn after it, so it takes the pointer over its place.
             let canvas = tree
                 .tiles
@@ -837,6 +875,8 @@ impl<P: Clients + 'static> App<P> {
     /// a quit has closed every tab, or kept open while one holds edits; and the next frame
     /// asked for.
     fn after_drawing(&mut self, ui: &mut Ui, mut started: bool) {
+        // A border's drag whose release the panes didn't see (they're gone) ended.
+        self.columns.settle(ui.ctx());
         // The dialog OK'd this frame, if one was (one tab's panes draw a frame), remembered.
         for tab in &mut self.tabs {
             if let Some(oked) = tab.take_oked() {
@@ -905,6 +945,7 @@ impl<P: Clients + 'static> App<P> {
     /// The opens under way and every tab polled; tabs whose sessions closed dropped; and
     /// what the recent documents' thread has told, a document it dropped said.
     fn poll(&mut self) {
+        self.columns.poll();
         let gone = self.recents.as_mut().map(Recents::poll).unwrap_or_default();
         for recent in gone {
             self.message = Some(format!(
@@ -1170,7 +1211,7 @@ impl<P: Clients + 'static> App<P> {
     /// its own field first, as a click away does (SolidWorks commits a name typed in place
     /// when another command is invoked): Esc drops it instead, and the rest never act
     /// while it's typed.
-    const COMMANDS_AFTER_RENAME: [Command; 9] = [
+    const COMMANDS_AFTER_RENAME: [Command; 10] = [
         Command::New,
         Command::Open,
         Command::Save,
@@ -1180,6 +1221,7 @@ impl<P: Clients + 'static> App<P> {
         Command::Redo,
         Command::Rebuild,
         Command::RebuildAll,
+        Command::Reload,
     ];
 
     /// The active tab's rename field, which has had the focus, if a shortcut of
@@ -1266,6 +1308,10 @@ impl<P: Clients + 'static> App<P> {
         );
         let rebuild_all = shortcuts::take(ui, Command::RebuildAll) && !typing;
         let rebuild = shortcuts::take(ui, Command::Rebuild);
+        // ⌘R (Ctrl+R elsewhere) before sketch mode's letters, though R alone is Rectangle's
+        // and an exact chord's. Done while typing too, as Save is: it's no key of a field's,
+        // and what it would drop is asked about first.
+        let reload = shortcuts::take(ui, Command::Reload);
         // Esc with a menu open (a feature's right-click menu, a drop-down) closes the menu
         // alone, as the prototype's `keydown` has it: left for the menu to take.
         let stop = !egui::Popup::is_any_open(ui.ctx()) && shortcuts::take(ui, Command::Stop);
@@ -1442,11 +1488,16 @@ impl<P: Clients + 'static> App<P> {
             let ctx = ui.ctx().clone();
             self.ask_save_as(id, false, &ctx);
         }
+        if reload && let Some(id) = self.active {
+            let now = ui.input(|input| input.time);
+            self.reload(id, now);
+        }
         if close && let Some(id) = self.active {
             self.close(id);
         }
         (
             save || undo
+                || reload
                 || redo
                 || stop
                 || close
@@ -1482,6 +1533,31 @@ impl<P: Clients + 'static> App<P> {
     /// The toast shown now, if one is, and when it was shown, by egui's clock.
     pub fn toast(&self) -> Option<(&str, f64)> {
         self.toast.as_ref().map(|(text, at)| (text.as_str(), *at))
+    }
+
+    /// Reload the tab of session `id` (Trevin's ask of 2026-11-09): asking first, naming
+    /// them, if it would drop unsaved edits, as Close asks before it drops them; never of a
+    /// file gone from disk, whose Reload drops nothing ([`Tab::reload`]).
+    fn reload(&mut self, id: SessionId, now: f64) {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+            return;
+        };
+        if tab.closing() {
+            return;
+        }
+        if tab.in_dialog() {
+            // As Rebuild everything does nothing in a dialog: the dialog's OK or Cancel
+            // first.
+            self.toast = Some((RELOAD_IN_DIALOG.to_owned(), now));
+            return;
+        }
+        // An untitled part's edits are all it is: it's only rebuilt, never asked about.
+        if tab.unsaved() && !tab.file_gone() && !tab.is_untitled() {
+            tab.show_changes(&self.sessions);
+            self.asking = Some(Asking::Reload(id));
+        } else {
+            tab.reload(&self.sessions);
+        }
     }
 
     /// Close the tab of session `id`: asking first if it holds edits (decision 1).
@@ -1581,7 +1657,11 @@ impl<P: Clients + 'static> App<P> {
                     form.browsed(path);
                 }
             }
-            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } | Asking::Changes(_) => {}
+            Asking::Close(_)
+            | Asking::Quit
+            | Asking::Replace { .. }
+            | Asking::Changes(_)
+            | Asking::Reload(_) => {}
         }
         false
     }
@@ -1776,7 +1856,11 @@ impl<P: Clients + 'static> App<P> {
                     file_name: browse::file_name_of(&form.path),
                 }
             }
-            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } | Asking::Changes(_) => {
+            Asking::Close(_)
+            | Asking::Quit
+            | Asking::Replace { .. }
+            | Asking::Changes(_)
+            | Asking::Reload(_) => {
                 return None;
             }
         };
@@ -1887,7 +1971,7 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// The File menu's items: New, Open…, Save As…, Export…, Revert, and Close.
+    /// The File menu's items: New, Open…, Save As…, Export…, Revert, Reload, and Close.
     fn file_menu(&mut self, ui: &mut Ui, started: &mut bool) {
         let open = !self.tabs.is_empty();
         let transaction = self
@@ -1946,6 +2030,24 @@ impl<P: Clients + 'static> App<P> {
             }
             ui.close();
         }
+        // Reload (⌘R, Ctrl+R elsewhere), off while the tab closes, as Revert is, and in a
+        // dialog, as Rebuild everything is.
+        let reloadable = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .is_some_and(|tab| !tab.closing() && !tab.in_dialog());
+        let label = Command::Reload.label();
+        if ui
+            .add_enabled(reloadable, egui::Button::new(label))
+            .clicked()
+        {
+            if let Some(id) = self.active {
+                let now = ui.input(|input| input.time);
+                self.reload(id, now);
+                *started = true;
+            }
+            ui.close();
+        }
         if ui.add_enabled(open, egui::Button::new("Close")).clicked() {
             if let Some(id) = self.active {
                 self.close(id);
@@ -1998,8 +2100,9 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The toolbar (section 8; `toolbar`): the Design workspace's SOLID tab and its panels,
-    /// CREATE's tools each opening its feature's dialog (M5.8): the primitives, and the
-    /// features that sweep a sketch's profile (those that cut, only with a body to cut); and
+    /// CREATE's tools each opening its feature's dialog (M5.8): the features that sweep a
+    /// sketch's profile (those that cut, only with a body to cut), solids being made
+    /// sketch-first (Trevin's decision of 2026-11-09), never as primitives; and
     /// SELECT's Clear selection. In a sketch, SKETCH's: a tool chosen, or left if it's on,
     /// Construction turned on or off, as their keys do, and Finish Sketch.
     fn toolbar(&mut self, ui: &mut Ui, started: &mut bool) {
@@ -2482,6 +2585,50 @@ impl<P: Clients + 'static> App<P> {
                     }
                 }
             }
+            Asking::Reload(id) => {
+                let sessions = &self.sessions;
+                let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+                    done = true;
+                    return;
+                };
+                modal::head(
+                    ui,
+                    Some(Icon::Rebuild),
+                    &format!("Reload {} from disk?", tab.name()),
+                );
+                // The edits' list, asked again until it can be: an edit's `begin` still out
+                // when the question came, its transaction isn't there to list from yet.
+                if tab.held_changes.is_none() {
+                    tab.show_changes(sessions);
+                }
+                let held = tab.held_changes.as_ref();
+                modal::body(ui, |ui| {
+                    modal::text(
+                        ui,
+                        "It has unsaved edits. Reloading drops them:",
+                        theme::MODAL_TEXT,
+                    );
+                    modal::label(ui, "Your unsaved edits");
+                    held_list(ui, "mine", held.map(|held| &held.mine), mine_row);
+                });
+                // As the close question lays out its buttons: what drops the edits on the
+                // left, Cancel on the right.
+                let ([reload], [cancel]) =
+                    modal::foot(
+                        ui,
+                        [Button::new("Reload, discard my edits", Kind::Danger)
+                            .enabled(!tab.closing())],
+                        [Button::new("Cancel", Kind::Secondary)],
+                    );
+                if reload {
+                    tab.reload(sessions);
+                    *started = true;
+                    done = true;
+                }
+                if cancel || escape {
+                    done = true;
+                }
+            }
             Asking::Changes(id) => {
                 let sessions = &self.sessions;
                 let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
@@ -2739,7 +2886,7 @@ impl<P: Clients + 'static> App<P> {
         if done {
             match self.asking {
                 Some(Asking::Export(_)) => self.export = None,
-                Some(Asking::Changes(id)) => {
+                Some(Asking::Changes(id) | Asking::Reload(id)) => {
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
                         tab.hide_changes();
                     }

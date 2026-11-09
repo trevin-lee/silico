@@ -7,6 +7,7 @@
 //! also its Home tab, and the documents opened lately (`recent`).
 
 pub mod app;
+mod app_data;
 mod banner;
 pub mod bar;
 pub mod box_select;
@@ -14,6 +15,7 @@ pub mod boxes;
 pub mod browse;
 pub mod canvas_menu;
 pub mod changes;
+mod columns;
 pub mod dialog;
 pub mod export;
 pub mod feature_menu;
@@ -23,6 +25,7 @@ mod menu;
 pub mod missing;
 mod modal;
 pub mod navigate;
+pub mod pane_widths;
 mod panes;
 mod properties;
 pub mod recent;

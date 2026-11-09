@@ -214,7 +214,7 @@ impl Icon {
 
     /// A feature's icon, by its `type` as the document writes it: the prototype's
     /// (`FEATURE_ICON` in `js/app.js`) for a sketch, the sweeps, the fillet and chamfer, and
-    /// the box; the toolbar's for the other primitives and the booleans (Union, Subtract,
+    /// the primitives a file holds; the toolbar's for the booleans (Union, Subtract,
     /// Intersect); and the box's for a type it doesn't know, as `FEATURE_ICON`'s callers fall
     /// back to it.
     pub fn of_kind(kind: &str) -> Icon {
@@ -433,9 +433,9 @@ mod tests {
     }
     #[test]
     fn each_feature_type_has_the_prototypes_icon() {
-        // `FEATURE_ICON` in js/app.js for the types it lists; the toolbar's CREATE and
-        // MODIFY commands' icons (Union, Subtract, Intersect, and the primitives) for the
-        // rest; the box's for a type nothing names.
+        // `FEATURE_ICON` in js/app.js for the types it lists (the primitives among them);
+        // the toolbar's MODIFY commands' icons (Union, Subtract, Intersect) for the rest; the
+        // box's for a type nothing names.
         for (kind, name) in [
             ("sketch", "sketch"),
             ("pad", "pad"),

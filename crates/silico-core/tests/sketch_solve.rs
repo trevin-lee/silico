@@ -2880,10 +2880,15 @@ fn a_solution_its_load_cant_translate_is_an_invalid_result_with_the_first_solves
     // point on a circle by the line from its centre. The next solve can't measure the
     // solution, so it's the result's fault, `invalid_result` (as `holdable`'s and a collapsed
     // symmetry's are), never `invalid_input`, which is kept for the drawing's refusal before
-    // any solve, whose diagnosis is of the geometry alone. Its message, element, and
-    // suggestion are the translation's, and its diagnosis the first solve's, which counts the
-    // constraint: 4 freedoms, by which an add on it is judged. The load never asks the worker,
-    // so the script's second reply is left.
+    // any solve, whose diagnosis is of the geometry alone. Its message and element are the
+    // translation's, and its diagnosis the first solve's, which counts the constraint: 4
+    // freedoms, by which an add on it is judged. The load never asks the worker, so the
+    // script's second reply is left.
+    //
+    // Its suggestion isn't the translation's (#429's round 3, R5): that one says to draw the
+    // point away from the centre, but it was drawn away, and the constraints brought it there,
+    // so an agent redrawing it gets this refusal again. It names the constraints, as
+    // `holdable`'s does for a curve they make too small.
     let text = text(
         &[point("p0000001", 7.0, 10.0), point("p0000002", 4.0, 6.0)],
         &[],
@@ -2919,8 +2924,11 @@ fn a_solution_its_load_cant_translate_is_an_invalid_result_with_the_first_solves
     assert_eq!(e.elements(), ["k0000001"]);
     assert_eq!(
         e.suggestion(),
-        Some("draw the point on the circle, away from its centre")
+        Some(
+            "change the constraints that bring it there: the solve, not where it was placed, makes it unmeasurable"
+        )
     );
+    assert!(!e.suggestion().unwrap().contains("draw"), "{e}");
     let states = silico_core::sketch_states::states(&sketch, got.diagnosed().unwrap()).unwrap();
     assert_eq!(
         (states.state, states.dofs),
