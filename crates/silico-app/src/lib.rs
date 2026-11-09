@@ -19,6 +19,7 @@ mod columns;
 pub mod dialog;
 pub mod export;
 pub mod feature_menu;
+pub mod grid;
 pub mod icons;
 pub mod measures;
 mod menu;

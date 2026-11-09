@@ -12303,6 +12303,139 @@ fn the_overlay_sees_the_frame_and_paints_over_the_bodies_and_under_the_view_cube
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- The ground grid (the prototype's `buildGrid`) ----
+
+/// Where each of the ground grid's paths was painted last frame, among [`painted`]'s shapes:
+/// the paths stroked by a colour that runs along them, which the grid alone paints.
+fn grid_places(shapes: &[eframe::egui::Shape]) -> Vec<usize> {
+    use eframe::egui::Shape;
+    use eframe::egui::epaint::ColorMode;
+    shapes
+        .iter()
+        .enumerate()
+        .filter(|(_, shape)| matches!(shape, Shape::Path(p) if matches!(p.stroke.color, ColorMode::UV(_))))
+        .map(|(k, _)| k)
+        .collect()
+}
+
+#[test]
+fn the_ground_grid_is_painted_over_the_canvas_and_under_the_bodies_frame() {
+    use eframe::egui::Shape;
+    let f = fixture();
+    let (mut h, _seen) = f.overlaid(EXAMPLE);
+    step(&mut h);
+    let shapes = painted(&h);
+    let top = silico_app::theme::color32(silico_app::theme::VIEWPORT_BG_TOP);
+    let canvas = shapes
+        .iter()
+        .position(
+            |s| matches!(s, Shape::Mesh(m) if m.vertices.first().is_some_and(|v| v.color == top)),
+        )
+        .expect("no canvas painted");
+    let bodies = shapes
+        .iter()
+        .position(|s| matches!(s, Shape::Rect(r) if r.fill == BODIES_MARK))
+        .expect("no bodies' mark painted");
+    // The strokes `grid::shapes` makes for this frame's view, in its order, each where it
+    // says, all of them together next after the canvas and before the bodies' frame: under
+    // it, so never over a body nor in its picking.
+    let frame = view(&h).frame().unwrap().clone();
+    let want = silico_app::grid::shapes(
+        &frame.camera,
+        frame.size_px,
+        frame.pixels_per_point,
+        frame.rect,
+    );
+    assert!(!want.is_empty());
+    let grid = grid_places(&shapes);
+    assert_eq!(grid, (canvas + 1..=canvas + want.len()).collect::<Vec<_>>());
+    assert!(
+        canvas + want.len() < bodies,
+        "{canvas} {} {bodies}",
+        want.len()
+    );
+    for (k, wanted) in grid.iter().zip(&want) {
+        let (Shape::Path(got), Shape::Path(wanted)) = (&shapes[*k], wanted) else {
+            panic!("{wanted:?}");
+        };
+        assert_eq!(got.points, wanted.points);
+        assert_eq!(got.stroke.width, wanted.stroke.width);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_bars_grid_shows_and_hides_the_ground_grid_and_the_renderer_is_given_none_of_it() {
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    step(&mut h);
+    let grid = |h: &AppHarness| grid_places(&painted(h)).len();
+    // On at first, as the prototype's.
+    assert!(view(&h).grid);
+    assert!(grid(&h) > 0);
+    // The frame the renderer is given is the same with it off: it draws none of it, and
+    // picks none.
+    let given = |record: &Record| {
+        let told = record.lock().unwrap();
+        let frame = told.frames.last().unwrap();
+        (
+            frame.camera.clone(),
+            frame.size_px,
+            frame.bodies.clone(),
+            frame.highlights.clone(),
+            frame.hovered.clone(),
+            frame.picking,
+            frame.edges,
+            frame.vertices,
+        )
+    };
+    let on = given(&record);
+    view_mut(&mut h).grid = false;
+    step(&mut h);
+    assert_eq!(grid(&h), 0);
+    assert_eq!(given(&record), on);
+    // The navigation bar's Grid shows it, and hides it again: the bar is laid out after the
+    // canvas, so the frame that takes the click has painted the canvas already, and the next,
+    // which the click asks for, shows the change.
+    let toggle = |h: &mut AppHarness| {
+        h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+            .get_by_label("Grid")
+            .click();
+        step(h);
+        assert!(h.ctx.has_requested_repaint());
+        step(h);
+    };
+    toggle(&mut h);
+    assert!(view(&h).grid);
+    assert!(grid(&h) > 0);
+    toggle(&mut h);
+    assert!(!view(&h).grid);
+    assert_eq!(grid(&h), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_open_hides_the_ground_grid_and_leaving_it_shows_it_again() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    step(&mut h);
+    let grid = |h: &AppHarness| grid_places(&painted(h)).len();
+    assert!(grid(&h) > 0);
+    // A sketch open: none, as the prototype hides it (sketch.js), the toggle left on.
+    create_sketch(&mut h, "XY plane");
+    step(&mut h);
+    assert!(h.state().tabs()[0].in_sketch());
+    assert_eq!(grid(&h), 0);
+    assert!(view(&h).grid);
+    // Finished: shown again.
+    leave_sketch(&mut h, true);
+    step(&mut h);
+    assert!(grid(&h) > 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// A left-button event as a tab's overlay was given it: the serial its call took, the
 /// frame's session, the event, and egui's time at the call.
 #[derive(Debug, Clone, Copy)]
