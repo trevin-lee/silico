@@ -50,6 +50,10 @@ Thirteen steps, where sketch mode may take two PRs. The core steps (M5.1, M5.2, 
   - the `cancelled` error code, still `internal` for a cancelled render (M4.6's open item), which the app's stop button shows (M5.4);
   - `Candidates::of_name` costs O(B) per broken name, felt where M5.8 shows a broken reference's candidates (a protected contract, so its own PR with the maintainer, if M5.8's benchmark shows it).
 
+## Follow-ups after M5
+
+- **A vertex picked through a thin wall** (N5, decided 2026-11-08). A vertex's picking disc, and Select Other's cast, take it toward the eye by 1.2% of the view's height (`vertex_reach`), depth alone, so a vertex behind a wall thinner than that can be picked through it and is listed unhidden; it's accepted for M5 (docs/design/m5.0-app.md, section 9, part 3a). The fix is an adjacency check, not depth alone: a vertex pick is dropped when a face nearer than an edge's reach (`edge_reach`, 2 pixels of the view's depth) that isn't one of the vertex's own faces covers it. The faces at a corner are the vertex's own, so a corner stays pickable, and a pick through a wall in front of it is dropped. The cast takes the same rule, so the hover and Select Other still agree.
+
 ## Open decisions
 
 Each was written with a recommendation, for the maintainer at M4's close, and was taken as recommended (2026-10-29) unless its text says otherwise.
