@@ -30,9 +30,11 @@ use silico_protocol::{LENGTH_TOLERANCE, arc_from_points};
 use super::geometry::{
     add, angle_between, cross, distance, dot, left, scale, sub, to_segment, unit,
 };
+use super::implied::{Axis, Implied, Key, Rel};
 use super::{Relation, Shown, Xy};
 use crate::document::sketch_edit::{Geo, Members, crossings, lies_along};
 use crate::document::{Direction, ElementId, Form, Reference, Sketch};
+use crate::sketch_states::SketchStates;
 
 /// How far from horizontal or vertical a line may be drawn, and from perpendicular,
 /// parallel, or tangent, for the pointer to show it: 2°, FreeCAD 1.1.3's, since SolidWorks'
@@ -349,6 +351,34 @@ impl Placed {
         placed
     }
 
+    /// Its relations merged into `implied`, the point it places known by `key`: the classes a
+    /// gesture's later relations are judged against.
+    pub(super) fn assert_into(&self, implied: &mut Implied, key: &Key) {
+        let mut rels = match &self.target {
+            Target::Shared(_) | Target::Free => Vec::new(),
+            Target::Origin => vec![
+                Rel::Same(Axis::Level, key.clone(), Key::Origin),
+                Rel::Same(Axis::Plumb, key.clone(), Key::Origin),
+            ],
+            Target::Midpoint(line, ons) => {
+                let mut rels = vec![Rel::OnLine(key.clone(), line.clone())];
+                rels.extend(ons.iter().map(|on| implied.on(key.clone(), on)));
+                rels
+            }
+            Target::On(curve) => vec![implied.on(key.clone(), curve)],
+            Target::Crossing(a, b) => vec![implied.on(key.clone(), a), implied.on(key.clone(), b)],
+        };
+        if let Some(q) = &self.level_with {
+            rels.push(Rel::Same(Axis::Level, key.clone(), Key::Point(q.clone())));
+        }
+        if let Some(q) = &self.above {
+            rels.push(Rel::Same(Axis::Plumb, key.clone(), Key::Point(q.clone())));
+        }
+        for rel in &rels {
+            implied.assert(rel);
+        }
+    }
+
     /// The relations a new point placed so keeps, `point` being its ID.
     pub(super) fn relations(&self, point: &ElementId) -> Vec<Form> {
         let p = || Reference::Element(point.clone());
@@ -449,6 +479,9 @@ pub(super) struct Pointer<'v, 's> {
     /// The points the pointer has woken, the newest first: the only ones a point lines up
     /// with.
     pub(super) woken: &'v [ElementId],
+    /// The newest read's member states: which points are fully defined, so which of the
+    /// relations it infers the sketch already implies ([`Implied`]).
+    pub(super) states: &'v SketchStates,
 }
 
 /// A curve near the pointer: the reference, its shape, where the pointer's nearest to it, and
@@ -507,13 +540,16 @@ impl Pointer<'_, '_> {
         }
         let near = self.curves_near(at);
         if let Some((mid, line)) = self.midpoint_near(at) {
-            // Each other curve through the middle exactly, as where it crosses the line.
-            let ons = near
+            // Each other curve through the middle exactly, as where it crosses the line, but
+            // one the sketch already holds the middle on (#278's G as amended).
+            let mut ons: Vec<Reference> = near
                 .iter()
                 .filter(|n| n.reference != Reference::Element(line.clone()))
                 .filter(|n| n.geo.off(mid) <= EXACT && (n.infinite || n.geo.spans(mid)))
                 .map(|n| n.reference.clone())
                 .collect();
+            ons.sort();
+            let ons = self.ons_not_implied(&line, ons);
             return Placed::new(mid, Target::Midpoint(line, ons));
         }
         if let Some((cross, a, b)) = self.crossing_near(at, &near) {
@@ -523,6 +559,28 @@ impl Pointer<'_, '_> {
             return Placed::new(curve.foot, Target::On(curve.reference.clone()));
         }
         Placed::new(at, Target::Free)
+    }
+
+    /// Of `ons`, in [`Reference`]'s order, the `on`s of a new point at the middle of `line`
+    /// the sketch doesn't already imply ([`Implied`], Rule E), the `midpoint` asserted first
+    /// and each `on` kept merged before the next: an `on` of the x axis at the middle of a
+    /// level line along it, or of a line level with it, goes.
+    fn ons_not_implied(&self, line: &ElementId, ons: Vec<Reference>) -> Vec<Reference> {
+        if ons.is_empty() {
+            return ons;
+        }
+        let mut implied = Implied::of(&self.view.sketch, self.states);
+        let point = Key::Fresh(0);
+        implied.assert(&Rel::OnLine(point.clone(), line.clone()));
+        let mut kept = Vec::new();
+        for curve in ons {
+            let rel = implied.on(point.clone(), &curve);
+            if !implied.implies(&rel) {
+                implied.assert(&rel);
+                kept.push(curve);
+            }
+        }
+        kept
     }
 
     /// What a click at `at` picks to dimension (Smart Dimension): a point of the sketch

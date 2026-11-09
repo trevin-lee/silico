@@ -11,11 +11,13 @@ use crate::command::Revision;
 
 mod dimension;
 mod edges;
+mod implied;
 use crate::document::json::{self, Plain};
 use crate::document::sketch_edit::{self, Members};
 use crate::document::{
     Coordinate, Form, Plane, Reference, SketchConstraint, SketchLine, SketchPoint,
 };
+use crate::sketch_states::{SketchState, SketchStates};
 
 /// IDs `t0000001`, `t0000002`, ... in turn, skipping any taken.
 struct Counter(u32);
@@ -111,26 +113,47 @@ struct Drive {
     /// *For construction*.
     construction: bool,
     keys: Modifiers,
-    ids: Counter,
+    ids: Box<dyn NewIds>,
     /// Each `sketch_add`'s members, described against the sketch it was added to.
     added: Vec<Vec<String>>,
     /// Each add's members, as made.
     made: Vec<Members>,
     messages: Vec<Message>,
     left: bool,
+    /// The read's states each event comes with: a sketch of free points' ([`no_states`]),
+    /// unless a test marks points fully defined.
+    states: SketchStates,
+    /// Where the last pointer event was.
+    last_at: Option<Xy>,
+}
+
+/// A read's states for a sketch of free points: none fully defined, nothing flagged.
+fn no_states() -> &'static SketchStates {
+    Box::leak(Box::new(SketchStates {
+        state: SketchState::UnderDefined,
+        dofs: 0,
+        points: std::collections::BTreeMap::new(),
+        lines: std::collections::BTreeMap::new(),
+        circles: std::collections::BTreeMap::new(),
+        arcs: std::collections::BTreeMap::new(),
+        constraints: std::collections::BTreeMap::new(),
+        solve_problem: None,
+    }))
 }
 
 impl Drive {
     fn new(kind: ToolKind, sketch: Sketch) -> Self {
         Drive {
             tool: SketchTool::new(kind),
+            states: no_states().clone(),
+            last_at: None,
             sketch,
             revision: Revision::OPENED,
             tolerance: TOLERANCE,
             automatic: true,
             construction: false,
             keys: Modifiers::default(),
-            ids: Counter(0),
+            ids: Box::new(Counter(0)),
             added: Vec::new(),
             made: Vec::new(),
             messages: Vec::new(),
@@ -147,8 +170,33 @@ impl Drive {
             tolerance: self.tolerance,
             automatic_relations: self.automatic,
             construction: self.construction,
+            states: &self.states,
         };
-        let outcome = self.tool.handle(&context, &mut self.ids, event, self.keys);
+        let shown: Vec<Relation> = self
+            .tool
+            .preview()
+            .shown
+            .iter()
+            .map(|s| s.relation.clone())
+            .collect();
+        let kind = self.tool.kind();
+        let at = match event {
+            Event::Press(at) | Event::Move(at) | Event::Release(at) | Event::DoubleClick(at) => {
+                Some(at)
+            }
+            _ => None,
+        };
+        // The preview the add's event came to is the one at its place: the event before it
+        // there (a click's press, a drag's last move). Events that jump (the property's) add
+        // where no preview was shown first: nothing to compare.
+        let previewed = at.is_some() && at == self.last_at;
+        self.last_at = at;
+        let outcome = self.tool.handle(&context, &mut *self.ids, event, self.keys);
+        if let Some(members) = &outcome.add
+            && previewed
+        {
+            shown_is_added(kind, &shown, members);
+        }
         if let Some(members) = &outcome.add {
             self.revision = self.revision.next().unwrap();
             self.tool.added(outcome.token.unwrap(), self.revision);
@@ -196,6 +244,86 @@ impl Drive {
     /// The adds so far, each described.
     fn adds(&self) -> Vec<Vec<String>> {
         self.added.clone()
+    }
+}
+
+/// The relations the pointer showed at the event that made an add (`shown`, the preview it
+/// came to), against the add's relations (`members`' constraints, but a rectangle's own,
+/// its sides' and a centre rectangle's `symmetric`, which it never shows: a tangent arc's
+/// own `tangent_at` it shows, as a line's inferred one): one and the same, as the glyphs a
+/// person sees are what's added (#278's G as amended). A point shared is structure, shown
+/// and adding nothing, but where an `on` makes it (a circle through a point, shown as the
+/// point shared): that one must be shown.
+fn shown_is_added(kind: ToolKind, shown: &[Relation], members: &Members) {
+    let new: std::collections::BTreeSet<&ElementId> =
+        members.points.iter().map(|p| &p.id).collect();
+    let own = |form: &Form| match kind {
+        ToolKind::CornerRectangle | ToolKind::CenterRectangle => matches!(
+            form,
+            Form::Horizontal { .. } | Form::Vertical { .. } | Form::Symmetric { .. }
+        ),
+        _ => false,
+    };
+    let element = |r: &Reference| match r {
+        Reference::Element(id) => Some(id.clone()),
+        _ => None,
+    };
+    let mut expected: Vec<Relation> = Vec::new();
+    for SketchConstraint { form, .. } in &members.constraints {
+        if own(form) {
+            continue;
+        }
+        let relation = match form {
+            Form::HorizontalPoints {
+                b: Reference::Origin,
+                ..
+            } => Some(Relation::Origin),
+            Form::VerticalPoints {
+                b: Reference::Origin,
+                ..
+            } => None,
+            Form::HorizontalPoints { b, .. } => element(b).map(Relation::HorizontalPoints),
+            Form::VerticalPoints { b, .. } => element(b).map(Relation::VerticalPoints),
+            Form::On { point, curve } => match point {
+                Reference::Element(p) if new.contains(p) => Some(Relation::On(curve.clone())),
+                Reference::Element(p) => Some(Relation::Shared(p.clone())),
+                _ => Some(Relation::Origin),
+            },
+            Form::Midpoint { line, .. } => element(line).map(Relation::Midpoint),
+            Form::Horizontal { .. } => Some(Relation::Horizontal),
+            Form::Vertical { .. } => Some(Relation::Vertical),
+            Form::Perpendicular { a, .. } => element(a).map(Relation::Perpendicular),
+            Form::Parallel { a, .. } => element(a).map(Relation::Parallel),
+            Form::TangentAt { a, .. } => element(a).map(Relation::Tangent),
+            other => panic!("{other:?}: no relation the pointer shows"),
+        };
+        expected.extend(relation);
+    }
+    let sorted = |relations: Vec<&Relation>| -> Vec<String> {
+        let mut texts: Vec<String> = relations.iter().map(|r| format!("{r:?}")).collect();
+        texts.sort();
+        texts
+    };
+    let unshared = |relations: &[Relation]| -> Vec<String> {
+        sorted(
+            relations
+                .iter()
+                .filter(|r| !matches!(r, Relation::Shared(_)))
+                .collect(),
+        )
+    };
+    // The origin a circle passes through is shown as the origin, as its centre at the
+    // origin would be: compared with the rest.
+    assert_eq!(
+        unshared(shown),
+        unshared(&expected),
+        "shown {shown:?}, added {members:?}"
+    );
+    for relation in expected.iter().filter(|r| matches!(r, Relation::Shared(_))) {
+        assert!(
+            shown.contains(relation),
+            "{relation:?} added, not shown: {shown:?}"
+        );
     }
 }
 
@@ -1062,12 +1190,23 @@ fn a_horizontal_lines_end_above_a_point_is_a_guide_not_a_relation() {
 // --- #278's G: every relation the pointer shows ----------------------------------------------
 
 #[test]
-fn a_redundant_relation_the_pointer_shows_is_added() {
+fn a_direction_the_sketch_already_fixes_is_neither_shown_nor_added() {
     // From (10, 0.1) to (40, −0.1), each end within 0.5 mm of the x axis: each on it, at
-    // (10, 0) and (40, 0), and the line between them horizontal, which the two `on`s already
-    // make it. All three are added: no filter (#278's G).
+    // (10, 0) and (40, 0), which already makes the line between them level. Its `horizontal`
+    // is left out, and the pointer doesn't show it as the line is let go (#278's G as
+    // amended (Fable, 2026-11-08, g5-redundant-autoconstraints-fable.md): a relation the
+    // sketch already fixes is neither shown nor added).
     let mut d = Drive::new(ToolKind::Line, empty());
-    d.drag([10.0, 0.1], [40.0, -0.1]);
+    d.to(10.0, 0.1).press(10.0, 0.1).to(40.0, -0.1);
+    let shown: Vec<&Relation> = d.tool.preview().shown.iter().map(|s| &s.relation).collect();
+    assert_eq!(
+        shown,
+        [
+            &Relation::On(Reference::XAxis),
+            &Relation::On(Reference::XAxis)
+        ]
+    );
+    d.release(40.0, -0.1);
     assert_eq!(
         d.adds(),
         [sorted(&[
@@ -1076,7 +1215,6 @@ fn a_redundant_relation_the_pointer_shows_is_added() {
             "line (10, 0)-(40, 0)",
             "on (10, 0) x_axis",
             "on (40, 0) x_axis",
-            "horizontal line (10, 0)-(40, 0)",
         ])]
     );
 }
@@ -1796,6 +1934,7 @@ fn a_cancel_after_the_add_its_chain_names_was_refused_starts_afresh() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut ids = Counter(0);
     let keys = Modifiers::default();
@@ -1902,10 +2041,11 @@ fn a_cancel_after_another_sketchs_read_cancels_nothing() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let out = d
         .tool
-        .handle(&context, &mut d.ids, Event::Cancel, Modifiers::default());
+        .handle(&context, &mut *d.ids, Event::Cancel, Modifiers::default());
     assert_eq!(out, Outcome::default());
     assert!(!d.tool.busy(), "afresh in the other sketch");
     assert!(d.tool.before_press.is_none());
@@ -2303,6 +2443,7 @@ fn clicks_on_a_stale_read(tool: &mut SketchTool, sketch: &Sketch, at: &[[f64; 2]
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut ids = Counter(0);
     let keys = Modifiers::default();
@@ -2385,6 +2526,7 @@ fn a_source_with_no_ids_adds_nothing_and_says_why() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SketchTool::new(ToolKind::Line);
     let keys = Modifiers::default();

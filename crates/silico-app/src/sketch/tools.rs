@@ -97,6 +97,7 @@ impl Input<'_> {
             tolerance: self.tolerance,
             automatic_relations: self.automatic_relations,
             construction: self.construction,
+            states: &self.read.states,
         }
     }
 

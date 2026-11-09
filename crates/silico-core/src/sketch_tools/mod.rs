@@ -34,8 +34,11 @@
 //!   about 1e-9 rad: an obround's join), so both hold where it's written. FreeCAD 1.1.3's
 //!   `seekAutoConstraint` adds both whatever; its main, since `d77c9647c3`, skips the
 //!   alignment wherever there's a tangency; this rule sits between them. Every one the
-//!   pointer shows at the accepting click is added, redundant or not (#278's G). Ctrl held,
-//!   or *Automatic relations* off, suppresses them all, and only them (#278's F).
+//!   pointer shows at the accepting click is added, and it shows none the sketch already
+//!   fixes (#278's G as amended, [`implied`]): an inferred relation asserting two points
+//!   level or plumb that the sketch already holds so, or reading only points it holds
+//!   fixed, is left out before it's shown. Ctrl held, or *Automatic relations* off,
+//!   suppresses them all, and only them (#278's F).
 //! - **Points lined up** (#278's E, and the coordinator's decision of 2026-10-31, as
 //!   SolidWorks wakes a point by hovering it): a point placed on nothing lines up only with
 //!   a woken point, one the pointer has passed within the pick tolerance of while the tool's
@@ -75,6 +78,7 @@ mod build;
 mod circle;
 mod dimension;
 mod geometry;
+mod implied;
 mod infer;
 mod line;
 mod point;
@@ -85,6 +89,7 @@ mod tests;
 use crate::command::{FeatureIds, Revision};
 use crate::document::sketch_edit::Members;
 use crate::document::{ElementId, FeatureId, Reference, Sketch};
+use crate::sketch_states::SketchStates;
 use crate::{Error, ErrorCode};
 use adds::Adds;
 
@@ -92,6 +97,7 @@ pub use dimension::{
     DimensionEvent, DimensionPreview, LEVEL, Offer, OfferChoice, OfferRequest, PARALLEL, Placement,
     PlacementKind, SmartDimension, TypedValue, offer, read_typed,
 };
+pub use implied::implied_by;
 pub use infer::{ANGLE_TOLERANCE_DEGREES, CROSSING_CURVES, WAKE};
 
 /// A point or a vector in the sketch's plane, `[x, y]`, in millimetres.
@@ -140,6 +146,10 @@ pub struct Context<'a> {
     /// construction either way, every other point not), and the relations inferred are the
     /// same. Smart Dimension, which adds no curve, doesn't read it.
     pub construction: bool,
+    /// The newest read's states: its points' (fully defined or not) are what a tool reads to
+    /// leave out an inferred relation the sketch already fixes (#278's G as amended,
+    /// `implied`). A sketch of free points has none to give: an empty read's are right.
+    pub states: &'a SketchStates,
 }
 
 /// The keys held with an event: Shift (a square), and Ctrl (no inferred relations).
@@ -636,6 +646,7 @@ impl SketchTool {
                 tolerance,
                 infer: context.automatic_relations && !keys.ctrl,
                 woken: &woken,
+                states: context.states,
             },
             shift: keys.shift,
             ids,

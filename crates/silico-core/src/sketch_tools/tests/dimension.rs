@@ -54,6 +54,7 @@ impl Dim {
             tolerance: self.tolerance,
             automatic_relations: true,
             construction: false,
+            states: &self.states,
         };
         let outcome = self
             .tool
@@ -1671,6 +1672,7 @@ fn a_dimension_placed_before_a_read_shows_it_keeps_its_id_taken() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Lowest;
@@ -1700,6 +1702,7 @@ fn another_sketch_starts_the_tool_afresh() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     d.tool.handle(
         &context,
@@ -1761,6 +1764,7 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
@@ -2758,6 +2762,7 @@ fn another_sketch_forgets_the_placement() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     d.tool.handle(
         &context,
@@ -2854,6 +2859,7 @@ fn settle_takes_a_read_with_no_event() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let out = d.tool.settle(&context, &under());
     assert_eq!(out, Outcome::default());
@@ -2868,6 +2874,7 @@ fn settle_takes_a_read_with_no_event() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let out = d.tool.settle(&context, &under());
     assert_eq!(out.message, Some(Message::DimensionChanged));
@@ -3094,6 +3101,7 @@ fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
@@ -3193,6 +3201,7 @@ fn a_placement_not_yet_answered_holds_the_next() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
@@ -3284,6 +3293,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
+            states: no_states(),
         };
         let mut tool = SmartDimension::new();
         let mut ids = Counter(0);
@@ -3305,6 +3315,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
+            states: no_states(),
         };
         tool.settle(&context, &states);
         let placement = tool.placement().unwrap();
@@ -3486,6 +3497,7 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SmartDimension::new();
     for at in [[20.0, 10.0], [20.0, 30.0]] {
