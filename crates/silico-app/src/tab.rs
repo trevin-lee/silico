@@ -5465,11 +5465,14 @@ fn standing(entries: &[Entry], body: &FeatureId, own: Option<&FeatureId>) -> Sta
 /// and that no feature consumes. A feature stands for a solid if it makes one (it isn't a
 /// sketch) and isn't suppressed, or if it's suppressed and its base stands for one (its
 /// chain passes it through, as `document::suppression`'s `standing` has it). A feature is
-/// consumed if any feature names it as an input, as the gate counts consumers: built or
-/// not, suppressed or not (a sketch a sweep names is among them, and stands for nothing).
+/// consumed if a feature other than a sketch names it as an input, built or not, suppressed
+/// or not, as the gate counts consumers (`Operation::inputs`: a feature's base and tool). A
+/// sketch consumes nothing, so a sketch on a face leaves the face's feature standing; the
+/// sketch a sweep names is among a sweep's inputs, and stands for nothing.
 fn tip_of(entries: &[Entry]) -> Option<FeatureId> {
     let consumed: std::collections::BTreeSet<&FeatureId> = entries
         .iter()
+        .filter(|entry| entry.kind != "sketch")
         .flat_map(|entry| entry.inputs.iter())
         .collect();
     let mut stands: BTreeMap<&FeatureId, bool> = BTreeMap::new();
@@ -6261,6 +6264,36 @@ mod tests {
         ];
         assert_eq!(tip_of(&fused), None);
         assert_eq!(tip_of(&[]), None);
+    }
+
+    #[test]
+    fn a_sketch_on_a_face_consumes_nothing_and_leaves_its_faces_feature_the_tip() {
+        let id = |text: &str| Some(FeatureId::new(text).unwrap());
+        // A box, and a sketch on one of its faces: the timeline lists the face's feature among
+        // the sketch's inputs, but the gate counts base and tool alone as consuming a solid,
+        // and a sketch has neither: the box is the tip.
+        let mut entries = vec![
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &["b0000001"]),
+        ];
+        assert_eq!(tip_of(&entries), id("b0000001"));
+        // A pocket of the box from that sketch: its base, the box, is consumed, and the pocket
+        // is the tip.
+        entries.push(feature(
+            "p0000001",
+            "pocket",
+            false,
+            &["b0000001", "s0000001"],
+        ));
+        assert_eq!(tip_of(&entries), id("p0000001"));
+        // A sketch on a face of a box that a later fuse consumes: the fuse is the tip.
+        let fused = [
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &["b0000001"]),
+            feature("b0000002", "box", false, &[]),
+            feature("z0000001", "fuse", false, &["b0000001", "b0000002"]),
+        ];
+        assert_eq!(tip_of(&fused), id("z0000001"));
     }
 
     #[test]
