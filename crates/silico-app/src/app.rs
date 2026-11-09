@@ -164,17 +164,33 @@ const PALETTE_MARGIN: f32 = 12.0;
 const PALETTE_FROM_CORNER: egui::Vec2 =
     egui::Vec2::new(-PALETTE_MARGIN - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
 
-/// The bands sketch mode's panels cover, in pixels at `pixels_per_point` (G6): from the
-/// canvas's top to as far below the sketch bar as it stands below the top, and from the
-/// canvas's right to as far left of the palette as it stands in from the right. A fit in
-/// sketch mode keeps its box out of them (`navigate::Inset`).
-fn sketch_inset(pixels_per_point: f32) -> crate::navigate::Inset {
+/// The bands sketch mode's panels cover, in pixels at `pixels_per_point`: from the canvas's
+/// top to as far below the sketch bar as it stands below the top, and from the canvas's
+/// right to as far left of the palette as it stands in from the right. A fit in sketch mode
+/// keeps its box out of them (`navigate::Inset`). Measured from the bar and the palette as
+/// the last frame drew them over `canvas`, so a band is what's on the screen; before they've
+/// been drawn, from where they're placed and their sizes.
+fn sketch_inset(
+    pixels_per_point: f32,
+    canvas: Option<egui::Rect>,
+    panels: Option<(egui::Rect, egui::Rect)>,
+) -> crate::navigate::Inset {
+    let (top, right) = match (canvas, panels) {
+        (Some(canvas), Some((bar, palette))) => (
+            (bar.bottom() - canvas.top()) + (bar.top() - canvas.top()),
+            (canvas.right() - palette.left()) + (canvas.right() - palette.right()),
+        ),
+        _ => (
+            2.0 * SKETCH_BAR_FROM_TOP + sketch::style::SKETCH_BAR_HEIGHT,
+            2.0 * PALETTE_MARGIN + sketch::style::SKETCH_PALETTE_WIDTH,
+        ),
+    };
     // Up to a whole pixel, so a band covers its panel; a few hundred at most, and the cast
     // saturates past u32 anyway.
     let pixels = |points: f32| (points * pixels_per_point).ceil().max(0.0) as u32;
     crate::navigate::Inset {
-        top: pixels(2.0 * SKETCH_BAR_FROM_TOP + sketch::style::SKETCH_BAR_HEIGHT),
-        right: pixels(2.0 * PALETTE_MARGIN + sketch::style::SKETCH_PALETTE_WIDTH),
+        top: pixels(top),
+        right: pixels(right),
         bottom: 0,
         left: 0,
     }
@@ -745,11 +761,12 @@ impl<P: Clients + 'static> App<P> {
         }
         self.toolbar(ui, &mut started);
         self.status_bar(ui, &mut started);
-        // What sketch mode adds to each view's fits (G6): its geometry, and the bands its bar
-        // and palette cover, set before the viewport takes the frame's asked view.
-        let inset = sketch_inset(ui.ctx().pixels_per_point());
+        // What sketch mode adds to each view's fits: its geometry, and the bands its bar and
+        // palette cover, set before the viewport takes the frame's asked view.
+        let ppp = ui.ctx().pixels_per_point();
         for tab in &mut self.tabs {
-            tab.frame_view(inset);
+            let panels = tab.sketch.as_ref().and_then(|mode| mode.panels);
+            tab.frame_view(sketch_inset(ppp, self.canvas, panels));
         }
         // Over the status bar, across the window's width, under a docked dialog too; drawn
         // before the viewport, which highlights the faces of the feature hovered in it.
@@ -2270,10 +2287,12 @@ impl<P: Clients + 'static> App<P> {
         let offer = mode.offer_view(&name);
         let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
-        egui::Area::new(sketch::dimension::bar_area(&id))
+        let bar_drawn = egui::Area::new(sketch::dimension::bar_area(&id))
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
             .pivot(egui::Align2::CENTER_TOP)
-            .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar));
+            .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar))
+            .response
+            .rect;
         // Pinned at the canvas's top right, under the ViewCube, as the prototype's is, and
         // kept above the canvas's bottom by the prototype's margin: its body scrolls if it
         // doesn't fit.
@@ -2285,6 +2304,7 @@ impl<P: Clients + 'static> App<P> {
                 sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
             });
         let (look_at, palette) = (shown.inner, shown.response.rect);
+        mode.panels = Some((bar_drawn, palette));
         match action {
             BarAction::None => {}
             BarAction::Finish => tab.finish_sketch(sessions, true),

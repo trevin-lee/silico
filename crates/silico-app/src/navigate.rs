@@ -241,6 +241,18 @@ pub struct Inset {
     pub left: u32,
 }
 
+/// What sketch mode adds to a view's fit (the M5.12 slice's finding, docs/walkthrough/m5.md):
+/// the open sketch's geometry, taken into the bounds with the bodies'
+/// (`crate::sketch::bounds`), and the bands its bar and palette cover, which a fitted view
+/// keeps its box out of. The tab sets it on its view each frame; the default, outside sketch
+/// mode, adds nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Framing {
+    /// The open sketch's geometry, as a box in model space.
+    pub sketch_box: Option<[[f64; 3]; 2]>,
+    pub inset: Inset,
+}
+
 impl Inset {
     /// The part of a `width` by `height` pane it leaves, if it leaves at least a pixel each
     /// way: its width and height.
@@ -299,11 +311,7 @@ pub fn named_in(
     height: u32,
     inset: Inset,
 ) -> Option<Camera> {
-    let (width, height) = (width.max(1), height.max(1));
-    let camera = inset_fit(width, height, inset, |across, down| {
-        view.camera(bounds, across, down)
-    })?;
-    checked_at(camera, width, height)
+    look_at(view.direction(), view.up(), bounds, width, height, inset)
 }
 
 /// Look At (Fusion's; SolidWorks' Normal To): the view square to a plane, looking at it
@@ -326,9 +334,9 @@ pub fn look_at(
 }
 
 /// Which way is up when looking at a face square from `toward` (its unit outward normal),
-/// as the named views have it ([`NamedView::up`]): +z across the view, made a unit; or +y
-/// when the face looks along z, as `top` and `bottom` have it, which is when +z's part
-/// across the view is under a millionth, too short to steer by.
+/// as the named views have it ([`NamedView::up`]): +z across the view, made a unit as the
+/// core makes a corner's; or +y when the face looks along z, as `top` and `bottom` have it,
+/// which is when +z's part across the view is under a millionth, too short to steer by.
 pub fn up_across(toward: [f64; 3]) -> [f64; 3] {
     let z = [0.0, 0.0, 1.0];
     let across = sub(z, scaled(toward, dot(z, toward)));
@@ -336,7 +344,7 @@ pub fn up_across(toward: [f64; 3]) -> [f64; 3] {
     if length < 1e-6 {
         return [0.0, 1.0, 0.0];
     }
-    scaled(across, 1.0 / length)
+    across.map(|part| part / length)
 }
 
 /// The view switched to a perspective one (Fusion's ViewCube menu, *Camera*), at
@@ -681,6 +689,38 @@ mod tests {
         let refit = fit_in(&front(), L, 1000, 800, BANDS).unwrap();
         assert!((height(&refit) - 66.0).abs() < 1e-12);
         near(refit.target, [38.25, 0.0, 29.125], 1e-12);
+    }
+
+    #[test]
+    fn bands_at_the_left_and_bottom_move_the_box_right_and_up_into_the_rest() {
+        // As BANDS' test, the rest 800 by 700 at 0.0825 mm a pixel, but its centre, (600,
+        // 350), is 100 right of the pane's (500, 400) and 50 above it: the target moves 8.25
+        // left (−x) and 4.125 down (−z) of the box's centre, (30, 0, 25).
+        let bands = Inset {
+            top: 0,
+            right: 0,
+            bottom: 100,
+            left: 200,
+        };
+        let fitted = named_in(NamedView::Front, L, 1000, 800, bands).unwrap();
+        assert!((height(&fitted) - 66.0).abs() < 1e-12, "{fitted:?}");
+        near(fitted.target, [21.75, 0.0, 20.875], 1e-12);
+    }
+
+    #[test]
+    fn a_band_leaving_one_pixel_across_fits_the_box_into_that_pixel() {
+        // 999 of 1000 columns covered at the right: the rest is 1 by 800, so the core's fit
+        // takes 60 across × 800 / 1 = 48 000, and 1.1 × that is 52 800 mm over 800 rows, 66 mm
+        // a pixel. The rest's centre, half a pixel in from the pane's left, is 499.5 pixels
+        // left of the pane's: the target is 499.5 × 66 = 32 967 right (+x) of the box's
+        // centre, at the box's middle height.
+        let sliver = Inset {
+            right: 999,
+            ..Inset::default()
+        };
+        let fitted = named_in(NamedView::Front, L, 1000, 800, sliver).unwrap();
+        assert!((height(&fitted) - 52_800.0).abs() < 1e-6, "{fitted:?}");
+        near(fitted.target, [30.0 + 32_967.0, 0.0, 25.0], 1e-6);
     }
 
     #[test]

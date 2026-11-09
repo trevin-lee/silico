@@ -362,12 +362,18 @@ pub const NEEDS_TWO_BODIES: &str = "Needs two bodies";
 pub const UNMENDED: &str =
     "The document has problems of its own: no feature changes until they're mended";
 
-/// What Look At says with no face to look at ([`Tab::look_at`]), the prototype's words.
+/// What Look At says with no flat face to look at ([`Tab::look_at`]): nothing selected,
+/// several things, one that isn't a face, or a face the core measured not planar. The
+/// prototype's words.
 pub const LOOK_AT_NO_FACE: &str = "Look At: select a flat face first.";
 
-/// What Look At says in sketch mode before a read has placed the sketch on its plane, or
-/// when the rebuild couldn't (a sketch on a face not found).
-pub const LOOK_AT_UNPLACED: &str = "Look At: the sketch isn't placed on a plane yet.";
+/// What Look At says of the one face selected while the core's measures of it haven't come
+/// (its `elements` read is out, or isn't asked while a dialog takes the selection).
+pub const LOOK_AT_UNMEASURED: &str = "Look At: the face selected isn't measured yet.";
+
+/// What Look At says in sketch mode before the sketch's first read has come. Once it has, a
+/// sketch the rebuild couldn't place (on a face not found) says the read's own error.
+pub const LOOK_AT_UNREAD: &str = "Look At: the sketch isn't read yet.";
 
 /// A command a tab sent that changes its transaction, as it sent it: what a test reads
 /// as the call record.
@@ -1309,16 +1315,16 @@ impl Tab {
         }
     }
 
-    /// What sketch mode adds to the view's fits this frame (G6, [`crate::viewport::Framing`]):
+    /// What sketch mode adds to the view's fits this frame ([`crate::navigate::Framing`]):
     /// the open sketch's geometry, and `inset`, the bands its bar and palette cover, in the
     /// canvas's pixels; nothing outside sketch mode.
     pub fn frame_view(&mut self, inset: crate::navigate::Inset) {
         let framing = self
             .sketch
             .as_ref()
-            .map_or_else(crate::viewport::Framing::default, |mode| {
-                crate::viewport::Framing {
-                    also: mode.model_box(),
+            .map_or_else(crate::navigate::Framing::default, |mode| {
+                crate::navigate::Framing {
+                    sketch_box: mode.model_box(),
                     inset,
                 }
             });
@@ -1332,41 +1338,46 @@ impl Tab {
     /// fits what a named view fits. Else what's missing is said, and the view stays.
     pub fn look_at(&mut self) {
         use crate::viewport::ViewAsk;
-        if let Some(mode) = self.sketch.as_ref() {
-            match mode.plane() {
-                Some(plane) => self.view.ask(ViewAsk::LookAt {
-                    toward: plane.normal(),
-                    up: plane.y_axis(),
-                }),
-                None => self.toast = Some(LOOK_AT_UNPLACED.to_owned()),
-            }
-            return;
-        }
-        match self.selected_plane_normal() {
-            Some(toward) => self.view.ask(ViewAsk::LookAt {
-                toward,
-                up: crate::navigate::up_across(toward),
-            }),
-            None => self.toast = Some(LOOK_AT_NO_FACE.to_owned()),
+        let asked = match self.sketch.as_ref() {
+            Some(mode) => match mode.drawable().map(|read| &read.plane) {
+                Some(Ok(plane)) => Ok((plane.normal(), plane.y_axis())),
+                Some(Err(error)) => Err(format!("Look At: {}", error.message())),
+                None => Err(LOOK_AT_UNREAD.to_owned()),
+            },
+            None => self
+                .selected_plane_normal()
+                .map(|toward| (toward, crate::navigate::up_across(toward)))
+                .map_err(str::to_owned),
+        };
+        match asked {
+            Ok((toward, up)) => self.view.ask(ViewAsk::LookAt { toward, up }),
+            Err(said) => self.toast = Some(said),
         }
     }
 
     /// The outward normal of the one element selected, if it's a face the core's answer for
-    /// the selection as it is now says is planar.
-    fn selected_plane_normal(&self) -> Option<[f64; 3]> {
+    /// the selection as it is now says is planar; else what Look At says instead.
+    fn selected_plane_normal(&self) -> Result<[f64; 3], &'static str> {
         use silico_core::command::elements::ElementType;
         let mut elements = self.selection.elements();
-        let one = elements.next()?;
-        if elements.next().is_some()
-            || one.found()?.kind() != silico_core::kernel::ElementKind::Face
-        {
-            return None;
+        let (Some(one), None) = (elements.next(), elements.next()) else {
+            return Err(LOOK_AT_NO_FACE);
+        };
+        match one.found().map(silico_core::selection::Selected::kind) {
+            None => return Err(LOOK_AT_UNMEASURED),
+            Some(silico_core::kernel::ElementKind::Face) => {}
+            Some(_) => return Err(LOOK_AT_NO_FACE),
         }
-        let of = crate::measures::Of::now(&self.selection)?;
-        let entry = self.measures.answers(of)?.element.as_ref()?.as_ref().ok()?;
-        (entry.r#type == ElementType::Plane)
-            .then_some(entry.normal)
-            .flatten()
+        let answered = crate::measures::Of::now(&self.selection)
+            .and_then(|of| self.measures.answers(of))
+            .and_then(|answers| answers.element.as_ref());
+        match answered {
+            Some(Ok(entry)) if entry.r#type == ElementType::Plane => {
+                entry.normal.ok_or(LOOK_AT_NO_FACE)
+            }
+            Some(Ok(_)) => Err(LOOK_AT_NO_FACE),
+            Some(Err(_)) | None => Err(LOOK_AT_UNMEASURED),
+        }
     }
 
     /// The canvas's Select Other menu closed, if it's open: a modal or the shortcut sheet has
