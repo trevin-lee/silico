@@ -506,18 +506,20 @@ fn a_centre_of_the_wrong_shape_is_refused_naming_it() {
 #[test]
 fn a_centre_stored_as_a_solid_with_nothing_in_it_stores_it_is_drift_not_a_refusal() {
     // A solid with nothing in it stores neither a centre nor a box. A file that stores a
-    // centre without a box, or a box without a centre, reads (the reader checks each field
-    // as written, not what a kernel would measure), and the rebuild names what moved.
+    // centre without a box reads (the reader checks each field as written, not what a
+    // kernel would measure), and the rebuild names what moved. A box without a centre is
+    // a fingerprint written before Silico stored centres (#389), which recorded none: not
+    // compared on it, no drift (Fable's decision of 2026-11-09; `check` warns
+    // `fingerprint_incomplete`).
+    let (_, model) = rebuilt(&block_with(
+        r#"{"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
+    ));
+    assert!(model.drift().is_empty(), "{:?}", model.drift());
     for (fingerprint, field, said) in [
         (
             r#"{"volume": 8000, "area": 2800, "center": [20, 10, 5], "faces": 6, "edges": 12, "vertices": 8}"#,
             "fingerprint.bbox",
             "bbox none → [0, 0, 0, 40, 20, 10]",
-        ),
-        (
-            r#"{"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
-            "fingerprint.center",
-            "center none → [20, 10, 5]",
         ),
         // Nothing at all where a block is: both, in the file's order.
         (

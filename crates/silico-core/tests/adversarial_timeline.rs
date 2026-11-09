@@ -57,8 +57,10 @@ fn rebuilt_with(
     )
 }
 
-/// A box 7 × 1 × 1 stored with volume 8: it measures 7 (by formula), so it drifts.
-const STALE_BOX: &str = r#"{"id": "dddddddd", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 7, "width": 1, "height": 1, "fingerprint": {"volume": 8, "area": 30, "bbox": [0, 0, 0, 7, 1, 1], "faces": 6, "edges": 12, "vertices": 8}}"#;
+/// A box 7 × 1 × 1 stored with volume 8: it measures 7 (by formula), so it drifts; its
+/// other measures as it measures them (area 2(7 + 7 + 1) = 30, centre its middle,
+/// (3.5, 0.5, 0.5)), so on its volume alone.
+const STALE_BOX: &str = r#"{"id": "dddddddd", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 7, "width": 1, "height": 1, "fingerprint": {"volume": 8, "area": 30, "center": [3.5, 0.5, 0.5], "bbox": [0, 0, 0, 7, 1, 1], "faces": 6, "edges": 12, "vertices": 8}}"#;
 
 // --- Drift excepted by the session's check, reported by the timeline -----------------------
 

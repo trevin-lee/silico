@@ -12259,7 +12259,8 @@
                   "ends_not_joined",
                   "constraints_redundant",
                   "fingerprint_missing",
-                  "constraints_partially_redundant"
+                  "constraints_partially_redundant",
+                  "fingerprint_incomplete"
                 ],
                 "type": "string"
               },

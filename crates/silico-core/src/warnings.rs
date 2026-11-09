@@ -56,6 +56,13 @@
 //!   published, after a save that wrote a sketch's solve and so didn't publish) doesn't warn
 //!   of a feature that document stores a fingerprint for now
 //!   (docs/design/m4.1-warnings-addendum.md).
+//! - `fingerprint_incomplete` (Fable's decision, 2026-11-09): a feature that built, whose
+//!   stored fingerprint doesn't record a measure a later Silico added, so a change there
+//!   isn't caught as drift: today its centre, in a fingerprint written before Silico stored
+//!   one (#389), its box there and its centre left out (`Fingerprint::records_center`),
+//!   where the solid has material. The rebuild isn't compared on that measure until
+//!   `format`, or a commit that reaches the feature, writes it in. Spared as
+//!   `fingerprint_missing` is.
 //!
 //! **Order:** by timeline (the document's features, in order), then by code, in
 //! [`WarningCode`]'s order (`ends_not_joined`, `constraints_redundant`,
@@ -179,6 +186,7 @@ fn of_feature(
         }
         (_, FeatureOutcome::Built { built, .. }) if !spared.contains(&feature.id) => {
             fingerprint_missing(feature, built, warnings);
+            fingerprint_incomplete(feature, built, warnings);
         }
         _ => {}
     }
@@ -434,6 +442,33 @@ fn constraints_redundant(id: &FeatureId, solution: &SketchSolution, warnings: &m
                 )
         });
     }
+}
+
+/// `feature`'s `fingerprint_incomplete` (the module's), if it built as `built` and the
+/// fingerprint its file stores doesn't record a measure a save would store: its centre, in
+/// a fingerprint written before Silico stored one ([`Fingerprint::records_center`]), of a
+/// solid with material in it.
+fn fingerprint_incomplete(feature: &Feature, built: &Built, warnings: &mut Warnings) {
+    let Some(stored) = &feature.fingerprint else {
+        return;
+    };
+    let rebuilt = built.summary().and_then(Fingerprint::of);
+    if stored.records_center() || rebuilt.is_none_or(|rebuilt| rebuilt.center.is_none()) {
+        return;
+    }
+    warnings.push_with(|| {
+        Warning::new(
+            WarningCode::FingerprintIncomplete,
+            format!(
+                "{} built, but its stored fingerprint doesn't record its center, so a change \
+                 there isn't caught as drift",
+                feature.id
+            ),
+        )
+        .with_feature(feature.id.as_str())
+        .with_parameter("fingerprint.center")
+        .with_suggestion("format the document to store it")
+    });
 }
 
 /// `feature`'s `fingerprint_missing` (the module's), if it built as `built` and a save

@@ -632,6 +632,93 @@ fn a_feature_built_with_no_fingerprint_warns_once_until_format_stores_it() {
 }
 
 #[test]
+fn a_fingerprint_stored_before_centres_were_warns_incomplete_not_drift_until_format_stores_it() {
+    // Fable's decision of 2026-11-09. The box 4 by 2 by 1 at the origin, its fingerprint as
+    // Silico wrote one before #389: every measure but its centre (by hand: volume 8, area
+    // 2(8 + 4 + 2) = 28, box (0, 0, 0) to (4, 2, 1), 6 faces, 12 edges, 8 vertices). Its
+    // rebuild's centre, (2, 1, 0.5), isn't drift on a centre the file never recorded: a
+    // warning of its own code, until `format` writes the centre in (refingerprinted, no
+    // drift accepted); then nothing warns.
+    let fingerprinted = |fingerprint: &str| {
+        let block = block("k7f2qx3m", 0);
+        let open = &block[..block.len() - 1];
+        document(&[format!(r#"{open}, "fingerprint": {fingerprint}}}"#)])
+    };
+    let f = opened(&fingerprinted(
+        r#"{"volume": 8, "area": 28, "bbox": [0, 0, 0, 4, 2, 1], "faces": 6, "edges": 12, "vertices": 8}"#,
+    ));
+    let checked = f.check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    let [warning] = checked.warnings.listed() else {
+        panic!("{:?}", said(&checked));
+    };
+    assert_eq!(checked.warnings.total(), 1);
+    assert_eq!(warning.code(), WarningCode::FingerprintIncomplete);
+    assert_eq!(warning.code().as_str(), "fingerprint_incomplete");
+    assert_eq!(
+        warning.message(),
+        "k7f2qx3m built, but its stored fingerprint doesn't record its center, so a change \
+         there isn't caught as drift"
+    );
+    assert_eq!(warning.feature(), Some("k7f2qx3m"));
+    assert_eq!(warning.elements(), [] as [&str; 0]);
+    assert_eq!(warning.parameter(), Some("fingerprint.center"));
+    assert_eq!(warning.cause(), None);
+    assert_eq!(
+        warning.suggestion(),
+        Some("format the document to store it")
+    );
+    let formatted = answer(f.sessions.format(&s1(), None, true)).result.unwrap();
+    assert_eq!(formatted.refingerprinted, [id("k7f2qx3m")]);
+    assert!(formatted.accepted.is_empty(), "{:?}", formatted.accepted);
+    assert!(
+        std::fs::read_to_string(f.path())
+            .unwrap()
+            .contains(r#""center": [2, 1, 0.5]"#)
+    );
+    let checked = f.check();
+    assert!(checked.problems.is_empty() && checked.warnings.is_empty());
+
+    // Its other measures are compared still: a volume stored as 7.5 drifts, alone, the centre
+    // unnamed; and it warns of the centre beside the drift.
+    let f = opened(&fingerprinted(
+        r#"{"volume": 7.5, "area": 28, "bbox": [0, 0, 0, 4, 2, 1], "faces": 6, "edges": 12, "vertices": 8}"#,
+    ));
+    let checked = f.check();
+    let [drift] = checked.problems.errors() else {
+        panic!("{:?}", checked.problems);
+    };
+    assert_eq!(
+        drift.message(),
+        "feature k7f2qx3m rebuilt to other measures than its fingerprint: volume 7.5 → 8"
+    );
+    assert_eq!(
+        checked
+            .warnings
+            .listed()
+            .iter()
+            .map(|warning| warning.code())
+            .collect::<Vec<_>>(),
+        [WarningCode::FingerprintIncomplete]
+    );
+
+    // Once recorded, the centre is compared as any measure: stored mirrored, it drifts.
+    let f = opened(&fingerprinted(
+        r#"{"volume": 8, "area": 28, "center": [-2, 1, 0.5], "bbox": [0, 0, 0, 4, 2, 1], "faces": 6, "edges": 12, "vertices": 8}"#,
+    ));
+    let checked = f.check();
+    let [drift] = checked.problems.errors() else {
+        panic!("{:?}", checked.problems);
+    };
+    assert_eq!(
+        drift.message(),
+        "feature k7f2qx3m rebuilt to other measures than its fingerprint: center [-2, 1, 0.5] → \
+         [2, 1, 0.5]"
+    );
+    assert!(checked.warnings.is_empty(), "{:?}", said(&checked));
+}
+
+#[test]
 fn a_failed_or_blocked_feature_and_a_sketch_never_warn_of_a_fingerprint() {
     // The kernel refuses the box 3 long: it fails, the fuse using it is blocked, and the
     // sketch holds no fingerprint: none of them warns.
