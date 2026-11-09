@@ -890,21 +890,22 @@ fn a_million_valid_features_validate_promptly() {
     // 1.56 s), so each size is run five times, in turn with the probe ([`cpu_against_probe`]),
     // and each bound reads the statistic that suits it.
     //
-    // The growth: a million's median CPU over a hundred thousand's, at most 30, about 10 by
-    // its count (a little more for its sorted keys' depth and the cache it outgrows), where
-    // a validation quadratic in the count would be about 100. The median, not the least:
-    // from the same runs on loaded gate runners the least's ratio reached 35.7 (the hundred
-    // thousand's luckiest run still in cache), the median's 27.2, 15.2 to 27.2 in 20 runs
-    // (2026-11-08, gate 42534849064), and 16.4 to 23.5 in 20 more (gate 42539931034). Taken
-    // against the probe's own growth it spread more, not less: the probe's doesn't follow
-    // validation's.
+    // The growth: a million's median CPU over a hundred thousand's, at most 30: 10 by its
+    // count, more for its sorted keys' depth and the cache a million outgrows (15 to 27 on
+    // loaded gate runners, against the Mac's 14), where a validation quadratic in the count
+    // would be about 100. The median, not the least: from the same runs on loaded gate
+    // runners the least's ratio reached 35.7 (the hundred thousand's luckiest run still in
+    // cache), the median's 27.2, 15.2 to 27.2 in 20 runs (2026-11-08, gate 42534849064),
+    // and 16.4 to 23.5 in 20 more (gate 42539931034). Taken against the probe's own growth
+    // it spread more, not less: the probe's doesn't follow validation's.
     //
     // The cost: a million's least CPU at most VALIDATE_PER_PROBE times the probe's least
     // beside it ([`probe`]), which load stretches too, if not quite alike: so a validation
     // three times slower fails it on the gate, as the 15 s bound before it did there, and
-    // one ten times slower everywhere. And at most 60 s of CPU, four times the most a loaded
-    // gate has taken, against a slowdown the probe shares (its IDs' `as_str`, std's sort and
-    // search).
+    // one ten times slower everywhere (the gate's heaviest load yet, 13.8 s for the
+    // million, measured up to 31.3; heavier could near 38). And at most 60 s of CPU, four
+    // times the most a loaded gate has taken, against a slowdown the probe shares (its IDs'
+    // `as_str`, std's sort and search).
     let (small, large) = (valid_features(100_000), valid_features(1_000_000));
     let measured = cpu_against_probe([&small, &large], validate);
     let [small_result, large_result] = measured.results;
@@ -955,6 +956,9 @@ struct AgainstProbe<T> {
 /// load only adds time: right for a cost, set against the probe's least beside it. The
 /// median is right for a ratio of two sizes: the least favours the smaller, whose few lucky
 /// runs find it still in cache, as the larger never is.
+/// The probe runs at both sizes, though only the larger's is read: it warms the smaller's
+/// memory for its validation alike every run, which can only raise the ratio, and keeps the
+/// runs as they were calibrated.
 fn cpu_against_probe<T>(docs: [&Document; 2], f: impl Fn(&Document) -> T) -> AgainstProbe<T> {
     const RUNS: usize = 5;
     let mut runs: [Vec<Duration>; 2] = [Vec::with_capacity(RUNS), Vec::with_capacity(RUNS)];
