@@ -284,9 +284,10 @@ pub struct Frame<'a> {
     /// frame composited over the pass as it is; or none, its alpha 0 (its colour unread),
     /// the frame composited over what the pass already holds, so what the caller painted
     /// under it shows wherever no body is (the app's canvas, a gradient, its theme's
-    /// `VIEWPORT_FRAME_BG`). Its edges' and its outlines' alpha is their coverage, blended as
-    /// re_renderer blends a view whose lines are drawn with alpha to coverage
-    /// (`BlendWithBackground::AlphaToCoverage`). Any other alpha is refused: a frame isn't
+    /// `VIEWPORT_FRAME_BG`). There, what the frame holds is premultiplied, each pixel its
+    /// colour times its coverage and its alpha the coverage (its edges are alpha blended, not
+    /// drawn with alpha to coverage), and it's blended over the pass as such
+    /// (`BlendWithBackground::Premultiplied`). Any other alpha is refused: a frame isn't
     /// translucent. A render's is its own, opaque ([`BACKGROUND`]).
     pub background: [u8; 4],
 }
@@ -1109,11 +1110,16 @@ impl Renderer {
                 readback_identifier: picked.id,
                 show_debug_view: false,
             }),
-            // With no background of its own, over what the pass holds: its edges' and
-            // vertices' alpha is their coverage (alpha to coverage), so blended as such.
+            // With no background of its own, over what the pass holds. What the view holds is
+            // premultiplied already: its faces drawn over none (0, 0, 0, 0), its edges alpha
+            // blended (`enable_alpha_blending`), its vertices' discs premultiplied
+            // (`FLAG_PREMULTIPLIED_ALPHA`), none by alpha to coverage. So it's blended as it
+            // is: re_renderer's alpha-to-coverage blend multiplies by alpha again, leaving
+            // each pixel an edge partly covers its colour times its coverage twice, a dark
+            // fringe along it.
             blend_with_background: match background {
                 Some(_) => BlendWithBackground::No,
-                None => BlendWithBackground::AlphaToCoverage,
+                None => BlendWithBackground::Premultiplied,
             },
             ..Default::default()
         };

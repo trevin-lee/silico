@@ -16,7 +16,7 @@ use super::tests::on_lavapipe;
 use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjection};
 
 use super::{
-    BACKGROUND, Element, Frame, HIT_EDGE_POINTS, HIT_VERTEX_POINTS, MAX_PENDING_PICKS,
+    BACKGROUND, EDGE, Element, Frame, HIT_EDGE_POINTS, HIT_VERTEX_POINTS, MAX_PENDING_PICKS,
     MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines, PendingPick, Pick, Pickable, Picking, PixelRect,
     RenderFailure, Renderer, hits, project, ray,
 };
@@ -615,6 +615,80 @@ fn a_frames_background_is_the_colour_it_gives_and_a_renders_its_own() {
             let mut rgb = vec![0; reader.output_buffer_size().unwrap()];
             reader.next_frame(&mut rgb).unwrap();
             assert_eq!(rgb[..3], [red, green, blue]);
+        },
+    );
+}
+
+#[test]
+fn a_frame_with_no_background_blends_an_edges_rim_over_the_pass_premultiplied_once() {
+    // The box's top edge (Edge3, z = 10) along row 20.73, 2 points wide: rows 19.73 to
+    // 21.73, so row 20 is under it whole and row 19 only its feathered outer rim, over
+    // nothing (the front face starts at row 20.73), columns 14 to 48 clear of the box's
+    // sides. The edge's colour is EDGE, #282828. With no background, the frame holds that
+    // rim premultiplied: its alpha α its coverage, its colour EDGE · α. Composited over a
+    // pass cleared to an opaque `under`, each channel is then EDGE · α + under · (1 − α), α
+    // read over nothing (the frame's alpha there), to 1.5 of 255 for the 8-bit rounding of
+    // the frame, the composite, and α. Blended as alpha to coverage, the rim's colour is
+    // multiplied by α a second time: at α = 30/255, EDGE's 40 is 4.7 premultiplied once,
+    // but 1.0 twice (40 to linear, 0.0212, times α, 0.0025, back to sRGB, 8.2, times α), a
+    // dark fringe.
+    on_lavapipe(
+        "render::frame_tests::a_frame_with_no_background_blends_an_edges_rim_over_the_pass_premultiplied_once",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let none = || Frame {
+                background: NO_BACKGROUND,
+                ..frame(&camera, &[1], &[], None)
+            };
+            let commands = r.prepare(&none()).unwrap();
+            let over_nothing = composited(r, Some(commands));
+            let pixel = |pixels: &[[u8; 4]], x: u32, y: u32| {
+                pixels[usize::try_from(y * WIDTH + x).unwrap()]
+            };
+            for under in [[0x1e, 0x1f, 0x22], [200, 200, 200], [12, 200, 77]] {
+                let commands = r.prepare(&none()).unwrap();
+                let [red, green, blue] = under.map(|c| f64::from(c) / 255.0);
+                let clear = wgpu::Color {
+                    r: red,
+                    g: green,
+                    b: blue,
+                    a: 1.0,
+                };
+                let over = composited_over(r, Some(commands), clear);
+                for x in 14..=48 {
+                    // The edge whole: its own colour, opaque.
+                    let line = pixel(&over, x, 20);
+                    for k in 0..3 {
+                        assert!(
+                            line[k].abs_diff(EDGE[k]) <= 1,
+                            "{under:?}: ({x}, 20) {line:?}"
+                        );
+                    }
+                    let rim = pixel(&over_nothing, x, 19);
+                    let alpha = f64::from(rim[3]) / 255.0;
+                    assert!(
+                        rim[3] > 10 && rim[3] < 245,
+                        "({x}, 19) over nothing {rim:?}: not the rim"
+                    );
+                    let got = pixel(&over, x, 19);
+                    assert_eq!(got[3], 255, "{under:?}: ({x}, 19) {got:?}");
+                    for k in 0..3 {
+                        let want =
+                            f64::from(EDGE[k]) * alpha + f64::from(under[k]) * (1.0 - alpha);
+                        assert!(
+                            (f64::from(got[k]) - want).abs() <= 1.5,
+                            "{under:?}: ({x}, 19) {got:?}, channel {k}, against {want} (α {alpha})"
+                        );
+                        // Over nothing, the rim premultiplied once.
+                        let once = f64::from(EDGE[k]) * alpha;
+                        assert!(
+                            (f64::from(rim[k]) - once).abs() <= 1.5,
+                            "({x}, 19) over nothing {rim:?}, channel {k}, against {once}"
+                        );
+                    }
+                }
+            }
         },
     );
 }
