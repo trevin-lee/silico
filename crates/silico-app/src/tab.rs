@@ -805,6 +805,9 @@ pub struct Tab {
     selection: crate::selection::Selection,
     /// The canvas's box selection (M5.7): a left drag, on geometry or empty space.
     box_select: crate::box_select::BoxSelect,
+    /// The canvas's Select Other (M5.7): its right click's menu, and the list of what's
+    /// under the pointer.
+    select_other: crate::select_other::SelectOther,
     /// What a toast is to say for the tab (a box's count, or why it took nothing), until
     /// the app takes it.
     toast: Option<String>,
@@ -1021,6 +1024,7 @@ impl Tab {
             reloaded_to: None,
             selection: crate::selection::Selection::default(),
             box_select: crate::box_select::BoxSelect::default(),
+            select_other: crate::select_other::SelectOther::default(),
             toast: None,
             reload_diff: None,
             outside: BTreeMap::new(),
@@ -1079,7 +1083,9 @@ impl Tab {
     /// a drag's move goes out in the frame it happened.
     ///
     /// While a sketch is open, they're sketch mode's: the selection's canvas is claimed
-    /// (a click of the selection's waiting let go, and a box drawn), and sketch mode's frame
+    /// (a click of the selection's waiting let go, and a box drawn), Select Other's menu
+    /// closed (one open, or a right click waiting for its boxes, as the sketch opened, let
+    /// go, and the hover, the wheel, and the window's keys with it), and sketch mode's frame
     /// ([`sketch_frame`](Self::sketch_frame)) is given the frame's events and pointer in
     /// points, and its sketch's plane on the screen and back through the frame's camera
     /// ([`Screen`]). SEAM: a face pick for Create Sketch, reading
@@ -1090,7 +1096,10 @@ impl Tab {
     /// geometry what's under its press, and a drag from empty space a box
     /// (`crate::box_select`), each read against the published model the tab last polled,
     /// which asks the session nothing more. The box select comes after the selection, so
-    /// it reads the hover this frame's answer gave.
+    /// it reads the hover this frame's answer gave. A right click opens the canvas's context
+    /// menu (`crate::canvas_menu`, through `crate::select_other`), first of them: while it's
+    /// open it holds the hover and the wheel, and a left press that closes it is given to
+    /// neither; an item chosen in it is done here, as its command is elsewhere.
     pub fn overlay<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -1100,6 +1109,8 @@ impl Tab {
         if let Some(mode) = self.sketch.as_ref() {
             self.selection.canvas_claimed();
             self.box_select = Default::default();
+            self.select_other
+                .close(&mut self.selection, &mut self.view, painter.ctx());
             let (ppp, origin) = (frame.pixels_per_point, frame.rect.left_top());
             let events = sketch::frame_events(&frame.left, &frame.secondary, ppp, origin);
             let pointer = frame
@@ -1117,13 +1128,81 @@ impl Tab {
             self.sketch_frame(sessions, painter, &input);
             return;
         }
-        self.selection.overlay(&mut self.view, frame, painter.ctx());
         // The bodies are of the model the selection is read against: the one published
         // last, as counted.
         let current = matches!(
             (self.published, self.view.bodies_of()),
             (Some(revision), Some(of)) if of == (self.published_models, revision)
         );
+        // Select Other first (`crate::select_other`): while its menu is open it holds the
+        // hover and the wheel, and a left press that closes it is its own, given to neither
+        // the selection nor the box. Sketch mode claims the canvas before this, so Select
+        // Other, the selection's, never opens in a sketch (one open, or waiting, as a sketch
+        // opens is closed there).
+        // Why Edit can't open each feature's dialog, as the feature menus say it: worked out
+        // only in a frame a right click may open the menu in.
+        let edit_off: BTreeMap<silico_core::document::FeatureId, Option<String>> =
+            if frame.secondary.is_empty() {
+                BTreeMap::new()
+            } else {
+                let entries = self
+                    .timeline
+                    .as_ref()
+                    .and_then(|timeline| timeline.features.as_deref())
+                    .unwrap_or_default();
+                entries
+                    .iter()
+                    .map(|entry| {
+                        let off = crate::feature_menu::off(
+                            self,
+                            entry,
+                            crate::feature_menu::Item::Edit,
+                            crate::feature_menu::Place::Browser,
+                        );
+                        (entry.id.clone(), off)
+                    })
+                    .collect()
+            };
+        let entries = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
+        let names = |id: &silico_core::document::FeatureId| {
+            entries
+                .iter()
+                .find(|entry| &entry.id == id)
+                .map(|entry| entry.name.clone())
+        };
+        let edit = |id: &silico_core::document::FeatureId| {
+            edit_off
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| Some("Its feature isn't in the timeline yet".to_owned()))
+        };
+        let facts = crate::select_other::Facts {
+            names: &names,
+            edit_off: &edit,
+        };
+        let (left, asked) = self.select_other.overlay(
+            &mut self.selection,
+            &mut self.view,
+            frame,
+            painter,
+            current,
+            &facts,
+        );
+        let passed;
+        let frame = if left.len() == frame.left.len() {
+            frame
+        } else {
+            passed = crate::viewport::ViewFrame {
+                left,
+                ..frame.clone()
+            };
+            &passed
+        };
+        self.selection.overlay(&mut self.view, frame, painter.ctx());
         let hidden: std::collections::BTreeSet<silico_core::document::FeatureId> = self
             .hidden
             .iter()
@@ -1155,6 +1234,38 @@ impl Tab {
             // What the box took is sent from the dialog's pane, maybe drawn already.
             painter.ctx().request_repaint();
         }
+        if let Some(asked) = asked {
+            self.canvas_act(sessions, asked);
+            painter.ctx().request_repaint();
+        }
+    }
+
+    /// What the canvas's context menu asked, done as its command is elsewhere: Edit as the
+    /// feature menus' Edit feature (`crate::feature_menu::act`), Hide as H hides a body, Fit
+    /// and Home view as F6 and Home, and Clear selection as Esc clears it.
+    fn canvas_act<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        asked: crate::canvas_menu::CanvasAct,
+    ) {
+        use crate::canvas_menu::CanvasAct;
+        use crate::viewport::ViewAsk;
+        match asked {
+            CanvasAct::Edit(id) => {
+                crate::feature_menu::act(self, sessions, crate::feature_menu::Act::Edit(id));
+            }
+            CanvasAct::Hide(id) => self.toggle_shown(Hideable::Feature(id)),
+            CanvasAct::Fit => self.view.ask(ViewAsk::Fit),
+            CanvasAct::Home => self.view.ask(ViewAsk::Named(crate::navigate::HOME)),
+            CanvasAct::ClearSelection => self.selection.clear(),
+        }
+    }
+
+    /// The canvas's Select Other menu closed, if it's open: a modal or the shortcut sheet has
+    /// come up over it, and takes the keyboard's focus and its keys.
+    pub(crate) fn close_select_other(&mut self, ctx: &eframe::egui::Context) {
+        self.select_other
+            .close(&mut self.selection, &mut self.view, ctx);
     }
 
     /// What clicks toggled in the selection while the dialog's box took the canvas's picks,
@@ -1221,6 +1332,22 @@ impl Tab {
     /// What a toast is to say for the tab, taken once (the app shows it).
     pub fn take_toast(&mut self) -> Option<String> {
         self.toast.take()
+    }
+
+    /// The canvas's Select Other (M5.7): the menu open, if one is, and its rows.
+    pub fn select_other(&self) -> &crate::select_other::SelectOther {
+        &self.select_other
+    }
+
+    /// `key` for Select Other's menu, taken by the window's keys while it's open (or a right
+    /// click waits to open it), before the pane draws: applied in this frame's overlay.
+    pub(crate) fn select_other_key(&mut self, key: crate::select_other::MenuKey) {
+        self.select_other.key(key);
+    }
+
+    /// Select Other's boxes made by `build` from now on ([`crate::App::boxing`]).
+    pub(crate) fn boxing(&mut self, build: crate::boxes::Build) {
+        self.select_other.building(build);
     }
 
     /// What's selected (M5.7), and what the pointer is over in the canvas: one selection,

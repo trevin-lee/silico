@@ -221,6 +221,10 @@ pub struct ViewFrame {
     /// A click's `seq` places it among the frame's left events: a slow frame's left click
     /// and the right click after it (the Line tool's click, then End chain) are told apart.
     pub secondary: Vec<SecondaryClick>,
+    /// The bodies the frame drew, by number, ascending: those of the view's table the
+    /// browser doesn't hide and the renderer holds (none it refused), as the renderer is
+    /// given them, each its mesh's (`View::bodies`). What Select Other casts on.
+    pub drawn: Vec<u32>,
     /// When the frame was drawn, by the clock the viewport's reads wait on (a test's, moved
     /// by hand, through [`crate::App::presenting_clocked`]).
     pub now: Instant,
@@ -527,6 +531,11 @@ pub struct View {
     /// check's, Ctrl+Shift+B) makes them stale, as a new revision does.
     published: u64,
     read_published: u64,
+    /// Whether a menu over the canvas holds the wheel (Select Other's, which steps through
+    /// its rows with it, `crate::select_other`): the wheel doesn't zoom while it does. Held
+    /// from the frame after the menu opens (the tab's overlay comes after the pane's
+    /// navigation), and let go as it closes.
+    pub(crate) wheel_held: bool,
 }
 
 /// A view a shortcut asks of the tab's viewport.
@@ -573,6 +582,7 @@ impl Default for View {
             asked: None,
             published: 0,
             read_published: 0,
+            wheel_held: false,
         }
     }
 }
@@ -1381,7 +1391,7 @@ impl View {
             };
             self.drag = (held && !lost).then_some(Drag::Canvas { button, last: at });
         }
-        if response.hovered() {
+        if response.hovered() && !self.wheel_held {
             let line = ui
                 .ctx()
                 .options(|options| options.input_options.line_scroll_speed);
@@ -1754,6 +1764,13 @@ pub fn show<P: Clients + 'static>(
         .input(|input| input.pointer.latest_pos())
         .filter(|at| rect.contains(*at))
         .map(|at| [(at.x - rect.left()) * ppp, (at.y - rect.top()) * ppp]);
+    // Ascending, each once, as the renderer takes them: the table's order.
+    let bodies: Vec<u32> = view
+        .bodies
+        .iter()
+        .filter(|(number, body)| !view.hidden.contains(&body.feature) && drawing.holds(**number))
+        .map(|(number, _)| *number)
+        .collect();
     view.frame = Some(ViewFrame {
         session: tab.id,
         rect,
@@ -1763,15 +1780,9 @@ pub fn show<P: Clients + 'static>(
         pointer_px,
         left,
         secondary,
+        drawn: bodies.clone(),
         now,
     });
-    // Ascending, each once, as the renderer takes them: the table's order.
-    let bodies: Vec<u32> = view
-        .bodies
-        .iter()
-        .filter(|(number, body)| !view.hidden.contains(&body.feature) && drawing.holds(**number))
-        .map(|(number, _)| *number)
-        .collect();
     // A highlight of a body not drawn, or of an element its mesh hasn't, would have the
     // renderer refuse the whole frame.
     let linked = view.linked_faces();
@@ -2858,6 +2869,7 @@ mod tests {
             pointer_px: None,
             left: Vec::new(),
             secondary: Vec::new(),
+            drawn: Vec::new(),
             now: now(),
         };
         let ctx = egui::Context::default();
