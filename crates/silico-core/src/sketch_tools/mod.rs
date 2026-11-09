@@ -132,7 +132,8 @@ impl ToolKind {
 /// What a tool works against: the sketch, by its feature's ID; the newest `sketch` read's
 /// members, as solved, and the revision of the model it read; the pick tolerance, in
 /// millimetres, that the viewport gives (a few pixels at its zoom); whether *Automatic
-/// relations* is on; and whether the tool draws for construction.
+/// relations* is on; whether the tool draws for construction; and the newest read's states,
+/// which points it fixes.
 #[derive(Debug, Clone, Copy)]
 pub struct Context<'a> {
     pub sketch_id: &'a FeatureId,

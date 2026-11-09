@@ -10,7 +10,8 @@
 //! 1. a point of the sketch, shared (D2), always, whatever the setting and Ctrl (#278's F);
 //! 2. with relations inferred: the origin (#278's A), then a line's middle (with an `on` of
 //!    each other curve through it exactly, #278's G, but an axis the line lies along: the
-//!    line stands for the axis there), then where two curves cross (two `on`s; at one
+//!    line stands for the axis there; and but one the sketch already implies, #278's G as
+//!    amended, [`Implied`]), then where two curves cross (two `on`s; at one
 //!    place, the sketch's own pair before one with an axis), then a curve (`on`), each
 //!    within the pick tolerance. The pointer finds a line
 //!    and an arc only where they're drawn (not past a line's end, nor on an arc's circle
@@ -288,7 +289,8 @@ pub(super) enum Target {
     /// The origin: a new point, level with it and above it (#278's A).
     Origin,
     /// A line's middle: a new point and `midpoint`, and an `on` of each other curve that
-    /// crosses it there (#278's G).
+    /// crosses it there (#278's G), but one the sketch already implies with the `midpoint`
+    /// held (#278's G as amended, [`Implied`]).
     Midpoint(ElementId, Vec<Reference>),
     /// A curve or an axis: a new point and `on`.
     On(Reference),
