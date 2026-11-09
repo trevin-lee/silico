@@ -2889,7 +2889,10 @@ fn a_solution_its_load_cant_translate_is_an_invalid_result_with_the_first_solves
         &[],
         &[circle("c0000001", "p0000002", 5.0)],
         &[],
-        &[r#"{"id": "k0000001", "type": "on", "point": "p0000001", "curve": "c0000001"}"#.to_owned()],
+        &[
+            r#"{"id": "k0000001", "type": "on", "point": "p0000001", "curve": "c0000001"}"#
+                .to_owned(),
+        ],
     );
     let sketch = sketch_of(&text);
     let t = Translation::new(&sketch).unwrap();

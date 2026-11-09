@@ -1602,8 +1602,7 @@ fn a_dimension_edited_a_micrometre_off_its_partner_on_a_refused_sketch_is_offere
 }
 
 #[test]
-fn an_edit_that_ends_its_conflict_is_offered_where_decision_5_then_finds_another_whatever_its_id()
-{
+fn an_edit_that_ends_its_conflict_is_offered_where_decision_5_then_finds_another_whatever_its_id() {
     // The edit rule's known case (`offer_of`'s doc; c3-edit-masking-fable.md, §1.1 and §4). A
     // constraint's conflict has two judges: PlaneGCS, and decision 5, which runs only where
     // PlaneGCS lists no conflict. The same sketch; E edited to 21, a millimetre off P, its
@@ -1633,7 +1632,11 @@ fn an_edit_that_ends_its_conflict_is_offered_where_decision_5_then_finds_another
         let mut pair = vec![e, "kc000002"];
         pair.sort_unstable();
         assert_eq!(listed(&after, ConstraintState::Conflicting), pair, "{e}");
-        assert_eq!(listed(&after, ConstraintState::Redundant), ["kd000002"], "{e}");
+        assert_eq!(
+            listed(&after, ConstraintState::Redundant),
+            ["kd000002"],
+            "{e}"
+        );
         assert_eq!(
             offered.map(|o| o.constraint),
             Some(element(e)),
@@ -1649,7 +1652,11 @@ fn an_edit_that_ends_its_conflict_is_offered_where_decision_5_then_finds_another
             "{e}: {:?}",
             back.states
         );
-        assert_eq!(listed(&back, ConstraintState::Conflicting), ["kd000002"], "{e}");
+        assert_eq!(
+            listed(&back, ConstraintState::Conflicting),
+            ["kd000002"],
+            "{e}"
+        );
         assert_eq!(listed(&back, ConstraintState::Redundant), [pick(e)], "{e}");
         assert_eq!(
             offered.map(|o| o.constraint),
