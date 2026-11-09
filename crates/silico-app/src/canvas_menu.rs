@@ -315,11 +315,12 @@ impl CanvasMenu {
 
     /// It drawn, its item `lit` lit; Create Sketch's planes open beside it (egui's submenu,
     /// as CREATE's drop-down opens them), while the pointer is on it or they are, or while
-    /// `planes_open` (the app's Enter on it chose it, `crate::select_other`, until the keys
-    /// or the pointer move to another item): then asked open each frame, marked shown first,
-    /// so egui keeps them open with the pointer resting on another item. What was pointed
-    /// at, clicked, or chosen.
-    pub fn draw(&self, ui: &mut Ui, lit: Option<usize>, planes_open: bool) -> Drawn {
+    /// `planes_open` (the app's Enter on it chose it, held as `crate::select_other`'s `Menu`
+    /// says): then asked open each frame, marked shown first, so egui keeps them open with
+    /// the pointer resting on another item. On its `fresh` frame, its first, any open item a
+    /// menu before it left under the same IDs is let go first, so no planes show that it
+    /// didn't open. What was pointed at, clicked, or chosen.
+    pub fn draw(&self, ui: &mut Ui, lit: Option<usize>, planes_open: bool, fresh: bool) -> Drawn {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         let width = self.width(ui);
         if let Some(head) = &self.head {
@@ -330,6 +331,12 @@ impl CanvasMenu {
         // open (Create Sketch's planes) stays open past the frame it opened in.
         let root = egui::containers::menu::find_menu_root(ui).id;
         egui::containers::menu::MenuState::mark_shown(ui.ctx(), root);
+        // A menu opened by a right click in the frame the one before it was shown keeps that
+        // one's state (its IDs are the same, and egui 0.36.2's `MenuState::from_id` lets an
+        // open item go only when it wasn't shown the frame before): its planes let go here.
+        if fresh {
+            egui::containers::menu::MenuState::from_ui(ui, |state, _| state.open_item = None);
+        }
         for (at, shown) in self.items.iter().enumerate() {
             if self.separated(at) {
                 menu::separator(ui, width);
@@ -571,7 +578,7 @@ mod tests {
                 let place =
                     egui::Rect::from_min_size(egui::Pos2::new(10.0, 20.0), Vec2::new(900.0, 900.0));
                 ui.scope_builder(egui::UiBuilder::new().max_rect(place), |ui| {
-                    assert_eq!(menu.draw(ui, Some(1), false), Drawn::default());
+                    assert_eq!(menu.draw(ui, Some(1), false, false), Drawn::default());
                 });
             });
             output.textures_delta.clear();

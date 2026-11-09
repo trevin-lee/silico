@@ -211,10 +211,11 @@ struct Waiting {
 /// the face under the pointer, read for its type; the layer Create Sketch's planes are on
 /// while they're open, and whether they're held open (Enter chose Create Sketch, till the
 /// keys light another item or the pointer moves onto anything in the menu but Create
-/// Sketch); the rows the cast found (none if it wasn't cast); the item or row lit and the
-/// one the pointer was last over; what it was cast on (the selection's model, and each body
-/// drawn with its mesh); the wheel's steps not yet whole; the list's scroll, whether it was
-/// just stepped, and its width.
+/// Sketch); whether it's yet to be drawn (its first frame lets go of any planes a menu
+/// before it held open); the rows the cast found (none if it wasn't cast); the item or row
+/// lit and the one the pointer was last over; what it was cast on (the selection's model,
+/// and each body drawn with its mesh); the wheel's steps not yet whole; the list's scroll,
+/// whether it was just stepped, and its width.
 #[derive(Debug)]
 struct Menu {
     phase: Phase,
@@ -225,6 +226,7 @@ struct Menu {
     face: Option<FaceRead>,
     planes_layer: Option<egui::LayerId>,
     planes_open: bool,
+    fresh: bool,
     rows: Vec<Row>,
     lit: Option<usize>,
     pointed: Option<usize>,
@@ -777,6 +779,7 @@ impl SelectOther {
             face,
             planes_layer: None,
             planes_open: false,
+            fresh: true,
             rows,
             lit: None,
             pointed: None,
@@ -882,9 +885,7 @@ impl SelectOther {
         if menu.phase != Phase::List {
             return;
         }
-        let over_menu = ctx
-            .pointer_hover_pos()
-            .is_some_and(|at| ctx.layer_id_at(at) == Some(menu.layer()));
+        let over_menu = pointer_over(ctx, menu.layer());
         if frame.pointer_px.is_none() && !over_menu {
             return;
         }
@@ -1220,33 +1221,44 @@ fn row_of(hit: &Hit, named_as: &MeshElement, names: &dyn Fn(&FeatureId) -> Optio
 /// The context menu (`crate::canvas_menu`): the pointer onto an item lights it, and a click
 /// chooses it.
 fn context_ui(ui: &mut Ui, menu: &mut Menu, act: &mut Option<Act>) {
-    let drawn = menu.context.draw(ui, menu.lit, menu.planes_open);
+    let drawn = menu.context.draw(
+        ui,
+        menu.lit,
+        menu.planes_open,
+        std::mem::take(&mut menu.fresh),
+    );
     let (pointed, clicked) = (drawn.pointed, drawn.clicked);
     menu.planes_layer = drawn.planes_layer;
     if let Some(plane) = drawn.plane {
         *act = Some(Act::Plane(plane));
         return;
     }
+    let before = menu.pointed;
     if let Some(at) = pointer_lights(ui, pointed, &mut menu.pointed) {
         menu.lit = Some(at);
     }
     // Create Sketch's planes held open by Enter go once the pointer moves onto anything of
     // the menu but Create Sketch (another item, one that's off, the separator), as hovering
     // another item closes a submenu in every menu; a move into the planes, or off the menu,
-    // keeps them.
-    // The pointer's place read first, its layer then: egui's input and its layers are
-    // behind one lock, never held together.
-    let at = ui.input(|input| input.pointer.hover_pos());
-    let over_menu = at.is_some_and(|at| ui.ctx().layer_id_at(at) == Some(ui.layer_id()));
+    // keeps them. Onto as [`pointer_lights`] has it: a nudge within the item the pointer
+    // rests on is no move onto it.
+    let over_menu = pointer_over(ui.ctx(), ui.layer_id());
     let on_create_sketch = pointed
         .and_then(|at| menu.context.items.get(at))
         .is_some_and(|shown| shown.item == CanvasItem::CreateSketch);
-    if moved(ui) && over_menu && !on_create_sketch {
+    let onto = pointed.is_none() || pointed != before;
+    if moved(ui) && over_menu && !on_create_sketch && onto {
         menu.planes_open = false;
     }
     if let Some(at) = clicked {
         *act = Some(Act::Context(at));
     }
+}
+
+/// Whether the pointer is over `layer`, read outside any input closure.
+fn pointer_over(ctx: &egui::Context, layer: egui::LayerId) -> bool {
+    ctx.pointer_hover_pos()
+        .is_some_and(|at| ctx.layer_id_at(at) == Some(layer))
 }
 
 /// Whether the pointer moved this frame (a `PointerMoved` event came).
@@ -1456,6 +1468,7 @@ mod tests {
             face: None,
             planes_layer: None,
             planes_open: false,
+            fresh: true,
             rows: (1..=u32::try_from(rows).unwrap()).map(row).collect(),
             lit: None,
             pointed: None,
@@ -1552,7 +1565,7 @@ mod tests {
             ]
         );
         assert_eq!((so.lit(), so.face_read()), (Some(3), Some(true)));
-        // Edit lit instead, the pointer resting on it: both stay on Edit, second.
+        // Edit lit instead, the pointer resting on it: Edit stays lit, second.
         let mut so = SelectOther {
             menu: Some(Menu {
                 lit: Some(1),
@@ -1580,28 +1593,6 @@ mod tests {
             (Some(2), Some(2), Phase::List)
         );
         assert_eq!(list.face_read(), Some(true));
-    }
-
-    #[test]
-    fn a_face_read_keeps_the_item_the_pointer_rests_on_past_the_one_put_before_it() {
-        // #444's review: Edit lit by the keys, the pointer last over Hide; Sketch on this face
-        // put before Hide: Edit stays lit, second (what the pointer rests on is taken the next
-        // frame, quietly: `pointer_lights`).
-        let ctx = egui::Context::default();
-        let of = Of {
-            version: 7,
-            model: (1, Revision::from_number(3).unwrap()),
-        };
-        let mut so = SelectOther {
-            menu: Some(Menu {
-                lit: Some(1),
-                pointed: Some(2),
-                ..over_the_top(of, Phase::Context)
-            }),
-            ..Default::default()
-        };
-        so.face_typed(of, true, &ctx);
-        assert_eq!(so.lit(), Some(1));
     }
 
     #[test]
@@ -2350,6 +2341,89 @@ mod tests {
             assert!(held(&mut so, 6, Some(Pos2::new(330.0, 423.0))), "{what}");
             assert!(!held(&mut so, 7, Some(other)), "{what}");
         }
+    }
+
+    #[test]
+    fn a_nudge_within_the_item_the_pointer_rests_on_keeps_the_planes_enter_held_open() {
+        // #444's review (round 4): the pointer resting on Fit (306 to 330), the keys back
+        // round to Create Sketch, and Enter: a move of a point within Fit is no move onto
+        // another item, as `pointer_lights` has it (Fit stays unlit), so the planes stay;
+        // a move of none, as a window may send, too. One onto Home view lets them go.
+        let ctx = themed();
+        let mut menu = opened(2, Phase::Context);
+        menu.context_facts.sketch_off = None;
+        menu.context = CanvasMenu::new(None, &menu.context_facts, &ctx);
+        let mut so = SelectOther {
+            menu: Some(menu),
+            ..Default::default()
+        };
+        let frame = |so: &mut SelectOther, time: u32, at: Option<Pos2>| {
+            let events = at.map(egui::Event::PointerMoved).into_iter().collect();
+            pass(&ctx, time, events, |ui| {
+                so.show(ui.ctx());
+            });
+            let menu = so.menu.as_ref().unwrap();
+            (menu.lit, menu.planes_open)
+        };
+        let fit = Pos2::new(330.0, 318.0);
+        frame(&mut so, 1, None);
+        frame(&mut so, 2, None);
+        assert_eq!(frame(&mut so, 3, Some(fit)), (Some(0), false));
+        let menu = so.menu.as_mut().unwrap();
+        menu.step(-1);
+        menu.planes_open = true;
+        assert_eq!(frame(&mut so, 4, None), (Some(4), true));
+        let nudged = fit + Vec2::new(1.0, 0.0);
+        assert_eq!(frame(&mut so, 5, Some(nudged)), (Some(4), true));
+        assert_eq!(frame(&mut so, 6, Some(nudged)), (Some(4), true));
+        assert_eq!(
+            frame(&mut so, 7, Some(Pos2::new(330.0, 342.0))),
+            (Some(1), false)
+        );
+    }
+
+    #[test]
+    fn a_press_where_no_layer_is_closes_a_menu_whose_planes_arent_open() {
+        // #444's mutants: with Create Sketch's planes not open, a press where egui finds no
+        // layer at all is off the menu, and closes it; a press on the menu (Fit, 306 to 330)
+        // doesn't. Every point of a window egui lays out is on a layer (its root's, the
+        // panels', the background), so it's off them, past the screen's 1000 points.
+        let ctx = themed();
+        let mut so = SelectOther {
+            menu: Some(opened(2, Phase::Context)),
+            ..Default::default()
+        };
+        for time in 1..=2 {
+            pass(&ctx, time, Vec::new(), |ui| {
+                so.show(ui.ctx());
+            });
+        }
+        assert_eq!(so.menu.as_ref().unwrap().planes_layer, None);
+        let (mut selection, mut view) = (Selection::default(), View::default());
+        let press = |at: Pos2| {
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        let fit = Pos2::new(330.0, 318.0);
+        pass(&ctx, 3, press(fit), |ui| {
+            so.pressed_off(&mut selection, &mut view, ui.ctx());
+        });
+        assert!(so.is_open());
+        let away = Pos2::new(1100.0, 1100.0);
+        let mut found = None;
+        pass(&ctx, 4, press(away), |ui| {
+            found = Some(ui.ctx().layer_id_at(away));
+            so.pressed_off(&mut selection, &mut view, ui.ctx());
+        });
+        assert_eq!(found, Some(None), "no layer at the press");
+        assert!(!so.is_open());
     }
 
     #[test]

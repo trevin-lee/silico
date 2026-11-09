@@ -1407,6 +1407,12 @@ impl Tab {
         &self.measures
     }
 
+    /// The face the canvas's context menu is over, as read for its type
+    /// ([`menu_face_read`](Self::menu_face_read)): of nothing while no menu is open over one.
+    pub fn menu_face(&self) -> &crate::measures::Measures {
+        &self.menu_face
+    }
+
     /// The face the canvas's context menu is over read for its type, as the selection
     /// view's face is (`elements`, through `crate::measures`): asked as the menu opens over
     /// it, polled, and its answer given the menu, whose Sketch on this face is there only
@@ -1423,10 +1429,8 @@ impl Tab {
                 self.menu_face
                     .ask(sessions, &self.id, Some(*of), Some(measured.clone()));
             }
-            None if self.menu_face.of().is_some() => {
-                self.menu_face.ask(sessions, &self.id, None, None);
-            }
-            None => {}
+            // No menu over a face: its read let go (`ask` does nothing when nothing changed).
+            None => self.menu_face.ask(sessions, &self.id, None, None),
         }
         self.menu_face.poll(sessions, &self.id);
         let Some((of, _)) = wanted else {
