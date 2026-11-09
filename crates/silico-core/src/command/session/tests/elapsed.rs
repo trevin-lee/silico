@@ -199,10 +199,10 @@ fn it_lies_between_what_the_tests_clock_measures_around_the_rebuild() {
 }
 
 #[test]
-fn a_stopped_rebuild_reads_how_long_it_ran_fixed_once_its_thread_has_ended() {
-    // The check's box held, the check cancelled: `stopped`, with a time. Once the stopped
-    // rebuild's count has ended (its held box superseded, never released by the test), the
-    // time is fixed.
+fn a_stopped_rebuild_reads_how_long_it_ran_to_its_stop_fixed_before_and_after_its_thread_ends() {
+    // The check's box held, the check cancelled: `stopped`, with a time, fixed at the stop
+    // (#422), 20 ms on by the test's clock the same; and once the stopped rebuild's count
+    // has ended (its held box superseded, never released by the test), the same again.
     let f = opened(BOX);
     let _hold = f.kernel.hold(is_box);
     let check = f
@@ -224,11 +224,13 @@ fn a_stopped_rebuild_reads_how_long_it_ran_fixed_once_its_thread_has_ended() {
     let stopped = said(&f);
     assert_eq!(stopped.state, "stopped");
     assert!(stopped.elapsed_ms.unwrap() >= started, "{stopped:?}");
+    spin_past(Instant::now(), Duration::from_millis(20));
+    assert_eq!(said(&f), stopped);
     until_ended(&f);
     let (fixed, again) = two_readings(&f);
     assert_eq!(fixed.state, "stopped");
     assert_eq!(fixed, again);
-    assert!(fixed.elapsed_ms.unwrap() >= stopped.elapsed_ms.unwrap());
+    assert_eq!(fixed.elapsed_ms, stopped.elapsed_ms);
     // The count's own end says the same.
     let counted = f.session().newest.counter().unwrap().now();
     assert!(counted.ended);
@@ -323,5 +325,85 @@ fn a_new_revision_reads_null_until_a_read_rebuilds_it() {
     assert!(
         elapsed <= wall,
         "{elapsed} ms, more than the {wall} ms since just before its check"
+    );
+}
+
+#[test]
+fn elapsed_ms_is_the_whole_milliseconds_floored_and_saturates() {
+    // `Progress::elapsed_ms`, which `elapsed_ms` writes and clients read: floored, never
+    // rounded; past `u64`'s milliseconds, its last.
+    let whole = |elapsed| {
+        crate::command::Progress {
+            done: 0,
+            steps: 0,
+            running: None,
+            features: crate::command::FeatureStates::default(),
+            elapsed,
+        }
+        .elapsed_ms()
+    };
+    assert_eq!(whole(Duration::ZERO), 0);
+    assert_eq!(whole(Duration::from_micros(999)), 0);
+    assert_eq!(whole(Duration::from_micros(84_999)), 84);
+    assert_eq!(whole(Duration::from_secs(3)), 3000);
+    assert_eq!(whole(Duration::MAX), u64::MAX);
+}
+
+#[test]
+fn a_full_rebuild_stopped_beside_done_reads_a_clock_ended_at_its_stop() {
+    // Main's (2026-11-09): the box rebuilt, then rebuilt anew (`check`'s `fresh`, the app's
+    // Ctrl+Shift+B), held at its box past its supersede (as the pool lets a running request
+    // go on for its grace), and cancelled. The revision keeps its model, so `status` says
+    // `done`, beside the stopped rebuild's count: its clock ends as it's stopped, though its
+    // box is still held and its count hasn't ended, at most what the test's clock measures
+    // from just before the check to its cancel's answer. Two readings 20 ms apart, the
+    // same; and the same again once its count ends, its `done` as at the stop (the drained
+    // box isn't settled) and its feature `queued`.
+    let f = opened(BOX);
+    f.sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait()
+        .result
+        .unwrap();
+    let hold = f.kernel.hold_past_supersede(is_box);
+    let before = Instant::now();
+    let fresh = f.sessions.check(&f.id, CheckModel::Current { fresh: true });
+    assert!(f.kernel.wait_running(1, WAIT));
+    spin_past(Instant::now(), Duration::from_millis(5));
+    assert!(
+        f.sessions
+            .cancel(&f.id, SessionCommand::Check)
+            .result
+            .unwrap()
+            .stopped
+    );
+    // The check answers its cancel as its rebuild is stopped, its box still held.
+    assert_eq!(
+        fresh.wait().result.unwrap_err().errors(),
+        [cancelled("check")]
+    );
+    let wall = ms(before.elapsed());
+    let first = said(&f);
+    assert_eq!(first.state, "done");
+    let elapsed = first.elapsed_ms.unwrap();
+    assert!(
+        elapsed <= wall,
+        "{elapsed} ms, past the {wall} ms to the cancel"
+    );
+    assert!(!f.session().newest.counter().unwrap().now().ended);
+    spin_past(Instant::now(), Duration::from_millis(20));
+    assert_eq!(said(&f), first);
+    // Let go: the count ends, and `status` stays as it was at the stop, beside `done`.
+    hold.release();
+    until_ended(&f);
+    assert_eq!(said(&f), first);
+    let count = f.session().newest.counter().unwrap().now();
+    assert_eq!(
+        count
+            .features
+            .iter()
+            .map(|(_, state)| state)
+            .collect::<Vec<_>>(),
+        [crate::command::StepState::Queued]
     );
 }

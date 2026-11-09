@@ -149,15 +149,6 @@ fn deg(v: &str) -> Angle {
     Angle::parse(v).unwrap()
 }
 
-fn with_line(mut s: Sketch, name: &str, from: [f64; 2], to: [f64; 2]) -> Sketch {
-    // Its points: `f` and `t` in place of its ID's first character.
-    let (f, t) = (format!("f{}", &name[1..]), format!("t{}", &name[1..]));
-    s.points.push(point(&f, from[0], from[1]));
-    s.points.push(point(&t, to[0], to[1]));
-    s.lines.push(line(name, &f, &t));
-    s
-}
-
 fn with_point(mut s: Sketch, name: &str, at: [f64; 2]) -> Sketch {
     s.points.push(point(name, at[0], at[1]));
     s
@@ -267,6 +258,122 @@ fn a_point_or_an_axis_alone_places_nothing() {
     assert_eq!(d.tool.preview().picks, vec![Reference::XAxis]);
     assert_eq!(d.modify(), None);
     assert!(d.made.is_empty() && d.messages.is_empty());
+}
+
+#[test]
+fn a_line_along_an_axis_is_picked_before_the_axis_whatever_its_id() {
+    // Picked on it, the line is 0 from the pointer, and so is its axis. The sketch's own
+    // curve is picked (Silico's rule: where a line lies along an axis it covers the axis, and
+    // a tie never turns on a random ID), whether its ID sorts before the axes' names
+    // ("aa…" < "x_axis" < "y_axis") or after them ("zz…"): placed off it, its length, 40.
+    for name in ["aa000001", "zz000001"] {
+        for (sketch, on, off) in along_the_axes(name) {
+            let mut d = Dim::new(sketch);
+            d.to(on[0], on[1]);
+            assert_eq!(d.tool.preview().hover, Some(r(name)), "{name} at {on:?}");
+            d.click(on[0], on[1]);
+            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at {on:?}");
+            d.click(off[0], off[1]);
+            assert_eq!(d.modify().as_deref(), Some("40"), "{name} at {on:?}");
+            d.enter();
+            assert_eq!(
+                d.placed(),
+                Form::Length {
+                    line: r(name),
+                    value: mm("40"),
+                    driving: true
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn a_line_along_an_axis_is_picked_where_its_foot_rounds() {
+    // Picked at (14.12, 0) on (10, 0)-(50, 0): the line's foot there, 10 + 40 · (4.12 / 40),
+    // rounds off the pointer by an ulp or two, the axis's foot doesn't; the line is picked
+    // all the same, on either axis (the review's T1).
+    for name in ["aa000001", "zz000001"] {
+        for (from, to, at) in [
+            ([10.0, 0.0], [50.0, 0.0], [14.12, 0.0]),
+            ([0.0, 10.0], [0.0, 50.0], [0.0, 14.12]),
+        ] {
+            let mut d = Dim::new(with_line(empty(), name, from, to));
+            d.click(at[0], at[1]);
+            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at {at:?}");
+        }
+    }
+}
+
+#[test]
+fn a_line_along_the_x_axis_is_picked_with_the_pointer_on_it_anywhere_along_it() {
+    // At (14.2842, 0) (the review's R1), and at a thousand places along it, (10.6, 0) to
+    // (49.4, 0), past the ends' tolerance (0.5, inclusive): the line every time, never the
+    // axis.
+    for name in ["aa000001", "zz000001"] {
+        let places =
+            std::iter::once(14.2842).chain((0..1000).map(|k| 10.6 + 38.8 * f64::from(k) / 999.0));
+        for x in places {
+            let mut d = Dim::new(with_line(empty(), name, [10.0, 0.0], [50.0, 0.0]));
+            d.click(x, 0.0);
+            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at ({x}, 0)");
+        }
+    }
+}
+
+#[test]
+fn a_line_within_a_tenth_of_a_micrometre_of_an_axis_is_picked_for_it() {
+    // As the Point tool's T4: (10, ±0.5e-7)-(50, ±0.5e-7) covers the x axis, so a pick 0.1
+    // on its far side takes the line; at ±2e-7 it doesn't, and the axis, nearer, is taken.
+    for (y, covered) in [
+        (0.5e-7, true),
+        (-0.5e-7, true),
+        (2e-7, false),
+        (-2e-7, false),
+    ] {
+        let mut d = Dim::new(with_line(empty(), "zz000001", [10.0, y], [50.0, y]));
+        d.click(20.0, -0.1 * y.signum());
+        let want = if covered {
+            r("zz000001")
+        } else {
+            Reference::XAxis
+        };
+        assert_eq!(d.tool.preview().picks, vec![want], "at y {y}");
+    }
+}
+
+#[test]
+fn a_pick_as_near_a_line_beside_an_axis_as_the_axis_takes_the_line() {
+    // (10, 0.5)-(50, 0.5) and a pick at (20, 0.25), exactly 0.25 from it and from the x
+    // axis: the line, whatever its ID (the review's T6).
+    for name in ["aa000001", "zz000001"] {
+        let mut d = Dim::new(with_line(empty(), name, [10.0, 0.5], [50.0, 0.5]));
+        d.click(20.0, 0.25);
+        assert_eq!(d.tool.preview().picks, vec![r(name)], "{name}");
+    }
+}
+
+#[test]
+fn an_axis_is_picked_where_no_line_of_the_sketch_lies_on_it() {
+    // Past the end of a line along an axis, (70, 0) and (0, 70) are 20 from the line and 0
+    // from the axis: the axis. And with the line 0.3 off the axis, (10, 0.3) to (50, 0.3)
+    // or (0.3, 10) to (0.3, 50), the pointer at (20, 0.1) or (0.1, 20) is 0.1 from the axis
+    // and 0.2 from the line: the axis, the nearer, whatever the line's ID.
+    for name in ["aa000001", "zz000001"] {
+        let [(along_x, _, _), (along_y, _, _)] = along_the_axes(name);
+        let off_x = with_line(empty(), name, [10.0, 0.3], [50.0, 0.3]);
+        let off_y = with_line(empty(), name, [0.3, 10.0], [0.3, 50.0]);
+        for (sketch, at, axis) in [
+            (along_x, [70.0, 0.0], Reference::XAxis),
+            (along_y, [0.0, 70.0], Reference::YAxis),
+            (off_x, [20.0, 0.1], Reference::XAxis),
+            (off_y, [0.1, 20.0], Reference::YAxis),
+        ] {
+            let mut d = Dim::new(sketch);
+            d.click(at[0], at[1]);
+            assert_eq!(d.tool.preview().picks, vec![axis], "{name} at {at:?}");
+        }
+    }
 }
 
 // --- SD1: two points, by the pointer; signs and order ---------------------------------

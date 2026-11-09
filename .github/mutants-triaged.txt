@@ -691,3 +691,11 @@ crates/silico-app/src/app.rs | App<P>::command_keys | replace || with && | #351
 # sends Cut alone). Tried by hand in the app's field: Alt+⌫ and Shift+⌫, alone or with a ←
 # in the same frame, in the field's first focused frame and after, leave "" both ways.
 crates/silico-app/src/feature_menu.rs | first_edit | replace match guard modifiers.is_none() with true | #398
+# A boolean's base and tool sent tool first when the base takes the tool's body (#412):
+# `base` and `tool` are the places of two different fields in one list, never equal, so
+# `<` and `<=` agree.
+crates/silico-app/src/dialog.rs | Dialog::changes | replace < with <= in Dialog::changes | #412
+# Where a body stands to a dialog's feature (#412): the same place in the timeline is the
+# same feature, which `built_through` answers first (a feature is built through itself),
+# so `>` and `>=` agree where the places are compared.
+crates/silico-app/src/tab.rs | standing | replace > with >= in standing | #412

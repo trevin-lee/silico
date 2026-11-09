@@ -580,6 +580,409 @@ fn the_nearest_curve_wins_over_an_axis() {
     );
 }
 
+/// A place as the adds describe it.
+fn place(at: Xy) -> String {
+    format!("({}, {})", mm(at[0]), mm(at[1]))
+}
+
+#[test]
+fn a_point_on_a_line_along_an_axis_is_on_the_line_not_the_axis_whatever_its_id() {
+    // A line along the x axis, (10, 0) to (50, 0), and one along the y axis, (0, 10) to
+    // (0, 50): a click on it at (20, 0) or (0, 20), mid-way between its end and its middle
+    // (beyond the tolerance of both), is 0 from the line and from its axis. The point is on
+    // the sketch's own curve (Silico's rule: where a line lies along an axis it covers the
+    // axis), whether the line's ID sorts before the axes' names ("aa…" < "x_axis" <
+    // "y_axis") or after them ("zz…").
+    for name in ["aa000001", "zz000001"] {
+        for ((sketch, on, _), (from, to)) in along_the_axes(name)
+            .into_iter()
+            .zip([([10.0, 0.0], [50.0, 0.0]), ([0.0, 10.0], [0.0, 50.0])])
+        {
+            let mut d = Drive::new(ToolKind::Point, sketch);
+            d.click(on[0], on[1]);
+            let segment = format!("line #{}-#{}", place(from), place(to));
+            assert_eq!(
+                d.adds(),
+                [sorted(&[
+                    &format!("point {}", place(on)),
+                    &format!("on {} {segment}", place(on)),
+                ])],
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_point_is_on_an_axis_where_no_line_of_the_sketch_lies_on_it() {
+    // Past the end of a line along an axis, (70, 0) and (0, 70) are 20 from the line and 0
+    // from the axis: on the axis. And with the line 0.3 off the axis, (10, 0.3) to (50, 0.3)
+    // or (0.3, 10) to (0.3, 50), a click at (20, 0.1) or (0.1, 20) is 0.1 from the axis and
+    // 0.2 from the line: on the axis, the nearer, at its foot, whatever the line's ID.
+    for name in ["aa000001", "zz000001"] {
+        for (from, to, at, foot, axis) in [
+            ([10.0, 0.0], [50.0, 0.0], [70.0, 0.0], [70.0, 0.0], "x_axis"),
+            ([0.0, 10.0], [0.0, 50.0], [0.0, 70.0], [0.0, 70.0], "y_axis"),
+            ([10.0, 0.3], [50.0, 0.3], [20.0, 0.1], [20.0, 0.0], "x_axis"),
+            ([0.3, 10.0], [0.3, 50.0], [0.1, 20.0], [0.0, 20.0], "y_axis"),
+        ] {
+            let mut d = Drive::new(ToolKind::Point, with_line(empty(), name, from, to));
+            d.click(at[0], at[1]);
+            assert_eq!(
+                d.adds(),
+                [sorted(&[
+                    &format!("point {}", place(foot)),
+                    &format!("on {} {axis}", place(foot)),
+                ])],
+                "{name} at {at:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_point_where_a_line_along_an_axis_is_crossed_is_on_the_two_lines_whatever_their_ids() {
+    // The line `name` along the x axis, (10, 0) to (50, 0), and n0000001 across it, (20, -5)
+    // to (20, 15) (its middle, (20, 5), and every end beyond the tolerance of (20, 0)): at
+    // (20, 0) the two lines cross, where n0000001 crosses the x axis too. The line along the
+    // axis covers it there, so the point is on the two lines, the sketch's own, whether
+    // `name` sorts before "x_axis" ("aa…") or after it ("zz…"). Without the line along the
+    // axis, the point is on n0000001 and the axis.
+    let across = |mut s: Sketch| {
+        s.points.push(point("q0000003", 20.0, -5.0));
+        s.points.push(point("q0000004", 20.0, 15.0));
+        s.lines.push(line("n0000001", "q0000003", "q0000004"));
+        s
+    };
+    let crossed = "line #(20, -5)-#(20, 15)";
+    for name in ["aa000001", "zz000001"] {
+        let sketch = with_line(empty(), name, [10.0, 0.0], [50.0, 0.0]);
+        let mut d = Drive::new(ToolKind::Point, across(sketch));
+        d.click(20.0, 0.1);
+        assert_eq!(
+            d.adds(),
+            [sorted(&[
+                "point (20, 0)",
+                "on (20, 0) line #(10, 0)-#(50, 0)",
+                &format!("on (20, 0) {crossed}"),
+            ])],
+            "{name}"
+        );
+    }
+    let mut d = Drive::new(ToolKind::Point, across(empty()));
+    d.click(20.0, 0.1);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (20, 0)",
+            "on (20, 0) x_axis",
+            &format!("on (20, 0) {crossed}"),
+        ])]
+    );
+}
+
+/// The curves the last add put its point `on`, sorted.
+fn ons(d: &Drive) -> Vec<Reference> {
+    let mut curves: Vec<Reference> = d
+        .made
+        .last()
+        .unwrap()
+        .constraints
+        .iter()
+        .filter_map(|c| match &c.form {
+            Form::On { curve, .. } => Some(curve.clone()),
+            _ => None,
+        })
+        .collect();
+    curves.sort();
+    curves
+}
+
+/// `xy` along the x axis as given, or, mirrored, along the y axis (x and y swapped).
+fn mirrored(xy: Xy, y_axis: bool) -> Xy {
+    if y_axis { [xy[1], xy[0]] } else { xy }
+}
+
+/// The line `name` along an axis, (10, 0) to (50, 0) or its mirror on the y axis, crossed
+/// by n0000001 from `from` to `to` (mirrored too), clicked at `at`: the point the click
+/// places is on the two lines, the sketch's own, never the axis, whatever `name` sorts as,
+/// on either axis.
+fn crossed_along_an_axis(from: Xy, to: Xy, at: Xy) {
+    for y_axis in [false, true] {
+        for name in ["aa000001", "zz000001"] {
+            let mut s = with_line(
+                empty(),
+                name,
+                mirrored([10.0, 0.0], y_axis),
+                mirrored([50.0, 0.0], y_axis),
+            );
+            let (a, b) = (mirrored(from, y_axis), mirrored(to, y_axis));
+            s.points.push(point("q0000003", a[0], a[1]));
+            s.points.push(point("q0000004", b[0], b[1]));
+            s.lines.push(line("n0000001", "q0000003", "q0000004"));
+            let mut d = Drive::new(ToolKind::Point, s);
+            let at = mirrored(at, y_axis);
+            d.click(at[0], at[1]);
+            let mut want = vec![
+                Reference::Element(id(name)),
+                Reference::Element(id("n0000001")),
+            ];
+            want.sort();
+            assert_eq!(ons(&d), want, "{name}, along the y axis: {y_axis}");
+        }
+    }
+}
+
+#[test]
+fn a_point_where_a_slanted_line_crosses_a_line_along_an_axis_is_on_the_two_lines() {
+    // n0000001 from (19.8, -8.77) to (19.33, 2.77) crosses the x axis, and the line along
+    // it, at (19.8 - 0.47 · 8.77 / 11.54, 0) ≈ (19.4428, 0): 0.1 from the click at
+    // (19.44, 0.1), within the tolerance; its middle (19.565, -3) and every end far. The two
+    // crossings are one place, worked out on two lines' arithmetic, so they may differ in
+    // the last bits: the point is on the two lines all the same (the review's T1).
+    crossed_along_an_axis([19.8, -8.77], [19.33, 2.77], [19.44, 0.1]);
+}
+
+#[test]
+fn a_crossing_on_a_line_along_an_axis_takes_the_line_at_any_slant() {
+    // n0000001 from (24.715, -4.443) to (21.922, 2.942) crosses the x axis at
+    // (24.715 - 2.793 · 4.443 / 7.385, 0) ≈ (23.0347, 0), 0.1 from the click at
+    // (23.03, 0.1) (the review's R1).
+    crossed_along_an_axis([24.715, -4.443], [21.922, 2.942], [23.03, 0.1]);
+}
+
+/// The curve `name`: a line from `from` to `to`, or a circle about `from` of radius `to[0]`.
+fn curve(s: Sketch, name: &str, from: Xy, to: Xy, circle: bool) -> Sketch {
+    if !circle {
+        return with_line(s, name, from, to);
+    }
+    let mut s = s;
+    let c = format!("c{}", &name[1..]);
+    s.points.push(point(&c, from[0], from[1]));
+    s.circles.push(crate::document::SketchCircle {
+        id: id(name),
+        center: id(&c),
+        radius: Coordinate::new(to[0]).unwrap(),
+        construction: false,
+    });
+    s
+}
+
+#[test]
+fn a_point_where_two_curves_cross_on_an_axis_is_on_the_two_curves() {
+    // The circle about (20, 0) of radius 5 and the line (24, -6)-(25.5, 3) cross at
+    // (25, 0), on the x axis (the line's y is 0 at t = 2/3, x = 24 + 1.5 · 2/3); the lines
+    // (27.2, -3.4)-(31.7, 6.8) and (26, -3.2)-(34.1, 6.4) cross at (28.7, 0) (each's y is 0
+    // at t = 1/3). The axis crosses each curve there too, a place worked out on other
+    // arithmetic, an ulp or so apart. Clicked 0.3 either side of the crossing and at it, 0.1,
+    // 0.2, and 0.3 above and below (all within 0.5 of it), with the IDs in either order:
+    // the point is on the two curves, the sketch's own, never the axis (the review's R2).
+    let cases: [(Xy, Xy, bool, Xy, Xy, Xy); 2] = [
+        (
+            [20.0, 0.0],
+            [5.0, 0.0],
+            true,
+            [24.0, -6.0],
+            [25.5, 3.0],
+            [25.0, 0.0],
+        ),
+        (
+            [27.2, -3.4],
+            [31.7, 6.8],
+            false,
+            [26.0, -3.2],
+            [34.1, 6.4],
+            [28.7, 0.0],
+        ),
+    ];
+    for (a_from, a_to, a_circle, b_from, b_to, cross) in cases {
+        for (first, second) in [("aa000001", "zz000002"), ("zz000001", "aa000002")] {
+            for dx in [-0.3, 0.0, 0.3] {
+                for dy in [-0.3, -0.2, -0.1, 0.1, 0.2, 0.3] {
+                    let s = curve(empty(), first, a_from, a_to, a_circle);
+                    let s = curve(s, second, b_from, b_to, false);
+                    let mut d = Drive::new(ToolKind::Point, s);
+                    let at = [cross[0] + dx, cross[1] + dy];
+                    d.click(at[0], at[1]);
+                    let mut want = vec![
+                        Reference::Element(id(first)),
+                        Reference::Element(id(second)),
+                    ];
+                    want.sort();
+                    assert_eq!(ons(&d), want, "{first} and {second} at {at:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn two_crossings_as_near_take_the_sketchs_own_pair_whatever_the_ids() {
+    // e, (20, -8)-(20, 24), crosses the x axis at (20, 0); bb000001, (20.25, -8)-(20.25, 16),
+    // crosses cc000001, (18.25, -7.75)-(24.25, 16.25), at (20.25, 0.25) (cc's x is 20.25 at
+    // t = 1/3, its y −7.75 + 24/3). The click at (20, 0.25) is 0.25 from both crossings, two
+    // places: the sketch's own pair, bb and cc, whatever e's ID sorts as (the review's T3).
+    for e in ["aa000001", "zz000001"] {
+        let s = with_line(empty(), e, [20.0, -8.0], [20.0, 24.0]);
+        let s = with_line(s, "bb000001", [20.25, -8.0], [20.25, 16.0]);
+        let s = with_line(s, "cc000001", [18.25, -7.75], [24.25, 16.25]);
+        let mut d = Drive::new(ToolKind::Point, s);
+        d.click(20.0, 0.25);
+        assert_eq!(
+            ons(&d),
+            [
+                Reference::Element(id("bb000001")),
+                Reference::Element(id("cc000001"))
+            ],
+            "e {e}"
+        );
+    }
+}
+
+#[test]
+fn a_line_within_a_tenth_of_a_micrometre_of_an_axis_covers_it() {
+    // A line along the x axis but 0.5e-7 off it, (10, ±0.5e-7)-(50, ±0.5e-7): within
+    // LENGTH_TOLERANCE (1e-7), so it lies along the axis and covers it; a click 0.1 on the
+    // far side of the axis from it, nearer the axis by 0.5e-7, is on the line. At ±2e-7,
+    // beyond it, it doesn't cover the axis: the click is on the axis, the nearer (the
+    // review's T4).
+    for (y, covered) in [
+        (0.5e-7, true),
+        (-0.5e-7, true),
+        (2e-7, false),
+        (-2e-7, false),
+    ] {
+        let s = with_line(empty(), "zz000001", [10.0, y], [50.0, y]);
+        let mut d = Drive::new(ToolKind::Point, s);
+        let at = [20.0, -0.1 * y.signum()];
+        d.click(at[0], at[1]);
+        let want = if covered {
+            Reference::Element(id("zz000001"))
+        } else {
+            Reference::XAxis
+        };
+        assert_eq!(ons(&d), [want], "at y {y}");
+    }
+}
+
+#[test]
+fn a_point_at_the_middle_of_a_line_along_an_axis_is_on_the_line_only() {
+    // The middle of (10, 0)-(50, 0), clicked at (30, 0.1): the line stands for the axis
+    // where it lies along it, so the point is its midpoint, with no `on` of the axis (as
+    // #278's G as amended leaves out the same `on`; the review's T5).
+    let mut d = Drive::new(
+        ToolKind::Point,
+        with_line(empty(), "zz000001", [10.0, 0.0], [50.0, 0.0]),
+    );
+    d.click(30.0, 0.1);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (30, 0)",
+            "midpoint (30, 0) line #(10, 0)-#(50, 0)",
+        ])]
+    );
+}
+
+#[test]
+fn a_point_as_near_a_line_beside_an_axis_as_the_axis_is_on_the_line() {
+    // (10, 0.5)-(50, 0.5), half a millimetre off the x axis, and a click at (20, 0.25):
+    // exactly 0.25 from both. The tie goes to the sketch's own line, whatever its ID (the
+    // review's T6).
+    for name in ["aa000001", "zz000001"] {
+        let mut d = Drive::new(
+            ToolKind::Point,
+            with_line(empty(), name, [10.0, 0.5], [50.0, 0.5]),
+        );
+        d.click(20.0, 0.25);
+        assert_eq!(ons(&d), [Reference::Element(id(name))], "{name}");
+    }
+}
+
+#[test]
+fn a_crossing_with_an_axis_nearer_than_the_sketchs_own_is_taken() {
+    // n, (20, -5)-(20, 15), crosses the x axis at (20, 0), 0.05 from the click at (20, 0.05),
+    // and pp000001, (5, 0.3)-(30, 0.3), at (20, 0.3), 0.25 from it: two places. The nearer,
+    // with the axis, is taken, whatever n's ID: an axis's crossing is set aside only at the
+    // sketch's own crossing's place (the review's T7).
+    for n in ["aa000001", "zz000001"] {
+        let s = with_line(empty(), n, [20.0, -5.0], [20.0, 15.0]);
+        let s = with_line(s, "pp000001", [5.0, 0.3], [30.0, 0.3]);
+        let mut d = Drive::new(ToolKind::Point, s);
+        d.click(20.0, 0.05);
+        assert_eq!(
+            ons(&d),
+            [Reference::Element(id(n)), Reference::XAxis],
+            "{n}"
+        );
+    }
+}
+
+#[test]
+fn a_sketch_crossing_within_a_tenth_of_a_micrometre_of_an_axis_crossing_is_one_place() {
+    // n, (20, -5)-(20, 15), and pp000001, (15, -5 + e)-(35, 15 + e), slope 1, cross at
+    // (20, e); n crosses the x axis at (20, 0). At e = ±0.5e-7 the two are within
+    // LENGTH_TOLERANCE (1e-7), one place: the sketch's own pair. At ±2e-7, two places; the
+    // click at (20, -0.1 · sign(e)), on the axis's side, is nearer the axis's: n and the
+    // axis (the review's T7).
+    for (e, one_place) in [
+        (0.5e-7, true),
+        (-0.5e-7, true),
+        (2e-7, false),
+        (-2e-7, false),
+    ] {
+        let s = with_line(empty(), "n0000001", [20.0, -5.0], [20.0, 15.0]);
+        let s = with_line(s, "pp000001", [15.0, -5.0 + e], [35.0, 15.0 + e]);
+        let mut d = Drive::new(ToolKind::Point, s);
+        d.click(20.0, -0.1 * f64::signum(e));
+        let other = if one_place {
+            Reference::Element(id("pp000001"))
+        } else {
+            Reference::XAxis
+        };
+        assert_eq!(
+            ons(&d),
+            [Reference::Element(id("n0000001")), other],
+            "e {e}"
+        );
+    }
+}
+
+#[test]
+fn three_curves_through_one_place_take_the_two_lowest_ids() {
+    // (27.2, 26.6)-(31.7, 36.8), (26, 26.8)-(34.1, 36.4), and (22.7, 27)-(40.7, 36) each reach
+    // (28.7, 30) at t = 1/3: three crossings at one place, worked out on three pairs'
+    // arithmetic. Their IDs in each rotated order, the click on a grid 0.3 apart about the
+    // crossing (every end and middle beyond 0.5): the point is on the two lowest IDs, the
+    // first pair in the document's order (the review's T8).
+    let lines = [
+        ([27.2, 26.6], [31.7, 36.8]),
+        ([26.0, 26.8], [34.1, 36.4]),
+        ([22.7, 27.0], [40.7, 36.0]),
+    ];
+    let names = ["aa000001", "mm000001", "zz000001"];
+    for turn in 0..3 {
+        let mut s = empty();
+        for (k, (from, to)) in lines.iter().enumerate() {
+            s = with_line(s, names[(k + turn) % 3], *from, *to);
+        }
+        for dx in [-0.3, 0.0, 0.3] {
+            for dy in [-0.3, 0.0, 0.3] {
+                let mut d = Drive::new(ToolKind::Point, s.clone());
+                d.click(28.7 + dx, 30.0 + dy);
+                assert_eq!(
+                    ons(&d),
+                    [
+                        Reference::Element(id("aa000001")),
+                        Reference::Element(id("mm000001"))
+                    ],
+                    "turn {turn} at ({dx}, {dy})"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn the_nearest_woken_point_lines_up_and_a_tie_goes_to_the_lower_id() {
     // Woken points at x = 30.2 and 30.4: a click at (30, 50) is 0.2 and 0.4 off their

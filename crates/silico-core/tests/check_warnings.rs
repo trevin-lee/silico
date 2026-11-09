@@ -56,7 +56,7 @@ use silico_core::command::logs::{LogLevel, LogQuery};
 use silico_core::command::wire::{Layout, ToWire, write};
 use silico_core::command::{CheckAnswer, CheckModel, Revision, SessionId, Sessions};
 use silico_core::document::json::Node;
-use silico_core::fake::{FakeKernel, FakeSketches};
+use silico_core::fake::{FakeKernel, FakeSketches, Hold};
 use silico_core::kernel::{Op, Primitive};
 use silico_core::sketch::SketchSolver;
 use silico_core::{Error, ErrorCode, WarningCode};
@@ -629,6 +629,193 @@ fn a_feature_built_with_no_fingerprint_warns_once_until_format_stores_it() {
     assert!(checked.problems.is_empty() && checked.warnings.is_empty());
     let published = answer(f.sessions.check(&s1(), CheckModel::Published));
     assert!(published.result.unwrap().warnings.is_empty());
+}
+
+#[test]
+fn a_fingerprint_stored_before_centres_were_warns_incomplete_not_drift_until_format_stores_it() {
+    // Fable's decision of 2026-11-09. The box 4 by 2 by 1 at the origin, its fingerprint as
+    // Silico wrote one before #389: every measure but its centre (by hand: volume 8, area
+    // 2(8 + 4 + 2) = 28, box (0, 0, 0) to (4, 2, 1), 6 faces, 12 edges, 8 vertices). Its
+    // rebuild's centre, (2, 1, 0.5), isn't drift on a centre the file never recorded: a
+    // warning of its own code, until `format` writes the centre in (refingerprinted, no
+    // drift accepted); then nothing warns.
+    let fingerprinted = |fingerprint: &str| {
+        let block = block("k7f2qx3m", 0);
+        let open = &block[..block.len() - 1];
+        document(&[format!(r#"{open}, "fingerprint": {fingerprint}}}"#)])
+    };
+    let f = opened(&fingerprinted(
+        r#"{"volume": 8, "area": 28, "bbox": [0, 0, 0, 4, 2, 1], "faces": 6, "edges": 12, "vertices": 8}"#,
+    ));
+    let checked = f.check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    let [warning] = checked.warnings.listed() else {
+        panic!("{:?}", said(&checked));
+    };
+    assert_eq!(checked.warnings.total(), 1);
+    assert_eq!(warning.code(), WarningCode::FingerprintIncomplete);
+    assert_eq!(warning.code().as_str(), "fingerprint_incomplete");
+    assert_eq!(
+        warning.message(),
+        "k7f2qx3m built, but its stored fingerprint doesn't record its center, so a change \
+         there isn't caught as drift"
+    );
+    assert_eq!(warning.feature(), Some("k7f2qx3m"));
+    assert_eq!(warning.elements(), [] as [&str; 0]);
+    assert_eq!(warning.parameter(), Some("fingerprint.center"));
+    assert_eq!(warning.cause(), None);
+    assert_eq!(
+        warning.suggestion(),
+        Some("format the document to store it")
+    );
+    let formatted = answer(f.sessions.format(&s1(), None, true)).result.unwrap();
+    assert_eq!(formatted.refingerprinted, [id("k7f2qx3m")]);
+    assert!(formatted.accepted.is_empty(), "{:?}", formatted.accepted);
+    assert!(
+        std::fs::read_to_string(f.path())
+            .unwrap()
+            .contains(r#""center": [2, 1, 0.5]"#)
+    );
+    let checked = f.check();
+    assert!(checked.problems.is_empty() && checked.warnings.is_empty());
+
+    // Its other measures are compared still: a volume stored as 7.5 drifts, alone, the centre
+    // unnamed; and it warns of the centre beside the drift.
+    let f = opened(&fingerprinted(
+        r#"{"volume": 7.5, "area": 28, "bbox": [0, 0, 0, 4, 2, 1], "faces": 6, "edges": 12, "vertices": 8}"#,
+    ));
+    let checked = f.check();
+    let [drift] = checked.problems.errors() else {
+        panic!("{:?}", checked.problems);
+    };
+    assert_eq!(
+        drift.message(),
+        "feature k7f2qx3m rebuilt to other measures than its fingerprint: volume 7.5 → 8"
+    );
+    assert_eq!(
+        checked
+            .warnings
+            .listed()
+            .iter()
+            .map(|warning| warning.code())
+            .collect::<Vec<_>>(),
+        [WarningCode::FingerprintIncomplete]
+    );
+
+    // Once recorded, the centre is compared as any measure: stored mirrored, it drifts.
+    let f = opened(&fingerprinted(
+        r#"{"volume": 8, "area": 28, "center": [-2, 1, 0.5], "bbox": [0, 0, 0, 4, 2, 1], "faces": 6, "edges": 12, "vertices": 8}"#,
+    ));
+    let checked = f.check();
+    let [drift] = checked.problems.errors() else {
+        panic!("{:?}", checked.problems);
+    };
+    assert_eq!(
+        drift.message(),
+        "feature k7f2qx3m rebuilt to other measures than its fingerprint: center [-2, 1, 0.5] → \
+         [2, 1, 0.5]"
+    );
+    assert!(checked.warnings.is_empty(), "{:?}", said(&checked));
+}
+
+/// Box `id` 4 by 2 by 1 at (`x`, 0, 0), its fingerprint as Silico wrote one before #389:
+/// every measure but its centre, by hand (volume 8, area 2(8 + 4 + 2) = 28, its box from
+/// (x, 0, 0) to (x + 4, 2, 1), 6 faces, 12 edges, 8 vertices).
+fn before_centres(id: &str, x: u32) -> String {
+    let block = block(id, x);
+    let open = &block[..block.len() - 1];
+    let end = x + 4;
+    format!(
+        r#"{open}, "fingerprint": {{"volume": 8, "area": 28, "bbox": [{x}, 0, 0, {end}, 2, 1], "faces": 6, "edges": 12, "vertices": 8}}}}"#
+    )
+}
+
+/// The `fingerprint_incomplete` warning of `id`, as [`said`] gives it.
+fn incomplete(id: &str) -> Said {
+    (
+        WarningCode::FingerprintIncomplete,
+        id.to_owned(),
+        vec![],
+        None,
+    )
+}
+
+#[test]
+fn fingerprint_incomplete_on_the_wire_names_its_field() {
+    let checked = opened(&document(&[before_centres("k7f2qx3m", 0)])).check();
+    let [warning] = checked.warnings.listed() else {
+        panic!("{:?}", said(&checked));
+    };
+    assert_eq!(
+        write(&warning.to_wire(), Layout::Canonical).unwrap(),
+        "{\"code\": \"fingerprint_incomplete\", \"message\": \"k7f2qx3m built, but its stored \
+         fingerprint doesn't record its center, so a change there isn't caught as drift\", \
+         \"feature\": \"k7f2qx3m\", \"elements\": [], \"elements_total\": 0, \"parameter\": \
+         \"fingerprint.center\", \"cause\": null, \"suggestion\": \"format the document to \
+         store it\", \"candidates\": [], \"ranking\": [], \"advice\": null}"
+    );
+}
+
+#[test]
+fn a_fingerprint_recording_an_empty_solid_where_one_builds_drifts_and_isnt_incomplete() {
+    // A centre and box left out together record a solid with nothing in it (#389), not a
+    // fingerprint written before centres were: the 4 by 2 by 1 box drifts on every measure
+    // the record holds, its centre and box among them, and nothing warns.
+    let block = block("k7f2qx3m", 0);
+    let open = &block[..block.len() - 1];
+    let f = opened(&document(&[format!(
+        r#"{open}, "fingerprint": {{"volume": 0, "area": 0, "faces": 0, "edges": 0, "vertices": 0}}}}"#
+    )]));
+    let checked = f.check();
+    let [drift] = checked.problems.errors() else {
+        panic!("{:?}", checked.problems);
+    };
+    assert_eq!(drift.code(), ErrorCode::Drift);
+    assert_eq!(
+        drift.message(),
+        "feature k7f2qx3m rebuilt to other measures than its fingerprint: volume 0 → 8, area 0 \
+         → 28, center none → [2, 1, 0.5], bbox none → [0, 0, 0, 4, 2, 1], faces 0 → 6, edges 0 \
+         → 12, vertices 0 → 8"
+    );
+    assert!(checked.warnings.is_empty(), "{:?}", said(&checked));
+}
+
+#[test]
+fn a_commit_writes_the_centre_of_a_feature_its_edits_reached_and_leaves_one_they_didnt_incomplete()
+{
+    // Two boxes saved before #389, k7f2qx3m at x 0 and m0000002 at x 10. In a transaction,
+    // m0000002's length becomes 5: its commit writes its fingerprint (decision 28), so it
+    // isn't warned of there; k7f2qx3m, which no edit reached, keeps its record without a
+    // centre and warns, before the commit and after it. The commit writes m0000002's centre,
+    // by hand (10 + 5 / 2, 2 / 2, 1 / 2) = (12.5, 1, 0.5).
+    let f = opened(&document(&[
+        before_centres("k7f2qx3m", 0),
+        before_centres("m0000002", 10),
+    ]));
+    assert_eq!(
+        said(&f.check()),
+        [incomplete("k7f2qx3m"), incomplete("m0000002")]
+    );
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    let revision = at(&f);
+    let five: Node = silico_core::document::json::read(b"5").unwrap();
+    answer(
+        f.sessions
+            .set_field(&s1(), revision, id("m0000002"), "length".to_owned(), five),
+    )
+    .result
+    .unwrap();
+    let checked = f.check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert_eq!(said(&checked), [incomplete("k7f2qx3m")]);
+    let committed = answer(f.sessions.commit(&s1())).result.unwrap();
+    assert_eq!(committed.refingerprinted, [id("m0000002")]);
+    let file = std::fs::read_to_string(f.path()).unwrap();
+    assert!(file.contains(r#""center": [12.5, 1, 0.5]"#), "{file}");
+    // k7f2qx3m's record is as it was: its box, and no centre.
+    assert_eq!(file.matches(r#""center""#).count(), 1, "{file}");
+    assert!(file.contains(r#""bbox": [0, 0, 0, 4, 2, 1]"#), "{file}");
+    assert_eq!(said(&f.check()), [incomplete("k7f2qx3m")]);
 }
 
 #[test]
@@ -1597,6 +1784,106 @@ fn a_carried_feature_is_warned_of_in_a_published_check_of_an_older_model_with_no
     assert!(!session.transaction);
     assert_ne!(session.revision, before);
     assert_eq!(said(&published_check(&f, before)), both);
+}
+
+/// Box m0000003, 9 long at x 20, which a test's kernel holds while a reload of the file
+/// that adds it rebuilds, so a published check reads the model built before.
+const HELD_BOX: &str = r#"{"id": "m0000003", "type": "box", "v": 1, "name": "Block", "position": [20, 0, 0], "length": 9, "width": 2, "height": 1}"#;
+
+/// Writes `features` to the fixture's file and reads it, reloading it at a new revision,
+/// as the kernel holds box m0000003; gives the hold.
+fn reloaded_holding_the_new_box(f: &Fixture, features: &[String], before: Revision) -> Hold {
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx == 9.0));
+    std::fs::write(f.path(), document(features)).unwrap();
+    let read = answer(f.sessions.text(&s1(), None));
+    let session = read.session.unwrap();
+    assert!(session.reloaded);
+    assert!(!session.transaction);
+    assert_ne!(session.revision, before);
+    hold
+}
+
+#[test]
+fn an_incomplete_fingerprint_the_file_still_holds_is_warned_of_in_a_published_check_of_an_older_model()
+ {
+    // k7f2qx3m's fingerprint was written before #389, in the file and in the document of
+    // the model built from it. Box m0000003 is added on disk and the file reloaded while the
+    // kernel holds the box: a published check reads the model built before, and the file
+    // still lacks k7f2qx3m's centre, so it says so, as the file is judged (decision 28).
+    let f = opened(&document(&[before_centres("k7f2qx3m", 0)]));
+    assert_eq!(said(&f.check()), [incomplete("k7f2qx3m")]);
+    let before = at(&f);
+    let _hold = reloaded_holding_the_new_box(
+        &f,
+        &[before_centres("k7f2qx3m", 0), HELD_BOX.to_owned()],
+        before,
+    );
+    assert_eq!(said(&published_check(&f, before)), [incomplete("k7f2qx3m")]);
+}
+
+#[test]
+fn a_feature_the_file_now_stores_an_incomplete_fingerprint_for_isnt_said_to_miss_one_by_an_older_model()
+ {
+    // k7f2qx3m was built with no fingerprint stored. The file on disk now stores one written
+    // before #389, and adds box m0000003, reloaded while the kernel holds it: a published
+    // check reads the model built before, whose document stores none. The file isn't
+    // missing k7f2qx3m's fingerprint, so it isn't said to be; that the file's lacks its
+    // centre is said once the reloaded revision's model is published (the model of an older
+    // revision only spares).
+    let f = opened(&document(&[block("k7f2qx3m", 0)]));
+    assert_eq!(
+        said(&f.check()),
+        [(
+            WarningCode::FingerprintMissing,
+            "k7f2qx3m".to_owned(),
+            vec![],
+            None
+        )]
+    );
+    let before = at(&f);
+    let hold = reloaded_holding_the_new_box(
+        &f,
+        &[before_centres("k7f2qx3m", 0), HELD_BOX.to_owned()],
+        before,
+    );
+    let published = published_check(&f, before);
+    assert!(published.warnings.is_empty(), "{:?}", said(&published));
+    drop(hold);
+    assert_eq!(
+        said(&f.check()),
+        [
+            incomplete("k7f2qx3m"),
+            (
+                WarningCode::FingerprintMissing,
+                "m0000003".to_owned(),
+                vec![],
+                None
+            )
+        ]
+    );
+}
+
+#[test]
+fn a_feature_whose_fingerprint_the_file_no_longer_stores_isnt_said_to_be_incomplete_by_an_older_model()
+ {
+    // k7f2qx3m was built with a fingerprint written before #389. The file on disk now
+    // stores none for it (taken out by hand), and adds box m0000003, reloaded while the
+    // kernel holds it: a published check reads the model built before, whose document
+    // stored the incomplete record. The file stores no fingerprint, so neither "incomplete"
+    // (untrue of the file) nor "missing" (the model stored one) is said by that model; the
+    // reloaded revision's check says it's missing.
+    let f = opened(&document(&[before_centres("k7f2qx3m", 0)]));
+    assert_eq!(said(&f.check()), [incomplete("k7f2qx3m")]);
+    let before = at(&f);
+    let hold =
+        reloaded_holding_the_new_box(&f, &[block("k7f2qx3m", 0), HELD_BOX.to_owned()], before);
+    let published = published_check(&f, before);
+    assert!(published.warnings.is_empty(), "{:?}", said(&published));
+    drop(hold);
+    let missing = |id: &str| (WarningCode::FingerprintMissing, id.to_owned(), vec![], None);
+    assert_eq!(said(&f.check()), [missing("k7f2qx3m"), missing("m0000003")]);
 }
 
 #[test]

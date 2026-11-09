@@ -678,8 +678,11 @@ impl TimelineAnswer {
                 };
             }
         };
-        let Timeline { features, bodies } =
-            timeline(document, Some(model), &read.checking.excepted(read.reached));
+        let Timeline { features, bodies } = timeline(
+            document,
+            Some(model),
+            &read.checking.excepted(model, read.reached),
+        );
         TimelineAnswer {
             revision,
             model: Some(read.read.revision),
@@ -1154,6 +1157,14 @@ pub struct Progress {
     pub running: Option<String>,
     pub features: FeatureStates,
     pub elapsed: Duration,
+}
+
+impl Progress {
+    /// [`elapsed`](Self::elapsed) in whole milliseconds, floored, as `elapsed_ms` writes it
+    /// (`u64::MAX` past that).
+    pub fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.elapsed.as_millis()).unwrap_or(u64::MAX)
+    }
 }
 
 impl From<&StepCount> for Progress {

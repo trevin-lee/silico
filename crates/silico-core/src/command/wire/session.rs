@@ -263,7 +263,7 @@ impl ToWire for Rebuild {
             (
                 "elapsed_ms",
                 Json::or_null(self.progress.as_ref(), |progress| {
-                    Json::whole(u64::try_from(progress.elapsed.as_millis()).unwrap_or(u64::MAX))
+                    Json::whole(progress.elapsed_ms())
                 }),
             ),
             (

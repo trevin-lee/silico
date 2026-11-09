@@ -120,8 +120,21 @@ impl Fingerprint {
         })
     }
 
+    /// Whether it records its centre of mass. One written since Silico stored the centre
+    /// (#389) holds it, or leaves it out with its box, for a solid with nothing in it. A box
+    /// with no centre is a shape no Silico since then writes ([`Fingerprint::of`] leaves the
+    /// centre out exactly when it leaves the box out): written before, or edited by hand. It
+    /// recorded no centre, so a rebuild isn't compared on one (Fable's decision of
+    /// 2026-11-09): `check` warns `fingerprint_incomplete`, and `format` or a commit that
+    /// reaches the feature writes it in, as a fingerprint left out whole is only
+    /// `fingerprint_missing`.
+    pub fn records_center(&self) -> bool {
+        self.center.is_some() || self.bbox.is_none()
+    }
+
     /// How `rebuilt` differs from this one, field by field, in the file's order: each field's
-    /// name, as stored, and as rebuilt (in the file's spelling).
+    /// name, as stored, and as rebuilt (in the file's spelling). A measure it doesn't record
+    /// ([`records_center`](Self::records_center)) isn't compared.
     pub fn differences(&self, rebuilt: &Fingerprint) -> Vec<Difference> {
         let mut differences = Vec::new();
         let mut compare = |field: &'static str, stored: String, now: String| {
@@ -139,11 +152,13 @@ impl Fingerprint {
             rebuilt.volume.to_string(),
         );
         compare("area", self.area.to_string(), rebuilt.area.to_string());
-        compare(
-            "center",
-            lengths_text(self.center.as_ref().map(|c| c.as_slice())),
-            lengths_text(rebuilt.center.as_ref().map(|c| c.as_slice())),
-        );
+        if self.records_center() {
+            compare(
+                "center",
+                lengths_text(self.center.as_ref().map(|c| c.as_slice())),
+                lengths_text(rebuilt.center.as_ref().map(|c| c.as_slice())),
+            );
+        }
         compare(
             "bbox",
             lengths_text(self.bbox.as_ref().map(|b| b.as_slice())),
@@ -186,6 +201,63 @@ fn lengths_text(lengths: Option<&[Length]>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_centre_a_fingerprint_doesnt_record_isnt_compared_and_one_left_out_with_its_box_is() {
+        // The 40 by 20 by 10 box at the origin, as rebuilt (by hand: volume 8000, area
+        // 2(800 + 400 + 200) = 2800, its centre its middle, (20, 10, 5), its box (0, 0, 0)
+        // to (40, 20, 10)).
+        let length = |mm: f64| Length::rounded(mm).unwrap();
+        let rebuilt = Fingerprint {
+            volume: Measure::rounded(8000.0).unwrap(),
+            area: Measure::rounded(2800.0).unwrap(),
+            center: Some([20.0, 10.0, 5.0].map(length)),
+            bbox: Some([0.0, 0.0, 0.0, 40.0, 20.0, 10.0].map(length)),
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+        };
+        let fields = |differences: Vec<Difference>| -> Vec<&'static str> {
+            differences.into_iter().map(|d| d.field).collect()
+        };
+        assert!(rebuilt.records_center());
+        // Stored before #389: its box, no centre. Not compared on a centre it never
+        // recorded; its other measures are, a volume of 7999.5 drifting alone.
+        let before = Fingerprint {
+            center: None,
+            ..rebuilt
+        };
+        assert!(!before.records_center());
+        assert!(before.differences(&rebuilt).is_empty());
+        let lighter = Fingerprint {
+            volume: Measure::rounded(7999.5).unwrap(),
+            ..before
+        };
+        assert_eq!(fields(lighter.differences(&rebuilt)), ["volume"]);
+        // Centre and box left out together: a solid with nothing in it, recorded so, and a
+        // rebuild with material drifts on both.
+        let empty = Fingerprint {
+            center: None,
+            bbox: None,
+            ..rebuilt
+        };
+        assert!(empty.records_center());
+        assert_eq!(fields(empty.differences(&rebuilt)), ["center", "bbox"]);
+        // A centre recorded is compared, as always: the box mirrored in x drifts on it.
+        let mirrored = Fingerprint {
+            center: Some([-20.0, 10.0, 5.0].map(length)),
+            ..rebuilt
+        };
+        let [difference] = mirrored.differences(&rebuilt).try_into().unwrap();
+        assert_eq!(
+            (
+                difference.field,
+                difference.stored.as_str(),
+                difference.rebuilt.as_str()
+            ),
+            ("center", "[-20, 10, 5]", "[20, 10, 5]")
+        );
+    }
 
     #[test]
     fn measures_round_to_6_decimals_from_their_exact_value() {
