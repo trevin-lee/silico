@@ -609,8 +609,7 @@ impl SketchTool {
         }
         let pending = self.adds.members();
         let view = infer::View::of(context.sketch, &pending);
-        self.classes
-            .keep_for(context.sketch, &pending, context.states);
+        self.classes.keep_for(&view.sketch, context.states);
         let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
             context.tolerance
         } else {
@@ -652,7 +651,6 @@ impl SketchTool {
                 tolerance,
                 infer: context.automatic_relations && !keys.ctrl,
                 woken: &woken,
-                states: context.states,
                 classes: &self.classes,
             },
             shift: keys.shift,

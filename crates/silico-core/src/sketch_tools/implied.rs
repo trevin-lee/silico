@@ -23,7 +23,7 @@
 //! gesture makes them, each kept merged before the next:
 //!
 //! - **Rule E.** One asserting two points level (`horizontal`, `horizontal_points`, an `on` of
-//!   the x shared or of a level line) is left out when they're already in one Y class, or both
+//!   the x axis or of a level line) is left out when they're already in one Y class, or both
 //!   their Y classes are fixed. X likewise. A `midpoint` asserts both its point's coordinates,
 //!   which no class holds whole: it's only partly implied, and never left out.
 //! - **Rule F.** An inferred `perpendicular`, `parallel`, or `tangent_at` is left out when
@@ -40,7 +40,6 @@
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::document::sketch_edit::Members;
 use crate::document::{ElementId, Form, Length, Reference, Sketch};
 use crate::sketch_states::{MemberState, SketchStates};
 
@@ -52,49 +51,53 @@ use crate::sketch_states::{MemberState, SketchStates};
 /// implied.
 pub fn implied_by(sketch: &Sketch, states: &SketchStates, form: &Form) -> bool {
     let implied = Implied::of(sketch, states);
-    implied.implies(&implied.rel(form, &Key::of))
+    implied.implies(&implied.rel(form))
 }
 
 /// The classes of a tool's newest view, built once for it, the first time a relation is
-/// judged on it, and kept while what they're built from stays the same: the read's sketch,
-/// the adds pending on it, and the read's states. Each judgement copies them, to merge a
-/// gesture's own relations into.
+/// judged on it, from what [`keep_for`](Self::keep_for) keeps: the view (the read's sketch
+/// with the adds pending on it merged) and the read's states; kept while those stay the
+/// same. Each judgement copies them, to merge a gesture's own relations into.
 #[derive(Debug, Default)]
 pub(super) struct ViewClasses {
-    of: Option<(Sketch, Members, SketchStates)>,
+    /// The view and its read's states: none before the first.
+    of: Option<(Sketch, SketchStates)>,
     classes: OnceCell<Implied>,
 }
 
 impl ViewClasses {
-    /// Kept for a view of `sketch` with `pending` on it, whose read gives `states`: let go,
-    /// to be built again, if they were another view's.
-    pub(super) fn keep_for(&mut self, sketch: &Sketch, pending: &Members, states: &SketchStates) {
+    /// Kept for `view`, whose read gives `states`: let go, to be built again, if they were
+    /// another view's.
+    pub(super) fn keep_for(&mut self, view: &Sketch, states: &SketchStates) {
         let same = self
             .of
             .as_ref()
-            .is_some_and(|(s, p, st)| s == sketch && p == pending && st == states);
+            .is_some_and(|(v, st)| v == view && st == states);
         if !same {
             *self = ViewClasses {
-                of: Some((sketch.clone(), pending.clone(), states.clone())),
+                of: Some((view.clone(), states.clone())),
                 classes: OnceCell::new(),
             };
         }
     }
 
-    /// The classes of `view` (the sketch [`keep_for`](Self::keep_for) was given, with its
-    /// pending adds), its points fixed as `states` marks them: built the first time asked.
-    pub(super) fn of(&self, view: &Sketch, states: &SketchStates) -> &Implied {
-        self.classes.get_or_init(|| Implied::of(view, states))
+    /// The classes of the view [`keep_for`](Self::keep_for) was last given, its points fixed
+    /// as its states mark them: built the first time asked. Before any, the origin's alone.
+    pub(super) fn of(&self) -> &Implied {
+        self.classes.get_or_init(|| match &self.of {
+            Some((view, states)) => Implied::of(view, states),
+            None => Implied::new(),
+        })
     }
 }
 
-/// A point a relation reads: the origin, a point of the sketch, or one a gesture is placing
-/// and hasn't named yet (its first, its second).
+/// A point a relation reads: the origin, or a point, of the sketch or one a gesture is
+/// placing (named by [`Unnamed`](super::infer::Unnamed) till it has an ID, none the view
+/// holds, so a class of its own until a relation joins it).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Key {
     Origin,
     Point(ElementId),
-    Fresh(u8),
 }
 
 impl Key {
@@ -112,13 +115,13 @@ impl Key {
 /// Which partition: the points sharing a y (level with each other), or sharing an x
 /// (plumb).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Shared {
+pub(super) enum Partition {
     Y,
     X,
 }
 
-impl Shared {
-    const BOTH: [Shared; 2] = [Shared::Y, Shared::X];
+impl Partition {
+    const BOTH: [Partition; 2] = [Partition::Y, Partition::X];
 }
 
 /// One partition, a union-find by size: each key's slot, each slot's parent toward its
@@ -232,8 +235,8 @@ impl Classes {
 /// A relation, as the classes read it.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum ClassRel {
-    /// Two points sharing a y (`Shared::Y`) or an x.
-    Same(Shared, Key, Key),
+    /// Two points sharing a y (`Partition::Y`) or an x.
+    Same(Partition, Key, Key),
     /// A point on a line: in the line's class while the line is level or plumb.
     OnLine(Key, ElementId),
     /// A point at a line's middle: in the line's class as one on it is, and only partly
@@ -266,10 +269,9 @@ pub(super) struct Implied {
 }
 
 impl Implied {
-    /// The classes of `sketch` (the view's: the read's members and the pending adds'), its
-    /// points fixed as `states` marks them.
-    pub(super) fn of(sketch: &Sketch, states: &SketchStates) -> Implied {
-        let mut implied = Implied {
+    /// The classes of no sketch: the origin's alone, fixed in each partition.
+    fn new() -> Implied {
+        Implied {
             y: Classes::new(),
             x: Classes::new(),
             lines: BTreeMap::new(),
@@ -278,7 +280,13 @@ impl Implied {
             on: BTreeMap::new(),
             flat_y: BTreeSet::new(),
             flat_x: BTreeSet::new(),
-        };
+        }
+    }
+
+    /// The classes of `sketch` (the view's: the read's members and the pending adds'), its
+    /// points fixed as `states` marks them.
+    pub(super) fn of(sketch: &Sketch, states: &SketchStates) -> Implied {
+        let mut implied = Implied::new();
         for (id, state) in &states.points {
             if *state == MemberState::FullyDefined {
                 let key = Key::Point(id.clone());
@@ -305,7 +313,7 @@ impl Implied {
                 .or_insert(Key::Point(center.clone()));
         }
         for constraint in &sketch.constraints {
-            let rel = implied.rel(&constraint.form, &Key::of);
+            let rel = implied.rel(&constraint.form);
             implied.merge(&rel);
         }
         implied
@@ -322,43 +330,43 @@ impl Implied {
             self.ends.entry(end.clone()).or_default().push(id.clone());
         }
         self.lines.insert(id.clone(), (a.clone(), b.clone()));
-        for shared in Shared::BOTH {
-            if self.classes(shared).same(&a, &b) {
-                for (p, end) in self.flatten(shared, id) {
-                    self.join(shared, p, end);
+        for partition in Partition::BOTH {
+            if self.classes(partition).same(&a, &b) {
+                for (p, end) in self.flatten(partition, id) {
+                    self.join(partition, p, end);
                 }
             }
         }
     }
 
-    /// What `form` asserts, as the classes read it, each point it names known by `key`'s
-    /// [`Key`] for it (a gesture's points not yet named as [`Key::Fresh`]): it reads no
-    /// classes, only which lines and curves the sketch has.
-    pub(super) fn rel(&self, form: &Form, key: &dyn Fn(&Reference) -> Option<Key>) -> ClassRel {
-        let pair = |shared, a: &Reference, b: &Reference| match (key(a), key(b)) {
-            (Some(a), Some(b)) => ClassRel::Same(shared, a, b),
+    /// What `form` asserts, as the classes read it, each point it names known by its
+    /// [`Key`]: it reads no classes, only which lines and curves the sketch has.
+    pub(super) fn rel(&self, form: &Form) -> ClassRel {
+        let key = Key::of;
+        let pair = |partition, a: &Reference, b: &Reference| match (key(a), key(b)) {
+            (Some(a), Some(b)) => ClassRel::Same(partition, a, b),
             _ => ClassRel::Other,
         };
         match form {
-            Form::Horizontal { line } => self.line_ends(Shared::Y, line),
-            Form::Vertical { line } => self.line_ends(Shared::X, line),
-            Form::HorizontalPoints { a, b } => pair(Shared::Y, a, b),
-            Form::VerticalPoints { a, b } => pair(Shared::X, a, b),
+            Form::Horizontal { line } => self.line_ends(Partition::Y, line),
+            Form::Vertical { line } => self.line_ends(Partition::X, line),
+            Form::HorizontalPoints { a, b } => pair(Partition::Y, a, b),
+            Form::VerticalPoints { a, b } => pair(Partition::X, a, b),
             Form::DistanceY {
                 a,
                 b,
                 value,
                 driving: true,
-            } if *value == Length::default() => pair(Shared::Y, a, b),
+            } if *value == Length::default() => pair(Partition::Y, a, b),
             Form::DistanceX {
                 a,
                 b,
                 value,
                 driving: true,
-            } if *value == Length::default() => pair(Shared::X, a, b),
+            } if *value == Length::default() => pair(Partition::X, a, b),
             Form::On { point, curve } => match (key(point), curve) {
-                (Some(p), Reference::XAxis) => ClassRel::Same(Shared::Y, p, Key::Origin),
-                (Some(p), Reference::YAxis) => ClassRel::Same(Shared::X, p, Key::Origin),
+                (Some(p), Reference::XAxis) => ClassRel::Same(Partition::Y, p, Key::Origin),
+                (Some(p), Reference::YAxis) => ClassRel::Same(Partition::X, p, Key::Origin),
                 (Some(p), Reference::Element(line)) if self.lines.contains_key(line) => {
                     ClassRel::OnLine(p, line.clone())
                 }
@@ -393,10 +401,10 @@ impl Implied {
     }
 
     /// A line's ends made level or plumb, if it's a line the classes know.
-    fn line_ends(&self, shared: Shared, line: &Reference) -> ClassRel {
+    fn line_ends(&self, partition: Partition, line: &Reference) -> ClassRel {
         match line {
             Reference::Element(id) => match self.lines.get(id) {
-                Some((a, b)) => ClassRel::Same(shared, a.clone(), b.clone()),
+                Some((a, b)) => ClassRel::Same(partition, a.clone(), b.clone()),
                 None => ClassRel::Other,
             },
             _ => ClassRel::Other,
@@ -419,17 +427,17 @@ impl Implied {
     /// fixed (Rule F): a relation the tool leaves out.
     pub(super) fn implies(&self, rel: &ClassRel) -> bool {
         match rel {
-            ClassRel::Same(shared, a, b) => {
-                let classes = self.classes(*shared);
+            ClassRel::Same(partition, a, b) => {
+                let classes = self.classes(*partition);
                 classes.same(a, b) || (classes.is_fixed(a) && classes.is_fixed(b))
             }
             ClassRel::OnLine(p, line) => {
                 let Some((end, other)) = self.lines.get(line) else {
                     return false;
                 };
-                Shared::BOTH.into_iter().any(|shared| {
-                    self.classes(shared).same(end, other)
-                        && self.implies(&ClassRel::Same(shared, p.clone(), end.clone()))
+                Partition::BOTH.into_iter().any(|partition| {
+                    self.classes(partition).same(end, other)
+                        && self.implies(&ClassRel::Same(partition, p.clone(), end.clone()))
                 })
             }
             ClassRel::Reads(keys) => {
@@ -456,7 +464,7 @@ impl Implied {
     /// `rel` held: merged into the classes, and what it lets through the lines joined.
     pub(super) fn merge(&mut self, rel: &ClassRel) {
         match rel {
-            ClassRel::Same(shared, a, b) => self.join(*shared, a.clone(), b.clone()),
+            ClassRel::Same(partition, a, b) => self.join(*partition, a.clone(), b.clone()),
             ClassRel::OnLine(p, line) | ClassRel::Midpoint(p, line) => {
                 let Some((end, _)) = self.lines.get(line).cloned() else {
                     return;
@@ -464,9 +472,9 @@ impl Implied {
                 #[cfg(test)]
                 super::infer::work::visit();
                 self.on.entry(line.clone()).or_default().push(p.clone());
-                for shared in Shared::BOTH {
-                    if self.flat(shared).contains(line) {
-                        self.join(shared, p.clone(), end.clone());
+                for partition in Partition::BOTH {
+                    if self.flat(partition).contains(line) {
+                        self.join(partition, p.clone(), end.clone());
                     }
                 }
             }
@@ -474,15 +482,15 @@ impl Implied {
         }
     }
 
-    /// `a`'s and `b`'s classes in `shared` made one, and each join that lets through the
+    /// `a`'s and `b`'s classes in `partition` made one, and each join that lets through the
     /// lines: a line whose ends that puts in one class is taken up (each line once), and each
     /// point on it joined to it, and so on, until nothing more joins. Only the lines ending at
     /// a point of the smaller class are looked at, so each point's lines are looked at as
     /// often as its class at least doubles.
-    fn join(&mut self, shared: Shared, a: Key, b: Key) {
+    fn join(&mut self, partition: Partition, a: Key, b: Key) {
         let mut work = vec![(a, b)];
         while let Some((a, b)) = work.pop() {
-            let Some(moved) = self.classes_mut(shared).join(&a, &b) else {
+            let Some(moved) = self.classes_mut(partition).join(&a, &b) else {
                 continue;
             };
             let mut taken = Vec::new();
@@ -491,23 +499,23 @@ impl Implied {
                     #[cfg(test)]
                     super::infer::work::visit();
                     if let Some((e, f)) = self.lines.get(line)
-                        && !self.flat(shared).contains(line)
-                        && self.classes(shared).same(e, f)
+                        && !self.flat(partition).contains(line)
+                        && self.classes(partition).same(e, f)
                     {
                         taken.push(line.clone());
                     }
                 }
             }
             for line in taken {
-                work.extend(self.flatten(shared, &line));
+                work.extend(self.flatten(partition, &line));
             }
         }
     }
 
-    /// The line `line` held level (Y) or plumb (X) in `shared`, if it wasn't already: the
+    /// The line `line` held level (Y) or plumb (X) in `partition`, if it wasn't already: the
     /// joins each point on it then needs, to its first end.
-    fn flatten(&mut self, shared: Shared, line: &ElementId) -> Vec<(Key, Key)> {
-        if !self.flat_mut(shared).insert(line.clone()) {
+    fn flatten(&mut self, partition: Partition, line: &ElementId) -> Vec<(Key, Key)> {
+        if !self.flat_mut(partition).insert(line.clone()) {
             return Vec::new();
         }
         let Some((end, _)) = self.lines.get(line) else {
@@ -525,31 +533,31 @@ impl Implied {
             .collect()
     }
 
-    fn classes(&self, shared: Shared) -> &Classes {
-        match shared {
-            Shared::Y => &self.y,
-            Shared::X => &self.x,
+    fn classes(&self, partition: Partition) -> &Classes {
+        match partition {
+            Partition::Y => &self.y,
+            Partition::X => &self.x,
         }
     }
 
-    fn classes_mut(&mut self, shared: Shared) -> &mut Classes {
-        match shared {
-            Shared::Y => &mut self.y,
-            Shared::X => &mut self.x,
+    fn classes_mut(&mut self, partition: Partition) -> &mut Classes {
+        match partition {
+            Partition::Y => &mut self.y,
+            Partition::X => &mut self.x,
         }
     }
 
-    fn flat(&self, shared: Shared) -> &BTreeSet<ElementId> {
-        match shared {
-            Shared::Y => &self.flat_y,
-            Shared::X => &self.flat_x,
+    fn flat(&self, partition: Partition) -> &BTreeSet<ElementId> {
+        match partition {
+            Partition::Y => &self.flat_y,
+            Partition::X => &self.flat_x,
         }
     }
 
-    fn flat_mut(&mut self, shared: Shared) -> &mut BTreeSet<ElementId> {
-        match shared {
-            Shared::Y => &mut self.flat_y,
-            Shared::X => &mut self.flat_x,
+    fn flat_mut(&mut self, partition: Partition) -> &mut BTreeSet<ElementId> {
+        match partition {
+            Partition::Y => &mut self.flat_y,
+            Partition::X => &mut self.flat_x,
         }
     }
 }

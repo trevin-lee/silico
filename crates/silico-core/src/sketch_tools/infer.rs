@@ -34,11 +34,10 @@ use silico_protocol::{LENGTH_TOLERANCE, arc_from_points};
 use super::geometry::{
     add, angle_between, cross, distance, dot, left, scale, sub, to_segment, unit,
 };
-use super::implied::{Implied, Key, ViewClasses};
+use super::implied::{Implied, ViewClasses};
 use super::{Relation, Shown, Xy};
 use crate::document::sketch_edit::{Geo, Members, crossings, lies_along};
 use crate::document::{Direction, ElementId, Form, Reference, Sketch};
-use crate::sketch_states::SketchStates;
 
 /// How far from horizontal or vertical a line may be drawn, and from perpendicular,
 /// parallel, or tangent, for the pointer to show it: 2°, FreeCAD 1.1.3's, since SolidWorks'
@@ -462,16 +461,15 @@ pub(super) struct Pointer<'v, 's> {
     /// The points the pointer has woken, the newest first: the only ones a point lines up
     /// with.
     pub(super) woken: &'v [ElementId],
-    /// The newest read's member states: which points are fully defined, so which of the
-    /// relations it infers the sketch already implies ([`Implied`]).
-    pub(super) states: &'v SketchStates,
-    /// The view's classes, built once for it ([`ViewClasses`]).
+    /// The view's classes, built once for it ([`ViewClasses`]), its points fixed as the
+    /// newest read's member states mark them: which of the relations it infers the sketch
+    /// already implies ([`Implied`]).
     pub(super) classes: &'v ViewClasses,
 }
 
 /// IDs for a gesture's point or line not named yet, none a point or curve of the view: what
-/// its relations are written with to be judged ([`Implied::rel`]), each of its points read
-/// as a [`Key::Fresh`] (its start's, its end's).
+/// its relations are written with to be judged ([`Implied::rel`]), each of its points a
+/// class of its own until a relation joins it.
 pub(super) struct Unnamed {
     pub(super) start: ElementId,
     pub(super) end: ElementId,
@@ -490,15 +488,6 @@ impl Unnamed {
             end: free.next()?,
             line: free.next()?,
         })
-    }
-
-    /// The point `reference` names, the gesture's own as fresh.
-    pub(super) fn key(&self, reference: &Reference) -> Option<Key> {
-        match reference {
-            Reference::Element(id) if *id == self.start => Some(Key::Fresh(0)),
-            Reference::Element(id) if *id == self.end => Some(Key::Fresh(1)),
-            other => Key::of(other),
-        }
     }
 }
 
@@ -537,7 +526,7 @@ fn nearest<K: Ord, T>(items: impl Iterator<Item = (f64, K, T)>) -> Option<T> {
 impl Pointer<'_, '_> {
     /// The view's classes, built the first time a relation is judged on it.
     pub(super) fn implied(&self) -> &Implied {
-        self.classes.of(&self.view.sketch, self.states)
+        self.classes.of()
     }
 
     /// The point of the sketch nearest `at`, within the tolerance.
@@ -581,7 +570,7 @@ impl Pointer<'_, '_> {
                 .map(|n| n.reference.clone())
                 .collect();
             ons.sort();
-            let ons = self.ons_not_implied(&line, ons);
+            let ons = self.ons_not_implied(mid, &line, ons);
             return Placed::new(mid, Target::Midpoint(line, ons));
         }
         if let Some((cross, a, b)) = self.crossing_near(at, &near) {
@@ -593,33 +582,30 @@ impl Pointer<'_, '_> {
         Placed::new(at, Target::Free)
     }
 
-    /// Of `ons`, in [`Reference`]'s order, the `on`s of a new point at the middle of `line`
-    /// the sketch doesn't already imply ([`Implied`], Rule E), the `midpoint` asserted first
-    /// and each `on` kept merged before the next: an `on` of the x axis at the middle of a
-    /// level line along it, or of a line level with it, goes.
-    fn ons_not_implied(&self, line: &ElementId, ons: Vec<Reference>) -> Vec<Reference> {
+    /// Of `ons`, in [`Reference`]'s order, the `on`s of a new point at `mid`, the middle of
+    /// `line`, the sketch doesn't already imply ([`Implied`], Rule E): the forms the add
+    /// writes for it ([`Placed::relations`]), judged in their order, the `midpoint` first
+    /// and asserted, and each `on` kept merged before the next. An `on` of the x axis at the
+    /// middle of a level line along it, or of a line level with it, goes.
+    fn ons_not_implied(&self, mid: Xy, line: &ElementId, ons: Vec<Reference>) -> Vec<Reference> {
         let Some(unnamed) = Unnamed::of(self.view).filter(|_| !ons.is_empty()) else {
             return ons;
         };
-        let key = |reference: &Reference| unnamed.key(reference);
         let mut implied = self.implied().clone();
-        let point = Reference::Element(unnamed.start.clone());
-        let midpoint = Form::Midpoint {
-            point: point.clone(),
-            line: Reference::Element(line.clone()),
-        };
-        let midpoint = implied.rel(&midpoint, &key);
-        implied.merge(&midpoint);
-        ons.into_iter()
-            .filter(|curve| {
-                let on = Form::On {
-                    point: point.clone(),
-                    curve: curve.clone(),
-                };
-                let rel = implied.rel(&on, &key);
-                implied.admit(&rel)
-            })
-            .collect()
+        let placed = Placed::new(mid, Target::Midpoint(line.clone(), ons));
+        let mut kept = Vec::new();
+        for form in placed.relations(&unnamed.start) {
+            let rel = implied.rel(&form);
+            match form {
+                Form::On { curve, .. } => {
+                    if implied.admit(&rel) {
+                        kept.push(curve);
+                    }
+                }
+                _ => implied.merge(&rel),
+            }
+        }
+        kept
     }
 
     /// What a click at `at` picks to dimension (Smart Dimension): a point of the sketch

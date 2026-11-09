@@ -7,12 +7,13 @@
 
 use super::build::Builder;
 use super::geometry::distance;
+use super::implied::Key;
 use super::infer::{Align, Along, Placed, Pointer, Unnamed, View, along, one_place, onto};
 use super::{
     Event, MeasureKind, Message, Outcome, Preview, PreviewMeasure, Shown, Step, Xy, within_reach,
 };
+use crate::document::ElementId;
 use crate::document::sketch_edit::Members;
-use crate::document::{ElementId, Reference};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct Line {
@@ -316,11 +317,10 @@ fn not_implied(
     let Some(unnamed) = Unnamed::of(pointer.view).filter(|_| !along.is_empty()) else {
         return along;
     };
-    let key = |reference: &Reference| unnamed.key(reference);
     let mut implied = pointer.implied().clone();
     let mut named = |placed: &Placed, id: &ElementId| {
         for form in placed.relations(id) {
-            let rel = implied.rel(&form, &key);
+            let rel = implied.rel(&form);
             implied.merge(&rel);
         }
         id.clone()
@@ -333,18 +333,15 @@ fn not_implied(
         Some(id) => id.clone(),
         None => named(end, &unnamed.end),
     };
-    let ends = (
-        key(&Reference::Element(start_id.clone())),
-        key(&Reference::Element(end_id)),
+    implied.line(
+        &unnamed.line,
+        Key::Point(start_id.clone()),
+        Key::Point(end_id),
     );
-    let (Some(a), Some(b)) = ends else {
-        return along;
-    };
-    implied.line(&unnamed.line, a, b);
     along
         .into_iter()
         .filter(|direction| {
-            let rel = implied.rel(&direction.form(&unnamed.line, &start_id), &key);
+            let rel = implied.rel(&direction.form(&unnamed.line, &start_id));
             implied.admit(&rel)
         })
         .collect()
