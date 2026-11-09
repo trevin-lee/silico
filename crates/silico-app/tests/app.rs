@@ -33365,6 +33365,82 @@ fn a_right_click_waiting_for_its_boxes_is_let_go_by_esc_or_a_press_and_never_ope
 }
 
 #[test]
+fn a_right_click_waiting_for_its_boxes_is_let_go_as_the_model_changes_and_the_keys_act_again() {
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let making = Arc::new(Making::default());
+    making.hold();
+    let (mut h, _record) = box_from_above_made(&f, Some(making.build()));
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    right_click(&mut h, at, at, Modifiers::NONE);
+    assert!(select_other(&h).is_waiting());
+    // Another model published (the box made taller by another client), its meshes read: the
+    // click let go, as an open menu is closed, for what it would cast on is gone.
+    set_through_the_core(&f, &mut h, "k7f2qx3m", "height", "12");
+    assert!(!select_other(&h).is_waiting());
+    assert!(!select_other(&h).holds_keys());
+    // The boxes made after, the new mesh's: no menu opens.
+    making.release();
+    boxes_made(&mut h);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(!select_other(&h).is_open());
+    assert!(h.query_by_role_and_label(Role::Menu, "Canvas").is_none());
+    // And the window's keys act: F6 fits.
+    let camera = view(&h).camera().clone();
+    h.key_press(Key::F6);
+    step_until(&mut h, "fitted", |h| view(h).camera() != &camera);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_click_waiting_for_its_boxes_opens_saying_so_when_their_thread_ends() {
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    // The boxes' making held until let go, and then it panics: their thread ends.
+    let (end, ended) = std::sync::mpsc::channel::<()>();
+    let ended = Mutex::new(ended);
+    let boxing: silico_app::boxes::Build = Arc::new(
+        move |_: Arc<silico_protocol::Mesh>| -> silico_render::render::Pickable {
+            ended.lock().unwrap().recv_timeout(WAIT).unwrap();
+            panic!("the boxes' thread ends");
+        },
+    );
+    let (mut h, _record) = box_from_above_made(&f, Some(boxing));
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    right_click(&mut h, at, at, Modifiers::NONE);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(select_other(&h).is_waiting());
+    assert!(!select_other(&h).is_open());
+    // Their thread ended: the click's menu opens, saying what's under the pointer can't be
+    // found, its Select Other… off, as nothing can be cast.
+    end.send(()).unwrap();
+    let item = format!("Select Other… {}", silico_app::canvas_menu::UNCAST);
+    step_until(&mut h, "the context menu", |h| anywhere(h, &item));
+    assert!(!select_other(&h).is_waiting());
+    assert!(select_other(&h).rows().is_empty());
+    assert!(h.get_by_label(&item).accesskit_node().is_disabled());
+    // Closed, the window's keys act: F6 fits.
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(!select_other(&h).holds_keys());
+    let camera = view(&h).camera().clone();
+    h.key_press(Key::F6);
+    step_until(&mut h, "fitted", |h| view(h).camera() != &camera);
+    // A right click after opens at once, saying the same: nothing waits on boxes that won't
+    // be made.
+    right_click(&mut h, at, at, Modifiers::NONE);
+    assert!(!select_other(&h).is_waiting());
+    assert!(select_other(&h).is_open());
+    step_until(&mut h, "the context menu again", |h| anywhere(h, &item));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn select_others_boxes_are_kept_through_the_body_hidden_and_the_tab_hidden_made_once_a_mesh() {
     use eframe::egui::{Key, Modifiers, PointerButton};
     let f = fixture();
