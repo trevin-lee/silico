@@ -32,6 +32,7 @@ A study note for M5's design (M5.0): how Autodesk Fusion lays out its window and
 - Visibility icon: an eye, and an eye struck through when hidden (the help's own 16 px icons, `visible.png` and `hidden.png`) [vis]. Clicking it toggles the object in browser and canvas; `V` toggles the selection's visibility [vis]. The API docs still call it a "light bulb" [apivis]: older wording.
 - Hidden categories set in the Navigation Bar's Object Visibility override the browser's eyes [vis].
 - A fully constrained sketch shows a red lock on its icon [fully].
+- *Auto hide sketch on feature creation*, Preferences > General > Design, on by default: a sketch is hidden when a feature is created from it, and stays visible with the setting off. *(Autodesk support [autohide] [sketchinvis]; the help itself wasn't found to state it.)*
 - Ordering: the browser groups objects by type in folders. It isn't the feature history: in Parametric Modeling mode the history is the Timeline; in Direct Modeling mode features such as Extrude, Fillet, and Hole are listed in the browser instead [modes]. CLAUDE.md's rule settles this for Silico, since it's layout: the browser groups by type as Fusion's does, and the timeline holds the features (M5.4, docs/roadmap/m5-app.md). A failed feature's mark is error feedback, so it behaves as SolidWorks' does (docs/ux/solidworks.md), drawn with Fusion's look on its timeline entry and its browser entry.
 
 ## The timeline
@@ -224,6 +225,8 @@ Read from Rerun's source at tag `0.38.1` (`crates/viewer_support/re_ui`: `src/de
 [rel26]: https://help.autodesk.com/cloudhelp/ENU/Fusion-ReleaseNotes/files/FIC-REL-NOTES-INC.htm
 [rel25]: https://help.autodesk.com/cloudhelp/ENU/Fusion-ReleaseNotes/files/FIC-REL-NOTES-2025.htm
 [dock]: https://www.autodesk.com/support/technical/article/caas/sfdcarticles/sfdcarticles/How-to-dock-undock-toolbars-and-dialog-boxes-in-Fusion-360.html
+[autohide]: https://www.autodesk.com/support/technical/article/caas/sfdcarticles/sfdcarticles/How-to-adjust-automatic-visibility-of-sketch-in-Fusion-360.html
+[sketchinvis]: https://www.autodesk.com/support/technical/article/caas/sfdcarticles/sfdcarticles/Sketch-becomes-invisible-after-extruding-it-in-Fusion-3560.html
 [pzo]: https://www.autodesk.com/products/fusion-360/blog/quick-tip-pan-zoom-orbit-preferences/
 [errblog]: https://www.autodesk.com/products/fusion-360/blog/quick-tip-fixing-errors-in-your-design/
 [themes]: https://www.autodesk.com/products/fusion-360/blog/a-fresh-look-for-fusion-dark-and-light-mode-are-now-here/
