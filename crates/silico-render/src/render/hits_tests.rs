@@ -386,10 +386,11 @@ fn a_perspective_edges_reach_is_of_its_depth_and_at_most_a_quarter_of_it() {
         listed(&hits(camera, [100, 100], 1.0, &bodies, [50.0, row]))
     };
     // 90 degrees: Edge1 at depth 10, its reach 1.2% of 2 tan 45° of that, 0.24, so its key
-    // 9.76. At row 52 the ray (y −0.04 of its depth) meets the floor at depth s where s =
-    // 10 − 0.3 · 0.04 s: 10 / 1.012 = 9.8814, behind the edge's key: the edge first. At row 55
-    // (y −0.1) at 10 / 1.03 = 9.7087, before it: the floor first. Its reach not of its depth
-    // (0.024), the floor would come first at row 52 too.
+    // 9.76 (at 100 rows an edge's 2 pixels of depth are 2% of the view's height, more than a
+    // vertex's 1.2%, which caps it). At row 52 the ray (y −0.04 of its depth) meets the floor
+    // at depth s where s = 10 − 0.3 · 0.04 s: 10 / 1.012 = 9.8814, behind the edge's key: the
+    // edge first. At row 55 (y −0.1) at 10 / 1.03 = 9.7087, before it: the floor first. Its
+    // reach not of its depth (0.024), the floor would come first at row 52 too.
     let right = from_the_origin_at(90.0);
     assert_eq!(at(&right, 52.0), [(Edge(1), false), (Face(1), false)]);
     assert_eq!(at(&right, 55.0), [(Face(1), false), (Edge(1), false)]);
@@ -656,28 +657,36 @@ fn an_edge_on_the_face_under_the_pointer_is_never_hidden_by_it_and_comes_first_w
     let row = 200.0 - 200.0 / 2f64.sqrt();
     let landed = project(&camera, SIZE, [10.0, 20.0, 20.0]).unwrap();
     assert!((landed[0] - 200.0).abs() < 1e-4 && (landed[1] - row).abs() < 1e-4);
-    // 2 pixels below the edge, 0.2 mm down the image: the top face met at y = 20 − 0.2√2,
-    // depth 141.42 − 0.2 = 141.22; Edge12 at (10, 20, 20), 141.42, less its reach 0.48 is
-    // 140.94: first, and on the ray through its own point the top face is met at its own
-    // depth, so not hidden. Beyond the top the ray leaves through the back face, Face4
-    // (y = 20), at z = 20 − 0.2√2, depth 141.42 + 0.2 = 141.62: hidden.
-    let under = hits(&camera, SIZE, 1.0, &bodies, [200.0, row + 2.0]);
+    // An edge's reach is 2 pixels of the view's depth (`edge_reach`, as its picking strip
+    // is drawn), 0.2 mm here (2/400 of 40, under a vertex's 1.2%, 0.48). A pixel below the
+    // edge, 0.1 mm down the image: the top face met at y = 20 − 0.1√2, depth 141.42 − 0.1 =
+    // 141.32; Edge12 at (10, 20, 20), 141.42, less its reach is 141.22: first, and on the ray
+    // through its own point the top face is met at its own depth, so not hidden. Beyond the
+    // top the ray leaves through the back face, Face4 (y = 20), at z = 20 − 0.1√2, depth
+    // 141.42 + 0.1 = 141.52: hidden. (2 pixels below, the top is met at the edge's key.)
+    let under = hits(&camera, SIZE, 1.0, &bodies, [200.0, row + 1.0]);
     assert_eq!(
         listed(&under),
         [(Edge(12), false), (Face(6), false), (Face(4), true)]
     );
     let a = 200.0 / 2f64.sqrt();
-    let off = 0.2 * 2f64.sqrt();
+    let off = 0.1 * 2f64.sqrt();
     assert_at(&under[0], [10.0, 20.0, 20.0], a);
-    assert_at(&under[1], [10.0, 20.0 - off, 20.0], a - 0.2);
-    assert_at(&under[2], [10.0, 20.0, 20.0 - off], a + 0.2);
-    // 5 pixels below, 0.5 mm, past the reach: the edge after the face, still not hidden.
-    let under = hits(&camera, SIZE, 1.0, &bodies, [200.0, row + 5.0]);
-    assert_eq!(
-        listed(&under),
-        [(Face(6), false), (Edge(12), false), (Face(4), true)]
-    );
-    assert!((VERTEX_REACH * 40.0 - 0.48).abs() < 1e-12);
+    assert_at(&under[1], [10.0, 20.0 - off, 20.0], a - 0.1);
+    assert_at(&under[2], [10.0, 20.0, 20.0 - off], a + 0.1);
+    // 3 pixels below, 0.3 mm, past the reach: the edge after the face, still not hidden;
+    // and so 5 below, 0.5 mm.
+    for below in [3.0, 5.0] {
+        let under = hits(&camera, SIZE, 1.0, &bodies, [200.0, row + below]);
+        assert_eq!(
+            listed(&under),
+            [(Face(6), false), (Edge(12), false), (Face(4), true)],
+            "{below} below"
+        );
+    }
+    assert!((super::EDGE_REACH_PIXELS / 400.0 * 40.0 - 0.2).abs() < 1e-12);
+    assert!((super::edge_fraction(400) - 0.005).abs() < 1e-18);
+    assert!(super::edge_fraction(400) < VERTEX_REACH);
 }
 
 /// In perspective from the origin along −z, +y up, 90 degrees high, 100 by 100 pixels: (x, y,

@@ -101,6 +101,16 @@ pub const VERTEX_REACH: f64 = 0.012;
 /// view as wide as 180° keeps it ahead of the eye (and of the near plane, at half the least
 /// depth a vertex is drawn at).
 const MOST_VERTEX_REACH: f64 = 0.25;
+/// How far toward the eye an edge's picking strip is drawn ([`edge_picks`]), in pixels of the
+/// view's depth at it (N5): an edge's stroke is at its line's depth across its width, so at
+/// a concave edge, whose faces both rise toward the eye away from its line, the faces hid
+/// every pixel of it. Moved this far, it wins the pixel nearest its line (half a pixel off)
+/// against a face rising toward the eye by up to 4 pixels of depth a pixel across it (turned
+/// up to 76° from face-on), and its whole stroke against one rising by up to 2 (63°); and a
+/// wall more than 2 pixels of depth thick in front of it still hides it. Never more than
+/// [`VERTEX_REACH`] of the view's height, so a vertex's disc, drawn past the edges' depth
+/// offset, stays ahead of its edges.
+const EDGE_REACH_PIXELS: f64 = 2.0;
 /// The bit a vertex's picking instance has, above its number from 1: past the u32 the ID
 /// buffer's instances are (the worker's renders draw no vertices), so [`EDGE_BIT`] and the
 /// ID buffer are as they were.
@@ -245,7 +255,10 @@ pub struct Frame<'a> {
     /// app's theme), never read from it here.
     pub outlines: Outlines,
     /// The pixels to read back for picking, if any: [`Renderer::take_picking`] gives what
-    /// they found, a frame or two later.
+    /// they found, a frame or two later. A frame that picks draws each edge near them again,
+    /// into the picking layer alone, toward the eye by its reach ([`edge_picks`]), so an
+    /// edge is picked along its stroke unless a face is nearer than that there, a concave
+    /// edge as a convex one; the image is drawn as it is without them.
     pub picking: Option<PixelRect>,
     /// The radius, in points, within which a vertex is picked, if vertices are picked (none
     /// with the selection's vertex filter off, M5.7): a frame that picks then draws a disc
@@ -306,7 +319,10 @@ pub struct Pick {
     pub pixel: [u32; 2],
     /// The point seen at the pixel's centre, in the document's coordinates: the centre
     /// unprojected at the picking layer's depth there, in f64 (the depth itself is the GPU's
-    /// f32); none if the depth wasn't read back. A vertex's is its own point.
+    /// f32); none if the depth wasn't read back. A vertex's is its own point. An edge's is its
+    /// picking strip's taken back from the eye by the reach it was drawn toward it by
+    /// ([`edge_picks`]): the point its drawn stroke is at there. (Where the drawn stroke alone
+    /// covers a pixel, at its border to f32's rounding, it would be that reach behind.)
     pub point: Option<[f64; 3]>,
 }
 
@@ -565,6 +581,8 @@ impl Renderer {
                     origin: view.origin,
                     depth: view.depth,
                     projection: view.projection,
+                    perspective: view.perspective,
+                    span: view.span,
                 },
             );
             (rect, id)
@@ -588,6 +606,7 @@ impl Renderer {
                 rect,
                 id,
                 vertices: frame.vertices,
+                edges: true,
             }),
             None,
         );
@@ -673,7 +692,10 @@ impl Renderer {
             } else if depths.len() == ids.len()
                 && let Some(&depth) = usize::try_from(i).ok().and_then(|i| depths.get(i))
             {
-                pick.point = request.point_at(pick.pixel, depth);
+                // An edge's picking strip is drawn toward the eye ([`edge_picks`]): its point
+                // is taken back by as much.
+                let edge = matches!(pick.hit, Element::Edge(_));
+                pick.point = request.point_at(pick.pixel, depth, edge);
             }
             pick
         };
@@ -945,6 +967,7 @@ impl Renderer {
                 rect: whole,
                 id: picking,
                 vertices: None,
+                edges: false,
             }),
             Some(screenshot),
         );
@@ -1010,6 +1033,32 @@ impl Renderer {
             uploaded.settle(view, lit);
             uploaded.faces(ctx, number, lit, view, &mut instances, uploads)?;
             edges(&mut lines, number, uploaded, lit, view, &strokes);
+        }
+        // The edges near a frame's picking again, toward the eye, after every edge drawn (so
+        // none drawn is ever left out for them, should the strips reach re_renderer's most):
+        // a frame that doesn't pick, and a render, pay nothing for them.
+        if let Some(Picked {
+            rect, edges: true, ..
+        }) = picking
+            && let Some(projector) = Projector::new(&view.camera, [view.width, view.height])
+        {
+            let half = f64::from(EDGE_WIDTH) / 2.0 * f64::from(pixels_per_point);
+            let near = Near::of(rect, half);
+            let mut strips = 0usize;
+            for &(number, _) in drawn {
+                if let Some(uploaded) = bodies.get(&number) {
+                    strips += edge_picks(
+                        &mut lines,
+                        number,
+                        uploaded,
+                        view,
+                        &projector,
+                        near,
+                        &strokes[0],
+                    );
+                }
+            }
+            tracing::debug!(strips, "edge picks");
         }
         // The vertices' discs, only for a picking that asks for them: a frame that doesn't
         // pick pays nothing for them.
@@ -1148,18 +1197,22 @@ fn outlined_as(highlighted: bool, hovered: bool) -> OutlineMaskPreference {
     }
 }
 
-/// What a view's picking asks: its rectangle, its readback's identifier, and the radius in
-/// points its vertices are picked within, if they are ([`Frame::vertices`]).
+/// What a view's picking asks: its rectangle, its readback's identifier, the radius in
+/// points its vertices are picked within, if they are ([`Frame::vertices`]), and whether its
+/// edges are drawn again at their reach ([`edge_picks`]): a frame's are, a render's, whose ID
+/// buffer is M4.6's, not.
 #[derive(Debug, Clone, Copy)]
 struct Picked {
     rect: PixelRect,
     id: u64,
     vertices: Option<f32>,
+    edges: bool,
 }
 
-/// The pixels about a picking rectangle a vertex's disc can reach it from: the rectangle
-/// (from its corner, `size` pixels on), each side out by the disc's radius in pixels and one
-/// pixel more (a disc's edge is smoothed over about a pixel).
+/// The pixels about a picking rectangle a vertex's disc, or an edge's stroke, can reach it
+/// from: the rectangle (from its corner, `size` pixels on), each side out by the disc's
+/// radius (or the stroke's half width) in pixels and one pixel more (a disc's edge is
+/// smoothed over about a pixel).
 #[derive(Debug, Clone, Copy)]
 struct Near {
     low: [f64; 2],
@@ -1177,6 +1230,26 @@ impl Near {
 
     fn holds(&self, pixel: [f64; 2]) -> bool {
         (0..2).all(|k| self.low[k] <= pixel[k] && pixel[k] <= self.high[k])
+    }
+
+    /// Whether anything in the box `bounds` can land in it, through `projector`: whether
+    /// its eight corners' pixels' box meets it (the image of a box wholly in front of the eye
+    /// is within its corners', a projection keeping lines straight); and, where a corner has
+    /// no pixel (in perspective, nearer the eye than [`MIN_EYE_DISTANCE`] or behind it, or
+    /// past f64), it may, so yes.
+    fn meets_box(&self, projector: &Projector, bounds: Bounds) -> bool {
+        let mut low = [f64::INFINITY; 2];
+        let mut high = [f64::NEG_INFINITY; 2];
+        for corner in box_corners(bounds) {
+            let Some(pixel) = projector.pixel(corner) else {
+                return true;
+            };
+            for k in 0..2 {
+                low[k] = low[k].min(pixel[k]);
+                high[k] = high[k].max(pixel[k]);
+            }
+        }
+        (0..2).all(|k| low[k] <= self.high[k] && self.low[k] <= high[k])
     }
 }
 
@@ -1202,6 +1275,10 @@ struct PendingPick {
     origin: [f64; 3],
     depth: f64,
     projection: ViewProjection,
+    /// The view's kind and its `span` ([`View::span`]), to take an edge's pick back by its
+    /// reach ([`edge_reach`]).
+    perspective: bool,
+    span: f64,
 }
 
 impl PendingPick {
@@ -1269,12 +1346,17 @@ impl PendingPick {
     /// The point seen at the centre of the frame's pixel `pixel`, at the picking layer's
     /// `depth` there, in the document: the pixel's centre and the depth unprojected through
     /// the frame's own projection (the picking rectangle's crop moves and scales x and y
-    /// alone, so its depth is the frame's), in f64, then taken back through the view (the
-    /// inverse of [`View::place`], d = right x + up y + back (z + depth)); none if it isn't
-    /// finite.
-    fn point_at(&self, pixel: [u32; 2], depth: f32) -> Option<[f64; 3]> {
+    /// alone, so its depth is the frame's), in f64; for an `edge`'s, taken back from the eye
+    /// by the reach its picking strip was drawn toward it by ([`back_from_eye`], on the same
+    /// pixel); then taken back through the view (the inverse of [`View::at`], d = right x +
+    /// up y + back (z + depth)). None if it isn't finite.
+    fn point_at(&self, pixel: [u32; 2], depth: f32, edge: bool) -> Option<[f64; 3]> {
         let centre = pixel.map(|c| f64::from(c) + 0.5);
-        let p = unproject(self.projection, self.size, centre, f64::from(depth))?;
+        let mut p = unproject(self.projection, self.size, centre, f64::from(depth))?;
+        if edge {
+            let fraction = edge_fraction(self.size[1]);
+            p = back_from_eye(p, fraction, self.perspective, self.span);
+        }
         let v = [p[0], p[1], p[2] + self.depth];
         let f = &self.frame;
         Some(std::array::from_fn(|k| {
@@ -1544,10 +1626,28 @@ impl View {
     /// the next kept segment beginning another. One strip, of every point, in a view with no
     /// pyramid.
     fn cut_strip(&self, points: &[[f64; 3]]) -> Vec<Vec<glam::Vec3>> {
+        self.cut_strip_by(points, vec3)
+    }
+
+    /// [`View::cut_strip`], each point it keeps or cuts at, about the camera in f64
+    /// ([`View::about_camera`]'s), placed by `place`: so an edge's picking strip is cut where
+    /// its drawn strip is, then moved ([`edge_picks`]).
+    fn cut_strip_by(
+        &self,
+        points: &[[f64; 3]],
+        place: impl Fn([f64; 3]) -> glam::Vec3,
+    ) -> Vec<Vec<glam::Vec3>> {
         if self.pyramid.is_none() {
-            return vec![points.iter().map(|p| self.at(*p)).collect()];
+            return vec![
+                points
+                    .iter()
+                    .map(|p| place(self.about_camera(*p)))
+                    .collect(),
+            ];
         }
-        let placed = |[x, y, depth]: [f64; 3]| vec3([x, y, -depth]);
+        // In the eye's frame about the eye (a pyramid's view is a perspective one, its camera
+        // the eye), its depth the negated z.
+        let placed = |[x, y, depth]: [f64; 3]| place([x, y, -depth]);
         let mut strips = Vec::new();
         let mut strip: Vec<glam::Vec3> = Vec::new();
         for pair in points.windows(2) {
@@ -1579,38 +1679,40 @@ impl View {
     }
 
     /// Where a vertex at `p` has its picking disc: [`View::at`], moved toward the eye by its
-    /// reach ([`vertex_reach`], which Select Other's cast takes too), in f64 before it's f32;
-    /// along the view (orthographic, at most halfway to the near plane, at the camera, z = 0)
-    /// or along its line to the eye (perspective, at most [`MOST_VERTEX_REACH`] of its
-    /// depth), so it lands on the same pixel.
+    /// reach ([`vertex_reach`], which Select Other's cast takes too, [`toward_eye`]), in f64
+    /// before it's f32; along the view (orthographic, at most halfway to the near plane, at
+    /// the camera, z = 0) or along its line to the eye (perspective, at most
+    /// [`MOST_VERTEX_REACH`] of its depth), so it lands on the same pixel.
     fn disc_at(&self, p: [f64; 3]) -> glam::Vec3 {
-        let d = sub(p, self.origin);
-        let mut v = [
-            dot(self.frame.right, d),
-            dot(self.frame.up, d),
-            dot(self.frame.back, d) - self.depth,
-        ];
-        if self.perspective {
-            // A millimetre's reach is the fraction of its line to the eye it's moved by.
-            let toward = vertex_reach(true, self.span, 1.0);
-            v = v.map(|c| c * (1.0 - toward));
-        } else {
-            // In front of the camera by −z.
-            v[2] += vertex_reach(false, self.span, -v[2]);
-        }
-        vec3(v)
+        let v = self.about_camera(p);
+        vec3(toward_eye(v, VERTEX_REACH, self.perspective, self.span))
+    }
+
+    /// `v`, a point about the camera ([`View::about_camera`]), where an edge's picking strip
+    /// has it: moved toward the eye by an edge's reach ([`edge_reach`], which Select Other's
+    /// cast takes too, [`toward_eye`]), as a vertex's disc is by its own, in f64 before it's
+    /// f32.
+    fn edge_pick_at(&self, v: [f64; 3]) -> glam::Vec3 {
+        let fraction = edge_fraction(self.height);
+        vec3(toward_eye(v, fraction, self.perspective, self.span))
     }
 
     /// `p` in the fixed camera's world, its offset from the camera's point and its rotation
     /// into the view both taken in f64 before it's f32: precise to f32's step of what's
     /// across the view, wherever the point is.
     fn at(&self, p: [f64; 3]) -> glam::Vec3 {
+        vec3(self.about_camera(p))
+    }
+
+    /// [`View::at`] in f64: `p`'s offset from the camera's point rotated into the view, x
+    /// right, y up, and z toward the eye, the camera at z = 0.
+    fn about_camera(&self, p: [f64; 3]) -> [f64; 3] {
         let d = sub(p, self.origin);
-        vec3([
+        [
             dot(self.frame.right, d),
             dot(self.frame.up, d),
             dot(self.frame.back, d) - self.depth,
-        ])
+        ]
     }
 }
 
@@ -1844,6 +1946,10 @@ thread_local! {
     /// How many of a [`Tree`]'s boxes (its nodes' and its chunks') casts on this thread have
     /// tested a line against: for the tests that bound a cast's work.
     static BOXES_TESTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many edges frames on this thread have found near their picking squares, each drawn
+    /// again for picking where its view places it ([`edge_picks`]): for the tests that bound
+    /// a frame's picking work.
+    static EDGE_PICKS_DRAWN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// A body's mesh as [`hits`] casts on it: the mesh (the same `Arc` the renderer was given);
@@ -2162,15 +2268,18 @@ pub struct Hit {
 /// drawing's own rule, [`cut_by`], as [`project_segment`] cuts and `project` a point), and
 /// orthographic the whole line is (drawn in front of the eye too).
 ///
-/// An edge or a vertex is taken toward the eye by the reach a frame's picking disc is drawn
-/// toward it by ([`vertex_reach`]: [`VERTEX_REACH`] of the view's height at it, the
-/// prototype's `pickAll` tolerance, `eps`; orthographic, at most halfway to the near plane
-/// the renderer draws the bodies from, as it sets it for them; in perspective, at most
-/// [`MOST_VERTEX_REACH`] of its depth): it's listed by its depth less that, and hidden only
-/// where a face is met nearer than that on the ray through its own point. So one lying on
-/// the faces it bounds is never hidden by them, at any angle, and comes before the face
-/// under the pointer within that reach, as the renderer's depth offset draws it over its
-/// face. A face is hidden where another face is met strictly nearer on the pointer's ray.
+/// A vertex is taken toward the eye by the reach a frame's picking disc is drawn toward it by
+/// ([`vertex_reach`]: [`VERTEX_REACH`] of the view's height at it, the prototype's `pickAll`
+/// tolerance, `eps`; orthographic, at most halfway to the near plane the renderer draws the
+/// bodies from, as it sets it for them; in perspective, at most [`MOST_VERTEX_REACH`] of its
+/// depth), and an edge by the reach its picking strip is drawn toward it by ([`edge_reach`]:
+/// [`EDGE_REACH_PIXELS`] of the view's depth at it, with the same caps, never more than a
+/// vertex's), so the hover, the click, and the cast take an edge alike: each is listed by
+/// its depth less its reach, and hidden only where a face is met nearer than that on the ray
+/// through its own point. So one lying on the faces it bounds is never hidden by them, at any
+/// angle, and comes before the face under the pointer within that reach, as the renderer's
+/// picking draws it over its face. A face is hidden where another face is met strictly
+/// nearer on the pointer's ray.
 /// Ordered by that depth, then vertex, edge, and face, then body and number, with no
 /// tolerance more but the triangles' own: a line along an edge two triangles share meets
 /// both ([`WATERTIGHT`], a part in 2^40 of a triangle).
@@ -2330,8 +2439,8 @@ impl Line {
 /// [`hits`]'s view: the renderer's projection ([`Projector`]), the eye and the way it looks,
 /// the pixels a point, how much of the view a pixel is (mm, orthographic; mm for each mm of
 /// depth, in perspective), how tall the view is (`span`: mm, orthographic; for each mm from
-/// the eye, in perspective), and, orthographic, how far in front of the target the renderer
-/// draws the bodies from ([`orthographic_depth`]: its near plane).
+/// the eye, in perspective, and `rows`, in pixels), and, orthographic, how far in front of
+/// the target the renderer draws the bodies from ([`orthographic_depth`]: its near plane).
 struct Caster {
     projector: Projector,
     eye: [f64; 3],
@@ -2339,6 +2448,7 @@ struct Caster {
     pixels_per_point: f64,
     per_pixel: f64,
     span: f64,
+    rows: u32,
     near: Option<f64>,
 }
 
@@ -2376,6 +2486,7 @@ impl Caster {
             pixels_per_point,
             per_pixel: span / f64::from(size_px[1]),
             span,
+            rows: size_px[1],
             near,
             projector,
         })
@@ -2420,17 +2531,31 @@ impl Caster {
         self.depth(corner) - largest * f64::EPSILON * 16384.0
     }
 
-    /// An edge's or a vertex's reach toward the eye at `point`, `depth` along the view: a
-    /// frame's picking disc's there ([`vertex_reach`]), of how far in front of the
-    /// renderer's camera it is (orthographic, its near plane, [`orthographic_depth`] in front
-    /// of the target; in perspective, the eye).
-    fn reach_of(&self, point: [f64; 3], depth: f64) -> f64 {
+    /// A vertex's reach toward the eye at `point`, `depth` along the view: a frame's picking
+    /// disc's there ([`vertex_reach`]).
+    fn vertex_reach_at(&self, point: [f64; 3], depth: f64) -> f64 {
+        let (perspective, ahead) = self.ahead_of(point, depth);
+        vertex_reach(perspective, self.span, ahead)
+    }
+
+    /// An edge's reach toward the eye at `point`, `depth` along the view: a frame's picking
+    /// strip's there ([`edge_reach`]).
+    fn edge_reach_at(&self, point: [f64; 3], depth: f64) -> f64 {
+        let (perspective, ahead) = self.ahead_of(point, depth);
+        edge_reach(perspective, self.span, self.rows, ahead)
+    }
+
+    /// Whether the view is in perspective, and how far in front of the renderer's camera
+    /// `point`, `depth` along the view, is (orthographic, its near plane,
+    /// [`orthographic_depth`] in front of the target; in perspective, the eye): what a reach
+    /// is of.
+    fn ahead_of(&self, point: [f64; 3], depth: f64) -> (bool, f64) {
         match self.near {
             Some(near) => {
                 let along = dot(self.projector.frame.back, sub(point, self.projector.origin));
-                vertex_reach(false, self.span, near - along)
+                (false, near - along)
             }
-            None => vertex_reach(true, self.span, depth),
+            None => (true, depth),
         }
     }
 
@@ -2538,7 +2663,7 @@ impl Caster {
                         depth,
                         hidden: false,
                     },
-                    key: depth - self.reach_of(point, depth),
+                    key: depth - self.edge_reach_at(point, depth),
                 });
             }
         }
@@ -2660,7 +2785,7 @@ impl Caster {
                         depth,
                         hidden: false,
                     },
-                    key: depth - self.reach_of(*point, depth),
+                    key: depth - self.vertex_reach_at(*point, depth),
                 });
             }
         }
@@ -2766,20 +2891,83 @@ fn cut_by(fa: f64, fb: f64, (enter, leave): (f64, f64)) -> Option<(f64, f64)> {
 }
 
 /// How far toward the eye a vertex's picking disc is drawn ([`View::disc_at`]), and Select
-/// Other's cast takes an edge or a vertex ([`hits`]), of a point `ahead` mm in front of the
-/// drawing's camera (orthographic, its near plane, at the camera; in perspective, the eye,
-/// along the view): [`VERTEX_REACH`] of the view's height there, the prototype's `pickAll`
-/// tolerance. Orthographic, `span` is the view's height, and the reach at most halfway to the
-/// near plane, as little as a millimetre in front of the scene, so a disc at the scene's front
-/// isn't cut; in perspective, `span` is the view's height a millimetre from the eye, and the
-/// reach at most [`MOST_VERTEX_REACH`] of the depth, so a view as wide as 180° keeps it
-/// ahead of the eye: in mm along the view, `ahead` times that fraction (at an `ahead` of 1,
-/// the fraction itself, which the disc is moved along its line to the eye by).
+/// Other's cast takes a vertex ([`hits`]), of a point `ahead` mm in front of the drawing's
+/// camera (orthographic, its near plane, at the camera; in perspective, the eye, along the
+/// view): [`VERTEX_REACH`] of the view's height there, the prototype's `pickAll` tolerance
+/// ([`reach`]'s caps).
+///
+/// Its limit, accepted for M5 (N5, decided 2026-11-08): the reach is depth alone, so a vertex
+/// behind a wall thinner than about 1.2% of the view's height (1.2 mm in a view 100 mm high)
+/// can be picked through it, and Select Other lists it unhidden. It can't be less: the disc
+/// must win its rim, 7 points from the vertex, against the faces it bounds that rise toward
+/// the eye. The pick shows on hover before a click and can be undone. The better rule, after
+/// M5 (docs/roadmap/m5-app.md), is by adjacency: a vertex's pick dropped where a face nearer
+/// than an edge's reach ([`edge_reach`]) covers it that isn't one of the vertex's own.
 fn vertex_reach(perspective: bool, span: f64, ahead: f64) -> f64 {
+    reach(VERTEX_REACH, perspective, span, ahead)
+}
+
+/// How far toward the eye an edge's picking strip is drawn ([`edge_picks`]), and Select
+/// Other's cast takes an edge ([`hits`]), of a point `ahead` mm in front of the drawing's
+/// camera in a view `rows` pixels high: [`EDGE_REACH_PIXELS`] of the view's depth there
+/// ([`edge_fraction`] of its height), with [`vertex_reach`]'s caps, so never more than it.
+fn edge_reach(perspective: bool, span: f64, rows: u32, ahead: f64) -> f64 {
+    reach(edge_fraction(rows), perspective, span, ahead)
+}
+
+/// The fraction of a view's height, `rows` pixels, that an edge's reach is: [`EDGE_REACH_PIXELS`]
+/// of its rows, and at most [`VERTEX_REACH`] (which it is under 167 rows, and for a view of
+/// none).
+fn edge_fraction(rows: u32) -> f64 {
+    (EDGE_REACH_PIXELS / f64::from(rows)).min(VERTEX_REACH)
+}
+
+/// `fraction` of a view's height at a point `ahead` mm in front of the drawing's camera, as a
+/// reach toward the eye. Orthographic, `span` is the view's height, and the reach at most
+/// halfway to the near plane, as little as a millimetre in front of the scene, so a disc or a
+/// strip at the scene's front isn't cut; in perspective, `span` is the view's height a
+/// millimetre from the eye, and the reach at most [`MOST_VERTEX_REACH`] of the depth, so a
+/// view as wide as 180° keeps it ahead of the eye: in mm along the view, `ahead` times that
+/// fraction (at an `ahead` of 1, the fraction itself, which a point is moved along its line to
+/// the eye by).
+fn reach(fraction: f64, perspective: bool, span: f64, ahead: f64) -> f64 {
     if perspective {
-        (VERTEX_REACH * span).min(MOST_VERTEX_REACH) * ahead
+        (fraction * span).min(MOST_VERTEX_REACH) * ahead
     } else {
-        (VERTEX_REACH * span).min(ahead / 2.0)
+        (fraction * span).min(ahead / 2.0)
+    }
+}
+
+/// `v`, a point about the drawing's camera (x right, y up, z toward the eye:
+/// [`View::about_camera`]'s), moved toward the eye by its [`reach`] of `fraction` of a view
+/// `span` high, in f64: along the view (orthographic, `−z` ahead of the camera, at z = 0) or
+/// along its line to the eye (perspective, the eye at the origin), so it lands on the same
+/// pixel.
+fn toward_eye(v: [f64; 3], fraction: f64, perspective: bool, span: f64) -> [f64; 3] {
+    if perspective {
+        let toward = reach(fraction, true, span, 1.0);
+        v.map(|c| c * (1.0 - toward))
+    } else {
+        [v[0], v[1], v[2] + reach(fraction, false, span, -v[2])]
+    }
+}
+
+/// [`toward_eye`] undone: the point `v` is where it moves to. Orthographic, a point is moved
+/// by the whole reach where that's at most halfway to the camera, so to at most the reach in
+/// front of it (z ≤ −reach), and by half its way otherwise, halving z; in perspective it's
+/// scaled about the eye by at least 3/4 ([`MOST_VERTEX_REACH`]).
+fn back_from_eye(v: [f64; 3], fraction: f64, perspective: bool, span: f64) -> [f64; 3] {
+    if perspective {
+        let toward = reach(fraction, true, span, 1.0);
+        v.map(|c| c / (1.0 - toward))
+    } else {
+        let whole = fraction * span;
+        let z = if v[2] <= -whole {
+            v[2] - whole
+        } else {
+            2.0 * v[2]
+        };
+        [v[0], v[1], z]
     }
 }
 
@@ -3215,6 +3403,82 @@ fn edges(
     }
 }
 
+/// Body `body`'s edges of two points or more whose box lands `near` a frame's picking
+/// rectangle ([`Near::meets_box`], through `projector`), each drawn again as a strip into the
+/// picking layer alone, in a batch of the body's: invisible (its colour and alpha 0,
+/// blended, so it draws nothing and writes no depth to the image; outlined by nothing),
+/// [`EDGE_WIDTH`] wide at [`EDGE_DEPTH_OFFSET`], its picking ID its drawn strip's (the
+/// body's number, and the edge's with [`EDGE_BIT`]); placed as its drawn strip is
+/// ([`edges`]: by `stroke`, a frame's edges' frustum, whole or cut to a perspective view's
+/// pyramid), then moved toward the eye by its reach ([`edge_reach`], [`View::edge_pick_at`]),
+/// in f64. So an edge is picked along its stroke unless a face is nearer than its reach
+/// there: a concave edge, whose faces both rise toward the eye away from its line and so
+/// hide its drawn stroke, as a convex one; a wall thicker than the reach in front of it
+/// still hides it (N5). How many strips it drew.
+fn edge_picks(
+    lines: &mut LineDrawableBuilder<'_>,
+    body: u32,
+    uploaded: &Uploaded,
+    view: &View,
+    projector: &Projector,
+    near: Near,
+    stroke: &ViewRegion,
+) -> usize {
+    let seen = uploaded.bounds.is_some_and(|bounds| {
+        stroke.class_of_box(bounds) != Class::Out && near.meets_box(projector, bounds)
+    });
+    if !seen {
+        return 0;
+    }
+    let span = tracing::debug_span!("edge_picks", body, strips = tracing::field::Empty).entered();
+    let mut batch = lines
+        .batch(format!("Body{body}EdgePicks"))
+        .world_from_obj(glam::Affine3A::IDENTITY)
+        .picking_object_id(PickingLayerObjectId(u64::from(body)))
+        .depth_offset(EDGE_DEPTH_OFFSET);
+    let mut strips = 0usize;
+    for (edge, (points, bounds)) in edge_spans(&uploaded.mesh)
+        .zip(&uploaded.edge_bounds)
+        .enumerate()
+    {
+        let Ok(number) = u32::try_from(edge + 1) else {
+            break;
+        };
+        let Some(bounds) = *bounds else {
+            continue;
+        };
+        if points.len() < 2 || !near.meets_box(projector, bounds) {
+            continue;
+        }
+        let style = |strip: re_renderer::LineStripBuilder<'_, '_>| {
+            strip
+                .radius(Size::new_ui_points(EDGE_WIDTH / 2.0))
+                .color(Color32::TRANSPARENT)
+                .picking_instance_id(PickingLayerInstanceId(u64::from(EDGE_BIT | number)));
+        };
+        #[cfg(test)]
+        EDGE_PICKS_DRAWN.with(|drawn| drawn.set(drawn.get() + 1));
+        match view.place(stroke, bounds, || Box::new(points.iter().copied())) {
+            Placed::Not => {}
+            Placed::Whole => {
+                let moved = points
+                    .iter()
+                    .map(|p| view.edge_pick_at(view.about_camera(*p)));
+                style(batch.add_strip(moved));
+                strips += 1;
+            }
+            Placed::Cut => {
+                for strip in view.cut_strip_by(points, |v| view.edge_pick_at(v)) {
+                    style(batch.add_strip(strip.into_iter()));
+                    strips += 1;
+                }
+            }
+        }
+    }
+    span.record("strips", strips);
+    strips
+}
+
 /// Body `body`'s vertices of `mesh` that land `near` a picking rectangle in `view`
 /// ([`Projector`], as [`project`] lands them: none nearer a perspective eye than
 /// [`MIN_EYE_DISTANCE`]), each a disc `radius` points wide in the picking layer alone, in a
@@ -3560,6 +3824,58 @@ mod tests {
             assert_eq!(Element::of_instance(instance), want, "{instance:#x}");
         }
         assert_eq!(VERTEX_BIT, 0x1_0000_0000);
+    }
+
+    #[test]
+    fn an_edges_reach_is_2_pixels_of_the_views_depth_at_most_a_vertexs_and_is_undone_exactly() {
+        use super::{VERTEX_REACH, back_from_eye, edge_fraction, edge_reach, toward_eye};
+        let near = |a: [f64; 3], b: [f64; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-12);
+        // 2 pixels of the view's height: 2/800 of it at 800 rows, 2/400 at 400; at 167 rows
+        // 2/167 = 0.011976, just under a vertex's 1.2%, which caps it from 166 rows (0.012048)
+        // down, and for a view of none.
+        assert!((edge_fraction(800) - 0.0025).abs() < 1e-18);
+        assert!((edge_fraction(400) - 0.005).abs() < 1e-18);
+        assert!((edge_fraction(167) - 2.0 / 167.0).abs() < 1e-18);
+        for rows in [166, 48, 1, 0] {
+            assert_eq!(edge_fraction(rows), VERTEX_REACH, "{rows}");
+        }
+        // Orthographic, 100 mm high at 800 rows: 0.25 mm, but at most half the way to the
+        // camera (a point 0.4 mm in front of it moves 0.2).
+        assert!((edge_reach(false, 100.0, 800, 30.0) - 0.25).abs() < 1e-12);
+        assert!((edge_reach(false, 100.0, 800, 0.4) - 0.2).abs() < 1e-12);
+        // In perspective, 1 mm high a mm from the eye: 2/800 of the depth, 0.25 at 100; 170°
+        // high (22.86 mm a mm) at 48 rows, a vertex's 1.2% is 0.274 of the depth, past the
+        // most, a quarter: 25 at 100.
+        let wide = 2.0 * libm::tan(85f64.to_radians());
+        assert!((edge_reach(true, 1.0, 800, 100.0) - 0.25).abs() < 1e-12);
+        assert!((edge_reach(true, wide, 48, 100.0) - 25.0).abs() < 1e-12);
+        // Moved and moved back, by hand: orthographic along z alone, the reach whole (10 mm
+        // in front of the camera to 9.75), or half the way (0.4 to 0.2), or both alike (0.5
+        // to 0.25); in perspective, along the line to the eye, by 0.9975 or the quarter.
+        for (v, fraction, perspective, span, moved) in [
+            ([3.0, -4.0, -10.0], 0.0025, false, 100.0, [3.0, -4.0, -9.75]),
+            ([3.0, -4.0, -0.4], 0.0025, false, 100.0, [3.0, -4.0, -0.2]),
+            ([3.0, -4.0, -0.5], 0.0025, false, 100.0, [3.0, -4.0, -0.25]),
+            (
+                [1.0, 2.0, -100.0],
+                0.0025,
+                true,
+                1.0,
+                [0.9975, 1.995, -99.75],
+            ),
+            (
+                [1.0, 2.0, -100.0],
+                VERTEX_REACH,
+                true,
+                wide,
+                [0.75, 1.5, -75.0],
+            ),
+        ] {
+            let there = toward_eye(v, fraction, perspective, span);
+            assert!(near(there, moved), "{v:?}: {there:?}");
+            let back = back_from_eye(there, fraction, perspective, span);
+            assert!(near(back, v), "{v:?}: {there:?} back to {back:?}");
+        }
     }
 
     #[test]
