@@ -27,7 +27,7 @@ use super::hit::{Hit, hit};
 use super::style::*;
 use super::*;
 
-fn id(text: &str) -> ElementId {
+pub(crate) fn id(text: &str) -> ElementId {
     ElementId::new(text).unwrap()
 }
 
@@ -35,7 +35,7 @@ fn element(text: &str) -> Reference {
     Reference::Element(id(text))
 }
 
-fn point(name: &str, x: f64, y: f64) -> SketchPoint {
+pub(crate) fn point(name: &str, x: f64, y: f64) -> SketchPoint {
     SketchPoint {
         id: id(name),
         x: Coordinate::new(x).unwrap(),
@@ -44,7 +44,7 @@ fn point(name: &str, x: f64, y: f64) -> SketchPoint {
     }
 }
 
-fn line(name: &str, from: &str, to: &str) -> SketchLine {
+pub(crate) fn line(name: &str, from: &str, to: &str) -> SketchLine {
     SketchLine {
         id: id(name),
         from: id(from),
@@ -142,7 +142,7 @@ fn read(
     }
 }
 
-fn under(sketch: Sketch) -> SketchRead {
+pub(crate) fn under(sketch: Sketch) -> SketchRead {
     read(
         sketch,
         SketchState::UnderDefined,
@@ -152,7 +152,7 @@ fn under(sketch: Sketch) -> SketchRead {
 }
 
 /// Ten screen points a millimetre, the origin at (100, 500), y up.
-fn hand(at: [f64; 2]) -> Option<Pos2> {
+pub(crate) fn hand(at: [f64; 2]) -> Option<Pos2> {
     Some(pos2(
         (100.0 + 10.0 * at[0]) as f32,
         (500.0 - 10.0 * at[1]) as f32,
@@ -1369,7 +1369,7 @@ fn a_flat_sketch_fills_its_rectangle_but_the_margin_and_maps_back() {
 }
 
 /// `f` with a painter, in one pass of a context with the app's fonts.
-fn with_painter(f: impl FnOnce(&egui::Painter)) {
+pub(crate) fn with_painter(f: impl FnOnce(&egui::Painter)) {
     let ctx = egui::Context::default();
     ctx.set_fonts(crate::theme::fonts());
     let mut f = Some(f);
@@ -1383,7 +1383,7 @@ fn with_painter(f: impl FnOnce(&egui::Painter)) {
 }
 
 /// [`hand`]'s way back: screen points to the sketch's millimetres.
-fn unhand(at: Pos2) -> Option<[f64; 2]> {
+pub(crate) fn unhand(at: Pos2) -> Option<[f64; 2]> {
     Some([
         (f64::from(at.x) - 100.0) / 10.0,
         (500.0 - f64::from(at.y)) / 10.0,
@@ -2905,6 +2905,45 @@ fn a_region_whose_loop_doesnt_run_end_to_end_is_left_unfilled_and_said() {
     assert_eq!(warnings.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+#[test]
+fn the_palette_says_how_the_tool_on_is_used_and_how_trim_trims_each_way() {
+    // The palette's Tool section, under the tool's name: how it's used, in the prototype's
+    // words for the line, and the help's for trim's two ways (docs/ux/solidworks.md, §4).
+    let mut mode = mode_on(under(rectangle(Vec::new())));
+    let words = |mode: &SketchMode, settings: &mut bar::Settings| -> Vec<String> {
+        let view = mode.palette_view(silico_core::command::Revision::OPENED);
+        texts_on_light(|ui| bar::palette(ui, &view, settings))
+            .into_iter()
+            .map(|(words, _)| words)
+            .collect()
+    };
+    let mut settings = bar::Settings::default();
+    mode.tools.choose(Some(tools::Choice::Draw(
+        silico_core::sketch_tools::ToolKind::Line,
+    )));
+    let said = words(&mode, &mut settings);
+    assert!(
+        said.iter()
+            .any(|w| w == "Click, click: a chain. Double-click or Enter ends it. Drag: one line."),
+        "{said:?}"
+    );
+    mode.tools.choose(Some(tools::Choice::Trim));
+    let said = words(&mode, &mut settings);
+    assert!(
+        said.iter()
+            .any(|w| w == "Drag across curves to trim them. Drag along one to extend it."),
+        "{said:?}"
+    );
+    settings.trim = tools::TrimMode::Closest;
+    let said = words(&mode, &mut settings);
+    assert!(
+        said.iter()
+            .any(|w| w
+                == "Click a curve to trim it to its closest cuts. Drag from one to extend it."),
+        "{said:?}"
+    );
+}
+
 // The mutants #351's run left alive in `draw`: each placement, guard, and shape worked by
 // hand.
 
@@ -3990,7 +4029,7 @@ fn painted_on_light(mut draw: impl FnMut(&mut egui::Ui)) -> Vec<egui::Shape> {
 /// `tool` on.
 fn palette_painted(tool: Option<silico_core::sketch_tools::ToolKind>) -> Vec<egui::Shape> {
     let mut mode = mode_on(under(rectangle(Vec::new())));
-    mode.tool = tool;
+    mode.tools.choose(tool.map(tools::Choice::Draw));
     let view = mode.palette_view(silico_core::command::Revision::OPENED);
     let mut settings = bar::Settings::default();
     painted_on_light(|ui| bar::palette(ui, &view, &mut settings))
@@ -4092,12 +4131,12 @@ fn each_tool_is_named_as_the_toolbars_name_it_and_the_palette_names_the_one_on()
         egui::Color32::from_rgb(0xff, 0xff, 0xff)
     );
     painted_text(&painted, "Automatic relations");
-    // None on: "None", and no Automatic relations.
+    // None on: the keys that choose one.
     let painted = palette_painted(None);
-    painted_text(&painted, "None");
-    assert!(!painted.iter().any(
-        |shape| matches!(shape, egui::Shape::Text(text) if text.galley.text() == "Automatic relations")
-    ));
+    painted_text(
+        &painted,
+        "None. Line L, Rectangle R, Circle C, Arc A, Point P, Trim T",
+    );
 }
 
 #[test]

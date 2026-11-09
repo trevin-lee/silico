@@ -575,6 +575,25 @@ crates/silico-app/src/banner.rs | show | replace | with ^ | #381
 # allows and in the width inside the border.
 crates/silico-app/src/modal.rs | show_sized | replace * with / | #382
 crates/silico-app/src/modal.rs | show_sized | replace * with / | #382
+# Trim's and split's geometry (#364). `crossings`' guard `a <= 0 || !finite || < 0`: each
+# case either `&&` lets through divides by a zero `a` or takes the root of a negative, NaN,
+# or infinite discriminant, so no share of the way comes out within [0, 1] and none is found.
+crates/silico-app/src/sketch/tools.rs | crossings | replace || with && | #364
+crates/silico-app/src/sketch/tools.rs | crossings | replace || with && | #364
+# `onto`'s `l > 0` as `>=`: hypot is 0 only for a zero offset, which scaled by r/0 is NaN,
+# and the result's own finite check gives none, as the guard does.
+crates/silico-app/src/sketch/tools.rs | onto | replace > with >= | #364
+# `trim_event`'s turn taken the short way round, `(step + π) mod 2π − π`: `step − π` differs
+# from `step + π` by 2π, so the remainder is the same angle, up to an ulp of rounding.
+crates/silico-app/src/sketch/tools.rs | trim_event | replace + with - | #364
+# The trail kept to its newest TRAIL places: one place is pushed and the trail trimmed at
+# each step, so it's at most TRAIL + 1 long; at TRAIL, `>=` drains `..0`, nothing; and
+# `(TRAIL + 1) / TRAIL` is `(TRAIL + 1) − TRAIL`, 1.
+crates/silico-app/src/sketch/tools.rs | trim_event | replace > with >= | #364
+crates/silico-app/src/sketch/tools.rs | trim_event | replace - with / | #364
+# `past_end`'s press past an arc's end, `from > sweep` as `>=`: at `from == sweep` the
+# nearer end is its end, `sweep`, which `from` already is.
+crates/silico-app/src/sketch/tools.rs | past_end | replace > with >= | #364
 # A key cap's inner corner (#392) takes the ellipse's gradient for its normal only when both
 # its radii are more than none; `rx >= 0.0` for `rx > 0.0` differs only where rx is 0 and ry
 # more. Each corner's ry is the radius less its top or bottom border, rx the radius less its

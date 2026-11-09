@@ -134,6 +134,21 @@ fn enter_is_ok(ui: &mut Ui) -> bool {
     })
 }
 
+/// Sketch mode's tools' keys (the prototype's, DESIGN.md *Keyboard*): L line, R rectangle,
+/// C circle, A arc (the 3-point arc, Fusion's first), P point, and T trim.
+const SKETCH_KEYS: [(Key, sketch::tools::Choice); 6] = {
+    use silico_core::sketch_tools::ToolKind;
+    use sketch::tools::Choice;
+    [
+        (Key::L, Choice::Draw(ToolKind::Line)),
+        (Key::R, Choice::Draw(ToolKind::CornerRectangle)),
+        (Key::C, Choice::Draw(ToolKind::Circle)),
+        (Key::A, Choice::Draw(ToolKind::ThreePointArc)),
+        (Key::P, Choice::Draw(ToolKind::Point)),
+        (Key::T, Choice::Trim),
+    ]
+};
+
 /// Where sketch mode's panels stand in the canvas, as the prototype's: the sketch bar below
 /// its top, centred; the palette at its right, below the ViewCube.
 const SKETCH_BAR_FROM_TOP: f32 = 10.0;
@@ -1254,6 +1269,27 @@ impl<P: Clients + 'static> App<P> {
         // Del (or ⌫) in sketch mode deletes the sketch's selection, never a feature (the
         // prototype's `keydown` gives a sketch its own keys and goes no further).
         let (sketch_delete, delete) = (delete && in_sketch, delete && !in_sketch);
+        // Sketch mode's keys (the prototype's, DESIGN.md *Keyboard*), unless a field is being
+        // typed in: a tool's letter chooses it, or leaves it if it's on; X Construction; and
+        // Enter ends a chain.
+        // Only a plain letter: Shift or Alt with it is another key's.
+        let sketch_keys = in_sketch
+            && !typing
+            && ui.input(|input| !input.modifiers.shift && !input.modifiers.alt);
+        let letter = sketch_keys
+            .then(|| {
+                ui.input_mut(|input| {
+                    SKETCH_KEYS
+                        .iter()
+                        .find(|(key, _)| input.consume_key(Modifiers::NONE, *key))
+                        .map(|(_, choice)| *choice)
+                })
+            })
+            .flatten();
+        let construction =
+            sketch_keys && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::X));
+        let sketch_enter =
+            sketch_keys && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
         // SEAM(#351): `in_sketch` once the sketch's own keys are in (the wiring's X is
         // Construction); until then the filters are taken in a sketch too.
         let filters = if typing {
@@ -1318,6 +1354,18 @@ impl<P: Clients + 'static> App<P> {
             tab.view.ask(ask);
         }
         let sessions = &self.sessions;
+        if let Some(choice) = letter
+            && let Some(mode) = tab.sketch.as_ref()
+        {
+            let on = mode.tools.choice() == Some(choice);
+            tab.sketch_choose((!on).then_some(choice));
+        }
+        if construction && let Some(mode) = tab.sketch.as_mut() {
+            mode.settings.construction = !mode.settings.construction;
+        }
+        if sketch_enter {
+            tab.sketch_enter(sessions);
+        }
         // An untitled part's Save asks where, through the Save panel, once the tab is let go:
         // with no edits too, as its first save writes the document all the same.
         let mut save_panel = None;
@@ -1374,7 +1422,8 @@ impl<P: Clients + 'static> App<P> {
                 || rebuild_all
                 || deleted
                 || sketch_delete
-                || finish,
+                || finish
+                || sketch_enter,
             dialog_key,
         )
     }
