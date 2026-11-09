@@ -201,9 +201,9 @@ enum Queued {
     Revert {
         then_close: bool,
     },
-    /// Reload's Rebuild everything (Trevin's ask of 2026-11-09), after the revert it asked,
-    /// if any: its `check` reads the file first ([`Tab::reload`]). In the queue, so an edit
-    /// asked after it is sent after it, and a later revert drops it.
+    /// Reload (Trevin's ask of 2026-11-09), after the revert it asked, if any: its read of
+    /// the file, then its Rebuild everything ([`Tab::reload`]). In the queue, so an edit
+    /// asked after it is sent after the read, and a later revert drops it.
     Reload,
     /// An undo or a redo; one asked in sketch mode carries the state it goes no further back
     /// than (`floor`), and takes one step, never a dialog's group.
@@ -589,6 +589,13 @@ enum Under {
         feature: FeatureId,
         running: Running<TextAnswer>,
     },
+    /// Reload's read of the file (`text` of the document now), sent at the tab's revision
+    /// `sent_at`: what's asked after it waits for it ([`Tab::reload`]); then Rebuild
+    /// everything, unheld.
+    ReloadRead {
+        sent_at: Revision,
+        running: Running<TextAnswer>,
+    },
     /// Restore's read of the text of `revision`, sent at the tab's revision `sent_at`.
     Restore {
         revision: Revision,
@@ -802,9 +809,9 @@ pub struct Tab {
     /// program's, so it shows no [`reloaded`](Self::reloaded) banner. Let go once the file
     /// is as the session holds it again.
     reload_asked: bool,
-    /// The check out is Reload's: until it answers, a reload of the file the session makes
-    /// is the person's, so [`reload_asked`](Self::reload_asked) is kept.
-    reload_out: bool,
+    /// Reload's Rebuild everything, its read of the file answered, waiting for a check of
+    /// the tab's own to answer first (one is out at a time).
+    reload_rebuild: bool,
     /// The revision the newest reload the tab saw came to. A `status` of an older revision
     /// compared the file with the bytes that reload replaced.
     reloaded_to: Option<Revision>,
@@ -1032,7 +1039,7 @@ impl Tab {
             disk_choice: DiskChoice::None,
             reloaded: None,
             reload_asked: false,
-            reload_out: false,
+            reload_rebuild: false,
             reloaded_to: None,
             selection: crate::selection::Selection::default(),
             box_select: crate::box_select::BoxSelect::default(),
@@ -1626,6 +1633,7 @@ impl Tab {
             | Under::SaveAs { .. }
             | Under::Close(_)
             | Under::Load { .. }
+            | Under::ReloadRead { .. }
             | Under::Restore { .. } => false,
         });
         // A drag's begin, moves, or end under way: its edit lands as it ends.
@@ -1711,7 +1719,6 @@ impl Tab {
                 // Nor one Reload has yet to read.
                 if self.quiet()
                     && !self.reload_queued()
-                    && !self.reload_out
                     && !matches!(status.disk, Some(Disk::Changed | Disk::Gone))
                 {
                     self.reload_asked = false;
@@ -1901,6 +1908,12 @@ impl Tab {
                 Err(read) => self.check_read = Some((gate, read)),
             }
         }
+        // Reload's Rebuild everything, once the check out before it has answered; none if
+        // it may not be sent now (a dialog opened meanwhile, or the tab closes).
+        if self.reload_rebuild && self.check_read.is_none() {
+            self.reload_rebuild = false;
+            self.rebuild_all(sessions);
+        }
         let mut close = false;
         for under in std::mem::take(&mut self.under) {
             if let Some(under) = self.take(sessions, under, &mut close) {
@@ -1931,17 +1944,6 @@ impl Tab {
     /// edit), which the newest timeline's revision, past the one the check read, shows.
     /// The newest's is asked next, if it's wanted.
     fn took_check_answer(&mut self, gate: bool, response: Response<CheckAnswer>) {
-        // Reload's, which read the file and found it as the session held it: no reload of
-        // the person's is still to come (a Reload waiting behind it marks its own as it's
-        // sent).
-        if std::mem::take(&mut self.reload_out)
-            && !response
-                .session
-                .as_ref()
-                .is_some_and(|session| session.reloaded)
-        {
-            self.reload_asked = false;
-        }
         let superseded = std::mem::take(&mut self.check_superseded);
         let fresh = std::mem::take(&mut self.fresh_out);
         if fresh {
@@ -2617,6 +2619,27 @@ impl Tab {
                     running,
                 }),
             },
+            Under::ReloadRead { sent_at, running } => match running.try_take() {
+                Ok(response) => {
+                    // A reload it made (or one queued ahead of it) is seen as the person's.
+                    // One it didn't make leaves the mark to the poll, which lets it go once
+                    // nothing of the tab's is under way and the file is as the session holds
+                    // it.
+                    self.reload_in(sessions, sent_at, response.session.as_ref());
+                    self.took_session(&response);
+                    match response.result {
+                        // Then Rebuild everything, unheld, as ⇧⌘B sends it: an edit after it
+                        // supersedes it. A check of the tab's own out answers first.
+                        Ok(_) if self.check_read.is_some() => self.reload_rebuild = true,
+                        Ok(_) => self.rebuild_all(sessions),
+                        // The file couldn't be read (gone since the last status, say): said,
+                        // and nothing rebuilt or dropped beyond what was asked.
+                        Err(problems) => self.message = Some(said(&problems)),
+                    }
+                    None
+                }
+                Err(running) => Some(Under::ReloadRead { sent_at, running }),
+            },
             Under::Restore {
                 revision,
                 sent_at,
@@ -2905,22 +2928,15 @@ impl Tab {
                     });
                 }
                 Queued::Reload => {
-                    // One check of the tab's out at a time: one out answers first.
-                    if self.check_read.is_some() {
-                        self.edits.queue.push_front(Queued::Reload);
-                        return;
-                    }
-                    // The reload its read makes is the person's, whatever a Reload before it
-                    // came to (an untitled part's reads no file).
+                    // First the file read (`text` of the document now reads it first, outside
+                    // a transaction): what's asked after it waits for that alone. The reload
+                    // it makes is the person's, whatever a Reload before it came to (an
+                    // untitled part's reads no file).
                     self.reload_asked = !self.is_untitled();
-                    self.rebuild_all(sessions);
-                    if self.check_read.is_some() {
-                        self.reload_out = true;
-                    } else {
-                        // Not sent (a dialog opened meanwhile, or the tab closes): no reload
-                        // of the person's comes.
-                        self.reload_asked = false;
-                    }
+                    self.under.push(Under::ReloadRead {
+                        sent_at: self.revision,
+                        running: sessions.text(&self.id, None),
+                    });
                 }
                 Queued::Opened { serial } => {
                     self.dialog_base = Some(self.revision);
@@ -3258,10 +3274,7 @@ impl Tab {
     /// Whether what's queued waits: an edit, a save, a revert, a step, or a dialog's add (or
     /// its body's read) running.
     fn blocked(&self) -> bool {
-        // Reload's check out: what's asked after it waits for it, so an edit's begin never
-        // cancels it before it has read the file.
         self.edits.in_flight.is_some()
-            || self.reload_out
             || self.dragging()
             || self.under.iter().any(|under| {
                 matches!(
@@ -3282,6 +3295,7 @@ impl Tab {
                         | Under::SketchCut { .. }
                         | Under::DimensionValue { .. }
                         | Under::OfferField { .. }
+                        | Under::ReloadRead { .. }
                         | Under::Restore { .. }
                         | Under::Replace { .. }
                 )
@@ -3936,8 +3950,10 @@ impl Tab {
     /// (the app asks before, naming them). Outside a transaction every command reads the file
     /// first, so Rebuild everything's `check` is the read: a file changed on disk is reloaded
     /// by it, before the disk watch's next comparison, and that is what's rebuilt; the
-    /// reload is the person's, so no banner says another program's. The check is queued
-    /// behind the revert ([`Queued::Reload`]), so an edit asked after it comes after it.
+    /// reload is the person's, so no banner says another program's. The read is queued
+    /// behind the revert ([`Queued::Reload`]), and what's asked after it waits for the read
+    /// alone ([`Under::ReloadRead`]); the rebuild is then sent unheld, as ⇧⌘B's, which an
+    /// edit after it supersedes.
     ///
     /// An untitled part has no file: it's only rebuilt, its edits kept. On a file gone from
     /// disk nothing is reloaded or dropped: the part open here is the only copy of the work,
@@ -3968,7 +3984,7 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// Whether Reload's Rebuild everything waits in the queue.
+    /// Whether a Reload waits in the queue.
     fn reload_queued(&self) -> bool {
         self.edits
             .queue

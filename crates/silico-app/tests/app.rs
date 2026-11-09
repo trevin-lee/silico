@@ -35605,7 +35605,7 @@ fn after_a_reload_that_found_nothing_changed_another_programs_change_has_its_ban
     step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
     settled(&mut h);
     command_r(&mut h);
-    step_until(&mut h, "Reload's check answered", |h| {
+    step_until(&mut h, "Reload's rebuild answered", |h| {
         let tab = &h.state().tabs()[0];
         tab.rebuilds_all == 1 && !tab.checking()
     });
@@ -35799,5 +35799,77 @@ fn with_a_fillet_open_a_click_on_the_timelines_empty_space_keeps_its_edges_selec
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_edit_after_a_reload_waits_for_its_read_of_the_file_never_for_its_rebuild() {
+    // Reload reads the file first, holding what's asked after it for that alone; its Rebuild
+    // everything is sent unheld, so an edit typed while it runs lands at once, superseding
+    // it, as an edit supersedes ⇧⌘B's.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
+    settled(&mut h);
+    std::fs::write(&path, example_theirs()).unwrap();
+    let hold = f.kernel.hold(is_box);
+    command_r(&mut h);
+    step_until(&mut h, "the file read again", |h| {
+        shows(h, "Timeline", "Drill") && h.state().tabs()[0].rebuilds_all == 1
+    });
+    step_until(&mut h, "the rebuild held at its box", |_| {
+        f.kernel.wait_running(1, Duration::ZERO)
+    });
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit landed, the box still held", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "Pins")
+    });
+    assert!(h.state().tabs()[0].message.is_none());
+    hold.release();
+    settled(&mut h);
+    assert!(text_of(&f, &h).contains(r#""name": "Pins""#));
+    assert!(text_of(&f, &h).contains(r#""name": "Drill""#));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_edit_asked_while_reloads_read_waits_lands_after_it_on_the_file_read_again() {
+    // Rebuild everything held at its box keeps the session busy, so Reload's read of the
+    // file, changed on disk, waits behind it; an edit typed meanwhile waits for the read,
+    // then lands on the document it read, never against the revision before it.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
+    settled(&mut h);
+    let hold = f.kernel.hold(is_box);
+    h.key_press_modifiers(
+        eframe::egui::Modifiers::COMMAND | eframe::egui::Modifiers::SHIFT,
+        eframe::egui::Key::B,
+    );
+    step_until(&mut h, "Rebuild everything held at its box", |_| {
+        f.kernel.wait_running(1, Duration::ZERO)
+    });
+    std::fs::write(&path, example_theirs()).unwrap();
+    command_r(&mut h);
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(
+        shows(&h, "Timeline", "Hole"),
+        "the read waits behind the rebuild"
+    );
+    hold.release();
+    step_until(&mut h, "the read, then the edit", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.edits.idle() && shows(h, "Timeline", "Drill") && shows(h, "Timeline", "Pins")
+    });
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].message, None);
+    let text = text_of(&f, &h);
+    assert!(text.contains(r#""name": "Pins""#), "{text}");
+    assert!(text.contains(r#""name": "Drill""#), "{text}");
     assert_eq!(never_waits::waits(), 0);
 }
