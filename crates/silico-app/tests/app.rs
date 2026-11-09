@@ -24378,7 +24378,13 @@ fn a_drags_changed_end_is_drawn_from_its_last_frame_until_a_read_of_its_edit() {
     step_until(&mut h, "the end answered", |h| {
         the_drag(h).is_none_or(|d| !d.in_flight())
     });
-    assert!(f.kernel.wait_running(1, WAIT));
+    // The end's edit is made inside the drag's transaction, where an edit starts no
+    // rebuild until a read of the current model asks for one: the app's read of the new
+    // revision, sent in the frame after it sees it, which may come after the end's answer.
+    // So frames are stepped until the edit's rebuild runs, held at its first request.
+    step_until(&mut h, "the edit's rebuild under way", |_| {
+        f.kernel.wait_running(1, Duration::ZERO)
+    });
     for _ in 0..10 {
         step(&mut h);
     }
