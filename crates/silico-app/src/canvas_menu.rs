@@ -375,6 +375,11 @@ mod tests {
         let all = CanvasMenu::new(None, &context(true, true), &ctx);
         assert_eq!(all.step(Some(3), 1), Some(0));
         assert_eq!(all.step(Some(1), 2), Some(3));
+        // From none lit, the first step forward lights the first, two the second; back, the
+        // last.
+        assert_eq!(all.step(None, 1), Some(0));
+        assert_eq!(all.step(None, 2), Some(1));
+        assert_eq!(all.step(None, -1), Some(3));
         // An item lit that's off (it went off while lit) steps from none.
         assert_eq!(menu.step(Some(2), 1), Some(0));
         // None on: none lit.
@@ -384,5 +389,84 @@ mod tests {
         }
         assert_eq!(none.step(None, 1), None);
         assert_eq!(none.step(Some(0), -1), None);
+    }
+
+    #[test]
+    fn drawn_its_lines_are_as_wide_as_its_widest_and_the_item_lit_alone_is_filled_blue() {
+        // styles.css's `.menu .mi` (`padding: 0 8px; gap: 8px`, its icon 14 wide, its dim
+        // words `margin-left: 8px; font-size: 11px`, `.sc` after a gap, `padding-left: 24px`,
+        // its caps `.kbd`s, each as wide as its words and its padding and borders (10), or
+        // 16, 2 apart) in a `.menu` at least `min-width: 200px` less its border and its 4 of
+        // padding each side (190). Every item on, Home view (the second) lit: it alone filled
+        // `--blue` (#186add), the menu's lines' width, 24 high, 24 below the first's top.
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let menu = CanvasMenu::new(None, &context(true, true), &ctx);
+        let mut drawn = Vec::new();
+        let mut widest = 0.0f32;
+        for time in 1..=2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::splat(1000.0),
+                )),
+                time: Some(f64::from(time)),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let text = |text: &str, size: f32| {
+                    ui.painter()
+                        .layout_no_wrap(
+                            text.to_owned(),
+                            egui::FontId::proportional(size),
+                            egui::Color32::WHITE,
+                        )
+                        .size()
+                        .x
+                };
+                widest = menu
+                    .items
+                    .iter()
+                    .map(|shown| {
+                        let sub = shown
+                            .sub
+                            .as_deref()
+                            .map_or(0.0, |sub| 8.0 + 8.0 + text(sub, 11.0));
+                        let caps: f32 = shown
+                            .caps
+                            .iter()
+                            .map(|cap| (text(cap, 10.5) + 10.0).max(16.0))
+                            .sum::<f32>()
+                            + 2.0 * (shown.caps.len().saturating_sub(1) as f32);
+                        16.0 + 14.0 + 8.0 + text(&shown.label, 12.0) + sub + 8.0 + 24.0 + caps
+                    })
+                    .fold(190.0, f32::max);
+                let place =
+                    egui::Rect::from_min_size(egui::Pos2::new(10.0, 20.0), Vec2::new(900.0, 900.0));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(place), |ui| {
+                    assert_eq!(menu.draw(ui, Some(1)), (None, None));
+                });
+            });
+            output.textures_delta.clear();
+            drawn = output.shapes;
+        }
+        assert!(widest > 190.0, "{widest}");
+        let blue: Vec<egui::Rect> = drawn
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == egui::Color32::from_rgb(0x18, 0x6a, 0xdd) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blue.len(), 1, "{blue:?}");
+        let want = egui::Rect::from_min_size(egui::Pos2::new(10.0, 44.0), Vec2::new(widest, 24.0));
+        assert!(
+            (blue[0].min - want.min).length() < 1e-3 && (blue[0].max - want.max).length() < 1e-3,
+            "{blue:?}, {want:?}"
+        );
     }
 }

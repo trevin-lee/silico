@@ -2371,6 +2371,43 @@ pub(crate) mod tests {
         assert_eq!(selection.hovered, Some(hovered));
     }
 
+    #[test]
+    fn the_camera_moving_lets_go_of_the_pointers_hover_but_not_of_a_menus_row() {
+        // The pointer may be over something else once the camera moves, so its hover is let
+        // go; a menu's lit row (Select Other's) is an element, not what's under the pointer,
+        // so it stays.
+        let view = View::default();
+        let mut frame = frame_of(Vec::new());
+        let mut selection = Selection::default();
+        selection.view_changed(&view, &frame);
+        let hovered = Hovered {
+            body: 1,
+            element: Element::Face(3),
+            name: named("k7f2qx3m", face(3)),
+            stable: true,
+            found: None,
+        };
+        let moved = |frame: &mut ViewFrame| frame.camera.eye[0] += 1.0;
+        // Nothing moved: kept.
+        selection.hovered = Some(hovered.clone());
+        selection.view_changed(&view, &frame);
+        assert_eq!(selection.hovered, Some(hovered.clone()));
+        // The pointer's, the camera moved: let go.
+        moved(&mut frame);
+        selection.view_changed(&view, &frame);
+        assert_eq!(selection.hovered, None);
+        // A menu's row, the camera moved: kept.
+        selection.hold_hover(Some((
+            hovered.body,
+            hovered.element,
+            Arc::clone(&hovered.name),
+            hovered.stable,
+        )));
+        moved(&mut frame);
+        selection.view_changed(&view, &frame);
+        assert_eq!(selection.hovered, Some(hovered));
+    }
+
     // ---- Models built on the fake kernel, as the core's selection tests build them ----
 
     use silico_core::kernel::{

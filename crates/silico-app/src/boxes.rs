@@ -358,6 +358,11 @@ mod tests {
     fn boxes_are_made_off_the_holding_thread_once_kept_while_held_and_let_go_after() {
         let (build, made) = recorded();
         let mut boxes = Boxes::new(build);
+        // Written as how many are made and asked for, and whether their thread has ended.
+        assert_eq!(
+            format!("{boxes:?}"),
+            "Boxes { made: 0, asked: 0, failed: false, .. }"
+        );
         let ctx = egui::Context::default();
         let (a, b) = (mesh(0.0), mesh(5.0));
         // Nothing made at the hold that asks for them: they're made on a thread of their own.
@@ -365,6 +370,10 @@ mod tests {
         held_until(&mut boxes, &[(1, &a), (2, &b)], &ctx, |boxes| {
             boxes.made_of(1, &a).is_some() && boxes.made_of(2, &b).is_some()
         });
+        assert_eq!(
+            format!("{boxes:?}"),
+            "Boxes { made: 2, asked: 0, failed: false, .. }"
+        );
         let here = std::thread::current().id();
         let on = made.lock().unwrap().clone();
         assert_eq!(on.len(), 2, "{on:?}");
@@ -412,6 +421,11 @@ mod tests {
         let ctx = egui::Context::default();
         let (a, b) = (mesh(0.0), mesh(5.0));
         boxes.hold([(1, &a), (2, &b)].into_iter(), &ctx);
+        // Both asked for, the first held in its making: none made.
+        assert_eq!(
+            format!("{boxes:?}"),
+            "Boxes { made: 0, asked: 2, failed: false, .. }"
+        );
         boxes.hold([(1, &a)].into_iter(), &ctx);
         drop(b);
         release.send(()).unwrap();
@@ -518,6 +532,10 @@ mod tests {
         held_until(&mut boxes, &[(1, &a)], &ctx, Boxes::failed);
         assert!(boxes.made_of(1, &a).is_none());
         assert!(boxes.asked.is_empty());
+        assert_eq!(
+            format!("{boxes:?}"),
+            "Boxes { made: 0, asked: 0, failed: true, .. }"
+        );
         boxes.hold([(1, &a)].into_iter(), &ctx);
         assert!(boxes.asked.is_empty() && boxes.failed());
     }

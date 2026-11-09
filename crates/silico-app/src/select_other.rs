@@ -1435,4 +1435,639 @@ mod tests {
         );
         assert_eq!(left, [key(Key::A, egui::Modifiers::NONE)]);
     }
+
+    // ---- Drawn, and given frames, as the tab gives them ----
+
+    use crate::canvas_menu::SELECT_OTHER;
+    use crate::viewport::{LeftEvent, LeftKind};
+    use egui::Color32;
+
+    /// The app's theme (its fonts, and every menu's style) on egui's context.
+    fn themed() -> egui::Context {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        ctx
+    }
+
+    /// A pass of `ctx` on a 1000-point square screen at one pixel a point, at `time` seconds
+    /// (a second on from the last, so a new area's fade-in is over by the pass after it shows),
+    /// with `events`; `run` given its root Ui. What it painted.
+    fn pass(
+        ctx: &egui::Context,
+        time: u32,
+        events: Vec<egui::Event>,
+        run: impl FnMut(&mut Ui),
+    ) -> egui::FullOutput {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::splat(1000.0))),
+            time: Some(f64::from(time)),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, run);
+        output.textures_delta.clear();
+        output
+    }
+
+    /// Whether a repaint was asked for in the pass that gave `output`.
+    fn repaint_asked(output: &egui::FullOutput) -> bool {
+        output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .is_some_and(|viewport| viewport.repaint_delay.is_zero())
+    }
+
+    /// The shapes `output` painted, in order, each of a group in its place.
+    fn shapes(output: egui::FullOutput) -> Vec<egui::Shape> {
+        fn flat(shape: egui::Shape, into: &mut Vec<egui::Shape>) {
+            match shape {
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        flat(shape, into);
+                    }
+                }
+                shape => into.push(shape),
+            }
+        }
+        let mut all = Vec::new();
+        for clipped in output.shapes {
+            flat(clipped.shape, &mut all);
+        }
+        all
+    }
+
+    /// A menu opened at (300, 300) with `rows` rows.
+    fn opened(rows: usize, phase: Phase) -> Menu {
+        Menu {
+            at: Pos2::new(300.0, 300.0),
+            ..menu(rows, phase)
+        }
+    }
+
+    /// A left event of `kind`, `seq`th in its frame.
+    fn left(kind: LeftKind, seq: u32) -> LeftEvent {
+        LeftEvent {
+            kind,
+            at_px: [10.0, 10.0],
+            shift: false,
+            ctrl: false,
+            frame: 0,
+            time: 0.0,
+            seq,
+        }
+    }
+
+    /// A right click at `at_px`, `seq`th in its frame.
+    fn right(at_px: [f32; 2], seq: u32) -> SecondaryClick {
+        SecondaryClick {
+            at_px,
+            shift: false,
+            ctrl: false,
+            frame: 0,
+            time: 0.0,
+            seq,
+        }
+    }
+
+    /// A canvas 400 by 300 points from (100, 50), at two pixels a point, given `left` and
+    /// `secondary`; the pointer over it, at `pointer_px`.
+    fn canvas(
+        left: Vec<LeftEvent>,
+        secondary: Vec<SecondaryClick>,
+        pointer_px: Option<[f32; 2]>,
+    ) -> ViewFrame {
+        ViewFrame {
+            session: silico_core::command::SessionId::parse("s1").unwrap(),
+            rect: Rect::from_min_size(Pos2::new(100.0, 50.0), Vec2::new(400.0, 300.0)),
+            camera: crate::navigate::HOME.camera(crate::navigate::NO_BOX, 800, 600),
+            size_px: [800, 600],
+            pixels_per_point: 2.0,
+            pointer_px,
+            left,
+            secondary,
+            drawn: Vec::new(),
+            now: std::time::Instant::now(),
+        }
+    }
+
+    fn wheeled(unit: egui::MouseWheelUnit, lines: f32) -> egui::Event {
+        egui::Event::MouseWheel {
+            unit,
+            delta: Vec2::new(0.0, lines),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn colour(hex: u32) -> Color32 {
+        let [_, r, g, b] = hex.to_be_bytes();
+        Color32::from_rgb(r, g, b)
+    }
+
+    fn near(a: Pos2, b: Pos2) -> bool {
+        (a - b).length() < 1e-3
+    }
+
+    /// A text shape's words, its first section's size and colour, and where it's drawn.
+    fn text_of(shape: &egui::Shape) -> (String, f32, Color32, Pos2, Vec2) {
+        let egui::Shape::Text(text) = shape else {
+            panic!("not text: {shape:?}");
+        };
+        let format = &text.galley.job.sections[0].format;
+        (
+            text.galley.text().to_owned(),
+            format.font_id.size,
+            format.color,
+            text.pos,
+            text.galley.size(),
+        )
+    }
+
+    #[test]
+    fn the_foot_is_the_prototypes_its_words_and_key_caps_under_a_rule() {
+        // styles.css, `.menu.select-other .foot`: `margin-top: 4px`, `border-top: 1px solid
+        // var(--g250)` (#272626), `padding: 4px 8px 2px`, `font-size: 10.5px`, `color:
+        // var(--g550)` (#939090); interact.js's `openSelectOther`, its words "Tab or the
+        // wheel steps · Enter selects · Esc closes", the keys `.kbd`s (`height: 16px;
+        // min-width: 16px; padding: 0 4px; border: 1px solid var(--g350)` (#525151),
+        // `border-radius: 3px; background: var(--g250); color: var(--g800)` (#e0dfdf),
+        // `font-size: 10.5px`, all border-box). Put at (10, 20), by hand: the rule 4 down,
+        // its 1 point's middle at 24.5; its line 4 under it, 16 high, from 29 to 45 (its
+        // middle 37, a cap's words' line under its 1-point top border, their middle 38); 2
+        // under that, 27 high in all; its words from 8 in, a cap as wide as its words and
+        // its padding and borders (10), or 16, and the foot 8 wider again at its right.
+        let ctx = themed();
+        let parts = [
+            ("Tab", true),
+            (" or the wheel steps · ", false),
+            ("Enter", true),
+            (" selects · ", false),
+            ("Esc", true),
+            (" closes", false),
+        ];
+        let mut measured = Vec::new();
+        let mut drawn = None;
+        let output = pass(&ctx, 1, Vec::new(), |ui| {
+            measured = parts
+                .iter()
+                .map(|(text, _)| {
+                    ui.painter()
+                        .layout_no_wrap(
+                            (*text).to_owned(),
+                            FontId::proportional(10.5),
+                            Color32::WHITE,
+                        )
+                        .size()
+                })
+                .collect();
+            let place = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(900.0, 100.0));
+            let inner = ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                let width = foot_width(ui);
+                paint_foot(ui, width);
+                width
+            });
+            drawn = Some((inner.inner, inner.response.rect));
+        });
+        let (width, rect) = drawn.unwrap();
+        let wide = |(at, (_, cap)): (usize, &(&str, bool))| {
+            let text = measured[at].x;
+            if *cap { (text + 10.0).max(16.0) } else { text }
+        };
+        let words: f32 = parts.iter().enumerate().map(wide).sum();
+        assert!((width - (8.0 + words + 8.0)).abs() < 1e-3, "{width}");
+        assert!(near(rect.min, Pos2::new(10.0, 20.0)), "{rect:?}");
+        assert!((rect.width() - width).abs() < 1e-3, "{rect:?}");
+        assert!((rect.height() - 27.0).abs() < 1e-3, "{rect:?}");
+        let shapes = shapes(output);
+        // The rule, then each cap (its fill, its border, its words) and each run of words.
+        assert_eq!(shapes.len(), 13, "{shapes:#?}");
+        let egui::Shape::LineSegment { points, stroke } = &shapes[0] else {
+            panic!("no rule: {:?}", shapes[0]);
+        };
+        assert!(near(points[0], Pos2::new(10.0, 24.5)), "{points:?}");
+        assert!(near(points[1], Pos2::new(10.0 + width, 24.5)), "{points:?}");
+        assert_eq!(*stroke, Stroke::new(1.0, colour(0x272626)));
+        let mut x = 18.0;
+        let mut at = 1;
+        for (n, (text, cap)) in parts.iter().enumerate() {
+            let size = measured[n];
+            if *cap {
+                let cap_wide = (size.x + 10.0).max(16.0);
+                let egui::Shape::Rect(fill) = &shapes[at] else {
+                    panic!("no cap for {text}: {:?}", shapes[at]);
+                };
+                let place = Rect::from_min_max(Pos2::new(x, 29.0), Pos2::new(x + cap_wide, 45.0));
+                assert!(
+                    near(fill.rect.min, place.min) && near(fill.rect.max, place.max),
+                    "{text}: {fill:?}"
+                );
+                assert_eq!(fill.fill, colour(0x272626), "{text}");
+                assert_eq!(fill.corner_radius, egui::CornerRadius::same(3), "{text}");
+                let egui::Shape::Mesh(border) = &shapes[at + 1] else {
+                    panic!("no border for {text}: {:?}", shapes[at + 1]);
+                };
+                let bounds = border.calc_bounds();
+                // On the pixels the cap's box is rounded to, feathered half a pixel out.
+                let off = (bounds.min - place.min)
+                    .abs()
+                    .max((bounds.max - place.max).abs());
+                assert!(off.x <= 1.0 && off.y <= 1.0, "{text}: {bounds:?} {place:?}");
+                assert!(
+                    border
+                        .vertices
+                        .iter()
+                        .any(|vertex| vertex.color == colour(0x525151)),
+                    "{text}"
+                );
+                let (said, font, ink, pos, galley) = text_of(&shapes[at + 2]);
+                assert_eq!((said.as_str(), font, ink), (*text, 10.5, colour(0xe0dfdf)));
+                let centre = Pos2::new(x + cap_wide / 2.0, 38.0);
+                assert!(near(pos, centre - galley / 2.0), "{text}: {pos:?}");
+                x += cap_wide;
+                at += 3;
+            } else {
+                let (said, font, ink, pos, _) = text_of(&shapes[at]);
+                assert_eq!((said.as_str(), font, ink), (*text, 10.5, colour(0x939090)));
+                assert!(
+                    near(pos, Pos2::new(x, 37.0 - size.y / 2.0)),
+                    "{text}: {pos:?}"
+                );
+                x += size.x;
+                at += 1;
+            }
+        }
+        assert!((x + 8.0 - (10.0 + width)).abs() < 1e-3, "{x}");
+    }
+
+    #[test]
+    fn its_menus_open_beside_the_click_framed_holding_the_focus_the_lit_row_alone_filled() {
+        // The context menu 1 point right of and below its right click (so the click's own
+        // point stays the canvas's), the list 28 right and 18 up (interact.js,
+        // `openSelectOther`'s `e.clientX + 28, e.clientY - 18`); each framed as `.menu` is
+        // (`background: var(--g200)`, #212121; `border: 1px solid var(--g250)`, #272626;
+        // `border-radius: var(--r)`, 6), holding the keyboard's focus. The list's lit row
+        // alone filled `--blue` (#186add): its first, under the frame's border and its 4 of
+        // padding, and its head (6 + 16 + 2 high).
+        let ctx = themed();
+        let mut so = SelectOther {
+            menu: Some(opened(4, Phase::Context)),
+            ..Default::default()
+        };
+        let mut drawn = None;
+        for time in 1..=3 {
+            drawn = Some(pass(&ctx, time, Vec::new(), |ui| {
+                assert!(so.show(ui.ctx()).is_none());
+            }));
+        }
+        let layer = so.menu.as_ref().unwrap().layer();
+        let area = ctx.memory(|memory| memory.area_rect(layer.id)).unwrap();
+        assert_eq!(area.min, Pos2::new(301.0, 301.0));
+        let framed = |shapes: &[egui::Shape], area: Rect| {
+            let frame = shapes
+                .iter()
+                .find_map(|shape| match shape {
+                    egui::Shape::Rect(rect) if rect.fill == colour(0x212121) => Some(rect),
+                    _ => None,
+                })
+                .expect("no frame");
+            assert!(
+                near(frame.rect.min, area.min) && near(frame.rect.max, area.max),
+                "{frame:?} {area:?}"
+            );
+            assert_eq!(frame.stroke, Stroke::new(1.0, colour(0x272626)));
+            assert_eq!(frame.corner_radius, egui::CornerRadius::same(6));
+        };
+        framed(&shapes(drawn.take().unwrap()), area);
+        assert!(ctx.memory(|memory| memory.has_focus(menu_id())));
+        // The list, its first row lit.
+        so.menu.as_mut().unwrap().list();
+        for time in 4..=6 {
+            drawn = Some(pass(&ctx, time, Vec::new(), |ui| {
+                assert!(so.show(ui.ctx()).is_none());
+            }));
+        }
+        let layer = so.menu.as_ref().unwrap().layer();
+        let area = ctx.memory(|memory| memory.area_rect(layer.id)).unwrap();
+        assert_eq!(area.min, Pos2::new(328.0, 282.0));
+        let painted = shapes(drawn.take().unwrap());
+        let blue: Vec<Rect> = painted
+            .iter()
+            .filter_map(|shape| match shape {
+                egui::Shape::Rect(rect) if rect.fill == colour(0x186add) => Some(rect.rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blue.len(), 1, "{blue:?}");
+        assert!(near(blue[0].min, Pos2::new(333.0, 311.0)), "{blue:?}");
+        assert!((blue[0].height() - 24.0).abs() < 1e-3, "{blue:?}");
+        framed(&painted, area);
+        assert!(ctx.memory(|memory| memory.has_focus(menu_id())));
+    }
+
+    #[test]
+    fn the_lit_row_is_scrolled_into_view_no_farther_than_it_must_go() {
+        // 30 rows of 24, 16 shown (384 high, the list's 0 to 384 of its 720): the 18th
+        // lit, from 408 to 432, scrolled to 432 − 384 = 48; the 15th (336 to 360) already
+        // in view, left there; the 2nd (24 to 48) brought down to 24.
+        let ctx = themed();
+        let mut so = SelectOther {
+            menu: Some(opened(30, Phase::Context)),
+            ..Default::default()
+        };
+        so.menu.as_mut().unwrap().list();
+        let scrolled = |so: &mut SelectOther, by: i64, time: u32| {
+            so.menu.as_mut().unwrap().step(by);
+            for time in time..time + 2 {
+                pass(&ctx, time, Vec::new(), |ui| {
+                    so.show(ui.ctx());
+                });
+            }
+            let menu = so.menu.as_ref().unwrap();
+            (menu.lit, menu.scroll)
+        };
+        assert_eq!(scrolled(&mut so, 0, 1), (Some(0), 0.0));
+        assert_eq!(scrolled(&mut so, 17, 3), (Some(17), 48.0));
+        assert_eq!(scrolled(&mut so, -3, 5), (Some(14), 48.0));
+        assert_eq!(scrolled(&mut so, -13, 7), (Some(1), 24.0));
+        // The wheel over the list steps it (the overlay's) and never scrolls it itself.
+        let row = Pos2::new(340.0, 330.0);
+        for time in 9..20 {
+            let events = if time == 9 {
+                vec![
+                    egui::Event::PointerMoved(row),
+                    wheeled(egui::MouseWheelUnit::Line, -3.0),
+                ]
+            } else {
+                Vec::new()
+            };
+            pass(&ctx, time, events, |ui| {
+                so.show(ui.ctx());
+            });
+        }
+        let menu = so.menu.as_ref().unwrap();
+        assert_eq!((menu.lit, menu.scroll), (Some(1), 24.0));
+    }
+
+    #[test]
+    fn the_wheel_steps_the_list_over_the_canvas_or_over_the_list_and_nowhere_else() {
+        use egui::MouseWheelUnit::{Line, Point};
+        let ctx = themed();
+        let mut so = SelectOther {
+            menu: Some(opened(4, Phase::Context)),
+            ..Default::default()
+        };
+        so.menu.as_mut().unwrap().list();
+        for time in 1..=3 {
+            pass(&ctx, time, Vec::new(), |ui| {
+                so.show(ui.ctx());
+            });
+        }
+        let list = ctx
+            .memory(|memory| memory.area_rect(so.menu.as_ref().unwrap().layer().id))
+            .unwrap();
+        let away = Pos2::new(50.0, 50.0);
+        assert!(!list.contains(away));
+        let wheel = |so: &mut SelectOther, time: u32, at: Pos2, over: bool, unit, lines| {
+            let pointer = over.then_some([10.0, 10.0]);
+            let events = vec![egui::Event::PointerMoved(at), wheeled(unit, lines)];
+            pass(&ctx, time, events, |ui| {
+                so.wheel(ui.ctx(), &canvas(Vec::new(), Vec::new(), pointer));
+                so.show(ui.ctx());
+            });
+            so.menu.as_ref().unwrap().lit
+        };
+        // Over the canvas (its pointer in its frame), down a line: on.
+        assert_eq!(wheel(&mut so, 4, away, true, Line, -1.0), Some(1));
+        // Over the list, which the canvas's frame has no pointer under: on.
+        assert_eq!(wheel(&mut so, 5, list.center(), false, Line, -1.0), Some(2));
+        // Over neither (another pane): nothing.
+        assert_eq!(wheel(&mut so, 6, away, false, Line, -1.0), Some(2));
+        // Points with no line to make them lines (a line of 0 points) step nothing, and keep
+        // what the wheel held of a line: half a line, nothing of the points, half a line, one
+        // step.
+        ctx.options_mut(|options| options.input_options.line_scroll_speed = 0.0);
+        assert_eq!(wheel(&mut so, 7, away, true, Line, -0.5), Some(2));
+        assert_eq!(wheel(&mut so, 8, away, true, Point, -10.0), Some(2));
+        assert_eq!(wheel(&mut so, 9, away, true, Line, -0.5), Some(3));
+    }
+
+    #[test]
+    fn the_pointer_onto_an_item_lights_it_and_resting_there_or_leaving_it_keeps_the_keys_light() {
+        // Over nothing, with rows: Fit, Home view, Select Other…, Clear selection (off). The
+        // menu at (301, 301), its lines from 5 in (its border and its padding): Fit from 306
+        // to 330, Home view below it.
+        let ctx = themed();
+        let mut so = SelectOther {
+            menu: Some(opened(2, Phase::Context)),
+            ..Default::default()
+        };
+        let lit = |so: &mut SelectOther, time: u32, at: Option<Pos2>| {
+            let events = at.map(egui::Event::PointerMoved).into_iter().collect();
+            pass(&ctx, time, events, |ui| {
+                so.show(ui.ctx());
+            });
+            so.menu.as_ref().unwrap().lit
+        };
+        assert_eq!(lit(&mut so, 1, None), None);
+        assert_eq!(lit(&mut so, 2, None), None);
+        // Onto Fit: lit.
+        assert_eq!(lit(&mut so, 3, Some(Pos2::new(330.0, 318.0))), Some(0));
+        // The keys step to Home view, the pointer resting on Fit: Home view stays lit.
+        so.menu.as_mut().unwrap().step(1);
+        assert_eq!(lit(&mut so, 4, None), Some(1));
+        assert_eq!(lit(&mut so, 5, None), Some(1));
+        // Off the menu: what's lit stays.
+        assert_eq!(lit(&mut so, 6, Some(Pos2::new(50.0, 50.0))), Some(1));
+    }
+
+    #[test]
+    fn a_press_that_closed_the_menu_is_its_own_to_its_release_and_the_double_click_after() {
+        use LeftKind::{Cancel, DoubleClick, Move, Press, Release};
+        let ctx = egui::Context::default();
+        let names = |_: &FeatureId| None;
+        let edit_off = |_: &FeatureId| None;
+        let facts = Facts {
+            names: &names,
+            edit_off: &edit_off,
+        };
+        let kept = |swallowing: bool, kinds: &[LeftKind]| -> (Vec<LeftKind>, bool) {
+            let mut so = SelectOther {
+                swallowing,
+                ..Default::default()
+            };
+            let (mut selection, mut view) = (Selection::default(), View::default());
+            let events = (0..)
+                .zip(kinds)
+                .map(|(seq, kind)| left(*kind, seq))
+                .collect();
+            let frame = canvas(events, Vec::new(), None);
+            let given = Given {
+                frame: &frame,
+                current: false,
+                facts: &facts,
+                ctx: &ctx,
+            };
+            let (kept, opened) = so.canvas_events(&mut selection, &mut view, &given);
+            assert!(!opened);
+            (kept.iter().map(|event| event.kind).collect(), so.swallowing)
+        };
+        // Its release ends it, the double-click straight after that release is its too, and
+        // the press after is the canvas's.
+        assert_eq!(
+            kept(true, &[Move, Release, DoubleClick, Press, Release]),
+            (vec![Press, Release], false)
+        );
+        // A press straight after its release is the canvas's.
+        assert_eq!(
+            kept(true, &[Release, Press, Release]),
+            (vec![Press, Release], false)
+        );
+        // A cancel makes no double-click: what comes straight after it is the canvas's.
+        assert_eq!(
+            kept(true, &[Cancel, DoubleClick]),
+            (vec![DoubleClick], false)
+        );
+        // Not ended yet: still the menu's.
+        assert_eq!(kept(true, &[Move]), (vec![], true));
+        // With no press of the menu's, a double-click is the canvas's.
+        assert_eq!(
+            kept(false, &[DoubleClick, Press]),
+            (vec![DoubleClick, Press], false)
+        );
+    }
+
+    #[test]
+    fn the_menu_opens_at_its_clicks_point_or_the_canvass_centre_for_one_not_finite() {
+        let ctx = egui::Context::default();
+        let names = |_: &FeatureId| None;
+        let edit_off = |_: &FeatureId| None;
+        let facts = Facts {
+            names: &names,
+            edit_off: &edit_off,
+        };
+        let at = |at_px: [f32; 2]| {
+            let mut so = SelectOther::default();
+            let (mut selection, mut view) = (Selection::default(), View::default());
+            let waiting = Waiting {
+                click: right(at_px, 0),
+                frame: canvas(Vec::new(), Vec::new(), None),
+                meshes: Vec::new(),
+                hovered: None,
+                model: None,
+                current: false,
+            };
+            so.open(waiting, &mut selection, &mut view, &facts, &ctx);
+            // Cast on nothing: the meshes aren't the selection's model's.
+            let said = so.context().unwrap().items[2].said(&ctx);
+            assert_eq!(said, format!("{SELECT_OTHER} {UNREAD}"));
+            so.menu.unwrap().at
+        };
+        // 40 and 30 pixels in, at 2 a point: 20 and 15 points from the canvas's corner.
+        assert_eq!(at([40.0, 30.0]), Pos2::new(120.0, 65.0));
+        // Either not finite: the canvas's centre, (300, 200).
+        assert_eq!(at([f32::NAN, 30.0]), Pos2::new(300.0, 200.0));
+        assert_eq!(at([40.0, f32::INFINITY]), Pos2::new(300.0, 200.0));
+        assert_eq!(at([f32::NAN, f32::NEG_INFINITY]), Pos2::new(300.0, 200.0));
+    }
+
+    #[test]
+    fn a_tab_not_shown_closes_its_menu_and_takes_no_right_click_and_one_shown_again_does() {
+        let ctx = egui::Context::default();
+        let names = |_: &FeatureId| None;
+        let edit_off = |_: &FeatureId| None;
+        let facts = Facts {
+            names: &names,
+            edit_off: &edit_off,
+        };
+        let (mut selection, mut view) = (Selection::default(), View::default());
+        let mut so = SelectOther::default();
+        let mut overlay = |so: &mut SelectOther, time: u32, shown: bool, frame: &ViewFrame| {
+            let mut kept = Vec::new();
+            pass(&ctx, time, Vec::new(), |ui| {
+                let mut painter = ui.painter().clone();
+                if !shown {
+                    painter.set_invisible();
+                }
+                let (left, asked) =
+                    so.overlay(&mut selection, &mut view, frame, &painter, false, &facts);
+                assert_eq!(asked, None);
+                kept = left.iter().map(|event| event.kind).collect::<Vec<_>>();
+            });
+            (kept, selection.hover_held())
+        };
+        // A pass the tab isn't shown in: its overlay not given it.
+        let unshown = |time: u32| {
+            pass(&ctx, time, Vec::new(), |_| {});
+        };
+        let nothing = canvas(Vec::new(), Vec::new(), None);
+        let click = canvas(Vec::new(), vec![right([40.0, 30.0], 1)], None);
+        // Shown, and shown the next pass: the list stays open, holding the hover.
+        assert_eq!(overlay(&mut so, 1, true, &nothing), (vec![], false));
+        so.menu = Some(opened(4, Phase::Context));
+        so.menu.as_mut().unwrap().list();
+        assert_eq!(overlay(&mut so, 2, true, &nothing), (vec![], true));
+        assert_eq!(so.phase(), Some(Phase::List));
+        // Not shown a pass, then shown: closed, the hover let go.
+        unshown(3);
+        assert!(so.is_open());
+        assert_eq!(overlay(&mut so, 4, true, &nothing), (vec![], false));
+        assert!(!so.is_open());
+        // Not shown a pass, then shown with a right click: its menu opens.
+        unshown(5);
+        assert_eq!(overlay(&mut so, 6, true, &click), (vec![], true));
+        assert_eq!(so.phase(), Some(Phase::Context));
+        // A press closes it, its stream the menu's; the tab hidden mid-stream, given its
+        // end unshown with the frame it was last shown in (a right click in it): the stream
+        // ended, the menu not opened again.
+        let press = canvas(vec![left(LeftKind::Press, 0)], Vec::new(), None);
+        assert_eq!(overlay(&mut so, 7, true, &press), (vec![], false));
+        assert!(!so.is_open() && so.swallowing);
+        let ended = canvas(
+            vec![left(LeftKind::Cancel, 0)],
+            vec![right([40.0, 30.0], 1)],
+            None,
+        );
+        assert_eq!(overlay(&mut so, 8, false, &ended), (vec![], false));
+        assert!(!so.is_open() && !so.is_waiting() && !so.swallowing);
+    }
+
+    #[test]
+    fn a_change_of_its_menu_or_its_light_asks_for_the_frame_that_draws_it() {
+        let ctx = themed();
+        let names = |_: &FeatureId| None;
+        let edit_off = |_: &FeatureId| None;
+        let facts = Facts {
+            names: &names,
+            edit_off: &edit_off,
+        };
+        let (mut selection, mut view) = (Selection::default(), View::default());
+        let mut so = SelectOther::default();
+        let nothing = canvas(Vec::new(), Vec::new(), None);
+        let mut overlay = |so: &mut SelectOther, time: u32| {
+            let output = pass(&ctx, time, Vec::new(), |ui| {
+                let painter = ui.painter().clone();
+                so.overlay(&mut selection, &mut view, &nothing, &painter, false, &facts);
+            });
+            repaint_asked(&output)
+        };
+        overlay(&mut so, 1);
+        so.menu = Some(opened(4, Phase::Context));
+        so.menu.as_mut().unwrap().list();
+        // Its first frame (egui's sizing pass, which asks for the next) aside.
+        overlay(&mut so, 2);
+        overlay(&mut so, 3);
+        assert!(!overlay(&mut so, 4), "a repaint asked with nothing changed");
+        so.key(MenuKey::Next);
+        assert!(
+            overlay(&mut so, 5),
+            "no repaint asked for the row stepped to"
+        );
+        assert_eq!(so.lit(), Some(1));
+        // egui draws the pass after one a repaint is asked in too.
+        overlay(&mut so, 6);
+        assert!(!overlay(&mut so, 7), "a repaint asked with nothing changed");
+        so.key(MenuKey::Close);
+        assert!(overlay(&mut so, 8), "no repaint asked for the menu closed");
+        assert!(!so.is_open());
+    }
 }
