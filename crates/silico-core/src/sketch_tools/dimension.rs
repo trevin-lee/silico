@@ -1472,8 +1472,10 @@ pub fn prompted_refusal(states: &SketchStates) -> bool {
 }
 
 /// A read's degrees of freedom, where they count its constraints: PlaneGCS's, for every
-/// answer but a translation's refusal (`invalid_input`), whose diagnosis is of the geometry
-/// alone and compares with nothing.
+/// answer but a translation's refusal of the sketch as drawn (`invalid_input`), which no
+/// solve follows, so its diagnosis is of the geometry alone (`Diagnosed::untranslated`) and
+/// compares with nothing. A solution a load can't translate again is `invalid_result`, with
+/// the first solve's diagnosis, which counts them (`Translation::solve`).
 pub fn freedoms(states: &SketchStates) -> Option<i32> {
     let untranslated = states
         .solve_problem

@@ -826,6 +826,27 @@ fn holdable(file: &Sketch) -> Result<(), Error> {
     Err(error)
 }
 
+/// A solution the next solve can't translate ([`Translation::new`] refuses the file a save
+/// would write, as it refuses a drawing): `invalid_result`, as [`holdable`]'s and a collapsed
+/// symmetry's are, the translation's words as its message, its elements and suggestion
+/// kept. So `invalid_input` is only ever the drawing's refusal, before any solve, whose
+/// diagnosis is of the geometry alone ([`Diagnosed::untranslated`]), which
+/// `sketch_tools::freedoms` reads.
+fn unmeasurable(translation: Error) -> Error {
+    let mut error = Error::new(
+        ErrorCode::InvalidResult,
+        format!(
+            "the sketch solves to geometry the next solve can't measure: {}",
+            translation.message()
+        ),
+    )
+    .with_elements(translation.elements().iter().map(String::as_str));
+    if let Some(suggestion) = translation.suggestion() {
+        error = error.with_suggestion(suggestion);
+    }
+    error
+}
+
 /// What a solve's diagnosis says of a sketch's members, by ID, for every answer that stands,
 /// solved or refused (docs/ports/sketcher.md, *Definition states*): PlaneGCS's diagnosis,
 /// taken where the solve started, before any algorithm ran, and the constraints decision 5
@@ -1821,7 +1842,10 @@ impl Translation {
             }
             let load = match Translation::new(&file) {
                 Ok(load) => load,
-                Err(e) => return Ok(refusal(first, Err(e))),
+                // The solution is one the next solve can't measure: the result's fault, as a
+                // collapsed symmetry's is (`read_noting`) and `holdable`'s, not the drawing's,
+                // whose refusal before any solve `invalid_input` is kept for.
+                Err(e) => return Ok(refusal(first, Err(unmeasurable(e)))),
             };
             // A worker that failed (crashed, timed out, ran short) or a reply that can't be
             // trusted is the error, as for the first solve; the worker refusing the start is

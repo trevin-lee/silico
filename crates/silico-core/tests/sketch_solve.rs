@@ -2870,6 +2870,63 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
 }
 
 #[test]
+fn a_solution_its_load_cant_translate_is_an_invalid_result_with_the_first_solves_freedoms() {
+    // A point p1 held `on` a circle about p2 (4, 6), radius 5, drawn on it at (7, 10): the
+    // drawing translates and solves. Five unknowns (the points' four and the radius), one
+    // row: PlaneGCS's 4 freedoms. The worker says it solved, nothing flagged, but with p1 at
+    // the circle's centre (every other value as drawn), finite, so the reply is taken; the
+    // file a save would write holds it (the gate reads no coincidence), and the load's
+    // translation refuses that file, as it refuses such a drawing: the solver measures a
+    // point on a circle by the line from its centre. The next solve can't measure the
+    // solution, so it's the result's fault, `invalid_result` (as `holdable`'s and a collapsed
+    // symmetry's are), never `invalid_input`, which is kept for the drawing's refusal before
+    // any solve, whose diagnosis is of the geometry alone. Its message, element, and
+    // suggestion are the translation's, and its diagnosis the first solve's, which counts the
+    // constraint: 4 freedoms, by which an add on it is judged. The load never asks the worker,
+    // so the script's second reply is left.
+    let text = text(
+        &[point("p0000001", 7.0, 10.0), point("p0000002", 4.0, 6.0)],
+        &[],
+        &[circle("c0000001", "p0000002", 5.0)],
+        &[],
+        &[r#"{"id": "k0000001", "type": "on", "point": "p0000001", "curve": "c0000001"}"#.to_owned()],
+    );
+    let sketch = sketch_of(&text);
+    let t = Translation::new(&sketch).unwrap();
+    let at = |v: f64| t.system.values.iter().position(|&w| w == v).unwrap();
+    let mut values = t.system.values.clone();
+    values[at(7.0)] = 4.0;
+    values[at(10.0)] = 6.0;
+    let mut centred = answer(&t, values, SolveStatus::Success);
+    centred.dofs = 4;
+    let unused = answer(&t, t.system.values.clone(), SolveStatus::Success);
+    let mut s = Scripted {
+        answers: vec![Ok(centred), Ok(unused)],
+        sent: Vec::new(),
+        distrusted: 0,
+    };
+    let got = t.solve(&mut s).unwrap();
+    assert_eq!((s.sent.len(), s.answers.len(), s.distrusted), (1, 1, 0));
+    let e = got.outcome().unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidResult, "{e}");
+    assert_eq!(
+        e.message(),
+        "the sketch solves to geometry the next solve can't measure: a point on a circle drawn at its centre, (4, 6): the solver measures it by the line between them"
+    );
+    assert_eq!(e.elements(), ["k0000001"]);
+    assert_eq!(
+        e.suggestion(),
+        Some("draw the point on the circle, away from its centre")
+    );
+    let states = silico_core::sketch_states::states(&sketch, got.diagnosed().unwrap()).unwrap();
+    assert_eq!(
+        (states.state, states.dofs),
+        (silico_core::sketch_states::SketchState::Invalid, 4)
+    );
+    assert_eq!(silico_core::sketch_tools::freedoms(&states), Some(4));
+}
+
+#[test]
 fn a_circles_solved_radius_is_where_the_solve_again_starts() {
     // The council, on the first check by load: a circle's radius is a value the solve moves
     // and the file stores, so a load starts from the solved radius, and a load that moves

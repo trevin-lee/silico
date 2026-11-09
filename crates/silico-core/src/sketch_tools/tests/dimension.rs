@@ -4392,7 +4392,9 @@ fn an_add_on_or_to_a_translations_refusal_is_never_judged_by_its_freedoms() {
     // refusal again with 8: not offered (invalid, no prompt, the dimension not flagged).
     // Placed on a solved read with 3, the add's read a translation's refusal with 8: not
     // offered. Placed on a read refused `invalid_result` with 3 (its diagnosis counts the
-    // constraints), the add's read refused `over_constrained` with 3: dependent, offered.
+    // constraints), the add's read refused `over_constrained` with 3: dependent, offered. A
+    // load's refusal is `invalid_result`, whose diagnosis counts the constraints
+    // (`Translation::solve`), and compares: its third case.
     use ConstraintState::{Conflicting, Unsolved};
     let untranslated = |dofs| {
         states_at(
@@ -4416,6 +4418,8 @@ fn an_add_on_or_to_a_translations_refusal_is_never_judged_by_its_freedoms() {
     let (sketch, placement) = placed_on(states_at(SketchState::UnderDefined, 3, None, &[]));
     let read = read_on(&sketch, after(8));
     assert_eq!(offer(&read, placement.revision, &placement), None);
+    // A solution that can't be built, or one a load can't translate again: `invalid_result`,
+    // with the first solve's diagnosis.
     let unbuildable = states_at(SketchState::Invalid, 3, Some(ErrorCode::InvalidResult), &[]);
     let (sketch, placement) = placed_on(unbuildable);
     let read = read_on(
