@@ -33,11 +33,6 @@
     pocket: { label: 'Pocket', keys: [], group: 'Create', icon: 'pocket', desc: "Cuts a sketch's profile out of the solid" },
     revolve: { label: 'Revolve', keys: [], group: 'Create', icon: 'revolve', desc: 'Sweeps a profile around an axis' },
     groove: { label: 'Groove', keys: [], group: 'Create', icon: 'groove', desc: 'Cuts a profile swept around an axis' },
-    box: { label: 'Box', keys: [], group: 'Create', icon: 'box' },
-    cylinder: { label: 'Cylinder', keys: [], group: 'Create', icon: 'cylinder' },
-    sphere: { label: 'Sphere', keys: [], group: 'Create', icon: 'sphere' },
-    cone: { label: 'Cone', keys: [], group: 'Create', icon: 'cone' },
-    torus: { label: 'Torus', keys: [], group: 'Create', icon: 'torus' },
     fillet: { label: 'Fillet', keys: [], group: 'Modify', icon: 'fillet', desc: 'Rounds the selected edges' },
     chamfer: { label: 'Chamfer', keys: [], group: 'Modify', icon: 'chamfer', desc: 'Bevels the selected edges' },
     union: { label: 'Union', keys: [], group: 'Modify', icon: 'union' },
@@ -79,8 +74,10 @@
     cancel: { label: 'Cancel', keys: ['Esc'], group: 'Dialogs' },
     shortcuts: { label: 'Keyboard shortcuts', keys: ['?'], group: 'Help', icon: 'help' },
   };
-  const FEATURE_ICON = { sketch: 'sketch', pad: 'pad', pocket: 'pocket', fillet: 'fillet', chamfer: 'chamfer', revolve: 'revolve', groove: 'groove', box: 'box' };
-  const FEATURE_KIND = { sketch: 'Sketch', pad: 'Pad', pocket: 'Pocket', fillet: 'Fillet', chamfer: 'Chamfer' };
+  // The primitives' icons and names stay for those a file holds, which edit but are never made here
+  // (Trevin's decision of 2026-11-09: solids are made sketch-first).
+  const FEATURE_ICON = { sketch: 'sketch', pad: 'pad', pocket: 'pocket', fillet: 'fillet', chamfer: 'chamfer', revolve: 'revolve', groove: 'groove', box: 'box', cylinder: 'cylinder', sphere: 'sphere', cone: 'cone', torus: 'torus' };
+  const FEATURE_KIND = { sketch: 'Sketch', pad: 'Pad', pocket: 'Pocket', fillet: 'Fillet', chamfer: 'Chamfer', box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', cone: 'Cone', torus: 'Torus' };
 
   // ───────── Documents ─────────
   function bracketFeatures() {
@@ -442,7 +439,7 @@
             const bodyErr = d.problems.find((p) => p.severity === 'error');
             const lastHealthy = [...d.features].reverse().find((f) => f.type !== 'sketch' && d.health[f.id] === 'healthy');
             body += row({ id: 'body1', depth: 2, icon: 'body', name: 'Body1', meta: lastHealthy ? esc(lastHealthy.name) : '', eye: S.vis.body, hidden: !S.vis.body, selected: S.selRow === 'body1', mark: bodyErr ? 'error' : null, markTip: bodyErr ? bodyErr.title : '', act: 'bodyRow' });
-          } else body += `<div class="tree-empty">${d.features.length ? 'No body: ' + (d.problems[0] ? esc(d.problems[0].title) : 'nothing builds one yet') : 'None yet. A pad or a primitive makes one.'}</div>`;
+          } else body += `<div class="tree-empty">${d.features.length ? 'No body: ' + (d.problems[0] ? esc(d.problems[0].title) : 'nothing builds one yet') : 'None yet. A pad makes one.'}</div>`;
         }
         const sketches = d.features.filter((f) => f.type === 'sketch');
         body += row({ id: 'sketches', depth: 1, caret: E.sketches, icon: 'folder', name: 'Sketches', meta: sketches.length ? '' : '0' });

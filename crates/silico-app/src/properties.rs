@@ -2273,6 +2273,43 @@ mod tests {
         }
     }
 
+    /// At the property panel's least column, 232 (pane_widths.rs), less its border, 231: a
+    /// row's value column (231 less `--pad` 12 at each side, the key's 96, and the 8 between,
+    /// 103) is at least as wide as its key's, 96; and the dialog's footer gives Cancel and
+    /// OK ((231 − 24 − 6) / 2 = 100.5 each) at least each one's own width with its key cap,
+    /// in the app's fonts (Cancel's 95.6 the wider).
+    #[test]
+    fn at_the_least_property_panel_a_rows_columns_and_the_footers_buttons_fit() {
+        let natural = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let measured = std::sync::Arc::clone(&natural);
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 200.0))
+            .build_ui(move |ui| {
+                let commands = [
+                    crate::shortcuts::Command::Cancel,
+                    crate::shortcuts::Command::Ok,
+                ];
+                let widths = commands.map(|command| {
+                    let cap = command.keys_text(ui.ctx());
+                    let button = modal::Button::new(command.label(), Kind::Secondary).cap(&cap);
+                    modal::natural_width(ui, &button)
+                });
+                *measured.lock().unwrap() = widths.to_vec();
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(3);
+        let natural = natural.lock().unwrap().clone();
+        let least = crate::pane_widths::PROPERTIES_MIN_W - crate::columns::BORDER;
+        let value = least - 2.0 * PAD - KEY_W - ROW_GAP;
+        assert!(value >= KEY_W, "a value's column {value} under its key's");
+        let (_, cancel, ok) =
+            footer_places(Rect::from_min_size(Pos2::ZERO, Vec2::new(least, 400.0)));
+        assert!(natural[0] > 90.0, "Cancel's own width: {}", natural[0]);
+        for (place, natural) in [cancel, ok].iter().zip(&natural) {
+            assert!(place.width() >= *natural, "{place:?} under {natural}");
+        }
+    }
+
     #[test]
     fn a_footer_buttons_key_cap_is_8_after_its_words_and_bordered_2_at_its_bottom() {
         let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(150.0, 26.0));
