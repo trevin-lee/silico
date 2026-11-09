@@ -494,6 +494,11 @@ pub struct View {
     /// set from outside (the selection's filter, M5.7): the renderer's
     /// [`crate::renderer::Frame::vertices`]. None picks none.
     pub vertices: Option<f32>,
+    /// Whether a pick takes edges, set from outside (the selection's filter, M5.7): the
+    /// renderer's [`crate::renderer::Frame::edges`], which draws each edge near a pick's
+    /// square again toward the eye only then, so with edges off a concave edge's faces are
+    /// picked to its line. On, as the selection's filter starts.
+    pub edges: bool,
     /// The broken reference's candidate whose card row the pointer is over (flow 6b), set
     /// from outside: drawn with the hover, in [`theme::VIEWPORT_CANDIDATE`] for that frame.
     ///
@@ -572,6 +577,7 @@ impl Default for View {
             highlights: BTreeSet::new(),
             hovered: BTreeSet::new(),
             vertices: None,
+            edges: true,
             candidate: None,
             linked: None,
             picking: None,
@@ -1840,6 +1846,7 @@ pub fn show<P: Clients + 'static>(
         hovered,
         outlines,
         picking,
+        edges: view.edges,
         vertices: view.vertices,
     };
     drawing.present(ui.painter(), rect, changes, Some(frame));
