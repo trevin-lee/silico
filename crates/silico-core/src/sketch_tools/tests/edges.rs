@@ -651,6 +651,50 @@ fn a_point_is_on_an_axis_where_no_line_of_the_sketch_lies_on_it() {
 }
 
 #[test]
+fn a_point_where_a_line_along_an_axis_is_crossed_is_on_the_two_lines_whatever_their_ids() {
+    // The line `name` along the x axis, (10, 0) to (50, 0), and n0000001 across it, (20, -5)
+    // to (20, 15) (its middle, (20, 5), and every end beyond the tolerance of (20, 0)): at
+    // (20, 0) the two lines cross, and so do n0000001 and the x axis. The point is on the two
+    // lines, the sketch's own, whether `name` sorts before "x_axis" ("aa…": the pairs'
+    // texts "aa… n0000001" and "n0000001 x_axis") or after it ("zz…": "n0000001 x_axis"
+    // and "n0000001 zz…"). Without the line along the axis, the point is on n0000001 and
+    // the axis.
+    let across = |mut s: Sketch| {
+        s.points.push(point("q0000003", 20.0, -5.0));
+        s.points.push(point("q0000004", 20.0, 15.0));
+        s.lines.push(line("n0000001", "q0000003", "q0000004"));
+        s
+    };
+    let crossed = "line #(20, -5)-#(20, 15)";
+    for name in ["aa000001", "zz000001"] {
+        let mut d = Drive::new(
+            ToolKind::Point,
+            across(just_line(name, (10.0, 0.0), (50.0, 0.0))),
+        );
+        d.click(20.0, 0.1);
+        assert_eq!(
+            d.adds(),
+            [sorted(&[
+                "point (20, 0)",
+                "on (20, 0) line #(10, 0)-#(50, 0)",
+                &format!("on (20, 0) {crossed}"),
+            ])],
+            "{name}"
+        );
+    }
+    let mut d = Drive::new(ToolKind::Point, across(empty()));
+    d.click(20.0, 0.1);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (20, 0)",
+            "on (20, 0) x_axis",
+            &format!("on (20, 0) {crossed}"),
+        ])]
+    );
+}
+
+#[test]
 fn the_nearest_woken_point_lines_up_and_a_tie_goes_to_the_lower_id() {
     // Woken points at x = 30.2 and 30.4: a click at (30, 50) is 0.2 and 0.4 off their
     // verticals, so above the first. Woken at 29.75 and 30.25: 0.25 each, the lower ID.

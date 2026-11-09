@@ -624,7 +624,9 @@ impl Pointer<'_, '_> {
     }
 
     /// Where two of the curves `near` cross, nearest `at` and within the tolerance of it, on
-    /// both as drawn: of the [`CROSSING_CURVES`] nearest curves only.
+    /// both as drawn: of the [`CROSSING_CURVES`] nearest curves only. At a tie, a crossing of
+    /// two of the sketch's own curves comes before one with an axis (a line drawn along an
+    /// axis crosses another line where the axis does), then by the pair's IDs.
     fn crossing_near(&self, at: Xy, near: &[Near]) -> Option<(Xy, Reference, Reference)> {
         let mut nearest_first: Vec<&Near> = near.iter().collect();
         nearest_first.sort_by(|a, b| {
@@ -633,8 +635,8 @@ impl Pointer<'_, '_> {
                 .then_with(|| a.reference.cmp(&b.reference))
         });
         nearest_first.truncate(CROSSING_CURVES);
-        // Each pair in the sketch's order (axes, then curves by ID), so a crossing's two `on`s
-        // come out the same however near each was.
+        // Each pair in the references' order (the sketch's curves by ID, then the x axis,
+        // then the y axis), so a crossing's two `on`s come out the same however near each was.
         nearest_first.sort_by(|a, b| a.reference.cmp(&b.reference));
         let mut found = Vec::new();
         for (i, a) in nearest_first.iter().enumerate() {
@@ -645,7 +647,10 @@ impl Pointer<'_, '_> {
                     let d = distance(x, at);
                     let on = |n: &Near| n.infinite || n.geo.spans(x);
                     if d <= self.tolerance && on(a) && on(b) {
-                        let key = format!("{} {}", a.reference, b.reference);
+                        let key = (
+                            a.infinite || b.infinite,
+                            format!("{} {}", a.reference, b.reference),
+                        );
                         found.push((d, key, (x, a.reference.clone(), b.reference.clone())));
                     }
                 }
