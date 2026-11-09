@@ -145,6 +145,10 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 - *Replace Entity* gives the new entity the old one's dimensions and relations; deleting an entity and drawing another usually means making the references again ([Replace Sketch Entities](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_replace_sketch_entities.htm)).
 - The help doesn't say what deleting a sketch entity does to its relations and dimensions, or to the endpoint it shares with a neighbour.
 
+### Sketch visibility
+
+- A sketch a feature absorbs (an extrude's or a cut's) is hidden once the feature is made, and users report it can't be turned off; a sketch nothing absorbs shows. *(Unofficial: the help's Hide/Show Sketch pages cover drawings only and don't state the rule. Reported in an Eng-Tips thread, "How do I make sketch lines that are behind a solid not show?", and a Siemens community thread comparing NX with how SolidWorks hides a sketch once it's extruded.)*
+
 ## 5. Features
 
 ### The PropertyManager
