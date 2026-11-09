@@ -1866,6 +1866,27 @@ fn a_feature_the_file_now_stores_an_incomplete_fingerprint_for_isnt_said_to_miss
 }
 
 #[test]
+fn a_feature_whose_fingerprint_the_file_no_longer_stores_isnt_said_to_be_incomplete_by_an_older_model()
+ {
+    // k7f2qx3m was built with a fingerprint written before #389. The file on disk now
+    // stores none for it (taken out by hand), and adds box m0000003, reloaded while the
+    // kernel holds it: a published check reads the model built before, whose document
+    // stored the incomplete record. The file stores no fingerprint, so neither "incomplete"
+    // (untrue of the file) nor "missing" (the model stored one) is said by that model; the
+    // reloaded revision's check says it's missing.
+    let f = opened(&document(&[before_centres("k7f2qx3m", 0)]));
+    assert_eq!(said(&f.check()), [incomplete("k7f2qx3m")]);
+    let before = at(&f);
+    let hold =
+        reloaded_holding_the_new_box(&f, &[block("k7f2qx3m", 0), HELD_BOX.to_owned()], before);
+    let published = published_check(&f, before);
+    assert!(published.warnings.is_empty(), "{:?}", said(&published));
+    drop(hold);
+    let missing = |id: &str| (WarningCode::FingerprintMissing, id.to_owned(), vec![], None);
+    assert_eq!(said(&f.check()), [missing("k7f2qx3m"), missing("m0000003")]);
+}
+
+#[test]
 fn a_carried_feature_is_warned_of_in_a_published_check_after_a_commit_that_writes_nothing() {
     // Found by the review (A3-1): in a transaction, box m0000003 is added and checked, then
     // removed and checked, so the published model is the transaction's; its commit writes

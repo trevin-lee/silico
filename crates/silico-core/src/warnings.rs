@@ -140,10 +140,11 @@ impl Warnings {
     }
 }
 
-/// `model`'s warnings, in order (the module's *Order*): none of a missing fingerprint for a
-/// feature in `spared`: the features an open transaction's edits reached, whose commit
-/// writes their fingerprints (decision 28), and, for a model older than its session's
-/// document, those that document stores a fingerprint for now.
+/// `model`'s warnings, in order (the module's *Order*): none of a missing or incomplete
+/// fingerprint for a feature in `spared`: the features an open transaction's edits reached,
+/// whose commit writes their fingerprints (decision 28), and, for a model older than its
+/// session's document, those whose record that document holds now answers what the model
+/// would say (docs/design/m4.1-warnings-addendum.md).
 pub fn of(model: &Model, spared: &BTreeSet<FeatureId>) -> Warnings {
     let _span = tracing::info_span!("warnings").entered();
     let mut warnings = Warnings::none();

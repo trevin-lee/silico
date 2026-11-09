@@ -716,6 +716,9 @@ impl Checking {
     /// `fingerprint_incomplete`) spares a feature only where the model's document stored
     /// none: the file isn't missing one, but the model can't say it's incomplete. Where the
     /// model's document stored one too, its incomplete record is warned of, as the file's is.
+    /// And a feature the file stores no fingerprint for now, where the model's document
+    /// stored one, is spared: the model can't say it's missing (it stored one), and what it
+    /// would say of it, an incomplete record, isn't true of the file.
     pub(super) fn spared<'a>(
         &'a self,
         model: &Model,
@@ -747,10 +750,9 @@ impl Checking {
         spared.extend(
             now.features
                 .iter()
-                .filter(|feature| {
-                    feature.fingerprint.as_ref().is_some_and(|stored| {
-                        stored.records_center() || !stored_then.contains(&feature.id)
-                    })
+                .filter(|feature| match &feature.fingerprint {
+                    Some(stored) => stored.records_center() || !stored_then.contains(&feature.id),
+                    None => stored_then.contains(&feature.id),
                 })
                 .map(|feature| feature.id.clone()),
         );
