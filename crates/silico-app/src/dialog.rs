@@ -1708,8 +1708,13 @@ fn input_ui(
             properties::unit(ui, field.rect, unit);
         }
         Value::Toggle(on) => {
-            ui.add_enabled(enabled, egui::Checkbox::without_text(on))
+            let toggle = ui
+                .add_enabled(enabled, egui::Checkbox::without_text(on))
                 .labelled_by(label);
+            // Named itself too, as its row's key: `labelled_by` only relates it to the row's
+            // label, which leaves the box nameless to whatever doesn't follow the relation.
+            ui.ctx()
+                .accesskit_node_builder(toggle.id, |node| node.set_label(input.label));
         }
         Value::Choice { options, chosen } => {
             let shown: Vec<String> = options.iter().map(|(_, shown)| shown.clone()).collect();

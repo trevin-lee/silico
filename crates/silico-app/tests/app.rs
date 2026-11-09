@@ -7303,9 +7303,10 @@ fn edit_feature_of_a_reversed_pad_loads_it_reversed_and_sends_nothing() {
     step_until(&mut h, "its dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
     });
+    // The box found by its own name, its row's key (Main's N3).
     assert_eq!(
         dialog(&h)
-            .get_by_role(Role::CheckBox)
+            .get_by_role_and_label(Role::CheckBox, "Reversed")
             .accesskit_node()
             .toggled(),
         Some(eframe::egui::accesskit::Toggled::True)
