@@ -37,5 +37,6 @@ pub mod toolbar;
 pub mod viewport;
 mod wake;
 mod whats_wrong;
+mod words;
 
 pub use app::App;

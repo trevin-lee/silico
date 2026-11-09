@@ -717,16 +717,6 @@ pub fn finished(typed: &str) -> Option<&str> {
     Some(typed.trim()).filter(|name| !name.is_empty())
 }
 
-/// `names` as a list in words: "A", "A and B", "A, B, and C".
-fn listed(names: &[String]) -> String {
-    match names {
-        [] => String::new(),
-        [one] => one.clone(),
-        [one, two] => format!("{one} and {two}"),
-        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
-    }
-}
-
 /// What the status bar says a suppression did, each feature by `name`: the feature, then
 /// what went with it (its dependents, suppressed; what it needs, unsuppressed). Nothing
 /// for one that changed nothing.
@@ -751,7 +741,10 @@ pub fn suppressed_words(done: &Suppressed, name: impl Fn(&FeatureId) -> String) 
         (true, _) => "which depend on it",
         (false, _) => "which it needs",
     };
-    Some(format!("{word} {feature}, and {}, {with}", listed(&others)))
+    Some(format!(
+        "{word} {feature}, and {}, {with}",
+        crate::words::listed(&others, "and")
+    ))
 }
 
 /// What the status bar says a deletion did: the feature deleted, then each feature rewired
@@ -1486,15 +1479,6 @@ mod tests {
         );
         // Changing nothing says nothing.
         assert_eq!(said(&suppressed("c0000001", &[], &[])), None);
-    }
-
-    #[test]
-    fn a_list_in_words_has_its_and_and_its_commas() {
-        let names = |n: &[&str]| n.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        assert_eq!(listed(&names(&[])), "");
-        assert_eq!(listed(&names(&["A"])), "A");
-        assert_eq!(listed(&names(&["A", "B"])), "A and B");
-        assert_eq!(listed(&names(&["A", "B", "C"])), "A, B, and C");
     }
 
     #[test]

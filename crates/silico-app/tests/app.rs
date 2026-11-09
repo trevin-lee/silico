@@ -30717,11 +30717,11 @@ fn a_broken_edges_card_lists_the_cores_candidates_closest_first_and_use_writes_o
     };
     assert_eq!(
         described(&format!("Closest · {EDGE4}")).as_deref(),
-        Some("Closest · Numbered nearest k7f2qx3m.box.Edge5, 1 away")
+        Some("Numbered 1 from k7f2qx3m.box.Edge5")
     );
     assert_eq!(
         described(EDGE6).as_deref(),
-        Some("Numbered nearest k7f2qx3m.box.Edge5, 1 away")
+        Some("Numbered 1 from k7f2qx3m.box.Edge5")
     );
     assert_eq!(said.parameter(), Some("edges.1"));
     let before = text_of(&f, &h);
@@ -30962,9 +30962,10 @@ fn in_the_fillets_dialog_remove_the_edge_empties_its_box_and_ok_waits_for_an_edg
             .is_some_and(|button| !button.accesskit_node().is_disabled())
     });
     let sent = h.state().tabs()[0].sent.clone();
-    // Under the candidates and their whys, the button runs under the dialog's footer: the
-    // body scrolled down by the wheel, as a person would, until it's clear of the footer,
-    // so the click is the button's, not Cancel's over it.
+    // Under the candidates and their whys, the button runs under the dialog's footer, where
+    // the body's scroll area is clipped: the body scrolled down by the wheel, as a person
+    // would, until the whole button is above the footer's top, so the click (kittest's, at
+    // the button's centre) is the button's, not Cancel's over it.
     let remove = |h: &AppHarness| {
         dialog(h)
             .get_by_role_and_label(Role::Button, "Remove the edge")
@@ -30973,7 +30974,9 @@ fn in_the_fillets_dialog_remove_the_edge_empties_its_box_and_ok_waits_for_an_edg
     let footer = dialog(&h)
         .get_by_role_and_label(Role::Button, "Cancel")
         .rect()
-        .top();
+        .top()
+        - silico_app::theme::DIALOG_FOOTER_PADDING
+        - silico_app::theme::BORDER_WIDTH;
     let body = dialog(&h)
         .get_by_role_and_label(Role::Button, &format!("Use {EDGE4}"))
         .rect()
@@ -30989,7 +30992,8 @@ fn in_the_fillets_dialog_remove_the_edge_empties_its_box_and_ok_waits_for_an_edg
         "{:?} under the footer",
         remove(&h)
     );
-    // The scroll's animation over (egui takes no click while it runs): the button still.
+    // The scroll's animation over, the button still: kittest clicks where the last frame
+    // drew it, and a frame that moves it after would take the click elsewhere.
     let last = std::cell::Cell::new(remove(&h));
     step_until(&mut h, "the body still", |h| {
         let now = remove(h);
