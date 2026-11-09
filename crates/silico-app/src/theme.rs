@@ -1528,12 +1528,14 @@ pub const CANVAS_MIN_HEIGHT: f32 = VIEW_CUBE_MARGIN
     + NAVIGATION_BAR_MARGIN;
 
 /// The window's least size (Fusion's window has one; the prototype, a page, has none): the
-/// browser's and the property panel's columns (`--browser-w`, `--right-w`) and the least
-/// canvas between them, 884; and the app bar (`--top-bar-h`), the toolbar (`--toolbar-tabs-
-/// h`, `--toolbar-h`, and its border), the least canvas, the timeline (`--timeline-h`, and
-/// the 1 egui's separator line takes above it), and the status bar (`--status-h`), 336.
+/// browser's and the property panel's columns at their leasts (`crate::pane_widths`'
+/// `BROWSER_MIN_W` and `RIGHT_MIN_W`, to which a narrower window takes them, 200 and 232)
+/// and the least canvas between them, 772; and the app bar (`--top-bar-h`), the toolbar
+/// (`--toolbar-tabs-h`, `--toolbar-h`, and its border), the least canvas, the timeline
+/// (`--timeline-h`, and the 1 egui's separator line takes above it), and the status bar
+/// (`--status-h`), 336.
 pub const WINDOW_MIN_WIDTH: f32 =
-    crate::panes::BROWSER_W + crate::panes::RIGHT_W + CANVAS_MIN_WIDTH;
+    crate::pane_widths::BROWSER_MIN_W + crate::pane_widths::RIGHT_MIN_W + CANVAS_MIN_WIDTH;
 pub const WINDOW_MIN_HEIGHT: f32 = TOP_BAR_HEIGHT
     + TOOLBAR_TABS_HEIGHT
     + TOOLBAR_PANELS_HEIGHT

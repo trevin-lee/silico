@@ -181,8 +181,16 @@ svg.i.lg { width: 20px; height: 20px; stroke-width: 1.35; }
 .btn-finish:hover { background: #2a78e8; }
 
 /* Main row */
-#main { display: grid; grid-template-columns: var(--browser-w) 1fr var(--right-w); min-height: 0; }
+#main { display: grid; grid-template-columns: var(--browser-w) 1fr var(--right-w); min-height: 0; position: relative; }
 #main.browser-collapsed { grid-template-columns: 28px 1fr var(--right-w); }
+/* Each side pane's border dragged to resize it (Trevin, 2026-11-09; interact.js sets
+   --browser-w and --right-w): 3px either side of the 1px border, egui's resize grab radius;
+   the cursor alone shows it. Least widths: the browser 200, the properties 232, the canvas 340. */
+.sash { position: absolute; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 50; }
+.sash.browser { left: calc(var(--browser-w) - 4px); }
+.sash.right { right: calc(var(--right-w) - 4px); }
+#main.browser-collapsed .sash.browser { display: none; }
+body.sashing, body.sashing * { cursor: col-resize !important; user-select: none; }
 .panel { background: var(--g100); min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 #browser { border-right: 1px solid var(--g250); }
 #right { border-left: 1px solid var(--g250); }

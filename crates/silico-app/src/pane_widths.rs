@@ -1,0 +1,466 @@
+//! The side panes' widths (the browser's column and the property panel's), as the person
+//! last dragged their borders (`crate::columns`), kept in a file of the app's own in the
+//! platform's app-data folder, beside the recent documents ([`PaneWidths::default_file`]),
+//! so the window opens laid out as it was left.
+//!
+//! The file is read on a thread of its own, which writes it after each drag that changes
+//! them, so the UI thread never waits on it (invariant 4): the window asks the thread
+//! ([`PaneWidths::save`]) and takes what it read ([`PaneWidths::poll`]). Its form is a header
+//! line, then the browser's width and the property panel's, each on a line of its own in
+//! whole points (`text`); a file that isn't one (`parse`), or can't be read, is the
+//! defaults, never a failure; and a width out of range is clamped into it
+//! ([`Widths::clamped`]). At most `recent::MAX_FILE_BYTES` of it is read.
+
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
+
+use crate::wake::Wake;
+
+/// The file's name in the app-data folder.
+pub const FILE_NAME: &str = "pane-widths";
+
+/// The file's first line: its form, and the form's version.
+pub(crate) const HEADER: &str = "silico pane-widths 1";
+
+/// The side panes' widths at first, as the prototype's `#main` lays them out (styles.css:
+/// `grid-template-columns: var(--browser-w) 1fr var(--right-w)`, `--browser-w: 248px`,
+/// `--right-w: 296px`), each column with its 1 px border inside it (`#browser`'s
+/// `border-right`, `#right`'s `border-left`, `box-sizing: border-box`).
+pub(crate) const BROWSER_W: f32 = 248.0;
+pub(crate) const RIGHT_W: f32 = 296.0;
+
+/// The browser's least column (its border in it), from what its deepest row holds (`.row`,
+/// `crate::panes`' `row`): a body's or a sketch's, two levels in, 6 of padding and two
+/// indents of 18, then its caret's place (14), its eye's (18), and its icon (14), each 4
+/// before the next part, 100 in all; a sketch's prefix, `(–)` in the monospace type (19.8
+/// in the app's fonts), and 4; at its right a health mark (14) 4 after its name, and 6 of
+/// padding; so a sketch's default name with two digits, `Sketch12`, whole, which a pane 199
+/// wide holds (egui fits a name by its last glyph's ink, 51.0, not its advance, 52.2) and
+/// one a point narrower cuts short (`panes`' test `at_the_least_browser_a_deep_rows_parts
+/// _and_a_default_name_fit` draws both); with its border, 200, on the 8-point grid the
+/// prototype's columns are on (248, 296). A longer name is cut short with an ellipsis, as at
+/// any width.
+pub(crate) const BROWSER_MIN_W: f32 = 200.0;
+
+/// The property panel's least column (its border in it), from its rows (`.prop`: `--pad`
+/// 12 at each side, the key's column 96, 8 to the value) with a value's column as wide as
+/// the key's, so a dialog's field holds a value and its unit, 224; with its border, 225. A
+/// dialog's footer (`.dlg-footer`) then gives Cancel and OK (224 less its padding, 12 at
+/// each side, and the 6 between them) 97 each, room for Cancel with its key cap, 95.6 in
+/// the app's fonts (`properties`' test `at_the_least_property_panel_a_rows_columns_and_the
+/// _footers_buttons_fit` measures them); rounded up to the 8-point grid, 232.
+pub(crate) const RIGHT_MIN_W: f32 = 232.0;
+
+/// The widest a file may make a column: wider than any display is in points (an 8K one at
+/// its native scale is 7,680). A wider one is clamped to it; a drag never makes one wider
+/// than its window leaves it.
+pub(crate) const WIDEST: f32 = 8192.0;
+
+/// The side panes' columns, each its border included, in points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Widths {
+    /// The browser's, at the window's left.
+    pub browser: f32,
+    /// The property panel's, at the window's right.
+    pub properties: f32,
+}
+
+impl Default for Widths {
+    fn default() -> Self {
+        Widths {
+            browser: BROWSER_W,
+            properties: RIGHT_W,
+        }
+    }
+}
+
+impl Widths {
+    /// Each in its range: no narrower than its least ([`BROWSER_MIN_W`], [`RIGHT_MIN_W`]),
+    /// no wider than [`WIDEST`]; one that isn't a number, its least.
+    pub fn clamped(self) -> Self {
+        Widths {
+            browser: within(self.browser, BROWSER_MIN_W),
+            properties: within(self.properties, RIGHT_MIN_W),
+        }
+    }
+}
+
+/// `width` from `least` to [`WIDEST`]; `least` if it isn't a number (`clamp` keeps a NaN).
+fn within(width: f32, least: f32) -> f32 {
+    if width.is_nan() {
+        least
+    } else {
+        width.clamp(least, WIDEST)
+    }
+}
+
+/// The widths of the file `bytes`, clamped ([`Widths::clamped`]): the defaults unless it's
+/// UTF-8, its first line [`HEADER`], and the two lines after it `browser N` and `properties
+/// N`, in that order, each `N` a whole number of points in decimal digits (the last line's
+/// break optional), and nothing after them.
+pub(crate) fn parse(bytes: &[u8]) -> Widths {
+    let parsed = || {
+        let text = std::str::from_utf8(bytes).ok()?;
+        let body = text.strip_prefix(HEADER)?.strip_prefix('\n')?;
+        let mut lines = body.split_terminator('\n');
+        let browser = points(lines.next()?.strip_prefix("browser ")?)?;
+        let properties = points(lines.next()?.strip_prefix("properties ")?)?;
+        lines.next().is_none().then_some(Widths {
+            browser,
+            properties,
+        })
+    };
+    parsed().map_or_else(Widths::default, Widths::clamped)
+}
+
+/// `text` as a width, if it's decimal digits alone: a number past `u32`'s range is past
+/// [`WIDEST`], and clamped to it as any wider one is.
+fn points(text: &str) -> Option<f32> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some(text.parse::<u32>().map_or(WIDEST, |points| points as f32))
+}
+
+/// The file's text for `widths`: [`HEADER`], then each width, clamped, to the nearest whole
+/// point, on a line of its own.
+pub(crate) fn text(widths: Widths) -> String {
+    let widths = widths.clamped();
+    format!(
+        "{HEADER}\nbrowser {}\nproperties {}\n",
+        widths.browser.round(),
+        widths.properties.round()
+    )
+}
+
+/// What reads the file the first time: its bytes, or none if it can't be read (a test's, to
+/// hold the read).
+pub type Read = crate::recent::Read;
+
+/// The panes' widths as the file holds them, as the window last heard them from the thread
+/// that keeps them.
+pub struct PaneWidths {
+    /// The file's widths, once read and not yet taken.
+    read: Option<Widths>,
+    /// Whether the file has been read (or found unreadable) yet.
+    told: bool,
+    asks: Option<Sender<Widths>>,
+    tells: Option<Receiver<Widths>>,
+    wake: Wake,
+}
+
+impl PaneWidths {
+    /// The widths kept in `file`, read on a thread of its own (`recent::read_capped`: a
+    /// regular file, never a pipe that could hang it, and at most its cap of it).
+    pub fn at(file: PathBuf) -> Self {
+        Self::reading(file, Box::new(crate::recent::read_capped))
+    }
+
+    /// The widths kept in `file`, read first by `read` on a thread of its own.
+    pub fn reading(file: PathBuf, read: Read) -> Self {
+        let (asks, asked) = mpsc::channel();
+        let (tell, tells) = mpsc::channel();
+        let wake = Wake::default();
+        let waking = wake.clone();
+        let started = std::thread::Builder::new()
+            .name("silico-pane-widths".to_owned())
+            .spawn(move || keep(&file, read, &asked, &tell, &waking));
+        match started {
+            Ok(_) => PaneWidths {
+                read: None,
+                told: false,
+                asks: Some(asks),
+                tells: Some(tells),
+                wake,
+            },
+            Err(e) => {
+                tracing::warn!("the panes' widths can't be kept: {e}");
+                PaneWidths {
+                    read: None,
+                    told: true,
+                    asks: None,
+                    tells: None,
+                    wake,
+                }
+            }
+        }
+    }
+
+    /// Where the widths are kept: `pane-widths` in the platform's app-data folder, beside
+    /// `recent-documents` ([`crate::recent::Recents::default_file`]); none if the platform
+    /// names no home folder.
+    pub fn default_file() -> Option<PathBuf> {
+        crate::recent::Recents::default_file().map(|recents| recents.with_file_name(FILE_NAME))
+    }
+
+    /// Whether the file has been read (or found unreadable) yet.
+    pub fn is_read(&self) -> bool {
+        self.told
+    }
+
+    /// The widths read from the file, once, the first poll after the thread tells them,
+    /// never waited for.
+    pub(crate) fn poll(&mut self) -> Option<Widths> {
+        if let Some(tells) = &self.tells {
+            for widths in tells.try_iter() {
+                self.read = Some(widths);
+                self.told = true;
+            }
+        }
+        self.read.take()
+    }
+
+    /// `widths` kept: written to the file by the thread, if they aren't what it holds.
+    pub(crate) fn save(&self, widths: Widths) {
+        if let Some(asks) = &self.asks {
+            // A thread that has ended keeps nothing more; the window keeps its widths.
+            let _ = asks.send(widths);
+        }
+    }
+
+    /// The thread asks `ctx` for a frame when it tells the widths it read.
+    pub(crate) fn waking(&self, ctx: &eframe::egui::Context) {
+        self.wake.set(ctx);
+    }
+}
+
+/// The thread that keeps the widths: `file` read once and its widths told (the defaults, if
+/// it can't be read); then each ask taken as it comes, the newest of those already waiting,
+/// and written unless it's what was read or last written.
+fn keep(file: &Path, read: Read, asked: &Receiver<Widths>, tell: &Sender<Widths>, wake: &Wake) {
+    let _span = tracing::info_span!("pane widths", file = %file.display()).entered();
+    let mut held = read(file).map_or_else(Widths::default, |bytes| parse(&bytes));
+    if tell.send(held).is_err() {
+        return;
+    }
+    wake.wake();
+    while let Ok(first) = asked.recv() {
+        let newest = asked.try_iter().last().unwrap_or(first).clamped();
+        if held == newest {
+            continue;
+        }
+        match crate::recent::write(file, &text(newest)) {
+            Ok(()) => held = newest,
+            Err(e) => tracing::warn!("the panes' widths couldn't be written: {e}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn widths_are_read_as_written() {
+        let widths = Widths {
+            browser: 300.0,
+            properties: 260.0,
+        };
+        assert_eq!(
+            text(widths),
+            "silico pane-widths 1\nbrowser 300\nproperties 260\n"
+        );
+        assert_eq!(parse(text(widths).as_bytes()), widths);
+        // The last line's break is optional; leading zeros are the number's.
+        assert_eq!(
+            parse(b"silico pane-widths 1\nbrowser 0300\nproperties 260"),
+            widths
+        );
+        // Written to the nearest whole point.
+        let halves = Widths {
+            browser: 300.5,
+            properties: 260.4,
+        };
+        assert_eq!(
+            text(halves),
+            "silico pane-widths 1\nbrowser 301\nproperties 260\n"
+        );
+        // The defaults, as the prototype's columns: 248 and 296.
+        assert_eq!(
+            text(Widths::default()),
+            "silico pane-widths 1\nbrowser 248\nproperties 296\n"
+        );
+    }
+
+    #[test]
+    fn anything_else_is_the_defaults() {
+        let defaults = Widths {
+            browser: 248.0,
+            properties: 296.0,
+        };
+        for bytes in [
+            &b""[..],
+            b"\xff\xfe",
+            b"silico pane-widths 1",
+            b"silico pane-widths 1\n",
+            b"silico pane-widths 2\nbrowser 300\nproperties 260\n",
+            b"silico recent-documents 1\nbrowser 300\nproperties 260\n",
+            b"browser 300\nproperties 260\n",
+            b" silico pane-widths 1\nbrowser 300\nproperties 260\n",
+            b"silico pane-widths 1\r\nbrowser 300\nproperties 260\n",
+            // A line missing, out of order, twice, or one more.
+            b"silico pane-widths 1\nbrowser 300\n",
+            b"silico pane-widths 1\nproperties 260\nbrowser 300\n",
+            b"silico pane-widths 1\nbrowser 300\nbrowser 300\n",
+            b"silico pane-widths 1\nbrowser 300\nproperties 260\nbrowser 300\n",
+            b"silico pane-widths 1\nbrowser 300\nproperties 260\n\n",
+            // A number that isn't whole decimal digits.
+            b"silico pane-widths 1\nbrowser 300.5\nproperties 260\n",
+            b"silico pane-widths 1\nbrowser -300\nproperties 260\n",
+            b"silico pane-widths 1\nbrowser +300\nproperties 260\n",
+            b"silico pane-widths 1\nbrowser \nproperties 260\n",
+            b"silico pane-widths 1\nbrowser 3e2\nproperties 260\n",
+            b"silico pane-widths 1\nbrowser 0x12c\nproperties 260\n",
+            b"silico pane-widths 1\nbrowser NaN\nproperties 260\n",
+            b"silico pane-widths 1\nbrowser 300\r\nproperties 260\n",
+            b"silico pane-widths 1\nbrowser  300\nproperties 260\n",
+            b"silico pane-widths 1\nbrowser 300 \nproperties 260\n",
+            b"silico pane-widths 1\nbrowser\t300\nproperties 260\n",
+            b"silico pane-widths 1\nBrowser 300\nproperties 260\n",
+            b"silico pane-widths 1\nbrowser \xd9\xa3\nproperties 260\n",
+        ] {
+            assert_eq!(
+                parse(bytes),
+                defaults,
+                "{:?}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn a_width_out_of_range_is_clamped_into_it() {
+        // By hand: the browser's least 200, the property panel's 232, the widest 8192.
+        let read = |browser: &str, properties: &str| {
+            parse(
+                format!("silico pane-widths 1\nbrowser {browser}\nproperties {properties}\n")
+                    .as_bytes(),
+            )
+        };
+        let widths = |browser, properties| Widths {
+            browser,
+            properties,
+        };
+        assert_eq!(read("0", "0"), widths(200.0, 232.0));
+        assert_eq!(read("199", "231"), widths(200.0, 232.0));
+        assert_eq!(read("200", "232"), widths(200.0, 232.0));
+        assert_eq!(read("201", "233"), widths(201.0, 233.0));
+        assert_eq!(read("8192", "8191"), widths(8192.0, 8191.0));
+        assert_eq!(read("8193", "100000"), widths(8192.0, 8192.0));
+        // Past u32's 4,294,967,295, and a thousand digits: the widest.
+        assert_eq!(read("4294967296", "4294967295"), widths(8192.0, 8192.0));
+        assert_eq!(read(&"9".repeat(1000), "300"), widths(8192.0, 300.0));
+        // And clamped when written.
+        assert_eq!(
+            text(widths(10.0, f32::NAN)),
+            "silico pane-widths 1\nbrowser 200\nproperties 232\n"
+        );
+        assert_eq!(
+            text(widths(f32::INFINITY, -5.0)),
+            "silico pane-widths 1\nbrowser 8192\nproperties 232\n"
+        );
+    }
+
+    /// The thread's word polled until it's read.
+    fn polled_until_read(widths: &mut PaneWidths) -> Widths {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            if let Some(read) = widths.poll() {
+                assert!(widths.is_read());
+                return read;
+            }
+            assert!(std::time::Instant::now() < deadline, "never told");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// `file`'s text once it reads `want`, within a minute.
+    fn written(file: &Path, want: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while std::fs::read_to_string(file).ok().as_deref() != Some(want) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never written: {want}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn the_thread_reads_the_file_once_and_writes_the_newest_widths_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("deep").join(FILE_NAME);
+        // No file: the defaults, told once.
+        let mut kept = PaneWidths::at(file.clone());
+        assert_eq!(polled_until_read(&mut kept), Widths::default());
+        assert_eq!(kept.poll(), None);
+        assert!(!file.exists());
+        // Asked twice: the file holds the newest.
+        kept.save(Widths {
+            browser: 500.0,
+            properties: 500.0,
+        });
+        let wider = Widths {
+            browser: 320.0,
+            properties: 300.0,
+        };
+        kept.save(wider);
+        written(&file, "silico pane-widths 1\nbrowser 320\nproperties 300\n");
+        // Another instance on the same file reads them.
+        let mut again = PaneWidths::at(file.clone());
+        assert_eq!(polled_until_read(&mut again), wider);
+        // No file but the widths' is left in its folder.
+        let names: Vec<_> = std::fs::read_dir(file.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [FILE_NAME]);
+    }
+
+    #[test]
+    fn the_thread_asks_the_window_for_a_frame_when_it_tells_the_widths() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let ctx = eframe::egui::Context::default();
+        let asked = std::sync::Arc::new(AtomicU64::new(0));
+        let counted = std::sync::Arc::clone(&asked);
+        ctx.set_request_repaint_callback(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let read: Read = Box::new(move |_| {
+            released.recv().ok()?;
+            Some(b"silico pane-widths 1\nbrowser 300\nproperties 260\n".to_vec())
+        });
+        let mut kept = PaneWidths::reading(dir.path().join(FILE_NAME), read);
+        kept.waking(&ctx);
+        // Held: nothing told, and the window not asked.
+        assert_eq!(kept.poll(), None);
+        assert!(!kept.is_read());
+        assert_eq!(asked.load(Ordering::SeqCst), 0);
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while asked.load(Ordering::SeqCst) == 0 {
+            assert!(std::time::Instant::now() < deadline, "no frame asked for");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            polled_until_read(&mut kept),
+            Widths {
+                browser: 300.0,
+                properties: 260.0,
+            }
+        );
+    }
+
+    #[test]
+    fn the_widths_are_kept_beside_the_recent_documents() {
+        let recents = crate::recent::Recents::default_file();
+        let widths = PaneWidths::default_file();
+        assert_eq!(recents.is_some(), widths.is_some());
+        if let (Some(recents), Some(widths)) = (recents, widths) {
+            assert_eq!(recents.parent(), widths.parent());
+            assert_eq!(widths.file_name().unwrap(), "pane-widths");
+        }
+    }
+}

@@ -270,7 +270,7 @@ fn keep(file: &Path, read: Read, asked: &Receiver<Ask>, tell: &Sender<Told>, wak
         }
         if after != before {
             let lines: Vec<&str> = after.iter().map(String::as_str).collect();
-            if let Err(e) = write(file, &lines) {
+            if let Err(e) = write(file, &text(&lines)) {
                 tracing::warn!("the list of recent documents couldn't be written: {e}");
             }
         }
@@ -376,14 +376,15 @@ pub(crate) fn read_capped(file: &Path) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// The number of the next file written beside the list: with the process's ID, a name no
-/// other write, in this instance of the app or another, uses at once.
+/// The number of the next file written beside the list (or beside the panes' widths,
+/// `crate::pane_widths`): with the process's ID, a name no other write, in this instance of
+/// the app or another, uses at once.
 static WRITES: AtomicU64 = AtomicU64::new(0);
 
-/// `paths` written to `file`, its folder made if it isn't there: to a file of its own beside
-/// it first, flushed to the disk, then moved over it, so a reader never sees half a list;
+/// `text` written to `file`, its folder made if it isn't there: to a file of its own beside
+/// it first, flushed to the disk, then moved over it, so a reader never sees half of it;
 /// that file removed if the write fails.
-fn write(file: &Path, paths: &[&str]) -> std::io::Result<()> {
+pub(crate) fn write(file: &Path, text: &str) -> std::io::Result<()> {
     if let Some(folder) = file.parent() {
         std::fs::create_dir_all(folder)?;
     }
@@ -396,7 +397,7 @@ fn write(file: &Path, paths: &[&str]) -> std::io::Result<()> {
     let beside = PathBuf::from(beside);
     let written = (|| {
         let mut new = std::fs::File::create(&beside)?;
-        new.write_all(text(paths).as_bytes())?;
+        new.write_all(text.as_bytes())?;
         new.sync_all()?;
         std::fs::rename(&beside, file)
     })();
