@@ -366,7 +366,7 @@ pub struct App<P: Clients + 'static> {
 }
 
 /// A row of Show changes' "Their change (on disk)": the changed feature's name in the key
-/// column, purple (`.k`, `var(--purple)`), and the field and its values beside it.
+/// column, in the info tone (`.k`, `var(--outside)`), and the field and its values beside it.
 fn theirs_row(row: &changes::Row) -> (String, egui::Color32, String) {
     (
         row.feature.clone(),
@@ -2100,8 +2100,9 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The toolbar (section 8; `toolbar`): the Design workspace's SOLID tab and its panels,
-    /// CREATE's tools each opening its feature's dialog (M5.8): the primitives, and the
-    /// features that sweep a sketch's profile (those that cut, only with a body to cut); and
+    /// CREATE's tools each opening its feature's dialog (M5.8): the features that sweep a
+    /// sketch's profile (those that cut, only with a body to cut), solids being made
+    /// sketch-first (Trevin's decision of 2026-11-09), never as primitives; and
     /// SELECT's Clear selection. In a sketch, SKETCH's: a tool chosen, or left if it's on,
     /// Construction turned on or off, as their keys do, and Finish Sketch.
     fn toolbar(&mut self, ui: &mut Ui, started: &mut bool) {
@@ -2320,7 +2321,7 @@ impl<P: Clients + 'static> App<P> {
     /// The banner over the canvas (section 4; DESIGN.md's 6c and 6d): a file changed on
     /// disk while edits are held, amber (gone, red), offering Reload (`rollback`, after which
     /// the session reloads it) or to keep the edits (a commit is then a conflict); or else,
-    /// once the session has reloaded its file with nothing held, purple, saying so until
+    /// once the session has reloaded its file with nothing held, in the info tone, saying so until
     /// it's dismissed.
     fn disk_banner(&mut self, ui: &mut Ui, canvas: egui::Rect, started: &mut bool) {
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
@@ -2634,7 +2635,7 @@ impl<P: Clients + 'static> App<P> {
                     done = true;
                     return;
                 };
-                modal::head(ui, Some(Icon::Diff), "What changed on disk");
+                modal::head(ui, Some(Icon::Rebuild), "What changed on disk");
                 let held = tab.held_changes.as_ref();
                 modal::body(ui, |ui| {
                     // The prototype's rows (`.prop`, unpadded), each list from its own diff.
@@ -3395,14 +3396,15 @@ mod tests {
     }
 
     #[test]
-    fn show_changes_lists_their_features_purple_and_your_edits_as_edits() {
+    fn show_changes_lists_their_features_in_the_info_tone_and_your_edits_as_edits() {
         // The prototype's 6d rows: under "Their change (on disk)", the feature's name in
-        // the key column in purple (`.k`, `var(--purple)`, #b780ff), the field and its
+        // the key column in the info tone (`.k`, `var(--outside)`, `--info` #adbbff; Trevin's
+        // change of 2026-11-09, from purple), the field and its
         // values beside it; under "Your unsaved edits", "Edit" in the key's grey.
         let theirs = held_list_painted("theirs", one_row("Pin", "radius", "5 → 3"), theirs_row);
         assert_eq!(
             painted_in(&theirs, "Pin"),
-            eframe::egui::Color32::from_rgb(0xb7, 0x80, 0xff)
+            eframe::egui::Color32::from_rgb(0xad, 0xbb, 0xff)
         );
         assert_eq!(painted_in(&theirs, "radius · 5 → 3"), theme::PROPERTY_VALUE);
         let mine = held_list_painted("mine", one_row("Block", "height", "10 → 12"), mine_row);

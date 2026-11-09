@@ -341,9 +341,10 @@ pub const ALERT_WARNING_BG: Color32 = hex_alpha(0xdf7700, 46);
 pub const ALERT_WARNING_TEXT: Color32 = hex(0xffd28a);
 /// "Rebuilt" and ready dots (`success_text_color`, Green.700).
 pub const SUCCESS: Color32 = hex(0x00da7e);
-/// What an agent or another program changed on disk (Purple.600; approved, `re_ui` has no
-/// such token).
-pub const CHANGED_OUTSIDE: Color32 = hex(0xb780ff);
+/// What an agent or another program changed on disk (the prototype's `--outside`): the info
+/// tone, [`INFO`], light and unsaturated, apart from the selection's saturated Blue.500
+/// (Trevin's change of 2026-11-09: the purple it was didn't fit the theme).
+pub const CHANGED_OUTSIDE: Color32 = INFO;
 /// Links and information (`info_text_color`, Blue.700; the prototype's `--info`).
 pub const INFO: Color32 = hex(0xadbbff);
 
@@ -733,17 +734,17 @@ pub const TOOLTIP_SHADOW: Shadow = Shadow {
 
 /// The ViewCube's side, and its margin from the canvas's top and right (the prototype's
 /// viewport.js:101, `CUBE` and `CUBE_M`); the Home button sits above it, this high. The
-/// prototype's Home is a 22 high button 4 to the cube's left (app.js:782), which the
-/// viewport's overlay places.
+/// prototype's Home is a 22 high button 4 to the cube's left (app.js's `renderCanvasUI`,
+/// `home3d`), which the viewport's overlay places.
 pub const VIEW_CUBE_SIDE: f32 = 92.0;
 pub const VIEW_CUBE_MARGIN: f32 = 16.0;
 pub const VIEW_CUBE_HOME_HEIGHT: f32 = 20.0;
 
 /// The navigation bar's width and height, and its margin from the canvas's bottom (the
 /// prototype's `.nav-bar`, 12 from the bottom). Its height is a 24 high button, 3 of padding,
-/// and a 1 border, each above and below; its width, its seven buttons as app.js:771 lays
-/// them out (five of 26, the display menu's 42, and the grid's 26), its separator (7), the
-/// 1 between each, and the same padding and border at each side.
+/// and a 1 border, each above and below; its width, its seven buttons as app.js's
+/// `renderCanvasUI` lays them out (five of 26, the display menu's 42, and the grid's 26),
+/// its separator (7), the 1 between each, and the same padding and border at each side.
 pub const NAVIGATION_BAR_WIDTH: f32 = 220.0;
 pub const NAVIGATION_BAR_HEIGHT: f32 = 32.0;
 pub const NAVIGATION_BAR_MARGIN: f32 = 12.0;
@@ -1576,10 +1577,12 @@ pub const BANNER_TITLE: Color32 = TEXT_STRONG;
 pub const BANNER_WARNING_BG: Color32 = hex(0x2a1d0b);
 pub const BANNER_WARNING_BORDER: Color32 = hex(0x6b4310);
 pub const BANNER_WARNING_TEXT: Color32 = ALERT_WARNING_TEXT;
-/// A banner saying the session reloaded its file (`.canvas-banner.info`): purple.
-pub const BANNER_INFO_BG: Color32 = hex(0x17142a);
-pub const BANNER_INFO_BORDER: Color32 = hex(0x463375);
-pub const BANNER_INFO_TEXT: Color32 = hex(0xe4d6ff);
+/// A banner saying the session reloaded its file (`.canvas-banner.info`): the info tone on
+/// a dark card as the other banners' (`--info-card-bg`, `--info-card-border`,
+/// `--info-card-text`; Trevin's change of 2026-11-09, from purple).
+pub const BANNER_INFO_BG: Color32 = hex(0x111a2d);
+pub const BANNER_INFO_BORDER: Color32 = hex(0x2b3c66);
+pub const BANNER_INFO_TEXT: Color32 = hex(0xdce3ff);
 /// A banner saying the file is gone (`.canvas-banner.err`).
 pub const BANNER_ERROR_BG: Color32 = hex(0x2a0a12);
 pub const BANNER_ERROR_BORDER: Color32 = hex(0x6e1228);
@@ -1596,12 +1599,13 @@ pub const BANNER_LIST_MARGIN_TOP: f32 = 6.0;
 pub const BANNER_LIST_ROW_GAP: f32 = 2.0;
 pub const BANNER_LIST_COLUMN_GAP: f32 = 10.0;
 
-/// The card in a feature's properties saying another program changed it (`.err-card.warn`,
-/// restyled purple as `featureProps` styles it): `rgba(183,128,255,.12)`, its border
-/// `#463375`, its words `#e4d6ff`.
-pub const OUTSIDE_CARD_BG: Color32 = Color32::from_rgba_unmultiplied_const(183, 128, 255, 31);
-pub const OUTSIDE_CARD_BORDER: Color32 = hex(0x463375);
-pub const OUTSIDE_CARD_TEXT: Color32 = hex(0xe4d6ff);
+/// The card in a feature's properties saying another program changed it (`.err-card.info`):
+/// the info banner's card, its head ([`INFO`]) and words (Trevin's change of 2026-11-09,
+/// from purple).
+pub const OUTSIDE_CARD_BG: Color32 = BANNER_INFO_BG;
+pub const OUTSIDE_CARD_BORDER: Color32 = BANNER_INFO_BORDER;
+pub const OUTSIDE_CARD_HEAD: Color32 = INFO;
+pub const OUTSIDE_CARD_TEXT: Color32 = BANNER_INFO_TEXT;
 /// A ghost button's words (`.btn-ghost`): Gray.750; hovered, on its fill
 /// ([`GHOST_BUTTON_HOVER_BG`]), white.
 pub const GHOST_BUTTON_TEXT: Color32 = GRAY_750;
@@ -2206,7 +2210,7 @@ mod tests {
                 [0xff, 0x7a, 0x0c, 0xff],
             ),
             ("VIEWPORT_BG", VIEWPORT_BG, [0, 0, 0, 0xff]),
-            // interact.js:473-475, `overlay`'s `dot`: a hovered vertex white, a selected one
+            // interact.js's `overlay`, its `dot`: a hovered vertex white, a selected one
             // #4676ff, each ringed `stroke="#000"`.
             (
                 "VIEWPORT_HOVER_VERTEX",

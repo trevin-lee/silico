@@ -7,7 +7,8 @@
 //! stdin closed mid-transaction; SIGTERM mid-commit. It never hangs, exits 0, and leaves
 //! the document as it was or as committed, whole, with nothing beside it. Expected values:
 //! MCP 2025-06-18's shapes and its stdio rule (nothing but messages on stdout), the tool
-//! count from the design's command list, the note's rules, and the files as written here.
+//! count from the design's command list, silico-mcp's committed `tools.json` (protected) for
+//! the tool list, the note's rules, and the files as written here.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "common/run.rs"]
@@ -57,6 +58,44 @@ fn serve_initializes_lists_its_tools_makes_a_document_and_ends_with_its_input() 
         r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}"#,
         "2",
     );
+    // What the binary serves is silico-mcp's committed contract, every tool's title and
+    // description with the rest. silico-mcp's own tests hold its `tools::list` to it too,
+    // but nextest runs packages in name order, so they come after most of the workspace's,
+    // near the end of the 30 minutes a whole workspace's mutants run gives each mutant: one
+    // caught only there can time out. The CLI's run early. Tool by tool, so a difference
+    // names its tool rather than printing both lists whole.
+    let contract: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../silico-mcp/tests/contract/tools.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let keys = |reply: &Value| {
+        reply
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert_eq!(keys(&tools["result"]), keys(&contract));
+    let listed = |reply: &Value| reply["tools"].as_array().unwrap().clone();
+    let (sent, committed) = (listed(&tools["result"]), listed(&contract));
+    let names = |list: &[Value]| -> Vec<String> {
+        list.iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(names(&sent), names(&committed));
+    for (sent, committed) in sent.iter().zip(&committed) {
+        assert!(
+            sent == committed,
+            "tools/list's {} differs from silico-mcp's tests/contract/tools.json",
+            committed["name"]
+        );
+    }
     let tools = tools["result"]["tools"].as_array().unwrap();
     // M4.1's 26 commands, M5.1's move_feature, suppress_feature, and timeline, M5.3's
     // drag_begin, drag_move, and drag_end, M5.5's meshes, M5.10's sketch, sketch_add,

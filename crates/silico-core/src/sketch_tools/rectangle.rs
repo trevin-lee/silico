@@ -176,7 +176,7 @@ impl Rectangle {
             let square = add(first.at, [sign(d[0]) * side, sign(d[1]) * side]);
             return step.pointer.shared_only(square);
         }
-        let mut corner = step.pointer.snap(at);
+        let mut corner = step.pointer.snap_after(at, &[first]);
         let besides: Vec<_> = first.shared().into_iter().collect();
         step.pointer.align(&mut corner, Align::Guides, &besides);
         corner

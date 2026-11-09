@@ -76,9 +76,9 @@ impl Step {
 }
 
 /// A feature's type in words, as the prototype says it (`FEATURE_KIND` in `js/app.js`) for
-/// the types it lists, and as the toolbar's commands name the rest (the primitives, and
-/// Union, Subtract, and Intersect for the booleans); the type as written for one neither
-/// names.
+/// the types it lists (the primitives a file holds among them), and as the toolbar's
+/// commands name the rest (Revolve, Groove, and Union, Subtract, and Intersect for the
+/// booleans); the type as written for one neither names.
 pub fn kind_words(kind: &str) -> &str {
     match kind {
         "sketch" => "Sketch",
@@ -1105,7 +1105,8 @@ mod tests {
 
     #[test]
     fn a_features_type_is_said_as_the_prototype_says_it() {
-        // `FEATURE_KIND` in js/app.js; the toolbar's names for the rest.
+        // `FEATURE_KIND` in js/app.js (the primitives among them); the toolbar's names for
+        // the rest.
         for (kind, words) in [
             ("sketch", "Sketch"),
             ("pad", "Pad"),
@@ -1560,11 +1561,12 @@ mod tests {
     }
 
     #[test]
-    fn a_feature_another_program_changed_has_the_purple_badge_where_it_has_no_health_mark() {
-        // `.tl-item .badge.outside`: `--purple` (#b780ff), 7 square, 1 in from the item's
+    fn a_feature_another_program_changed_has_the_info_badge_where_it_has_no_health_mark() {
+        // `.tl-item .badge.outside`: `--outside` (the info tone, #adbbff; Trevin's change of
+        // 2026-11-09, from purple), 7 square, 1 in from the item's
         // top right, in its `--g150` ring 1.5 outside it; labelled with what changed. A
         // feature with a health mark shows that mark alone.
-        const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+        const INFO: Color32 = Color32::from_rgb(0xad, 0xbb, 0xff);
         const OUTSIDE: f32 = 7.0;
         let mut tab = tab_of(Some(&features()), 0);
         for id in ["b0000001", "p0000001"] {
@@ -1583,7 +1585,7 @@ mod tests {
             .collect();
         assert_eq!(drawn.len(), 2, "the block's badge: {drawn:?}");
         let ring = (OUTSIDE / 2.0 + css::BADGE_RING, css::G150);
-        let dot = (OUTSIDE / 2.0, PURPLE);
+        let dot = (OUTSIDE / 2.0, INFO);
         for (got, (radius, colour)) in drawn.iter().zip([ring, dot]) {
             assert!(
                 near_pos(got.0, centre) && near(got.1, radius) && got.2 == colour,
