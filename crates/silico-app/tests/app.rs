@@ -5374,8 +5374,8 @@ fn create(h: &mut AppHarness, kind: &str) {
 
 /// The dialog of `kind`, a sweep, opened from CREATE on the sketch Triangle, chosen in the
 /// browser first: a feature made sketch-first. Its add follows the read of its body, the
-/// document's tip ([`sweep_sent`] waits for it).
-fn sweep_triangle(h: &mut AppHarness, kind: &str) {
+/// document's tip ([`sweep_until_add_sent`] waits for it).
+fn open_sweep_on_triangle(h: &mut AppHarness, kind: &str) {
     step_until(h, "its sketch", |h| shows(h, "Browser", "Triangle"));
     h.get_by_role_and_label(Role::Pane, "Browser")
         .get_by_label("Triangle")
@@ -5384,9 +5384,9 @@ fn sweep_triangle(h: &mut AppHarness, kind: &str) {
     create(h, kind);
 }
 
-/// [`sweep_triangle`]'s Pad: the dialog that adds a feature, as a primitive's did.
-fn pad_triangle(h: &mut AppHarness) {
-    sweep_triangle(h, "Pad");
+/// [`open_sweep_on_triangle`]'s Pad: the dialog that adds a feature, as a primitive's did.
+fn open_pad_on_triangle(h: &mut AppHarness) {
+    open_sweep_on_triangle(h, "Pad");
 }
 
 /// The adds the first tab has sent.
@@ -5398,17 +5398,17 @@ fn feature_adds(h: &AppHarness) -> usize {
         .count()
 }
 
-/// [`sweep_triangle`], stepped until its add is sent, its body read: where a primitive's
-/// add was sent from its dialog's first frame, with no read before it.
-fn sweep_sent(h: &mut AppHarness, kind: &str) {
+/// [`open_sweep_on_triangle`], stepped until its add is sent, its body read (not until it's
+/// answered): where a primitive's add was sent from its dialog's first frame.
+fn sweep_until_add_sent(h: &mut AppHarness, kind: &str) {
     let before = feature_adds(h);
-    sweep_triangle(h, kind);
+    open_sweep_on_triangle(h, kind);
     step_until(h, "its add sent", |h| feature_adds(h) > before);
 }
 
-/// [`sweep_sent`]'s Pad.
-fn pad_sent(h: &mut AppHarness) {
-    sweep_sent(h, "Pad");
+/// [`sweep_until_add_sent`]'s Pad: the add sent, not yet answered.
+fn pad_until_add_sent(h: &mut AppHarness) {
+    sweep_until_add_sent(h, "Pad");
 }
 
 /// Whether `op` is a prism: a pad's or a pocket's sweep, which nothing in
@@ -5747,7 +5747,7 @@ fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -5789,7 +5789,7 @@ fn an_unparseable_value_is_red_sends_nothing_and_keeps_ok_off() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -5817,7 +5817,7 @@ fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -5835,8 +5835,15 @@ fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
     step(&mut h);
     settled(&mut h);
     assert_eq!(input(&h, "Length").value().as_deref(), Some("-10"));
-    // Said in the dialog, as the core words it.
+    // Said in the dialog, as the core words it: the pad's length, refused for what it is,
+    // the gate's words for a sweep's length out of its range (validate.rs's), and the
+    // suggestion after them, written here by hand.
     let said = h.state().tabs()[0].message.clone().unwrap();
+    assert_eq!(
+        said,
+        "pad extent.length must be a length above 0 mm and at most 1000000 mm (a kilometre), \
+         got -10 (give the pad a valid extent.length)"
+    );
     assert!(dialog(&h).query_by_label(&said).is_some(), "{said}");
     assert!(!ok_enabled(&h));
     // "10" again: taken, OK on.
@@ -5862,7 +5869,7 @@ fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits(
     let before = text_of(&f, &h);
     assert!(before.contains(r#""name": "PinK""#));
     let opened_at = h.state().tabs()[0].revision;
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -5899,7 +5906,7 @@ fn a_failed_preview_shows_the_cores_error_in_the_dialog_and_ok_keeps_the_feature
     });
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the error in the dialog", |h| {
         dialog(h)
             .query_all_by_label_contains("the pad came apart")
@@ -5935,7 +5942,7 @@ fn esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_dialog_second() {
     let before = text_of(&f, &h);
     // The new pad's prism held: its preview's rebuild runs until released.
     let hold = f.kernel.hold(is_prism);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -5996,7 +6003,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queu
         .kernel
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })));
     let fresh = f.sessions.check(&id, CheckModel::Current { fresh: true });
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add sent", |h| {
         h.state().tabs()[0].sent.contains(&Sent::Add)
     });
@@ -6074,7 +6081,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
     let before = text_of(&f, &h);
     let id = h.state().tabs()[0].id;
     let hold = f.kernel.hold(is_prism);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -6167,7 +6174,7 @@ fn an_edit_and_an_esc_in_one_frame_supersede_the_preview_then_cancel_the_dialog(
     let before = text_of(&f, &h);
     let id = h.state().tabs()[0].id;
     let hold = f.kernel.hold(is_prism);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -6220,7 +6227,7 @@ fn esc_in_a_dialog_whose_preview_was_built_since_status_said_it_rebuilt_is_its_c
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let id = h.state().tabs()[0].id;
     let hold = f.kernel.hold(is_prism);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -6252,7 +6259,7 @@ fn esc_whose_previews_read_stopped_the_rebuild_first_stops_it_leaving_the_dialog
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let id = h.state().tabs()[0].id;
     let hold = f.kernel.hold(is_prism);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -6288,7 +6295,7 @@ fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() 
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let hold = f.kernel.hold(is_prism);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -6316,7 +6323,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -6351,7 +6358,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(text_of(&f, &h), before);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -6375,7 +6382,7 @@ fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back()
     settled(&mut h);
     let before = text_of(&f, &h);
     let opened_at = h.state().tabs()[0].revision;
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -6810,7 +6817,7 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
         });
     };
     // Cancel: its rollback lands with the rebuild held.
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     rebuilding(&mut h);
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Cancel")
@@ -6819,7 +6826,7 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
     // OK'd with its preview still rebuilding, then Ctrl+Z: its undo lands too.
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     rebuilding(&mut h);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -6832,11 +6839,11 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
         Some(Sent::Undo(Some(_)))
     ));
     // OK'd with its preview still rebuilding, then another dialog: its add lands.
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     rebuilding(&mut h);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
-    sweep_triangle(&mut h, "Pocket");
+    open_sweep_on_triangle(&mut h, "Pocket");
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -6888,7 +6895,7 @@ fn a_dialog_and_create_are_off_while_the_tab_closes() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -7010,7 +7017,7 @@ fn revert_closes_an_open_dialog_with_the_edits_it_drops() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -7038,7 +7045,7 @@ fn a_cancel_before_the_add_answers_waits_for_it_and_rolls_it_back() {
     // The add, sent once its body is read beside the queue, waits in the session's queue:
     // the Cancel waits behind it in the tab's.
     let (hold, check) = hold_queue(&f, &h, 0);
-    pad_sent(&mut h);
+    pad_until_add_sent(&mut h);
     assert!(h.state().tabs()[0].dialog.as_ref().unwrap().adding);
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -7137,7 +7144,7 @@ fn esc_after_typing_coalesced_behind_a_held_preview_stays_stopped() {
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let hold = f.kernel.hold(is_prism);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     // Two keystrokes, one a frame: the preview's read asked while an edit is in flight
     // runs at the revision that edit comes to.
@@ -7242,7 +7249,7 @@ fn typing_while_the_add_is_unanswered_makes_one_feature_and_edits_it() {
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let (hold, check) = hold_queue(&f, &h, 0);
-    pad_sent(&mut h);
+    pad_until_add_sent(&mut h);
     type_into(&mut h, "Length", "12");
     let typed = input(&h, "Length").value().unwrap();
     hold.release();
@@ -7363,7 +7370,7 @@ fn two_dialogs_okd_are_undone_and_redone_each_whole() {
     let before = text_of(&f, &h);
     let mut texts = vec![before.clone()];
     for (kind, label) in [("Pad", "Length"), ("Pocket", "Length")] {
-        sweep_triangle(&mut h, kind);
+        open_sweep_on_triangle(&mut h, kind);
         added(&mut h);
         type_into(&mut h, label, "1");
         settled(&mut h);
@@ -7406,7 +7413,7 @@ fn save_is_off_while_a_dialog_is_open() {
     let f = fixture();
     let (mut h, path) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     assert!(h.state().tabs()[0].unsaved());
@@ -7466,7 +7473,7 @@ fn cancel_of_a_dialog_that_began_the_transaction_leaves_none_open_so_outside_wri
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     assert!(h.state().tabs()[0].transaction);
@@ -7491,7 +7498,7 @@ fn an_add_answered_after_its_dialog_was_cancelled_never_becomes_the_next_dialogs
     let before = text_of(&f, &h);
     let (hold, check) = hold_queue(&f, &h, 0);
     // A Pad of the triangle, its add sent and held, then cancelled.
-    pad_sent(&mut h);
+    pad_until_add_sent(&mut h);
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     // A Pad's, with no sketch chosen (a body selected, the plate): nothing of its own to
@@ -7517,7 +7524,7 @@ fn a_digit_typed_in_the_frame_enter_is_pressed_is_in_what_ok_keeps() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     input(&h, "Length").focus();
@@ -7611,7 +7618,7 @@ fn step_key(h: &mut AppHarness, undo: bool) {
 
 /// A `kind` dialog, a sweep of the triangle: added, `label` typed into, and OK'd.
 fn made(h: &mut AppHarness, kind: &str, label: &str) {
-    sweep_triangle(h, kind);
+    open_sweep_on_triangle(h, kind);
     added(h);
     type_into(h, label, "1");
     settled(h);
@@ -7671,7 +7678,7 @@ fn ok_and_enter_wait_for_the_add_so_what_was_typed_meanwhile_is_kept() {
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let (hold, check) = hold_queue(&f, &h, 0);
-    pad_sent(&mut h);
+    pad_until_add_sent(&mut h);
     type_into(&mut h, "Length", "12");
     let typed = input(&h, "Length").value().unwrap();
     // The add unanswered: OK off, and Enter does nothing.
@@ -7742,7 +7749,7 @@ fn save_as_is_off_while_a_dialog_is_open() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     // File > Save As… off, and Ctrl+Shift+S asks nothing.
@@ -8119,7 +8126,7 @@ fn an_open_dialog_with_nothing_to_send_asks_for_no_frame_at_once() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     quiet_wakes(&mut h);
@@ -8917,7 +8924,7 @@ fn export_is_off_while_a_feature_dialog_is_open_or_the_tab_closes() {
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     assert!(export_off(&mut h));
     // Its preview built, as `status` says: with it still rebuilding, Esc would stop it,
     // leaving the dialog open.
@@ -9475,7 +9482,7 @@ fn enter_on_a_feature_dialogs_focused_cancel_cancels() {
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     dialog(&h)
@@ -15428,7 +15435,7 @@ fn label_texts<'a>(nodes: impl Iterator<Item = egui_kittest::Node<'a>>) -> Vec<S
         .collect()
 }
 
-/// CREATE's row, as app.js:394 lays it out: Create Sketch and the sweeps.
+/// CREATE's row, as app.js's `renderToolbar` lays it out: Create Sketch and the sweeps.
 const CREATE_ROW: [&str; 5] = ["Create Sketch", "Pad", "Pocket", "Revolve", "Groove"];
 
 #[test]
@@ -15593,7 +15600,9 @@ fn each_toolbar_button_names_its_command_and_says_what_it_does_or_that_it_isnt_b
 #[test]
 fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
     let f = fixture();
-    let mut h = f.themed_with(&["example.silico"]);
+    // The M2.1 example with a triangle sketched, for CREATE's Pad to sweep.
+    let mut h = opened_themed(&f, "example.silico", SKETCHED_EXAMPLE);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
     let open = |h: &mut AppHarness, label: &str| {
         pointer_away(h);
         h.get_by_role_and_label(Role::Toolbar, label)
@@ -15602,8 +15611,8 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         step(h);
         step(h);
     };
-    // interact.js:172: the filters under a heading, all of them, each with its key, and
-    // Clear selection (Esc), which the app has: off with nothing selected.
+    // interact.js's `selectMenu`: the filters under a heading, all of them, each with its
+    // key, and Clear selection (Esc), which the app has: off with nothing selected.
     open(&mut h, "SELECT");
     let menu = h.get_by_role_and_label(Role::Menu, "SELECT");
     let entries = buttons_of(&menu);
@@ -15617,8 +15626,13 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
     assert_eq!(on_of(&menu), entries[..4]);
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
-    // interact.js:184: Create Sketch and the sweeps, and no primitive (Trevin's decision of
-    // 2026-11-09: solids are made sketch-first).
+    // The triangle chosen in the browser, for the Pad opened from the drop-down to sweep.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    // interact.js's `createMenu`: Create Sketch and the sweeps, and no primitive (Trevin's
+    // decision of 2026-11-09: solids are made sketch-first).
     open(&mut h, "CREATE");
     let menu = h.get_by_role_and_label(Role::Menu, "CREATE");
     let entries = buttons_of(&menu);
@@ -15632,8 +15646,8 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
     let mut menu_on = on_of(&menu);
     menu_on.sort_unstable();
     assert_eq!(menu_on, on);
-    // An entry opens its dialog, as the row's button does, and the menu closes: Pad's, with
-    // no sketch chosen, adding nothing yet.
+    // An entry opens its dialog, as the row's button does, and the menu closes: Pad's, of
+    // the triangle chosen.
     menu.get_by_label("Pad").click();
     step_until(&mut h, "the dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
@@ -15642,9 +15656,10 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
     // at its frame's end, so the menu is gone the frame after.
     step(&mut h);
     assert!(h.query_by_role_and_label(Role::Menu, "CREATE").is_none());
-    // Its preview built, as `status` says: with it still rebuilding, Esc would stop it,
-    // leaving the dialog open (esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_
-    // dialog_second).
+    // Its pad added, and its preview built, as `status` says: with it still rebuilding, Esc
+    // would stop it, leaving the dialog open (esc_stops_a_dialogs_preview_rebuild_first_and_
+    // cancels_the_dialog_second).
+    added(&mut h);
     step_until(&mut h, "the preview built", |h| {
         let tab = &h.state().tabs()[0];
         tab.status.as_ref().is_some_and(|status| {
@@ -15652,12 +15667,14 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
                 && status.rebuild.state == silico_core::command::RebuildState::Done
         })
     });
+    assert!(fields_of(&text_of(&f, &h), "Pad").is_some());
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| {
         h.query_by_role(Role::Dialog).is_none()
     });
     settled(&mut h);
-    // interact.js:171: the edge tools, and the booleans under a heading, the edge tools
+    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
+    // interact.js's `modifyMenu`: the edge tools, and the booleans under a heading, the edge tools
     // built.
     open(&mut h, "MODIFY");
     let menu = h.get_by_role_and_label(Role::Menu, "MODIFY");
@@ -15725,7 +15742,7 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
 fn creates_row_and_drop_down_hold_no_primitive_as_the_prototypes_create_menu() {
     // Trevin's decision of 2026-11-09: solids are made sketch-first, as SolidWorks makes
     // them. interact.js's `createMenu` is ['createSketch', 'sep', 'pad', 'pocket',
-    // 'revolve', 'groove'], each labelled as app.js's `CMD` labels it; the row (app.js:394)
+    // 'revolve', 'groove'], each labelled as app.js's `CMD` labels it; the row (`renderToolbar`)
     // the same but the separator. No primitive in either, nor the heading they were under.
     let f = fixture();
     let mut h = f.themed_with(&["example.silico"]);
@@ -15758,13 +15775,18 @@ fn creates_row_and_drop_down_hold_no_primitive_as_the_prototypes_create_menu() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// Whether `label` names a primitive: one's name alone, or with its keys after it, or the
-/// heading CREATE's drop-down once held them under.
+/// Whether `label` names a primitive: any of its words, in any case, one's name ("Box",
+/// "New box", "Add Cylinder ⌘K"), or the heading CREATE's drop-down once held them under.
 fn names_a_primitive(label: &str) -> bool {
-    label == "PRIMITIVES"
-        || PRIMITIVES
-            .iter()
-            .any(|primitive| label == *primitive || label.starts_with(&format!("{primitive} ")))
+    label
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .any(|word| {
+            word == "primitives"
+                || PRIMITIVES
+                    .iter()
+                    .any(|primitive| word == primitive.to_lowercase())
+        })
 }
 
 #[test]
@@ -15777,14 +15799,21 @@ fn no_registry_entry_or_menu_makes_a_primitive() {
     // never opened can't pass. (The canvas's menu and the sketch menu are held to their exact
     // items by their own tests.)
     for entry in REGISTRY {
-        let words = entry.label.to_lowercase();
-        for primitive in PRIMITIVES {
-            assert!(
-                !words.contains(&primitive.to_lowercase()),
-                "{}",
-                entry.label
-            );
-        }
+        assert!(!names_a_primitive(entry.label), "{}", entry.label);
+    }
+    for named in [
+        "Box",
+        "New box",
+        "Add Cylinder ⌘K",
+        "SPHERE",
+        "cone",
+        "Torus…",
+        "PRIMITIVES",
+    ] {
+        assert!(names_a_primitive(named), "{named}");
+    }
+    for unnamed in ["Boxes", "Block", "Icone", "Pad", "Select Other…"] {
+        assert!(!names_a_primitive(unnamed), "{unnamed}");
     }
     let f = fixture();
     let mut h = f.themed_with(&["example.silico"]);
@@ -15953,8 +15982,8 @@ fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
     );
     assert!(h.query_by_label("Finish Sketch").is_none());
     // A sketch open (#351's `tab.in_sketch()`): SKETCH after SOLID, and shown; its panels
-    // (app.js:384), sketch mode's tools and Construction on, the rest not built yet;
-    // Finish Sketch, on.
+    // (app.js's `renderToolbar`, in a sketch), sketch mode's tools and Construction on, the
+    // rest not built yet; Finish Sketch, on.
     h.state_mut().in_sketch = true;
     h.step();
     h.step();
@@ -16388,7 +16417,7 @@ fn the_browser_lists_the_document_then_origin_bodies_and_sketches_each_row_with_
     let f = fixture();
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
-    // app.js:427–455: the document's row (its file's name, `.silico` left off), Origin
+    // app.js's `renderBrowser`: the document's row (its file's name, `.silico` left off), Origin
     // (its point, its axes, its planes), Bodies, and Sketches, each a header with a caret;
     // the bodies and the sketch in the document's order.
     assert_eq!(
@@ -16459,7 +16488,7 @@ fn a_headers_caret_folds_its_rows_away_and_back_and_the_documents_folds_them_all
 
 #[test]
 fn an_empty_group_says_what_makes_its_first_row() {
-    // The M2.1 example has a body and no sketch (app.js:446: `.tree-empty`).
+    // The M2.1 example has a body and no sketch (app.js's `renderBrowser`: `.tree-empty`).
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its body", |h| shows(h, "Browser", "Hole"));
@@ -17628,7 +17657,7 @@ fn the_status_bar_says_a_rebuild_with_errors_and_an_edit_unsaved() {
     });
     assert!(status_said(&h, "Saved").is_none());
     // A dialog open: its edits are its own until OK.
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the dialog said", |h| {
         status_said(h, "Unsaved").as_deref() == Some("Unsaved · dialog open")
     });
@@ -17669,7 +17698,7 @@ fn the_dialogs_close_button_cancels_it() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     assert!(shows(&h, "Timeline", "Pad"));
@@ -17690,7 +17719,7 @@ fn a_dialogs_preview_line_says_its_rebuild_running_stopped_and_with_errors() {
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let hold = f.kernel.hold(is_prism);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     // Running: what stops it said beside it.
     step_until(&mut h, "the preview rebuilding", |h| {
@@ -17715,7 +17744,7 @@ fn a_dialogs_preview_line_says_its_rebuild_running_stopped_and_with_errors() {
     f.kernel.refuse(|op| {
         is_prism(op).then(|| Error::new(ErrorCode::KernelFailed, "the pad came apart"))
     });
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     step_until(&mut h, "the preview's errors", |h| {
         dialog(h)
@@ -17800,7 +17829,7 @@ fn a_saves_model_and_a_rollbacks_say_no_time_never_another_models() {
     step_until(&mut h, "the save's revision, with no time", exactly);
     // A Pad dialog, its preview rebuilt whole, then cancelled: the transaction it began
     // rolled back, the model it kept published at a new revision.
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     step_until(&mut h, "the preview up to date", |h| {
         dialog(h)
@@ -17862,7 +17891,7 @@ fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview
     // then up to date, at the transaction's revision, with the core's time for that rebuild.
     let gap = opened + 20;
     let hold = f.kernel.hold(is_prism);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     assert!(f.kernel.wait_running(1, WAIT));
     spin(gap);
@@ -18367,7 +18396,7 @@ fn ctrl_shift_b_does_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
     // A rebuild stopped, so a Ctrl+B would rebuild: a Pad dialog's preview, held at its
     // prism, stopped by Esc, the dialog left open.
     let hold = f.kernel.hold(is_prism);
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -18951,7 +18980,7 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                 let mut kept = pads(&h);
                 for chord in keys_of(command) {
                     for by_keys in [true, false] {
-                        pad_triangle(&mut h);
+                        open_pad_on_triangle(&mut h);
                         added(&mut h);
                         settled(&mut h);
                         // Its preview built: Esc would stop one still rebuilding first.
@@ -19356,7 +19385,7 @@ fn enter_alone_in_a_dialog_asks_for_the_next_frame_at_once() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Enter));
@@ -25870,12 +25899,10 @@ fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a silico_app::tab::Tab {
         .unwrap_or_else(|| panic!("no tab {name}"))
 }
 
-/// A sketch added to the part shown, named `name`, as a part is begun sketch-first (the app
-/// makes no primitive: Trevin's decision of 2026-11-09): CREATE's Create Sketch on the XY
-/// plane, then Finish Sketch (⌘↵), which keeps it, empty, as "Sketch1". The part then holds
-/// unsaved edits, its tab marked.
-fn add_sketch(h: &mut AppHarness, name: &str) {
-    // Create Sketch on once the new part's timeline is read.
+/// The part `part`, shown, in sketch mode on a new sketch, as a part is begun sketch-first
+/// (the app makes no primitive: Trevin's decision of 2026-11-09): CREATE's Create Sketch,
+/// once the part's timeline is read, on the XY plane, its sketch added and read.
+fn begin_sketch_on_xy(h: &mut AppHarness, part: &str) {
     step_until(h, "Create Sketch on", |h| {
         !h.get_by_role_and_label(Role::Toolbar, "CREATE")
             .get_by_label("Create Sketch")
@@ -25892,58 +25919,47 @@ fn add_sketch(h: &mut AppHarness, name: &str) {
     step(h);
     h.get_by_role_and_label(Role::Button, "XY plane").click();
     step_until(h, "its sketch added and read", |h| {
-        tab_named(h, name)
+        tab_named(h, part)
             .sketch
             .as_ref()
             .is_some_and(|mode| mode.sketch.is_some() && mode.drawable().is_some())
     });
+}
+
+/// Finish Sketch (⌘↵) in the part `part`, shown, which keeps its sketch: sketch mode
+/// closed, and the part's edits held, unsaved, its tab marked.
+fn finish_sketch_unsaved(h: &mut AppHarness, part: &str) {
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Enter);
-    step_until(h, "sketch mode closed", |h| {
-        tab_named(h, name).sketch.is_none()
-    });
-    let marked = format!("{name} *");
-    step_until(h, "unsaved", |h| {
-        tab_named(h, name).edits.idle() && tab_named(h, name).unsaved() && anywhere(h, &marked)
+    let marked = format!("{part} *");
+    step_until(h, "sketch mode closed, unsaved", |h| {
+        let tab = tab_named(h, part);
+        tab.sketch.is_none() && tab.edits.idle() && tab.unsaved() && anywhere(h, &marked)
     });
 }
 
-/// The part `name`, shown, given a sketch with a profile, sketch-first: Create Sketch on
-/// the XY plane, a corner rectangle from the origin to (40, 20) drawn with R (its events
-/// given to the tab's sketch mode as [`sketch_events`] gives them), and Finish Sketch (⌘↵),
-/// which keeps it as "Sketch1". The part then holds unsaved edits, its tab marked.
-fn add_rectangle(f: &Fixture, h: &mut AppHarness, name: &str) {
+/// A sketch added to the part `part`, shown: [`begin_sketch_on_xy`], then Finish Sketch,
+/// which keeps it, empty, as "Sketch1".
+fn add_sketch(h: &mut AppHarness, part: &str) {
+    begin_sketch_on_xy(h, part);
+    finish_sketch_unsaved(h, part);
+}
+
+/// The part `part`, shown, given a sketch with a profile: [`begin_sketch_on_xy`], a corner
+/// rectangle from the origin to (40, 20) drawn with R (its events given to the tab's sketch
+/// mode as [`sketch_events`] gives them), and Finish Sketch, which keeps it as "Sketch1".
+fn add_rectangle(f: &Fixture, h: &mut AppHarness, part: &str) {
     let at = h
         .state()
         .tabs()
         .iter()
-        .position(|tab| tab.name() == name)
+        .position(|tab| tab.name() == part)
         .unwrap();
-    step_until(h, "Create Sketch on", |h| {
-        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Create Sketch")
-            .accesskit_node()
-            .is_disabled()
-    });
-    h.get_by_role_and_label(Role::Toolbar, "CREATE")
-        .get_by_label("Create Sketch")
-        .click();
-    step_until(h, "its planes", |h| {
-        h.query_by_role_and_label(Role::Button, "XY plane")
-            .is_some()
-    });
-    step(h);
-    h.get_by_role_and_label(Role::Button, "XY plane").click();
-    step_until(h, "its sketch added and read", |h| {
-        tab_named(h, name)
-            .sketch
-            .as_ref()
-            .is_some_and(|mode| mode.sketch.is_some() && mode.drawable().is_some())
-    });
+    begin_sketch_on_xy(h, part);
     h.key_press(eframe::egui::Key::R);
     step(h);
     sketch_events_at(f, h, at, &dragged([0.0, 0.0], [40.0, 20.0]));
     step_until(h, "its four lines read", |h| {
-        let tab = tab_named(h, name);
+        let tab = tab_named(h, part);
         tab.edits.idle()
             && tab
                 .sketch
@@ -25951,19 +25967,14 @@ fn add_rectangle(f: &Fixture, h: &mut AppHarness, name: &str) {
                 .and_then(|mode| mode.drawable())
                 .is_some_and(|read| read.members.lines.len() == 4)
     });
-    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Enter);
-    let marked = format!("{name} *");
-    step_until(h, "sketch mode closed, unsaved", |h| {
-        let tab = tab_named(h, name);
-        tab.sketch.is_none() && tab.edits.idle() && tab.unsaved() && anywhere(h, &marked)
-    });
+    finish_sketch_unsaved(h, part);
 }
 
-/// A solid made sketch-first in the part `name`, shown: [`add_rectangle`], then CREATE's
+/// A solid made sketch-first in the part `part`, shown: [`add_rectangle`], then CREATE's
 /// Pad of its sketch, chosen in the browser, its add answered and OK'd. The part then holds
 /// "Sketch1" and "Pad", unsaved, its tab marked, and the kernel has built the pad's prism.
-fn add_pad(f: &Fixture, h: &mut AppHarness, name: &str) {
-    add_rectangle(f, h, name);
+fn add_pad(f: &Fixture, h: &mut AppHarness, part: &str) {
+    add_rectangle(f, h, part);
     step_until(h, "its sketch", |h| shows(h, "Browser", "Sketch1"));
     h.get_by_role_and_label(Role::Pane, "Browser")
         .get_by_label("Sketch1")
@@ -25971,7 +25982,7 @@ fn add_pad(f: &Fixture, h: &mut AppHarness, name: &str) {
     step(h);
     create(h, "Pad");
     step_until(h, "its add answered", |h| {
-        tab_named(h, name)
+        tab_named(h, part)
             .dialog
             .as_ref()
             .is_some_and(|dialog| dialog.feature.is_some() && !dialog.adding)
@@ -25979,9 +25990,9 @@ fn add_pad(f: &Fixture, h: &mut AppHarness, name: &str) {
     step_until(h, "OK on", ok_enabled);
     dialog(h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(h, "the dialog closed", |h| !dialog_open(h));
-    let marked = format!("{name} *");
+    let marked = format!("{part} *");
     step_until(h, "unsaved", |h| {
-        let tab = tab_named(h, name);
+        let tab = tab_named(h, part);
         tab.edits.idle() && tab.unsaved() && anywhere(h, &marked)
     });
 }
@@ -32937,7 +32948,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
     step(&mut h);
     // A dialog open: nothing changes a feature under it (its Cancel undoes to where it
     // opened), so only Find is on.
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     menu_on(&mut h, "Timeline", "Block");
     let dialog = "Close the open dialog first";
@@ -33634,7 +33645,7 @@ fn f2_and_del_with_a_dialog_open_say_why_and_do_nothing() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     let pin = silico_core::document::FeatureId::new("a91cw0de").unwrap();
@@ -36773,7 +36784,7 @@ fn command_r_with_a_dialog_open_says_to_finish_it_first_and_sends_nothing() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    pad_triangle(&mut h);
+    open_pad_on_triangle(&mut h);
     command_r(&mut h);
     step_until(&mut h, "said", |h| {
         h.state()

@@ -358,7 +358,8 @@ const DIMENSION: Command = keyed(
     shortcuts::Command::Dimension,
 );
 
-/// A constraint's button (app.js:387): its name, and the prototype's line on them all.
+/// A constraint's button (app.js's `renderToolbar`, CONSTRAINTS): its name, and the
+/// prototype's line on them all.
 const fn constraint(label: &'static str, icon: Icon) -> Command {
     command(
         label,
@@ -389,7 +390,8 @@ struct Panel {
     menu: Option<&'static [Entry]>,
 }
 
-/// SOLID's panels (app.js:394, interact.js:170). CREATE makes solids sketch-first, as
+/// SOLID's panels (app.js's `renderToolbar`; interact.js's `createMenu`, `modifyMenu`, and
+/// `selectMenu`). CREATE makes solids sketch-first, as
 /// SolidWorks does (Trevin's decision of 2026-11-09, docs/design/m5-ui/DESIGN.md): Create
 /// Sketch and the sweeps, and no primitive; one a file holds is edited, from Edit Feature.
 const SOLID: &[Panel] = &[
@@ -438,7 +440,7 @@ const SOLID: &[Panel] = &[
     },
 ];
 
-/// SKETCH's panels (app.js:384), before Finish Sketch.
+/// SKETCH's panels (app.js's `renderToolbar`, in a sketch), before Finish Sketch.
 const SKETCH: &[Panel] = &[
     Panel {
         label: "CREATE",
@@ -462,7 +464,8 @@ const SKETCH: &[Panel] = &[
     },
 ];
 
-/// CONSTRAINTS' row: Smart Dimension, then the constraints in app.js:387's order.
+/// CONSTRAINTS' row: Smart Dimension, then the constraints in the order app.js's
+/// `renderToolbar` gives them.
 const CONSTRAINTS: [Command; 11] = [
     DIMENSION,
     constraint("Horizontal", Icon::CHorizontal),
@@ -1125,10 +1128,10 @@ mod tests {
 
     /// A dialog's command is labelled with its kind's title, which the dialog's heading
     /// and the tests find it by; each sweep is in CREATE's drop-down once and in its row
-    /// once (app.js:394); the dressings and the booleans are in MODIFY's row and drop-down
-    /// once each (app.js:397, interact.js:176).
+    /// once (app.js's `renderToolbar`, interact.js's `createMenu`); the dressings and the
+    /// booleans are in MODIFY's row and drop-down once each (`renderToolbar`, `modifyMenu`).
     #[test]
-    fn every_dialog_is_in_creates_drop_down_under_its_title_and_the_sweeps_in_its_row() {
+    fn each_sweep_and_modify_dialog_is_offered_once_under_its_title() {
         let create = &SOLID[0];
         let menu = create.menu.unwrap_or_default();
         let modify = &SOLID[1];
