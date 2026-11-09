@@ -144,6 +144,11 @@ codes! {
         /// `constraints_redundant`, whose advice is to remove them: removing one of these frees
         /// what only it fixes (approved at M4's close, 2026-10-29).
         ConstraintsPartiallyRedundant = "constraints_partially_redundant",
+        /// A feature built, but its stored fingerprint doesn't record a measure a later
+        /// Silico added (today its centre of mass, which fingerprints written before #389
+        /// don't hold), so a change there isn't caught as drift (Fable's decision of
+        /// 2026-11-09): compared once `format` or a commit writes it in.
+        FingerprintIncomplete = "fingerprint_incomplete",
     }
 }
 
