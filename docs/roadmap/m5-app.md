@@ -52,7 +52,7 @@ Thirteen steps, where sketch mode may take two PRs. The core steps (M5.1, M5.2, 
 
 ## Known, fixed next
 
-- **Concave edges lost from the drawn image** (N5, confirmed on Metal, 2026-11-08). An edge's stroke is drawn square to the view at its line's depth, offset toward the eye by only `EDGE_DEPTH_OFFSET` (about 3e-6 mm in an orthographic view), so at a concave edge, whose faces both rise toward the eye away from its line, the faces hide most of its stroke in the image: the bracket's inside fillet loses its upright boundary edge. N5 fixed the picking alone (each edge drawn again into the picking layer toward the eye, docs/design/m5.0-app.md, section 9); the image is unchanged. The fix is the next PR, after the ViewCube work, test first: a concave edge's stroke drawn in the image, pixel by pixel against a projection by hand, without letting an edge behind a wall show through it.
+- **Concave edges lost from the drawn image** (N5, confirmed on Metal, 2026-11-08). *Fixed:* a face beside an edge rising toward the eye across its stroke hid the stroke on that side (a concave edge's both faces, a fillet's tangent edge's flat face), its strip being offset toward the eye by only `EDGE_DEPTH_OFFSET`; each drawn edge is now moved toward the eye by a reach of its own, √2 pixels of depth a stroke's half width and half a pixel, never more than an edge pick's `edge_reach`, an edge behind a 1 mm wall still hidden (docs/design/m5.0-app.md, section 10, *As built (N5's image)*).
 
 ## Follow-ups after M5
 

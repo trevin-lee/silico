@@ -496,8 +496,9 @@ pub struct View {
     pub vertices: Option<f32>,
     /// Whether a pick takes edges, set from outside (the selection's filter, M5.7): the
     /// renderer's [`crate::renderer::Frame::edges`], which draws each edge near a pick's
-    /// square again toward the eye only then, so with edges off a concave edge's faces are
-    /// picked to its line. On, as the selection's filter starts.
+    /// square again toward the eye only then, so with edges off an edge is picked where it's
+    /// drawn alone, a concave edge's stroke as a convex one's. On, as the selection's filter
+    /// starts.
     pub edges: bool,
     /// The broken reference's candidate whose card row the pointer is over (flow 6b), set
     /// from outside: drawn with the hover, in [`theme::VIEWPORT_CANDIDATE`] for that frame.
