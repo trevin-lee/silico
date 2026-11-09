@@ -4833,8 +4833,10 @@ impl Tab {
             self.selection.let_go(&name);
         }
         // A new sweep's base worked out before its add is sent, as the add will work it out:
-        // a body no feature may take sends nothing, and the dialog says why up front.
-        if dialog.made && dialog.kind.sweeps() && dialog.feature.is_none() {
+        // a body no feature may take sends nothing, and the dialog says why up front. A
+        // dialog with no feature yet is a new one's (Edit Feature's has its feature from the
+        // first), so being made needs no asking.
+        if dialog.kind.sweeps() && dialog.feature.is_none() {
             let entries = self
                 .timeline
                 .as_ref()
@@ -7139,6 +7141,72 @@ mod tests {
             Some(None)
         );
         assert!(!dialog.adding);
+    }
+
+    #[test]
+    fn a_base_edit_in_flight_holds_a_sweeps_ok_and_one_of_another_field_or_feature_doesnt() {
+        // #443's mutants (tab.rs:425): an edit in flight counts as one queued does. The
+        // Pocket's own `base` in flight holds its OK; its `sketch`, or another feature's
+        // `base`, doesn't.
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let (_dir, sessions, mut tab) = session_tab();
+        let mut dialog = Dialog::new(Kind::Pocket, Some(fid("s0000009")), 1);
+        dialog.add().unwrap();
+        dialog.added(fid("q0000001"));
+        tab.dialog = Some(dialog);
+        assert!(tab.can_ok());
+        let value = || silico_core::document::json::read(br#""k7f2qx3m""#).unwrap();
+        for (feature, field, held) in [
+            ("q0000001", "base", true),
+            ("q0000001", "sketch", false),
+            ("q0000009", "base", false),
+        ] {
+            tab.edits.in_flight = Some(Flying {
+                field: (fid(feature), field.to_owned()),
+                value: value(),
+                sending: Sending {
+                    against: tab.revision,
+                    state: tab.revision,
+                },
+                running: sessions.set_field(
+                    &tab.id,
+                    tab.revision,
+                    fid(feature),
+                    field.to_owned(),
+                    value(),
+                ),
+            });
+            assert_eq!(tab.base_held(), held, "{feature}'s {field}");
+            assert_eq!(tab.can_ok(), !held, "{feature}'s {field}");
+        }
+    }
+
+    #[test]
+    fn a_new_sweeps_check_before_its_add_isnt_asked_once_its_added() {
+        // #443's mutants (tab.rs:4842, `made && sweeps && feature.is_none()`): a Pocket from
+        // Sketch2, added; the tab's timeline then one whose Block no feature may take (Joined
+        // suppressed). Its Length changed: the edit is sent, the check before the add, which
+        // would refuse the Block, not asked of a feature already made.
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let (_dir, sessions, mut tab) = session_tab();
+        let mut dialog = Dialog::new(Kind::Pocket, Some(fid("s0000002")), 1);
+        dialog.add().unwrap();
+        dialog.added(fid("q0000001"));
+        let length = dialog
+            .inputs
+            .iter_mut()
+            .find(|input| input.label == "Length")
+            .unwrap();
+        length.value = crate::dialog::Value::Length("7".to_owned());
+        tab.dialog = Some(dialog);
+        tab.timeline = Some(timeline(0, None, joined(true)));
+        assert!(base_of(&joined(true), Some(&fid("s0000002"))).is_err());
+        tab.dialog_changed(&sessions);
+        assert_eq!(tab.dialog.as_ref().unwrap().base_refused, None);
+        assert!(
+            tab.edits.in_flight.is_some() || !tab.edits.queue.is_empty(),
+            "the Length's edit sent"
+        );
     }
 
     #[test]
