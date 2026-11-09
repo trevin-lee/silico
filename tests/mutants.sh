@@ -81,6 +81,14 @@ slow_proptests=(
   # perspective looks at random; the pyramid's tests hold its rules at their edges.
   adversarial_face_anchors::random_close_perspective_looks_at_long_slabs_draw_every_clear_face_pixel_as_a_ray_cast_sees_it
 )
+# M5.12's scripted slice (silico-app's tests/slice.rs), left out: an end-to-end acceptance
+# test that builds the bracket through the app on the real workers and lavapipe, then reads
+# its exports back in FreeCAD, minutes on a loaded shard for every mutant; every path it
+# drives is covered by the unit and harness tests (the sketch tools', the app's, the core's
+# commands, the export's). It stays in the gate.
+app_acceptance=(
+  the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_reads_back
+)
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.
 tests_of() {
   local package=$1 tests="" t
@@ -89,7 +97,7 @@ tests_of() {
   echo "package($package) & ($tests)"
 }
 # Left out of mutants and of the exploration alike: the wall clock's tests and the GiB ones.
-skipped="$(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}") | $(tests_of silico-render "${render_scale[@]}")"
+skipped="$(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}") | $(tests_of silico-render "${render_scale[@]}") | $(tests_of silico-app "${app_acceptance[@]}")"
 # The slow proptests, for mutants to leave out too and the exploration to run alone: empty
 # when there are none, as `package(p) & ()` is no filter.
 slow=""
