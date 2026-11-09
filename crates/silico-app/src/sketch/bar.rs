@@ -56,7 +56,7 @@ pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
     let (fill, accent, strong, weak) = (FLOATING_BG, SELECTION_BG, TEXT_STRONG, TEXT_SUBDUED);
     // One row, whatever room the canvas leaves: its words are never wrapped away.
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-    egui::Frame::new()
+    let shown = egui::Frame::new()
         .fill(fill)
         .stroke(Stroke::new(1.0, accent))
         .corner_radius(CornerRadius::same(6))
@@ -106,8 +106,19 @@ pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
                     action = BarAction::Finish;
                 }
             });
+            ui.unique_id()
         });
+    bounded(ui, shown.inner, shown.response.rect);
     action
+}
+
+/// The group `group`'s node (a ui's, which egui gives no bounds of its own) bounded by
+/// `rect`, its frame's, in points as egui bounds its widgets: so the accessibility tree says
+/// where the group is, around what it holds.
+fn bounded(ui: &Ui, group: egui::Id, rect: egui::Rect) {
+    ui.ctx().accesskit_node_builder(group, |node| {
+        node.set_bounds(crate::panes::bounds(rect));
+    });
 }
 
 /// The dark look the bar and the palette are drawn in, whatever theme the window shows:
@@ -254,7 +265,7 @@ fn usage(choice: Choice, trim: TrimMode) -> &'static str {
 /// don't fit.
 pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings, max_height: f32) {
     dark(ui);
-    egui::Frame::new()
+    let shown = egui::Frame::new()
         .fill(FLOATING_BG)
         .stroke(Stroke::new(BORDER, PANEL_BORDER))
         .corner_radius(CornerRadius::same(6))
@@ -308,7 +319,9 @@ pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings, max_hei
                     });
                     section(ui, "Colours", legend);
                 });
+            ui.unique_id()
         });
+    bounded(ui, shown.inner, shown.response.rect);
 }
 
 /// The palette's Tool: the tool on, how it's used, and what it last said, or the keys that

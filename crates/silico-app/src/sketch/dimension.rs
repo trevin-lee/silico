@@ -21,8 +21,8 @@
 use std::collections::BTreeSet;
 
 use eframe::egui::{self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Stroke, Ui, Vec2};
-use silico_core::command::Revision;
 use silico_core::command::sketch::SketchRead;
+use silico_core::command::{Revision, SessionId};
 use silico_core::document::{ElementId, FeatureId, Form};
 use silico_core::sketch_tools::{
     Offer, OfferChoice, OfferRequest, Placement, PlacementKind, offer, read_typed,
@@ -206,26 +206,69 @@ pub fn clear_of_palette(wanted: Pos2, size: Vec2, within: Rect, palette: Rect) -
     Pos2::new(within.left(), at.y)
 }
 
+/// What names a sketch mode's Modify boxes: its tab's session `session` and its opening
+/// `serial`, so no two sketch modes' boxes are one box to egui, though each numbers its
+/// boxes from the start ([`modify_box`]'s `owner`).
+pub fn modify_owner(session: &SessionId, serial: u64) -> egui::Id {
+    egui::Id::new(("sketch_mode", session.to_string(), serial))
+}
+
+/// The area of the Modify box numbered `opened` of the sketch mode `owner` names: where
+/// egui keeps its place and its size, and the root of every ID the box has, so none of
+/// them can be another box's.
+pub fn modify_area(owner: egui::Id, opened: u64) -> egui::Id {
+    owner.with(("sketch_modify", opened))
+}
+
+/// The field of the Modify box whose area is `area` ([`modify_area`]): what egui keeps of
+/// it (its cursor, its undo) and gives the keyboard to.
+fn field_of(area: egui::Id) -> egui::Id {
+    area.with("field")
+}
+
+/// The field of the Modify box numbered `opened` of the sketch mode `owner` names, its
+/// box's own: the one way to name it outside the box.
+pub fn modify_field(owner: egui::Id, opened: u64) -> egui::Id {
+    field_of(modify_area(owner, opened))
+}
+
+/// The sketch bar's area in the tab of the session `session`: where egui keeps its place.
+pub fn bar_area(session: &SessionId) -> egui::Id {
+    egui::Id::new(("sketch_bar", session.to_string()))
+}
+
+/// The Sketch Palette's area in the tab of the session `session`: where egui keeps its
+/// place and its size.
+pub fn palette_area(session: &SessionId) -> egui::Id {
+    egui::Id::new(("sketch_palette", session.to_string()))
+}
+
 /// The Modify box (the prototype's `.modify-box`, "Modify dimension"): the value's field, in
 /// [`field_frame`]'s Modify look, its unit, ✓ and ✕, and under it a hint, or what was said
 /// of the text, in red; at its dimension's text, the box and its hint whole inside the
 /// viewport `viewport` and clear of the Sketch Palette `palette` ([`clear_of_palette`], by
 /// its size as last drawn). A new box takes the keyboard. What it was asked, if anything.
+///
+/// `owner` names the sketch mode the box is of (its tab's session and its opening, as the
+/// app gives it): a box is known by `owner` and its number, so each box of every sketch
+/// mode takes the keyboard once as it opens, a later sketch's as the first's, though each
+/// sketch mode numbers its boxes from the start again.
 pub fn modify_box(
     ctx: &egui::Context,
+    owner: egui::Id,
     view: &ModifyView,
     viewport: Rect,
     palette: Rect,
 ) -> Option<ModifyAction> {
     let mut asked = None;
-    let id = egui::Id::new(("sketch_modify", view.opened));
+    let area = modify_area(owner, view.opened);
     // Its size as last drawn; none before its first (egui's sizing pass, drawn unseen).
-    let size = egui::AreaState::load(ctx, id).and_then(|state| state.size);
+    let size = egui::AreaState::load(ctx, area).and_then(|state| state.size);
     let wanted = view.at + MODIFY_FROM_TEXT;
     let at = size.map_or(wanted, |size| {
         clear_of_palette(wanted, size, viewport, palette)
     });
-    egui::Area::new(id)
+    egui::Area::new(area)
         .fixed_pos(at)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
@@ -247,7 +290,7 @@ pub fn modify_box(
                 })
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let id = egui::Id::new(("sketch_modify_field", view.opened));
+                        let id = field_of(area);
                         let focused = ui.memory(|m| m.has_focus(id));
                         let mut text = view.text.clone();
                         let field =
@@ -274,7 +317,7 @@ pub fn modify_box(
                         // A new box takes the keyboard, once, its cursor after its value.
                         // (Not selected, as SolidWorks' and the prototype's is: egui 0.36's
                         // field collapses a selection made outside its own events.)
-                        let taken = egui::Id::new(("sketch_modify_taken", view.opened));
+                        let taken = area.with("taken");
                         if !ui.data(|d| d.get_temp::<bool>(taken).unwrap_or(false)) {
                             field.request_focus();
                             ui.data_mut(|d| d.insert_temp(taken, true));
@@ -314,7 +357,7 @@ pub fn modify_box(
             ui.label(hint.size(SKETCH_MODIFY_HINT_SIZE));
         });
     // Placed by a size it no longer has (its hint grew, say): placed again next frame.
-    if size.is_some() && egui::AreaState::load(ctx, id).and_then(|state| state.size) != size {
+    if size.is_some() && egui::AreaState::load(ctx, area).and_then(|state| state.size) != size {
         ctx.request_repaint();
     }
     asked

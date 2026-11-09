@@ -331,8 +331,8 @@ impl<P: Clients + 'static> Server<P> {
     }
 }
 
-/// `initialize`'s instructions: the workspace, the three things an agent most needs, and
-/// that a part can be made with no file.
+/// `initialize`'s instructions: the workspace, how to make a solid, the three things an agent
+/// most needs, and that a part can be made with no file.
 fn instructions(workspace: Option<&str>) -> String {
     let paths = match workspace {
         Some(root) => format!(
@@ -341,7 +341,8 @@ fn instructions(workspace: Option<&str>) -> String {
         None => "Paths are taken as the system resolves them.".to_owned(),
     };
     format!(
-        "Silico is a parametric CAD system: open a document (a .silico file) as a session, edit its features, and read its model's elements and measures. {paths} {} {} {} {}",
+        "Silico is a parametric CAD system: open a document (a .silico file) as a session, edit its features, and read its model's elements and measures. {paths} {} {} {} {} {}",
+        tools::SKETCH_FIRST,
         tools::IN_A_TRANSACTION,
         tools::UNTITLED,
         tools::READ_CURRENT,
