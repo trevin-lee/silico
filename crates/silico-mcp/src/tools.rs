@@ -206,6 +206,10 @@ pub const IN_A_TRANSACTION: &str = "Edit inside a transaction: `begin`, the edit
 pub const READ_CURRENT: &str = "After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.";
 pub const NAMES_FROM_ELEMENTS: &str =
     "Name a face, edge, or vertex only as `elements` or `query` gives it; never make a name up.";
+/// How to make a solid: from sketches, as the app makes them (the maintainer's decision of
+/// 2026-11-09: the app no longer makes primitives), said in `initialize`'s instructions and in
+/// `add_feature`'s description.
+pub const SKETCH_FIRST: &str = "Build solids from sketches, as the app does: a sketch on a plane or a face, then a pad, pocket, revolve, or groove of it, and fillets and chamfers on the result. The primitives (box, cylinder, sphere, cone, torus) are still read, but the app no longer makes them, so a part built from sketches is one a person can edit the way they'd have built it.";
 /// That a part can be made with no file (an untitled one), said in `initialize`'s
 /// instructions and in `open`'s description, as the three above are in theirs.
 pub const UNTITLED: &str = "For a part with no file yet, open with `path: null` and `create: true`: an untitled part, nothing on disk, its edits made inside a transaction, and its first `commit` given a path to save it there.";
@@ -395,9 +399,9 @@ fn words(command: Command) -> (&'static str, String) {
         ),
     };
     let tips: &[&str] = match command {
+        Command::AddFeature => &[SKETCH_FIRST, IN_A_TRANSACTION, READ_CURRENT],
         Command::Begin
         | Command::Commit
-        | Command::AddFeature
         | Command::SetField
         | Command::RemoveFeature
         | Command::ReplaceText

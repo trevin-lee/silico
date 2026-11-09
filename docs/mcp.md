@@ -46,7 +46,9 @@ This adds it for the directory you run it in. For every project use `claude mcp 
 
 ## The workflow
 
-The server's `instructions`, which every client is given at `initialize`, say the three rules an agent most needs: edit inside a transaction, read `model: "current"` after an edit, and name an element only as `elements` or `query` gives it; and how to make a part with no file yet.
+The server's `instructions`, which every client is given at `initialize`, say how to make a solid and the three rules an agent most needs: build solids from sketches, as the app does (a sketch on a plane or a face, then a pad, pocket, revolve, or groove of it); edit inside a transaction, read `model: "current"` after an edit, and name an element only as `elements` or `query` gives it; and how to make a part with no file yet.
+
+**Build from sketches.** The app makes solids only from sketches, as SolidWorks does: it no longer makes primitives (the maintainer's decision, 2026-11-09). The core still reads them, so older documents and a feature written as a `box` work as before, but a part an agent builds from sketches is one a person opening it can edit the way they'd have built it. The worked example below builds the bracket that way.
 
 **Every argument is given.** A request is read strictly: each field its shape has must be present, `null` where it allows none (`"feature": null` for every body), and a field it doesn't have is refused. `schema` (`{"of": "query"}`, or `{"of": "document"}` for the document's JSON Schema) gives the same shapes `tools/list` does.
 
