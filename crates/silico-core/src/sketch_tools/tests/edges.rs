@@ -580,6 +580,76 @@ fn the_nearest_curve_wins_over_an_axis() {
     );
 }
 
+/// The sketch of one line, `name`, from `from` to `to`, its points `q0000001` and
+/// `q0000002`.
+fn just_line(name: &str, from: (f64, f64), to: (f64, f64)) -> Sketch {
+    let mut s = empty();
+    s.points.push(point("q0000001", from.0, from.1));
+    s.points.push(point("q0000002", to.0, to.1));
+    s.lines.push(line(name, "q0000001", "q0000002"));
+    s
+}
+
+/// A place as the adds describe it.
+fn place(at: (f64, f64)) -> String {
+    format!("({}, {})", at.0, at.1)
+}
+
+#[test]
+fn a_point_on_a_line_along_an_axis_is_on_the_line_not_the_axis_whatever_its_id() {
+    // A line along the x axis, (10, 0) to (50, 0), and one along the y axis, (0, 10) to
+    // (0, 50): a click on it at (20, 0) or (0, 20), mid-way between its end and its middle
+    // (beyond the tolerance of both), is 0 from the line and from its axis. The point is on
+    // the sketch's own curve (SolidWorks' relation is to the sketch's entity), whether the
+    // line's ID sorts before the axes' names ("aa…" < "x_axis" < "y_axis") or after them
+    // ("zz…").
+    for name in ["aa000001", "zz000001"] {
+        for (from, to, on) in [
+            ((10.0, 0.0), (50.0, 0.0), (20.0, 0.0)),
+            ((0.0, 10.0), (0.0, 50.0), (0.0, 20.0)),
+        ] {
+            let mut d = Drive::new(ToolKind::Point, just_line(name, from, to));
+            d.click(on.0, on.1);
+            let segment = format!("line #{}-#{}", place(from), place(to));
+            assert_eq!(
+                d.adds(),
+                [sorted(&[
+                    &format!("point {}", place(on)),
+                    &format!("on {} {segment}", place(on)),
+                ])],
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_point_is_on_an_axis_where_no_line_of_the_sketch_lies_on_it() {
+    // Past the end of a line along an axis, (70, 0) and (0, 70) are 20 from the line and 0
+    // from the axis: on the axis. And with the line 0.3 off the axis, (10, 0.3) to (50, 0.3)
+    // or (0.3, 10) to (0.3, 50), a click at (20, 0.1) or (0.1, 20) is 0.1 from the axis and
+    // 0.2 from the line: on the axis, the nearer, at its foot, whatever the line's ID.
+    for name in ["aa000001", "zz000001"] {
+        for (from, to, at, foot, axis) in [
+            ((10.0, 0.0), (50.0, 0.0), (70.0, 0.0), (70.0, 0.0), "x_axis"),
+            ((0.0, 10.0), (0.0, 50.0), (0.0, 70.0), (0.0, 70.0), "y_axis"),
+            ((10.0, 0.3), (50.0, 0.3), (20.0, 0.1), (20.0, 0.0), "x_axis"),
+            ((0.3, 10.0), (0.3, 50.0), (0.1, 20.0), (0.0, 20.0), "y_axis"),
+        ] {
+            let mut d = Drive::new(ToolKind::Point, just_line(name, from, to));
+            d.click(at.0, at.1);
+            assert_eq!(
+                d.adds(),
+                [sorted(&[
+                    &format!("point {}", place(foot)),
+                    &format!("on {} {axis}", place(foot)),
+                ])],
+                "{name} at {at:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_nearest_woken_point_lines_up_and_a_tie_goes_to_the_lower_id() {
     // Woken points at x = 30.2 and 30.4: a click at (30, 50) is 0.2 and 0.4 off their

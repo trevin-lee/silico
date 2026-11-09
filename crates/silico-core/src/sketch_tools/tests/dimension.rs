@@ -269,6 +269,75 @@ fn a_point_or_an_axis_alone_places_nothing() {
     assert!(d.made.is_empty() && d.messages.is_empty());
 }
 
+/// A line along the x axis, (10, 0) to (50, 0), and one along the y axis, (0, 10) to
+/// (0, 50), each 40 long and named `name`; each with a place on it, mid-way between its end
+/// and its middle (beyond the pick tolerance of both), and a place 10 off it.
+fn along_the_axes(name: &str) -> [(Sketch, [f64; 2], [f64; 2]); 2] {
+    [
+        (
+            with_line(empty(), name, [10.0, 0.0], [50.0, 0.0]),
+            [20.0, 0.0],
+            [20.0, 10.0],
+        ),
+        (
+            with_line(empty(), name, [0.0, 10.0], [0.0, 50.0]),
+            [0.0, 20.0],
+            [10.0, 20.0],
+        ),
+    ]
+}
+
+#[test]
+fn a_line_along_an_axis_is_picked_before_the_axis_whatever_its_id() {
+    // Picked on it, the line is 0 from the pointer, and so is its axis. The sketch's own
+    // curve is picked (SolidWorks picks the sketch's entity over the origin's axes), whether
+    // its ID sorts before the axes' names ("aa…" < "x_axis" < "y_axis") or after them
+    // ("zz…"): placed off it, its length, 40.
+    for name in ["aa000001", "zz000001"] {
+        for (sketch, on, off) in along_the_axes(name) {
+            let mut d = Dim::new(sketch);
+            d.to(on[0], on[1]);
+            assert_eq!(d.tool.preview().hover, Some(r(name)), "{name} at {on:?}");
+            d.click(on[0], on[1]);
+            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at {on:?}");
+            d.click(off[0], off[1]);
+            assert_eq!(d.modify().as_deref(), Some("40"), "{name} at {on:?}");
+            d.enter();
+            assert_eq!(
+                d.placed(),
+                Form::Length {
+                    line: r(name),
+                    value: mm("40"),
+                    driving: true
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn an_axis_is_picked_where_no_line_of_the_sketch_lies_on_it() {
+    // Past the end of a line along an axis, (70, 0) and (0, 70) are 20 from the line and 0
+    // from the axis: the axis. And with the line 0.3 off the axis, (10, 0.3) to (50, 0.3)
+    // or (0.3, 10) to (0.3, 50), the pointer at (20, 0.1) or (0.1, 20) is 0.1 from the axis
+    // and 0.2 from the line: the axis, the nearer, whatever the line's ID.
+    for name in ["aa000001", "zz000001"] {
+        let [(along_x, _, _), (along_y, _, _)] = along_the_axes(name);
+        let off_x = with_line(empty(), name, [10.0, 0.3], [50.0, 0.3]);
+        let off_y = with_line(empty(), name, [0.3, 10.0], [0.3, 50.0]);
+        for (sketch, at, axis) in [
+            (along_x, [70.0, 0.0], Reference::XAxis),
+            (along_y, [0.0, 70.0], Reference::YAxis),
+            (off_x, [20.0, 0.1], Reference::XAxis),
+            (off_y, [0.1, 20.0], Reference::YAxis),
+        ] {
+            let mut d = Dim::new(sketch);
+            d.click(at[0], at[1]);
+            assert_eq!(d.tool.preview().picks, vec![axis], "{name} at {at:?}");
+        }
+    }
+}
+
 // --- SD1: two points, by the pointer; signs and order ---------------------------------
 
 /// Two points: p (10, 10), q (40, 30). The box they span: x 10 to 40, y 10 to 30.
