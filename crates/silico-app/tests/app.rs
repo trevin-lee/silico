@@ -10809,6 +10809,35 @@ fn a_face_turned_a_quarter_toward_the_view_is_drawn_and_left_unlabelled_and_one_
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn a_face_facing_the_view_by_the_edge_on_limit_is_drawn_with_none_of_its_own_edges() {
+    // From (0, −1, 10⁻⁹) onto the origin: the eye's offset is 1 long as f64 rounds it, so the
+    // view's back is (0, −1, 10⁻⁹) exactly (checked) and the top faces it at 10⁻⁹, the most a
+    // face may and still be edge-on, not drawn. The front, square on, is drawn with its four
+    // edges and its label; the left and right are edge-on, the back and bottom face away. No
+    // edge of the top's is drawn but the one it shares with the front.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let camera = silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+        eye: [0.0, -1.0, 1e-9],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 1.0],
+    };
+    assert_eq!(camera.frame().unwrap().back, [0.0, -1.0, 1e-9]);
+    view_mut(&mut h).set_camera(camera);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(cube_drawn(&h), ["border", "front", "label"]);
+    let edges: Vec<_> = cube_lines(&h)
+        .into_iter()
+        .filter(|(_, stroke)| stroke.color == CUBE_EDGE)
+        .collect();
+    assert_eq!(edges.len(), 4, "{edges:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// What the ViewCube drew last frame before its edges, in order: each polygon by its fill
 /// (a border, or a face's), and each label (a mesh).
 fn cube_drawn(h: &AppHarness) -> Vec<&'static str> {

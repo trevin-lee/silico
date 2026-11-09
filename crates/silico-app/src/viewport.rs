@@ -2079,12 +2079,12 @@ fn hidden_by_cube(from: [f64; 3], along: [f64; 3], back: [f64; 3]) -> Option<[f6
                 return None;
             }
         } else {
-            // a + d·s + t·b from −1 to 1: t between (−1 − a − d·s)/b and (1 − a − d·s)/b.
-            let near = ((-1.0 - a) / b, -d / b);
-            let far = ((1.0 - a) / b, -d / b);
-            let (low, high) = if b > 0.0 { (near, far) } else { (far, near) };
-            lower.push(low);
-            upper.push(high);
+            // a + d·s + t·b from −1 to 1: t between (−1 − a − d·s)/b and (1 − a − d·s)/b,
+            // the lesser below, two lines in s of one slope.
+            let slope = -d / b;
+            let (one, other) = ((-1.0 - a) / b, (1.0 - a) / b);
+            lower.push((one.min(other), slope));
+            upper.push((one.max(other), slope));
         }
     }
     if upper.is_empty() {
@@ -4045,5 +4045,107 @@ mod tests {
             hidden_by_cube([-2.0, 1.5, 0.0], [4.0, 0.0, 0.0], [0.0, -1.0, 0.0]),
             [0.25, 0.75],
         );
+    }
+
+    /// The cube's far face and its own faces, by hand. Along y at x = z = 0, from y = 1.5
+    /// to 5, seen from (0.6, −0.8, 0): a point (0, y, 0) moves to (0.6t, y − 0.8t, 0) toward
+    /// the eye, reaching the cube's far face, y = 1, at t = (y − 1)/0.8, and leaving it by
+    /// its side, x = 1, at t = 1/0.6: hidden while (y − 1)/0.8 ≤ 5/3, to y = 7/3, s =
+    /// (7/3 − 3/2)/3.5 = 5/21, and seen past that. The cube is closed: behind it from the
+    /// front, along x from −2 to 2 at y = 1.5, a segment in the plane of its top face, z = 1,
+    /// or its bottom's, z = −1, is hidden where the cube's in front, s from 1/4 to 3/4; one
+    /// 0.5 above it or below it, never.
+    #[test]
+    fn the_cube_hides_a_segment_as_far_as_its_far_face_and_its_closed_faces_reach() {
+        same_interval(
+            hidden_by_cube([0.0, 1.5, 0.0], [0.0, 3.5, 0.0], [0.6, -0.8, 0.0]),
+            [0.0, 5.0 / 21.0],
+        );
+        let seen = seen_past_cube([0.0, 1.5, 0.0], [0.0, 3.5, 0.0], [0.6, -0.8, 0.0]);
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!((seen[0][0] - 5.0 / 21.0).abs() < 1e-12, "{seen:?}");
+        assert_eq!(seen[0][1], 1.0);
+        let front = [0.0, -1.0, 0.0];
+        for z in [1.0, -1.0] {
+            same_interval(
+                hidden_by_cube([-2.0, 1.5, z], [4.0, 0.0, 0.0], front),
+                [0.25, 0.75],
+            );
+        }
+        for z in [1.5, -1.5] {
+            assert_eq!(
+                hidden_by_cube([-2.0, 1.5, z], [4.0, 0.0, 0.0], front),
+                None,
+                "{z}"
+            );
+        }
+    }
+
+    /// A label left waiting by a run that never ended a pass for it is dropped, not drawn
+    /// over the next run's shapes. egui takes a run's plugins before its first pass, so the
+    /// labels' plugin, registered by the first pass that labels a face, ends no pass of that
+    /// run: if that pass asks for another, the second's label waits, keeping a place in a
+    /// paint list that's gone. The next run, which draws only a red square, where that label
+    /// kept its place, still draws the square, and no label; the one after, labelling the
+    /// face, draws its label.
+    #[test]
+    fn a_label_left_waiting_by_a_run_that_never_ended_its_pass_is_dropped_not_drawn_over_the_next()
+    {
+        let ctx = egui::Context::default();
+        // The app's fonts: eframe's default ones aren't built in, so with none a label lays out
+        // no glyphs.
+        theme::apply(&ctx);
+        let on = OnFace {
+            centre: egui::pos2(50.0, 50.0),
+            across: Vec2::new(20.0, 0.0),
+            down: Vec2::new(0.0, 20.0),
+        };
+        let square = egui::Color32::RED;
+        let mut passes = 0;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            passes += 1;
+            label_cube_face(ui.painter(), on, 20.0, "TOP");
+            if passes == 1 {
+                ui.ctx().request_discard("a second pass");
+            }
+        })
+        .drop_without_applying_deltas();
+        assert_eq!(passes, 2);
+        assert_eq!(
+            ctx.with_plugin(|labels: &mut CubeLabels| labels.waiting.len()),
+            Some(1)
+        );
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.painter().rect_filled(
+                Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::splat(10.0)),
+                0.0,
+                square,
+            );
+        });
+        let shapes: Vec<egui::Shape> = output.shapes.iter().map(|c| c.shape.clone()).collect();
+        output.drop_without_applying_deltas();
+        assert!(
+            shapes
+                .iter()
+                .any(|shape| matches!(shape, egui::Shape::Rect(r) if r.fill == square)),
+            "{shapes:?}"
+        );
+        assert!(
+            !shapes
+                .iter()
+                .any(|shape| matches!(shape, egui::Shape::Mesh(_))),
+            "{shapes:?}"
+        );
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            label_cube_face(ui.painter(), on, 20.0, "TOP");
+        });
+        let meshes = output
+            .shapes
+            .iter()
+            .filter(|c| matches!(&c.shape, egui::Shape::Mesh(m) if !m.vertices.is_empty()))
+            .count();
+        let shapes = format!("{:?}", output.shapes);
+        output.drop_without_applying_deltas();
+        assert_eq!(meshes, 1, "{shapes}");
     }
 }
