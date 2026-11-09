@@ -1736,22 +1736,7 @@ impl Tab {
             self.reloaded_under_dialog(sessions);
         }
         let published = sessions.published(&self.id);
-        let model = published
-            .result
-            .as_ref()
-            .ok()
-            .map(|published| Arc::downgrade(&published.model));
-        // Another model than the last seen, though maybe of the same revision (a fresh
-        // check's): counted, so the viewport reads its meshes again.
-        let same = match (&self.published_model, &model) {
-            (Some(seen), Some(now)) => seen.ptr_eq(now),
-            (None, None) => true,
-            _ => false,
-        };
-        if !same {
-            self.published_models = self.published_models.wrapping_add(1);
-            self.published_model = model;
-        }
+        self.count_published(&published);
         let model = published
             .result
             .as_ref()
@@ -4004,6 +3989,26 @@ impl Tab {
     /// The timeline read again once the session's revision or the published model's
     /// changes (section 3, *When the app reads*): of the published model, or, while nothing
     /// is published, of the current one, whose read waits for its rebuild.
+    /// The newest model published, `published`, counted in
+    /// [`published_models`](Self::published_models) if it's another than the last seen, though
+    /// maybe of the same revision (a fresh check's), so the viewport reads its meshes again.
+    fn count_published(&mut self, published: &Response<silico_core::command::Published>) {
+        let model = published
+            .result
+            .as_ref()
+            .ok()
+            .map(|published| Arc::downgrade(&published.model));
+        let same = match (&self.published_model, &model) {
+            (Some(seen), Some(now)) => seen.ptr_eq(now),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.published_models = self.published_models.wrapping_add(1);
+            self.published_model = model;
+        }
+    }
+
     fn read_timeline<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         let asked = (self.revision, self.published);
         if self.timeline_read.is_some() || self.timeline_asked == Some(asked) {
@@ -4027,6 +4032,10 @@ impl Tab {
         self.timeline_asked = Some(asked);
         self.check_first = self.check_read.is_some();
         self.timeline_read = Some(sessions.timeline(&self.id, model));
+        // A fresh check publishes its model before it answers, so this read, sent in the poll
+        // that took the answer, can be of a model published since that poll counted them:
+        // counted now, so the read records the newest.
+        self.count_published(&sessions.published(&self.id));
         self.timeline_read_after = self.published_models;
     }
 
@@ -6690,6 +6699,64 @@ mod tests {
         });
         tab.read_check(&sessions);
         assert!(tab.check_read.is_some());
+    }
+
+    #[test]
+    fn a_timeline_read_sent_with_a_fresh_checks_answer_records_the_model_it_published() {
+        // Rebuild everything's fresh check publishes its model, then answers. A poll counts
+        // the published models first, then takes the answers, then sends the timeline read
+        // the answer calls for: so the publish and the answer can both land between the count
+        // and the read. Here they do, on purpose: the check answered (a command queued after
+        // it has) while the tab didn't poll, then the poll's steps after its count. The read
+        // records the model the check published, the one past those the tab had counted.
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("part.silico");
+        std::fs::write(
+            &document,
+            r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}]}"#,
+        )
+        .unwrap();
+        let sessions = Arc::new(Sessions::with_cache_opener(
+            Arc::new(silico_core::fake::FakeKernel::new(1).unwrap()),
+            |dir| silico_core::cache::Cache::unsealed(dir),
+        ));
+        let opened = sessions.open(&document, false).wait();
+        let id = opened.session.unwrap().id;
+        let mut tab = Tab::opened(
+            id,
+            document.to_str().unwrap().to_owned(),
+            &opened.result.unwrap().problems,
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while tab.timeline.is_none() || tab.timeline_read.is_some() || tab.published_models == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the timeline never read"
+            );
+            tab.poll(&sessions);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let seen = tab.published_models;
+        assert!(tab.can_rebuild_all());
+        tab.rebuild_all(&sessions);
+        sessions.text(&id, None).wait().result.unwrap();
+        assert_eq!(tab.published_models, seen);
+        tab.take_answers(&sessions);
+        tab.read_timeline(&sessions);
+        assert!(tab.timeline_read.is_some());
+        assert_eq!(tab.timeline_read_after, seen + 1);
+        while tab.timeline_read.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the timeline never read again"
+            );
+            tab.poll(&sessions);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            (tab.timeline_after, tab.published_models),
+            (seen + 1, seen + 1)
+        );
     }
 
     #[test]
