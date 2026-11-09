@@ -227,7 +227,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Status => (
             "Session status",
-            "What a session holds, answered at once even while another of its commands runs: its features; the transaction open, if one is, with whether its document differs from the one it began from (unsaved), and the edits `undo` and `redo` can step through; what's running; and how far its rebuild has got.",
+            "What a session holds, answered at once even while another of its commands runs: its features; the transaction open, if one is, with whether its document differs from the one it began from (unsaved), and the edits `undo` and `redo` can step through; what's running; and how far its rebuild has got, and how long it has run.",
         ),
         Command::ReadLogs => (
             "Read logs",

@@ -269,12 +269,21 @@ fn independent_branches_run_at_once() {
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
 }
 
-/// Polls `progress` until its whole count is `want`, for at most [`WAIT`].
+/// `count` but its clock, which no test can pin: its `elapsed` zero.
+fn clockless(count: StepCount) -> StepCount {
+    StepCount {
+        elapsed: Duration::ZERO,
+        ..count
+    }
+}
+
+/// Polls `progress` until its whole count but its clock ([`clockless`]) is `want`, for at
+/// most [`WAIT`].
 #[track_caller]
 fn until_counted(progress: &silico_core::recompute::StepCounter, want: &StepCount) {
     let deadline = std::time::Instant::now() + WAIT;
     loop {
-        let now = progress.now();
+        let now = clockless(progress.now());
         if now == *want {
             return;
         }
@@ -309,6 +318,7 @@ fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
             steps: 4,
             running: Some("a91cw0de cylinder".to_owned()),
             ended: false,
+            elapsed: Duration::ZERO,
             features: states(&[
                 ("k7f2qx3m", Built),
                 ("a91cw0de", Running),
@@ -323,18 +333,19 @@ fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
         steps: 4,
         running: None,
         ended: true,
+        elapsed: Duration::ZERO,
         features: states(&[
             ("k7f2qx3m", Built),
             ("a91cw0de", Built),
             ("m3tq8v0z", Built),
         ]),
     };
-    assert_eq!(progress.now(), all_done);
+    assert_eq!(clockless(progress.now()), all_done);
     // Again, every step kept: all four settled before any runs.
     let again = engine.start(checked(EXAMPLE));
     let progress = again.progress();
     assert!(matches!(again.wait().unwrap(), RunOutcome::Published(_)));
-    assert_eq!(progress.now(), all_done);
+    assert_eq!(clockless(progress.now()), all_done);
     // A thicker pin, its cylinder held: the block's step is kept, settled before any runs,
     // so one is done while the cylinder is held, though the block never ran.
     let before = engine.kernel().calls().len();
@@ -351,6 +362,7 @@ fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
             steps: 4,
             running: Some("a91cw0de cylinder".to_owned()),
             ended: false,
+            elapsed: Duration::ZERO,
             features: states(&[
                 ("k7f2qx3m", Built),
                 ("a91cw0de", Running),
@@ -360,7 +372,7 @@ fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
     );
     hold.release();
     assert!(matches!(thicker.wait().unwrap(), RunOutcome::Published(_)));
-    assert_eq!(progress.now(), all_done);
+    assert_eq!(clockless(progress.now()), all_done);
     // Kept, not run: the pin's cylinder, its move, and the cut ran, one after the other,
     // and no box was made.
     assert_eq!(
@@ -416,6 +428,7 @@ fn a_second_rebuild_of_the_same_document_has_its_kept_features_built_at_its_firs
             steps: 5,
             running: Some("q0000001 sphere".to_owned()),
             ended: false,
+            elapsed: Duration::ZERO,
             features: states(&[
                 ("k7f2qx3m", Built),
                 ("a91cw0de", Built),
@@ -463,6 +476,7 @@ fn steps_that_cant_run_are_counted_done_before_any_runs() {
             steps: 4,
             running: Some("k7f2qx3m box".to_owned()),
             ended: false,
+            elapsed: Duration::ZERO,
             features: states(&[
                 ("k7f2qx3m", Running),
                 ("a91cw0de", Failed),
@@ -473,12 +487,13 @@ fn steps_that_cant_run_are_counted_done_before_any_runs() {
     hold.release();
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
     assert_eq!(
-        progress.now(),
+        clockless(progress.now()),
         StepCount {
             done: 4,
             steps: 4,
             running: None,
             ended: true,
+            elapsed: Duration::ZERO,
             features: states(&[
                 ("k7f2qx3m", Built),
                 ("a91cw0de", Failed),
@@ -571,6 +586,7 @@ fn a_step_only_a_feature_refused_mid_run_needs_is_counted_done_unrun_while_anoth
             steps: 6,
             running: Some("pppppppp cylinder".to_owned()),
             ended: false,
+            elapsed: Duration::ZERO,
             features: states(&[
                 ("aaaaaaaa", Built),
                 ("bbbbbbbb", Built),
@@ -589,12 +605,13 @@ fn a_step_only_a_feature_refused_mid_run_needs_is_counted_done_unrun_while_anoth
         panic!("not published")
     };
     assert_eq!(
-        progress.now(),
+        clockless(progress.now()),
         StepCount {
             done: 6,
             steps: 6,
             running: None,
             ended: true,
+            elapsed: Duration::ZERO,
             features: states(&[
                 ("aaaaaaaa", Built),
                 ("bbbbbbbb", Built),

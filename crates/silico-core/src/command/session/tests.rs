@@ -1892,7 +1892,7 @@ fn a_one_edit_commits_fault_is_the_saved_revisions_and_never_met_again() {
     // box and its move to x = 100; the fuse) all settled, the lug's crash and the steps it
     // blocked among them.
     assert_eq!(
-        f.sessions.status(&f.id).result.unwrap().rebuild,
+        clockless_rebuild(f.sessions.status(&f.id).result.unwrap().rebuild),
         Rebuild {
             revision: saved,
             state: RebuildState::Faulted,
@@ -1905,6 +1905,7 @@ fn a_one_edit_commits_fault_is_the_saved_revisions_and_never_met_again() {
                     ("b0000001", StepState::Faulted),
                     ("f0000001", StepState::Blocked)
                 ]),
+                elapsed: Duration::ZERO,
             }),
         }
     );
@@ -3802,11 +3803,27 @@ fn a_reads_client_is_its_kernels_and_advances_it() {
     assert!(matches!(asked, Outcome::Superseded), "{asked:?}");
 }
 
-/// Polls `progress` until it's `want`, for at most [`WAIT`].
+/// `progress` but its clock, which no test can pin: its `elapsed` zero.
+fn clockless(progress: Option<Progress>) -> Option<Progress> {
+    progress.map(|progress| Progress {
+        elapsed: Duration::ZERO,
+        ..progress
+    })
+}
+
+/// `rebuild` but its progress's clock ([`clockless`]).
+fn clockless_rebuild(rebuild: Rebuild) -> Rebuild {
+    Rebuild {
+        progress: clockless(rebuild.progress),
+        ..rebuild
+    }
+}
+
+/// Polls `progress` until it's `want` but its clock ([`clockless`]), for at most [`WAIT`].
 #[track_caller]
 fn until_progress(progress: impl Fn() -> Option<Progress>, want: Option<Progress>) {
     let started = std::time::Instant::now();
-    while progress() != want {
+    while clockless(progress()) != want {
         assert!(started.elapsed() < WAIT, "{:?}, not {want:?}", progress());
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -3836,10 +3853,11 @@ fn a_held_rebuild_shows_its_steps_done_below_its_steps_then_all_of_them() {
             ("b0000001", StepState::Running),
             ("f0000001", StepState::Queued),
         ]),
+        elapsed: Duration::ZERO,
     });
     until_progress(|| check.progress(), one_of_four.clone());
     assert_eq!(
-        f.sessions.status(&f.id).result.unwrap().rebuild,
+        clockless_rebuild(f.sessions.status(&f.id).result.unwrap().rebuild),
         Rebuild {
             revision: Revision::OPENED,
             state: RebuildState::Running,
@@ -3849,7 +3867,7 @@ fn a_held_rebuild_shows_its_steps_done_below_its_steps_then_all_of_them() {
     hold.release();
     check.wait().result.unwrap();
     assert_eq!(
-        f.sessions.status(&f.id).result.unwrap().rebuild,
+        clockless_rebuild(f.sessions.status(&f.id).result.unwrap().rebuild),
         Rebuild {
             revision: Revision::OPENED,
             state: RebuildState::Done,
@@ -3862,6 +3880,7 @@ fn a_held_rebuild_shows_its_steps_done_below_its_steps_then_all_of_them() {
                     ("b0000001", StepState::Built),
                     ("f0000001", StepState::Built)
                 ]),
+                elapsed: Duration::ZERO,
             }),
         }
     );
@@ -3901,6 +3920,7 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
                 ("b0000001", StepState::Running),
                 ("f0000001", StepState::Queued),
             ]),
+            elapsed: Duration::ZERO,
         }),
     );
     // A step counts as running as its job starts, before its request reaches the kernel
@@ -3932,7 +3952,7 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
     let (status, read, still_held) = answered.unwrap();
     assert!(still_held, "answered while the lug was held");
     assert_eq!(
-        status.unwrap(),
+        clockless_rebuild(status.unwrap()),
         Rebuild {
             revision: Revision(2),
             state: RebuildState::Running,
@@ -3945,6 +3965,7 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
                     ("b0000001", StepState::Running),
                     ("f0000001", StepState::Queued)
                 ]),
+                elapsed: Duration::ZERO,
             }),
         }
     );
@@ -3978,6 +3999,7 @@ fn a_published_reads_handle_reports_no_rebuilds_progress() {
             ("b0000001", StepState::Running),
             ("f0000001", StepState::Queued),
         ]),
+        elapsed: Duration::ZERO,
     });
     until_progress(|| check.progress(), lug_held.clone());
     let (go, held) = mpsc::channel::<()>();
@@ -3991,7 +4013,7 @@ fn a_published_reads_handle_reports_no_rebuilds_progress() {
         },
     );
     assert_eq!(read.progress(), None);
-    assert_eq!(check.progress(), lug_held);
+    assert_eq!(clockless(check.progress()), lug_held);
     go.send(()).unwrap();
     assert_eq!(read.wait().result.unwrap(), Revision::OPENED);
     hold.release();
@@ -4784,6 +4806,7 @@ fn asked_without_pause_through_many_commits_the_sessions_own_saves_never_read_as
 mod cancel_rebuild;
 mod disk_reload;
 mod drag;
+mod elapsed;
 mod rebuild_features;
 #[test]
 fn a_diff_cancelled_as_it_compares_a_feature_stops_there_and_answers_cancelled() {

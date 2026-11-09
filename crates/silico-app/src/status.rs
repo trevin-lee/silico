@@ -8,9 +8,17 @@
 //! sheet's button (`crate::sheet`). With no document open, how the warm start stands
 //! (decision 10) in the rebuild's place.
 //!
+//! A rebuild done without errors says its time (`· 84 ms`), the core's (`status.rebuild`'s
+//! `elapsed_ms`, measured by the core from the rebuild's being asked for to its end, its
+//! model published): the app's own clock would time its polls, not the rebuild. Only a
+//! rebuild done whole, of the revision shown ([`Tab::rebuilt_ms`]). A save's or a
+//! rollback's revision, whose model no rebuild of its own made, says no time: `status`
+//! gives none for it, by decision (Fable's, 2026-11-09, docs/design/m5.0-app.md, *The
+//! rebuild's time*: the null says nothing was rebuilt, and another rebuild's time would
+//! misreport it), where the prototype's bar keeps its last rebuild's time (its save makes
+//! no revision; its Cancel rebuilds).
+//!
 //! Left out, each for a reason, each a seam:
-//! - the rebuild's time (`· 84 ms`): `status.rebuild` gives no duration, and the app's own
-//!   clock would time its polls, not the rebuild. SEAM: a duration in the core's `Rebuild`.
 //! - the edits' count (`Unsaved · 2 edits`): the core's undo stack counts edits, but the
 //!   app's Undo steps over a dialog's edits as one, so neither count is the person's. SEAM:
 //!   the tab's count of its own undo steps.
@@ -50,8 +58,13 @@ pub enum Said {
     },
     /// The rebuild was stopped, as far as it had got.
     Stopped(Option<(usize, usize)>),
-    /// Rebuilt: the revision, and its errors (the gate's and its features').
-    Rebuilt { revision: u64, errors: u64 },
+    /// Rebuilt: the revision, its errors (the gate's and its features'), and how long the
+    /// rebuild took, in whole milliseconds, if the core says.
+    Rebuilt {
+        revision: u64,
+        errors: u64,
+        ms: Option<u64>,
+    },
     /// The kernel faulted.
     Faulted,
 }
@@ -80,6 +93,12 @@ impl Said {
             Said::Rebuilt {
                 revision,
                 errors: 0,
+                ms: Some(ms),
+            } => format!("Rebuilt · revision {revision} · {ms} ms"),
+            Said::Rebuilt {
+                revision,
+                errors: 0,
+                ms: None,
             } => format!("Rebuilt · revision {revision}"),
             Said::Rebuilt { errors, .. } => {
                 format!("Rebuilt with {errors} error{}", plural(*errors))
@@ -153,6 +172,7 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
             RebuildState::Done => Said::Rebuilt {
                 revision: status.rebuild.revision.number(),
                 errors: tab.errors(),
+                ms: tab.rebuilt_ms(),
             },
             RebuildState::Faulted => Said::Faulted,
             RebuildState::Idle => Said::Nothing,
@@ -1089,6 +1109,7 @@ mod tests {
         let mut h = asking(Said::Rebuilt {
             revision: 4,
             errors: 2,
+            ms: None,
         });
         assert!(!h.state().1.whats_wrong);
         h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
@@ -1100,6 +1121,7 @@ mod tests {
             Said::Rebuilt {
                 revision: 4,
                 errors: 0,
+                ms: None,
             },
             Said::Faulted,
         ] {
@@ -1121,6 +1143,7 @@ mod tests {
             Said::Rebuilt {
                 revision: 3,
                 errors: 0,
+                ms: None,
             },
             (false, false),
             Saved::Unsaved,
@@ -1221,6 +1244,7 @@ mod tests {
             Said::Rebuilt {
                 revision: 12,
                 errors: 0,
+                ms: Some(84),
             },
             (false, false),
             Saved::Saved,
@@ -1257,7 +1281,7 @@ mod tests {
         assert_eq!((dots[0].radius, dots[0].fill), (css::DOT / 2.0, css::GREEN));
         let words = said_at(
             &h,
-            "Rebuilt · revision 12",
+            "Rebuilt · revision 12 · 84 ms",
             item + css::ITEM_PADDING + css::DOT + css::ITEM_GAP,
             css::G550,
         );
@@ -1266,7 +1290,7 @@ mod tests {
             Pos2::new(words + css::ITEM_PADDING, middle() + css::ITEM_H / 2.0),
         );
         sized(
-            widget(&h, Role::Label, "Rebuilt · revision 12"),
+            widget(&h, Role::Label, "Rebuilt · revision 12 · 84 ms"),
             item_rect,
             "the item",
         );
@@ -1438,6 +1462,7 @@ mod tests {
             Said::Rebuilt {
                 revision: 4,
                 errors: 2,
+                ms: None,
             },
             (false, false),
             Saved::Saved,
@@ -1469,16 +1494,21 @@ mod tests {
             "Rebuild stopped at 1 of 4"
         );
         assert_eq!(Said::Stopped(None).words(), "Rebuild stopped");
-        let rebuilt = |errors| {
+        let rebuilt = |errors, ms| {
             Said::Rebuilt {
                 revision: 9,
                 errors,
+                ms,
             }
             .words()
         };
-        assert_eq!(rebuilt(0), "Rebuilt · revision 9");
-        assert_eq!(rebuilt(1), "Rebuilt with 1 error");
-        assert_eq!(rebuilt(3), "Rebuilt with 3 errors");
+        // The prototype's `renderStatus`: "Rebuilt · revision N · 84 ms"; with errors, their
+        // count alone, the time unsaid as the prototype's.
+        assert_eq!(rebuilt(0, Some(84)), "Rebuilt · revision 9 · 84 ms");
+        assert_eq!(rebuilt(0, Some(0)), "Rebuilt · revision 9 · 0 ms");
+        assert_eq!(rebuilt(0, None), "Rebuilt · revision 9");
+        assert_eq!(rebuilt(1, Some(84)), "Rebuilt with 1 error");
+        assert_eq!(rebuilt(3, None), "Rebuilt with 3 errors");
         assert_eq!(Said::Nothing.words(), "");
     }
 }

@@ -956,7 +956,7 @@ fn a_candidate_rebuilding_for_a_document_the_gate_refused_is_reported_running_an
     assert!(!before.gated);
     // One box, one step, held: none done, the box's running.
     assert_eq!(
-        (before.running, before.rebuild),
+        (before.running, clockless_rebuild(before.rebuild)),
         (
             Some(RunningCommand::Command(SessionCommand::ReplaceText)),
             Rebuild {
@@ -967,6 +967,7 @@ fn a_candidate_rebuilding_for_a_document_the_gate_refused_is_reported_running_an
                     steps: 1,
                     running: Some("k7f2qx3m box".to_owned()),
                     features: states(&[("k7f2qx3m", StepState::Running)]),
+                    elapsed: Duration::ZERO,
                 }),
             }
         )
