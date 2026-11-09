@@ -58,6 +58,26 @@ A study note for M5's design (M5.0): how Autodesk Fusion lays out its window and
 - In-canvas manipulators: a distance input shows an arrow in the canvas that drags its value; an angle input shows a draggable widget; a direction input shows an arrow that flips; a triad moves, rotates, and scales [inputs]. Fillet shows radius handles [fillet]. A manipulator hides while its input is hidden or disabled [inputs].
 - In-canvas value boxes beside a manipulator: not described in Fusion's help. (Inventor's help describes such a box; that isn't Fusion.)
 
+## Combine
+
+Read on 2026-11-08 from [combine] and [combref].
+
+- Design > Solid > Modify > Combine opens the Combine dialog. The steps: select the Target Body in the canvas, then the Tool Bodies, then choose the Operation, then OK [combine].
+- Its inputs, in order [combref]:
+  - **Target Body**: the body being acted on.
+  - **Tool Bodies**: the bodies that change it.
+  - **Operation**:
+    - Join: one solid body of them;
+    - Cut: the Tool Bodies' volume removed from the Target Body;
+    - Intersect: the overlapping volume kept, as one body [combine].
+  - **Objects To Cut**: offered when a cut is edited, to cut the bodies chosen when it was made or the bodies visible now.
+  - **New Component**.
+  - **Keep Tools**: keeps the Tool Bodies after the combine [combine].
+- If the result is hidden behind the tool bodies in the canvas, hide those in the browser [combine].
+- The help doesn't say whether a body selected before the command fills the Target Body, nor whether Tool Bodies becomes the active box once the Target Body is chosen. Its steps take them in that order.
+
+Silico's app follows its words: the box labels Target Body and Tool Body, the second singular since each of Silico's booleans takes one tool (docs/ux/solidworks.md, *Combine*). Its commands are the prototype's Union, Subtract, and Intersect, one button each, in place of an Operation choice. It has no Keep Tools, since Silico's booleans always consume both bodies, and no New Component.
+
 ## ViewCube and Navigation Bar
 
 - ViewCube: a cube in a corner of the canvas [cube], the top right *(diagram)* [pzo].
@@ -181,6 +201,8 @@ Read from Rerun's source at tag `0.38.1` (`crates/viewer_support/re_ui`: `src/de
 [insert]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-INSERT-TOOLS.htm
 [extref]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-REF-EXTRUDE.htm
 [fillet]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-FILLET-SOLID.htm
+[combine]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-COMBINE.htm
+[combref]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-REF-COMBINE.htm
 [sel]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-SELECTION.htm
 [selobj]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-SELECT-OBJECTS.htm
 [selmodes]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-SELECTION-MODES.htm

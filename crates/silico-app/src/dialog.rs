@@ -43,11 +43,15 @@ pub enum Kind {
     Groove,
     Fillet,
     Chamfer,
+    Union,
+    Subtract,
+    Intersect,
 }
 
 impl Kind {
-    /// Every kind: the primitives, the sweeps, then the dressings of a body's edges.
-    pub const ALL: [Kind; 11] = [
+    /// Every kind: the primitives, the sweeps, the dressings of a body's edges, then the
+    /// booleans of two bodies.
+    pub const ALL: [Kind; 14] = [
         Kind::Box,
         Kind::Cylinder,
         Kind::Sphere,
@@ -59,6 +63,9 @@ impl Kind {
         Kind::Groove,
         Kind::Fillet,
         Kind::Chamfer,
+        Kind::Union,
+        Kind::Subtract,
+        Kind::Intersect,
     ];
 
     /// The feature's `type`, as the document writes it.
@@ -75,6 +82,9 @@ impl Kind {
             Kind::Groove => "groove",
             Kind::Fillet => "fillet",
             Kind::Chamfer => "chamfer",
+            Kind::Union => "fuse",
+            Kind::Subtract => "cut",
+            Kind::Intersect => "common",
         }
     }
 
@@ -92,7 +102,39 @@ impl Kind {
             Kind::Groove => "Groove",
             Kind::Fillet => "Fillet",
             Kind::Chamfer => "Chamfer",
+            Kind::Union => "Union",
+            Kind::Subtract => "Subtract",
+            Kind::Intersect => "Intersect",
         }
+    }
+
+    /// What its feature is called in a sentence, with its article: "a fillet", "a union",
+    /// "an intersection".
+    pub fn a_noun(self) -> &'static str {
+        match self {
+            Kind::Box => "a box",
+            Kind::Cylinder => "a cylinder",
+            Kind::Sphere => "a sphere",
+            Kind::Cone => "a cone",
+            Kind::Torus => "a torus",
+            Kind::Pad => "a pad",
+            Kind::Pocket => "a pocket",
+            Kind::Revolve => "a revolve",
+            Kind::Groove => "a groove",
+            Kind::Fillet => "a fillet",
+            Kind::Chamfer => "a chamfer",
+            Kind::Union => "a union",
+            Kind::Subtract => "a subtraction",
+            Kind::Intersect => "an intersection",
+        }
+    }
+
+    /// What its feature is called in a sentence, without its article ("union").
+    pub fn noun(self) -> &'static str {
+        let noun = self.a_noun();
+        noun.strip_prefix("an ")
+            .or_else(|| noun.strip_prefix("a "))
+            .unwrap_or(noun)
     }
 
     /// The kind of a feature of `type_name`, if a dialog edits it.
@@ -118,6 +160,18 @@ impl Kind {
     /// Whether it dresses a body's edges (MODIFY's), which it then must have.
     pub fn dresses(self) -> bool {
         matches!(self, Kind::Fillet | Kind::Chamfer)
+    }
+
+    /// Whether it's a boolean of two bodies (MODIFY's COMBINE: SolidWorks' Combine, Fusion's
+    /// Combine), its target the feature's `base` and its tool its `tool`, both consumed; the
+    /// part then must have two bodies.
+    pub fn combines(self) -> bool {
+        matches!(self, Kind::Union | Kind::Subtract | Kind::Intersect)
+    }
+
+    /// Whether MODIFY offers it: the dressings and the booleans.
+    pub fn modifies(self) -> bool {
+        self.dresses() || self.combines()
     }
 
     /// Whether a new one's dialog opens with the values the last of its kind was OK'd with
@@ -192,6 +246,8 @@ pub enum Part {
     Names(&'static str),
     /// A number of a chamfer's `size`, by its field.
     SizeNumber(&'static str),
+    /// A body, by its field: a boolean's target, its `base`, or its tool, its `tool`.
+    Body(&'static str),
 }
 
 impl Part {
@@ -204,7 +260,7 @@ impl Part {
             Part::Sketch => "sketch",
             Part::Axis => "axis",
             Part::ExtentType | Part::ExtentNumber(_) | Part::Reversed => "extent",
-            Part::Names(field) => field,
+            Part::Names(field) | Part::Body(field) => field,
             Part::SizeNumber(_) => "size",
         }
     }
@@ -228,10 +284,27 @@ pub enum Value {
     Selection(Option<FeatureId>),
     /// A selection box of elements by name, which the canvas fills.
     Names(Names),
+    /// A selection box of one body, which the canvas and the browser fill.
+    Body(BodyBox),
 }
 
-/// The field a box of names writes its body to: the feature's `base`.
+/// The field a box of names writes its body to, and a boolean's target box its body: the
+/// feature's `base`.
 pub const BASE: &str = "base";
+
+/// The field a boolean's tool box writes its body to.
+pub const TOOL: &str = "tool";
+
+/// A selection box of one body (a boolean's Target Body or Tool Body, as Fusion's Combine
+/// labels them; docs/ux/fusion.md, *Combine*), as SolidWorks' box of one entity holds it: the
+/// body, by its feature's ID, the end of its chain, as the document's `base` and `tool` name
+/// it; a pick replaces it. And what it last said: why it refused a pick, or what of the
+/// selection it opened with it left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BodyBox {
+    pub body: Option<FeatureId>,
+    pub said: Option<Says>,
+}
 
 /// A selection box of elements by name (a fillet's edges; section 9's *The active selection
 /// box*), as SolidWorks' PropertyManager box holds them: the names it writes, in the order
@@ -239,11 +312,11 @@ pub const BASE: &str = "base";
 /// [`Selection::storable`](crate::selection::Selection::storable) gives it); the body
 /// they're of, which the feature builds on (its `base`); and what it last said: why it
 /// refused an element, or what of the selection it opened with it left out. It takes one
-/// kind of element, `takes`, for a feature of type `of` (`fillet`).
+/// kind of element, `takes`, for a feature of kind `of` (a fillet).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Names {
     pub takes: ElementKind,
-    pub of: &'static str,
+    pub of: Kind,
     pub names: Vec<String>,
     pub body: Option<FeatureId>,
     pub said: Option<Says>,
@@ -275,8 +348,8 @@ impl Says {
 }
 
 impl Names {
-    /// An empty box of `takes`, of a feature of type `of`.
-    pub fn new(takes: ElementKind, of: &'static str) -> Self {
+    /// An empty box of `takes`, of a feature of kind `of`.
+    pub fn new(takes: ElementKind, of: Kind) -> Self {
         Names {
             takes,
             of,
@@ -303,6 +376,18 @@ impl Names {
         };
         format!("{} {word}", self.names.len())
     }
+}
+
+/// Where a body picked for a box of one body stands to the dialog's own feature, as the
+/// timeline orders them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// Before it, or the dialog's feature isn't there yet: the box may take it.
+    Before,
+    /// Its own body, or a body built on it: read against the bodies it combines.
+    Through,
+    /// After it, and not built on it: a feature may use only features before it.
+    After,
 }
 
 /// What a box of names made of an element a click toggled in the selection.
@@ -365,6 +450,9 @@ pub struct Dialog {
     /// Each field's text, as the document holds it as far as the dialog knows: as loaded,
     /// as added, or as last sent. A field whose text differs is sent.
     sent: BTreeMap<&'static str, String>,
+    /// Each field's text as the document holds it, as answered: as loaded, as added, or as
+    /// last taken. A box of one body whose body the core refused goes back to it.
+    kept: BTreeMap<&'static str, String>,
     /// A new one's add is sent and not yet answered.
     pub adding: bool,
     /// The selection box a pick fills (section 9, *The active selection box*): the place
@@ -480,7 +568,7 @@ impl Dialog {
                 Input {
                     label: "Edges",
                     part: Part::Names("edges"),
-                    value: Value::Names(Names::new(ElementKind::Edge, "fillet")),
+                    value: Value::Names(Names::new(ElementKind::Edge, Kind::Fillet)),
                 },
                 length("Radius", Part::Number("radius"), "1"),
             ],
@@ -492,9 +580,23 @@ impl Dialog {
                 Input {
                     label: "Edges",
                     part: Part::Names("edges"),
-                    value: Value::Names(Names::new(ElementKind::Edge, "chamfer")),
+                    value: Value::Names(Names::new(ElementKind::Edge, Kind::Chamfer)),
                 },
                 length("Distance", Part::SizeNumber("distance"), "1"),
+            ],
+            // Its target and its tool, a body each, in Fusion's words (Target Body, Tool
+            // Body: one tool, as Silico's booleans take one; docs/ux/fusion.md, *Combine*).
+            Kind::Union | Kind::Subtract | Kind::Intersect => vec![
+                Input {
+                    label: "Target Body",
+                    part: Part::Body(BASE),
+                    value: Value::Body(BodyBox::default()),
+                },
+                Input {
+                    label: "Tool Body",
+                    part: Part::Body(TOOL),
+                    value: Value::Body(BodyBox::default()),
+                },
             ],
             Kind::Revolve | Kind::Groove => vec![
                 sketch_input,
@@ -515,15 +617,19 @@ impl Dialog {
                 reversed,
             ],
         };
-        let active = inputs
-            .iter()
-            .position(|input| matches!(input.value, Value::Selection(_) | Value::Names(_)));
+        let active = inputs.iter().position(|input| {
+            matches!(
+                input.value,
+                Value::Selection(_) | Value::Names(_) | Value::Body(_)
+            )
+        });
         Dialog {
             kind,
             feature: None,
             made: true,
             inputs,
             sent: BTreeMap::new(),
+            kept: BTreeMap::new(),
             adding: false,
             active,
             serial,
@@ -548,7 +654,7 @@ impl Dialog {
                 Part::ExtentType => extent.and_then(|extent| member(extent, "type")),
                 Part::ExtentNumber(field) => extent.and_then(|extent| member(extent, field)),
                 Part::Reversed => extent.and_then(|extent| member(extent, "reversed")),
-                Part::Names(field) => member(node, field),
+                Part::Names(field) | Part::Body(field) => member(node, field),
                 Part::SizeNumber(field) => {
                     member(node, "size").and_then(|size| member(size, field))
                 }
@@ -564,6 +670,9 @@ impl Dialog {
                 (Value::Toggle(on), Json::Bool(value)) => *on = *value,
                 (Value::Selection(picked), Json::String(text)) => {
                     *picked = Some(FeatureId::new(text)?);
+                }
+                (Value::Body(held), Json::String(text)) => {
+                    held.body = Some(FeatureId::new(text)?);
                 }
                 (Value::Names(names), Json::Array(items)) => {
                     names.names = items
@@ -599,7 +708,16 @@ impl Dialog {
             .into_iter()
             .filter_map(|(field, text)| Some((field, text?)))
             .collect();
+        dialog.kept = dialog.sent.clone();
         Some(dialog)
+    }
+
+    /// Its new feature's add answered, the feature `id`: the document holds what the add
+    /// sent.
+    pub fn added(&mut self, id: FeatureId) {
+        self.feature = Some(id);
+        self.adding = false;
+        self.kept = self.sent.clone();
     }
 
     /// Whether the extent's form is one of `forms`.
@@ -632,6 +750,7 @@ impl Dialog {
                 Value::Length(text) | Value::Angle(text) => number(text).is_some(),
                 Value::Selection(picked) => picked.is_some(),
                 Value::Names(names) => names.text().is_some() && names.body.is_some(),
+                Value::Body(held) => held.body.is_some(),
                 Value::Toggle(_) | Value::Choice { .. } => true,
             }
     }
@@ -661,13 +780,14 @@ impl Dialog {
                     fields.insert(BASE, names.body.as_ref().map(|body| quoted(body.as_str())));
                     names.text()
                 }
+                Value::Body(held) => held.body.as_ref().map(|body| quoted(body.as_str())),
             };
             match input.part {
                 Part::Position(at) => match (text, position.get_mut(at)) {
                     (Some(text), Some(slot)) => *slot = text,
                     _ => position_ok = false,
                 },
-                Part::Number(_) | Part::Sketch | Part::Axis | Part::Names(_) => {
+                Part::Number(_) | Part::Sketch | Part::Axis | Part::Names(_) | Part::Body(_) => {
                     fields.insert(input.part.field(), text);
                 }
                 Part::ExtentType => match text {
@@ -718,9 +838,33 @@ impl Dialog {
         fields
     }
 
-    /// Whether every field can be sent: OK is off until it can.
+    /// Whether every field can be sent, and no body is in two boxes (a body can't be its
+    /// own tool): OK is off until both hold.
     pub fn valid(&self) -> bool {
-        self.fields().values().all(Option::is_some)
+        self.fields().values().all(Option::is_some) && !self.one_body_twice()
+    }
+
+    /// The bodies its boxes of one body hold, in order: a boolean's target, then its tool.
+    pub fn bodies(&self) -> Vec<FeatureId> {
+        self.inputs
+            .iter()
+            .filter_map(|input| match &input.value {
+                Value::Body(held) => held.body.clone(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether two of its boxes of one body hold the same body.
+    fn one_body_twice(&self) -> bool {
+        let mut seen: Vec<FeatureId> = Vec::new();
+        for body in self.bodies() {
+            if seen.contains(&body) {
+                return true;
+            }
+            seen.push(body);
+        }
+        false
     }
 
     /// The new feature's add, as the members of the feature the document writes (no `id`,
@@ -757,22 +901,100 @@ impl Dialog {
     /// The edits the inputs ask of the feature: each field whose text differs from what
     /// the document holds as far as the dialog knows, then taken as held. None before the
     /// feature is there.
-    pub fn changes(&mut self) -> Vec<(&'static str, Node)> {
+    ///
+    /// A box of one body's (a boolean's `base` and `tool`) waits while an edit of the
+    /// feature does (`waiting`), so each is sent against the document as the dialog knows
+    /// it, and none is reordered behind another (a waiting edit of a field is replaced in
+    /// place); and with both to send, the one whose new body is the other's in the document
+    /// goes second (base B with tool B there: the tool first), as the core refuses a body
+    /// as both, even for a moment.
+    pub fn changes(&mut self, waiting: bool) -> Vec<(&'static str, Node)> {
         if self.feature.is_none() {
             return Vec::new();
         }
-        let mut changes = Vec::new();
+        let mut changed: Vec<(&'static str, String)> = Vec::new();
         for (field, text) in self.fields() {
             let Some(text) = text else { continue };
-            if self.sent.get(field) == Some(&text) {
+            if self.sent.get(field) == Some(&text) || (waiting && self.is_body(field)) {
                 continue;
             }
+            changed.push((field, text));
+        }
+        // The fields come sorted, base before tool: the tool first if the base's new body is
+        // the tool's in the document.
+        let new_base = changed.iter().position(|(field, _)| *field == BASE);
+        let new_tool = changed.iter().position(|(field, _)| *field == TOOL);
+        if let (Some(base), Some(tool)) = (new_base, new_tool)
+            && base < tool
+            && self.is_body(BASE)
+            && changed.get(base).map(|(_, text)| text) == self.sent.get(TOOL)
+        {
+            changed.swap(base, tool);
+        }
+        let mut changes = Vec::new();
+        for (field, text) in changed {
             if let Ok(node) = json::read(text.as_bytes()) {
                 changes.push((field, node));
                 self.sent.insert(field, text);
             }
         }
         changes
+    }
+
+    /// Whether `field` is a box of one body's.
+    fn is_body(&self, field: &str) -> bool {
+        self.inputs
+            .iter()
+            .any(|input| matches!(input.part, Part::Body(of) if of == field))
+    }
+
+    /// Whether a box of one body holds what isn't sent yet ([`changes`](Self::changes)
+    /// waits with it): OK is off until it's sent, so what OK keeps is what the boxes show.
+    pub fn holding(&self) -> bool {
+        self.feature.is_some()
+            && self.fields().into_iter().any(|(field, text)| {
+                self.is_body(field) && text.is_some() && self.sent.get(field) != text.as_ref()
+            })
+    }
+
+    /// An edit of `field` to `value` answered, `ok` if the core took it. For a box of one
+    /// body: taken, the document holds that body; refused, the document keeps the one it
+    /// held, and the box, if it still shows the body refused, shows that one again (and
+    /// takes it as sent), so it never shows what the document doesn't hold. Whether it went
+    /// back.
+    pub fn answered(&mut self, field: &str, value: &Node, ok: bool) -> bool {
+        let Json::String(id) = &value.value else {
+            return false;
+        };
+        let refused = quoted(id);
+        let Some(input) = self
+            .inputs
+            .iter_mut()
+            .find(|input| matches!(input.part, Part::Body(of) if of == field))
+        else {
+            return false;
+        };
+        let (Part::Body(field), Value::Body(held)) = (input.part, &mut input.value) else {
+            return false;
+        };
+        if ok {
+            self.kept.insert(field, refused);
+            return false;
+        }
+        let shows = held.body.as_ref().map(|body| quoted(body.as_str()));
+        let kept =
+            self.kept
+                .get(field)
+                .and_then(|kept| match json::read(kept.as_bytes()).ok()?.value {
+                    Json::String(id) => Some((kept.clone(), FeatureId::new(&id)?)),
+                    _ => None,
+                });
+        let Some((text, body)) = kept.filter(|_| shows.as_ref() == Some(&refused)) else {
+            return false;
+        };
+        held.body = Some(body);
+        self.sent.insert(field, text);
+        true
     }
 
     /// The active selection box filled with `sketch`, if the dialog has one.
@@ -858,14 +1080,247 @@ impl Dialog {
     }
 
     /// What the canvas picks while the dialog is open, as a selection filter: the kind of
-    /// element its active box takes, if it's a box of names; else none (the canvas picks as
-    /// its own filter has it).
+    /// element its active box takes, if it's a box of names; every kind, if it's a box of one
+    /// body, which takes the body of any element picked; else none (the canvas picks as its
+    /// own filter has it).
     pub fn takes(&self) -> Option<Filter> {
-        self.names().map(|names| Filter {
-            faces: names.takes == ElementKind::Face,
-            edges: names.takes == ElementKind::Edge,
-            vertices: names.takes == ElementKind::Vertex,
-        })
+        match self
+            .active
+            .and_then(|at| self.inputs.get(at))
+            .map(|input| &input.value)
+        {
+            Some(Value::Names(names)) => Some(Filter {
+                faces: names.takes == ElementKind::Face,
+                edges: names.takes == ElementKind::Edge,
+                vertices: names.takes == ElementKind::Vertex,
+            }),
+            Some(Value::Body(_)) => Some(Filter::default()),
+            _ => None,
+        }
+    }
+
+    /// The active selection box, if it's a box of one body.
+    fn body_box(&self) -> Option<&BodyBox> {
+        match self.active.and_then(|at| self.inputs.get(at)) {
+            Some(Input {
+                value: Value::Body(held),
+                ..
+            }) => Some(held),
+            _ => None,
+        }
+    }
+
+    fn body_box_mut(&mut self) -> Option<&mut BodyBox> {
+        match self.active.and_then(|at| self.inputs.get_mut(at)) {
+            Some(Input {
+                value: Value::Body(held),
+                ..
+            }) => Some(held),
+            _ => None,
+        }
+    }
+
+    /// Whether its active box takes a body: the canvas's picks and the browser's body rows
+    /// are its while it does.
+    pub fn takes_bodies(&self) -> bool {
+        self.body_box().is_some()
+    }
+
+    /// The selection box at `at` made the active one (a click on it, the prototype's
+    /// `activateBox`), if it's one.
+    pub fn activate(&mut self, at: usize) {
+        if let Some(Input {
+            value: Value::Selection(_) | Value::Names(_) | Value::Body(_),
+            ..
+        }) = self.inputs.get(at)
+        {
+            self.active = Some(at);
+        }
+    }
+
+    /// The place of the first box of one body that holds none, if one doesn't.
+    fn first_empty_body(&self) -> Option<usize> {
+        self.inputs
+            .iter()
+            .position(|input| matches!(&input.value, Value::Body(held) if held.body.is_none()))
+    }
+
+    /// The bodies selected when the dialog opened (the browser's body rows, in the order
+    /// selected), taken into its boxes of one body in order, the first its target and the
+    /// second its tool; and `left_out`, what else was selected, noted under its first box.
+    /// The active box is then the first left empty, if one is, else the first. Silico's
+    /// choice: SolidWorks' help doesn't say whether Combine's boxes take what's selected
+    /// when it starts (docs/ux/solidworks.md, §5, *Combine*), though its other boxes do.
+    pub fn take_bodies(&mut self, bodies: &[FeatureId], left_out: Option<String>) {
+        let mut bodies = bodies.iter();
+        let mut first = None;
+        for (at, input) in self.inputs.iter_mut().enumerate() {
+            if let Value::Body(held) = &mut input.value {
+                held.body = bodies.next().cloned();
+                held.said = None;
+                if first.is_none() {
+                    first = Some(at);
+                    held.said = left_out.clone().map(Says::Noted);
+                }
+            }
+        }
+        self.active = self.first_empty_body().or(first);
+    }
+
+    /// An element a click toggled in the selection while a box of one body is active, taken
+    /// as a pick of the body it's in ([`set_body`](Self::set_body)), whether the click
+    /// added it to the selection or let it go: Silico's choice, as SolidWorks' help says
+    /// only that a body is selected in the graphics area (docs/ux/solidworks.md, §5,
+    /// *Combine*). Refused, and why said, if it isn't in a body the model has named yet, or
+    /// if it comes after the dialog's feature (`standing`), which may use only features
+    /// before it.
+    ///
+    /// A pick on the body the dialog's own feature is built into (its own result, or a body
+    /// built on it) is read against the bodies its boxes hold, as SolidWorks reads a
+    /// feature's picks on the model rolled back to before it: `holds` says whether a body's
+    /// solid holds the element by its name, or why that can't be read. The first that does
+    /// is the body picked; if none does, it's the feature's own, or a later one's, and
+    /// refused: said, with why one couldn't be read if one couldn't.
+    pub fn took_body(
+        &mut self,
+        toggled: &Toggled,
+        standing: Standing,
+        holds: &dyn Fn(&FeatureId) -> Result<bool, Error>,
+    ) -> Taken {
+        if !self.takes_bodies() {
+            return Taken::Ignored;
+        }
+        let shown = match &toggled.stored {
+            Ok(stored) => stored.to_string(),
+            Err(_) => toggled.name.clone(),
+        };
+        let noun = self.kind.noun();
+        let body = if standing == Standing::Through {
+            let mut unread = None;
+            let mut found = None;
+            for input in self.bodies() {
+                match holds(&input) {
+                    Ok(true) => {
+                        found = Some(input);
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(why) => {
+                        unread.get_or_insert(why);
+                    }
+                }
+            }
+            match (found, unread) {
+                (Some(found), _) => found,
+                (None, Some(why)) => return self.refuse(words(&why)),
+                (None, None) => {
+                    return self.refuse(format!(
+                        "{shown} is on none of the bodies this {noun} combines: select one of \
+                         them, or another body"
+                    ));
+                }
+            }
+        } else {
+            match (&toggled.body, &toggled.stored) {
+                (Some(body), _) => body.clone(),
+                (None, Err(refusal)) => return self.refuse(words(refusal)),
+                (None, Ok(_)) => {
+                    return self.refuse(format!(
+                        "{shown} isn't in a body the model has built: select it again once \
+                         the model has rebuilt"
+                    ));
+                }
+            }
+        };
+        if standing == Standing::After {
+            return self.refuse(self.after(&body));
+        }
+        self.set_body(body)
+    }
+
+    /// The browser's row of the feature `id` chosen while a box of one body is active: taken
+    /// into it, as a pick of the body is ([`set_body`](Self::set_body)); unless it isn't a
+    /// body (`is_body`: a sketch's row), or it's the dialog's own feature's body or one built
+    /// on it, which can't be its own input, or comes after it (`standing`): each refused,
+    /// said.
+    pub fn took_row(&mut self, id: &FeatureId, is_body: bool, standing: Standing) -> Taken {
+        if !self.takes_bodies() {
+            return Taken::Ignored;
+        }
+        let (a_noun, noun) = (self.kind.a_noun(), self.kind.noun());
+        if !is_body {
+            return self.refuse(format!("{id} isn't a body: {a_noun} takes bodies"));
+        }
+        match standing {
+            Standing::Through => self.refuse(format!(
+                "{id} is built through this {noun}: select one of the bodies it combines, or \
+                 another body"
+            )),
+            Standing::After => self.refuse(self.after(id)),
+            Standing::Before => self.set_body(id.clone()),
+        }
+    }
+
+    /// Why `body`, after the dialog's feature, can't be its input: the core's reason
+    /// (a feature may use only features before it), in the box's words.
+    fn after(&self, body: &FeatureId) -> String {
+        format!(
+            "{body} comes after this {}: a feature may use only features before it",
+            self.kind.noun()
+        )
+    }
+
+    /// `body` taken into the active box of one body, replacing what it held, as SolidWorks'
+    /// box of one entity takes a pick; unless another box holds it (a body can't be its own
+    /// tool: said, nothing taken). Then the first box left empty is the active one, if one
+    /// is, as Fusion's Combine goes on from its Target Body to its Tool Bodies
+    /// (docs/ux/fusion.md, *Combine*). What every box said is let go. Added if the box
+    /// holds another body now; ignored if it held that one.
+    fn set_body(&mut self, body: FeatureId) -> Taken {
+        let Some(active) = self.active else {
+            return Taken::Ignored;
+        };
+        let other = self
+            .inputs
+            .iter()
+            .enumerate()
+            .find_map(|(at, input)| match &input.value {
+                Value::Body(held) if at != active && held.body.as_ref() == Some(&body) => {
+                    Some(input.label)
+                }
+                _ => None,
+            });
+        if let Some(label) = other {
+            return self.refuse(format!(
+                "{body} is the {label} already: a body can't be its own tool"
+            ));
+        }
+        for input in &mut self.inputs {
+            if let Value::Body(held) = &mut input.value {
+                held.said = None;
+            }
+        }
+        let Some(held) = self.body_box_mut() else {
+            return Taken::Ignored;
+        };
+        let changed = held.body.as_ref() != Some(&body);
+        held.body = Some(body);
+        if let Some(empty) = self.first_empty_body() {
+            self.active = Some(empty);
+        }
+        if changed {
+            Taken::Added
+        } else {
+            Taken::Ignored
+        }
+    }
+
+    /// `why` said under the active box of one body: refused.
+    fn refuse(&mut self, why: String) -> Taken {
+        if let Some(held) = self.body_box_mut() {
+            held.said = Some(Says::Refused(why));
+        }
+        Taken::Refused
     }
 
     /// The selection the dialog opened with, taken into its active box of names, if it has
@@ -891,14 +1346,14 @@ impl Dialog {
             }
         };
         if let [first, second, ..] = bodies {
-            let (plural, of) = (names.takes.plural(), names.of);
+            let (plural, a_noun) = (names.takes.plural(), names.of.a_noun());
             let others = if bodies.len() > 2 {
                 ", among others"
             } else {
                 ""
             };
             names.said = Some(Says::Refused(format!(
-                "The selected {plural} are on {} bodies, {first} and {second}{others}: a {of} \
+                "The selected {plural} are on {} bodies, {first} and {second}{others}: {a_noun} \
                  takes one body's {plural}",
                 bodies.len(),
             )));
@@ -969,9 +1424,9 @@ impl Dialog {
             && kind != names.takes
         {
             names.said = Some(Says::Refused(format!(
-                "{shown} is {}: a {} takes {}",
+                "{shown} is {}: {} takes {}",
                 kind.a_word(),
-                names.of,
+                names.of.a_noun(),
                 names.takes.plural()
             )));
             return Taken::Refused;
@@ -981,7 +1436,7 @@ impl Dialog {
         {
             names.said = Some(Says::Refused(format!(
                 "{stored} is made by this {} itself: select one of the {} it's built on",
-                names.of,
+                names.of.noun(),
                 names.takes.plural()
             )));
             return Taken::Refused;
@@ -996,7 +1451,7 @@ impl Dialog {
                 names.said = Some(Says::Refused(format!(
                     "{shown} isn't on {base}, which this {} is built on: select one of \
                      {base}'s {}",
-                    names.of,
+                    names.of.noun(),
                     names.takes.plural()
                 )));
                 return Taken::Refused;
@@ -1020,11 +1475,11 @@ impl Dialog {
             match &names.body {
                 Some(held) if *held != body && !names.names.is_empty() => {
                     names.said = Some(Says::Refused(format!(
-                        "{stored} is on {body}, and the {}'s other {} on {held}: a {} takes \
+                        "{stored} is on {body}, and the {}'s other {} on {held}: {} takes \
                          one body's {}",
-                        names.of,
+                        names.of.noun(),
                         names.takes.plural(),
-                        names.of,
+                        names.of.a_noun(),
                         names.takes.plural()
                     )));
                     return Taken::Refused;
@@ -1090,6 +1545,7 @@ impl Dialog {
         let active = self.active;
         let serial = self.serial;
         let mut unpicked: Option<(usize, usize)> = None;
+        let mut activated: Option<usize> = None;
         let inputs = &mut self.inputs;
         ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
             egui::ScrollArea::vertical()
@@ -1108,7 +1564,7 @@ impl Dialog {
                         );
                         any_refused |= refused(input.part.field());
                         properties::row(ui, input.label, |ui, label| {
-                            input_ui(
+                            if input_ui(
                                 ui,
                                 input,
                                 label,
@@ -1116,8 +1572,17 @@ impl Dialog {
                                 highlighted(active, at),
                                 named,
                                 enabled,
-                            );
+                            ) {
+                                activated = Some(at);
+                            }
                         });
+                        // A box of one body says under it what it last said.
+                        if let Value::Body(BodyBox {
+                            said: Some(said), ..
+                        }) = &input.value
+                        {
+                            properties::said(ui, said.text(), said.ink());
+                        }
                         // A box of names lists them under it, each with its remove button,
                         // and what it last said.
                         if let Value::Names(names) = &input.value {
@@ -1156,6 +1621,9 @@ impl Dialog {
                     }
                 });
         });
+        if let Some(at) = activated {
+            self.activate(at);
+        }
         if let Some((at, place)) = unpicked
             && let Some(Input {
                 value: Value::Names(names),
@@ -1168,7 +1636,7 @@ impl Dialog {
         }
         properties::footer_paint(ui, footer);
         // Off while its add is unanswered: what's typed meanwhile is sent after it.
-        let ok = enabled && self.valid() && !any_refused && !self.adding;
+        let ok = enabled && self.valid() && !any_refused && !self.adding && !self.holding();
         let mut action = if closed && enabled {
             Action::Cancel
         } else {
@@ -1199,6 +1667,8 @@ impl Dialog {
 
 /// `input`'s value in its row, labelled by `label` (its key's): a field with its unit, a
 /// toggle, a choice's drop-down, or a selection box (highlighted if it's the active one).
+/// Whether it was clicked to be made the active box: a box of one body, of which a dialog
+/// has two, is (the prototype's `activateBox`).
 fn input_ui(
     ui: &mut Ui,
     input: &mut Input,
@@ -1207,11 +1677,15 @@ fn input_ui(
     active: bool,
     named: &dyn Fn(&FeatureId) -> Option<String>,
     enabled: bool,
-) {
+) -> bool {
     let unit = match input.value {
         Value::Length(_) => "mm",
         Value::Angle(_) => "°",
-        Value::Toggle(_) | Value::Choice { .. } | Value::Selection(_) | Value::Names(_) => "",
+        Value::Toggle(_)
+        | Value::Choice { .. }
+        | Value::Selection(_)
+        | Value::Names(_)
+        | Value::Body(_) => "",
     };
     match &mut input.value {
         Value::Length(text) | Value::Angle(text) => {
@@ -1262,7 +1736,34 @@ fn input_ui(
             let empty = format!("Select {} in the canvas", names.takes.plural());
             properties::selection_box(ui, active, icon_of(names.takes), count.as_deref(), &empty);
         }
+        Value::Body(held) => {
+            // The body's chip, by the name the timeline gives it; or, empty, what to do. The
+            // active box highlighted (section 9); a click makes it the active one.
+            let name = held
+                .body
+                .as_ref()
+                .map(|id| named(id).unwrap_or_else(|| id.as_str().to_owned()));
+            let drawn = properties::selection_box(
+                ui,
+                active,
+                Icon::Body,
+                name.as_deref(),
+                "Select a body in the canvas or the browser",
+            );
+            let clicked = ui
+                .interact(
+                    drawn.rect,
+                    ui.id().with(("dialog-body-box", input.label)),
+                    egui::Sense::click(),
+                )
+                .labelled_by(label);
+            clicked.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, active, input.label)
+            });
+            return enabled && clicked.clicked();
+        }
     }
+    false
 }
 
 /// The icon a box of names shows its kind of element with: the selection filters'.
@@ -1490,7 +1991,7 @@ mod tests {
         dialog.inputs = vec![Input {
             label: "Edges",
             part: Part::Names("edges"),
-            value: Value::Names(Names::new(ElementKind::Edge, "fillet")),
+            value: Value::Names(Names::new(ElementKind::Edge, Kind::Fillet)),
         }];
         dialog.active = Some(0);
         dialog
@@ -1725,7 +2226,7 @@ mod tests {
         assert_eq!(dialog.inputs[1].value, Value::Length("2.5".to_owned()));
         // Loaded as the document holds it: nothing to send.
         let mut loaded = dialog.clone();
-        assert!(loaded.changes().is_empty());
+        assert!(loaded.changes(false).is_empty());
         // An edge that isn't a string, or a base that isn't an ID: not a fillet it reads.
         for bad in [
             r#"{"type": "fillet", "base": "k7f2qx3m", "edges": [3], "radius": 1}"#,
@@ -1814,10 +2315,10 @@ mod tests {
         let id = FeatureId::new("c0000001").unwrap();
         let mut loaded = Dialog::load(Kind::Chamfer, id.clone(), &read, 2).unwrap();
         assert_eq!(loaded.inputs[1].value, Value::Length("0.5".to_owned()));
-        assert!(loaded.changes().is_empty());
+        assert!(loaded.changes(false).is_empty());
         // A distance typed is an edit of `size` whole.
         loaded.inputs[1].value = Value::Length("2".to_owned());
-        let changes = loaded.changes();
+        let changes = loaded.changes(false);
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].0, "size");
         assert_eq!(
@@ -2103,5 +2604,585 @@ mod tests {
         let members = cube.add().unwrap();
         let added = feature_node(Kind::Box, &members, Some(&base)).unwrap();
         assert!(!format!("{:?}", json::Plain::of(&added)).contains("b0000001"));
+    }
+
+    // ---- The booleans' boxes of one body ----
+
+    fn fid(id: &str) -> FeatureId {
+        FeatureId::new(id).unwrap()
+    }
+
+    /// The bodies a dialog's boxes of one body hold, in order, by ID: none for an empty one.
+    fn held(dialog: &Dialog) -> Vec<Option<&str>> {
+        dialog
+            .inputs
+            .iter()
+            .filter_map(|input| match &input.value {
+                Value::Body(held) => Some(held.body.as_ref().map(FeatureId::as_str)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// What the box of one body labelled `label` says under it, if anything.
+    fn said_under(dialog: &Dialog, label: &str) -> Option<Says> {
+        dialog.inputs.iter().find_map(|input| match &input.value {
+            Value::Body(held) if input.label == label => held.said.clone(),
+            _ => None,
+        })
+    }
+
+    fn refused(text: &str) -> Option<Says> {
+        Some(Says::Refused(text.to_owned()))
+    }
+
+    #[test]
+    fn each_kind_is_called_in_a_sentence_with_its_article_and_without() {
+        let words: Vec<(&str, &str)> = Kind::ALL
+            .into_iter()
+            .map(|kind| (kind.a_noun(), kind.noun()))
+            .collect();
+        assert_eq!(
+            words,
+            [
+                ("a box", "box"),
+                ("a cylinder", "cylinder"),
+                ("a sphere", "sphere"),
+                ("a cone", "cone"),
+                ("a torus", "torus"),
+                ("a pad", "pad"),
+                ("a pocket", "pocket"),
+                ("a revolve", "revolve"),
+                ("a groove", "groove"),
+                ("a fillet", "fillet"),
+                ("a chamfer", "chamfer"),
+                ("a union", "union"),
+                ("a subtraction", "subtraction"),
+                ("an intersection", "intersection"),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_booleans_dialog_has_a_target_and_a_tool_body_and_adds_them_as_its_base_and_tool() {
+        // Union, Subtract, and Intersect (the prototype's commands) make the document's fuse,
+        // cut, and common; their boxes are Fusion's Target Body and Tool Body, the second
+        // singular as the booleans take one tool (docs/ux/fusion.md, *Combine*).
+        for (kind, type_name, title, a_noun) in [
+            (Kind::Union, "fuse", "Union", "a union"),
+            (Kind::Subtract, "cut", "Subtract", "a subtraction"),
+            (Kind::Intersect, "common", "Intersect", "an intersection"),
+        ] {
+            assert_eq!(kind.type_name(), type_name);
+            assert_eq!(kind.title(), title);
+            assert_eq!(kind.a_noun(), a_noun);
+            assert_eq!(Kind::of(type_name), Some(kind));
+            assert!(kind.combines() && kind.modifies(), "{title}");
+            assert!(!kind.dresses() && !kind.sweeps() && !kind.cuts(), "{title}");
+            assert!(!kind.remembers(), "{title}");
+            let mut dialog = Dialog::new(kind, None, 1);
+            let labels: Vec<&str> = dialog.inputs.iter().map(|input| input.label).collect();
+            assert_eq!(labels, ["Target Body", "Tool Body"], "{title}");
+            // The target's box active; the canvas picks every kind of element, each taking
+            // its body.
+            assert_eq!(dialog.active, Some(0), "{title}");
+            assert!(dialog.takes_bodies(), "{title}");
+            assert_eq!(
+                dialog.takes(),
+                Some(Filter {
+                    faces: true,
+                    edges: true,
+                    vertices: true
+                }),
+                "{title}"
+            );
+            // Nothing to add until both boxes hold a body.
+            assert!(!dialog.valid(), "{title}");
+            assert!(dialog.add().is_none(), "{title}");
+            assert_eq!(
+                dialog.took_row(&fid("k7f2qx3m"), true, Standing::Before),
+                Taken::Added,
+                "{title}"
+            );
+            // The tool's box, empty, is the active one now.
+            assert_eq!(dialog.active, Some(1), "{title}");
+            assert!(dialog.add().is_none(), "{title}");
+            assert_eq!(
+                dialog.took_row(&fid("a91cw0de"), true, Standing::Before),
+                Taken::Added,
+                "{title}"
+            );
+            assert_eq!(dialog.active, Some(1), "{title}");
+            assert!(dialog.valid(), "{title}");
+            let node = feature_node(kind, &dialog.add().unwrap(), None).unwrap();
+            let want = format!(
+                r#"{{"type": "{type_name}", "name": "{title}", "base": "k7f2qx3m", "tool": "a91cw0de"}}"#
+            );
+            assert_eq!(
+                json::Plain::of(&node),
+                json::Plain::of(&json::read(want.as_bytes()).unwrap()),
+                "{title}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_second_pick_replaces_a_boxs_body_and_one_body_in_both_boxes_is_refused() {
+        let mut dialog = Dialog::new(Kind::Subtract, None, 1);
+        dialog.took_row(&fid("aaaaaaaa"), true, Standing::Before);
+        dialog.took_row(&fid("bbbbbbbb"), true, Standing::Before);
+        assert_eq!(held(&dialog), [Some("aaaaaaaa"), Some("bbbbbbbb")]);
+        // A second pick in the tool's box replaces its body, as SolidWorks' box of one entity
+        // takes one; the box stays the active one; the same pick again changes nothing.
+        assert_eq!(
+            dialog.took_row(&fid("cccccccc"), true, Standing::Before),
+            Taken::Added
+        );
+        assert_eq!(held(&dialog), [Some("aaaaaaaa"), Some("cccccccc")]);
+        assert_eq!(dialog.active, Some(1));
+        assert_eq!(
+            dialog.took_row(&fid("cccccccc"), true, Standing::Before),
+            Taken::Ignored
+        );
+        // The target's body in the tool's box: refused, said, nothing taken.
+        assert_eq!(
+            dialog.took_row(&fid("aaaaaaaa"), true, Standing::Before),
+            Taken::Refused
+        );
+        assert_eq!(
+            said_under(&dialog, "Tool Body"),
+            refused("aaaaaaaa is the Target Body already: a body can't be its own tool")
+        );
+        assert_eq!(held(&dialog), [Some("aaaaaaaa"), Some("cccccccc")]);
+        assert!(dialog.valid());
+        // The target's box made the active one (a click on it): a pick replaces the target,
+        // the box stays active (none is empty), and the refusal is let go.
+        dialog.activate(0);
+        assert_eq!(dialog.active, Some(0));
+        assert_eq!(
+            dialog.took_row(&fid("dddddddd"), true, Standing::Before),
+            Taken::Added
+        );
+        assert_eq!(held(&dialog), [Some("dddddddd"), Some("cccccccc")]);
+        assert_eq!(dialog.active, Some(0));
+        assert_eq!(said_under(&dialog, "Tool Body"), None);
+        assert_eq!(
+            dialog.took_row(&fid("cccccccc"), true, Standing::Before),
+            Taken::Refused
+        );
+        assert_eq!(
+            said_under(&dialog, "Target Body"),
+            refused("cccccccc is the Tool Body already: a body can't be its own tool")
+        );
+        // An input that's no selection box isn't made active.
+        let mut cube = Dialog::new(Kind::Box, None, 2);
+        cube.activate(3);
+        assert_eq!(cube.active, None);
+        // One body in both boxes, as a document the gate refuses has it: never valid, so
+        // OK stays off.
+        let both = json::read(
+            br#"{"id": "n0000001", "type": "fuse", "v": 1, "name": "U", "base": "aaaaaaaa", "tool": "aaaaaaaa"}"#,
+        )
+        .unwrap();
+        let both = Dialog::load(Kind::Union, fid("n0000001"), &both, 3).unwrap();
+        assert_eq!(held(&both), [Some("aaaaaaaa"), Some("aaaaaaaa")]);
+        assert!(!both.valid());
+    }
+
+    #[test]
+    fn a_click_on_any_element_takes_its_body_and_one_in_no_built_body_is_refused() {
+        let mut dialog = Dialog::new(Kind::Union, None, 1);
+        // A face of k7f2qx3m, added to the selection by the click: its body, the target.
+        let face = Toggled {
+            kind: Some(ElementKind::Face),
+            ..toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")
+        };
+        assert_eq!(
+            dialog.took_body(&face, Standing::Before, &|_| panic!("read")),
+            Taken::Added
+        );
+        assert_eq!(held(&dialog), [Some("k7f2qx3m"), None]);
+        assert_eq!(dialog.active, Some(1));
+        // A vertex of a91cw0de the click let go of in the selection: a click all the same,
+        // its body taken.
+        let vertex = Toggled {
+            kind: Some(ElementKind::Vertex),
+            ..toggle(false, &edge("a91cw0de", 2), "a91cw0de")
+        };
+        assert_eq!(
+            dialog.took_body(&vertex, Standing::Before, &|_| panic!("read")),
+            Taken::Added
+        );
+        assert_eq!(held(&dialog), [Some("k7f2qx3m"), Some("a91cw0de")]);
+        // One not answered yet, in no body known: refused in the store's words.
+        let waiting = Toggled {
+            added: true,
+            name: "k7f2qx3m.box.Edge9".to_owned(),
+            stored: Err(Error::new(
+                silico_core::ErrorCode::Conflict,
+                "k7f2qx3m.box.Edge9 isn't answered yet: its body's elements aren't named yet",
+            )
+            .with_suggestion("select it again once the model has rebuilt")),
+            body: None,
+            kind: None,
+        };
+        assert_eq!(
+            dialog.took_body(&waiting, Standing::Before, &|_| panic!("read")),
+            Taken::Refused
+        );
+        assert_eq!(
+            said_under(&dialog, "Tool Body"),
+            refused(
+                "k7f2qx3m.box.Edge9 isn't answered yet: its body's elements aren't named yet \
+                 (select it again once the model has rebuilt)"
+            )
+        );
+        assert_eq!(held(&dialog), [Some("k7f2qx3m"), Some("a91cw0de")]);
+        // One whose name stores but whose body no model gave: refused too.
+        let bodiless = Toggled {
+            body: None,
+            ..toggle(true, &edge("k7f2qx3m", 4), "k7f2qx3m")
+        };
+        assert_eq!(
+            dialog.took_body(&bodiless, Standing::Before, &|_| panic!("read")),
+            Taken::Refused
+        );
+        assert_eq!(
+            said_under(&dialog, "Tool Body"),
+            refused(
+                "k7f2qx3m.box.Edge4 isn't in a body the model has built: select it again once \
+                 the model has rebuilt"
+            )
+        );
+        assert_eq!(held(&dialog), [Some("k7f2qx3m"), Some("a91cw0de")]);
+        // A dialog whose active box is no body's takes none.
+        let mut fillet = Dialog::new(Kind::Fillet, None, 2);
+        let before = fillet.clone();
+        assert_eq!(
+            fillet.took_body(&face, Standing::Before, &|_| panic!("read")),
+            Taken::Ignored
+        );
+        assert_eq!(
+            fillet.took_row(&fid("k7f2qx3m"), true, Standing::Before),
+            Taken::Ignored
+        );
+        assert_eq!(fillet, before);
+        assert!(!fillet.takes_bodies());
+        // And a box of one body takes no edge into a box of names.
+        let mut union = Dialog::new(Kind::Union, None, 3);
+        assert_eq!(union.take(&face), Taken::Ignored);
+        assert_eq!(held(&union), [None, None]);
+    }
+
+    #[test]
+    fn a_pick_on_the_booleans_own_body_takes_the_body_its_element_came_from() {
+        // A union n0000001 of aaaaaaaa and bbbbbbbb, open under Edit Feature: the canvas draws
+        // its preview, its own body, which holds both bodies' elements. A pick there is read
+        // against the bodies its boxes hold, the target first, as SolidWorks reads a pick on
+        // the model rolled back to before the feature.
+        let node = json::read(
+            br#"{"id": "n0000001", "type": "fuse", "v": 1, "name": "Joined", "base": "aaaaaaaa", "tool": "bbbbbbbb"}"#,
+        )
+        .unwrap();
+        let mut dialog = Dialog::load(Kind::Union, fid("n0000001"), &node, 1).unwrap();
+        assert_eq!(held(&dialog), [Some("aaaaaaaa"), Some("bbbbbbbb")]);
+        // Both full: the target's box is the active one.
+        assert_eq!(dialog.active, Some(0));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let in_only = |body: &'static str| {
+            let asked = &asked;
+            move |at: &FeatureId| {
+                asked.borrow_mut().push(at.to_string());
+                Ok(at.as_str() == body)
+            }
+        };
+        // The target's own element: the target, as held (nothing changes), the tool unread.
+        let picked = toggle(true, &edge("aaaaaaaa", 2), "n0000001");
+        assert_eq!(
+            dialog.took_body(&picked, Standing::Through, &in_only("aaaaaaaa")),
+            Taken::Ignored
+        );
+        assert_eq!(*asked.borrow(), ["aaaaaaaa"]);
+        // The tool's element in the target's box: the tool's body, which it holds already.
+        asked.borrow_mut().clear();
+        let picked = toggle(true, &edge("bbbbbbbb", 4), "n0000001");
+        assert_eq!(
+            dialog.took_body(&picked, Standing::Through, &in_only("bbbbbbbb")),
+            Taken::Refused
+        );
+        assert_eq!(*asked.borrow(), ["aaaaaaaa", "bbbbbbbb"]);
+        assert_eq!(
+            said_under(&dialog, "Target Body"),
+            refused("bbbbbbbb is the Tool Body already: a body can't be its own tool")
+        );
+        // In neither (the union's own, or a later feature's): refused.
+        let own = toggle(true, &edge("n0000001", 1), "n0000001");
+        assert_eq!(
+            dialog.took_body(&own, Standing::Through, &|_| Ok(false)),
+            Taken::Refused
+        );
+        assert_eq!(
+            said_under(&dialog, "Target Body"),
+            refused(
+                "n0000001.box.Edge1 is on none of the bodies this union combines: select one \
+                 of them, or another body"
+            )
+        );
+        // The target can't be read (its feature failed), the tool doesn't hold it: why the
+        // target can't be read, as the core says it.
+        let failed = |at: &FeatureId| {
+            if at.as_str() == "aaaaaaaa" {
+                Err(Error::new(
+                    silico_core::ErrorCode::KernelFailed,
+                    "aaaaaaaa failed, so it has no solid",
+                )
+                .with_suggestion("mend aaaaaaaa"))
+            } else {
+                Ok(false)
+            }
+        };
+        assert_eq!(
+            dialog.took_body(&own, Standing::Through, &failed),
+            Taken::Refused
+        );
+        assert_eq!(
+            said_under(&dialog, "Target Body"),
+            refused("aaaaaaaa failed, so it has no solid (mend aaaaaaaa)")
+        );
+        // The target can't be read, but the tool holds it: the tool's.
+        let in_tool = |at: &FeatureId| {
+            if at.as_str() == "aaaaaaaa" {
+                Err(Error::new(silico_core::ErrorCode::KernelFailed, "no solid"))
+            } else {
+                Ok(true)
+            }
+        };
+        assert_eq!(
+            dialog.took_body(&own, Standing::Through, &in_tool),
+            Taken::Refused
+        );
+        assert_eq!(
+            said_under(&dialog, "Target Body"),
+            refused("bbbbbbbb is the Tool Body already: a body can't be its own tool")
+        );
+        // A body after the union, not built on it: refused, in the core's words.
+        let later = toggle(true, &edge("dddddddd", 1), "dddddddd");
+        assert_eq!(
+            dialog.took_body(&later, Standing::After, &|_| panic!("read")),
+            Taken::Refused
+        );
+        assert_eq!(
+            said_under(&dialog, "Target Body"),
+            refused("dddddddd comes after this union: a feature may use only features before it")
+        );
+        assert_eq!(held(&dialog), [Some("aaaaaaaa"), Some("bbbbbbbb")]);
+        // Not on its own body: the body picked, read against nothing.
+        let elsewhere = toggle(true, &edge("cccccccc", 1), "cccccccc");
+        assert_eq!(
+            dialog.took_body(&elsewhere, Standing::Before, &|_| panic!("read")),
+            Taken::Added
+        );
+        assert_eq!(held(&dialog), [Some("cccccccc"), Some("bbbbbbbb")]);
+        assert_eq!(said_under(&dialog, "Target Body"), None);
+        // A tool that isn't an ID: not a union it loads.
+        let bad = json::read(
+            br#"{"id": "n0000001", "type": "fuse", "v": 1, "name": "U", "base": "aaaaaaaa", "tool": 7}"#,
+        )
+        .unwrap();
+        assert!(Dialog::load(Kind::Union, fid("n0000001"), &bad, 2).is_none());
+    }
+
+    #[test]
+    fn a_browser_row_fills_the_active_body_box_unless_its_no_body_or_built_through_the_boolean() {
+        let mut dialog = Dialog::new(Kind::Intersect, None, 1);
+        assert_eq!(
+            dialog.took_row(&fid("s0000001"), false, Standing::Before),
+            Taken::Refused
+        );
+        assert_eq!(
+            said_under(&dialog, "Target Body"),
+            refused("s0000001 isn't a body: an intersection takes bodies")
+        );
+        assert_eq!(
+            dialog.took_row(&fid("dddddddd"), true, Standing::After),
+            Taken::Refused
+        );
+        assert_eq!(
+            said_under(&dialog, "Target Body"),
+            refused(
+                "dddddddd comes after this intersection: a feature may use only features \
+                 before it"
+            )
+        );
+        assert_eq!(
+            dialog.took_row(&fid("n0000001"), true, Standing::Through),
+            Taken::Refused
+        );
+        assert_eq!(
+            said_under(&dialog, "Target Body"),
+            refused(
+                "n0000001 is built through this intersection: select one of the bodies it \
+                 combines, or another body"
+            )
+        );
+        assert_eq!(held(&dialog), [None, None]);
+        assert_eq!(dialog.active, Some(0));
+        assert_eq!(
+            dialog.took_row(&fid("k7f2qx3m"), true, Standing::Before),
+            Taken::Added
+        );
+        assert_eq!(said_under(&dialog, "Target Body"), None);
+        assert_eq!(held(&dialog), [Some("k7f2qx3m"), None]);
+        // A sweep's dialog has no box of one body: a row is its sketch box's, as before.
+        let mut pad = Dialog::new(Kind::Pad, None, 2);
+        assert_eq!(
+            pad.took_row(&fid("k7f2qx3m"), true, Standing::Before),
+            Taken::Ignored
+        );
+        assert_eq!(pad.inputs[0].value, Value::Selection(None));
+    }
+
+    /// The fields and values of `changes`, as text.
+    fn sent_of(changes: &[(&'static str, Node)]) -> Vec<(&'static str, String)> {
+        changes
+            .iter()
+            .map(|(field, node)| match &node.value {
+                Json::String(id) => (*field, id.clone()),
+                _ => panic!("{field} isn't a string"),
+            })
+            .collect()
+    }
+
+    /// A union n0000001 of aaaaaaaa and bbbbbbbb, its dialog loaded (Edit Feature).
+    fn loaded_union() -> Dialog {
+        let node = json::read(
+            br#"{"id": "n0000001", "type": "fuse", "v": 1, "name": "U", "base": "aaaaaaaa", "tool": "bbbbbbbb"}"#,
+        )
+        .unwrap();
+        Dialog::load(Kind::Union, fid("n0000001"), &node, 1).unwrap()
+    }
+
+    #[test]
+    fn a_booleans_bodies_wait_for_its_edits_and_go_tool_first_when_the_target_takes_the_tools() {
+        let mut dialog = loaded_union();
+        assert!(dialog.changes(false).is_empty());
+        // The tool cccccccc, then the target bbbbbbbb, the document's tool.
+        dialog.activate(1);
+        dialog.took_row(&fid("cccccccc"), true, Standing::Before);
+        dialog.activate(0);
+        dialog.took_row(&fid("bbbbbbbb"), true, Standing::Before);
+        assert_eq!(held(&dialog), [Some("bbbbbbbb"), Some("cccccccc")]);
+        // While an edit of the feature waits: nothing sent, and OK waits for them.
+        assert!(dialog.changes(true).is_empty());
+        assert!(dialog.holding());
+        // Then the tool first, so the base never names the tool's body.
+        assert_eq!(
+            sent_of(&dialog.changes(false)),
+            [
+                ("tool", "cccccccc".to_owned()),
+                ("base", "bbbbbbbb".to_owned())
+            ]
+        );
+        assert!(!dialog.holding());
+        assert!(dialog.changes(false).is_empty());
+        // Both again, the target's new body not the tool's: the target first.
+        dialog.took_row(&fid("dddddddd"), true, Standing::Before);
+        dialog.activate(1);
+        dialog.took_row(&fid("aaaaaaaa"), true, Standing::Before);
+        assert_eq!(
+            sent_of(&dialog.changes(false)),
+            [
+                ("base", "dddddddd".to_owned()),
+                ("tool", "aaaaaaaa".to_owned())
+            ]
+        );
+        // A fillet's numbers never wait.
+        let fillet = json::read(
+            br#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "R", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "radius": 1}"#,
+        )
+        .unwrap();
+        let mut fillet = Dialog::load(Kind::Fillet, fid("f0000001"), &fillet, 2).unwrap();
+        fillet.inputs[1].value = Value::Length("2".to_owned());
+        assert!(!fillet.holding());
+        assert_eq!(fillet.changes(true).len(), 1);
+    }
+
+    #[test]
+    fn a_refused_body_puts_its_box_back_to_the_documents_and_a_taken_one_is_the_documents() {
+        let string = |id: &str| json::read(quoted(id).as_bytes()).unwrap();
+        let mut dialog = loaded_union();
+        dialog.activate(1);
+        dialog.took_row(&fid("cccccccc"), true, Standing::Before);
+        dialog.changes(false);
+        // Taken: the document's tool is cccccccc now.
+        assert!(!dialog.answered("tool", &string("cccccccc"), true));
+        dialog.took_row(&fid("dddddddd"), true, Standing::Before);
+        dialog.changes(false);
+        // Refused: the box shows the document's cccccccc again, nothing more to send.
+        assert!(dialog.answered("tool", &string("dddddddd"), false));
+        assert_eq!(held(&dialog), [Some("aaaaaaaa"), Some("cccccccc")]);
+        assert!(dialog.changes(false).is_empty());
+        assert!(!dialog.holding());
+        // A refusal of a body the box no longer shows leaves the box as it is.
+        dialog.took_row(&fid("eeeeeeee"), true, Standing::Before);
+        assert!(!dialog.answered("tool", &string("dddddddd"), false));
+        assert_eq!(held(&dialog), [Some("aaaaaaaa"), Some("eeeeeeee")]);
+        // The target's refused: back to the loaded aaaaaaaa.
+        dialog.activate(0);
+        dialog.took_row(&fid("ffffffff"), true, Standing::Before);
+        dialog.changes(false);
+        assert!(dialog.answered("base", &string("ffffffff"), false));
+        assert_eq!(held(&dialog)[0], Some("aaaaaaaa"));
+        // Another field, or a value that's no body: nothing.
+        assert!(!dialog.answered("radius", &string("aaaaaaaa"), false));
+        let number = json::read(b"3").unwrap();
+        assert!(!dialog.answered("tool", &number, false));
+        // A new union: what the document holds is what its add sent.
+        let mut union = Dialog::new(Kind::Union, None, 3);
+        union.took_row(&fid("aaaaaaaa"), true, Standing::Before);
+        union.took_row(&fid("bbbbbbbb"), true, Standing::Before);
+        assert!(union.add().is_some());
+        union.added(fid("n0000002"));
+        assert_eq!(union.feature, Some(fid("n0000002")));
+        assert!(!union.adding);
+        union.took_row(&fid("cccccccc"), true, Standing::Before);
+        union.changes(false);
+        assert!(union.answered("tool", &string("cccccccc"), false));
+        assert_eq!(held(&union), [Some("aaaaaaaa"), Some("bbbbbbbb")]);
+    }
+
+    #[test]
+    fn the_bodies_selected_as_it_opens_fill_the_target_then_the_tool_and_the_rest_is_noted() {
+        // None selected: both empty, the target's box active.
+        let mut dialog = Dialog::new(Kind::Union, None, 1);
+        dialog.take_bodies(&[], None);
+        assert_eq!(held(&dialog), [None, None]);
+        assert_eq!(dialog.active, Some(0));
+        // One: the target; the tool's box active; what else was selected noted under the
+        // target's, in the panel's subdued text.
+        let mut dialog = Dialog::new(Kind::Union, None, 2);
+        dialog.take_bodies(
+            &[fid("k7f2qx3m")],
+            Some("1 face left out: a union takes two bodies".to_owned()),
+        );
+        assert_eq!(held(&dialog), [Some("k7f2qx3m"), None]);
+        assert_eq!(dialog.active, Some(1));
+        assert_eq!(
+            said_under(&dialog, "Target Body"),
+            Some(Says::Noted(
+                "1 face left out: a union takes two bodies".to_owned()
+            ))
+        );
+        assert_eq!(said_under(&dialog, "Tool Body"), None);
+        // A pick lets the note go.
+        dialog.took_row(&fid("a91cw0de"), true, Standing::Before);
+        assert_eq!(said_under(&dialog, "Target Body"), None);
+        // Two: the target, then the tool; the target's box active.
+        let mut dialog = Dialog::new(Kind::Subtract, None, 3);
+        dialog.take_bodies(&[fid("a91cw0de"), fid("k7f2qx3m")], None);
+        assert_eq!(held(&dialog), [Some("a91cw0de"), Some("k7f2qx3m")]);
+        assert_eq!(dialog.active, Some(0));
+        assert_eq!(dialog.bodies(), [fid("a91cw0de"), fid("k7f2qx3m")]);
+        assert!(dialog.valid());
     }
 }

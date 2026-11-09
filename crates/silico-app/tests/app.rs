@@ -5863,7 +5863,8 @@ fn edit_feature_from_the_context_menu_opens_the_same_dialog() {
     for (label, value) in [("Length", "40"), ("Width", "20"), ("Height", "10")] {
         assert_eq!(input(&h, label).value().as_deref(), Some(value), "{label}");
     }
-    // The cut has no dialog: its Edit Feature is off.
+    // The cut's opens its Subtract dialog, its boxes the cut's base and tool by their
+    // names, though the part has one body (the cut consumes the two it combines).
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     h.get_by_role_and_label(Role::Pane, "Timeline")
@@ -5873,11 +5874,20 @@ fn edit_feature_from_the_context_menu_opens_the_same_dialog() {
     step(&mut h);
     assert_eq!(
         menu_items(&h, "HOLE")[0],
-        (
-            "Edit feature double-click".to_owned(),
-            Some("Subtract has no dialog yet".to_owned())
-        )
+        ("Edit feature double-click".to_owned(), None)
     );
+    menu_click(&mut h, "HOLE", "Edit feature");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Subtract")
+            .is_some()
+    });
+    assert_eq!(
+        boxed_bodies(&h),
+        held(&[Some("k7f2qx3m"), Some("a91cw0de")])
+    );
+    for name in ["Block", "Pin"] {
+        assert!(dialog(&h).query_by_label(name).is_some(), "{name}");
+    }
     assert!(h.state().tabs()[0].sent.is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
@@ -14674,7 +14684,9 @@ fn each_toolbar_button_names_its_command_and_says_what_it_does_or_that_it_isnt_b
         ),
         ("MODIFY", "Fillet", vec!["Rounds the selected edges"]),
         ("MODIFY", "Chamfer", vec!["Bevels the selected edges"]),
-        ("MODIFY", "Union", vec!["Not built yet"]),
+        // Off for want of a second body (the example's one body is the hole's): it says so.
+        ("MODIFY", "Union", vec!["Needs two bodies"]),
+        ("MODIFY", "Intersect", vec!["Needs two bodies"]),
         (
             "INSPECT",
             "Measure",
@@ -14780,12 +14792,13 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
     );
     assert!(menu.query_by_label("COMBINE").is_some());
     assert_eq!(on_of(&menu), ["Fillet", "Chamfer"]);
-    // An entry not built says so, as its button does (Union has no line of its own).
+    // An entry off for want of a second body says so, as its button does (Union has no
+    // line of its own): the example's one body is the hole's.
     h.get_by_role_and_label(Role::Menu, "MODIFY")
         .get_by_label("Union")
         .hover();
     step_until(&mut h, "its tooltip", |h| {
-        h.query_by_role_and_label(Role::Label, "Not built yet")
+        h.query_by_role_and_label(Role::Label, "Needs two bodies")
             .is_some()
     });
     open(&mut h, "INSPECT");
@@ -14878,6 +14891,7 @@ fn toolbar_with(
                     in_sketch: stub.in_sketch,
                     create_sketch: stub.create_sketch,
                     can_open: &can_open,
+                    why_closed: &|_| None,
                     selected: stub.selected,
                     tool: stub.tool,
                     construction: stub.construction,
@@ -28815,6 +28829,1079 @@ fn a_chamfer_dialog_fed_the_selection_of_an_edge_writes_a_chamfer_of_its_distanc
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- The boolean dialogs (M5.8): Union, Subtract, and Intersect ----
+//
+// Their behaviour is SolidWorks' Combine and their words Fusion's (docs/ux/solidworks.md, §5,
+// *Combine*; docs/ux/fusion.md, *Combine*): a Target Body and a Tool Body, one body each,
+// filled from the bodies selected as the dialog opens, a click on a body's face, edge, or
+// vertex taking that body, and a second pick in a box replacing its body.
+
+/// The bodies the open dialog's boxes of one body hold, in order, by ID: none for an empty
+/// one.
+fn boxed_bodies(h: &AppHarness) -> Vec<Option<String>> {
+    h.state().tabs()[0]
+        .dialog
+        .as_ref()
+        .map(|dialog| {
+            dialog
+                .inputs
+                .iter()
+                .filter_map(|input| match &input.value {
+                    silico_app::dialog::Value::Body(held) => {
+                        Some(held.body.as_ref().map(ToString::to_string))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `ids` as [`boxed_bodies`] gives them.
+fn held(ids: &[Option<&str>]) -> Vec<Option<String>> {
+    ids.iter().map(|id| id.map(str::to_owned)).collect()
+}
+
+/// Stepped until the open dialog's boxes of one body hold `want`, and once more, so the
+/// dialog is drawn holding them.
+#[track_caller]
+fn bodies_boxed_until(h: &mut AppHarness, want: &[Option<&str>]) {
+    let want = held(want);
+    step_until(h, &format!("{want:?} in the boxes"), |h| {
+        boxed_bodies(h) == want
+    });
+    step(h);
+}
+
+/// What the open dialog's box of one body labelled `label` says under it, if anything.
+fn said_under(h: &AppHarness, label: &str) -> Option<String> {
+    h.state().tabs()[0]
+        .dialog
+        .as_ref()?
+        .inputs
+        .iter()
+        .find_map(|input| match &input.value {
+            silico_app::dialog::Value::Body(held) if input.label == label => {
+                held.said.as_ref().map(|said| said.text().to_owned())
+            }
+            _ => None,
+        })
+}
+
+/// The label of the open dialog's active box.
+fn active_box(h: &AppHarness) -> Option<&'static str> {
+    let dialog = h.state().tabs()[0].dialog.as_ref()?;
+    dialog
+        .active
+        .and_then(|at| dialog.inputs.get(at))
+        .map(|input| input.label)
+}
+
+/// The features the selection holds, by ID, in order.
+fn selected_features(h: &AppHarness) -> Vec<String> {
+    h.state().tabs()[0]
+        .selection()
+        .items()
+        .iter()
+        .filter_map(|item| match item {
+            silico_app::selection::Item::Feature(id) => Some(id.to_string()),
+            silico_app::selection::Item::Element(_) => None,
+        })
+        .collect()
+}
+
+/// Face `n` of body `body` found under the canvas's centre from now on, and clicked there.
+fn click_face(h: &mut AppHarness, record: &Record, body: u32, n: u32) {
+    use silico_app::renderer::Element::Face;
+    let at = the_viewport(h).center();
+    let centre = pixel_at(h, at);
+    answering(record, Some((body, Face(n), centre)), None);
+    click_canvas(h, at, false);
+}
+
+/// Vertex `n` of body `body` found under the canvas's centre from now on, and clicked there.
+fn click_vertex(h: &mut AppHarness, record: &Record, body: u32, n: u32) {
+    use silico_app::renderer::Element::Vertex;
+    let at = the_viewport(h).center();
+    let centre = pixel_at(h, at);
+    answering(record, Some((body, Vertex(n), centre)), None);
+    click_canvas(h, at, false);
+}
+
+/// The open dialog's box labelled `label` clicked, so it's the active one.
+fn click_box(h: &mut AppHarness, label: &str) {
+    dialog(h).get_by_role_and_label(Role::Button, label).click();
+    step(h);
+    step(h);
+}
+
+/// Every face of a box's mesh, as the fake renderer numbers them, on body `body`: what the
+/// canvas lights of a body selected whole.
+fn whole_box(body: u32) -> Vec<(u32, silico_app::renderer::Element)> {
+    (1..=6)
+        .map(|n| (body, silico_app::renderer::Element::Face(n)))
+        .collect()
+}
+
+#[test]
+fn a_union_takes_two_bodies_clicked_in_the_canvas_and_ok_writes_a_fuse_of_them() {
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("blocks.silico", TWO_BLOCKS);
+    meshes_settled(&mut h);
+    let before = text_of(&f, &h);
+    let (block, other) = (body_of(&h, "k7f2qx3m"), body_of(&h, "a91cw0de"));
+    // Nothing selected: both boxes empty, in Fusion's words, the target's active (lit) and
+    // OK off.
+    modify(&mut h, "Union");
+    assert_eq!(boxed_bodies(&h), held(&[None, None]));
+    for label in ["Target Body", "Tool Body"] {
+        assert!(
+            dialog(&h)
+                .query_by_role_and_label(Role::Button, label)
+                .is_some(),
+            "{label}"
+        );
+    }
+    assert_eq!(
+        dialog(&h)
+            .query_all_by_label("Select a body in the canvas or the browser")
+            .count(),
+        2
+    );
+    assert_eq!(active_box(&h), Some("Target Body"));
+    assert_eq!(
+        toggled(&dialog(&h).get_by_role_and_label(Role::Button, "Target Body")),
+        Some(true)
+    );
+    assert_eq!(
+        toggled(&dialog(&h).get_by_role_and_label(Role::Button, "Tool Body")),
+        Some(false)
+    );
+    assert!(!ok_enabled(&h));
+    // A click on the block's face takes the block, whole: the target, by its name in the
+    // box; the block selected, every face of it lit; the tool's box active; nothing sent.
+    click_face(&mut h, &record, block, 3);
+    bodies_boxed_until(&mut h, &[Some("k7f2qx3m"), None]);
+    assert_eq!(selected_features(&h), ["k7f2qx3m"]);
+    assert!(selected_names(&h).is_empty());
+    assert!(dialog(&h).query_by_label("Block").is_some());
+    assert_eq!(active_box(&h), Some("Tool Body"));
+    step(&mut h);
+    assert_eq!(highlighted(&record), whole_box(block));
+    assert!(!ok_enabled(&h));
+    assert_eq!(h.state().tabs()[0].sent, []);
+    // A click on the other block's edge takes it, the tool: the union is added and previewed.
+    click_edge(&mut h, &record, other, 5, false);
+    bodies_boxed_until(&mut h, &[Some("k7f2qx3m"), Some("a91cw0de")]);
+    added(&mut h);
+    settled(&mut h);
+    assert!(dialog(&h).query_by_label("Other").is_some());
+    assert_eq!(selected_features(&h), ["k7f2qx3m", "a91cw0de"]);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Union"),
+        Some(expected(
+            r#"{"type": "fuse", "name": "Union", "base": "k7f2qx3m", "tool": "a91cw0de"}"#
+        ))
+    );
+    let id = dialog_feature(&h);
+    assert!(ok_enabled(&h));
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // The document as the canonical writer lays it out: the blocks as they were, and the
+    // fuse after them, its ID and version the core's.
+    let text = text_of(&f, &h);
+    let want = format!(
+        r#"{{
+  "silico": 1,
+  "units": {{"length": "mm", "resolution": "1nm"}},
+  "naming": 5,
+  "features": [
+    {{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
+    {{"id": "a91cw0de", "type": "box", "v": 1, "name": "Other", "position": [80, 0, 0], "length": 10, "width": 10, "height": 10}},
+    {{"id": "{id}", "type": "fuse", "v": 1, "name": "Union", "base": "k7f2qx3m", "tool": "a91cw0de"}}
+  ]
+}}
+"#
+    );
+    assert_eq!(text, want);
+    assert!(before.contains(feature_line(&text, "box").as_str()));
+    assert_eq!(h.state().tabs()[0].sent, [Sent::Begin, Sent::Add]);
+    // One body now, the union's: the tool consumed with the target. So the booleans are
+    // off, each saying why.
+    step_until(&mut h, "one body", |h| {
+        h.state().tabs()[0]
+            .browser
+            .bodies
+            .iter()
+            .map(|row| row.id.to_string())
+            .collect::<Vec<_>>()
+            == [id.clone()]
+    });
+    for kind in ["Union", "Subtract", "Intersect"] {
+        assert!(
+            h.get_by_role_and_label(Role::Toolbar, "MODIFY")
+                .get_by_label(kind)
+                .accesskit_node()
+                .is_disabled(),
+            "{kind}"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_union_opens_on_the_body_selected_and_a_second_pick_in_a_box_replaces_its_body() {
+    // The fake kernel's meshes, which hold together with each shape as the fake makes it
+    // (a union's both boxes' faces), so the view's meshes are read again after each preview.
+    let f = fixture();
+    let (mut h, record) = f.drawn("blocks.silico", THREE_BLOCKS);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's bodies", |h| {
+        shows(h, "Browser", "Second")
+    });
+    // Second's row selected in the browser: the union's target as it opens, the tool's box
+    // the active one.
+    browser(&h).get_by_label("Second").click();
+    step_until(&mut h, "Second selected", |h| {
+        selected_features(h) == ["a0000001"]
+    });
+    modify(&mut h, "Union");
+    assert_eq!(boxed_bodies(&h), held(&[Some("a0000001"), None]));
+    assert_eq!(active_box(&h), Some("Tool Body"));
+    assert_eq!(said_under(&h, "Target Body"), None);
+    assert!(dialog(&h).query_by_label("Second").is_some());
+    // Second's own face in the tool's box: refused, said under it, nothing taken or sent.
+    let own_tool = "a0000001 is the Target Body already: a body can't be its own tool";
+    let body = body_of(&h, "a0000001");
+    click_face(&mut h, &record, body, 1);
+    step_until(&mut h, "the refusal", |h| {
+        said_under(h, "Tool Body").as_deref() == Some(own_tool)
+    });
+    assert!(dialog(&h).query_by_label(own_tool).is_some());
+    assert_eq!(boxed_bodies(&h), held(&[Some("a0000001"), None]));
+    assert_eq!(selected_features(&h), ["a0000001"]);
+    assert!(!ok_enabled(&h));
+    assert_eq!(h.state().tabs()[0].sent, []);
+    // A click on First's vertex: the tool, and the union added.
+    let body = body_of(&h, "c0000001");
+    click_vertex(&mut h, &record, body, 2);
+    bodies_boxed_until(&mut h, &[Some("a0000001"), Some("c0000001")]);
+    added(&mut h);
+    settled(&mut h);
+    assert_eq!(said_under(&h, "Tool Body"), None);
+    assert_eq!(
+        written(&f, &h, "Union", "tool"),
+        Some(plain(r#""c0000001""#))
+    );
+    // A second pick in the tool's box, Third's face: it replaces First, written as the
+    // tool, the box still active.
+    meshes_settled(&mut h);
+    let body = body_of(&h, "b0000001");
+    click_face(&mut h, &record, body, 1);
+    bodies_boxed_until(&mut h, &[Some("a0000001"), Some("b0000001")]);
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Union", "tool"),
+        Some(plain(r#""b0000001""#))
+    );
+    assert_eq!(active_box(&h), Some("Tool Body"));
+    assert_eq!(selected_features(&h), ["a0000001", "b0000001"]);
+    // A face of the union's own preview, which the fake's fuse takes whole from Second (its
+    // base, `a0000001.box.Face2`): read against the bodies the union combines, it's
+    // Second's, the target's, so refused in the tool's box.
+    meshes_settled(&mut h);
+    let union = dialog_feature(&h);
+    let body = body_of(&h, &union);
+    click_face(&mut h, &record, body, 2);
+    step_until(&mut h, "the refusal", |h| {
+        said_under(h, "Tool Body").as_deref() == Some(own_tool)
+    });
+    assert_eq!(
+        boxed_bodies(&h),
+        held(&[Some("a0000001"), Some("b0000001")])
+    );
+    // The target's box clicked: active. First's face, standing again, replaces Second.
+    click_box(&mut h, "Target Body");
+    assert_eq!(active_box(&h), Some("Target Body"));
+    let body = body_of(&h, "c0000001");
+    click_face(&mut h, &record, body, 4);
+    bodies_boxed_until(&mut h, &[Some("c0000001"), Some("b0000001")]);
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Union", "base"),
+        Some(plain(r#""c0000001""#))
+    );
+    assert_eq!(active_box(&h), Some("Target Body"));
+    // Second's row in the browser, standing again too: the target.
+    step_until(&mut h, "Second's row", |h| shows(h, "Browser", "Second"));
+    browser(&h).get_by_label("Second").click();
+    bodies_boxed_until(&mut h, &[Some("a0000001"), Some("b0000001")]);
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Union", "base"),
+        Some(plain(r#""a0000001""#))
+    );
+    // The union's own row: built through the union, so refused, nothing sent.
+    let sent = h.state().tabs()[0].sent.len();
+    browser(&h).get_by_label("Union").click();
+    let built_through = format!(
+        "{union} is built through this union: select one of the bodies it combines, or another \
+         body"
+    );
+    step_until(&mut h, "the refusal", |h| {
+        said_under(h, "Target Body").as_deref() == Some(built_through.as_str())
+    });
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(
+        boxed_bodies(&h),
+        held(&[Some("a0000001"), Some("b0000001")])
+    );
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert_eq!(selected_features(&h), ["a0000001", "b0000001"]);
+    assert!(ok_enabled(&h));
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Union"),
+        Some(expected(
+            r#"{"type": "fuse", "name": "Union", "base": "a0000001", "tool": "b0000001"}"#
+        ))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [
+            Sent::Begin,
+            Sent::Add,
+            Sent::Edit("tool".to_owned()),
+            Sent::Edit("base".to_owned()),
+            Sent::Edit("base".to_owned()),
+        ]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_intersection_opened_on_a_selected_face_takes_no_body_and_esc_puts_the_face_back() {
+    // A selected face fills no body box as the dialog opens (SolidWorks' help doesn't say
+    // one does): it's left out, said in the panel's subdued text, and let go.
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("blocks.silico", TWO_BLOCKS);
+    meshes_settled(&mut h);
+    let before = text_of(&f, &h);
+    let block = body_of(&h, "k7f2qx3m");
+    click_face(&mut h, &record, block, 3);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    modify(&mut h, "Intersect");
+    assert_eq!(boxed_bodies(&h), held(&[None, None]));
+    assert_eq!(active_box(&h), Some("Target Body"));
+    let note = "1 face left out: an intersection takes two bodies";
+    assert_eq!(said_under(&h, "Target Body").as_deref(), Some(note));
+    assert!(dialog(&h).query_by_label(note).is_some());
+    assert!(h.state().tabs()[0].selection().is_empty());
+    // The same face clicked now takes its body, the note let go.
+    click_face(&mut h, &record, block, 3);
+    bodies_boxed_until(&mut h, &[Some("k7f2qx3m"), None]);
+    assert_eq!(said_under(&h, "Target Body"), None);
+    assert_eq!(selected_features(&h), ["k7f2qx3m"]);
+    // Esc is Cancel: nothing was sent, the document is as it was, and the face is selected
+    // again, as SolidWorks returns to the selection its command started with.
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    assert!(selected_features(&h).is_empty());
+    assert_eq!(h.state().tabs()[0].sent, []);
+    assert_eq!(text_of(&f, &h), before);
+    // Closed, the canvas picks as before: a click on a face selects that face.
+    let body = body_of(&h, "a91cw0de");
+    click_face(&mut h, &record, body, 2);
+    selected_until(&mut h, &["a91cw0de.box.Face2"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_subtraction_whose_tool_misses_its_target_shows_the_cores_refusal_and_cancel_undoes_it() {
+    // The two blocks don't meet, so the cut removes nothing, which the core refuses (S7's
+    // rule, #386): its words in the dialog, as a fillet's refusal is shown.
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, _record) = f.drawn("blocks.silico", TWO_BLOCKS);
+    meshes_settled(&mut h);
+    let before = text_of(&f, &h);
+    step_until(&mut h, "the browser's bodies", |h| {
+        shows(h, "Browser", "Other")
+    });
+    // The other block selected in the browser before the command: the target as it opens.
+    browser(&h).get_by_label("Other").click();
+    step_until(&mut h, "Other selected", |h| {
+        selected_features(h) == ["a91cw0de"]
+    });
+    let opened_at = h.state().tabs()[0].revision;
+    modify(&mut h, "Subtract");
+    assert_eq!(boxed_bodies(&h), held(&[Some("a91cw0de"), None]));
+    // The target's box clicked, and the block's row in the browser: the block replaces it,
+    // and the tool's box, empty, is the active one; the other block's row is the tool.
+    click_box(&mut h, "Target Body");
+    browser(&h).get_by_label("Block").click();
+    bodies_boxed_until(&mut h, &[Some("k7f2qx3m"), None]);
+    assert_eq!(active_box(&h), Some("Tool Body"));
+    browser(&h).get_by_label("Other").click();
+    bodies_boxed_until(&mut h, &[Some("k7f2qx3m"), Some("a91cw0de")]);
+    added(&mut h);
+    settled(&mut h);
+    let id = dialog_feature(&h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Subtract"),
+        Some(expected(
+            r#"{"type": "cut", "name": "Subtract", "base": "k7f2qx3m", "tool": "a91cw0de"}"#
+        ))
+    );
+    // The refusal, by hand: the block's volume 40 × 20 × 10 = 8000 mm³ kept whole, the fake
+    // kernel's cut holding both boxes' 6 faces, 12 edges, and 8 vertices.
+    let lines = [
+        format!(
+            "cut {id} removes nothing from its base k7f2qx3m: the result's volume is the \
+             base's, 8000 mm³ (12 faces, 24 edges, and 16 vertices, against the base's 6, 12, \
+             and 8)"
+        ),
+        "if its tool misses its base, move it so they overlap, or remove or suppress the cut; \
+         a boolean is built to a millionth of its size, so a tool that reaches less than that \
+         past or into its base is lost"
+            .to_owned(),
+    ];
+    step_until(&mut h, "the refusal in the dialog", |h| {
+        lines
+            .iter()
+            .all(|line| dialog(h).query_by_label(line).is_some())
+    });
+    // OK keeps the feature with its error, as SolidWorks saves a part with rebuild errors.
+    assert!(ok_enabled(&h));
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    let tab = &h.state().tabs()[0];
+    assert_eq!(tab.sent.first(), Some(&Sent::Begin));
+    assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
+    assert!(tab.revision > opened_at);
+    // The selection as it was when the command started: the other block's row.
+    step_until(&mut h, "Other selected again", |h| {
+        selected_features(h) == ["a91cw0de"]
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// THREE_BLOCKS' bodies' rows shown, and the Union dialog open on none of them.
+fn union_of_three_blocks(f: &Fixture) -> (AppHarness, Record) {
+    let (mut h, record) = f.drawn("blocks.silico", THREE_BLOCKS);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's bodies", |h| {
+        ["First", "Second", "Third"]
+            .iter()
+            .all(|name| shows(h, "Browser", name))
+    });
+    modify(&mut h, "Union");
+    (h, record)
+}
+
+#[test]
+fn a_target_picked_as_the_tools_body_while_the_add_waits_is_sent_after_the_tool() {
+    // #412's review: the add of First and Second waits; meanwhile Third goes into the tool's
+    // box and Second into the target's. Sent base first, the base would be Second while the
+    // tool is still Second, which the core refuses ("is base too"): so the tool goes first.
+    let f = fixture();
+    let (mut h, _record) = union_of_three_blocks(&f);
+    browser(&h).get_by_label("First").click();
+    bodies_boxed_until(&mut h, &[Some("c0000001"), None]);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    browser(&h).get_by_label("Second").click();
+    bodies_boxed_until(&mut h, &[Some("c0000001"), Some("a0000001")]);
+    step_until(&mut h, "the add sent", |h| {
+        h.state().tabs()[0].sent.contains(&Sent::Add)
+    });
+    browser(&h).get_by_label("Third").click();
+    bodies_boxed_until(&mut h, &[Some("c0000001"), Some("b0000001")]);
+    click_box(&mut h, "Target Body");
+    browser(&h).get_by_label("Second").click();
+    bodies_boxed_until(&mut h, &[Some("a0000001"), Some("b0000001")]);
+    hold.release();
+    check.wait();
+    settled(&mut h);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Union"),
+        Some(expected(
+            r#"{"type": "fuse", "name": "Union", "base": "a0000001", "tool": "b0000001"}"#
+        ))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [
+            Sent::Begin,
+            Sent::Add,
+            Sent::Edit("tool".to_owned()),
+            Sent::Edit("base".to_owned()),
+        ]
+    );
+    assert_eq!(
+        boxed_bodies(&h),
+        held(&[Some("a0000001"), Some("b0000001")])
+    );
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert!(ok_enabled(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_swap_made_while_the_add_waits_is_refused_and_the_boxes_follow_the_document() {
+    // The add of First and Second waits; meanwhile the boxes go through Third to Second
+    // and First, the add's two the other way round. No order of the two edits passes the
+    // core (each would make one body both), so both are refused, and each box goes back to
+    // the body the document holds, never showing what it didn't take.
+    let f = fixture();
+    let (mut h, _record) = union_of_three_blocks(&f);
+    browser(&h).get_by_label("First").click();
+    bodies_boxed_until(&mut h, &[Some("c0000001"), None]);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    browser(&h).get_by_label("Second").click();
+    bodies_boxed_until(&mut h, &[Some("c0000001"), Some("a0000001")]);
+    step_until(&mut h, "the add sent", |h| {
+        h.state().tabs()[0].sent.contains(&Sent::Add)
+    });
+    browser(&h).get_by_label("Third").click();
+    bodies_boxed_until(&mut h, &[Some("c0000001"), Some("b0000001")]);
+    click_box(&mut h, "Target Body");
+    browser(&h).get_by_label("Second").click();
+    bodies_boxed_until(&mut h, &[Some("a0000001"), Some("b0000001")]);
+    click_box(&mut h, "Tool Body");
+    browser(&h).get_by_label("First").click();
+    bodies_boxed_until(&mut h, &[Some("a0000001"), Some("c0000001")]);
+    hold.release();
+    check.wait();
+    settled(&mut h);
+    step_until(&mut h, "the boxes as the document", |h| {
+        boxed_bodies(h) == held(&[Some("c0000001"), Some("a0000001")])
+    });
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Union"),
+        Some(expected(
+            r#"{"type": "fuse", "name": "Union", "base": "c0000001", "tool": "a0000001"}"#
+        ))
+    );
+    let tab = &h.state().tabs()[0];
+    assert_eq!(
+        tab.sent,
+        [
+            Sent::Begin,
+            Sent::Add,
+            Sent::Edit("tool".to_owned()),
+            Sent::Edit("base".to_owned()),
+        ]
+    );
+    // The core's refusal of the last, in validate.rs's words (by hand), in the dialog.
+    let why = "tool a0000001 is base too: a fuse takes two different solids (give the fuse a \
+               different tool)";
+    assert_eq!(tab.message.as_deref(), Some(why));
+    step(&mut h);
+    assert!(dialog(&h).query_by_label(why).is_some());
+    // What the boxes show is what OK keeps.
+    assert!(ok_enabled(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// THREE_BLOCKS and a fourth, apart from the rest.
+const FOUR_BLOCKS: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "c0000001", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
+    {"id": "a0000001", "type": "box", "v": 1, "name": "Second", "position": [20, 0, 0], "length": 20, "width": 10, "height": 10},
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Third", "position": [50, 0, 0], "length": 10, "width": 10, "height": 10},
+    {"id": "d0000001", "type": "box", "v": 1, "name": "Fourth", "position": [80, 0, 0], "length": 10, "width": 10, "height": 10}
+  ]
+}
+"#;
+
+#[test]
+fn ok_stays_off_while_a_box_holds_a_body_unsent_behind_an_edit_and_comes_on_once_it_is_sent() {
+    // #412's second review: the add of First and Second answered, OK on. The session's queue
+    // held: Third into the tool, whose edit is sent and waits; then Fourth into the target,
+    // which waits unsent behind it (an edit of the feature still to answer holds the boxes'
+    // next). OK is off while a box holds what isn't sent, so what OK keeps is what the boxes
+    // show; once the tool's edit answers and the target's is sent and answers, it's on, and
+    // the document holds what the boxes show.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("blocks.silico", FOUR_BLOCKS);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's bodies", |h| {
+        ["First", "Second", "Third", "Fourth"]
+            .iter()
+            .all(|name| shows(h, "Browser", name))
+    });
+    modify(&mut h, "Union");
+    browser(&h).get_by_label("First").click();
+    bodies_boxed_until(&mut h, &[Some("c0000001"), None]);
+    browser(&h).get_by_label("Second").click();
+    bodies_boxed_until(&mut h, &[Some("c0000001"), Some("a0000001")]);
+    step_until(&mut h, "the add answered", ok_enabled);
+    settled(&mut h);
+    assert!(ok_enabled(&h));
+    let (hold, check) = hold_queue(&f, &h, 0);
+    browser(&h).get_by_label("Third").click();
+    bodies_boxed_until(&mut h, &[Some("c0000001"), Some("b0000001")]);
+    let tool = Sent::Edit("tool".to_owned());
+    let base = Sent::Edit("base".to_owned());
+    step_until(&mut h, "the tool's edit sent", |h| {
+        h.state().tabs()[0].sent.contains(&tool)
+    });
+    click_box(&mut h, "Target Body");
+    browser(&h).get_by_label("Fourth").click();
+    bodies_boxed_until(&mut h, &[Some("d0000001"), Some("b0000001")]);
+    for _ in 0..5 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!h.state().tabs()[0].sent.contains(&base));
+        assert!(!ok_enabled(&h));
+        assert!(!h.state().tabs()[0].can_ok());
+    }
+    hold.release();
+    check.wait();
+    step_until(&mut h, "OK on again", ok_enabled);
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Union"),
+        Some(expected(
+            r#"{"type": "fuse", "name": "Union", "base": "d0000001", "tool": "b0000001"}"#
+        ))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [Sent::Begin, Sent::Add, tool, base]
+    );
+    assert!(h.state().tabs()[0].can_ok());
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Three blocks, the union of the second and the third, then a fourth block.
+const UNION_BETWEEN: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "c0000001", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
+    {"id": "a0000001", "type": "box", "v": 1, "name": "Second", "position": [20, 0, 0], "length": 20, "width": 10, "height": 10},
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Third", "position": [50, 0, 0], "length": 10, "width": 10, "height": 10},
+    {"id": "n0000001", "type": "fuse", "v": 1, "name": "Joined", "base": "a0000001", "tool": "b0000001"},
+    {"id": "d0000001", "type": "box", "v": 1, "name": "Fourth", "position": [80, 0, 0], "length": 10, "width": 10, "height": 10}
+  ]
+}
+"#;
+
+/// A fuse's history, by hand: its result a box of six faces, the base's Face2 to Face5
+/// kept as its Face2 to Face5, the tool's Face1 kept as its Face6, and its Face1 and Edge1
+/// reported by nothing (Edge1 bounding Face1 alone), so named by their numbers; the base's
+/// other edges and its vertices kept.
+fn mixing_fuse() -> silico_core::kernel::History {
+    use silico_core::kernel::{ElementCounts, ElementFate, History, InputHistory, Topology};
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        ..ElementFate::default()
+    };
+    let none = || ElementFate::default();
+    let face1 = |rest: Vec<Vec<u32>>| -> Vec<Vec<u32>> {
+        std::iter::once(vec![1, 2]).chain(rest).collect()
+    };
+    History {
+        inputs: vec![
+            InputHistory {
+                faces: std::iter::once(none())
+                    .chain((2..=5).map(kept))
+                    .chain([none()])
+                    .collect(),
+                edges: std::iter::once(none()).chain((2..=12).map(kept)).collect(),
+                vertices: (1..=8).map(kept).collect(),
+            },
+            InputHistory {
+                faces: std::iter::once(kept(6))
+                    .chain((2..=6).map(|_| none()))
+                    .collect(),
+                edges: vec![ElementFate::default(); 12],
+                vertices: vec![ElementFate::default(); 8],
+            },
+        ],
+        result: ElementCounts {
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: face1(vec![vec![]; 5]),
+            outer_edges: face1(vec![vec![]; 5]),
+            edge_vertices: vec![vec![]; 12],
+            solid_faces: vec![(1..=6).collect()],
+        },
+    }
+}
+
+/// The fake kernel's fuses answered as [`mixing_fuse`] has them, their result a box a mm³
+/// larger than their base (so S7's rule takes them), and UNION_BETWEEN open, its meshes read.
+fn union_between(f: &Fixture) -> (AppHarness, Record) {
+    f.kernel.answer_instead(|op| match op {
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                shape: FakeKernel::resized(base, 1.0)?,
+                history: mixing_fuse(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, record) = f.drawn("between.silico", UNION_BETWEEN);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's bodies", |h| {
+        ["First", "Joined", "Fourth"]
+            .iter()
+            .all(|name| shows(h, "Browser", name))
+    });
+    (h, record)
+}
+
+#[test]
+fn a_pick_on_a_unions_own_body_takes_the_body_its_face_came_from() {
+    // Edit Feature on Joined, the union of Second and Third: the canvas draws its own body.
+    // A face from its tool (Third's Face1, its Face6) is Third's; one from its target
+    // (Second's Face2) is Second's; its own Face1, from neither, is neither's. Each read
+    // against the bodies it combines, as SolidWorks reads picks on the model rolled back.
+    let f = fixture();
+    let (mut h, record) = union_between(&f);
+    edit_from_the_timeline(&mut h, "Joined");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Union").is_some()
+    });
+    assert_eq!(
+        boxed_bodies(&h),
+        held(&[Some("a0000001"), Some("b0000001")])
+    );
+    assert_eq!(active_box(&h), Some("Target Body"));
+    let joined = body_of(&h, "n0000001");
+    // The tool's face in the target's box: the tool's body, refused there.
+    click_face(&mut h, &record, joined, 6);
+    step_until(&mut h, "the tool's", |h| {
+        said_under(h, "Target Body").as_deref()
+            == Some("b0000001 is the Tool Body already: a body can't be its own tool")
+    });
+    // The target's face in the tool's box: the target's body, refused there.
+    click_box(&mut h, "Tool Body");
+    click_face(&mut h, &record, joined, 2);
+    step_until(&mut h, "the target's", |h| {
+        said_under(h, "Tool Body").as_deref()
+            == Some("a0000001 is the Target Body already: a body can't be its own tool")
+    });
+    // The target's face in the target's box: taken as it is, nothing said or sent.
+    click_box(&mut h, "Target Body");
+    click_face(&mut h, &record, joined, 3);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(said_under(&h, "Target Body"), None);
+    // Its own face: on neither.
+    click_face(&mut h, &record, joined, 1);
+    step_until(&mut h, "neither's", |h| {
+        said_under(h, "Target Body").as_deref()
+            == Some(
+                "n0000001.fuse.Face1 is on none of the bodies this union combines: select one \
+                 of them, or another body",
+            )
+    });
+    assert_eq!(
+        boxed_bodies(&h),
+        held(&[Some("a0000001"), Some("b0000001")])
+    );
+    assert!(h.state().tabs()[0].sent.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_feature_on_a_union_refuses_a_body_made_after_it_in_the_box() {
+    // Fourth comes after Joined: the core would refuse it as Joined's tool ("comes after
+    // this feature"), so its box refuses it, in those words, by its row and by its face.
+    let f = fixture();
+    let (mut h, record) = union_between(&f);
+    edit_from_the_timeline(&mut h, "Joined");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Union").is_some()
+    });
+    click_box(&mut h, "Tool Body");
+    let after = "d0000001 comes after this union: a feature may use only features before it";
+    browser(&h).get_by_label("Fourth").click();
+    step_until(&mut h, "the refusal", |h| {
+        said_under(h, "Tool Body").as_deref() == Some(after)
+    });
+    let first = body_of(&h, "c0000001");
+    click_face(&mut h, &record, first, 1);
+    step_until(&mut h, "First taken", |h| {
+        boxed_bodies(h) == held(&[Some("a0000001"), Some("c0000001")])
+    });
+    let fourth = body_of(&h, "d0000001");
+    click_face(&mut h, &record, fourth, 1);
+    step_until(&mut h, "the refusal", |h| {
+        said_under(h, "Tool Body").as_deref() == Some(after)
+    });
+    settled(&mut h);
+    assert_eq!(
+        boxed_bodies(&h),
+        held(&[Some("a0000001"), Some("c0000001")])
+    );
+    assert_eq!(
+        written(&f, &h, "Joined", "tool"),
+        Some(plain(r#""c0000001""#))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [Sent::Begin, Sent::Edit("tool".to_owned())]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_bodies_selected_as_a_union_opens_fill_target_then_tool_and_the_rest_is_noted() {
+    // Plate, then Washer, then a sketch selected: Plate the target, Washer the tool, the
+    // sketch left out and said; a sketch's row clicked then is no body, refused.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("sketched.silico", SKETCHED);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's rows", |h| {
+        shows(h, "Browser", "Washer") && shows(h, "Browser", "Triangle")
+    });
+    let ids = |ids: &[&str]| -> Vec<silico_core::document::FeatureId> {
+        ids.iter()
+            .map(|id| silico_core::document::FeatureId::new(id).unwrap())
+            .collect()
+    };
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .select_features(ids(&["b0000001", "s0000001", "b0000002"]));
+    modify(&mut h, "Union");
+    assert_eq!(
+        boxed_bodies(&h),
+        held(&[Some("b0000001"), Some("b0000002")])
+    );
+    assert_eq!(active_box(&h), Some("Target Body"));
+    let note = "1 feature left out: a union takes two bodies";
+    assert_eq!(said_under(&h, "Target Body").as_deref(), Some(note));
+    assert_eq!(selected_features(&h), ["b0000001", "b0000002"]);
+    added(&mut h);
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Union"),
+        Some(expected(
+            r#"{"type": "fuse", "name": "Union", "base": "b0000001", "tool": "b0000002"}"#
+        ))
+    );
+    browser(&h).get_by_label("Triangle").click();
+    step_until(&mut h, "the refusal", |h| {
+        said_under(h, "Target Body").as_deref()
+            == Some("s0000001 isn't a body: a union takes bodies")
+    });
+    assert_eq!(
+        boxed_bodies(&h),
+        held(&[Some("b0000001"), Some("b0000002")])
+    );
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // Washer then Plate: the other way round.
+    step_until(&mut h, "the selection back", |h| {
+        selected_features(h) == ["b0000001", "s0000001", "b0000002"]
+    });
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .select_features(ids(&["b0000002", "b0000001"]));
+    modify(&mut h, "Subtract");
+    assert_eq!(
+        boxed_bodies(&h),
+        held(&[Some("b0000002"), Some("b0000001")])
+    );
+    assert_eq!(said_under(&h, "Target Body"), None);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_third_body_selected_as_a_union_opens_is_left_out_and_said() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("blocks.silico", THREE_BLOCKS);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's bodies", |h| {
+        shows(h, "Browser", "Third")
+    });
+    let ids = ["b0000001", "c0000001", "a0000001"]
+        .map(|id| silico_core::document::FeatureId::new(id).unwrap());
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .select_features(ids.to_vec());
+    modify(&mut h, "Intersect");
+    assert_eq!(
+        boxed_bodies(&h),
+        held(&[Some("b0000001"), Some("c0000001")])
+    );
+    assert_eq!(
+        said_under(&h, "Target Body").as_deref(),
+        Some("1 feature left out: an intersection takes two bodies")
+    );
+    assert_eq!(selected_features(&h), ["b0000001", "c0000001"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_boolean_says_the_documents_own_problems_are_why_its_off_not_its_bodies() {
+    // A document the gate refuses (the hole's tool names no feature): every dialog's
+    // command is off, the booleans saying why as the feature menus do, not "Needs two
+    // bodies".
+    let broken = EXAMPLE.replace(r#""tool": "a91cw0de""#, r#""tool": "zzzzzzzz""#);
+    let f = fixture();
+    let (mut h, _) = f.opened("broken.silico", &broken);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    step_until(&mut h, "the gate's problems", |h| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.problems > 0)
+    });
+    let why = "The document has problems of its own: no feature changes until they're mended";
+    for kind in ["Union", "Subtract", "Intersect"] {
+        assert!(
+            h.get_by_role_and_label(Role::Toolbar, "MODIFY")
+                .get_by_label(kind)
+                .accesskit_node()
+                .is_disabled(),
+            "{kind}"
+        );
+        pointer_away(&mut h);
+        h.get_by_role_and_label(Role::Toolbar, "MODIFY")
+            .get_by_label(kind)
+            .hover();
+        step_until(&mut h, "its tooltip", |h| {
+            h.query_by_role_and_label(Role::Label, kind).is_some()
+        });
+        step(&mut h);
+        assert!(
+            h.query_by_role_and_label(Role::Label, why).is_some(),
+            "{kind}"
+        );
+        assert!(
+            h.query_by_role_and_label(Role::Label, "Needs two bodies")
+                .is_none(),
+            "{kind}"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_window_over_one_bodys_edges_takes_that_body_once() {
+    // A box drawn while a box of one body is active takes each body it holds an edge of
+    // once: over the block's twelve edges alone (the other block hidden), the block is the
+    // target, and none of its other edges goes on to the tool's box, which would refuse it.
+    use eframe::egui::Modifiers;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, _record) = f.drawn("blocks.silico", TWO_BLOCKS);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 40.0 },
+        eye: [20.0, -100.0, 5.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    });
+    step_until(&mut h, "the meshes read", |h| {
+        !view(h).reading() && meshes_current(h)
+    });
+    step_until(&mut h, "the browser's bodies", |h| {
+        shows(h, "Browser", "Other")
+    });
+    browser(&h).get_by_label("Hide Other").click();
+    step(&mut h);
+    modify(&mut h, "Union");
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 12.0));
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    bodies_boxed_until(&mut h, &[Some("k7f2qx3m"), None]);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(boxed_bodies(&h), held(&[Some("k7f2qx3m"), None]));
+    assert_eq!(said_under(&h, "Tool Body"), None);
+    assert_eq!(active_box(&h), Some("Tool Body"));
+    assert_eq!(selected_features(&h), ["k7f2qx3m"]);
+    assert!(selected_names(&h).is_empty());
+    assert_eq!(h.state().tabs()[0].sent, []);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_booleans_are_off_with_one_body_saying_why_and_on_with_two() {
+    for (text, on) in [(A_BOX, false), (TWO_BLOCKS, true)] {
+        let f = fixture();
+        let (mut h, _) = f.drawn("part.silico", text);
+        meshes_settled(&mut h);
+        step_until(&mut h, "the browser's bodies", |h| {
+            !h.state().tabs()[0].browser.bodies.is_empty()
+        });
+        for kind in ["Union", "Subtract", "Intersect"] {
+            let off = h
+                .get_by_role_and_label(Role::Toolbar, "MODIFY")
+                .get_by_label(kind)
+                .accesskit_node()
+                .is_disabled();
+            assert_eq!(off, !on, "{kind}");
+            pointer_away(&mut h);
+            h.get_by_role_and_label(Role::Toolbar, "MODIFY")
+                .get_by_label(kind)
+                .hover();
+            step_until(&mut h, "its tooltip", |h| {
+                h.query_by_role_and_label(Role::Label, kind).is_some()
+            });
+            step(&mut h);
+            let why = h
+                .query_by_role_and_label(Role::Label, "Needs two bodies")
+                .is_some();
+            assert_eq!(why, !on, "{kind}");
+        }
+        // Clicked while off, nothing opens.
+        if !on {
+            h.get_by_role_and_label(Role::Toolbar, "MODIFY")
+                .get_by_label("Union")
+                .click();
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            assert!(!dialog_open(&h));
+        }
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
 // ---- What's Wrong ----
 
 /// Three blocks side by side: the first and the third short enough for the kernel to refuse
@@ -29381,12 +30468,12 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
             .map(|id| id.as_str()),
         Some("k7f2qx3m")
     );
-    // The hole has no dialog yet; its row is the body's.
+    // The hole's dialog is its Subtract's; its row is the body's.
     menu_on(&mut h, "Timeline", "Hole");
     assert_eq!(
         menu_items(&h, "HOLE"),
         [
-            off("Edit feature double-click", "Subtract has no dialog yet"),
+            on("Edit feature double-click"),
             on("Rename F2"),
             on("Suppress"),
             on("Find in browser"),
@@ -29400,7 +30487,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
     assert_eq!(
         menu_items(&h, "HOLE"),
         [
-            off("Edit feature double-click", "Subtract has no dialog yet"),
+            on("Edit feature double-click"),
             on("Rename F2"),
             on("Suppress"),
             on("Find in timeline"),
@@ -29477,10 +30564,7 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
     assert_eq!(
         menu_items(&h, "HOLE"),
         [
-            (
-                "Edit feature double-click".to_owned(),
-                Some("Subtract has no dialog yet".to_owned())
-            ),
+            ("Edit feature double-click".to_owned(), None),
             ("Rename F2".to_owned(), None),
             ("Suppress".to_owned(), None),
             (

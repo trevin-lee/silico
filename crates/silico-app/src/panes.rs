@@ -277,13 +277,17 @@ impl<P: Clients + 'static> Panes<'_, P> {
         for what in asked.toggled {
             tab.toggle_shown(what);
         }
-        if let Some(id) = asked.selected
-            && tab.selection().feature() != Some(&id)
-        {
-            // A sketch chosen here fills an open dialog's selection box (section 9).
-            tab.pick(&id);
-            tab.selected_in = crate::feature_menu::Place::Browser;
-            tab.selection_mut().select_feature(id);
+        if let Some(id) = asked.selected {
+            if tab.pick_body(&id) {
+                // A row chosen while a dialog's box takes a body fills that box, or says why
+                // it doesn't (section 9); the selection is the bodies the boxes hold.
+                tab.selected_in = crate::feature_menu::Place::Browser;
+            } else if tab.selection().feature() != Some(&id) {
+                // A sketch chosen here fills an open dialog's selection box (section 9).
+                tab.pick(&id);
+                tab.selected_in = crate::feature_menu::Place::Browser;
+                tab.selection_mut().select_feature(id);
+            }
         }
         if let Some(id) = asked.menu_selected
             && tab.selection().feature() != Some(&id)
@@ -406,11 +410,18 @@ impl<P: Clients + 'static> Panes<'_, P> {
         };
         let enabled = !tab.closing();
         let title = dialog.kind.title();
-        let rows = &tab.browser.sketches;
+        // A feature's name as the timeline lists it: a sweep's sketch, a boolean's body (one
+        // its own feature consumes too, which the browser doesn't list).
+        let entries = tab
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
         let named = |id: &FeatureId| {
-            rows.iter()
-                .find(|row| &row.id == id)
-                .map(|row| row.name.clone())
+            entries
+                .iter()
+                .find(|entry| &entry.id == id)
+                .map(|entry| entry.name.clone())
         };
         let refused = |field: &str| refused.contains(&field);
         let mut cards = properties::Cards {
@@ -3952,9 +3963,10 @@ mod property_panel_drawn {
         for pair in tops.windows(2) {
             assert!(pair[0] < pair[1], "{lines:?} out of order: {tops:?}");
         }
-        // `featureProps` gives `noShow`: Edit, off (a cut has no dialog), and Copy as JSON.
+        // `featureProps` gives `noShow`: Edit, on (a cut's dialog is Subtract's), and Copy
+        // as JSON.
         let edit = h.get_by_role_and_label(Role::Button, "Edit Hole");
-        assert!(edit.accesskit_node().is_disabled());
+        assert!(!edit.accesskit_node().is_disabled());
         assert!(
             h.query_by_role_and_label(Role::Button, "Show in timeline")
                 .is_none()
@@ -4026,7 +4038,7 @@ mod property_panel_drawn {
     #[test]
     fn a_document_problems_show_in_timeline_selects_its_feature_for_the_timeline_to_scroll_to() {
         // `docProps` gives every card Edit and Show in timeline: the gate's problem naming
-        // Hole, with nothing selected.
+        // Hole, with nothing selected, the timeline counting it as the gate's.
         let mut tab = part();
         let gate = silico_core::Error::new(
             silico_core::ErrorCode::InvalidInput,
@@ -4035,11 +4047,16 @@ mod property_panel_drawn {
         .with_feature("c0000001")
         .with_parameter("tool");
         tab.document_problems.push(Said::of(&gate));
+        if let Some(timeline) = tab.timeline.as_mut() {
+            timeline.problems = 1;
+        }
         let mut h = drawn(tab);
         assert!(
             h.query_by_label("Revision").is_some(),
             "the document's view"
         );
+        // Off: nothing of a document the gate refused changes but its text, though the
+        // cut's dialog is Subtract's.
         assert!(
             h.get_by_role_and_label(Role::Button, "Edit Hole")
                 .accesskit_node()
@@ -4329,7 +4346,7 @@ mod property_panel_drawn {
             assert_eq!(colour(&shown, 0), css::CAND_TEXT);
             top = row.bottom() + css::CAND_MARGIN;
         }
-        // `.ec-actions`: Edit Hole (`.btn-secondary`, Gray.300, off: its words Gray.750),
+        // `.ec-actions`: Edit Hole (`.btn-secondary`, Gray.300, on, its words Gray.750),
         // then Copy as JSON 6 after it (`.btn-ghost`: no fill, Gray.750), each 22 high.
         let edit = h.get_by_role_and_label(Role::Button, "Edit Hole").rect();
         assert!(

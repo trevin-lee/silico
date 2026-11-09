@@ -190,6 +190,32 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 - A dangling dimension is repaired by dragging its handle onto an entity; a dangling relation by dragging the entity, by *Auto Repair*, or in *Display/Delete Relations*; the help advises repairing the first feature in error and working down ([Error Message - Dangling Geometry](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDE_SKETCH_EXTREFS_FAIL.htm)).
 - The help doesn't say what a feature after a failed one is built on (the last good body, or nothing), or whether it fails too.
 
+### Combine
+
+Read from the 2027 help on 2026-11-08.
+
+- In a multibody part, *Combine* (Features toolbar, or Insert > Features > Combine) opens the Combine PropertyManager, which adds, subtracts, or keeps the overlap of bodies of that one part ([Combine PropertyManager](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_DVE_FEAT_COMBINE_BODIES.htm), [Combine Bodies](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_combine_bodies.htm)).
+- *Operation Type* is one of three ([Combine Bodies](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_combine_bodies.htm)):
+  - *Add* combines the solids of all the selected bodies into a single body;
+  - *Subtract* removes overlapping material from a selected main body;
+  - *Common* removes all material except what overlaps.
+
+  The PropertyManager's page names the third *Combine* where it lists them, and *Common* where it says which boxes show; the Combine Bodies and Combining Bodies - Common pages name it *Common*.
+- *Add* and *Common* have one box, *Bodies to Combine* (*Solid Bodies*): the bodies to combine ([Combine PropertyManager](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_DVE_FEAT_COMBINE_BODIES.htm)).
+- *Subtract* has two ([Combine PropertyManager](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_DVE_FEAT_COMBINE_BODIES.htm)):
+  - *Main Body* (*Solid Body*): the one body to keep. *Make main body transparent* helps to select bodies to subtract that it hides.
+  - *Bodies to Subtract* (*Solid Bodies*): the bodies whose material is removed.
+- Each box takes bodies selected in the graphics area or in the *Solid Bodies* folder of the FeatureManager design tree ([Combine PropertyManager](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_DVE_FEAT_COMBINE_BODIES.htm)).
+- The steps for each operation: choose the operation, fill its boxes (for Subtract, *Main Body* first), click *Show Preview*, then OK ([Combining Bodies - Add](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_combining_bodies_add.htm), [Combining Bodies - Subtract](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_combining_bodies_subtract.htm), [Combining Bodies - Common](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_combining_bodies_common.htm)).
+- The help doesn't say:
+  - whether bodies, or faces, selected before the command fill its boxes;
+  - whether *Main Body* hands the focus on to *Bodies to Subtract* once it holds its body;
+  - what a click on a body's face or edge puts in a box;
+  - whether one body may be in both of Subtract's boxes;
+  - what the PropertyManager shows when the result is empty or changes nothing.
+
+Silico's booleans are binary: `fuse`, `cut`, and `common` each take one `base` and one `tool`, and consume both. So Silico's dialog has two boxes of one body each, its target and its tool, for all three operations, as Subtract's *Main Body* and one body to subtract. A pick in a box replaces its body, as a box of one entity does. The same body in both boxes is refused. Bodies selected in the browser fill the boxes when the dialog opens, the first the target, the second the tool; a selected face, edge, or vertex doesn't, since the help doesn't say it does. A click on a body's face, edge, or vertex takes that body. Once the target is taken, the tool's box becomes the active one if it's empty, as Fusion's Combine moves from its Target Body to its Tool Bodies (docs/ux/fusion.md, *Combine*). The help names none of these rules, so they're Silico's own.
+
 ## 6. Undo, saving, and changes on disk
 
 - Ctrl+Z undoes the last action "when possible"; the Undo List undoes a chosen action and every one after it; Ctrl+Y redoes, when the undo can be reversed ([Basic Commands](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_basic_commands.htm)).
@@ -219,6 +245,7 @@ What this note looked for and couldn't source from the help:
 - What a drag's release keeps (a relation from dropping on an entity; a position the solver can't reach); dragging fully defined geometry.
 - What trim does to relations and dimensions, and what deleting an entity does to its relations and to a shared endpoint.
 - What a PropertyManager shows when its preview fails.
+- Combine: whether a selection made before it fills its boxes, whether its boxes hand the focus on, and what a click on a body's face puts in one (§5, *Combine*).
 - What a feature downstream of a failed one is built on.
 - What is undoable, and whether undo crosses a save, a rebuild, leaving a sketch, or a feature's OK.
 - What happens when a document open for writing changes on disk, beyond SolidWorks' own one-writer locking.
