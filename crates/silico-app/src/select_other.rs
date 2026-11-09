@@ -270,8 +270,8 @@ impl SelectOther {
         self.menu.is_some() || self.waiting.is_some()
     }
 
-    /// The meshes whose boxes are kept for the next cast, in the order they were made: each
-    /// the view's, never one it has let go.
+    /// The meshes whose boxes are kept for the next cast, by their bodies' numbers: each the
+    /// view's, never one it has let go.
     pub fn kept_meshes(&self) -> Vec<&Arc<Mesh>> {
         self.boxes.meshes().collect()
     }
@@ -337,7 +337,7 @@ impl SelectOther {
         // Each body's boxes asked for as the view takes its mesh, made off the UI thread, and
         // those of a mesh it no longer holds let go: nothing keeps an old mesh.
         self.boxes
-            .hold(view.bodies().values().map(|body| &body.mesh), &ctx);
+            .hold(view.bodies().iter().map(|(n, body)| (*n, &body.mesh)), &ctx);
         let menu_changed = self
             .menu
             .as_ref()
@@ -561,7 +561,7 @@ impl SelectOther {
     fn made(&self, meshes: &[(u32, Arc<Mesh>)]) -> bool {
         meshes
             .iter()
-            .all(|(_, mesh)| self.boxes.made_of(mesh).is_some())
+            .all(|(n, mesh)| self.boxes.made_of(*n, mesh).is_some())
     }
 
     /// The right click waiting, its menu opened if its bodies' boxes are made now, or none
@@ -678,7 +678,7 @@ impl SelectOther {
     ) -> Option<(Vec<Row>, usize)> {
         let bodies: Vec<(u32, &Pickable)> = meshes
             .iter()
-            .map(|(n, mesh)| self.boxes.made_of(mesh).map(|pickable| (*n, pickable)))
+            .map(|(n, mesh)| self.boxes.made_of(*n, mesh).map(|pickable| (*n, pickable)))
             .collect::<Option<_>>()?;
         let pixel = centre_of(square(click.at_px, frame.size_px, 0));
         let pointer = pixel.map(|c| f64::from(c) + 0.5);
