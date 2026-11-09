@@ -1527,15 +1527,24 @@ pub const CANVAS_MIN_HEIGHT: f32 = VIEW_CUBE_MARGIN
     + NAVIGATION_BAR_HEIGHT
     + NAVIGATION_BAR_MARGIN;
 
+/// The toolbar's least width: its widest row, sketch mode's (SKETCH's CREATE, MODIFY,
+/// CONSTRAINTS, and INSPECT, from its left after `.tb-panels`' 6, then Finish Sketch in
+/// `.tb-finish`'s 8 at each side and the row's 6 at its right), 881.5 in the app's fonts;
+/// rounded up to the 8-point grid the prototype's columns are on (248, 296), 888. The test
+/// `at_the_windows_least_width_the_app_bar_toolbar_and_status_bar_fit` lays it out there.
+pub const TOOLBAR_MIN_WIDTH: f32 = 888.0;
+
 /// The window's least size (Fusion's window has one; the prototype, a page, has none): the
-/// browser's and the property panel's columns at their leasts (`crate::pane_widths`'
-/// `BROWSER_MIN_W` and `RIGHT_MIN_W`, to which a narrower window takes them, 200 and 232)
-/// and the least canvas between them, 772; and the app bar (`--top-bar-h`), the toolbar
-/// (`--toolbar-tabs-h`, `--toolbar-h`, and its border), the least canvas, the timeline
-/// (`--timeline-h`, and the 1 egui's separator line takes above it), and the status bar
-/// (`--status-h`), 336.
-pub const WINDOW_MIN_WIDTH: f32 =
-    crate::pane_widths::BROWSER_MIN_W + crate::pane_widths::RIGHT_MIN_W + CANVAS_MIN_WIDTH;
+/// wider of the toolbar's least ([`TOOLBAR_MIN_WIDTH`], 888) and the side panes' columns at
+/// their leasts (`crate::pane_widths`' `BROWSER_MIN_W` and `PROPERTIES_MIN_W`, 200 and 232)
+/// with the least canvas between them, 772: 888, at which the panes keep the prototype's
+/// widths and a narrower window gives back only what panes dragged wider take; and the app
+/// bar (`--top-bar-h`), the toolbar (`--toolbar-tabs-h`, `--toolbar-h`, and its border), the
+/// least canvas, the timeline (`--timeline-h`, and the 1 egui's separator line takes above
+/// it), and the status bar (`--status-h`), 336.
+pub const WINDOW_MIN_WIDTH: f32 = TOOLBAR_MIN_WIDTH.max(
+    crate::pane_widths::BROWSER_MIN_W + crate::pane_widths::PROPERTIES_MIN_W + CANVAS_MIN_WIDTH,
+);
 pub const WINDOW_MIN_HEIGHT: f32 = TOP_BAR_HEIGHT
     + TOOLBAR_TABS_HEIGHT
     + TOOLBAR_PANELS_HEIGHT

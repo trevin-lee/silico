@@ -313,9 +313,10 @@ fn the_panes_are_the_prototypes_columns_the_browser_248_the_properties_296_and_t
     // the last point of its column), the right panel's border the 1 before its panel, the
     // canvas between. At 1280: 1280 − 248 − 296 = 736, the border at 248 + 736 = 984, the
     // panel from 985 (1280 − 295). At 1600: 1600 − 544 = 1056, the panel from 1305. At 884:
-    // 884 − 544 = 340, the canvas's least, the panel from 589 (884 − 295). At the window's
-    // least size, 772 by 336 (main.rs): the side panes at their leasts, 772 − 200 − 232 =
-    // 340, the panel from 541 (200 + 340 + 1). At 500, under that: the panes at their
+    // 884 − 544 = 340, the canvas's least, the panel from 589 (884 − 295). At 772 by 336,
+    // the panes' leasts and the canvas's (under the window's least, which the toolbar sets,
+    // main.rs): the side panes at their leasts, 772 − 200 − 232 = 340, the panel from 541
+    // (200 + 340 + 1). At 500, under that: the panes at their
     // leasts and the canvas the rest, 500 − 432 = 68, the panel from 269. At 400, under the
     // panes' leasts, 432: the canvas nothing (`#canvas-wrap`'s `min-width: 0`), the panel's
     // border at 200, the panel from 201 to 432, past the window's right edge.
@@ -516,11 +517,22 @@ fn a_drag_on_a_side_panes_border_moves_its_column_by_the_drag_and_the_canvas_tak
     for (x, over) in [
         (247.5, true),
         (984.5, true),
-        // Inside egui's grab radius, 3 at each side of the border.
+        // Inside egui's grab radius, 3 at each side of the border: the handle 244 to 251,
+        // and 981 to 988; a point past either end, over a row or the canvas, not. (Over the
+        // property panel's rows, which take no click, egui reaches the nearest widget within
+        // its interact radius, 5, so there the handle answers to 993; 994 is past it.)
         (245.0, true),
         (250.0, true),
         (982.0, true),
         (987.0, true),
+        (244.5, true),
+        (250.5, true),
+        (981.5, true),
+        (987.5, true),
+        (243.0, false),
+        (252.0, false),
+        (980.0, false),
+        (994.0, false),
         // Well away: the browser, the canvas, the property panel.
         (200.0, false),
         (300.0, false),
@@ -613,13 +625,13 @@ fn widths_file(f: &Fixture) -> PathBuf {
 /// The app keeping its panes' widths in `file`, in a window 1280 wide, the example open
 /// from `name`, the file read.
 fn keeping_widths(f: &Fixture, name: &str, file: &Path) -> AppHarness {
-    use silico_app::pane_widths::PaneWidths;
+    use silico_app::pane_widths::KeptWidths;
     let file = file.to_owned();
     let mut h = in_window(f, name, 1280.0, |app| {
-        app.keeping_widths(PaneWidths::at(file))
+        app.keeping_widths(KeptWidths::at(file))
     });
     step_until(&mut h, "the widths read", |h| {
-        h.state().kept_widths().is_some_and(PaneWidths::is_read)
+        h.state().kept_widths().is_read()
     });
     step(&mut h);
     h
@@ -703,6 +715,243 @@ fn a_widths_file_that_doesnt_parse_is_the_defaults_and_one_out_of_range_is_clamp
     let widths = h.state().pane_widths();
     assert_eq!((widths.browser, widths.properties), (200.0, 8192.0));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), out);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// In a window narrow enough that the panes give width back, a drag moves only its own
+/// column, by its distance, the other held at the width it's shown at: at 800, from 248
+/// and 296, the columns are 212, 340, 248 (84 over; the browser gives 84 · 48 / 112 = 36,
+/// the property panel 48). The browser's border 10 left: 202, the property panel held at
+/// 248, the canvas 800 − 202 − 248 = 350. Let go, the browser's choice is 202 and the
+/// property panel's still 296: 38 over, the rooms 2 and 64, the browser gives 38 · 2 / 66 =
+/// 1.15, 1, the property panel 37, so 201, 340, 259. At 1280 again, the property panel is
+/// back at its 296 and the browser at the 202 it was dragged to: the canvas 782.
+#[test]
+fn a_drag_in_a_narrowed_window_moves_its_column_alone_and_keeps_the_others_choice() {
+    let f = fixture();
+    let mut h = in_window(&f, "example.silico", 1280.0, |app| app);
+    resized(&mut h, 800.0);
+    assert_eq!(columns(&h), [(0.0, 211.0), (212.0, 340.0), (553.0, 247.0)]);
+    press_at(&mut h, 211.5);
+    // One move of 10, past egui's 6 before a press is a drag.
+    h.hover_at(on_panes(201.5));
+    step(&mut h);
+    step(&mut h);
+    assert!(resize_cursor(&h));
+    assert_eq!(columns(&h), [(0.0, 201.0), (202.0, 350.0), (553.0, 247.0)]);
+    released_at(&mut h, 201.5);
+    assert_eq!(columns(&h), [(0.0, 200.0), (201.0, 340.0), (542.0, 258.0)]);
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (202.0, 296.0));
+    resized(&mut h, 1280.0);
+    assert_eq!(columns(&h), [(0.0, 201.0), (202.0, 782.0), (985.0, 295.0)]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The widths file read only once a drag is under way (its read held till then): the
+/// person's drag wins. Dragged to 300 with the property panel at 296, the file's 400 and
+/// 260 then read: the columns stay 300 and 296, during the drag and after, and the file is
+/// written with them as the drag ends.
+#[test]
+fn a_widths_file_read_while_a_border_is_dragged_never_moves_the_panes() {
+    use silico_app::pane_widths::KeptWidths;
+    let f = fixture();
+    let file = widths_file(&f);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "silico pane-widths 1\nbrowser 400\nproperties 260\n").unwrap();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let read: silico_app::pane_widths::Read = Box::new(move |file| {
+        released.recv().ok()?;
+        std::fs::read(file).ok()
+    });
+    let kept = file.clone();
+    let mut h = in_window(&f, "example.silico", 1280.0, move |app| {
+        app.keeping_widths(KeptWidths::reading(kept, read))
+    });
+    assert!(!h.state().kept_widths().is_read());
+    press_at(&mut h, 247.5);
+    pointer_moved(&mut h, 247.5, 299.5);
+    step(&mut h);
+    assert_eq!(columns(&h), [(0.0, 299.0), (300.0, 684.0), (985.0, 295.0)]);
+    release.send(()).unwrap();
+    step_until(&mut h, "the widths read", |h| {
+        h.state().kept_widths().is_read()
+    });
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(columns(&h), [(0.0, 299.0), (300.0, 684.0), (985.0, 295.0)]);
+    released_at(&mut h, 299.5);
+    assert_eq!(columns(&h), [(0.0, 299.0), (300.0, 684.0), (985.0, 295.0)]);
+    file_reads(&file, "silico pane-widths 1\nbrowser 300\nproperties 296\n");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Only the primary button drags a border: a middle-button drag from the browser's border
+/// 80 right moves no column, and the widths chosen are the prototype's still.
+#[test]
+fn a_middle_button_drag_on_a_border_resizes_nothing() {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let f = fixture();
+    let mut h = in_window(&f, "example.silico", 1280.0, |app| app);
+    let button = |h: &AppHarness, x: f32, pressed: bool| {
+        h.event(Event::PointerButton {
+            pos: on_panes(x),
+            button: PointerButton::Middle,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    };
+    h.hover_at(on_panes(247.5));
+    step(&mut h);
+    button(&h, 247.5, true);
+    step(&mut h);
+    for i in 1..=8u8 {
+        h.hover_at(on_panes(247.5 + 10.0 * f32::from(i)));
+        step(&mut h);
+    }
+    button(&h, 327.5, false);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(columns(&h), [(0.0, 247.0), (248.0, 736.0), (985.0, 295.0)]);
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (248.0, 296.0));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The thread keeping the panes' widths asks the window for a frame as it tells what it
+/// read, so a window drawing nothing else lays them out: with no document open (no rebuild
+/// to wake it), the read held, then let go, a frame is asked for with none stepped.
+#[test]
+fn the_widths_read_ask_the_window_for_a_frame() {
+    use silico_app::pane_widths::KeptWidths;
+    use std::sync::atomic::AtomicU64;
+    let f = fixture();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let read: silico_app::pane_widths::Read = Box::new(move |_| {
+        released.recv().ok()?;
+        Some(b"silico pane-widths 1\nbrowser 300\nproperties 260\n".to_vec())
+    });
+    let file = widths_file(&f);
+    let mut h = f.app_made(|app| app.keeping_widths(KeptWidths::reading(file, read)));
+    let asked = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&asked);
+    h.ctx.set_request_repaint_callback(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+    });
+    step(&mut h);
+    step(&mut h);
+    assert!(!h.state().kept_widths().is_read());
+    let before = asked.load(Ordering::SeqCst);
+    release.send(()).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while asked.load(Ordering::SeqCst) == before {
+        assert!(Instant::now() < deadline, "no frame asked for");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    step(&mut h);
+    assert!(h.state().kept_widths().is_read());
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (300.0, 260.0));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// At the window's least size, 888 by 336 (main.rs: the toolbar's least, wider than the
+/// panes' leasts and the canvas's, 772), the app bar, the toolbar, and the status bar lay
+/// out: every button and tab in them inside the window and none over another, with a part
+/// open and in sketch mode, whose panels and Finish Sketch make the toolbar's widest row,
+/// Finish Sketch at least 15 right of the last panel's label (that panel's padding 6 and
+/// border 1, then `.tb-finish`'s 8).
+#[test]
+fn at_the_windows_least_width_the_app_bar_toolbar_and_status_bar_fit() {
+    let least = (
+        silico_app::theme::WINDOW_MIN_WIDTH,
+        silico_app::theme::WINDOW_MIN_HEIGHT,
+    );
+    let f = fixture();
+    let path = f.file("example.silico", EXAMPLE);
+    let app = App::new(Arc::clone(&f.sessions));
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((least.0 + 2.0 * MARGIN, least.1 + 2.0 * MARGIN))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    silico_app::theme::apply(&h.ctx);
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(&mut h, "the timeline read", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.timeline.is_some())
+    });
+    step(&mut h);
+    // Each button and tab wholly in a bar: the app bar and the toolbar above the panes (30
+    // and 77), and the status bar (24) at the window's bottom; what the panes scroll under
+    // the status bar isn't in it.
+    let in_bars = |h: &AppHarness| -> Vec<(String, eframe::egui::Rect)> {
+        let top = MARGIN..=MARGIN + 107.0;
+        let bottom = MARGIN + least.1 - 24.0..=MARGIN + least.1;
+        h.root()
+            .query_all(egui_kittest::kittest::by().recursive(true))
+            .filter(|node| matches!(node.accesskit_node().role(), Role::Button | Role::Tab))
+            .filter_map(|node| {
+                let node = node.accesskit_node();
+                let rect = node.bounding_box()?;
+                let rect = eframe::egui::Rect::from_min_max(
+                    eframe::egui::pos2(rect.x0 as f32, rect.y0 as f32),
+                    eframe::egui::pos2(rect.x1 as f32, rect.y1 as f32),
+                );
+                let within = |band: &std::ops::RangeInclusive<f32>| {
+                    band.contains(&rect.top()) && band.contains(&rect.bottom())
+                };
+                (within(&top) || within(&bottom)).then(|| (node.label().unwrap_or_default(), rect))
+            })
+            .collect()
+    };
+    let fits = |h: &AppHarness, what: &str| {
+        let placed = in_bars(h);
+        assert!(placed.len() > 10, "{what}: {placed:?}");
+        for (label, rect) in &placed {
+            assert!(
+                rect.left() >= MARGIN - 0.5 && rect.right() <= MARGIN + least.0 + 0.5,
+                "{what}: {label} at {rect:?}, past the window"
+            );
+        }
+        for (at, (label, rect)) in placed.iter().enumerate() {
+            for (other, place) in &placed[at + 1..] {
+                let both = rect.intersect(*place);
+                let nested = rect.contains_rect(*place) || place.contains_rect(*rect);
+                assert!(
+                    nested || both.width() <= 0.5 || both.height() <= 0.5,
+                    "{what}: {label} at {rect:?} over {other} at {place:?}"
+                );
+            }
+        }
+    };
+    fits(&h, "a part open");
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    step(&mut h);
+    fits(&h, "in sketch mode");
+    let placed = in_bars(&h);
+    let finish = placed
+        .iter()
+        .find(|(label, _)| label == "Finish Sketch")
+        .map(|(_, rect)| *rect)
+        .unwrap();
+    let last = placed
+        .iter()
+        .filter(|(label, rect)| {
+            // The toolbar's row: under the app bar, over the panes.
+            let toolbar = rect.top() > MARGIN + 30.0 && rect.bottom() <= MARGIN + 107.0;
+            toolbar && label != "Finish Sketch"
+        })
+        .map(|(_, rect)| rect.right())
+        .fold(f32::MIN, f32::max);
+    assert!(
+        finish.left() - last >= 15.0,
+        "Finish Sketch at {finish:?}, the panels to {last}"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 

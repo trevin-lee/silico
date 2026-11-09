@@ -7,6 +7,7 @@
 //! also its Home tab, and the documents opened lately (`recent`).
 
 pub mod app;
+mod app_data;
 mod banner;
 pub mod bar;
 pub mod box_select;

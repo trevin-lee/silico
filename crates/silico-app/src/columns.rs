@@ -10,9 +10,9 @@
 //! double-clicked, where a border here moves its own column alone, by the drag's distance,
 //! and stops at the first bound it meets.
 
-use eframe::egui::{self, CursorIcon, Rect, Sense, Ui};
+use eframe::egui::{self, CursorIcon, PointerButton, Rect, Sense, Ui};
 
-use crate::pane_widths::{BROWSER_MIN_W, PaneWidths, RIGHT_MIN_W, Widths};
+use crate::pane_widths::{BROWSER_MIN_W, KeptWidths, PROPERTIES_MIN_W, Widths};
 use crate::theme::CANVAS_MIN_WIDTH;
 
 /// A side pane, whose column's inner border is dragged.
@@ -26,10 +26,10 @@ pub(crate) enum Side {
 
 impl Side {
     /// Its column's least width.
-    fn least(self) -> f32 {
+    fn min(self) -> f32 {
         match self {
             Side::Browser => BROWSER_MIN_W,
-            Side::Properties => RIGHT_MIN_W,
+            Side::Properties => PROPERTIES_MIN_W,
         }
     }
 }
@@ -79,13 +79,13 @@ pub(crate) fn fit(chosen: Widths, width: f32) -> Laid {
         };
     }
     let browser_room = browser - BROWSER_MIN_W;
-    let properties_room = properties - RIGHT_MIN_W;
+    let properties_room = properties - PROPERTIES_MIN_W;
     let room = browser_room + properties_room;
     if over >= room {
         return Laid {
             browser: BROWSER_MIN_W,
-            canvas: (width - BROWSER_MIN_W - RIGHT_MIN_W).max(0.0),
-            properties: RIGHT_MIN_W,
+            canvas: (width - BROWSER_MIN_W - PROPERTIES_MIN_W).max(0.0),
+            properties: PROPERTIES_MIN_W,
         };
     }
     // `room` is more than `over`, which is more than 0. Each share from 0 to its room: the
@@ -110,7 +110,7 @@ pub(crate) fn fit(chosen: Widths, width: f32) -> Laid {
 /// `travel`, the pointer's way right since its press (the browser's border, its column's
 /// right edge, widening it; the property panel's, its left edge, narrowing it), to a whole
 /// point; no wider than leaves the canvas [`CANVAS_MIN_WIDTH`] in a window `width` wide
-/// beside `other`, the other column as laid, and no narrower than its least, which wins
+/// beside `other`, the other column as held, and no narrower than its least, which wins
 /// where the two cross.
 pub(crate) fn dragged(side: Side, start: f32, travel: f32, other: f32, width: f32) -> f32 {
     let wanted = match side {
@@ -118,14 +118,19 @@ pub(crate) fn dragged(side: Side, start: f32, travel: f32, other: f32, width: f3
         Side::Properties => start - travel,
     };
     let most = (width - other - CANVAS_MIN_WIDTH).floor();
-    wanted.round().min(most).max(side.least())
+    wanted.round().min(most).max(side.min())
 }
 
-/// A border's drag under way: its pane's, and its column's width as it began.
+/// A border's drag under way, by the primary button: its pane's; its column's width as it
+/// began, and where the button was pressed (kept, as the pointer's own press origin moves
+/// with any other button's press); and the other column's width as it was shown then, at
+/// which it's held till the drag ends.
 #[derive(Debug, Clone, Copy)]
 struct Drag {
     side: Side,
     start: f32,
+    origin: f32,
+    other: f32,
 }
 
 /// The side panes' widths, as the person chose them by dragging their borders (the
@@ -135,7 +140,7 @@ pub(crate) struct Columns {
     drag: Option<Drag>,
     /// Whether a border has been dragged: the file's widths, read after, aren't taken.
     dragged: bool,
-    kept: Option<PaneWidths>,
+    kept: KeptWidths,
 }
 
 impl Columns {
@@ -145,13 +150,13 @@ impl Columns {
             chosen: Widths::default(),
             drag: None,
             dragged: false,
-            kept: None,
+            kept: KeptWidths::unkept(),
         }
     }
 
     /// The widths kept in `kept`, taken once it's read, each drag's written to it.
-    pub(crate) fn keeping(&mut self, kept: PaneWidths) {
-        self.kept = Some(kept);
+    pub(crate) fn keeping(&mut self, kept: KeptWidths) {
+        self.kept = kept;
     }
 
     /// The widths as chosen.
@@ -159,15 +164,15 @@ impl Columns {
         self.chosen
     }
 
-    /// Where the widths are kept, if anywhere.
-    pub(crate) fn kept(&self) -> Option<&PaneWidths> {
-        self.kept.as_ref()
+    /// Where the widths are kept.
+    pub(crate) fn kept(&self) -> &KeptWidths {
+        &self.kept
     }
 
     /// The kept widths taken, if the file has been read since the last poll and no border
     /// has been dragged before it was (the person's drag wins, and is written at its end).
     pub(crate) fn poll(&mut self) {
-        if let Some(read) = self.kept.as_mut().and_then(PaneWidths::poll)
+        if let Some(read) = self.kept.poll()
             && !self.dragged
         {
             self.chosen = read;
@@ -176,22 +181,31 @@ impl Columns {
 
     /// The thread keeping the widths asks `ctx` for a frame when it has read them.
     pub(crate) fn waking(&self, ctx: &egui::Context) {
-        if let Some(kept) = &self.kept {
-            kept.waking(ctx);
-        }
+        self.kept.waking(ctx);
     }
 
-    /// The columns for a window `width` wide ([`fit`]).
+    /// The columns for a window `width` wide ([`fit`]), from the widths chosen, but while a
+    /// border is dragged, the other column held at the width it was shown at as the drag
+    /// began: so the dragged one moves by the drag alone, even in a window narrow enough
+    /// that the panes give width back, and the other's choice is kept for a wider one.
     pub(crate) fn laid(&self, width: f32) -> Laid {
-        fit(self.chosen, width)
+        let mut widths = self.chosen;
+        if let Some(drag) = self.drag {
+            match drag.side {
+                Side::Browser => widths.properties = drag.other,
+                Side::Properties => widths.browser = drag.other,
+            }
+        }
+        fit(widths, width)
     }
 
     /// Each side pane's border's handle, over the columns laid as `laid` in `area` (the
     /// tiles' rect: its left the browser's, its width the window's): the border's 1 point
     /// and egui's grab radius at each side of it, the resize cursor shown while it's hovered
-    /// or dragged. A drag moves its column by the pointer's way from its press, clamped
-    /// ([`dragged`]), the other held as laid, from the next frame; its widths are kept as it
-    /// ends. Drawn after the panes, so it's on top of what they sense beside the border.
+    /// or dragged. A drag by the primary button moves its column by the pointer's way from
+    /// its press, clamped ([`dragged`]), the other held as shown, from the next frame; its
+    /// widths are kept as it ends. Drawn after the panes, so it's on top of what they sense
+    /// beside the border.
     pub(crate) fn handles(&mut self, ui: &Ui, area: Rect, laid: Laid) {
         let grab = ui.style().interaction.resize_grab_radius_side;
         for side in [Side::Browser, Side::Properties] {
@@ -207,35 +221,31 @@ impl Columns {
                 ui.id().with(("column-border", side)),
                 Sense::CLICK | Sense::DRAG,
             );
-            if response.hovered() || response.dragged() {
+            if response.hovered() || response.dragged_by(PointerButton::Primary) {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
             }
-            if response.drag_started() {
+            let other = match side {
+                Side::Browser => Side::Properties,
+                Side::Properties => Side::Browser,
+            };
+            if response.drag_started_by(PointerButton::Primary)
+                && let Some(origin) = ui
+                    .input(|input| input.pointer.press_origin())
+                    .or(response.interact_pointer_pos())
+            {
                 self.drag = Some(Drag {
                     side,
                     start: laid.of(side),
+                    origin: origin.x,
+                    other: laid.of(other),
                 });
-                // The other column held as it's shown, so this one moves by the drag alone.
-                self.chosen = Widths {
-                    browser: laid.browser,
-                    properties: laid.properties,
-                };
             }
-            let pointer = ui.input(|input| {
-                input
-                    .pointer
-                    .press_origin()
-                    .zip(input.pointer.interact_pos())
-            });
-            if response.dragged()
+            if response.dragged_by(PointerButton::Primary)
                 && let Some(drag) = self.drag.filter(|drag| drag.side == side)
-                && let Some((from, to)) = pointer
+                && let Some(to) = ui.input(|input| input.pointer.interact_pos())
             {
-                let other = match side {
-                    Side::Browser => laid.properties,
-                    Side::Properties => laid.browser,
-                };
-                let width = dragged(side, drag.start, to.x - from.x, other, area.width());
+                let travel = to.x - drag.origin;
+                let width = dragged(side, drag.start, travel, drag.other, area.width());
                 match side {
                     Side::Browser => self.chosen.browser = width,
                     Side::Properties => self.chosen.properties = width,
@@ -243,12 +253,27 @@ impl Columns {
                 self.dragged = true;
                 ui.ctx().request_repaint();
             }
-            if response.drag_stopped() && self.drag.take().is_some() {
-                if let Some(kept) = &self.kept {
-                    kept.save(self.chosen);
-                }
-                ui.ctx().request_repaint();
+            if response.drag_stopped_by(PointerButton::Primary) {
+                self.end(ui.ctx());
             }
+        }
+    }
+
+    /// A drag held while the primary button isn't down any more, its release unseen (the
+    /// panes gone from the window, their last tab closed, as it was let go): ended, and its
+    /// widths kept, as a seen release does. Called after the frame is drawn.
+    pub(crate) fn settle(&mut self, ctx: &egui::Context) {
+        if self.drag.is_some() && !ctx.input(|input| input.pointer.primary_down()) {
+            self.end(ctx);
+        }
+    }
+
+    /// The drag under way, if one is, ended: the widths chosen kept, the other pane's
+    /// choice as it was, and the next frame laid out from them.
+    fn end(&mut self, ctx: &egui::Context) {
+        if self.drag.take().is_some() {
+            self.kept.save(self.chosen);
+            ctx.request_repaint();
         }
     }
 }
@@ -433,6 +458,86 @@ mod tests {
                 dragged(Side::Properties, 232.0, travel, 200.0, 700.0),
                 232.0
             );
+        }
+    }
+
+    #[test]
+    fn a_held_drag_lays_the_other_pane_out_as_shown_and_keeps_its_choice() {
+        // At 800 from 248 and 296 the columns are 212, 340, 248 (by hand above). The
+        // browser's border held at 202: the property panel held at the 248 it was shown at,
+        // the canvas 800 − 202 − 248 = 350; its own choice still 296.
+        let mut columns = Columns::new();
+        columns.chosen = widths(202.0, 296.0);
+        columns.drag = Some(Drag {
+            side: Side::Browser,
+            start: 212.0,
+            origin: 0.0,
+            other: 248.0,
+        });
+        assert_eq!(columns.laid(800.0), laid(202.0, 350.0, 248.0));
+        // Let go: from 202 and 296 at 800, 38 over; the rooms 2 and 64, 66; the browser
+        // gives 38 · 2 / 66 = 1.15, 1, the property panel 37: 201, 340, 259.
+        columns.drag = None;
+        assert_eq!(columns.laid(800.0), laid(201.0, 340.0, 259.0));
+        // The property panel's border held at 240, the browser at the 212 it was shown at,
+        // its own choice still 248: the canvas 800 − 212 − 240 = 348.
+        columns.chosen = widths(248.0, 240.0);
+        columns.drag = Some(Drag {
+            side: Side::Properties,
+            start: 248.0,
+            origin: 0.0,
+            other: 212.0,
+        });
+        assert_eq!(columns.laid(800.0), laid(212.0, 348.0, 240.0));
+        assert_eq!(columns.chosen(), widths(248.0, 240.0));
+    }
+
+    #[test]
+    fn a_drag_whose_release_goes_unseen_ends_once_the_button_is_up_and_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(crate::pane_widths::FILE_NAME);
+        let mut columns = Columns::new();
+        columns.keeping(KeptWidths::at(file.clone()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !columns.kept().is_read() {
+            columns.poll();
+            assert!(std::time::Instant::now() < deadline, "never read");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        columns.chosen = widths(300.0, 296.0);
+        columns.dragged = true;
+        let held = Drag {
+            side: Side::Browser,
+            start: 248.0,
+            origin: 0.0,
+            other: 296.0,
+        };
+        columns.drag = Some(held);
+        // The primary button still down: the drag held, nothing written.
+        let ctx = egui::Context::default();
+        let pressed = egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(egui::pos2(10.0, 10.0)),
+                egui::Event::PointerButton {
+                    pos: egui::pos2(10.0, 10.0),
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(pressed, |_| {});
+        output.textures_delta.clear();
+        columns.settle(&ctx);
+        assert!(columns.drag.is_some(), "ended while the button is down");
+        // Up, with no frame of the panes' to see it: ended, and its widths written.
+        columns.settle(&egui::Context::default());
+        assert!(columns.drag.is_none(), "still held");
+        let want = "silico pane-widths 1\nbrowser 300\nproperties 296\n";
+        while std::fs::read_to_string(&file).ok().as_deref() != Some(want) {
+            assert!(std::time::Instant::now() < deadline, "never written");
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
 }

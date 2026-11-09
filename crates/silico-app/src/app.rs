@@ -24,7 +24,7 @@ use crate::changes::{self, Changes};
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::modal::{self, Button, Kind};
-use crate::pane_widths::{PaneWidths, Widths};
+use crate::pane_widths::{KeptWidths, Widths};
 use crate::panes::{self, Pane, Panes};
 use crate::properties;
 use crate::recent::Recents;
@@ -492,7 +492,7 @@ impl<P: Clients + 'static> App<P> {
     /// The app, laying its side panes out at the widths `widths` keeps once it has read them,
     /// and keeping there those each drag of a border leaves.
     #[must_use]
-    pub fn keeping_widths(mut self, widths: PaneWidths) -> Self {
+    pub fn keeping_widths(mut self, widths: KeptWidths) -> Self {
         self.columns.keeping(widths);
         self
     }
@@ -503,8 +503,9 @@ impl<P: Clients + 'static> App<P> {
         self.columns.chosen()
     }
 
-    /// Where the side panes' widths are kept, if the app keeps them.
-    pub fn kept_widths(&self) -> Option<&PaneWidths> {
+    /// Where the side panes' widths are kept: nowhere ([`KeptWidths::unkept`]) unless
+    /// [`keeping_widths`](Self::keeping_widths) gave a file.
+    pub fn kept_widths(&self) -> &KeptWidths {
         self.columns.kept()
     }
 
@@ -874,6 +875,8 @@ impl<P: Clients + 'static> App<P> {
     /// a quit has closed every tab, or kept open while one holds edits; and the next frame
     /// asked for.
     fn after_drawing(&mut self, ui: &mut Ui, mut started: bool) {
+        // A border's drag whose release the panes didn't see (they're gone) ended.
+        self.columns.settle(ui.ctx());
         // The dialog OK'd this frame, if one was (one tab's panes draw a frame), remembered.
         for tab in &mut self.tabs {
             if let Some(oked) = tab.take_oked() {

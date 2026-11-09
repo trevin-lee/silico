@@ -2299,7 +2299,7 @@ mod tests {
         theme::apply(&h.ctx);
         h.run_steps(3);
         let natural = natural.lock().unwrap().clone();
-        let least = crate::pane_widths::RIGHT_MIN_W - crate::columns::BORDER;
+        let least = crate::pane_widths::PROPERTIES_MIN_W - crate::columns::BORDER;
         let value = least - 2.0 * PAD - KEY_W - ROW_GAP;
         assert!(value >= KEY_W, "a value's column {value} under its key's");
         let (_, cancel, ok) =

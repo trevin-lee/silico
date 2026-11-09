@@ -608,7 +608,7 @@
   // ───────── The side panes' borders, dragged to resize them (Trevin, 2026-11-09) ─────────
   // The column moves by the drag's distance from the press, the canvas taking up the
   // difference, between the pane's least width and what leaves the canvas its own.
-  const LEAST = { browser: 200, right: 232, canvas: 340 };
+  const MIN = { browser: 200, right: 232, canvas: 340 };
   document.addEventListener('mousedown', (e) => {
     const sash = e.target.closest('[data-sash]'); if (!sash || e.button !== 0) return;
     e.preventDefault();
@@ -621,8 +621,8 @@
     document.body.classList.add('sashing');
     const move = (ev) => {
       const travel = side === 'browser' ? ev.clientX - x0 : x0 - ev.clientX;
-      const most = Math.floor($('#main').getBoundingClientRect().width - held - LEAST.canvas);
-      const w = Math.max(LEAST[side], Math.min(most, Math.round(start + travel)));
+      const most = Math.floor($('#main').getBoundingClientRect().width - held - MIN.canvas);
+      const w = Math.max(MIN[side], Math.min(most, Math.round(start + travel)));
       root.style.setProperty('--' + side + '-w', w + 'px');
     };
     const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); document.body.classList.remove('sashing'); };

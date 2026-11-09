@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use silico_app::App;
-use silico_app::pane_widths::PaneWidths;
+use silico_app::pane_widths::KeptWidths;
 use silico_app::recent::Recents;
 use silico_app::start::Warm;
 use silico_app::theme;
@@ -64,7 +64,7 @@ fn main() -> ExitCode {
     // Read off the UI thread, from the platform's app-data folder: the recent documents, and
     // the side panes' widths beside them.
     let recents = Recents::default_file().map(Recents::at);
-    let widths = PaneWidths::default_file().map(PaneWidths::at);
+    let widths = KeptWidths::default_file().map(KeptWidths::at);
     let silico = silico_beside();
     let ran = eframe::run_native(
         "Silico",
@@ -195,17 +195,20 @@ mod tests {
 
     #[test]
     fn the_apps_window_is_no_smaller_than_its_panes_bars_and_a_usable_canvas() {
-        // By hand from styles.css and the theme's proposals. Wide: the side panes at their
-        // leasts (pane_widths.rs: the browser's 200, the property panel's 232), and a canvas
-        // that holds a banner at its least, 320, 10 at each side. High: `--top-bar-h` 30;
-        // the toolbar, `--toolbar-tabs-h` 24, `--toolbar-h` 52, and its 1 border; a canvas
-        // that holds the ViewCube, 16 from its top and 92 high, over the navigation bar, 32
-        // high and 12 above and below it; egui's 1 line over the timeline; `--timeline-h`
-        // 40; and `--status-h` 24.
-        let wide = 200.0 + 232.0 + (10.0 + 320.0 + 10.0);
+        // By hand from styles.css and the theme's proposals. Wide: the wider of the toolbar
+        // in sketch mode, 881.5 in the app's fonts, on the 8-point grid 888, and the side
+        // panes at their leasts (pane_widths.rs: the browser's 200, the property panel's 232)
+        // with a canvas that holds a banner at its least, 320, 10 at each side. High:
+        // `--top-bar-h` 30; the toolbar, `--toolbar-tabs-h` 24, `--toolbar-h` 52, and its 1
+        // border; a canvas that holds the ViewCube, 16 from its top and 92 high, over the
+        // navigation bar, 32 high and 12 above and below it; egui's 1 line over the
+        // timeline; `--timeline-h` 40; and `--status-h` 24.
+        let panes: f32 = 200.0 + 232.0 + (10.0 + 320.0 + 10.0);
+        assert_eq!(panes, 772.0);
+        let wide = panes.max(888.0);
         let high =
             30.0 + (24.0 + 52.0 + 1.0) + (16.0 + 92.0 + 12.0 + 32.0 + 12.0) + 1.0 + 40.0 + 24.0;
-        assert_eq!((wide, high), (772.0, 336.0));
+        assert_eq!((wide, high), (888.0, 336.0));
         for app_bar in [true, false] {
             let viewport = app_options(app_bar).viewport;
             assert_eq!(

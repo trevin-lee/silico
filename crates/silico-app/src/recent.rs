@@ -11,11 +11,11 @@
 //! failure, and at most [`MAX_FILE_BYTES`] of it is read.
 
 use std::collections::BTreeSet;
-use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 
+pub use crate::app_data::Read;
+use crate::app_data::{read_capped, write};
 use crate::wake::Wake;
 
 /// How many documents the list keeps.
@@ -78,10 +78,6 @@ enum Told {
     Gone(Recent),
 }
 
-/// What reads the list's file the first time: its bytes, or none if it can't be read (a
-/// test's, to hold the read). Each later read, before a write, is [`read_capped`]'s.
-pub type Read = Box<dyn FnOnce(&Path) -> Option<Vec<u8>> + Send>;
-
 /// The list of recent documents, as the window last heard it from the thread that keeps it.
 pub struct Recents {
     list: Vec<Recent>,
@@ -92,13 +88,14 @@ pub struct Recents {
 }
 
 impl Recents {
-    /// The list kept in `file`, read on a thread of its own ([`read_capped`]: a regular
-    /// file, never a pipe that could hang it, and at most [`MAX_FILE_BYTES`] of it).
+    /// The list kept in `file`, read on a thread of its own (`app_data::read_capped`: a
+    /// regular file, never a pipe that could hang it, and at most [`MAX_FILE_BYTES`] of it).
     pub fn at(file: PathBuf) -> Self {
-        Self::reading(file, Box::new(read_capped))
+        Self::reading(file, Box::new(|file| read_capped(file, MAX_FILE_BYTES)))
     }
 
-    /// The list kept in `file`, read first by `read` on a thread of its own.
+    /// The list kept in `file`, read first by `read` on a thread of its own (each later
+    /// read, before a write, `app_data::read_capped`'s).
     pub fn reading(file: PathBuf, read: Read) -> Self {
         let (asks, asked) = mpsc::channel();
         let (tell, told) = mpsc::channel();
@@ -134,10 +131,11 @@ impl Recents {
     }
 
     /// Where the list is kept: `recent-documents` in the platform's app-data folder
-    /// (`~/Library/Application Support/Silico` on macOS, `$XDG_DATA_HOME/silico` or
-    /// `~/.local/share/silico` on Linux); none if the platform names no home folder.
+    /// (`app_data::folder`: `~/Library/Application Support/Silico` on macOS,
+    /// `$XDG_DATA_HOME/silico` or `~/.local/share/silico` on Linux); none if the platform
+    /// names no home folder.
     pub fn default_file() -> Option<PathBuf> {
-        directories::ProjectDirs::from("", "", "Silico").map(|dirs| dirs.data_dir().join(FILE_NAME))
+        crate::app_data::folder().map(|folder| folder.join(FILE_NAME))
     }
 
     /// The list, newest first, as the thread last told it.
@@ -242,7 +240,7 @@ fn keep(file: &Path, read: Read, asked: &Receiver<Ask>, tell: &Sender<Told>, wak
         wake.wake();
     }
     while let Ok(first) = asked.recv() {
-        let on_disk = read_capped(file).map(|bytes| parse(&bytes));
+        let on_disk = read_capped(file, MAX_FILE_BYTES).map(|bytes| parse(&bytes));
         let before = on_disk.unwrap_or_else(|| paths.clone());
         let mut after = before.clone();
         let mut gone = Vec::new();
@@ -353,62 +351,10 @@ pub(crate) fn text(paths: &[&str]) -> String {
     text
 }
 
-/// `file`'s first [`MAX_FILE_BYTES`], if it's a regular file that can be read (a pipe, which
-/// could hang the read, isn't); if there's more, the line the cap cuts is dropped too.
-pub(crate) fn read_capped(file: &Path) -> Option<Vec<u8>> {
-    if !std::fs::metadata(file).ok()?.is_file() {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    std::fs::File::open(file)
-        .ok()?
-        .take(MAX_FILE_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() > MAX_FILE_BYTES {
-        bytes.truncate(MAX_FILE_BYTES);
-        let whole = bytes
-            .iter()
-            .rposition(|&byte| byte == b'\n')
-            .map_or(0, |at| at + 1);
-        bytes.truncate(whole);
-    }
-    Some(bytes)
-}
-
-/// The number of the next file written beside the list (or beside the panes' widths,
-/// `crate::pane_widths`): with the process's ID, a name no other write, in this instance of
-/// the app or another, uses at once.
-static WRITES: AtomicU64 = AtomicU64::new(0);
-
-/// `text` written to `file`, its folder made if it isn't there: to a file of its own beside
-/// it first, flushed to the disk, then moved over it, so a reader never sees half of it;
-/// that file removed if the write fails.
-pub(crate) fn write(file: &Path, text: &str) -> std::io::Result<()> {
-    if let Some(folder) = file.parent() {
-        std::fs::create_dir_all(folder)?;
-    }
-    let mut beside = file.as_os_str().to_owned();
-    beside.push(format!(
-        ".{}.{}.new",
-        std::process::id(),
-        WRITES.fetch_add(1, Ordering::Relaxed)
-    ));
-    let beside = PathBuf::from(beside);
-    let written = (|| {
-        let mut new = std::fs::File::create(&beside)?;
-        new.write_all(text.as_bytes())?;
-        new.sync_all()?;
-        std::fs::rename(&beside, file)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&beside);
-    }
-    written
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
 
     #[test]
@@ -557,7 +503,7 @@ mod tests {
         lines.push_str("/a/1.silico\n");
         std::fs::write(&file, &lines).unwrap();
         assert_eq!(parse(lines.as_bytes()), ["/a/0.silico", "/a/1.silico"]);
-        let read = read_capped(&file).unwrap();
+        let read = read_capped(&file, MAX_FILE_BYTES).unwrap();
         assert!(read.len() <= MAX_FILE_BYTES);
         assert!(read.ends_with(b"\n"));
         assert_eq!(parse(&read), ["/a/0.silico"]);
@@ -565,12 +511,12 @@ mod tests {
         let huge = format!("/{}", "a".repeat(10_000_000));
         std::fs::write(&file, text(&[huge.as_str()])).unwrap();
         assert_eq!(
-            read_capped(&file).unwrap(),
+            read_capped(&file, MAX_FILE_BYTES).unwrap(),
             format!("{HEADER}\n").into_bytes()
         );
         // Something that isn't a regular file isn't read.
-        assert_eq!(read_capped(dir.path()), None);
-        assert_eq!(read_capped(&dir.path().join("none")), None);
+        assert_eq!(read_capped(dir.path(), MAX_FILE_BYTES), None);
+        assert_eq!(read_capped(&dir.path().join("none"), MAX_FILE_BYTES), None);
     }
 
     #[test]
@@ -669,19 +615,25 @@ mod tests {
         let whole = text(&lines);
         assert_eq!(whole.len(), 40_996);
         std::fs::write(&file, &whole).unwrap();
-        assert_eq!(read_capped(&file).unwrap(), whole.as_bytes());
-        assert_eq!(parse(&read_capped(&file).unwrap()), longest);
+        assert_eq!(
+            read_capped(&file, MAX_FILE_BYTES).unwrap(),
+            whole.as_bytes()
+        );
+        assert_eq!(parse(&read_capped(&file, MAX_FILE_BYTES).unwrap()), longest);
         // Exactly 65,536 bytes, its last line unbroken: all of it read, that line included.
         let mut exact = String::from("silico recent-documents 1\n/a/0.silico\n/");
         exact.push_str(&"b".repeat(65_536 - exact.len()));
         assert_eq!(exact.len(), 65_536);
         std::fs::write(&file, &exact).unwrap();
-        assert_eq!(read_capped(&file).unwrap(), exact.as_bytes());
+        assert_eq!(
+            read_capped(&file, MAX_FILE_BYTES).unwrap(),
+            exact.as_bytes()
+        );
         // One byte more: the line the cap cuts is dropped.
         exact.push('b');
         std::fs::write(&file, &exact).unwrap();
         assert_eq!(
-            read_capped(&file).unwrap(),
+            read_capped(&file, MAX_FILE_BYTES).unwrap(),
             b"silico recent-documents 1\n/a/0.silico\n"
         );
     }

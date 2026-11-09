@@ -1,19 +1,20 @@
 //! The side panes' widths (the browser's column and the property panel's), as the person
 //! last dragged their borders (`crate::columns`), kept in a file of the app's own in the
-//! platform's app-data folder, beside the recent documents ([`PaneWidths::default_file`]),
+//! platform's app-data folder, beside the recent documents ([`KeptWidths::default_file`]),
 //! so the window opens laid out as it was left.
 //!
-//! The file is read on a thread of its own, which writes it after each drag that changes
-//! them, so the UI thread never waits on it (invariant 4): the window asks the thread
-//! ([`PaneWidths::save`]) and takes what it read ([`PaneWidths::poll`]). Its form is a header
+//! The file is read on a thread of its own, which writes it at the end of each drag, so the
+//! UI thread never waits on it (invariant 4): the window asks the thread
+//! ([`KeptWidths::save`]) and takes what it read ([`KeptWidths::poll`]). Its form is a header
 //! line, then the browser's width and the property panel's, each on a line of its own in
 //! whole points (`text`); a file that isn't one (`parse`), or can't be read, is the
 //! defaults, never a failure; and a width out of range is clamped into it
-//! ([`Widths::clamped`]). At most `recent::MAX_FILE_BYTES` of it is read.
+//! ([`Widths::clamped`]). At most [`MAX_FILE_BYTES`] of it is read.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 
+pub use crate::app_data::Read;
 use crate::wake::Wake;
 
 /// The file's name in the app-data folder.
@@ -22,12 +23,16 @@ pub const FILE_NAME: &str = "pane-widths";
 /// The file's first line: its form, and the form's version.
 pub(crate) const HEADER: &str = "silico pane-widths 1";
 
+/// The most of the file read: its header and two widths take a few dozen bytes. Whatever
+/// comes after it, and the line it cuts, is left unread.
+pub const MAX_FILE_BYTES: usize = 4096;
+
 /// The side panes' widths at first, as the prototype's `#main` lays them out (styles.css:
 /// `grid-template-columns: var(--browser-w) 1fr var(--right-w)`, `--browser-w: 248px`,
 /// `--right-w: 296px`), each column with its 1 px border inside it (`#browser`'s
 /// `border-right`, `#right`'s `border-left`, `box-sizing: border-box`).
 pub(crate) const BROWSER_W: f32 = 248.0;
-pub(crate) const RIGHT_W: f32 = 296.0;
+pub(crate) const PROPERTIES_W: f32 = 296.0;
 
 /// The browser's least column (its border in it), from what its deepest row holds (`.row`,
 /// `crate::panes`' `row`): a body's or a sketch's, two levels in, 6 of padding and two
@@ -35,11 +40,11 @@ pub(crate) const RIGHT_W: f32 = 296.0;
 /// before the next part, 100 in all; a sketch's prefix, `(–)` in the monospace type (19.8
 /// in the app's fonts), and 4; at its right a health mark (14) 4 after its name, and 6 of
 /// padding; so a sketch's default name with two digits, `Sketch12`, whole, which a pane 199
-/// wide holds (egui fits a name by its last glyph's ink, 51.0, not its advance, 52.2) and
-/// one a point narrower cuts short (`panes`' test `at_the_least_browser_a_deep_rows_parts
-/// _and_a_default_name_fit` draws both); with its border, 200, on the 8-point grid the
-/// prototype's columns are on (248, 296). A longer name is cut short with an ellipsis, as at
-/// any width.
+/// wide holds exactly (egui fits a name by its last glyph's ink, 51.0, not its advance,
+/// 52.2) and one a point narrower cuts short (`panes`' test `at_the_least_browser_a_deep
+/// _rows_parts_and_a_default_name_fit` draws both); with its border, 200, which is on the
+/// 8-point grid the prototype's columns are on (248, 296). A longer name is cut short with
+/// an ellipsis, as at any width.
 pub(crate) const BROWSER_MIN_W: f32 = 200.0;
 
 /// The property panel's least column (its border in it), from its rows (`.prop`: `--pad`
@@ -49,7 +54,7 @@ pub(crate) const BROWSER_MIN_W: f32 = 200.0;
 /// each side, and the 6 between them) 97 each, room for Cancel with its key cap, 95.6 in
 /// the app's fonts (`properties`' test `at_the_least_property_panel_a_rows_columns_and_the
 /// _footers_buttons_fit` measures them); rounded up to the 8-point grid, 232.
-pub(crate) const RIGHT_MIN_W: f32 = 232.0;
+pub(crate) const PROPERTIES_MIN_W: f32 = 232.0;
 
 /// The widest a file may make a column: wider than any display is in points (an 8K one at
 /// its native scale is 7,680). A wider one is clamped to it; a drag never makes one wider
@@ -69,28 +74,28 @@ impl Default for Widths {
     fn default() -> Self {
         Widths {
             browser: BROWSER_W,
-            properties: RIGHT_W,
+            properties: PROPERTIES_W,
         }
     }
 }
 
 impl Widths {
-    /// Each in its range: no narrower than its least ([`BROWSER_MIN_W`], [`RIGHT_MIN_W`]),
-    /// no wider than [`WIDEST`]; one that isn't a number, its least.
+    /// Each in its range: no narrower than its least ([`BROWSER_MIN_W`],
+    /// [`PROPERTIES_MIN_W`]), no wider than [`WIDEST`]; one that isn't a number, its least.
     pub fn clamped(self) -> Self {
         Widths {
             browser: within(self.browser, BROWSER_MIN_W),
-            properties: within(self.properties, RIGHT_MIN_W),
+            properties: within(self.properties, PROPERTIES_MIN_W),
         }
     }
 }
 
-/// `width` from `least` to [`WIDEST`]; `least` if it isn't a number (`clamp` keeps a NaN).
-fn within(width: f32, least: f32) -> f32 {
+/// `width` from `min` to [`WIDEST`]; `min` if it isn't a number (`clamp` keeps a NaN).
+fn within(width: f32, min: f32) -> f32 {
     if width.is_nan() {
-        least
+        min
     } else {
-        width.clamp(least, WIDEST)
+        width.clamp(min, WIDEST)
     }
 }
 
@@ -133,84 +138,94 @@ pub(crate) fn text(widths: Widths) -> String {
     )
 }
 
-/// What reads the file the first time: its bytes, or none if it can't be read (a test's, to
-/// hold the read).
-pub type Read = crate::recent::Read;
-
 /// The panes' widths as the file holds them, as the window last heard them from the thread
 /// that keeps them.
-pub struct PaneWidths {
-    /// The file's widths, once read and not yet taken.
-    read: Option<Widths>,
+pub struct KeptWidths {
     /// Whether the file has been read (or found unreadable) yet.
-    told: bool,
+    read: bool,
+    /// The file's widths, once read, until the window takes them.
+    widths: Option<Widths>,
     asks: Option<Sender<Widths>>,
-    tells: Option<Receiver<Widths>>,
+    told: Option<Receiver<Widths>>,
     wake: Wake,
 }
 
-impl PaneWidths {
-    /// The widths kept in `file`, read on a thread of its own (`recent::read_capped`: a
-    /// regular file, never a pipe that could hang it, and at most its cap of it).
+impl KeptWidths {
+    /// The widths kept in `file`, read on a thread of its own (`app_data::read_capped`: a
+    /// regular file, never a pipe that could hang it, and at most [`MAX_FILE_BYTES`] of it).
     pub fn at(file: PathBuf) -> Self {
-        Self::reading(file, Box::new(crate::recent::read_capped))
+        Self::reading(
+            file,
+            Box::new(|file| crate::app_data::read_capped(file, MAX_FILE_BYTES)),
+        )
     }
 
     /// The widths kept in `file`, read first by `read` on a thread of its own.
     pub fn reading(file: PathBuf, read: Read) -> Self {
         let (asks, asked) = mpsc::channel();
-        let (tell, tells) = mpsc::channel();
+        let (tell, told) = mpsc::channel();
         let wake = Wake::default();
         let waking = wake.clone();
         let started = std::thread::Builder::new()
             .name("silico-pane-widths".to_owned())
             .spawn(move || keep(&file, read, &asked, &tell, &waking));
         match started {
-            Ok(_) => PaneWidths {
-                read: None,
-                told: false,
+            Ok(_) => KeptWidths {
+                read: false,
+                widths: None,
                 asks: Some(asks),
-                tells: Some(tells),
+                told: Some(told),
                 wake,
             },
             Err(e) => {
                 tracing::warn!("the panes' widths can't be kept: {e}");
-                PaneWidths {
-                    read: None,
-                    told: true,
-                    asks: None,
-                    tells: None,
-                    wake,
-                }
+                Self::unkept()
             }
         }
     }
 
-    /// Where the widths are kept: `pane-widths` in the platform's app-data folder, beside
-    /// `recent-documents` ([`crate::recent::Recents::default_file`]); none if the platform
-    /// names no home folder.
+    /// Widths that aren't kept, their thread not started: read, the defaults, and no drag's
+    /// written anywhere.
+    pub fn unkept() -> Self {
+        KeptWidths {
+            read: true,
+            widths: None,
+            asks: None,
+            told: None,
+            wake: Wake::default(),
+        }
+    }
+
+    /// Where the widths are kept: `pane-widths` in the platform's app-data folder
+    /// (`app_data::folder`), beside `recent-documents`; none if the platform names no home
+    /// folder.
     pub fn default_file() -> Option<PathBuf> {
-        crate::recent::Recents::default_file().map(|recents| recents.with_file_name(FILE_NAME))
+        crate::app_data::folder().map(|folder| folder.join(FILE_NAME))
     }
 
     /// Whether the file has been read (or found unreadable) yet.
     pub fn is_read(&self) -> bool {
-        self.told
+        self.read
+    }
+
+    /// Whether the widths are kept: false if their thread couldn't be started.
+    pub fn is_kept(&self) -> bool {
+        self.asks.is_some()
     }
 
     /// The widths read from the file, once, the first poll after the thread tells them,
     /// never waited for.
     pub(crate) fn poll(&mut self) -> Option<Widths> {
-        if let Some(tells) = &self.tells {
-            for widths in tells.try_iter() {
-                self.read = Some(widths);
-                self.told = true;
+        if let Some(told) = &self.told {
+            for widths in told.try_iter() {
+                self.widths = Some(widths);
+                self.read = true;
             }
         }
-        self.read.take()
+        self.widths.take()
     }
 
-    /// `widths` kept: written to the file by the thread, if they aren't what it holds.
+    /// `widths` kept: written to the file by the thread.
     pub(crate) fn save(&self, widths: Widths) {
         if let Some(asks) = &self.asks {
             // A thread that has ended keeps nothing more; the window keeps its widths.
@@ -226,22 +241,19 @@ impl PaneWidths {
 
 /// The thread that keeps the widths: `file` read once and its widths told (the defaults, if
 /// it can't be read); then each ask taken as it comes, the newest of those already waiting,
-/// and written unless it's what was read or last written.
+/// and written, even what the file was last read or written with: another instance of the
+/// app may have written it since, and the last drag to end is what the file keeps.
 fn keep(file: &Path, read: Read, asked: &Receiver<Widths>, tell: &Sender<Widths>, wake: &Wake) {
     let _span = tracing::info_span!("pane widths", file = %file.display()).entered();
-    let mut held = read(file).map_or_else(Widths::default, |bytes| parse(&bytes));
-    if tell.send(held).is_err() {
+    let widths = read(file).map_or_else(Widths::default, |bytes| parse(&bytes));
+    if tell.send(widths).is_err() {
         return;
     }
     wake.wake();
     while let Ok(first) = asked.recv() {
-        let newest = asked.try_iter().last().unwrap_or(first).clamped();
-        if held == newest {
-            continue;
-        }
-        match crate::recent::write(file, &text(newest)) {
-            Ok(()) => held = newest,
-            Err(e) => tracing::warn!("the panes' widths couldn't be written: {e}"),
+        let newest = asked.try_iter().last().unwrap_or(first);
+        if let Err(e) = crate::app_data::write(file, &text(newest)) {
+            tracing::warn!("the panes' widths couldn't be written: {e}");
         }
     }
 }
@@ -362,7 +374,7 @@ mod tests {
     }
 
     /// The thread's word polled until it's read.
-    fn polled_until_read(widths: &mut PaneWidths) -> Widths {
+    fn polled_until_read(widths: &mut KeptWidths) -> Widths {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
             if let Some(read) = widths.poll() {
@@ -391,7 +403,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("deep").join(FILE_NAME);
         // No file: the defaults, told once.
-        let mut kept = PaneWidths::at(file.clone());
+        let mut kept = KeptWidths::at(file.clone());
         assert_eq!(polled_until_read(&mut kept), Widths::default());
         assert_eq!(kept.poll(), None);
         assert!(!file.exists());
@@ -407,7 +419,7 @@ mod tests {
         kept.save(wider);
         written(&file, "silico pane-widths 1\nbrowser 320\nproperties 300\n");
         // Another instance on the same file reads them.
-        let mut again = PaneWidths::at(file.clone());
+        let mut again = KeptWidths::at(file.clone());
         assert_eq!(polled_until_read(&mut again), wider);
         // No file but the widths' is left in its folder.
         let names: Vec<_> = std::fs::read_dir(file.parent().unwrap())
@@ -432,7 +444,7 @@ mod tests {
             released.recv().ok()?;
             Some(b"silico pane-widths 1\nbrowser 300\nproperties 260\n".to_vec())
         });
-        let mut kept = PaneWidths::reading(dir.path().join(FILE_NAME), read);
+        let mut kept = KeptWidths::reading(dir.path().join(FILE_NAME), read);
         kept.waking(&ctx);
         // Held: nothing told, and the window not asked.
         assert_eq!(kept.poll(), None);
@@ -454,9 +466,50 @@ mod tests {
     }
 
     #[test]
+    fn two_instances_on_one_file_keep_the_drag_that_ended_last() {
+        // One instance writes 320 and 300, another 400 and 260, and the first 320 and 300
+        // again: what the file was last written with by the first, written again, as the
+        // last drag to end, never skipped as what it already wrote.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(FILE_NAME);
+        let mut first = KeptWidths::at(file.clone());
+        let mut second = KeptWidths::at(file.clone());
+        polled_until_read(&mut first);
+        polled_until_read(&mut second);
+        let (one, other) = (
+            Widths {
+                browser: 320.0,
+                properties: 300.0,
+            },
+            Widths {
+                browser: 400.0,
+                properties: 260.0,
+            },
+        );
+        first.save(one);
+        written(&file, "silico pane-widths 1\nbrowser 320\nproperties 300\n");
+        second.save(other);
+        written(&file, "silico pane-widths 1\nbrowser 400\nproperties 260\n");
+        first.save(one);
+        written(&file, "silico pane-widths 1\nbrowser 320\nproperties 300\n");
+    }
+
+    #[test]
+    fn widths_not_kept_are_read_at_once_as_the_defaults_and_written_nowhere() {
+        let mut unkept = KeptWidths::unkept();
+        assert!(unkept.is_read());
+        assert!(!unkept.is_kept());
+        assert_eq!(unkept.poll(), None);
+        // Nothing to write to: asked, nothing happens.
+        unkept.save(Widths::default());
+        let dir = tempfile::tempdir().unwrap();
+        assert!(KeptWidths::at(dir.path().join(FILE_NAME)).is_kept());
+    }
+
+    #[test]
     fn the_widths_are_kept_beside_the_recent_documents() {
         let recents = crate::recent::Recents::default_file();
-        let widths = PaneWidths::default_file();
+        let widths = KeptWidths::default_file();
         assert_eq!(recents.is_some(), widths.is_some());
         if let (Some(recents), Some(widths)) = (recents, widths) {
             assert_eq!(recents.parent(), widths.parent());
