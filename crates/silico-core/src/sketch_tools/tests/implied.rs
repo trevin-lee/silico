@@ -8,6 +8,7 @@
 
 use super::*;
 use crate::sketch_states::MemberState;
+use crate::sketch_tools::implied_by;
 
 /// The forms of each constraint the adds made, by type, sorted.
 fn types(d: &Drive) -> Vec<&'static str> {
@@ -461,4 +462,203 @@ fn ids_handed_out_in_reverse_order_leave_the_same_relations_out() {
         gesture(&mut reversed);
         assert_eq!(ours.adds(), reversed.adds());
     }
+}
+
+// ---- #431's review, round 1: what the classes read ----
+
+/// `forms` as `s`'s constraints, numbered k0000001 on, in order.
+fn constrained(mut s: Sketch, forms: Vec<Form>) -> Sketch {
+    for (k, form) in forms.into_iter().enumerate() {
+        s.constraints.push(SketchConstraint {
+            id: id(&format!("k{:07}", k + 1)),
+            form,
+        });
+    }
+    s
+}
+
+/// A read's states marking the points `ids` fully defined, and nothing else.
+fn fixing(ids: &[&str]) -> SketchStates {
+    let mut states = no_states().clone();
+    for p in ids {
+        states.points.insert(id(p), MemberState::FullyDefined);
+    }
+    states
+}
+
+fn el(text: &str) -> Reference {
+    Reference::Element(id(text))
+}
+
+fn on(point: &str, curve: Reference) -> Form {
+    Form::On {
+        point: el(point),
+        curve,
+    }
+}
+
+fn level(a: &str, b: &str) -> Form {
+    Form::HorizontalPoints { a: el(a), b: el(b) }
+}
+
+fn plumb(a: &str, b: &str) -> Form {
+    Form::VerticalPoints { a: el(a), b: el(b) }
+}
+
+#[test]
+fn a_line_from_the_origin_up_the_y_axis_has_no_vertical() {
+    // (0, 0), then (0, 40), then Enter: the start at the origin, level and plumb with it;
+    // the end on the y axis, plumb with it. Both in the origin's X class, so the line's
+    // `vertical` goes: the chain along the x axis's case, mirrored onto y.
+    let mut d = Drive::new(ToolKind::Line, empty());
+    d.click(0.0, 0.0);
+    d.click(0.0, 40.0);
+    d.send(Event::Enter);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (0, 0)",
+            "point (0, 40)",
+            "line (0, 0)-(0, 40)",
+            "horizontal_points (0, 0) origin",
+            "vertical_points (0, 0) origin",
+            "on (0, 40) y_axis",
+        ])]
+    );
+}
+
+/// `free`, at (10, 10), held level by `horizontal_points` with `held`, at (40, 10) and fully
+/// defined, and q0000003 at (70, 10.5), fully defined: `free`'s Y class is fixed through
+/// `held`, so `horizontal_points` of `free` and q0000003 reads two fixed Y classes and is
+/// implied (Rule E). Its X class is its own, free, so `vertical_points` of the two isn't.
+fn fixed_through(free: &str, held: &str) {
+    let mut s = empty();
+    s.points.push(point(free, 10.0, 10.0));
+    s.points.push(point(held, 40.0, 10.0));
+    s.points.push(point("q0000003", 70.0, 10.5));
+    let s = constrained(s, vec![level(free, held)]);
+    let states = fixing(&[held, "q0000003"]);
+    assert!(implied_by(&s, &states, &level(free, "q0000003")));
+    assert!(!implied_by(&s, &states, &plumb(free, "q0000003")));
+}
+
+#[test]
+fn a_point_held_level_with_a_fixed_point_of_a_later_id_is_fixed_through_it() {
+    // The free point's ID first: their class's root is the free point's.
+    fixed_through("q0000001", "q0000002");
+}
+
+#[test]
+fn a_point_held_level_with_a_fixed_point_of_an_earlier_id_is_fixed_through_it() {
+    // The fixed point's ID first: their class's root is the fixed point's.
+    fixed_through("q0000002", "q0000001");
+}
+
+#[test]
+fn a_point_on_a_line_is_level_with_it_whatever_order_its_relations_come_in() {
+    // M (10, 20)-(50, 20) `horizontal`; q0000001 (20, 20) `on` M; q0000002 (70, 20) level
+    // with M's first end by `horizontal_points`: one Y class, so `horizontal_points` of the
+    // two points is implied (Rule E), in each of the six orders the three can come in. An
+    // `on` read before M is level joins once M is.
+    let mut base = with_line(empty(), "m0000001", [10.0, 20.0], [50.0, 20.0]);
+    base.points.push(point("q0000001", 20.0, 20.0));
+    base.points.push(point("q0000002", 70.0, 20.0));
+    let forms = [
+        Form::Horizontal {
+            line: el("m0000001"),
+        },
+        on("q0000001", el("m0000001")),
+        level("q0000002", "f0000001"),
+    ];
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let s = constrained(base.clone(), order.map(|i| forms[i].clone()).to_vec());
+        assert!(
+            implied_by(&s, &fixing(&[]), &level("q0000001", "q0000002")),
+            "{order:?}"
+        );
+    }
+}
+
+#[test]
+fn a_point_on_a_line_whose_end_is_on_a_level_line_is_level_with_it_once_that_line_is() {
+    // N (10, 20)-(50, 20), made `horizontal` last; L (90, 20)-(70, 20), its first end level
+    // with N's by `horizontal_points`, its second `on` N; q0000001 (80, 20) `on` L, before
+    // all. Once N is level, L's second end joins N's class through N, which makes L level,
+    // which puts q0000001 in the class too: a second round, after the first's join. So
+    // `horizontal_points` of q0000001 and N's first end is implied.
+    let mut s = with_line(empty(), "n0000001", [10.0, 20.0], [50.0, 20.0]);
+    s = with_line(s, "n0000002", [90.0, 20.0], [70.0, 20.0]);
+    s.points.push(point("q0000001", 80.0, 20.0));
+    let s = constrained(
+        s,
+        vec![
+            on("q0000001", el("n0000002")),
+            on("t0000002", el("n0000001")),
+            level("f0000002", "f0000001"),
+            Form::Horizontal {
+                line: el("n0000001"),
+            },
+        ],
+    );
+    assert!(implied_by(
+        &s,
+        &fixing(&[]),
+        &level("q0000001", "f0000001")
+    ));
+}
+
+/// A `distance_y` (`y` true) or `distance_x` of `nm` nanometres between q0000001 (10, 10)
+/// and q0000002 (40, 10), driving or not, as their one constraint.
+fn distance(y: bool, nm: i64, driving: bool) -> Sketch {
+    let mut s = empty();
+    s.points.push(point("q0000001", 10.0, 10.0));
+    s.points.push(point("q0000002", 40.0, 10.0));
+    let (a, b, value) = (el("q0000001"), el("q0000002"), crate::document::Length::from_nm(nm));
+    let form = if y {
+        Form::DistanceY {
+            a,
+            b,
+            value,
+            driving,
+        }
+    } else {
+        Form::DistanceX {
+            a,
+            b,
+            value,
+            driving,
+        }
+    };
+    constrained(s, vec![form])
+}
+
+#[test]
+fn a_driving_distance_of_zero_holds_two_points_level_and_no_other_does() {
+    // A driving `distance_y` of exactly 0 asserts y1 = y2: the two points in one Y class, so
+    // `horizontal_points` of them is implied (Rule E), and nothing of X is. One of 1 nm
+    // asserts they differ; a reference one of 0 asserts nothing: two classes either way.
+    let states = fixing(&[]);
+    let (a, b) = ("q0000001", "q0000002");
+    assert!(implied_by(&distance(true, 0, true), &states, &level(a, b)));
+    assert!(!implied_by(&distance(true, 0, true), &states, &plumb(a, b)));
+    assert!(!implied_by(&distance(true, 1, true), &states, &level(a, b)));
+    assert!(!implied_by(&distance(true, 0, false), &states, &level(a, b)));
+}
+
+#[test]
+fn a_driving_x_distance_of_zero_holds_two_points_plumb_and_no_other_does() {
+    // The x twin: a driving `distance_x` of exactly 0 asserts x1 = x2, one X class.
+    let states = fixing(&[]);
+    let (a, b) = ("q0000001", "q0000002");
+    assert!(implied_by(&distance(false, 0, true), &states, &plumb(a, b)));
+    assert!(!implied_by(&distance(false, 0, true), &states, &level(a, b)));
+    assert!(!implied_by(&distance(false, 1, true), &states, &plumb(a, b)));
+    assert!(!implied_by(&distance(false, 0, false), &states, &plumb(a, b)));
 }
