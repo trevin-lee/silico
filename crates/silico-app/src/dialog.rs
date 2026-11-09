@@ -467,6 +467,29 @@ pub struct Dialog {
     /// after its add moved it to (`crate::tab`'s `base_of`). None for any other dialog, and
     /// for a sweep added with no body; a sweep's own dialog (Edit Feature) never moves it.
     pub base: Option<FeatureId>,
+    /// Why a new sweep can't be built on the body its sketch's face is on, if it can't
+    /// (`crate::tab`'s `base_of`: the body a suppressed boolean's tool, which the gate counts
+    /// that boolean as consuming): nothing is sent for that sketch, OK is off, and the
+    /// dialog says it.
+    pub base_refused: Option<String>,
+}
+
+/// What the tab lets an open dialog do: anything at all (`enabled`, none while its tab
+/// closes), and whether the tab holds its OK off (`held`: a new sweep's own edit of its
+/// base waiting or refused, `Tab::base_held`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Allowed {
+    pub enabled: bool,
+    pub held: bool,
+}
+
+#[cfg(test)]
+impl Allowed {
+    /// Everything allowed: a dialog drawn alone, as the panes' tests draw one.
+    pub const ALL: Allowed = Allowed {
+        enabled: true,
+        held: false,
+    };
 }
 
 /// A length's input.
@@ -641,6 +664,7 @@ impl Dialog {
             serial,
             unpicked: Vec::new(),
             base: None,
+            base_refused: None,
         }
     }
 
@@ -1522,8 +1546,8 @@ impl Dialog {
     /// name of the feature it names, if the timeline lists it, and Cancel and OK in its
     /// footer at the bottom of `ui`; `named`
     /// gives a feature's name by its ID (a selection box shows it), `refused` whether an edit
-    /// of a field was refused (its input red, OK off), and `enabled` whether anything can be
-    /// sent now (off while the tab closes).
+    /// of a field was refused (its input red, OK off), and `allowed` whether anything can be
+    /// sent now (off while the tab closes) and whether the tab holds OK off.
     ///
     /// Left out: the Name field (the property panel's renames a feature, a dialog's would be
     /// one more way).
@@ -1538,8 +1562,9 @@ impl Dialog {
         preview: Option<properties::Preview>,
         named: &dyn Fn(&FeatureId) -> Option<String>,
         refused: &dyn Fn(&str) -> bool,
-        enabled: bool,
+        allowed: Allowed,
     ) -> Action {
+        let Allowed { enabled, held } = allowed;
         let whole = ui.max_rect();
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         let closed = properties::title(
@@ -1657,8 +1682,16 @@ impl Dialog {
             names.said = None;
         }
         properties::footer_paint(ui, footer);
-        // Off while its add is unanswered: what's typed meanwhile is sent after it.
-        let ok = enabled && self.valid() && !any_refused && !self.adding && !self.holding();
+        // Off while its add is unanswered: what's typed meanwhile is sent after it. Off, too,
+        // while a new sweep's base is refused, or the tab `held` it (its base edit waiting or
+        // refused): a sweep's sketch and its base are one change.
+        let ok = enabled
+            && !held
+            && self.base_refused.is_none()
+            && self.valid()
+            && !any_refused
+            && !self.adding
+            && !self.holding();
         let mut action = if closed && enabled {
             Action::Cancel
         } else {
