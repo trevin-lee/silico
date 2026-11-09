@@ -57,6 +57,7 @@ impl FrameData {
             edges: self.edges,
             vertices: self.vertices,
             background: crate::theme::VIEWPORT_BG,
+            lines: &[],
         }
     }
 }
