@@ -6306,9 +6306,10 @@ fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() 
     });
     // Answered with the rebuild still held (the next preview's read waits for it, and a
     // read of the text would wait behind that): the transaction's rebuild starts with that
-    // read, so frames are stepped until it runs.
+    // read, so frames are stepped until it runs, held at its prism, the second (the first,
+    // the opened preview's, superseded).
     step_until(&mut h, "the edit's rebuild held at its prism", |_| {
-        f.kernel.wait_running(1, Duration::ZERO)
+        prisms_asked(&f) == 2 && f.kernel.wait_running(1, Duration::ZERO)
     });
     hold.release();
     let text = text_of(&f, &h);
@@ -8261,6 +8262,15 @@ fn boxes_asked(f: &Fixture) -> usize {
         .calls()
         .iter()
         .filter(|call| is_box(&call.op))
+        .count()
+}
+
+/// How many prisms the fake has started (a held one among them).
+fn prisms_asked(f: &Fixture) -> usize {
+    f.kernel
+        .calls()
+        .iter()
+        .filter(|call| is_prism(&call.op))
         .count()
 }
 
@@ -17897,9 +17907,9 @@ fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview
     open_pad_on_triangle(&mut h);
     added(&mut h);
     // The transaction's rebuild starts with the dialog's next read, so frames are stepped
-    // until it runs, held at the prism.
+    // until it runs, held at the prism: the first, the document having none.
     step_until(&mut h, "the preview held at its prism", |_| {
-        f.kernel.wait_running(1, Duration::ZERO)
+        prisms_asked(&f) == 1 && f.kernel.wait_running(1, Duration::ZERO)
     });
     spin(gap);
     hold.release();
@@ -36771,10 +36781,11 @@ fn a_second_reload_asked_while_the_first_is_out_reads_the_file_as_the_persons_to
     settled(&mut h);
     let hold = f.kernel.hold(is_box);
     command_r(&mut h);
-    // Reload's rebuild is sent on the frame that takes its read of the file, so frames are
-    // stepped until it runs, held at its box.
+    // Reload's rebuild is sent on the frame after the one that takes its read of the file,
+    // so frames are stepped until it runs, held at its box: the second box, the open's
+    // being the first.
     step_until(&mut h, "the first's rebuild held at its box", |_| {
-        f.kernel.wait_running(1, Duration::ZERO)
+        boxes_asked(&f) == 2 && f.kernel.wait_running(1, Duration::ZERO)
     });
     std::fs::write(&path, example_theirs()).unwrap();
     command_r(&mut h);
@@ -36799,7 +36810,12 @@ fn command_r_with_a_dialog_open_says_to_finish_it_first_and_sends_nothing() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // The pad added, so the dialog holds its feature in the transaction, unsaved: a Reload
+    // let through would ask its question, then drop the pad.
     open_pad_on_triangle(&mut h);
+    added(&mut h);
+    settled(&mut h);
+    let sent = h.state().tabs()[0].sent.clone();
     command_r(&mut h);
     step_until(&mut h, "said", |h| {
         h.state()
@@ -36809,9 +36825,11 @@ fn command_r_with_a_dialog_open_says_to_finish_it_first_and_sends_nothing() {
     for _ in 0..5 {
         step(&mut h);
     }
+    assert!(!anywhere(&h, "Reload example.silico from disk?"));
     let tab = &h.state().tabs()[0];
     assert!(tab.in_dialog());
     assert_eq!(tab.rebuilds_all, 0);
+    assert_eq!(tab.sent, sent);
     assert!(h.query_by_role_and_label(Role::Dialog, "Pad").is_some());
     // File > Reload is off with it open, as Rebuild everything is.
     h.get_by_label("File").click();
@@ -36839,14 +36857,7 @@ fn command_r_on_an_untitled_part_with_edits_asks_nothing_and_only_rebuilds_keepi
         tab.unsaved() && tab.edits.idle() && !tab.in_dialog()
     });
     let mine = text_of(&f, &h);
-    let prisms = || {
-        f.kernel
-            .calls()
-            .iter()
-            .filter(|call| is_prism(&call.op))
-            .count()
-    };
-    let built = prisms();
+    let built = prisms_asked(&f);
     assert!(built > 0, "the pad never built");
     command_r(&mut h);
     step_until(&mut h, "rebuilt everything", |h| {
@@ -36854,7 +36865,7 @@ fn command_r_on_an_untitled_part_with_edits_asks_nothing_and_only_rebuilds_keepi
         tab.rebuilds_all == 1 && !tab.checking()
     });
     assert!(!anywhere(&h, "Reload Untitled from disk?"));
-    assert!(prisms() > built, "the pad built anew");
+    assert!(prisms_asked(&f) > built, "the pad built anew");
     let tab = &h.state().tabs()[0];
     assert!(tab.unsaved());
     assert_eq!(text_of(&f, &h), mine);
