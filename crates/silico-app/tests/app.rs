@@ -5090,6 +5090,65 @@ fn a_sweeps_ok_waits_for_a_sketch_chosen_in_the_browser_and_adds_nothing_before(
 }
 
 #[test]
+fn ok_clicked_in_the_frame_an_input_turns_invalid_leaves_the_dialog_open() {
+    // #443's review: OK is asked of the inputs as drawn in the frame. A Pocket's Length,
+    // valid, its field focused; then a letter typed after it (5x, no length) and OK clicked,
+    // both given to one frame (the harness gives each event it queues a frame of its own),
+    // the click by OK's accessibility action: the button was off by the time it was
+    // clicked, so the dialog stays open, the pocket's length 5 as it was, and Enter after is
+    // off too.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pocket");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    assert!(ok_enabled(&h));
+    input(&h, "Length").focus();
+    step(&mut h);
+    let (target_node, target_tree) = dialog(&h)
+        .get_by_role_and_label(Role::Button, "OK")
+        .accesskit_node()
+        .locate();
+    h.input_mut().events.extend([
+        eframe::egui::Event::Text("x".to_owned()),
+        eframe::egui::Event::AccessKitActionRequest(eframe::egui::accesskit::ActionRequest {
+            target_node,
+            target_tree,
+            action: eframe::egui::accesskit::Action::Click,
+            data: None,
+        }),
+    ]);
+    step(&mut h);
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("5x"));
+    step(&mut h);
+    assert!(dialog_open(&h));
+    assert!(!ok_enabled(&h));
+    settled(&mut h);
+    let fields = fields_of(&text_of(&f, &h), "Pocket").unwrap();
+    assert!(
+        fields
+            .iter()
+            .any(|(key, value)| key == "extent" && format!("{value:?}").contains("Number(\"5\")")),
+        "{fields:?}"
+    );
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
     let f = fixture();
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
