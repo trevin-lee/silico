@@ -1570,14 +1570,14 @@ pub enum Preview {
     Stopped,
     /// Built with errors: OK keeps the feature with them.
     Errors(u64),
-    /// Built, at the revision.
-    UpToDate(u64),
+    /// Built, at the revision, in the whole milliseconds the core says its rebuild took, if
+    /// it says.
+    UpToDate { revision: u64, ms: Option<u64> },
 }
 
 /// The preview's line (`.dlg-status`): its mark, its words, and, while it runs, what stops
-/// it. `rebuild` names Rebuild's shortcut.
-///
-/// SEAM: the preview's time (`· 84 ms`), as the status bar's rebuild's: `status` gives none.
+/// it. `rebuild` names Rebuild's shortcut. Up to date, its time (`· 84 ms`), as the status
+/// bar's rebuild's.
 pub(crate) fn preview(ui: &mut Ui, preview: Preview, rebuild: &str) {
     let plural = |n: u64| if n == 1 { "" } else { "s" };
     let (mark, words, ink) = match preview {
@@ -1602,9 +1602,12 @@ pub(crate) fn preview(ui: &mut Ui, preview: Preview, rebuild: &str) {
             ),
             theme::ERROR_TEXT,
         ),
-        Preview::UpToDate(revision) => (
+        Preview::UpToDate { revision, ms } => (
             Some(Icon::Check),
-            format!("Preview up to date · revision {revision}"),
+            match ms {
+                Some(ms) => format!("Preview up to date · revision {revision} · {ms} ms"),
+                None => format!("Preview up to date · revision {revision}"),
+            },
             theme::DIALOG_STATUS_TEXT,
         ),
     };
