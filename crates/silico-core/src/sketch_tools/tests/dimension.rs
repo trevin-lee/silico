@@ -149,15 +149,6 @@ fn deg(v: &str) -> Angle {
     Angle::parse(v).unwrap()
 }
 
-fn with_line(mut s: Sketch, name: &str, from: [f64; 2], to: [f64; 2]) -> Sketch {
-    // Its points: `f` and `t` in place of its ID's first character.
-    let (f, t) = (format!("f{}", &name[1..]), format!("t{}", &name[1..]));
-    s.points.push(point(&f, from[0], from[1]));
-    s.points.push(point(&t, to[0], to[1]));
-    s.lines.push(line(name, &f, &t));
-    s
-}
-
 fn with_point(mut s: Sketch, name: &str, at: [f64; 2]) -> Sketch {
     s.points.push(point(name, at[0], at[1]));
     s
@@ -269,30 +260,12 @@ fn a_point_or_an_axis_alone_places_nothing() {
     assert!(d.made.is_empty() && d.messages.is_empty());
 }
 
-/// A line along the x axis, (10, 0) to (50, 0), and one along the y axis, (0, 10) to
-/// (0, 50), each 40 long and named `name`; each with a place on it, mid-way between its end
-/// and its middle (beyond the pick tolerance of both), and a place 10 off it.
-fn along_the_axes(name: &str) -> [(Sketch, [f64; 2], [f64; 2]); 2] {
-    [
-        (
-            with_line(empty(), name, [10.0, 0.0], [50.0, 0.0]),
-            [20.0, 0.0],
-            [20.0, 10.0],
-        ),
-        (
-            with_line(empty(), name, [0.0, 10.0], [0.0, 50.0]),
-            [0.0, 20.0],
-            [10.0, 20.0],
-        ),
-    ]
-}
-
 #[test]
 fn a_line_along_an_axis_is_picked_before_the_axis_whatever_its_id() {
     // Picked on it, the line is 0 from the pointer, and so is its axis. The sketch's own
-    // curve is picked (SolidWorks picks the sketch's entity over the origin's axes), whether
-    // its ID sorts before the axes' names ("aa…" < "x_axis" < "y_axis") or after them
-    // ("zz…"): placed off it, its length, 40.
+    // curve is picked (Silico's rule: where a line lies along an axis it covers the axis, and
+    // a tie never turns on a random ID), whether its ID sorts before the axes' names
+    // ("aa…" < "x_axis" < "y_axis") or after them ("zz…"): placed off it, its length, 40.
     for name in ["aa000001", "zz000001"] {
         for (sketch, on, off) in along_the_axes(name) {
             let mut d = Dim::new(sketch);

@@ -3,8 +3,9 @@
 //! would put a point, the point it would share or the relation it would leave there, the
 //! points it's level with or above, and the direction a line would take.
 //!
-//! The pointer looks, nearest first within each kind, ties by ID (a curve of the sketch
-//! before an axis, as SolidWorks picks the sketch's entity over the origin's), in this order:
+//! The pointer looks, nearest first within each kind, ties in [`Reference`]'s order (the
+//! sketch's own curves by ID, then the axes: Silico's rule, since a tie must never turn on a
+//! random ID), in this order:
 //! 1. a point of the sketch, shared (D2), always, whatever the setting and Ctrl (#278's F);
 //! 2. with relations inferred: the origin (#278's A), then a line's middle (with an `on` of
 //!    each other curve through it exactly, #278's G), then where two curves cross (two
@@ -473,15 +474,6 @@ fn nearest<K: Ord, T>(items: impl Iterator<Item = (f64, K, T)>) -> Option<T> {
         .map(|(_, _, t)| t)
 }
 
-impl Near {
-    /// The order a tie in distance goes in: the sketch's own curves, by ID, before the axes.
-    /// A line drawn along an axis is as near the pointer as the axis everywhere along it, and
-    /// SolidWorks picks the sketch's entity there, not the origin's axis.
-    fn tie(&self) -> (bool, &str) {
-        (self.infinite, self.reference.as_str())
-    }
-}
-
 impl Pointer<'_, '_> {
     /// The point of the sketch nearest `at`, within the tolerance.
     fn point_near(&self, at: Xy) -> Option<(f64, ElementId)> {
@@ -527,7 +519,7 @@ impl Pointer<'_, '_> {
         if let Some((cross, a, b)) = self.crossing_near(at, &near) {
             return Placed::new(cross, Target::Crossing(a, b));
         }
-        if let Some(curve) = nearest(near.iter().map(|n| (n.off, n.tie(), n))) {
+        if let Some(curve) = nearest(near.iter().map(|n| (n.off, &n.reference, n))) {
             return Placed::new(curve.foot, Target::On(curve.reference.clone()));
         }
         Placed::new(at, Target::Free)
@@ -536,8 +528,9 @@ impl Pointer<'_, '_> {
     /// What a click at `at` picks to dimension (Smart Dimension): a point of the sketch
     /// within the tolerance, or the origin where it's nearer, as [`snap`](Self::snap) finds
     /// them; else the curve nearest, within the tolerance, as `snap` finds curves (a line or
-    /// an arc where it's drawn, a circle all round, an axis anywhere along it), ties as
-    /// `snap`'s (the sketch's own curves, by ID, before the axes); else nothing. Whether relations are inferred plays no part: a pick is no relation.
+    /// an arc where it's drawn, a circle all round, an axis anywhere along it but where a
+    /// line of the sketch lies along it), ties as `snap`'s (in [`Reference`]'s order); else
+    /// nothing. Whether relations are inferred plays no part: a pick is no relation.
     pub(super) fn pick(&self, at: Xy) -> Option<Reference> {
         let point = self.point_near(at);
         let origin = distance(at, [0.0, 0.0]);
@@ -548,7 +541,7 @@ impl Pointer<'_, '_> {
             None => {}
         }
         let near = self.curves_near(at);
-        nearest(near.iter().map(|n| (n.off, n.tie(), n))).map(|n| n.reference.clone())
+        nearest(near.iter().map(|n| (n.off, &n.reference, n))).map(|n| n.reference.clone())
     }
 
     /// Only a point of the sketch the click shares, else nothing: where a tool fixes the
@@ -649,9 +642,9 @@ impl Pointer<'_, '_> {
     }
 
     /// Where two of the curves `near` cross, nearest `at` and within the tolerance of it, on
-    /// both as drawn: of the [`CROSSING_CURVES`] nearest curves only. At a tie, a crossing of
-    /// two of the sketch's own curves comes before one with an axis (a line drawn along an
-    /// axis crosses another line where the axis does), then by the pair's IDs.
+    /// both as drawn: of the [`CROSSING_CURVES`] nearest curves only. At a tie, the pair
+    /// first in [`Reference`]'s order: two of the sketch's own curves, by ID, before one with
+    /// an axis.
     fn crossing_near(&self, at: Xy, near: &[Near]) -> Option<(Xy, Reference, Reference)> {
         let mut nearest_first: Vec<&Near> = near.iter().collect();
         nearest_first.sort_by(|a, b| {
@@ -672,10 +665,7 @@ impl Pointer<'_, '_> {
                     let d = distance(x, at);
                     let on = |n: &Near| n.infinite || n.geo.spans(x);
                     if d <= self.tolerance && on(a) && on(b) {
-                        let key = (
-                            a.infinite || b.infinite,
-                            format!("{} {}", a.reference, b.reference),
-                        );
+                        let key = (a.reference.clone(), b.reference.clone());
                         found.push((d, key, (x, a.reference.clone(), b.reference.clone())));
                     }
                 }
