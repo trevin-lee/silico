@@ -808,6 +808,9 @@ pub struct Tab {
     /// The canvas's Select Other (M5.7): its right click's menu, and the list of what's
     /// under the pointer.
     select_other: crate::select_other::SelectOther,
+    /// What the core says of the selection's elements, for the property panel's selection
+    /// view (M5.7's measures): one element's entry, or two's distance and angle.
+    measures: crate::measures::Measures,
     /// What a toast is to say for the tab (a box's count, or why it took nothing), until
     /// the app takes it.
     toast: Option<String>,
@@ -1025,6 +1028,7 @@ impl Tab {
             selection: crate::selection::Selection::default(),
             box_select: crate::box_select::BoxSelect::default(),
             select_other: crate::select_other::SelectOther::default(),
+            measures: crate::measures::Measures::default(),
             toast: None,
             reload_diff: None,
             outside: BTreeMap::new(),
@@ -1359,6 +1363,36 @@ impl Tab {
     /// The selection, to change: a pick by name, a feature, a clear, its filter.
     pub fn selection_mut(&mut self) -> &mut crate::selection::Selection {
         &mut self.selection
+    }
+
+    /// What the core says of the selection's elements (M5.7's measures), as last answered.
+    pub fn measures(&self) -> &crate::measures::Measures {
+        &self.measures
+    }
+
+    /// The measures of the selection as it is now asked, if they're not what was asked last
+    /// (a pick or a rebuild since), and their reads out polled; none asked while a dialog
+    /// holds the panel (or is being read), which shows no measures, and whose preview's
+    /// rebuild a distance would wait behind.
+    pub fn measure<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        self.measures.poll(sessions, &self.id);
+        if self.in_dialog() {
+            return;
+        }
+        let of = crate::measures::Of::now(&self.selection);
+        // The same version of the selection on the same model: the same elements, as they
+        // were found, so nothing more to ask (and nothing to work out each frame).
+        if of == self.measures.of() {
+            return;
+        }
+        let measured = crate::measures::Measured::of(&self.selection);
+        self.measures.ask(sessions, &self.id, of, measured);
+    }
+
+    /// The measures, for a crate's test to answer as if read (`Measures::answered_as`).
+    #[cfg(test)]
+    pub(crate) fn measures_mut(&mut self) -> &mut crate::measures::Measures {
+        &mut self.measures
     }
 
     /// Whether anything is wrong: the gate's problems, or a feature's problems or warnings,
@@ -1730,6 +1764,7 @@ impl Tab {
         self.sketch_requests(sessions);
         self.drive_drag(sessions);
         self.read_sketches(sessions);
+        self.measure(sessions);
     }
 
     /// The sketch reads polled and started, without waiting: sketch mode's, of its sketch,
@@ -3485,7 +3520,7 @@ impl Tab {
     }
 
     /// The feature `id`'s name, as the timeline last listed it: its ID if it doesn't.
-    fn name_of(&self, id: &FeatureId) -> String {
+    pub(crate) fn name_of(&self, id: &FeatureId) -> String {
         self.entry(id.as_str())
             .map_or_else(|| id.as_str().to_owned(), |entry| entry.name.clone())
     }

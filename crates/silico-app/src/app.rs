@@ -724,6 +724,7 @@ impl<P: Clients + 'static> App<P> {
                 sessions,
                 name,
                 drawing,
+                remembered,
                 ..
             } = self;
             let mut panes = Panes {
@@ -733,6 +734,7 @@ impl<P: Clients + 'static> App<P> {
                 started: &mut started,
                 drawing,
                 dialog_key,
+                remembered,
             };
             panes::fit(tree, ui.available_width());
             tree.ui(&mut panes, ui);

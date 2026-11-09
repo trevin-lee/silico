@@ -234,6 +234,20 @@ Silico's booleans are binary: `fuse`, `cut`, and `common` each take one `base` a
 - With the multi-user environment on, one user holds write access at a time: a document someone else has open for writing opens read-only, its tooltip naming that user, and *Get Write Access* or *Make Read-Only* changes it ([Multi-User Environment](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_multi_user_environment.htm)). When the writer gives up write access, *Reload* can take it ([Reload](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_FILE_RELOAD_MULTIPLE.htm)).
 - Beyond its own multi-user locking, the help doesn't say what happens when a document open for writing is changed on disk by another program.
 
+## 7. Measure
+
+Read on 2026-11-08 for M5.7's selection view; the 2026 help says the same.
+
+- Measure measures distance, angle, and radius, and the size of and between lines, points, surfaces, and planes, in parts, assemblies, sketches, and drawings ([Measure Tool](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_MEASURE.htm)).
+- One entity selected is measured on its own; a vertex or sketch point gives its x, y, and z coordinates ([Measure Tool](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_MEASURE.htm), [Using the Measure Tool](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_using_the_measure_tool.htm)).
+- Two entities selected give the smallest distance between them ([Using the Measure Tool](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_using_the_measure_tool.htm)). For two arcs or circles, *Arc/Circle Measurements* picks the distance shown: center to center, minimum, maximum, or a custom one ([Measure Tool](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_MEASURE.htm)). The help doesn't say which is the default.
+- *Projected On* a face or plane adds the distance projected on it and the distance normal to it; *Show XYZ Measurements* adds dX, dY, and dZ between the entities ([Measure Tool](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_MEASURE.htm)).
+- The dialog lists up to six selections. Clicking a selected item again in the graphics area removes it, and clicking a blank area clears them all ([Measure Tool](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_MEASURE.htm), [Using the Measure Tool](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_using_the_measure_tool.htm)).
+- Measure updates as the selection changes, even across documents and while other tools run ([Using the Measure Tool](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_using_the_measure_tool.htm)).
+- With Measure closed, the status bar shows common measurements of what's selected, such as an edge's length ([Measure Tool](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_MEASURE.htm), [Status Bar](https://help.solidworks.com/2027/english/SolidWorks/sldworks/r_status_bar.htm)).
+- *Quick Copy* copies a value from the dialog, with or without its units ([Measure Tool](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_MEASURE.htm)).
+- The help doesn't say which measures a pair of entities gets (when an angle is given, or a normal distance without *Projected On*), nor what Measure shows for a pair it can't relate.
+
 ## Not covered
 
 What this note looked for and couldn't source from the help:

@@ -9,16 +9,21 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Color32, RichText, Sense, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType};
 use egui_tiles::{Tile, TileId, Tiles, Tree, UiResponse};
+use silico_core::command::elements::Entry as ElementEntry;
 use silico_core::command::{SessionId, Sessions};
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
-use silico_core::document::Units;
+use silico_core::document::{Length, Units};
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
+use silico_protocol::ElementKind;
 
 use crate::dialog::Action;
 use crate::icons::{self, Icon, IconSize};
+use crate::measures::Answers;
 use crate::properties;
+use crate::selection::Picked;
+use crate::shortcuts::Command;
 use crate::tab::{Hideable, Tab};
 use crate::theme;
 
@@ -143,6 +148,9 @@ pub struct Panes<'a, P: Clients + 'static> {
     pub drawing: &'a mut crate::viewport::Drawing,
     /// Enter or Esc pressed this frame, if it's an open dialog's (`App::keys`).
     pub dialog_key: Option<egui::Key>,
+    /// What each kind of dialog was last OK'd with: the selection view's Fillet opens its
+    /// dialog with them, as the toolbar's does.
+    pub remembered: &'a crate::dialog::Remembered,
 }
 
 impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
@@ -318,9 +326,10 @@ impl<P: Clients + 'static> Panes<'_, P> {
     }
 
     /// The property panel (DESIGN.md, *Layout*: one right panel, four jobs): the feature
-    /// dialog, if one is open; else the selection's faces and edges, if it has any
-    /// (`selectionProps`, [`selected_elements`]); else the selected feature's properties;
-    /// else the document's, never an empty state.
+    /// dialog, if one is open; else the selection's faces, edges, and vertices, if it has
+    /// any, with their measures (`selectionProps`, [`selected_elements`]), and what its link
+    /// and buttons ask done; else the selected feature's properties; else the document's,
+    /// never an empty state.
     fn properties(&mut self, ui: &mut Ui) {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         let Some(tab) = self.tab.as_deref_mut() else {
@@ -342,7 +351,12 @@ impl<P: Clients + 'static> Panes<'_, P> {
             // A dialog still being read (Edit Feature): Esc cancels it.
             tab.close_dialog(self.sessions, false);
         }
-        properties::title(ui, None, "Properties", None);
+        // The selection's views close with Clear selection (`selectionProps`' `clearSel`).
+        let selecting = tab.selection().elements().next().is_some();
+        let clear = selecting.then_some((CLEAR_SELECTION, Command::ClearSelection));
+        if properties::title(ui, None, "Properties", clear) {
+            tab.selection_mut().clear();
+        }
         let entry: Option<Entry> = tab.selection().feature().and_then(|selected| {
             tab.timeline
                 .as_ref()
@@ -354,6 +368,12 @@ impl<P: Clients + 'static> Panes<'_, P> {
         let name = &mut *self.name;
         let started = &mut *self.started;
         let elements = tab.selection().elements().next().is_some();
+        if elements {
+            // A pick made this frame (the canvas is drawn before this pane) is measured from
+            // this frame, not the next.
+            tab.measure(sessions);
+        }
+        let mut viewed = None;
         let out = egui::ScrollArea::vertical()
             .id_salt("properties")
             .auto_shrink([false, false])
@@ -361,7 +381,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 match entry {
                     _ if elements => {
-                        selected_elements(ui, tab);
+                        viewed = selected_elements(ui, tab);
                         properties::CardOut::default()
                     }
                     Some(entry) => feature(ui, tab, &entry, sessions, name, started),
@@ -372,6 +392,24 @@ impl<P: Clients + 'static> Panes<'_, P> {
         tab.hover_candidate(out.hovered);
         if let Some(asked) = out.asked {
             *self.started |= tab.card_asked(sessions, asked);
+        }
+        match viewed {
+            None => {}
+            Some(Viewed::Select(id)) => tab.selection_mut().select_feature(id),
+            Some(Viewed::Edit(id)) => {
+                // Never a sketch's: an element's name names the feature that made it in a
+                // solid, which a sketch never is.
+                tab.edit_feature(sessions, &id);
+                *self.started = true;
+            }
+            Some(Viewed::Fillet) => {
+                tab.open_dialog(sessions, crate::dialog::Kind::Fillet, self.remembered);
+                *self.started = true;
+            }
+            Some(Viewed::SketchOn(face)) => {
+                tab.create_sketch_on_face(sessions, &face.to_string());
+                *self.started = true;
+            }
         }
     }
 
@@ -489,15 +527,13 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
 /// The selected feature's properties (`featureProps`): its head (its type's icon, its name,
 /// its type and ID), the document's problems and its own (its error card, with Edit, as
 /// `featureProps` offers it, `noShow`), its name, editable, which is an edit of the
-/// document, and its health and ID; and, if another program changed it, what changed (the
-/// purple Changed on disk card, with Mark as seen). What an error card's button asked, if
-/// one was.
+/// document, and its health and ID, with the ID's copy button (`prop('ID', …, { copy })`);
+/// and, if another program changed it, what changed (the purple Changed on disk card, with
+/// Mark as seen). What an error card's button asked, if one was.
 ///
 /// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
 /// direction), which need its fields read, as its dialog reads them; and its Edit feature
 /// and Suppress buttons (the timeline's double-click and menu edit it already).
-/// SEAM: the ID row's copy button (`.prop .v .copy`), once the app has a clipboard command
-/// of its own.
 fn feature<P: Clients + 'static>(
     ui: &mut Ui,
     tab: &mut Tab,
@@ -590,14 +626,7 @@ fn feature<P: Clients + 'static>(
         Health::Unknown => ("Not built", theme::TEXT_SUBDUED),
     };
     properties::text_row(ui, "State", properties::body(state, colour));
-    properties::text_row(
-        ui,
-        "ID",
-        egui::text::LayoutJob::single_section(
-            entry.id.as_str().to_owned(),
-            properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
-        ),
-    );
+    properties::copy_row(ui, "ID", entry.id.as_str());
     properties::hint(
         ui,
         &[(
@@ -608,52 +637,434 @@ fn feature<P: Clients + 'static>(
     asked
 }
 
-/// The selection's faces and edges (`selectionProps`, M5.7), each under its kind: its name
-/// as an agent writes it, and whether a store takes it, Stable; or, Unstable, the refusal
-/// a store gives it, with its suggestion (what a fillet's edges would say); or, Waiting,
-/// why it isn't answered (its feature didn't build, or its body isn't named yet).
-///
-/// SEAM: the prototype's look for it (`selectionProps`: each element's measures, its
-/// surface type, and its feature), which needs an `elements` read of each; and a vertex's
-/// row, once vertices are picked.
-fn selected_elements(ui: &mut Ui, tab: &Tab) {
-    let elements: Vec<_> = tab.selection().elements().collect();
-    let sub = properties::body("Selection", theme::PROPERTY_HEAD_SUB);
-    let title = match elements.len() {
-        1 => "1 element selected".to_owned(),
-        n => format!("{n} elements selected"),
-    };
-    properties::head(ui, Icon::SelFace, &title, sub);
-    // The head is painted, not labelled: the count said again where it reads.
-    properties::text_row(
-        ui,
-        "Selected",
-        properties::body(&title, theme::PROPERTY_VALUE),
-    );
-    for (place, picked) in elements.into_iter().enumerate() {
-        // Each element's rows under an ID of its own: they're keyed alike.
-        ui.push_id(("selected", place), |ui| selected_element(ui, picked));
+/// What the selection view asked (`selectionProps`' link and buttons): a feature selected
+/// (Made by), its dialog opened (Edit), Fillet started with the selection, or a sketch
+/// created on the planar face a store names so (Sketch on this face).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Viewed {
+    Select(FeatureId),
+    Edit(FeatureId),
+    Fillet,
+    SketchOn(Arc<silico_core::naming::Name>),
+}
+
+/// The selection's faces, edges, and vertices (`selectionProps`, M5.7): one element's view
+/// ([`one_selected`]), or several's ([`several_selected`]), from the core's answers for the
+/// selection as it is now ([`crate::measures`]), never another's. What it asked, if
+/// anything.
+fn selected_elements(ui: &mut Ui, tab: &Tab) -> Option<Viewed> {
+    let elements: Vec<&Picked> = tab.selection().elements().collect();
+    let none = Answers::default();
+    let answers = crate::measures::Of::now(tab.selection())
+        .and_then(|of| tab.measures().answers(of))
+        .unwrap_or(&none);
+    match elements.as_slice() {
+        [one] => one_selected(ui, tab, one, answers),
+        several => {
+            several_selected(ui, several, answers);
+            None
+        }
     }
 }
 
-/// A selected element's rows ([`selected_elements`]).
-fn selected_element(ui: &mut Ui, picked: &crate::selection::Picked) {
-    use crate::selection::State;
-    let kind = match picked.found().map(silico_core::selection::Selected::kind) {
-        Some(silico_protocol::ElementKind::Face) => "Face",
-        Some(silico_protocol::ElementKind::Edge) => "Edge",
-        Some(silico_protocol::ElementKind::Vertex) => "Vertex",
-        _ => "Element",
+/// The selection views' close button's label and tooltip (`selectionProps`' `clearSel`).
+const CLEAR_SELECTION: &str = "Clear selection";
+
+/// What the property panel says of a measure not answered yet: words, never a dash, as the
+/// panel says the file on disk isn't compared yet.
+const NOT_MEASURED: &str = "Not measured yet";
+
+/// What it says of one element's measure while its feature doesn't build: not measured,
+/// for as long as that lasts, never "not measured yet" (its Stability card says why).
+const NOT_BUILT: &str = "Not measured: its feature didn't build";
+
+/// The planar face's button that creates a sketch on it (`selectionProps`' `sketchOnFace`).
+const SKETCH_ON_FACE: &str = "Sketch on this face";
+
+/// One element selected (`selectionProps`' first view): its head (its kind's icon, its
+/// number in its body's solid, and what it is, on which body); MEASURES, from its entry
+/// as `elements` lists it ([`measure_rows`]); NAME: its name as an agent writes it, with a
+/// copy button, the feature that made it, a link that selects it, and its stability, as
+/// [`stability`] says it; then Sketch on this face for a planar face (Create Sketch on it,
+/// [`Tab::create_sketch_on_face`]), Fillet for an edge (the toolbar's, with the selection),
+/// and Edit for its maker (Edit Feature's), and the hint.
+fn one_selected(ui: &mut Ui, tab: &Tab, picked: &Picked, answers: &Answers) -> Option<Viewed> {
+    use silico_core::command::elements::ElementType;
+    let found = picked.found();
+    let kind = found.map(silico_core::selection::Selected::kind);
+    let entry = answers
+        .element
+        .as_ref()
+        .and_then(|entry| entry.as_ref().ok());
+    let icon = kind.map_or(Icon::SelFace, Icon::of_element);
+    let title = found.map_or_else(|| "Element".to_owned(), |found| found.element.to_string());
+    let what = element_words(kind, entry);
+    let sub = match found {
+        Some(found) => format!("{what} · {}", body_name(tab, &found.feature)),
+        None => what,
     };
-    properties::section(ui, kind);
-    properties::text_row(
+    element_head(ui, icon, &title, &sub);
+    properties::section(ui, "Measures");
+    measure_rows(ui, picked, kind, answers.element.as_ref());
+    properties::section(ui, "Name");
+    properties::copy_row(ui, "Stable name", &picked.name);
+    let maker = found.map(|found| found.name.feature().clone());
+    let mut viewed = None;
+    if let Some(maker) = &maker
+        && properties::link_row(ui, "Made by", &tab.name_of(maker))
+    {
+        viewed = Some(Viewed::Select(maker.clone()));
+    }
+    stability(ui, picked);
+    let edit = maker
+        .as_ref()
+        .map(|maker| format!("Edit {}", tab.name_of(maker)));
+    let mut buttons = Vec::new();
+    let mut acts = Vec::new();
+    // A face `elements` says is a plane (`selectionProps`' `sketchOnFace`), by the name a
+    // store writes for it (`Selected::stored`), as every store takes a selection's: off
+    // while none of its names is stable (its Stability card says why), or while sketch
+    // mode can't open.
+    if kind == Some(ElementKind::Face)
+        && entry.is_some_and(|entry| entry.r#type == ElementType::Plane)
+    {
+        let stored = found.and_then(|found| found.stored.as_ref().ok());
+        buttons.push(
+            crate::modal::Button::new(SKETCH_ON_FACE, crate::modal::Kind::Secondary)
+                .icon(Icon::Sketch)
+                .enabled(stored.is_some() && tab.can_sketch()),
+        );
+        acts.push(stored.map(|face| Viewed::SketchOn(Arc::clone(face))));
+    }
+    if kind == Some(ElementKind::Edge) {
+        buttons.push(
+            crate::modal::Button::new("Fillet", crate::modal::Kind::Secondary)
+                .icon(Icon::Fillet)
+                .enabled(tab.can_open(crate::dialog::Kind::Fillet)),
+        );
+        acts.push(Some(Viewed::Fillet));
+    }
+    if let (Some(maker), Some(words)) = (&maker, &edit) {
+        buttons.push(
+            crate::modal::Button::new(words, crate::modal::Kind::Ghost)
+                .icon(Icon::Edit)
+                .enabled(tab.can_edit(maker)),
+        );
+        acts.push(Some(Viewed::Edit(maker.clone())));
+    }
+    if let Some(at) = properties::buttons(ui, &buttons) {
+        viewed = acts.get(at).cloned().flatten();
+    }
+    let modifier = crate::start::modifier_caps(ui.ctx(), egui::Modifiers::COMMAND)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    properties::hint(
         ui,
-        "Name",
-        egui::text::LayoutJob::single_section(
-            picked.name.clone(),
-            properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
-        ),
+        &[
+            (
+                &format!("{modifier}-click adds or removes. Right-click › "),
+                false,
+            ),
+            ("Select Other", true),
+            (" reaches what's behind.", false),
+        ],
     );
+    viewed
+}
+
+/// Several elements selected (`selectionProps`' second view): its head (how many, and of
+/// each kind how many); for two, MEASURE, from `distance` and `angle` ([`pair_rows`]);
+/// SELECTION, a row for each, its number in its body's solid and its name as an agent
+/// writes it; and Copy names, which copies their names as a JSON array, as an agent writes
+/// a fillet's `edges`.
+fn several_selected(ui: &mut Ui, elements: &[&Picked], answers: &Answers) {
+    let title = format!("{} selected", elements.len());
+    element_head(ui, Icon::SelFace, &title, &kinds_words(elements));
+    if let [a, b] = elements {
+        properties::section(ui, "Measure");
+        pair_rows(ui, [a, b], answers);
+    }
+    properties::section(ui, "Selection");
+    for (place, picked) in elements.iter().enumerate() {
+        // Each element's row under an ID of its own: two may have one number.
+        let key = picked
+            .found()
+            .map_or_else(|| "Element".to_owned(), |found| found.element.to_string());
+        ui.push_id(("selected", place), |ui| {
+            properties::text_row(
+                ui,
+                &key,
+                egui::text::LayoutJob::single_section(
+                    picked.name.clone(),
+                    properties::format(theme::MONOSPACE_SIZE, theme::TEXT_SUBDUED, true),
+                ),
+            );
+        });
+    }
+    let copy = crate::modal::Button::new("Copy names", crate::modal::Kind::Ghost).icon(Icon::Copy);
+    if properties::buttons(ui, &[copy]).is_some()
+        && let Some(names) = names_json(elements)
+    {
+        ui.ctx().copy_text(names);
+    }
+}
+
+/// The elements' names, in the order picked, as a JSON array on one line, as the command
+/// API writes strings (a fillet's `edges`); none if it's too long to write.
+fn names_json(elements: &[&Picked]) -> Option<String> {
+    use silico_core::command::wire::{self, Json, Layout};
+    let names = Json::array(elements.iter().map(|picked| Json::str(&picked.name)));
+    wire::write(&names, Layout::OneLine).ok()
+}
+
+/// A selection's head ([`properties::head`]): `icon`, `title` over `sub` in the head's
+/// smaller type; each line labelled, as no other widget says them.
+fn element_head(ui: &mut Ui, icon: Icon, title: &str, sub: &str) {
+    let mut job = properties::body(sub, theme::PROPERTY_HEAD_SUB);
+    job.sections.iter_mut().for_each(|section| {
+        section.format.font_id.size = theme::HEADER_SIZE;
+    });
+    let lines = properties::head(ui, icon, title, job);
+    for (line, said) in lines.into_iter().zip([title, sub]) {
+        let response = ui.interact(line, ui.id().with(("head", said)), Sense::hover());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, said));
+    }
+}
+
+/// How many of each kind `elements` are, faces first, then edges and vertices ("2 faces, 1
+/// edge"), and how many aren't answered yet, with no kind known.
+fn kinds_words(elements: &[&Picked]) -> String {
+    let kind_of = |picked: &&Picked| picked.found().map(silico_core::selection::Selected::kind);
+    let count = |kind: Option<ElementKind>| {
+        elements
+            .iter()
+            .filter(|picked| kind_of(picked) == kind)
+            .count()
+    };
+    let mut words: Vec<String> = [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex]
+        .into_iter()
+        .filter_map(|kind| match count(Some(kind)) {
+            0 => None,
+            1 => Some(format!("1 {}", kind.word())),
+            n => Some(format!("{n} {}", kind.plural())),
+        })
+        .collect();
+    match count(None) {
+        0 => {}
+        1 => words.push("1 element".to_owned()),
+        n => words.push(format!("{n} elements")),
+    }
+    words.join(", ")
+}
+
+/// What an element is, as the head's sub-line says it (`selectionProps`: "Planar face",
+/// "Line edge", "Vertex"): its entry's type, once it's read; its kind alone till then. A
+/// circle edge whose ends are one point is a circle, any other an arc.
+fn element_words(kind: Option<ElementKind>, entry: Option<&ElementEntry>) -> String {
+    use silico_core::command::elements::ElementType as T;
+    let face = |r#type: Option<T>| match r#type {
+        Some(T::Plane) => "Planar face",
+        Some(T::Cylinder) => "Cylindrical face",
+        Some(T::Cone) => "Conical face",
+        Some(T::Sphere) => "Spherical face",
+        Some(T::Torus) => "Toroidal face",
+        Some(T::Bezier) => "Bézier face",
+        Some(T::Bspline) => "B-spline face",
+        Some(T::Revolution) => "Revolved face",
+        Some(T::Extrusion) => "Extruded face",
+        Some(T::Offset) => "Offset face",
+        _ => "Face",
+    };
+    let edge = |entry: Option<&ElementEntry>| match entry.map(|entry| entry.r#type) {
+        Some(T::Line) => "Line edge",
+        Some(T::Circle) if entry.is_some_and(|entry| entry.start == entry.end) => "Circle edge",
+        Some(T::Circle) => "Arc edge",
+        Some(T::Ellipse) => "Ellipse edge",
+        Some(T::Hyperbola) => "Hyperbola edge",
+        Some(T::Parabola) => "Parabola edge",
+        Some(T::Bezier) => "Bézier edge",
+        Some(T::Bspline) => "B-spline edge",
+        Some(T::Offset) => "Offset edge",
+        _ => "Edge",
+    };
+    match kind {
+        Some(ElementKind::Face) => face(entry.map(|entry| entry.r#type)),
+        Some(ElementKind::Edge) => edge(entry),
+        Some(ElementKind::Vertex) => "Vertex",
+        _ => "Element",
+    }
+    .to_owned()
+}
+
+/// One element's MEASURES (`selectionProps`), from its `entry` as `elements` lists it: a
+/// face's area, and a planar face's normal or a cylinder's radius and axis; an edge's
+/// length, and a circle's or arc's radius; a vertex's position. Not read yet: the rows its
+/// kind always has, each [`NOT_MEASURED`], or [`NOT_BUILT`] while `picked` waits for a
+/// feature that didn't build; refused, the core's refusal, as a card.
+fn measure_rows(
+    ui: &mut Ui,
+    picked: &Picked,
+    kind: Option<ElementKind>,
+    entry: Option<&Result<ElementEntry, silico_core::command::Problems>>,
+) {
+    use silico_core::command::elements::ElementType as T;
+    let entry = match entry {
+        Some(Ok(entry)) => entry,
+        Some(Err(problems)) => {
+            if let Some(error) = problems.errors().first() {
+                let said = crate::tab::Said::of(error);
+                properties::card(ui, &said, None, properties::Offer::default());
+            }
+            return;
+        }
+        None => {
+            let key = match kind {
+                Some(ElementKind::Face) => "Area",
+                Some(ElementKind::Edge) => "Length",
+                Some(ElementKind::Vertex) => "Position",
+                _ => return,
+            };
+            let said = match &picked.state {
+                crate::selection::State::Waiting { why: Some(_), .. } => NOT_BUILT,
+                _ => NOT_MEASURED,
+            };
+            properties::text_row(ui, key, properties::body(said, theme::TEXT_SUBDUED));
+            return;
+        }
+    };
+    let value = |text: &str| properties::body(text, theme::PROPERTY_VALUE);
+    if let Some(area) = entry.area {
+        let area = format!("{} mm²", properties::fixed(area.millionths(), MILLIONTHS));
+        properties::text_row(ui, "Area", value(&area));
+    }
+    if let Some(normal) = entry.normal.filter(|_| entry.r#type == T::Plane) {
+        properties::text_row(ui, "Normal", value(&properties::direction(normal)));
+    }
+    if let Some(length) = entry.length {
+        properties::text_row(ui, "Length", value(&mm(length)));
+    }
+    if matches!(entry.r#type, T::Cylinder | T::Circle) {
+        if let Some(radius) = entry.radius {
+            properties::text_row(ui, "Radius", value(&mm(radius)));
+        }
+        if let Some(axis) = entry.axis.as_ref().filter(|_| entry.r#type == T::Cylinder) {
+            properties::text_row(ui, "Axis", value(&properties::direction(axis.direction)));
+        }
+    }
+    if let Some(position) = entry.position {
+        let [x, y, z] = position.map(|length| properties::trimmed(length.nm().into(), NM_PER_MM));
+        properties::text_row(ui, "Position", value(&format!("({x}, {y}, {z}) mm")));
+    }
+}
+
+/// Two elements' MEASURE (`selectionProps`, as SolidWorks' Measure reports any two
+/// entities: docs/ux/solidworks.md, §7): from `distance`, the least distance, and the
+/// normal, centre, and centre-to-element distances where the core gives them; from
+/// `angle`, the angle, "(parallel)" at exactly 0 or 180, or no row where it refuses the
+/// pair. Not read yet: Distance, and Angle unless one is a vertex (which no angle takes),
+/// each [`NOT_MEASURED`]; the distance refused, the core's refusal, as a card. One waiting
+/// for a feature that didn't build: why, as a card, in place of the rows.
+fn pair_rows(ui: &mut Ui, pair: [&Picked; 2], answers: &Answers) {
+    use crate::selection::State;
+    // One waits for a feature that didn't build: nothing's measured till it builds, so why
+    // is said, as one element's Stability says it, never a measure "not measured yet" for
+    // as long as it fails.
+    let mut whys: Vec<&str> = pair
+        .iter()
+        .filter_map(|picked| match &picked.state {
+            State::Waiting { why: Some(why), .. } => Some(why.as_str()),
+            _ => None,
+        })
+        .collect();
+    whys.dedup();
+    if !whys.is_empty() {
+        for (at, why) in whys.into_iter().enumerate() {
+            let said = crate::tab::Said {
+                warning: true,
+                message: why.to_owned(),
+                ..crate::tab::Said::default()
+            };
+            ui.push_id(("waiting", at), |ui| {
+                properties::card(ui, &said, None, properties::Offer::default())
+            });
+        }
+        return;
+    }
+    let value = |text: &str| properties::body(text, theme::PROPERTY_VALUE);
+    let waiting = || properties::body(NOT_MEASURED, theme::TEXT_SUBDUED);
+    match &answers.distance {
+        None => properties::text_row(ui, "Distance", waiting()),
+        Some(Ok(distance)) => {
+            properties::text_row(ui, "Distance", value(&mm(distance.distance)));
+            for (key, length) in [
+                ("Normal distance", distance.normal_distance),
+                ("Center distance", distance.center_distance),
+                ("Center to element", distance.center_to_element),
+            ] {
+                if let Some(length) = length {
+                    properties::text_row(ui, key, value(&mm(length)));
+                }
+            }
+        }
+        Some(Err(problems)) => {
+            if let Some(error) = problems.errors().first() {
+                let said = crate::tab::Said::of(error);
+                properties::card(ui, &said, None, properties::Offer::default());
+            }
+        }
+    }
+    let vertex = pair.iter().any(|picked| {
+        picked.found().map(silico_core::selection::Selected::kind) == Some(ElementKind::Vertex)
+    });
+    match &answers.angle {
+        None if !vertex => properties::text_row(ui, "Angle", waiting()),
+        Some(Ok(angle)) => properties::text_row(ui, "Angle", value(&angle_words(angle.angle))),
+        // Refused: the pair has no angle, and nothing is said of it.
+        None | Some(Err(_)) => {}
+    }
+}
+
+/// An angle as the selection view writes it: "0° (parallel)" and "180° (parallel)" at
+/// exactly those, as the prototype writes parallel faces' (the core's two faces facing
+/// apart read 0, facing alike 180); else to two decimals, as `fmtF`.
+fn angle_words(angle: silico_core::document::Angle) -> String {
+    match angle.ndeg() {
+        0 => "0° (parallel)".to_owned(),
+        NDEG_HALF_TURN => "180° (parallel)".to_owned(),
+        ndeg => format!("{}°", properties::fixed(ndeg.into(), NDEG_PER_DEGREE)),
+    }
+}
+
+/// `length` as the selection view writes it: in mm, to two decimals (`fmtF`).
+fn mm(length: Length) -> String {
+    format!("{} mm", properties::fixed(length.nm().into(), NM_PER_MM))
+}
+
+/// A length's nanometres in a mm, an area's millionths in a mm², and an angle's nanodegrees
+/// in a degree and in half a turn: the steps the core gives each in.
+const NM_PER_MM: i128 = 1_000_000;
+const MILLIONTHS: i128 = 1_000_000;
+const NDEG_PER_DEGREE: i128 = 1_000_000_000;
+const NDEG_HALF_TURN: i64 = 180_000_000_000;
+
+/// The body `id`'s name, as the browser's row or the timeline gives it; its ID if neither
+/// lists it.
+fn body_name(tab: &Tab, id: &FeatureId) -> String {
+    tab.browser
+        .bodies
+        .iter()
+        .find(|row| &row.id == id)
+        .map(|row| row.name.clone())
+        .unwrap_or_else(|| tab.name_of(id))
+}
+
+/// An element's stability (#385's row, `selectionProps`' Stable): Stable, if a store takes
+/// its name; or, Unstable, the refusal a store gives it, with its suggestion (what a
+/// fillet's edges would say); or, Waiting, why it isn't answered (its feature didn't
+/// build, or its body isn't named yet).
+fn stability(ui: &mut Ui, picked: &Picked) {
+    use crate::selection::State;
     let (state, colour, said) = match &picked.state {
         State::Found(selected) => match &selected.stored {
             Ok(_) => ("Stable", theme::SUCCESS, None),
@@ -1754,6 +2165,7 @@ mod tests {
         name: Option<NameField>,
         started: bool,
         drawing: crate::viewport::Drawing,
+        remembered: crate::dialog::Remembered,
     }
 
     fn fid(id: &str) -> FeatureId {
@@ -1839,6 +2251,7 @@ mod tests {
             name: None,
             started: false,
             drawing: crate::viewport::Drawing::default(),
+            remembered: crate::dialog::Remembered::default(),
         };
         let mut h = Harness::builder()
             .with_size(Vec2::new(PANE.x + width + 40.0, PANE.y + HEIGHT + 40.0))
@@ -1853,6 +2266,7 @@ mod tests {
                             started: &mut shown.started,
                             drawing: &mut shown.drawing,
                             dialog_key: None,
+                            remembered: &shown.remembered,
                         }
                         .browser(ui);
                     });
@@ -2803,6 +3217,12 @@ mod property_panel_drawn {
         /// `.ec-actions { gap: 6px }`; `.btn { height: 22px }`.
         pub const EC_ACTIONS_GAP: f32 = 6.0;
         pub const BTN_H: f32 = 22.0;
+        /// `selectionProps`' buttons: `padding: 10px var(--pad); gap: 6px`.
+        pub const BUTTONS_PADDING: f32 = 10.0;
+        pub const BUTTONS_GAP: f32 = 6.0;
+        /// `--green` (`.ok-text`), `--info` (`.link`).
+        pub const GREEN: Color32 = Color32::from_rgb(0x00, 0xda, 0x7e);
+        pub const INFO: Color32 = Color32::from_rgb(0xad, 0xbb, 0xff);
         /// `.field`: `height: 22px`, Gray.200, corners `--r-sm`.
         pub const FIELD_H: f32 = 22.0;
         /// `.dlg-footer`: `padding: 8px var(--pad); gap: 6px; border-top: 1px`; its `.btn`
@@ -2841,6 +3261,7 @@ mod property_panel_drawn {
         name: Option<NameField>,
         started: bool,
         drawing: crate::viewport::Drawing,
+        remembered: crate::dialog::Remembered,
     }
 
     fn fid(id: &str) -> FeatureId {
@@ -2909,6 +3330,7 @@ mod property_panel_drawn {
             name: None,
             started: false,
             drawing: crate::viewport::Drawing::default(),
+            remembered: crate::dialog::Remembered::default(),
         };
         let mut h = Harness::builder()
             .with_size(Vec2::new(PANE.x + width + 40.0, PANE.y + HEIGHT + 40.0))
@@ -2923,6 +3345,7 @@ mod property_panel_drawn {
                             started: &mut shown.started,
                             drawing: &mut shown.drawing,
                             dialog_key: None,
+                            remembered: &shown.remembered,
                         }
                         .properties(ui);
                     });
@@ -4400,5 +4823,543 @@ mod property_panel_drawn {
                 Stroke::new(css::BORDER, css::CARD_BORDER)
             )]
         );
+    }
+
+    // ---- The selection view (`selectionProps`) ----
+
+    /// The fake's 2 by 1 by 1 block, `aaaaaaaa`, named Block and the timeline's one body,
+    /// its model published (the selection's tests' `box_model`), `names` selected in it in
+    /// order, and the measures of that selection answered `answers`, as if read.
+    fn selecting(names: &[&str], answers: Answers) -> Tab {
+        let mut tab = part();
+        tab.timeline = Some(TimelineAnswer {
+            revision: Revision::OPENED,
+            model: Some(Revision::OPENED),
+            problems: 0,
+            features: Some(vec![entry("aaaaaaaa", "box", "Block", Health::Healthy)]),
+            bodies: vec![fid("aaaaaaaa")],
+        });
+        tab.browser.bodies = vec![crate::tab::Row {
+            id: fid("aaaaaaaa"),
+            name: "Block".to_owned(),
+            health: Health::Healthy,
+            marked_by: None,
+        }];
+        let model = crate::selection::tests::box_model();
+        tab.selection_mut()
+            .published(Some((model, Revision::OPENED)), 1);
+        for name in names {
+            tab.selection_mut().pick(
+                &format!("aaaaaaaa.box.{name}"),
+                crate::selection::How::Toggle,
+            );
+        }
+        assert_eq!(tab.selection().elements().count(), names.len());
+        let of = crate::measures::Of::now(tab.selection()).unwrap();
+        let measured = crate::measures::Measured::of(tab.selection());
+        tab.measures_mut().answered_as(of, measured, answers);
+        tab
+    }
+
+    /// The block's element `name`'s entry, as `elements` lists it from the fake's
+    /// description (every face of type other, every edge too).
+    fn element(name: &str) -> ElementEntry {
+        let model = crate::selection::tests::box_model();
+        silico_core::command::elements::entries(&model, &fid("aaaaaaaa"))
+            .unwrap()
+            .iter()
+            .find(|entry| entry.name.to_string() == format!("aaaaaaaa.box.{name}"))
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn one_planar_face_is_drawn_as_selection_props_its_measures_name_sketch_on_it_edit_and_hint() {
+        use silico_core::command::elements::ElementType;
+        // Face5, by hand the block's bottom: 2 by 1, so 2 mm², facing −z.
+        let mut face = element("Face5");
+        face.r#type = ElementType::Plane;
+        face.area = silico_core::document::Measure::rounded(2.0);
+        face.normal = Some([0.0, 0.0, -1.0]);
+        let answers = Answers {
+            element: Some(Ok(face)),
+            ..Answers::default()
+        };
+        let mut h = drawn(selecting(&["Face5"], answers));
+        h.ctx.set_os(egui::os::OperatingSystem::Nix);
+        h.run_steps(2);
+        let mut y = title_and_head(&h, "Face5", "Planar face · Block", body(css::FS_SMALL));
+        y = section_at(&h, "MEASURES", y);
+        y = row_at(&h, "Area", "2.00 mm²", y, body(css::FS), css::G800);
+        y = row_at(&h, "Normal", "(0, 0, -1)", y, body(css::FS), css::G800);
+        y = section_at(&h, "NAME", y);
+        // `.prop .v .copy`: the copy icon at the value's right (`margin-left: auto`),
+        // Gray.550, centred on the row; the name in `.mono`, the value's Gray.800.
+        let copy = Rect::from_min_size(
+            Pos2::new(
+                PANE.x + W - css::PAD - css::ICON,
+                y + (css::ROW_H - css::ICON) / 2.0,
+            ),
+            Vec2::splat(css::ICON),
+        );
+        y = row_at(
+            &h,
+            "Stable name",
+            "aaaaaaaa.box.Face5",
+            y,
+            mono(),
+            css::G800,
+        );
+        assert_eq!(icon_at(&h, copy), Some(css::G550), "the copy icon");
+        assert!(near_rect(
+            h.get_by_role_and_label(Role::Button, "Copy").rect(),
+            copy
+        ));
+        // Made by: a link (`.link`, `--info`); Stable, `.ok-text`.
+        y = row_at(&h, "Made by", "Block", y, body(css::FS), css::INFO);
+        assert!(h.query_by_role_and_label(Role::Link, "Block").is_some());
+        y = row_at(&h, "Stability", "Stable", y, body(css::FS), css::GREEN);
+        // A planar face's buttons, 10 under the rows (app.js:582): Sketch on this face
+        // (`.btn-secondary`, Gray.300) first, then Edit Block (`.btn-ghost`, no fill), 6
+        // after it.
+        let sketch = h
+            .get_by_role_and_label(Role::Button, "Sketch on this face")
+            .rect();
+        at(
+            sketch.min,
+            Pos2::new(PANE.x + css::PAD, y + css::BUTTONS_PADDING),
+            "Sketch on this face",
+        );
+        assert!(near(sketch.height(), css::BTN_H));
+        assert_eq!(
+            fills_at(&h, sketch),
+            [(css::G300, CornerRadius::same(css::R_SM), Stroke::NONE)]
+        );
+        let edit = h.get_by_role_and_label(Role::Button, "Edit Block").rect();
+        at(
+            edit.min,
+            Pos2::new(sketch.right() + css::BUTTONS_GAP, sketch.top()),
+            "Edit Block",
+        );
+        assert!(near(edit.height(), css::BTN_H));
+        assert!(fills_at(&h, edit).is_empty(), "a ghost has no fill");
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Fillet").is_none(),
+            "a face has no Fillet"
+        );
+        // The hint, 10 under them, Select Other emphasised; the modifier the platform's.
+        let words = "Ctrl-click adds or removes. Right-click › Select Other reaches what's behind.";
+        hint_at(&h, words, edit.bottom() + css::BUTTONS_PADDING);
+        assert_eq!(colour(&text(&h, words), 1), css::G800);
+        h.ctx.set_os(egui::os::OperatingSystem::Mac);
+        h.run_steps(2);
+        assert!(
+            h.query_by_label(
+                "⌘-click adds or removes. Right-click › Select Other reaches what's behind."
+            )
+            .is_some()
+        );
+        // The copy button copies the name as it's written.
+        h.get_by_role_and_label(Role::Button, "Copy").click();
+        h.step();
+        assert_eq!(copied(&h).as_deref(), Some("aaaaaaaa.box.Face5"));
+        // Sketch on this face on while sketch mode can open, and off while it can't
+        // (`Tab::can_sketch`): here, the document has a problem the gate found.
+        let sketch_off = |h: &Harness<'static, Shown>| {
+            h.get_by_role_and_label(Role::Button, "Sketch on this face")
+                .accesskit_node()
+                .is_disabled()
+        };
+        assert!(!sketch_off(&h));
+        let tab = h.state_mut().tab.as_mut().unwrap();
+        tab.timeline.as_mut().unwrap().problems = 1;
+        assert!(!tab.can_sketch());
+        h.run_steps(2);
+        assert!(sketch_off(&h));
+    }
+
+    #[test]
+    fn a_face_not_measured_yet_offers_no_sketch_on_it_till_elements_says_its_a_plane() {
+        // Whether a face is a plane is `elements`' to say: unanswered, its Area says so, and
+        // there's no Sketch on this face, Edit Block alone.
+        let h = drawn(selecting(&["Face5"], Answers::default()));
+        assert!(h.query_by_label("Not measured yet").is_some());
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Sketch on this face")
+                .is_none()
+        );
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Edit Block")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn an_edge_not_measured_yet_says_so_and_offers_fillet_before_edit() {
+        // No answer yet: its kind's row, Length, says so in `.subdued`, never a dash.
+        let h = drawn(selecting(&["Edge3"], Answers::default()));
+        let mut y = title_and_head(&h, "Edge3", "Edge · Block", body(css::FS_SMALL));
+        y = section_at(&h, "MEASURES", y);
+        y = row_at(
+            &h,
+            "Length",
+            "Not measured yet",
+            y,
+            body(css::FS),
+            css::G550,
+        );
+        y = section_at(&h, "NAME", y);
+        y = row_at(
+            &h,
+            "Stable name",
+            "aaaaaaaa.box.Edge3",
+            y,
+            mono(),
+            css::G800,
+        );
+        y = row_at(&h, "Made by", "Block", y, body(css::FS), css::INFO);
+        y = row_at(&h, "Stability", "Stable", y, body(css::FS), css::GREEN);
+        // Fillet (`.btn-secondary`, Gray.300) first, then Edit Block, 6 after it.
+        let fillet = h.get_by_role_and_label(Role::Button, "Fillet").rect();
+        at(
+            fillet.min,
+            Pos2::new(PANE.x + css::PAD, y + css::BUTTONS_PADDING),
+            "Fillet",
+        );
+        assert_eq!(
+            fills_at(&h, fillet),
+            [(css::G300, CornerRadius::same(css::R_SM), Stroke::NONE)]
+        );
+        let edit = h.get_by_role_and_label(Role::Button, "Edit Block").rect();
+        at(
+            edit.min,
+            Pos2::new(fillet.right() + css::BUTTONS_GAP, fillet.top()),
+            "Edit Block",
+        );
+    }
+
+    #[test]
+    fn two_faces_are_drawn_as_selection_props_with_measure_over_selection_and_copy_names() {
+        use silico_core::command::measure::{AngleAnswer, DistanceAnswer};
+        // Face5 and Face6, by hand the block's bottom and top: 1 apart each way, facing apart.
+        let mm = Length::from_nm(1_000_000);
+        let answers = Answers {
+            element: None,
+            distance: Some(Ok(DistanceAnswer {
+                distance: mm,
+                from: [Length::from_nm(0); 3],
+                to: [Length::from_nm(0), Length::from_nm(0), mm],
+                center_distance: None,
+                normal_distance: Some(mm),
+                center_to_element: None,
+            })),
+            angle: Some(Ok(AngleAnswer {
+                angle: silico_core::document::Angle::rounded(0.0).unwrap(),
+                vertex: None,
+            })),
+        };
+        let mut h = drawn(selecting(&["Face5", "Face6"], answers));
+        let mut y = title_and_head(&h, "2 selected", "2 faces", body(css::FS_SMALL));
+        y = section_at(&h, "MEASURE", y);
+        y = row_at(&h, "Distance", "1.00 mm", y, body(css::FS), css::G800);
+        y = row_at(
+            &h,
+            "Normal distance",
+            "1.00 mm",
+            y,
+            body(css::FS),
+            css::G800,
+        );
+        y = row_at(&h, "Angle", "0° (parallel)", y, body(css::FS), css::G800);
+        y = section_at(&h, "SELECTION", y);
+        // Each by its number, its name in `.mono.subdued`.
+        y = row_at(&h, "Face5", "aaaaaaaa.box.Face5", y, mono(), css::G550);
+        y = row_at(&h, "Face6", "aaaaaaaa.box.Face6", y, mono(), css::G550);
+        let copy = h.get_by_role_and_label(Role::Button, "Copy names").rect();
+        at(
+            copy.min,
+            Pos2::new(PANE.x + css::PAD, y + css::BUTTONS_PADDING),
+            "Copy names",
+        );
+        assert!(fills_at(&h, copy).is_empty(), "a ghost has no fill");
+        assert!(h.query_by_label("MEASURES").is_none());
+        h.get_by_role_and_label(Role::Button, "Copy names").click();
+        h.step();
+        assert_eq!(
+            copied(&h).as_deref(),
+            Some(r#"["aaaaaaaa.box.Face5", "aaaaaaaa.box.Face6"]"#)
+        );
+    }
+
+    #[test]
+    fn an_elements_words_are_its_types_and_an_angle_is_parallel_at_exactly_0_or_180() {
+        use silico_core::command::elements::ElementType;
+        use silico_core::document::Angle;
+        let face = Some(ElementKind::Face);
+        let edge = Some(ElementKind::Edge);
+        let mut entry = element("Edge3");
+        let at = |x: i64| [Length::from_nm(x), Length::from_nm(0), Length::from_nm(0)];
+        // A circle's edge whose ends are one point is a circle; another, an arc.
+        entry.r#type = ElementType::Circle;
+        entry.start = Some(at(1));
+        entry.end = Some(at(1));
+        assert_eq!(element_words(edge, Some(&entry)), "Circle edge");
+        entry.end = Some(at(2));
+        assert_eq!(element_words(edge, Some(&entry)), "Arc edge");
+        for (r#type, words) in [
+            (ElementType::Line, "Line edge"),
+            (ElementType::Bspline, "B-spline edge"),
+            (ElementType::Other, "Edge"),
+        ] {
+            entry.r#type = r#type;
+            assert_eq!(element_words(edge, Some(&entry)), words);
+        }
+        for (r#type, words) in [
+            (ElementType::Plane, "Planar face"),
+            (ElementType::Cylinder, "Cylindrical face"),
+            (ElementType::Cone, "Conical face"),
+            (ElementType::Other, "Face"),
+        ] {
+            entry.r#type = r#type;
+            assert_eq!(element_words(face, Some(&entry)), words);
+        }
+        // Not read yet: its kind alone.
+        assert_eq!(element_words(face, None), "Face");
+        assert_eq!(element_words(edge, None), "Edge");
+        assert_eq!(element_words(Some(ElementKind::Vertex), None), "Vertex");
+        assert_eq!(element_words(None, None), "Element");
+        // Parallel at exactly 0 or 180 at the nanodegree, as the core reads it; else fmtF's.
+        for (degrees, words) in [
+            (0.0, "0° (parallel)"),
+            (180.0, "180° (parallel)"),
+            (90.0, "90.00°"),
+            (1e-9, "0.00°"),
+            (179.999_999_999, "180.00°"),
+            (30.004_999_999, "30.00°"),
+            (30.005, "30.01°"),
+        ] {
+            assert_eq!(
+                angle_words(Angle::rounded(degrees).unwrap()),
+                words,
+                "{degrees}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_element_type_has_its_words_for_each_kind_of_element_it_can_be() {
+        use silico_core::command::elements::ElementType as T;
+        // By hand: the prototype's words where it has them (app.js:567-573: "Planar face",
+        // "Cylindrical face", "Line edge", "Arc edge", "Vertex"); for each other type the
+        // core gives (`ElementType`, its geometry as OCCT names it), a face its adjective
+        // before "face", an edge its curve's noun before "edge", as those are; the kind alone
+        // for a type of no name (`Other`). The words past the prototype's are #414's
+        // approved ones, pinned.
+        let (face, edge, vertex) = (ElementKind::Face, ElementKind::Edge, ElementKind::Vertex);
+        let table = [
+            (face, T::Plane, "Planar face"),
+            (face, T::Cylinder, "Cylindrical face"),
+            (face, T::Cone, "Conical face"),
+            (face, T::Sphere, "Spherical face"),
+            (face, T::Torus, "Toroidal face"),
+            (face, T::Bezier, "Bézier face"),
+            (face, T::Bspline, "B-spline face"),
+            (face, T::Revolution, "Revolved face"),
+            (face, T::Extrusion, "Extruded face"),
+            (face, T::Offset, "Offset face"),
+            (face, T::Other, "Face"),
+            (edge, T::Line, "Line edge"),
+            // Its ends apart: an arc (its ends one point, a circle: below).
+            (edge, T::Circle, "Arc edge"),
+            (edge, T::Ellipse, "Ellipse edge"),
+            (edge, T::Hyperbola, "Hyperbola edge"),
+            (edge, T::Parabola, "Parabola edge"),
+            (edge, T::Bezier, "Bézier edge"),
+            (edge, T::Bspline, "B-spline edge"),
+            (edge, T::Offset, "Offset edge"),
+            (edge, T::Other, "Edge"),
+            (vertex, T::Point, "Vertex"),
+        ];
+        // Every type with each kind of element it can be has its row, and only those.
+        let pairs: Vec<(ElementKind, T)> = table.iter().map(|&(kind, t, _)| (kind, t)).collect();
+        for t in T::ALL {
+            for kind in [face, edge, vertex] {
+                assert_eq!(
+                    pairs.contains(&(kind, t)),
+                    t.is_of(kind),
+                    "a {kind:?} of type {t:?}"
+                );
+            }
+        }
+        let mut entry = element("Edge3");
+        let at = |x: i64| [Length::from_nm(x), Length::from_nm(0), Length::from_nm(0)];
+        entry.start = Some(at(1));
+        entry.end = Some(at(2));
+        for (kind, t, words) in table {
+            entry.r#type = t;
+            assert_eq!(
+                element_words(Some(kind), Some(&entry)),
+                words,
+                "a {kind:?} of type {t:?}"
+            );
+        }
+        entry.r#type = T::Circle;
+        entry.end = Some(at(1));
+        assert_eq!(element_words(Some(edge), Some(&entry)), "Circle edge");
+    }
+
+    #[test]
+    fn a_vertex_not_measured_yet_says_its_position_isnt_and_offers_edit_alone() {
+        // `selectionProps`' vertex (app.js:573): "Vertex" on its body, and its one measure,
+        // Position, which says it isn't measured till `elements` answers, in `.subdued`,
+        // never a dash; no Sketch on this face, no Fillet: Edit Block alone, 10 under the rows.
+        let h = drawn(selecting(&["Vertex1"], Answers::default()));
+        let mut y = title_and_head(&h, "Vertex1", "Vertex · Block", body(css::FS_SMALL));
+        y = section_at(&h, "MEASURES", y);
+        y = row_at(&h, "Position", NOT_MEASURED, y, body(css::FS), css::G550);
+        y = section_at(&h, "NAME", y);
+        y = row_at(
+            &h,
+            "Stable name",
+            "aaaaaaaa.box.Vertex1",
+            y,
+            mono(),
+            css::G800,
+        );
+        y = row_at(&h, "Made by", "Block", y, body(css::FS), css::INFO);
+        y = row_at(&h, "Stability", "Stable", y, body(css::FS), css::GREEN);
+        let edit = h.get_by_role_and_label(Role::Button, "Edit Block").rect();
+        at(
+            edit.min,
+            Pos2::new(PANE.x + css::PAD, y + css::BUTTONS_PADDING),
+            "Edit Block",
+        );
+        for button in [SKETCH_ON_FACE, "Fillet"] {
+            assert!(
+                h.query_by_role_and_label(Role::Button, button).is_none(),
+                "a vertex has no {button}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pair_not_measured_yet_says_so_of_distance_and_angle_and_with_a_vertex_of_distance_alone() {
+        // Two faces, unanswered: Distance and Angle, each not measured yet in `.subdued`,
+        // then SELECTION.
+        let h = drawn(selecting(&["Face5", "Face6"], Answers::default()));
+        let mut y = title_and_head(&h, "2 selected", "2 faces", body(css::FS_SMALL));
+        y = section_at(&h, "MEASURE", y);
+        y = row_at(&h, "Distance", NOT_MEASURED, y, body(css::FS), css::G550);
+        y = row_at(&h, "Angle", NOT_MEASURED, y, body(css::FS), css::G550);
+        section_at(&h, "SELECTION", y);
+        // A face and a vertex, unanswered: no angle takes a vertex (`angle`'s design), so
+        // Distance alone, then SELECTION.
+        let h = drawn(selecting(&["Face5", "Vertex1"], Answers::default()));
+        let mut y = title_and_head(&h, "2 selected", "1 face, 1 vertex", body(css::FS_SMALL));
+        y = section_at(&h, "MEASURE", y);
+        y = row_at(&h, "Distance", NOT_MEASURED, y, body(css::FS), css::G550);
+        section_at(&h, "SELECTION", y);
+        assert!(h.query_by_label("Angle").is_none());
+    }
+
+    #[test]
+    fn an_elements_body_is_named_by_its_own_row_among_several_bodies() {
+        // Two bodies, the element's listed second, named Body1 in the browser (its feature
+        // Block in the timeline): its head names its own body's row, Body1, never the
+        // other's, Plate, nor its feature's name.
+        let mut tab = selecting(&["Face5"], Answers::default());
+        tab.browser.bodies[0].name = "Body1".to_owned();
+        tab.browser.bodies.insert(
+            0,
+            crate::tab::Row {
+                id: fid("b0000002"),
+                name: "Plate".to_owned(),
+                health: Health::Healthy,
+                marked_by: None,
+            },
+        );
+        let h = drawn(tab);
+        title_and_head(&h, "Face5", "Face · Body1", body(css::FS_SMALL));
+        assert!(h.query_by_label_contains("Plate").is_none());
+    }
+
+    #[test]
+    fn a_refused_measure_is_the_cores_card_in_place_of_its_rows() {
+        // A distance the kernel couldn't find, in the core's words (`distance`'s design):
+        // its card, with its code, and no Distance row; the angle, answered, still shown.
+        let refused = |code, message: &str| Problems::from(silico_core::Error::new(code, message));
+        let distance = "the kernel couldn't find the least distance between these elements";
+        let answers = Answers {
+            element: None,
+            distance: Some(Err(refused(silico_core::ErrorCode::KernelFailed, distance))),
+            angle: Some(Ok(silico_core::command::measure::AngleAnswer {
+                angle: silico_core::document::Angle::rounded(90.0).unwrap(),
+                vertex: None,
+            })),
+        };
+        let h = drawn(selecting(&["Face5", "Face6"], answers));
+        assert!(h.query_by_label(distance).is_some());
+        assert!(h.query_by_label("kernel_failed").is_some());
+        assert!(h.query_by_label("Distance").is_none());
+        assert!(h.query_by_label(NOT_MEASURED).is_none());
+        assert!(h.query_by_label("90.00°").is_some());
+        // An element's listing refused: its card in place of MEASURES' rows.
+        let listing = "the document has no feature aaaaaaaa";
+        let answers = Answers {
+            element: Some(Err(refused(silico_core::ErrorCode::InvalidInput, listing))),
+            ..Answers::default()
+        };
+        let h = drawn(selecting(&["Face5"], answers));
+        assert!(h.query_by_label(listing).is_some());
+        assert!(h.query_by_label("invalid_input").is_some());
+        assert!(h.query_by_label("Area").is_none());
+        assert!(h.query_by_label(NOT_MEASURED).is_none());
+    }
+
+    #[test]
+    fn each_selection_view_closes_with_clear_selection_in_its_title_and_a_feature_has_none() {
+        for names in [&["Face5"][..], &["Face5", "Face6"][..]] {
+            let mut h = drawn(selecting(names, Answers::default()));
+            // `.panel-title .ab-btn`, at the title's right, past its 6 of padding.
+            let close = h
+                .get_by_role_and_label(Role::Button, "Clear selection")
+                .rect();
+            let right = PANE.x + W - css::TITLE_PADDING_RIGHT;
+            at(
+                close.min,
+                Pos2::new(
+                    right - css::TITLE_BTN,
+                    PANE.y + (css::TITLE_H - css::TITLE_BTN) / 2.0,
+                ),
+                "Clear selection",
+            );
+            h.get_by_role_and_label(Role::Button, "Clear selection")
+                .click();
+            h.run_steps(2);
+            let tab = h.state().tab.as_ref().unwrap();
+            assert!(tab.selection().is_empty(), "{names:?}");
+            // The document's properties now, which have no close button.
+            assert!(
+                h.query_by_role_and_label(Role::Button, "Clear selection")
+                    .is_none()
+            );
+        }
+        let mut tab = part();
+        tab.selection_mut().select_feature(fid("b0000001"));
+        let h = drawn(tab);
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Clear selection")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_features_id_row_copies_its_id() {
+        let mut tab = part();
+        tab.selection_mut().select_feature(fid("b0000001"));
+        let mut h = drawn(tab);
+        h.get_by_role_and_label(Role::Button, "Copy").click();
+        h.step();
+        assert_eq!(copied(&h).as_deref(), Some("b0000001"));
     }
 }

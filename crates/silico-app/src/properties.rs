@@ -84,17 +84,25 @@ pub(crate) fn field_rect(ui: &Ui, width: f32) -> Rect {
     )
 }
 
-/// A label of `job`, cut short with an ellipsis where it doesn't fit.
-fn truncated(ui: &mut Ui, mut job: LayoutJob) -> Response {
-    job.wrap = TextWrapping::truncate_at_width(ui.available_width());
-    ui.add(Label::new(job).selectable(false))
+/// A label of `job`, cut short with an ellipsis where it doesn't fit its ui's width (its
+/// cell's: `.prop .k` and `.prop .v`'s `text-overflow: ellipsis`), its whole text the
+/// tooltip then (egui's own, once it's cut). A label lays its words out by its ui's wrap
+/// mode, whatever its job's wrap says: so it's told to truncate.
+fn truncated(ui: &mut Ui, job: LayoutJob) -> Response {
+    ui.add(Label::new(job).selectable(false).truncate())
 }
 
 /// A side panel's title (`.panel-title`, the browser's and the property panel's): `icon`,
 /// if it has one (a dialog's), and `text` in capitals, on a [`theme::TITLE_BAR_HEIGHT`]
 /// row; and at its right, if `close` names one, a close button (`.panel-title .ab-btn`)
-/// labelled so: whether it was clicked.
-pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str, close: Option<&str>) -> bool {
+/// labelled so, its tooltip the command it does (a dialog's Cancel, the selection's Clear
+/// selection) with its keys: whether it was clicked.
+pub(crate) fn title(
+    ui: &mut Ui,
+    icon: Option<Icon>,
+    text: &str,
+    close: Option<(&str, crate::shortcuts::Command)>,
+) -> bool {
     let (rect, _) = ui.allocate_exact_size(
         vec2(ui.available_width(), theme::TITLE_BAR_HEIGHT),
         Sense::hover(),
@@ -108,14 +116,14 @@ pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str, close: Option<&
     );
     let mut clicked = false;
     let words = match close {
-        Some(label) => {
+        Some((label, command)) => {
             let side = theme::PANEL_TITLE_BUTTON_SIZE;
             let button = Rect::from_min_size(
                 pos2(inner.right() - side, inner.center().y - side / 2.0),
                 Vec2::splat(side),
             );
             clicked = within(ui, button, ("title-close", text), |ui| {
-                close_button(ui, label)
+                close_button(ui, label, command)
             })
             .clicked();
             Rect::from_min_max(
@@ -152,8 +160,9 @@ pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str, close: Option<&
 }
 
 /// The title's close button (`.panel-title .ab-btn`): its × in Gray.750, white on Gray.300
-/// hovered, labelled `label`, with Cancel's tooltip.
-fn close_button(ui: &mut Ui, label: &str) -> Response {
+/// hovered, labelled `label`, its tooltip `command`'s words and keys (`data-tip`,
+/// `data-tipk`).
+fn close_button(ui: &mut Ui, label: &str, command: crate::shortcuts::Command) -> Response {
     let side = theme::PANEL_TITLE_BUTTON_SIZE;
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
@@ -178,13 +187,13 @@ fn close_button(ui: &mut Ui, label: &str) -> Response {
         ui,
         Rect::from_center_size(rect.center(), Vec2::splat(IconSize::Small.points())),
     );
-    let cancel = crate::shortcuts::Command::Cancel;
-    let said = format!("{} ({})", cancel.label(), cancel.keys_text(ui.ctx()));
+    let said = format!("{} ({})", command.label(), command.keys_text(ui.ctx()));
     response.on_hover_text(said)
 }
 
-/// The head (`.prop-head`): `icon` in its box, `title` over `sub`.
-pub(crate) fn head(ui: &mut Ui, icon: Icon, title: &str, sub: LayoutJob) {
+/// The head (`.prop-head`): `icon` in its box, `title` over `sub`. Its title's line and its
+/// sub-line's, each as wide as the head's words may be.
+pub(crate) fn head(ui: &mut Ui, icon: Icon, title: &str, sub: LayoutJob) -> [Rect; 2] {
     let words = 2.0 * theme::BODY_LINE_HEIGHT;
     let (rect, _) = ui.allocate_exact_size(
         vec2(
@@ -216,23 +225,22 @@ pub(crate) fn head(ui: &mut Ui, icon: Icon, title: &str, sub: LayoutJob) {
     let line =
         |at: f32| Rect::from_min_max(pos2(left, at), pos2(right, at + theme::BODY_LINE_HEIGHT));
     // Painted, not labelled: the document's name is its tab's, and a feature's its Name
-    // field's, so the accessibility tree has each once.
-    for (at, mut job) in [
-        (
-            top,
-            LayoutJob::single_section(
-                title.to_owned(),
-                format(theme::TITLE_SIZE, theme::PROPERTY_HEAD_TITLE, false),
-            ),
+    // field's, so the accessibility tree has each once (a selection's head, which no other
+    // widget says, is labelled by its caller, over the lines given back).
+    let lines = [line(top), line(top + theme::BODY_LINE_HEIGHT)];
+    for (line, mut job) in lines.into_iter().zip([
+        LayoutJob::single_section(
+            title.to_owned(),
+            format(theme::TITLE_SIZE, theme::PROPERTY_HEAD_TITLE, false),
         ),
-        (top + theme::BODY_LINE_HEIGHT, sub),
-    ] {
-        let line = line(at);
+        sub,
+    ]) {
         job.wrap = TextWrapping::truncate_at_width(line.width());
         let galley = ui.painter().layout_job(job);
         let at = pos2(line.left(), line.center().y - galley.size().y / 2.0);
         ui.painter().galley(at, galley, theme::PROPERTY_HEAD_TITLE);
     }
+    lines
 }
 
 /// A section's header (`.section`): `text` in capitals, and the rule after it.
@@ -304,6 +312,227 @@ pub(crate) fn row<R>(ui: &mut Ui, key: &str, value: impl FnOnce(&mut Ui, egui::I
 /// A row whose value is `value`'s text, cut short where it doesn't fit.
 pub(crate) fn text_row(ui: &mut Ui, key: &str, value: LayoutJob) {
     row(ui, key, |ui, _| truncated(ui, value));
+}
+
+/// A row whose value is `value` in the monospace type (`.prop .v .mono`), cut short where it
+/// doesn't fit, its whole its tooltip; and at the value's right (`.prop .v .copy`, `margin-
+/// left: auto`, [`theme::PROPERTY_COPY_GAP`] after the text) the copy icon, Gray.550, white
+/// hovered, a button labelled Copy, which puts `value` on the clipboard as it's written.
+pub(crate) fn copy_row(ui: &mut Ui, key: &str, value: &str) {
+    row(ui, key, |ui, _| {
+        let whole = ui.max_rect();
+        let side = IconSize::Small.points();
+        let button = Rect::from_center_size(
+            pos2(whole.right() - side / 2.0, whole.center().y),
+            Vec2::splat(side),
+        );
+        let job = LayoutJob::single_section(
+            value.to_owned(),
+            format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
+        );
+        // A label lays its words out in the width its ui has left, whatever its job's wrap
+        // says: the ui is left the room before the icon and its gap, and no more.
+        let room = whole.width() - side - theme::PROPERTY_COPY_GAP;
+        ui.set_max_width(room.max(0.0));
+        // Its whole value its one tooltip, cut or not (the prototype's `title`): egui's own,
+        // shown once it's cut, would be a second.
+        ui.add(
+            Label::new(job)
+                .selectable(false)
+                .truncate()
+                .show_tooltip_when_elided(false),
+        )
+        .on_hover_text(value);
+        let response = ui.interact(button, ui.id().with("copy"), Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Copy"));
+        let ink = if response.hovered() {
+            theme::TEXT_STRONG
+        } else {
+            theme::TEXT_SUBDUED
+        };
+        Icon::Copy
+            .image(IconSize::Small)
+            .tint(ink)
+            .paint_at(ui, button);
+        if response
+            .on_hover_text("Copy, as an agent would write it")
+            .clicked()
+        {
+            ui.ctx().copy_text(value.to_owned());
+        }
+    });
+}
+
+/// A row whose value is a link (`.link`): `text` in `--info`, white and underlined hovered,
+/// cut short where it doesn't fit, labelled `text` as a link. Whether it was clicked.
+pub(crate) fn link_row(ui: &mut Ui, key: &str, text: &str) -> bool {
+    row(ui, key, |ui, _| {
+        let room = ui.available_width();
+        let laid = |ink: Color32, underline: Stroke| {
+            let mut job = LayoutJob::single_section(
+                text.to_owned(),
+                TextFormat {
+                    underline,
+                    ..format(theme::BODY_SIZE, ink, false)
+                },
+            );
+            job.wrap = TextWrapping::truncate_at_width(room);
+            job
+        };
+        let size = ui
+            .painter()
+            .layout_job(laid(theme::INFO, Stroke::NONE))
+            .size();
+        let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, text));
+        let job = if response.hovered() {
+            laid(
+                theme::TEXT_STRONG,
+                Stroke::new(theme::BORDER_WIDTH, theme::TEXT_STRONG),
+            )
+        } else {
+            laid(theme::INFO, Stroke::NONE)
+        };
+        let galley = ui.painter().layout_job(job);
+        ui.painter().galley(
+            pos2(rect.left(), rect.center().y - galley.size().y / 2.0),
+            galley,
+            theme::INFO,
+        );
+        response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+    })
+}
+
+/// A row of buttons under a view's rows (`selectionProps`' `display: flex; gap: 6px;
+/// padding: 10px var(--pad); flex-wrap: wrap`): each as a modal paints it, in a line until
+/// the next doesn't fit, [`theme::PROPERTY_BUTTONS_GAP`] apart each way. Which was clicked,
+/// if one was (an off one never is).
+pub(crate) fn buttons(ui: &mut Ui, buttons: &[modal::Button<'_>]) -> Option<usize> {
+    if buttons.is_empty() {
+        return None;
+    }
+    let widths: Vec<f32> = buttons
+        .iter()
+        .map(|button| modal::natural_width(ui, button))
+        .collect();
+    let outer = ui.available_width();
+    let (places, height) = wrapped(
+        &widths,
+        (outer - 2.0 * pad()).max(0.0),
+        theme::PROPERTY_BUTTONS_GAP,
+    );
+    let (whole, _) = ui.allocate_exact_size(
+        vec2(outer, height + 2.0 * theme::PROPERTY_BUTTONS_PADDING),
+        Sense::hover(),
+    );
+    let origin = whole.min.to_vec2() + vec2(pad(), theme::PROPERTY_BUTTONS_PADDING);
+    // Painted in a child of their own, so the row's cursor stays under its padding.
+    let salt = ("buttons", buttons.first().map(|button| button.text));
+    let mut row = ui.new_child(UiBuilder::new().id_salt(salt).max_rect(whole));
+    let mut clicked = None;
+    for (at, (button, place)) in buttons.iter().zip(places).enumerate() {
+        if modal::paint(&mut row, place.translate(origin), button).clicked() {
+            clicked = Some(at);
+        }
+    }
+    clicked
+}
+
+/// Where buttons `widths` wide go as `flex-wrap` places them in a box `width` wide, `gap`
+/// apart each way, from the box's top left: each in a line until the next doesn't fit.
+/// Each one's place, and the height they take.
+fn wrapped(widths: &[f32], width: f32, gap: f32) -> (Vec<Rect>, f32) {
+    let (mut x, mut y) = (0.0f32, 0.0f32);
+    let mut places = Vec::with_capacity(widths.len());
+    for &wide in widths {
+        if x > 0.0 && x + wide > width {
+            x = 0.0;
+            y += theme::BUTTON_HEIGHT + gap;
+        }
+        places.push(Rect::from_min_size(
+            pos2(x, y),
+            vec2(wide, theme::BUTTON_HEIGHT),
+        ));
+        x += wide + gap;
+    }
+    (places, y + theme::BUTTON_HEIGHT)
+}
+
+/// `steps` of a quantity a unit of which is `per` steps (a length's nanometres a mm, an
+/// area's millionths a mm², an angle's nanodegrees a degree), as the prototype's `fmtF`
+/// writes a measure (app.js: `toLocaleString('en-US', {minimumFractionDigits: 2,
+/// maximumFractionDigits: 2})`): to exactly two decimals, rounded half away from zero as
+/// `Intl.NumberFormat` rounds, its whole part grouped by threes with commas, `-` only
+/// before what doesn't round to 0. Worked from the core's exact steps, never a float, so
+/// it's the value the core gives, rounded once.
+pub(crate) fn fixed(steps: i128, per: i128) -> String {
+    written(steps, per, true)
+}
+
+/// [`fixed`], but as the prototype's `fmt` writes a value (`minimumFractionDigits: 0`):
+/// at most two decimals, none of them a trailing 0.
+pub(crate) fn trimmed(steps: i128, per: i128) -> String {
+    written(steps, per, false)
+}
+
+/// [`fixed`] if `both` decimals are always written, else [`trimmed`].
+fn written(steps: i128, per: i128, both: bool) -> String {
+    let step = (per / 100).max(1);
+    let (whole, rest) = (steps / step, steps % step);
+    let hundredths = if 2 * rest.abs() >= step {
+        whole + steps.signum()
+    } else {
+        whole
+    };
+    let sign = if hundredths < 0 { "-" } else { "" };
+    let magnitude = hundredths.unsigned_abs();
+    let units = grouped(magnitude / 100);
+    match (both, magnitude % 100) {
+        (true, part) => format!("{sign}{units}.{part:02}"),
+        (false, 0) => format!("{sign}{units}"),
+        (false, part) if part.is_multiple_of(10) => format!("{sign}{units}.{}", part / 10),
+        (false, part) => format!("{sign}{units}.{part:02}"),
+    }
+}
+
+/// `units`' digits, grouped by threes from the right with commas (`en-US`'s grouping).
+fn grouped(units: u128) -> String {
+    let digits = units.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// A direction (a normal, an axis) as the prototype writes one (`(${normal.join(', ')})`):
+/// each component exactly, as JavaScript writes a number ([`script_number`]).
+pub(crate) fn direction(direction: [f64; 3]) -> String {
+    let [x, y, z] = direction.map(script_number);
+    format!("({x}, {y}, {z})")
+}
+
+/// `value` as JavaScript's `Number.prototype.toString` writes it: the shortest decimal that
+/// reads back as it, in an exponent's form where JavaScript uses one (under 1e-6 or from
+/// 1e21 on, its exponent signed: `6.123233995736766e-17`, `1e+21`), never rounded further;
+/// `-0` written `0`. Kernel noise in a unit vector stays readable, and exact.
+fn script_number(value: f64) -> String {
+    let value = if value == 0.0 { 0.0 } else { value };
+    let magnitude = value.abs();
+    if magnitude == 0.0 || (1e-6..1e21).contains(&magnitude) {
+        return format!("{value}");
+    }
+    // Rust's `{:e}` is the same shortest digits, its exponent unsigned when it's positive.
+    let written = format!("{value:e}");
+    match written.split_once('e') {
+        Some((digits, power)) if !power.starts_with('-') => format!("{digits}e+{power}"),
+        _ => written,
+    }
 }
 
 /// A row of a modal's list (`.prop` with `padding: 0`, as the prototype's "What changed on
@@ -1264,22 +1493,15 @@ fn card_buttons(
     }
     // Placed as `flex-wrap` places them: in a line until the next doesn't fit.
     let width = ui.available_width();
-    let gap = theme::ERROR_CARD_ACTIONS_GAP;
-    let (mut x, mut y) = (0.0f32, 0.0f32);
-    let mut places = Vec::with_capacity(buttons.len());
-    for (_, button) in &buttons {
-        let wide = modal::natural_width(ui, button);
-        if x > 0.0 && x + wide > width {
-            x = 0.0;
-            y += theme::BUTTON_HEIGHT + gap;
-        }
-        places.push((x, y, wide));
-        x += wide + gap;
-    }
-    let (whole, _) = ui.allocate_exact_size(vec2(width, y + theme::BUTTON_HEIGHT), Sense::hover());
+    let widths: Vec<f32> = buttons
+        .iter()
+        .map(|(_, button)| modal::natural_width(ui, button))
+        .collect();
+    let (places, height) = wrapped(&widths, width, theme::ERROR_CARD_ACTIONS_GAP);
+    let (whole, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let mut asked = None;
-    for ((which, button), (x, y, wide)) in buttons.iter().zip(places) {
-        let rect = Rect::from_min_size(whole.min + vec2(x, y), vec2(wide, theme::BUTTON_HEIGHT));
+    for ((which, button), place) in buttons.iter().zip(places) {
+        let rect = place.translate(whole.min.to_vec2());
         let response = modal::paint(ui, rect, button);
         let clicked = match which {
             Which::Copy => response
@@ -1987,6 +2209,68 @@ mod tests {
             "Another feature's: made from k7f2qx3m.box.Edge4, which is numbered 1 from \
              k7f2qx3m.box.Edge5"
         );
+    }
+
+    #[test]
+    fn a_measure_is_written_as_fmt_f_writes_it_and_a_value_as_fmt_does() {
+        // By hand, as `Number(n).toLocaleString('en-US', {minimumFractionDigits: d,
+        // maximumFractionDigits: 2})` writes the exact decimal: half away from zero, the
+        // whole part grouped by threes, no sign on what rounds to 0. In nanometres a mm.
+        const MM: i128 = 1_000_000;
+        for (nm, fixed_words, trimmed_words) in [
+            (0, "0.00", "0"),
+            (10_000_000, "10.00", "10"),
+            (15_707_963, "15.71", "15.71"),
+            // A half: away from zero, either way (`Intl`'s halfExpand).
+            (125_000, "0.13", "0.13"),
+            (-125_000, "-0.13", "-0.13"),
+            (124_999, "0.12", "0.12"),
+            (2_500_000, "2.50", "2.5"),
+            (2_005_000, "2.01", "2.01"),
+            (2_004_999, "2.00", "2"),
+            // Under half a hundredth either side of 0: 0, unsigned.
+            (-4_999, "0.00", "0"),
+            (-5_000, "-0.01", "-0.01"),
+            (999_995_000, "1,000.00", "1,000"),
+            (1_234_567_891_000, "1,234,567.89", "1,234,567.89"),
+            (-1_234_000_000, "-1,234.00", "-1,234"),
+            (100_000_000_000, "100,000.00", "100,000"),
+        ] {
+            assert_eq!(fixed(nm, MM), fixed_words, "{nm} nm");
+            assert_eq!(trimmed(nm, MM), trimmed_words, "{nm} nm");
+        }
+        // Nanodegrees a degree: 89.999999999° to two decimals is 90.00°.
+        assert_eq!(fixed(89_999_999_999, 1_000_000_000), "90.00");
+        assert_eq!(fixed(45_005_000_000, 1_000_000_000), "45.01");
+    }
+
+    #[test]
+    fn a_direction_is_written_as_the_prototypes_javascript_writes_its_components() {
+        assert_eq!(direction([0.0, 0.0, 1.0]), "(0, 0, 1)");
+        assert_eq!(direction([-1.0, -0.0, 0.0]), "(-1, 0, 0)");
+        assert_eq!(
+            direction([std::f64::consts::FRAC_1_SQRT_2, 0.0, -0.5]),
+            "(0.7071067811865476, 0, -0.5)"
+        );
+        // Kernel noise: cos(π/2) as an f64, as `String(Math.cos(Math.PI / 2))` writes it.
+        assert_eq!(
+            direction([6.123233995736766e-17, 0.0, -1.0]),
+            "(6.123233995736766e-17, 0, -1)"
+        );
+        // JavaScript's bounds, by hand from `Number.prototype.toString`: 1e-6 is the least
+        // written plainly, and anything under it, or from 1e21 on, with an exponent.
+        for (value, written) in [
+            (1e-6, "0.000001"),
+            (-1.5e-6, "-0.0000015"),
+            (9.99e-7, "9.99e-7"),
+            (-1e-7, "-1e-7"),
+            (5e-324, "5e-324"),
+            (123_456_789_012_345_680_000.0, "123456789012345680000"),
+            (1e21, "1e+21"),
+            (-2.5e22, "-2.5e+22"),
+        ] {
+            assert_eq!(script_number(value), written, "{value:e}");
+        }
     }
 
     #[test]
@@ -2797,5 +3081,220 @@ mod tests {
         let wide = "é".repeat(35);
         assert_eq!(chip_text(&wide), format!("{}…", "é".repeat(32)));
         assert_eq!(chip_text(&"é".repeat(34)), "é".repeat(34));
+    }
+
+    /// `.prop .v`: `display: flex; gap: 6px`; `.prop .v .copy { margin-left: auto }`.
+    const V_GAP: f32 = 6.0;
+    /// `--info`, `.link`'s.
+    const INFO: Color32 = Color32::from_rgb(0xad, 0xbb, 0xff);
+
+    #[test]
+    fn a_copy_rows_value_too_long_is_cut_short_6_before_its_copy_icon_at_the_rows_right() {
+        // `.prop` in a 295 wide panel, `--pad` in each side: the copy icon (`--icon`) at the
+        // value's right, centred on the row; the value from 12 + 96 + 8 in, a name too long
+        // for its column cut short with an ellipsis, ending within a glyph of `.mono`'s 11 px
+        // (under 8) of 6 before the icon (`gap: 6px`), never past that.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(295.0, 60.0));
+        let name = "k7f2qx3m.fillet.Edge111111111111111111111111111111111111111111";
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 120.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    copy_row(ui, "Stable name", name);
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let copy = widget(&h, Role::Button, "Copy");
+        sized(
+            copy,
+            Rect::from_min_size(
+                Pos2::new(
+                    place.right() - PAD - ICON,
+                    place.top() + (ROW_H - ICON) / 2.0,
+                ),
+                Vec2::splat(ICON),
+            ),
+            "the copy button",
+        );
+        let shown = text_shape(&h, name);
+        let left = place.left() + PAD + KEY_W + ROW_GAP;
+        assert!(near(shown.pos.x, left), "the value at {:?}", shown.pos);
+        let whole = h.ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(name.to_owned(), FontId::monospace(11.0), Color32::WHITE)
+                .size()
+                .x
+        });
+        assert!(
+            left + whole > copy.right(),
+            "{name} fits the row: the case is gone"
+        );
+        let right = shown.pos.x + shown.galley.size().x;
+        let end = copy.left() - V_GAP;
+        assert!(
+            right <= end + egui::emath::GUI_ROUNDING && right > end - 8.0,
+            "the value ends at {right}, the copy icon at {copy:?}"
+        );
+        // Cut with an ellipsis on its one line, never wrapped; whole in the accessibility
+        // tree, as Copy copies it.
+        assert!(shown.galley.elided);
+        assert_eq!(shown.galley.rows.len(), 1);
+        let last = shown
+            .galley
+            .rows
+            .last()
+            .and_then(|row| row.glyphs.last())
+            .map(|glyph| glyph.chr);
+        assert_eq!(last, Some('…'));
+        assert!(h.query_by_label(name).is_some());
+        // Hovered: its whole value, once (the prototype's one `title`), never egui's own
+        // tooltip for a cut label beside it.
+        h.ctx
+            .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
+        h.get_by_label(name).hover();
+        h.run_steps(3);
+        let said = painted(&h)
+            .into_iter()
+            .filter(|shape| matches!(shape, egui::Shape::Text(text) if text.galley.text() == name))
+            .count();
+        assert_eq!(said, 2, "the value and one tooltip");
+    }
+
+    #[test]
+    fn a_text_rows_long_key_and_value_are_each_cut_short_within_their_column() {
+        // `.prop .k` and `.prop .v`: `overflow: hidden; text-overflow: ellipsis; white-space:
+        // nowrap`. In a 295 wide panel, a key longer than its 96 and a value longer than the
+        // rest: each one line, cut with an ellipsis, ending within its own column.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(295.0, 60.0));
+        let key = "A key far too long for its column of ninety-six";
+        let value =
+            "p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000001, G s0000001.sketch.Edge.na000002)";
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 120.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    text_row(ui, key, body(value, theme::PROPERTY_VALUE));
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        for (text, right) in [
+            (key, place.left() + PAD + KEY_W),
+            (value, place.right() - PAD),
+        ] {
+            let shown = text_shape(&h, text);
+            assert!(shown.galley.elided, "{text} cut");
+            assert_eq!(shown.galley.rows.len(), 1, "{text} on one line");
+            let end = shown.pos.x + shown.galley.size().x;
+            // Cut at its column's right, within a glyph (under 8 at 11 and 12 px), never
+            // short of that, nor past it.
+            assert!(
+                end <= right + egui::emath::GUI_ROUNDING && end > right - 8.0,
+                "{text} ends at {end}, not within a glyph of its column's {right}"
+            );
+        }
+        // The value cut, hovered: its whole text, egui's one tooltip.
+        h.ctx
+            .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
+        h.get_by_label(value).hover();
+        h.run_steps(3);
+        let said = painted(&h)
+            .into_iter()
+            .filter(|shape| matches!(shape, egui::Shape::Text(text) if text.galley.text() == value))
+            .count();
+        assert_eq!(said, 2, "the value and one tooltip");
+    }
+
+    #[test]
+    fn a_link_is_info_at_rest_and_white_and_underlined_hovered() {
+        // `.link { color: var(--info) }`, `.link:hover { color: #fff; text-decoration:
+        // underline }`: a line under its words hovered, a pixel thick (a browser's at 12 px),
+        // in their white; none at rest.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(295.0, 60.0));
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 120.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    link_row(ui, "Made by", "Block");
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let shown = text_shape(&h, "Block");
+        assert_eq!(colour(&shown), INFO, "at rest");
+        assert_eq!(
+            shown.galley.job.sections[0].format.underline,
+            Stroke::NONE,
+            "at rest"
+        );
+        h.get_by_role_and_label(Role::Link, "Block").hover();
+        h.run_steps(2);
+        let shown = text_shape(&h, "Block");
+        assert_eq!(colour(&shown), Color32::WHITE, "hovered");
+        assert_eq!(
+            shown.galley.job.sections[0].format.underline,
+            Stroke::new(1.0, Color32::WHITE),
+            "hovered"
+        );
+    }
+
+    /// `selectionProps`' buttons: `display: flex; gap: 6px; padding: 10px var(--pad);
+    /// flex-wrap: wrap`.
+    const BUTTONS_PADDING: f32 = 10.0;
+    const BUTTONS_GAP: f32 = 6.0;
+
+    #[test]
+    fn a_views_buttons_share_a_line_they_just_fit_inside_its_padding_and_wrap_a_point_narrower() {
+        // Fillet and Edit Block, measured in a wide row; then a row exactly as wide as the
+        // two, the gap, and `--pad` at each side: on one line, Fillet 12 in and 10 down, Edit
+        // Block 6 after it. A point narrower, Edit Block wraps, first on the next line, 6
+        // under Fillet.
+        let labels = ["Fillet", "Edit Block"];
+        let drawn = |width: f32| {
+            let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(width, 100.0));
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(width + 80.0, 160.0))
+                .build_ui(move |ui| {
+                    ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                        super::buttons(
+                            ui,
+                            &[
+                                modal::Button::new("Fillet", Kind::Secondary).icon(Icon::Fillet),
+                                modal::Button::new("Edit Block", Kind::Ghost).icon(Icon::Edit),
+                            ],
+                        );
+                    });
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(2);
+            let [fillet, edit] = labels.map(|label| widget(&h, Role::Button, label));
+            (place, fillet, edit)
+        };
+        let (_, fillet, edit) = drawn(600.0);
+        let both = fillet.width() + BUTTONS_GAP + edit.width();
+        let width = both + 2.0 * PAD;
+        let (place, fillet, edit) = drawn(width);
+        at(
+            fillet.min,
+            Pos2::new(place.left() + PAD, place.top() + BUTTONS_PADDING),
+            "Fillet",
+        );
+        at(
+            edit.min,
+            Pos2::new(fillet.right() + BUTTONS_GAP, fillet.top()),
+            "Edit Block, just fitting",
+        );
+        let (place, fillet, edit) = drawn(width - 1.0);
+        at(
+            fillet.min,
+            Pos2::new(place.left() + PAD, place.top() + BUTTONS_PADDING),
+            "Fillet",
+        );
+        at(
+            edit.min,
+            Pos2::new(place.left() + PAD, fillet.bottom() + BUTTONS_GAP),
+            "Edit Block, wrapped",
+        );
     }
 }
