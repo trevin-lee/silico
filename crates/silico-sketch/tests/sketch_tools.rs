@@ -999,10 +999,10 @@ fn length_of(line: &str, value: &str) -> Form {
 }
 
 /// A driving `length` of the line `line`, `value` mm, as the constraint `id`: a document's
-/// constraint, after the comma that follows the one before it.
+/// constraint.
 fn length_json(id: &str, line: &str, value: &str) -> String {
     format!(
-        r#", {{"id": "{id}", "type": "length", "line": "{line}", "value": {value}, "driving": true}}"#
+        r#"{{"id": "{id}", "type": "length", "line": "{line}", "value": {value}, "driving": true}}"#
     )
 }
 
@@ -1134,21 +1134,23 @@ const OVERLAPPING_ROWS: [&str; 5] = [
 /// The study's IDs for the five rows, in their order.
 const STUDY_ORDER: [&str; 5] = ["ka000001", "ka000002", "ka000003", "ka000004", "ka000005"];
 
-/// The overlapping groups, each row `i` with the ID `ids[i]`, then `more`.
+/// The overlapping groups, each row `i` with the ID `ids[i]`, then the constraints `more` (a
+/// JSON list's insides, or nothing).
 fn overlapping_with(ids: [&str; 5], more: &str) -> String {
-    let rows: Vec<String> = OVERLAPPING_ROWS
+    let constraints: Vec<String> = OVERLAPPING_ROWS
         .iter()
         .zip(ids)
         .map(|(row, id)| format!(r#"{{"id": "{id}", {row}}}"#))
+        .chain((!more.is_empty()).then(|| more.to_owned()))
         .collect();
     sketch_doc(
         OVERLAPPING_POINTS,
         OVERLAPPING_LINES,
-        &format!("{}{more}", rows.join(", ")),
+        &constraints.join(", "),
     )
 }
 
-/// The overlapping groups with the study's IDs, then `more`.
+/// The overlapping groups with the study's IDs, then the constraints `more`.
 fn overlapping(more: &str) -> String {
     overlapping_with(STUDY_ORDER, more)
 }
@@ -1271,7 +1273,7 @@ fn a_dimension_joining_a_conflict_is_offered() {
     // conflicting group: its own state is conflicting, and its row is dependent, so the
     // freedoms stay; offered, its ID first or last.
     let more = format!(
-        "{}{}",
+        "{}, {}",
         length_json("kb000001", "na000003", "30"),
         length_json("kb000002", "na000003", "31")
     );
@@ -1317,19 +1319,19 @@ const FREE_LINE: &str =
 /// The free line's two lengths, kd000001 `a` and kd000002 `b`.
 fn free_lengths(a: &str, b: &str) -> String {
     format!(
-        "{}{}",
+        "{}, {}",
         length_json("kd000001", "nb000002", a),
         length_json("kd000002", "nb000002", b)
     )
 }
 
 /// The level line and the free line, eight unknowns, the level line's two constraints, then
-/// `more`.
+/// the constraints `more`.
 fn level(more: &str) -> String {
     sketch_doc(
         &format!("{LEVEL_POINTS}, {FREE_POINTS}"),
         &format!("{LEVEL_LINE}, {FREE_LINE}"),
-        &format!("{LEVEL_CONSTRAINTS}{more}"),
+        &format!("{LEVEL_CONSTRAINTS}, {more}"),
     )
 }
 
@@ -1343,25 +1345,14 @@ const TRIANGLE_LINES: &str = r#"{"id": "ne000001", "from": "pe000001", "to": "pe
 /// The triangle's bottom and right side 10 long (ke000001, ke000002), and its bottom 10 again
 /// (ke000003), agreeing: six unknowns, the rank 2, so 4 freedoms, and the pair {ke000001,
 /// ke000003} dependent, PlaneGCS's contest leaving out the later tag, ke000003, redundant: a
-/// driving dimension repeating another, so over defined, solved. Then `more`.
-fn triangle(more: &str) -> String {
-    sketch_doc(
-        TRIANGLE_POINTS,
-        TRIANGLE_LINES,
-        &format!(
-            "{}{}{}{more}",
-            length_json("ke000001", "ne000001", "10").trim_start_matches(", "),
-            length_json("ke000002", "ne000002", "10"),
-            length_json("ke000003", "ne000001", "10")
-        ),
-    )
-}
+/// driving dimension repeating another, so over defined, solved.
+const TRIANGLE_LENGTHS: &str = r#"{"id": "ke000001", "type": "length", "line": "ne000001", "value": 10, "driving": true}, {"id": "ke000002", "type": "length", "line": "ne000002", "value": 10, "driving": true}, {"id": "ke000003", "type": "length", "line": "ne000001", "value": 10, "driving": true}"#;
 
 #[test]
 fn a_repeated_dimension_added_on_a_refused_sketch_is_offered_whatever_its_id() {
-    // Round 1's R1. Eight unknowns; the rows the horizontal, the x distance, and the free
-    // line's lengths 30 and 31, which conflict, so the solve is refused `over_constrained`
-    // and the rank is 3: 5 freedoms. A `length` of the level line, 20, repeats the x distance
+    // #429 round 1, R1. Eight unknowns; the rows the horizontal, the x distance, and the
+    // free line's lengths 30 and 31, which conflict, so the solve is refused
+    // `over_constrained` and the rank is 3: 5 freedoms. A `length` of the level line, 20, repeats the x distance
     // (the line level, its row is the x distance's): the rank stays 3, 5 freedoms, so it's
     // dependent, offered, its ID first or last. Its group is {kc000002, it}, a row each, so the
     // contest leaves out the later tag: its ID first, kc000002 reads redundant and it
@@ -1404,10 +1395,10 @@ fn a_repeated_dimension_added_on_a_refused_sketch_is_offered_whatever_its_id() {
 #[test]
 fn a_dimension_a_micrometre_off_its_partner_added_on_an_over_defined_sketch_is_offered_whatever_its_id()
  {
-    // Round 1's R1, its second case: decision 5's window. The level sketch with the free
-    // line's lengths 30 and 30 again, agreeing: the later tag, kd000002, redundant, a driving
-    // dimension repeating another, so over defined, solved; eight unknowns, the rank 3, 5
-    // freedoms. A `length` of the level line, 20.000001, a micrometre off its x distance
+    // #429 round 1, R1's second case, on the level line (something free): decision 5's
+    // window. The level sketch with the free line's lengths 30 and 30 again, agreeing: the
+    // later tag, kd000002, redundant, a driving dimension repeating another, so over
+    // defined, solved; eight unknowns, the rank 3, 5 freedoms. A `length` of the level line, 20.000001, a micrometre off its x distance
     // kc000002, whose row it repeats: within PlaneGCS's redundancy (its error's square under
     // 1e-10), so the rank stays 3 and the freedoms 5, but past decision 5's tolerance (1e-9 of
     // the level line's 20 mm), so the core refuses the pair's pick, `over_constrained`, naming
@@ -1454,9 +1445,9 @@ fn a_dimension_a_micrometre_off_its_partner_added_on_an_over_defined_sketch_is_o
 
 #[test]
 fn a_dimension_a_micrometre_off_others_added_where_nothing_is_free_is_offered_whatever_its_id() {
-    // Round 1's R1, its second case, where nothing is free. The rectangle fully defined, 0
-    // freedoms; a third dimension, the top left to the bottom right across, 50 as drawn: over
-    // defined, solved, 0 freedoms still (nothing free, so PlaneGCS counts the rows it didn't
+    // #429 round 1, R1's second case, on the rectangle (nothing free). The rectangle fully
+    // defined, 0 freedoms; a third dimension, the top left to the bottom right across, 50 as
+    // drawn: over defined, solved, 0 freedoms still (nothing free, so PlaneGCS counts the rows it didn't
     // find redundant, and its group was). A fourth across, 50.000001, a micrometre off the
     // third, whose row it repeats. Its group (the top's length, the right side's `vertical`,
     // the third, and it) has two rows too many, and which two the contest leaves out follows
@@ -1517,7 +1508,7 @@ fn a_dimension_a_micrometre_off_others_added_where_nothing_is_free_is_offered_wh
 /// distance kc000002, one of the two redundant, the later tag.
 fn agreeing_pair(e: &str) -> String {
     level(&format!(
-        "{}{}",
+        "{}, {}",
         free_lengths("30", "30.000001"),
         length_json(e, "nb000001", "20")
     ))
@@ -1546,8 +1537,8 @@ fn opened_pair(e: &str) -> (Fixture, SketchRead, Revision) {
 
 #[test]
 fn a_redundant_dimension_edited_into_conflict_on_a_refused_sketch_is_offered_whatever_its_id() {
-    // Round 1's R2. The sketch refused by the free line; the level line's length, E, and its
-    // x distance, P, agreeing, the later tag redundant. E edited to 21, a millimetre off: an
+    // #429 round 1, R2. The sketch refused by the free line; the level line's length, E, and
+    // its x distance, P, agreeing, the later tag redundant. E edited to 21, a millimetre off: an
     // edit changes a value, not a row, so the group and the contest's pick stay, and PlaneGCS's
     // reduced solve, the pick left out, can't meet it, so the pair's group stays in conflict,
     // both listed: newly in conflict, offered, E's ID first or last. Where E is the later tag
@@ -1574,7 +1565,7 @@ fn a_redundant_dimension_edited_into_conflict_on_a_refused_sketch_is_offered_wha
 #[test]
 fn a_dimension_edited_a_micrometre_off_its_partner_on_a_refused_sketch_is_offered_whatever_its_id()
 {
-    // Round 1's R2, in decision 5's window. The same sketch; E edited to 20.000001, a
+    // #429 round 1, R2, in decision 5's window. The same sketch; E edited to 20.000001, a
     // micrometre off P: within PlaneGCS's redundancy, past decision 5's tolerance (1e-9 of the
     // level line's 20 mm, 2e-8 mm), so the core refuses the pair's pick alone,
     // newly conflicting: E where its ID is the later tag, P where it's the earlier, so the
@@ -1617,15 +1608,77 @@ fn a_dimension_edited_a_micrometre_off_its_partner_on_a_refused_sketch_is_offere
 }
 
 #[test]
+fn an_edit_that_ends_its_conflict_is_offered_where_decision_5_then_finds_another_whatever_its_id()
+{
+    // The edit rule's known case (`offer_of`'s doc; c3-edit-masking-fable.md, §1.1 and §4). A
+    // constraint's conflict has two judges: PlaneGCS, and decision 5, which runs only where
+    // PlaneGCS lists no conflict. The same sketch; E edited to 21, a millimetre off P, its
+    // row's partner (the line level, its length is its x distance): past PlaneGCS's
+    // redundancy (1 mm squared against 1e-10), so PlaneGCS lists the pair whole, E and
+    // kc000002, and decision 5 doesn't run, so kd000002, 30.000001 against 30 (1e-6 mm, its
+    // square within PlaneGCS's redundancy), reads `redundant`, its disagreement masked:
+    // newly in conflict, offered. Then E edited back to 20: the pair agrees, PlaneGCS lists
+    // no conflict, and decision 5 runs, judging kd000002's micrometre past its part's
+    // tolerance (1e-9 of the free line's 30 mm, 3e-8 mm): conflicting, newly, so offered, E's
+    // ID first or last. That's the uncovering, not the edit's doing: kd000002 disagreed
+    // before it, unjudged. E is dependent, agreeing with its group again, so the offer is
+    // true of it, and wrong only in laying the conflict to the edit. The same edit back to 20
+    // from 20.000001 (the test above) isn't offered: decision 5 judged kd000002 on that read
+    // too. Eight unknowns, the rank 3, so 5 freedoms throughout: an edit changes no row, and
+    // a refused answer keeps the drawing's diagnosis.
+    for e in ["00000001", "zzzzzzzz"] {
+        let (f, before, at) = opened_pair(e);
+        set_value(&f, e, "21");
+        let (after, offered) = judged(&f, &before, at, e, Change::Edit);
+        assert_eq!(
+            (refusal(&after), after.states.dofs),
+            (Some(ErrorCode::OverConstrained), 5),
+            "{e}: {:?}",
+            after.states
+        );
+        let mut pair = vec![e, "kc000002"];
+        pair.sort_unstable();
+        assert_eq!(listed(&after, ConstraintState::Conflicting), pair, "{e}");
+        assert_eq!(listed(&after, ConstraintState::Redundant), ["kd000002"], "{e}");
+        assert_eq!(
+            offered.map(|o| o.constraint),
+            Some(element(e)),
+            "{e}: {:?}",
+            after.states
+        );
+        let at = at.next().unwrap();
+        set_value(&f, e, "20");
+        let (back, offered) = judged(&f, &after, at, e, Change::Edit);
+        assert_eq!(
+            (refusal(&back), back.states.dofs),
+            (Some(ErrorCode::OverConstrained), 5),
+            "{e}: {:?}",
+            back.states
+        );
+        assert_eq!(listed(&back, ConstraintState::Conflicting), ["kd000002"], "{e}");
+        assert_eq!(listed(&back, ConstraintState::Redundant), [pick(e)], "{e}");
+        assert_eq!(
+            offered.map(|o| o.constraint),
+            Some(element(e)),
+            "{e}: {:?}",
+            back.states
+        );
+    }
+}
+
+#[test]
 fn an_add_that_newly_refuses_an_over_defined_sketch_is_offered_whatever_its_id() {
-    // Round 1's R3. The triangle, over defined and solved, 4 freedoms. Its left side given
-    // 30: no triangle has sides 10, 10, and 30, so the reduced solve (the pick left out)
-    // fails, and PlaneGCS leaves the pair's group in conflict, ke000001 and ke000003 both
-    // listed; the new length is in no group, `unsolved`, and the rank 3, so 3 freedoms;
+    // #429 round 1, R3. The triangle, over defined and solved, 4 freedoms. Its left side
+    // given 30: no triangle has sides 10, 10, and 30, so the reduced solve (the pick left
+    // out) fails, and PlaneGCS leaves the pair's group in conflict, ke000001 and ke000003
+    // both listed; the new length is in no group, `unsolved`, and the rank 3, so 3 freedoms;
     // refused `over_constrained`. Neither its freedoms (lower) nor its own state offer it; the
     // solve newly refused does, its ID first or last.
     for id in ["00000001", "zzzzzzzz"] {
-        let f = opened_with(ToolKind::Line, &triangle(""));
+        let f = opened_with(
+            ToolKind::Line,
+            &sketch_doc(TRIANGLE_POINTS, TRIANGLE_LINES, TRIANGLE_LENGTHS),
+        );
         let (before, at) = f.read_at();
         assert_eq!(
             (before.states.state, before.states.dofs, refusal(&before)),
@@ -1658,25 +1711,20 @@ fn an_add_that_newly_refuses_an_over_defined_sketch_is_offered_whatever_its_id()
 }
 
 #[test]
-fn an_independent_add_that_fails_a_refused_sketchs_reduced_solve_is_never_offered() {
-    // c3 as amended's residual risk, its §4's first item, pinned as determinism. The triangle
-    // and the free line with lengths 30 and 31, in conflict: refused `over_constrained`, ten
-    // unknowns, the rank 3, so 7 freedoms; the free line's pair conflicting, the triangle's
-    // pick redundant. The left side given 30, independent: the reduced solve fails, so every
-    // group is listed conflicting, the new length in none (`unsolved`), the rank 4, 6
-    // freedoms. The solve was refused already, its freedoms dropped, and it isn't flagged:
-    // never offered, its ID first or last, and the sketch's state says what's wrong.
+fn an_independent_add_that_fails_a_refused_sketchs_reduced_solve_is_never_offered_a_known_miss() {
+    // c3 as amended's residual risk, its §4's first item, `offer`'s known miss, pinned as
+    // determinism. The triangle and the free line with lengths 30 and 31, in conflict:
+    // refused `over_constrained`, ten unknowns, the rank 3, so 7 freedoms; the free line's
+    // pair conflicting, the triangle's pick redundant. The left side given 30, independent:
+    // the reduced solve fails, so every group is listed conflicting, the new length in none
+    // (`unsolved`), the rank 4, 6 freedoms. The solve was refused already, its freedoms
+    // dropped, and it isn't flagged: never offered, its ID first or last, and the sketch's
+    // state says what's wrong.
     for id in ["00000001", "zzzzzzzz"] {
         let doc = sketch_doc(
             &format!("{TRIANGLE_POINTS}, {FREE_POINTS}"),
             &format!("{TRIANGLE_LINES}, {FREE_LINE}"),
-            &format!(
-                "{}{}{}{}",
-                length_json("ke000001", "ne000001", "10").trim_start_matches(", "),
-                length_json("ke000002", "ne000002", "10"),
-                length_json("ke000003", "ne000001", "10"),
-                free_lengths("30", "31")
-            ),
+            &format!("{TRIANGLE_LENGTHS}, {}", free_lengths("30", "31")),
         );
         let f = opened_with(ToolKind::Line, &doc);
         let (before, at) = f.read_at();

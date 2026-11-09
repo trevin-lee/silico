@@ -3159,12 +3159,11 @@ fn a_dimension_that_leaves_a_sketchs_freedoms_where_they_were_is_offered_where_t
 {
     // Item 1: placed on a read with 1000 freedoms; the add's read solved, nothing flagged,
     // its state the same: 1000 or more freedoms is a dependent dimension, offered; 999
-    // isn't. A refused solve's freedoms count the constraints too, but a translation's
-    // refusal's (`invalid_input`), whose diagnosis is of the geometry alone, by c3 as amended
-    // (Fable, 2026-11-09, c3-refused-sketch-fable.md), where c3 had "a refused solve's
-    // freedoms say nothing": a solution that can't be built (`invalid_result`, state invalid, so no
-    // prompt and not newly refused) with 1000 is offered; a translation's refusal with 1000
-    // isn't.
+    // isn't. A refused solve's freedoms count the constraints too (c3 as amended, Fable,
+    // 2026-11-09, c3-refused-sketch-fable.md; c3 had them say nothing), but for a
+    // translation's refusal (`invalid_input`), whose diagnosis is of the geometry alone. So
+    // a solution that can't be built (`invalid_result`, the state invalid, so no prompt and
+    // not newly refused) with 1000 is offered; a translation's refusal with 1000 isn't.
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
@@ -3431,11 +3430,11 @@ fn with_an_edit_between_its_read_and_its_add_a_dimension_is_judged_by_its_own_st
 
 #[test]
 fn a_solved_add_taking_a_freedom_is_not_offered_though_the_moved_pick_newly_over_defines() {
-    // Round 1's T2. Placed on a read with 1000 freedoms, under defined, nothing flagged. The
-    // add's read solved, 999 freedoms (it took one: independent), and PlaneGCS's contest moved
-    // its pick to k0000009, a dimension elsewhere, now redundant, so the sketch is newly over
-    // defined, solved. Its freedoms dropped, it isn't flagged, and the solve isn't refused: not
-    // offered, whatever the state's word.
+    // #429 round 1, T2. Placed on a read with 1000 freedoms, under defined, nothing flagged.
+    // The add's read solved, 999 freedoms (it took one: independent), and PlaneGCS's contest
+    // moved its pick to k0000009, a dimension elsewhere, now redundant, so the sketch is
+    // newly over defined, solved. Its freedoms dropped, it isn't flagged, and the solve isn't
+    // refused: not offered, whatever the state's word.
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
@@ -4013,10 +4012,14 @@ fn an_edit_is_offered_where_it_newly_sets_a_constraint_in_conflict_or_newly_refu
     // `offer`'s rule for an edit, c3 as amended (Fable, 2026-11-09,
     // c3-refused-sketch-fable.md). Under defined, solved, nothing flagged; the edit's read
     // flags a relation redundant, the sketch still under defined at the same 3 freedoms,
-    // solved: nothing in conflict, not offered. The same read over defined, solved (a
-    // dimension redundant, which no edit's read is: an edit changes no row, so it can't make
-    // one redundant): nothing in conflict and the solve not refused, so not offered either
-    // (the state newly over defined, which offered it once, is no measure now).
+    // solved: nothing in conflict, not offered. The same read over defined, solved, a
+    // dimension redundant: an edit's read is so where its value took the solution to a
+    // configuration at which rows that were independent depend (a triangle flattened, say:
+    // for a solved sketch the diagnosis is taken again at the solution, M3.4's load),
+    // agreeing there, the freedoms up by one. Nothing in conflict and the solve not refused,
+    // so not offered: the edited dimension needn't be in the new group, SolidWorks prompts
+    // for no edit, and the state says over defined (which offered the edit once, under the
+    // old rule; it's no measure now).
     let (sketch, edit) = edit_on(&states_at(SketchState::UnderDefined, 3, None, &[]));
     let read = edit_read(
         &sketch,
@@ -4035,7 +4038,7 @@ fn an_edit_is_offered_where_it_newly_sets_a_constraint_in_conflict_or_newly_refu
             ("k0000009", ConstraintState::Redundant),
         ],
         SketchState::OverDefined,
-        3,
+        4,
     );
     assert_eq!(offer(&over, edit.revision, &edit), None);
     // k0000009 conflicting before: the solve refused. The edit's read puts the dimension in
@@ -4166,8 +4169,8 @@ fn conflict(dofs: i32, constraints: &[(&str, ConstraintState)]) -> SketchStates 
 
 #[test]
 fn a_dependent_add_on_a_refused_sketch_is_offered_by_its_freedoms_whatever_its_own_state() {
-    // Round 1's R1, by hand. Placed on a read refused `over_constrained` by k0000009, in
-    // conflict elsewhere, 5 freedoms. The add's read refused alike, 5 freedoms still: the
+    // #429 round 1, R1, by hand. Placed on a read refused `over_constrained` by k0000009,
+    // in conflict elsewhere, 5 freedoms. The add's read refused alike, 5 freedoms still: the
     // dimension's row is dependent, so offered, whichever of its group the contest left out:
     // it (redundant), or its partner k0000008 (it `unsolved`, which its own state alone
     // wouldn't offer). The solve was refused already, so not newly.
@@ -4194,11 +4197,11 @@ fn a_dependent_add_on_a_refused_sketch_is_offered_by_its_freedoms_whatever_its_o
 
 #[test]
 fn an_add_newly_refusing_an_over_defined_sketch_that_solved_is_offered() {
-    // Round 1's R3, by hand. Placed on a read over defined but solved (k0000009, a dimension
-    // repeating another, redundant), 4 freedoms. The add's read refused `over_constrained`,
-    // k0000009 and k0000008 conflicting (the reduced solve failing lists the whole group), the
-    // dimension in no group, `unsolved`, 3 freedoms: independent, and not flagged, but the
-    // solve is newly refused: offered.
+    // #429 round 1, R3, by hand. Placed on a read over defined but solved (k0000009, a
+    // dimension repeating another, redundant), 4 freedoms. The add's read refused
+    // `over_constrained`, k0000009 and k0000008 conflicting (the reduced solve failing lists
+    // the whole group), the dimension in no group, `unsolved`, 3 freedoms: independent, and
+    // not flagged, but the solve is newly refused: offered.
     use ConstraintState::{Conflicting, Redundant, Unsolved};
     let before = states_at(
         SketchState::OverDefined,
@@ -4226,10 +4229,10 @@ fn an_add_newly_refusing_an_over_defined_sketch_that_solved_is_offered() {
 
 #[test]
 fn a_redundant_dimension_edited_into_conflict_on_a_refused_sketch_is_offered() {
-    // Round 1's R2, by hand. Edited on a read refused `over_constrained` by k0000009, the
-    // dimension agreeing with k0000008, and redundant, the contest's pick. Edited to disagree:
-    // it and k0000008 conflicting (a group left in conflict lists every member): newly in
-    // conflict, offered, though it was flagged before.
+    // #429 round 1, R2, by hand. Edited on a read refused `over_constrained` by k0000009,
+    // the dimension agreeing with k0000008, and redundant, the contest's pick. Edited to
+    // disagree: it and k0000008 conflicting (a group left in conflict lists every member):
+    // newly in conflict, offered, though it was flagged before.
     use ConstraintState::{Conflicting, Redundant};
     let (sketch, edit) = edit_on(&conflict(
         3,
@@ -4255,10 +4258,11 @@ fn a_redundant_dimension_edited_into_conflict_on_a_refused_sketch_is_offered() {
 #[test]
 fn an_edit_is_offered_for_any_constraint_it_newly_sets_in_conflict_and_with_a_change_between_for_its_own()
  {
-    // Round 1's T1. Edited on a read refused by k0000009 in conflict, the dimension `unsolved`
-    // and k0000008, its partner, the contest's pick, redundant. The edit's read: k0000008 newly
-    // conflicting, the dimension `unsolved` still (decision 5 lists the pick alone). An edit
-    // changes no row, so whatever newly conflicts is its doing: offered. A constraint newly
+    // #429 round 1, T1. Edited on a read refused by k0000009 in conflict, the dimension
+    // `unsolved` and k0000008, its partner, the contest's pick, redundant. The edit's read:
+    // k0000008 newly conflicting, the dimension `unsolved` still (decision 5 lists the pick
+    // alone). An edit changes no row, so whatever newly conflicts is taken for its doing
+    // (`offer`'s doc has the one case where it isn't): offered. A constraint newly
     // redundant, k0000009 conflicting as before, nothing new in conflict: not offered. With
     // another change between, the attribution is lost: judged by the dimension's own state,
     // `unsolved`, not offered; newly conflicting itself, offered; conflicting before too, not.
@@ -4329,6 +4333,39 @@ fn an_edit_is_offered_for_any_constraint_it_newly_sets_in_conflict_and_with_a_ch
         ..already
     };
     assert_eq!(offer(&own, already.revision, &already), None);
+}
+
+#[test]
+fn an_edit_with_a_change_between_is_not_offered_for_its_own_redundancy() {
+    // #429 round 2, T7. Edited on a read refused by k0000009 in conflict, the dimension
+    // `unsolved`, with another change between the edit and its read, so the edit is judged
+    // by its dimension's own state. That state newly redundant, or partially redundant, is
+    // flagged but in no conflict, and an edit changes no row, so a repetition isn't its
+    // doing: not offered. Newly conflicting, it is.
+    use ConstraintState::{Conflicting, PartiallyRedundant, Redundant, Unsolved};
+    let (sketch, edit) = edit_on(&conflict(
+        3,
+        &[("t0000101", Unsolved), ("k0000009", Conflicting)],
+    ));
+    let between = Placement {
+        revision: edit.revision.next().unwrap(),
+        ..edit
+    };
+    for (own, offered) in [
+        (Redundant, false),
+        (PartiallyRedundant, false),
+        (Conflicting, true),
+    ] {
+        let after = read_on(
+            &sketch,
+            conflict(3, &[("t0000101", own), ("k0000009", Conflicting)]),
+        );
+        assert_eq!(
+            offer(&after, between.revision, &between).is_some(),
+            offered,
+            "{own:?}"
+        );
+    }
 }
 
 #[test]
@@ -4431,9 +4468,9 @@ fn an_add_on_or_to_a_translations_refusal_is_never_judged_by_its_freedoms() {
 
 #[test]
 fn an_add_on_a_refused_sketch_is_offered_for_any_flag_of_its_own_and_an_edit_only_for_a_conflict() {
-    // Round 1's T3. Placed on a read refused `over_constrained` by k0000009, 5 freedoms; the
-    // add's read refused alike, 4 freedoms (its row independent), so neither its freedoms nor
-    // a newly refused solve offer it: its own flag does, conflicting, redundant, or partially
+    // #429 round 1, T3. Placed on a read refused `over_constrained` by k0000009, 5 freedoms;
+    // the add's read refused alike, 4 freedoms (its row independent), so neither its freedoms
+    // nor a newly refused solve offer it: its own flag does, conflicting, redundant, or partially
     // redundant. An edit on the same read whose read has its dimension newly redundant or
     // partially redundant, not in conflict, isn't offered (an edit changes no row, so only a
     // conflict is its doing); newly in conflict, it is.
