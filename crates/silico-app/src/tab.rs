@@ -362,6 +362,13 @@ pub const NEEDS_TWO_BODIES: &str = "Needs two bodies";
 pub const UNMENDED: &str =
     "The document has problems of its own: no feature changes until they're mended";
 
+/// What Look At says with no face to look at ([`Tab::look_at`]), the prototype's words.
+pub const LOOK_AT_NO_FACE: &str = "Look At: select a flat face first.";
+
+/// What Look At says in sketch mode before a read has placed the sketch on its plane, or
+/// when the rebuild couldn't (a sketch on a face not found).
+pub const LOOK_AT_UNPLACED: &str = "Look At: the sketch isn't placed on a plane yet.";
+
 /// A command a tab sent that changes its transaction, as it sent it: what a test reads
 /// as the call record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1300,6 +1307,66 @@ impl Tab {
             CanvasAct::ClearSelection => self.selection.clear(),
             CanvasAct::CreateSketch(plane) => self.create_sketch(sessions, plane),
         }
+    }
+
+    /// What sketch mode adds to the view's fits this frame (G6, [`crate::viewport::Framing`]):
+    /// the open sketch's geometry, and `inset`, the bands its bar and palette cover, in the
+    /// canvas's pixels; nothing outside sketch mode.
+    pub fn frame_view(&mut self, inset: crate::navigate::Inset) {
+        let framing = self
+            .sketch
+            .as_ref()
+            .map_or_else(crate::viewport::Framing::default, |mode| {
+                crate::viewport::Framing {
+                    also: mode.model_box(),
+                    inset,
+                }
+            });
+        self.view.frame_with(framing);
+    }
+
+    /// Look At (Ctrl+8; Fusion's Look At, SolidWorks' Normal To; the prototype's `lookAt`):
+    /// in sketch mode, the view square to the sketch's plane, its x across and its y up;
+    /// otherwise square to the one face selected, if the core measured it planar, from its
+    /// outward normal, up as the named views have it ([`crate::navigate::up_across`]). Each
+    /// fits what a named view fits. Else what's missing is said, and the view stays.
+    pub fn look_at(&mut self) {
+        use crate::viewport::ViewAsk;
+        if let Some(mode) = self.sketch.as_ref() {
+            match mode.plane() {
+                Some(plane) => self.view.ask(ViewAsk::LookAt {
+                    toward: plane.normal(),
+                    up: plane.y_axis(),
+                }),
+                None => self.toast = Some(LOOK_AT_UNPLACED.to_owned()),
+            }
+            return;
+        }
+        match self.selected_plane_normal() {
+            Some(toward) => self.view.ask(ViewAsk::LookAt {
+                toward,
+                up: crate::navigate::up_across(toward),
+            }),
+            None => self.toast = Some(LOOK_AT_NO_FACE.to_owned()),
+        }
+    }
+
+    /// The outward normal of the one element selected, if it's a face the core's answer for
+    /// the selection as it is now says is planar.
+    fn selected_plane_normal(&self) -> Option<[f64; 3]> {
+        use silico_core::command::elements::ElementType;
+        let mut elements = self.selection.elements();
+        let one = elements.next()?;
+        if elements.next().is_some()
+            || one.found()?.kind() != silico_core::kernel::ElementKind::Face
+        {
+            return None;
+        }
+        let of = crate::measures::Of::now(&self.selection)?;
+        let entry = self.measures.answers(of)?.element.as_ref()?.as_ref().ok()?;
+        (entry.r#type == ElementType::Plane)
+            .then_some(entry.normal)
+            .flatten()
     }
 
     /// The canvas's Select Other menu closed, if it's open: a modal or the shortcut sheet has

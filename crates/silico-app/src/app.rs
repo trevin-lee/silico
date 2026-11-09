@@ -164,6 +164,22 @@ const PALETTE_MARGIN: f32 = 12.0;
 const PALETTE_FROM_CORNER: egui::Vec2 =
     egui::Vec2::new(-PALETTE_MARGIN - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
 
+/// The bands sketch mode's panels cover, in pixels at `pixels_per_point` (G6): from the
+/// canvas's top to as far below the sketch bar as it stands below the top, and from the
+/// canvas's right to as far left of the palette as it stands in from the right. A fit in
+/// sketch mode keeps its box out of them (`navigate::Inset`).
+fn sketch_inset(pixels_per_point: f32) -> crate::navigate::Inset {
+    // Up to a whole pixel, so a band covers its panel; a few hundred at most, and the cast
+    // saturates past u32 anyway.
+    let pixels = |points: f32| (points * pixels_per_point).ceil().max(0.0) as u32;
+    crate::navigate::Inset {
+        top: pixels(2.0 * SKETCH_BAR_FROM_TOP + sketch::style::SKETCH_BAR_HEIGHT),
+        right: pixels(2.0 * PALETTE_MARGIN + sketch::style::SKETCH_PALETTE_WIDTH),
+        bottom: 0,
+        left: 0,
+    }
+}
+
 /// What the app is asking the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Asking {
@@ -729,6 +745,12 @@ impl<P: Clients + 'static> App<P> {
         }
         self.toolbar(ui, &mut started);
         self.status_bar(ui, &mut started);
+        // What sketch mode adds to each view's fits (G6): its geometry, and the bands its bar
+        // and palette cover, set before the viewport takes the frame's asked view.
+        let inset = sketch_inset(ui.ctx().pixels_per_point());
+        for tab in &mut self.tabs {
+            tab.frame_view(inset);
+        }
         // Over the status bar, across the window's width, under a docked dialog too; drawn
         // before the viewport, which highlights the faces of the feature hovered in it.
         let active = self.active_place();
@@ -1346,6 +1368,8 @@ impl<P: Clients + 'static> App<P> {
                 }
             })
         };
+        // Look At (⌘8), never a field's: its view depends on the selection or the sketch.
+        let look_at = !typing && shortcuts::take(ui, Command::LookAt);
         let in_sketch = self
             .active_place()
             .and_then(|at| self.tabs.get(at))
@@ -1434,6 +1458,9 @@ impl<P: Clients + 'static> App<P> {
         };
         if let Some(ask) = view {
             tab.view.ask(ask);
+        }
+        if look_at {
+            tab.look_at();
         }
         let sessions = &self.sessions;
         if let Some(choice) = letter {
@@ -2252,17 +2279,20 @@ impl<P: Clients + 'static> App<P> {
         // doesn't fit.
         let palette_at = canvas.right_top() + PALETTE_FROM_CORNER;
         let palette_height = canvas.bottom() - PALETTE_MARGIN - palette_at.y;
-        let palette = egui::Area::new(sketch::dimension::palette_area(&id))
+        let shown = egui::Area::new(sketch::dimension::palette_area(&id))
             .fixed_pos(palette_at)
             .show(ui.ctx(), |ui| {
                 sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
-            })
-            .response
-            .rect;
+            });
+        let (look_at, palette) = (shown.inner, shown.response.rect);
         match action {
             BarAction::None => {}
             BarAction::Finish => tab.finish_sketch(sessions, true),
             BarAction::Cancel => tab.finish_sketch(sessions, false),
+        }
+        // The palette's Look At, as ⌘8 is.
+        if look_at {
+            tab.look_at();
         }
         *started |= action != BarAction::None;
         // Whole in the canvas, and clear of the palette.

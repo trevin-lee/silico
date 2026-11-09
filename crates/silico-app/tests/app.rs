@@ -19654,6 +19654,30 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                 h.get_by_role_and_label(Role::Group, "ViewCube")
                     .get_by_label("Top front right")
             }),
+            Command::LookAt => {
+                // In sketch mode, by its keys and by the Sketch Palette's Look At, each from
+                // a view moved off: the same camera (Look At's own tests check which).
+                let f = fixture();
+                let mut h = triangle_opened(&f);
+                for chord in keys_of(command) {
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    panned(&mut h);
+                    let moved = view(&h).camera().clone();
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    let keyed = view(&h).camera().clone();
+                    assert_ne!(keyed, moved, "Look At moved nothing");
+                    view_mut(&mut h).set_camera(moved);
+                    step(&mut h);
+                    h.get_by_role_and_label(Role::Button, entry.label).click();
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(view(&h).camera(), &keyed, "the palette's Look At");
+                }
+            }
             // The pointer's: the viewport takes them, no key (their own tests: the middle
             // button's pan and orbit, the wheel's zoom).
             Command::WhatsWrong => {
@@ -26839,6 +26863,11 @@ fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a silico_app::tab::Tab {
 /// (the app makes no primitive: Trevin's decision of 2026-11-09): CREATE's Create Sketch,
 /// once the part's timeline is read, on the XY plane, its sketch added and read.
 fn begin_sketch_on_xy(h: &mut AppHarness, part: &str) {
+    begin_sketch_on(h, part, "XY plane");
+}
+
+/// [`begin_sketch_on_xy`] on the origin plane labelled `plane` ("XZ plane").
+fn begin_sketch_on(h: &mut AppHarness, part: &str, plane: &str) {
     step_until(h, "Create Sketch on", |h| {
         !h.get_by_role_and_label(Role::Toolbar, "CREATE")
             .get_by_label("Create Sketch")
@@ -26849,11 +26878,10 @@ fn begin_sketch_on_xy(h: &mut AppHarness, part: &str) {
         .get_by_label("Create Sketch")
         .click();
     step_until(h, "its planes", |h| {
-        h.query_by_role_and_label(Role::Button, "XY plane")
-            .is_some()
+        h.query_by_role_and_label(Role::Button, plane).is_some()
     });
     step(h);
-    h.get_by_role_and_label(Role::Button, "XY plane").click();
+    h.get_by_role_and_label(Role::Button, plane).click();
     step_until(h, "its sketch added and read", |h| {
         tab_named(h, part)
             .sketch
@@ -38767,5 +38795,226 @@ fn the_tools_read_the_sketchs_states_and_leave_out_a_direction_between_fixed_poi
         ("pa000001", "pa000002")
     );
     assert_eq!(sketch.constraints, Vec::new());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Look At, and fits in sketch mode (G6) ----------------------------------------------
+
+/// Whether the view looks from `toward` (the unit vector from its target to its eye) with
+/// `up` up the image, each to 1e-9.
+fn looks(h: &AppHarness, toward: [f64; 3], up: [f64; 3]) -> bool {
+    let camera = view(h).camera();
+    let d: [f64; 3] = std::array::from_fn(|k| camera.eye[k] - camera.target[k]);
+    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    (0..3).all(|k| (d[k] / n - toward[k]).abs() < 1e-9 && (camera.up[k] - up[k]).abs() < 1e-9)
+}
+
+/// Where the open sketch's place `at` is drawn, as sketch mode draws it (its `Screen`).
+fn drawn_at(h: &AppHarness, at: [f64; 2]) -> eframe::egui::Pos2 {
+    let read = sketch_mode(h).unwrap().drawable().unwrap();
+    let frame = view(h).frame().unwrap();
+    silico_app::sketch::screen::Screen::of(read, frame)
+        .unwrap()
+        .project(at)
+        .unwrap()
+}
+
+/// The sketch bar's and the Sketch Palette's rectangles.
+fn sketch_panels(h: &AppHarness) -> (eframe::egui::Rect, eframe::egui::Rect) {
+    (
+        h.get_by_role_and_label(Role::Toolbar, "Sketch bar").rect(),
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .rect(),
+    )
+}
+
+/// The middle of the room sketch mode's bands leave the canvas `canvas`: below the bar by
+/// as much as the bar stands below the canvas's top, and left of the palette by as much as
+/// it stands in from the canvas's right (`app::sketch_inset`). A fit in sketch mode centres
+/// its box there.
+fn room_middle(
+    canvas: eframe::egui::Rect,
+    bar: eframe::egui::Rect,
+    palette: eframe::egui::Rect,
+) -> eframe::egui::Pos2 {
+    let top = bar.bottom() + (bar.top() - canvas.top());
+    let right = palette.left() - (canvas.right() - palette.right());
+    eframe::egui::Pos2::new((canvas.left() + right) / 2.0, (top + canvas.bottom()) / 2.0)
+}
+
+/// Whether `a` and `b` are within 2 points each way: the bar's rect in the tree is inside
+/// its 1-point border, and a band is whole pixels.
+fn about(a: eframe::egui::Pos2, b: eframe::egui::Pos2) -> bool {
+    (a.x - b.x).abs() <= 2.0 && (a.y - b.y).abs() <= 2.0
+}
+
+/// The newest toast's words and time, if one shows.
+fn toast_said(h: &AppHarness) -> Option<(String, f64)> {
+    h.state().toast().map(|(text, at)| (text.to_owned(), at))
+}
+
+#[test]
+fn look_at_in_sketch_mode_turns_square_to_its_plane_its_x_across_and_its_y_up() {
+    // A sketch on XZ: its x along +X, its y along +Z, its normal x × y = −Y. Square to it
+    // from that side: the eye out along −Y, +Z up, as Front looks. A new part opens at Home,
+    // a corner's view, so the view turns.
+    let (front, z) = ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    begin_sketch_on(&mut h, "Untitled", "XZ plane");
+    assert!(!looks(&h, front, z));
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "square to the sketch", |h| looks(h, front, z));
+    let keyed = view(&h).camera().clone();
+    // Home again, then the palette's Look At: the same view.
+    h.key_press(Key::Home);
+    step_until(&mut h, "home", |h| !looks(h, front, z));
+    h.get_by_role_and_label(Role::Button, "Look At").click();
+    step_until(&mut h, "square again", |h| view(h).camera() == &keyed);
+    assert!(toast_said(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_turns_square_to_the_flat_face_selected_and_says_what_it_needs_with_none() {
+    // The 40 × 20 × 10 block's faces as the fake describes them, each by its outward normal.
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    // Nothing selected: said in the prototype's words, and the view stays.
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_NO_FACE)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    // The top, facing +z: from above, +y up, as Top looks.
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "from above", |h| {
+        looks(h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    });
+    // The right side, facing +x: from +x, +z up, as Right looks.
+    select_in_box(&mut h, &["Face2"]);
+    row_until(&mut h, "Area", "200.00 mm²");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "from the right", |h| {
+        looks(h, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+    });
+    // An edge isn't a face: said again (a newer toast), and the view stays.
+    let (_, first) = toast_said(&h).unwrap_or_default();
+    select_in_box(&mut h, &["Edge12"]);
+    row_until(&mut h, "Length", "40.00 mm");
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said again", |h| {
+        toast_said(h)
+            .is_some_and(|(text, at)| text == silico_app::tab::LOOK_AT_NO_FACE && at > first)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn fit_in_sketch_mode_takes_the_sketch_in_clear_of_the_bar_and_the_palette() {
+    // A new part has no body, so Fit had nothing to fit: in sketch mode it takes the sketch's
+    // geometry, the 40 × 20 rectangle from the origin, and keeps it out from under the sketch
+    // bar (above) and the palette (right). Fitted to it, the rectangle spans the room left,
+    // less the fit's tenth over (1 / 1.1 = 0.909) and the bands' own margins: at least 0.85
+    // of the room across or down.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    begin_sketch_on_xy(&mut h, "Untitled");
+    h.key_press(Key::R);
+    step(&mut h);
+    sketch_events_at(&f, &mut h, 0, &dragged([0.0, 0.0], [40.0, 20.0]));
+    step_until(&mut h, "its four lines read", |h| {
+        h.state().tabs()[0].edits.idle()
+            && sketch_mode(h)
+                .and_then(|mode| mode.drawable())
+                .is_some_and(|read| read.members.lines.len() == 4)
+    });
+    let before = view(&h).camera().clone();
+    h.key_press(Key::F6);
+    step_until(&mut h, "fitted", |h| view(h).camera() != &before);
+    step(&mut h);
+    let (bar, palette) = sketch_panels(&h);
+    let canvas = view(&h).frame().unwrap().rect;
+    let corners = [[0.0, 0.0], [40.0, 0.0], [0.0, 20.0], [40.0, 20.0]].map(|at| drawn_at(&h, at));
+    for (at, place) in corners.iter().enumerate() {
+        assert!(
+            canvas.contains(*place) && place.y > bar.bottom() && place.x < palette.left(),
+            "corner {at} at {place:?}: bar {bar:?}, palette {palette:?}, canvas {canvas:?}"
+        );
+    }
+    let span = |k: usize| {
+        let along = corners.map(|p| p[k]);
+        along.iter().copied().fold(f32::MIN, f32::max)
+            - along.iter().copied().fold(f32::MAX, f32::min)
+    };
+    // Centred in the room the bands leave: the rectangle's middle, (20, 10), drawn there.
+    let middle = drawn_at(&h, [20.0, 10.0]);
+    let room = room_middle(canvas, bar, palette);
+    assert!(
+        about(middle, room),
+        "the middle at {middle:?}, the room's at {room:?}"
+    );
+    let (room_across, room_down) = (
+        palette.left() - canvas.left(),
+        canvas.bottom() - bar.bottom(),
+    );
+    let filled = (span(0) / room_across).max(span(1) / room_down);
+    assert!(
+        filled >= 0.85,
+        "{filled}: {} by {} in {room_across} by {room_down}",
+        span(0),
+        span(1)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_a_new_parts_first_sketch_front_keeps_the_sketch_bar_off_its_top() {
+    // A new part's first sketch, on XZ, seen from the front (⌘1), as the slice draws its L:
+    // with no body, Front fits a 100 mm cube about the origin, so the sketch's y = 50 (z =
+    // 50) is the fitted box's top. The whole of it, corners and top middle, is drawn below
+    // the sketch bar and left of the palette. Fitted to the whole canvas, the top was drawn
+    // about 0.05 of the canvas down, under the bar.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    begin_sketch_on(&mut h, "Untitled", "XZ plane");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step_until(&mut h, "from the front", |h| {
+        looks(h, [0.0, -1.0, 0.0], [0.0, 0.0, 1.0])
+    });
+    step(&mut h);
+    let (bar, palette) = sketch_panels(&h);
+    let canvas = view(&h).frame().unwrap().rect;
+    // The cube's middle, the origin, drawn at the middle of the room the bands leave.
+    let origin = drawn_at(&h, [0.0, 0.0]);
+    let room = room_middle(canvas, bar, palette);
+    assert!(
+        about(origin, room),
+        "the origin at {origin:?}, the room's middle at {room:?}"
+    );
+    for at in [
+        [-50.0, 50.0],
+        [0.0, 50.0],
+        [50.0, 50.0],
+        [-50.0, -50.0],
+        [50.0, -50.0],
+    ] {
+        let place = drawn_at(&h, at);
+        assert!(
+            canvas.contains(place) && place.y > bar.bottom() && place.x < palette.left(),
+            "{at:?} at {place:?}: bar {bar:?}, palette {palette:?}, canvas {canvas:?}"
+        );
+    }
     assert_eq!(never_waits::waits(), 0);
 }

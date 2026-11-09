@@ -2763,13 +2763,13 @@ fn the_bar_and_the_palette_are_drawn_dark_on_a_window_showing_the_light_theme() 
         bar::sketch_bar(ui, &bar);
     });
     texts.extend(texts_on_light(|ui| {
-        bar::palette(ui, &view, &mut settings, f32::INFINITY)
+        bar::palette(ui, &view, &mut settings, f32::INFINITY);
     }));
     assert!(texts.iter().any(|(words, _)| words == "Cancel"));
     assert!(texts.iter().any(|(words, _)| words == "Profile"));
-    // Every text but Look At, which is off (faded on purpose till the viewport's camera),
-    // stands out from the panels' dark fill.
-    for (words, colour) in texts.iter().filter(|(words, _)| words != "Look At") {
+    // Every text, Look At's among them, stands out from the panels' dark fill.
+    assert!(texts.iter().any(|(words, _)| words == "Look At"));
+    for (words, colour) in &texts {
         let ratio = contrast(*colour, FLOATING_BG);
         assert!(ratio >= 3.0, "{words:?} in {colour:?}: {ratio}");
     }
@@ -3743,10 +3743,12 @@ fn a_fields_frame_takes_the_prototypes_fill_and_border_for_its_kind_hover_focus_
 /// The palette's words, as drawn.
 fn palette_words(view: &bar::PaletteView) -> Vec<String> {
     let mut settings = bar::Settings::default();
-    texts_on_light(|ui| bar::palette(ui, view, &mut settings, f32::INFINITY))
-        .into_iter()
-        .map(|(words, _)| words)
-        .collect()
+    texts_on_light(|ui| {
+        bar::palette(ui, view, &mut settings, f32::INFINITY);
+    })
+    .into_iter()
+    .map(|(words, _)| words)
+    .collect()
 }
 
 #[test]
@@ -4925,10 +4927,12 @@ fn the_palette_says_how_the_tool_on_is_used_and_how_trim_trims_each_way() {
     let mut mode = mode_on(under(rectangle(Vec::new())));
     let words = |mode: &SketchMode, settings: &mut bar::Settings| -> Vec<String> {
         let view = mode.palette_view(silico_core::command::Revision::OPENED, None);
-        texts_on_light(|ui| bar::palette(ui, &view, settings, f32::INFINITY))
-            .into_iter()
-            .map(|(words, _)| words)
-            .collect()
+        texts_on_light(|ui| {
+            bar::palette(ui, &view, settings, f32::INFINITY);
+        })
+        .into_iter()
+        .map(|(words, _)| words)
+        .collect()
     };
     let mut settings = bar::Settings::default();
     mode.tools.choose(Some(tools::Choice::Draw(
@@ -6152,7 +6156,9 @@ fn palette_painted(tool: Option<silico_core::sketch_tools::ToolKind>) -> Vec<egu
     mode.tools.choose(tool.map(tools::Choice::Draw));
     let view = mode.palette_view(silico_core::command::Revision::OPENED, None);
     let mut settings = bar::Settings::default();
-    painted_on_light(|ui| bar::palette(ui, &view, &mut settings, f32::INFINITY))
+    painted_on_light(|ui| {
+        bar::palette(ui, &view, &mut settings, f32::INFINITY);
+    })
 }
 
 /// The one text painted that says `words`.

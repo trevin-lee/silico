@@ -15,6 +15,7 @@
 //! ([`dimension`]).
 
 pub mod bar;
+pub mod bounds;
 pub mod dimension;
 pub mod drag;
 pub mod draw;
@@ -1146,6 +1147,21 @@ impl SketchMode {
     }
 
     /// What the sketch bar shows of the sketch, named `name`.
+    /// The plane the newest read placed the sketch on, if a read has and the rebuild could:
+    /// what Look At turns square to.
+    pub fn plane(&self) -> Option<silico_protocol::SketchPlane> {
+        let read = self.read.as_ref()?.result.as_ref().ok()?;
+        read.plane.as_ref().ok().copied()
+    }
+
+    /// The newest read's geometry as a box in model space, on its plane
+    /// ([`bounds::model_box`]): what a fit takes in with the bodies in sketch mode. None
+    /// before a read has placed it, or for a sketch with nothing in it.
+    pub fn model_box(&self) -> Option<[[f64; 3]; 2]> {
+        let read = self.read.as_ref()?.result.as_ref().ok()?;
+        bounds::model_box(&read.members, *read.plane.as_ref().ok()?)
+    }
+
     pub fn bar_view(&self, name: &str, enabled: bool) -> bar::BarView {
         let plane = self.drawable().and_then(|read| read.plane.as_ref().ok());
         bar::BarView {

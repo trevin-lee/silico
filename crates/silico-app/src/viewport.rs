@@ -542,15 +542,31 @@ pub struct View {
     /// from the frame after the menu opens (the tab's overlay comes after the pane's
     /// navigation), and let go as it closes.
     pub(crate) wheel_held: bool,
+    /// What sketch mode adds to a fit, as the tab last set it.
+    framing: Framing,
 }
 
-/// A view a shortcut asks of the tab's viewport.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A view a shortcut asks of the tab's viewport. Each fits the bodies with what the view's
+/// [`Framing`] adds in sketch mode.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ViewAsk {
     /// The bodies fitted, looking as it looks (F6, the navigation bar's Fit).
     Fit,
     /// A named view of the bodies, as the ViewCube gives it (Home, a face, a corner).
     Named(NamedView),
+    /// Look At (Ctrl+8): the view square to a plane, looking from `toward`, its unit
+    /// normal toward the eye, with `up` up the image ([`navigate::look_at`]).
+    LookAt { toward: [f64; 3], up: [f64; 3] },
+}
+
+/// What sketch mode adds to a view's fit (G6): the open sketch's geometry, taken into the
+/// bounds with the bodies' (`crate::sketch::bounds`), and the bands its bar and palette
+/// cover, which a fitted view keeps its box out of ([`navigate::Inset`]). The tab sets it
+/// each frame ([`View::frame_with`]); the default, outside sketch mode, adds nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Framing {
+    pub also: Option<[[f64; 3]; 2]>,
+    pub inset: navigate::Inset,
 }
 
 impl Default for View {
@@ -590,6 +606,7 @@ impl Default for View {
             published: 0,
             read_published: 0,
             wheel_held: false,
+            framing: Framing::default(),
         }
     }
 }
@@ -673,6 +690,11 @@ impl View {
     /// any asked before it that hasn't been.
     pub fn ask(&mut self, ask: ViewAsk) {
         self.asked = Some(ask);
+    }
+
+    /// What sketch mode adds to a fit from now on ([`Framing`]): the tab's, each frame.
+    pub fn frame_with(&mut self, framing: Framing) {
+        self.framing = framing;
     }
 
     /// Looks through `camera`, as a control of the person's does.
@@ -1110,24 +1132,48 @@ impl View {
         }
     }
 
-    /// Every box the tab holds, joined.
+    /// Every box the tab holds and the open sketch's (its [`Framing`]'s), joined: what a fit
+    /// takes.
     fn bounds(&self) -> Option<[[f64; 3]; 2]> {
-        silico_core::views::joined(self.boxes())
+        silico_core::views::joined(self.boxes().chain(self.framing.also))
     }
 
-    /// The named view `view` of the bodies' boxes (a cube's, with none), in the view's
-    /// projection.
+    /// The named view `view` of the bodies' boxes and the open sketch's (a cube's, with
+    /// none), clear of sketch mode's bands, in the view's projection.
     fn look_from(&mut self, view: NamedView, size_px: [u32; 2]) {
         let bounds = self.bounds().unwrap_or(NO_BOX);
-        let camera = navigate::named(view, bounds, size_px[0], size_px[1])
+        let camera = navigate::named_in(view, bounds, size_px[0], size_px[1], self.framing.inset)
             .and_then(|camera| navigate::projected(&camera, self.perspective));
         self.moved(camera);
     }
 
-    /// Fits the view to the bodies' boxes (F6), looking as it looks.
+    /// Look At: the view square to a plane from `toward`, `up` up the image, fitted to the
+    /// boxes a named view fits, in the view's projection.
+    fn look_at(&mut self, toward: [f64; 3], up: [f64; 3], size_px: [u32; 2]) {
+        let bounds = self.bounds().unwrap_or(NO_BOX);
+        let camera = navigate::look_at(
+            toward,
+            up,
+            bounds,
+            size_px[0],
+            size_px[1],
+            self.framing.inset,
+        )
+        .and_then(|camera| navigate::projected(&camera, self.perspective));
+        self.moved(camera);
+    }
+
+    /// Fits the view to the bodies' boxes and the open sketch's (F6), looking as it looks,
+    /// clear of sketch mode's bands.
     fn fit(&mut self, size_px: [u32; 2]) {
         if let Some(bounds) = self.bounds() {
-            let camera = navigate::fit(&self.camera, bounds, size_px[0], size_px[1]);
+            let camera = navigate::fit_in(
+                &self.camera,
+                bounds,
+                size_px[0],
+                size_px[1],
+                self.framing.inset,
+            );
             self.moved(camera);
         }
     }
@@ -1430,6 +1476,7 @@ impl View {
         match self.asked.take() {
             Some(ViewAsk::Named(named)) => self.look_from(named, size_px),
             Some(ViewAsk::Fit) => self.fit(size_px),
+            Some(ViewAsk::LookAt { toward, up }) => self.look_at(toward, up, size_px),
             None if response.double_clicked_by(PointerButton::Middle) => self.fit(size_px),
             None => {}
         }
