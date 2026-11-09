@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::accesskit::Role;
 use eframe::egui::{Key, Modifiers};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
 use silico_app::browse::{Answer, Ask, Browse, Pick};
 use silico_app::export::ExportForm;
@@ -186,34 +186,37 @@ fn new_part(h: &mut AppHarness) {
     });
 }
 
-/// A box added through CREATE's Box dialog and its OK, the part `name` then unsaved.
-fn add_box(h: &mut AppHarness, name: &str) {
+/// A sketch added to the part `name`, shown, as a part is begun sketch-first (the app makes
+/// no primitive: Trevin's decision of 2026-11-09): CREATE's Create Sketch on the XY plane,
+/// then Finish Sketch (Command+Enter), which keeps it, empty, as "Sketch1". The part `name`
+/// is then unsaved.
+fn add_sketch(h: &mut AppHarness, name: &str) {
+    // Create Sketch on once the part's timeline is read.
+    step_until(h, "Create Sketch on", |h| {
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    });
     h.get_by_role_and_label(Role::Toolbar, "CREATE")
-        .get_by_role_and_label(Role::Button, "CREATE")
+        .get_by_label("Create Sketch")
         .click();
-    step_until(h, "CREATE's drop-down", |h| {
-        h.query_by_role_and_label(Role::Menu, "CREATE").is_some()
+    step_until(h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, "XY plane")
+            .is_some()
     });
     step(h);
-    h.get_by_role_and_label(Role::Menu, "CREATE")
-        .get_by_label("Box")
-        .click();
-    step_until(h, "the dialog", |h| {
-        h.query_by_role_and_label(Role::Dialog, "Box").is_some()
-    });
-    step_until(h, "its add answered", |h| {
+    h.get_by_role_and_label(Role::Button, "XY plane").click();
+    step_until(h, "its sketch added and read", |h| {
         tab_named(h, name)
-            .dialog
+            .sketch
             .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
+            .is_some_and(|mode| mode.sketch.is_some() && mode.drawable().is_some())
     });
-    h.get_by_role(Role::Dialog)
-        .get_by_role_and_label(Role::Button, "OK")
-        .click();
+    press_keys(h, Modifiers::COMMAND, Key::Enter);
     step_until(h, "unsaved", |h| {
-        h.query_by_role(Role::Dialog).is_none()
-            && tab_named(h, name).edits.idle()
-            && tab_named(h, name).unsaved()
+        let tab = tab_named(h, name);
+        tab.sketch.is_none() && tab.edits.idle() && tab.unsaved()
     });
 }
 
@@ -270,7 +273,7 @@ fn a_save_panels_pick_for_a_part_closed_meanwhile_writes_nothing_and_says_nothin
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     press_keys(&mut h, Modifiers::COMMAND, Key::S);
     asked_times(&mut h, &browser, 1);
     // The portal's panel leaves the window to be used: the part closed, its edits dropped.
@@ -296,7 +299,7 @@ fn a_save_panels_pick_for_a_part_whose_dont_save_is_still_running_writes_nothing
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     press_keys(&mut h, Modifiers::COMMAND, Key::S);
     asked_times(&mut h, &browser, 1);
     press_keys(&mut h, Modifiers::COMMAND, Key::W);
@@ -322,7 +325,7 @@ fn a_close_asked_while_the_parts_save_panel_is_open_is_taken_on_by_that_panel() 
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     // Command+S, then Close's Save while that panel is open: no second panel, and the one
     // open closes the part once it's saved.
     press_keys(&mut h, Modifiers::COMMAND, Key::S);
@@ -348,7 +351,7 @@ fn a_cancel_of_a_save_panel_a_close_took_on_keeps_the_part() {
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     press_keys(&mut h, Modifiers::COMMAND, Key::S);
     asked_times(&mut h, &browser, 1);
     press_keys(&mut h, Modifiers::COMMAND, Key::W);
@@ -374,7 +377,7 @@ fn a_save_as_to_a_file_another_tab_holds_is_refused_said_and_leaves_the_part_unt
     h.state_mut().open(held.to_str().unwrap(), false);
     step_until(&mut h, "its tab", |h| h.state().tabs().len() == 1);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     press_keys(&mut h, Modifiers::COMMAND, Key::S);
     asked_times(&mut h, &browser, 1);
     browser.answer(Some(&held));
@@ -417,7 +420,7 @@ fn a_quits_save_to_a_file_another_session_holds_stops_the_quit() {
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     close_window(&mut h);
     step_until(&mut h, "the quit question", |h| {
         h.query_by_label_contains("Save changes before quitting?")
@@ -443,7 +446,7 @@ fn a_save_panels_pick_the_core_refuses_is_said_and_the_part_keeps_its_edits() {
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     // One in a folder that isn't there, a folder, and one in a rebuild cache.
     let folder = f.dir.path().join("folder.silico");
     std::fs::create_dir(&folder).unwrap();
@@ -494,7 +497,7 @@ fn a_quits_save_panel_answering_a_path_that_isnt_utf8_stops_the_quit() {
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     close_window(&mut h);
     step_until(&mut h, "the quit question", |h| {
         h.query_by_label_contains("Save changes before quitting?")
@@ -598,14 +601,14 @@ fn save_as_picking_the_documents_own_file_saves_it() {
             .first()
             .is_some_and(|tab| tab.timeline.is_some())
     });
-    add_box(&mut h, "own.silico");
+    add_sketch(&mut h, "own.silico");
     press_keys(&mut h, Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
     asked_times(&mut h, &browser, 1);
     browser.answer(Some(&own));
     step_until(&mut h, "saved", |h| !tab_named(h, "own.silico").unsaved());
     assert_eq!(tab_named(&h, "own.silico").message, None);
     let text = std::fs::read_to_string(&own).unwrap();
-    assert!(text.contains(r#""name": "Box""#), "{text}");
+    assert!(text.contains(r#""name": "Sketch1""#), "{text}");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -627,7 +630,7 @@ fn save_as_picking_a_link_to_the_documents_own_file_saves_it_and_keeps_its_path(
             .first()
             .is_some_and(|tab| tab.timeline.is_some())
     });
-    add_box(&mut h, "own.silico");
+    add_sketch(&mut h, "own.silico");
     press_keys(&mut h, Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
     asked_times(&mut h, &browser, 1);
     browser.answer(Some(&link));
@@ -638,7 +641,7 @@ fn save_as_picking_a_link_to_the_documents_own_file_saves_it_and_keeps_its_path(
     assert_eq!(tab.path.as_deref(), own.to_str());
     assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
     let text = std::fs::read_to_string(&own).unwrap();
-    assert!(text.contains(r#""name": "Box""#), "{text}");
+    assert!(text.contains(r#""name": "Sketch1""#), "{text}");
     // No transaction left open, nothing more to save.
     assert!(!tab.transaction);
     assert_eq!(never_waits::waits(), 0);

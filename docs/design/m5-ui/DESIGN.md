@@ -76,6 +76,7 @@ The blank canvas (1b) is still the right look for a **new, empty part**: grid, a
 - Errors: red marks on the feature in the timeline and the browser and on the document's tab; a click on the document's root opens **What's Wrong**; OK still allowed on a failed preview (saves the feature with its error).
 - Sketches: definition-state colours; `(–)`/`(+)`/`(?)` prefixes in the browser; the status bar showing pointer coordinates and the state; the three-way prompt for an over-defining dimension (driven / leave driving / cancel); automatic relations with Ctrl held to suppress them; click-click line chains ended by double-click or Esc.
 - Esc interrupts a rebuild; Ctrl+B rebuilds; Ctrl+S saves; asterisk on an unsaved tab; Close asks.
+- Solids: Trevin's decision of 2026-11-09: solids are made sketch-first, as SolidWorks makes them; the app creates no primitives, and edits those a file holds. CREATE holds Create Sketch and the sweeps alone, and no command, menu, or key makes a box, cylinder, sphere, cone, or torus; one a file holds (an agent's, through `silico serve`, or written by hand) opens its dialog from Edit Feature (a double-click, or the feature's menu), as any feature does.
 
 **Onshape (good ideas)**
 - The **rollback bar**, here a blue handle in the timeline you drag between features (Fusion's marker is out of M5, so this is flagged).

@@ -1124,7 +1124,9 @@ fn a_document_the_gate_refuses_opens_with_its_problems_shown() {
         assert!(features.contains(&name.to_owned()), "{name}: {features:?}");
     }
     // No feature can be made in it: only `replace_text` mends it.
-    assert!(create_off(&mut h, "Box"));
+    for kind in ["Pad", "Pocket", "Revolve", "Groove"] {
+        assert!(create_off(&mut h, kind), "{kind}");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -3911,7 +3913,7 @@ fn the_name_field_is_off_while_its_tab_closes() {
     assert!(h.state().tabs()[0].closing(), "not closing");
     assert!(name_field(&h).accesskit_node().is_disabled());
     // Nor can a dialog open: what it sent would come after the close.
-    assert!(create_off(&mut h, "Box"));
+    assert!(create_off(&mut h, "Pad"));
     let before = name_field(&h).value();
     name_field(&h).type_text("z");
     step(&mut h);
@@ -5328,6 +5330,24 @@ const SKETCHED: &str = r#"{
 }
 "#;
 
+/// The M2.1 example with a triangle sketched on XY, not yet swept: a part to make a feature
+/// in sketch-first, as SolidWorks makes solids (Trevin's decision of 2026-11-09: the app
+/// makes no primitive). The triangle, (30, 0), (50, 0), (30, 10), lies half on the block's
+/// floor and half past its end (x = 40), so its pad, 10 up from z = 0, is one solid with the
+/// hole's body and changes it. The hole, the tip, is a Pad's base.
+const SKETCHED_EXAMPLE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 30, "y": 0, "construction": false}, {"id": "pb000000", "x": 50, "y": 0, "construction": false}, {"id": "pc000000", "x": 30, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
 /// The open dialog.
 fn dialog(h: &AppHarness) -> egui_kittest::Node<'_> {
     h.get_by_role(Role::Dialog)
@@ -5338,26 +5358,73 @@ fn dialog_open(h: &AppHarness) -> bool {
     h.query_by_role(Role::Dialog).is_some()
 }
 
-/// The primitives, which the toolbar keeps in CREATE's drop-down alone (app.js:394,
-/// interact.js:170).
+/// The primitives, which a file may hold and the app edits, but never makes (Trevin's
+/// decision of 2026-11-09: solids are made sketch-first, as SolidWorks makes them).
 const PRIMITIVES: [&str; 5] = ["Box", "Cylinder", "Sphere", "Cone", "Torus"];
 
-/// The dialog of `kind` opened from the toolbar's CREATE: a sweep from its row, a
-/// primitive from its drop-down.
+/// The dialog of `kind` opened from the toolbar's CREATE row.
 fn create(h: &mut AppHarness, kind: &str) {
-    if PRIMITIVES.contains(&kind) {
-        open_create_menu(h);
-        h.get_by_role_and_label(Role::Menu, "CREATE")
-            .get_by_label(kind)
-            .click();
-    } else {
-        h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label(kind)
-            .click();
-    }
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label(kind)
+        .click();
     step_until(h, "the dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, kind).is_some()
     });
+}
+
+/// The dialog of `kind`, a sweep, opened from CREATE on the sketch Triangle, chosen in the
+/// browser first: a feature made sketch-first. Its add follows the read of its body, the
+/// document's tip ([`sweep_sent`] waits for it).
+fn sweep_triangle(h: &mut AppHarness, kind: &str) {
+    step_until(h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(h);
+    create(h, kind);
+}
+
+/// [`sweep_triangle`]'s Pad: the dialog that adds a feature, as a primitive's did.
+fn pad_triangle(h: &mut AppHarness) {
+    sweep_triangle(h, "Pad");
+}
+
+/// The adds the first tab has sent.
+fn feature_adds(h: &AppHarness) -> usize {
+    h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter(|sent| **sent == Sent::Add)
+        .count()
+}
+
+/// [`sweep_triangle`], stepped until its add is sent, its body read: where a primitive's
+/// add was sent from its dialog's first frame, with no read before it.
+fn sweep_sent(h: &mut AppHarness, kind: &str) {
+    let before = feature_adds(h);
+    sweep_triangle(h, kind);
+    step_until(h, "its add sent", |h| feature_adds(h) > before);
+}
+
+/// [`sweep_sent`]'s Pad.
+fn pad_sent(h: &mut AppHarness) {
+    sweep_sent(h, "Pad");
+}
+
+/// Whether `op` is a prism: a pad's or a pocket's sweep, which nothing in
+/// [`SKETCHED_EXAMPLE`] is before one's made.
+fn is_prism(op: &Op) -> bool {
+    matches!(op, Op::Prism { .. })
+}
+
+/// The extent a one-sided pad of `length` writes, as JSON reads it.
+fn one_side(length: &str) -> Plain {
+    Plain::of(
+        &json::read(
+            format!(r#"{{"type": "one_side", "length": {length}, "reversed": false}}"#).as_bytes(),
+        )
+        .unwrap(),
+    )
 }
 
 /// CREATE's drop-down opened by a click on its label (`.tb-label`), laid out (egui lays a
@@ -5372,29 +5439,12 @@ fn open_create_menu(h: &mut AppHarness) {
     step(h);
 }
 
-/// Whether CREATE's `kind` is off: a sweep in its row; a primitive in its drop-down, which
-/// this opens and closes again by a second click on its label.
+/// Whether CREATE's `kind`, in its row, is off.
 fn create_off(h: &mut AppHarness, kind: &str) -> bool {
-    if !PRIMITIVES.contains(&kind) {
-        return h
-            .get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label(kind)
-            .accesskit_node()
-            .is_disabled();
-    }
-    open_create_menu(h);
-    let off = h
-        .get_by_role_and_label(Role::Menu, "CREATE")
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
         .get_by_label(kind)
         .accesskit_node()
-        .is_disabled();
-    h.get_by_role_and_label(Role::Toolbar, "CREATE")
-        .get_by_role_and_label(Role::Button, "CREATE")
-        .click();
-    step_until(h, "CREATE's drop-down closed", |h| {
-        h.query_by_role_and_label(Role::Menu, "CREATE").is_none()
-    });
-    off
+        .is_disabled()
 }
 
 /// The dialog's input labelled `label`.
@@ -5535,30 +5585,12 @@ fn answered_while_held(h: &mut AppHarness) {
 
 #[test]
 fn each_kinds_dialog_adds_its_feature_with_its_defaults_on_ok() {
-    // The defaults are the dialog's (the M5.8 brief: a 10 mm cube, a cylinder of radius 5
-    // and height 10, ...), each written here; a sweep takes the sketch selected and the
-    // body last on the timeline as its base.
-    let cases: [(&str, &str); 9] = [
-        (
-            "Box",
-            r#"{"type": "box", "name": "Box", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#,
-        ),
-        (
-            "Cylinder",
-            r#"{"type": "cylinder", "name": "Cylinder", "position": [0, 0, 0], "radius": 5, "height": 10}"#,
-        ),
-        (
-            "Sphere",
-            r#"{"type": "sphere", "name": "Sphere", "position": [0, 0, 0], "radius": 5}"#,
-        ),
-        (
-            "Cone",
-            r#"{"type": "cone", "name": "Cone", "position": [0, 0, 0], "radius1": 5, "radius2": 0, "height": 10}"#,
-        ),
-        (
-            "Torus",
-            r#"{"type": "torus", "name": "Torus", "position": [0, 0, 0], "radius1": 10, "radius2": 2}"#,
-        ),
+    // The defaults are the dialog's (the M5.8 brief: a pad 10 long, a pocket 5 deep, a
+    // whole turn), each written here; a sweep takes the sketch selected and the body last on
+    // the timeline as its base. CREATE makes no primitive (Trevin's decision of 2026-11-09):
+    // their dialogs edit what a file holds (each_primitive_of_the_m2_1_example_edits_from_
+    // its_dialog_and_ok_writes_the_value, and its sphere's, cone's, and torus's beside it).
+    let cases: [(&str, &str); 4] = [
         (
             "Pad",
             r#"{"type": "pad", "name": "Pad", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}"#,
@@ -5713,9 +5745,9 @@ fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
 #[test]
 fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -5725,7 +5757,8 @@ fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
     settled(&mut h);
     let sent = h.state().tabs()[0].edits.sent;
     // The session's queue held: the first keystroke's edit waits in it, and the next two
-    // wait in the tab, the last replacing the one before.
+    // wait in the tab, the last replacing the one before. The pad's length is its extent's:
+    // `set_field` sets the extent whole.
     let (hold, check) = hold_queue(&f, &h, 0);
     type_into(&mut h, "Length", "123");
     hold.release();
@@ -5735,17 +5768,17 @@ fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
     assert_eq!(
         h.state().tabs()[0].sent[h.state().tabs()[0].sent.len() - 2..],
         [
-            Sent::Edit("length".to_owned()),
-            Sent::Edit("length".to_owned())
+            Sent::Edit("extent".to_owned()),
+            Sent::Edit("extent".to_owned())
         ]
     );
     // The field's text, the 10 and the three digits after it, is the document's.
     let typed = input(&h, "Length").value().unwrap();
     assert_eq!(typed, "10123");
     let text = text_of(&f, &h);
-    let fields = fields_of(&text, "Box").unwrap();
+    let fields = fields_of(&text, "Pad").unwrap();
     assert!(
-        fields.contains(&("length".to_owned(), Plain::Number(typed.clone()))),
+        fields.contains(&("extent".to_owned(), one_side("10123"))),
         "{typed}: {fields:?}"
     );
     assert_eq!(never_waits::waits(), 0);
@@ -5754,9 +5787,9 @@ fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
 #[test]
 fn an_unparseable_value_is_red_sends_nothing_and_keeps_ok_off() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Sphere");
+    pad_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -5765,11 +5798,11 @@ fn an_unparseable_value_is_red_sends_nothing_and_keeps_ok_off() {
     });
     settled(&mut h);
     let sent = h.state().tabs()[0].edits.sent;
-    type_into(&mut h, "Radius", "x");
+    type_into(&mut h, "Length", "x");
     for _ in 0..10 {
         step(&mut h);
     }
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("5x"));
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("10x"));
     assert!(!ok_enabled(&h));
     assert_eq!(h.state().tabs()[0].edits.sent, sent);
     // Enter is OK only when OK is on.
@@ -5782,9 +5815,9 @@ fn an_unparseable_value_is_red_sends_nothing_and_keeps_ok_off() {
 #[test]
 fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Sphere");
+    pad_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -5792,26 +5825,27 @@ fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
             .is_some_and(|dialog| dialog.feature.is_some())
     });
     settled(&mut h);
-    // "-5": a number, sent, and refused by the gate (a radius is above 0).
+    // "-10": a number, sent, and refused by the gate (a sweep's length is above 0).
     // The minus at the field's start, where a person puts it: Home, then "-".
-    input(&h, "Radius").focus();
+    input(&h, "Length").focus();
     step(&mut h);
     h.key_press(eframe::egui::Key::Home);
     step(&mut h);
-    input(&h, "Radius").type_text("-");
+    input(&h, "Length").type_text("-");
     step(&mut h);
     settled(&mut h);
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("-10"));
     // Said in the dialog, as the core words it.
     let said = h.state().tabs()[0].message.clone().unwrap();
     assert!(dialog(&h).query_by_label(&said).is_some(), "{said}");
     assert!(!ok_enabled(&h));
-    // "5" again: taken, OK on.
+    // "10" again: taken, OK on.
     h.key_press(eframe::egui::Key::Home);
     step(&mut h);
     h.key_press(eframe::egui::Key::Delete);
     step(&mut h);
     settled(&mut h);
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("5"));
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("10"));
     assert!(ok_enabled(&h));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -5819,7 +5853,7 @@ fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
 #[test]
 fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     // An edit before the dialog, in the transaction.
     select(&mut h, "Pin");
@@ -5828,16 +5862,22 @@ fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits(
     let before = text_of(&f, &h);
     assert!(before.contains(r#""name": "PinK""#));
     let opened_at = h.state().tabs()[0].revision;
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
             .as_ref()
             .is_some_and(|dialog| dialog.feature.is_some())
     });
-    type_into(&mut h, "Height", "2");
+    type_into(&mut h, "Length", "2");
     settled(&mut h);
-    assert!(text_of(&f, &h).contains(r#""height": 102"#));
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pad")
+            .unwrap()
+            .into_iter()
+            .find(|(key, _)| key == "extent"),
+        Some(("extent".to_owned(), one_side("102")))
+    );
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Cancel")
         .click();
@@ -5855,15 +5895,14 @@ fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits(
 fn a_failed_preview_shows_the_cores_error_in_the_dialog_and_ok_keeps_the_feature() {
     let f = fixture();
     f.kernel.refuse(|op| {
-        matches!(op, Op::MakePrimitive(Primitive::Cone { .. }))
-            .then(|| Error::new(ErrorCode::KernelFailed, "the cone came apart"))
+        is_prism(op).then(|| Error::new(ErrorCode::KernelFailed, "the pad came apart"))
     });
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Cone");
+    pad_triangle(&mut h);
     step_until(&mut h, "the error in the dialog", |h| {
         dialog(h)
-            .query_all_by_label_contains("the cone came apart")
+            .query_all_by_label_contains("the pad came apart")
             .next()
             .is_some()
     });
@@ -5872,10 +5911,11 @@ fn a_failed_preview_shows_the_cores_error_in_the_dialog_and_ok_keeps_the_feature
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     let text = text_of(&f, &h);
+    // On the tip, the hole; the triangle; the defaults' 10 up.
     assert_eq!(
-        fields_of(&text, "Cone"),
+        fields_of(&text, "Pad"),
         Some(expected(
-            r#"{"type": "cone", "name": "Cone", "position": [0, 0, 0], "radius1": 5, "radius2": 0, "height": 10}"#
+            r#"{"type": "pad", "name": "Pad", "base": "m3tq8v0z", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}"#
         ))
     );
     assert!(
@@ -5890,12 +5930,12 @@ fn a_failed_preview_shows_the_cores_error_in_the_dialog_and_ok_keeps_the_feature
 #[test]
 fn esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_dialog_second() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
-    // The new box's build held: its preview's rebuild runs until released.
-    let hold = f.kernel.hold(is_box);
-    create(&mut h, "Box");
+    // The new pad's prism held: its preview's rebuild runs until released.
+    let hold = f.kernel.hold(is_prism);
+    pad_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -5935,33 +5975,28 @@ fn until(what: &str, done: impl Fn() -> bool) {
     }
 }
 
-/// The box a dialog's defaults make, 10 mm wide: narrower than the example's block.
-fn is_new_box(op: &Op) -> bool {
-    matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx < 20.0)
-}
-
 #[test]
 fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queue() {
     // The preview's `timeline` read queued behind another command that waits on the same
     // rebuild (a check of the current model), so it isn't the rebuild's waiter yet when Esc
     // stops it. The next command that needs the model starts a stopped rebuild again
     // (decision 34): run after the stop, the read would, undoing it. The stop holds: the
-    // read answers `cancelled`, the tab reads the published model, and the new box is asked
-    // of the kernel once.
+    // read answers `cancelled`, the tab reads the published model, and the new pad's prism is
+    // asked of the kernel once.
     use silico_core::command::{RebuildState, RunningCommand, SessionCommand};
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
     let id = h.state().tabs()[0].id;
-    let box_hold = f.kernel.hold(is_new_box);
+    let prism_hold = f.kernel.hold(is_prism);
     // The queue held behind a fresh check whose pin the fake holds: the dialog's begin and
     // add are queued behind it.
     let pin_hold = f
         .kernel
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })));
     let fresh = f.sessions.check(&id, CheckModel::Current { fresh: true });
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     step_until(&mut h, "its add sent", |h| {
         h.state().tabs()[0].sent.contains(&Sent::Add)
     });
@@ -5970,7 +6005,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queu
     pin_hold.release();
     assert!(fresh.wait_timeout(WAIT).ok().unwrap().result.is_ok());
     // Queued behind the add: it needs the new revision's model, whose rebuild it starts and
-    // the fake holds at the new box.
+    // the fake holds at the new pad's prism.
     let waiting = f.sessions.check(&id, CheckModel::Current { fresh: false });
     assert!(f.kernel.wait_running(1, WAIT));
     step_until(&mut h, "the preview rebuilding", |h| {
@@ -5991,23 +6026,23 @@ fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queu
         answered.result.unwrap_err().errors()[0].code(),
         ErrorCode::Cancelled
     );
-    let new_boxes = || {
+    let new_prisms = || {
         f.kernel
             .asked()
             .iter()
-            .filter(|call| is_new_box(&call.op))
+            .filter(|call| is_prism(&call.op))
             .count()
     };
-    // Then the read, run (it starts the rebuild again, asking for the new box) or answered
+    // Then the read, run (it starts the rebuild again, asking for the prism) or answered
     // `cancelled` (the tab then reads the published model, of the add's revision).
     step_until(&mut h, "the preview's read run or answered", |h| {
-        new_boxes() > 1
+        new_prisms() > 1
             || h.state().tabs()[0]
                 .timeline
                 .as_ref()
                 .is_some_and(|timeline| timeline.revision == added)
     });
-    assert_eq!(new_boxes(), 1, "the stopped rebuild started again");
+    assert_eq!(new_prisms(), 1, "the stopped rebuild started again");
     let tab = &h.state().tabs()[0];
     assert!(tab.status.as_ref().is_some_and(|status| {
         status.rebuild.revision == added && status.rebuild.state == RebuildState::Stopped
@@ -6020,8 +6055,8 @@ fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queu
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(text_of(&f, &h), before);
-    assert_eq!(new_boxes(), 1);
-    box_hold.release();
+    assert_eq!(new_prisms(), 1);
+    prism_hold.release();
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -6031,15 +6066,15 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
     // feature selected) queued behind the preview's read, the rebuild's waiter. Run after
     // the stop, it would start the rebuild again (decision 34). The stop holds: the check
     // answers `cancelled`, none of the current model is asked again while the rebuild is
-    // stopped, and the new box is asked of the kernel once.
+    // stopped, and the new pad's prism is asked of the kernel once.
     use silico_core::command::{RebuildState, RunningCommand, SessionCommand};
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
     let id = h.state().tabs()[0].id;
-    let hold = f.kernel.hold(is_new_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    pad_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -6066,7 +6101,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
         tab.selection_mut().select_feature(marked.unwrap());
     }
     step_until(&mut h, "the check sent", |h| h.state().tabs()[0].checking());
-    // Queued: the read still waits on the rebuild, which the fake holds at the new box. The
+    // Queued: the read still waits on the rebuild, which the fake holds at the prism. The
     // stop cancels the check, sent later, before the read: the read, cancelled, stops the
     // rebuild and answers, and its session runs the check next, which, cancelled second,
     // could start the rebuild again first (the tab's unit test
@@ -6079,25 +6114,25 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
     h.state_mut().tabs_mut()[0].message = Some("an earlier refusal".to_owned());
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
-    let new_boxes = || {
+    let new_prisms = || {
         f.kernel
             .asked()
             .iter()
-            .filter(|call| is_new_box(&call.op))
+            .filter(|call| is_prism(&call.op))
             .count()
     };
-    // Then the check, run (it starts the rebuild again, asking for the new box) or answered
+    // Then the check, run (it starts the rebuild again, asking for the prism) or answered
     // `cancelled`, and the tab's timeline read again, of the published model.
     step_until(&mut h, "the check run or answered", |h| {
         let tab = &h.state().tabs()[0];
-        new_boxes() > 1
+        new_prisms() > 1
             || (!tab.checking()
                 && tab
                     .timeline
                     .as_ref()
                     .is_some_and(|timeline| timeline.revision == added))
     });
-    assert_eq!(new_boxes(), 1, "the stopped rebuild started again");
+    assert_eq!(new_prisms(), 1, "the stopped rebuild started again");
     let tab = &h.state().tabs()[0];
     assert!(tab.status.as_ref().is_some_and(|status| {
         status.rebuild.revision == added && status.rebuild.state == RebuildState::Stopped
@@ -6109,7 +6144,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(text_of(&f, &h), before);
-    assert_eq!(new_boxes(), 1);
+    assert_eq!(new_prisms(), 1);
     hold.release();
     assert_eq!(never_waits::waits(), 0);
 }
@@ -6127,12 +6162,12 @@ fn an_edit_and_an_esc_in_one_frame_supersede_the_preview_then_cancel_the_dialog(
     use silico_app::dialog::Value;
     use silico_core::command::{RunningCommand, SessionCommand};
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
     let id = h.state().tabs()[0].id;
-    let hold = f.kernel.hold(is_new_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    pad_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -6143,19 +6178,19 @@ fn an_edit_and_an_esc_in_one_frame_supersede_the_preview_then_cancel_the_dialog(
     });
     let tab = &mut h.state_mut().tabs_mut()[0];
     tab.message = Some("an earlier refusal".to_owned());
-    // "3" typed before the width's 10.
+    // "3" typed before the length's 10 (the pad's extent, which `set_field` sets whole).
     let dialog = tab.dialog.as_mut().unwrap();
-    let width = dialog
+    let length = dialog
         .inputs
         .iter_mut()
-        .find(|input| input.label == "Width")
+        .find(|input| input.label == "Length")
         .unwrap();
-    width.value = Value::Length("310".to_owned());
+    length.value = Value::Length("310".to_owned());
     assert!(tab.dialog_changed(&f.sessions));
     assert!(
         tab.sent
             .iter()
-            .any(|sent| matches!(sent, Sent::Edit(field) if field == "width")),
+            .any(|sent| matches!(sent, Sent::Edit(field) if field == "extent")),
         "{:?}",
         tab.sent
     );
@@ -6181,11 +6216,11 @@ fn esc_in_a_dialog_whose_preview_was_built_since_status_said_it_rebuilt_is_its_c
     // Cancel, never eaten, and nothing is said.
     use silico_core::command::RebuildState;
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let id = h.state().tabs()[0].id;
-    let hold = f.kernel.hold(is_new_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    pad_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -6213,11 +6248,11 @@ fn esc_whose_previews_read_stopped_the_rebuild_first_stops_it_leaving_the_dialog
     // let go.
     use silico_core::command::{Cancellable, RebuildState, RunningCommand, SessionCommand};
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let id = h.state().tabs()[0].id;
-    let hold = f.kernel.hold(is_new_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    pad_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -6250,16 +6285,16 @@ fn esc_whose_previews_read_stopped_the_rebuild_first_stops_it_leaving_the_dialog
 #[test]
 fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let hold = f.kernel.hold(is_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    pad_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
     // The rebuild still held: the edit lands all the same, the old preview's read stopped.
-    type_into(&mut h, "Width", "3");
-    step_until(&mut h, "the width applied", |h| {
+    type_into(&mut h, "Length", "3");
+    step_until(&mut h, "the length applied", |h| {
         h.state().tabs()[0].edits.idle() && !h.state().tabs()[0].unsettled()
     });
     // Answered with the rebuild still held (the next preview's read waits for it, and a
@@ -6267,17 +6302,21 @@ fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() 
     assert!(f.kernel.wait_running(1, WAIT));
     hold.release();
     let text = text_of(&f, &h);
-    assert!(text.contains(r#""width": 103"#), "{text}");
+    let pad = fields_of(&text, "Pad").unwrap();
+    assert!(
+        pad.contains(&("extent".to_owned(), one_side("103"))),
+        "{text}"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
 fn enter_is_ok_and_esc_is_cancel() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
-    create(&mut h, "Torus");
+    pad_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -6286,7 +6325,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     });
     settled(&mut h);
     // One dialog at a time: CREATE's tools off.
-    assert!(create_off(&mut h, "Box"));
+    assert!(create_off(&mut h, "Pad"));
     // Undo and redo are the dialog's Cancel's while it's open: off.
     let sent = h.state().tabs()[0].sent.clone();
     assert!(
@@ -6312,7 +6351,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(text_of(&f, &h), before);
-    create(&mut h, "Torus");
+    pad_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -6322,38 +6361,54 @@ fn enter_is_ok_and_esc_is_cancel() {
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert!(fields_of(&text_of(&f, &h), "Torus").is_some());
+    assert!(fields_of(&text_of(&f, &h), "Pad").is_some());
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
 fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
     let before = text_of(&f, &h);
     let opened_at = h.state().tabs()[0].revision;
-    create(&mut h, "Cylinder");
+    pad_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
             .as_ref()
             .is_some_and(|dialog| dialog.feature.is_some())
     });
-    // Two edits, each its own step on the stack: the add, the radius, the height.
-    type_into(&mut h, "Radius", "1");
+    // Two edits, each its own step on the stack: the add, the length, the direction.
+    type_into(&mut h, "Length", "1");
     settled(&mut h);
-    type_into(&mut h, "Height", "2");
+    let edits = h.state().tabs()[0].edits.sent;
+    dialog(&h)
+        .get_by_role_and_label(Role::CheckBox, "Reversed")
+        .click();
+    step(&mut h);
     settled(&mut h);
+    assert_eq!(h.state().tabs()[0].edits.sent, edits + 1);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     let after = text_of(&f, &h);
     let ok_at = h.state().tabs()[0].revision;
-    assert!(after.contains(r#""radius": 51"#) && after.contains(r#""height": 102"#));
+    assert_eq!(
+        fields_of(&after, "Pad")
+            .unwrap()
+            .into_iter()
+            .find(|(key, _)| key == "extent"),
+        Some((
+            "extent".to_owned(),
+            Plain::of(
+                &json::read(br#"{"type": "one_side", "length": 101, "reversed": true}"#).unwrap()
+            )
+        ))
+    );
     step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
     step(&mut h);
@@ -6472,6 +6527,207 @@ fn edit_feature_from_the_context_menu_opens_the_same_dialog() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// A sphere, a cone, and a torus, each a body of its own, written by hand: the primitives
+/// the M2.1 example doesn't hold, which a file may (an agent's, through `silico serve`).
+const ROUND_PRIMITIVES: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "e0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5},
+    {"id": "e0000002", "type": "cone", "v": 1, "name": "Spike", "position": [30, 0, 0], "radius1": 5, "radius2": 1, "height": 10},
+    {"id": "e0000003", "type": "torus", "v": 1, "name": "Ring", "position": [80, 0, 0], "radius1": 10, "radius2": 2}
+  ]
+}
+"#;
+
+/// The feature `name` edited in its dialog, `kind`'s, opened by a double-click on its
+/// timeline item: each of its inputs as `loaded` gives it, nothing sent by the loading;
+/// `typed` typed at the end of `field`, and OK'd. Its fields as the document then writes
+/// them.
+fn edited(
+    f: &Fixture,
+    h: &mut AppHarness,
+    name: &str,
+    kind: &str,
+    loaded: &[(&str, &str)],
+    field: &str,
+    typed: &str,
+) -> Option<Vec<(String, Plain)>> {
+    let sent = h.state().tabs()[0].sent.len();
+    double_click(h, "Timeline", name);
+    step_until(h, "its dialog, loaded", |h| {
+        h.query_by_role_and_label(Role::Dialog, kind).is_some()
+            && input(h, loaded[0].0).value().as_deref() == Some(loaded[0].1)
+    });
+    for (label, value) in loaded {
+        assert_eq!(
+            input(h, label).value().as_deref(),
+            Some(*value),
+            "{name}'s {label}"
+        );
+    }
+    for _ in 0..5 {
+        step(h);
+    }
+    assert_eq!(
+        h.state().tabs()[0].sent.len(),
+        sent,
+        "{name}'s loading sent"
+    );
+    type_into(h, field, typed);
+    settled(h);
+    dialog(h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(h, "the dialog closed", |h| !dialog_open(h));
+    settled(h);
+    fields_of(&text_of(f, h), name)
+}
+
+#[test]
+fn each_primitive_of_the_m2_1_example_edits_from_its_dialog_and_ok_writes_the_value() {
+    // The app makes no primitive (Trevin's decision of 2026-11-09: solids are made
+    // sketch-first, as SolidWorks makes them), but edits those a file holds: the M2.1
+    // example's block and pin, each from its own dialog (Box's, Cylinder's) opened by a
+    // double-click, its values EXAMPLE's, one typed into, OK'd. Expected: EXAMPLE's fields
+    // and the value typed, written by hand; the hole, edited by neither, as it was.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // The block: its width 20, a 5 typed after it.
+    assert_eq!(
+        edited(
+            &f,
+            &mut h,
+            "Block",
+            "Box",
+            &[
+                ("X", "0"),
+                ("Y", "0"),
+                ("Z", "0"),
+                ("Length", "40"),
+                ("Width", "20"),
+                ("Height", "10"),
+            ],
+            "Width",
+            "5",
+        ),
+        Some(expected(
+            r#"{"type": "box", "name": "Block", "position": [0, 0, 0], "length": 40, "width": 205, "height": 10}"#
+        ))
+    );
+    // The pin: its radius 2.5, a 5 typed after it.
+    assert_eq!(
+        edited(
+            &f,
+            &mut h,
+            "Pin",
+            "Cylinder",
+            &[
+                ("X", "20"),
+                ("Y", "10"),
+                ("Z", "-1"),
+                ("Radius", "2.5"),
+                ("Height", "12"),
+            ],
+            "Radius",
+            "5",
+        ),
+        Some(expected(
+            r#"{"type": "cylinder", "name": "Pin", "position": [20, 10, -1], "radius": 2.55, "height": 12}"#
+        ))
+    );
+    let text = text_of(&f, &h);
+    assert_eq!(fields_of(&text, "Hole"), fields_of(EXAMPLE, "Hole"));
+    // One transaction, an edit of each, and no add.
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [
+            Sent::Begin,
+            Sent::Edit("width".to_owned()),
+            Sent::Edit("radius".to_owned())
+        ]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sphere_a_cone_and_a_torus_each_edit_from_their_dialogs_and_ok_writes_the_value() {
+    // The primitives the M2.1 example doesn't hold, as a file may: each from its own dialog
+    // opened by a double-click, its values ROUND_PRIMITIVES', one typed into, OK'd.
+    // Expected: ROUND_PRIMITIVES' fields and the value typed, written by hand.
+    let f = fixture();
+    let (mut h, _) = f.opened("round.silico", ROUND_PRIMITIVES);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Ring"));
+    // The ball: its radius 5, ".5" typed after it.
+    assert_eq!(
+        edited(
+            &f,
+            &mut h,
+            "Ball",
+            "Sphere",
+            &[("X", "0"), ("Y", "0"), ("Z", "0"), ("Radius", "5")],
+            "Radius",
+            ".5",
+        ),
+        Some(expected(
+            r#"{"type": "sphere", "name": "Ball", "position": [0, 0, 0], "radius": 5.5}"#
+        ))
+    );
+    // The spike: its top radius 1, ".5" typed after it.
+    assert_eq!(
+        edited(
+            &f,
+            &mut h,
+            "Spike",
+            "Cone",
+            &[
+                ("X", "30"),
+                ("Y", "0"),
+                ("Z", "0"),
+                ("Bottom radius", "5"),
+                ("Top radius", "1"),
+                ("Height", "10"),
+            ],
+            "Top radius",
+            ".5",
+        ),
+        Some(expected(
+            r#"{"type": "cone", "name": "Spike", "position": [30, 0, 0], "radius1": 5, "radius2": 1.5, "height": 10}"#
+        ))
+    );
+    // The ring: its minor radius 2, ".5" typed after it.
+    assert_eq!(
+        edited(
+            &f,
+            &mut h,
+            "Ring",
+            "Torus",
+            &[
+                ("X", "80"),
+                ("Y", "0"),
+                ("Z", "0"),
+                ("Major radius", "10"),
+                ("Minor radius", "2"),
+            ],
+            "Minor radius",
+            ".5",
+        ),
+        Some(expected(
+            r#"{"type": "torus", "name": "Ring", "position": [80, 0, 0], "radius1": 10, "radius2": 2.5}"#
+        ))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [
+            Sent::Begin,
+            Sent::Edit("radius".to_owned()),
+            Sent::Edit("radius2".to_owned()),
+            Sent::Edit("radius2".to_owned())
+        ]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn the_cutting_sweeps_are_off_with_no_body_to_cut() {
     let f = fixture();
@@ -6485,9 +6741,7 @@ fn the_cutting_sweeps_are_off_with_no_body_to_cut() {
     for kind in ["Pocket", "Groove"] {
         assert!(create_off(&mut h, kind), "{kind}");
     }
-    for kind in [
-        "Box", "Cylinder", "Sphere", "Cone", "Torus", "Pad", "Revolve",
-    ] {
+    for kind in ["Pad", "Revolve"] {
         assert!(!create_off(&mut h, kind), "{kind}");
     }
     assert_eq!(never_waits::waits(), 0);
@@ -6547,16 +6801,16 @@ fn a_refused_values_mark_goes_with_its_dialog() {
 #[test]
 fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waiting_for_it() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let hold = f.kernel.hold(is_box);
+    let hold = f.kernel.hold(is_prism);
     let rebuilding = |h: &mut AppHarness| {
         step_until(h, "the preview rebuilding", |h| {
             h.state().tabs()[0].preview_rebuilding()
         });
     };
     // Cancel: its rollback lands with the rebuild held.
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     rebuilding(&mut h);
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Cancel")
@@ -6565,7 +6819,7 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
     // OK'd with its preview still rebuilding, then Ctrl+Z: its undo lands too.
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     rebuilding(&mut h);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -6578,18 +6832,18 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
         Some(Sent::Undo(Some(_)))
     ));
     // OK'd with its preview still rebuilding, then another dialog: its add lands.
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     rebuilding(&mut h);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
-    create(&mut h, "Sphere");
+    sweep_triangle(&mut h, "Pocket");
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
             .as_ref()
             .is_some_and(|dialog| dialog.feature.is_some())
     });
-    // And File > Revert with the sphere's preview rebuilding: its rollback lands too.
+    // And File > Revert with the pocket's preview rebuilding: its rollback lands too.
     rebuilding(&mut h);
     h.get_by_label("File").click();
     step(&mut h);
@@ -6600,7 +6854,7 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
     });
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
     hold.release();
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -6615,7 +6869,7 @@ fn esc_while_edit_feature_reads_the_feature_opens_no_dialog() {
     // Reading it, one dialog at a time: CREATE's tools off (drawn before the timeline
     // took the double-click, so from the next frame).
     step(&mut h);
-    assert!(create_off(&mut h, "Box"));
+    assert!(create_off(&mut h, "Pad"));
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     hold.release();
@@ -6632,9 +6886,9 @@ fn esc_while_edit_feature_reads_the_feature_opens_no_dialog() {
 #[test]
 fn a_dialog_and_create_are_off_while_the_tab_closes() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -6667,7 +6921,7 @@ fn a_dialog_and_create_are_off_while_the_tab_closes() {
     step(&mut h);
     assert!(dialog_open(&h));
     assert_eq!(h.state().tabs()[0].sent, sent);
-    assert!(input(&h, "Height").accesskit_node().is_disabled());
+    assert!(input(&h, "Length").accesskit_node().is_disabled());
     hold.release();
     check.wait();
     assert_eq!(never_waits::waits(), 0);
@@ -6754,9 +7008,9 @@ fn redo_is_off_while_a_dialog_is_open() {
 #[test]
 fn revert_closes_an_open_dialog_with_the_edits_it_drops() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -6770,7 +7024,7 @@ fn revert_closes_an_open_dialog_with_the_edits_it_drops() {
     h.get_by_label("Revert").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
     assert!(h.state().tabs()[0].dialog.is_none());
     assert_eq!(never_waits::waits(), 0);
 }
@@ -6778,12 +7032,14 @@ fn revert_closes_an_open_dialog_with_the_edits_it_drops() {
 #[test]
 fn a_cancel_before_the_add_answers_waits_for_it_and_rolls_it_back() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
-    // The add waits in the session's queue: the Cancel waits behind it in the tab's.
+    // The add, sent once its body is read beside the queue, waits in the session's queue:
+    // the Cancel waits behind it in the tab's.
     let (hold, check) = hold_queue(&f, &h, 0);
-    create(&mut h, "Box");
+    pad_sent(&mut h);
+    assert!(h.state().tabs()[0].dialog.as_ref().unwrap().adding);
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     hold.release();
@@ -6878,10 +7134,10 @@ fn added(h: &mut AppHarness) {
 #[test]
 fn esc_after_typing_coalesced_behind_a_held_preview_stays_stopped() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let hold = f.kernel.hold(is_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    pad_triangle(&mut h);
     added(&mut h);
     // Two keystrokes, one a frame: the preview's read asked while an edit is in flight
     // runs at the revision that edit comes to.
@@ -6983,20 +7239,20 @@ fn a_sweeps_body_is_the_documents_tip_even_where_the_model_has_none_there() {
 #[test]
 fn typing_while_the_add_is_unanswered_makes_one_feature_and_edits_it() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let (hold, check) = hold_queue(&f, &h, 0);
-    create(&mut h, "Box");
+    pad_sent(&mut h);
     type_into(&mut h, "Length", "12");
     let typed = input(&h, "Length").value().unwrap();
     hold.release();
     check.wait();
     settled(&mut h);
     let text = text_of(&f, &h);
-    assert_eq!(text.matches(r#""type": "box""#).count(), 2, "{text}");
-    let fields = fields_of(&text, "Box").unwrap();
+    assert_eq!(text.matches(r#""type": "pad""#).count(), 1, "{text}");
+    let fields = fields_of(&text, "Pad").unwrap();
     assert!(
-        fields.contains(&("length".to_owned(), Plain::Number(typed.clone()))),
+        fields.contains(&("extent".to_owned(), one_side(&typed))),
         "{typed}: {fields:?}"
     );
     assert_eq!(
@@ -7102,12 +7358,12 @@ fn a_suppressed_feature_is_never_a_sweeps_body() {
 #[test]
 fn two_dialogs_okd_are_undone_and_redone_each_whole() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     let before = text_of(&f, &h);
     let mut texts = vec![before.clone()];
-    for (kind, label) in [("Box", "Length"), ("Sphere", "Radius")] {
-        create(&mut h, kind);
+    for (kind, label) in [("Pad", "Length"), ("Pocket", "Length")] {
+        sweep_triangle(&mut h, kind);
         added(&mut h);
         type_into(&mut h, label, "1");
         settled(&mut h);
@@ -7148,9 +7404,9 @@ fn two_dialogs_okd_are_undone_and_redone_each_whole() {
 #[test]
 fn save_is_off_while_a_dialog_is_open() {
     let f = fixture();
-    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    let (mut h, path) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     assert!(h.state().tabs()[0].unsaved());
@@ -7164,7 +7420,7 @@ fn save_is_off_while_a_dialog_is_open() {
         step(&mut h);
     }
     assert_eq!(h.state().tabs()[0].saves, 0);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), SKETCHED_EXAMPLE);
     // OK'd: Save on.
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -7208,9 +7464,9 @@ fn edit_features_read_comes_after_the_edits_asked_before_it() {
 #[test]
 fn cancel_of_a_dialog_that_began_the_transaction_leaves_none_open_so_outside_writes_reload() {
     let f = fixture_reading(Some(Arc::new(real)));
-    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    let (mut h, path) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     assert!(h.state().tabs()[0].transaction);
@@ -7220,7 +7476,7 @@ fn cancel_of_a_dialog_that_began_the_transaction_leaves_none_open_so_outside_wri
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert!(!h.state().tabs()[0].transaction);
-    let theirs = EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#);
+    let theirs = SKETCHED_EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#);
     std::fs::write(&path, &theirs).unwrap();
     step_until(&mut h, "the reload", |h| shows(h, "Timeline", "Theirs"));
     assert_eq!(text_of(&f, &h), theirs);
@@ -7234,10 +7490,16 @@ fn an_add_answered_after_its_dialog_was_cancelled_never_becomes_the_next_dialogs
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
     let before = text_of(&f, &h);
     let (hold, check) = hold_queue(&f, &h, 0);
-    create(&mut h, "Box");
+    // A Pad of the triangle, its add sent and held, then cancelled.
+    pad_sent(&mut h);
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
-    // A Pad's, with no sketch chosen: nothing of its own to add.
+    // A Pad's, with no sketch chosen (a body selected, the plate): nothing of its own to
+    // add.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Plate")
+        .click();
+    step(&mut h);
     create(&mut h, "Pad");
     hold.release();
     check.wait();
@@ -7253,12 +7515,12 @@ fn an_add_answered_after_its_dialog_was_cancelled_never_becomes_the_next_dialogs
 #[test]
 fn a_digit_typed_in_the_frame_enter_is_pressed_is_in_what_ok_keeps() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
-    input(&h, "Height").focus();
+    input(&h, "Length").focus();
     step(&mut h);
     {
         use eframe::egui::{Event, Key, Modifiers};
@@ -7275,9 +7537,9 @@ fn a_digit_typed_in_the_frame_enter_is_pressed_is_in_what_ok_keeps() {
     step(&mut h);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    let fields = fields_of(&text_of(&f, &h), "Box").unwrap();
+    let fields = fields_of(&text_of(&f, &h), "Pad").unwrap();
     assert!(
-        fields.contains(&("height".to_owned(), Plain::Number("107".to_owned()))),
+        fields.contains(&("extent".to_owned(), one_side("107"))),
         "{fields:?}"
     );
     assert_eq!(never_waits::waits(), 0);
@@ -7347,9 +7609,9 @@ fn step_key(h: &mut AppHarness, undo: bool) {
     settled(h);
 }
 
-/// A `kind` dialog: added, `label` typed into, and OK'd.
+/// A `kind` dialog, a sweep of the triangle: added, `label` typed into, and OK'd.
 fn made(h: &mut AppHarness, kind: &str, label: &str) {
-    create(h, kind);
+    sweep_triangle(h, kind);
     added(h);
     type_into(h, label, "1");
     settled(h);
@@ -7361,19 +7623,20 @@ fn made(h: &mut AppHarness, kind: &str, label: &str) {
 #[test]
 fn a_dialog_undone_then_another_made_lets_the_other_be_redone_whole() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     let before = text_of(&f, &h);
-    made(&mut h, "Box", "Length");
+    made(&mut h, "Pad", "Length");
     step_key(&mut h, true);
     assert_eq!(text_of(&f, &h), before);
-    // The box's edits are the redo branch the sphere's add drops.
-    made(&mut h, "Sphere", "Radius");
-    let sphere = text_of(&f, &h);
+    // The pad's edits are the redo branch the pocket's add drops.
+    made(&mut h, "Pocket", "Length");
+    let pocket = text_of(&f, &h);
+    assert!(fields_of(&pocket, "Pocket").is_some() && fields_of(&pocket, "Pad").is_none());
     step_key(&mut h, true);
     assert_eq!(text_of(&f, &h), before);
     step_key(&mut h, false);
-    assert_eq!(text_of(&f, &h), sphere);
+    assert_eq!(text_of(&f, &h), pocket);
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -7381,13 +7644,13 @@ fn a_dialog_undone_then_another_made_lets_the_other_be_redone_whole() {
 #[test]
 fn a_dialog_undone_then_a_name_typed_lets_the_name_be_redone() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     let before = text_of(&f, &h);
-    made(&mut h, "Box", "Length");
+    made(&mut h, "Pad", "Length");
     step_key(&mut h, true);
     assert_eq!(text_of(&f, &h), before);
-    // A name typed in the property panel drops the box's edits.
+    // A name typed in the property panel drops the pad's edits.
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
@@ -7405,10 +7668,10 @@ fn a_dialog_undone_then_a_name_typed_lets_the_name_be_redone() {
 #[test]
 fn ok_and_enter_wait_for_the_add_so_what_was_typed_meanwhile_is_kept() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let (hold, check) = hold_queue(&f, &h, 0);
-    create(&mut h, "Box");
+    pad_sent(&mut h);
     type_into(&mut h, "Length", "12");
     let typed = input(&h, "Length").value().unwrap();
     // The add unanswered: OK off, and Enter does nothing.
@@ -7426,9 +7689,9 @@ fn ok_and_enter_wait_for_the_add_so_what_was_typed_meanwhile_is_kept() {
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    let fields = fields_of(&text_of(&f, &h), "Box").unwrap();
+    let fields = fields_of(&text_of(&f, &h), "Pad").unwrap();
     assert!(
-        fields.contains(&("length".to_owned(), Plain::Number(typed.clone()))),
+        fields.contains(&("extent".to_owned(), one_side(&typed))),
         "{typed}: {fields:?}"
     );
     assert_eq!(never_waits::waits(), 0);
@@ -7477,9 +7740,9 @@ fn edit_feature_opens_at_the_revision_its_read_found_when_the_session_moved_unde
 #[test]
 fn save_as_is_off_while_a_dialog_is_open() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     // File > Save As… off, and Ctrl+Shift+S asks nothing.
@@ -7523,14 +7786,14 @@ fn save_as_is_off_while_a_dialog_is_open() {
 #[test]
 fn a_refused_edit_after_an_undone_dialog_leaves_its_redo_whole() {
     let f = fixture();
-    let one_letter = EXAMPLE.replace(r#""name": "Pin""#, r#""name": "P""#);
+    let one_letter = SKETCHED_EXAMPLE.replace(r#""name": "Pin""#, r#""name": "P""#);
     let (mut h, _) = f.opened("example.silico", &one_letter);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "P"));
-    made(&mut h, "Box", "Length");
-    let boxed = text_of(&f, &h);
+    made(&mut h, "Pad", "Length");
+    let padded = text_of(&f, &h);
     step_key(&mut h, true);
     assert_eq!(text_of(&f, &h), one_letter);
-    // The one-letter name emptied: refused, so the box's edits stay the redo branch.
+    // The one-letter name emptied: refused, so the pad's edits stay the redo branch.
     select(&mut h, "P");
     name_field(&h).focus();
     step(&mut h);
@@ -7542,7 +7805,7 @@ fn a_refused_edit_after_an_undone_dialog_leaves_its_redo_whole() {
     });
     settled(&mut h);
     step_key(&mut h, false);
-    assert_eq!(text_of(&f, &h), boxed);
+    assert_eq!(text_of(&f, &h), padded);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -7600,12 +7863,12 @@ fn a_sweeps_body_read_before_the_session_moved_is_read_again() {
 #[test]
 fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    made(&mut h, "Box", "Length");
-    let boxed = text_of(&f, &h);
+    made(&mut h, "Pad", "Length");
+    let padded = text_of(&f, &h);
     step_key(&mut h, true);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
     // The Pin's radius made "-2.5" (refused), then "2.5" again: a set_field of the value
     // the document holds, which changes nothing.
     double_click(&mut h, "Timeline", "Pin");
@@ -7632,22 +7895,22 @@ fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
     step_key(&mut h, false);
-    assert_eq!(text_of(&f, &h), boxed);
+    assert_eq!(text_of(&f, &h), padded);
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
 fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_redo() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
-    made(&mut h, "Box", "Length");
-    let boxed = text_of(&f, &h);
+    made(&mut h, "Pad", "Length");
+    let padded = text_of(&f, &h);
     step_key(&mut h, true);
     select(&mut h, "PinK");
     // The queue held: another client's undo (of PinK), then a name typed here against the
@@ -7664,11 +7927,11 @@ fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_re
         h.state().tabs()[0].message.is_some() && !h.state().tabs()[0].unsettled()
     });
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
-    // Redo: PinK, then the box's edits whole.
+    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
+    // Redo: PinK, then the pad's edits whole.
     step_key(&mut h, false);
     step_key(&mut h, false);
-    assert_eq!(text_of(&f, &h), boxed);
+    assert_eq!(text_of(&f, &h), padded);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -7854,9 +8117,9 @@ fn an_open_dialog_with_nothing_to_send_asks_for_no_frame_at_once() {
     // A frame with input in it is asked for again by egui itself; one with none, while a
     // dialog sits open with nothing changed, asks for no frame at once (only the idle one).
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     quiet_wakes(&mut h);
@@ -8634,7 +8897,7 @@ fn a_refusal_and_a_question_are_let_go_when_the_dialog_opens_again_and_a_quit_ca
 #[test]
 fn export_is_off_while_a_feature_dialog_is_open_or_the_tab_closes() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     let export_off = |h: &mut AppHarness| {
         h.get_by_label("File").click();
@@ -8654,8 +8917,18 @@ fn export_is_off_while_a_feature_dialog_is_open_or_the_tab_closes() {
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     assert!(export_off(&mut h));
+    // Its preview built, as `status` says: with it still rebuilding, Esc would stop it,
+    // leaving the dialog open.
+    added(&mut h);
+    step_until(&mut h, "the preview built", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.status.as_ref().is_some_and(|status| {
+            status.rebuild.revision == tab.revision
+                && status.rebuild.state == silico_core::command::RebuildState::Done
+        })
+    });
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
@@ -9199,10 +9472,10 @@ fn enter_right_after_a_menu_item_opened_the_dialog_by_enter_is_its_ok() {
 #[test]
 fn enter_on_a_feature_dialogs_focused_cancel_cancels() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     dialog(&h)
@@ -13450,7 +13723,9 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
             h.key_press(eframe::egui::Key::Escape);
             step_until(&mut h, "it gone", |h| !anywhere(h, "Open document"));
 
-            // A panel's field: the Sphere's dialog's Radius, docked at the right.
+            // A panel's field: the Block's dialog's Length, docked at the right, opened by a
+            // double-click to edit it (the app makes no primitive, but edits those a file
+            // holds). Its row's above, Z, a field too, as a Sphere's Radius had.
             let path = f.file("example.silico", EXAMPLE);
             h.state_mut().open(path.to_str().unwrap(), false);
             step_until(&mut h, "the timeline read", |h| {
@@ -13459,12 +13734,15 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
                     .first()
                     .is_some_and(|tab| tab.timeline.is_some())
             });
-            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-            create(&mut h, "Sphere");
-            added(&mut h);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+            double_click(&mut h, "Timeline", "Block");
+            step_until(&mut h, "its dialog, loaded", |h| {
+                h.query_by_role_and_label(Role::Dialog, "Box").is_some()
+                    && input(h, "Length").value().as_deref() == Some("40")
+            });
             settled(&mut h);
             // The pointer off it, on the dialog's title.
-            dialog(&h).get_by_label("SPHERE").hover();
+            dialog(&h).get_by_label("BOX").hover();
             for _ in 0..5 {
                 step(&mut h);
             }
@@ -13472,7 +13750,7 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
             let pixel = |at: eframe::egui::Pos2| {
                 image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
             };
-            let field = input(&h, "Radius").rect();
+            let field = input(&h, "Length").rect();
             assert!(field.width() > 30.0 && field.height() > 10.0, "{field:?}");
             // Inside it, clear of its text (at its left) and its border.
             let inside = field.right_center() + eframe::egui::vec2(-4.0, 0.0);
@@ -13486,7 +13764,7 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
                 "{field:?}"
             );
             // Hovered: Gray.250 (`.field:hover`).
-            input(&h, "Radius").hover();
+            input(&h, "Length").hover();
             for _ in 0..5 {
                 step(&mut h);
             }
@@ -13496,13 +13774,13 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
             };
             assert_eq!(pixel(inside), [0x27, 0x26, 0x26, 0xff], "{field:?}");
             // A value that doesn't parse: the red border (`.field.bad`), focused or not.
-            type_into(&mut h, "Radius", "x");
+            type_into(&mut h, "Length", "x");
             for _ in 0..5 {
                 step(&mut h);
             }
-            // Its 5 and the x, in either order (where the caret was), parse as no number.
-            let typed = input(&h, "Radius").value().unwrap_or_default();
-            assert!(["x5", "5x"].contains(&typed.as_str()), "{typed}");
+            // Its 40 and the x, in either order (where the caret was), parse as no number.
+            let typed = input(&h, "Length").value().unwrap_or_default();
+            assert!(["x40", "40x"].contains(&typed.as_str()), "{typed}");
             let image = h.render().unwrap();
             let pixel = |at: eframe::egui::Pos2| {
                 image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
@@ -15339,26 +15617,26 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
     assert_eq!(on_of(&menu), entries[..4]);
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
-    // interact.js:170: Create Sketch, the sweeps, and the primitives under a heading.
+    // interact.js:184: Create Sketch and the sweeps, and no primitive (Trevin's decision of
+    // 2026-11-09: solids are made sketch-first).
     open(&mut h, "CREATE");
     let menu = h.get_by_role_and_label(Role::Menu, "CREATE");
     let entries = buttons_of(&menu);
-    assert_eq!(entries.len(), 10, "{entries:?}");
+    assert_eq!(entries.len(), 5, "{entries:?}");
     assert!(entries[0].starts_with("Create Sketch"), "{entries:?}");
-    assert_eq!(entries[1..5], CREATE_ROW[1..]);
-    assert_eq!(entries[5..], PRIMITIVES);
-    assert!(menu.query_by_label("PRIMITIVES").is_some());
-    // Create Sketch too, now that sketch mode can open.
-    let mut on: Vec<&str> = CREATE_ROW.iter().chain(&PRIMITIVES).copied().collect();
+    assert_eq!(entries[1..], CREATE_ROW[1..]);
+    assert!(menu.query_by_label("PRIMITIVES").is_none());
+    // Each on, Create Sketch too, now that sketch mode can open.
+    let mut on: Vec<&str> = CREATE_ROW.to_vec();
     on.sort_unstable();
     let mut menu_on = on_of(&menu);
     menu_on.sort_unstable();
     assert_eq!(menu_on, on);
-    // An entry opens its dialog, as the row's button does, and the menu closes.
-    menu.get_by_label("Cylinder").click();
+    // An entry opens its dialog, as the row's button does, and the menu closes: Pad's, with
+    // no sketch chosen, adding nothing yet.
+    menu.get_by_label("Pad").click();
     step_until(&mut h, "the dialog", |h| {
-        h.query_by_role_and_label(Role::Dialog, "Cylinder")
-            .is_some()
+        h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
     });
     // The dialog shows in the click's own frame, docked in Properties; egui closes a popup
     // at its frame's end, so the menu is gone the frame after.
@@ -15424,9 +15702,9 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
     assert!(h.state().tabs()[0].selection().is_empty());
     assert!(h.query_by_role_and_label(Role::Menu, "SELECT").is_none());
     // With a feature selected and a dialog open, Clear selection is off: the dialog's
-    // Cancel (Esc) comes first.
+    // Cancel (Esc) comes first. (Pad's, the pin no sketch it takes.)
     select(&mut h, "Pin");
-    create(&mut h, "Box");
+    create(&mut h, "Pad");
     settled(&mut h);
     assert!(h.state().tabs()[0].selection().feature().is_some());
     open(&mut h, "SELECT");
@@ -15440,6 +15718,136 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         })
         .unwrap();
     assert!(clear.accesskit_node().is_disabled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn creates_row_and_drop_down_hold_no_primitive_as_the_prototypes_create_menu() {
+    // Trevin's decision of 2026-11-09: solids are made sketch-first, as SolidWorks makes
+    // them. interact.js's `createMenu` is ['createSketch', 'sep', 'pad', 'pocket',
+    // 'revolve', 'groove'], each labelled as app.js's `CMD` labels it; the row (app.js:394)
+    // the same but the separator. No primitive in either, nor the heading they were under.
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    let create = || h.get_by_role_and_label(Role::Toolbar, "CREATE");
+    assert_eq!(
+        buttons_of(&create()),
+        [
+            "Create Sketch",
+            "Pad",
+            "Pocket",
+            "Revolve",
+            "Groove",
+            "CREATE"
+        ]
+    );
+    for primitive in PRIMITIVES {
+        assert!(create().query_by_label(primitive).is_none(), "{primitive}");
+    }
+    pointer_away(&mut h);
+    open_create_menu(&mut h);
+    let menu = h.get_by_role_and_label(Role::Menu, "CREATE");
+    let entries = buttons_of(&menu);
+    assert_eq!(entries.len(), 5, "{entries:?}");
+    assert!(entries[0].starts_with("Create Sketch"), "{entries:?}");
+    assert_eq!(entries[1..], ["Pad", "Pocket", "Revolve", "Groove"]);
+    for primitive in PRIMITIVES {
+        assert!(menu.query_by_label(primitive).is_none(), "{primitive}");
+    }
+    assert!(menu.query_by_label("PRIMITIVES").is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether `label` names a primitive: one's name alone, or with its keys after it, or the
+/// heading CREATE's drop-down once held them under.
+fn names_a_primitive(label: &str) -> bool {
+    label == "PRIMITIVES"
+        || PRIMITIVES
+            .iter()
+            .any(|primitive| label == *primitive || label.starts_with(&format!("{primitive} ")))
+}
+
+#[test]
+fn no_registry_entry_or_menu_makes_a_primitive() {
+    // Trevin's decision of 2026-11-09: nothing the app offers makes a box, a cylinder, a
+    // sphere, a cone, or a torus. The registry (the keys, the shortcut sheet, the
+    // tooltips) names none; and no button in the window names one while each of its menus is
+    // open: File, SOLID's four drop-downs, a feature's in the timeline (the block's, a box
+    // itself) and in the browser. Each menu is seen open before it's read, so a menu that
+    // never opened can't pass. (The canvas's menu and the sketch menu are held to their exact
+    // items by their own tests.)
+    for entry in REGISTRY {
+        let words = entry.label.to_lowercase();
+        for primitive in PRIMITIVES {
+            assert!(
+                !words.contains(&primitive.to_lowercase()),
+                "{}",
+                entry.label
+            );
+        }
+    }
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let none_named = |h: &AppHarness, menu: &str| {
+        let buttons: Vec<String> = h
+            .query_all_by_role(Role::Button)
+            .filter_map(|node| node.accesskit_node().label())
+            .collect();
+        assert!(
+            !buttons.iter().any(|label| names_a_primitive(label)),
+            "{menu}: {buttons:?}"
+        );
+        assert!(!anywhere(h, "PRIMITIVES"), "{menu}");
+    };
+    // File.
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(anywhere(&h, "Save As…"), "File never opened");
+    none_named(&h, "File");
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    // SOLID's drop-downs.
+    for panel in ["CREATE", "MODIFY", "INSPECT", "SELECT"] {
+        pointer_away(&mut h);
+        h.get_by_role_and_label(Role::Toolbar, panel)
+            .get_by_role_and_label(Role::Button, panel)
+            .click();
+        step_until(&mut h, panel, |h| {
+            h.query_by_role_and_label(Role::Menu, panel).is_some()
+        });
+        step(&mut h);
+        none_named(&h, panel);
+        h.key_press(Key::Escape);
+        step(&mut h);
+        step(&mut h);
+    }
+    // A feature's, in the timeline and in the browser.
+    for (pane, name, head) in [("Timeline", "Block", "BLOCK"), ("Browser", "Hole", "HOLE")] {
+        menu_on(&mut h, pane, name);
+        assert!(!menu_items(&h, head).is_empty(), "{pane}'s {name}");
+        none_named(&h, head);
+        h.key_press(Key::Escape);
+        step(&mut h);
+        step(&mut h);
+    }
+    // The shortcut sheet, the registry drawn: none of its words a primitive's.
+    h.get_by_role_and_label(Role::Button, "Shortcuts").click();
+    step_until(&mut h, "the sheet", sheet_open);
+    let words: Vec<String> = the_sheet(&h)
+        .query_all(egui_kittest::kittest::by().recursive(true))
+        .filter_map(|node| {
+            let node = node.accesskit_node();
+            node.label().or_else(|| node.value())
+        })
+        .collect();
+    assert!(words.iter().any(|said| said == "Undo"), "{words:?}");
+    assert!(
+        !words.iter().any(|said| names_a_primitive(said)),
+        "{words:?}"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -15809,13 +16217,13 @@ fn a_dialog_that_cant_open_is_off_in_creates_row_and_drop_down_and_one_that_can_
     let menu = h.get_by_role_and_label(Role::Menu, "CREATE");
     let menu_off = |label: &str| menu.get_by_label(label).accesskit_node().is_disabled();
     assert!(menu_off("Pocket") && menu_off("Groove"));
-    assert!(!menu_off("Pad") && !menu_off("Box") && !menu_off("Torus"));
-    menu.get_by_label("Torus").click();
+    assert!(!menu_off("Pad") && !menu_off("Revolve"));
+    menu.get_by_label("Revolve").click();
     h.step();
     h.step();
     assert_eq!(
         h.state().acts,
-        [Act::Dialog(Kind::Pad), Act::Dialog(Kind::Torus)]
+        [Act::Dialog(Kind::Pad), Act::Dialog(Kind::Revolve)]
     );
 }
 
@@ -17116,10 +17524,14 @@ fn an_open_dialog_takes_the_property_panels_place_and_cancel_gives_it_back() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    // Pad's, nothing selected: the document's properties showed before it.
+    step_until(&mut h, "the document's properties", |h| {
+        property(h, "Revision").is_some()
+    });
+    create(&mut h, "Pad");
     // The dialog is in the panel (one right panel), the document's properties gone.
     let panel = h.get_by_role_and_label(Role::Pane, "Properties");
-    assert!(panel.query_by_role_and_label(Role::Dialog, "Box").is_some());
+    assert!(panel.query_by_role_and_label(Role::Dialog, "Pad").is_some());
     assert!(panel.query_by_label("INPUTS").is_some());
     assert_eq!(property(&h, "Revision"), None);
     dialog(&h)
@@ -17204,7 +17616,7 @@ fn the_status_bar_says_a_rebuild_with_errors_and_an_edit_unsaved() {
         matches!(op, Op::Boolean { .. })
             .then(|| Error::new(ErrorCode::KernelFailed, "the cut came apart"))
     });
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     // The cut failed: one error, the document's one problem.
     step_until(&mut h, "rebuilt with its error", |h| {
         status_said(h, "Rebuilt").as_deref() == Some("Rebuilt with 1 error")
@@ -17216,7 +17628,7 @@ fn the_status_bar_says_a_rebuild_with_errors_and_an_edit_unsaved() {
     });
     assert!(status_said(&h, "Saved").is_none());
     // A dialog open: its edits are its own until OK.
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     step_until(&mut h, "the dialog said", |h| {
         status_said(h, "Unsaved").as_deref() == Some("Unsaved · dialog open")
     });
@@ -17255,19 +17667,19 @@ fn the_changed_on_disk_chip_offers_again_the_choice_the_edits_were_kept_over() {
 #[test]
 fn the_dialogs_close_button_cancels_it() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
-    assert!(shows(&h, "Timeline", "Box"));
+    assert!(shows(&h, "Timeline", "Pad"));
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Close the dialog")
         .click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
-    // Cancel's: the box it added is taken away again.
-    step_until(&mut h, "the box gone", |h| {
-        shows(h, "Timeline", "Hole") && !shows(h, "Timeline", "Box")
+    // Cancel's: the pad it added is taken away again.
+    step_until(&mut h, "the pad gone", |h| {
+        shows(h, "Timeline", "Hole") && !shows(h, "Timeline", "Pad")
     });
     assert_eq!(never_waits::waits(), 0);
 }
@@ -17275,10 +17687,10 @@ fn the_dialogs_close_button_cancels_it() {
 #[test]
 fn a_dialogs_preview_line_says_its_rebuild_running_stopped_and_with_errors() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let hold = f.kernel.hold(is_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    pad_triangle(&mut h);
     added(&mut h);
     // Running: what stops it said beside it.
     step_until(&mut h, "the preview rebuilding", |h| {
@@ -17299,10 +17711,11 @@ fn a_dialogs_preview_line_says_its_rebuild_running_stopped_and_with_errors() {
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    // A box the kernel refuses: the preview's error, and that OK keeps the feature with it.
-    f.kernel
-        .refuse(|op| is_box(op).then(|| Error::new(ErrorCode::KernelFailed, "the box came apart")));
-    create(&mut h, "Box");
+    // A pad the kernel refuses: the preview's error, and that OK keeps the feature with it.
+    f.kernel.refuse(|op| {
+        is_prism(op).then(|| Error::new(ErrorCode::KernelFailed, "the pad came apart"))
+    });
+    pad_triangle(&mut h);
     added(&mut h);
     step_until(&mut h, "the preview's errors", |h| {
         dialog(h)
@@ -17364,7 +17777,7 @@ fn a_saves_model_and_a_rollbacks_say_no_time_never_another_models() {
     // it kept published at the rollback's. "Rebuilt · revision N" exactly, never the last
     // rebuild's time.
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     type_name(&mut h, "s");
@@ -17385,9 +17798,9 @@ fn a_saves_model_and_a_rollbacks_say_no_time_never_another_models() {
     settled(&mut h);
     assert!(h.state().tabs()[0].revision.number() > edited);
     step_until(&mut h, "the save's revision, with no time", exactly);
-    // A Box dialog, its preview rebuilt whole, then cancelled: the transaction it began
+    // A Pad dialog, its preview rebuilt whole, then cancelled: the transaction it began
     // rolled back, the model it kept published at a new revision.
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     added(&mut h);
     step_until(&mut h, "the preview up to date", |h| {
         dialog(h)
@@ -17407,7 +17820,7 @@ fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview
     // The core's `elapsed_ms` (#416), never the app's own clock: the bar's "Rebuilt ·
     // revision N · T ms" (`renderStatus`) and an up-to-date preview's "Preview up to date ·
     // revision N · T ms" (`renderDialog`) say the whole milliseconds `status` gives for
-    // that rebuild. Each held by the fake at its box past a gap of its own, let pass by the
+    // that rebuild. Each held by the fake (the block, the pad's prism) past a gap of its own, let pass by the
     // test's clock (a full rebuild's 40 ms, the preview's 20 past the first's time, so
     // never the same, however loaded the machine): each at least its gap, each the core's.
     let spin = |gap| {
@@ -17417,7 +17830,7 @@ fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview
         }
     };
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
     settled(&mut h);
     let hold = f.kernel.hold(is_box);
@@ -17445,11 +17858,11 @@ fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview
         Some(opened),
         "{said}"
     );
-    // A box's dialog: its preview held at the new box 20 ms past the first's time, then up
-    // to date, at the transaction's revision, with the core's time for that rebuild.
+    // A pad's dialog: its preview held at the new pad's prism 20 ms past the first's time,
+    // then up to date, at the transaction's revision, with the core's time for that rebuild.
     let gap = opened + 20;
-    let hold = f.kernel.hold(is_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    pad_triangle(&mut h);
     added(&mut h);
     assert!(f.kernel.wait_running(1, WAIT));
     spin(gap);
@@ -17940,19 +18353,21 @@ fn ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it() {
 #[test]
 fn ctrl_shift_b_does_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // What a rebuild builds: everything's boxes (a full one's), and the pad's prism (the
+    // stopped preview's, resumed).
     let boxes = |f: &Fixture| {
         f.kernel
             .calls()
             .iter()
-            .filter(|call| is_box(&call.op))
+            .filter(|call| is_box(&call.op) || is_prism(&call.op))
             .count()
     };
-    // A rebuild stopped, so a Ctrl+B would rebuild: a Box dialog's preview, held at its
-    // new box, stopped by Esc, the dialog left open.
-    let hold = f.kernel.hold(is_box);
-    create(&mut h, "Box");
+    // A rebuild stopped, so a Ctrl+B would rebuild: a Pad dialog's preview, held at its
+    // prism, stopped by Esc, the dialog left open.
+    let hold = f.kernel.hold(is_prism);
+    pad_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -18529,14 +18944,14 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
             }
             Command::Ok | Command::Cancel => {
                 let f = fixture();
-                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
                 step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
                 let ok = command == Command::Ok;
-                let boxes = |h: &AppHarness| text_of(&f, h).matches("\"box\"").count();
-                let mut kept = boxes(&h);
+                let pads = |h: &AppHarness| text_of(&f, h).matches("\"pad\"").count();
+                let mut kept = pads(&h);
                 for chord in keys_of(command) {
                     for by_keys in [true, false] {
-                        create(&mut h, "Box");
+                        pad_triangle(&mut h);
                         added(&mut h);
                         settled(&mut h);
                         // Its preview built: Esc would stop one still rebuilding first.
@@ -18558,7 +18973,7 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                         step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
                         settled(&mut h);
                         kept += usize::from(ok);
-                        assert_eq!(boxes(&h), kept, "{command:?}, by its keys: {by_keys}");
+                        assert_eq!(pads(&h), kept, "{command:?}, by its keys: {by_keys}");
                     }
                 }
             }
@@ -18939,9 +19354,9 @@ fn enter_alone_in_a_dialog_asks_for_the_next_frame_at_once() {
     // The dialog's OK, which its pane asks the next frame for too, so this alone never
     // tells `keys`' own `enter` from none (Ctrl+W's and Ctrl+B's tests do, beside it).
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Enter));
@@ -20642,12 +21057,22 @@ fn dragged(from: [f64; 2], to: [f64; 2]) -> Vec<silico_app::sketch::PointerEvent
 /// [`to_screen`], on a thread marked so a wait there counts, the pointer at the last; then
 /// one frame of the app's, whose pane draws through the same projection ([`hand_camera`]).
 fn sketch_events(f: &Fixture, h: &mut AppHarness, events: &[silico_app::sketch::PointerEvent]) {
-    hand_camera(h);
+    sketch_events_at(f, h, 0, events);
+}
+
+/// [`sketch_events`], given to the sketch mode of the tab at `at`.
+fn sketch_events_at(
+    f: &Fixture,
+    h: &mut AppHarness,
+    at: usize,
+    events: &[silico_app::sketch::PointerEvent],
+) {
+    hand_camera_at(h, at);
     {
         let _marked = never_waits::marked();
         let ctx = eframe::egui::Context::default();
         let sessions = Arc::clone(&f.sessions);
-        let tab = &mut h.state_mut().tabs_mut()[0];
+        let tab = &mut h.state_mut().tabs_mut()[at];
         let pointer = events.last().map(|event| event.at);
         let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
             let painter = ui.painter().clone();
@@ -20669,7 +21094,12 @@ fn sketch_events(f: &Fixture, h: &mut AppHarness, events: &[silico_app::sketch::
 /// down, a tenth of a millimetre a point, the image's centre over the sketch's place
 /// `to_sketch` gives it. Nothing until the pane has drawn a frame.
 fn hand_camera(h: &mut AppHarness) {
-    let Some(frame) = view(h).frame() else {
+    hand_camera_at(h, 0);
+}
+
+/// [`hand_camera`], of the tab at `at`.
+fn hand_camera_at(h: &mut AppHarness, at: usize) {
+    let Some(frame) = h.state().tabs()[at].view.frame() else {
         return;
     };
     let ppp = f64::from(frame.pixels_per_point);
@@ -20680,14 +21110,16 @@ fn hand_camera(h: &mut AppHarness) {
         f64::from(frame.rect.top()) + height / 2.0 / ppp,
     ];
     let [x, y] = [(centre[0] - 100.0) / 10.0, (500.0 - centre[1]) / 10.0];
-    view_mut(h).set_camera(silico_protocol::Camera {
-        projection: silico_protocol::Projection::Orthographic {
-            view_height: height / ppp / 10.0,
-        },
-        eye: [x, y, 1000.0],
-        target: [x, y, 0.0],
-        up: [0.0, 1.0, 0.0],
-    });
+    h.state_mut().tabs_mut()[at]
+        .view
+        .set_camera(silico_protocol::Camera {
+            projection: silico_protocol::Projection::Orthographic {
+                view_height: height / ppp / 10.0,
+            },
+            eye: [x, y, 1000.0],
+            target: [x, y, 0.0],
+            up: [0.0, 1.0, 0.0],
+        });
 }
 
 /// The sketch `id` as the session's document holds it.
@@ -25438,21 +25870,119 @@ fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a silico_app::tab::Tab {
         .unwrap_or_else(|| panic!("no tab {name}"))
 }
 
-/// A box added to the part shown, named `name`, through CREATE's Box dialog and its OK:
-/// the part then holds unsaved edits, its tab marked.
-fn add_box(h: &mut AppHarness, name: &str) {
-    create(h, "Box");
+/// A sketch added to the part shown, named `name`, as a part is begun sketch-first (the app
+/// makes no primitive: Trevin's decision of 2026-11-09): CREATE's Create Sketch on the XY
+/// plane, then Finish Sketch (⌘↵), which keeps it, empty, as "Sketch1". The part then holds
+/// unsaved edits, its tab marked.
+fn add_sketch(h: &mut AppHarness, name: &str) {
+    // Create Sketch on once the new part's timeline is read.
+    step_until(h, "Create Sketch on", |h| {
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    });
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, "XY plane")
+            .is_some()
+    });
+    step(h);
+    h.get_by_role_and_label(Role::Button, "XY plane").click();
+    step_until(h, "its sketch added and read", |h| {
+        tab_named(h, name)
+            .sketch
+            .as_ref()
+            .is_some_and(|mode| mode.sketch.is_some() && mode.drawable().is_some())
+    });
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Enter);
+    step_until(h, "sketch mode closed", |h| {
+        tab_named(h, name).sketch.is_none()
+    });
+    let marked = format!("{name} *");
+    step_until(h, "unsaved", |h| {
+        tab_named(h, name).edits.idle() && tab_named(h, name).unsaved() && anywhere(h, &marked)
+    });
+}
+
+/// The part `name`, shown, given a sketch with a profile, sketch-first: Create Sketch on
+/// the XY plane, a corner rectangle from the origin to (40, 20) drawn with R (its events
+/// given to the tab's sketch mode as [`sketch_events`] gives them), and Finish Sketch (⌘↵),
+/// which keeps it as "Sketch1". The part then holds unsaved edits, its tab marked.
+fn add_rectangle(f: &Fixture, h: &mut AppHarness, name: &str) {
+    let at = h
+        .state()
+        .tabs()
+        .iter()
+        .position(|tab| tab.name() == name)
+        .unwrap();
+    step_until(h, "Create Sketch on", |h| {
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    });
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, "XY plane")
+            .is_some()
+    });
+    step(h);
+    h.get_by_role_and_label(Role::Button, "XY plane").click();
+    step_until(h, "its sketch added and read", |h| {
+        tab_named(h, name)
+            .sketch
+            .as_ref()
+            .is_some_and(|mode| mode.sketch.is_some() && mode.drawable().is_some())
+    });
+    h.key_press(eframe::egui::Key::R);
+    step(h);
+    sketch_events_at(f, h, at, &dragged([0.0, 0.0], [40.0, 20.0]));
+    step_until(h, "its four lines read", |h| {
+        let tab = tab_named(h, name);
+        tab.edits.idle()
+            && tab
+                .sketch
+                .as_ref()
+                .and_then(|mode| mode.drawable())
+                .is_some_and(|read| read.members.lines.len() == 4)
+    });
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Enter);
+    let marked = format!("{name} *");
+    step_until(h, "sketch mode closed, unsaved", |h| {
+        let tab = tab_named(h, name);
+        tab.sketch.is_none() && tab.edits.idle() && tab.unsaved() && anywhere(h, &marked)
+    });
+}
+
+/// A solid made sketch-first in the part `name`, shown: [`add_rectangle`], then CREATE's
+/// Pad of its sketch, chosen in the browser, its add answered and OK'd. The part then holds
+/// "Sketch1" and "Pad", unsaved, its tab marked, and the kernel has built the pad's prism.
+fn add_pad(f: &Fixture, h: &mut AppHarness, name: &str) {
+    add_rectangle(f, h, name);
+    step_until(h, "its sketch", |h| shows(h, "Browser", "Sketch1"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch1")
+        .click();
+    step(h);
+    create(h, "Pad");
     step_until(h, "its add answered", |h| {
         tab_named(h, name)
             .dialog
             .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
+            .is_some_and(|dialog| dialog.feature.is_some() && !dialog.adding)
     });
+    step_until(h, "OK on", ok_enabled);
     dialog(h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(h, "the dialog closed", |h| !dialog_open(h));
     let marked = format!("{name} *");
     step_until(h, "unsaved", |h| {
-        tab_named(h, name).edits.idle() && tab_named(h, name).unsaved() && anywhere(h, &marked)
+        let tab = tab_named(h, name);
+        tab.edits.idle() && tab.unsaved() && anywhere(h, &marked)
     });
 }
 
@@ -25510,7 +26040,7 @@ fn an_untitled_parts_edit_is_marked_and_command_s_saves_it_through_the_save_pane
     let mut h = f.app_browsing(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     assert!(anywhere(&h, "Untitled *"));
     // Command+S: the Save panel, named by the part; nothing written until it answers.
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
@@ -25546,24 +26076,24 @@ fn an_untitled_parts_edit_is_marked_and_command_s_saves_it_through_the_save_pane
     assert!(!tab.unsaved());
     assert_eq!(tab.message, None);
     assert!(!anywhere(&h, "Untitled"));
-    // The file holds the document as the session holds it: the box.
+    // The file holds the document as the session holds it: the sketch.
     let id = tab.id;
     let held = f.sessions.text(&id, None).wait().result.unwrap().text;
     assert_eq!(std::fs::read_to_string(&part).unwrap(), held);
-    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(names_in(&part), ["Sketch1"]);
     assert_eq!(
         f.sessions.status(&id).session.unwrap().path.as_deref(),
         part.to_str()
     );
     // From now on a file's: Command+S commits to it, asking nothing.
-    select(&mut h, "Box");
+    select(&mut h, "Sketch1");
     type_name(&mut h, "x");
     step_until(&mut h, "unsaved", |h| {
         h.state().tabs()[0].edits.idle() && anywhere(h, "part.silico *")
     });
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step_until(&mut h, "saved", |h| !anywhere(h, "part.silico *"));
-    assert_eq!(names_in(&part), ["Boxx"]);
+    assert_eq!(names_in(&part), ["Sketch1x"]);
     assert_eq!(browser.asked().len(), 1);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -25576,7 +26106,7 @@ fn closing_an_edited_untitled_part_asks_and_dont_save_leaves_nothing_and_a_cance
     step(&mut h);
     let before = listing(f.dir.path());
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     let question = "Save changes to Untitled before closing?";
     // Close: asked. Save: the Save panel, cancelled: the part stays, its edits held, and
     // nothing is said or sent.
@@ -25608,7 +26138,7 @@ fn closing_an_edited_untitled_part_asks_and_dont_save_leaves_nothing_and_a_cance
     // A quit's Save all, its panel cancelled: the quit stops, the part kept, the window
     // open, and that said.
     new_part(&mut h);
-    add_box(&mut h, "Untitled 2");
+    add_sketch(&mut h, "Untitled 2");
     close_window(&mut h);
     assert!(told(&h, false), "a close with edits held wasn't cancelled");
     step_until(&mut h, "the quit question", |h| {
@@ -25641,9 +26171,9 @@ fn quitting_with_two_edited_untitled_parts_saves_each_through_its_panel_in_turn(
     let mut h = f.app_browsing(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     new_part(&mut h);
-    add_box(&mut h, "Untitled 2");
+    add_sketch(&mut h, "Untitled 2");
     close_window(&mut h);
     assert!(told(&h, false), "a close with edits held wasn't cancelled");
     step_until(&mut h, "the quit question", |h| {
@@ -25672,7 +26202,7 @@ fn quitting_with_two_edited_untitled_parts_saves_each_through_its_panel_in_turn(
     step_until(&mut h, "the window closing", |h| told(h, true));
     assert!(h.state().tabs().is_empty());
     for path in [&one, &two] {
-        assert_eq!(names_in(path), ["Box"], "{}", path.display());
+        assert_eq!(names_in(path), ["Sketch1"], "{}", path.display());
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -25685,7 +26215,7 @@ fn quitting_with_three_untitled_parts_stops_at_the_one_whose_panel_is_cancelled(
     step(&mut h);
     for name in ["Untitled", "Untitled 2", "Untitled 3"] {
         new_part(&mut h);
-        add_box(&mut h, name);
+        add_sketch(&mut h, name);
     }
     close_window(&mut h);
     step_until(&mut h, "the quit question", |h| {
@@ -25712,7 +26242,7 @@ fn quitting_with_three_untitled_parts_stops_at_the_one_whose_panel_is_cancelled(
     let names: Vec<&str> = h.state().tabs().iter().map(|tab| tab.name()).collect();
     assert_eq!(names, ["Untitled 2", "Untitled 3"]);
     assert!(h.state().tabs().iter().all(|tab| tab.unsaved()));
-    assert_eq!(names_in(&one), ["Box"]);
+    assert_eq!(names_in(&one), ["Sketch1"]);
     // A second quit asks again, and its Save all asks the second's panel first.
     close_window(&mut h);
     step_until(&mut h, "asked again", |h| {
@@ -25734,7 +26264,7 @@ fn an_untitled_parts_export_refuses_a_path_that_isnt_full_and_takes_one_that_is(
     let mut h = f.app_made(|app| app.documents_folder(Some(documents.clone())));
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_pad(&f, &mut h, "Untitled");
     h.get_by_label("File").click();
     step(&mut h);
     step(&mut h);
@@ -25804,7 +26334,7 @@ fn with_no_native_dialog_an_untitled_parts_save_asks_for_a_typed_full_path() {
         };
         step(&mut h);
         new_part(&mut h);
-        add_box(&mut h, "Untitled");
+        add_sketch(&mut h, "Untitled");
         h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
         step_until(&mut h, "the typed Save As", |h| {
             anywhere(h, "Save Untitled as")
@@ -25842,7 +26372,7 @@ fn with_no_native_dialog_an_untitled_parts_save_asks_for_a_typed_full_path() {
             h.state().tabs()[0].path.as_deref() == made.to_str() && !anywhere(h, "Save Untitled as")
         });
         step_until(&mut h, "clean", |h| !h.state().tabs()[0].unsaved());
-        assert_eq!(names_in(&made), ["Box"]);
+        assert_eq!(names_in(&made), ["Sketch1"]);
         assert_eq!(never_waits::waits(), 0);
     }
 }
@@ -25858,7 +26388,7 @@ fn an_untitled_part_is_listed_in_recent_only_once_its_first_save_gives_it_a_file
     });
     recents_read(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     // Home, a while: nothing listed.
     home_button(&h).click();
     step_until(&mut h, "Home", start_shown);
@@ -25945,7 +26475,7 @@ fn quits_save_all_with_a_parts_own_save_panel_open_saves_it_once_through_that_pa
     step(&mut h);
     let before = listing(f.dir.path());
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     // Command+S: its panel open (the portal's leaves the window usable), then a quit.
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     save_panel_asked(&mut h, &browser, 1);
@@ -25965,7 +26495,7 @@ fn quits_save_all_with_a_parts_own_save_panel_open_saves_it_once_through_that_pa
     step_until(&mut h, "the window closing", |h| told(h, true));
     assert!(h.state().tabs().is_empty());
     assert_eq!(browser.asked().len(), 1);
-    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(names_in(&part), ["Sketch1"]);
     // One document written: the part's, and no other.
     let documents = |listed: Vec<String>| -> Vec<String> {
         listed
@@ -25985,7 +26515,8 @@ fn quits_save_all_while_a_parts_save_as_runs_waits_for_it_and_asks_no_panel() {
     let mut h = f.app_browsing(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    // Its pad, which the held check builds again.
+    add_pad(&f, &mut h, "Untitled");
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     save_panel_asked(&mut h, &browser, 1);
     // Picked, its Save As held behind the session's queue.
@@ -26011,7 +26542,7 @@ fn quits_save_all_while_a_parts_save_as_runs_waits_for_it_and_asks_no_panel() {
     step_until(&mut h, "the window closing", |h| told(h, true));
     assert!(h.state().tabs().is_empty());
     assert_eq!(browser.asked().len(), 1);
-    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(names_in(&part), ["Sketch1", "Pad"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -26031,7 +26562,7 @@ fn a_stopped_quit_leaves_a_save_panel_it_marked_to_save_without_closing() {
     type_name(&mut h, "Q");
     step_until(&mut h, "unsaved", |h| anywhere(h, "a.silico *"));
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     save_panel_asked(&mut h, &browser, 1);
     let theirs = EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#);
@@ -26060,7 +26591,7 @@ fn a_stopped_quit_leaves_a_save_panel_it_marked_to_save_without_closing() {
     }
     assert_eq!(h.state().tabs().len(), 2);
     assert!(h.state().tabs().iter().all(|tab| !tab.closing()));
-    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(names_in(&part), ["Sketch1"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -26070,9 +26601,9 @@ fn with_no_native_dialogs_close_and_quit_save_an_untitled_part_through_the_typed
     let mut h = f.app();
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     new_part(&mut h);
-    add_box(&mut h, "Untitled 2");
+    add_sketch(&mut h, "Untitled 2");
     // Close's Save: the typed Save As, a full path, saved and closed.
     h.get_by_label("Untitled *").click();
     step(&mut h);
@@ -26090,7 +26621,7 @@ fn with_no_native_dialogs_close_and_quit_save_an_untitled_part_through_the_typed
     step_until(&mut h, "saved and closed", |h| {
         h.state().tabs().len() == 1 && h.state().tabs()[0].name() == "Untitled 2"
     });
-    assert_eq!(names_in(&one), ["Box"]);
+    assert_eq!(names_in(&one), ["Sketch1"]);
     // Quit's Save all, its typed Save As cancelled: the quit stops, the part kept.
     close_window(&mut h);
     step_until(&mut h, "the quit question", |h| {
@@ -26129,7 +26660,7 @@ fn with_no_native_dialogs_close_and_quit_save_an_untitled_part_through_the_typed
     answer_question(&mut h, "Replace");
     step_until(&mut h, "the window closing", |h| told(h, true));
     assert!(h.state().tabs().is_empty());
-    assert_eq!(names_in(&there), ["Box"]);
+    assert_eq!(names_in(&there), ["Sketch1"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -26214,7 +26745,7 @@ fn an_untitled_parts_export_browse_starts_in_its_paths_folder_or_the_platforms()
     });
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     h.get_by_label("File").click();
     step(&mut h);
     step(&mut h);
@@ -26246,7 +26777,8 @@ fn a_save_as_that_closes_its_part_counts_as_closing_while_it_runs() {
     let mut h = f.app_browsing(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    // Its pad, which the held check builds again.
+    add_pad(&f, &mut h, "Untitled");
     h.get_by_label("Close Untitled").click();
     step_until(&mut h, "the close question", |h| {
         anywhere(h, "Save changes to Untitled before closing?")
@@ -26274,7 +26806,7 @@ fn a_save_as_that_closes_its_part_counts_as_closing_while_it_runs() {
     hold.release();
     let _ = check.wait();
     step_until(&mut h, "closed", |h| h.state().tabs().is_empty());
-    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(names_in(&part), ["Sketch1", "Pad"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -26309,9 +26841,9 @@ fn a_second_untitled_parts_save_while_the_firsts_panel_is_open_asks_its_own_type
     let mut h = f.app_browsing(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     new_part(&mut h);
-    add_box(&mut h, "Untitled 2");
+    add_sketch(&mut h, "Untitled 2");
     // Untitled shown, and Command+S: its panel.
     h.get_by_label("Untitled *").click();
     step(&mut h);
@@ -26350,7 +26882,7 @@ fn a_second_untitled_parts_save_while_the_firsts_panel_is_open_asks_its_own_type
     assert_eq!(names, ["one.silico", "two.silico"]);
     assert!(h.state().tabs().iter().all(|tab| !tab.unsaved()));
     for path in [&one, &two] {
-        assert_eq!(names_in(path), ["Box"], "{}", path.display());
+        assert_eq!(names_in(path), ["Sketch1"], "{}", path.display());
     }
     assert_eq!(browser.asked().len(), 1);
     assert_eq!(never_waits::waits(), 0);
@@ -26363,7 +26895,7 @@ fn a_quits_save_all_with_a_parts_panel_open_then_cancelled_stops_the_quit_asking
     let mut h = f.app_browsing(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     save_panel_asked(&mut h, &browser, 1);
     close_window(&mut h);
@@ -26409,9 +26941,10 @@ fn a_quit_passes_over_an_untitled_part_closed_without_saving_while_anothers_pane
     step(&mut h);
     let before = listing(f.dir.path());
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     new_part(&mut h);
-    add_box(&mut h, "Untitled 2");
+    // Its pad, which the check holding its queue builds again.
+    add_pad(&f, &mut h, "Untitled 2");
     close_window(&mut h);
     step_until(&mut h, "the quit question", |h| {
         anywhere(h, "Save changes before quitting?")
@@ -26448,7 +26981,7 @@ fn a_quit_passes_over_an_untitled_part_closed_without_saving_while_anothers_pane
     step_until(&mut h, "the window closing", |h| told(h, true));
     assert!(h.state().tabs().is_empty());
     assert_eq!(browser.asked().len(), 1);
-    assert_eq!(names_in(&one), ["Box"]);
+    assert_eq!(names_in(&one), ["Sketch1"]);
     // No other document written: Untitled 2's edits dropped, as Don't save says.
     let documents = |listed: Vec<String>| -> Vec<String> {
         listed
@@ -26471,8 +27004,15 @@ fn an_untitled_parts_save_is_off_and_command_s_asks_nothing_in_a_dialog_or_while
     new_part(&mut h);
     step(&mut h);
     assert!(!bar_save(&h).accesskit_node().is_disabled());
-    // A dialog open: Save off, and Command+S asks no panel.
-    create(&mut h, "Box");
+    // Begun sketch-first: its sketch, a rectangle, then a dialog open, the sketch's Pad, its
+    // add answered: Save off, and Command+S asks no panel.
+    add_rectangle(&f, &mut h, "Untitled");
+    assert!(!bar_save(&h).accesskit_node().is_disabled());
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch1")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pad");
     step_until(&mut h, "its add answered", |h| {
         tab_named(h, "Untitled")
             .dialog
@@ -26517,7 +27057,7 @@ fn an_untitled_parts_save_is_off_and_command_s_asks_nothing_in_a_dialog_or_while
     step_until(&mut h, "saved", |h| {
         h.state().tabs()[0].path.as_deref() == part.to_str() && !h.state().tabs()[0].unsaved()
     });
-    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(names_in(&part), ["Sketch1", "Pad"]);
     assert_eq!(browser.asked().len(), 1);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -26534,7 +27074,7 @@ fn an_export_form_opened_while_untitled_takes_a_relative_path_in_the_folder_of_i
     });
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_pad(&f, &mut h, "Untitled");
     // Its Save panel open (the portal's leaves the window usable), and Export… opened.
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     save_panel_asked(&mut h, &browser, 1);
@@ -32306,7 +32846,7 @@ const CHAIN_WITHOUT_HOLE: &str = r#"{
 #[test]
 fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its body", |h| shows(h, "Browser", "Hole"));
     let on = |label: &str| (label.to_owned(), None);
     let off = |label: &str, why: &str| (label.to_owned(), Some(why.to_owned()));
@@ -32397,7 +32937,7 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
     step(&mut h);
     // A dialog open: nothing changes a feature under it (its Cancel undoes to where it
     // opened), so only Find is on.
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     added(&mut h);
     menu_on(&mut h, "Timeline", "Block");
     let dialog = "Close the open dialog first";
@@ -33092,9 +33632,9 @@ fn a_blank_name_is_dropped_as_esc_drops_it_and_a_name_is_sent_trimmed() {
 #[test]
 fn f2_and_del_with_a_dialog_open_say_why_and_do_nothing() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     let pin = silico_core::document::FeatureId::new("a91cw0de").unwrap();
@@ -36231,9 +36771,9 @@ fn a_second_reload_asked_while_the_first_is_out_reads_the_file_as_the_persons_to
 #[test]
 fn command_r_with_a_dialog_open_says_to_finish_it_first_and_sends_nothing() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    pad_triangle(&mut h);
     command_r(&mut h);
     step_until(&mut h, "said", |h| {
         h.state()
@@ -36246,7 +36786,7 @@ fn command_r_with_a_dialog_open_says_to_finish_it_first_and_sends_nothing() {
     let tab = &h.state().tabs()[0];
     assert!(tab.in_dialog());
     assert_eq!(tab.rebuilds_all, 0);
-    assert!(h.query_by_role_and_label(Role::Dialog, "Box").is_some());
+    assert!(h.query_by_role_and_label(Role::Dialog, "Pad").is_some());
     // File > Reload is off with it open, as Rebuild everything is.
     h.get_by_label("File").click();
     step(&mut h);
@@ -36267,20 +36807,28 @@ fn command_r_on_an_untitled_part_with_edits_asks_nothing_and_only_rebuilds_keepi
     let mut h = f.app();
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
-    step_until(&mut h, "the box's edit held", |h| {
+    add_pad(&f, &mut h, "Untitled");
+    step_until(&mut h, "the pad's edits held", |h| {
         let tab = &h.state().tabs()[0];
         tab.unsaved() && tab.edits.idle() && !tab.in_dialog()
     });
     let mine = text_of(&f, &h);
-    let boxes = boxes_asked(&f);
+    let prisms = || {
+        f.kernel
+            .calls()
+            .iter()
+            .filter(|call| is_prism(&call.op))
+            .count()
+    };
+    let built = prisms();
+    assert!(built > 0, "the pad never built");
     command_r(&mut h);
     step_until(&mut h, "rebuilt everything", |h| {
         let tab = &h.state().tabs()[0];
         tab.rebuilds_all == 1 && !tab.checking()
     });
     assert!(!anywhere(&h, "Reload Untitled from disk?"));
-    assert!(boxes_asked(&f) > boxes, "the box built anew");
+    assert!(prisms() > built, "the pad built anew");
     let tab = &h.state().tabs()[0];
     assert!(tab.unsaved());
     assert_eq!(text_of(&f, &h), mine);

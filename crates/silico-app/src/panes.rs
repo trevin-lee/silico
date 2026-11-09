@@ -1345,7 +1345,7 @@ fn tree(
     let no_body = match tab.document_problems.first() {
         Some(said) if any_features => format!("No body: {}", said.message),
         None if any_features => "No body: nothing builds one yet".to_owned(),
-        _ => "None yet. A pad or a primitive makes one.".to_owned(),
+        _ => "None yet. A pad makes one.".to_owned(),
     };
     let groups = [
         ("Bodies", &tab.browser.bodies, Icon::Body, no_body),
@@ -3055,7 +3055,7 @@ mod tests {
             ..Said::default()
         };
         let down = |n: f32| css::TITLE_H + n * css::ROW_H;
-        let none_yet = "None yet. A pad or a primitive makes one.";
+        let none_yet = "None yet. A pad makes one.";
         for (features, problem, bodies) in [
             (&[][..], None, none_yet),
             (&[][..], Some(problem()), none_yet),

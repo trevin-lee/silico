@@ -1,6 +1,8 @@
 //! Feature dialogs (M5.8; docs/design/m5.0-app.md, sections 8 and 9, *Feature dialogs*):
 //! Fusion's docked dialog, a vertical stack of labelled inputs with OK and Cancel at its
-//! bottom, of the primitives and of the features that sweep a sketch's profile. A dialog
+//! bottom, of the features that sweep a sketch's profile, of the dressings and booleans, and
+//! of the primitives a file holds, which it edits but never makes (solids are made
+//! sketch-first, as SolidWorks makes them: Trevin's decision of 2026-11-09). A dialog
 //! holds what its inputs say; the tab turns each change into an edit of the document
 //! inside its transaction ([`crate::tab::Tab`]), so the preview is the model rebuilt.
 //!
