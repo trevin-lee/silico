@@ -258,11 +258,16 @@ pub struct Frame<'a> {
     /// app's theme), never read from it here.
     pub outlines: Outlines,
     /// The pixels to read back for picking, if any: [`Renderer::take_picking`] gives what
-    /// they found, a frame or two later. A frame that picks draws each edge near them again,
-    /// into the picking layer alone, toward the eye by its reach ([`edge_picks`]), so an
-    /// edge is picked along its stroke unless a face is nearer than that there, a concave
-    /// edge as a convex one; the image is drawn as it is without them.
+    /// they found, a frame or two later.
     pub picking: Option<PixelRect>,
+    /// Whether edges are picked (not with the selection's edge filter off, M5.7): a frame
+    /// that picks then draws each edge near the picking rectangle again, into the picking
+    /// layer alone, toward the eye by its reach ([`edge_picks`]), so an edge is picked along
+    /// its stroke unless a face is nearer than that there, a concave edge as a convex one; the
+    /// image is drawn as it is without them. With them off, a concave edge's faces are picked
+    /// to its line, as its drawn stroke leaves them (a convex edge's stroke is picked still,
+    /// as it's drawn over its faces).
+    pub edges: bool,
     /// The radius, in points, within which a vertex is picked, if vertices are picked (none
     /// with the selection's vertex filter off, M5.7): a frame that picks then draws a disc
     /// of it about each vertex whose point lands within it of the picking rectangle, into
@@ -609,7 +614,7 @@ impl Renderer {
                 rect,
                 id,
                 vertices: frame.vertices,
-                edges: true,
+                edges: frame.edges,
             }),
             None,
         );
@@ -1038,8 +1043,9 @@ impl Renderer {
             edges(&mut lines, number, uploaded, lit, view, &strokes);
         }
         // The edges near a frame's picking again, toward the eye, after every edge drawn (so
-        // none drawn is ever left out for them, should the strips reach re_renderer's most):
-        // a frame that doesn't pick, and a render, pay nothing for them.
+        // none drawn is ever left out for them, should the strips reach re_renderer's most),
+        // for a picking that asks for them: a frame that doesn't pick, one whose edges aren't
+        // picked, and a render, pay nothing for them.
         if let Some(Picked {
             rect, edges: true, ..
         }) = picking
@@ -1194,8 +1200,8 @@ fn outlined_as(highlighted: bool, hovered: bool) -> OutlineMaskPreference {
 
 /// What a view's picking asks: its rectangle, its readback's identifier, the radius in
 /// points its vertices are picked within, if they are ([`Frame::vertices`]), and whether its
-/// edges are drawn again at their reach ([`edge_picks`]): a frame's are, a render's, whose ID
-/// buffer is M4.6's, not.
+/// edges are drawn again at their reach ([`edge_picks`]): a frame's are where it picks edges
+/// ([`Frame::edges`]), a render's, whose ID buffer is M4.6's, never.
 #[derive(Debug, Clone, Copy)]
 struct Picked {
     rect: PixelRect,

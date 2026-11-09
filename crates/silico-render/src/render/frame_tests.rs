@@ -52,6 +52,7 @@ fn frame<'a>(
         hovered: &[],
         outlines: Outlines::DEFAULT,
         picking,
+        edges: true,
         vertices: None,
         background: VIEWPORT_BG,
     }
@@ -3841,6 +3842,47 @@ fn a_renders_id_buffer_has_no_edge_picks_so_a_concave_edges_faces_have_its_pixel
                     ..square_frame(&camera, &[1], at)
                 };
                 assert_eq!(hit(r, &asking), Some((1, Edge(1), at)), "{at:?}");
+            }
+        },
+    );
+}
+
+#[test]
+fn with_edges_not_picked_a_pick_beside_a_concave_edge_takes_the_face_under_it() {
+    on_lavapipe(
+        "render::frame_tests::with_edges_not_picked_a_pick_beside_a_concave_edge_takes_the_face_under_it",
+        |r| {
+            use Element::{Edge, Face};
+            // The selection's edge filter off (E, or a dialog's box taking faces): a frame that
+            // picks draws no edge's picking strip, so the L's concave edge's faces hide its
+            // drawn stroke, as they do in the image. The pixel (400, 400), its centre 0.18
+            // pixels off Edge1 on the floor's side, is the floor's, Face1, its point on it
+            // (z = 5); (400, 399), 0.68 off on the wall's side, the wall's, Face2 (x = 5); and
+            // no square finds an edge (its pixels' centres at least 0.049 off the line, where a
+            // face is 0.0075 mm nearer the eye than it, against its depth offset's 3e-6). So
+            // the selection takes the face under the pointer. With edges picked, each pixel,
+            // within the edge's stroke (a point either side of its line), is Edge1's, its
+            // picking strip drawn over both faces, and the face isn't under the pointer.
+            let mesh = Arc::new(l_mesh());
+            r.upload(1, &mesh).unwrap();
+            let camera = l_camera();
+            for (at, face, k, plane) in
+                [([400, 400], Face(1), 2, 5.0), ([400, 399], Face(2), 0, 5.0)]
+            {
+                let off = Frame {
+                    edges: false,
+                    ..square_frame(&camera, &[1], at)
+                };
+                let picking = pick(r, &off);
+                assert_eq!(picking.edge, None, "{at:?}");
+                let hit = picking.hit.unwrap();
+                assert_eq!((hit.body, hit.hit, hit.pixel), (1, face, at), "{at:?}");
+                let point = hit.point.unwrap();
+                assert!((point[k] - plane).abs() < 1e-3, "{at:?}: {point:?}");
+                assert_eq!(taken(&picking, at), Some((1, face)), "{at:?}");
+                let on = pick(r, &square_frame(&camera, &[1], at));
+                let found = on.hit.map(|h| (h.body, h.hit, h.pixel));
+                assert_eq!(found, Some((1, Edge(1), at)), "{at:?}");
             }
         },
     );

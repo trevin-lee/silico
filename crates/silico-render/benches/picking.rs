@@ -169,6 +169,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                             hovered: hover,
                             outlines: Outlines::DEFAULT,
                             picking: asking.then_some(picking),
+                            // The edges picked, as the selection's filter starts (N5: each
+                            // near the square drawn again toward the eye).
+                            edges: true,
                             // The selection's 7-point vertex discs (M5.7).
                             vertices: vertices.then_some(7.0),
                             // The app's viewport colour (its theme's VIEWPORT_BG).

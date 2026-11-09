@@ -10302,6 +10302,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     hovered: Vec::new(),
                     outlines: silico_app::renderer::Outlines::DEFAULT,
                     picking: None,
+                    edges: true,
                     vertices: None,
                 };
                 assert!(ViewRenderer::prepare(renderer, &data.frame()).is_ok());
@@ -27656,6 +27657,33 @@ fn a_box_cancelled_by_the_focus_going_selects_nothing() {
     h.event(Event::WindowFocused(true));
     box_release(&mut h, left_high, Modifiers::NONE);
     assert_eq!(selected_names(&h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_edge_and_vertex_filters_reach_the_frames_the_viewport_draws() {
+    use eframe::egui::Key;
+    // Each frame the viewport hands the renderer picks edges (drawing each near its square
+    // again toward the eye, N5) and vertices (in discs 7 points across) as the filter takes
+    // them: both as it starts; E, no edges; V, no vertices either; E again, edges.
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    let last = |h: &mut AppHarness| {
+        step(h);
+        step(h);
+        let told = record.lock().unwrap();
+        let frame = told.frames.last().unwrap();
+        (frame.edges, frame.vertices)
+    };
+    assert_eq!(last(&mut h), (true, Some(7.0)));
+    for (key, want) in [
+        (Key::E, (false, Some(7.0))),
+        (Key::V, (false, None)),
+        (Key::E, (true, None)),
+    ] {
+        h.key_press(key);
+        assert_eq!(last(&mut h), want, "{key:?}");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 
