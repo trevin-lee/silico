@@ -27255,6 +27255,95 @@ fn a_sketch_on_a_face_leaves_its_body_the_tip_so_a_pocket_or_pad_from_it_takes_t
     }
 }
 
+/// The M2.1 example's Block and Pin ([`EXAMPLE`]) before its Hole: two bodies, standing
+/// apart, the Pin built last.
+const BLOCK_AND_PIN: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12}
+  ]
+}
+"#;
+
+#[test]
+fn a_pocket_or_pad_from_a_sketch_on_the_first_bodys_face_builds_on_that_body_not_the_last() {
+    // #438's review, L1: a Block, then a separate Pin, the tip (the last body built, nothing
+    // consuming it). The Block's top, Face6, sketched on by Sketch on this face, a rectangle
+    // drawn inside it, and the sketch finished. A sweep from a sketch on a face builds on
+    // that face's body, as SolidWorks merges it and FreeCAD's PartDesign builds in the
+    // sketch's own Body: a Pocket's add, or a Pad's, names the Block as its base, never the
+    // Pin.
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    for (kind, extent) in [
+        (
+            "Pocket",
+            r#"{"type": "one_side", "length": 5, "reversed": false}"#,
+        ),
+        (
+            "Pad",
+            r#"{"type": "one_side", "length": 10, "reversed": false}"#,
+        ),
+    ] {
+        let f = fixture();
+        describes_a_real_box(&f);
+        measures_the_box(&f);
+        let (mut h, _) = f.opened("block-and-pin.silico", BLOCK_AND_PIN);
+        step_until(&mut h, "the model published", |h| {
+            h.state().tabs()[0].published.is_some()
+        });
+        step(&mut h);
+        select_in_box(&mut h, &["Face6"]);
+        row_until(&mut h, "Area", "800.00 mm²");
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .get_by_role_and_label(Role::Button, "Sketch on this face")
+            .click();
+        step_until(&mut h, "its sketch added", |h| {
+            sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+        });
+        sketch_read(&mut h);
+        let sketch = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+        h.key_press(eframe::egui::Key::R);
+        step(&mut h);
+        assert_eq!(
+            sketch_mode(&h).unwrap().tools.choice(),
+            Some(Choice::Draw(ToolKind::CornerRectangle))
+        );
+        sketch_events(&f, &mut h, &clicked(10.0, 5.0));
+        sketch_events(&f, &mut h, &clicked(30.0, 15.0));
+        settled(&mut h);
+        read_with_lines(&mut h, 4);
+        leave_sketch(&mut h, true);
+        step_until(&mut h, "its sketch listed", |h| {
+            shows(h, "Browser", "Sketch1")
+        });
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label("Sketch1")
+            .click();
+        step(&mut h);
+        create(&mut h, kind);
+        step_until(&mut h, "its add answered", |h| {
+            h.state().tabs()[0]
+                .dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.feature.is_some())
+        });
+        settled(&mut h);
+        assert_eq!(
+            fields_of(&text_of(&f, &h), kind),
+            Some(expected(&format!(
+                r#"{{"type": "{}", "name": "{kind}", "base": "k7f2qx3m", "sketch": "{sketch}", "extent": {extent}}}"#,
+                kind.to_lowercase()
+            ))),
+            "{kind}"
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
 #[test]
 fn sketch_on_this_face_is_off_for_a_face_no_store_can_name_and_on_for_a_stable_one() {
     // FUSED, its faces planes: the fuse's Face1, named only by its number, is unstable, so

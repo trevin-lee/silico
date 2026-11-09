@@ -247,17 +247,13 @@ pub fn off(tab: &Tab, entry: &Entry, item: Item, place: Place) -> Option<String>
 /// Why the browser has no row for `entry`: it lists bodies and sketches, a body by the
 /// feature that ends its chain; a feature that failed there built none. It's inside a body
 /// if a feature other than a sketch names it as an input, as the gate counts consumers
-/// (`Operation::inputs`): a sketch on its face consumes nothing.
+/// (`crate::tab::consumed`): a sketch on its face consumes nothing.
 fn no_row(tab: &Tab, entry: &Entry) -> String {
     let consumed = tab
         .timeline
         .as_ref()
         .and_then(|timeline| timeline.features.as_ref())
-        .is_some_and(|entries| {
-            entries
-                .iter()
-                .any(|other| other.kind != "sketch" && other.inputs.contains(&entry.id))
-        });
+        .is_some_and(|entries| crate::tab::consumed(entries).contains_key(&entry.id));
     if consumed {
         "It's inside a body: the browser lists bodies and sketches".to_owned()
     } else if entry.health == Health::Error {

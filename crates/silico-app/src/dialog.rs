@@ -1810,6 +1810,16 @@ pub fn feature_node(kind: Kind, members: &[String], base: Option<&FeatureId>) ->
     json::read(format!("{{{}}}", members.join(", ")).as_bytes()).ok()
 }
 
+/// The sketch a new sweep's `members` (its dialog's [`Dialog::add`]) name, if they name one:
+/// what its base is found from (`crate::tab`'s `base_of`).
+pub fn sketch_of(members: &[String]) -> Option<FeatureId> {
+    let node = json::read(format!("{{{}}}", members.join(", ")).as_bytes()).ok()?;
+    match &member(&node, "sketch")?.value {
+        Json::String(id) => FeatureId::new(id),
+        _ => None,
+    }
+}
+
 /// `text` as a JSON string.
 pub(crate) fn quoted(text: &str) -> String {
     let mut quoted = String::with_capacity(text.len() + 2);
@@ -1840,6 +1850,26 @@ fn member<'a>(node: &'a Node, key: &str) -> Option<&'a Node> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sweeps_members_name_its_sketch_and_others_name_none() {
+        let members = |sketch: Option<&str>| -> Vec<String> {
+            ["\"type\": \"pocket\"", "\"name\": \"Pocket\""]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(sketch.map(|sketch| format!("\"sketch\": {sketch}")))
+                .collect()
+        };
+        assert_eq!(
+            sketch_of(&members(Some("\"s0000001\""))),
+            FeatureId::new("s0000001")
+        );
+        // None named, none that's a string, or none that's an ID.
+        assert_eq!(sketch_of(&members(None)), None);
+        assert_eq!(sketch_of(&members(Some("1"))), None);
+        assert_eq!(sketch_of(&members(Some("\"S\""))), None);
+        assert_eq!(sketch_of(&["\"sketch\":".to_owned()]), None);
+    }
 
     #[test]
     fn a_number_is_its_json_text_and_nothing_else_is_one() {

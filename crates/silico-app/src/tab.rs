@@ -332,9 +332,9 @@ enum Queued {
     },
 }
 
-/// A new sweep's body: not yet read, or read from the document at a revision (its tip,
-/// [`tip_of`], none if it has none), which the add is sent with only if the session is still
-/// at that revision, and read again otherwise.
+/// A new sweep's body: not yet read, or read from the document at a revision (its base,
+/// [`base_of`]: its sketch's face's body, or the tip; none if it has none), which the add is
+/// sent with only if the session is still at that revision, and read again otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Body {
     Unread,
@@ -2374,14 +2374,20 @@ impl Tab {
                 running,
             } => match running.try_take() {
                 Ok(response) => {
-                    // The document's tip at the revision it was read at; read again if the read
-                    // was refused (it names no model when none is published, so it's refused
-                    // only as every read is).
+                    // The sweep's base at the revision it was read at, from the sketch the add
+                    // sends ([`base_of`]); read again if the read was refused (it names no
+                    // model when none is published, so it's refused only as every read is).
                     let body = match response.result {
-                        Ok(timeline) => Body::Read(
-                            timeline.features.as_deref().and_then(tip_of),
-                            timeline.revision,
-                        ),
+                        Ok(timeline) => {
+                            let sketch = crate::dialog::sketch_of(&members);
+                            Body::Read(
+                                timeline
+                                    .features
+                                    .as_deref()
+                                    .and_then(|entries| base_of(entries, sketch.as_ref())),
+                                timeline.revision,
+                            )
+                        }
                         Err(_) => Body::Unread,
                     };
                     // Sent next, before anything queued after it.
@@ -4226,7 +4232,7 @@ impl Tab {
 
     /// The tip of the document as the tab's timeline last listed it ([`tip_of`]): whether a
     /// sweep that cuts has a body to cut, for CREATE's tools. A sweep's add takes its body
-    /// from the document as it is when it's sent.
+    /// from the document as it is when it's sent ([`base_of`]).
     fn tip(&self) -> Option<FeatureId> {
         tip_of(self.timeline.as_ref()?.features.as_ref()?)
     }
@@ -4302,8 +4308,8 @@ impl Tab {
 
     /// A new feature's dialog opened (section 9): its inputs at their defaults, or those its
     /// kind was last OK'd with, if it remembers them (`remembered`); a sweep's sketch the one
-    /// selected if it's one, and its body the tip. Its feature is added as soon as its
-    /// inputs are valid.
+    /// selected if it's one, and its body its sketch's face's, or the tip ([`base_of`]). Its
+    /// feature is added as soon as its inputs are valid.
     pub fn open_dialog<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -5568,21 +5574,29 @@ fn standing(entries: &[Entry], body: &FeatureId, own: Option<&FeatureId>) -> Sta
     }
 }
 
-/// The body a new sweep builds on, as FreeCAD's PartDesign takes its body's tip, from a
-/// document's features as `timeline` lists them, in order: the last that stands for a solid
-/// and that no feature consumes. A feature stands for a solid if it makes one (it isn't a
-/// sketch) and isn't suppressed, or if it's suppressed and its base stands for one (its
-/// chain passes it through, as `document::suppression`'s `standing` has it). A feature is
-/// consumed if a feature other than a sketch names it as an input, built or not, suppressed
-/// or not, as the gate counts consumers (`Operation::inputs`: a feature's base and tool). A
-/// sketch consumes nothing, so a sketch on a face leaves the face's feature standing; the
-/// sketch a sweep names is among a sweep's inputs, and stands for nothing.
-fn tip_of(entries: &[Entry]) -> Option<FeatureId> {
-    let consumed: std::collections::BTreeSet<&FeatureId> = entries
-        .iter()
-        .filter(|entry| entry.kind != "sketch")
-        .flat_map(|entry| entry.inputs.iter())
-        .collect();
+/// What a document's features, as `timeline` lists them, consume, each by the feature that
+/// consumes it: every feature that a feature other than a sketch names as an input, built or
+/// not, suppressed or not, as the gate counts consumers (`Operation::inputs`: a feature's
+/// base and tool). The gate lets a solid have one consumer at most; were there more, the
+/// first in the timeline's order is kept. A sketch consumes nothing, so a sketch on a face
+/// leaves the face's feature standing; the sketch a sweep names is among the sweep's inputs,
+/// and stands for nothing. The one rule for the tip ([`tip_of`]), a sweep's base
+/// ([`base_of`]), and the feature menus' rows (`crate::feature_menu`).
+pub(crate) fn consumed(entries: &[Entry]) -> BTreeMap<&FeatureId, &FeatureId> {
+    let mut consumed = BTreeMap::new();
+    for entry in entries.iter().filter(|entry| entry.kind != "sketch") {
+        for input in &entry.inputs {
+            consumed.entry(input).or_insert(&entry.id);
+        }
+    }
+    consumed
+}
+
+/// Which of a document's features, as `timeline` lists them, in order, stand for a solid: a
+/// feature that makes one (it isn't a sketch) and isn't suppressed, or one that's suppressed
+/// whose base stands for one (its chain passes it through, as `document::suppression`'s
+/// `standing` has it).
+fn solids(entries: &[Entry]) -> BTreeMap<&FeatureId, bool> {
     let mut stands: BTreeMap<&FeatureId, bool> = BTreeMap::new();
     for entry in entries {
         let standing = if entry.kind == "sketch" {
@@ -5601,13 +5615,73 @@ fn tip_of(entries: &[Entry]) -> Option<FeatureId> {
         };
         stands.insert(&entry.id, standing);
     }
+    stands
+}
+
+/// The tip of a document, as FreeCAD's PartDesign takes its body's, from its features as
+/// `timeline` lists them, in order: the last that stands for a solid ([`solids`]) and that
+/// no feature consumes ([`consumed`]).
+fn tip_of(entries: &[Entry]) -> Option<FeatureId> {
+    let consumed = consumed(entries);
+    let stands = solids(entries);
     entries
         .iter()
         .rev()
         .find(|entry| {
-            stands.get(&entry.id).copied().unwrap_or(false) && !consumed.contains(&entry.id)
+            stands.get(&entry.id).copied().unwrap_or(false) && !consumed.contains_key(&entry.id)
         })
         .map(|entry| entry.id.clone())
+}
+
+/// The body a new sweep from the sketch `sketch` builds on, from a document's features as
+/// `timeline` lists them, in order.
+///
+/// From a sketch on a face, it's the face's body: the face's feature (the sketch's input,
+/// `[face's feature]`), followed forward through the feature that consumes each one
+/// ([`consumed`]) to the end of its chain, if that stands for a solid ([`solids`]). So in a
+/// part of two bodies, a pocket sketched on the first body's face cuts that body, not the
+/// last one built. Behaviour follows SolidWorks, where a feature from a sketch on a face
+/// merges with that face's body (an extrude's *Merge result*); FreeCAD's PartDesign makes
+/// the same choice, building a Pad or Pocket in the sketch's own Body, after its Tip
+/// (`prepareProfileBased`, src/Mod/PartDesign/Gui/Command.cpp), and offering a sketch of
+/// another Body only as a copy or a cross-reference into the active one
+/// (`TaskFeaturePick::otherBody`, the same file).
+///
+/// Otherwise it's the tip ([`tip_of`]), as it is with one body: with no sketch, from a
+/// sketch on an origin plane (no input), from a sketch whose face's feature the timeline
+/// doesn't list (removed), from a sketch that failed (its face not found,
+/// `reference_broken`, which the timeline says only as an error), or where the chain's end
+/// stands for no solid.
+fn base_of(entries: &[Entry], sketch: Option<&FeatureId>) -> Option<FeatureId> {
+    sketch
+        .and_then(|sketch| face_body(entries, sketch))
+        .or_else(|| tip_of(entries))
+}
+
+/// The body of the face the sketch `sketch` is on, as [`base_of`] finds it; none if it's on
+/// no face, or its face's body can't be found.
+fn face_body(entries: &[Entry], sketch: &FeatureId) -> Option<FeatureId> {
+    let sketch = entries
+        .iter()
+        .find(|entry| &entry.id == sketch && entry.kind == "sketch")?;
+    if sketch.health == Health::Error {
+        return None;
+    }
+    let face = sketch.inputs.first()?;
+    let mut end = &entries.iter().find(|entry| &entry.id == face)?.id;
+    let consumed = consumed(entries);
+    // A consumer comes after what it consumes, so no chain is longer than the timeline.
+    for _ in 0..entries.len() {
+        let Some(next) = consumed.get(end) else {
+            break;
+        };
+        end = next;
+    }
+    solids(entries)
+        .get(end)
+        .copied()
+        .unwrap_or(false)
+        .then(|| end.clone())
 }
 
 /// What a refused timeline read leaves, the tab having found nothing published before
@@ -6402,6 +6476,162 @@ mod tests {
             feature("z0000001", "fuse", false, &["b0000001", "b0000002"]),
         ];
         assert_eq!(tip_of(&fused), id("z0000001"));
+    }
+
+    /// `entry` with its health `health`.
+    fn health(mut entry: Entry, health: Health) -> Entry {
+        entry.health = health;
+        entry
+    }
+
+    #[test]
+    fn what_a_feature_consumes_is_named_by_a_feature_other_than_a_sketch_each_by_its_consumer() {
+        // A box, a cylinder, a sketch on the box's face, a fuse of the two, and a pad from the
+        // sketch: the fuse consumes both bodies, the pad its sketch; the sketch, which names
+        // the box, consumes nothing.
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let entries = [
+            feature("b0000001", "box", false, &[]),
+            feature("c0000001", "cylinder", false, &[]),
+            feature("s0000001", "sketch", false, &["b0000001"]),
+            feature("z0000001", "fuse", false, &["b0000001", "c0000001"]),
+            feature("p0000001", "pad", false, &["z0000001", "s0000001"]),
+        ];
+        let by: Vec<(FeatureId, FeatureId)> = consumed(&entries)
+            .into_iter()
+            .map(|(what, by)| (what.clone(), by.clone()))
+            .collect();
+        assert_eq!(
+            by,
+            [
+                (fid("b0000001"), fid("z0000001")),
+                (fid("c0000001"), fid("z0000001")),
+                (fid("s0000001"), fid("p0000001")),
+                (fid("z0000001"), fid("p0000001")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sweep_from_a_sketch_on_a_face_builds_on_that_faces_body_where_the_tip_is_another() {
+        let id = |text: &str| Some(FeatureId::new(text).unwrap());
+        let sketch = FeatureId::new("s0000001").unwrap();
+        // #438's review: a box, a separate cylinder, and a sketch on the box's face. The tip is
+        // the cylinder, built last; a sweep from the sketch builds on the box, whose face it's
+        // on.
+        let two = [
+            feature("b0000001", "box", false, &[]),
+            feature("c0000001", "cylinder", false, &[]),
+            feature("s0000001", "sketch", false, &["b0000001"]),
+        ];
+        assert_eq!(tip_of(&two), id("c0000001"));
+        assert_eq!(base_of(&two, Some(&sketch)), id("b0000001"));
+        // The box since cut by the cylinder, and another box built after: the base is the cut,
+        // where the box's chain ends; the tip, the other box.
+        let cut = [
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &["b0000001"]),
+            feature("c0000001", "cylinder", false, &[]),
+            feature("x0000001", "cut", false, &["b0000001", "c0000001"]),
+            feature("d0000001", "box", false, &[]),
+        ];
+        assert_eq!(tip_of(&cut), id("d0000001"));
+        assert_eq!(base_of(&cut, Some(&sketch)), id("x0000001"));
+        // The box since consumed by a fuse with the cylinder, as its tool, and another box
+        // after: the fuse.
+        let fused = [
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &["b0000001"]),
+            feature("c0000001", "cylinder", false, &[]),
+            feature("z0000001", "fuse", false, &["c0000001", "b0000001"]),
+            feature("d0000001", "box", false, &[]),
+        ];
+        assert_eq!(tip_of(&fused), id("d0000001"));
+        assert_eq!(base_of(&fused, Some(&sketch)), id("z0000001"));
+        // A chain of two: a fillet of the box, then a chamfer of the fillet, the cylinder
+        // after: the chamfer.
+        let chain = [
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &["b0000001"]),
+            feature("f0000001", "fillet", false, &["b0000001"]),
+            feature("f0000002", "chamfer", false, &["f0000001"]),
+            feature("c0000001", "cylinder", false, &[]),
+        ];
+        assert_eq!(tip_of(&chain), id("c0000001"));
+        assert_eq!(base_of(&chain, Some(&sketch)), id("f0000002"));
+    }
+
+    #[test]
+    fn a_sweeps_walk_to_its_faces_body_follows_what_stands_as_the_tip_does() {
+        let id = |text: &str| Some(FeatureId::new(text).unwrap());
+        let sketch = FeatureId::new("s0000001").unwrap();
+        // A suppressed fillet of the box, the box's face sketched on: the fillet stands for the
+        // box (its chain passes it through), and ends the box's chain; the tip is the cylinder.
+        let suppressed = [
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &["b0000001"]),
+            feature("f0000001", "fillet", true, &["b0000001"]),
+            feature("c0000001", "cylinder", false, &[]),
+        ];
+        assert_eq!(tip_of(&suppressed), id("c0000001"));
+        assert_eq!(base_of(&suppressed, Some(&sketch)), id("f0000001"));
+        // The box consumed by a suppressed fuse whose base is a suppressed box: the fuse
+        // stands for nothing, so the chain's end is no body, and the base is the tip, the
+        // cylinder.
+        let nothing = [
+            feature("e0000001", "box", true, &[]),
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &["b0000001"]),
+            feature("c0000001", "cylinder", false, &[]),
+            feature("z0000001", "fuse", true, &["e0000001", "b0000001"]),
+        ];
+        assert_eq!(tip_of(&nothing), id("c0000001"));
+        assert_eq!(base_of(&nothing, Some(&sketch)), id("c0000001"));
+    }
+
+    #[test]
+    fn a_sweep_whose_sketch_has_no_face_body_found_builds_on_the_tip() {
+        let id = |text: &str| Some(FeatureId::new(text).unwrap());
+        let sketch = FeatureId::new("s0000001").unwrap();
+        let box_ = FeatureId::new("b0000001").unwrap();
+        // On an origin plane (no input): the tip.
+        let origin = [
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &[]),
+            feature("c0000001", "cylinder", false, &[]),
+        ];
+        assert_eq!(base_of(&origin, Some(&sketch)), id("c0000001"));
+        // No sketch named, or a sketch the timeline doesn't list, or a feature that isn't a
+        // sketch: the tip.
+        let on_box = [
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &["b0000001"]),
+            feature("c0000001", "cylinder", false, &[]),
+        ];
+        assert_eq!(base_of(&on_box, Some(&sketch)), id("b0000001"));
+        assert_eq!(base_of(&on_box, None), id("c0000001"));
+        let unlisted = FeatureId::new("s0000009").unwrap();
+        assert_eq!(base_of(&on_box, Some(&unlisted)), id("c0000001"));
+        assert_eq!(base_of(&on_box, Some(&box_)), id("c0000001"));
+        // Its face's feature removed (the timeline lists no a0000001): the tip.
+        let removed = [
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &["a0000001"]),
+            feature("c0000001", "cylinder", false, &[]),
+        ];
+        assert_eq!(base_of(&removed, Some(&sketch)), id("c0000001"));
+        // Its face not found (`reference_broken`), so the sketch is in error: the tip. A
+        // sketch with warnings, or not built yet (unknown), is on its face's body still.
+        let mut broken = on_box.clone();
+        broken[1] = health(broken[1].clone(), Health::Error);
+        assert_eq!(base_of(&broken, Some(&sketch)), id("c0000001"));
+        for kept in [Health::Warning, Health::Unknown] {
+            let mut entries = on_box.clone();
+            entries[1] = health(entries[1].clone(), kept);
+            assert_eq!(base_of(&entries, Some(&sketch)), id("b0000001"), "{kept:?}");
+        }
+        // Nothing stands at all: none.
+        assert_eq!(base_of(&[], Some(&sketch)), None);
     }
 
     #[test]
