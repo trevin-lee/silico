@@ -1714,13 +1714,9 @@ impl Tab {
         }
         match status.result {
             Ok(status) => {
-                // The file as the session holds it, nothing of the tab's under way: no
-                // reload of the person's is still to come.
-                // Nor one Reload has yet to read.
-                if self.quiet()
-                    && !self.reload_queued()
-                    && !matches!(status.disk, Some(Disk::Changed | Disk::Gone))
-                {
+                // The file as the session holds it, nothing of the tab's under way (a Reload
+                // queued or reading is): no reload of the person's is still to come.
+                if self.quiet() && !matches!(status.disk, Some(Disk::Changed | Disk::Gone)) {
                     self.reload_asked = false;
                 }
                 // A rebuild done whole: its time kept with its revision. One done but not
@@ -2630,8 +2626,7 @@ impl Tab {
                     match response.result {
                         // Then Rebuild everything, unheld, as ⇧⌘B sends it: an edit after it
                         // supersedes it. A check of the tab's own out answers first.
-                        Ok(_) if self.check_read.is_some() => self.reload_rebuild = true,
-                        Ok(_) => self.rebuild_all(sessions),
+                        Ok(_) => self.reload_rebuild = true,
                         // The file couldn't be read (gone since the last status, say): said,
                         // nothing rebuilt, and no reload of the person's to come, the poll
                         // never letting the mark go while the file is gone.
@@ -3354,14 +3349,8 @@ impl Tab {
     /// Whether nothing of the tab's is under way: no edit in flight or queued, nothing
     /// queued, no command running. A revision that moves then isn't the tab's.
     fn quiet(&self) -> bool {
-        // A Reload waiting for the tab's check to answer is no change of the tab's: a reload
-        // meanwhile is seen as the session's.
         self.edits.in_flight.is_none()
-            && self
-                .edits
-                .queue
-                .iter()
-                .all(|queued| matches!(queued, Queued::Reload))
+            && self.edits.queue.is_empty()
             && self.under.is_empty()
             && !self.beginning
             && !self.dragging()
@@ -3966,13 +3955,10 @@ impl Tab {
     /// An untitled part has no file: it's only rebuilt, its edits kept. On a file gone from
     /// disk nothing is reloaded or dropped: the part open here is the only copy of the work,
     /// so that's said, with Save As to keep it (Main's ruling of 2026-11-09; the core refuses
-    /// a read of a gone file outside a transaction, so nothing can be rebuilt). Nothing with
-    /// a dialog open, as Rebuild everything does nothing then (the app says why), while the
-    /// tab closes, or before the document is read.
+    /// a read of a gone file outside a transaction, so nothing can be rebuilt). The app asks
+    /// it only of a tab that isn't closing and has no dialog open, as Rebuild everything
+    /// does nothing in one (it says why); its rebuild is sent once the document is read.
     pub fn reload<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if self.closing() || self.timeline.is_none() || self.in_dialog() {
-            return;
-        }
         if self.file_gone() {
             self.toast = Some(format!(
                 "{} is gone from disk: nothing to reload. Save As keeps your work",
@@ -3990,14 +3976,6 @@ impl Tab {
         }
         self.edits.queue.push_back(Queued::Reload);
         self.advance(sessions);
-    }
-
-    /// Whether a Reload waits in the queue.
-    fn reload_queued(&self) -> bool {
-        self.edits
-            .queue
-            .iter()
-            .any(|queued| matches!(queued, Queued::Reload))
     }
 
     /// Whether Rebuild everything may be sent: the document read, no dialog open (its

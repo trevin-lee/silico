@@ -35578,6 +35578,13 @@ fn a_cmd_click_on_a_selected_browser_row_takes_it_out_and_on_an_unselected_item_
     step_until(&mut h, "Hole selected", |h| {
         selected_features(h) == ["m3tq8v0z"]
     });
+    // A plain click on it, selected: it stays selected (only Cmd takes it out).
+    let at = hole(&h);
+    click_canvas(&mut h, at, false);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(selected_features(&h), ["m3tq8v0z"]);
     let at = hole(&h);
     click_canvas(&mut h, at, true);
     deselected(&mut h, "Hole taken out by a Cmd-click in the browser");
@@ -35672,6 +35679,17 @@ fn command_r_with_a_dialog_open_says_to_finish_it_first_and_sends_nothing() {
     assert!(tab.in_dialog());
     assert_eq!(tab.rebuilds_all, 0);
     assert!(h.query_by_role_and_label(Role::Dialog, "Box").is_some());
+    // File > Reload is off with it open, as Rebuild everything is.
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        button_off_start(&h, "Reload")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -35910,6 +35928,39 @@ fn a_reload_whose_read_finds_the_file_gone_leaves_the_next_programs_change_its_b
             h,
             "Reloaded example.silico: another program changed it on disk",
         )
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn command_r_with_a_transaction_open_and_nothing_changed_ends_it_to_read_the_file() {
+    // An edit, then undone: the transaction stays open with nothing changed, so nothing
+    // is asked; its read of the file would read nothing inside it, so it's rolled back
+    // first, and the file changed on disk is read.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.transaction && tab.edits.idle() && shows(h, "Timeline", "Pins")
+    });
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    step_until(
+        &mut h,
+        "undone, the transaction open, nothing changed",
+        |h| {
+            let tab = &h.state().tabs()[0];
+            tab.transaction && !tab.unsaved() && shows(h, "Timeline", "Pin")
+        },
+    );
+    std::fs::write(&path, example_theirs()).unwrap();
+    command_r(&mut h);
+    assert!(!anywhere(&h, "Reload example.silico from disk?"));
+    step_until(&mut h, "the file read again", |h| {
+        let tab = &h.state().tabs()[0];
+        !tab.transaction && shows(h, "Timeline", "Drill")
     });
     assert_eq!(never_waits::waits(), 0);
 }
