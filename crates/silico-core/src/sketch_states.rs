@@ -297,10 +297,11 @@ fn is_empty(sketch: &Sketch) -> bool {
 ///   `over_defined`, SolidWorks' meaning, whose over-defined text is the conflict text;
 ///   `no_solution` is for a sketch the solver couldn't place with no constraint in excess;
 /// - `solve_failed`: `no_solution`;
-/// - `invalid_result`: `invalid`;
-/// - `invalid_input`: `invalid`, geometry that can't be held: a sketch the translation
-///   refuses (two points drawn at one place where a constraint is measured by the line
-///   between them, an arc that sweeps nothing), or a solution a load can't translate again;
+/// - `invalid_result`: `invalid`, a solution that can't be built or held, or a solution a
+///   load can't translate again;
+/// - `invalid_input`: `invalid`, a sketch the translation refuses before any solve (two
+///   points drawn at one place where a constraint is measured by the line between them, an
+///   arc that sweeps nothing);
 /// - any other code, a worker's (`worker_crashed`, `worker_timeout`, `worker_unavailable`), a
 ///   reply the core can't read (`protocol_error`), or a bug's (`internal`): none. It says
 ///   nothing about the sketch.
