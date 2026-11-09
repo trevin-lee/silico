@@ -386,28 +386,125 @@ fn tool_section(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
 pub enum MenuAction {
     None,
     EndChain,
+    /// Smart Dimension: its tool chosen, as the bar's button and D choose it.
+    Dimension,
     Finish,
     Cancel,
 }
 
-/// The canvas's right-click menu in sketch mode, as the prototype has it: *End chain*, on
-/// only while a tool's gesture is under way (`busy`), then Finish Sketch and Cancel sketch.
-/// The pane opens it; what was asked is given back.
+/// An item of the canvas's right-click menu in sketch mode: what it asks, its icon, its
+/// words, its keys' caps (the registry's, as the platform names them), whether it's on, and
+/// whether a separator comes before it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuItem {
+    pub action: MenuAction,
+    pub icon: Option<crate::icons::Icon>,
+    pub label: &'static str,
+    pub caps: Vec<String>,
+    pub on: bool,
+    pub separated: bool,
+}
+
+/// The canvas's right-click menu in sketch mode, as the prototype's `onContext` has it
+/// (js/interact.js), in its order: *End chain* (Esc), on only while a tool's gesture is
+/// under way (`busy`); Smart Dimension (D), with its icon; a separator; Finish Sketch (its
+/// Ctrl+↵, ⌘↵ on macOS), with its icon; and Cancel sketch. Each cap is the registry's
+/// (`crate::shortcuts`): Smart Dimension's and Finish Sketch's their own commands', and End
+/// chain's Esc, which the app takes as the registry's Stop and gives sketch mode, where it
+/// ends the gesture (`Tab::escape`).
+pub fn menu_items(ctx: &egui::Context, busy: bool) -> Vec<MenuItem> {
+    use crate::icons::Icon;
+    vec![
+        MenuItem {
+            action: MenuAction::EndChain,
+            icon: None,
+            label: "End chain",
+            caps: Command::Stop.caps(ctx),
+            on: busy,
+            separated: false,
+        },
+        MenuItem {
+            action: MenuAction::Dimension,
+            icon: Some(Icon::Dimension),
+            label: Command::Dimension.label(),
+            caps: Command::Dimension.caps(ctx),
+            on: true,
+            separated: false,
+        },
+        MenuItem {
+            action: MenuAction::Finish,
+            icon: Some(Icon::Check),
+            label: Command::FinishSketch.label(),
+            caps: Command::FinishSketch.caps(ctx),
+            on: true,
+            separated: true,
+        },
+        MenuItem {
+            action: MenuAction::Cancel,
+            icon: None,
+            label: "Cancel sketch",
+            caps: Vec::new(),
+            on: true,
+            separated: false,
+        },
+    ]
+}
+
+/// The canvas's right-click menu in sketch mode ([`menu_items`]), each item a button named
+/// by its words, its keys' caps drawn at its right and given a screen reader as its
+/// shortcut. The pane opens it; what was asked is given back.
 pub fn canvas_menu(ui: &mut Ui, busy: bool) -> MenuAction {
+    let items = menu_items(ui.ctx(), busy);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let padding = ui.spacing().button_padding.x;
+    let gap = ui.spacing().icon_spacing;
+    // As wide as its widest item: its icon, its words, the caps' padding, and its caps.
+    let width = items
+        .iter()
+        .map(|item| {
+            let words = ui
+                .painter()
+                .layout_no_wrap(item.label.to_owned(), font.clone(), Color32::WHITE)
+                .size()
+                .x;
+            let icon = if item.icon.is_some() {
+                crate::icons::ICON_SIZE + gap
+            } else {
+                0.0
+            };
+            let caps = if item.caps.is_empty() {
+                0.0
+            } else {
+                crate::theme::MENU_KEYS_PADDING + crate::start::key_caps_width(ui, &item.caps)
+            };
+            2.0 * padding + icon + words + caps
+        })
+        .fold(0.0, f32::max);
     let mut action = MenuAction::None;
-    if ui
-        .add_enabled(busy, egui::Button::new("End chain"))
-        .clicked()
-    {
-        action = MenuAction::EndChain;
-    }
-    ui.separator();
-    if ui.button("Finish Sketch").clicked() {
-        action = MenuAction::Finish;
-    }
-    if ui.button("Cancel sketch").clicked() {
-        action = MenuAction::Cancel;
-    }
+    ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+        ui.set_width(width);
+        for item in &items {
+            if item.separated {
+                ui.separator();
+            }
+            let button = match item.icon {
+                Some(icon) => egui::Button::image_and_text(crate::icons::icon(icon), item.label),
+                None => egui::Button::new(item.label),
+            };
+            let response = ui.add_enabled(item.on, button);
+            if !item.caps.is_empty() {
+                let right = Pos2::new(response.rect.right() - padding, response.rect.center().y);
+                crate::start::key_caps(ui, right, &item.caps, false);
+                let shortcut = crate::shortcuts::joined(ui.ctx(), &item.caps);
+                ui.ctx().accesskit_node_builder(response.id, |node| {
+                    node.set_keyboard_shortcut(shortcut);
+                });
+            }
+            if response.clicked() {
+                action = item.action;
+            }
+        }
+    });
     if action != MenuAction::None {
         ui.close();
     }

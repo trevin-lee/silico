@@ -2262,6 +2262,10 @@ impl<P: Clients + 'static> App<P> {
             match asked {
                 sketch::bar::MenuAction::None => {}
                 sketch::bar::MenuAction::EndChain => tab.sketch_end_chain(sessions),
+                // As the bar's button and D choose it.
+                sketch::bar::MenuAction::Dimension => {
+                    tab.sketch_toggle(sketch::tools::Choice::Dimension);
+                }
                 sketch::bar::MenuAction::Finish => tab.finish_sketch(sessions, true),
                 sketch::bar::MenuAction::Cancel => tab.finish_sketch(sessions, false),
             }

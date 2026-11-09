@@ -1156,6 +1156,120 @@ fn the_canvas_menu_offers_end_chain_only_while_a_gesture_is_under_way() {
 }
 
 #[test]
+fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel_with_their_keys() {
+    // js/interact.js's `onContext` in a sketch: End chain ['Esc'], Smart Dimension
+    // ('dimension' icon, ['D']), a separator, Finish Sketch ('check' icon, ['Mod', 'Enter']),
+    // and Cancel sketch, in that order; Mod is Ctrl off macOS and ⌘ on it, and Enter ↵ (the
+    // prototype's KEYNAME, app.js:8, as the registry names them). Each button named by its words alone, its keys its shortcut
+    // for a screen reader; Smart Dimension asks for its tool.
+    use crate::icons::Icon;
+    use crate::sketch::bar::{MenuAction, canvas_menu, menu_items};
+    use eframe::egui;
+    use egui_kittest::kittest::{NodeT, Queryable};
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let ctx = egui::Context::default();
+    ctx.set_os(egui::os::OperatingSystem::Nix);
+    let items = menu_items(&ctx, false);
+    let shown: Vec<_> = items
+        .iter()
+        .map(|item| {
+            (
+                item.action,
+                item.icon,
+                item.label,
+                item.caps.clone(),
+                item.on,
+                item.separated,
+            )
+        })
+        .collect();
+    let caps = |caps: &[&str]| caps.iter().map(|cap| (*cap).to_owned()).collect::<Vec<_>>();
+    assert_eq!(
+        shown,
+        [
+            (
+                MenuAction::EndChain,
+                None,
+                "End chain",
+                caps(&["Esc"]),
+                false,
+                false
+            ),
+            (
+                MenuAction::Dimension,
+                Some(Icon::Dimension),
+                "Smart Dimension",
+                caps(&["D"]),
+                true,
+                false
+            ),
+            (
+                MenuAction::Finish,
+                Some(Icon::Check),
+                "Finish Sketch",
+                caps(&["Ctrl", "↵"]),
+                true,
+                true
+            ),
+            (
+                MenuAction::Cancel,
+                None,
+                "Cancel sketch",
+                caps(&[]),
+                true,
+                false
+            ),
+        ]
+    );
+    ctx.set_os(egui::os::OperatingSystem::Mac);
+    assert_eq!(menu_items(&ctx, true)[2].caps, caps(&["⌘", "↵"]));
+    assert!(menu_items(&ctx, true)[0].on);
+    // Drawn: its buttons top to bottom in that order, each named by its words, its keys
+    // its shortcut; Smart Dimension clicked asks for it.
+    let asked = Rc::new(Cell::new(MenuAction::None));
+    let seen = Rc::clone(&asked);
+    let mut h = egui_kittest::Harness::new_ui(move |ui| {
+        let action = canvas_menu(ui, true);
+        if action != MenuAction::None {
+            seen.set(action);
+        }
+    });
+    h.ctx.set_os(egui::os::OperatingSystem::Nix);
+    h.run();
+    let mut buttons: Vec<(f32, String, Option<String>)> = h
+        .query_all_by_role(egui::accesskit::Role::Button)
+        .map(|node| {
+            let node_rect = node.rect();
+            let access = node.accesskit_node();
+            (
+                node_rect.top(),
+                access.label().unwrap_or_default(),
+                access.data().keyboard_shortcut().map(str::to_owned),
+            )
+        })
+        .collect();
+    buttons.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let named: Vec<(String, Option<String>)> = buttons
+        .into_iter()
+        .map(|(_, label, keys)| (label, keys))
+        .collect();
+    let keyed = |label: &str, keys: Option<&str>| (label.to_owned(), keys.map(str::to_owned));
+    assert_eq!(
+        named,
+        [
+            keyed("End chain", Some("Esc")),
+            keyed("Smart Dimension", Some("D")),
+            keyed("Finish Sketch", Some("Ctrl+↵")),
+            keyed("Cancel sketch", None),
+        ]
+    );
+    h.get_by_label("Smart Dimension").click();
+    h.run();
+    assert_eq!(asked.get(), MenuAction::Dimension);
+}
+
+#[test]
 fn a_power_trim_sweep_pressed_near_a_line_trims_it_where_it_crosses_and_extends_nothing() {
     // Pressed 0.5 mm above na000001 at x = 30, within the pick, then swept down across it
     // to (30, −5): no extend (it left the line's carrier, and ends past neither end), but

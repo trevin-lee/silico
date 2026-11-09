@@ -826,6 +826,9 @@ pub struct Tab {
     /// What the core says of the selection's elements, for the property panel's selection
     /// view (M5.7's measures): one element's entry, or two's distance and angle.
     measures: crate::measures::Measures,
+    /// What the core says of the face the canvas's context menu is over: its entry, read as
+    /// the selection view's is, for its type (Sketch on this face, `crate::canvas_menu`).
+    menu_face: crate::measures::Measures,
     /// What a toast is to say for the tab (a box's count, or why it took nothing), until
     /// the app takes it.
     toast: Option<String>,
@@ -1045,6 +1048,7 @@ impl Tab {
             box_select: crate::box_select::BoxSelect::default(),
             select_other: crate::select_other::SelectOther::default(),
             measures: crate::measures::Measures::default(),
+            menu_face: crate::measures::Measures::default(),
             toast: None,
             reload_diff: None,
             outside: BTreeMap::new(),
@@ -1203,6 +1207,7 @@ impl Tab {
         let facts = crate::select_other::Facts {
             names: &names,
             edit_off: &edit,
+            sketch_off: crate::feature_menu::sketch_off(self),
         };
         let (left, asked) = self.select_other.overlay(
             &mut self.selection,
@@ -1212,6 +1217,7 @@ impl Tab {
             current,
             &facts,
         );
+        self.menu_face_read(sessions, painter.ctx());
         let passed;
         let frame = if left.len() == frame.left.len() {
             frame
@@ -1261,8 +1267,11 @@ impl Tab {
     }
 
     /// What the canvas's context menu asked, done as its command is elsewhere: Edit as the
-    /// feature menus' Edit feature (`crate::feature_menu::act`), Hide as H hides a body, Fit
-    /// and Home view as F6 and Home, and Clear selection as Esc clears it.
+    /// feature menus' Edit feature (`crate::feature_menu::act`), Sketch on this face as the
+    /// selection view's button ([`create_sketch_on_face`](Self::create_sketch_on_face)),
+    /// Hide as H hides a body, Fit and Home view as F6 and Home, Clear selection as Esc
+    /// clears it, and a plane of Create Sketch's as the toolbar's
+    /// ([`create_sketch`](Self::create_sketch)).
     fn canvas_act<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -1274,10 +1283,12 @@ impl Tab {
             CanvasAct::Edit(id) => {
                 crate::feature_menu::act(self, sessions, crate::feature_menu::Act::Edit(id));
             }
+            CanvasAct::SketchOnFace(face) => self.create_sketch_on_face(sessions, &face),
             CanvasAct::Hide(id) => self.toggle_shown(Hideable::Feature(id)),
             CanvasAct::Fit => self.view.ask(ViewAsk::Fit),
             CanvasAct::Home => self.view.ask(ViewAsk::Named(crate::navigate::HOME)),
             CanvasAct::ClearSelection => self.selection.clear(),
+            CanvasAct::CreateSketch(plane) => self.create_sketch(sessions, plane),
         }
     }
 
@@ -1384,6 +1395,45 @@ impl Tab {
     /// What the core says of the selection's elements (M5.7's measures), as last answered.
     pub fn measures(&self) -> &crate::measures::Measures {
         &self.measures
+    }
+
+    /// The face the canvas's context menu is over read for its type, as the selection
+    /// view's face is (`elements`, through `crate::measures`): asked as the menu opens over
+    /// it, polled, and its answer given the menu, whose Sketch on this face is there only
+    /// for a plane; the read let go as the menu closes. Never waited on.
+    fn menu_face_read<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        ctx: &eframe::egui::Context,
+    ) {
+        use silico_core::command::elements::ElementType;
+        let wanted = self.select_other.face_wanted();
+        match &wanted {
+            Some((of, measured)) => {
+                self.menu_face
+                    .ask(sessions, &self.id, Some(*of), Some(measured.clone()));
+            }
+            None if self.menu_face.of().is_some() => {
+                self.menu_face.ask(sessions, &self.id, None, None);
+            }
+            None => {}
+        }
+        self.menu_face.poll(sessions, &self.id);
+        let Some((of, _)) = wanted else {
+            return;
+        };
+        let typed = self
+            .menu_face
+            .answers(of)
+            .and_then(|answers| answers.element.as_ref())
+            .map(|element| {
+                element
+                    .as_ref()
+                    .is_ok_and(|entry| entry.r#type == ElementType::Plane)
+            });
+        if let Some(plane) = typed {
+            self.select_other.face_typed(of, plane, ctx);
+        }
     }
 
     /// The measures of the selection as it is now asked, if they're not what was asked last

@@ -209,19 +209,24 @@ fn unchangeable(tab: &Tab) -> Option<String> {
     None
 }
 
+/// Why sketch mode can't open in `tab` now ([`Tab::can_sketch`]), if it can't: what Edit
+/// Sketch says, and the canvas's Sketch on this face and Create Sketch
+/// (`crate::canvas_menu`).
+pub(crate) fn sketch_off(tab: &Tab) -> Option<String> {
+    if tab.can_sketch() {
+        None
+    } else {
+        Some(unchangeable(tab).unwrap_or_else(|| "The sketch can't open now".to_owned()))
+    }
+}
+
 /// Why `item` is off for the feature `entry` of `tab`, at `place`, if it is.
 pub fn off(tab: &Tab, entry: &Entry, item: Item, place: Place) -> Option<String> {
     match item {
         Item::Edit => {
             if entry.kind == "sketch" {
                 // Sketch mode's Edit Sketch.
-                return if tab.can_sketch() {
-                    None
-                } else {
-                    Some(
-                        unchangeable(tab).unwrap_or_else(|| "The sketch can't open now".to_owned()),
-                    )
-                };
+                return sketch_off(tab);
             }
             let Some(kind) = crate::dialog::Kind::of(entry.kind) else {
                 return Some(format!(

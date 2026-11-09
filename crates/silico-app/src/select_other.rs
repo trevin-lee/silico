@@ -58,8 +58,11 @@ use silico_protocol::Mesh;
 use silico_render::render::{Hit, MAX_HITS, Pickable, hits};
 
 use crate::boxes::{Boxes, Build};
-use crate::canvas_menu::{CanvasAct, CanvasItem, CanvasMenu, Context, UNCAST, UNREAD, Under};
+use crate::canvas_menu::{
+    CanvasAct, CanvasItem, CanvasMenu, Context, Planar, UNCAST, UNREAD, Under,
+};
 use crate::icons::Icon;
+use crate::measures::{Measured, Of};
 use crate::menu;
 use crate::renderer::Element;
 use crate::selection::{How, Selection, centre_of, square};
@@ -152,11 +155,13 @@ impl Row {
 }
 
 /// What the tab knows that the canvas's menus say ([`SelectOther::overlay`]): a feature's
-/// name by its ID, and why Edit can't open a feature's dialog now, if it can't (the feature
-/// menus' reason, `crate::feature_menu::off`).
+/// name by its ID; why Edit can't open a feature's dialog now, if it can't (the feature
+/// menus' reason, `crate::feature_menu::off`); and why sketch mode can't open now, if it
+/// can't (`crate::feature_menu::sketch_off`).
 pub(crate) struct Facts<'a> {
     pub(crate) names: &'a dyn Fn(&FeatureId) -> Option<String>,
     pub(crate) edit_off: &'a dyn Fn(&FeatureId) -> Option<String>,
+    pub(crate) sketch_off: Option<String>,
 }
 
 /// The canvas's Select Other: its menu, while one is open, or the right click waiting for its
@@ -171,6 +176,9 @@ pub struct SelectOther {
     keys: Vec<MenuKey>,
     swallowing: bool,
     shown: Option<u64>,
+    /// How many context menus have opened: what keys each one's face read
+    /// ([`FaceRead`]), so no answer of another menu's is taken for it.
+    opened: u64,
 }
 
 /// A right click whose menu waits for the boxes of the bodies it casts on: what it's opened
@@ -189,14 +197,23 @@ struct Waiting {
 }
 
 /// An open menu: which; where its right click was, in points; the context menu, its items
-/// for what was under the pointer; the rows the cast found (none if it wasn't cast); the item or row lit and the one the pointer was last over; what it was cast on (the
-/// selection's model, and each body drawn with its mesh); the wheel's steps not yet whole;
-/// the list's scroll, whether it was just stepped, and its width.
+/// for what was under the pointer, and what they were made of (what's under the pointer,
+/// and what the menu says of the rest), to make them again when its face's type is read;
+/// the face under the pointer, read for its type; the layer Create Sketch's planes are on
+/// while they're open, and whether Enter asked them open; the rows the cast found (none if
+/// it wasn't cast); the item or row lit and the one the pointer was last over; what it was
+/// cast on (the selection's model, and each body drawn with its mesh); the wheel's steps not
+/// yet whole; the list's scroll, whether it was just stepped, and its width.
 #[derive(Debug)]
 struct Menu {
     phase: Phase,
     at: Pos2,
     context: CanvasMenu,
+    under: Option<Under>,
+    said: Context,
+    face: Option<FaceRead>,
+    planes: Option<egui::LayerId>,
+    open_planes: bool,
     rows: Vec<Row>,
     lit: Option<usize>,
     pointed: Option<usize>,
@@ -208,10 +225,25 @@ struct Menu {
     width: Option<f32>,
 }
 
+/// The face a context menu opened over, read for its type as the selection view reads a
+/// face it shows (`crate::measures`, `elements`), so Sketch on this face is there only for a
+/// plane: what the read is of (this menu, and the selection's model), what it reads (the
+/// body the face is in, and the name the selection holds it by), the name a store writes
+/// for it or why none can be, and whether its answer has been taken.
+#[derive(Debug)]
+struct FaceRead {
+    of: Of,
+    measured: Measured,
+    stored: Result<String, String>,
+    typed: bool,
+}
+
 /// What the person did in the menu this frame.
 enum Act {
     /// The context menu's item at this place chosen.
     Context(usize),
+    /// A plane chosen from Create Sketch's planes.
+    Plane(silico_core::document::OriginPlane),
     /// A row chosen, Ctrl held or not.
     Choose(usize, bool),
 }
@@ -260,6 +292,13 @@ impl SelectOther {
         self.menu.as_ref().and_then(|menu| menu.lit)
     }
 
+    /// The face the open context menu is over, read for its type
+    /// ([`face_typed`](Self::face_typed)): whether its answer has been taken (or is still to
+    /// come); none if the menu isn't over a face the selection's model finds.
+    pub fn face_read(&self) -> Option<bool> {
+        self.menu.as_ref()?.face.as_ref().map(|face| face.typed)
+    }
+
     /// Whether a right click waits for its bodies' boxes to open its menu.
     pub fn is_waiting(&self) -> bool {
         self.waiting.is_some()
@@ -286,6 +325,54 @@ impl SelectOther {
     /// next given a frame (this one's, which comes after the keys).
     pub(crate) fn key(&mut self, key: MenuKey) {
         self.keys.push(key);
+    }
+
+    /// The read of the face the open context menu is over, while its type isn't taken yet:
+    /// what it's of, and what's measured (the tab reads it, as the selection view's face is
+    /// read: `crate::measures`).
+    pub(crate) fn face_wanted(&self) -> Option<(Of, Measured)> {
+        let face = self.menu.as_ref()?.face.as_ref()?;
+        (!face.typed).then(|| (face.of, face.measured.clone()))
+    }
+
+    /// The open context menu's face read as a plane, or not (`plane`), for the read `of`: if
+    /// it's a plane, Sketch on this face is among its items from now on, as the selection
+    /// view's button is once `elements` says so; the item lit stays lit. An answer of
+    /// another menu's read is dropped.
+    pub(crate) fn face_typed(&mut self, of: Of, plane: bool, ctx: &egui::Context) {
+        let Some(menu) = self.menu.as_mut() else {
+            return;
+        };
+        let Some(face) = menu
+            .face
+            .as_mut()
+            .filter(|face| face.of == of && !face.typed)
+        else {
+            return;
+        };
+        face.typed = true;
+        tracing::debug!(plane, "canvas_menu_face_typed");
+        if !plane {
+            return;
+        }
+        let stored = face.stored.clone();
+        let Some(under) = menu.under.as_mut() else {
+            return;
+        };
+        under.plane = Some(Planar { stored });
+        let lit = menu
+            .lit
+            .and_then(|at| menu.context.items.get(at))
+            .map(|shown| shown.item.clone());
+        menu.context = CanvasMenu::new(Some(under), &menu.said, ctx);
+        menu.lit = lit.and_then(|lit| {
+            menu.context
+                .items
+                .iter()
+                .position(|shown| shown.item == lit)
+        });
+        menu.pointed = None;
+        ctx.request_repaint();
     }
 
     /// The canvas's right clicks and left button this frame (`frame`, given to the tab's
@@ -385,6 +472,11 @@ impl SelectOther {
                 if let Some(act) = self.context_chosen(at, selection, view, &ctx) {
                     asked = Some(act);
                 }
+            }
+            Some(Act::Plane(plane)) => {
+                tracing::debug!(?plane, "canvas_menu_plane_chosen");
+                self.close(selection, view, &ctx);
+                asked = Some(CanvasAct::CreateSketch(plane));
             }
             Some(Act::Choose(at, ctrl)) => self.choose(at, ctrl, selection, view, &ctx),
             None => {}
@@ -486,8 +578,10 @@ impl SelectOther {
         if !self.holds_keys() {
             return;
         }
-        // Waiting, no menu is drawn: a press anywhere is off it.
+        // Waiting, no menu is drawn: a press anywhere is off it. Create Sketch's planes, open
+        // beside it, are its own.
         let layer = self.menu.as_ref().map(Menu::layer);
+        let planes = self.menu.as_ref().and_then(|menu| menu.planes);
         let presses: Vec<Pos2> = ctx.input(|input| {
             input
                 .events
@@ -500,10 +594,10 @@ impl SelectOther {
                 })
                 .collect()
         });
-        if presses
-            .iter()
-            .any(|at| layer.is_none() || ctx.layer_id_at(*at) != layer)
-        {
+        if presses.iter().any(|at| {
+            let on = ctx.layer_id_at(*at);
+            layer.is_none() || (on != layer && (planes.is_none() || on != planes))
+        }) {
             tracing::debug!("a press off Select Other closed it");
             self.close(selection, view, ctx);
         }
@@ -622,20 +716,45 @@ impl SelectOther {
         // What a click there would select: the pointer's hover; or, while a menu held it,
         // the first of the cast's no face hides that the filters take.
         let filter = selection.picks();
-        let under = hovered
-            .or_else(|| {
-                rows.iter()
-                    .find(|row| {
-                        !row.hidden
-                            && match row.element {
-                                Element::Face(_) => filter.faces,
-                                Element::Edge(_) => filter.edges,
-                                Element::Vertex(_) => filter.vertices,
-                            }
-                    })
-                    .map(|row| (row.body, row.element, Arc::clone(&row.name)))
-            })
-            .and_then(|(body, element, name)| under_of(view, facts, body, element, &name));
+        let pointed = hovered.or_else(|| {
+            rows.iter()
+                .find(|row| {
+                    !row.hidden
+                        && match row.element {
+                            Element::Face(_) => filter.faces,
+                            Element::Edge(_) => filter.edges,
+                            Element::Vertex(_) => filter.vertices,
+                        }
+                })
+                .map(|row| (row.body, row.element, Arc::clone(&row.name)))
+        });
+        let under = pointed
+            .as_ref()
+            .and_then(|(body, element, name)| under_of(view, facts, *body, *element, name));
+        self.opened = self.opened.wrapping_add(1);
+        // A face, read for its type as the selection view's is: found in the selection's
+        // model as a pick is, for its body and the name a store writes for it.
+        let face = match (&pointed, &under, selection.model_of()) {
+            (Some((_, Element::Face(_), name)), Some(_), Some(model)) => {
+                selection.found(&name.to_string()).map(|found| FaceRead {
+                    of: Of {
+                        version: self.opened,
+                        model,
+                    },
+                    measured: Measured::One {
+                        body: found.feature.clone(),
+                        name: Arc::clone(&found.name),
+                    },
+                    stored: found
+                        .stored
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .map_err(|why| why.message().to_owned()),
+                    typed: false,
+                })
+            }
+            _ => None,
+        };
         let context = Context {
             count,
             listable: !rows.is_empty(),
@@ -643,6 +762,7 @@ impl SelectOther {
                 .as_ref()
                 .and_then(|under| (facts.edit_off)(&under.maker)),
             selected: !selection.is_empty(),
+            sketch_off: facts.sketch_off.clone(),
         };
         self.menu = Some(Menu {
             phase: Phase::Context,
@@ -652,6 +772,11 @@ impl SelectOther {
                 frame.rect.center()
             },
             context: CanvasMenu::new(under.as_ref(), &context, ctx),
+            under,
+            said: context,
+            face,
+            planes: None,
+            open_planes: false,
             rows,
             lit: None,
             pointed: None,
@@ -732,6 +857,15 @@ impl SelectOther {
             CanvasItem::SelectOther => {
                 menu.list();
                 return None;
+            }
+            // Its planes opened beside it, a plane to be chosen there.
+            CanvasItem::CreateSketch => {
+                menu.open_planes = true;
+                return None;
+            }
+            CanvasItem::SketchOnFace => {
+                let face = menu.under.as_ref()?.plane.as_ref()?.stored.clone().ok()?;
+                CanvasAct::SketchOnFace(face)
             }
             CanvasItem::Act(act) => act,
         };
@@ -1009,6 +1143,7 @@ fn under_of(
         maker,
         body_name: named(facts.names, &body.feature),
         body: body.feature.clone(),
+        plane: None,
     })
 }
 
@@ -1059,7 +1194,14 @@ fn row_of(hit: &Hit, named_as: &MeshElement, names: &dyn Fn(&FeatureId) -> Optio
 /// The context menu (`crate::canvas_menu`): the pointer onto an item lights it, and a click
 /// chooses it.
 fn context_ui(ui: &mut Ui, menu: &mut Menu, act: &mut Option<Act>) {
-    let (pointed, clicked) = menu.context.draw(ui, menu.lit);
+    let open_planes = std::mem::take(&mut menu.open_planes);
+    let drawn = menu.context.draw(ui, menu.lit, open_planes);
+    let (pointed, clicked) = (drawn.pointed, drawn.clicked);
+    menu.planes = drawn.planes;
+    if let Some(plane) = drawn.plane {
+        *act = Some(Act::Plane(plane));
+        return;
+    }
     // An item the pointer has moved onto lights (the prototype's mouseover); one it rests on
     // doesn't take the light back from the keys.
     if pointed.is_some() && pointed != menu.pointed {
@@ -1253,13 +1395,19 @@ mod tests {
             listable: rows > 0,
             edit_off: None,
             selected: false,
+            sketch_off: Some("Close the open dialog first".to_owned()),
         };
-        // Over nothing, nothing selected: Fit and Home on, Clear selection off, and Select
-        // Other… on with rows.
+        // Over nothing, nothing selected, sketch mode unable to open: Fit and Home on, Clear
+        // selection and Create Sketch off, and Select Other… on with rows.
         Menu {
             phase,
             at: Pos2::ZERO,
             context: CanvasMenu::new(None, &context, &ctx),
+            under: None,
+            said: context,
+            face: None,
+            planes: None,
+            open_planes: false,
             rows: (1..=u32::try_from(rows).unwrap()).map(row).collect(),
             lit: None,
             pointed: None,
@@ -1294,7 +1442,8 @@ mod tests {
         assert!(list.lit.is_some_and(|at| at < 4));
         // An empty list lights nothing; a context menu steps through its items that are on
         // (Fit, Home view, and Select Other… with rows; Clear selection off, as nothing is
-        // selected): back from none to the last on, Select Other…, and on round to Fit.
+        // selected, and Create Sketch, as sketch mode can't open): back from none to the last
+        // on, Select Other…, and on round to Fit.
         let mut empty = menu(0, Phase::List);
         empty.step(1);
         assert_eq!(empty.lit, None);
@@ -1889,6 +2038,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            sketch_off: None,
         };
         let kept = |swallowing: bool, kinds: &[LeftKind]| -> (Vec<LeftKind>, bool) {
             let mut so = SelectOther {
@@ -1944,6 +2094,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            sketch_off: None,
         };
         let at = |at_px: [f32; 2]| {
             let mut so = SelectOther::default();
@@ -1978,6 +2129,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            sketch_off: None,
         };
         let (mut selection, mut view) = (Selection::default(), View::default());
         let mut so = SelectOther::default();
@@ -2039,6 +2191,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            sketch_off: None,
         };
         let (mut selection, mut view) = (Selection::default(), View::default());
         let mut so = SelectOther::default();
