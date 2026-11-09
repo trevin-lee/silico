@@ -249,19 +249,12 @@ pub fn retype<P: Clients + 'static>(h: &mut AppUi<P>, label: &str, old: &str, ne
     assert_eq!(input(h, label).value().as_deref(), Some(new));
 }
 
-/// The dialog's checkbox on the row labelled `label` clicked: the box itself, found on its
-/// label's row, as a person finds it (the box carries no label of its own in the tree: it's
-/// `labelled_by` its row's, dialog.rs's `Value::Toggle`, which a query by label doesn't
-/// follow).
+/// The dialog's checkbox labelled `label` clicked (dialog.rs's `Value::Toggle`, named as its
+/// row's key).
 pub fn tick<P: Clients + 'static>(h: &mut AppUi<P>, label: &str) {
-    let row = dialog(h).get_by_label(label).rect();
-    let on_row: Vec<Pos2> = dialog(h)
-        .query_all_by_role(Role::CheckBox)
-        .map(|b| b.rect().center())
-        .filter(|c| c.y >= row.min.y && c.y <= row.max.y)
-        .collect();
-    assert_eq!(on_row.len(), 1, "one box on {label}'s row");
-    click_at(h, on_row[0], false);
+    dialog(h)
+        .get_by_role_and_label(Role::CheckBox, label)
+        .click();
     step(h);
 }
 

@@ -799,19 +799,10 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
             let ppp = frame.pixels_per_point;
             frame.rect.min + eframe::egui::vec2(px[0] as f32 / ppp, px[1] as f32 / ppp)
         };
-        // A convex edge first, the base's end's top, (60, y, 5), clicked at its middle,
-        // (60, 20, 5): an edge of the pad's, from the L's corner at (60, 5). So a click at
-        // a place the frame shows reaches the ID buffer's edges.
-        click_at(h, screen_of(h, [60.0, 20.0, 5.0]), false);
-        step_until(h, "the base's end's top edge selected", |h| {
-            let names = selected_names(h);
-            names.len() == 1 && names[0].starts_with(&format!("{pad}.pad.Edge("))
-        });
-        let convex = selected_names(h);
-        // The inside corner, clicked at its middle, and the click answered. Finding N5: a
-        // concave edge loses every pixel of its line to the two faces it joins, which rise
-        // toward the eye from it, so the click picks a face (the one above the line, or the
-        // one below it, within 2 points of it either way) and never the edge.
+        // The inside corner, a concave edge, clicked at its middle (N5, fixed by #424: each
+        // edge is drawn again for picking 2 pixels of depth toward the eye, so the faces it
+        // joins, rising toward the eye from it, no longer hide it), and the click answered.
+        let before = selected_names(h);
         let at = screen_of(h, [5.0, 20.0, 5.0]);
         assert!(
             clear(h, at, 4.0),
@@ -820,14 +811,18 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         );
         click_at(h, at, false);
         step_until(h, "the click on the corner answered", |h| {
-            selected_names(h) != convex
+            selected_names(h) != before
         });
         phase("the fillet's pick");
         assert_eq!(
             selected_names(h),
             [corner.as_str()],
-            "the inside corner's edge, clicked (finding N5: a concave edge can't be picked)"
+            "the inside corner's edge, clicked at {at:?}"
         );
+        record(&format!(
+            "the corner's middle, (5, 20, 5), clicked at {at:?}: selected {:?}",
+            selected_names(h)
+        ));
         modify(h, "Fillet");
         added(h);
         assert_eq!(boxed(h), [corner.as_str()]);
