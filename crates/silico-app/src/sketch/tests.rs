@@ -4016,6 +4016,21 @@ fn a_second_modify_box_of_one_sketch_mode_takes_the_keyboard_as_the_first_did() 
 }
 
 #[test]
+fn a_second_modify_box_of_one_sketch_mode_has_a_field_of_its_own() {
+    // One sketch mode's boxes 1 and 2, one after the other: each takes the keyboard into
+    // its own box's field, so nothing the first box's field kept (its cursor, its undo) is
+    // the second's (the review's T5).
+    let owner = egui::Id::new("a sketch mode");
+    let cell = std::rc::Rc::new(std::cell::Cell::new(None));
+    let mut h = boxes_harness(std::rc::Rc::clone(&cell));
+    let first = keyboard_after(&mut h, &cell, (owner, 1));
+    let second = keyboard_after(&mut h, &cell, (owner, 2));
+    assert_eq!(first, Some(dimension::modify_field(owner, 1)));
+    assert_eq!(second, Some(dimension::modify_field(owner, 2)));
+    assert_ne!(first, second);
+}
+
+#[test]
 fn leaving_the_modify_boxs_field_by_esc_accepts_nothing_and_enter_accepts() {
     use dimension::ModifyAction;
     let field = dimension::modify_field(egui::Id::new("a sketch mode"), 7);

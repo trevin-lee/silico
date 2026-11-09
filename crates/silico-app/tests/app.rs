@@ -21282,6 +21282,48 @@ fn a_later_sketchs_modify_box_opens_with_its_cursor_after_its_value_not_where_an
 }
 
 #[test]
+fn a_second_modify_box_of_one_sketch_opens_with_its_cursor_after_its_value_not_where_the_first_left_it()
+ {
+    // One sketch's first box, on its right side's "20": Home (its cursor to the start), then
+    // Enter, its 20 placed. Its second, on the top's "40", picked at (20, 20) and placed at
+    // (20, 30): two Backspaces and "30" give "30", not "3040" (the first box's cursor
+    // carried over; the review's T5).
+    use eframe::egui::Key;
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    rectangle_dimensioned(&f, &mut h);
+    step(&mut h);
+    assert!(modify_field(&h).unwrap().is_focused());
+    pressed(&mut h, &[Key::Home]);
+    h.key_press(Key::Enter);
+    step(&mut h);
+    settled(&mut h);
+    read_with_constraints(&mut h, 7);
+    dimension_at(&f, &mut h, [20.0, 20.0], [20.0, 30.0], "40");
+    step_until(&mut h, "the second box drawn", |h| {
+        modify_field(h).is_some()
+    });
+    step(&mut h);
+    assert!(modify_field(&h).unwrap().is_focused());
+    pressed(&mut h, &[Key::Backspace, Key::Backspace]);
+    modify_field(&h).unwrap().type_text("30");
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        modify_field(&h).and_then(|field| field.value()).as_deref(),
+        Some("30")
+    );
+    h.key_press(Key::Enter);
+    step(&mut h);
+    settled(&mut h);
+    read_with_constraints(&mut h, 8);
+    leave_sketch(&mut h, true);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn the_sketch_bar_and_the_palette_are_bounded_around_their_controls_in_the_tree() {
     // Each panel's group in the accessibility tree has bounds of its own (a ui's node, which
     // egui bounds no other way): its area's rectangle, within half a point, at one pixel a
