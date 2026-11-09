@@ -1108,3 +1108,50 @@ fn a_line_from_the_origin_to_a_fixed_point_off_level_keeps_its_starts_relations(
         ])]
     );
 }
+
+#[test]
+fn a_newer_read_of_the_same_sketch_with_other_states_is_judged_by_its_states() {
+    // #431 round 3, T14. q0000001 (10, 10) and q0000002 (40, 10.785), both free: a line from
+    // the first to the second is 1.5° off level, so the pointer finds `horizontal`, their Y
+    // classes free and apart: shown. Then a newer read, as the app gives the tool each one:
+    // a revision on, its sketch the same (as the read of an add the view already held is,
+    // where the solve moved nothing: a dimension placed at its measured value, say), its
+    // states marking both points fully defined. The classes are built again for the new
+    // states (`ViewClasses::keep_for` keys them by the view and the states), so both Y
+    // classes are fixed and the `horizontal` goes (Rule E: added, it would conflict): not
+    // shown at the same place, and not added.
+    let mut s = empty();
+    s.points.push(point("q0000001", 10.0, 10.0));
+    s.points.push(point("q0000002", 40.0, 10.785));
+    let mut d = Drive::new(ToolKind::Line, s);
+    d.to(10.0, 10.0).press(10.0, 10.0).to(40.0, 10.785);
+    assert!(shows(&d, &Relation::Horizontal));
+    fixed(&mut d, &["q0000001", "q0000002"]);
+    d.revision = d.revision.next().unwrap();
+    d.to(40.0, 10.785);
+    assert!(!shows(&d, &Relation::Horizontal));
+    d.release(40.0, 10.785);
+    assert_eq!(d.made.len(), 1);
+    assert_eq!(types(&d), Vec::<&str>::new());
+}
+
+#[test]
+fn a_line_beside_a_level_line_named_as_the_tools_unnamed_line_keeps_its_horizontal() {
+    // #431 round 3, T15. A level line named zz000002, (10, 50) to (50, 50), its points
+    // fz000002 and tz000002: the tools' first three unnamed IDs are zz000000 and zz000001
+    // for a gesture's points and, zz000002 being a curve of the view, zz000003 for its
+    // line. A new line from (10, 10) to (40, 10.785), both ends free: its `horizontal` is
+    // judged on its own ends, free and apart, so it stays. Named zz000002, the gesture's
+    // line would be taken for the level line, whose ends are level already, and the
+    // `horizontal` would go.
+    let s = with_line(empty(), "zz000002", [10.0, 50.0], [50.0, 50.0]);
+    let s = constrained(
+        s,
+        vec![Form::Horizontal {
+            line: el("zz000002"),
+        }],
+    );
+    let mut d = Drive::new(ToolKind::Line, s);
+    d.drag([10.0, 10.0], [40.0, 10.785]);
+    assert_eq!(types(&d), ["horizontal"], "{:?}", d.adds());
+}
