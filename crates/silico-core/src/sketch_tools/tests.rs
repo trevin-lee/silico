@@ -2211,8 +2211,10 @@ fn for_construction_the_preview_of_a_rectangle_under_way_is_construction() {
 
 #[test]
 fn the_preview_shows_what_the_click_would_add() {
-    // Hovering 0.1 mm off the x axis mid-line: the line under way to (40, 0), `on` x_axis and
-    // horizontal; the same as what the release adds (the G test).
+    // Hovering 0.1 mm off the x axis mid-line: the line under way to (40, 0), each end `on`
+    // x_axis, and no `horizontal`, which the two `on`s already make it; the same as what the
+    // release adds (the G test; #278's G as amended (Fable, 2026-11-08,
+    // g5-redundant-autoconstraints-fable.md)).
     let mut d = Drive::new(ToolKind::Line, empty());
     d.press(10.0, 0.1).to(40.0, -0.1);
     let preview = d.tool.preview();
@@ -2223,7 +2225,6 @@ fn the_preview_shows_what_the_click_would_add() {
         [
             &Relation::On(Reference::XAxis),
             &Relation::On(Reference::XAxis),
-            &Relation::Horizontal,
         ]
     );
 }

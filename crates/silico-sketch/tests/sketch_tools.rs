@@ -334,13 +334,39 @@ fn a_closed_chain_solves_as_its_horizontals_and_verticals_hold_it() {
 }
 
 #[test]
-fn a_redundant_horizontal_the_pointer_showed_is_kept_and_read_redundant() {
-    // #278's G: a line with both ends on the x axis, and horizontal. Four unknowns, two
-    // independent equations (each end's y): two freedoms, and one of the three relations
-    // repeats the others, read as redundant; the sketch's state by its freedoms, under
-    // defined (M5.0's item 32, Addendum 2).
+fn a_horizontal_both_ends_on_the_axis_fix_is_left_out_by_the_tool_and_read_redundant_written_by_hand()
+ {
+    // #278's G as amended (Fable, 2026-11-08, g5-redundant-autoconstraints-fable.md): a line
+    // with both ends on the x axis, the line between them level by the two `on`s. The tool
+    // leaves its `horizontal` out: two constraints, none redundant, two freedoms (four
+    // unknowns, each end's y fixed).
     let mut f = opened(ToolKind::Line);
     f.drag([10.0, 0.1], [40.0, -0.1]);
+    let read = f.read();
+    assert_eq!(read.states.dofs, 2);
+    assert_eq!(read.states.state, SketchState::UnderDefined);
+    assert_eq!(read.members.constraints.len(), 2);
+    assert!(
+        read.states
+            .constraints
+            .values()
+            .all(|s| *s == ConstraintState::Satisfied),
+        "{:?}",
+        read.states.constraints
+    );
+    // The same sketch with the `horizontal` written by hand, as an agent or a person may: one
+    // of the three relations repeats the others, read redundant, the freedoms the same two,
+    // the sketch's state by them, under defined (M5.0's item 32, Addendum 2).
+    let line = read.members.lines[0].id.clone();
+    f.sketch_add(&Members {
+        constraints: vec![silico_core::document::SketchConstraint {
+            id: ElementId::new("k0000001").unwrap(),
+            form: Form::Horizontal {
+                line: Reference::Element(line),
+            },
+        }],
+        ..Members::default()
+    });
     let read = f.read();
     assert_eq!(read.states.dofs, 2);
     assert_eq!(read.states.state, SketchState::UnderDefined);
