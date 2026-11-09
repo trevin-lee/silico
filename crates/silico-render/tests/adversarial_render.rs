@@ -1760,3 +1760,127 @@ fn a_highlight_on_a_face_with_no_triangles_or_a_body_of_one_point_draws_without_
     call(&mut w, &scene).unwrap();
     still_draws(&mut w);
 }
+
+/// A coordinate of a strip's point: in range, or one of the values `Strips::new` refuses.
+fn coordinate() -> impl Strategy<Value = f64> {
+    prop_oneof![
+        8 => -1e6f64..1e6,
+        1 => prop_oneof![
+            Just(f64::NAN),
+            Just(f64::INFINITY),
+            Just(f64::NEG_INFINITY),
+            Just(1.000_000_1e12),
+            Just(-1.000_000_1e12),
+            Just(f64::MAX),
+            Just(f64::MIN),
+        ],
+        1 => prop_oneof![Just(1e12), Just(-1e12), Just(0.0), Just(-0.0), Just(f64::MIN_POSITIVE)],
+    ]
+}
+
+#[test]
+fn hostile_strips_are_refused_naming_the_first_bad_strip_and_point_or_kept_with_their_box() {
+    // `/break-it` on the frame's lines (`Strips::new`): polylines of 0 to 6 points, each
+    // coordinate in range or one of the values to refuse (NaN, infinities, past 10^12, f64's
+    // ends), or at the bound itself. Each set is made exactly when every strip has two points
+    // or more, each coordinate finite and at most 10^12 from the origin; then it keeps every
+    // strip and point, and its box is theirs. Otherwise it's refused naming `lines`, and the
+    // first strip in order that's short or holds a bad point: its count, or that point.
+    use silico_render::render::Strips;
+    let mut runner = TestRunner::new_with_rng(
+        Config {
+            cases: 2000,
+            failure_persistence: None,
+            ..Config::default()
+        },
+        TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+    );
+    let strategy = prop::collection::vec(
+        prop::collection::vec([coordinate(), coordinate(), coordinate()], 0..7),
+        0..6,
+    );
+    runner
+        .run(&strategy, |polylines| {
+            let fine = |c: f64| c.is_finite() && c.abs() <= 1e12;
+            let first_bad = polylines.iter().enumerate().find_map(|(k, strip)| {
+                if strip.len() < 2 {
+                    return Some(format!("strip {k} has {} point(s)", strip.len()));
+                }
+                strip
+                    .iter()
+                    .position(|p| !p.iter().all(|c| fine(*c)))
+                    .map(|i| format!("strip {k}'s point {i}, "))
+            });
+            match (Strips::new(polylines.clone()), first_bad) {
+                (Ok(strips), None) => {
+                    prop_assert_eq!(strips.len(), polylines.len());
+                    let points: usize = polylines.iter().map(Vec::len).sum();
+                    prop_assert_eq!(strips.points(), points);
+                    let all: Vec<[f64; 3]> = polylines.into_iter().flatten().collect();
+                    let want = all.first().map(|first| {
+                        all.iter().fold((*first, *first), |(lo, hi), p| {
+                            (
+                                std::array::from_fn(|k| lo[k].min(p[k])),
+                                std::array::from_fn(|k| hi[k].max(p[k])),
+                            )
+                        })
+                    });
+                    prop_assert_eq!(strips.bounds(), want);
+                }
+                (Err(refused), Some(said)) => {
+                    prop_assert_eq!(refused.parameter, "lines");
+                    prop_assert!(
+                        refused.message.starts_with(&said),
+                        "{} / {}",
+                        refused.message,
+                        said
+                    );
+                }
+                (made, want) => {
+                    prop_assert!(false, "made {:?}, the first bad {:?}", made, want);
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_million_points_are_made_into_strips_at_once_and_one_bad_point_at_their_end_refused() {
+    // A sketch of a great many curves: a million points in 500,000 strips of two, made in
+    // one pass; the same with the last point NaN refused, naming it.
+    use silico_render::render::Strips;
+    let strips = |last: f64| {
+        (0..500_000u32).map(move |k| {
+            let x = f64::from(k);
+            let end = if k == 499_999 { last } else { x };
+            vec![[x, 0.0, 0.0], [end, 1.0, 0.0]]
+        })
+    };
+    let started = Instant::now();
+    let made = Strips::new(strips(499_999.0)).unwrap();
+    assert!(started.elapsed() < LIMIT, "{:?}", started.elapsed());
+    assert_eq!((made.len(), made.points()), (500_000, 1_000_000));
+    assert_eq!(
+        made.bounds(),
+        Some(([0.0, 0.0, 0.0], [499_999.0, 1.0, 0.0]))
+    );
+    // Each strip's points by its place, the first, a middle one, and the last; none past it.
+    assert_eq!(made.strip(0), Some(&[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]][..]));
+    assert_eq!(
+        made.strip(1234),
+        Some(&[[1234.0, 0.0, 0.0], [1234.0, 1.0, 0.0]][..])
+    );
+    assert_eq!(
+        made.strip(499_999),
+        Some(&[[499_999.0, 0.0, 0.0], [499_999.0, 1.0, 0.0]][..])
+    );
+    assert_eq!(made.strip(500_000), None);
+    let refused = Strips::new(strips(f64::NAN)).unwrap_err();
+    assert_eq!(refused.parameter, "lines");
+    assert!(
+        refused.message.starts_with("strip 499999's point 1, "),
+        "{}",
+        refused.message
+    );
+}

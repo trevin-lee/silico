@@ -388,6 +388,17 @@ impl Strips {
         self.points.len()
     }
 
+    /// The `k`th strip's points, in order; none past the last.
+    pub fn strip(&self, k: usize) -> Option<&[[f64; 3]]> {
+        let end = *self.ends.get(k)?;
+        let start = k
+            .checked_sub(1)
+            .and_then(|k| self.ends.get(k))
+            .copied()
+            .unwrap_or(0);
+        self.points.get(start..end)
+    }
+
     /// Each strip's points, in order, and its box.
     fn strips(&self) -> impl Iterator<Item = (&[[f64; 3]], Bounds)> {
         let starts = std::iter::once(0).chain(self.ends.iter().copied());

@@ -42,6 +42,10 @@
 //! edges (`Renderer::placed`, where every edge's box is tested against the square) by their
 //! medians; the batch's cost is the difference.
 //!
+//! Then shown sketches' lines (`Frame::lines`): the part with 50 sets of 200 circles, 220,000
+//! points, still and orbiting, with and without them, each run's frames and the CPU's
+//! placing by their medians.
+//!
 //! Recorded, never budgeted: it fails on no time. Run with
 //! `SILICO_KERNEL_WORKER=target/release/silico-kernel-worker SILICO_BENCH_BREP=part.brep
 //! pixi run cargo bench -p silico-render --bench picking`, the B-rep Silico's (as
@@ -239,6 +243,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     out += &cast(&mesh, extent, View::Fitted);
     out += &cast(&mesh, extent, View::Crowd);
     out += &edge_batch(&mut renderer, &device, &queue, &mesh, extent, &mut serial)?;
+    out += &sketch_lines(&mut renderer, &device, &queue, &mesh, &mut serial)?;
     std::io::stdout().write_all(out.as_bytes())?;
     Ok(())
 }
@@ -349,6 +354,133 @@ fn edge_batch(
             "edge_batch copies 10 edges {edges_drawn} size {width}x{height} view {} edges_picked {} renderer_frame_median_ms {:.2} renderer_frame_p95_ms {:.2} placed_median_ms {:.3} picks_answered {answered}/{FRAMES} picks_with_an_edge {on_edges}\n",
             if orbiting { "orbiting" } else { "still" },
             if edges { "on" } else { "off" },
+            ms(times[FRAMES / 2]),
+            ms(times[FRAMES * 95 / 100]),
+            ms(placing[FRAMES / 2]),
+        );
+    }
+    Ok(out)
+}
+
+/// Shown sketches' lines (`Frame::lines`, docs/design/m5.0-app.md section 10, the study's
+/// heavy case): the part as body 1 at 1920 by 1080, with 50 sets of lines, each 200 circles
+/// of 22 points (21 segments, a 2.75 mm circle's at 0.125 mm a point) spread over the part's
+/// box in 50 planes along z, 220,000 points in all; the view still and orbiting, with the
+/// lines and without, picking each frame as the hover does. Each line gives the frames'
+/// median and the median of the CPU's placing (`Renderer::placed`, the lines' strips placed
+/// in f64 about the camera with the faces and edges); the lines' cost is the difference.
+fn sketch_lines(
+    renderer: &mut Renderer,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    mesh: &Mesh,
+    serial: &mut u64,
+) -> Result<String, Box<dyn Error>> {
+    use silico_render::render::{Lines, Strips};
+    const SETS: usize = 50;
+    const CIRCLES: usize = 200;
+    const POINTS: usize = 22;
+    let (width, height) = (1920u32, 1080u32);
+    let (low, high) = bounds(mesh);
+    let target: [f64; 3] = std::array::from_fn(|k| (low[k] + high[k]) / 2.0);
+    let reach = (0..3)
+        .map(|k| (high[k] - low[k]) / 2.0)
+        .map(|h| h * h)
+        .sum::<f64>()
+        .sqrt();
+    let radius = (high[0] - low[0]).min(high[1] - low[1]) / 40.0;
+    let strips: Vec<Strips> = (0..SETS)
+        .map(|set| {
+            let z = low[2] + (high[2] - low[2]) * set as f64 / (SETS - 1) as f64;
+            let circles = (0..CIRCLES).map(|c| {
+                let (col, row) = ((c % 20) as f64, (c / 20) as f64);
+                let centre = [
+                    low[0] + (high[0] - low[0]) * (col + 0.5) / 20.0,
+                    low[1] + (high[1] - low[1]) * (row + 0.5) / 10.0,
+                ];
+                (0..POINTS)
+                    .map(|i| {
+                        let angle = std::f64::consts::TAU * i as f64 / (POINTS - 1) as f64;
+                        [
+                            centre[0] + radius * libm::cos(angle),
+                            centre[1] + radius * libm::sin(angle),
+                            z,
+                        ]
+                    })
+                    .collect::<Vec<_>>()
+            });
+            Strips::new(circles).map_err(|e| e.message)
+        })
+        .collect::<Result<_, _>>()?;
+    let points: usize = strips.iter().map(Strips::points).sum();
+    let sets: Vec<Lines<'_>> = strips
+        .iter()
+        .map(|strips| Lines {
+            strips,
+            colour: [0x7a, 0x95, 0xff, 0xff],
+            width: 1.5,
+        })
+        .collect();
+    let mut out = String::new();
+    for (orbiting, drawn) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut frame = |i: usize, serial: u64| {
+            let camera = orbit(target, reach, if orbiting { i } else { 0 });
+            let picking = PixelRect {
+                min: [
+                    i32::try_from(width / 3).unwrap_or(0),
+                    i32::try_from(height / 3).unwrap_or(0),
+                ],
+                size: [SQUARE, SQUARE],
+            };
+            let started = Instant::now();
+            let commands = renderer
+                .prepare(&Frame {
+                    serial,
+                    camera: &camera,
+                    size_px: [width, height],
+                    pixels_per_point: 1.0,
+                    bodies: &[1],
+                    highlights: &[],
+                    hovered: &[],
+                    outlines: Outlines::DEFAULT,
+                    picking: Some(picking),
+                    edges: true,
+                    vertices: None,
+                    // None, as the app's frames (its theme's VIEWPORT_FRAME_BG).
+                    background: None,
+                    lines: if drawn { &sets } else { &[] },
+                })
+                .map_err(|f| f.to_string())?;
+            let placed = renderer.placed();
+            queue.submit([commands]);
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(Duration::from_secs(60)),
+                })
+                .map_err(|e| e.to_string())?;
+            renderer.take_picking();
+            Ok::<_, String>((started.elapsed(), placed))
+        };
+        for i in 0..3 {
+            *serial += 1;
+            frame(i, *serial)?;
+        }
+        let mut times = Vec::with_capacity(FRAMES);
+        let mut placing = Vec::with_capacity(FRAMES);
+        for i in 0..FRAMES {
+            *serial += 1;
+            let (took, placed) = frame(i, *serial)?;
+            times.push(took);
+            placing.push(placed);
+        }
+        times.sort();
+        placing.sort();
+        let ms = |d: Duration| d.as_secs_f64() * 1e3;
+        out += &format!(
+            "sketch_lines sets {SETS} points {points} size {width}x{height} view {} lines {} renderer_frame_median_ms {:.2} renderer_frame_p95_ms {:.2} placed_median_ms {:.3}\n",
+            if orbiting { "orbiting" } else { "still" },
+            if drawn { "on" } else { "off" },
             ms(times[FRAMES / 2]),
             ms(times[FRAMES * 95 / 100]),
             ms(placing[FRAMES / 2]),

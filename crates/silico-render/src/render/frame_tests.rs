@@ -4448,6 +4448,27 @@ fn a_line_over_the_background_and_one_on_an_edge_are_drawn_over_them() {
                 BLACK
             );
             assert_magenta_row(&over, 15, 12, 49);
+            // With no background, as the app's frames: composited over what the pass holds
+            // (green here), the line as opaque as over a background of its own, and the pass's
+            // own colour beside it, above the box (row 5) and between it and the box (row 18).
+            let commands = r
+                .prepare(&Frame {
+                    lines: &[magenta(&above)],
+                    background: NO_BACKGROUND,
+                    ..frame(&camera, &[1], &[], None)
+                })
+                .unwrap();
+            let green = wgpu::Color {
+                r: 0.0,
+                g: 1.0,
+                b: 0.0,
+                a: 1.0,
+            };
+            let bare = composited_over(r, Some(commands), green);
+            assert_magenta_row(&bare, 15, 12, 49);
+            for y in [5, 18] {
+                assert_eq!(pixel(&bare, 32, y), [0, 255, 0, 255], "(32, {y})");
+            }
             // Along the front face's top edge (Edge3, z = 10, row 20.73): the edge's dark
             // without it, the line drawn after the edges over it (the prototype's
             // `renderOrder` 4 against the edges' 2 and 3). Row 20's centre is 0.23 from the
