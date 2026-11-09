@@ -121,12 +121,13 @@ impl Fingerprint {
     }
 
     /// Whether it records its centre of mass. One written since Silico stored the centre
-    /// (#389) holds it, or leaves it out with its box, for a solid with nothing in it; one
-    /// with a box and no centre was written before (Fable's decision of 2026-11-09): it
-    /// recorded no centre, so a rebuild isn't compared on one (`check` warns
-    /// `fingerprint_incomplete`, and `format` or a commit that reaches the feature writes it
-    /// in). Its other fields say so exactly: a centre left out alone is no fingerprint
-    /// [`Fingerprint::of`] writes.
+    /// (#389) holds it, or leaves it out with its box, for a solid with nothing in it. A box
+    /// with no centre is a shape no Silico since then writes ([`Fingerprint::of`] leaves the
+    /// centre out exactly when it leaves the box out): written before, or edited by hand. It
+    /// recorded no centre, so a rebuild isn't compared on one (Fable's decision of
+    /// 2026-11-09): `check` warns `fingerprint_incomplete`, and `format` or a commit that
+    /// reaches the feature writes it in, as a fingerprint left out whole is only
+    /// `fingerprint_missing`.
     pub fn records_center(&self) -> bool {
         self.center.is_some() || self.bbox.is_none()
     }

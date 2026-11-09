@@ -690,9 +690,9 @@ impl Checking {
     /// warn of ([`spared`](Self::spared)), and the drift it doesn't say, of the features the
     /// edits reached (decision 28: a commit writes their records anew). One place for both,
     /// so a timeline's marks never disagree with the check of the same model.
-    pub(super) fn excepted(&self, reached: &Reached) -> Excepted {
+    pub(super) fn excepted(&self, model: &Model, reached: &Reached) -> Excepted {
         Excepted {
-            spared: self.spared(reached).into_owned(),
+            spared: self.spared(model, reached).into_owned(),
             drift: reached.get().clone(),
         }
     }
@@ -711,7 +711,16 @@ impl Checking {
     /// session's revision's model is published, as everything else of that revision is. A
     /// model of the session's revision has the session's document, which stores what it
     /// does.
-    pub(super) fn spared<'a>(&'a self, reached: &'a Reached) -> Cow<'a, BTreeSet<FeatureId>> {
+    ///
+    /// A fingerprint stored now that lacks a measure a later Silico added (its centre,
+    /// `fingerprint_incomplete`) spares a feature only where the model's document stored
+    /// none: the file isn't missing one, but the model can't say it's incomplete. Where the
+    /// model's document stored one too, its incomplete record is warned of, as the file's is.
+    pub(super) fn spared<'a>(
+        &'a self,
+        model: &Model,
+        reached: &'a Reached,
+    ) -> Cow<'a, BTreeSet<FeatureId>> {
         let committing = reached.committing(self);
         let Checking::Older { open, now, .. } = self else {
             return Cow::Borrowed(committing);
@@ -728,10 +737,21 @@ impl Checking {
         } else {
             BTreeSet::new()
         };
+        let stored_then: BTreeSet<&FeatureId> = model
+            .document()
+            .features
+            .iter()
+            .filter(|feature| feature.fingerprint.is_some())
+            .map(|feature| &feature.id)
+            .collect();
         spared.extend(
             now.features
                 .iter()
-                .filter(|feature| feature.fingerprint.is_some())
+                .filter(|feature| {
+                    feature.fingerprint.as_ref().is_some_and(|stored| {
+                        stored.records_center() || !stored_then.contains(&feature.id)
+                    })
+                })
                 .map(|feature| feature.id.clone()),
         );
         Cow::Owned(spared)

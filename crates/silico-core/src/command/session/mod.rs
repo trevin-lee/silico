@@ -1129,7 +1129,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     let _span = tracing::info_span!("check").entered();
                     Ok(CheckAnswer::of(
                         read.model(),
-                        &read.checking.excepted(read.reached),
+                        &read.checking.excepted(read.model(), read.reached),
                     ))
                 },
             ),
@@ -1199,7 +1199,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     let _span = tracing::info_span!("check", fresh).entered();
                     Ok(CheckAnswer::of(
                         &current.model,
-                        &current.checking.excepted(&current.reached),
+                        &current.checking.excepted(&current.model, &current.reached),
                     ))
                 }
                 Err(Unbuilt::Gated { gated, .. }) => Ok(CheckAnswer::refused(gated.problems())),

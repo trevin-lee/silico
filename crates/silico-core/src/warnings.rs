@@ -3,7 +3,7 @@
 //! its own ([`WarningCode`]). A warning never refuses a command, blocks a save, or sets an
 //! exit code.
 //!
-//! Four codes, each from the model alone, so a gate's refusal (no model) has none:
+//! Five codes, each from the model alone, so a gate's refusal (no model) has none:
 //! - `ends_not_joined` (M3.2's D2): ends of a sketch's profile curves (lines and arcs that
 //!   aren't construction geometry) that are separate points FreeCAD would join, on the sketch
 //!   as it solved: points strictly closer than FreeCAD's joining distance, 1e-7 mm, grouped
@@ -66,8 +66,8 @@
 //!
 //! **Order:** by timeline (the document's features, in order), then by code, in
 //! [`WarningCode`]'s order (`ends_not_joined`, `constraints_redundant`,
-//! `fingerprint_missing`, `constraints_partially_redundant`), then, for a sketch's
-//! `ends_not_joined`, by cluster, by its least point ID. The first
+//! `fingerprint_missing`, `constraints_partially_redundant`, `fingerprint_incomplete`), then,
+//! for a sketch's `ends_not_joined`, by cluster, by its least point ID. The first
 //! [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED) are listed, all counted, as
 //! problems are. Nothing depends on the order the file lists a sketch's members in.
 

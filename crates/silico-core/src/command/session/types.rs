@@ -678,8 +678,11 @@ impl TimelineAnswer {
                 };
             }
         };
-        let Timeline { features, bodies } =
-            timeline(document, Some(model), &read.checking.excepted(read.reached));
+        let Timeline { features, bodies } = timeline(
+            document,
+            Some(model),
+            &read.checking.excepted(model, read.reached),
+        );
         TimelineAnswer {
             revision,
             model: Some(read.read.revision),

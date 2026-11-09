@@ -458,6 +458,33 @@ fn m4s_live_bracket_saved_before_centres_checks_with_no_error_and_a_warning_a_fe
     );
     let formatted = std::fs::read_to_string(&file).unwrap();
     assert_eq!(formatted.matches(r#""center": ["#).count(), fingerprints);
+    // The centres it wrote, by hand, to the nanometre: the base leg 60 × 40 × 5 at its
+    // middle, (30, 20, 2.5); the upright 5 × 40 × 50, (2.5, 20, 25); and their fuse, the
+    // two less the 5 × 40 × 5 block they share at (2.5, 20, 2.5), so x = (12000 · 30 +
+    // 10000 · 2.5 − 1000 · 2.5) / 21000 = 382500 / 21000 and z = (12000 · 2.5 + 10000 · 25
+    // − 1000 · 2.5) / 21000 = 277500 / 21000, y 20.
+    let document = silico_core::document::read(formatted.as_bytes()).unwrap();
+    let centre = |feature: &str| {
+        document
+            .features
+            .iter()
+            .find(|f| f.id.as_str() == feature)
+            .and_then(|f| f.fingerprint.as_ref())
+            .and_then(|f| f.center)
+            .map(|c| c.map(silico_core::document::Length::nm))
+            .unwrap_or_else(|| panic!("{feature} has no centre"))
+    };
+    let nm = |mm: f64| (mm * 1e6).round() as i64;
+    for (feature, want) in [
+        ("base0000", [30.0, 20.0, 2.5]),
+        ("rght0000", [2.5, 20.0, 25.0]),
+        (
+            "merge000",
+            [382_500.0 / 21_000.0, 20.0, 277_500.0 / 21_000.0],
+        ),
+    ] {
+        assert_eq!(centre(feature), want.map(nm), "{feature}");
+    }
     let again = silico(&scratch, &["check"], &file);
     assert_eq!(again.status.code(), Some(0));
     assert!(

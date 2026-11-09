@@ -8,6 +8,7 @@
 
 use super::model;
 
+use std::collections::BTreeSet;
 use std::f64::consts::PI;
 
 use model::{WAIT, checked, described, id, made, published};
@@ -18,8 +19,8 @@ use silico_core::document::{
 };
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::Op;
-use silico_core::recompute::{Recompute, RunOutcome};
-use silico_core::{Error, ErrorCode};
+use silico_core::recompute::{FeatureOutcome, Recompute, RunOutcome};
+use silico_core::{Error, ErrorCode, Warning, WarningCode};
 
 const HEAD: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": ["#;
 
@@ -504,17 +505,28 @@ fn a_centre_of_the_wrong_shape_is_refused_naming_it() {
 }
 
 #[test]
-fn a_centre_stored_as_a_solid_with_nothing_in_it_stores_it_is_drift_not_a_refusal() {
+fn a_box_or_centre_stored_alone_reads_and_is_drift_or_an_incomplete_fingerprint_not_a_refusal() {
     // A solid with nothing in it stores neither a centre nor a box. A file that stores a
     // centre without a box reads (the reader checks each field as written, not what a
     // kernel would measure), and the rebuild names what moved. A box without a centre is
     // a fingerprint written before Silico stored centres (#389), which recorded none: not
-    // compared on it, no drift (Fable's decision of 2026-11-09; `check` warns
-    // `fingerprint_incomplete`).
+    // compared on it, no drift (Fable's decision of 2026-11-09), and `check` warns
+    // `fingerprint_incomplete` of the feature, which built.
     let (_, model) = rebuilt(&block_with(
         r#"{"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
     ));
+    assert!(
+        matches!(
+            model.outcome(&id("k7f2qx3m")),
+            Some(FeatureOutcome::Built { .. })
+        ),
+        "{:?}",
+        model.outcome(&id("k7f2qx3m"))
+    );
     assert!(model.drift().is_empty(), "{:?}", model.drift());
+    let warnings = silico_core::warnings::of(&model, &BTreeSet::new());
+    let codes: Vec<_> = warnings.listed().iter().map(Warning::code).collect();
+    assert_eq!(codes, [WarningCode::FingerprintIncomplete], "{warnings:?}");
     for (fingerprint, field, said) in [
         (
             r#"{"volume": 8000, "area": 2800, "center": [20, 10, 5], "faces": 6, "edges": 12, "vertices": 8}"#,
