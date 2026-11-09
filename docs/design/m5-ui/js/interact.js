@@ -54,6 +54,14 @@
       case 'shortcuts': S.modal = { type: 'shortcuts', q: '' }; A.render(); setTimeout(() => { const i = $('[data-key="sc-q"]'); i && i.focus(); }, 0); return;
       case 'rebuild': if (d) A.resumeRebuild(); return;
       case 'rebuildAll': if (d) { A.startRebuild(d); A.toast('Rebuilding every feature, ignoring the cache'); } return;
+      // Trevin's ask of 2026-11-09: the file read again, then every feature rebuilt. A gone file drops
+      // nothing (Save As keeps the work); unsaved edits are asked about first, as Close asks.
+      case 'reload':
+        if (!d) return;
+        if (S.dialog) { A.toast('Finish or cancel the dialog first: Reload drops what it holds.'); return; }
+        if (d.disk === 'gone') { A.toast(`${d.file} is gone from disk: nothing to reload. Save As keeps your work`); return; }
+        if (A.dirty(d) && !d.untitled) { S.modal = { type: 'reloadDirty', file: d.file, edits: d.undo.length }; A.render(); return; }
+        A.startRebuild(d); A.toast(d.untitled ? 'Rebuilding every feature' : 'Reloaded from disk, rebuilding every feature'); return;
       case 'stop': A.stopRebuild(); return;
       case 'whatsWrong': if (d) { S.modal = { type: 'whatswrong' }; A.syncHighlight(); A.render(); } return;
       case 'createSketch': if (!d) { runCmd('newDoc'); return; } if (S.sketch) return; startPickPlane(); return;
@@ -165,6 +173,7 @@
         { label: 'Save', icon: 'save', keys: ['Mod', 'S'], disabled: !d, run: () => runCmd('save') },
         { label: 'Save As…', keys: ['Mod', 'Shift', 'S'], disabled: !d, run: () => runCmd('saveAs') },
         { label: 'Revert to saved', disabled: !d || !A.dirty(d), run: () => runCmd('revert') },
+        { label: 'Reload', icon: 'rebuild', keys: ['Mod', 'R'], disabled: !d || !!S.dialog, run: () => runCmd('reload') },
         'sep', { head: 'Export' },
         { label: '3MF (printable mesh)…', disabled: !d || !VP.model(), run: () => A.toast('Export runs off the UI thread; its own dialog shows progress and Stop.') },
         { label: 'STEP…', disabled: !d || !VP.model(), run: () => A.toast('Export runs off the UI thread; its own dialog shows progress and Stop.') },
@@ -199,7 +208,13 @@
       A.render();
     },
     toggleBrowser() { $('#main').classList.toggle('browser-collapsed'); A.render(); },
-    tlItem(el) { selectFeature(el.dataset.id); },
+    // Trevin's ask of 2026-11-09: ⌘/Ctrl-click on the selected item takes it out; a click on the track's
+    // empty space clears the selection (tlTrack); neither while a dialog's boxes hold the selection.
+    tlItem(el, e) {
+      if (e && isMod(e) && S.selFeature === el.dataset.id && !S.dialog) { S.selFeature = null; A.syncHighlight(); A.render(); return; }
+      selectFeature(el.dataset.id);
+    },
+    tlTrack(el, e) { if (e.target !== el || S.dialog) return; S.selFeature = null; S.sel = []; S.selRow = null; A.syncHighlight(); A.render(); },
     editFeature(el) { editFeature(el.dataset.id); },
     showFeature(el) { S.modal = null; selectFeature(el.dataset.id); },
     suppress(el) { const id = el.dataset.id; A.edit((d) => { d.suppressed[id] = !d.suppressed[id]; }, { label: (doc().suppressed[id] ? 'Unsuppress ' : 'Suppress ') + A.featName(doc(), id) }); },
@@ -216,6 +231,7 @@
     undoReload() { const B = S.banner; if (!B || !B.prev) return; const prev = B.prev; S.banner = null; A.edit((d) => { A.restore(d, prev); }, { label: 'Restore my version' }); A.toast('Your version is back as an unsaved edit. Save writes it over theirs.'); },
     showDiff() { S.modal = { type: 'diff' }; A.render(); },
     showConflict() { S.banner = { kind: 'conflict' }; A.render(); },
+    reloadDirtyDiscard() { const d = doc(); S.modal = null; A.restore(d, d.saved); d.undo = []; d.redo = []; d.rev++; A.startRebuild(d); A.toast('Reloaded from disk, rebuilding every feature'); },
     reloadDiscard() { const d = doc(); const k = d.pendingDisk && d.pendingDisk.kind; S.modal = null; A.restore(d, d.saved); d.undo = []; d.redo = []; if (k) applyAgent(d, k); else { d.disk = 'unchanged'; S.banner = null; A.startRebuild(d); } },
     keepMine() { S.modal = { type: 'keepMine' }; A.render(); },
     keepMineConfirm() { S.modal = null; S.banner = null; A.render(); A.toast('Working on your version. Save is held until you reload or Save As.', 'warn'); },
@@ -534,7 +550,7 @@
     if (key === '?' || (key === '/' && e.shiftKey)) { e.preventDefault(); runCmd('shortcuts'); return; }
     if (isMod(e)) {
       const k = key.toLowerCase();
-      const map = { n: 'newDoc', o: 'open', s: e.shiftKey ? 'saveAs' : 'save', w: 'close', z: e.shiftKey ? 'redo' : 'undo', y: 'redo', b: e.shiftKey ? 'rebuildAll' : 'rebuild', k: 'search', '1': 'vFront', '2': 'vBack', '3': 'vLeft', '4': 'vRight', '5': 'vTop', '6': 'vBottom', '7': 'vIso', '8': 'lookAt', enter: 'finishSketch' };
+      const map = { n: 'newDoc', o: 'open', s: e.shiftKey ? 'saveAs' : 'save', w: 'close', z: e.shiftKey ? 'redo' : 'undo', y: 'redo', b: e.shiftKey ? 'rebuildAll' : 'rebuild', r: 'reload', k: 'search', '1': 'vFront', '2': 'vBack', '3': 'vLeft', '4': 'vRight', '5': 'vTop', '6': 'vBottom', '7': 'vIso', '8': 'lookAt', enter: 'finishSketch' };
       if (map[k]) { if (map[k] === 'finishSketch' && !S.sketch) return; e.preventDefault(); runCmd(map[k]); }
       return;
     }
