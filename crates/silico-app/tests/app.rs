@@ -36044,6 +36044,19 @@ fn enter_on_create_sketch_opens_its_planes_with_the_pointer_resting_on_fit() {
             "the planes closed under the resting pointer"
         );
     }
+    // The pointer moved again where it rests, on Fit (a move of none, as a window may send):
+    // no move onto another item, so the planes stay, and Create Sketch lit.
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fit")
+        .hover();
+    for _ in 0..4 {
+        step(&mut h);
+        assert!(
+            planes_open(&h),
+            "the planes closed under a move onto nothing new"
+        );
+    }
+    assert_eq!(select_other(&h).lit(), Some(lit));
     h.key_press(Key::Tab);
     step_until(&mut h, "its planes let go", |h| !planes_open(h));
     assert!(select_other(&h).is_open());
@@ -36105,10 +36118,11 @@ fn esc_closes_the_menu_and_its_planes_and_a_menu_opened_again_has_none_open() {
 #[test]
 fn a_menu_opened_again_by_a_right_click_has_none_of_the_last_menus_planes_open() {
     // #444's review: the planes opened by Enter, then a right click elsewhere over nothing:
-    // the new menu opens with no planes. Its layer and its submenu's are the last one's;
-    // what holds it is egui's own reset of a menu's open item once the menu wasn't shown for
-    // a frame (`MenuState::from_id`).
-    use eframe::egui::{Key, Modifiers};
+    // the new menu opens with no planes, from its first frame. Its layer and its submenu's
+    // are the last one's, and egui's own reset of a menu's open item (`MenuState::from_id`)
+    // doesn't fire, the last menu shown the frame before: the new one lets go of the open
+    // item the last one left, on its first frame (`CanvasMenu::draw`'s `fresh`).
+    use eframe::egui::{Event, Key, Modifiers, PointerButton};
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
     context_over_nothing(&mut h, &record);
@@ -36119,7 +36133,27 @@ fn a_menu_opened_again_by_a_right_click_has_none_of_the_last_menus_planes_open()
     step_until(&mut h, "its planes", planes_open);
     let elsewhere = above_at(&h, 30.0, 26.0, [0.0, 0.0]);
     answering(&record, None, None);
-    context_at(&mut h, elsewhere);
+    // The right click by hand, the pointer moved there and the button pressed and let go
+    // all given to one frame (the harness gives each event it queues a frame of its own),
+    // which opens the new menu and draws it: no planes in it.
+    let button = |pressed| Event::PointerButton {
+        pos: elsewhere,
+        button: PointerButton::Secondary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    h.input_mut()
+        .events
+        .extend([Event::PointerMoved(elsewhere), button(true), button(false)]);
+    step(&mut h);
+    assert_eq!(
+        select_other(&h).phase(),
+        Some(silico_app::select_other::Phase::Context)
+    );
+    assert!(
+        !planes_open(&h),
+        "the last menu's planes on the new one's first frame"
+    );
     // The pointer then off the menu, on no item of it (an item under it would close a
     // submenu egui held open).
     h.hover_at(above_at(&h, -15.0, 0.0, [0.0, 0.0]));
@@ -36128,6 +36162,36 @@ fn a_menu_opened_again_by_a_right_click_has_none_of_the_last_menus_planes_open()
         assert!(!planes_open(&h));
     }
     assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_context_menu_closed_lets_go_of_its_faces_read() {
+    // #444's mutants: the menu opened over the box's top reads the face for its type (Sketch
+    // on this face). Once answered (the fake answers at once: the rebuild described the
+    // face), the read is let go, the menu keeping what it said; and closed by Esc, the menu
+    // leaves none behind.
+    use eframe::egui::Key;
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(6), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the top hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    context_at(&mut h, at);
+    step_until(&mut h, "its face read answered", |h| {
+        select_other(h).face_read() == Some(true)
+    });
+    step(&mut h);
+    assert!(h.state().tabs()[0].menu_face().of().is_none());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    step(&mut h);
+    assert!(h.state().tabs()[0].menu_face().of().is_none());
+    assert!(!h.state().tabs()[0].menu_face().reading());
     assert_eq!(never_waits::waits(), 0);
 }
 
