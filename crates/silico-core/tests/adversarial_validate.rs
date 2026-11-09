@@ -796,54 +796,61 @@ proptest! {
 fn a_million_features_all_refused_validate_promptly() {
     // Every feature a boolean of the first box with a missing tool, all sharing one ID:
     // each refused three ways (its ID, base consumed, tool missing), named by place.
-    // Promptly, as for the valid million below: this thread's CPU time for a million is at
-    // most 30 times that for a hundred thousand (about 10), where a refusal quadratic in the
-    // count would be about 100; a ratio, so a loaded machine can't fail it. And at most
-    // 7.5 s, against a constant slowdown: half the valid million's bound, as it costs about
-    // half as much (0.78 s against 1.56 s on the Mac, a debug build), so a refusal 10 times
-    // slower fails it.
+    // Promptly, measured as the valid million below is ([`cpu_against_probe`]), for the
+    // same reasons: its growth from a hundred thousand the median's, at most 30, about 10
+    // by its count, where a refusal quadratic in the count would be about 100 (9.1 to 11.7
+    // in 20 runs on loaded gate runners, 2026-11-08, gate 42546134628, where the least's
+    // ran to 15.6, and 9.9 to 11.1 in 20 more, gate 42550703380); its cost the least's, at
+    // most REFUSED_PER_PROBE times the probe's least beside it; and at most 7.5 s of CPU,
+    // the bound it had alone before, three times the slowest of those runs (2.4 s), against
+    // a slowdown the probe shares.
     let refused = |n: usize| {
         let mut features = vec![feature("aaaaaaaa", "A", unit_box())];
         features.extend((0..n).map(|_| feature("aaaaaaaa", "F", cut("aaaaaaaa", MISSING))));
         document(features)
     };
     let (small, large) = (refused(100_000), refused(1_000_000));
-    let ([small_cpu, large_cpu], [small, invalid]) =
-        least_cpu([&small, &large], |doc| validate(doc).unwrap_err());
+    let measured = cpu_against_probe([&small, &large], |doc| validate(doc).unwrap_err());
+    let [small_invalid, invalid] = measured.results;
     // The first boolean takes the box; every later one is refused for that too. Each is
     // refused for its ID and its tool.
-    assert_eq!(small.total(), 100_000 * 3 - 1);
+    assert_eq!(small_invalid.total(), 100_000 * 3 - 1);
     assert_eq!(invalid.total(), 1_000_000 * 3 - 1);
     assert_eq!(invalid.errors().len(), 100);
     assert_eq!(invalid.errors()[0].feature(), Some("features[1]"));
-    let ratio = large_cpu.as_secs_f64() / small_cpu.as_secs_f64();
+    let [small_median, large_median] = measured.median;
+    let ratio = large_median.as_secs_f64() / small_median.as_secs_f64();
     assert!(
         ratio < 30.0,
-        "a million refused features took {ratio:.1} times the CPU of a hundred thousand ({large_cpu:?} against {small_cpu:?})"
+        "a million refused features took {ratio:.1} times the median CPU of a hundred thousand ({large_median:?} against {small_median:?})"
+    );
+    let (large_cpu, large_probe) = (measured.least[1], measured.probe[1]);
+    let per_probe = large_cpu.as_secs_f64() / large_probe.as_secs_f64();
+    assert!(
+        per_probe <= REFUSED_PER_PROBE,
+        "a million refused features took {per_probe:.1} times the probe's CPU, more than {REFUSED_PER_PROBE} ({large_cpu:?} against {large_probe:?})"
     );
     assert!(
-        large_cpu <= Duration::from_millis(7500),
-        "a million refused features took {large_cpu:?} of CPU, more than 7.5 s"
+        large_cpu <= REFUSED_MOST,
+        "a million refused features took {large_cpu:?} of CPU, more than {REFUSED_MOST:?}"
     );
 }
 
-/// The least of three runs of `f` on each of `docs`, the runs taken in turn (one of each,
-/// three times), in this thread's CPU time, and `f`'s last results: so a burst of load
-/// can't stretch one size's measure and not the other's.
-fn least_cpu<T>(docs: [&Document; 2], f: impl Fn(&Document) -> T) -> ([Duration; 2], [T; 2]) {
-    let mut least = [Duration::MAX; 2];
-    let mut last: [Option<T>; 2] = [None, None];
-    for _ in 0..3 {
-        for (k, doc) in docs.iter().enumerate() {
-            let start = cpu_time::ThreadTime::now();
-            let out = f(doc);
-            least[k] = least[k].min(start.elapsed());
-            last[k] = Some(out);
-        }
-    }
-    let [a, b] = last;
-    (least, [a.unwrap(), b.unwrap()])
-}
+/// The most a million refused features' validation may take in CPU time, as a multiple of
+/// its probe's ([`probe`]), each the least of five runs: between what the gate's runners
+/// measure of it and what they measure of a validation three times slower, about 1.41 times
+/// clear of each. Measured on loaded gate runners, 20 runs a round (2026-11-08): 1.58 to
+/// 2.69 times over two rounds (gates 42546134628 and 42550703380), and 5.34 to 6.25 for a
+/// validation run three times over (gate 42546137103); the Mac's debug build, loaded, about
+/// 1.7, and 5.1 and 17.0 for one run three and ten times over. So a refusal three times
+/// slower fails it on the gate and on the Mac, as the valid million's bound does on the
+/// gate, and one ten times slower everywhere.
+const REFUSED_PER_PROBE: f64 = 3.8;
+
+/// The most a million refused features' validation may take in CPU time: the 7.5 s it was
+/// bounded by alone before, half the valid million's 15 s then, as it costs about half as
+/// much on the Mac (0.78 s against 1.56 s, a debug build).
+const REFUSED_MOST: Duration = Duration::from_millis(7500);
 
 /// `n` valid features with distinct IDs: every third fuses the two before it, which no one
 /// else takes.
@@ -999,7 +1006,7 @@ fn probe_key(id: &FeatureId) -> u64 {
 /// The probe: work of validation's own shape on `doc`'s own features, in std's code alone,
 /// none of the gate's. Each feature's ID read where the document holds it (so the probe
 /// walks the memory the gate does, as load slows it) and keyed with its place,
-/// sorted; then each feature's ID and the IDs it takes (a fuse's base and tool), each read
+/// sorted; then each feature's ID and the IDs it takes (a boolean's base and tool), each read
 /// again where it's held, searched in them. How many were found, so none of it is
 /// optimised away.
 fn probe(doc: &Document) -> usize {
@@ -1020,7 +1027,9 @@ fn probe(doc: &Document) -> usize {
         .map(|feature| {
             found(&feature.id)
                 + match &feature.operation {
-                    Operation::Fuse { base, tool } => found(base) + found(tool),
+                    Operation::Fuse { base, tool }
+                    | Operation::Cut { base, tool }
+                    | Operation::Common { base, tool } => found(base) + found(tool),
                     _ => 0,
                 }
         })
