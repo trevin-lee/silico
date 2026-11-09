@@ -3482,6 +3482,68 @@ fn a_double_click_on_a_dimension_opens_its_box_with_its_value_whose_text_is_aske
 }
 
 #[test]
+fn each_double_clicked_box_of_one_sketch_mode_is_numbered_anew() {
+    // The bottom's length, 40, double-clicked three times, its box closed between (Esc's
+    // way): each box numbered anew as it opens, 1, 2, 3, so each is a box of its own to egui
+    // (its keyboard taken once, its field's own cursor). Then Smart Dimension's box, the
+    // right side picked at (40, 10) and placed at (55, 10), and, the tool chosen again, its
+    // second, placed at (60, 10): each numbered apart from every double-clicked box, and
+    // from each other; and the next double-clicked box after them is the fourth (the
+    // review's T6).
+    use dimension::ModifyAction;
+    let read = under(rectangle(vec![length("ka000001", "na000001", "40", true)]));
+    let mut mode = mode_at(read);
+    let mut dragged: Option<drag::Drag> = None;
+    frame_of(&mut mode, &mut dragged, &[]);
+    let label = mode
+        .last_drawn()
+        .iter()
+        .find_map(|d| match d {
+            Drawn::Label {
+                of: Some(of), at, ..
+            } if of.as_str() == "ka000001" => Some(*at),
+            _ => None,
+        })
+        .unwrap();
+    let mut clicks = press(label, false).to_vec();
+    clicks.extend(press(label, false));
+    clicks.push(event(PointerAction::DoubleClick, label, false));
+    let double_clicked = |mode: &mut SketchMode, dragged: &mut Option<drag::Drag>| {
+        frame_of(mode, dragged, &clicks);
+        let view = mode.modify_view().unwrap();
+        assert!(!view.placing);
+        mode.modify(ModifyAction::Skip);
+        assert!(mode.edit_box.is_none() && mode.modify_view().is_none());
+        view.opened
+    };
+    let numbers: Vec<u64> = (0..3)
+        .map(|_| double_clicked(&mut mode, &mut dragged))
+        .collect();
+    assert_eq!(numbers, [1, 2, 3]);
+    // Smart Dimension's two boxes, each closed by leaving the tool.
+    let mut smart = Vec::new();
+    for place in [55.0, 60.0] {
+        mode.tools.choose(Some(tools::Choice::Dimension));
+        frame_of(&mut mode, &mut dragged, &press(at_mm(40.0, 10.0), false));
+        frame_of(&mut mode, &mut dragged, &press(at_mm(place, 10.0), false));
+        let view = mode.modify_view().unwrap();
+        assert!(view.placing, "placed at {place}");
+        assert_eq!(view.text, "20", "placed at {place}");
+        smart.push(view.opened);
+        mode.tools.choose(None);
+        assert!(mode.modify_view().is_none(), "placed at {place}");
+    }
+    assert_ne!(smart[0], smart[1]);
+    for number in &smart {
+        assert!(!numbers.contains(number), "{number} among {numbers:?}");
+    }
+    // The next double-clicked box is the fourth, none of Smart Dimension's.
+    let fourth = double_clicked(&mut mode, &mut dragged);
+    assert_eq!(fourth, 4);
+    assert!(!smart.contains(&fourth), "{fourth} among {smart:?}");
+}
+
+#[test]
 fn a_driven_dimension_double_clicked_opens_no_modify_box() {
     let read = under(rectangle(vec![length("ka000001", "na000001", "40", false)]));
     let mut mode = mode_at(read);
@@ -3875,6 +3937,32 @@ fn an_angles_value_opens_its_box_in_degrees() {
     assert_eq!(dimension::value_of(&length), Some(("2.5".to_owned(), "mm")));
 }
 
+/// A placed dimension's Modify box numbered `opened`, `waiting` or not, on 40 mm at
+/// (300, 200).
+fn box_view(opened: u64, waiting: bool) -> dimension::ModifyView {
+    dimension::ModifyView {
+        text: "40".to_owned(),
+        unit: "mm",
+        at: pos2(300.0, 200.0),
+        opened,
+        said: None,
+        waiting,
+        placing: false,
+    }
+}
+
+/// `view`'s box, of the sketch mode `owner` names, drawn in a viewport far wider than it
+/// and with the palette far from it, so neither moves it: what it was asked, if anything.
+fn draw_box(
+    ui: &egui::Ui,
+    owner: egui::Id,
+    view: &dimension::ModifyView,
+) -> Option<dimension::ModifyAction> {
+    let viewport = egui::Rect::from_min_max(pos2(-1.0e4, -1.0e4), pos2(1.0e4, 1.0e4));
+    let palette = egui::Rect::from_min_size(pos2(9.0e3, 9.0e3), vec2(10.0, 10.0));
+    dimension::modify_box(ui.ctx(), owner, view, viewport, palette)
+}
+
 /// A placed dimension's Modify box, `waiting` or not, opened as number 7 at (300, 200).
 fn modify_harness(
     waiting: bool,
@@ -3884,20 +3972,9 @@ fn modify_harness(
 ) {
     let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let seen = std::rc::Rc::clone(&asked);
-    let view = dimension::ModifyView {
-        text: "40".to_owned(),
-        unit: "mm",
-        at: pos2(300.0, 200.0),
-        opened: 7,
-        said: None,
-        waiting,
-        placing: false,
-    };
+    let view = box_view(7, waiting);
     let harness = egui_kittest::Harness::new_ui(move |ui| {
-        // A viewport far wider than the box, and the palette far from it: neither moves it.
-        let viewport = egui::Rect::from_min_max(pos2(-1.0e4, -1.0e4), pos2(1.0e4, 1.0e4));
-        let palette = egui::Rect::from_min_size(pos2(9.0e3, 9.0e3), vec2(10.0, 10.0));
-        if let Some(action) = dimension::modify_box(ui.ctx(), &view, viewport, palette) {
+        if let Some(action) = draw_box(ui, egui::Id::new("a sketch mode"), &view) {
             seen.borrow_mut().push(action);
         }
     });
@@ -3911,7 +3988,7 @@ fn the_modify_box_stands_left_and_up_of_its_text_as_the_prototype_puts_it() {
     // The prototype's `.modify-box`: its corner 74 points left and 15 up of the text.
     let rect = h
         .ctx
-        .memory(|m| m.area_rect(egui::Id::new(("sketch_modify", 7u64))))
+        .memory(|m| m.area_rect(dimension::modify_area(egui::Id::new("a sketch mode"), 7)))
         .unwrap();
     assert_eq!(rect.min, pos2(226.0, 185.0));
 }
@@ -3936,10 +4013,101 @@ fn the_modify_boxs_accept_waits_on_the_core_and_its_hint_says_so() {
     }
 }
 
+/// A harness drawing one Modify box, numbered as `box_of` says and of the sketch mode it
+/// names, or none while it says none: the box's field is what has the keyboard, if anything.
+fn boxes_harness(
+    box_of: std::rc::Rc<std::cell::Cell<Option<(egui::Id, u64)>>>,
+) -> egui_kittest::Harness<'static> {
+    egui_kittest::Harness::new_ui(move |ui| {
+        let Some((owner, opened)) = box_of.get() else {
+            return;
+        };
+        let _ = draw_box(ui, owner, &box_view(opened, false));
+    })
+}
+
+/// What has the keyboard once `box_of`'s box is drawn, after a frame with no box (so what
+/// had it before has let it go).
+fn keyboard_after(
+    h: &mut egui_kittest::Harness<'static>,
+    cell: &std::cell::Cell<Option<(egui::Id, u64)>>,
+    next: (egui::Id, u64),
+) -> Option<egui::Id> {
+    cell.set(None);
+    h.run();
+    cell.set(Some(next));
+    h.run();
+    h.ctx.memory(|m| m.focused())
+}
+
+#[test]
+fn each_sketch_modes_box_has_a_field_of_its_own() {
+    // Two sketch modes' first boxes, one after the other: each takes the keyboard into a
+    // field of its own, so nothing one box's field kept (its cursor, its undo) is the
+    // other's (the review's Q1).
+    let cell = std::rc::Rc::new(std::cell::Cell::new(None));
+    let mut h = boxes_harness(std::rc::Rc::clone(&cell));
+    let a = keyboard_after(&mut h, &cell, (egui::Id::new("sketch mode A"), 1));
+    let b = keyboard_after(&mut h, &cell, (egui::Id::new("sketch mode B"), 1));
+    assert!(a.is_some() && b.is_some(), "{a:?} {b:?}");
+    assert_ne!(a, b);
+}
+
+#[test]
+fn each_tabs_sketch_bar_and_palette_have_areas_of_their_own() {
+    // Two tabs' sessions, s1 and s2: each tab's sketch bar, and its palette, is an area of
+    // its own, so neither's place or size is the other tab's (the review's T8).
+    let session = |text: &str| silico_core::command::SessionId::parse(text).unwrap();
+    let (s1, s2) = (session("s1"), session("s2"));
+    assert_ne!(dimension::bar_area(&s1), dimension::bar_area(&s2));
+    assert_ne!(dimension::palette_area(&s1), dimension::palette_area(&s2));
+    // Nor is one tab's bar its palette.
+    assert_ne!(dimension::bar_area(&s1), dimension::palette_area(&s1));
+}
+
+#[test]
+fn two_tabs_sketch_modes_of_one_number_each_give_their_first_box_the_keyboard() {
+    // Two tabs' sessions, s1 and s2, each with its first sketch mode, serial 1, and its
+    // first box: the second takes the keyboard as the first did (the review's T1).
+    let owner = |session: &str| {
+        dimension::modify_owner(&silico_core::command::SessionId::parse(session).unwrap(), 1)
+    };
+    let cell = std::rc::Rc::new(std::cell::Cell::new(None));
+    let mut h = boxes_harness(std::rc::Rc::clone(&cell));
+    assert!(keyboard_after(&mut h, &cell, (owner("s1"), 1)).is_some());
+    assert!(keyboard_after(&mut h, &cell, (owner("s2"), 1)).is_some());
+}
+
+#[test]
+fn a_second_modify_box_of_one_sketch_mode_takes_the_keyboard_as_the_first_did() {
+    // One sketch mode's boxes 1 and 2, one after the other: each takes the keyboard as it
+    // opens (the review's T2).
+    let owner = egui::Id::new("a sketch mode");
+    let cell = std::rc::Rc::new(std::cell::Cell::new(None));
+    let mut h = boxes_harness(std::rc::Rc::clone(&cell));
+    assert!(keyboard_after(&mut h, &cell, (owner, 1)).is_some());
+    assert!(keyboard_after(&mut h, &cell, (owner, 2)).is_some());
+}
+
+#[test]
+fn a_second_modify_box_of_one_sketch_mode_has_a_field_of_its_own() {
+    // One sketch mode's boxes 1 and 2, one after the other: each takes the keyboard into
+    // its own box's field, so nothing the first box's field kept (its cursor, its undo) is
+    // the second's (the review's T5).
+    let owner = egui::Id::new("a sketch mode");
+    let cell = std::rc::Rc::new(std::cell::Cell::new(None));
+    let mut h = boxes_harness(std::rc::Rc::clone(&cell));
+    let first = keyboard_after(&mut h, &cell, (owner, 1));
+    let second = keyboard_after(&mut h, &cell, (owner, 2));
+    assert_eq!(first, Some(dimension::modify_field(owner, 1)));
+    assert_eq!(second, Some(dimension::modify_field(owner, 2)));
+    assert_ne!(first, second);
+}
+
 #[test]
 fn leaving_the_modify_boxs_field_by_esc_accepts_nothing_and_enter_accepts() {
     use dimension::ModifyAction;
-    let field = egui::Id::new(("sketch_modify_field", 7u64));
+    let field = dimension::modify_field(egui::Id::new("a sketch mode"), 7);
     // Esc: the field let go, nothing asked.
     let (mut h, asked) = modify_harness(false);
     h.run();
