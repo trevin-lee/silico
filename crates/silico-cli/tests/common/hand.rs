@@ -214,17 +214,21 @@ pub fn enclosed(volume: f64, rim: usize, arc: usize) -> f64 {
     volume + 4.0 * 5.0 * hole_short + 40.0 * spandrel
 }
 
-/// The bracket's mesh, as a 3MF holds it, against the hand, meshed at the tolerance
-/// `tolerance`; the volume it encloses. Printable ([`printable`]); each hole's two rims of
-/// [`chords`]' count of points, and each of the fillet's two arcs one more than its chords;
-/// nothing else a vertex but the profile's five corners left at each end (the walls and the
-/// fillet are meshed with no nodes inside them, a cylinder's splitter placing none,
-/// docs/ports/mesh-export.md), so 8 rims, 2 arcs and 10 corners; and, closed and of genus 4
-/// (four through holes), V − E + F = 2 − 2 · 4 with E = 3F/2, so F = 2V + 12. Its box the
-/// part's, [0, 0, 0]–[60, 40, 50], exactly (its corners are the B-rep's vertices, whole
-/// numbers in 32 bits too); and its volume the part's and its chords' segments ([`enclosed`]),
-/// to what rounding each coordinate to 32 bits moves it ([`rounding`]).
-pub fn the_bracket_s_mesh(mesh: &Object, tolerance: f64) -> f64 {
+/// The bracket's mesh, as a 3MF holds it, asserted against the hand, meshed at the tolerance
+/// `tolerance`; the volume it encloses. Printable ([`printable`]). Each hole's two rims of
+/// [`chords`]' count of points, and each of the fillet's two arcs one more than its chords:
+/// at 0.1 mm a rim 126 chords (2π over 0.05 rad) and an arc 32 (π/2 over 0.05), 33 points
+/// (at 0.01 mm they'd be 229 and 58). Nothing else a vertex but the profile's five corners
+/// left at each end (the walls and the fillet are meshed with no nodes inside them, a
+/// cylinder's splitter placing none, docs/ports/mesh-export.md), so 8 · 126 + 2 · 33 + 2 · 5
+/// = 1,084 vertices; and, closed and of genus 4 (four through holes), V − E + F = 2 − 2 · 4
+/// with E = 3F/2, so F = 2V + 12 = 2,180 triangles. Its box the part's, [0, 0, 0]–[60, 40,
+/// 50], exactly (its corners are the B-rep's vertices, whole numbers in 32 bits too). Its
+/// volume, every vertex on the B-rep, the part's and, past each arc, the segments between it
+/// and its chords ([`enclosed`]): V + 4 · 5 · (π · 2.75² − 63 · 2.75² sin(2π/126)) + 40 · 32 ·
+/// (25/2)(θ − sin θ) at θ = π/64, about V + 0.197 + 0.315 = V + 0.512 mm³, to what rounding
+/// each coordinate to 32 bits moves it ([`rounding`]), ε ≈ 0.062 mm³ either way.
+pub fn assert_bracket_mesh_as_by_hand(mesh: &Object, tolerance: f64) -> f64 {
     let mesh_volume = printable(mesh);
     let rim = chords(2.0 * PI, HOLE_R, tolerance);
     let arc = chords(PI / 2.0, FILLET_R, tolerance);

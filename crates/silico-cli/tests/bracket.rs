@@ -67,8 +67,8 @@ use serde_json::Value;
 use serde_json::value::RawValue;
 
 use hand::{
-    FILLET_R, HOLE, HOLE_R, PI, bracket, centred, chords, drilled, legs, measured, solids,
-    the_bracket_s_mesh,
+    FILLET_R, HOLE, HOLE_R, PI, assert_bracket_mesh_as_by_hand, bracket, centred, chords, drilled,
+    legs, measured, solids,
 };
 use serve::{ask_line, exited, lines, serve_working};
 use threemf::model;
@@ -805,21 +805,14 @@ fn the_bracket_session_replays_measures_as_by_hand_and_its_3mf_reads_back_in_the
     assert_eq!(objects[0]["feature"], "f0000001");
     assert_eq!(objects[0]["triangles"], mesh.triangles.len());
     assert_eq!(objects[0]["vertices"], mesh.vertices.len());
-    // Meshed at the tolerance asked, by hand from OCCT's rule ([`chords`]): at 0.1 mm each
-    // rim a circle of 126 chords (2π over 0.05 rad), so 126 points, and each of the
-    // fillet's two quarter arcs 32 chords (π/2 over 0.05), 33 points. (At 0.01 mm they'd
-    // be 229 and 58.)
+    // Meshed at the tolerance asked, against the hand ([`assert_bracket_mesh_as_by_hand`],
+    // its derivation there): at 0.1 mm, 126 chords a rim and 32 an arc of the fillet, so
+    // 1,084 vertices and 2,180 triangles, and the volume the part's and its chords'
+    // segments' within the 32-bit rounding.
     let rim = chords(2.0 * PI, HOLE_R, TOLERANCE);
     let arc = chords(PI / 2.0, FILLET_R, TOLERANCE);
     assert_eq!((rim, arc), (126, 32));
-    // The mesh against the hand ([`the_bracket_s_mesh`]): those rims and arcs; nothing else
-    // a vertex but the profile's five corners left at each end, so 8 · 126 + 2 · 33 + 2 · 5
-    // = 1,084, and, closed and of genus 4, F = 2V + 12 = 2,180; the part's box exactly; and
-    // its volume, every vertex on the B-rep, the part's and, past each arc, the segments
-    // between it and its chords: V + 4 · 5 · (π · 2.75² − 63 · 2.75² sin(2π/126)) + 40 · 32 ·
-    // (25/2)(θ − sin θ) at θ = π/64, about V + 0.197 + 0.315 = V + 0.512 mm³, to what
-    // rounding each coordinate to 32 bits moves it ([`rounding`]), ε ≈ 0.062 mm³ either way.
-    let mesh_volume = the_bracket_s_mesh(mesh, TOLERANCE);
+    let mesh_volume = assert_bracket_mesh_as_by_hand(mesh, TOLERANCE);
     assert_eq!(mesh.vertices.len(), 1084);
     assert_eq!(mesh.triangles.len(), 2180);
     measured("the export's volume", &objects[0]["volume"], mesh_volume);
