@@ -108,6 +108,22 @@ fn placed_at(
     placed
 }
 
+/// A centrepoint arc's start, the pointer at `at`, after its `centre`: lined up as a guide,
+/// beside the centre if it's a point of the sketch, and judged after the centre's relations.
+/// What its preview shows and its click sets, one and the same.
+fn start_at(step: &Step<'_, '_, '_>, centre: &Placed, at: Xy) -> Placed {
+    let besides: Vec<&ElementId> = centre.shared().into_iter().collect();
+    placed_at(step, at, &besides, &[centre])
+}
+
+/// A three-point arc's end, the pointer at `at`, after its `start`: lined up as a guide,
+/// beside the start if it's a point of the sketch, and judged after the start's relations.
+/// What its preview shows and its click sets, one and the same.
+fn end_at(step: &Step<'_, '_, '_>, start: &Placed, at: Xy) -> Placed {
+    let besides: Vec<&ElementId> = start.shared().into_iter().collect();
+    placed_at(step, at, &besides, &[start])
+}
+
 /// Where a centre the pointer places, lined up as relations: a lone point, which shows no
 /// direction of its own (#278's E).
 fn centre_at(step: &Step<'_, '_, '_>, at: Xy) -> Placed {
@@ -312,8 +328,7 @@ impl Centerpoint {
 
     /// The start set where the pointer places it, `at`: unless it's on the centre.
     fn start(&mut self, step: &Step<'_, '_, '_>, centre: Placed, at: Xy) -> Outcome {
-        let besides: Vec<&ElementId> = centre.shared().into_iter().collect();
-        let start = placed_at(step, at, &besides, &[&centre]);
+        let start = start_at(step, &centre, at);
         if on_top(step, &centre, &start) {
             self.state = CenterState::Centre {
                 centre,
@@ -350,8 +365,7 @@ impl Centerpoint {
                 show(preview, &placed);
             }
             CenterState::Pressed { centre, .. } | CenterState::Centre { centre, .. } => {
-                let besides: Vec<&ElementId> = centre.shared().into_iter().collect();
-                let start = placed_at(step, at, &besides, &[centre]);
+                let start = start_at(step, centre, at);
                 preview.points.push(centre.at);
                 preview.guides.push([centre.at, start.at]);
                 measure_radius(preview, centre.at, start.at);
@@ -635,8 +649,7 @@ impl ThreePoint {
 
     /// The end set where the pointer places it: unless it's on the start.
     fn end(&mut self, step: &Step<'_, '_, '_>, start: Placed, at: Xy) -> Outcome {
-        let besides: Vec<&ElementId> = start.shared().into_iter().collect();
-        let end = placed_at(step, at, &besides, &[&start]);
+        let end = end_at(step, &start, at);
         if on_top(step, &start, &end) {
             self.state = ThreeState::Start {
                 start,
@@ -672,8 +685,7 @@ impl ThreePoint {
         match &self.state {
             ThreeState::Idle => show(preview, &placed_at(step, at, &[], &[])),
             ThreeState::Pressed { start, .. } | ThreeState::Start { start, .. } => {
-                let besides: Vec<&ElementId> = start.shared().into_iter().collect();
-                let end = placed_at(step, at, &besides, &[start]);
+                let end = end_at(step, start, at);
                 preview.guides.push([start.at, end.at]);
                 preview.shown.extend(start.shown());
                 show(preview, &end);
