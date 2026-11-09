@@ -2098,7 +2098,7 @@ impl<P: Clients + 'static> App<P> {
         let offer = mode.offer_view(&name);
         let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
-        egui::Area::new(egui::Id::new(("sketch_bar", id.to_string())))
+        egui::Area::new(sketch::dimension::bar_area(&id))
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
             .pivot(egui::Align2::CENTER_TOP)
             .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar));
@@ -2107,7 +2107,7 @@ impl<P: Clients + 'static> App<P> {
         // doesn't fit.
         let palette_at = canvas.right_top() + PALETTE_FROM_CORNER;
         let palette_height = canvas.bottom() - PALETTE_MARGIN - palette_at.y;
-        let palette = egui::Area::new(egui::Id::new(("sketch_palette", id.to_string())))
+        let palette = egui::Area::new(sketch::dimension::palette_area(&id))
             .fixed_pos(palette_at)
             .show(ui.ctx(), |ui| {
                 sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)

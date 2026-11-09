@@ -3875,6 +3875,32 @@ fn an_angles_value_opens_its_box_in_degrees() {
     assert_eq!(dimension::value_of(&length), Some(("2.5".to_owned(), "mm")));
 }
 
+/// A placed dimension's Modify box numbered `opened`, `waiting` or not, on 40 mm at
+/// (300, 200).
+fn box_view(opened: u64, waiting: bool) -> dimension::ModifyView {
+    dimension::ModifyView {
+        text: "40".to_owned(),
+        unit: "mm",
+        at: pos2(300.0, 200.0),
+        opened,
+        said: None,
+        waiting,
+        placing: false,
+    }
+}
+
+/// `view`'s box, of the sketch mode `owner` names, drawn in a viewport far wider than it
+/// and with the palette far from it, so neither moves it: what it was asked, if anything.
+fn draw_box(
+    ui: &egui::Ui,
+    owner: egui::Id,
+    view: &dimension::ModifyView,
+) -> Option<dimension::ModifyAction> {
+    let viewport = egui::Rect::from_min_max(pos2(-1.0e4, -1.0e4), pos2(1.0e4, 1.0e4));
+    let palette = egui::Rect::from_min_size(pos2(9.0e3, 9.0e3), vec2(10.0, 10.0));
+    dimension::modify_box(ui.ctx(), owner, view, viewport, palette)
+}
+
 /// A placed dimension's Modify box, `waiting` or not, opened as number 7 at (300, 200).
 fn modify_harness(
     waiting: bool,
@@ -3884,21 +3910,9 @@ fn modify_harness(
 ) {
     let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let seen = std::rc::Rc::clone(&asked);
-    let view = dimension::ModifyView {
-        text: "40".to_owned(),
-        unit: "mm",
-        at: pos2(300.0, 200.0),
-        opened: 7,
-        said: None,
-        waiting,
-        placing: false,
-    };
+    let view = box_view(7, waiting);
     let harness = egui_kittest::Harness::new_ui(move |ui| {
-        // A viewport far wider than the box, and the palette far from it: neither moves it.
-        let viewport = egui::Rect::from_min_max(pos2(-1.0e4, -1.0e4), pos2(1.0e4, 1.0e4));
-        let palette = egui::Rect::from_min_size(pos2(9.0e3, 9.0e3), vec2(10.0, 10.0));
-        let owner = egui::Id::new("a sketch mode");
-        if let Some(action) = dimension::modify_box(ui.ctx(), owner, &view, viewport, palette) {
+        if let Some(action) = draw_box(ui, egui::Id::new("a sketch mode"), &view) {
             seen.borrow_mut().push(action);
         }
     });
@@ -3946,18 +3960,7 @@ fn boxes_harness(
         let Some((owner, opened)) = box_of.get() else {
             return;
         };
-        let view = dimension::ModifyView {
-            text: "40".to_owned(),
-            unit: "mm",
-            at: pos2(300.0, 200.0),
-            opened,
-            said: None,
-            waiting: false,
-            placing: false,
-        };
-        let viewport = egui::Rect::from_min_max(pos2(-1.0e4, -1.0e4), pos2(1.0e4, 1.0e4));
-        let palette = egui::Rect::from_min_size(pos2(9.0e3, 9.0e3), vec2(10.0, 10.0));
-        let _ = dimension::modify_box(ui.ctx(), owner, &view, viewport, palette);
+        let _ = draw_box(ui, owner, &box_view(opened, false));
     })
 }
 

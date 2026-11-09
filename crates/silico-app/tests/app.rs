@@ -21024,46 +21024,17 @@ fn the_modify_boxs_text_typed_reaches_the_core_as_typed_and_its_refusal_is_said_
     counting(&f);
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create_sketch(&mut h, "XY plane");
-    sketch_read(&mut h);
-    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
-    h.key_press(eframe::egui::Key::R);
-    step(&mut h);
-    sketch_events(&f, &mut h, &dragged([0.0, 0.0], [40.0, 20.0]));
-    settled(&mut h);
-    read_with_lines(&mut h, 4);
-    h.key_press(eframe::egui::Key::D);
-    step(&mut h);
-    let field = |h: &AppHarness| -> Option<String> {
-        h.query_by_role_and_label(Role::Dialog, "Modify dimension")?
-            .query_by_label("Value in millimetres")?
-            .value()
-    };
-    // Typed into the box itself, which has the keyboard: Home, its value's two characters
-    // deleted, and what's typed, in one frame.
+    let field = |h: &AppHarness| -> Option<String> { modify_field(h)?.value() };
+    // Typed into the box itself, which has the keyboard: Home and its value's two
+    // characters deleted, then what's typed.
     let typed = |h: &mut AppHarness, text: &str| {
-        for key in [
-            eframe::egui::Key::Home,
-            eframe::egui::Key::Delete,
-            eframe::egui::Key::Delete,
-        ] {
-            h.input_mut().events.push(eframe::egui::Event::Key {
-                key,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: eframe::egui::Modifiers::NONE,
-            });
-        }
-        h.query_by_role_and_label(Role::Dialog, "Modify dimension")
-            .unwrap()
-            .get_by_label("Value in millimetres")
-            .type_text(text);
+        use eframe::egui::Key;
+        pressed(h, &[Key::Home, Key::Delete, Key::Delete]);
+        modify_field(h).unwrap().type_text(text);
         step(h);
         step(h);
     };
-    dimension_at(&f, &mut h, [40.0, 10.0], [55.0, 10.0], "20");
-    step_until(&mut h, "the box drawn", |h| field(h).is_some());
+    let id = rectangle_dimensioned(&f, &mut h);
     typed(&mut h, "25mm");
     assert_eq!(field(&h).as_deref(), Some("25mm"));
     assert_eq!(
@@ -21208,6 +21179,25 @@ fn modify_field(h: &AppHarness) -> Option<egui_kittest::Node<'_>> {
         .query_by_label("Value in millimetres")
 }
 
+/// A sketch made on XY, a 40 by 20 rectangle drawn in it from the origin, and Smart
+/// Dimension's length of its right side, (40, 0) to (40, 20), placed at (55, 10): its
+/// Modify box drawn, on "20". The sketch's ID.
+fn rectangle_dimensioned(f: &Fixture, h: &mut AppHarness) -> silico_core::document::FeatureId {
+    create_sketch(h, "XY plane");
+    sketch_read(h);
+    let id = sketch_mode(h).unwrap().sketch.clone().unwrap();
+    h.key_press(eframe::egui::Key::R);
+    step(h);
+    sketch_events(f, h, &dragged([0.0, 0.0], [40.0, 20.0]));
+    settled(h);
+    read_with_lines(h, 4);
+    h.key_press(eframe::egui::Key::D);
+    step(h);
+    dimension_at(f, h, [40.0, 10.0], [55.0, 10.0], "20");
+    step_until(h, "the box drawn", |h| modify_field(h).is_some());
+    id
+}
+
 #[test]
 fn every_sketchs_modify_box_takes_the_keyboard_as_it_opens_not_only_the_first_sketchs() {
     // Two sketches one after the other in one run, each a 40 by 20 rectangle from the origin,
@@ -21220,18 +21210,7 @@ fn every_sketchs_modify_box_takes_the_keyboard_as_it_opens_not_only_the_first_sk
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     for (sketch, typed) in [("the first", "25"), ("the second", "30")] {
-        create_sketch(&mut h, "XY plane");
-        sketch_read(&mut h);
-        let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
-        h.key_press(eframe::egui::Key::R);
-        step(&mut h);
-        sketch_events(&f, &mut h, &dragged([0.0, 0.0], [40.0, 20.0]));
-        settled(&mut h);
-        read_with_lines(&mut h, 4);
-        h.key_press(eframe::egui::Key::D);
-        step(&mut h);
-        dimension_at(&f, &mut h, [40.0, 10.0], [55.0, 10.0], "20");
-        step_until(&mut h, "the box drawn", |h| modify_field(h).is_some());
+        let id = rectangle_dimensioned(&f, &mut h);
         step(&mut h);
         assert!(
             modify_field(&h).unwrap().is_focused(),
@@ -21278,17 +21257,7 @@ fn a_later_sketchs_modify_box_opens_with_its_cursor_after_its_value_not_where_an
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     for first in [true, false] {
-        create_sketch(&mut h, "XY plane");
-        sketch_read(&mut h);
-        h.key_press(Key::R);
-        step(&mut h);
-        sketch_events(&f, &mut h, &dragged([0.0, 0.0], [40.0, 20.0]));
-        settled(&mut h);
-        read_with_lines(&mut h, 4);
-        h.key_press(Key::D);
-        step(&mut h);
-        dimension_at(&f, &mut h, [40.0, 10.0], [55.0, 10.0], "20");
-        step_until(&mut h, "the box drawn", |h| modify_field(h).is_some());
+        rectangle_dimensioned(&f, &mut h);
         step(&mut h);
         assert!(modify_field(&h).unwrap().is_focused());
         if first {
@@ -21327,17 +21296,24 @@ fn the_sketch_bar_and_the_palette_are_bounded_around_their_controls_in_the_tree(
         for _ in 0..3 {
             step(&mut h);
         }
-        let tab = h.state().tabs()[0].id.to_string();
+        let tab = h.state().tabs()[0].id;
         for (role, label, area, least) in [
-            (Role::Toolbar, "Sketch bar", "sketch_bar", 2),
-            (Role::Group, "Sketch Palette", "sketch_palette", 6),
+            (
+                Role::Toolbar,
+                "Sketch bar",
+                silico_app::sketch::dimension::bar_area(&tab),
+                2,
+            ),
+            (
+                Role::Group,
+                "Sketch Palette",
+                silico_app::sketch::dimension::palette_area(&tab),
+                6,
+            ),
         ] {
             let group = h.get_by_role_and_label(role, label);
             let bounds = group.rect();
-            let rect =
-                eframe::egui::AreaState::load(&h.ctx, eframe::egui::Id::new((area, tab.clone())))
-                    .unwrap()
-                    .rect();
+            let rect = eframe::egui::AreaState::load(&h.ctx, area).unwrap().rect();
             assert!(
                 (bounds.min - rect.min).length() <= 0.5 && (bounds.max - rect.max).length() <= 0.5,
                 "{label} at {ppp}x: {bounds:?}, its area {rect:?}"
@@ -23247,10 +23223,9 @@ fn a_right_click_on_the_canvas_opens_the_sketch_menu_at_it_and_its_own_release_l
 // over-define prompt's Cancel, and the canvas menu at fractional scales ----
 
 /// The Sketch Palette's place on the screen, as last drawn: its area's, the app's
-/// `sketch_palette` of the tab shown.
+/// `palette_area` of the tab shown.
 fn palette_rect(h: &AppHarness) -> eframe::egui::Rect {
-    let tab = h.state().tabs()[0].id.to_string();
-    let id = eframe::egui::Id::new(("sketch_palette", tab));
+    let id = silico_app::sketch::dimension::palette_area(&h.state().tabs()[0].id);
     eframe::egui::AreaState::load(&h.ctx, id).unwrap().rect()
 }
 

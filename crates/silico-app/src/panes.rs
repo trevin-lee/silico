@@ -190,8 +190,8 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
     }
 }
 
-/// A pane's place, `rect`, as the accessibility tree gives it (in points, as egui's
-/// widgets give theirs).
+/// Any place on the screen, `rect` (a pane's, a floating panel's, a tab's name), as the
+/// accessibility tree gives it: in points, as egui's widgets give theirs.
 pub(crate) fn bounds(rect: egui::Rect) -> egui::accesskit::Rect {
     egui::accesskit::Rect {
         x0: rect.min.x.into(),
