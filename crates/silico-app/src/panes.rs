@@ -668,6 +668,10 @@ const CLEAR_SELECTION: &str = "Clear selection";
 /// panel says the file on disk isn't compared yet.
 const NOT_MEASURED: &str = "Not measured yet";
 
+/// What it says of one element's measure while its feature doesn't build: not measured,
+/// for as long as that lasts, never "not measured yet" (its Stability card says why).
+const NOT_BUILT: &str = "Not measured: its feature didn't build";
+
 /// One element selected (`selectionProps`' first view): its head (its kind's icon, its
 /// number in its body's solid, and what it is, on which body); MEASURES, from its entry
 /// as `elements` lists it ([`measure_rows`]); NAME: its name as an agent writes it, with a
@@ -690,7 +694,7 @@ fn one_selected(ui: &mut Ui, tab: &Tab, picked: &Picked, answers: &Answers) -> O
     };
     element_head(ui, icon, &title, &sub);
     properties::section(ui, "Measures");
-    measure_rows(ui, kind, answers.element.as_ref());
+    measure_rows(ui, picked, kind, answers.element.as_ref());
     properties::section(ui, "Name");
     properties::copy_row(ui, "Stable name", &picked.name);
     let maker = found.map(|found| found.name.feature().clone());
@@ -872,9 +876,11 @@ fn element_words(kind: Option<ElementKind>, entry: Option<&ElementEntry>) -> Str
 /// One element's MEASURES (`selectionProps`), from its `entry` as `elements` lists it: a
 /// face's area, and a planar face's normal or a cylinder's radius and axis; an edge's
 /// length, and a circle's or arc's radius; a vertex's position. Not read yet: the rows its
-/// kind always has, each [`NOT_MEASURED`]; refused, the core's refusal, as a card.
+/// kind always has, each [`NOT_MEASURED`], or [`NOT_BUILT`] while `picked` waits for a
+/// feature that didn't build; refused, the core's refusal, as a card.
 fn measure_rows(
     ui: &mut Ui,
+    picked: &Picked,
     kind: Option<ElementKind>,
     entry: Option<&Result<ElementEntry, silico_core::command::Problems>>,
 ) {
@@ -895,7 +901,11 @@ fn measure_rows(
                 Some(ElementKind::Vertex) => "Position",
                 _ => return,
             };
-            properties::text_row(ui, key, properties::body(NOT_MEASURED, theme::TEXT_SUBDUED));
+            let said = match &picked.state {
+                crate::selection::State::Waiting { why: Some(_), .. } => NOT_BUILT,
+                _ => NOT_MEASURED,
+            };
+            properties::text_row(ui, key, properties::body(said, theme::TEXT_SUBDUED));
             return;
         }
     };
