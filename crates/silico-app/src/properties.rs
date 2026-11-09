@@ -3187,11 +3187,23 @@ mod tests {
             assert!(shown.galley.elided, "{text} cut");
             assert_eq!(shown.galley.rows.len(), 1, "{text} on one line");
             let end = shown.pos.x + shown.galley.size().x;
+            // Cut at its column's right, within a glyph (under 8 at 11 and 12 px), never
+            // short of that, nor past it.
             assert!(
-                end <= right + egui::emath::GUI_ROUNDING,
-                "{text} ends at {end}, past its column's {right}"
+                end <= right + egui::emath::GUI_ROUNDING && end > right - 8.0,
+                "{text} ends at {end}, not within a glyph of its column's {right}"
             );
         }
+        // The value cut, hovered: its whole text, egui's one tooltip.
+        h.ctx
+            .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
+        h.get_by_label(value).hover();
+        h.run_steps(3);
+        let said = painted(&h)
+            .into_iter()
+            .filter(|shape| matches!(shape, egui::Shape::Text(text) if text.galley.text() == value))
+            .count();
+        assert_eq!(said, 2, "the value and one tooltip");
     }
 
     #[test]
