@@ -5147,6 +5147,139 @@ mod property_panel_drawn {
     }
 
     #[test]
+    fn every_element_type_has_its_words_for_each_kind_of_element_it_can_be() {
+        use silico_core::command::elements::ElementType as T;
+        // By hand: the prototype's words where it has them (app.js:567-573: "Planar face",
+        // "Cylindrical face", "Line edge", "Arc edge", "Vertex"); for each other type the
+        // core gives (`ElementType`, its geometry as OCCT names it), its adjective before
+        // its kind, as those are; the kind alone for a type of no name (`Other`).
+        let (face, edge, vertex) = (ElementKind::Face, ElementKind::Edge, ElementKind::Vertex);
+        let table = [
+            (face, T::Plane, "Planar face"),
+            (face, T::Cylinder, "Cylindrical face"),
+            (face, T::Cone, "Conical face"),
+            (face, T::Sphere, "Spherical face"),
+            (face, T::Torus, "Toroidal face"),
+            (face, T::Bezier, "Bézier face"),
+            (face, T::Bspline, "B-spline face"),
+            (face, T::Revolution, "Revolved face"),
+            (face, T::Extrusion, "Extruded face"),
+            (face, T::Offset, "Offset face"),
+            (face, T::Other, "Face"),
+            (edge, T::Line, "Line edge"),
+            // Its ends apart: an arc (its ends one point, a circle: below).
+            (edge, T::Circle, "Arc edge"),
+            (edge, T::Ellipse, "Ellipse edge"),
+            (edge, T::Hyperbola, "Hyperbola edge"),
+            (edge, T::Parabola, "Parabola edge"),
+            (edge, T::Bezier, "Bézier edge"),
+            (edge, T::Bspline, "B-spline edge"),
+            (edge, T::Offset, "Offset edge"),
+            (edge, T::Other, "Edge"),
+            (vertex, T::Point, "Vertex"),
+        ];
+        // Every type with each kind of element it can be has its row, and only those.
+        let pairs: Vec<(ElementKind, T)> = table.iter().map(|&(kind, t, _)| (kind, t)).collect();
+        for t in T::ALL {
+            for kind in [face, edge, vertex] {
+                assert_eq!(
+                    pairs.contains(&(kind, t)),
+                    t.is_of(kind),
+                    "a {kind:?} of type {t:?}"
+                );
+            }
+        }
+        let mut entry = element("Edge3");
+        let at = |x: i64| [Length::from_nm(x), Length::from_nm(0), Length::from_nm(0)];
+        entry.start = Some(at(1));
+        entry.end = Some(at(2));
+        for (kind, t, words) in table {
+            entry.r#type = t;
+            assert_eq!(
+                element_words(Some(kind), Some(&entry)),
+                words,
+                "a {kind:?} of type {t:?}"
+            );
+        }
+        entry.r#type = T::Circle;
+        entry.end = Some(at(1));
+        assert_eq!(element_words(Some(edge), Some(&entry)), "Circle edge");
+    }
+
+    #[test]
+    fn a_vertex_not_measured_yet_says_its_position_isnt_and_offers_edit_alone() {
+        // `selectionProps`' vertex (app.js:573): "Vertex" on its body, and its one measure,
+        // Position, which says it isn't measured till `elements` answers, in `.subdued`,
+        // never a dash; no Sketch on this face, no Fillet: Edit Block alone, 10 under the rows.
+        let h = drawn(selecting(&["Vertex1"], Answers::default()));
+        let mut y = title_and_head(&h, "Vertex1", "Vertex · Block", body(css::FS_SMALL));
+        y = section_at(&h, "MEASURES", y);
+        y = row_at(&h, "Position", NOT_MEASURED, y, body(css::FS), css::G550);
+        y = section_at(&h, "NAME", y);
+        y = row_at(
+            &h,
+            "Stable name",
+            "aaaaaaaa.box.Vertex1",
+            y,
+            mono(),
+            css::G800,
+        );
+        y = row_at(&h, "Made by", "Block", y, body(css::FS), css::INFO);
+        y = row_at(&h, "Stability", "Stable", y, body(css::FS), css::GREEN);
+        let edit = h.get_by_role_and_label(Role::Button, "Edit Block").rect();
+        at(
+            edit.min,
+            Pos2::new(PANE.x + css::PAD, y + css::BUTTONS_PADDING),
+            "Edit Block",
+        );
+        for button in [SKETCH_ON_FACE, "Fillet"] {
+            assert!(
+                h.query_by_role_and_label(Role::Button, button).is_none(),
+                "a vertex has no {button}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pair_not_measured_yet_says_so_of_distance_and_angle_and_with_a_vertex_of_distance_alone() {
+        // Two faces, unanswered: Distance and Angle, each not measured yet in `.subdued`,
+        // then SELECTION.
+        let h = drawn(selecting(&["Face5", "Face6"], Answers::default()));
+        let mut y = title_and_head(&h, "2 selected", "2 faces", body(css::FS_SMALL));
+        y = section_at(&h, "MEASURE", y);
+        y = row_at(&h, "Distance", NOT_MEASURED, y, body(css::FS), css::G550);
+        y = row_at(&h, "Angle", NOT_MEASURED, y, body(css::FS), css::G550);
+        section_at(&h, "SELECTION", y);
+        // A face and a vertex, unanswered: no angle takes a vertex (`angle`'s design), so
+        // Distance alone, then SELECTION.
+        let h = drawn(selecting(&["Face5", "Vertex1"], Answers::default()));
+        let mut y = title_and_head(&h, "2 selected", "1 face, 1 vertex", body(css::FS_SMALL));
+        y = section_at(&h, "MEASURE", y);
+        y = row_at(&h, "Distance", NOT_MEASURED, y, body(css::FS), css::G550);
+        section_at(&h, "SELECTION", y);
+        assert!(h.query_by_label("Angle").is_none());
+    }
+
+    #[test]
+    fn an_elements_body_is_named_by_its_own_row_among_several_bodies() {
+        // Two bodies, the element's listed second: its head names its own body, Block,
+        // never the other's, Plate.
+        let mut tab = selecting(&["Face5"], Answers::default());
+        tab.browser.bodies.insert(
+            0,
+            crate::tab::Row {
+                id: fid("b0000002"),
+                name: "Plate".to_owned(),
+                health: Health::Healthy,
+                marked_by: None,
+            },
+        );
+        let h = drawn(tab);
+        title_and_head(&h, "Face5", "Face · Block", body(css::FS_SMALL));
+        assert!(h.query_by_label_contains("Plate").is_none());
+    }
+
+    #[test]
     fn a_refused_measure_is_the_cores_card_in_place_of_its_rows() {
         // A distance the kernel couldn't find, in the core's words (`distance`'s design):
         // its card, with its code, and no Distance row; the angle, answered, still shown.

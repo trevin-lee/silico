@@ -3076,6 +3076,8 @@ mod tests {
 
     /// `.prop .v`: `display: flex; gap: 6px`; `.prop .v .copy { margin-left: auto }`.
     const V_GAP: f32 = 6.0;
+    /// `--info`, `.link`'s.
+    const INFO: Color32 = Color32::from_rgb(0xad, 0xbb, 0xff);
 
     #[test]
     fn a_copy_rows_value_too_long_is_cut_short_6_before_its_copy_icon_at_the_rows_right() {
@@ -3124,6 +3126,99 @@ mod tests {
         assert!(
             right <= end + egui::emath::GUI_ROUNDING && right > end - 8.0,
             "the value ends at {right}, the copy icon at {copy:?}"
+        );
+    }
+
+    #[test]
+    fn a_link_is_info_at_rest_and_white_and_underlined_hovered() {
+        // `.link { color: var(--info) }`, `.link:hover { color: #fff; text-decoration:
+        // underline }`: a line under its words hovered, a pixel thick (a browser's at 12 px),
+        // in their white; none at rest.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(295.0, 60.0));
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 120.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    link_row(ui, "Made by", "Block");
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let shown = text_shape(&h, "Block");
+        assert_eq!(colour(&shown), INFO, "at rest");
+        assert_eq!(
+            shown.galley.job.sections[0].format.underline,
+            Stroke::NONE,
+            "at rest"
+        );
+        h.get_by_role_and_label(Role::Link, "Block").hover();
+        h.run_steps(2);
+        let shown = text_shape(&h, "Block");
+        assert_eq!(colour(&shown), Color32::WHITE, "hovered");
+        assert_eq!(
+            shown.galley.job.sections[0].format.underline,
+            Stroke::new(1.0, Color32::WHITE),
+            "hovered"
+        );
+    }
+
+    /// `selectionProps`' buttons: `display: flex; gap: 6px; padding: 10px var(--pad);
+    /// flex-wrap: wrap`.
+    const BUTTONS_PADDING: f32 = 10.0;
+    const BUTTONS_GAP: f32 = 6.0;
+
+    #[test]
+    fn a_views_buttons_share_a_line_they_just_fit_inside_its_padding_and_wrap_a_point_narrower() {
+        // Fillet and Edit Block, measured in a wide row; then a row exactly as wide as the
+        // two, the gap, and `--pad` at each side: on one line, Fillet 12 in and 10 down, Edit
+        // Block 6 after it. A point narrower, Edit Block wraps, first on the next line, 6
+        // under Fillet.
+        let labels = ["Fillet", "Edit Block"];
+        let drawn = |width: f32| {
+            let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(width, 100.0));
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(width + 80.0, 160.0))
+                .build_ui(move |ui| {
+                    ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                        super::buttons(
+                            ui,
+                            &[
+                                modal::Button::new("Fillet", Kind::Secondary).icon(Icon::Fillet),
+                                modal::Button::new("Edit Block", Kind::Ghost).icon(Icon::Edit),
+                            ],
+                        );
+                    });
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(2);
+            let [fillet, edit] = labels.map(|label| widget(&h, Role::Button, label));
+            (place, fillet, edit)
+        };
+        let (_, fillet, edit) = drawn(600.0);
+        let both = fillet.width() + BUTTONS_GAP + edit.width();
+        let width = both + 2.0 * PAD;
+        assert_eq!(width - 2.0 * PAD, both, "the row, the two exactly");
+        let (place, fillet, edit) = drawn(width);
+        at(
+            fillet.min,
+            Pos2::new(place.left() + PAD, place.top() + BUTTONS_PADDING),
+            "Fillet",
+        );
+        at(
+            edit.min,
+            Pos2::new(fillet.right() + BUTTONS_GAP, fillet.top()),
+            "Edit Block, just fitting",
+        );
+        let (place, fillet, edit) = drawn(width - 1.0);
+        at(
+            fillet.min,
+            Pos2::new(place.left() + PAD, place.top() + BUTTONS_PADDING),
+            "Fillet",
+        );
+        at(
+            edit.min,
+            Pos2::new(place.left() + PAD, fillet.bottom() + BUTTONS_GAP),
+            "Edit Block, wrapped",
         );
     }
 }

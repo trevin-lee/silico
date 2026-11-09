@@ -26733,6 +26733,29 @@ fn a_pair_waiting_on_a_feature_that_failed_says_why_and_not_that_its_not_measure
     assert!(!shows(&h, "Properties", "Not measured yet"));
     assert_eq!(row_value(&h, "Distance"), None);
     assert_eq!(row_value(&h, "Angle"), None);
+    // Each on a warning's card (`.err-card.warn`: `--alert-warn-bg`, rgba(223, 119, 0, .18),
+    // bordered #5c3a08), as one element's Stability card says it: the pair waits, it isn't
+    // in error.
+    let warn = eframe::egui::Color32::from_rgba_unmultiplied(223, 119, 0, 46);
+    let warn_border = eframe::egui::Color32::from_rgb(0x5c, 0x3a, 0x08);
+    for why in &whys {
+        let at = h
+            .get_by_role_and_label(Role::Pane, "Properties")
+            .query_all_by_label_contains(why)
+            .next()
+            .unwrap()
+            .rect();
+        let cards: Vec<_> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                eframe::egui::Shape::Rect(card) if card.rect.contains_rect(at) => {
+                    Some((card.fill, card.stroke.color))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(cards.contains(&(warn, warn_border)), "{why}: {cards:?}");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 

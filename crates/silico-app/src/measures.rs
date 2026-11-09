@@ -487,6 +487,48 @@ mod tests {
     }
 
     #[test]
+    fn a_pair_is_reading_while_its_distance_is_out_though_its_angle_has_answered() {
+        // Faces 1 and 3, their distance held: `angle` asks the kernel nothing, so it answers
+        // first; with the distance still out, a read is out, till it answers too.
+        let mut opened = opened();
+        opened.select(&["Face1", "Face3"]);
+        let mut measures = Measures::default();
+        let hold = opened.kernel.hold(|op| between(op, 1, 3));
+        let of = opened.ask(&mut measures);
+        assert!(measures.reading());
+        opened.polled_until(&mut measures, |m| {
+            m.answers(of).is_some_and(|answers| answers.angle.is_some())
+        });
+        let answers = measures.answers(of).unwrap();
+        assert_eq!(answers.distance, None);
+        assert!(measures.reading(), "the distance is out");
+        hold.release();
+        opened.polled_until(&mut measures, |m| !m.reading());
+        // The fake's faces 1 and 3 stand at (1, 0, 0) and (3, 0, 0): 2 apart.
+        let distance = measures.answers(of).unwrap().distance.clone().unwrap();
+        assert_eq!(distance.unwrap().distance, Length::from_nm(2_000_000));
+    }
+
+    #[test]
+    fn what_the_measures_are_of_is_what_was_asked_last_and_nothing_before_any_ask() {
+        // What a tab compares with the selection each frame, to ask again only when the
+        // selection or its model has moved (`Tab::measure`).
+        let mut opened = opened();
+        let mut measures = Measures::default();
+        assert_eq!(measures.of(), None);
+        opened.select(&["Face2"]);
+        let first = opened.ask(&mut measures);
+        assert_eq!(measures.of(), Some(first));
+        opened.select(&["Face4"]);
+        let second = opened.ask(&mut measures);
+        assert_ne!(first, second);
+        assert_eq!(measures.of(), Some(second));
+        // Asked of no model: of nothing again.
+        measures.ask(&opened.sessions, &opened.id, None, None);
+        assert_eq!(measures.of(), None);
+    }
+
+    #[test]
     fn three_elements_read_nothing_and_none_reads_nothing() {
         let mut opened = opened();
         let mut measures = Measures::default();
