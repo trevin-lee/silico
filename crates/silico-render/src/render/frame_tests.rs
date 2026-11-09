@@ -4608,6 +4608,27 @@ fn stroke_of(image: &Drawn, line: &ImageLine, half: f64, margin: f64) -> [[(usiz
     ]
 }
 
+/// Of the pixels of `image` whose centres lie from `margin` along `line` to `margin` before its
+/// end, and `low` to `high` off it (`low` ≤ |s| < `high`), each one's `s` and its colour.
+fn band(
+    image: &Drawn,
+    line: &ImageLine,
+    margin: f64,
+    (low, high): (f64, f64),
+) -> Vec<(f64, [u8; 4])> {
+    let mut found = Vec::new();
+    for y in 0..image.size[1] {
+        for x in 0..image.size[0] {
+            let (t, s) = line.measure([x, y]);
+            if t < margin || t > line.length - margin || s.abs() < low || s.abs() >= high {
+                continue;
+            }
+            found.push((s, image.at([x, y])));
+        }
+    }
+    found
+}
+
 /// A frame of the L or another body, body 1, `size` pixels at `pixels_per_point`, picking
 /// nothing.
 fn plain_frame<'a>(camera: &'a Camera, size: [u32; 2], pixels_per_point: f32) -> Frame<'a> {
@@ -4674,6 +4695,41 @@ fn a_concave_edges_stroke_is_drawn_whole_along_its_line_as_a_convex_ones_is() {
                 assert!(all_of(whole, 50), "{what}: whole {whole:?} of {SIDES:?}");
                 assert!(all_of(part, 40), "{what}: in part {part:?} of {SIDES:?}");
             }
+            // Those bands hold for a reach over about 0.98 pixels, though a whole stroke over
+            // these faces needs 1.21 (the test skeptic, #439). So each of Edge1's pixels 0.5 to
+            // 0.9 off its line, partly under its stroke, is compared with Edge4's as far off on
+            // the side whose face faces the same way: the floor below Edge1 and the top above
+            // Edge4 face +z, and the wall is above Edge1 and below Edge4. Both lines run 30°
+            // below the row, and a pixel's four samples are symmetric about its centre, so a
+            // pixel and its mirror have their samples as far off their lines, and a stroke
+            // drawn whole over both covers them alike. On lavapipe 89 of the 90 agree to a
+            // level a channel; one, (433, 418), 0.73 off on the wall's side, is 10 lighter,
+            // as light with a reach of 1.1 pixels as with 1.91, so no face took its sample
+            // (its faces there are 1.26 pixels of depth nearer at most): each side may have
+            // one. A reach of 1.1 pixels (√2 taken as 0.6) left 14 and 13 a side lighter by 9
+            // to 57 levels.
+            let [a, b] = ends(5.0);
+            let concave = band(&image, &ImageLine::new(a, b), 8.0, (0.5, 0.9));
+            let [a, b] = ends(20.0);
+            let convex = band(&image, &ImageLine::new(a, b), 8.0, (0.5, 0.9));
+            let mut pairs = [0usize; 2];
+            let mut apart = [0usize; 2];
+            for &(s, pixel) in &concave {
+                let &(mirror, its) = convex
+                    .iter()
+                    .min_by(|m, n| (m.0 + s).abs().total_cmp(&(n.0 + s).abs()))
+                    .unwrap();
+                assert!((mirror + s).abs() < 0.01, "{s} against {mirror}");
+                let side = usize::from(s < 0.0);
+                pairs[side] += 1;
+                if (0..3).any(|k| pixel[k].abs_diff(its[k]) > 2) {
+                    apart[side] += 1;
+                }
+            }
+            assert!(
+                pairs.iter().all(|&n| n >= 40) && apart.iter().all(|&n| n <= 1),
+                "{apart:?} of {pairs:?} apart from Edge4's, of {SIDES:?}"
+            );
         },
     );
 }
@@ -5238,6 +5294,86 @@ fn a_highlighted_concave_edge_in_a_render_is_drawn_to_its_plain_strokes_reach_an
                     "{what} 1.9 to 2.2 off: {past:?} of {SIDES:?}"
                 );
             }
+        },
+    );
+}
+
+/// A frame taller than it's wide, 800 by 1200: 100 mm over its 1200 rows (1/12 mm a pixel)
+/// about the centre (400, 600). Each drawn reach is of its rows, 1.9142/1200 of the view's
+/// height, against 1.9142/800 were it taken of its 800 columns.
+const TALL: [u32; 2] = [800, 1200];
+
+#[test]
+fn a_drawn_edge_behind_a_thin_wall_takes_its_reach_of_the_views_rows_wide_or_tall() {
+    on_lavapipe(
+        "render::frame_tests::a_drawn_edge_behind_a_thin_wall_takes_its_reach_of_the_views_rows_wide_or_tall",
+        |r| {
+            // The plate from above, orthographic and 100 mm high (`above_the_wall`), a pixel a
+            // point. WIDE, 1200 by 800: 0.125 mm a pixel, Edge13 (x 10 to 30, y 20) along row
+            // 400.0 from column 600 − 80 = 520 to 680; its drawn reach 1.9142/800 × 100 =
+            // 0.2393 mm, so 0.23 mm behind the top (zb 0.77) it's drawn, rows 399 and 400 (their
+            // centres half a pixel off it) the edges' colour from column 540 to 660, and 0.245
+            // mm behind (0.755) hidden, the top's. Taken of its 1200 columns the reach would be
+            // 0.1595 mm, hiding it at 0.23. TALL, 800 by 1200: 1/12 mm a pixel, Edge13 along
+            // row 600.0 from column 400 − 120 = 280 to 520; its reach 1.9142/1200 × 100 =
+            // 0.1595 mm, so 0.15 mm behind (zb 0.85) drawn, from column 300 to 500, and 0.17
+            // (0.83) hidden. Taken of its 800 columns it would be 0.2393 mm, drawing it at 0.17.
+            let camera = above_the_wall(false);
+            // Each row's pixels checked: 120 wide (centres 540.5 to 659.5), 200 tall.
+            for (size, from, to, least, zb, drawn) in [
+                (WIDE, [530.0, 400.0], [670.0, 400.0], 120, 0.77, true),
+                (WIDE, [530.0, 400.0], [670.0, 400.0], 120, 0.755, false),
+                (TALL, [290.0, 600.0], [510.0, 600.0], 200, 0.85, true),
+                (TALL, [290.0, 600.0], [510.0, 600.0], 200, 0.83, false),
+            ] {
+                let [left, right] = [[10.0, 20.0, zb], [30.0, 20.0, zb]];
+                assert_pixel(
+                    project(&camera, size, left),
+                    [from[0] - 10.0, from[1]],
+                    1e-4,
+                );
+                assert_pixel(project(&camera, size, right), [to[0] + 10.0, to[1]], 1e-4);
+                r.upload(1, &thin_wall(zb)).unwrap();
+                let image = drawn_image(r, &plain_frame(&camera, size, 1.0));
+                let test = if drawn { edge_coloured } else { its_face };
+                let got = ImageLine::new(from, to).tally(&image, 10.0, (0.0, 0.6), 10.0, test);
+                let what = format!("{size:?}, zb {zb}, drawn {drawn}");
+                assert!(all_of(got, least), "{what}: {got:?} of {SIDES:?}");
+            }
+        },
+    );
+}
+
+#[test]
+fn with_edges_not_picked_an_edge_picks_point_takes_its_reach_of_the_views_rows_in_a_wide_frame() {
+    on_lavapipe(
+        "render::frame_tests::with_edges_not_picked_an_edge_picks_point_takes_its_reach_of_the_views_rows_in_a_wide_frame",
+        |r| {
+            // Edge13 on the plate's top (zb = 1) from above, orthographic, in WIDE, 1200 by 800
+            // (0.125 mm a pixel about (600, 400)), a pixel a point, edges not picked: the pixel
+            // (600, 400), its centre half a pixel right of and below the line's point (20, 20,
+            // 1), is its drawn strip's, moved toward the eye by 1.9142/800 of the view's 100 mm,
+            // 0.2393 mm, and its point taken back by as much: (20.0625, 19.9375, 1), by hand.
+            // Either reach taken of the 1200 columns, 0.1595 mm, would leave z at 1 + 0.2393 −
+            // 0.1595 = 1.0798 (the point's) or 1 − 0.0798 = 0.9202 (the strip's).
+            r.upload(1, &thin_wall(1.0)).unwrap();
+            let camera = above_the_wall(false);
+            assert_pixel(
+                project(&camera, WIDE, [20.0, 20.0, 1.0]),
+                [600.0, 400.0],
+                1e-4,
+            );
+            let asking = Frame {
+                size_px: WIDE,
+                edges: false,
+                ..frame(&camera, &[1], &[], Some(rect([600, 400], [1, 1])))
+            };
+            let hit = pick(r, &asking).hit.unwrap();
+            assert_eq!(
+                (hit.body, hit.hit, hit.pixel),
+                (1, Element::Edge(13), [600, 400])
+            );
+            assert_point(&hit, [20.0625, 19.9375, 1.0], [1e-3; 3]);
         },
     );
 }
