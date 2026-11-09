@@ -35558,3 +35558,176 @@ fn in_sketch_mode_r_alone_is_rectangle_and_command_r_reloads_never_choosing_it()
     );
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- #427's review ----
+
+#[test]
+fn a_cmd_click_on_a_selected_browser_row_takes_it_out_and_on_an_unselected_item_selects_it_alone() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Browser", "Hole"));
+    let hole = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label("Hole")
+            .rect()
+            .center()
+    };
+    // The browser's Hole selected, then Cmd-clicked: out.
+    let at = hole(&h);
+    click_canvas(&mut h, at, false);
+    step_until(&mut h, "Hole selected", |h| {
+        selected_features(h) == ["m3tq8v0z"]
+    });
+    let at = hole(&h);
+    click_canvas(&mut h, at, true);
+    deselected(&mut h, "Hole taken out by a Cmd-click in the browser");
+    // A Cmd-click on an item not selected selects it, alone (several features aren't
+    // selected together outside a dialog's boxes).
+    pin_selected(&mut h);
+    let block = h
+        .get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label("Block")
+        .rect()
+        .center();
+    click_canvas(&mut h, block, true);
+    step_until(&mut h, "Block selected alone", |h| {
+        selected_features(h) == ["k7f2qx3m"]
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn after_a_reload_that_found_nothing_changed_another_programs_change_has_its_banner() {
+    // The person's Reload read the file and found it as the session held it: no reload of
+    // theirs is to come, so the next one, another program's, is announced.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
+    settled(&mut h);
+    command_r(&mut h);
+    step_until(&mut h, "Reload's check answered", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.rebuilds_all == 1 && !tab.checking()
+    });
+    std::fs::write(&path, example_theirs()).unwrap();
+    // Another client's read reloads it, as the disk watch's would.
+    let id = h.state().tabs()[0].id;
+    assert!(f.sessions.text(&id, None).wait().session.unwrap().reloaded);
+    step_until(&mut h, "the banner", |h| {
+        anywhere(
+            h,
+            "Reloaded example.silico: another program changed it on disk",
+        )
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_second_reload_asked_while_the_first_is_out_reads_the_file_as_the_persons_too() {
+    // The first Reload's rebuild held at its box; the file changed; Reload again, which
+    // waits behind the first. The first finds nothing changed, the second reloads: the
+    // person's, so no banner says another program's.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
+    settled(&mut h);
+    let hold = f.kernel.hold(is_box);
+    command_r(&mut h);
+    step(&mut h);
+    assert!(f.kernel.wait_running(1, WAIT));
+    std::fs::write(&path, example_theirs()).unwrap();
+    command_r(&mut h);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 1, "the second waits");
+    hold.release();
+    step_until(
+        &mut h,
+        "both rebuilt, the second of the file read again",
+        |h| {
+            let tab = &h.state().tabs()[0];
+            tab.rebuilds_all == 2 && !tab.checking() && shows(h, "Timeline", "Drill")
+        },
+    );
+    settled(&mut h);
+    assert!(h.state().tabs()[0].reloaded.is_none());
+    assert!(!anywhere(
+        &h,
+        "Reloaded example.silico: another program changed it on disk"
+    ));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn command_r_with_a_dialog_open_says_to_finish_it_first_and_sends_nothing() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    command_r(&mut h);
+    step_until(&mut h, "said", |h| {
+        h.state()
+            .toast()
+            .is_some_and(|(text, _)| text == silico_app::app::RELOAD_IN_DIALOG)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let tab = &h.state().tabs()[0];
+    assert!(tab.in_dialog());
+    assert_eq!(tab.rebuilds_all, 0);
+    assert!(h.query_by_role_and_label(Role::Dialog, "Box").is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn command_r_on_an_untitled_part_with_edits_asks_nothing_and_only_rebuilds_keeping_them() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    add_box(&mut h, "Untitled");
+    step_until(&mut h, "the box's edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.unsaved() && tab.edits.idle() && !tab.in_dialog()
+    });
+    let mine = text_of(&f, &h);
+    let boxes = boxes_asked(&f);
+    command_r(&mut h);
+    step_until(&mut h, "rebuilt everything", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.rebuilds_all == 1 && !tab.checking()
+    });
+    assert!(!anywhere(&h, "Reload Untitled from disk?"));
+    assert!(boxes_asked(&f) > boxes, "the box built anew");
+    let tab = &h.state().tabs()[0];
+    assert!(tab.unsaved());
+    assert_eq!(text_of(&f, &h), mine);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn command_r_while_a_first_rename_is_typed_names_it_once_its_transaction_opens() {
+    // F2's field on a saved part, typed in, then ⌘R: the rename is sent first (its begin
+    // not answered yet), and the question asks the edits' list until it can be read.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    h.key_press(eframe::egui::Key::F2);
+    step_until(&mut h, "the rename field", |h| {
+        rename_field(h, "Pin").is_some()
+    });
+    step(&mut h);
+    rename_field(&h, "Pin").unwrap().type_text("Dowel");
+    step(&mut h);
+    command_r(&mut h);
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Reload example.silico from disk?")
+    });
+    step_until(&mut h, "the rename named", |h| {
+        anywhere(h, r#"Dowel · name · "Pin" → "Dowel""#)
+    });
+    assert_eq!(never_waits::waits(), 0);
+}

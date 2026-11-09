@@ -55,6 +55,10 @@ pub const IDLE_FRAME: Duration = DISK_CHECK_INTERVAL.saturating_add(IDLE_MARGIN)
 pub const FILTERS_SAID: &str =
     "F5 shows the selection filters. They live in the toolbar, under SELECT.";
 
+/// What Reload says with a feature dialog open (⌘R, Ctrl+R elsewhere): as Rebuild everything
+/// does nothing in a dialog, the dialog's OK or Cancel comes first.
+pub const RELOAD_IN_DIALOG: &str = "Finish or cancel the dialog first: Reload drops what it holds.";
+
 /// The selection filters' keys pressed this frame, X, E, and V (`crate::shortcuts`), each
 /// taken and its kind given, in that order; none taken while a sketch is open (`in_sketch`),
 /// whose X is Construction and whose picking is its own.
@@ -1451,7 +1455,8 @@ impl<P: Clients + 'static> App<P> {
             self.ask_save_as(id, false, &ctx);
         }
         if reload && let Some(id) = self.active {
-            self.reload(id);
+            let now = ui.input(|input| input.time);
+            self.reload(id, now);
         }
         if close && let Some(id) = self.active {
             self.close(id);
@@ -1499,14 +1504,21 @@ impl<P: Clients + 'static> App<P> {
     /// Reload the tab of session `id` (Trevin's ask of 2026-11-09): asking first, naming
     /// them, if it would drop unsaved edits, as Close asks before it drops them; never of a
     /// file gone from disk, whose Reload drops nothing ([`Tab::reload`]).
-    fn reload(&mut self, id: SessionId) {
+    fn reload(&mut self, id: SessionId, now: f64) {
         let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
             return;
         };
         if tab.closing() {
             return;
         }
-        if tab.unsaved() && !tab.file_gone() {
+        if tab.in_dialog() {
+            // As Rebuild everything does nothing in a dialog: the dialog's OK or Cancel
+            // first.
+            self.toast = Some((RELOAD_IN_DIALOG.to_owned(), now));
+            return;
+        }
+        // An untitled part's edits are all it is: it's only rebuilt, never asked about.
+        if tab.unsaved() && !tab.file_gone() && !tab.is_untitled() {
             tab.show_changes(&self.sessions);
             self.asking = Some(Asking::Reload(id));
         } else {
@@ -1925,7 +1937,7 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// The File menu's items: New, Open…, Save As…, Export…, Revert, and Close.
+    /// The File menu's items: New, Open…, Save As…, Export…, Revert, Reload, and Close.
     fn file_menu(&mut self, ui: &mut Ui, started: &mut bool) {
         let open = !self.tabs.is_empty();
         let transaction = self
@@ -1984,17 +1996,20 @@ impl<P: Clients + 'static> App<P> {
             }
             ui.close();
         }
-        // Reload (⌘R, Ctrl+R elsewhere), off while the tab closes, as Revert is.
+        // Reload (⌘R, Ctrl+R elsewhere), off while the tab closes, as Revert is, and in a
+        // dialog, as Rebuild everything is.
         let reloadable = self
             .active_place()
             .and_then(|at| self.tabs.get(at))
-            .is_some_and(|tab| !tab.closing());
+            .is_some_and(|tab| !tab.closing() && !tab.in_dialog());
+        let label = Command::Reload.label();
         if ui
-            .add_enabled(reloadable, egui::Button::new("Reload"))
+            .add_enabled(reloadable, egui::Button::new(label))
             .clicked()
         {
             if let Some(id) = self.active {
-                self.reload(id);
+                let now = ui.input(|input| input.time);
+                self.reload(id, now);
                 *started = true;
             }
             ui.close();
@@ -2546,6 +2561,11 @@ impl<P: Clients + 'static> App<P> {
                     Some(Icon::Rebuild),
                     &format!("Reload {} from disk?", tab.name()),
                 );
+                // The edits' list, asked again until it can be: an edit's `begin` still out
+                // when the question came, its transaction isn't there to list from yet.
+                if tab.held_changes.is_none() {
+                    tab.show_changes(sessions);
+                }
                 let held = tab.held_changes.as_ref();
                 modal::body(ui, |ui| {
                     modal::text(
@@ -2556,15 +2576,15 @@ impl<P: Clients + 'static> App<P> {
                     modal::label(ui, "Your unsaved edits");
                     held_list(ui, "mine", held.map(|held| &held.mine), mine_row);
                 });
-                let ([], [cancel, reload]) = modal::foot(
-                    ui,
-                    [],
-                    [
-                        Button::new("Cancel", Kind::Secondary),
-                        Button::new("Reload, discard my edits", Kind::Danger)
-                            .enabled(!tab.closing()),
-                    ],
-                );
+                // As the close question lays out its buttons: what drops the edits on the
+                // left, Cancel on the right.
+                let ([reload], [cancel]) =
+                    modal::foot(
+                        ui,
+                        [Button::new("Reload, discard my edits", Kind::Danger)
+                            .enabled(!tab.closing())],
+                        [Button::new("Cancel", Kind::Secondary)],
+                    );
                 if reload {
                     tab.reload(sessions);
                     *started = true;

@@ -391,7 +391,8 @@ fn features<P: Clients + 'static>(
             // The track's empty space, under its items, which take a click on them first:
             // a click there lets the selection go (Trevin's ask of 2026-11-09), as one on the
             // canvas's empty space does.
-            let empty = ui.interact(track, ui.id().with("empty"), Sense::click());
+            // Clickable, not focusable: no stop of its own for Tab, nor a node unnamed.
+            let empty = ui.interact(track, ui.id().with("empty"), Sense::CLICK);
             asked.cleared = empty.clicked();
             egui::ScrollArea::horizontal()
                 .id_salt("timeline-track")
@@ -440,6 +441,8 @@ fn features<P: Clients + 'static>(
     if let Some(id) = asked.selected {
         tab.selected_in = feature_menu::Place::Timeline;
         tab.selection_mut().select_feature(id);
+    } else if tab.in_dialog() {
+        // A dialog's boxes hold what the selection shows: neither is let go here.
     } else if let Some(id) = asked.deselected {
         tab.selection_mut().deselect_feature(&id);
     } else if asked.cleared {

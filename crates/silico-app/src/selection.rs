@@ -2935,6 +2935,37 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn deselect_feature_takes_that_feature_out_and_keeps_the_rest_as_they_were() {
+        // Trevin's ask of 2026-11-09: a Ctrl-click on a selected feature takes it out. Of
+        // three features and an element, the second feature goes; the rest stay, in order,
+        // and the selection's version moves, so what reads it reads it again.
+        let mut selection = Selection::default();
+        selection.select_features(vec![fid("aaaaaaaa"), fid("bbbbbbbb"), fid("cccccccc")]);
+        selection.items.push(picked("k7f2qx3m.box.Edge9"));
+        let before = selection.version();
+        selection.deselect_feature(&fid("bbbbbbbb"));
+        assert_eq!(
+            selection.items(),
+            [
+                Item::Feature(fid("aaaaaaaa")),
+                Item::Feature(fid("cccccccc")),
+                picked("k7f2qx3m.box.Edge9"),
+            ]
+        );
+        assert_ne!(selection.version(), before);
+        // A feature not selected: nothing changes, nor the version.
+        let unchanged = selection.version();
+        selection.deselect_feature(&fid("dddddddd"));
+        assert_eq!(selection.items().len(), 3);
+        assert_eq!(selection.version(), unchanged);
+        // The last feature out of a selection of one: nothing selected.
+        let mut one = Selection::default();
+        one.select_feature(fid("aaaaaaaa"));
+        one.deselect_feature(&fid("aaaaaaaa"));
+        assert!(one.is_empty());
+    }
+
+    #[test]
     fn keep_only_lets_go_of_features_and_other_kinds_and_let_go_drops_by_either_name() {
         let mut selection = Selection::default();
         selection.published(Some((fused(1, 2), Revision::from_number(1).unwrap())), 1);

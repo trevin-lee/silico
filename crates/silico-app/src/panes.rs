@@ -298,7 +298,12 @@ impl<P: Clients + 'static> Panes<'_, P> {
             }
         }
         if let Some(id) = asked.deselected {
-            tab.selection_mut().deselect_feature(&id);
+            if tab.pick_body(&id) {
+                // A dialog's box takes the row, as a plain click's does.
+                tab.selected_in = crate::feature_menu::Place::Browser;
+            } else if !tab.in_dialog() {
+                tab.selection_mut().deselect_feature(&id);
+            }
         }
         if let Some(id) = asked.menu_selected
             && tab.selection().feature() != Some(&id)

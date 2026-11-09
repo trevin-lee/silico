@@ -724,7 +724,7 @@
     if (roll >= d.features.length) items += rollBar();
     if (!d.features.length) items = '<span class="tl-empty">Features appear here, in order, as you add them.</span>';
     const errs = d.problems.filter((p) => p.severity === 'error').length;
-    $('#timeline').innerHTML = `<span class="tl-label">Timeline</span><div class="tl-track" role="toolbar" aria-label="Features in order">${items}</div>
+    $('#timeline').innerHTML = `<span class="tl-label">Timeline</span><div class="tl-track" role="toolbar" aria-label="Features in order" data-act="tlTrack">${items}</div>
       <div class="tl-right">${errs ? `<button class="st-item err-text" data-act="whatsWrong">${icon('error')} ${errs} error${errs > 1 ? 's' : ''}</button>` : ''}<span>${d.features.length} features</span><button class="ab-btn" data-act="noop" data-tip="Timeline options">${icon('gear')}</button></div>`;
   }
   function rollBar() { return `<div class="tl-roll" data-act="noop" data-roll="1" role="separator" aria-label="Rollback bar" data-tip="Rollback bar" data-tipd="Drag to see the part as it was at an earlier feature. (Onshape's; Fusion's marker is out of M5)"></div>`; }
@@ -871,6 +871,12 @@
         <div class="m-head">${icon('warn')}<span>Keep your edits</span></div>
         <div class="m-body"><p style="margin:0;color:var(--g750)">You keep working on your version. ${esc(d.file)} keeps its new contents on disk, and Save stays off until you reload or Save As. The status bar shows <span class="warn-text">Changed on disk</span> meanwhile.</p></div>
         <div class="m-foot"><button class="btn btn-secondary" data-act="closeModal">Back</button><button class="btn btn-secondary" data-act="keepMineConfirm">Keep working</button><button class="btn btn-primary" data-act="saveAsCmd">Save As now…</button></div></div></div>`;
+    }
+    if (M.type === 'reloadDirty') {
+      return `<div class="backdrop" data-act="closeModal"><div class="modal" role="dialog" aria-modal="true" data-stop="1">
+        <div class="m-head">${icon('rebuild')}<span>Reload ${esc(M.file)} from disk?</span></div>
+        <div class="m-body"><p style="margin:0;color:var(--g750)">It has ${M.edits} unsaved edit${M.edits === 1 ? '' : 's'}. Reloading drops them.</p></div>
+        <div class="m-foot"><button class="btn btn-danger" data-act="reloadDirtyDiscard">Reload, discard my edits</button><span style="flex:1"></span><button class="btn btn-secondary" data-act="closeModal">Cancel</button></div></div></div>`;
     }
     if (M.type === 'closeDirty') {
       return `<div class="backdrop" data-act="closeModal"><div class="modal" role="dialog" aria-modal="true" data-stop="1">

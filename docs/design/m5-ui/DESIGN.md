@@ -161,7 +161,7 @@ Nothing uses blur, gradients, or animation beyond a 200 ms view transition (egui
 The sheet (`?`) is generated from the same command registry as menus, tooltips and search, so a shortcut is never documented in one place and different in another. Highlights:
 
 - File: ⌘N, ⌘O, ⌘S, ⇧⌘S, ⌘W. Edit: ⌘Z, ⇧⌘Z / Ctrl+Y, F2, Del, S (search).
-- Rebuild: ⌘B (rebuild / resume), ⇧⌘B (everything), ⌘R / Ctrl+R (reload: the file read again, then everything rebuilt; asked first if it would drop unsaved edits, and never of a file gone from disk; Trevin's ask, 2026-11-09), Esc (stop).
+- Rebuild: ⌘B (rebuild / resume), ⇧⌘B (everything), ⌘R (reload: the file read again, then everything rebuilt; it asks first if it would drop unsaved edits, drops nothing when the file is gone from disk, only rebuilds an untitled part, and waits for a dialog's OK or Cancel; Trevin's ask, 2026-11-09), Esc (stop).
 - View: F6 fit, Home, ⌘1–⌘7 standard views (SolidWorks' numbering), ⌘8 Look At; Shift+middle orbit, middle pan, wheel zoom.
 - Selection (outside sketches): X faces, E edges, V vertices, H hide/show, Esc clears. A click on the timeline's empty space clears it too, and ⌘/Ctrl-click on a selected timeline item or browser row takes its feature out (Trevin's ask, 2026-11-09).
 - Sketch: L line, R rectangle, C circle, A arc, P point, T trim, D Smart Dimension, X construction, hold ⌘/Ctrl for no relations, ⌘↵ Finish Sketch.
