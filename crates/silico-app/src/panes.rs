@@ -5151,8 +5151,10 @@ mod property_panel_drawn {
         use silico_core::command::elements::ElementType as T;
         // By hand: the prototype's words where it has them (app.js:567-573: "Planar face",
         // "Cylindrical face", "Line edge", "Arc edge", "Vertex"); for each other type the
-        // core gives (`ElementType`, its geometry as OCCT names it), its adjective before
-        // its kind, as those are; the kind alone for a type of no name (`Other`).
+        // core gives (`ElementType`, its geometry as OCCT names it), a face its adjective
+        // before "face", an edge its curve's noun before "edge", as those are; the kind alone
+        // for a type of no name (`Other`). The words past the prototype's are #414's
+        // approved ones, pinned.
         let (face, edge, vertex) = (ElementKind::Face, ElementKind::Edge, ElementKind::Vertex);
         let table = [
             (face, T::Plane, "Planar face"),
@@ -5262,9 +5264,11 @@ mod property_panel_drawn {
 
     #[test]
     fn an_elements_body_is_named_by_its_own_row_among_several_bodies() {
-        // Two bodies, the element's listed second: its head names its own body, Block,
-        // never the other's, Plate.
+        // Two bodies, the element's listed second, named Body1 in the browser (its feature
+        // Block in the timeline): its head names its own body's row, Body1, never the
+        // other's, Plate, nor its feature's name.
         let mut tab = selecting(&["Face5"], Answers::default());
+        tab.browser.bodies[0].name = "Body1".to_owned();
         tab.browser.bodies.insert(
             0,
             crate::tab::Row {
@@ -5275,7 +5279,7 @@ mod property_panel_drawn {
             },
         );
         let h = drawn(tab);
-        title_and_head(&h, "Face5", "Face · Block", body(css::FS_SMALL));
+        title_and_head(&h, "Face5", "Face · Body1", body(css::FS_SMALL));
         assert!(h.query_by_label_contains("Plate").is_none());
     }
 

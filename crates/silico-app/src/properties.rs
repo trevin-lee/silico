@@ -84,10 +84,12 @@ pub(crate) fn field_rect(ui: &Ui, width: f32) -> Rect {
     )
 }
 
-/// A label of `job`, cut short with an ellipsis where it doesn't fit.
-fn truncated(ui: &mut Ui, mut job: LayoutJob) -> Response {
-    job.wrap = TextWrapping::truncate_at_width(ui.available_width());
-    ui.add(Label::new(job).selectable(false))
+/// A label of `job`, cut short with an ellipsis where it doesn't fit its ui's width (its
+/// cell's: `.prop .k` and `.prop .v`'s `text-overflow: ellipsis`), its whole text the
+/// tooltip then (egui's own, once it's cut). A label lays its words out by its ui's wrap
+/// mode, whatever its job's wrap says: so it's told to truncate.
+fn truncated(ui: &mut Ui, job: LayoutJob) -> Response {
+    ui.add(Label::new(job).selectable(false).truncate())
 }
 
 /// A side panel's title (`.panel-title`, the browser's and the property panel's): `icon`,
@@ -332,8 +334,15 @@ pub(crate) fn copy_row(ui: &mut Ui, key: &str, value: &str) {
         // says: the ui is left the room before the icon and its gap, and no more.
         let room = whole.width() - side - theme::PROPERTY_COPY_GAP;
         ui.set_max_width(room.max(0.0));
-        ui.add(Label::new(job).selectable(false).truncate())
-            .on_hover_text(value);
+        // Its whole value its one tooltip, cut or not (the prototype's `title`): egui's own,
+        // shown once it's cut, would be a second.
+        ui.add(
+            Label::new(job)
+                .selectable(false)
+                .truncate()
+                .show_tooltip_when_elided(false),
+        )
+        .on_hover_text(value);
         let response = ui.interact(button, ui.id().with("copy"), Sense::click());
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Copy"));
         let ink = if response.hovered() {
@@ -3127,6 +3136,62 @@ mod tests {
             right <= end + egui::emath::GUI_ROUNDING && right > end - 8.0,
             "the value ends at {right}, the copy icon at {copy:?}"
         );
+        // Cut with an ellipsis on its one line, never wrapped; whole in the accessibility
+        // tree, as Copy copies it.
+        assert!(shown.galley.elided);
+        assert_eq!(shown.galley.rows.len(), 1);
+        let last = shown
+            .galley
+            .rows
+            .last()
+            .and_then(|row| row.glyphs.last())
+            .map(|glyph| glyph.chr);
+        assert_eq!(last, Some('…'));
+        assert!(h.query_by_label(name).is_some());
+        // Hovered: its whole value, once (the prototype's one `title`), never egui's own
+        // tooltip for a cut label beside it.
+        h.ctx
+            .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
+        h.get_by_label(name).hover();
+        h.run_steps(3);
+        let said = painted(&h)
+            .into_iter()
+            .filter(|shape| matches!(shape, egui::Shape::Text(text) if text.galley.text() == name))
+            .count();
+        assert_eq!(said, 2, "the value and one tooltip");
+    }
+
+    #[test]
+    fn a_text_rows_long_key_and_value_are_each_cut_short_within_their_column() {
+        // `.prop .k` and `.prop .v`: `overflow: hidden; text-overflow: ellipsis; white-space:
+        // nowrap`. In a 295 wide panel, a key longer than its 96 and a value longer than the
+        // rest: each one line, cut with an ellipsis, ending within its own column.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(295.0, 60.0));
+        let key = "A key far too long for its column of ninety-six";
+        let value =
+            "p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000001, G s0000001.sketch.Edge.na000002)";
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 120.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    text_row(ui, key, body(value, theme::PROPERTY_VALUE));
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        for (text, right) in [
+            (key, place.left() + PAD + KEY_W),
+            (value, place.right() - PAD),
+        ] {
+            let shown = text_shape(&h, text);
+            assert!(shown.galley.elided, "{text} cut");
+            assert_eq!(shown.galley.rows.len(), 1, "{text} on one line");
+            let end = shown.pos.x + shown.galley.size().x;
+            assert!(
+                end <= right + egui::emath::GUI_ROUNDING,
+                "{text} ends at {end}, past its column's {right}"
+            );
+        }
     }
 
     #[test]
@@ -3197,7 +3262,6 @@ mod tests {
         let (_, fillet, edit) = drawn(600.0);
         let both = fillet.width() + BUTTONS_GAP + edit.width();
         let width = both + 2.0 * PAD;
-        assert_eq!(width - 2.0 * PAD, both, "the row, the two exactly");
         let (place, fillet, edit) = drawn(width);
         at(
             fillet.min,
