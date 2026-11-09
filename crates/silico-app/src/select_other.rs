@@ -802,7 +802,7 @@ impl SelectOther {
 
     /// The menu closed, or the right click waiting to open one let go: the hover and the
     /// wheel let go, and the keyboard's focus. The tab's, as a modal or the shortcut sheet
-    /// comes up over it (and sketch mode, when it takes the canvas: SEAM(#351)).
+    /// comes up over it, and each frame sketch mode holds the canvas (`Tab::overlay`).
     pub(crate) fn close(
         &mut self,
         selection: &mut Selection,

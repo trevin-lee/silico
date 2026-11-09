@@ -32837,6 +32837,64 @@ fn while_select_other_is_open_the_wheel_steps_it_and_doesnt_zoom_and_after_it_zo
 }
 
 #[test]
+fn a_sketch_opened_under_select_other_closes_it_and_the_wheel_zooms_in_sketch_mode() {
+    use eframe::egui::MouseWheelUnit;
+    use silico_core::document::OriginPlane;
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    // The list open: it holds the hover, the wheel, and the window's keys.
+    list_at(&mut h, at, "4 under the pointer");
+    assert!(select_other(&h).holds_keys());
+    // A sketch opened under it: the menu closed by sketch mode's first frame, and the hover,
+    // the wheel, and the keys let go with it.
+    let sessions = Arc::clone(h.state().sessions());
+    h.state_mut().tabs_mut()[0].create_sketch(&sessions, OriginPlane::Xy);
+    assert!(sketch_mode(&h).is_some());
+    step(&mut h);
+    assert!(!select_other(&h).is_open());
+    assert!(!select_other(&h).holds_keys());
+    assert!(!h.state().tabs()[0].selection().hover_held());
+    // So the wheel zooms in sketch mode, as it does with no menu open (held, it wouldn't):
+    // over the canvas's centre, clear of the sketch bar and the palette.
+    step_until(&mut h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    let camera = view(&h).camera().clone();
+    let centre = above_at(&h, 20.0, 10.0, [0.0, 0.0]);
+    wheel(&mut h, centre, MouseWheelUnit::Line, 1.0);
+    step(&mut h);
+    assert!(ortho_height(view(&h).camera()) < ortho_height(&camera));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_click_waiting_for_its_boxes_as_a_sketch_opens_is_let_go_and_never_holds_its_keys() {
+    use eframe::egui::Modifiers;
+    use silico_core::document::OriginPlane;
+    let f = fixture();
+    let making = Arc::new(Making::default());
+    making.hold();
+    let (mut h, _record) = box_from_above_made(&f, Some(making.build()));
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    right_click(&mut h, at, at, Modifiers::NONE);
+    assert!(select_other(&h).is_waiting());
+    let sessions = Arc::clone(h.state().sessions());
+    h.state_mut().tabs_mut()[0].create_sketch(&sessions, OriginPlane::Xy);
+    step(&mut h);
+    assert!(!select_other(&h).is_waiting());
+    assert!(!select_other(&h).holds_keys());
+    // Its boxes made after: no menu opens in sketch mode.
+    making.release();
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert!(!select_other(&h).is_open());
+    assert!(h.query_by_role_and_label(Role::Menu, "Canvas").is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn select_other_lists_every_kind_whatever_the_filters_and_none_of_a_hidden_body() {
     use silico_app::selection::Filter;
     let f = fixture();

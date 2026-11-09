@@ -1077,7 +1077,9 @@ impl Tab {
     /// a drag's move goes out in the frame it happened.
     ///
     /// While a sketch is open, they're sketch mode's: the selection's canvas is claimed
-    /// (a click of the selection's waiting let go, and a box drawn), and sketch mode's frame
+    /// (a click of the selection's waiting let go, and a box drawn), Select Other's menu
+    /// closed (one open, or a right click waiting for its boxes, as the sketch opened, let
+    /// go, and the hover, the wheel, and the window's keys with it), and sketch mode's frame
     /// ([`sketch_frame`](Self::sketch_frame)) is given the frame's events and pointer in
     /// points, and its sketch's plane on the screen and back through the frame's camera
     /// ([`Screen`]). SEAM: a face pick for Create Sketch, reading
@@ -1092,11 +1094,6 @@ impl Tab {
     /// menu (`crate::canvas_menu`, through `crate::select_other`), first of them: while it's
     /// open it holds the hover and the wheel, and a left press that closes it is given to
     /// neither; an item chosen in it is done here, as its command is elsewhere.
-    /// SEAM(#351): sketch mode claims them first, while a sketch is open
-    /// (`if self.in_sketch() { self.selection.canvas_claimed(); self.box_select =
-    /// Default::default(); return self.sketch.overlay(sessions, painter, frame) }`, a click
-    /// of the selection's waiting and a box drawn let go), its face pick for Create Sketch
-    /// reading [`selection`](Self::selection)'s hover and pick.
     pub fn overlay<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -1106,6 +1103,8 @@ impl Tab {
         if let Some(mode) = self.sketch.as_ref() {
             self.selection.canvas_claimed();
             self.box_select = Default::default();
+            self.select_other
+                .close(&mut self.selection, &mut self.view, painter.ctx());
             let (ppp, origin) = (frame.pixels_per_point, frame.rect.left_top());
             let events = sketch::frame_events(&frame.left, &frame.secondary, ppp, origin);
             let pointer = frame
@@ -1131,10 +1130,9 @@ impl Tab {
         );
         // Select Other first (`crate::select_other`): while its menu is open it holds the
         // hover and the wheel, and a left press that closes it is its own, given to neither
-        // the selection nor the box. SEAM(#351): sketch mode claims the canvas before this,
-        // so Select Other, the selection's, never opens in a sketch (one open as a sketch
-        // opens is closed there: `self.select_other.close(&mut self.selection, &mut
-        // self.view, painter.ctx())`).
+        // the selection nor the box. Sketch mode claims the canvas before this, so Select
+        // Other, the selection's, never opens in a sketch (one open, or waiting, as a sketch
+        // opens is closed there).
         // Why Edit can't open each feature's dialog, as the feature menus say it: worked out
         // only in a frame a right click may open the menu in.
         let edit_off: BTreeMap<silico_core::document::FeatureId, Option<String>> =
