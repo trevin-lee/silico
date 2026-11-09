@@ -1659,6 +1659,24 @@ fn pixels(length: f32) -> u32 {
     length.round().max(0.0) as u32
 }
 
+/// The canvas behind the bodies over `rect`: a vertical gradient from
+/// [`theme::VIEWPORT_BG_TOP`] along its top to [`theme::VIEWPORT_BG_BOTTOM`] along its
+/// bottom, its colours blended as egui blends a mesh's (in sRGB, as CSS's `linear-gradient`
+/// does). The renderer's frames are transparent where no body is
+/// ([`theme::VIEWPORT_FRAME_BG`]), so it shows there.
+fn canvas_background(rect: Rect) -> egui::Shape {
+    let top = theme::color32(theme::VIEWPORT_BG_TOP);
+    let bottom = theme::color32(theme::VIEWPORT_BG_BOTTOM);
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), top);
+    mesh.colored_vertex(rect.right_top(), top);
+    mesh.colored_vertex(rect.right_bottom(), bottom);
+    mesh.colored_vertex(rect.left_bottom(), bottom);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    egui::Shape::mesh(mesh)
+}
+
 /// The viewport pane: the tab's view drawn, its navigation taken, its read started when
 /// one is wanted, and its frame given to the renderer.
 pub fn show<P: Clients + 'static>(
@@ -1668,8 +1686,7 @@ pub fn show<P: Clients + 'static>(
     drawing: &mut Drawing,
 ) {
     let rect = ui.available_rect_before_wrap();
-    ui.painter()
-        .rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+    ui.painter().add(canvas_background(rect));
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     if let Some(why) = &drawing.unavailable {
         // Said where the model would be: nothing else in the window would say it.
@@ -1953,15 +1970,261 @@ pub fn end_unshown<P: Clients + 'static>(
     overlaid(tab, sessions, &painter, &frame);
 }
 
-/// The ViewCube's faces: each named view's face, its outward normal.
-const FACES: [(NamedView, [f64; 3]); 6] = [
-    (NamedView::Front, [0.0, -1.0, 0.0]),
-    (NamedView::Back, [0.0, 1.0, 0.0]),
-    (NamedView::Left, [-1.0, 0.0, 0.0]),
-    (NamedView::Right, [1.0, 0.0, 0.0]),
-    (NamedView::Top, [0.0, 0.0, 1.0]),
-    (NamedView::Bottom, [0.0, 0.0, -1.0]),
+/// A face of the ViewCube: its named view, its outward normal, and the way its label's
+/// words run across it and the way their tops point, each a unit axis of the cube.
+#[derive(Debug, Clone, Copy)]
+struct CubeFace {
+    view: NamedView,
+    normal: [f64; 3],
+    right: [f64; 3],
+    up: [f64; 3],
+}
+
+/// The ViewCube's faces, each label lying as the prototype's textures do (viewport.js's
+/// `buildCube`: three.js's `BoxGeometry` turned a quarter about x, so its +y face is the
+/// top and its +z the front), read from outside the cube and upright from the face's own
+/// view: the sides' words z up, the top's tops toward the back. The prototype's bottom view
+/// looks with −y up, and its bottom's words read upright there, their tops toward the
+/// front; the app's (`NamedView::up`) looks with +y up, so the bottom's tops are toward the
+/// back here, or Bottom would show its own word upside down. Each face's `right × up` is
+/// its normal.
+const FACES: [CubeFace; 6] = [
+    CubeFace {
+        view: NamedView::Front,
+        normal: [0.0, -1.0, 0.0],
+        right: [1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    CubeFace {
+        view: NamedView::Back,
+        normal: [0.0, 1.0, 0.0],
+        right: [-1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    CubeFace {
+        view: NamedView::Left,
+        normal: [-1.0, 0.0, 0.0],
+        right: [0.0, -1.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    CubeFace {
+        view: NamedView::Right,
+        normal: [1.0, 0.0, 0.0],
+        right: [0.0, 1.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    CubeFace {
+        view: NamedView::Top,
+        normal: [0.0, 0.0, 1.0],
+        right: [1.0, 0.0, 0.0],
+        up: [0.0, 1.0, 0.0],
+    },
+    CubeFace {
+        view: NamedView::Bottom,
+        normal: [0.0, 0.0, -1.0],
+        right: [-1.0, 0.0, 0.0],
+        up: [0.0, 1.0, 0.0],
+    },
 ];
+
+/// How far a face must face the view to be drawn: an edge-on face isn't.
+const CUBE_FACE_SHOWN: f64 = 1e-9;
+
+/// How far a face must face the view for its label to be drawn and its click taken.
+const CUBE_FACE_LABELLED: f64 = 0.25;
+
+/// A face's fill (viewport.js's `buildCube`).
+fn cube_face_fill(view: NamedView) -> egui::Color32 {
+    match view {
+        NamedView::Top => theme::VIEW_CUBE_TOP_FILL,
+        NamedView::Bottom => theme::VIEW_CUBE_BOTTOM_FILL,
+        NamedView::Front => theme::VIEW_CUBE_FRONT_FILL,
+        NamedView::Back => theme::VIEW_CUBE_BACK_FILL,
+        _ => theme::VIEW_CUBE_SIDE_FILL,
+    }
+}
+
+/// An edge of the ViewCube: its two ends, corners of the cube (each coordinate ±1), and the
+/// outward normals of the two faces it joins.
+#[derive(Debug, Clone, Copy)]
+struct CubeEdge {
+    ends: [[f64; 3]; 2],
+    faces: [[f64; 3]; 2],
+}
+
+/// The cube's twelve edges: for each axis, the four along it, from −1 to 1 on it.
+fn cube_edges() -> impl Iterator<Item = CubeEdge> {
+    (0..3).flat_map(|k| {
+        let (a, b) = ((k + 1) % 3, (k + 2) % 3);
+        [(1.0, 1.0), (1.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)]
+            .into_iter()
+            .map(move |(sa, sb)| {
+                let mut start = [0.0; 3];
+                start[a] = sa;
+                start[b] = sb;
+                let mut end = start;
+                start[k] = -1.0;
+                end[k] = 1.0;
+                let (mut one, mut other) = ([0.0; 3], [0.0; 3]);
+                one[a] = sa;
+                other[b] = sb;
+                CubeEdge {
+                    ends: [start, end],
+                    faces: [one, other],
+                }
+            })
+    })
+}
+
+/// Where a point of the cube's face lands: the face's centre on screen, and how far one of
+/// the face's units (its half side) across it and down it move on screen.
+#[derive(Debug, Clone, Copy)]
+struct OnFace {
+    centre: Pos2,
+    across: Vec2,
+    down: Vec2,
+}
+
+impl OnFace {
+    /// The point `u` across the face and `v` down it, each in its half sides (its corners
+    /// at ±1): an orthographic view maps the face affinely, so a square on it is a
+    /// parallelogram on screen.
+    fn at(&self, u: f32, v: f32) -> Pos2 {
+        self.centre + self.across * u + self.down * v
+    }
+}
+
+/// A face's label, waiting for the pass's end ([`CubeLabels`]): its words laid out at the
+/// size they have face-on, where its mesh goes in the paint list, and how it lies on its
+/// face.
+struct CubeLabel {
+    galley: Arc<egui::Galley>,
+    layer: egui::LayerId,
+    clip: Rect,
+    opacity: f32,
+    at: egui::layers::ShapeIdx,
+    face: OnFace,
+    /// Points of the galley a half side of the face holds: the cube's scale.
+    per_unit: f32,
+}
+
+/// The ViewCube's labels, each drawn on its face at the pass's end: a label is its galley's
+/// glyphs as a mesh, each vertex mapped onto the face, so it foreshortens with the face and
+/// stays inside it; the mesh's texture coordinates are the font atlas's, which grows while
+/// a pass lays out text, so they're taken from the atlas only once the pass has laid out
+/// everything. Each label holds the place its face kept for it in the paint list, so it's
+/// drawn over its face and under the cube's edges.
+#[derive(Default)]
+struct CubeLabels {
+    waiting: Vec<CubeLabel>,
+}
+
+impl egui::Plugin for CubeLabels {
+    fn debug_name(&self) -> &'static str {
+        "ViewCube labels"
+    }
+
+    fn on_begin_pass(&mut self, _ui: &mut Ui) {
+        // Those of a pass that never ended are another pass's places.
+        self.waiting.clear();
+    }
+
+    fn on_end_pass(&mut self, ui: &mut Ui) {
+        for label in self.waiting.drain(..) {
+            let mesh = label_mesh(ui.ctx(), &label);
+            let mut painter = ui
+                .ctx()
+                .layer_painter(label.layer)
+                .with_clip_rect(label.clip);
+            painter.set_opacity(label.opacity);
+            painter.set(label.at, egui::Shape::mesh(mesh));
+        }
+    }
+}
+
+/// `label`'s glyphs as a mesh on its face: the galley tessellated about its centre, at the
+/// font atlas's size now, each vertex's offset from that centre, in face units, taken
+/// across and down the face from the label's middle ([`theme::VIEW_CUBE_LABEL_DROP`] below
+/// the face's).
+fn label_mesh(ctx: &egui::Context, label: &CubeLabel) -> egui::Mesh {
+    let mut options = ctx.tessellation_options(|options| *options);
+    // Placed on the face after, so not snapped to pixels here.
+    options.round_text_to_pixels = false;
+    let atlas = ctx.fonts(|fonts| fonts.font_image_size());
+    let mut tessellator =
+        egui::epaint::Tessellator::new(ctx.pixels_per_point(), options, atlas, Vec::new());
+    let middle = label.galley.rect.center().to_vec2();
+    let text = egui::epaint::TextShape::new(
+        Pos2::ZERO - middle,
+        Arc::clone(&label.galley),
+        theme::VIEW_CUBE_LABEL,
+    );
+    let mut mesh = egui::Mesh::default();
+    tessellator.tessellate_text(&text, &mut mesh);
+    let drop = 2.0 * theme::VIEW_CUBE_LABEL_DROP;
+    for vertex in &mut mesh.vertices {
+        let u = vertex.pos.x / label.per_unit;
+        let v = drop + vertex.pos.y / label.per_unit;
+        vertex.pos = label.face.at(u, v);
+    }
+    mesh
+}
+
+/// A face of the ViewCube as the prototype's texture paints it (viewport.js's `label`): the
+/// border's grey over the whole face, and `fill` inside the border, neither stroked: the
+/// cube's edges are drawn once, over them.
+fn paint_cube_face(painter: &egui::Painter, on: OnFace, fill: egui::Color32) {
+    let corners = |half: f32| {
+        vec![
+            on.at(half, half),
+            on.at(half, -half),
+            on.at(-half, -half),
+            on.at(-half, half),
+        ]
+    };
+    let border = egui::Shape::convex_polygon(corners(1.0), theme::VIEW_CUBE_BORDER, Stroke::NONE);
+    painter.add(border);
+    let inside = 1.0 - 2.0 * theme::VIEW_CUBE_BORDER_WIDTH;
+    painter.add(egui::Shape::convex_polygon(
+        corners(inside),
+        fill,
+        Stroke::NONE,
+    ));
+}
+
+/// Keeps `words`' place in the paint list, over the face `on`, for its label, drawn there at
+/// the pass's end ([`CubeLabels`]): Inter Medium at [`theme::VIEW_CUBE_LABEL_SIZE`] of the
+/// face's side face-on, `per_unit` points to its half side. The first pass that labels a
+/// face registers the labels' plugin, and its labels are drawn from the next, asked for at
+/// once: a pass's plugins are those it began with.
+fn label_cube_face(painter: &egui::Painter, on: OnFace, per_unit: f32, words: &str) {
+    if !painter.is_visible() {
+        return;
+    }
+    let size = theme::VIEW_CUBE_LABEL_SIZE * 2.0 * per_unit;
+    let galley = painter.layout_no_wrap(
+        words.to_owned(),
+        egui::FontId::proportional(size),
+        theme::VIEW_CUBE_LABEL,
+    );
+    let label = CubeLabel {
+        galley,
+        layer: painter.layer_id(),
+        clip: painter.clip_rect(),
+        opacity: painter.opacity(),
+        at: painter.add(egui::Shape::Noop),
+        face: on,
+        per_unit,
+    };
+    let ctx = painter.ctx();
+    if ctx
+        .with_plugin(|labels: &mut CubeLabels| labels.waiting.push(label))
+        .is_none()
+    {
+        ctx.add_plugin(CubeLabels::default());
+        ctx.request_repaint();
+    }
+}
 
 /// A named view's words, as the ViewCube labels it: `top_front_right` is "Top front right".
 fn words(view: NamedView) -> String {
@@ -2001,13 +2264,25 @@ pub fn view_cube_rect(viewport: Rect) -> Rect {
     )
 }
 
+/// Where the ViewCube's Home button is drawn, over the cube at `rect`'s top left.
+fn view_cube_home_rect(rect: Rect) -> Rect {
+    Rect::from_min_size(
+        rect.left_top() - Vec2::new(0.0, theme::VIEW_CUBE_HOME_HEIGHT),
+        Vec2::new(44.0, theme::VIEW_CUBE_HOME_HEIGHT - 2.0),
+    )
+}
+
 /// The ViewCube, at the canvas's top right (section 8; fusion.md, *ViewCube and Navigation
-/// Bar*): the cube as the camera sees it; a face's click gives its orthographic view, a
-/// corner's its isometric one, a left drag orbits, and Home gives the home view; its menu
-/// switches the projection, which the views it gives keep.
+/// Bar*): the cube as the camera sees it, drawn as the prototype's (viewport.js's
+/// `buildCube` and `label`): each face it faces filled in its own grey inside a border, its
+/// label in capitals lying on it, and each edge of a face drawn once over them. A face's
+/// click gives its orthographic view, a corner's its isometric one, a left drag orbits, and
+/// Home gives the home view; its menu switches the projection, which the views it gives
+/// keep.
 fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
     let side = theme::VIEW_CUBE_SIDE;
     let rect = view_cube_rect(viewport);
+    let home = view_cube_home_rect(rect);
     let Ok(frame) = view.camera.frame() else {
         return;
     };
@@ -2015,6 +2290,8 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
             node.set_role(egui::accesskit::Role::Group);
             node.set_label("ViewCube");
+            // A group that senses nothing gets no bounds of egui's: the cube and its Home.
+            node.set_bounds(crate::panes::bounds(rect.union(home)));
         });
         let cube = ui.interact(rect, ui.id().with("cube"), Sense::click_and_drag());
         cube.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Orbit the view"));
@@ -2029,65 +2306,54 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
         }
         let mut parts = vec![cube];
         let scale = f64::from(side) * 0.28;
-        let at = |v: [f64; 3]| {
+        let offset = |v: [f64; 3]| {
             let x = silico_protocol::vec3::dot(v, frame.right) * scale;
             let y = -silico_protocol::vec3::dot(v, frame.up) * scale;
-            let offset = Vec2::new(x as f32, y as f32);
-            rect.center() + offset
+            Vec2::new(x as f32, y as f32)
         };
+        let at = |v: [f64; 3]| rect.center() + offset(v);
+        let facing = |normal: [f64; 3]| silico_protocol::vec3::dot(normal, frame.back);
         let painter = ui.painter_at(rect);
-        let fill = ui.visuals().widgets.inactive.bg_fill;
-        let stroke = Stroke::new(1.0, ui.visuals().widgets.inactive.fg_stroke.color);
         let mut chosen = None;
-        for (named, normal) in FACES {
-            let facing = silico_protocol::vec3::dot(normal, frame.back);
-            if facing <= 1e-9 {
+        for face in FACES {
+            let faced = facing(face.normal);
+            if faced <= CUBE_FACE_SHOWN {
                 continue;
             }
-            // The face's two directions across it, and its corners in turn about it.
-            let k = normal.iter().position(|c| *c != 0.0).unwrap_or(0);
-            let (a, b) = ((k + 1) % 3, (k + 2) % 3);
-            let corner = |sa: f64, sb: f64| {
-                let mut v = normal;
-                v[a] = sa;
-                v[b] = sb;
-                at(v)
+            let on = OnFace {
+                centre: at(face.normal),
+                across: offset(face.right),
+                down: offset(face.up.map(|c| -c)),
             };
-            let points = vec![
-                corner(1.0, 1.0),
-                corner(1.0, -1.0),
-                corner(-1.0, -1.0),
-                corner(-1.0, 1.0),
-            ];
-            let shade = fill.gamma_multiply(0.6 + 0.4 * facing as f32);
-            painter.add(egui::Shape::convex_polygon(points, shade, stroke));
-            if facing > 0.25 {
-                let label = words(named);
-                let centre = at(normal);
-                painter.text(
-                    centre,
-                    egui::Align2::CENTER_CENTER,
-                    &label,
-                    egui::FontId::proportional(10.0),
-                    ui.visuals().text_color(),
-                );
-                let part = Rect::from_center_size(centre, Vec2::splat(side * 0.3));
+            paint_cube_face(&painter, on, cube_face_fill(face.view));
+            if faced > CUBE_FACE_LABELLED {
+                let label = words(face.view);
+                label_cube_face(&painter, on, scale as f32, &label.to_uppercase());
+                let part = Rect::from_center_size(on.centre, Vec2::splat(side * 0.3));
                 let response = cube_part(ui, part, &label);
                 if response.clicked() {
-                    chosen = Some(named);
+                    chosen = Some(face.view);
                 }
                 parts.push(response);
             }
         }
+        // Each edge of a face drawn, once, over the faces: so one shared by two is no wider.
+        for edge in cube_edges() {
+            if edge
+                .faces
+                .iter()
+                .any(|normal| facing(*normal) > CUBE_FACE_SHOWN)
+            {
+                let [start, end] = edge.ends;
+                painter.line_segment([at(start), at(end)], theme::VIEW_CUBE_EDGE);
+            }
+        }
         for named in silico_core::views::NAMED_VIEWS {
             let direction = named.direction();
-            if FACES.iter().any(|(face, _)| *face == named)
-                || silico_protocol::vec3::dot(direction, frame.back) <= 0.1
-            {
+            if FACES.iter().any(|face| face.view == named) || facing(direction) <= 0.1 {
                 continue;
             }
             let corner = at(direction.map(|c| c * 3f64.sqrt()));
-            painter.circle_filled(corner, 3.0, stroke.color);
             let response = cube_part(
                 ui,
                 Rect::from_center_size(corner, Vec2::splat(12.0)),
@@ -2098,10 +2364,6 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
             }
             parts.push(response);
         }
-        let home = Rect::from_min_size(
-            rect.left_top() - Vec2::new(0.0, theme::VIEW_CUBE_HOME_HEIGHT),
-            Vec2::new(44.0, theme::VIEW_CUBE_HOME_HEIGHT - 2.0),
-        );
         if ui.put(home, egui::Button::new("Home").small()).clicked() {
             chosen = Some(HOME);
         }
@@ -2160,6 +2422,12 @@ fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2
                         }
                     });
                 });
+            // egui gives a scope that senses the bounds it starts with, none (a size of NaN),
+            // and never the rect it ends with: that's its widget's, where it's drawn.
+            let drawn = ui.min_rect();
+            ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                node.set_bounds(crate::panes::bounds(drawn));
+            });
         },
     );
 }
@@ -3517,5 +3785,82 @@ mod tests {
         let options = egui::InputOptions::default();
         assert!(!clicks.released(egui::pos2(120.0, 100.0), 60.1, &options));
         assert!(left_click(&mut clicks, at, 60.15));
+    }
+
+    /// Each face's label reads from outside the cube (its right × up is its normal) and
+    /// upright from the face's own named view as the core gives it: its normal the view's
+    /// way, its up the view's up, its right the view's right (the up × that way).
+    #[test]
+    fn each_cube_faces_label_reads_upright_from_its_own_view() {
+        use silico_protocol::vec3::cross;
+        let mut views: Vec<NamedView> = FACES.iter().map(|face| face.view).collect();
+        for face in FACES {
+            let view = face.view;
+            assert_eq!(cross(face.right, face.up), face.normal, "{view:?}");
+            assert_eq!(view.direction(), face.normal, "{view:?}");
+            assert_eq!(view.up(), face.up, "{view:?}");
+            assert_eq!(cross(view.up(), view.direction()), face.right, "{view:?}");
+        }
+        // The six faces, each once.
+        views.sort_by_key(|view| view.name());
+        views.dedup();
+        assert_eq!(views.len(), 6);
+    }
+
+    /// The cube's edges: its twelve, each once, along one axis from −1 to 1 at two corners,
+    /// between the two faces whose normals are its other two coordinates.
+    #[test]
+    fn the_cubes_edges_are_its_twelve_each_once_between_the_faces_it_joins() {
+        let mut seen = BTreeSet::new();
+        let mut along = [0; 3];
+        for CubeEdge {
+            ends: [start, end],
+            faces: [one, other],
+        } in cube_edges()
+        {
+            let moving: Vec<usize> = (0..3).filter(|&k| start[k] != end[k]).collect();
+            assert_eq!(moving.len(), 1, "{start:?} {end:?}");
+            let k = moving[0];
+            along[k] += 1;
+            assert_eq!((start[k], end[k]), (-1.0, 1.0));
+            assert!(start.iter().chain(&end).all(|c| c.abs() == 1.0));
+            assert_ne!(one, other);
+            for normal in [one, other] {
+                let nonzero: Vec<usize> = (0..3).filter(|&a| normal[a] != 0.0).collect();
+                assert_eq!(nonzero.len(), 1, "{normal:?}");
+                let a = nonzero[0];
+                assert_ne!(a, k);
+                assert_eq!(normal[a], start[a], "{normal:?} at {start:?}");
+            }
+            assert!(seen.insert((start.map(f64::to_bits), end.map(f64::to_bits))));
+        }
+        assert_eq!(seen.len(), 12);
+        assert_eq!(along, [4, 4, 4]);
+    }
+
+    /// The canvas's gradient: a mesh of two triangles over the rectangle, its top corners
+    /// #1e1f22 and its bottom ones #3a3c41 (styles.css's `--canvas-top` and
+    /// `--canvas-bottom`).
+    #[test]
+    fn the_canvas_background_runs_from_its_top_colour_to_its_bottom_one() {
+        let rect = Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(110.0, 220.0));
+        let egui::Shape::Mesh(mesh) = canvas_background(rect) else {
+            panic!("not a mesh");
+        };
+        let top = egui::Color32::from_rgb(0x1e, 0x1f, 0x22);
+        let bottom = egui::Color32::from_rgb(0x3a, 0x3c, 0x41);
+        let corners: Vec<(Pos2, egui::Color32)> =
+            mesh.vertices.iter().map(|v| (v.pos, v.color)).collect();
+        assert_eq!(
+            corners,
+            [
+                (egui::pos2(10.0, 20.0), top),
+                (egui::pos2(110.0, 20.0), top),
+                (egui::pos2(110.0, 220.0), bottom),
+                (egui::pos2(10.0, 220.0), bottom),
+            ]
+        );
+        assert_eq!(mesh.indices, [0, 1, 2, 0, 2, 3]);
+        assert_eq!(mesh.texture_id, egui::TextureId::default());
     }
 }
