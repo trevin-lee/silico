@@ -20184,10 +20184,10 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
         menu_items(&h, "PLATE"),
         [
             off("Edit feature double-click"),
-            off("Rename F2"),
+            off("Rename"),
             off("Suppress"),
             on("Find in browser"),
-            off("Delete Del"),
+            off("Delete"),
         ]
     );
     // Esc closes the menu alone (#398's): the sketch's selection kept.
@@ -20205,10 +20205,10 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
         menu_items(&h, "TRIANGLE"),
         [
             off("Edit Sketch double-click"),
-            off("Rename F2"),
+            off("Rename"),
             off("Suppress"),
             on("Find in browser"),
-            off("Delete Del"),
+            off("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -20270,10 +20270,10 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
         menu_items(&h, "PLATE"),
         [
             on("Edit feature double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             on("Find in browser"),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -20284,10 +20284,10 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
         menu_items(&h, "TRIANGLE"),
         [
             on("Edit Sketch double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             on("Find in browser"),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     menu_click(&mut h, "TRIANGLE", "Edit Sketch");
@@ -24030,6 +24030,39 @@ fn sketch_modes_menu_offers_end_chain_smart_dimension_finish_and_cancel_with_the
         .click();
     step(&mut h);
     step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Dimension)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_modes_menu_is_never_open_with_smart_dimension_on() {
+    // #444's review, T5, asked that the menu's Smart Dimension with Smart Dimension on turn
+    // it off, as the prototype's toggles (js/sketch.js:224). The menu's item toggles
+    // (`Tab::sketch_toggle`), but the app never has the menu open with the tool on: D with
+    // the menu open turns the tool on and closes the menu, and with the tool on a right
+    // click is its lock (SolidWorks' right-click-to-lock), not the menu's.
+    use silico_app::sketch::tools::Choice;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed_sketch(&f);
+    open_menu(&f, &mut h, 20.0, 20.0);
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Dimension)
+    );
+    assert!(sketch_menu(&h).is_none());
+    let event = pointer(silico_app::sketch::PointerAction::RightClick, 20.0, 20.0);
+    sketch_events(&f, &mut h, &[event]);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(sketch_menu(&h).is_none());
+    assert!(sketch_mode(&h).unwrap().menu_at.is_none());
     assert_eq!(
         sketch_mode(&h).unwrap().tools.choice(),
         Some(Choice::Dimension)
@@ -32972,13 +33005,13 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "BLOCK"),
         [
             on("Edit feature double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             off(
                 "Find in browser",
                 "It's inside a body: the browser lists bodies and sketches"
             ),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     // The prototype's right-click selects the feature it's on.
@@ -33011,10 +33044,10 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "HOLE"),
         [
             on("Edit feature double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             on("Find in browser"),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -33025,10 +33058,10 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "HOLE"),
         [
             on("Edit feature double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             on("Find in timeline"),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -33040,10 +33073,10 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "XY"),
         [
             off("Edit feature double-click", origin),
-            off("Rename F2", origin),
+            off("Rename", origin),
             off("Suppress", origin),
             off("Find in timeline", origin),
-            off("Delete Del", origin),
+            off("Delete", origin),
         ]
     );
     h.key_press(Key::Escape);
@@ -33058,13 +33091,13 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "BLOCK"),
         [
             off("Edit feature double-click", dialog),
-            off("Rename F2", dialog),
+            off("Rename", dialog),
             off("Suppress", dialog),
             off(
                 "Find in browser",
                 "It's inside a body: the browser lists bodies and sketches"
             ),
-            off("Delete Del", dialog),
+            off("Delete", dialog),
         ]
     );
     // Clicked, the off items do nothing: nothing sent, nothing said.
@@ -33102,13 +33135,13 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
         menu_items(&h, "HOLE"),
         [
             ("Edit feature double-click".to_owned(), None),
-            ("Rename F2".to_owned(), None),
+            ("Rename".to_owned(), None),
             ("Suppress".to_owned(), None),
             (
                 "Find in browser".to_owned(),
                 Some("It built no body, so the browser has no row for it".to_owned())
             ),
-            ("Delete Del".to_owned(), None),
+            ("Delete".to_owned(), None),
         ]
     );
     // Its block, whose consumer failed, is a body of its own now: found.
@@ -33519,10 +33552,10 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
                 .collect::<Vec<_>>(),
             [
                 "Edit feature double-click",
-                "Rename F2",
+                "Rename",
                 "Suppress",
                 "Find in browser",
-                "Delete Del"
+                "Delete"
             ]
         );
         if let Some(shot) = std::env::var_os("SILICO_APP_FEATURE_MENU_SHOT") {
@@ -33796,7 +33829,7 @@ fn on_a_document_the_gate_refused_f2_del_and_the_menus_items_say_why_and_do_noth
     let why = "The document has problems of its own: no feature changes until they're mended";
     menu_on(&mut h, "Timeline", "Pin");
     let items = menu_items(&h, "PIN");
-    for (at, label) in [(1, "Rename F2"), (2, "Suppress"), (4, "Delete Del")] {
+    for (at, label) in [(1, "Rename"), (2, "Suppress"), (4, "Delete")] {
         assert_eq!(items[at], (label.to_owned(), Some(why.to_owned())));
     }
     h.key_press(Key::Escape);
@@ -33856,7 +33889,7 @@ fn the_menus_items_say_the_document_is_closing_while_it_closes() {
     menu_on(&mut h, "Timeline", "Hole");
     let closing = "The document is closing";
     let items = menu_items(&h, "HOLE");
-    for (at, label) in [(1, "Rename F2"), (2, "Suppress"), (4, "Delete Del")] {
+    for (at, label) in [(1, "Rename"), (2, "Suppress"), (4, "Delete")] {
         assert_eq!(items[at], (label.to_owned(), Some(closing.to_owned())));
     }
     hold.release();
@@ -35011,8 +35044,19 @@ fn box_from_above_made(
     f: &Fixture,
     boxing: Option<silico_app::boxes::Build>,
 ) -> (AppHarness, Record) {
+    from_above_made(f, "box.silico", A_BOX, boxing)
+}
+
+/// [`box_from_above_made`] of `text` opened as `name`: its one body meshed as the box is
+/// (every tessellation the 40 by 20 by 10 box's, [`meshes_a_real_box`]), seen as the box is.
+fn from_above_made(
+    f: &Fixture,
+    name: &str,
+    text: &str,
+    boxing: Option<silico_app::boxes::Build>,
+) -> (AppHarness, Record) {
     meshes_a_real_box(f);
-    let (mut h, record) = f.drawn_with("box.silico", A_BOX, None, boxing);
+    let (mut h, record) = f.drawn_with(name, text, None, boxing);
     meshes_settled(&mut h);
     view_mut(&mut h).set_camera(silico_protocol::Camera {
         projection: silico_protocol::Projection::Orthographic { view_height: 40.0 },
@@ -35547,7 +35591,19 @@ fn context_said(h: &AppHarness) -> Vec<(String, bool)> {
         .expect("the context menu")
         .items
         .iter()
-        .map(|shown| (shown.said(&h.ctx), shown.off.is_none()))
+        .map(|shown| {
+            // Its name, then its keys as a screen reader's shortcut has them.
+            let said = if shown.caps.is_empty() {
+                shown.said()
+            } else {
+                format!(
+                    "{} {}",
+                    shown.said(),
+                    silico_app::shortcuts::joined(&h.ctx, &shown.caps)
+                )
+            };
+            (said, shown.off.is_none())
+        })
         .collect()
 }
 
@@ -35864,6 +35920,149 @@ fn the_context_menus_sketch_items_are_off_while_sketch_mode_cant_open_saying_why
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The context menu opened over nothing, by the box seen from above: Fit, Home view,
+/// Select Other…, Clear selection, and Create Sketch.
+fn context_over_nothing(h: &mut AppHarness, record: &Record) {
+    let off = above_at(h, 20.0, 25.0, [0.0, 0.0]);
+    answering(record, None, None);
+    h.hover_at(off);
+    for _ in 0..4 {
+        step(h);
+    }
+    context_at(h, off);
+}
+
+#[test]
+fn enter_on_the_context_menus_create_sketch_opens_its_planes() {
+    // #444's review, R3 and T2: Shift+Tab from nothing lit lights the last item on, Create
+    // Sketch, and Enter on it opens its planes beside it, the toolbar's, as the pointer
+    // does; one chosen there starts a sketch. SEAM: the planes are the pointer's, the keys
+    // stepping the menu's own items (the module doc's).
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    let lit = select_other(&h).lit().unwrap();
+    assert_eq!(
+        select_other(&h).context().unwrap().items[lit].label,
+        "Create Sketch"
+    );
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_none()
+    );
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_some()
+    });
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(select_other(&h).is_open());
+    let planes = h.get_by_role_and_label(Role::Menu, "Create Sketch");
+    assert_eq!(buttons_of(&planes), ["XY plane", "XZ plane", "YZ plane"]);
+    planes.get_by_label("XZ plane").click();
+    let (_, features) = sketch_added(&f, &mut h);
+    assert!(!select_other(&h).is_open());
+    assert!(features[1].is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn hovering_an_off_create_sketch_opens_no_planes() {
+    // #444's review, T5: with a dialog open, sketch mode can't open, and Create Sketch over
+    // nothing is off; the pointer resting on it opens nothing.
+    let f = fixture();
+    describes_a_real_box(&f);
+    let (mut h, record) = box_from_above(&f);
+    context_over_the_top(&mut h, &record);
+    h.get_by_label("Edit Block").click();
+    step_until(&mut h, "the box's dialog", |h| {
+        h.state().tabs()[0].in_dialog()
+    });
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    context_over_nothing(&mut h, &record);
+    let create = h
+        .get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Create Sketch");
+    assert!(create.accesskit_node().is_disabled());
+    create.hover();
+    for _ in 0..8 {
+        step(&mut h);
+    }
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_none()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn over_an_unstable_planar_face_sketch_on_this_face_is_off_with_the_stores_refusal() {
+    // #444's review, T3. FUSED's fuse (its result the base's, a box, every face a plane), its
+    // Face1 named only by its number, unstable: no store takes it, so the menu's Sketch on
+    // this face is there (the face is a plane) but off, saying the store's own words, as the
+    // selection view's button is off for it.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    planar_boxes(&f.kernel);
+    f.kernel.answer_instead(|op| match op {
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                shape: FakeKernel::resized(base, 1.0)?,
+                history: numbering_fuse(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, record) = from_above_made(&f, "fused.silico", FUSED, None);
+    boxes_made(&mut h);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "Face1 hovered", |h| {
+        hover_name(h).as_deref() == Some("rrrrrrrr.fuse.Face1")
+    });
+    context_at(&mut h, at);
+    step_until(&mut h, "its face read", |h| {
+        select_other(h).face_read() == Some(true)
+    });
+    step(&mut h);
+    let shown = select_other(&h)
+        .context()
+        .unwrap()
+        .items
+        .iter()
+        .find(|shown| shown.label == "Sketch on this face")
+        .cloned()
+        .expect("Sketch on this face, over a plane");
+    let why = shown.off.expect("off for an unstable face");
+    assert!(
+        why.contains(
+            "\"rrrrrrrr.fuse.Face1\", names a face, whose name is unstable (it came about as \
+             another element did, or is its number): an edit could make it another element"
+        ),
+        "{why}"
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Sketch on this face")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn over_nothing_the_context_menus_create_sketch_opens_the_toolbars_planes_and_one_starts_a_sketch()
 {
@@ -35969,7 +36168,9 @@ fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
     );
     // Fit: the camera F6 gives, from the same camera.
     let start = view(&h).camera().clone();
-    h.get_by_label("Fit F6").click();
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fit")
+        .click();
     step_until(&mut h, "fitted", |h| view(h).camera() != &start);
     let by_menu = view(&h).camera().clone();
     view_mut(&mut h).set_camera(start.clone());
@@ -35985,7 +36186,9 @@ fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
         step(&mut h);
     }
     context_at(&mut h, off);
-    h.get_by_label("Home view Home").click();
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Home view")
+        .click();
     step_until(&mut h, "home", |h| view(h).camera() != &start);
     let by_menu = view(&h).camera().clone();
     view_mut(&mut h).set_camera(start.clone());
@@ -36014,7 +36217,9 @@ fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
         context_said(&h)[3],
         ("Clear selection Esc".to_owned(), true)
     );
-    h.get_by_label("Clear selection Esc").click();
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Clear selection")
+        .click();
     selected_until(&mut h, &[]);
     assert!(!select_other(&h).is_open());
     assert_eq!(never_waits::waits(), 0);
