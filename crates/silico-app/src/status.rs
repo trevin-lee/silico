@@ -8,9 +8,11 @@
 //! sheet's button (`crate::sheet`). With no document open, how the warm start stands
 //! (decision 10) in the rebuild's place.
 //!
+//! A rebuild done without errors says its time (`· 84 ms`), the core's (`status.rebuild`'s
+//! `elapsed_ms`, measured by the core from its rebuild's start to its end): the app's own
+//! clock would time its polls, not the rebuild.
+//!
 //! Left out, each for a reason, each a seam:
-//! - the rebuild's time (`· 84 ms`): `status.rebuild` gives no duration, and the app's own
-//!   clock would time its polls, not the rebuild. SEAM: a duration in the core's `Rebuild`.
 //! - the edits' count (`Unsaved · 2 edits`): the core's undo stack counts edits, but the
 //!   app's Undo steps over a dialog's edits as one, so neither count is the person's. SEAM:
 //!   the tab's count of its own undo steps.
@@ -50,8 +52,13 @@ pub enum Said {
     },
     /// The rebuild was stopped, as far as it had got.
     Stopped(Option<(usize, usize)>),
-    /// Rebuilt: the revision, and its errors (the gate's and its features').
-    Rebuilt { revision: u64, errors: u64 },
+    /// Rebuilt: the revision, its errors (the gate's and its features'), and how long the
+    /// rebuild took, in whole milliseconds, if the core says.
+    Rebuilt {
+        revision: u64,
+        errors: u64,
+        ms: Option<u64>,
+    },
     /// The kernel faulted.
     Faulted,
 }
@@ -80,6 +87,12 @@ impl Said {
             Said::Rebuilt {
                 revision,
                 errors: 0,
+                ms: Some(ms),
+            } => format!("Rebuilt · revision {revision} · {ms} ms"),
+            Said::Rebuilt {
+                revision,
+                errors: 0,
+                ms: None,
             } => format!("Rebuilt · revision {revision}"),
             Said::Rebuilt { errors, .. } => {
                 format!("Rebuilt with {errors} error{}", plural(*errors))
@@ -133,6 +146,11 @@ pub struct Asked {
     pub whats_wrong: bool,
 }
 
+/// `elapsed` in whole milliseconds, floored, as the core writes `elapsed_ms`.
+pub(crate) fn whole_ms(elapsed: std::time::Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// The bar for `tab`, the tab shown, and `message`, the window's refusal, if it has one.
 pub fn of(tab: &Tab, message: Option<String>) -> Bar {
     let status = tab.status.as_ref();
@@ -153,6 +171,11 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
             RebuildState::Done => Said::Rebuilt {
                 revision: status.rebuild.revision.number(),
                 errors: tab.errors(),
+                ms: status
+                    .rebuild
+                    .progress
+                    .as_ref()
+                    .map(|progress| whole_ms(progress.elapsed)),
             },
             RebuildState::Faulted => Said::Faulted,
             RebuildState::Idle => Said::Nothing,
@@ -1089,6 +1112,7 @@ mod tests {
         let mut h = asking(Said::Rebuilt {
             revision: 4,
             errors: 2,
+            ms: None,
         });
         assert!(!h.state().1.whats_wrong);
         h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
@@ -1100,6 +1124,7 @@ mod tests {
             Said::Rebuilt {
                 revision: 4,
                 errors: 0,
+                ms: None,
             },
             Said::Faulted,
         ] {
@@ -1121,6 +1146,7 @@ mod tests {
             Said::Rebuilt {
                 revision: 3,
                 errors: 0,
+                ms: None,
             },
             (false, false),
             Saved::Unsaved,
@@ -1221,6 +1247,7 @@ mod tests {
             Said::Rebuilt {
                 revision: 12,
                 errors: 0,
+                ms: None,
             },
             (false, false),
             Saved::Saved,
@@ -1438,6 +1465,7 @@ mod tests {
             Said::Rebuilt {
                 revision: 4,
                 errors: 2,
+                ms: None,
             },
             (false, false),
             Saved::Saved,
@@ -1469,16 +1497,31 @@ mod tests {
             "Rebuild stopped at 1 of 4"
         );
         assert_eq!(Said::Stopped(None).words(), "Rebuild stopped");
-        let rebuilt = |errors| {
+        let rebuilt = |errors, ms| {
             Said::Rebuilt {
                 revision: 9,
                 errors,
+                ms,
             }
             .words()
         };
-        assert_eq!(rebuilt(0), "Rebuilt · revision 9");
-        assert_eq!(rebuilt(1), "Rebuilt with 1 error");
-        assert_eq!(rebuilt(3), "Rebuilt with 3 errors");
+        // The prototype's `renderStatus`: "Rebuilt · revision N · 84 ms"; with errors, their
+        // count alone, the time unsaid as the prototype's.
+        assert_eq!(rebuilt(0, Some(84)), "Rebuilt · revision 9 · 84 ms");
+        assert_eq!(rebuilt(0, Some(0)), "Rebuilt · revision 9 · 0 ms");
+        assert_eq!(rebuilt(0, None), "Rebuilt · revision 9");
+        assert_eq!(rebuilt(1, Some(84)), "Rebuilt with 1 error");
+        assert_eq!(rebuilt(3, None), "Rebuilt with 3 errors");
         assert_eq!(Said::Nothing.words(), "");
+    }
+
+    #[test]
+    fn a_rebuilds_time_is_its_whole_milliseconds_floored_as_the_core_writes_them() {
+        use std::time::Duration;
+        assert_eq!(whole_ms(Duration::ZERO), 0);
+        assert_eq!(whole_ms(Duration::from_micros(999)), 0);
+        assert_eq!(whole_ms(Duration::from_micros(84_999)), 84);
+        assert_eq!(whole_ms(Duration::from_secs(3)), 3000);
+        assert_eq!(whole_ms(Duration::MAX), u64::MAX);
     }
 }

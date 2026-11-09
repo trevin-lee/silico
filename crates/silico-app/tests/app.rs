@@ -16421,6 +16421,23 @@ fn status_said(h: &AppHarness, start: &str) -> Option<String> {
     })
 }
 
+/// The milliseconds `said` ends with after `start` (" · T ms"), if it does: the core's time
+/// for a rebuild, so any whole number.
+fn time_after(said: &str, start: &str) -> Option<u64> {
+    said.strip_prefix(start)?
+        .strip_prefix(" · ")?
+        .strip_suffix(" ms")?
+        .parse()
+        .ok()
+}
+
+/// Whether the status bar says the model is rebuilt at `revision` with no errors: "Rebuilt ·
+/// revision N · T ms", T the core's time for it, so any whole number.
+fn rebuilt_at(h: &AppHarness, revision: u64) -> bool {
+    status_said(h, "Rebuilt")
+        .is_some_and(|said| time_after(&said, &format!("Rebuilt · revision {revision}")).is_some())
+}
+
 #[test]
 fn with_nothing_selected_the_property_panel_shows_the_documents_properties() {
     let f = fixture_reading(Some(Arc::new(real)));
@@ -16568,9 +16585,7 @@ fn the_status_bar_says_the_rebuild_running_stopped_and_rebuilt_with_stop_and_reb
     hold.release();
     h.get_by_role_and_label(Role::Button, "Rebuild").click();
     // Rebuilt: revision 1, the one it opened at, with no error.
-    step_until(&mut h, "rebuilt", |h| {
-        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
-    });
+    step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
     assert!(
         h.get_by_role_and_label(Role::Button, "Rebuild")
             .accesskit_node()
@@ -16702,6 +16717,55 @@ fn a_dialogs_preview_line_says_its_rebuild_running_stopped_and_with_errors() {
                     .is_some_and(|said| said.starts_with("The preview has "))
             })
     });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview() {
+    // The core's `elapsed_ms` (#416), never the app's own clock: the bar's "Rebuilt ·
+    // revision N · T ms" (`renderStatus`) and an up-to-date preview's "Preview up to date ·
+    // revision N · T ms" (`renderDialog`) say the whole milliseconds `status` gives for
+    // that rebuild, floored.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
+    settled(&mut h);
+    let id = h.state().tabs()[0].id;
+    let cores = || {
+        let status = f.sessions.status(&id).result.unwrap();
+        let elapsed = status.rebuild.progress.unwrap().elapsed;
+        (
+            status.rebuild.revision.number(),
+            u64::try_from(elapsed.as_millis()).unwrap(),
+        )
+    };
+    let (revision, ms) = cores();
+    let said = status_said(&h, "Rebuilt").unwrap();
+    assert_eq!(
+        time_after(&said, &format!("Rebuilt · revision {revision}")),
+        Some(ms),
+        "{said}"
+    );
+    // A box's dialog: its preview rebuilt, up to date, at the transaction's revision, with
+    // the core's time for that rebuild.
+    create(&mut h, "Box");
+    added(&mut h);
+    step_until(&mut h, "the preview up to date", |h| {
+        dialog(h)
+            .query_by_label_contains("Preview up to date · revision ")
+            .is_some()
+    });
+    settled(&mut h);
+    let (revision, ms) = cores();
+    let line = dialog(&h)
+        .get_by_label_contains("Preview up to date · revision ")
+        .accesskit_node();
+    let line = line.label().or_else(|| line.value()).unwrap();
+    assert_eq!(
+        time_after(&line, &format!("Preview up to date · revision {revision}")),
+        Some(ms),
+        "{line}"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -17095,9 +17159,7 @@ fn the_view_keys_do_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
 fn ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
-    step_until(&mut h, "rebuilt", |h| {
-        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
-    });
+    step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
     settled(&mut h);
     let boxes = |f: &Fixture| {
         f.kernel
@@ -17122,9 +17184,7 @@ fn ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it() {
     });
     assert_eq!(h.state().tabs()[0].rebuilds_all, 1);
     assert_eq!(h.state().tabs()[0].rebuilds, 0, "never a Rebuild");
-    step_until(&mut h, "rebuilt again", |h| {
-        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
-    });
+    step_until(&mut h, "rebuilt again", |h| rebuilt_at(h, 1));
     assert!(shows(&h, "Timeline", "Hole"));
     // Held at its box: Esc stops it, as Stop does, and the revision keeps the model it
     // had (`status` says it's rebuilt, of that model): nothing more is built.
@@ -17138,8 +17198,7 @@ fn ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it() {
     assert_eq!(boxes(&f), 3);
     h.key_press(Key::Escape);
     step_until(&mut h, "the fresh rebuild stopped", |h| {
-        !h.state().tabs()[0].checking()
-            && status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
+        !h.state().tabs()[0].checking() && rebuilt_at(h, 1)
     });
     assert!(h.state().tabs()[0].message.is_none());
     let calls = f.kernel.calls().len();
@@ -17222,9 +17281,7 @@ fn a_rebuild_everything_check_an_edit_overtook_marks_nothing_once_it_answers() {
     use std::sync::atomic::AtomicUsize;
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
-    step_until(&mut h, "rebuilt", |h| {
-        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
-    });
+    step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
     settled(&mut h);
     // The next box made is refused, once: Rebuild everything makes the Block again, and its
     // check marks it.
@@ -17334,9 +17391,7 @@ fn stopped_then_resumed(stop: impl Fn(&mut AppHarness), resume: impl Fn(&mut App
     step_until(&mut h, "the rebuild stopped", rebuild_stopped);
     hold.release();
     resume(&mut h);
-    step_until(&mut h, "rebuilt", |h| {
-        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
-    });
+    step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
     assert_eq!(h.state().tabs()[0].rebuilds, 1);
 }
 

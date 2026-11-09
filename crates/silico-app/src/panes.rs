@@ -459,7 +459,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
 
 /// What `tab`'s open dialog's preview line says (`renderDialog`'s PREVIEW, state 3e): none
 /// before its feature is there (a new one's add unanswered); else its rebuild running (Esc
-/// stops it), stopped, or done, with the errors the timeline counts, if any.
+/// stops it), stopped, or done, with the errors the timeline counts, if any, or the core's
+/// time for its rebuild.
 fn preview_of(tab: &Tab) -> Option<properties::Preview> {
     use silico_core::command::RebuildState;
     tab.dialog.as_ref()?.feature.as_ref()?;
@@ -476,7 +477,13 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
     }
     (rebuild.state == RebuildState::Done && rebuild.revision == tab.revision).then(|| {
         match tab.errors() {
-            0 => properties::Preview::UpToDate(rebuild.revision.number()),
+            0 => properties::Preview::UpToDate {
+                revision: rebuild.revision.number(),
+                ms: rebuild
+                    .progress
+                    .as_ref()
+                    .map(|progress| crate::status::whole_ms(progress.elapsed)),
+            },
             errors => properties::Preview::Errors(errors),
         }
     })
@@ -3707,7 +3714,21 @@ mod property_panel_drawn {
             boxed.right() - css::STATUS_PADDING_X
         ));
         // Up to date, and stopped.
-        let h = dialog_drawn(dialog(), Some(properties::Preview::UpToDate(7)));
+        let h = dialog_drawn(
+            dialog(),
+            Some(properties::Preview::UpToDate {
+                revision: 7,
+                ms: Some(84),
+            }),
+        );
+        line(&h, "Preview up to date · revision 7 · 84 ms", css::G550);
+        let h = dialog_drawn(
+            dialog(),
+            Some(properties::Preview::UpToDate {
+                revision: 7,
+                ms: None,
+            }),
+        );
         line(&h, "Preview up to date · revision 7", css::G550);
         let h = dialog_drawn(dialog(), Some(properties::Preview::Stopped));
         let stopped = painted(&h).into_iter().any(|shape| {
