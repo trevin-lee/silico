@@ -347,9 +347,12 @@ pub struct Pick {
     /// The point seen at the pixel's centre, in the document's coordinates: the centre
     /// unprojected at the picking layer's depth there, in f64 (the depth itself is the GPU's
     /// f32); none if the depth wasn't read back. A vertex's is its own point. An edge's is its
-    /// picking strip's taken back from the eye by the reach it was drawn toward it by
-    /// ([`edge_picks`]): the point its drawn stroke is at there. (Where the drawn stroke alone
-    /// covers a pixel, at its border to f32's rounding, it would be that reach behind.)
+    /// strip's taken back from the eye by the reach it was drawn toward it by: its picking
+    /// strip's ([`edge_picks`]) in a frame that picks edges ([`Frame::edges`]), its drawn
+    /// strip's ([`drawn_edge_fraction`]) in one that doesn't; the point its line is at there.
+    /// (In a frame that picks edges, where the drawn stroke alone covers a pixel, at its border
+    /// to f32's rounding, it would be behind by what the drawn strip's reach falls short of the
+    /// picking strip's, at most 1.5 pixels of depth.)
     pub point: Option<[f64; 3]>,
 }
 
@@ -610,6 +613,11 @@ impl Renderer {
                     projection: view.projection,
                     perspective: view.perspective,
                     span: view.span,
+                    strip_fraction: if frame.edges {
+                        edge_fraction(view.height)
+                    } else {
+                        drawn_edge_fraction(view.height, frame.pixels_per_point)
+                    },
                 },
             );
             (rect, id)
@@ -718,8 +726,9 @@ impl Renderer {
             } else if depths.len() == ids.len()
                 && let Some(&depth) = usize::try_from(i).ok().and_then(|i| depths.get(i))
             {
-                // An edge's picking strip is drawn toward the eye ([`edge_picks`]): its point
-                // is taken back by as much.
+                // An edge's strip is drawn toward the eye (its picking strip, [`edge_picks`],
+                // or, with edges not picked, its drawn strip): its point is taken back by as
+                // much.
                 let edge = matches!(pick.hit, Element::Edge(_));
                 pick.point = request.point_at(pick.pixel, depth, edge);
             }
@@ -1342,6 +1351,11 @@ struct PendingPick {
     /// reach ([`edge_reach`]).
     perspective: bool,
     span: f64,
+    /// How far toward the eye, of the view's height, the edges' strips it picks from were
+    /// moved ([`toward_eye`]): in a frame that picks edges their picking strips', an edge's
+    /// reach ([`edge_fraction`]); in one that doesn't, their drawn strips' alone
+    /// ([`drawn_edge_fraction`]).
+    strip_fraction: f64,
 }
 
 impl PendingPick {
@@ -1410,19 +1424,18 @@ impl PendingPick {
     /// `depth` there, in the document: the pixel's centre and the depth unprojected through
     /// the frame's own projection (the picking rectangle's crop moves and scales x and y
     /// alone, so its depth is the frame's), in f64; for an `edge`'s, taken back from the eye
-    /// by the reach its picking strip was drawn toward it by ([`back_from_eye`], on the same
-    /// pixel); then taken back through the view (the inverse of [`View::about_camera`], d =
-    /// right x + up y + back (z + depth)). None if it isn't finite. An edge's pixel only its
-    /// drawn strip reached (in a frame not picking edges, or a highlight's wider stroke) was
-    /// drawn toward the eye by that strip's reach ([`drawn_edge_fraction`]), so its point is
-    /// off the line by what that falls short of the picking strip's: at most 0.09 pixels of
-    /// depth, at a pixel a point, and none from 1.06.
+    /// by the reach the strip it was picked from was drawn toward it by ([`back_from_eye`], on
+    /// the same pixel): its picking strip's in a frame that picks edges ([`edge_picks`]), its
+    /// drawn strip's in one that doesn't ([`drawn_edge_fraction`]); then taken back through
+    /// the view (the inverse of [`View::about_camera`], d = right x + up y + back (z +
+    /// depth)). None if it isn't finite. (Found by /break-it: taken back by an edge's reach in
+    /// both, a frame not picking edges left its point behind the line by what the drawn
+    /// strip's reach falls short of it: 0.09 pixels of depth at a pixel a point, 0.44 at 3/4.)
     fn point_at(&self, pixel: [u32; 2], depth: f32, edge: bool) -> Option<[f64; 3]> {
         let centre = pixel.map(|c| f64::from(c) + 0.5);
         let mut p = unproject(self.projection, self.size, centre, f64::from(depth))?;
         if edge {
-            let fraction = edge_fraction(self.size[1]);
-            p = back_from_eye(p, fraction, self.perspective, self.span);
+            p = back_from_eye(p, self.strip_fraction, self.perspective, self.span);
         }
         let v = [p[0], p[1], p[2] + self.depth];
         let f = &self.frame;

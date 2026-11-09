@@ -16,9 +16,9 @@ use super::tests::on_lavapipe;
 use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjection};
 
 use super::{
-    BACKGROUND, EDGE, Element, Frame, HIT_EDGE_POINTS, HIT_VERTEX_POINTS, MAX_PENDING_PICKS,
-    MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines, PendingPick, Pick, Pickable, Picking, PixelRect,
-    RenderFailure, Renderer, hits, project, ray,
+    BACKGROUND, EDGE, Element, Frame, HIGHLIGHT, HIT_EDGE_POINTS, HIT_VERTEX_POINTS,
+    MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines, PendingPick, Pick, Pickable,
+    Picking, PixelRect, RenderFailure, Renderer, hits, project, ray,
 };
 use crate::bench::{box_mesh, front_of_a_box};
 
@@ -940,6 +940,7 @@ fn requests_never_answered_are_dropped_oldest_first_past_the_bound() {
                         },
                         perspective: false,
                         span: 44.0,
+                        strip_fraction: super::edge_fraction(HEIGHT),
                     },
                 );
             }
@@ -1858,6 +1859,7 @@ fn request(rect: PixelRect, size: [u32; 2]) -> PendingPick {
         },
         perspective: false,
         span: 44.0,
+        strip_fraction: super::edge_fraction(size[1]),
     }
 }
 
@@ -4223,10 +4225,11 @@ fn at_four_pixels_a_point_a_concave_edge_is_picked_two_and_a_half_pixels_off_its
             // below it, a millimetre of x 16/√5 pixels down and 1/√5 mm toward the eye: half a
             // pixel of depth a pixel. The pixel (400, 402), its centre 2.5 pixels below the
             // line, is inside the stroke's half width at 4 pixels a point (a point, 4 pixels),
-            // and the floor there is 1.25 pixels of depth nearer the eye than the line: it hides
-            // the drawn stroke, and not the picking strip, 2 pixels of depth toward the eye. So
-            // the pixel is the edge's at 4 pixels a point, and the floor's at 1, whose 1-pixel
-            // stroke misses it. The strip is drawn for a rectangle its box lands within half
+            // and the floor there is 1.25 pixels of depth nearer the eye than the line: it hid
+            // the drawn stroke before N5's image, and not the picking strip, 2 pixels of depth
+            // toward the eye, as the drawn strip is now at 4 pixels a point too. So the pixel
+            // is the edge's at 4 pixels a point, and the floor's at 1, whose 1-pixel stroke
+            // misses it. The strip is drawn for a rectangle its box lands within half
             // the stroke and a pixel of, rows 397 to 408 at 4 pixels a point; within a quarter
             // of a pixel and a pixel (rows 400.75 to 404.25), or a pixel alone, it would be left
             // out. The L's other edges along y lie along rows 382.1 (x and z 0) and farther,
@@ -5029,6 +5032,211 @@ fn a_silhouettes_stroke_over_nothing_and_whats_past_it_are_drawn_as_they_were() 
             for row in [260, 400, 539] {
                 let far = image.at([230, row]);
                 assert!(grey(far, far), "({row}): {far:?}");
+            }
+        },
+    );
+}
+
+// ---- Hostile drawn edges (N5's image) ----
+
+#[test]
+fn an_edge_picks_point_is_on_its_line_whether_edges_are_picked_or_not_at_any_pixels_a_point() {
+    on_lavapipe(
+        "render::frame_tests::an_edge_picks_point_is_on_its_line_whether_edges_are_picked_or_not_at_any_pixels_a_point",
+        |r| {
+            // Found by /break-it: with edges not picked (the selection's edge filter off), an
+            // edge pick's point was its drawn strip's taken back from the eye by an edge's
+            // picking reach, 2 pixels of depth, though the strip was moved by its own, √2 h +
+            // 1/2 (h the stroke's half width in pixels): left behind its line by the
+            // difference, 2 − 1.9142 = 0.0858 pixels of depth at a pixel a point (0.0107 mm,
+            // z 0.9893) and 2 − (0.75 √2 + 1/2) = 0.4393 at 3/4 (0.0549 mm, z 0.9451), past
+            // the 0.09 the notes gave.
+            //
+            // Edge13 on the plate's top (zb = 1), from above ([`above_the_wall`]), along row
+            // 400.0: the pixel (400, 400), its centre half a pixel right of the line's point
+            // (20, 20, 1) and half a pixel below it, is under its stroke at 3/4, 1, and 2
+            // pixels a point (half widths of 0.75 pixels and more), the strip drawn over the
+            // top (moved toward the eye). Its point there, by hand: (20 + 0.0625, 20 − 0.0625,
+            // 1), half a pixel each way being 0.0625 mm orthographic (0.125 mm a pixel) and in
+            // perspective at the top's depth, 100 mm, where a pixel is 100/800 mm. With edges
+            // picked, it's the picking strip's, taken back by its reach; with them not, the
+            // drawn strip's, taken back by that strip's; at 2 pixels a point the two are one.
+            r.upload(1, &thin_wall(1.0)).unwrap();
+            for perspective in [false, true] {
+                let camera = above_the_wall(perspective);
+                assert_pixel(
+                    project(&camera, SQUARE, [20.0, 20.0, 1.0]),
+                    [400.0, 400.0],
+                    1e-4,
+                );
+                for pixels_per_point in [0.75, 1.0, 2.0] {
+                    for edges in [true, false] {
+                        let what = format!(
+                            "perspective {perspective}, {pixels_per_point} pixels a point, edges {edges}"
+                        );
+                        let asking = Frame {
+                            size_px: SQUARE,
+                            pixels_per_point,
+                            edges,
+                            ..frame(&camera, &[1], &[], Some(rect([400, 400], [1, 1])))
+                        };
+                        let hit = pick(r, &asking).hit.unwrap();
+                        assert_eq!(
+                            (hit.body, hit.hit, hit.pixel),
+                            (1, Element::Edge(13), [400, 400]),
+                            "{what}"
+                        );
+                        let got = hit.point.unwrap();
+                        let want = [20.0625, 19.9375, 1.0];
+                        assert!(
+                            (0..3).all(|k| (got[k] - want[k]).abs() < 1e-3),
+                            "{what}: {got:?} against {want:?}"
+                        );
+                    }
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn a_drawn_edge_behind_a_thin_wall_follows_the_reach_of_the_frames_pixels_a_point() {
+    on_lavapipe(
+        "render::frame_tests::a_drawn_edge_behind_a_thin_wall_follows_the_reach_of_the_frames_pixels_a_point",
+        |r| {
+            // The plate from above, its Edge13 along row 400.0 (`above_the_wall`): rows 399 and
+            // 400, their centres half a pixel off it, under its stroke at half a pixel a point
+            // (its half width half a pixel: half of each) and at two (two pixels: all of each),
+            // from column 340 to 460, the plate's top 10 rows off beside them. The drawn reach
+            // is √2 h + 1/2 pixels of depth, h the stroke's half width in pixels, at most an
+            // edge's picking reach, 2: at half a pixel a point √2/2 + 1/2 = 1.2071 (0.1509 mm,
+            // orthographic at 0.125 mm a pixel), at two 2√2 + 1/2 = 3.33, held to 2 (0.25 mm);
+            // at one, 1.9142 (0.2393 mm). So orthographic, at half a pixel a point, the edge
+            // 0.13 mm behind the top (zb 0.87) is drawn and 0.17 mm (0.83) hidden, where a pixel
+            // a point would draw it; at two, 0.245 mm (0.755) is drawn, where a pixel a point
+            // would hide it, and 0.26 mm (0.74) hidden. In perspective the reach is that over
+            // 800 of the depth along the line to the eye (the view 1 mm high a mm from it):
+            // (101 − zb) × (1 − 1.2071/800), 99.979 and 100.019, and (101 − zb) × (1 − 2/800),
+            // 99.994 and 100.009, against the top at 100. Drawn, the rows are darker than the
+            // top; hidden, the top's.
+            for perspective in [false, true] {
+                let camera = above_the_wall(perspective);
+                for (pixels_per_point, zb, drawn) in [
+                    (0.5, 0.87, true),
+                    (0.5, 0.83, false),
+                    (2.0, 0.755, true),
+                    (2.0, 0.74, false),
+                ] {
+                    r.upload(1, &thin_wall(zb)).unwrap();
+                    let image = drawn_image(r, &plain_frame(&camera, SQUARE, pixels_per_point));
+                    let line = ImageLine::new([330.0, 400.0], [470.0, 400.0]);
+                    let test = if drawn { darker } else { its_face };
+                    let got = line.tally(&image, 10.0, (0.0, 0.6), 10.0, test);
+                    let what = format!(
+                        "zb {zb}, {pixels_per_point} pixels a point, perspective {perspective}, drawn {drawn}"
+                    );
+                    assert!(all_of(got, 120), "{what}: {got:?} of {SIDES:?}");
+                }
+            }
+        },
+    );
+}
+
+/// A render's PNG, `size` pixels, as a [`Drawn`].
+fn png_image(png: &[u8], size: [u32; 2]) -> Drawn {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+        .read_info()
+        .unwrap();
+    let mut rgb = vec![0; reader.output_buffer_size().unwrap()];
+    reader.next_frame(&mut rgb).unwrap();
+    Drawn {
+        size,
+        pixels: rgb
+            .chunks_exact(3)
+            .map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+    }
+}
+
+/// Whether a pixel is the highlight's blue, to 3 of 255 a channel.
+fn highlight_coloured(pixel: [u8; 4], _: [u8; 4]) -> bool {
+    (0..3).all(|k| pixel[k].abs_diff(HIGHLIGHT[k]) <= 3)
+}
+
+/// Whether a pixel is bluer than its face (its blue less its red) by 15 of 255 or more:
+/// blended with the highlight's blue.
+fn tinted(pixel: [u8; 4], face: [u8; 4]) -> bool {
+    let blue = |p: [u8; 4]| i32::from(p[2]) - i32::from(p[0]);
+    blue(pixel) - blue(face) >= 15
+}
+
+#[test]
+fn a_highlighted_concave_edge_in_a_render_is_drawn_to_its_plain_strokes_reach_and_no_farther() {
+    on_lavapipe(
+        "render::frame_tests::a_highlighted_concave_edge_in_a_render_is_drawn_to_its_plain_strokes_reach_and_no_farther",
+        |r| {
+            // The worker's render of the L ([`l_camera`], 800 by 800, a pixel a point) with
+            // Edge1, the concave (5, y, 5), and Edge4, the convex wall top (5, y, 20),
+            // highlighted: each drawn 4 pixels wide (2 either side of its line) in the
+            // highlight's blue, and moved toward the eye by the plain stroke's reach, √2 + 1/2 =
+            // 1.9142 pixels of depth. Each face beside Edge1 rises toward the eye away from its
+            // line by √1.5 = 1.2247 pixels of depth a pixel, so its highlight is drawn to
+            // 1.9142/1.2247 = 1.563 pixels off its line, of its 2: each pixel whose centre is
+            // within 1.2 of it (its samples within 1.5, the faces at most 1.84 nearer) is the
+            // highlight's blue, as Edge4's are; each 1.9 to 2.2 off (its samples under the
+            // stroke 1.6 off or more, the faces 1.96 nearer or more) is its face's, where
+            // Edge4's are tinted (a fifth to a half covered, the stroke's coverage falling
+            // from whole half a pixel inside its side to none half a pixel past it). Before N5's image all of it was the faces'; a reach of the
+            // highlight's own, 2√2 + 1/2 = 3.33 pixels, would draw it whole. In the ID buffer,
+            // (400, 401), its centre 1.05 off Edge1 on the floor's side (the floor 1.29 nearer),
+            // is Edge1's (the floor's without the highlight); (400, 402), 1.92 off (2.35
+            // nearer), within the stroke's 2 but past its reach, the floor's, Face1; and
+            // (400, 397), 2.42 off on the wall's side, past the stroke, the wall's, Face2.
+            let scene = silico_protocol::RenderScene {
+                bodies: vec![silico_protocol::RenderBody {
+                    body: 1,
+                    mesh: l_mesh(),
+                    highlight_faces: vec![],
+                    highlight_edges: vec![0, 3],
+                }],
+                camera: l_camera(),
+                width: SQUARE[0],
+                height: SQUARE[1],
+                ids: true,
+            };
+            scene.check().unwrap();
+            let rendered = r.render(&scene).unwrap();
+            let ids = rendered.ids.unwrap();
+            let id = |[x, y]: [u32; 2]| ids[usize::try_from(y * SQUARE[0] + x).unwrap()];
+            let edge = silico_protocol::EDGE_BIT | 1;
+            for (at, want) in [
+                ([400, 399], edge),
+                ([400, 400], edge),
+                ([400, 401], edge),
+                ([400, 402], 1),
+                ([400, 397], 2),
+            ] {
+                assert_eq!(id(at), [1, want], "{at:?}");
+            }
+            let image = png_image(&rendered.png, SQUARE);
+            for (what, z) in [("Edge4, convex", 20.0), ("Edge1, concave", 5.0)] {
+                let a = l_view([5.0, 0.0, z], 8.0, 400.0);
+                let b = l_view([5.0, 20.0, z], 8.0, 400.0);
+                for (y, end) in [(0.0, a), (20.0, b)] {
+                    assert_pixel(project(&scene.camera, SQUARE, [5.0, y, z]), end, 1e-4);
+                }
+                let line = ImageLine::new(a, b);
+                let near = line.tally(&image, 10.0, (0.0, 1.2), 4.5, highlight_coloured);
+                assert!(
+                    all_of(near, 100),
+                    "{what} within 1.2: {near:?} of {SIDES:?}"
+                );
+                let rim = if z == 5.0 { its_face } else { tinted };
+                let past = line.tally(&image, 10.0, (1.9, 2.2), 4.5, rim);
+                assert!(
+                    all_of(past, 25),
+                    "{what} 1.9 to 2.2 off: {past:?} of {SIDES:?}"
+                );
             }
         },
     );
