@@ -35625,8 +35625,8 @@ fn after_a_reload_that_found_nothing_changed_another_programs_change_has_its_ban
 #[test]
 fn a_second_reload_asked_while_the_first_is_out_reads_the_file_as_the_persons_too() {
     // The first Reload's rebuild held at its box; the file changed; Reload again, which
-    // waits behind the first. The first finds nothing changed, the second reloads: the
-    // person's, so no banner says another program's.
+    // lets the first's rebuild go, as an edit would, and reads the file at once: the
+    // person's reload, so no banner says another program's.
     let f = fixture();
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
@@ -35637,19 +35637,13 @@ fn a_second_reload_asked_while_the_first_is_out_reads_the_file_as_the_persons_to
     assert!(f.kernel.wait_running(1, WAIT));
     std::fs::write(&path, example_theirs()).unwrap();
     command_r(&mut h);
-    for _ in 0..5 {
-        step(&mut h);
-    }
-    assert_eq!(h.state().tabs()[0].rebuilds_all, 1, "the second waits");
-    hold.release();
     step_until(
         &mut h,
-        "both rebuilt, the second of the file read again",
-        |h| {
-            let tab = &h.state().tabs()[0];
-            tab.rebuilds_all == 2 && !tab.checking() && shows(h, "Timeline", "Drill")
-        },
+        "the file read again, the second's rebuild sent",
+        |h| h.state().tabs()[0].rebuilds_all == 2 && shows(h, "Timeline", "Drill"),
     );
+    hold.release();
+    step_until(&mut h, "rebuilt", |h| !h.state().tabs()[0].checking());
     settled(&mut h);
     assert!(h.state().tabs()[0].reloaded.is_none());
     assert!(!anywhere(
@@ -35834,10 +35828,11 @@ fn an_edit_after_a_reload_waits_for_its_read_of_the_file_never_for_its_rebuild()
 }
 
 #[test]
-fn an_edit_asked_while_reloads_read_waits_lands_after_it_on_the_file_read_again() {
-    // Rebuild everything held at its box keeps the session busy, so Reload's read of the
-    // file, changed on disk, waits behind it; an edit typed meanwhile waits for the read,
-    // then lands on the document it read, never against the revision before it.
+fn an_edit_asked_after_reload_while_a_rebuild_is_held_lands_at_once_on_the_file_read_again() {
+    // Rebuild everything held at its box: ⌘R lets the tab's own reads go, as an edit's
+    // send does, so its read of the file, changed on disk, runs at once, and an edit asked
+    // after it lands on the document it read, the box still held; never against the
+    // revision before it, nor behind the held rebuild.
     let f = fixture();
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
@@ -35854,22 +35849,67 @@ fn an_edit_asked_while_reloads_read_waits_lands_after_it_on_the_file_read_again(
     command_r(&mut h);
     select(&mut h, "Pin");
     type_name(&mut h, "s");
-    for _ in 0..5 {
-        step(&mut h);
-    }
-    assert!(
-        shows(&h, "Timeline", "Hole"),
-        "the read waits behind the rebuild"
-    );
-    hold.release();
-    step_until(&mut h, "the read, then the edit", |h| {
+    step_until(&mut h, "the read, then the edit, the box still held", |h| {
         let tab = &h.state().tabs()[0];
         tab.edits.idle() && shows(h, "Timeline", "Drill") && shows(h, "Timeline", "Pins")
     });
-    settled(&mut h);
     assert_eq!(h.state().tabs()[0].message, None);
+    hold.release();
+    settled(&mut h);
     let text = text_of(&f, &h);
     assert!(text.contains(r#""name": "Pins""#), "{text}");
     assert!(text.contains(r#""name": "Drill""#), "{text}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_reload_whose_read_finds_the_file_gone_leaves_the_next_programs_change_its_banner() {
+    // ⌘R as the file is deleted after the last comparison: its read, held behind another
+    // client's rebuild, is refused once the watch has found the file gone, when the poll
+    // never lets a mark go. Another program then puts back other bytes, and the session's
+    // reload of them is announced as theirs, not taken for the person's.
+    use silico_core::disk::Disk;
+    let reader = Arc::new(HeldReader::default());
+    let f = fixture_reading(Some(reader.reader()));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    settled(&mut h);
+    let id = h.state().tabs()[0].id;
+    reader.hold(&mut h);
+    assert_eq!(disk(&h), Some(Disk::Unchanged));
+    // The session busy with another client's rebuild, held at its box.
+    let hold = f.kernel.hold(is_box);
+    let other = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    assert!(f.kernel.wait_running(1, WAIT));
+    std::fs::remove_file(&path).unwrap();
+    command_r(&mut h);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].message, None, "the read waits");
+    // The watch let go: it finds the file gone. Then the rebuild, and the read is refused.
+    reader.open();
+    until("the file found gone", || {
+        f.sessions.disk(&id).ok().flatten() == Some(Disk::Gone)
+    });
+    hold.release();
+    let _ = other.wait();
+    step_until(&mut h, "the read refused", |h| {
+        h.state().tabs()[0]
+            .message
+            .as_deref()
+            .is_some_and(|said| said.contains("couldn't be read"))
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(disk(&h), Some(Disk::Gone));
+    std::fs::write(&path, example_theirs()).unwrap();
+    step_until(&mut h, "the banner", |h| {
+        anywhere(
+            h,
+            "Reloaded example.silico: another program changed it on disk",
+        )
+    });
     assert_eq!(never_waits::waits(), 0);
 }

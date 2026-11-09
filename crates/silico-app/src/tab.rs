@@ -2633,8 +2633,12 @@ impl Tab {
                         Ok(_) if self.check_read.is_some() => self.reload_rebuild = true,
                         Ok(_) => self.rebuild_all(sessions),
                         // The file couldn't be read (gone since the last status, say): said,
-                        // and nothing rebuilt or dropped beyond what was asked.
-                        Err(problems) => self.message = Some(said(&problems)),
+                        // nothing rebuilt, and no reload of the person's to come, the poll
+                        // never letting the mark go while the file is gone.
+                        Err(problems) => {
+                            self.message = Some(said(&problems));
+                            self.reload_asked = false;
+                        }
                     }
                     None
                 }
@@ -2933,6 +2937,10 @@ impl Tab {
                     // it makes is the person's, whatever a Reload before it came to (an
                     // untitled part's reads no file).
                     self.reload_asked = !self.is_untitled();
+                    // The tab's own reads that wait for a rebuild go first, as an edit's
+                    // send lets them go: the read would wait behind them, and what's asked
+                    // after it with it. Reload's Rebuild everything takes their place.
+                    self.supersede_preview();
                     self.under.push(Under::ReloadRead {
                         sent_at: self.revision,
                         running: sessions.text(&self.id, None),
