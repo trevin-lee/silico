@@ -891,12 +891,13 @@ fn a_million_valid_features_validate_promptly() {
     // and each bound reads the statistic that suits it.
     //
     // The growth: a million's median CPU over a hundred thousand's, at most 30, about 10 by
-    // its count (a little more for its sorted keys' depth and the cache it outgrows), where a
-    // validation quadratic in the count would be about 100. The median, not the least: from
-    // the same runs on loaded gate runners the least's ratio reached 35.7 (the hundred
+    // its count (a little more for its sorted keys' depth and the cache it outgrows), where
+    // a validation quadratic in the count would be about 100. The median, not the least:
+    // from the same runs on loaded gate runners the least's ratio reached 35.7 (the hundred
     // thousand's luckiest run still in cache), the median's 27.2, 15.2 to 27.2 in 20 runs
-    // (2026-11-08, gate 42534849064). Taken against the probe's own growth it spread more,
-    // not less: the probe's doesn't follow validation's.
+    // (2026-11-08, gate 42534849064), and 16.4 to 23.5 in 20 more (gate 42539931034). Taken
+    // against the probe's own growth it spread more, not less: the probe's doesn't follow
+    // validation's.
     //
     // The cost: a million's least CPU at most VALIDATE_PER_PROBE times the probe's least
     // beside it ([`probe`]), which load stretches too, if not quite alike: so a validation
@@ -929,14 +930,14 @@ fn a_million_valid_features_validate_promptly() {
 
 /// The most a million valid features' validation may take in CPU time, as a multiple of
 /// its probe's ([`probe`]), each the least of five runs: between what the gate's runners
-/// measure of it and what they measure of a validation three times slower. Measured on
-/// loaded gate runners, 20 runs each (2026-11-08): 15.8 to 24.9 times (gate 42534849064,
-/// a million taking up to 12.1 s), 15.5 to 27.7 at up to 13.8 s (gate 42531595559), and
-/// 47.0 to 63.7 for a validation run three times over (gate 42525748593); the Mac's debug
-/// build, loaded, 8.0 to 8.9, and 87 for one run ten times over. So a validation three
-/// times slower fails it on the gate, as the 15 s bound before it did there, and one ten
-/// times slower everywhere.
-const VALIDATE_PER_PROBE: f64 = 36.0;
+/// measure of it and what they measure of a validation three times slower, about 1.2 times
+/// clear of each. Measured on loaded gate runners, 20 runs a round (2026-11-08): 15.3 to
+/// 31.3 times over four rounds (gates 42525746494, 42531595559, 42534849064, 42539931034;
+/// a million taking up to 13.8 s), and 47.0 to 63.7 for a validation run three times over
+/// (gate 42525748593); the Mac's debug build, loaded, 8.0 to 8.9, and 87 for one run ten
+/// times over. So a validation three times slower fails it on the gate, as the 15 s bound
+/// before it did there, and one ten times slower everywhere.
+const VALIDATE_PER_PROBE: f64 = 38.0;
 
 /// What [`cpu_against_probe`] measured, of the same five interleaved runs: the least and
 /// the median CPU time of each document's validation, the least of the probe's at each, and
