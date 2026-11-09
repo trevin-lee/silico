@@ -4795,6 +4795,34 @@ fn a_negative_angle_runs_its_arc_clockwise_its_arrows_along_it() {
 }
 
 #[test]
+fn a_zero_angle_points_its_arrows_as_a_positive_angles_do() {
+    // A reference 0° between the bottom side, +x from (0, 0), and the top side reversed,
+    // +x from (0, 20) (the gate takes any angle up to 360° either way): parallel, so the
+    // corner is the bottom side's start, (0, 0). The arc runs from 0° through nothing, each
+    // of its 25 points at (2.6, 0). As a positive angle's, its first arrow runs
+    // counter-clockwise from there, +y, and its last back, −y.
+    let read = under(rectangle(vec![constraint(
+        "ka000001",
+        Form::Angle {
+            a: element("na000001"),
+            b: element("na000003"),
+            reversed: true,
+            value: Angle::parse("0").unwrap(),
+            driving: false,
+        },
+    )]));
+    let got = dimensions(&read);
+    assert_eq!(got.len(), 1);
+    assert_placed(
+        &got[0],
+        &[&[[2.6, 0.0]; 25]],
+        &[([2.6, 0.0], [0.0, 1.0]), ([2.6, 0.0], [0.0, -1.0])],
+        "(0°)",
+        [2.6, 0.0],
+    );
+}
+
+#[test]
 fn glyphs_on_a_point_stack_leftward_and_one_on_an_arc_stands_out_through_its_middle() {
     // Two relations on (40, 0): the first 1.3 mm down and left, (38.7, −1.3); the next a
     // step (1.8 mm) further left, (36.9, −1.3).
@@ -4840,6 +4868,44 @@ fn glyphs_on_a_point_stack_leftward_and_one_on_an_arc_stands_out_through_its_mid
     assert_eq!(got.len(), 2);
     let out = 11.3 * FRAC_1_SQRT_2;
     assert!(same(got[0].at, [out, out]), "{got:?}");
+}
+
+#[test]
+fn a_circles_glyph_stands_out_at_45_degrees_and_a_half_arcs_at_its_middle_straight_up() {
+    // An equal relation on a circle about (30, 0) of radius 4 and on the arc about (0, 0)
+    // from (10, 0) to (−10, 0), counter-clockwise from 0° through 180°.
+    let mut sketch = sketch_of(
+        vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 10.0, 0.0),
+            point("pa000003", -10.0, 0.0),
+            point("pa000004", 30.0, 0.0),
+        ],
+        Vec::new(),
+        vec![arc("aa000001", "pa000001", "pa000002", "pa000003")],
+    );
+    sketch.circles.push(SketchCircle {
+        id: id("ca000001"),
+        center: id("pa000004"),
+        radius: Coordinate::new(4.0).unwrap(),
+        construction: false,
+    });
+    let mut read = under(sketch);
+    read.members.constraints.push(constraint(
+        "ka000001",
+        Form::Equal {
+            a: element("ca000001"),
+            b: element("aa000001"),
+        },
+    ));
+    let got = glyphs(&read);
+    assert_eq!(got.len(), 2, "{got:?}");
+    // The circle's at 45°, 4 + 1.3 out: (30 + 5.3/√2, 5.3/√2), about (33.748, 3.748); not
+    // at its 180°, (24.7, 0).
+    let out = 5.3 * FRAC_1_SQRT_2;
+    assert!(same(got[0].at, [30.0 + out, out]), "{got:?}");
+    // The arc's at its middle, 90°, 10 + 1.3 out: straight up, (0, 11.3); not at 45°.
+    assert!(same(got[1].at, [0.0, 11.3]), "{got:?}");
 }
 
 #[test]
@@ -4895,6 +4961,38 @@ fn the_axes_run_along_zero_only_where_its_in_view_and_no_grid_at_no_scale() {
             ..
         }
     )));
+}
+
+#[test]
+fn a_view_past_the_fade_on_one_axis_alone_draws_no_grid_and_no_axes() {
+    // Ten points a millimetre, the minor step 100 points apart. In view, x from 300 to
+    // 400 mm and y from −10 to 10 mm: y = −10, 0, and 10 cross it, and so does the x axis,
+    // but every x in it lies past the grid's 200 mm, so none of them is drawn. So too with
+    // the axes swapped: x from −10 to 10, y from −400 to −300.
+    let read = under(rectangle(Vec::new()));
+    for visible in [
+        ([300.0, -10.0], [400.0, 10.0]),
+        ([-10.0, -400.0], [10.0, -300.0]),
+    ] {
+        let seen = View {
+            visible: Some(visible),
+            ..view()
+        };
+        let drawn = drawing(&read, &seen, Shown::default(), &Default::default(), &[]);
+        let grid: Vec<&Drawn> = drawn
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d,
+                    Drawn::Stroke {
+                        kind: StrokeKind::GridMinor | StrokeKind::GridMajor | StrokeKind::Axis,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert!(grid.is_empty(), "{visible:?}: {grid:?}");
+    }
 }
 
 #[test]
