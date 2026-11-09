@@ -503,7 +503,7 @@ impl<P: Clients + 'static> App<P> {
         self.columns.chosen()
     }
 
-    /// Where the side panes' widths are kept: nowhere ([`KeptWidths::unkept`]) unless
+    /// Where the side panes' widths are kept: nowhere (read at once, the prototype's) unless
     /// [`keeping_widths`](Self::keeping_widths) gave a file.
     pub fn kept_widths(&self) -> &KeptWidths {
         self.columns.kept()

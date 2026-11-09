@@ -221,9 +221,6 @@ impl Columns {
                 ui.id().with(("column-border", side)),
                 Sense::CLICK | Sense::DRAG,
             );
-            if response.hovered() || response.dragged_by(PointerButton::Primary) {
-                ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
-            }
             let other = match side {
                 Side::Browser => Side::Properties,
                 Side::Properties => Side::Browser,
@@ -239,6 +236,14 @@ impl Columns {
                     origin: origin.x,
                     other: laid.of(other),
                 });
+            }
+            // egui counts a widget it takes to be dragged as hovered: the cursor shows over
+            // the border, or while a drag of this border is held, never for a drag egui still
+            // follows once it has ended here (the focus lost), nor another button's.
+            let held = self.drag.is_some_and(|drag| drag.side == side);
+            let hovered = response.hovered() && !response.dragged();
+            if hovered || (held && response.dragged_by(PointerButton::Primary)) {
+                ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
             }
             if response.dragged_by(PointerButton::Primary)
                 && let Some(drag) = self.drag.filter(|drag| drag.side == side)
@@ -260,10 +265,19 @@ impl Columns {
     }
 
     /// A drag held while the primary button isn't down any more, its release unseen (the
-    /// panes gone from the window, their last tab closed, as it was let go): ended, and its
-    /// widths kept, as a seen release does. Called after the frame is drawn.
+    /// panes gone from the window, their last tab closed, as it was let go), or as the
+    /// window loses the focus (where egui keeps the button down, and the release may never
+    /// come: the viewport's own drags end there too): ended, and its widths kept, as a seen
+    /// release does. Called after the frame is drawn.
     pub(crate) fn settle(&mut self, ctx: &egui::Context) {
-        if self.drag.is_some() && !ctx.input(|input| input.pointer.primary_down()) {
+        let over = ctx.input(|input| {
+            !input.pointer.primary_down()
+                || input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::WindowFocused(false)))
+        });
+        if self.drag.is_some() && over {
             self.end(ctx);
         }
     }

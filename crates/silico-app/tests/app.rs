@@ -786,6 +786,58 @@ fn a_widths_file_read_while_a_border_is_dragged_never_moves_the_panes() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// A drag whose release the panes never see, their tab closed under it (Ctrl+W mid-drag,
+/// the start page shown), ends once the button is up, and its widths are kept: the
+/// browser dragged 52 right, 300, beside the property panel's 296.
+#[test]
+fn a_drag_let_go_after_its_tab_closed_is_kept() {
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let file = widths_file(&f);
+    let mut h = keeping_widths(&f, "closed.silico", &file);
+    press_at(&mut h, 247.5);
+    pointer_moved(&mut h, 247.5, 299.5);
+    step(&mut h);
+    assert_eq!(columns(&h)[0], (0.0, 299.0));
+    h.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    assert!(h.state().start_shown());
+    released_at(&mut h, 299.5);
+    file_reads(&file, "silico pane-widths 1\nbrowser 300\nproperties 296\n");
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (300.0, 296.0));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A drag ends as the window loses the focus, where egui keeps the button down and the
+/// release may never come: the browser dragged 52 right, 300, the focus lost, then the
+/// pointer 50 further with the button still down by egui's count: the column stays at
+/// 300, the resize cursor isn't asked for, and 300 and 296 are kept at once.
+#[test]
+fn a_drag_ends_as_the_window_loses_the_focus_and_is_kept() {
+    use eframe::egui::Event;
+    let f = fixture();
+    let file = widths_file(&f);
+    let mut h = keeping_widths(&f, "focus.silico", &file);
+    press_at(&mut h, 247.5);
+    pointer_moved(&mut h, 247.5, 299.5);
+    step(&mut h);
+    assert_eq!(columns(&h)[0], (0.0, 299.0));
+    h.event(Event::WindowFocused(false));
+    step(&mut h);
+    file_reads(&file, "silico pane-widths 1\nbrowser 300\nproperties 296\n");
+    for x in [324.5, 349.5] {
+        h.hover_at(on_panes(x));
+        step(&mut h);
+    }
+    step(&mut h);
+    assert_eq!(columns(&h), [(0.0, 299.0), (300.0, 684.0), (985.0, 295.0)]);
+    assert!(!resize_cursor(&h));
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (300.0, 296.0));
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// Only the primary button drags a border: a middle-button drag from the browser's border
 /// 80 right moves no column, and the widths chosen are the prototype's still.
 #[test]

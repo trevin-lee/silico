@@ -186,7 +186,7 @@ impl KeptWidths {
 
     /// Widths that aren't kept, their thread not started: read, the defaults, and no drag's
     /// written anywhere.
-    pub fn unkept() -> Self {
+    pub(crate) fn unkept() -> Self {
         KeptWidths {
             read: true,
             widths: None,
