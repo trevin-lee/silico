@@ -23831,6 +23831,16 @@ fn mid_drag_undo_and_redo_are_off_and_their_keys_send_nothing_and_once_it_ends_b
     step_until(&mut h, "both offered", |h| {
         offered(h, "Undo") && offered(h, "Redo")
     });
+    // A drag begins only from a read of the state the session is at, and the undo's read is
+    // sent once its rebuild publishes and answered off the UI thread, which may be frames
+    // after both are offered: so it's waited for, frame by frame, before the press.
+    step_until(&mut h, "the read of the undo's revision", |h| {
+        let tab = &h.state().tabs()[0];
+        sketch_mode(h)
+            .and_then(|mode| mode.read.as_ref())
+            .and_then(|read| read.model)
+            == Some(tab.revision)
+    });
     // The second corner, back at (10, 10), pressed and dragged: neither is offered, by
     // button or key, while the drag is under way.
     sketch_events(
