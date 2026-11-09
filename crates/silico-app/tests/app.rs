@@ -16722,13 +16722,96 @@ fn a_dialogs_preview_line_says_its_rebuild_running_stopped_and_with_errors() {
 }
 
 #[test]
+fn a_full_rebuild_stopped_in_its_sketches_solve_leaves_the_models_own_time() {
+    // A full rebuild (Ctrl+Shift+B) solves the sketches it sweeps before its plan. Stopped
+    // there it's at 0 of 0, every feature queued: not whole, though `done` equals `steps`.
+    // The revision keeps its model (`status`'s `done`), and the bar its own rebuild's time,
+    // 30 ms on by the test's clock, while the stopped one's solve is still held.
+    let f = fixture();
+    let pad = r#"    {"id": "r0000002", "type": "pad", "v": 1, "name": "Raised", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 3, "reversed": false}}"#;
+    let text = SKETCHED.replace("\n  ]\n}", &format!(",\n{pad}\n  ]\n}}"));
+    let (mut h, _) = f.opened("raised.silico", &text);
+    step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
+    settled(&mut h);
+    let time = |h: &AppHarness| {
+        status_said(h, "Rebuilt").and_then(|said| time_after(&said, "Rebuilt · revision 1"))
+    };
+    let whole = time(&h);
+    assert!(whole.is_some());
+    f.sketches.hold();
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
+    step_until(&mut h, "rebuilding", |h| {
+        status_said(h, "Rebuilding").is_some()
+    });
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the full rebuild stopped", |h| {
+        !h.state().tabs()[0].checking() && rebuilt_at(h, 1)
+    });
+    let from = Instant::now();
+    while from.elapsed() < Duration::from_millis(30) {
+        std::thread::yield_now();
+    }
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(time(&h), whole);
+    f.sketches.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_saves_model_and_a_rollbacks_say_no_time_never_another_models() {
+    // A revision whose model no rebuild of its own made shows no time ([`Tab::rebuilt_ms`]):
+    // a save's, its model rebound at the save's revision; and a dialog's Cancel's, the model
+    // it kept published at the rollback's. "Rebuilt · revision N" exactly, never the last
+    // rebuild's time.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let edited = h.state().tabs()[0].revision.number();
+    step_until(&mut h, "the edit rebuilt, with its time", |h| {
+        rebuilt_at(h, edited)
+    });
+    let exactly = |h: &AppHarness| {
+        let revision = h.state().tabs()[0].revision.number();
+        status_said(h, "Rebuilt").as_deref()
+            == Some(format!("Rebuilt · revision {revision}").as_str())
+    };
+    h.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    step_until(&mut h, "saved", |h| !anywhere(h, "example.silico *"));
+    settled(&mut h);
+    assert!(h.state().tabs()[0].revision.number() > edited);
+    step_until(&mut h, "the save's revision, with no time", exactly);
+    // A Box dialog, its preview rebuilt whole, then cancelled: the transaction it began
+    // rolled back, the model it kept published at a new revision.
+    create(&mut h, "Box");
+    added(&mut h);
+    step_until(&mut h, "the preview up to date", |h| {
+        dialog(h)
+            .query_by_label_contains("Preview up to date · revision ")
+            .is_some()
+    });
+    let previewed = h.state().tabs()[0].revision.number();
+    cancel_dialog(&mut h);
+    settled(&mut h);
+    assert!(h.state().tabs()[0].revision.number() > previewed);
+    step_until(&mut h, "the rollback's revision, with no time", exactly);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview() {
     // The core's `elapsed_ms` (#416), never the app's own clock: the bar's "Rebuilt ·
     // revision N · T ms" (`renderStatus`) and an up-to-date preview's "Preview up to date ·
     // revision N · T ms" (`renderDialog`) say the whole milliseconds `status` gives for
     // that rebuild. Each held by the fake at its box past a gap of its own, let pass by the
-    // test's clock (a full rebuild's 40 ms, the preview's 90): each at least its gap, the
-    // two apart, each the core's.
+    // test's clock (a full rebuild's 40 ms, the preview's 20 past the first's time, so
+    // never the same, however loaded the machine): each at least its gap, each the core's.
     let spin = |gap| {
         let from = Instant::now();
         while from.elapsed() < Duration::from_millis(gap) {
@@ -16764,13 +16847,14 @@ fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview
         Some(opened),
         "{said}"
     );
-    // A box's dialog: its preview held at the new box for 90 ms, then up to date, at the
-    // transaction's revision, with the core's time for that rebuild.
+    // A box's dialog: its preview held at the new box 20 ms past the first's time, then up
+    // to date, at the transaction's revision, with the core's time for that rebuild.
+    let gap = opened + 20;
     let hold = f.kernel.hold(is_box);
     create(&mut h, "Box");
     added(&mut h);
     assert!(f.kernel.wait_running(1, WAIT));
-    spin(90);
+    spin(gap);
     hold.release();
     step_until(&mut h, "the preview up to date", |h| {
         dialog(h)
@@ -16779,8 +16863,7 @@ fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview
     });
     settled(&mut h);
     let (revision, previewed) = cores();
-    assert!(previewed >= 90, "{previewed} ms");
-    assert_ne!(previewed, opened);
+    assert!(previewed >= gap, "{previewed} ms, not {gap}");
     let line = dialog(&h)
         .get_by_label_contains("Preview up to date · revision ")
         .accesskit_node();

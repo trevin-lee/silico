@@ -13,7 +13,7 @@ use silico_core::command::{
     Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, DiffAnswer, ExtendBy,
     FieldSet, ModelChoice, Moved, NewMembers, Problems, RebuildState, Removed, Replaced, Response,
     Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, SketchCut, SketchEdited,
-    SketchJoined, Status, Stepped, Suppressed, TextAnswer, TimelineAnswer,
+    SketchJoined, Status, StepState, Stepped, Suppressed, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::json::Node;
@@ -707,9 +707,10 @@ pub struct Tab {
     /// The newest `status`, and the revision it was of.
     pub status: Option<Status>,
     status_revision: Revision,
-    /// The last rebuild `status` showed whole (done, every step of its plan settled): its
-    /// revision, and the core's time for it, in whole milliseconds (`elapsed_ms`). What the
-    /// bar and a dialog's preview say of the revision's rebuild ([`Tab::rebuilt_ms`]).
+    /// The last rebuild `status` showed whole (done, every step of its plan settled and no
+    /// feature left queued or running): its revision, and the core's time for it, in whole
+    /// milliseconds (`elapsed_ms`). What the bar and a dialog's preview say of the
+    /// revision's rebuild ([`Tab::rebuilt_ms`]).
     rebuilt: Option<(Revision, u64)>,
     /// The revision of the newest model published, if there's one.
     pub published: Option<Revision>,
@@ -1540,15 +1541,17 @@ impl Tab {
                     self.reload_asked = false;
                 }
                 // A rebuild done whole: its time kept with its revision. One done but not
-                // whole (a full rebuild stopped, the revision keeping the model it had) or
-                // with no rebuild of its own (a save's model, rebound; a rollback's, kept)
-                // leaves the last kept.
+                // whole (a full rebuild stopped, the revision keeping the model it had: what
+                // it hadn't settled left queued, even before its plan, at 0 of 0) or with no
+                // rebuild of its own (a save's model, rebound; a rollback's, kept) leaves
+                // the last kept.
                 if status.rebuild.state == RebuildState::Done
-                    && let Some(progress) = status
-                        .rebuild
-                        .progress
-                        .as_ref()
-                        .filter(|progress| progress.done == progress.steps)
+                    && let Some(progress) = status.rebuild.progress.as_ref().filter(|progress| {
+                        progress.done == progress.steps
+                            && progress.features.iter().all(|(_, state)| {
+                                !matches!(state, StepState::Queued | StepState::Running)
+                            })
+                    })
                 {
                     self.rebuilt = Some((status.rebuild.revision, progress.elapsed_ms()));
                 }
