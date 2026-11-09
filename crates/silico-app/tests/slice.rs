@@ -88,11 +88,6 @@ type H = AppUi<KernelPool>;
 /// The export's tolerance: the dialog's default, FreeCAD's, the session's.
 const TOLERANCE: f64 = 0.1;
 
-thread_local! {
-    /// How many Modify boxes didn't take the keyboard as they opened (finding N4).
-    static UNFOCUSED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-}
-
 const NAME: &str =
     "the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_reads_back";
 
@@ -106,12 +101,21 @@ fn seen(h: &H, at: [f64; 2]) -> Pos2 {
     screen.project(at).unwrap()
 }
 
-/// The rectangles of what the app draws over the canvas: the ViewCube, the navigation bar,
-/// and in sketch mode the sketch bar and the Sketch Palette, each the bounds of what it
-/// holds (the groups themselves have none). A click there is theirs.
+/// The rectangles of what the app draws over the canvas: in sketch mode the sketch bar and
+/// the Sketch Palette, each by its own bounds in the tree; and the ViewCube and the
+/// navigation bar, each by the bounds of what it holds (their groups have none of their
+/// own: finding N2's other half). A click there is theirs.
 fn overlays(h: &H) -> Vec<(&'static str, Rect)> {
     let mut found = Vec::new();
-    for label in ["Sketch bar", "Sketch Palette", "ViewCube", "Navigation bar"] {
+    for (role, label) in [
+        (Role::Toolbar, "Sketch bar"),
+        (Role::Group, "Sketch Palette"),
+    ] {
+        if let Some(node) = h.query_by_role_and_label(role, label) {
+            found.push((label, node.rect()));
+        }
+    }
+    for label in ["ViewCube", "Navigation bar"] {
         for node in h.query_all_by_label(label) {
             let mut bounds = Rect::NOTHING;
             for inner in node.query_all(egui_kittest::kittest::by().recursive(true)) {
@@ -282,19 +286,10 @@ fn dimension(h: &mut H, pick: &[[f64; 2]], place: [f64; 2], value: &str, constra
         sketch_click(h, *at);
     }
     sketch_click(h, place);
-    // Open; it takes the keyboard as it opens. Where it doesn't (a later sketch's: finding
-    // N4), clicked into, as a person would before typing.
-    step_until(h, "the Modify box open", |h| modify_field(h).is_some());
-    step(h);
-    step(h);
-    if !modify_field(h).unwrap().is_focused() {
-        let at = modify_field(h).unwrap().rect().center();
-        click_at(h, at, false);
-        step_until(h, "the Modify box holding the keyboard", |h| {
-            modify_field(h).is_some_and(|field| field.is_focused())
-        });
-        UNFOCUSED.with(|n| n.set(n.get() + 1));
-    }
+    // Open, holding the keyboard as it opens, in every sketch (N4's fix): nothing clicked.
+    step_until(h, "the Modify box open, holding the keyboard", |h| {
+        modify_field(h).is_some_and(|field| field.is_focused())
+    });
     let held = modify_field(h)
         .unwrap()
         .value()
@@ -609,6 +604,14 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         silico_app::theme::apply(&h.ctx);
         let h = &mut h;
 
+        // Each phase's time, for the record.
+        let mut last = Instant::now();
+        let mut phase = |name: &str| {
+            record(&format!("phase {name}: {:?}", last.elapsed()));
+            last = Instant::now();
+        };
+        phase("setup");
+
         // --- A new part (Command+N): "Untitled", with no file until its first save.
         new_part(h);
         settled(h);
@@ -688,17 +691,17 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
             .unwrap()
             .id
             .clone();
-        // G5 (its own PR, FreeCAD's *Avoid redundant*): once it lands, the L's inferred
-        // relations hold nothing twice, and this sketch has no `constraints_redundant`
-        // warning. Until then, recorded.
-        record(&format!(
-            "sketch 1, dimensioned: flagged {:?}; Modify boxes clicked into: {}",
-            flagged(h),
-            UNFOCUSED.with(std::cell::Cell::get)
-        ));
+        // #278's G as amended (G5): the L's inferred relations hold nothing twice, so no
+        // constraint is flagged and the sketch has no `constraints_redundant` warning; and
+        // no offer opened for any of its dimensions (`dimension`'s check).
+        let flags = flagged(h);
+        assert!(flags.is_empty(), "sketch 1 flags {flags:?}");
         leave_sketch(h, true);
         healthy(h, 1);
+        let warnings: u64 = entries(h).iter().map(|e| e.4).sum();
+        assert_eq!(warnings, 0, "sketch 1's warnings: {:?}", entries(h));
         rename(h, "Sketch1", "Bracket profile");
+        phase("sketch 1");
 
         // --- The pad: Length 40, Reversed (+Y: XZ's normal is −Y).
         sweep(h, "Pad", "Bracket profile");
@@ -707,6 +710,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         ok(h);
         healthy(h, 2);
         rename(h, "Pad", "Legs");
+        phase("the pad");
 
         // --- Sketch 2, the base's holes, on XY. Top (Command+5) looks down −Z, fitted to
         // the legs. C, the Circle tool: each centre, then a place on its rim; the second
@@ -728,13 +732,11 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
                 between: ([50.0, 20.0], "16"),
             },
         );
-        record(&format!(
-            "sketch 2, dimensioned: flagged {base_holes:?}; Modify boxes clicked into: {}",
-            UNFOCUSED.with(std::cell::Cell::get)
-        ));
+        assert!(base_holes.is_empty(), "sketch 2 flags {base_holes:?}");
         leave_sketch(h, true);
         healthy(h, 3);
         rename(h, "Sketch2", "Base holes");
+        phase("sketch 2");
 
         // --- Pocket 1: through all, Reversed (+Z: the legs stand above XY).
         sweep(h, "Pocket", "Base holes");
@@ -743,6 +745,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         ok(h);
         healthy(h, 4);
         rename(h, "Pocket", "Base holes");
+        phase("pocket 1");
 
         // --- Sketch 3, the upright's holes, on YZ: sketch x is +Y, sketch y is +Z. Right
         // (Command+4) looks along −X, Y to the right. The second centre level with the
@@ -763,13 +766,11 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
                 between: ([20.0, 46.0], "16"),
             },
         );
-        record(&format!(
-            "sketch 3, dimensioned: flagged {upright_holes:?}; Modify boxes clicked into: {}",
-            UNFOCUSED.with(std::cell::Cell::get)
-        ));
+        assert!(upright_holes.is_empty(), "sketch 3 flags {upright_holes:?}");
         leave_sketch(h, true);
         healthy(h, 5);
         rename(h, "Sketch3", "Upright holes");
+        phase("sketch 3");
 
         // --- Pocket 2: through all, Reversed (+X).
         sweep(h, "Pocket", "Upright holes");
@@ -778,6 +779,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         ok(h);
         healthy(h, 6);
         rename(h, "Pocket", "Upright holes");
+        phase("pocket 2");
 
         // --- The fillet. Isometric (Command+7), the front, right and top toward the eye:
         // the inside corner's edge, (5, 0, 5) to (5, 40, 5), faces it. Clicked at its middle,
@@ -820,6 +822,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         step_until(h, "the click on the corner answered", |h| {
             selected_names(h) != convex
         });
+        phase("the fillet's pick");
         assert_eq!(
             selected_names(h),
             [corner.as_str()],
@@ -832,6 +835,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         ok(h);
         healthy(h, 7);
         rename(h, "Fillet", "Inside corner");
+        phase("the fillet");
 
         // --- Saved as bracket.silico (the typed Save As: the harness has no native
         // dialogs), then Rebuild everything (Command+Shift+B): every step built anew from
@@ -848,6 +852,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         healthy(h, 7);
         assert!(h.state().tabs()[0].document_problems.is_empty());
         meshes_settled(h);
+        phase("save and rebuild everything");
 
         // --- Exported through the dialog: a 3MF at its default, 0.1 mm, beside the
         // document; a STEP; and a STEP to bracket.stp.
@@ -865,13 +870,16 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
             Some("0.1")
         );
         exported(h, &dir.join("bracket.3mf"));
+        phase("the 3MF's export");
         open_export(h, title);
         press(h, "STEP");
         exported(h, &dir.join("bracket.step"));
+        phase("the STEP's export");
         open_export(h, title);
         press(h, "STEP");
         set_field(h, "Path", dir.join("bracket.stp").to_str().unwrap());
         exported(h, &dir.join("bracket.stp"));
+        phase("the .stp's export");
         let built = started.elapsed();
 
         // === The done test ===================================================================
@@ -880,6 +888,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         // fingerprint the recorded session's field for field, rebuilt on the same kernel.
         let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let reference = recorded(&dir);
+        phase("the recorded session's reference");
         let solids = ["pad", "pocket", "fillet"];
         let ours = of_kinds(&saved, &solids);
         let theirs = of_kinds(&reference, &solids);
@@ -1020,6 +1029,7 @@ print("SILICO_ORACLE " + json.dumps({{
             path = step.to_str().unwrap()
         ))
         .unwrap_or_else(|e| panic!("{e}"));
+        phase("FreeCAD's read of the STEP");
         let within = |what: &str, got: &Value, hand: f64| {
             let got = got.as_f64().unwrap();
             let bound = 1e-9 * hand.abs() + 5e-7 + 1e-10 * hand.abs();
