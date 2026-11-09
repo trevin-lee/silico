@@ -3806,17 +3806,6 @@ mod property_panel_drawn {
     const EDGE2_WHY: &str = "Made from Face1, as the broken name is, but not from Face4";
     const EDGE4_WHY: &str = "Made from Face4, as the broken name is, but not from Face1";
 
-    /// The characters `shown` draws, its rows joined, spaces left out: what a cut would lose.
-    fn drawn_characters(shown: &TextShape) -> String {
-        shown
-            .galley
-            .rows
-            .iter()
-            .flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr))
-            .filter(|chr| !chr.is_whitespace())
-            .collect()
-    }
-
     #[test]
     fn each_candidate_says_why_the_core_ranked_it_under_its_name() {
         // `.cand .why`: under each name, on the body's 16 px line, 10.5 in the accent, the
@@ -3874,7 +3863,7 @@ mod property_panel_drawn {
         assert!(lines >= 3, "{lines} lines");
         assert!(!why.galley.elided);
         let whole: String = words.chars().filter(|chr| !chr.is_whitespace()).collect();
-        assert_eq!(drawn_characters(&why), whole);
+        assert_eq!(crate::modal::tests::drawn_characters(&why), whole);
         // The row's inside: the pane less the panel's padding, the card's border and its
         // body's padding, and the row's own.
         let inside =

@@ -1157,9 +1157,9 @@ pub(crate) const CLOSEST: &str = "Closest · ";
 /// - made from what the broken name is made from: "Made from A and B, as the broken name
 ///   is", then, if the broken name is made from more, ", but not from C or D";
 /// - none shared, a name by number: "Numbered 1 from C", or, if what's numbered nearest is
-///   an element the candidate is made from, "Made from D, numbered 1 from C";
+///   an element the candidate is made from, "Made from D, which is numbered 1 from C";
 /// - either, if the candidate isn't the broken name's own feature's (which the core ranks
-///   after its own): ", in another feature".
+///   after its own), said first, of the candidate: "Another feature's: made from …".
 ///
 /// Each list names at most [`MOST_NAMED`], the rest counted ("or 3 others"): a name can be
 /// made from thousands (the reader's `MOST_WEIGHT`), and the card stays a card; the whole
@@ -1170,30 +1170,36 @@ fn worded(name: &str, rank: &silico_core::Rank) -> String {
         crate::words::listed_at_most(names, conjunction, MOST_NAMED)
     };
     let broken = listed(&rank.unshared, "or");
-    let mut words = match (rank.shared.as_slice(), &rank.nearest) {
+    let said = match (rank.shared.as_slice(), &rank.nearest) {
         ([], Some(nearest)) if nearest.element == name => {
-            format!("Numbered {} from {broken}", nearest.gap)
+            format!("numbered {} from {broken}", nearest.gap)
         }
         ([], Some(nearest)) => format!(
-            "Made from {}, numbered {} from {broken}",
+            "made from {}, which is numbered {} from {broken}",
             nearest.element, nearest.gap
         ),
         ([], None) => return String::new(),
         (shared, _) if rank.unshared.is_empty() => {
-            format!("Made from {}, as the broken name is", listed(shared, "and"))
+            format!("made from {}, as the broken name is", listed(shared, "and"))
         }
         (shared, _) => format!(
-            "Made from {}, as the broken name is, but not from {broken}",
+            "made from {}, as the broken name is, but not from {broken}",
             listed(shared, "and")
         ),
     };
-    if !rank.same_feature {
-        words.push_str(", in another feature");
+    if rank.same_feature {
+        let mut chars = said.chars();
+        chars
+            .next()
+            .map(|first| first.to_uppercase().chain(chars).collect())
+            .unwrap_or_default()
+    } else {
+        format!("Another feature's: {said}")
     }
-    words
 }
 
-/// How many names of a list a candidate's why names (the most candidates the core gives).
+/// How many names of a list in a why are named before the rest is counted: enough to read,
+/// few enough that the card stays a card.
 const MOST_NAMED: usize = 5;
 
 /// The words of a broken reference's card's Remove the edge (`errCard`'s `removeRef`).
@@ -1818,8 +1824,8 @@ mod tests {
 
     use super::*;
     use crate::modal::tests::{
-        at, at_opacity, cap_border, colour, fills_at, font, icon_at, kbd_border, near, near_rect,
-        painted, rects, sized, text_shape, widget,
+        at, at_opacity, cap_border, colour, drawn_characters, fills_at, font, icon_at, kbd_border,
+        near, near_rect, painted, rects, sized, text_shape, widget,
     };
 
     /// styles.css: `.dlg-footer .btn { flex: 1; height: 26px }`; `.btn { gap: 6px }`;
@@ -1864,7 +1870,7 @@ mod tests {
         cut.same_feature = false;
         assert_eq!(
             worded("c0000001.cut.Face(I b0000001.box.Face2)", &cut),
-            "Made from b0000001.box.Face2, as the broken name is, in another feature"
+            "Another feature's: made from b0000001.box.Face2, as the broken name is"
         );
         // Lists in words, in the core's order: what it's made from with "and", what it
         // isn't with "or" (none of them).
@@ -1934,15 +1940,8 @@ mod tests {
             why.galley.rows.len()
         );
         assert!(!why.galley.elided);
-        let drawn: String = why
-            .galley
-            .rows
-            .iter()
-            .flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr))
-            .filter(|chr| !chr.is_whitespace())
-            .collect();
         let whole: String = words.chars().filter(|chr| !chr.is_whitespace()).collect();
-        assert_eq!(drawn, whole);
+        assert_eq!(drawn_characters(&why), whole);
         let used = widget(&h, Role::Button, &format!("Use {candidate}"));
         let right = why.pos.x + why.galley.size().x;
         assert!(
@@ -1975,13 +1974,15 @@ mod tests {
             ),
             "Numbered 3 from k7f2qx3m.box.Face9"
         );
-        // What's numbered nearest is an element the candidate is made from, not itself.
+        // What's numbered nearest is an element the candidate is made from, not itself: a
+        // candidate of another feature, as the core ranks one by number (its own feature's
+        // are the elements numbered).
+        let mut fillet = rank(&[], &edge5, Some(("k7f2qx3m.box.Edge4", 1)));
+        fillet.same_feature = false;
         assert_eq!(
-            worded(
-                "f0000001.fillet.Face(G k7f2qx3m.box.Edge4)",
-                &rank(&[], &edge5, Some(("k7f2qx3m.box.Edge4", 1)))
-            ),
-            "Made from k7f2qx3m.box.Edge4, numbered 1 from k7f2qx3m.box.Edge5"
+            worded("f0000001.fillet.Face(G k7f2qx3m.box.Edge4)", &fillet),
+            "Another feature's: made from k7f2qx3m.box.Edge4, which is numbered 1 from \
+             k7f2qx3m.box.Edge5"
         );
     }
 
