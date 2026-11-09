@@ -1156,6 +1156,14 @@ pub struct Progress {
     pub elapsed: Duration,
 }
 
+impl Progress {
+    /// [`elapsed`](Self::elapsed) in whole milliseconds, floored, as `elapsed_ms` writes it
+    /// (`u64::MAX` past that).
+    pub fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.elapsed.as_millis()).unwrap_or(u64::MAX)
+    }
+}
+
 impl From<&StepCount> for Progress {
     fn from(count: &StepCount) -> Self {
         Progress {

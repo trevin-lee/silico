@@ -479,10 +479,7 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
         match tab.errors() {
             0 => properties::Preview::UpToDate {
                 revision: rebuild.revision.number(),
-                ms: rebuild
-                    .progress
-                    .as_ref()
-                    .map(|progress| crate::status::whole_ms(progress.elapsed)),
+                ms: tab.rebuilt_ms(),
             },
             errors => properties::Preview::Errors(errors),
         }

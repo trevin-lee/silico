@@ -707,6 +707,10 @@ pub struct Tab {
     /// The newest `status`, and the revision it was of.
     pub status: Option<Status>,
     status_revision: Revision,
+    /// The last rebuild `status` showed whole (done, every step of its plan settled): its
+    /// revision, and the core's time for it, in whole milliseconds (`elapsed_ms`). What the
+    /// bar and a dialog's preview say of the revision's rebuild ([`Tab::rebuilt_ms`]).
+    rebuilt: Option<(Revision, u64)>,
     /// The revision of the newest model published, if there's one.
     pub published: Option<Revision>,
     /// The newest model published, as last seen (held weakly: only to tell it from
@@ -980,6 +984,7 @@ impl Tab {
             transaction: false,
             status: None,
             status_revision: Revision::OPENED,
+            rebuilt: None,
             published: None,
             published_model: None,
             published_models: 0,
@@ -1232,6 +1237,16 @@ impl Tab {
     /// as its timeline marks them (What's Wrong lists them).
     pub fn anything_wrong(&self) -> bool {
         self.timeline.as_ref().is_some_and(marked)
+    }
+
+    /// The core's time for the rebuild of the revision `status` says is rebuilt, in whole
+    /// milliseconds: that revision's last rebuild done whole, if one was seen, never
+    /// another's (a stopped one's, or another revision's model's).
+    pub fn rebuilt_ms(&self) -> Option<u64> {
+        let revision = self.status.as_ref()?.rebuild.revision;
+        self.rebuilt
+            .filter(|(of, _)| *of == revision)
+            .map(|(_, ms)| ms)
     }
 
     /// The errors its timeline counts: the gate's, and each feature's problems (the
@@ -1523,6 +1538,19 @@ impl Tab {
                 // reload of the person's is still to come.
                 if self.quiet() && !matches!(status.disk, Some(Disk::Changed | Disk::Gone)) {
                     self.reload_asked = false;
+                }
+                // A rebuild done whole: its time kept with its revision. One done but not
+                // whole (a full rebuild stopped, the revision keeping the model it had) or
+                // with no rebuild of its own (a save's model, rebound; a rollback's, kept)
+                // leaves the last kept.
+                if status.rebuild.state == RebuildState::Done
+                    && let Some(progress) = status
+                        .rebuild
+                        .progress
+                        .as_ref()
+                        .filter(|progress| progress.done == progress.steps)
+                {
+                    self.rebuilt = Some((status.rebuild.revision, progress.elapsed_ms()));
                 }
                 self.status = Some(status);
             }

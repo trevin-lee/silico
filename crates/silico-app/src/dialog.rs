@@ -506,6 +506,8 @@ impl Dialog {
             part: Part::Sketch,
             value: Value::Selection(sketch),
         };
+        // SEAM: the prototype draws Pad's direction as a segmented Direction, Normal (−Y) and
+        // Reversed (+Y) (app.js:618, `.seg`, `dlgRev`); a Reversed toggle until it's ported.
         let reversed = Input {
             label: "Reversed",
             part: Part::Reversed,
@@ -1711,8 +1713,8 @@ fn input_ui(
             let toggle = ui
                 .add_enabled(enabled, egui::Checkbox::without_text(on))
                 .labelled_by(label);
-            // Named itself too, as its row's key: `labelled_by` only relates it to the row's
-            // label, which leaves the box nameless to whatever doesn't follow the relation.
+            // `without_text` gives the box an empty label of its own, which hides the row's
+            // `labelled_by`: named as its row's key.
             ui.ctx()
                 .accesskit_node_builder(toggle.id, |node| node.set_label(input.label));
         }

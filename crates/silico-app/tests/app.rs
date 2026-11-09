@@ -16726,45 +16726,68 @@ fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview
     // The core's `elapsed_ms` (#416), never the app's own clock: the bar's "Rebuilt ·
     // revision N · T ms" (`renderStatus`) and an up-to-date preview's "Preview up to date ·
     // revision N · T ms" (`renderDialog`) say the whole milliseconds `status` gives for
-    // that rebuild, floored.
+    // that rebuild. Each held by the fake at its box past a gap of its own, let pass by the
+    // test's clock (a full rebuild's 40 ms, the preview's 90): each at least its gap, the
+    // two apart, each the core's.
+    let spin = |gap| {
+        let from = Instant::now();
+        while from.elapsed() < Duration::from_millis(gap) {
+            std::thread::yield_now();
+        }
+    };
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
     settled(&mut h);
+    let hold = f.kernel.hold(is_box);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
+    step(&mut h);
+    assert!(f.kernel.wait_running(1, WAIT));
+    spin(40);
+    hold.release();
+    step_until(&mut h, "rebuilt anew", |h| {
+        !h.state().tabs()[0].checking() && rebuilt_at(h, 1)
+    });
+    settled(&mut h);
     let id = h.state().tabs()[0].id;
     let cores = || {
         let status = f.sessions.status(&id).result.unwrap();
-        let elapsed = status.rebuild.progress.unwrap().elapsed;
-        (
-            status.rebuild.revision.number(),
-            u64::try_from(elapsed.as_millis()).unwrap(),
-        )
+        let progress = status.rebuild.progress.unwrap();
+        assert_eq!(progress.done, progress.steps);
+        (status.rebuild.revision.number(), progress.elapsed_ms())
     };
-    let (revision, ms) = cores();
+    let (revision, opened) = cores();
+    assert!(opened >= 40, "{opened} ms");
     let said = status_said(&h, "Rebuilt").unwrap();
     assert_eq!(
         time_after(&said, &format!("Rebuilt · revision {revision}")),
-        Some(ms),
+        Some(opened),
         "{said}"
     );
-    // A box's dialog: its preview rebuilt, up to date, at the transaction's revision, with
-    // the core's time for that rebuild.
+    // A box's dialog: its preview held at the new box for 90 ms, then up to date, at the
+    // transaction's revision, with the core's time for that rebuild.
+    let hold = f.kernel.hold(is_box);
     create(&mut h, "Box");
     added(&mut h);
+    assert!(f.kernel.wait_running(1, WAIT));
+    spin(90);
+    hold.release();
     step_until(&mut h, "the preview up to date", |h| {
         dialog(h)
             .query_by_label_contains("Preview up to date · revision ")
             .is_some()
     });
     settled(&mut h);
-    let (revision, ms) = cores();
+    let (revision, previewed) = cores();
+    assert!(previewed >= 90, "{previewed} ms");
+    assert_ne!(previewed, opened);
     let line = dialog(&h)
         .get_by_label_contains("Preview up to date · revision ")
         .accesskit_node();
     let line = line.label().or_else(|| line.value()).unwrap();
     assert_eq!(
         time_after(&line, &format!("Preview up to date · revision {revision}")),
-        Some(ms),
+        Some(previewed),
         "{line}"
     );
     assert_eq!(never_waits::waits(), 0);
@@ -17187,6 +17210,12 @@ fn ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it() {
     assert_eq!(h.state().tabs()[0].rebuilds, 0, "never a Rebuild");
     step_until(&mut h, "rebuilt again", |h| rebuilt_at(h, 1));
     assert!(shows(&h, "Timeline", "Hole"));
+    settled(&mut h);
+    let time = |h: &AppHarness| {
+        status_said(h, "Rebuilt").and_then(|said| time_after(&said, "Rebuilt · revision 1"))
+    };
+    let whole = time(&h);
+    assert!(whole.is_some());
     // Held at its box: Esc stops it, as Stop does, and the revision keeps the model it
     // had (`status` says it's rebuilt, of that model): nothing more is built.
     let hold = f.kernel.hold(is_box);
@@ -17202,6 +17231,16 @@ fn ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it() {
         !h.state().tabs()[0].checking() && rebuilt_at(h, 1)
     });
     assert!(h.state().tabs()[0].message.is_none());
+    // The bar's time is still the model's own rebuild's, never the stopped one's, whose
+    // clock runs on while its box is held: 30 ms let pass by the test's clock.
+    let from = Instant::now();
+    while from.elapsed() < Duration::from_millis(30) {
+        std::thread::yield_now();
+    }
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(time(&h), whole);
     let calls = f.kernel.calls().len();
     hold.release();
     for _ in 0..10 {

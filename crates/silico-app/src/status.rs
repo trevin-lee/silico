@@ -9,8 +9,10 @@
 //! (decision 10) in the rebuild's place.
 //!
 //! A rebuild done without errors says its time (`· 84 ms`), the core's (`status.rebuild`'s
-//! `elapsed_ms`, measured by the core from its rebuild's start to its end): the app's own
-//! clock would time its polls, not the rebuild.
+//! `elapsed_ms`, measured by the core from the rebuild's being asked for to its end, its
+//! model published): the app's own clock would time its polls, not the rebuild. Only a
+//! rebuild done whole, of the revision shown ([`Tab::rebuilt_ms`]); none for a revision
+//! whose model no rebuild of its own made (a save's, rebound; a rollback's, kept).
 //!
 //! Left out, each for a reason, each a seam:
 //! - the edits' count (`Unsaved · 2 edits`): the core's undo stack counts edits, but the
@@ -146,11 +148,6 @@ pub struct Asked {
     pub whats_wrong: bool,
 }
 
-/// `elapsed` in whole milliseconds, floored, as the core writes `elapsed_ms`.
-pub(crate) fn whole_ms(elapsed: std::time::Duration) -> u64 {
-    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-}
-
 /// The bar for `tab`, the tab shown, and `message`, the window's refusal, if it has one.
 pub fn of(tab: &Tab, message: Option<String>) -> Bar {
     let status = tab.status.as_ref();
@@ -171,11 +168,7 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
             RebuildState::Done => Said::Rebuilt {
                 revision: status.rebuild.revision.number(),
                 errors: tab.errors(),
-                ms: status
-                    .rebuild
-                    .progress
-                    .as_ref()
-                    .map(|progress| whole_ms(progress.elapsed)),
+                ms: tab.rebuilt_ms(),
             },
             RebuildState::Faulted => Said::Faulted,
             RebuildState::Idle => Said::Nothing,
@@ -1247,7 +1240,7 @@ mod tests {
             Said::Rebuilt {
                 revision: 12,
                 errors: 0,
-                ms: None,
+                ms: Some(84),
             },
             (false, false),
             Saved::Saved,
@@ -1284,7 +1277,7 @@ mod tests {
         assert_eq!((dots[0].radius, dots[0].fill), (css::DOT / 2.0, css::GREEN));
         let words = said_at(
             &h,
-            "Rebuilt · revision 12",
+            "Rebuilt · revision 12 · 84 ms",
             item + css::ITEM_PADDING + css::DOT + css::ITEM_GAP,
             css::G550,
         );
@@ -1293,7 +1286,7 @@ mod tests {
             Pos2::new(words + css::ITEM_PADDING, middle() + css::ITEM_H / 2.0),
         );
         sized(
-            widget(&h, Role::Label, "Rebuilt · revision 12"),
+            widget(&h, Role::Label, "Rebuilt · revision 12 · 84 ms"),
             item_rect,
             "the item",
         );
@@ -1513,15 +1506,5 @@ mod tests {
         assert_eq!(rebuilt(1, Some(84)), "Rebuilt with 1 error");
         assert_eq!(rebuilt(3, None), "Rebuilt with 3 errors");
         assert_eq!(Said::Nothing.words(), "");
-    }
-
-    #[test]
-    fn a_rebuilds_time_is_its_whole_milliseconds_floored_as_the_core_writes_them() {
-        use std::time::Duration;
-        assert_eq!(whole_ms(Duration::ZERO), 0);
-        assert_eq!(whole_ms(Duration::from_micros(999)), 0);
-        assert_eq!(whole_ms(Duration::from_micros(84_999)), 84);
-        assert_eq!(whole_ms(Duration::from_secs(3)), 3000);
-        assert_eq!(whole_ms(Duration::MAX), u64::MAX);
     }
 }

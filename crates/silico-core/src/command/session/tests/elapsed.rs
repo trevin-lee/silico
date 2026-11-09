@@ -325,3 +325,24 @@ fn a_new_revision_reads_null_until_a_read_rebuilds_it() {
         "{elapsed} ms, more than the {wall} ms since just before its check"
     );
 }
+
+#[test]
+fn elapsed_ms_is_the_whole_milliseconds_floored_and_saturates() {
+    // `Progress::elapsed_ms`, which `elapsed_ms` writes and clients read: floored, never
+    // rounded; past `u64`'s milliseconds, its last.
+    let whole = |elapsed| {
+        crate::command::Progress {
+            done: 0,
+            steps: 0,
+            running: None,
+            features: crate::command::FeatureStates::default(),
+            elapsed,
+        }
+        .elapsed_ms()
+    };
+    assert_eq!(whole(Duration::ZERO), 0);
+    assert_eq!(whole(Duration::from_micros(999)), 0);
+    assert_eq!(whole(Duration::from_micros(84_999)), 84);
+    assert_eq!(whole(Duration::from_secs(3)), 3000);
+    assert_eq!(whole(Duration::MAX), u64::MAX);
+}
