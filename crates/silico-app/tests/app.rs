@@ -36968,12 +36968,14 @@ fn a_menu_opened_again_by_a_right_click_has_none_of_the_last_menus_planes_open()
 }
 
 #[test]
-fn a_context_menu_closed_lets_go_of_its_faces_read() {
+fn a_face_read_answered_is_let_go() {
     // #444's mutants: the menu opened over the box's top reads the face for its type (Sketch
-    // on this face). Once answered (the fake answers at once: the rebuild described the
-    // face), the read is let go, the menu keeping what it said; and closed by Esc, the menu
-    // leaves none behind.
-    use eframe::egui::Key;
+    // on this face): the tab's read is of that face in the frames from its asking to its
+    // answer's taking (a frame at least: it's let go in the frame after). Once answered,
+    // it's let go, the menu keeping what it said. SEAM: the read can't be held across the
+    // menu's close here (the fake answers at once, the rebuild having described the face),
+    // so after Esc none is left by either way.
+    use eframe::egui::{Key, Modifiers, PointerButton};
     use silico_app::renderer::Element::Face;
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
@@ -36983,10 +36985,28 @@ fn a_context_menu_closed_lets_go_of_its_faces_read() {
     step_until(&mut h, "the top hovered", |h| {
         hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
     });
-    context_at(&mut h, at);
-    step_until(&mut h, "its face read answered", |h| {
-        select_other(h).face_read() == Some(true)
-    });
+    // The right click by hand, a frame at a time, the tab's read looked at after each.
+    let mut asked = false;
+    let right = PointerButton::Secondary;
+    button_event(&h, at, right, true, Modifiers::NONE);
+    step(&mut h);
+    asked |= h.state().tabs()[0].menu_face().of().is_some();
+    button_event(&h, at, right, false, Modifiers::NONE);
+    step(&mut h);
+    asked |= h.state().tabs()[0].menu_face().of().is_some();
+    for _ in 0..120 {
+        if select_other(&h).face_read() == Some(true) {
+            break;
+        }
+        step(&mut h);
+        asked |= h.state().tabs()[0].menu_face().of().is_some();
+    }
+    assert_eq!(
+        select_other(&h).face_read(),
+        Some(true),
+        "its face read answered"
+    );
+    assert!(asked, "the tab's read of the menu's face");
     step(&mut h);
     assert!(h.state().tabs()[0].menu_face().of().is_none());
     h.key_press(Key::Escape);
