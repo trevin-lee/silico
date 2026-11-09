@@ -308,7 +308,7 @@ fn edge_batch(
                     picking: Some(picking),
                     edges,
                     vertices: None,
-                    background: [0x00, 0x00, 0x00, 0xff],
+                    background: Some([0x00, 0x00, 0x00]),
                 })
                 .map_err(|f| f.to_string())?;
             let placed = renderer.placed();
