@@ -507,6 +507,10 @@ impl JsonSchema for ElementId {
 /// sketch has, the origin and the two axes (D6: FreeCAD's `RootPoint`, `H_Axis`, `V_Axis`).
 /// `x_axis` runs from the origin along +x and `y_axis` along +y, as FreeCAD's axes do, so a
 /// side of an axis and an angle from one mean what they mean for a line drawn that way.
+///
+/// Its order, the sketch's elements by ID, then the origin, the x axis, and the y axis, is
+/// the one the sketch tools break a tie by (`sketch_tools::infer`: a pick, a point's `on`, a
+/// crossing), so a sketch's own curve comes before an axis: keep the variants in this order.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Reference {
     Element(ElementId),
