@@ -602,7 +602,7 @@ fn a_node_left_unfilled_is_walked_as_nothing_never_round_for_ever() {
     let cube = Pickable::new(Arc::new(freecad_box(20.0, 20.0, 20.0)));
     let camera = from_above();
     let bodies = [(1, &cube)];
-    let caster = super::Caster::new(&camera, SIZE, 1.0, &bodies).unwrap();
+    let caster = super::Caster::new(&camera, SIZE, 1.0, &bodies, &[]).unwrap();
     let (origin, direction) = ray(&camera, SIZE, above_px(15.0, 15.0)).unwrap();
     let line = super::Line {
         origin,
@@ -1682,7 +1682,7 @@ fn a_boxs_least_depth_is_its_nearest_corners_less_a_part_in_2_38_of_its_largest_
     // is at z = 20, depth 80; the largest coordinate of the box's, the eye's, and the line's
     // is the eye's 100, of which a part in 2^38 is 3.64e-10.
     let cube = Pickable::new(Arc::new(freecad_box(20.0, 20.0, 20.0)));
-    let caster = super::Caster::new(&from_above(), SIZE, 1.0, &[(1, &cube)]).unwrap();
+    let caster = super::Caster::new(&from_above(), SIZE, 1.0, &[(1, &cube)], &[]).unwrap();
     let line = super::Line {
         origin: [15.0, 15.0, 10.0],
         direction: [0.0, 0.0, -1.0],
@@ -1711,7 +1711,7 @@ fn a_line_a_hair_past_a_triangles_edge_meets_it_through_its_box_grown_for_roundi
         vertex_points: vec![],
     };
     let body = Pickable::new(Arc::new(mesh));
-    let caster = super::Caster::new(&from_above(), SIZE, 1.0, &[(1, &body)]).unwrap();
+    let caster = super::Caster::new(&from_above(), SIZE, 1.0, &[(1, &body)], &[]).unwrap();
     let line = super::Line {
         origin: [x, 0.5, 50.0],
         direction: [0.0, 0.0, -1.0],
