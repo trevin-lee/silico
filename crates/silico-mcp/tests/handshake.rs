@@ -35,7 +35,7 @@ fn initialize_answers_with_the_pinned_revision_whatever_the_client_asks() {
         "{line}"
     );
     // The workspace, as relative paths resolve against it, how to make a solid (from
-    // sketches, as the app does), and the three things an agent most needs.
+    // sketches, as a person does in the app), and the three things an agent most needs.
     let instructions = result["instructions"].as_str().unwrap();
     let root = c.work.display().to_string();
     for said in [

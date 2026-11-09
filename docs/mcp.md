@@ -42,13 +42,13 @@ This adds it for the directory you run it in. For every project use `claude mcp 
 - **The rebuild cache** is `.silico-cache/` beside each document (none for an untitled session until its first save), ignoring itself in git, its entries sealed with a secret of yours at `~/.cache/silico/cache-secret` (or `$XDG_CACHE_HOME/silico/cache-secret`). `cache_clear` empties it.
 - **Logs** go to stderr, where the client keeps its MCP servers' logs: `warn` and above, unless `SILICO_LOG` (a `tracing` filter, set in the client's config) says otherwise. Stdout holds only MCP's messages. Each session also keeps its own recent events for `read_logs`.
 
-`tools/list` gives 45 tools, each tool's `inputSchema` its request and `outputSchema` its whole answer. Its input schemas are about 103 KB of an agent's context, `add_feature`'s about 25 KB of it (docs/design/m4.9-mcp.md, *Size*, measured at 30 tools).
+`tools/list` gives 45 tools, each tool's `inputSchema` its request and `outputSchema` its whole answer. Its input schemas are about 103 KB of an agent's context, `add_feature`'s about 25 KB of it. docs/design/m4.9-mcp.md's *Size* gives the figures as first measured, at 23 tools.
 
 ## The workflow
 
 The server's `instructions`, which every client is given at `initialize`, say how to make a solid and the three rules an agent most needs: build solids from sketches, as a person does in the app (a sketch on a plane or a face, then a pad, pocket, revolve, or groove of it); edit inside a transaction, read `model: "current"` after an edit, and name an element only as `elements` or `query` gives it; and how to make a part with no file yet.
 
-**Build from sketches.** The maintainer decided on 2026-11-09 that the app makes solids only from sketches, as SolidWorks does. The core still reads primitives, so older documents and a feature written as a `box` work as before, but a part an agent builds from sketches is one a person opening it can edit the way they'd have built it. The worked example below builds the bracket that way.
+**Build from sketches.** The maintainer decided on 2026-11-09 that the app makes solids only from sketches, as SolidWorks does (docs/design/m5.0-app.md, *The toolbar*). The core still reads primitives, so older documents and a feature written as a `box` work as before, but a part an agent builds from sketches is one a person opening it can edit the way they'd have built it. The worked example below builds the bracket that way.
 
 **Every argument is given.** A request is read strictly: each field its shape has must be present, `null` where it allows none (`"feature": null` for every body), and a field it doesn't have is refused. `schema` (`{"of": "query"}`, or `{"of": "document"}` for the document's JSON Schema) gives the same shapes `tools/list` does.
 
