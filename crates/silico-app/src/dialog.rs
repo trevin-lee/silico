@@ -471,16 +471,27 @@ pub struct Dialog {
     /// (`crate::tab`'s `base_of`: the body a suppressed boolean's tool, which the gate counts
     /// that boolean as consuming): nothing is sent for that sketch, OK is off, and the
     /// dialog says it.
-    pub base_refused: Option<String>,
+    pub base_refused: Option<BaseRefused>,
+}
+
+/// Why a new sweep's base is refused ([`Dialog::base_refused`]): the sketch it's refused
+/// for, the words the dialog says, and whether it came from the add's own read of the
+/// session's document (`Tab`'s `Under::Base`), which a check against the tab's timeline,
+/// older, mustn't undo: that one is kept until the sketch changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseRefused {
+    pub sketch: Option<FeatureId>,
+    pub why: String,
+    pub read: bool,
 }
 
 /// What the tab lets an open dialog do: anything at all (`enabled`, none while its tab
-/// closes), and whether the tab holds its OK off (`held`: a new sweep's own edit of its
-/// base waiting or refused, `Tab::base_held`).
+/// closes), and OK (`ok`: `Tab::can_ok`'s one answer, which Enter takes too, so the button
+/// and the key can't disagree).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Allowed {
     pub enabled: bool,
-    pub held: bool,
+    pub ok: bool,
 }
 
 #[cfg(test)]
@@ -488,7 +499,7 @@ impl Allowed {
     /// Everything allowed: a dialog drawn alone, as the panes' tests draw one.
     pub const ALL: Allowed = Allowed {
         enabled: true,
-        held: false,
+        ok: true,
     };
 }
 
@@ -1564,7 +1575,7 @@ impl Dialog {
         refused: &dyn Fn(&str) -> bool,
         allowed: Allowed,
     ) -> Action {
-        let Allowed { enabled, held } = allowed;
+        let Allowed { enabled, ok } = allowed;
         let whole = ui.max_rect();
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         let closed = properties::title(
@@ -1682,16 +1693,9 @@ impl Dialog {
             names.said = None;
         }
         properties::footer_paint(ui, footer);
-        // Off while its add is unanswered: what's typed meanwhile is sent after it. Off, too,
-        // while a new sweep's base is refused, or the tab `held` it (its base edit waiting or
-        // refused): a sweep's sketch and its base are one change.
-        let ok = enabled
-            && !held
-            && self.base_refused.is_none()
-            && self.valid()
-            && !any_refused
-            && !self.adding
-            && !self.holding();
+        // The tab's one answer (`Tab::can_ok`: valid, its add answered, no box holding, no
+        // edit refused, a sweep's base neither refused nor waiting), as Enter takes it.
+        let ok = enabled && ok;
         let mut action = if closed && enabled {
             Action::Cancel
         } else {
