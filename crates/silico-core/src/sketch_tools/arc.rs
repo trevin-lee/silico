@@ -95,9 +95,15 @@ fn draw_arc(preview: &mut Preview, drawn: &Drawn) {
 }
 
 /// Where a point the pointer places: an arc's end, lined up as a guide (as a line's end
-/// is), with the gesture's own points `besides`.
-fn placed_at(step: &Step<'_, '_, '_>, at: Xy, besides: &[&ElementId]) -> Placed {
-    let mut placed = step.pointer.snap(at);
+/// is), with the gesture's own points `besides`; judged after the points the gesture placed
+/// `before` it, in their order ([`Pointer::snap_after`](super::infer::Pointer::snap_after)).
+fn placed_at(
+    step: &Step<'_, '_, '_>,
+    at: Xy,
+    besides: &[&ElementId],
+    before: &[&Placed],
+) -> Placed {
+    let mut placed = step.pointer.snap_after(at, before);
     step.pointer.align(&mut placed, Align::Guides, besides);
     placed
 }
@@ -307,7 +313,7 @@ impl Centerpoint {
     /// The start set where the pointer places it, `at`: unless it's on the centre.
     fn start(&mut self, step: &Step<'_, '_, '_>, centre: Placed, at: Xy) -> Outcome {
         let besides: Vec<&ElementId> = centre.shared().into_iter().collect();
-        let start = placed_at(step, at, &besides);
+        let start = placed_at(step, at, &besides, &[&centre]);
         if on_top(step, &centre, &start) {
             self.state = CenterState::Centre {
                 centre,
@@ -345,7 +351,7 @@ impl Centerpoint {
             }
             CenterState::Pressed { centre, .. } | CenterState::Centre { centre, .. } => {
                 let besides: Vec<&ElementId> = centre.shared().into_iter().collect();
-                let start = placed_at(step, at, &besides);
+                let start = placed_at(step, at, &besides, &[centre]);
                 preview.points.push(centre.at);
                 preview.guides.push([centre.at, start.at]);
                 measure_radius(preview, centre.at, start.at);
@@ -392,7 +398,7 @@ fn end_on_circle(
     let radius = distance(start.at, centre.at);
     let toward = unit(sub(at, centre.at))?;
     let on_circle = add(centre.at, scale(toward, radius));
-    let snapped = step.pointer.snap(on_circle);
+    let snapped = step.pointer.snap_after(on_circle, &[centre, start]);
     let on = |p: Xy| (distance(p, centre.at) - radius).abs() <= EXACT;
     if on(snapped.at) {
         return Some(snapped);
@@ -538,7 +544,7 @@ impl ThreePoint {
                 Outcome::left()
             }
             (ThreeState::Idle, Event::Press(at)) => {
-                let start = placed_at(step, at, &[]);
+                let start = placed_at(step, at, &[], &[]);
                 if !reach(&[&start]) {
                     Outcome::said(Message::TooFar)
                 } else {
@@ -630,7 +636,7 @@ impl ThreePoint {
     /// The end set where the pointer places it: unless it's on the start.
     fn end(&mut self, step: &Step<'_, '_, '_>, start: Placed, at: Xy) -> Outcome {
         let besides: Vec<&ElementId> = start.shared().into_iter().collect();
-        let end = placed_at(step, at, &besides);
+        let end = placed_at(step, at, &besides, &[&start]);
         if on_top(step, &start, &end) {
             self.state = ThreeState::Start {
                 start,
@@ -664,10 +670,10 @@ impl ThreePoint {
             Event::EndChain | Event::Escape | Event::Enter | Event::Cancel => return,
         };
         match &self.state {
-            ThreeState::Idle => show(preview, &placed_at(step, at, &[])),
+            ThreeState::Idle => show(preview, &placed_at(step, at, &[], &[])),
             ThreeState::Pressed { start, .. } | ThreeState::Start { start, .. } => {
                 let besides: Vec<&ElementId> = start.shared().into_iter().collect();
-                let end = placed_at(step, at, &besides);
+                let end = placed_at(step, at, &besides, &[start]);
                 preview.guides.push([start.at, end.at]);
                 preview.shown.extend(start.shown());
                 show(preview, &end);
@@ -869,7 +875,7 @@ impl Tangent {
                 preview.shown.extend(placed.shown());
             }
             TangentState::Pressed { base, .. } | TangentState::Clicked { base, .. } => {
-                let end = placed_at(step, at, &[&base.point]);
+                let end = placed_at(step, at, &[&base.point], &[]);
                 preview.shown.push(Shown {
                     at: base.at,
                     relation: Relation::Tangent(base.curve.clone()),
@@ -910,7 +916,7 @@ fn base_at(step: &Step<'_, '_, '_>, at: Xy) -> Result<Base, Message> {
 /// The tangent arc from `base` to where the pointer places its end, `at`: none if the end is
 /// on the base (nothing drawn yet).
 fn finish_tangent(step: &mut Step<'_, '_, '_>, base: &Base, at: Xy) -> Option<Outcome> {
-    let end = placed_at(step, at, &[&base.point]);
+    let end = placed_at(step, at, &[&base.point], &[]);
     if end.shared() == Some(&base.point)
         || (end.shared().is_none() && distance(end.at, base.at) <= step.pointer.tolerance)
     {

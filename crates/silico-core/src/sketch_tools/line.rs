@@ -275,11 +275,11 @@ fn show_point(preview: &mut Preview, placed: &Placed) {
 /// already fixes it ([`not_implied`], #278's G as amended).
 fn end_of(step: &Step<'_, '_, '_>, start: &Start, at: Xy) -> End {
     let pointer = &step.pointer;
-    let new_start = match start {
-        Start::New(placed) => Some(placed),
-        Start::Point(..) => None,
+    let before: Vec<&Placed> = match start {
+        Start::New(placed) => vec![placed],
+        Start::Point(..) => Vec::new(),
     };
-    let mut placed = pointer.snap_after(at, new_start);
+    let mut placed = pointer.snap_after(at, &before);
     if !pointer.infer {
         return End {
             placed,
