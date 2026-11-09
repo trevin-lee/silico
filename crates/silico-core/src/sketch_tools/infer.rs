@@ -10,7 +10,8 @@
 //! 1. a point of the sketch, shared (D2), always, whatever the setting and Ctrl (#278's F);
 //! 2. with relations inferred: the origin (#278's A), then a line's middle (with an `on` of
 //!    each other curve through it exactly, #278's G, but an axis the line lies along: the
-//!    line stands for the axis there), then where two curves cross (two `on`s; at one
+//!    line stands for the axis there; and but one the sketch already implies, #278's G as
+//!    amended, [`Implied`]), then where two curves cross (two `on`s; at one
 //!    place, the sketch's own pair before one with an axis), then a curve (`on`), each
 //!    within the pick tolerance. The pointer finds a line
 //!    and an arc only where they're drawn (not past a line's end, nor on an arc's circle
@@ -33,11 +34,10 @@ use silico_protocol::{LENGTH_TOLERANCE, arc_from_points};
 use super::geometry::{
     add, angle_between, cross, distance, dot, left, scale, sub, to_segment, unit,
 };
-use super::implied::{Axis, Implied, Key, Rel};
+use super::implied::{Implied, ViewClasses};
 use super::{Relation, Shown, Xy};
 use crate::document::sketch_edit::{Geo, Members, crossings, lies_along};
 use crate::document::{Direction, ElementId, Form, Reference, Sketch};
-use crate::sketch_states::SketchStates;
 
 /// How far from horizontal or vertical a line may be drawn, and from perpendicular,
 /// parallel, or tangent, for the pointer to show it: 2°, FreeCAD 1.1.3's, since SolidWorks'
@@ -64,7 +64,8 @@ fn angle_tolerance() -> f64 {
 }
 
 /// How much work the views and the pointer did, counted in tests: each curve's shape built,
-/// and each pair of curves tried for a crossing.
+/// each pair of curves tried for a crossing, and each line or point on one the implied
+/// classes look at as they join.
 #[cfg(test)]
 pub(super) mod work {
     use std::cell::Cell;
@@ -72,6 +73,11 @@ pub(super) mod work {
     thread_local! {
         pub(in crate::sketch_tools) static SHAPES: Cell<usize> = const { Cell::new(0) };
         pub(in crate::sketch_tools) static PAIRS: Cell<usize> = const { Cell::new(0) };
+        pub(in crate::sketch_tools) static VISITS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(in crate::sketch_tools) fn visit() {
+        VISITS.with(|c| c.set(c.get() + 1));
     }
 
     pub(in crate::sketch_tools) fn shape() {
@@ -282,7 +288,8 @@ pub(super) enum Target {
     /// The origin: a new point, level with it and above it (#278's A).
     Origin,
     /// A line's middle: a new point and `midpoint`, and an `on` of each other curve that
-    /// crosses it there (#278's G).
+    /// crosses it there (#278's G), but one the sketch already implies with the `midpoint`
+    /// held (#278's G as amended, [`Implied`]).
     Midpoint(ElementId, Vec<Reference>),
     /// A curve or an axis: a new point and `on`.
     On(Reference),
@@ -352,34 +359,6 @@ impl Placed {
         placed.level_with = present(&self.level_with);
         placed.above = present(&self.above);
         placed
-    }
-
-    /// Its relations merged into `implied`, the point it places known by `key`: the classes a
-    /// gesture's later relations are judged against.
-    pub(super) fn assert_into(&self, implied: &mut Implied, key: &Key) {
-        let mut rels = match &self.target {
-            Target::Shared(_) | Target::Free => Vec::new(),
-            Target::Origin => vec![
-                Rel::Same(Axis::Level, key.clone(), Key::Origin),
-                Rel::Same(Axis::Plumb, key.clone(), Key::Origin),
-            ],
-            Target::Midpoint(line, ons) => {
-                let mut rels = vec![Rel::OnLine(key.clone(), line.clone())];
-                rels.extend(ons.iter().map(|on| implied.on(key.clone(), on)));
-                rels
-            }
-            Target::On(curve) => vec![implied.on(key.clone(), curve)],
-            Target::Crossing(a, b) => vec![implied.on(key.clone(), a), implied.on(key.clone(), b)],
-        };
-        if let Some(q) = &self.level_with {
-            rels.push(Rel::Same(Axis::Level, key.clone(), Key::Point(q.clone())));
-        }
-        if let Some(q) = &self.above {
-            rels.push(Rel::Same(Axis::Plumb, key.clone(), Key::Point(q.clone())));
-        }
-        for rel in &rels {
-            implied.assert(rel);
-        }
     }
 
     /// The relations a new point placed so keeps, `point` being its ID.
@@ -482,18 +461,34 @@ pub(super) struct Pointer<'v, 's> {
     /// The points the pointer has woken, the newest first: the only ones a point lines up
     /// with.
     pub(super) woken: &'v [ElementId],
-    /// The newest read's member states: which points are fully defined, so which of the
-    /// relations it infers the sketch already implies ([`Implied`]).
-    pub(super) states: &'v SketchStates,
+    /// The view's classes, built once for it ([`ViewClasses`]), its points fixed as the
+    /// newest read's member states mark them: which of the relations it infers the sketch
+    /// already implies ([`Implied`]).
+    pub(super) classes: &'v ViewClasses,
 }
 
-/// Where two curves near the pointer cross: how far from it, the place, whether one of the
-/// two is an axis, and the pair, in [`Reference`]'s order.
-struct Crossing {
-    d: f64,
-    at: Xy,
-    axis: bool,
-    pair: (Reference, Reference),
+/// IDs for a gesture's point or line not named yet, none a point or curve of the view: what
+/// its relations are written with to be judged ([`Implied::rel`]), each of its points a
+/// class of its own until a relation joins it.
+pub(super) struct Unnamed {
+    pub(super) start: ElementId,
+    pub(super) end: ElementId,
+    pub(super) line: ElementId,
+}
+
+impl Unnamed {
+    /// The first three IDs of `zz000000`, `zz000001`, ... that `view` doesn't hold as a point
+    /// or a curve: none only if it holds all million (more than the gate takes).
+    pub(super) fn of(view: &View<'_>) -> Option<Unnamed> {
+        let mut free = (0u32..1_000_000)
+            .filter_map(|k| ElementId::new(&format!("zz{k:06}")))
+            .filter(|id| view.point(id).is_none() && !view.has_curve(id));
+        Some(Unnamed {
+            start: free.next()?,
+            end: free.next()?,
+            line: free.next()?,
+        })
+    }
 }
 
 /// Where two curves near the pointer cross: how far from it, the place, whether one of the
@@ -529,6 +524,11 @@ fn nearest<K: Ord, T>(items: impl Iterator<Item = (f64, K, T)>) -> Option<T> {
 }
 
 impl Pointer<'_, '_> {
+    /// The view's classes, built the first time a relation is judged on it.
+    pub(super) fn implied(&self) -> &Implied {
+        self.classes.of()
+    }
+
     /// The point of the sketch nearest `at`, within the tolerance.
     fn point_near(&self, at: Xy) -> Option<(f64, ElementId)> {
         nearest(self.view.points.iter().filter_map(|(id, &p)| {
@@ -541,6 +541,16 @@ impl Pointer<'_, '_> {
     /// pointer infers; then, if it infers, the origin, a line's middle, two curves' crossing,
     /// or a curve; or nothing.
     pub(super) fn snap(&self, at: Xy) -> Placed {
+        self.snap_after(at, None)
+    }
+
+    /// Where a click at `at` puts a segment's end, after its start: as [`snap`](Self::snap),
+    /// but with a new start (`start`, the point it placed; none for a point of the sketch,
+    /// which brings no relation of its own) its relations are merged into the classes first,
+    /// so the `on`s beside the end's `midpoint` are judged after them, as the add writes them
+    /// (docs/ports/sketch-tools.md: the start point's relations, then the end point's, each
+    /// kept merged before the next).
+    pub(super) fn snap_after(&self, at: Xy, start: Option<&Placed>) -> Placed {
         let point = self.point_near(at);
         if !self.infer {
             return match point {
@@ -570,7 +580,7 @@ impl Pointer<'_, '_> {
                 .map(|n| n.reference.clone())
                 .collect();
             ons.sort();
-            let ons = self.ons_not_implied(&line, ons);
+            let ons = self.ons_not_implied(mid, &line, ons, start);
             return Placed::new(mid, Target::Midpoint(line, ons));
         }
         if let Some((cross, a, b)) = self.crossing_near(at, &near) {
@@ -582,23 +592,47 @@ impl Pointer<'_, '_> {
         Placed::new(at, Target::Free)
     }
 
-    /// Of `ons`, in [`Reference`]'s order, the `on`s of a new point at the middle of `line`
-    /// the sketch doesn't already imply ([`Implied`], Rule E), the `midpoint` asserted first
-    /// and each `on` kept merged before the next: an `on` of the x axis at the middle of a
-    /// level line along it, or of a line level with it, goes.
-    fn ons_not_implied(&self, line: &ElementId, ons: Vec<Reference>) -> Vec<Reference> {
-        if ons.is_empty() {
+    /// Of `ons`, in [`Reference`]'s order, the `on`s of a new point at `mid`, the middle of
+    /// `line`, the sketch doesn't already imply ([`Implied`], Rule E): the forms the add
+    /// writes for it ([`Placed::relations`]), judged in their order, the `midpoint` first
+    /// and asserted, and each `on` kept merged before the next. A segment's new `start`'s
+    /// relations are merged before them, as [`snap_after`](Self::snap_after) says. An `on`
+    /// of the x axis at the middle of a level line along it, or of a line level with it,
+    /// goes.
+    fn ons_not_implied(
+        &self,
+        mid: Xy,
+        line: &ElementId,
+        ons: Vec<Reference>,
+        start: Option<&Placed>,
+    ) -> Vec<Reference> {
+        let Some(unnamed) = Unnamed::of(self.view).filter(|_| !ons.is_empty()) else {
             return ons;
-        }
-        let mut implied = Implied::of(&self.view.sketch, self.states);
-        let point = Key::Fresh(0);
-        implied.assert(&Rel::OnLine(point.clone(), line.clone()));
+        };
+        let mut implied = self.implied().clone();
+        // A segment's new start is the gesture's first point, the end its second, as the
+        // segment's directions are judged (`line.rs`'s `not_implied`).
+        let point = match start {
+            Some(start) => {
+                for form in start.relations(&unnamed.start) {
+                    let rel = implied.rel(&form);
+                    implied.merge(&rel);
+                }
+                &unnamed.end
+            }
+            None => &unnamed.start,
+        };
+        let placed = Placed::new(mid, Target::Midpoint(line.clone(), ons));
         let mut kept = Vec::new();
-        for curve in ons {
-            let rel = implied.on(point.clone(), &curve);
-            if !implied.implies(&rel) {
-                implied.assert(&rel);
-                kept.push(curve);
+        for form in placed.relations(point) {
+            let rel = implied.rel(&form);
+            match form {
+                Form::On { curve, .. } => {
+                    if implied.admit(&rel) {
+                        kept.push(curve);
+                    }
+                }
+                _ => implied.merge(&rel),
             }
         }
         kept

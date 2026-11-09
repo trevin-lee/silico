@@ -35236,3 +35236,43 @@ fn a_sketch_left_gives_the_canvas_back_a_right_click_opening_its_menu_and_the_wh
     assert!(ortho_height(view(&h).camera()) < ortho_height(&camera));
     assert_eq!(never_waits::waits(), 0);
 }
+
+/// Two points of one sketch, (10, 10) and (40, 10.5), 0.95° off level from each other, and
+/// nothing else.
+const TWO_POINTS: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Pair", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 40, "y": 10.5, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn the_tools_read_the_sketchs_states_and_leave_out_a_direction_between_fixed_points() {
+    // The fake solver's read marks every point fully defined (its default solve has no
+    // freedoms). A line dragged from (10, 10) to (40, 10.5), each end a point of the sketch:
+    // 0.95° off level, so the pointer finds `horizontal`; but both ends' Y classes are fixed
+    // by the read's states, so the tool leaves it out (#278's G as amended, Rule E), and the
+    // line is added with no relation at all.
+    let f = fixture();
+    let (mut h, _) = f.opened("pair.silico", TWO_POINTS);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Pair"));
+    double_click(&mut h, "Browser", "Pair");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    sketch_events(&f, &mut h, &dragged([10.0, 10.0], [40.0, 10.5]));
+    settled(&mut h);
+    read_with_lines(&mut h, 1);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let line = &sketch.lines[0];
+    assert_eq!(
+        (line.from.as_str(), line.to.as_str()),
+        ("pa000001", "pa000002")
+    );
+    assert_eq!(sketch.constraints, Vec::new());
+    assert_eq!(never_waits::waits(), 0);
+}

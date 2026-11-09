@@ -132,7 +132,8 @@ impl ToolKind {
 /// What a tool works against: the sketch, by its feature's ID; the newest `sketch` read's
 /// members, as solved, and the revision of the model it read; the pick tolerance, in
 /// millimetres, that the viewport gives (a few pixels at its zoom); whether *Automatic
-/// relations* is on; and whether the tool draws for construction.
+/// relations* is on; whether the tool draws for construction; and the newest read's states,
+/// which points it fixes.
 #[derive(Debug, Clone, Copy)]
 pub struct Context<'a> {
     pub sketch_id: &'a FeatureId,
@@ -146,9 +147,11 @@ pub struct Context<'a> {
     /// construction either way, every other point not), and the relations inferred are the
     /// same. Smart Dimension, which adds no curve, doesn't read it.
     pub construction: bool,
-    /// The newest read's states: its points' (fully defined or not) are what a tool reads to
-    /// leave out an inferred relation the sketch already fixes (#278's G as amended,
-    /// `implied`). A sketch of free points has none to give: an empty read's are right.
+    /// The newest read's states: its points' (fully defined or not) are what a drawing tool
+    /// reads to leave out an inferred relation the sketch already fixes (#278's G as amended,
+    /// `implied`), and its constraints' and the sketch's are what Smart Dimension reads to
+    /// judge whether the dimension it placed over-defines the sketch, and so offers what it
+    /// may become (SD7). A sketch of free points has none to give: an empty read's are right.
     pub states: &'a SketchStates,
 }
 
@@ -448,6 +451,8 @@ pub struct SketchTool {
     /// The gesture and its preview before the press in progress, for [`Event::Cancel`] to
     /// put back: none with no press in progress.
     before_press: Option<BeforePress>,
+    /// The classes of the newest view, built once for it ([`implied::ViewClasses`]).
+    classes: implied::ViewClasses,
 }
 
 /// A tool's gesture and preview as they were before a press.
@@ -496,6 +501,7 @@ impl SketchTool {
             adds: Adds::new(),
             woken: Vec::new(),
             before_press: None,
+            classes: implied::ViewClasses::default(),
         }
     }
 
@@ -605,6 +611,7 @@ impl SketchTool {
         }
         let pending = self.adds.members();
         let view = infer::View::of(context.sketch, &pending);
+        self.classes.keep_for(&view.sketch, context.states);
         let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
             context.tolerance
         } else {
@@ -646,7 +653,7 @@ impl SketchTool {
                 tolerance,
                 infer: context.automatic_relations && !keys.ctrl,
                 woken: &woken,
-                states: context.states,
+                classes: &self.classes,
             },
             shift: keys.shift,
             ids,

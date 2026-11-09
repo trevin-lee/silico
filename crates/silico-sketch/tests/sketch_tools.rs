@@ -588,7 +588,7 @@ impl Fixture {
         } else {
             &mut self.ids
         };
-        let outcome = tool.handle(&context, &read.states, ids, event.clone());
+        let outcome = tool.handle(&context, ids, event.clone());
         assert_eq!(outcome.message, None, "{event:?}");
         if let (Some(members), Some(token)) = (outcome.add, outcome.token) {
             let made = self.sketch_add(&members);
@@ -862,7 +862,7 @@ fn each_equal_horizontal_distance_after_the_first_is_offered() {
             construction: false,
             states: &read.states,
         };
-        tool.settle(&context, &read.states);
+        tool.settle(&context);
         assert_eq!(tool.busy(), n > 0, "{n}");
         assert_eq!(tool.open_offer().is_some(), n > 0, "{n}");
         tool.dismiss_offer();
@@ -1061,6 +1061,35 @@ fn candidates(read: &SketchRead) -> Vec<Form> {
     forms
 }
 
+/// Whether `form` is one of the equalities the implied classes read: a `horizontal`,
+/// `vertical`, `horizontal_points`, `vertical_points`, or `on` of an axis.
+fn is_read_equality(form: &Form) -> bool {
+    matches!(
+        form,
+        Form::Horizontal { .. }
+            | Form::Vertical { .. }
+            | Form::HorizontalPoints { .. }
+            | Form::VerticalPoints { .. }
+            | Form::On {
+                curve: Reference::XAxis | Reference::YAxis,
+                ..
+            }
+    )
+}
+
+/// Whether a constraint read `state` is flagged as the rule expects of one it leaves out:
+/// redundant, partially redundant, or conflicting.
+fn flagged(state: Option<ConstraintState>) -> bool {
+    matches!(
+        state,
+        Some(
+            ConstraintState::Redundant
+                | ConstraintState::PartiallyRedundant
+                | ConstraintState::Conflicting
+        )
+    )
+}
+
 /// `form` added to the session inside a transaction, its read, then rolled back: the
 /// freedoms it leaves, and its own state.
 fn tried(f: &mut Fixture, form: &Form, n: &mut u32) -> (i32, Option<ConstraintState>) {
@@ -1103,24 +1132,28 @@ fn a_relation_the_tools_leave_out_is_one_planegcs_finds_redundant_or_conflicting
     use silico_core::sketch_tools::implied_by;
     let mut draws = Draws(0x0051_11c0);
     let (mut left_out, mut kept_tried) = (0, 0);
+    let mut left_out_by_form = std::collections::BTreeMap::<&str, usize>::new();
     for sketch in 0..12 {
         let mut f = opened(ToolKind::Line);
         draw_chain(&mut f, &mut draws);
         draw_chain(&mut f, &mut draws);
         let mut read = f.read();
-        let equalities_only = read.members.constraints.iter().all(|c| {
-            matches!(
+        // What the tools added (every constraint, the sketch begun empty): none of the
+        // equalities the classes read is redundant or conflicting.
+        for c in &read.members.constraints {
+            let state = read.states.constraints.get(&c.id).copied();
+            assert!(
+                !is_read_equality(&c.form) || !flagged(state),
+                "sketch {sketch}: the tools added {:?}, read {state:?}; the sketch: {:?}",
                 c.form,
-                Form::Horizontal { .. }
-                    | Form::Vertical { .. }
-                    | Form::HorizontalPoints { .. }
-                    | Form::VerticalPoints { .. }
-                    | Form::On {
-                        curve: Reference::XAxis | Reference::YAxis,
-                        ..
-                    }
-            )
-        });
+                read.members
+            );
+        }
+        let equalities_only = read
+            .members
+            .constraints
+            .iter()
+            .all(|c| is_read_equality(&c.form));
         if sketch % 2 == 1 {
             // Some points fixed where they are: a driving distance x and y from the origin.
             let mut constraints = Vec::new();
@@ -1170,17 +1203,10 @@ fn a_relation_the_tools_leave_out_is_one_planegcs_finds_redundant_or_conflicting
         for form in candidates(&read) {
             if implied_by(&read.members, &read.states, &form) {
                 left_out += 1;
+                *left_out_by_form.entry(form.type_name()).or_default() += 1;
                 let (dofs, state) = tried(&mut f, &form, &mut n);
                 assert!(
-                    dofs == before
-                        || matches!(
-                            state,
-                            Some(
-                                ConstraintState::Redundant
-                                    | ConstraintState::PartiallyRedundant
-                                    | ConstraintState::Conflicting
-                            )
-                        ),
+                    dofs == before || flagged(state),
                     "sketch {sketch}: {form:?} left out, but added it leaves {dofs} freedoms of \
                      {before}, read {state:?}; the sketch: {:?}",
                     read.members
@@ -1204,6 +1230,12 @@ fn a_relation_the_tools_leave_out_is_one_planegcs_finds_redundant_or_conflicting
     // stopped drawing axes or levels would show here).
     assert!(left_out >= 20, "{left_out} left out");
     assert!(kept_tried >= 20, "{kept_tried} kept tried");
+    // Rule F's half too: a perpendicular or a parallel among those left out.
+    let directions = ["perpendicular", "parallel"]
+        .iter()
+        .filter_map(|form| left_out_by_form.get(form))
+        .sum::<usize>();
+    assert!(directions > 0, "left out by form: {left_out_by_form:?}");
 }
 
 #[test]

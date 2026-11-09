@@ -7,13 +7,13 @@
 
 use super::build::Builder;
 use super::geometry::distance;
-use super::implied::{Axis, Implied, Key, Rel};
-use super::infer::{Align, Along, Placed, Pointer, View, along, one_place, onto};
+use super::implied::Key;
+use super::infer::{Align, Along, Placed, Pointer, Unnamed, View, along, one_place, onto};
 use super::{
     Event, MeasureKind, Message, Outcome, Preview, PreviewMeasure, Shown, Step, Xy, within_reach,
 };
+use crate::document::ElementId;
 use crate::document::sketch_edit::Members;
-use crate::document::{ElementId, Reference};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct Line {
@@ -265,7 +265,8 @@ fn show_point(preview: &mut Preview, placed: &Placed) {
 }
 
 /// Where a segment from `start` ends with the pointer at `at`, and the direction it shows:
-/// the point the pointer places; then, for a point placed on nothing, moved onto the
+/// the point the pointer places (the `on`s beside its `midpoint` judged after a new start's
+/// relations, `Pointer::snap_after`); then, for a point placed on nothing, moved onto the
 /// direction it shows (horizontal, vertical, tangent, perpendicular, parallel), and lined up
 /// with the points it's level with or above as guides only, which keep the direction it
 /// shows (#278's E: a horizontal line's end above a point is the help's own example of a
@@ -274,7 +275,11 @@ fn show_point(preview: &mut Preview, placed: &Placed) {
 /// already fixes it ([`not_implied`], #278's G as amended).
 fn end_of(step: &Step<'_, '_, '_>, start: &Start, at: Xy) -> End {
     let pointer = &step.pointer;
-    let mut placed = pointer.snap(at);
+    let new_start = match start {
+        Start::New(placed) => Some(placed),
+        Start::Point(..) => None,
+    };
+    let mut placed = pointer.snap_after(at, new_start);
     if !pointer.infer {
         return End {
             placed,
@@ -301,58 +306,50 @@ fn end_of(step: &Step<'_, '_, '_>, start: &Start, at: Xy) -> End {
 }
 
 /// Of `along`, in order, the directions the sketch doesn't already fix (#278's G as amended,
-/// [`Implied`]): the classes seeded from the view, then the start's relations (a new
-/// start's) and the end's (a new end's), then each direction judged (Rule E for horizontal
-/// and vertical, Rule F for tangent, perpendicular, and parallel), each kept merged before
-/// the next. So the preview and the add, which both take a segment's end from here, show and
-/// add the same.
+/// [`Implied`](super::implied::Implied)): the view's classes, copied, with the start's
+/// relations (a new start's) and the end's (a new end's) merged, then the segment, then each
+/// direction's form judged (Rule E for horizontal and vertical, Rule F for tangent,
+/// perpendicular, and parallel), each kept merged before the next. The forms are the ones the
+/// add writes ([`Placed::relations`], [`Along::form`]), the gesture's members named by
+/// [`Unnamed`] till it has IDs. So the preview and the add, which both take a segment's end
+/// from here, show and add the same.
 fn not_implied(
     pointer: &Pointer<'_, '_>,
     start: &Start,
     end: &Placed,
     along: Vec<Along>,
 ) -> Vec<Along> {
-    if along.is_empty() {
+    let Some(unnamed) = Unnamed::of(pointer.view).filter(|_| !along.is_empty()) else {
         return along;
-    }
-    let mut implied = Implied::of(&pointer.view.sketch, pointer.states);
-    let a = match start {
-        Start::Point(id, _) => Key::Point(id.clone()),
-        Start::New(placed) => {
-            let key = Key::Fresh(0);
-            placed.assert_into(&mut implied, &key);
-            key
-        }
     };
-    let b = match end.shared() {
-        Some(id) => Key::Point(id.clone()),
-        None => {
-            let key = Key::Fresh(1);
-            end.assert_into(&mut implied, &key);
-            key
+    let mut implied = pointer.implied().clone();
+    let mut named = |placed: &Placed, id: &ElementId| {
+        for form in placed.relations(id) {
+            let rel = implied.rel(&form);
+            implied.merge(&rel);
         }
+        id.clone()
     };
-    let mut kept = Vec::new();
-    for direction in along {
-        let rel = match &direction {
-            Along::Horizontal => Rel::Same(Axis::Level, a.clone(), b.clone()),
-            Along::Vertical => Rel::Same(Axis::Plumb, a.clone(), b.clone()),
-            Along::Tangent(curve) | Along::Perpendicular(curve) | Along::Parallel(curve) => {
-                match implied.reads(&Reference::Element(curve.clone())) {
-                    Some(mut keys) => {
-                        keys.extend([a.clone(), b.clone()]);
-                        Rel::Reads(keys)
-                    }
-                    None => Rel::Other,
-                }
-            }
-        };
-        if !implied.implies(&rel) {
-            implied.assert(&rel);
-            kept.push(direction);
-        }
-    }
-    kept
+    let start_id = match start {
+        Start::Point(id, _) => id.clone(),
+        Start::New(placed) => named(placed, &unnamed.start),
+    };
+    let end_id = match end.shared() {
+        Some(id) => id.clone(),
+        None => named(end, &unnamed.end),
+    };
+    implied.line(
+        &unnamed.line,
+        Key::Point(start_id.clone()),
+        Key::Point(end_id),
+    );
+    along
+        .into_iter()
+        .filter(|direction| {
+            let rel = implied.rel(&direction.form(&unnamed.line, &start_id));
+            implied.admit(&rel)
+        })
+        .collect()
 }
 
 /// The segment from `start` to the pointer at `at`: its members, its end's ID and place,

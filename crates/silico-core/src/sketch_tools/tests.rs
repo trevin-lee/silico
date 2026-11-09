@@ -73,6 +73,22 @@ fn with_line(mut s: Sketch, name: &str, from: Xy, to: Xy) -> Sketch {
     s
 }
 
+/// The element `text` as a reference.
+fn el(text: &str) -> Reference {
+    Reference::Element(id(text))
+}
+
+/// `forms` as `s`'s constraints, numbered k0000001 on, in order.
+fn constrained(mut s: Sketch, forms: Vec<Form>) -> Sketch {
+    for (k, form) in forms.into_iter().enumerate() {
+        s.constraints.push(SketchConstraint {
+            id: id(&format!("k{:07}", k + 1)),
+            form,
+        });
+    }
+    s
+}
+
 /// A line along the x axis, (10, 0) to (50, 0), and one along the y axis, (0, 10) to
 /// (0, 50), each 40 long and named `name`; each with a place on it, mid-way between its end
 /// and its middle (beyond the pick tolerance of both), and a place 10 off it.
@@ -571,6 +587,18 @@ fn described(sketch: &Sketch, members: &Members) -> Vec<String> {
     }
     lines.sort();
     lines
+}
+
+/// The forms of each constraint the tool's adds made, by type, sorted.
+fn types(d: &Drive) -> Vec<&'static str> {
+    let mut types: Vec<&'static str> = d
+        .made
+        .iter()
+        .flat_map(|m| &m.constraints)
+        .map(|c| c.form.type_name())
+        .collect();
+    types.sort();
+    types
 }
 
 fn sorted(lines: &[&str]) -> Vec<String> {

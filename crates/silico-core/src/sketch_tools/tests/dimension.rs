@@ -56,9 +56,7 @@ impl Dim {
             construction: false,
             states: &self.states,
         };
-        let outcome = self
-            .tool
-            .handle(&context, &self.states, &mut self.ids, event);
+        let outcome = self.tool.handle(&context, &mut self.ids, event);
         if let Some(members) = &outcome.add {
             self.revision = self.revision.next().unwrap();
             self.tool.added(outcome.token.unwrap(), self.revision);
@@ -138,10 +136,6 @@ fn under() -> SketchStates {
     states(SketchState::UnderDefined)
 }
 
-fn r(text: &str) -> Reference {
-    Reference::Element(id(text))
-}
-
 fn mm(v: &str) -> Length {
     Length::parse(v).unwrap()
 }
@@ -190,7 +184,7 @@ fn a_line_is_its_length_placed_with_the_value_typed() {
     assert_eq!(
         d.shown(),
         Some(Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: mm("50"),
             driving: true
         })
@@ -199,7 +193,7 @@ fn a_line_is_its_length_placed_with_the_value_typed() {
     assert_eq!(
         d.placed(),
         Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: mm("12.5"),
             driving: true
         }
@@ -232,7 +226,7 @@ fn a_circle_is_its_diameter_and_an_arc_its_radius() {
     assert_eq!(
         d.placed(),
         Form::Diameter {
-            curve: r("k0000001"),
+            curve: el("k0000001"),
             value: mm("14"),
             driving: true
         }
@@ -242,7 +236,7 @@ fn a_circle_is_its_diameter_and_an_arc_its_radius() {
     assert_eq!(
         d.placed(),
         Form::Radius {
-            curve: r("a0000001"),
+            curve: el("a0000001"),
             value: mm("10"),
             driving: true
         }
@@ -254,7 +248,7 @@ fn a_point_or_an_axis_alone_places_nothing() {
     let mut d = Dim::new(with_point(empty(), "p0000001", [10.0, 10.0]));
     d.click(10.0, 10.0).click(30.0, 30.0);
     assert_eq!(d.modify(), None);
-    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    assert_eq!(d.tool.preview().picks, vec![el("p0000001")]);
     d.escape().click(50.0, 0.2).click(30.0, 30.0);
     assert_eq!(d.tool.preview().picks, vec![Reference::XAxis]);
     assert_eq!(d.modify(), None);
@@ -271,16 +265,16 @@ fn a_line_along_an_axis_is_picked_before_the_axis_whatever_its_id() {
         for (sketch, on, off) in along_the_axes(name) {
             let mut d = Dim::new(sketch);
             d.to(on[0], on[1]);
-            assert_eq!(d.tool.preview().hover, Some(r(name)), "{name} at {on:?}");
+            assert_eq!(d.tool.preview().hover, Some(el(name)), "{name} at {on:?}");
             d.click(on[0], on[1]);
-            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at {on:?}");
+            assert_eq!(d.tool.preview().picks, vec![el(name)], "{name} at {on:?}");
             d.click(off[0], off[1]);
             assert_eq!(d.modify().as_deref(), Some("40"), "{name} at {on:?}");
             d.enter();
             assert_eq!(
                 d.placed(),
                 Form::Length {
-                    line: r(name),
+                    line: el(name),
                     value: mm("40"),
                     driving: true
                 }
@@ -301,7 +295,7 @@ fn a_line_along_an_axis_is_picked_where_its_foot_rounds() {
         ] {
             let mut d = Dim::new(with_line(empty(), name, from, to));
             d.click(at[0], at[1]);
-            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at {at:?}");
+            assert_eq!(d.tool.preview().picks, vec![el(name)], "{name} at {at:?}");
         }
     }
 }
@@ -317,7 +311,7 @@ fn a_line_along_the_x_axis_is_picked_with_the_pointer_on_it_anywhere_along_it() 
         for x in places {
             let mut d = Dim::new(with_line(empty(), name, [10.0, 0.0], [50.0, 0.0]));
             d.click(x, 0.0);
-            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at ({x}, 0)");
+            assert_eq!(d.tool.preview().picks, vec![el(name)], "{name} at ({x}, 0)");
         }
     }
 }
@@ -335,7 +329,7 @@ fn a_line_within_a_tenth_of_a_micrometre_of_an_axis_is_picked_for_it() {
         let mut d = Dim::new(with_line(empty(), "zz000001", [10.0, y], [50.0, y]));
         d.click(20.0, -0.1 * y.signum());
         let want = if covered {
-            r("zz000001")
+            el("zz000001")
         } else {
             Reference::XAxis
         };
@@ -350,7 +344,7 @@ fn a_pick_as_near_a_line_beside_an_axis_as_the_axis_takes_the_line() {
     for name in ["aa000001", "zz000001"] {
         let mut d = Dim::new(with_line(empty(), name, [10.0, 0.5], [50.0, 0.5]));
         d.click(20.0, 0.25);
-        assert_eq!(d.tool.preview().picks, vec![r(name)], "{name}");
+        assert_eq!(d.tool.preview().picks, vec![el(name)], "{name}");
     }
 }
 
@@ -397,8 +391,8 @@ fn two_points_are_horizontal_above_the_box_vertical_beside_it_and_aligned_elsewh
         (
             [25.0, 45.0],
             Form::DistanceX {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("30"),
                 driving: true,
             },
@@ -406,8 +400,8 @@ fn two_points_are_horizontal_above_the_box_vertical_beside_it_and_aligned_elsewh
         (
             [25.0, -5.0],
             Form::DistanceX {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("30"),
                 driving: true,
             },
@@ -415,8 +409,8 @@ fn two_points_are_horizontal_above_the_box_vertical_beside_it_and_aligned_elsewh
         (
             [55.0, 20.0],
             Form::DistanceY {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("20"),
                 driving: true,
             },
@@ -424,8 +418,8 @@ fn two_points_are_horizontal_above_the_box_vertical_beside_it_and_aligned_elsewh
         (
             [-5.0, 20.0],
             Form::DistanceY {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("20"),
                 driving: true,
             },
@@ -433,8 +427,8 @@ fn two_points_are_horizontal_above_the_box_vertical_beside_it_and_aligned_elsewh
         (
             [25.0, 20.0],
             Form::Distance {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("36.055513"),
                 driving: true,
             },
@@ -442,8 +436,8 @@ fn two_points_are_horizontal_above_the_box_vertical_beside_it_and_aligned_elsewh
         (
             [60.0, 50.0],
             Form::Distance {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("36.055513"),
                 driving: true,
             },
@@ -472,8 +466,8 @@ fn horizontal_and_vertical_distances_start_positive_whichever_point_is_picked_fi
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("30"),
             driving: true
         }
@@ -485,8 +479,8 @@ fn horizontal_and_vertical_distances_start_positive_whichever_point_is_picked_fi
     assert_eq!(
         d.placed(),
         Form::DistanceY {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("20"),
             driving: true
         }
@@ -498,8 +492,8 @@ fn horizontal_and_vertical_distances_start_positive_whichever_point_is_picked_fi
     assert_eq!(
         d.placed(),
         Form::Distance {
-            a: r("p0000002"),
-            b: r("p0000001"),
+            a: el("p0000002"),
+            b: el("p0000001"),
             value: mm("36.055513"),
             driving: true
         }
@@ -517,8 +511,8 @@ fn horizontal_and_vertical_distances_start_positive_whichever_point_is_picked_fi
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000002"),
-            b: r("p0000001"),
+            a: el("p0000002"),
+            b: el("p0000001"),
             value: mm("30"),
             driving: true
         }
@@ -530,8 +524,8 @@ fn horizontal_and_vertical_distances_start_positive_whichever_point_is_picked_fi
     assert_eq!(
         d.placed(),
         Form::DistanceY {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("20"),
             driving: true
         }
@@ -550,8 +544,8 @@ fn a_negative_value_typed_for_a_horizontal_distance_is_taken_as_typed() {
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("-30"),
             driving: true
         }
@@ -570,7 +564,7 @@ fn the_origin_is_a_point_to_dimension_from() {
         d.placed(),
         Form::DistanceX {
             a: Reference::Origin,
-            b: r("p0000001"),
+            b: el("p0000001"),
             value: mm("10"),
             driving: true
         }
@@ -591,7 +585,7 @@ fn two_points_at_one_place_have_no_distance_but_a_horizontal_and_vertical_offset
     );
     let mut d = Dim::new(s);
     d.click(9.9999, 9.9999).click(10.000001, 10.000001);
-    assert_eq!(d.tool.preview().picks, vec![r("p0000001"), r("p0000002")]);
+    assert_eq!(d.tool.preview().picks, vec![el("p0000001"), el("p0000002")]);
     d.click(30.0, 30.0);
     assert_eq!(d.messages, vec![Message::NoDistance]);
     assert_eq!(d.modify(), None);
@@ -599,8 +593,8 @@ fn two_points_at_one_place_have_no_distance_but_a_horizontal_and_vertical_offset
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("0"),
             driving: true
         }
@@ -629,8 +623,8 @@ fn level_points_are_horizontal_and_plumb_ones_vertical_wherever_the_pointer_is()
         assert_eq!(
             d.placed(),
             Form::DistanceX {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("30"),
                 driving: true
             },
@@ -650,8 +644,8 @@ fn level_points_are_horizontal_and_plumb_ones_vertical_wherever_the_pointer_is()
     assert_eq!(
         d.placed(),
         Form::DistanceY {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("30"),
             driving: true
         }
@@ -664,8 +658,8 @@ fn level_points_are_horizontal_and_plumb_ones_vertical_wherever_the_pointer_is()
     assert_eq!(
         d.placed(),
         Form::Distance {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("30"),
             driving: true
         }
@@ -690,8 +684,8 @@ fn coincident_points_keep_their_pick_order() {
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("a0000001"),
-            b: r("c0000001"),
+            a: el("a0000001"),
+            b: el("c0000001"),
             value: mm("0"),
             driving: true
         }
@@ -703,8 +697,8 @@ fn coincident_points_keep_their_pick_order() {
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("c0000001"),
-            b: r("a0000001"),
+            a: el("c0000001"),
+            b: el("a0000001"),
             value: mm("0"),
             driving: true
         }
@@ -728,8 +722,8 @@ fn a_points_distance_from_a_line_is_on_the_side_it_is_drawn() {
         [30.0, -4.0],
     );
     let pld = |point: &str, value: &str, side| Form::PointLineDistance {
-        point: r(point),
-        line: r("n0000001"),
+        point: el(point),
+        line: el("n0000001"),
         value: mm(value),
         side,
         driving: true,
@@ -807,8 +801,8 @@ fn a_circle_with_anything_else_is_measured_at_its_centre() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("c0000001"),
-            line: r("n0000001"),
+            point: el("c0000001"),
+            line: el("n0000001"),
             value: mm("20"),
             side: LineSide::Left,
             driving: true
@@ -821,8 +815,8 @@ fn a_circle_with_anything_else_is_measured_at_its_centre() {
     assert_eq!(
         d.placed(),
         Form::DistanceY {
-            a: r("c0000001"),
-            b: r("p0000001"),
+            a: el("c0000001"),
+            b: el("p0000001"),
             value: mm("30"),
             driving: true
         }
@@ -834,8 +828,8 @@ fn a_circle_with_anything_else_is_measured_at_its_centre() {
     assert_eq!(
         d.placed(),
         Form::Distance {
-            a: r("c0000001"),
-            b: r("c0000002"),
+            a: el("c0000001"),
+            b: el("c0000002"),
             value: mm("50"),
             driving: true
         }
@@ -858,8 +852,8 @@ fn a_point_and_a_centreline_give_its_distance_on_its_side_and_nothing_across() {
         "n0000001",
     );
     let want = Form::PointLineDistance {
-        point: r("p0000001"),
-        line: r("n0000001"),
+        point: el("p0000001"),
+        line: el("n0000001"),
         value: mm("12"),
         side: LineSide::Right,
         driving: true,
@@ -899,7 +893,7 @@ fn an_axis_is_a_centreline() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000001"),
+            point: el("p0000001"),
             line: Reference::YAxis,
             value: mm("12"),
             side: LineSide::Right,
@@ -919,7 +913,7 @@ fn a_lock_on_a_centrelines_near_side_holds_across_it() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000001"),
+            point: el("p0000001"),
             line: Reference::YAxis,
             value: mm("12"),
             side: LineSide::Right,
@@ -1023,7 +1017,7 @@ fn a_line_and_an_axis_make_an_angle_and_a_skipped_box_rounds_it_to_the_nanodegre
         d.placed(),
         Form::Angle {
             a: Reference::XAxis,
-            b: r("n0000001"),
+            b: el("n0000001"),
             reversed: false,
             value: deg("26.565051177"),
             driving: true
@@ -1044,8 +1038,8 @@ fn a_right_click_locks_the_angle_the_preview_shows() {
     assert_eq!(
         d.shown(),
         Some(Form::Angle {
-            a: r("n000000a"),
-            b: r("n000000b"),
+            a: el("n000000a"),
+            b: el("n000000b"),
             reversed: false,
             value: deg("45"),
             driving: true
@@ -1055,8 +1049,8 @@ fn a_right_click_locks_the_angle_the_preview_shows() {
     assert_eq!(
         d.placed(),
         Form::Angle {
-            a: r("n000000a"),
-            b: r("n000000b"),
+            a: el("n000000a"),
+            b: el("n000000b"),
             reversed: false,
             value: deg("45"),
             driving: true
@@ -1077,8 +1071,8 @@ fn a_right_click_locks_a_horizontal_distance() {
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("30"),
             driving: true
         }
@@ -1107,8 +1101,8 @@ fn chain() -> Sketch {
 
 fn angle(a: &str, b: &str, reversed: bool, value: &str) -> Form {
     Form::Angle {
-        a: r(a),
-        b: r(b),
+        a: el(a),
+        b: el(b),
         reversed,
         value: deg(value),
         driving: true,
@@ -1170,7 +1164,7 @@ fn the_vertex_is_a_shared_point_exactly() {
     else {
         panic!("{:?}", d.placed());
     };
-    assert_eq!((a, b, reversed), (r("n000000b"), r("n000000a"), false));
+    assert_eq!((a, b, reversed), (el("n000000b"), el("n000000a"), false));
     assert!(
         (159.0..160.0).contains(&value.degrees()),
         "{}",
@@ -1206,7 +1200,7 @@ fn the_pointer_on_the_vertex_is_between_the_along_rays() {
     else {
         panic!("{:?}", d.placed());
     };
-    assert_eq!((a, b, reversed), (r("n000000a"), r("n000000b"), false));
+    assert_eq!((a, b, reversed), (el("n000000a"), el("n000000b"), false));
     assert!(
         (67.16..67.17).contains(&value.degrees()),
         "{}",
@@ -1236,8 +1230,8 @@ fn two_parallel_lines_are_the_second_lines_from_to_the_first_line() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("f000000b"),
-            line: r("n000000a"),
+            point: el("f000000b"),
+            line: el("n000000a"),
             value: mm("20"),
             side: LineSide::Left,
             driving: true
@@ -1250,8 +1244,8 @@ fn two_parallel_lines_are_the_second_lines_from_to_the_first_line() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("f000000a"),
-            line: r("n000000b"),
+            point: el("f000000a"),
+            line: el("n000000b"),
             value: mm("20"),
             side: LineSide::Right,
             driving: true
@@ -1264,7 +1258,7 @@ fn two_parallel_lines_are_the_second_lines_from_to_the_first_line() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("f000000a"),
+            point: el("f000000a"),
             line: Reference::XAxis,
             value: mm("10"),
             side: LineSide::Left,
@@ -1299,8 +1293,8 @@ fn lines_are_parallel_by_freecads_test_to_its_edge() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("f000000b"),
-            line: r("n000000a"),
+            point: el("f000000b"),
+            line: el("n000000a"),
             value: mm("20"),
             side: LineSide::Left,
             driving: true
@@ -1314,8 +1308,8 @@ fn lines_are_parallel_by_freecads_test_to_its_edge() {
     assert_eq!(
         d.placed(),
         Form::Angle {
-            a: r("n000000b"),
-            b: r("n000000a"),
+            a: el("n000000b"),
+            b: el("n000000a"),
             reversed: true,
             value: deg("180"),
             driving: true
@@ -1346,15 +1340,15 @@ fn escape_undoes_the_last_pick_then_leaves_the_tool() {
     // nothing picked leaves the tool.
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(15.0, 15.0);
-    assert_eq!(d.tool.preview().picks, vec![r("n000000a"), r("n000000b")]);
+    assert_eq!(d.tool.preview().picks, vec![el("n000000a"), el("n000000b")]);
     d.escape();
-    assert_eq!(d.tool.preview().picks, vec![r("n000000a")]);
+    assert_eq!(d.tool.preview().picks, vec![el("n000000a")]);
     assert!(!d.left);
     d.click(20.0, 40.0).escape();
     assert_eq!(
         d.placed(),
         Form::Length {
-            line: r("n000000a"),
+            line: el("n000000a"),
             value: mm("20"),
             driving: true
         }
@@ -1426,7 +1420,7 @@ fn escape_mid_click_drops_the_press_with_the_pick() {
     d.escape();
     d.send(DimensionEvent::Release([20.0, 40.0]));
     assert_eq!(d.modify(), None);
-    assert_eq!(d.tool.preview().picks, vec![r("n000000a")]);
+    assert_eq!(d.tool.preview().picks, vec![el("n000000a")]);
 }
 
 #[test]
@@ -1446,9 +1440,9 @@ fn the_preview_shows_what_a_click_would_pick_and_points_before_curves() {
     // ID, the line's `from` point A's own; over A's middle, the line.
     let mut d = Dim::new(corner());
     d.to(10.1, 10.0);
-    assert_eq!(d.tool.preview().hover, Some(r("f000000a")));
+    assert_eq!(d.tool.preview().hover, Some(el("f000000a")));
     d.to(20.0, 10.2);
-    assert_eq!(d.tool.preview().hover, Some(r("n000000a")));
+    assert_eq!(d.tool.preview().hover, Some(el("n000000a")));
     d.to(20.0, 12.0);
     assert_eq!(d.tool.preview().hover, None);
 }
@@ -1479,7 +1473,7 @@ fn the_box_takes_no_units_arithmetic_or_words_and_stays_open() {
         assert_eq!(
             d.placed(),
             Form::Length {
-                line: r("n0000001"),
+                line: el("n0000001"),
                 value: mm("12"),
                 driving: true
             },
@@ -1506,7 +1500,7 @@ fn the_box_reads_a_number_as_the_document_does() {
         assert_eq!(
             d.placed(),
             Form::Length {
-                line: r("n0000001"),
+                line: el("n0000001"),
                 value: mm(want),
                 driving: true
             },
@@ -1564,8 +1558,8 @@ fn an_angles_box_reads_degrees_to_the_nanodegree_signed_within_a_turn() {
             assert_eq!(
                 d.placed(),
                 Form::Angle {
-                    a: r("n000000a"),
-                    b: r("n000000b"),
+                    a: el("n000000a"),
+                    b: el("n000000b"),
                     reversed: false,
                     value: deg(text),
                     driving: true
@@ -1594,7 +1588,7 @@ fn a_diameter_may_be_two_kilometres() {
     assert_eq!(
         d.placed(),
         Form::Diameter {
-            curve: r("k0000001"),
+            curve: el("k0000001"),
             value: mm("2000000"),
             driving: true
         }
@@ -1615,7 +1609,7 @@ fn a_skipped_box_writes_the_measured_value_rounded_to_the_nanometre() {
     // untouched box writes the same.
     let s = with_line(empty(), "n0000001", [10.0, 10.0], [11.0, 11.0]);
     let want = Form::Length {
-        line: r("n0000001"),
+        line: el("n0000001"),
         value: Length::from_nm(1_414_214),
         driving: true,
     };
@@ -1652,8 +1646,8 @@ fn a_skipped_box_whose_measure_the_gate_refuses_places_nothing_and_keeps_the_pic
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("500000"),
             driving: true
         }
@@ -1704,17 +1698,17 @@ fn a_dimension_placed_before_a_read_shows_it_keeps_its_id_taken() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Lowest;
     let mut made = Vec::new();
     for (pick, place) in [([20.0, 10.0], [20.0, 20.0]), ([20.0, 40.0], [20.0, 50.0])] {
         for at in [pick, place] {
-            tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
-            tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+            tool.handle(&context, &mut ids, DimensionEvent::Press(at));
+            tool.handle(&context, &mut ids, DimensionEvent::Release(at));
         }
-        let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+        let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
         made.push(out.add.unwrap().constraints[0].id.clone());
         // No read of its revision comes: its offer dismissed, so the next is placed.
         tool.dismiss_offer();
@@ -1734,14 +1728,10 @@ fn another_sketch_starts_the_tool_afresh() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
-    d.tool.handle(
-        &context,
-        &under(),
-        &mut d.ids,
-        DimensionEvent::Move([50.0, 50.0]),
-    );
+    d.tool
+        .handle(&context, &mut d.ids, DimensionEvent::Move([50.0, 50.0]));
     assert!(d.tool.preview().picks.is_empty());
     assert!(!d.tool.busy());
 }
@@ -1759,7 +1749,7 @@ fn a_position_that_isnt_a_number_is_refused_and_changes_nothing() {
         let out = d.send(event.clone());
         assert_eq!(out.message, Some(Message::NotFinite), "{event:?}");
     }
-    assert_eq!(d.tool.preview().picks, vec![r("n000000a")]);
+    assert_eq!(d.tool.preview().picks, vec![el("n000000a")]);
 }
 
 #[test]
@@ -1770,7 +1760,7 @@ fn a_tolerance_that_isnt_a_positive_number_picks_only_what_is_exactly_there() {
         d.click(20.0, 10.2);
         assert!(d.tool.preview().picks.is_empty(), "{tolerance}");
         d.click(20.0, 10.0);
-        assert_eq!(d.tool.preview().picks, vec![r("n000000a")], "{tolerance}");
+        assert_eq!(d.tool.preview().picks, vec![el("n000000a")], "{tolerance}");
     }
 }
 
@@ -1783,7 +1773,7 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
     sketch.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::Length {
-            line: r("n000000b"),
+            line: el("n000000b"),
             value: Length::from_nm(0),
             driving: true,
         },
@@ -1796,20 +1786,20 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
-        tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+        tool.handle(&context, &mut ids, DimensionEvent::Press(at));
+        tool.handle(&context, &mut ids, DimensionEvent::Release(at));
     }
-    let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+    let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
     assert_eq!(out.message, None);
     assert_eq!(
         out.add.unwrap().constraints[0].form,
         Form::Length {
-            line: r("n000000a"),
+            line: el("n000000a"),
             value: mm("20"),
             driving: true
         }
@@ -1818,16 +1808,11 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
     // dismissed, as no read of its revision comes.)
     tool.dismiss_offer();
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
-        tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+        tool.handle(&context, &mut ids, DimensionEvent::Press(at));
+        tool.handle(&context, &mut ids, DimensionEvent::Release(at));
     }
-    tool.handle(
-        &context,
-        &under(),
-        &mut ids,
-        DimensionEvent::Typed("0".to_owned()),
-    );
-    let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Enter);
+    tool.handle(&context, &mut ids, DimensionEvent::Typed("0".to_owned()));
+    let out = tool.handle(&context, &mut ids, DimensionEvent::Enter);
     assert_eq!(out.add, None);
     let Some(Message::ValueRefused(error)) = out.message else {
         panic!("{out:?}");
@@ -1858,8 +1843,8 @@ fn enter_on_an_untouched_box_places_the_measured_distance_from_a_line() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000001"),
-            line: r("n0000001"),
+            point: el("p0000001"),
+            line: el("n0000001"),
             value: mm("7"),
             side: LineSide::Left,
             driving: true
@@ -1919,7 +1904,7 @@ fn an_untouched_box_follows_a_newer_read() {
     assert_eq!(
         d.placed(),
         Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: mm("100"),
             driving: true
         }
@@ -1942,8 +1927,8 @@ fn a_typed_box_keeps_its_text_on_the_newest_side_and_order() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000001"),
-            line: r("n0000001"),
+            point: el("p0000001"),
+            line: el("n0000001"),
             value: mm("5"),
             side: LineSide::Right,
             driving: true
@@ -1961,8 +1946,8 @@ fn a_typed_box_keeps_its_text_on_the_newest_side_and_order() {
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000002"),
-            b: r("p0000001"),
+            a: el("p0000002"),
+            b: el("p0000001"),
             value: mm("20"),
             driving: true
         }
@@ -2015,8 +2000,8 @@ fn a_placing_click_may_land_on_something() {
     assert_eq!(
         d.shown(),
         Some(Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("30"),
             driving: true
         })
@@ -2029,7 +2014,7 @@ fn a_placing_click_may_land_on_something() {
     assert_eq!(
         d.placed(),
         Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: mm("50"),
             driving: true
         }
@@ -2046,7 +2031,7 @@ fn clicks_while_the_box_is_open_change_nothing() {
     assert_eq!(
         d.placed(),
         Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: mm("12"),
             driving: true
         }
@@ -2243,7 +2228,7 @@ fn lines_that_only_meet_keep_the_quadrant_rule_opposite() {
             [[5.0, 4.5], [40.0, 0.2]],
             [-4.2, -1.71],
             Form::Angle {
-                a: r("n0000001"),
+                a: el("n0000001"),
                 b: x_axis,
                 reversed: false,
                 value: deg("315"),
@@ -2321,8 +2306,8 @@ fn slanted_t(start: Xy, left: bool, held: bool) -> Sketch {
         s.constraints.push(SketchConstraint {
             id: id("k0000001"),
             form: Form::On {
-                point: r("f000000b"),
-                curve: r("n000000a"),
+                point: el("f000000b"),
+                curve: el("n000000a"),
             },
         });
     }
@@ -2394,18 +2379,18 @@ fn a_t_held_at_a_lines_middle_never_crosses() {
     let m = [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0];
     let holds = [
         Form::Midpoint {
-            point: r("f000000b"),
-            line: r("n000000a"),
+            point: el("f000000b"),
+            line: el("n000000a"),
         },
         Form::Symmetric {
-            a: r("f000000a"),
-            b: r("t000000a"),
-            about: r("f000000b"),
+            a: el("f000000a"),
+            b: el("t000000a"),
+            about: el("f000000b"),
         },
         Form::Symmetric {
-            a: r("t000000a"),
-            b: r("f000000a"),
-            about: r("f000000b"),
+            a: el("t000000a"),
+            b: el("f000000a"),
+            about: el("f000000b"),
         },
     ];
     let pick_a = [p[0] + d[0] * 0.15, p[1] + d[1] * 0.15];
@@ -2472,50 +2457,50 @@ fn only_a_hold_of_one_lines_end_on_the_other_ties_them() {
     on_a.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::On {
-            point: r("p0000001"),
-            curve: r("n000000a"),
+            point: el("p0000001"),
+            curve: el("n000000a"),
         },
     });
     let mut on_circle = with_circle(crossing(), "k0000002", [15.0, 20.0], 5.0);
     on_circle.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::On {
-            point: r("t000000b"),
-            curve: r("k0000002"),
+            point: el("t000000b"),
+            curve: el("k0000002"),
         },
     });
     let mut about_p = with_point(crossing(), "p0000001", [15.0, 10.0]);
     about_p.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::Symmetric {
-            a: r("f000000a"),
-            b: r("t000000a"),
-            about: r("p0000001"),
+            a: el("f000000a"),
+            b: el("t000000a"),
+            about: el("p0000001"),
         },
     });
     let mut half_on_a = with_point(crossing(), "z0000001", [20.0, 20.0]);
     half_on_a.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::Symmetric {
-            a: r("f000000a"),
-            b: r("z0000001"),
-            about: r("t000000b"),
+            a: el("f000000a"),
+            b: el("z0000001"),
+            about: el("t000000b"),
         },
     });
     let mut middle_p = with_point(crossing(), "p0000001", [15.0, 10.0]);
     middle_p.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::Midpoint {
-            point: r("p0000001"),
-            line: r("n000000a"),
+            point: el("p0000001"),
+            line: el("n000000a"),
         },
     });
     let mut middle_c = with_line(crossing(), "n000000c", [10.0, 15.0], [20.0, 15.0]);
     middle_c.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::Midpoint {
-            point: r("t000000b"),
-            line: r("n000000c"),
+            point: el("t000000b"),
+            line: el("n000000c"),
         },
     });
     for s in [on_a, on_circle, about_p, half_on_a, middle_p, middle_c] {
@@ -2631,10 +2616,10 @@ fn the_origin_is_picked_where_its_nearer_than_a_point_and_a_point_on_it_otherwis
     d.click(0.1, 0.1);
     assert_eq!(d.tool.preview().picks, vec![Reference::Origin]);
     d.escape().click(0.25, 0.25);
-    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    assert_eq!(d.tool.preview().picks, vec![el("p0000001")]);
     let mut d = Dim::new(with_point(empty(), "p0000001", [0.0, 0.0]));
     d.click(0.0, 0.0);
-    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    assert_eq!(d.tool.preview().picks, vec![el("p0000001")]);
 }
 
 #[test]
@@ -2652,8 +2637,8 @@ fn a_point_on_a_centrelines_left_is_measured_from_its_left() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000001"),
-            line: r("n0000001"),
+            point: el("p0000001"),
+            line: el("n0000001"),
             value: mm("12"),
             side: LineSide::Left,
             driving: true
@@ -2670,13 +2655,13 @@ fn a_centreline_stays_picked_for_the_next_dimension() {
         .click(0.0, 20.0)
         .click(20.0, 5.0)
         .escape();
-    assert_eq!(d.tool.preview().picks, vec![r("n0000001")]);
+    assert_eq!(d.tool.preview().picks, vec![el("n0000001")]);
     d.click(25.0, 30.0).click(30.0, 30.0).escape();
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000002"),
-            line: r("n0000001"),
+            point: el("p0000002"),
+            line: el("n0000001"),
             value: mm("25"),
             side: LineSide::Right,
             driving: true
@@ -2703,8 +2688,8 @@ fn a_parallel_line_across_a_centreline_is_refused_as_a_point_is() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("f0000001"),
-            line: r("n0000002"),
+            point: el("f0000001"),
+            line: el("n0000002"),
             value: mm("12"),
             side: LineSide::Left,
             driving: true
@@ -2720,8 +2705,8 @@ fn a_parallel_line_across_a_centreline_is_refused_as_a_point_is() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("f0000002"),
-            line: r("n0000001"),
+            point: el("f0000002"),
+            line: el("n0000001"),
             value: mm("12"),
             side: LineSide::Right,
             driving: true
@@ -2743,7 +2728,7 @@ fn a_pointer_a_subnormal_distance_across_a_centreline_is_across() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000001"),
+            point: el("p0000001"),
             line: Reference::YAxis,
             value: mm("0.000001"),
             side: LineSide::Left,
@@ -2776,7 +2761,7 @@ fn the_lock_goes_with_a_pick_the_read_drops() {
     assert!(d.tool.preview().locked);
     d.sketch.points.pop();
     d.to(25.0, 45.0);
-    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    assert_eq!(d.tool.preview().picks, vec![el("p0000001")]);
     assert!(!d.tool.preview().locked);
 }
 
@@ -2794,14 +2779,10 @@ fn another_sketch_forgets_the_placement() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
-    d.tool.handle(
-        &context,
-        &under(),
-        &mut d.ids,
-        DimensionEvent::Move([50.0, 50.0]),
-    );
+    d.tool
+        .handle(&context, &mut d.ids, DimensionEvent::Move([50.0, 50.0]));
     assert_eq!(d.tool.placement(), None);
 }
 
@@ -2867,7 +2848,7 @@ fn a_second_placement_waits_for_the_firsts_read() {
     d.click(15.0, 15.0).click(30.0, 30.0);
     assert_eq!(d.messages, vec![Message::Solving]);
     assert_eq!(d.modify(), None);
-    assert_eq!(d.tool.preview().picks, vec![r("n000000b")]);
+    assert_eq!(d.tool.preview().picks, vec![el("n000000b")]);
     assert_eq!(d.made.len(), 1);
     d.revision = made;
     d.click(30.0, 30.0);
@@ -2891,9 +2872,9 @@ fn settle_takes_a_read_with_no_event() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
-    let out = d.tool.settle(&context, &under());
+    let out = d.tool.settle(&context);
     assert_eq!(out, Outcome::default());
     assert!(!d.tool.busy());
     d.click(20.0, 10.0).click(15.0, 15.0).click(25.0, 13.0);
@@ -2906,9 +2887,9 @@ fn settle_takes_a_read_with_no_event() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
-    let out = d.tool.settle(&context, &under());
+    let out = d.tool.settle(&context);
     assert_eq!(out.message, Some(Message::DimensionChanged));
     assert_eq!(out.add, None);
     assert_eq!(d.tool.preview().modify, None);
@@ -2928,7 +2909,7 @@ fn a_box_typed_with_its_own_value_is_touched() {
     assert_eq!(
         d.placed(),
         Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: mm("50"),
             driving: true
         }
@@ -2979,8 +2960,8 @@ fn a_cancelled_press_picks_nothing_and_what_is_picked_stays() {
     // picked, and the pointer is where it was before the press. Then q clicked and the
     // dimension placed above the box: `distance_x` p to q, 40 − 10 = 30, as a twin that
     // never saw the press places it.
-    let p = r("p0000001");
-    let q = r("p0000002");
+    let p = el("p0000001");
+    let q = el("p0000002");
     let moves: [&[Xy]; 2] = [&[], &[[42.0, 33.0], [60.0, 55.0]]];
     for moves in moves {
         let mut d = Dim::new(two_points());
@@ -3041,7 +3022,7 @@ fn a_cancel_with_no_press_in_progress_changes_nothing() {
     assert_eq!(d.send(DimensionEvent::Cancel), Outcome::default());
     assert_eq!(d.tool.preview(), &preview);
     assert_eq!(d.tool.preview().pointer, Some([50.0, 50.0]));
-    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    assert_eq!(d.tool.preview().picks, vec![el("p0000001")]);
     // The Modify box open and typed in; a press (which the box ignores) cancelled: the box
     // and its text stay, and Enter places what was typed.
     d.click(40.0, 30.0).click(25.0, 45.0).typed("12");
@@ -3052,8 +3033,8 @@ fn a_cancel_with_no_press_in_progress_changes_nothing() {
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("12"),
             driving: true
         }
@@ -3133,13 +3114,12 @@ fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
-    let mut send = |tool: &mut SmartDimension, event: DimensionEvent| {
-        tool.handle(&context, &under(), &mut ids, event)
-    };
+    let mut send =
+        |tool: &mut SmartDimension, event: DimensionEvent| tool.handle(&context, &mut ids, event);
     for at in [[20.0, 10.0], [20.0, 30.0]] {
         send(&mut tool, DimensionEvent::Press(at));
         send(&mut tool, DimensionEvent::Release(at));
@@ -3233,17 +3213,17 @@ fn a_placement_not_yet_answered_holds_the_next() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
     let click = |tool: &mut SmartDimension, ids: &mut Counter, at: [f64; 2]| {
-        tool.handle(&context, &under(), ids, DimensionEvent::Press(at));
-        tool.handle(&context, &under(), ids, DimensionEvent::Release(at))
+        tool.handle(&context, ids, DimensionEvent::Press(at));
+        tool.handle(&context, ids, DimensionEvent::Release(at))
     };
     click(&mut tool, &mut ids, [20.0, 10.0]);
     click(&mut tool, &mut ids, [20.0, 30.0]);
-    let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+    let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
     assert!(out.add.is_some());
     click(&mut tool, &mut ids, [15.0, 15.0]);
     let out = click(&mut tool, &mut ids, [30.0, 30.0]);
@@ -3325,15 +3305,15 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
-            states: no_states(),
+            states: &under(),
         };
         let mut tool = SmartDimension::new();
         let mut ids = Counter(0);
         for at in [[20.0, 10.0], [20.0, 30.0]] {
-            tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
-            tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+            tool.handle(&context, &mut ids, DimensionEvent::Press(at));
+            tool.handle(&context, &mut ids, DimensionEvent::Release(at));
         }
-        let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+        let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
         let members = out.add.unwrap();
         let k = members.constraints[0].id.clone();
         tool.added(out.token.unwrap(), three);
@@ -3347,9 +3327,9 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
-            states: no_states(),
+            states: &states,
         };
-        tool.settle(&context, &states);
+        tool.settle(&context);
         let placement = tool.placement().unwrap();
         assert_eq!(placement.read, one, "{state:?}");
         assert_eq!(placement.revision, three, "{state:?}");
@@ -3482,7 +3462,7 @@ fn the_preview_has_the_pointer_and_hovers_nothing_once_two_are_picked() {
     let mut d = Dim::new(with_point(two_points(), "p0000003", [25.0, 45.0]));
     d.to(10.0, 10.0);
     assert_eq!(d.tool.preview().pointer, Some([10.0, 10.0]));
-    assert_eq!(d.tool.preview().hover, Some(r("p0000001")));
+    assert_eq!(d.tool.preview().hover, Some(el("p0000001")));
     d.click(10.0, 10.0).click(40.0, 30.0).to(25.0, 45.0);
     assert_eq!(d.tool.preview().pointer, Some([25.0, 45.0]));
     assert_eq!(d.tool.preview().hover, None);
@@ -3529,14 +3509,14 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
-        states: no_states(),
+        states: &under(),
     };
     let mut tool = SmartDimension::new();
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(&context, &under(), &mut d.ids, DimensionEvent::Press(at));
-        tool.handle(&context, &under(), &mut d.ids, DimensionEvent::Release(at));
+        tool.handle(&context, &mut d.ids, DimensionEvent::Press(at));
+        tool.handle(&context, &mut d.ids, DimensionEvent::Release(at));
     }
-    let out = tool.handle(&context, &under(), &mut d.ids, DimensionEvent::Escape);
+    let out = tool.handle(&context, &mut d.ids, DimensionEvent::Escape);
     let token = out.token.unwrap();
     let k = out.add.unwrap().constraints[0].id.clone();
     assert_eq!(tool.placement(), None);
@@ -4045,48 +4025,48 @@ fn dimensions() -> Vec<Form> {
     let v = mm("7");
     vec![
         Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: v,
             driving: true,
         },
         Form::Distance {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: v,
             driving: true,
         },
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: v,
             driving: true,
         },
         Form::DistanceY {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: v,
             driving: false,
         },
         Form::PointLineDistance {
-            point: r("p0000001"),
-            line: r("n0000001"),
+            point: el("p0000001"),
+            line: el("n0000001"),
             value: v,
             side: LineSide::Right,
             driving: true,
         },
         Form::Radius {
-            curve: r("k0000001"),
+            curve: el("k0000001"),
             value: v,
             driving: true,
         },
         Form::Diameter {
-            curve: r("k0000001"),
+            curve: el("k0000001"),
             value: v,
             driving: true,
         },
         Form::Angle {
-            a: r("n0000001"),
-            b: r("n0000002"),
+            a: el("n0000001"),
+            b: el("n0000002"),
             reversed: true,
             value: deg("45"),
             driving: true,
@@ -4183,7 +4163,7 @@ fn an_edit_box_reads_each_dimensions_value_as_the_document_does() {
 #[test]
 fn a_form_that_isnt_a_dimension_reads_no_number() {
     let horizontal = Form::Horizontal {
-        line: r("n0000001"),
+        line: el("n0000001"),
     };
     assert_eq!(read_typed(&horizontal, "12.5"), Err(Message::NotANumber));
 }

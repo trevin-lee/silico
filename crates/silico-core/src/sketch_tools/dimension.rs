@@ -78,6 +78,7 @@
 use super::adds::Adds;
 use super::build::Builder;
 use super::geometry::{cross, distance, dot, length, scale, sub, unit};
+use super::implied::ViewClasses;
 use super::infer::{Pointer, View};
 use super::{AddToken, Context, Message, NewIds, Outcome, Xy, geometry};
 use crate::command::Revision;
@@ -523,34 +524,33 @@ impl SmartDimension {
         self.before_press = None;
     }
 
-    /// `event` against `context`, whose read gives the sketch the states `states`: what it
-    /// added, said, or ended; the preview updated.
+    /// `event` against `context`, the sketch's states its read's ([`Context::states`]): what
+    /// it added, said, or ended; the preview updated.
     pub fn handle(
         &mut self,
         context: &Context<'_>,
-        states: &SketchStates,
         ids: &mut dyn NewIds,
         event: DimensionEvent,
     ) -> Outcome {
-        self.step(context, states, ids, Some(event))
+        self.step(context, ids, Some(event))
     }
 
     /// A newer read, given with no event: what [`handle`](Self::handle) does with each
     /// read, so the app calls it as each read comes and the tool settles the last
     /// placement's offer (and [`busy`](Self::busy)) and measures its open box again without
     /// waiting for the pointer. What it says is the box's closing, if the read closes it.
-    pub fn settle(&mut self, context: &Context<'_>, states: &SketchStates) -> Outcome {
-        self.step(context, states, &mut NoIds, None)
+    pub fn settle(&mut self, context: &Context<'_>) -> Outcome {
+        self.step(context, &mut NoIds, None)
     }
 
     fn step(
         &mut self,
         context: &Context<'_>,
-        states: &SketchStates,
         ids: &mut dyn NewIds,
         event: Option<DimensionEvent>,
     ) -> Outcome {
         let _span = tracing::debug_span!("smart_dimension").entered();
+        let states = context.states;
         if let Some(
             DimensionEvent::Press(at)
             | DimensionEvent::Move(at)
@@ -591,6 +591,9 @@ impl SmartDimension {
         }
         let pending = self.adds.members();
         let view = View::of(context.sketch, &pending);
+        // Smart Dimension picks, inferring no relation, so it judges none: its pointer's
+        // classes are never built.
+        let classes = ViewClasses::default();
         let closed = self.revalidate(&view);
         let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
             context.tolerance
@@ -602,7 +605,7 @@ impl SmartDimension {
             tolerance,
             infer: true,
             woken: &[],
-            states,
+            classes: &classes,
         };
         let event = match event {
             Some(DimensionEvent::Cancel) => {
