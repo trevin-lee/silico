@@ -27171,84 +27171,104 @@ fn sketch_on_this_face_creates_a_sketch_on_the_picked_face() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-#[test]
-fn a_sketch_on_a_face_leaves_its_body_the_tip_so_a_pocket_or_pad_from_it_takes_that_body() {
-    // The block's top, Face6, sketched on by Sketch on this face, a rectangle drawn inside it
-    // (the face's frame has its origin at (0, 0, 10) and its x +x, so the face spans 0 to 40
-    // by 0 to 20), and the sketch finished. The sketch names the block as the feature its
-    // face is on, but the gate counts a feature's base and tool alone as consuming a solid,
-    // and a sketch has neither: the block is still the body a sweep builds on. So Pocket is
-    // on in CREATE, and a Pocket's, or a Pad's, add takes the block as its base.
+/// `document` opened as `file`, its Block (k7f2qx3m) described and measured as a real box;
+/// the Block's top, Face6, sketched on by Sketch on this face, a rectangle drawn inside it
+/// (the face's frame has its origin at (0, 0, 10) and its x +x, so the face spans 0 to 40
+/// by 0 to 20), and the sketch finished and listed in the browser as `name`. The harness,
+/// and the sketch's ID.
+fn a_rectangle_on_the_blocks_top(
+    f: &Fixture,
+    file: &str,
+    document: &str,
+    name: &str,
+) -> (AppHarness, silico_core::document::FeatureId) {
     use silico_app::sketch::tools::Choice;
     use silico_core::sketch_tools::ToolKind;
-    for (kind, extent) in [
-        (
-            "Pocket",
-            r#"{"type": "one_side", "length": 5, "reversed": false}"#,
-        ),
-        (
-            "Pad",
-            r#"{"type": "one_side", "length": 10, "reversed": false}"#,
-        ),
-    ] {
+    describes_a_real_box(f);
+    measures_the_box(f);
+    let (mut h, _) = f.opened(file, document);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step(&mut h);
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Sketch on this face")
+        .click();
+    step_until(&mut h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    sketch_read(&mut h);
+    let sketch = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    // R, the corner rectangle, then its two corners clicked.
+    h.key_press(eframe::egui::Key::R);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Draw(ToolKind::CornerRectangle))
+    );
+    sketch_events(f, &mut h, &clicked(10.0, 5.0));
+    sketch_events(f, &mut h, &clicked(30.0, 15.0));
+    settled(&mut h);
+    read_with_lines(&mut h, 4);
+    assert_rectangle_in(
+        &sketch_of_text(f, &h, sketch.as_str()),
+        [10.0, 5.0],
+        [30.0, 15.0],
+    );
+    leave_sketch(&mut h, true);
+    step_until(&mut h, "its sketch listed", |h| shows(h, "Browser", name));
+    (h, sketch)
+}
+
+/// The sketch `name` chosen in the browser, and a `kind` (a sweep) made from it: CREATE's
+/// button on, its dialog open, and its add answered and settled.
+fn a_sweep_from(h: &mut AppHarness, name: &str, kind: &str) {
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label(name)
+        .click();
+    step(h);
+    assert!(
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label(kind)
+            .accesskit_node()
+            .is_disabled(),
+        "{kind} is on"
+    );
+    create(h, kind);
+    step_until(h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(h);
+}
+
+/// A Pocket's or a Pad's fields, as `fields_of` gives them: on `base`, from `sketch`, with
+/// its dialog's default extent.
+fn sweep_fields(kind: &str, base: &str, sketch: &str) -> Vec<(String, Plain)> {
+    let length = if kind == "Pocket" { 5 } else { 10 };
+    expected(&format!(
+        r#"{{"type": "{}", "name": "{kind}", "base": "{base}", "sketch": "{sketch}", "extent": {{"type": "one_side", "length": {length}, "reversed": false}}}}"#,
+        kind.to_lowercase()
+    ))
+}
+
+#[test]
+fn a_sketch_on_a_face_consumes_nothing_so_a_pocket_or_pad_from_it_takes_that_body() {
+    // The block's top, Face6, sketched on. The sketch names the block as the feature its face
+    // is on, but the gate counts a feature's base and tool alone as consuming a solid, and a
+    // sketch has neither: the block is still a body a sweep can build on. So Pocket is on in
+    // CREATE, and a Pocket's, or a Pad's, add takes the block, its face's body, as its base.
+    for kind in ["Pocket", "Pad"] {
         let f = fixture();
-        let mut h = a_measured_box(&f);
-        select_in_box(&mut h, &["Face6"]);
-        row_until(&mut h, "Area", "800.00 mm²");
-        h.get_by_role_and_label(Role::Pane, "Properties")
-            .get_by_role_and_label(Role::Button, "Sketch on this face")
-            .click();
-        step_until(&mut h, "its sketch added", |h| {
-            sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
-        });
-        sketch_read(&mut h);
-        let sketch = sketch_mode(&h).unwrap().sketch.clone().unwrap();
-        // R, the corner rectangle, then its two corners clicked.
-        h.key_press(eframe::egui::Key::R);
-        step(&mut h);
-        assert_eq!(
-            sketch_mode(&h).unwrap().tools.choice(),
-            Some(Choice::Draw(ToolKind::CornerRectangle))
-        );
-        sketch_events(&f, &mut h, &clicked(10.0, 5.0));
-        sketch_events(&f, &mut h, &clicked(30.0, 15.0));
-        settled(&mut h);
-        read_with_lines(&mut h, 4);
-        assert_rectangle_in(
-            &sketch_of_text(&f, &h, sketch.as_str()),
-            [10.0, 5.0],
-            [30.0, 15.0],
-        );
-        leave_sketch(&mut h, true);
-        step_until(&mut h, "its sketch listed", |h| {
-            shows(h, "Browser", "Sketch1")
-        });
-        // The sketch chosen in the browser, for the sweep to take.
-        h.get_by_role_and_label(Role::Pane, "Browser")
-            .get_by_label("Sketch1")
-            .click();
-        step(&mut h);
-        assert!(
-            !h.get_by_role_and_label(Role::Toolbar, "CREATE")
-                .get_by_label(kind)
-                .accesskit_node()
-                .is_disabled(),
-            "{kind} is on"
-        );
-        create(&mut h, kind);
-        step_until(&mut h, "its add answered", |h| {
-            h.state().tabs()[0]
-                .dialog
-                .as_ref()
-                .is_some_and(|dialog| dialog.feature.is_some())
-        });
-        settled(&mut h);
+        let (mut h, sketch) = a_rectangle_on_the_blocks_top(&f, "box.silico", A_BOX, "Sketch1");
+        a_sweep_from(&mut h, "Sketch1", kind);
         assert_eq!(
             fields_of(&text_of(&f, &h), kind),
-            Some(expected(&format!(
-                r#"{{"type": "{}", "name": "{kind}", "base": "k7f2qx3m", "sketch": "{sketch}", "extent": {extent}}}"#,
-                kind.to_lowercase()
-            ))),
+            Some(sweep_fields(kind, "k7f2qx3m", sketch.as_str())),
             "{kind}"
         );
         assert_eq!(never_waits::waits(), 0);
@@ -27271,77 +27291,93 @@ const BLOCK_AND_PIN: &str = r#"{
 #[test]
 fn a_pocket_or_pad_from_a_sketch_on_the_first_bodys_face_builds_on_that_body_not_the_last() {
     // #438's review, L1: a Block, then a separate Pin, the tip (the last body built, nothing
-    // consuming it). The Block's top, Face6, sketched on by Sketch on this face, a rectangle
-    // drawn inside it, and the sketch finished. A sweep from a sketch on a face builds on
+    // consuming it). The Block's top sketched on. A sweep from a sketch on a face builds on
     // that face's body, as SolidWorks merges it and FreeCAD's PartDesign builds in the
     // sketch's own Body: a Pocket's add, or a Pad's, names the Block as its base, never the
     // Pin.
-    use silico_app::sketch::tools::Choice;
-    use silico_core::sketch_tools::ToolKind;
-    for (kind, extent) in [
-        (
-            "Pocket",
-            r#"{"type": "one_side", "length": 5, "reversed": false}"#,
-        ),
-        (
-            "Pad",
-            r#"{"type": "one_side", "length": 10, "reversed": false}"#,
-        ),
-    ] {
+    for kind in ["Pocket", "Pad"] {
         let f = fixture();
-        describes_a_real_box(&f);
-        measures_the_box(&f);
-        let (mut h, _) = f.opened("block-and-pin.silico", BLOCK_AND_PIN);
-        step_until(&mut h, "the model published", |h| {
-            h.state().tabs()[0].published.is_some()
-        });
-        step(&mut h);
-        select_in_box(&mut h, &["Face6"]);
-        row_until(&mut h, "Area", "800.00 mm²");
-        h.get_by_role_and_label(Role::Pane, "Properties")
-            .get_by_role_and_label(Role::Button, "Sketch on this face")
-            .click();
-        step_until(&mut h, "its sketch added", |h| {
-            sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
-        });
-        sketch_read(&mut h);
-        let sketch = sketch_mode(&h).unwrap().sketch.clone().unwrap();
-        h.key_press(eframe::egui::Key::R);
-        step(&mut h);
-        assert_eq!(
-            sketch_mode(&h).unwrap().tools.choice(),
-            Some(Choice::Draw(ToolKind::CornerRectangle))
-        );
-        sketch_events(&f, &mut h, &clicked(10.0, 5.0));
-        sketch_events(&f, &mut h, &clicked(30.0, 15.0));
-        settled(&mut h);
-        read_with_lines(&mut h, 4);
-        leave_sketch(&mut h, true);
-        step_until(&mut h, "its sketch listed", |h| {
-            shows(h, "Browser", "Sketch1")
-        });
-        h.get_by_role_and_label(Role::Pane, "Browser")
-            .get_by_label("Sketch1")
-            .click();
-        step(&mut h);
-        create(&mut h, kind);
-        step_until(&mut h, "its add answered", |h| {
-            h.state().tabs()[0]
-                .dialog
-                .as_ref()
-                .is_some_and(|dialog| dialog.feature.is_some())
-        });
-        settled(&mut h);
+        let (mut h, sketch) =
+            a_rectangle_on_the_blocks_top(&f, "block-and-pin.silico", BLOCK_AND_PIN, "Sketch1");
+        a_sweep_from(&mut h, "Sketch1", kind);
         assert_eq!(
             fields_of(&text_of(&f, &h), kind),
-            Some(expected(&format!(
-                r#"{{"type": "{}", "name": "{kind}", "base": "k7f2qx3m", "sketch": "{sketch}", "extent": {extent}}}"#,
-                kind.to_lowercase()
-            ))),
+            Some(sweep_fields(kind, "k7f2qx3m", sketch.as_str())),
             "{kind}"
         );
         assert_eq!(never_waits::waits(), 0);
     }
+}
+
+/// [`BLOCK_AND_PIN`], and Loose, a closed square on xy from (18, 8) to (22, 12) about the
+/// Pin's axis, nothing built from it.
+const BLOCK_PIN_AND_LOOSE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "s0000009", "type": "sketch", "v": 1, "name": "Loose", "plane": "xy", "points": [{"id": "pa000000", "x": 18, "y": 8, "construction": false}, {"id": "pb000000", "x": 22, "y": 8, "construction": false}, {"id": "pc000000", "x": 22, "y": 12, "construction": false}, {"id": "pd000000", "x": 18, "y": 12, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pd000000", "construction": false}, {"id": "nd000000", "from": "pd000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+/// Over [`BLOCK_PIN_AND_LOOSE`], with Sketch2 drawn on the Block's top: a Pocket's dialog
+/// opened on `first`, its add answered with `first_base`; then `then` picked into its box,
+/// and the pocket's fields checked to say `then_base` once that edit is answered, and again
+/// once OK keeps it.
+fn a_sketch_picked_after_the_add(first: &str, first_base: &str, then: &str, then_base: &str) {
+    let f = fixture();
+    let (mut h, drawn) =
+        a_rectangle_on_the_blocks_top(&f, "loose.silico", BLOCK_PIN_AND_LOOSE, "Sketch2");
+    let id = |name: &str| {
+        if name == "Loose" {
+            "s0000009".to_owned()
+        } else {
+            drawn.as_str().to_owned()
+        }
+    };
+    a_sweep_from(&mut h, first, "Pocket");
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", first_base, &id(first)))
+    );
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label(then)
+        .click();
+    let picked = id(then);
+    step_until(&mut h, "the sketch picked sent", |h| {
+        fields_of(&text_of(&f, h), "Pocket").is_some_and(|fields| {
+            fields
+                .iter()
+                .any(|(key, value)| key == "sketch" && *value == Plain::String(picked.clone()))
+        })
+    });
+    settled(&mut h);
+    let want = Some(sweep_fields("Pocket", then_base, &picked));
+    assert_eq!(fields_of(&text_of(&f, &h), "Pocket"), want);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(fields_of(&text_of(&f, &h), "Pocket"), want);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_on_the_first_bodys_face_picked_after_the_add_takes_the_sweep_to_that_body() {
+    // #443's review, H1: a Pocket from Loose, on xy, takes the tip, the Pin, at its add. Then
+    // Sketch2, on the Block's top, picked into its open dialog: the pocket's base follows the
+    // sketch to the Block, as Sketch2's add would have it, and isn't left cutting the Pin.
+    a_sketch_picked_after_the_add("Loose", "a91cw0de", "Sketch2", "k7f2qx3m");
+}
+
+#[test]
+fn a_sketch_on_an_origin_plane_picked_after_the_add_takes_the_sweep_to_the_tip() {
+    // The reverse: a Pocket from Sketch2 takes the Block, its face's body; Loose, picked into
+    // its open dialog, takes it to the tip, the Pin, as Loose's add would have it. The tip is
+    // worked out without the pocket itself, which consumes the Block and stands last.
+    a_sketch_picked_after_the_add("Sketch2", "k7f2qx3m", "Loose", "a91cw0de");
 }
 
 #[test]
