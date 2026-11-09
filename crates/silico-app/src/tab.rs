@@ -1264,7 +1264,13 @@ impl Tab {
             };
             &passed
         };
-        self.selection.overlay(&mut self.view, frame, painter.ctx());
+        let select_other = &self.select_other;
+        self.selection.overlay(
+            &mut self.view,
+            frame,
+            painter.ctx(),
+            &|view, frame, pixel| select_other.face_under(view, frame, pixel),
+        );
         let hidden: std::collections::BTreeSet<silico_core::document::FeatureId> = self
             .hidden
             .iter()

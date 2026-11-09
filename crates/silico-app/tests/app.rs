@@ -36906,6 +36906,41 @@ const BY_THE_RIGHT_EDGE: [&str; 4] = [
 ];
 
 #[test]
+fn with_edges_filtered_out_a_click_or_hover_on_an_edges_stroke_takes_the_face_cast_under_it() {
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    // 2 pixels in from the top's right edge (x = 40), and 2 pixels out past it; the renderer
+    // finding Edge11's stroke (the top's edge there) at the centre of each, as it's drawn 2
+    // points wide over the face. By hand: the ray inside meets the top, Face6 (z = 10) first;
+    // the one outside meets no face of the box.
+    let inside = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    let outside = above_at(&h, 40.0, 10.0, [2.0, 0.0]);
+    let stroke = |h: &AppHarness, at| Some((1, Edge(11), pixel_at(h, at)));
+    answering(&record, stroke(&h, inside), stroke(&h, inside));
+    // Edges picked, as the filter starts: the edge.
+    click_canvas(&mut h, inside, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge11"]);
+    // Edges filtered out: the face under the stroke.
+    h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
+    step(&mut h);
+    click_canvas(&mut h, inside, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
+    // The hover takes it alike.
+    h.hover_at(inside + eframe::egui::vec2(0.0, 30.0));
+    step(&mut h);
+    h.hover_at(inside);
+    step_until(&mut h, "the face hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    // Past the box, no face under the stroke: a click there selects nothing, so clears.
+    answering(&record, stroke(&h, outside), stroke(&h, outside));
+    click_canvas(&mut h, outside, false);
+    selected_until(&mut h, &[]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn select_other_lists_whats_under_a_right_click_and_its_rows_light_the_hover_as_stepped() {
     use eframe::egui::{Key, Modifiers, MouseWheelUnit};
     use silico_app::renderer::Element::{Edge, Face};

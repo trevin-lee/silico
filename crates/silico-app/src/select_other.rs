@@ -64,7 +64,7 @@ use silico_core::command::meshes::MeshElement;
 use silico_core::document::FeatureId;
 use silico_core::naming::Name;
 use silico_protocol::Mesh;
-use silico_render::render::{Hit, MAX_HITS, Pickable, hits};
+use silico_render::render::{Hit, MAX_HITS, Pickable, face_hit, hits};
 
 use crate::boxes::{Boxes, Build};
 use crate::canvas_menu::{
@@ -328,6 +328,34 @@ impl SelectOther {
     /// view's, never one it has let go.
     pub fn kept_meshes(&self) -> Vec<&Arc<Mesh>> {
         self.boxes.meshes().collect()
+    }
+
+    /// The face under `pixel`'s centre in `frame`: of the bodies it drew (`view`'s meshes of
+    /// them), the one the ray meets first ([`face_hit`]), cast on their boxes. The
+    /// selection's where an edge's stroke covers its pick and the filter takes faces but not
+    /// edges ([`Selection::overlay`]). None where no face is there, or while a body the frame
+    /// drew has no boxes made (or none can be): it never casts without a body that's drawn.
+    pub(crate) fn face_under(
+        &self,
+        view: &View,
+        frame: &ViewFrame,
+        pixel: [u32; 2],
+    ) -> Option<(u32, Element)> {
+        let bodies: Vec<(u32, &Pickable)> = frame
+            .drawn
+            .iter()
+            .filter_map(|n| view.bodies().get(n).map(|body| (*n, &body.mesh)))
+            .map(|(n, mesh)| self.boxes.made_of(n, mesh).map(|pickable| (n, pickable)))
+            .collect::<Option<_>>()?;
+        let pointer = pixel.map(|c| f64::from(c) + 0.5);
+        face_hit(
+            &frame.camera,
+            frame.size_px,
+            frame.pixels_per_point,
+            &bodies,
+            pointer,
+        )
+        .map(|hit| (hit.body, hit.element))
     }
 
     /// Its boxes made by `build` from now on (a test's, to see where and when it runs):

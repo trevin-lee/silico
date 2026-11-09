@@ -25,7 +25,12 @@
 //! navigates; what it found is let go when the camera or the bodies change under it, and
 //! answers asked before that change are passed over. A pick takes an edge within
 //! [`EDGE_BAND_POINTS`] of the pointer (the prototype's 6, Select Other's too) before the
-//! face under it, as SolidWorks takes an edge near the pointer.
+//! face under it, as SolidWorks takes an edge near the pointer. With edges filtered out and
+//! faces not, a pick on an edge's drawn stroke takes the face under the pointer, the one the
+//! ray through its pixel meets first, cast on the bodies the frame drew (the stroke is drawn
+//! over it, so the renderer's picking holds the edge there), as SolidWorks' face filter
+//! selects only faces (docs/ux/solidworks.md §1, *Selection filters*); none where no face is
+//! under the stroke (past a silhouette), or while a body drawn has no boxes to cast on yet.
 //!
 //! A pick is named, and the selection's elements drawn, only on bodies read from the model
 //! the selection is read against ([`View::bodies_of`]): a model published, its meshes not
@@ -89,6 +94,19 @@ pub const EDGE_BAND_POINTS: f32 = HIT_EDGE_POINTS as f32;
 /// shares with the faces and edges under it, so a vertex is taken before an edge, and an edge
 /// before a face.
 pub const VERTEX_PICK_POINTS: f32 = HIT_VERTEX_POINTS as f32;
+
+/// The face under a pixel of a frame of a view, by its body's number, if one is there to cast
+/// on: [`Selection::overlay`]'s, where an edge's stroke covers a pick.
+pub(crate) type FaceUnder<'a> = &'a dyn Fn(&View, &ViewFrame, [u32; 2]) -> Option<(u32, Element)>;
+
+/// [`FaceUnder`] of the view and frame a pick is answered in.
+type Beneath<'a> = &'a dyn Fn([u32; 2]) -> Option<(u32, Element)>;
+
+/// A [`FaceUnder`] that finds nothing: a test's, where no body has boxes to cast on.
+#[cfg(test)]
+pub(crate) fn no_face(_: &View, _: &ViewFrame, _: [u32; 2]) -> Option<(u32, Element)> {
+    None
+}
 
 /// How many frames a click waits for its pick's answer, asking again each frame: past
 /// this (a second at 60 Hz: a renderer that answers none, or none installed), it's let go,
@@ -1277,8 +1295,16 @@ impl Selection {
     /// hover asked and taken; and the highlights and the hover set on `view` to draw.
     /// `ctx` gives egui's click distance. While `view`'s bodies are of another model than
     /// the selection's, nothing is named from them: a click waits for the meshes, asking
-    /// nothing, and the hover is let go.
-    pub(crate) fn overlay(&mut self, view: &mut View, frame: &ViewFrame, ctx: &egui::Context) {
+    /// nothing, and the hover is let go. `face_under` gives the face under a pixel of a frame
+    /// of the view, by its body's number, where an edge's stroke covers it (Select Other's
+    /// cast, [`crate::select_other::SelectOther::face_under`]).
+    pub(crate) fn overlay(
+        &mut self,
+        view: &mut View,
+        frame: &ViewFrame,
+        ctx: &egui::Context,
+        face_under: FaceUnder<'_>,
+    ) {
         let ppp = frame.pixels_per_point;
         let click_px = ctx.options(|options| options.input_options.max_click_dist) * ppp;
         let band = band_px(ppp);
@@ -1307,7 +1333,8 @@ impl Selection {
                 Some(_) if !current => {}
                 Some(click) if click.after.is_none_or(|after| picking.frame > after) => {
                     self.click = None;
-                    self.clicked(&picking, click.how, view.bodies());
+                    let beneath = |pixel| face_under(&*view, frame, pixel);
+                    self.clicked(&picking, click.how, view.bodies(), &beneath);
                 }
                 // An answer to a pick asked before the click: neither the click's nor, now,
                 // the hover's.
@@ -1316,7 +1343,8 @@ impl Selection {
                     && !self.hover_held
                     && self.stale_to.is_none_or(|stale| picking.frame > stale) =>
                 {
-                    self.hover_answered(&picking, view.bodies());
+                    let beneath = |pixel| face_under(&*view, frame, pixel);
+                    self.hover_answered(&picking, view.bodies(), &beneath);
                 }
                 None => {}
             }
@@ -1503,9 +1531,15 @@ impl Selection {
     /// A click's pick answered: what's under it selected `how`; nothing there, the
     /// selection cleared by a plain click, kept by a Ctrl-click. While a box takes the
     /// canvas's picks, every click toggles, and one on nothing changes nothing.
-    fn clicked(&mut self, picking: &Picking, how: How, bodies: &BTreeMap<u32, ViewBody>) {
+    fn clicked(
+        &mut self,
+        picking: &Picking,
+        how: How,
+        bodies: &BTreeMap<u32, ViewBody>,
+        beneath: Beneath<'_>,
+    ) {
         let how = self.canvas_how(how);
-        match self.under(picking, bodies) {
+        match self.under(picking, bodies, beneath) {
             Some((_, _, name, _)) => self.pick(&name.to_string(), how),
             None if how == How::Replace => self.clear(),
             None => {}
@@ -1514,8 +1548,13 @@ impl Selection {
 
     /// A hover's pick answered: what's under the pointer, read against the published model
     /// when it's another element than before.
-    fn hover_answered(&mut self, picking: &Picking, bodies: &BTreeMap<u32, ViewBody>) {
-        let under = self.under(picking, bodies);
+    fn hover_answered(
+        &mut self,
+        picking: &Picking,
+        bodies: &BTreeMap<u32, ViewBody>,
+        beneath: Beneath<'_>,
+    ) {
+        let under = self.under(picking, bodies, beneath);
         self.heard = Some((
             centre_of(picking.rect),
             under.as_ref().map(|(_, _, name, _)| Arc::clone(name)),
@@ -1549,25 +1588,38 @@ impl Selection {
 
     /// What a picking found under its centre, as the canvas picks ([`Self::picks`]): a
     /// vertex at its centre pixel (its disc is its tolerance, [`VERTEX_PICK_POINTS`]),
-    /// first; then an edge in its square; else the face at its centre pixel. Its body,
-    /// element, name, and the name's stability, as the bodies' meshes name them.
+    /// first; then an edge in its square; else the face at its centre pixel; or, where an
+    /// edge's stroke is drawn over that pixel and edges aren't picked but faces are, the face
+    /// `beneath` it. Its body, element, name, and the name's stability, as the bodies' meshes
+    /// name them.
     fn under(
         &self,
         picking: &Picking,
         bodies: &BTreeMap<u32, ViewBody>,
+        beneath: Beneath<'_>,
     ) -> Option<(u32, Element, Arc<Name>, bool)> {
         let centre = centre_of(picking.rect);
         let picks = self.picks();
-        let vertex = picking.hit.filter(|hit| {
-            hit.pixel == centre && matches!(hit.hit, Element::Vertex(_)) && picks.vertices
-        });
-        let edge = picking.edge.filter(|_| picks.edges);
-        let face = picking.hit.filter(|hit| {
-            hit.pixel == centre && matches!(hit.hit, Element::Face(_)) && picks.faces
-        });
-        let pick = vertex.or(edge).or(face)?;
-        let named = bodies.get(&pick.body)?.name_of(pick.hit)?;
-        Some((pick.body, pick.hit, Arc::clone(&named.name), named.stable))
+        let at_centre = |kind: fn(&Element) -> bool| {
+            picking
+                .hit
+                .filter(|hit| hit.pixel == centre && kind(&hit.hit))
+                .map(|hit| (hit.body, hit.hit))
+        };
+        let vertex = at_centre(|e| matches!(e, Element::Vertex(_))).filter(|_| picks.vertices);
+        let edge = picking
+            .edge
+            .filter(|_| picks.edges)
+            .map(|edge| (edge.body, edge.hit));
+        let face = at_centre(|e| matches!(e, Element::Face(_))).filter(|_| picks.faces);
+        let stroke = || {
+            at_centre(|e| matches!(e, Element::Edge(_)))
+                .filter(|_| picks.faces && !picks.edges)
+                .and_then(|_| beneath(centre))
+        };
+        let (body, element) = vertex.or(edge).or(face).or_else(stroke)?;
+        let named = bodies.get(&body)?.name_of(element)?;
+        Some((body, element, Arc::clone(&named.name), named.stable))
     }
 
     /// The highlights and the hover set on `view`, and what its picks take ([`Self::picks`]:
@@ -2186,7 +2238,7 @@ pub(crate) mod tests {
             event(Press, [50.0, 50.0], false),
             event(Release, [50.0, 50.0], false),
         ]);
-        selection.overlay(&mut view, &frame, &ctx);
+        selection.overlay(&mut view, &frame, &ctx, &no_face);
         assert_eq!(selection.click, None);
         assert_eq!(selection.said(), Some(CLICK_NO_MODEL));
     }
@@ -2378,7 +2430,7 @@ pub(crate) mod tests {
         frame.pointer_px = Some([50.0, 50.0]);
         selection.hover_asked = Some(centre_of(rect));
         let ctx = egui::Context::default();
-        selection.overlay(&mut view, &frame, &ctx);
+        selection.overlay(&mut view, &frame, &ctx, &no_face);
         assert_eq!(selection.taken, Some(5));
         assert_eq!(selection.hovered, None);
         let hovered = Hovered {
@@ -2389,7 +2441,7 @@ pub(crate) mod tests {
             found: None,
         };
         selection.hovered = Some(hovered.clone());
-        selection.overlay(&mut view, &frame, &ctx);
+        selection.overlay(&mut view, &frame, &ctx, &no_face);
         assert_eq!(view.picked().map(|picking| picking.frame), Some(5));
         assert_eq!(selection.hovered, Some(hovered));
     }
@@ -2675,15 +2727,15 @@ pub(crate) mod tests {
             event(Press, [50.0, 50.0], false),
             event(Release, [50.0, 50.0], false),
         ]);
-        selection.overlay(&mut view, &click, &ctx);
+        selection.overlay(&mut view, &click, &ctx, &no_face);
         for _ in 1..30 {
-            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         }
         assert_eq!(selection.click.map(|click| click.frames), Some(30));
         selection.published(Some((Arc::clone(&model), second.1)), second.0);
         // Waiting for model 2's meshes: no frame counted.
         for _ in 0..5 {
-            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         }
         assert_eq!(
             selection.click.map(|click| click.awaits),
@@ -2692,10 +2744,10 @@ pub(crate) mod tests {
         // Model 2's meshes come (the view's last answer, frame 5's, is before the click).
         view.answered_as(second, answer);
         for n in 1..=CLICK_FRAMES {
-            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
             assert_eq!(selection.click.map(|click| click.frames), Some(n));
         }
-        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert_eq!(selection.click, None);
     }
 
@@ -2867,7 +2919,7 @@ pub(crate) mod tests {
         };
         let under = |selection: &Selection, picking: &Picking| {
             selection
-                .under(picking, &bodies)
+                .under(picking, &bodies, &|_| None)
                 .map(|(body, element, name, _)| (body, element, name.to_string()))
         };
         let mut selection = Selection::default();
@@ -2899,6 +2951,92 @@ pub(crate) mod tests {
             under(&selection, &face),
             Some((1, Element::Face(3), "k7f2qx3m.box.Face3".to_owned()))
         );
+    }
+
+    #[test]
+    fn with_edges_filtered_out_a_pick_on_an_edges_stroke_takes_the_face_cast_under_it() {
+        let bodies = named_body();
+        let rect = square([50.0, 50.0], [100, 100], 3);
+        let centre = centre_of(rect);
+        let pick = |hit, pixel| crate::renderer::Pick {
+            body: 1,
+            hit,
+            pixel,
+            point: None,
+        };
+        // Edge2's stroke drawn over the centre pixel, and Edge1 in the square beside it.
+        let stroke = Picking {
+            frame: 1,
+            rect,
+            hit: Some(pick(Element::Edge(2), centre)),
+            edge: Some(pick(Element::Edge(1), [49, 50])),
+        };
+        // The cast: Face3 under any pixel, each pixel it's asked for kept.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let face3 = |pixel: [u32; 2]| {
+            asked.borrow_mut().push(pixel);
+            Some((1, Element::Face(3)))
+        };
+        let under = |selection: &Selection, picking: &Picking, beneath: Beneath<'_>| {
+            selection
+                .under(picking, &bodies, beneath)
+                .map(|(body, element, name, _)| (body, element, name.to_string()))
+        };
+        let mut selection = Selection::default();
+        // Edges picked, as the filter starts: the edge in the square, nothing cast.
+        assert_eq!(
+            under(&selection, &stroke, &face3),
+            Some((1, Element::Edge(1), "k7f2qx3m.box.Edge1".to_owned()))
+        );
+        assert!(asked.borrow().is_empty());
+        // Edges filtered out: the face cast under the centre pixel, by its name.
+        selection.filter.edges = false;
+        assert_eq!(
+            under(&selection, &stroke, &face3),
+            Some((1, Element::Face(3), "k7f2qx3m.box.Face3".to_owned()))
+        );
+        assert_eq!(*asked.borrow(), [centre]);
+        // No face under the stroke (past a silhouette), or no boxes to cast on yet: nothing.
+        assert_eq!(under(&selection, &stroke, &|_| None), None);
+        // A face the body's meshes don't name: nothing.
+        assert_eq!(
+            under(&selection, &stroke, &|_| Some((1, Element::Face(9)))),
+            None
+        );
+        // Faces filtered out too: nothing, and nothing cast.
+        asked.borrow_mut().clear();
+        selection.filter.faces = false;
+        assert_eq!(under(&selection, &stroke, &face3), None);
+        assert!(asked.borrow().is_empty());
+        // The filter whole, and a dialog's box taking faces alone: the face, cast.
+        selection.filter = Filter::default();
+        selection.take_into(Some(Filter {
+            faces: true,
+            edges: false,
+            vertices: false,
+        }));
+        assert_eq!(
+            under(&selection, &stroke, &face3).map(|(_, element, _)| element),
+            Some(Element::Face(3))
+        );
+        assert_eq!(*asked.borrow(), [centre]);
+        // A face at the centre pixel is taken as the picking found it, and an edge's stroke
+        // beside the centre (the centre the background's) is nothing: nothing cast for either.
+        asked.borrow_mut().clear();
+        let face = Picking {
+            hit: Some(pick(Element::Face(1), centre)),
+            ..stroke
+        };
+        assert_eq!(
+            under(&selection, &face, &face3).map(|(_, element, _)| element),
+            Some(Element::Face(1))
+        );
+        let beside = Picking {
+            hit: Some(pick(Element::Edge(2), [49, 50])),
+            ..stroke
+        };
+        assert_eq!(under(&selection, &beside, &face3), None);
+        assert!(asked.borrow().is_empty());
     }
 
     #[test]
@@ -3144,7 +3282,7 @@ pub(crate) mod tests {
                 event(Release, [50.0 + apart, 50.0], false),
             ]);
             frame.pixels_per_point = 2.0;
-            selection.overlay(&mut View::default(), &frame, &ctx);
+            selection.overlay(&mut View::default(), &frame, &ctx, &no_face);
             selection.said() == Some(CLICK_NO_MODEL)
         };
         assert!(clicked(0.0));
@@ -3215,12 +3353,12 @@ pub(crate) mod tests {
                 .map(|hovered| (hovered.body, hovered.element, hovered.name.to_string()))
         };
         let mut selection = Selection::default();
-        selection.hover_answered(&over(1), &bodies);
+        selection.hover_answered(&over(1), &bodies, &|_| None);
         assert_eq!(
             hovered(&selection),
             Some((1, Element::Face(1), "k7f2qx3m.box.Face1".to_owned()))
         );
-        selection.hover_answered(&over(2), &bodies);
+        selection.hover_answered(&over(2), &bodies, &|_| None);
         assert_eq!(
             hovered(&selection),
             Some((1, Element::Face(2), "k7f2qx3m.box.Face2".to_owned()))
@@ -3263,7 +3401,7 @@ pub(crate) mod tests {
         };
         let under = |selection: &Selection, picking: &Picking| {
             selection
-                .under(picking, &bodies)
+                .under(picking, &bodies, &|_| None)
                 .map(|(body, element, name, stable)| (body, element, name.to_string(), stable))
         };
         let mut selection = Selection::default();
@@ -3333,7 +3471,7 @@ pub(crate) mod tests {
             vertices: false,
         }));
         assert_eq!(
-            selection.under(&picking, &bodies).map(|u| u.1),
+            selection.under(&picking, &bodies, &|_| None).map(|u| u.1),
             Some(Element::Edge(1))
         );
         selection.draw(&mut view);
@@ -3341,7 +3479,7 @@ pub(crate) mod tests {
         // The box lets go: the vertex is picked, and the discs drawn, again.
         selection.take_into(None);
         assert_eq!(
-            selection.under(&picking, &bodies).map(|u| u.1),
+            selection.under(&picking, &bodies, &|_| None).map(|u| u.1),
             Some(Element::Vertex(2))
         );
         selection.draw(&mut view);
@@ -3431,14 +3569,14 @@ pub(crate) mod tests {
             }),
             edge: None,
         };
-        selection.clicked(&picking, How::Replace, &bodies);
+        selection.clicked(&picking, How::Replace, &bodies, &|_| None);
         assert_eq!(selection.names(), ["aaaaaaaa.box.Vertex5"]);
         let picked: Vec<_> = selection.elements().collect();
         assert_eq!(picked.len(), 1);
         assert!(picked[0].stable());
         assert_eq!(picked[0].found().unwrap().element, vertex(5));
         // Hovered, it's the hover's, its element a vertex.
-        selection.hover_answered(&picking, &bodies);
+        selection.hover_answered(&picking, &bodies, &|_| None);
         let hovered = selection.hovered().unwrap();
         assert_eq!((hovered.body, hovered.element), (1, Element::Vertex(5)));
         assert!(hovered.found.is_some());
@@ -3854,17 +3992,17 @@ pub(crate) mod tests {
             },
         );
         let ctx = egui::Context::default();
-        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert_eq!(selection.heard(), Some(&([50, 50], None)));
         // Heard in that frame alone.
-        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert_eq!(selection.heard(), None);
         // A click at (20, 20), and its answer: the click's, never heard as the hover's.
         let click = frame_of(vec![
             event(Press, [20.0, 20.0], false),
             event(Release, [20.0, 20.0], false),
         ]);
-        selection.overlay(&mut view, &click, &ctx);
+        selection.overlay(&mut view, &click, &ctx, &no_face);
         assert!(selection.click.is_some());
         view.answered_as(
             of,
@@ -3875,7 +4013,7 @@ pub(crate) mod tests {
                 edge: None,
             },
         );
-        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert!(selection.click.is_none(), "the click's answer not taken");
         assert_eq!(selection.heard(), None);
     }
