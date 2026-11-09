@@ -4085,6 +4085,244 @@ fn an_edit_is_offered_where_it_newly_prompts_or_refuses_or_is_newly_flagged_itse
     assert!(offer(&flags_it, between.revision, &added).is_some());
 }
 
+// --- SD7 by the dimension's own row: c3 as amended (Fable, 2026-11-09,
+// c3-refused-sketch-fable.md) -----------------------------------------------------------
+
+/// States in `of` with `dofs` freedoms, each constraint named in its state, the solve refused
+/// with `problem`, if any.
+fn states_at(
+    of: SketchState,
+    dofs: i32,
+    problem: Option<ErrorCode>,
+    constraints: &[(&str, ConstraintState)],
+) -> SketchStates {
+    let mut states = states(of);
+    states.dofs = dofs;
+    states.solve_problem = problem.map(|code| Error::new(code, "refused"));
+    for (k, state) in constraints {
+        states.constraints.insert(id(k), *state);
+    }
+    states
+}
+
+/// A read of the sketch `members` in the states `states`.
+fn read_on(members: &Sketch, states: SketchStates) -> SketchRead {
+    SketchRead {
+        states,
+        ..read_with(members.clone(), &[], SketchState::UnderDefined)
+    }
+}
+
+/// The corner's `length` of A, 25, placed as t0000101 by the tool (its add revision 2) on a
+/// read in the states `before`: the sketch it leaves, and its placement.
+fn placed_on(before: SketchStates) -> (Sketch, Placement) {
+    let mut d = Dim::new(corner());
+    d.states = before;
+    d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
+    let placement = d.tool.placement().unwrap();
+    assert_eq!(placement.constraint, id("t0000101"));
+    (d.sketch, placement)
+}
+
+/// That `length`'s value edited (`set_field`, revision 3) on revision 2's read, in the states
+/// `before`, as the app records an edit (`Edited::of`): the sketch, and the edit's placement.
+fn edit_on(before: &SketchStates) -> (Sketch, Placement) {
+    let (sketch, added) = placed_on(under());
+    let edit = Placement {
+        revision: added.revision.next().unwrap(),
+        read: added.revision,
+        before: before.state,
+        flagged: before
+            .constraints
+            .iter()
+            .filter(|(_, s)| s.flagged())
+            .map(|(k, _)| k.clone())
+            .collect(),
+        kind: PlacementKind::Edit {
+            before_refused: before.solve_problem.is_some(),
+        },
+        ..added
+    };
+    (sketch, edit)
+}
+
+/// States refused `over_constrained`, over defined, with `dofs` freedoms.
+fn conflict(dofs: i32, constraints: &[(&str, ConstraintState)]) -> SketchStates {
+    states_at(
+        SketchState::OverDefined,
+        dofs,
+        Some(ErrorCode::OverConstrained),
+        constraints,
+    )
+}
+
+#[test]
+fn a_dependent_add_on_a_refused_sketch_is_offered_by_its_freedoms_whatever_its_own_state() {
+    // Round 1's R1, by hand. Placed on a read refused `over_constrained` by k0000009, in
+    // conflict elsewhere, 5 freedoms. The add's read refused alike, 5 freedoms still: the
+    // dimension's row is dependent, so offered, whichever of its group the contest left out:
+    // it (redundant), or its partner k0000008 (it `unsolved`, which its own state alone
+    // wouldn't offer). The solve was refused already, so not newly.
+    use ConstraintState::{Conflicting, Redundant, Unsolved};
+    let (sketch, placement) = placed_on(conflict(5, &[("k0000009", Conflicting)]));
+    for (own, partner) in [(Unsolved, Redundant), (Redundant, Unsolved)] {
+        let after = read_on(
+            &sketch,
+            conflict(
+                5,
+                &[
+                    ("t0000101", own),
+                    ("k0000008", partner),
+                    ("k0000009", Conflicting),
+                ],
+            ),
+        );
+        assert_eq!(
+            offer(&after, placement.revision, &placement).map(|o| o.state),
+            Some(own)
+        );
+    }
+}
+
+#[test]
+fn an_add_newly_refusing_an_over_defined_sketch_that_solved_is_offered() {
+    // Round 1's R3, by hand. Placed on a read over defined but solved (k0000009, a dimension
+    // repeating another, redundant), 4 freedoms. The add's read refused `over_constrained`,
+    // k0000009 and k0000008 conflicting (the reduced solve failing lists the whole group), the
+    // dimension in no group, `unsolved`, 3 freedoms: independent, and not flagged, but the
+    // solve is newly refused: offered.
+    use ConstraintState::{Conflicting, Redundant, Unsolved};
+    let before = states_at(
+        SketchState::OverDefined,
+        4,
+        None,
+        &[("k0000009", Redundant)],
+    );
+    let (sketch, placement) = placed_on(before);
+    let after = read_on(
+        &sketch,
+        conflict(
+            3,
+            &[
+                ("t0000101", Unsolved),
+                ("k0000008", Conflicting),
+                ("k0000009", Conflicting),
+            ],
+        ),
+    );
+    assert_eq!(
+        offer(&after, placement.revision, &placement).map(|o| o.state),
+        Some(Unsolved)
+    );
+}
+
+#[test]
+fn a_redundant_dimension_edited_into_conflict_on_a_refused_sketch_is_offered() {
+    // Round 1's R2, by hand. Edited on a read refused `over_constrained` by k0000009, the
+    // dimension agreeing with k0000008, and redundant, the contest's pick. Edited to disagree:
+    // it and k0000008 conflicting (a group left in conflict lists every member): newly in
+    // conflict, offered, though it was flagged before.
+    use ConstraintState::{Conflicting, Redundant};
+    let (sketch, edit) = edit_on(&conflict(
+        3,
+        &[("t0000101", Redundant), ("k0000009", Conflicting)],
+    ));
+    let after = read_on(
+        &sketch,
+        conflict(
+            3,
+            &[
+                ("t0000101", Conflicting),
+                ("k0000008", Conflicting),
+                ("k0000009", Conflicting),
+            ],
+        ),
+    );
+    assert_eq!(
+        offer(&after, edit.revision, &edit).map(|o| o.state),
+        Some(Conflicting)
+    );
+}
+
+#[test]
+fn an_edit_is_offered_for_any_constraint_it_newly_sets_in_conflict_and_with_a_change_between_for_its_own()
+ {
+    // Round 1's T1. Edited on a read refused by k0000009 in conflict, the dimension `unsolved`
+    // and k0000008, its partner, the contest's pick, redundant. The edit's read: k0000008 newly
+    // conflicting, the dimension `unsolved` still (decision 5 lists the pick alone). An edit
+    // changes no row, so whatever newly conflicts is its doing: offered. A constraint newly
+    // redundant, k0000009 conflicting as before, nothing new in conflict: not offered. With
+    // another change between, the attribution is lost: judged by the dimension's own state,
+    // `unsolved`, not offered; newly conflicting itself, offered; conflicting before too, not.
+    use ConstraintState::{Conflicting, Redundant, Unsolved};
+    let (sketch, edit) = edit_on(&conflict(
+        3,
+        &[
+            ("t0000101", Unsolved),
+            ("k0000008", Redundant),
+            ("k0000009", Conflicting),
+        ],
+    ));
+    let partner = read_on(
+        &sketch,
+        conflict(
+            3,
+            &[
+                ("t0000101", Unsolved),
+                ("k0000008", Conflicting),
+                ("k0000009", Conflicting),
+            ],
+        ),
+    );
+    assert_eq!(
+        offer(&partner, edit.revision, &edit).map(|o| o.state),
+        Some(Unsolved)
+    );
+    let same = read_on(
+        &sketch,
+        conflict(
+            3,
+            &[
+                ("t0000101", Unsolved),
+                ("k0000007", Redundant),
+                ("k0000008", Redundant),
+                ("k0000009", Conflicting),
+            ],
+        ),
+    );
+    assert_eq!(offer(&same, edit.revision, &edit), None);
+    let between = Placement {
+        revision: edit.revision.next().unwrap(),
+        ..edit.clone()
+    };
+    assert_eq!(offer(&partner, between.revision, &between), None);
+    let own = read_on(
+        &sketch,
+        conflict(
+            3,
+            &[
+                ("t0000101", Conflicting),
+                ("k0000008", Conflicting),
+                ("k0000009", Conflicting),
+            ],
+        ),
+    );
+    assert!(offer(&own, between.revision, &between).is_some());
+    let (_, already) = edit_on(&conflict(
+        3,
+        &[
+            ("t0000101", Conflicting),
+            ("k0000008", Conflicting),
+            ("k0000009", Conflicting),
+        ],
+    ));
+    let already = Placement {
+        revision: already.revision.next().unwrap(),
+        ..already
+    };
+    assert_eq!(offer(&own, already.revision, &already), None);
+}
+
 // --- The Modify box's reading, for a placed dimension's edit too ---------------------
 
 /// Each dimension a document holds, with its current value: every length kind at 7 mm,
