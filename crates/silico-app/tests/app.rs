@@ -1314,7 +1314,7 @@ fn an_agents_commit_reloads_with_no_edits_held_and_is_announced_with_edits_held(
 }
 
 #[test]
-fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtaken() {
+fn a_reload_with_nothing_held_is_announced_in_the_info_tone_until_dismissed_or_overtaken() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
@@ -1343,7 +1343,7 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
     h.get_by_role_and_label(Role::Button, "Dismiss").click();
     step_until(&mut h, "dismissed", |h| !anywhere(h, reloaded));
     // Reloaded again, then changed on disk with an edit held: the amber banner takes its
-    // place, and once the edits are kept the purple one doesn't come back.
+    // place, and once the edits are kept the info one doesn't come back.
     std::fs::write(
         &path,
         EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#),
@@ -1371,7 +1371,7 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
     for _ in 0..10 {
         step(&mut h);
         assert!(!anywhere(&h, changed), "the amber banner came back");
-        assert!(!anywhere(&h, reloaded), "the purple banner came back");
+        assert!(!anywhere(&h, reloaded), "the info banner came back");
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -1400,15 +1400,15 @@ fn row_feature(h: &AppHarness, text: &str) -> String {
         .unwrap_or_else(|| panic!("no row reads {text}"))
 }
 
-/// The purple banner's title for the example's reload.
+/// The info banner's title for the example's reload.
 const RELOADED: &str = "Reloaded example.silico: another program changed it on disk";
 
-/// Frames stepped, the purple banner absent after each.
+/// Frames stepped, the info banner absent after each.
 #[track_caller]
 fn never_reloaded(h: &mut AppHarness, after: &str) {
     for _ in 0..10 {
         step(h);
-        assert!(!anywhere(h, RELOADED), "the purple banner after {after}");
+        assert!(!anywhere(h, RELOADED), "the info banner after {after}");
     }
 }
 
@@ -1424,7 +1424,7 @@ fn written_outside(h: &mut AppHarness, path: &Path, name: &str) {
 }
 
 #[test]
-fn the_purple_banner_comes_only_from_the_sessions_own_reload() {
+fn the_info_banner_comes_only_from_the_sessions_own_reload() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
@@ -1454,7 +1454,7 @@ fn the_purple_banner_comes_only_from_the_sessions_own_reload() {
 }
 
 #[test]
-fn a_reload_the_person_asked_for_shows_no_purple_banner() {
+fn a_reload_the_person_asked_for_shows_no_info_banner() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
@@ -1505,7 +1505,7 @@ fn a_reload_the_person_asked_for_shows_no_purple_banner() {
 }
 
 #[test]
-fn esc_dismisses_the_purple_banner_before_it_clears_the_selection() {
+fn esc_dismisses_the_info_banner_before_it_clears_the_selection() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
@@ -1620,7 +1620,8 @@ fn outside_marks(h: &AppHarness, pane: &str) -> usize {
 }
 
 #[test]
-fn the_changed_features_are_marked_in_purple_until_marked_seen_and_esc_dismisses_the_banner() {
+fn the_changed_features_are_marked_in_the_info_tone_until_marked_seen_and_esc_dismisses_the_banner()
+{
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
@@ -2258,7 +2259,7 @@ fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
     assert_eq!(outside_marks(&h, "Timeline"), 1);
     for _ in 0..10 {
         step(&mut h);
-        assert!(!anywhere(&h, reloaded), "the purple banner after Reload");
+        assert!(!anywhere(&h, reloaded), "the info banner after Reload");
     }
     // Again, the reload landing before the tab takes the rollback's answer: no frame
     // stepped from the click's until the session has rolled back and reloaded.
@@ -2286,7 +2287,7 @@ fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
         step(&mut h);
         assert!(
             !anywhere(&h, reloaded),
-            "the purple banner after the second Reload"
+            "the info banner after the second Reload"
         );
     }
     assert_eq!(never_waits::waits(), 0);
@@ -28941,7 +28942,7 @@ fn a_model_published_before_its_meshes_are_read_names_no_pick_and_draws_no_eleme
     // another face.
     assert_eq!(highlighted(&record), []);
     // Let go, and a click on the face numbered 2 of the old meshes: named from neither
-    // model, it waits. The edit above is another client's, announced in the purple banner,
+    // model, it waits. The edit above is another client's, announced in the info banner,
     // so the first Esc dismisses it, the face staying (the prototype's `escChain`), and the
     // second lets the face go.
     assert!(h.state().tabs()[0].reloaded.is_some());

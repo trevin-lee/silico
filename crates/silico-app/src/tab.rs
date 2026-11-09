@@ -839,7 +839,7 @@ pub struct Tab {
     /// seen, from the revision the tab had to the session's now, until it answers.
     reload_diff: Option<Running<DiffAnswer>>,
     /// The features another program changed, each by its ID with what changed in it, as
-    /// the reloads' diffs answered (`d.outside`): marked purple in the timeline and the
+    /// the reloads' diffs answered (`d.outside`): marked info-blue in the timeline and the
     /// browser until the person marks it seen in its properties (DESIGN.md, 6c).
     pub outside: BTreeMap<FeatureId, String>,
     /// Show changes (DESIGN.md, 6d): what another program wrote to the file and what the
@@ -3992,7 +3992,7 @@ impl Tab {
     /// Esc with no dialog open (section 3's order, the prototype's `escChain`, the nearest
     /// thing first): sketch mode's tool left, its chain or gesture ended with it (section 9,
     /// *Line*); or else sketch mode's selection cleared, if it has one; or else the reload's
-    /// purple banner dismissed, if one shows (DESIGN.md, 6c; an amber or red one in its
+    /// info banner dismissed, if one shows (DESIGN.md, 6c; an amber or red one in its
     /// place has let it go already); or else the feature's selection cleared; or else, with
     /// none of them, a rebuild running stopped quietly
     /// ([`stop_quietly`](Self::stop_quietly)).

@@ -536,7 +536,7 @@ fn script_number(value: f64) -> String {
 }
 
 /// A row of a modal's list (`.prop` with `padding: 0`, as the prototype's "What changed on
-/// disk" lists them): `key` in its column, in `key_colour` (the property key's, or purple
+/// disk" lists them): `key` in its column, in `key_colour` (the property key's, or the info tone
 /// for a feature another program changed), and `value` in the rest, each cut short where
 /// it doesn't fit; `list`, naming the list among the modal's, and `at`, its place among
 /// the list's rows, naming it.
@@ -610,8 +610,8 @@ pub(crate) fn hint_at(ui: &mut Ui, parts: &[(&str, bool)], margin: Margin) {
         });
 }
 
-/// The card saying another program changed the selected feature (`featureProps`' purple
-/// `.err-card.warn`): its head, the diff icon and "Changed on disk"; what changed, `text`;
+/// The card saying another program changed the selected feature (`featureProps`'
+/// `.err-card.info`): its head, the reload glyph and "Changed on disk"; what changed, `text`;
 /// and Mark as seen (`.btn-ghost`), which takes its mark away. Whether that was clicked.
 pub(crate) fn outside_card(ui: &mut Ui, text: &str) -> bool {
     let words = |text: &str, colour| {
@@ -649,9 +649,9 @@ pub(crate) fn outside_card(ui: &mut Ui, text: &str) -> bool {
                             vec2(side, theme::BODY_LINE_HEIGHT),
                             Sense::hover(),
                         );
-                        Icon::Diff
+                        Icon::Rebuild
                             .image(IconSize::Small)
-                            .tint(theme::OUTSIDE_CARD_TEXT)
+                            .tint(theme::OUTSIDE_CARD_HEAD)
                             .paint_at(ui, Rect::from_min_size(at.min, Vec2::splat(side)));
                         ui.add(
                             Label::new(words("Changed on disk", theme::TEXT_STRONG))
@@ -2366,12 +2366,12 @@ mod tests {
     #[test]
     fn a_modals_list_row_is_drawn_as_prop_its_value_8_after_the_keys_96() {
         let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(300.0, 100.0));
-        let purple = Color32::from_rgb(0xb7, 0x80, 0xff);
+        let outside = Color32::from_rgb(0xad, 0xbb, 0xff);
         let mut h = Harness::builder()
             .with_size(Vec2::new(400.0, 160.0))
             .build_ui(move |ui| {
                 ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
-                    list_row(ui, ("theirs", 0), "Drill", purple, "name · 5 → 3");
+                    list_row(ui, ("theirs", 0), "Drill", outside, "name · 5 → 3");
                 });
             });
         theme::apply(&h.ctx);
@@ -2394,7 +2394,7 @@ mod tests {
         );
         font(&key, FS, "the key");
         font(&value, FS, "the value");
-        assert_eq!(colour(&key), purple);
+        assert_eq!(colour(&key), outside);
         assert_eq!(colour(&value), G800);
     }
 
@@ -2534,11 +2534,12 @@ mod tests {
     }
 
     #[test]
-    fn the_changed_on_disk_card_is_drawn_as_feature_props_purple_err_card() {
-        // `featureProps`' card: `.err-card` (`margin: 8px var(--pad)`, 1 border, `--r`) in
-        // `rgba(183,128,255,.12)` bordered #463375; `.ec-head` (`padding: 8px 10px 4px;
-        // gap: 8px`): the diff icon in #e4d6ff, "Changed on disk" white; `.ec-body`
-        // (`padding: 0 10px 8px 32px`), #e4d6ff: what changed (`p`, `margin: 0 0 6px`), then
+    fn the_changed_on_disk_card_is_drawn_as_feature_props_info_err_card() {
+        // `featureProps`' card: `.err-card.info` (`margin: 8px var(--pad)`, 1 border, `--r`)
+        // in `--info-card-bg` #111a2d bordered `--info-card-border` #2b3c66; `.ec-head`
+        // (`padding: 8px 10px 4px; gap: 8px`): the reload glyph in `--info` #adbbff,
+        // "Changed on disk" white; `.ec-body` (`padding: 0 10px 8px 32px`),
+        // `--info-card-text` #dce3ff: what changed (`p`, `margin: 0 0 6px`), then
         // Mark as seen (`.btn.btn-ghost`). Every line 16 high.
         let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(295.0, 300.0));
         let text = "Block · height · 10 → 11, and the radius of its fillet too, which wraps";
@@ -2551,11 +2552,12 @@ mod tests {
             });
         theme::apply(&h.ctx);
         h.run_steps(2);
-        let ink = Color32::from_rgb(0xe4, 0xd6, 0xff);
+        let head_ink = Color32::from_rgb(0xad, 0xbb, 0xff);
+        let ink = Color32::from_rgb(0xdc, 0xe3, 0xff);
         let top = place.top() + 8.0;
         let inner = Pos2::new(place.left() + PAD + 1.0, top + 1.0);
         let icon = Rect::from_min_size(inner + Vec2::new(10.0, 8.0), Vec2::splat(ICON));
-        assert_eq!(icon_at(&h, icon), Some(ink), "the card's icon");
+        assert_eq!(icon_at(&h, icon), Some(head_ink), "the card's icon");
         let head = text_shape(&h, "Changed on disk");
         at(
             head.pos,
@@ -2588,7 +2590,7 @@ mod tests {
         assert_eq!(
             fills,
             [(
-                Color32::from_rgba_unmultiplied(183, 128, 255, 31),
+                Color32::from_rgb(0x11, 0x1a, 0x2d),
                 egui::CornerRadius::same(6)
             )],
             "the card"

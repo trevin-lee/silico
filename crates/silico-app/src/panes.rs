@@ -524,7 +524,7 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
 /// its type and ID), the document's problems and its own (its error card, with Edit, as
 /// `featureProps` offers it, `noShow`), its name, editable, which is an edit of the
 /// document, and its health and ID, with the ID's copy button (`prop('ID', …, { copy })`);
-/// and, if another program changed it, what changed (the purple Changed on disk card, with
+/// and, if another program changed it, what changed (the info Changed on disk card, with
 /// Mark as seen). What an error card's button asked, if one was.
 ///
 /// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
@@ -1394,7 +1394,7 @@ fn tree(
                         // A sketch's own failure reddens its name (`.row.err`); a body's
                         // mark is its chain's.
                         failed: sketches && each.health == Health::Error,
-                        // Changed by another program (`d.outside`), its purple dot where it
+                        // Changed by another program (`d.outside`), its info-blue dot where it
                         // has no health mark.
                         outside: tab.outside.get(&each.id).map(String::as_str),
                         clicks: false,
@@ -1572,7 +1572,7 @@ struct Line<'a> {
     mark: Option<(Health, Option<&'a str>)>,
     /// Whether its name is the error's red (`.row.err`).
     failed: bool,
-    /// What another program changed in it, if it did (`d.outside`): a purple dot at its
+    /// What another program changed in it, if it did (`d.outside`): an info-blue dot at its
     /// right where it has no mark (`.state-dot`).
     outside: Option<&'a str>,
     /// Whether it takes a click though it isn't selectable (the document's row, whose click
@@ -1822,7 +1822,7 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
 }
 
 /// The mark of a feature another program changed (`d.outside`), the browser's and the
-/// timeline's alike: a purple dot filling `rect` (`.state-dot`, or the timeline's
+/// timeline's alike: an info-blue dot filling `rect` (`.state-dot`, or the timeline's
 /// `.badge.outside`, in a ring of `ring`'s colour 1.5 outside it), labelled with what
 /// changed (`changed on disk: radius 5 → 3`) for the accessibility tree, and with the
 /// prototype's words as its hover text.
@@ -2730,11 +2730,12 @@ mod tests {
     type Expected<'a> = (&'a str, f32, Color32, Option<(Color32, &'a str)>);
 
     #[test]
-    fn a_row_another_program_changed_has_its_purple_dot_where_it_has_no_health_mark() {
+    fn a_row_another_program_changed_has_its_info_dot_where_it_has_no_health_mark() {
         // The prototype's row (`o.mark === 'outside'`): a `.state-dot` (8 square, round) in
-        // `--purple` (#b780ff) at the row's right, the name cut 4 (`.row`'s gap) before it;
-        // a row with a health mark shows that mark alone.
-        const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+        // `--outside` (the info tone, #adbbff; Trevin's change of 2026-11-09, from purple) at
+        // the row's right, the name cut 4 (`.row`'s gap) before it; a row with a health mark
+        // shows that mark alone.
+        const OUTSIDE: Color32 = Color32::from_rgb(0xad, 0xbb, 0xff);
         const DOT: f32 = 8.0;
         let mut tab = modelled();
         // Named long enough to be cut short by the dot.
@@ -2760,7 +2761,7 @@ mod tests {
             })
             .collect();
         assert!(
-            matches!(circles[..], [(centre, radius, PURPLE)]
+            matches!(circles[..], [(centre, radius, OUTSIDE)]
                 if near_pos(centre, dot.center()) && near(radius, DOT / 2.0)),
             "the block's dot: {circles:?}, not {DOT} across at {:?}",
             dot.center()
