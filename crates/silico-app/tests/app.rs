@@ -29421,6 +29421,81 @@ fn a_swap_made_while_the_add_waits_is_refused_and_the_boxes_follow_the_document(
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// THREE_BLOCKS and a fourth, apart from the rest.
+const FOUR_BLOCKS: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "c0000001", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
+    {"id": "a0000001", "type": "box", "v": 1, "name": "Second", "position": [20, 0, 0], "length": 20, "width": 10, "height": 10},
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Third", "position": [50, 0, 0], "length": 10, "width": 10, "height": 10},
+    {"id": "d0000001", "type": "box", "v": 1, "name": "Fourth", "position": [80, 0, 0], "length": 10, "width": 10, "height": 10}
+  ]
+}
+"#;
+
+#[test]
+fn ok_stays_off_while_a_box_holds_a_body_unsent_behind_an_edit_and_comes_on_once_it_is_sent() {
+    // #412's second review: the add of First and Second answered, OK on. The session's queue
+    // held: Third into the tool, whose edit is sent and waits; then Fourth into the target,
+    // which waits unsent behind it (an edit of the feature still to answer holds the boxes'
+    // next). OK is off while a box holds what isn't sent, so what OK keeps is what the boxes
+    // show; once the tool's edit answers and the target's is sent and answers, it's on, and
+    // the document holds what the boxes show.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("blocks.silico", FOUR_BLOCKS);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's bodies", |h| {
+        ["First", "Second", "Third", "Fourth"]
+            .iter()
+            .all(|name| shows(h, "Browser", name))
+    });
+    modify(&mut h, "Union");
+    browser(&h).get_by_label("First").click();
+    bodies_boxed_until(&mut h, &[Some("c0000001"), None]);
+    browser(&h).get_by_label("Second").click();
+    bodies_boxed_until(&mut h, &[Some("c0000001"), Some("a0000001")]);
+    step_until(&mut h, "the add answered", ok_enabled);
+    settled(&mut h);
+    assert!(ok_enabled(&h));
+    let (hold, check) = hold_queue(&f, &h, 0);
+    browser(&h).get_by_label("Third").click();
+    bodies_boxed_until(&mut h, &[Some("c0000001"), Some("b0000001")]);
+    let tool = Sent::Edit("tool".to_owned());
+    let base = Sent::Edit("base".to_owned());
+    step_until(&mut h, "the tool's edit sent", |h| {
+        h.state().tabs()[0].sent.contains(&tool)
+    });
+    click_box(&mut h, "Target Body");
+    browser(&h).get_by_label("Fourth").click();
+    bodies_boxed_until(&mut h, &[Some("d0000001"), Some("b0000001")]);
+    for _ in 0..5 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!h.state().tabs()[0].sent.contains(&base));
+        assert!(!ok_enabled(&h));
+        assert!(!h.state().tabs()[0].can_ok());
+    }
+    hold.release();
+    check.wait();
+    step_until(&mut h, "OK on again", ok_enabled);
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Union"),
+        Some(expected(
+            r#"{"type": "fuse", "name": "Union", "base": "d0000001", "tool": "b0000001"}"#
+        ))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [Sent::Begin, Sent::Add, tool, base]
+    );
+    assert!(h.state().tabs()[0].can_ok());
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// Three blocks, the union of the second and the third, then a fourth block.
 const UNION_BETWEEN: &str = r#"{
   "silico": 1,
