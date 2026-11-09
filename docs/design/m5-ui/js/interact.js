@@ -605,6 +605,30 @@
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
   });
 
+  // ───────── The side panes' borders, dragged to resize them (Trevin, 2026-11-09) ─────────
+  // The column moves by the drag's distance from the press, the canvas taking up the
+  // difference, between the pane's least width and what leaves the canvas its own.
+  const MIN = { browser: 200, right: 232, canvas: 340 };
+  document.addEventListener('mousedown', (e) => {
+    const sash = e.target.closest('[data-sash]'); if (!sash || e.button !== 0) return;
+    e.preventDefault();
+    const side = sash.dataset.sash; const other = side === 'browser' ? 'right' : 'browser';
+    const root = document.documentElement;
+    const width = (name) => $(name === 'browser' ? '#browser' : '#right').getBoundingClientRect().width;
+    const start = width(side); const held = width(other); const x0 = e.clientX;
+    // The other held as shown, but a collapsed browser's strip, which keeps its width for later.
+    if (!(other === 'browser' && $('#main').classList.contains('browser-collapsed'))) root.style.setProperty('--' + other + '-w', held + 'px');
+    document.body.classList.add('sashing');
+    const move = (ev) => {
+      const travel = side === 'browser' ? ev.clientX - x0 : x0 - ev.clientX;
+      const most = Math.floor($('#main').getBoundingClientRect().width - held - MIN.canvas);
+      const w = Math.max(MIN[side], Math.min(most, Math.round(start + travel)));
+      root.style.setProperty('--' + side + '-w', w + 'px');
+    };
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); document.body.classList.remove('sashing'); };
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+  });
+
   // Right-click on the timeline and the browser.
   document.addEventListener('contextmenu', (e) => {
     const t = e.target.closest('[data-act="tlItem"],[data-act="featureRow"]'); if (!t) return;

@@ -24,6 +24,7 @@ use crate::changes::{self, Changes};
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::modal::{self, Button, Kind};
+use crate::pane_widths::{KeptWidths, Widths};
 use crate::panes::{self, Pane, Panes};
 use crate::properties;
 use crate::recent::Recents;
@@ -345,6 +346,8 @@ pub struct App<P: Clients + 'static> {
     tab_in_view: Option<SessionId>,
     /// The documents opened lately, if the app keeps a list.
     recents: Option<Recents>,
+    /// The side panes' widths, as dragged, and where they're kept, if anywhere.
+    columns: crate::columns::Columns,
     /// The warm start's state, if the app warms its workers.
     warm: Option<Warm>,
     /// The `silico` an MCP client is told to run (Copy MCP config).
@@ -453,6 +456,7 @@ impl<P: Clients + 'static> App<P> {
             home: false,
             tab_in_view: None,
             recents: None,
+            columns: crate::columns::Columns::new(),
             warm: None,
             silico: "silico".to_owned(),
             documents: directories::UserDirs::new()
@@ -483,6 +487,26 @@ impl<P: Clients + 'static> App<P> {
     pub fn remembering(mut self, recents: Recents) -> Self {
         self.recents = Some(recents);
         self
+    }
+
+    /// The app, laying its side panes out at the widths `widths` keeps once it has read them,
+    /// and keeping there those each drag of a border leaves.
+    #[must_use]
+    pub fn keeping_widths(mut self, widths: KeptWidths) -> Self {
+        self.columns.keeping(widths);
+        self
+    }
+
+    /// The side panes' widths, as dragged (or read, or the prototype's), each its border
+    /// included: what [`keeping_widths`](Self::keeping_widths)' file keeps.
+    pub fn pane_widths(&self) -> Widths {
+        self.columns.chosen()
+    }
+
+    /// Where the side panes' widths are kept: nowhere (read at once, the prototype's) unless
+    /// [`keeping_widths`](Self::keeping_widths) gave a file.
+    pub fn kept_widths(&self) -> &KeptWidths {
+        self.columns.kept()
     }
 
     /// The app, its status bar saying how `warm`, its workers' warm start, stands while no
@@ -650,10 +674,12 @@ impl<P: Clients + 'static> App<P> {
                 wakes.fetch_add(1, Ordering::SeqCst);
                 ctx.request_repaint();
             });
-            // And the threads that keep the recent documents and warm the workers.
+            // And the threads that keep the recent documents and the panes' widths, and warm
+            // the workers.
             if let Some(recents) = &self.recents {
                 recents.waking(ui.ctx());
             }
+            self.columns.waking(ui.ctx());
             if let Some(warm) = &self.warm {
                 warm.waking(ui.ctx());
             }
@@ -732,6 +758,7 @@ impl<P: Clients + 'static> App<P> {
                 name,
                 drawing,
                 remembered,
+                columns,
                 ..
             } = self;
             let mut panes = Panes {
@@ -743,8 +770,12 @@ impl<P: Clients + 'static> App<P> {
                 dialog_key,
                 remembered,
             };
-            panes::fit(tree, ui.available_width());
+            let area = ui.available_rect_before_wrap();
+            let laid = columns.laid(area.width());
+            panes::fit(tree, &laid);
             tree.ui(&mut panes, ui);
+            // Over the panes' borders, after them, so a press there drags the border.
+            columns.handles(ui, area, laid);
             // Over the canvas, drawn after it, so it takes the pointer over its place.
             let canvas = tree
                 .tiles
@@ -844,6 +875,8 @@ impl<P: Clients + 'static> App<P> {
     /// a quit has closed every tab, or kept open while one holds edits; and the next frame
     /// asked for.
     fn after_drawing(&mut self, ui: &mut Ui, mut started: bool) {
+        // A border's drag whose release the panes didn't see (they're gone) ended.
+        self.columns.settle(ui.ctx());
         // The dialog OK'd this frame, if one was (one tab's panes draw a frame), remembered.
         for tab in &mut self.tabs {
             if let Some(oked) = tab.take_oked() {
@@ -912,6 +945,7 @@ impl<P: Clients + 'static> App<P> {
     /// The opens under way and every tab polled; tabs whose sessions closed dropped; and
     /// what the recent documents' thread has told, a document it dropped said.
     fn poll(&mut self) {
+        self.columns.poll();
         let gone = self.recents.as_mut().map(Recents::poll).unwrap_or_default();
         for recent in gone {
             self.message = Some(format!(
