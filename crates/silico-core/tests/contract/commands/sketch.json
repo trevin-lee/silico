@@ -165,6 +165,13 @@
               "null"
             ]
           },
+          "ranking": {
+            "description": "Why each candidate is where it is, one a candidate, in their order: what it's made\nfrom that the broken name is (`shared`), what of the broken name it isn't\n(`unshared`), whether it's the name's own feature's, and, for a name by number that\nfinds nothing, the nearest number and its gap. Empty where the candidates follow\nanother rule, which the suggestion states.",
+            "items": {
+              "$ref": "#/$defs/Rank"
+            },
+            "type": "array"
+          },
           "suggestion": {
             "description": "What to do about it, if Silico can say.",
             "type": [
@@ -183,6 +190,7 @@
           "feature",
           "message",
           "parameter",
+          "ranking",
           "suggestion"
         ],
         "type": "object"
@@ -212,6 +220,68 @@
           "over_defined"
         ],
         "type": "string"
+      },
+      "Nearest": {
+        "additionalProperties": false,
+        "description": "A candidate's element numbered nearest a broken name by number.",
+        "properties": {
+          "element": {
+            "description": "The element, by its own name (`k7f2qx3m.box.Face6`).",
+            "type": "string"
+          },
+          "gap": {
+            "description": "How many numbers apart it and the broken name are.",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "element",
+          "gap"
+        ],
+        "type": "object"
+      },
+      "Rank": {
+        "additionalProperties": false,
+        "description": "Why a candidate for a broken name is where it is among them. The candidates' order\nfollows from it: more `shared` first, then `same_feature`, then by name.",
+        "properties": {
+          "nearest": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Nearest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a name by number that finds nothing and shares nothing with any element, the\ncandidate's element numbered nearest it, and how far; null otherwise."
+          },
+          "same_feature": {
+            "description": "Whether the candidate is an element of the broken name's own feature.",
+            "type": "boolean"
+          },
+          "shared": {
+            "description": "The elements both the candidate's name and the broken one are made from, by their\nown names (a sketch's element by its ID), whole, in the names' order.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "unshared": {
+            "description": "The broken name's other elements, in the names' order: with `shared`, every element\nthe broken name is made from.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "nearest",
+          "same_feature",
+          "shared",
+          "unshared"
+        ],
+        "type": "object"
       },
       "SketchArcRead": {
         "additionalProperties": false,

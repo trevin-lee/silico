@@ -1,1 +1,1 @@
-{"code": "invalid_input", "message": "a transaction is open in session s1", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": null, "suggestion": "commit or roll back the transaction, then close the session", "candidates": [], "advice": null}
+{"code": "invalid_input", "message": "a transaction is open in session s1", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": null, "suggestion": "commit or roll back the transaction, then close the session", "candidates": [], "ranking": [], "advice": null}

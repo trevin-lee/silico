@@ -220,12 +220,11 @@ fn found_face<'a>(
     others: &dyn Fn() -> Vec<Live<'a>>,
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
 ) -> Result<Found, FeatureId> {
-    let broken = |why: &str, candidates: Vec<String>| {
-        Found::Not(Placed::Broken(
-            refused("plane.face", text, why, ElementKind::Face, candidates)
-                .with_feature(sketch.as_str()),
-        ))
+    // The sketch's refusal of the face for `why`, its candidates the caller's to give.
+    let face_refused = |why: &str| {
+        refused("plane.face", text, why, ElementKind::Face).with_feature(sketch.as_str())
     };
+    let broken = |error: Error| Found::Not(Placed::Broken(error));
     let solids = built(related);
     let maps: Vec<&ElementMap> = solids.iter().map(|(map, _)| *map).collect();
     // A broken name's candidates are read from every live solid, so its refusal waits until
@@ -241,10 +240,9 @@ fn found_face<'a>(
             .copied()
             .chain(built(&others).into_iter().map(|(map, _)| map))
             .collect();
-        Ok(broken(
-            why,
+        Ok(broken(face_refused(why).with_ranked(
             Candidates::of(&every, ElementKind::Face).of_name(name),
-        ))
+        )))
     };
     // Read as a fillet's edge is (`references::look_up`): only the related solids built can
     // hold it.
@@ -259,7 +257,7 @@ fn found_face<'a>(
             }
         },
         // The gate refuses a face that isn't a name: not reached from a checked document.
-        Lookup::Refused { why, name: None } => return Ok(broken(&why, Vec::new())),
+        Lookup::Refused { why, name: None } => return Ok(broken(face_refused(&why))),
         // Found, by an unstable name or as another kind of element.
         Lookup::Refused {
             why,
@@ -308,11 +306,12 @@ fn found_face<'a>(
             return Err(on);
         }
         let what = crate::elements::surface_type(&face.surface).word();
+        // The planar faces, by a rule of their own: unranked.
         return Ok(broken(
-            &format!(
+            face_refused(&format!(
                 "names a face that isn't planar: OCCT types its surface a {what}, and a sketch sits only on a face typed a plane"
-            ),
-            planar_faces(&name, related, &others),
+            ))
+            .with_candidates(planar_faces(&name, related, &others)),
         ));
     };
     Ok(Found::Plane { normal, location })
@@ -891,8 +890,21 @@ mod tests {
         assert_eq!(e.feature(), Some("s0000001"));
         assert_eq!(e.parameter(), Some("plane.face"));
         assert_eq!(e.elements(), ["b0000001.box.Face7"]);
-        // A box's Face7 names nothing: its nearest by number, Face6, is the candidate.
+        // A box's Face7 names nothing: its nearest by number, Face6, is the candidate, 1
+        // from it, the box's own, sharing nothing.
         assert_eq!(e.candidates(), ["b0000001.box.Face6"]);
+        assert_eq!(
+            e.ranking(),
+            [crate::Rank {
+                shared: Vec::new(),
+                unshared: vec!["b0000001.box.Face7".to_owned()],
+                same_feature: true,
+                nearest: Some(crate::Nearest {
+                    element: "b0000001.box.Face6".to_owned(),
+                    gap: 1,
+                }),
+            }]
+        );
         assert_eq!(
             e.message(),
             "plane.face, \"b0000001.box.Face7\", names no face of the solids live at the sketch's place: it isn't one of the faces they're made from, or an edit before this sketch removed or remade it"
@@ -952,6 +964,8 @@ mod tests {
         // The five planar faces, by name: Face1 to Face5.
         let want: Vec<String> = (1..=5).map(|i| format!("b0000001.box.Face{i}")).collect();
         assert_eq!(e.candidates(), want);
+        // By a rule of their own, which the suggestion states: unranked.
+        assert!(e.ranking().is_empty(), "{:?}", e.ranking());
     }
 
     #[test]
@@ -976,6 +990,8 @@ mod tests {
         assert_eq!(e.parameter(), Some("plane.x"));
         assert_eq!(e.elements(), ["-z"]);
         assert_eq!(e.candidates(), ["+x", "-x", "+y", "-y"]);
+        // Axis tokens, not names: unranked.
+        assert!(e.ranking().is_empty(), "{:?}", e.ranking());
     }
 
     #[test]

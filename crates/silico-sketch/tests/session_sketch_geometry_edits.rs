@@ -290,6 +290,7 @@ fn a_merge_that_takes_a_conflicting_sketch_past_its_last_freedom_is_refused_as_m
             "cause": WORSE,
             "suggestion": "remove or change one of the constraints named",
             "candidates": [],
+            "ranking": [],
             "advice": null
         }])
     );
@@ -432,6 +433,7 @@ fn a_merge_of_two_locked_ends_makes_a_lock_redundant_and_is_refused_as_main_roll
             "cause": WORSE,
             "suggestion": "remove the constraints named, then make the merge again",
             "candidates": [],
+            "ranking": [],
             "advice": null
         })
     );

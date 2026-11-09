@@ -2,7 +2,7 @@
 //! against committed files (tests/contract/), and changing it means changing them.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use silico_core::{Error, ErrorCode, Warning, WarningCode};
+use silico_core::{Error, ErrorCode, Nearest, Rank, Warning, WarningCode};
 
 fn contract(name: &str) -> String {
     let path = format!("{}/tests/contract/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -17,7 +17,37 @@ fn full() -> Error {
         .with_parameter("radius")
         .with_cause("StdFail_NotDone: BRepFilletAPI_MakeFillet")
         .with_suggestion("reduce the radius below 5 mm")
-        .with_candidates(["Edge2", "Edge4"])
+        .with_ranked(ranked())
+}
+
+/// [`full`]'s candidates, each with its rank, every field of each filled.
+fn ranked() -> [(&'static str, Rank); 2] {
+    [
+        (
+            "Edge2",
+            Rank {
+                shared: vec!["Face1".to_owned()],
+                unshared: vec!["Face4".to_owned()],
+                same_feature: true,
+                nearest: Some(Nearest {
+                    element: "Edge2".to_owned(),
+                    gap: 1,
+                }),
+            },
+        ),
+        (
+            "Edge4",
+            Rank {
+                shared: vec!["Face4".to_owned()],
+                unshared: vec!["Face1".to_owned()],
+                same_feature: false,
+                nearest: Some(Nearest {
+                    element: "Edge4".to_owned(),
+                    gap: 1,
+                }),
+            },
+        ),
+    ]
 }
 
 #[test]
@@ -243,6 +273,36 @@ fn accessors_return_what_was_set() {
     assert_eq!(e.cause(), Some("StdFail_NotDone: BRepFilletAPI_MakeFillet"));
     assert_eq!(e.suggestion(), Some("reduce the radius below 5 mm"));
     assert_eq!(e.candidates(), ["Edge2", "Edge4"]);
+    let ranks: Vec<Rank> = ranked().into_iter().map(|(_, rank)| rank).collect();
+    assert_eq!(e.ranking(), ranks);
+}
+
+#[test]
+fn candidates_and_their_ranking_are_set_together_and_unranked_candidates_clear_it() {
+    // `with_ranked` sets both, one rank a candidate in their order; `with_candidates`, a
+    // list by another rule, leaves no ranking of the candidates it replaced.
+    let ranked_error = full();
+    assert_eq!(ranked_error.candidates(), ["Edge2", "Edge4"]);
+    assert_eq!(ranked_error.ranking().len(), 2);
+    assert_eq!(
+        ranked_error.ranking()[0].nearest.as_ref().unwrap().element,
+        "Edge2"
+    );
+    assert_eq!(
+        ranked_error.ranking()[1].nearest.as_ref().unwrap().element,
+        "Edge4"
+    );
+    let unranked = full().with_candidates(["+x", "-x"]);
+    assert_eq!(unranked.candidates(), ["+x", "-x"]);
+    assert!(unranked.ranking().is_empty());
+    // Ranked with none: neither.
+    let none = full().with_ranked(Vec::<(String, Rank)>::new());
+    assert!(none.candidates().is_empty() && none.ranking().is_empty());
+    // An error never ranked, and a warning, write `ranking` as `[]`.
+    let minimal = serde_json::to_value(Error::new(ErrorCode::Internal, "m")).unwrap();
+    assert_eq!(minimal["ranking"], serde_json::json!([]));
+    let warning = serde_json::to_value(Warning::new(WarningCode::EndsNotJoined, "apart")).unwrap();
+    assert_eq!(warning["ranking"], serde_json::json!([]));
 }
 
 #[test]
@@ -259,7 +319,7 @@ fn errors_are_equal_by_every_field_they_say_and_no_fewer() {
             .with_parameter("radius")
             .with_cause("StdFail_NotDone: BRepFilletAPI_MakeFillet")
             .with_suggestion("reduce the radius below 5 mm")
-            .with_candidates(["Edge2", "Edge4"])
+            .with_ranked(ranked())
     };
     assert_eq!(full_as(ErrorCode::KernelFailed, "fillet failed"), full());
     let apart = [
@@ -272,6 +332,17 @@ fn errors_are_equal_by_every_field_they_say_and_no_fewer() {
         full().with_cause("another cause"),
         full().with_suggestion("another suggestion"),
         full().with_candidates(["Edge2"]),
+        // The same candidates, unranked; or ranked otherwise.
+        full().with_candidates(["Edge2", "Edge4"]),
+        full().with_ranked(ranked().map(|(candidate, rank)| {
+            (
+                candidate,
+                Rank {
+                    same_feature: !rank.same_feature,
+                    ..rank
+                },
+            )
+        })),
     ];
     for other in &apart {
         assert_ne!(&full(), other);

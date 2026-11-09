@@ -145,6 +145,7 @@ fn error(code: &str, message: &str, elements: &[&str], suggestion: &str) -> Valu
         "cause": null,
         "suggestion": suggestion,
         "candidates": [],
+        "ranking": [],
         "advice": null,
     })
 }
@@ -688,6 +689,7 @@ fn a_feature_that_isnt_a_sketch_and_an_unknown_one_are_refused_naming_sketch() {
                 "cause": null,
                 "suggestion": "name a sketch of the document, by its ID",
                 "candidates": ["s0000001", "s0000002", "s0000003"],
+                "ranking": [],
                 "advice": null,
             }],
             "total": 1,
@@ -730,6 +732,7 @@ fn a_malformed_sketch_request_is_refused_by_the_wires_reader() {
             "cause": null,
             "suggestion": suggestion,
             "candidates": [],
+            "ranking": [],
             "advice": null,
         })
     };

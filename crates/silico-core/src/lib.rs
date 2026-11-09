@@ -53,7 +53,7 @@ pub mod warnings;
 pub mod worker;
 pub mod workers;
 
-pub use error::{Error, ErrorCode, Said, Warning, WarningCode};
+pub use error::{Error, ErrorCode, Nearest, Rank, Said, Warning, WarningCode};
 
 /// `bytes` in lowercase hex, two digits each.
 pub(crate) fn hex(bytes: &[u8]) -> String {

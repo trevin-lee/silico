@@ -506,7 +506,7 @@ fn a_lines_extend_in_a_sketch_whose_constraints_conflict_is_refused_as_a_drag_of
         );
         assert_eq!(
             refused,
-            json!([{"code": "over_constrained", "message": "the sketch's constraints conflict, so line na000002 can't be extended", "feature": "s0000001", "elements": ["ka000009", "ka00000d"], "elements_total": 2, "parameter": null, "cause": null, "suggestion": "remove or change one of the constraints named", "candidates": [], "advice": null}]),
+            json!([{"code": "over_constrained", "message": "the sketch's constraints conflict, so line na000002 can't be extended", "feature": "s0000001", "elements": ["ka000009", "ka00000d"], "elements_total": 2, "parameter": null, "cause": null, "suggestion": "remove or change one of the constraints named", "candidates": [], "ranking": [], "advice": null}]),
             "inside: {inside}"
         );
         assert_eq!((f.revision(), f.text()), (at, text));

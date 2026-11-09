@@ -8,5 +8,6 @@
   "cause": null,
   "suggestion": null,
   "candidates": [],
+  "ranking": [],
   "advice": null
 }

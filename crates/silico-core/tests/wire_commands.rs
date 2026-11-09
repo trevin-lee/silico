@@ -2507,3 +2507,124 @@ fn the_sketch_states_words_in_its_snapshot_are_the_states_own() {
     assert_eq!(sketch["request"]["title"], "SketchRequest");
     assert_eq!(sketch["result"]["title"], "SketchResult");
 }
+
+/// Every object holding `candidates` in `value`, at any depth: each error and warning.
+fn with_candidates<'a>(value: &'a serde_json::Value, found: &mut Vec<&'a serde_json::Value>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if object.contains_key("candidates") {
+                found.push(value);
+            }
+            object.values().for_each(|v| with_candidates(v, found));
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|v| with_candidates(v, found)),
+        _ => {}
+    }
+}
+
+#[test]
+fn every_examples_error_ranks_all_its_candidates_or_none() {
+    // Fable's invariant (2026-11-08): `ranking` is `[]` or one entry a candidate, written
+    // after `candidates`, in every error and warning of every example. The two the design
+    // works through by hand are ranked, as their names say; every other is `[]`.
+    let root = contract("commands/examples");
+    let mut files = Vec::new();
+    for command in std::fs::read_dir(&root).unwrap() {
+        for file in std::fs::read_dir(command.unwrap().path()).unwrap() {
+            files.push(file.unwrap().path());
+        }
+    }
+    files.sort();
+    let mut errors = 0;
+    let mut ranked = Vec::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut found = Vec::new();
+        with_candidates(&value, &mut found);
+        for error in found {
+            errors += 1;
+            let candidates = error["candidates"].as_array().unwrap();
+            let ranking = error["ranking"].as_array().unwrap_or_else(|| {
+                panic!("{}: no ranking", path.display());
+            });
+            assert!(
+                ranking.is_empty() || ranking.len() == candidates.len(),
+                "{}",
+                path.display()
+            );
+            let keys: Vec<&String> = error.as_object().unwrap().keys().collect();
+            let at = |key: &str| keys.iter().position(|k| *k == key).unwrap();
+            assert_eq!(at("ranking"), at("candidates") + 1, "{}", path.display());
+            if !ranking.is_empty() {
+                let name = path.strip_prefix(&root).unwrap().display().to_string();
+                ranked.push((name, error["ranking"].clone()));
+            }
+        }
+    }
+    // 78 errors and the one warning's example.
+    assert_eq!(errors, 79);
+    assert_eq!(
+        ranked,
+        [
+            (
+                "check/reference-broken.json".to_owned(),
+                serde_json::json!([{"shared": ["a91cw0de.cylinder.Face1"], "unshared": ["k7f2qx3m.box.Face6"], "same_feature": true, "nearest": null}])
+            ),
+            (
+                "distance/refused-no-such-face.json".to_owned(),
+                serde_json::json!([{"shared": [], "unshared": ["k7f2qx3m.box.Face7"], "same_feature": true, "nearest": {"element": "k7f2qx3m.box.Face6", "gap": 1}}])
+            ),
+        ]
+    );
+    // The warning's is `[]`, as a warning has no candidates to rank.
+    let warning: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("warning/ends-not-joined.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(warning["ranking"], serde_json::json!([]));
+}
+
+#[test]
+fn a_ranking_that_isnt_one_holds_to_no_errors_schema() {
+    // The distance example's error, ranked, holds; each rank missing a field, with a field it
+    // hasn't, or with a field of the wrong type, doesn't; nor a gap of 0, which no name by
+    // number that finds nothing is from its nearest.
+    let error = error_schema();
+    let text = std::fs::read_to_string(contract(
+        "commands/examples/distance/refused-no-such-face.json",
+    ))
+    .unwrap();
+    holds(&error, &text, "the design's");
+    for (from, to) in [
+        (r#""shared": [],"#, ""),
+        (r#""same_feature": true,"#, r#""same_feature": "yes","#),
+        (
+            r#""same_feature": true,"#,
+            r#""same_feature": true, "why": "near","#,
+        ),
+        (r#""gap": 1"#, r#""gap": 0"#),
+        (r#""gap": 1"#, r#""gap": 1.5"#),
+        (
+            r#"{"element": "k7f2qx3m.box.Face6", "gap": 1}"#,
+            r#""k7f2qx3m.box.Face6""#,
+        ),
+        (
+            r#""unshared": ["k7f2qx3m.box.Face7"]"#,
+            r#""unshared": [7]"#,
+        ),
+    ] {
+        assert!(text.contains(from), "{from}");
+        fails(&error, &text.replace(from, to), to);
+    }
+    // And an error with no `ranking` at all.
+    let unranked = text
+        .split_once("  \"ranking\": [")
+        .map(|(before, after)| {
+            let (_, rest) = after.split_once("  ],\n").unwrap();
+            format!("{before}{rest}")
+        })
+        .unwrap();
+    assert!(!unranked.contains("ranking"));
+    fails(&error, &unranked, "no ranking");
+}

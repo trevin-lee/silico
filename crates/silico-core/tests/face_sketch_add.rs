@@ -200,8 +200,27 @@ fn error(
         "cause": null,
         "suggestion": suggestion,
         "candidates": candidates,
+        "ranking": [],
         "advice": null,
     })
+}
+
+/// Face6's rank as Face7's candidate, from the names: Face7 shares nothing with any face,
+/// and Face6, the box's own, is numbered 1 from it.
+fn face6_for_face7() -> Value {
+    json!({"shared": [], "unshared": ["b0000001.box.Face7"], "same_feature": true, "nearest": {"element": "b0000001.box.Face6", "gap": 1}})
+}
+
+/// An error with `ranking` in place of its `[]`.
+trait WithRanking {
+    fn with_ranking(self, ranking: Value) -> Self;
+}
+
+impl WithRanking for Value {
+    fn with_ranking(mut self, ranking: Value) -> Self {
+        self["ranking"] = ranking;
+        self
+    }
 }
 
 /// F1's table for a box's six faces (docs/ports/attacher.md, *Worked frames*).
@@ -306,7 +325,8 @@ fn a_face_that_names_nothing_is_refused_as_broken_with_candidates_and_the_edit_i
             "plane.face",
             "name the face as its feature now names it: the candidates are the likeliest, none taken for it",
             &["b0000001.box.Face6"],
-        ),
+        )
+        .with_ranking(json!([face6_for_face7()])),
         revision,
         &text,
     );
@@ -470,6 +490,7 @@ fn a_face_of_a_pad_blocked_on_a_failed_box_is_refused_naming_the_sketch_and_the_
             "cause": null,
             "suggestion": "mend b0000001 first (`check` says why it failed), or give plane.x to add the sketch all the same",
             "candidates": [],
+            "ranking": [],
             "advice": null,
         }),
         revision,
@@ -506,6 +527,7 @@ fn a_face_of_a_solid_that_couldnt_be_described_is_refused_with_the_kept_fault() 
             "cause": null,
             "suggestion": suggestion,
             "candidates": [],
+            "ranking": [],
             "advice": null,
         }),
         revision,
@@ -560,6 +582,7 @@ fn a_face_of_a_pad_blocked_on_a_sketch_a_description_crash_failed_names_that_ske
         "cause": null,
         "suggestion": "check with fresh to try it again",
         "candidates": [],
+        "ranking": [],
         "advice": null,
     });
     let answer = f.add(
@@ -601,6 +624,7 @@ fn a_worker_that_couldnt_be_had_names_no_feature_in_a_read_of_the_solid_or_of_on
         "cause": null,
         "suggestion": "check with fresh to try it again",
         "candidates": [],
+        "ranking": [],
         "advice": null,
     });
     for feature in ["b0000001", "f0000001"] {
@@ -884,6 +908,7 @@ fn set_field_refuses_a_face_planes_member_of_an_origin_plane_and_a_malformed_pla
                 "cause": null,
                 "suggestion": r#"set plane whole: to a face plane, {"face": "<its name>", "x": "+x", "reversed": false}, or to xy, xz, or yz"#,
                 "candidates": [],
+                "ranking": [],
                 "advice": null,
             }),
             revision,

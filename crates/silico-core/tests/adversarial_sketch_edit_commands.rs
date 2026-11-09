@@ -581,7 +581,7 @@ fn a_remove_of_the_origin_two_hundred_thousand_times_says_it_once_at_its_first_p
             "parameter": "members.0",
             "cause": null,
             "suggestion": "remove the constraints that name it instead",
-            "candidates": [], "advice": null
+            "candidates": [], "ranking": [], "advice": null
         }])
     );
     assert_eq!(envelope["total"], 1);
@@ -734,7 +734,7 @@ fn everything_removed_from_a_padded_sketch_is_applied_and_check_says_why_the_pad
             "parameter": "sketch",
             "cause": "the sketch has no curves to make a profile of (draw a closed outline of lines, arcs, or circles that aren't construction geometry)",
             "suggestion": "fix sketch s0000001 where the cause says, or sweep another sketch",
-            "candidates": [], "advice": null
+            "candidates": [], "ranking": [], "advice": null
         })
     );
     assert!(

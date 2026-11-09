@@ -779,7 +779,23 @@ fn full_error() -> Error {
         .with_parameter("radius")
         .with_cause("StdFail_NotDone: BRepFilletAPI_MakeFillet")
         .with_suggestion("reduce the radius below 5 mm")
-        .with_candidates(["Edge2", "Edge4"])
+        .with_ranked([
+            ("Edge2", rank("Face1", "Face4", true, "Edge2")),
+            ("Edge4", rank("Face4", "Face1", false, "Edge4")),
+        ])
+}
+
+/// A rank with every field filled: one element shared, one not, and the nearest 1 away.
+fn rank(shared: &str, unshared: &str, same_feature: bool, nearest: &str) -> crate::Rank {
+    crate::Rank {
+        shared: vec![shared.to_owned()],
+        unshared: vec![unshared.to_owned()],
+        same_feature,
+        nearest: Some(crate::Nearest {
+            element: nearest.to_owned(),
+            gap: 1,
+        }),
+    }
 }
 
 /// A tree's members and items, in the order written, as text: positions dropped.
@@ -885,7 +901,7 @@ fn the_envelopes_snapshot_refuses_what_no_response_is() {
     // The schema can fail: each of these breaks one rule of section 2.
     let validator = validator();
     let s = r#"{"id": "s1", "path": "p", "revision": 1, "transaction": false, "reloaded": false}"#;
-    let e = r#"{"code": "internal", "message": "m", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": null, "candidates": [], "advice": null}"#;
+    let e = r#"{"code": "internal", "message": "m", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": null, "candidates": [], "ranking": [], "advice": null}"#;
     for bad in [
         r#"{"ok": "true", "session": null, "model": null, "result": 1}"#.to_owned(),
         r#"{"ok": true, "session": null, "model": null}"#.to_owned(),

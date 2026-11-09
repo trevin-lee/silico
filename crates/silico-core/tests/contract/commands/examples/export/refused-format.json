@@ -1,1 +1,1 @@
-{"code": "invalid_input", "message": "format must be 3mf or step, got stl", "feature": null, "elements": [], "elements_total": 0, "parameter": "format", "cause": null, "suggestion": "give one of the formats", "candidates": ["3mf", "step"], "advice": null}
+{"code": "invalid_input", "message": "format must be 3mf or step, got stl", "feature": null, "elements": [], "elements_total": 0, "parameter": "format", "cause": null, "suggestion": "give one of the formats", "candidates": ["3mf", "step"], "ranking": [], "advice": null}

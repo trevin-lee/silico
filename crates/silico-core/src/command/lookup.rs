@@ -198,7 +198,7 @@ impl<'m> Lookup<'m> {
     pub(crate) fn found(&mut self, parameter: &str, text: &str) -> Found<'m> {
         let model = self.model;
         let makers = |id: &FeatureId| model.maker(id);
-        let broken = |why: String, candidates: Vec<String>| {
+        let broken = |why: String, candidates: Vec<(String, crate::Rank)>| {
             let suggestion = if candidates.is_empty() {
                 "name the element as the model now names it: `elements` lists every one"
             } else {
@@ -211,7 +211,7 @@ impl<'m> Lookup<'m> {
             )
             .with_parameter(parameter)
             .with_element(crate::references::cut_short(text))
-            .with_candidates(candidates)
+            .with_ranked(candidates)
             .with_suggestion(suggestion)
         };
         let parsed = if self.selection {

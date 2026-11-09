@@ -391,7 +391,7 @@ The core adds, and builds (*Built*, below):
 1. **The diagnosis kept beside an error.** The read returns, with its outcome, a diagnosis for every answer that stands: `dofs`, the free members (`Translation::free`), and the conflicting, redundant, and partially redundant constraint IDs, beside a solution and a refusal alike.
 2. **Decision 5's disagreeing constraints as data**, in the diagnosis's conflicting list. PlaneGCS doesn't report redundant groups, so the partner a disagreeing constraint repeats isn't known. It stays `unsolved`, and the one named is the one to remove, as the error's suggestion says.
 3. **What a constraint's equations depend on**, `SketchSystem::depends_on`, beside the parameter lists of `SketchSystem::reads` in silico-protocol.
-4. **The solve's problem in the read**, `solve_problem`: the error contract's object (M4.1: `code`, `message`, `feature`, `elements`, `elements_total`, `parameter`, `cause`, `suggestion`, `candidates`, `advice`), the same shape as an `errors[]` entry, present for every refused solve, `over_constrained` included, and `null` when the sketch solved. Its `elements`, for `over_constrained`, are exactly the `conflicting` constraints.
+4. **The solve's problem in the read**, `solve_problem`: the error contract's object (M4.1: `code`, `message`, `feature`, `elements`, `elements_total`, `parameter`, `cause`, `suggestion`, `candidates`, `ranking` (amended, M5), `advice`), the same shape as an `errors[]` entry, present for every refused solve, `over_constrained` included, and `null` when the sketch solved. Its `elements`, for `over_constrained`, are exactly the `conflicting` constraints.
 
 ### Tests
 

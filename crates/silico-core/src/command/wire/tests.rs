@@ -633,11 +633,15 @@ fn every_object_of_the_envelopes_snapshot_is_closed_and_requires_its_fields() {
     let defs: Vec<&String> = schema["$defs"].as_object().unwrap().keys().collect();
     assert_eq!(
         defs,
-        ["Error", "Model", "ModelOf", "Ran", "Refused", "Session"]
+        [
+            "Error", "Model", "ModelOf", "Nearest", "Ran", "Rank", "Refused", "Session"
+        ]
     );
     assert_eq!(schema["title"], "Response");
-    // Five of them are objects, each found and checked.
-    for name in ["Error", "Model", "Ran", "Refused", "Session"] {
+    // Seven of them are objects, each found and checked.
+    for name in [
+        "Error", "Model", "Nearest", "Ran", "Rank", "Refused", "Session",
+    ] {
         assert_eq!(
             schema["$defs"][name]["additionalProperties"],
             serde_json::json!(false),
@@ -1022,7 +1026,7 @@ fn a_response_past_its_limit_is_answered_with_a_refusal_saying_so() {
     assert_eq!(
         response_text_within(&answer, Layout::OneLine, limit),
         format!(
-            r#"{{"ok": false, "session": {{"id": "s1", "path": "bracket.silico", "revision": 4, "transaction": false, "reloaded": false}}, "model": {{"revision": 3, "of": "current", "fault": null}}, "errors": [{{"code": "invalid_input", "message": "the response would be more than the {limit} bytes a response may be", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": "a command that changes the document may have done its work before its answer was written: read the session's revision before asking again", "suggestion": "ask for less at once", "candidates": [], "advice": null}}], "total": 1}}"#
+            r#"{{"ok": false, "session": {{"id": "s1", "path": "bracket.silico", "revision": 4, "transaction": false, "reloaded": false}}, "model": {{"revision": 3, "of": "current", "fault": null}}, "errors": [{{"code": "invalid_input", "message": "the response would be more than the {limit} bytes a response may be", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": "a command that changes the document may have done its work before its answer was written: read the session's revision before asking again", "suggestion": "ask for less at once", "candidates": [], "ranking": [], "advice": null}}], "total": 1}}"#
         )
     );
     // A refusal too long itself is written without its session and model.

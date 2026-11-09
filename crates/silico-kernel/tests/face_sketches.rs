@@ -836,6 +836,7 @@ fn a_cylinders_side_added_without_x_is_refused_as_not_planar_with_the_planar_fac
             "cause": null,
             "suggestion": "name the face as its feature now names it: the candidates are the likeliest, none taken for it",
             "candidates": ["c0000001.cylinder.Face2", "c0000001.cylinder.Face3"],
+            "ranking": [],
             "advice": null,
         })
     );

@@ -177,6 +177,7 @@ fn refused_as(
             "cause": cause,
             "suggestion": suggestion,
             "candidates": [],
+            "ranking": [],
             "advice": null
         })
     );

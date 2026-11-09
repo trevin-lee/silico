@@ -275,7 +275,7 @@ const DESIGN_FILES: [&str; 6] = [
 /// redo it's refused "likewise", its cause "an edit after an undo drops what was undone".
 const REDO_REQUEST: &str = r#"{"session": "s1", "revision": 16, "to": null}"#;
 const REDO_RESULT: &str = r#"{"restored": 15, "undo": 3, "redo": 0, "dropped": 0}"#;
-const REDO_NOTHING: &str = r#"{"code": "invalid_input", "message": "nothing to redo in session s1's transaction", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": "an edit after an undo drops what was undone", "suggestion": "roll back to return to the state the transaction began from", "candidates": [], "advice": null}"#;
+const REDO_NOTHING: &str = r#"{"code": "invalid_input", "message": "nothing to redo in session s1's transaction", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": "an edit after an undo drops what was undone", "suggestion": "roll back to return to the state the transaction began from", "candidates": [], "ranking": [], "advice": null}"#;
 
 #[test]
 fn the_examples_are_the_designs_own_text_and_redos_by_hand_from_its_words() {
