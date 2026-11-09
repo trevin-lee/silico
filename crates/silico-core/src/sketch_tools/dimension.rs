@@ -1477,21 +1477,24 @@ fn flagged(states: &SketchStates) -> BTreeSet<ElementId> {
 /// only for a read of the model the add (or the edit) made (an older one doesn't hold it,
 /// and a newer one is past the moment), of its sketch, where the dimension is there and
 /// still driving, and the change (SD7):
-/// - flagged a constraint the read it was made on didn't (any, not only itself: which of
-///   a group PlaneGCS flags follows the IDs' order);
-/// - or, an add ([`PlacementKind::Add`]), the sketch solved, left its degrees of freedom
-///   where they were, or higher: a driving dimension adds an equation, so one that doesn't
-///   lower the rank is dependent, whatever PlaneGCS's greedy contest flagged (a constraint
-///   flagged already can cover the new group: four of one horizontal distance flag no more
-///   than three). Never an edit ([`PlacementKind::Edit`]): a value changed adds no
-///   equation, so on a solved sketch it leaves the freedoms where they were, over-defining
-///   or not, and they say nothing of it;
-/// - or took the sketch to over defined or no solution from a state that was neither (a
-///   refused solve, whose degrees of freedom say nothing of the change);
-/// - or, an edit, took the sketch from a solve that wasn't refused to one over defined or
-///   with no solution that is: over defined covers a redundant dimension that agrees
-///   (solved), a conflict (refused), and no solution, so an edit moving from the first to
-///   either of the others is new though the state's word may not be, nor its flags.
+/// - an add ([`PlacementKind::Add`]) on a sketch that solved: left its degrees of freedom
+///   where they were, or higher. A driving dimension adds an equation, so one that doesn't
+///   lower the rank is dependent, and one that does isn't, whatever PlaneGCS's greedy
+///   contest flagged: which member of a group it flags can move to another of overlapping
+///   groups as a column is added, so a constraint newly flagged says nothing of the
+///   dimension (a constraint flagged already can cover the new group, too: four of one
+///   horizontal distance flag no more than three);
+/// - an add on a sketch whose solve was refused, where its freedoms say nothing: took the
+///   sketch to over defined or no solution from a state that was neither, or is flagged
+///   itself (an independent row is in no group, so it's never the contest's pick; a
+///   conflicting group lists every member);
+/// - an edit ([`PlacementKind::Edit`]): took the sketch to over defined or no solution from
+///   a state that was neither; or from a solve that wasn't refused to one over defined or
+///   with no solution that is (over defined covers a redundant dimension that agrees,
+///   solved, a conflict, refused, and no solution, so an edit moving from the first to
+///   either of the others is new though the state's word may not be); or, on a refused
+///   sketch, is flagged itself where it wasn't before. A value changed adds no equation, so
+///   on a solved sketch the freedoms say nothing of it.
 ///
 /// So a sketch already over defined, left so, offers each dimension that adds to it, as
 /// SolidWorks prompts for each.
@@ -1507,10 +1510,10 @@ fn flagged(states: &SketchStates) -> BTreeSet<ElementId> {
 /// offered again for another client's timing). The tool places nothing while its last
 /// offer is unsettled, so its own adds never come between.
 ///
-/// One case is taken for the dimension's doing that isn't: a value typed that makes the
-/// geometry degenerate (circles tangent through a point, for one) can newly flag a relation
-/// that doesn't depend on the dimension, and the offer appears, though Driven doesn't repair
-/// the sketch.
+/// A value that makes the geometry degenerate (circles tangent through a point, for one)
+/// lowers the rank at the new solution, so an add placing it reads as dependent and is
+/// offered: the first-order fact, as the diagnosis reads it (item 32's Addendum 5), not a
+/// false offer.
 pub fn offer(read: &SketchRead, revision: Revision, placement: &Placement) -> Option<Offer> {
     offer_of(
         &read.sketch,
@@ -1540,21 +1543,19 @@ fn offer_of(
     let state = *states.constraints.get(&placement.constraint)?;
     let sketch_state = states.state;
     let over_defines = if placement.read.next() == Some(placement.revision) {
-        let newly_flagged = flagged(states)
-            .iter()
-            .any(|id| !placement.flagged.contains(id));
-        let dependent = match placement.kind {
-            PlacementKind::Add { dofs } => states.solve_problem.is_none() && states.dofs >= dofs,
-            PlacementKind::Edit { .. } => false,
-        };
+        let refused = states.solve_problem.is_some();
         let newly_prompted = prompted(sketch_state) && !prompted(placement.before);
-        let newly_refused = match placement.kind {
-            PlacementKind::Add { .. } => false,
+        match placement.kind {
+            PlacementKind::Add { dofs } if !refused => states.dofs >= dofs,
+            PlacementKind::Add { .. } => newly_prompted || state.flagged(),
             PlacementKind::Edit { before_refused } => {
-                prompted(sketch_state) && states.solve_problem.is_some() && !before_refused
+                let newly_refused = prompted(sketch_state) && refused && !before_refused;
+                let newly_own = refused
+                    && state.flagged()
+                    && !placement.flagged.contains(&placement.constraint);
+                newly_prompted || newly_refused || newly_own
             }
-        };
-        newly_flagged || dependent || newly_prompted || newly_refused
+        }
     } else {
         match placement.kind {
             PlacementKind::Add { .. } => state.flagged(),

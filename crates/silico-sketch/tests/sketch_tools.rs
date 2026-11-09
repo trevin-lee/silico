@@ -6,6 +6,7 @@
 //! in PlaneGCS's terms: a free arc has five) less its equations, its solved points where the
 //! tool drew them (the tools draw what their relations hold), and its profile's regions.
 
+use std::io::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -932,4 +933,318 @@ fn point_at(read: &SketchRead, want: (i64, i64)) -> ElementId {
         .unwrap()
         .id
         .clone()
+}
+
+// --- SD7's offer by rank (c3): a solved sketch's add judged by its freedoms alone ----------
+
+/// A document of one sketch on xy: its `points`, `lines`, and `constraints`, each a JSON
+/// list's insides.
+fn sketch_doc(points: &str, lines: &str, constraints: &str) -> String {
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{points}], "lines": [{lines}], "circles": [], "arcs": [], "constraints": [{constraints}]}}]}}"#
+    )
+}
+
+/// The constraints `read` flags (conflicting, redundant, or partially), by ID.
+fn flagged_in(read: &SketchRead) -> std::collections::BTreeSet<ElementId> {
+    read.states
+        .constraints
+        .iter()
+        .filter(|(_, state)| state.flagged())
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// What SD7 offers for the constraint `id` (`kind`, an add or an edit) on the read after
+/// the change, the read `before` of the revision `at` the one before it: the core's own
+/// [`offer`].
+fn judged(
+    f: &Fixture,
+    before: &SketchRead,
+    at: Revision,
+    id: &str,
+    kind: silico_core::sketch_tools::PlacementKind,
+) -> (SketchRead, Option<Offer>) {
+    let (after, made) = f.read_at();
+    let placement = silico_core::sketch_tools::Placement {
+        sketch: sketch_id(),
+        constraint: ElementId::new(id).unwrap(),
+        revision: made,
+        read: at,
+        before: before.states.state,
+        flagged: flagged_in(before),
+        kind,
+    };
+    let offered = silico_core::sketch_tools::offer(&after, made, &placement);
+    (after, offered)
+}
+
+/// The five rows of two overlapping dependent groups (the study's): points p1 (10, 0), p2
+/// (30, 0), p3 (50, 0), y1 = 0, y2 = 0, `horizontal` p1-p2, y3 = 0, `horizontal` p2-p3;
+/// and a free line (10, 20)-(30, 25) elsewhere.
+fn overlapping(more: &str) -> String {
+    let points = r#"{"id": "pa000001", "x": 10, "y": 0, "construction": false}, {"id": "pa000002", "x": 30, "y": 0, "construction": false}, {"id": "pa000003", "x": 50, "y": 0, "construction": false}, {"id": "pa000004", "x": 10, "y": 20, "construction": false}, {"id": "pa000005", "x": 30, "y": 25, "construction": false}"#;
+    let lines = r#"{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000004", "to": "pa000005", "construction": false}"#;
+    let constraints = format!(
+        r#"{{"id": "ka000001", "type": "distance_y", "a": "origin", "b": "pa000001", "value": 0, "driving": true}}, {{"id": "ka000002", "type": "distance_y", "a": "origin", "b": "pa000002", "value": 0, "driving": true}}, {{"id": "ka000003", "type": "horizontal", "line": "na000001"}}, {{"id": "ka000004", "type": "distance_y", "a": "origin", "b": "pa000003", "value": 0, "driving": true}}, {{"id": "ka000005", "type": "horizontal", "line": "na000002"}}{more}"#
+    );
+    sketch_doc(points, lines, &constraints)
+}
+
+/// `form` added as the constraint `id` by `sketch_add`.
+fn add_constraint(f: &Fixture, id: &str, form: Form) {
+    f.sketch_add(&Members {
+        constraints: vec![silico_core::document::SketchConstraint {
+            id: ElementId::new(id).unwrap(),
+            form,
+        }],
+        ..Members::default()
+    });
+}
+
+#[test]
+fn an_independent_dimension_on_overlapping_dependent_groups_is_never_offered() {
+    // The five rows hold two dependent groups that share y2 = 0; PlaneGCS's contest flags
+    // some of them. A driving length on the free line elsewhere, 5√17 ≈ 20.616 (its length
+    // as drawn), takes one freedom and joins no group: never offered, whichever members the
+    // contest flags after it, its ID first or last in the tags. Whether the contest's pick
+    // moved is recorded, so a reviewer sees the case is real.
+    for id in ["00000001", "zzzzzzzz"] {
+        let f = opened_with(ToolKind::Line, &overlapping(""));
+        let (before, at) = f.read_at();
+        assert!(before.states.solve_problem.is_none(), "{:?}", before.states);
+        let length = Length::rounded(f64::sqrt(20.0 * 20.0 + 5.0 * 5.0)).unwrap();
+        add_constraint(
+            &f,
+            id,
+            Form::Length {
+                line: Reference::Element(ElementId::new("na000003").unwrap()),
+                value: length,
+                driving: true,
+            },
+        );
+        let (after, offered) = judged(
+            &f,
+            &before,
+            at,
+            id,
+            silico_core::sketch_tools::PlacementKind::Add {
+                dofs: before.states.dofs,
+            },
+        );
+        assert_eq!(after.states.dofs, before.states.dofs - 1);
+        let moved = flagged_in(&after) != flagged_in(&before);
+        let _ = writeln!(
+            std::io::stderr(),
+            "the length {id}: the contest's flags {:?} before, {:?} after: moved {moved}",
+            flagged_in(&before),
+            flagged_in(&after)
+        );
+        assert!(offered.is_none(), "{id}: {offered:?}, {:?}", after.states);
+    }
+}
+
+#[test]
+fn a_dependent_dimension_on_the_same_sketch_is_offered() {
+    // y3 = 0 again, by a second driving distance: dependent (the freedoms stay), offered.
+    let f = opened_with(ToolKind::Line, &overlapping(""));
+    let (before, at) = f.read_at();
+    add_constraint(
+        &f,
+        "00000001",
+        Form::DistanceY {
+            a: Reference::Origin,
+            b: Reference::Element(ElementId::new("pa000003").unwrap()),
+            value: Length::default(),
+            driving: true,
+        },
+    );
+    let (after, offered) = judged(
+        &f,
+        &before,
+        at,
+        "00000001",
+        silico_core::sketch_tools::PlacementKind::Add {
+            dofs: before.states.dofs,
+        },
+    );
+    assert_eq!(after.states.dofs, before.states.dofs);
+    assert!(offered.is_some(), "{:?}", after.states);
+}
+
+#[test]
+fn a_dimension_joining_a_conflict_is_offered_by_its_own_state() {
+    // The free line's length 30, and 31: a conflict, refused. A third length, 32, joins the
+    // conflicting group: its own state is conflicting, offered.
+    let more = r#", {"id": "kb000001", "type": "length", "line": "na000003", "value": 30, "driving": true}, {"id": "kb000002", "type": "length", "line": "na000003", "value": 31, "driving": true}"#;
+    let f = opened_with(ToolKind::Line, &overlapping(more));
+    let (before, at) = f.read_at();
+    assert!(before.states.solve_problem.is_some(), "{:?}", before.states);
+    add_constraint(
+        &f,
+        "kb000003",
+        Form::Length {
+            line: Reference::Element(ElementId::new("na000003").unwrap()),
+            value: Length::rounded(32.0).unwrap(),
+            driving: true,
+        },
+    );
+    let (after, offered) = judged(
+        &f,
+        &before,
+        at,
+        "kb000003",
+        silico_core::sketch_tools::PlacementKind::Add {
+            dofs: before.states.dofs,
+        },
+    );
+    let own = after
+        .states
+        .constraints
+        .get(&ElementId::new("kb000003").unwrap());
+    assert_eq!(
+        own,
+        Some(&ConstraintState::Conflicting),
+        "{:?}",
+        after.states
+    );
+    assert!(offered.is_some());
+}
+
+#[test]
+fn a_value_edit_that_takes_a_solved_sketch_to_a_conflict_is_offered_once() {
+    // The free line's length 30, and its ends' x distance 20 (as drawn): solved. The length
+    // edited to 15, shorter than 20 across: no solution, refused, offered by the edit; the
+    // read after it, a later revision, offers nothing again.
+    let more = |value: &str| {
+        format!(
+            r#", {{"id": "kb000001", "type": "length", "line": "na000003", "value": {value}, "driving": true}}, {{"id": "kb000002", "type": "distance_x", "a": "pa000004", "b": "pa000005", "value": 20, "driving": true}}"#
+        )
+    };
+    let f = opened_with(ToolKind::Line, &overlapping(&more("30")));
+    let (before, at) = f.read_at();
+    assert!(before.states.solve_problem.is_none(), "{:?}", before.states);
+    let edited = f
+        .sessions
+        .replace_text(&s1(), at, overlapping(&more("15")))
+        .wait_timeout(HANG)
+        .unwrap_or_else(|_| panic!("replace_text didn't answer in {HANG:?}"));
+    edited.result.unwrap_or_else(|p| panic!("{p:?}"));
+    let kind = silico_core::sketch_tools::PlacementKind::Edit {
+        before_refused: false,
+    };
+    let (after, offered) = judged(&f, &before, at, "kb000001", kind);
+    assert!(after.states.solve_problem.is_some(), "{:?}", after.states);
+    assert!(offered.is_some(), "{:?}", after.states);
+    // Judged on a later read (another edit's), the moment's past: nothing.
+    let (later_before, later_at) = (after, f.read_at().1);
+    let placement = silico_core::sketch_tools::Placement {
+        sketch: sketch_id(),
+        constraint: ElementId::new("kb000001").unwrap(),
+        revision: later_at,
+        read: at,
+        before: later_before.states.state,
+        flagged: flagged_in(&later_before),
+        kind,
+    };
+    assert!(
+        silico_core::sketch_tools::offer(&later_before, later_at.next().unwrap(), &placement)
+            .is_none()
+    );
+}
+
+#[test]
+fn a_dimension_that_takes_a_freedom_from_a_solved_sketch_is_never_offered() {
+    // Over chains the Line tool draws (each from the origin or not, along the axes, level,
+    // plumb, and slanted), each driving distance x and y from the origin to each point, as
+    // drawn, added one at a time: where the sketch solved and the add took exactly one
+    // freedom, SD7 offers nothing, whatever the contest flags.
+    let chains: [&[(f64, f64)]; 6] = [
+        &[
+            (0.0, 0.0),
+            (40.0, 0.0),
+            (40.0, 10.0),
+            (10.0, 10.0),
+            (10.0, 30.0),
+            (0.0, 30.0),
+            (0.0, 0.0),
+        ],
+        &[(5.0, 5.0), (25.0, 5.2), (25.3, 30.0), (45.0, 41.0)],
+        &[
+            (0.0, 0.0),
+            (20.0, 0.1),
+            (35.0, 12.0),
+            (35.2, 40.0),
+            (0.1, 40.0),
+        ],
+        &[(-20.0, 10.0), (0.1, 10.0), (0.0, 30.0), (-15.0, 45.0)],
+        &[
+            (10.0, -10.0),
+            (30.0, -10.2),
+            (30.0, 0.0),
+            (50.0, 0.1),
+            (50.2, 20.0),
+        ],
+        &[
+            (12.0, 7.0),
+            (31.0, 18.0),
+            (47.0, 9.0),
+            (47.0, 30.0),
+            (12.0, 30.3),
+            (12.0, 7.0),
+        ],
+    ];
+    let mut judged_count = 0;
+    for chain in chains {
+        let mut f = opened(ToolKind::Line);
+        for (x, y) in chain {
+            f.click(*x, *y);
+        }
+        f.send(Event::Enter);
+        let mut n = 0u32;
+        let points: Vec<(ElementId, f64, f64)> = f
+            .read()
+            .members
+            .points
+            .iter()
+            .map(|p| (p.id.clone(), p.x.mm(), p.y.mm()))
+            .collect();
+        for (p, x, y) in points {
+            for (along_x, value) in [(true, x), (false, y)] {
+                let (before, at) = f.read_at();
+                n += 1;
+                let id = format!("{:08}", 70_000_000 + n);
+                let (a, b) = (Reference::Origin, Reference::Element(p.clone()));
+                let value = Length::rounded(value).unwrap();
+                let form = if along_x {
+                    Form::DistanceX {
+                        a,
+                        b,
+                        value,
+                        driving: true,
+                    }
+                } else {
+                    Form::DistanceY {
+                        a,
+                        b,
+                        value,
+                        driving: true,
+                    }
+                };
+                add_constraint(&f, &id, form);
+                let kind = silico_core::sketch_tools::PlacementKind::Add {
+                    dofs: before.states.dofs,
+                };
+                let (after, offered) = judged(&f, &before, at, &id, kind);
+                if after.states.solve_problem.is_none()
+                    && before.states.solve_problem.is_none()
+                    && after.states.dofs == before.states.dofs - 1
+                {
+                    judged_count += 1;
+                    assert!(offered.is_none(), "{id}: {offered:?}, {:?}", after.states);
+                }
+            }
+        }
+    }
+    assert!(judged_count >= 20, "{judged_count} judged");
 }
