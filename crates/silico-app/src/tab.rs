@@ -41,8 +41,8 @@ pub const OVERTAKEN: &str = "The dimension's choice wasn't applied: the sketch c
 /// than it names where there are too many to list, ARCHITECTURE.md's invariant 9), and its
 /// suggestion, from a `check` of the model the timeline's marks came from; whether it's a
 /// warning's; and the core's error or warning itself, whole, if it's one (a refusal said
-/// in words alone isn't): what its card reads its code, feature, parameter, and candidates
-/// from, and copies as the JSON an agent gets.
+/// in words alone isn't): what its card reads its code, feature, parameter, candidates,
+/// and their ranking from, and copies as the JSON an agent gets.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Said {
     pub warning: bool,
@@ -129,6 +129,14 @@ impl Said {
         self.source
             .as_ref()
             .map_or(&[], |source| source.said().candidates)
+    }
+
+    /// Why each of its [`candidates`](Self::candidates) is where it is, as the core ranked
+    /// them: one for each, or none where they follow another rule.
+    pub fn ranking(&self) -> &[silico_core::Rank] {
+        self.source
+            .as_ref()
+            .map_or(&[], |source| source.said().ranking)
     }
 
     /// The core's error or warning as the command API writes it, byte for byte: the error

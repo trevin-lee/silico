@@ -296,11 +296,7 @@ impl LeftOut {
             };
             parts.push(format!("{} {word}", self.features));
         }
-        match parts.as_slice() {
-            [] => None,
-            [one] => Some(one.clone()),
-            [rest @ .., last] => Some(format!("{} and {last}", rest.join(", "))),
-        }
+        (!parts.is_empty()).then(|| crate::words::listed(&parts, "and"))
     }
 }
 
@@ -1678,11 +1674,7 @@ fn gone_words(
             }
         })
         .collect();
-    let what = match parts.as_slice() {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    };
+    let what = crate::words::listed(&parts, "and");
     let verb = if dropped.len() == 1 { "is" } else { "are" };
     let mut said = format!("{what} {verb} gone after the rebuild");
     if let [(_, one)] = dropped {
@@ -2800,7 +2792,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             three.words().as_deref(),
-            Some("1 face, 2 vertices and 2 features")
+            Some("1 face, 2 vertices, and 2 features")
         );
     }
 

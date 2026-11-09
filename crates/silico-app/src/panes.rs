@@ -3774,10 +3774,137 @@ mod property_panel_drawn {
 
     /// [`part`] with Hole selected, its card [`broken`]'s.
     fn broken_hole() -> Tab {
+        hole_said(&broken())
+    }
+
+    /// [`part`] with Hole selected, its card `error`'s.
+    fn hole_said(error: &silico_core::Error) -> Tab {
         let mut tab = part();
-        tab.said.insert("c0000001".to_owned(), Said::of(&broken()));
+        tab.said.insert("c0000001".to_owned(), Said::of(error));
         tab.selection_mut().select_feature(fid("c0000001"));
         tab
+    }
+
+    /// [`broken`], its candidates ranked as the core ranks them (#417), by hand, as the
+    /// core's sharing rule gives them: the broken name made from Face1 and Face4, Edge2 from
+    /// Face1 alone and Edge4 from Face4 alone, each of its feature, by name.
+    fn ranked() -> silico_core::Error {
+        let names = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
+        let sharing = |shared: &str, unshared: &str| silico_core::Rank {
+            shared: names(&[shared]),
+            unshared: names(&[unshared]),
+            same_feature: true,
+            nearest: None,
+        };
+        broken().with_ranked([
+            ("Edge2", sharing("Face1", "Face4")),
+            ("Edge4", sharing("Face4", "Face1")),
+        ])
+    }
+
+    /// [`ranked`]'s whys, as the card words them (by hand from `worded`'s doc).
+    const EDGE2_WHY: &str = "Made from Face1, as the broken name is, but not from Face4";
+    const EDGE4_WHY: &str = "Made from Face4, as the broken name is, but not from Face1";
+
+    #[test]
+    fn each_candidate_says_why_the_core_ranked_it_under_its_name() {
+        // `.cand .why`: under each name, on the body's 16 px line, 10.5 in the accent, the
+        // core's ranking in words, the first's after "Closest · " (the heading's "closest
+        // first"); each row's description in the accessibility tree its why alone, its label
+        // as before.
+        let h = drawn(hole_said(&ranked()));
+        assert!(h.query_by_label("CANDIDATES, CLOSEST FIRST").is_some());
+        let first = format!("{}{EDGE2_WHY}", crate::properties::CLOSEST);
+        let mut lines = Vec::new();
+        for (name, words) in [("Edge2", first.as_str()), ("Edge4", EDGE4_WHY)] {
+            let shown = text(&h, name);
+            let why = text(&h, words);
+            at(
+                why.pos,
+                Pos2::new(shown.pos.x, shown.pos.y + css::LH),
+                words,
+            );
+            assert_eq!(
+                why.galley.job.sections[0].format.font_id,
+                body(css::CANDS_FS)
+            );
+            assert_eq!(colour(&why, 0), css::CARD_ACCENT);
+            lines.push(why.galley.rows.len());
+        }
+        let described = |label: &str| h.get_by_label(label).accesskit_node().description();
+        assert_eq!(described("Closest · Edge2").as_deref(), Some(EDGE2_WHY));
+        assert_eq!(described("Edge4").as_deref(), Some(EDGE4_WHY));
+        // Each row as high as its name and its why's lines: the buttons under them lower,
+        // by the lines the whys add, than under [`broken`]'s, whose rows have no whys.
+        let unranked = drawn(broken_hole());
+        let edit = |h: &Harness<'static, Shown>| {
+            h.get_by_role_and_label(Role::Button, "Edit Hole")
+                .rect()
+                .top()
+        };
+        let added = (lines[0] + lines[1]) as f32 * css::LH;
+        assert!(
+            near(edit(&h) - edit(&unranked), added),
+            "{} lower, not {added}",
+            edit(&h) - edit(&unranked)
+        );
+    }
+
+    #[test]
+    fn a_why_too_long_for_its_row_wraps_whole_and_the_row_grows() {
+        // A pane 180 wide: the first's why wraps to three lines or more, inside its row's
+        // padding, every character drawn (never cut, as the candidate's own name is); the
+        // row as high as its name and every line of its why.
+        let width = 180.0;
+        let h = drawn_at(hole_said(&ranked()), width);
+        let words = format!("{}{EDGE2_WHY}", crate::properties::CLOSEST);
+        let why = text(&h, &words);
+        let lines = why.galley.rows.len();
+        assert!(lines >= 3, "{lines} lines");
+        assert!(!why.galley.elided);
+        let whole: String = words.chars().filter(|chr| !chr.is_whitespace()).collect();
+        assert_eq!(crate::modal::tests::drawn_characters(&why), whole);
+        // The row's inside: the pane less the panel's padding, the card's border and its
+        // body's padding, and the row's own.
+        let inside =
+            PANE.x + width - css::PAD - css::BORDER - css::EC_HEAD_SIDE - css::CAND_PADDING_X;
+        assert!(
+            why.pos.x + why.galley.size().x <= inside + 0.5,
+            "{} past {inside}",
+            why.pos.x + why.galley.size().x
+        );
+        let shown = text(&h, "Edge2");
+        let next = text(&h, "Edge4");
+        let row_bottom = shown.pos.y + (1 + lines) as f32 * css::LH + css::CAND_PADDING_Y;
+        assert!(
+            near(
+                next.pos.y,
+                row_bottom + css::CAND_MARGIN + css::CAND_PADDING_Y
+            ),
+            "Edge4 at {}, not under Edge2's {lines} lines of why",
+            next.pos.y
+        );
+    }
+
+    #[test]
+    fn candidates_the_core_gives_no_ranking_say_nothing_of_closeness() {
+        // [`broken`]'s candidates follow no ranking (`with_candidates`): another rule, which
+        // its suggestion states, so the heading says CANDIDATES alone, no row says it's
+        // closest or why, and none is described.
+        let h = drawn(broken_hole());
+        assert!(h.query_by_label("CANDIDATES").is_some());
+        assert!(h.query_by_label("CANDIDATES, CLOSEST FIRST").is_none());
+        assert!(h.query_by_label("Closest · Edge2").is_none());
+        for name in ["Edge2", "Edge4"] {
+            assert_eq!(h.get_by_label(name).accesskit_node().description(), None);
+        }
+        assert!(
+            painted(&h).into_iter().all(|shape| match shape {
+                Shape::Text(shown) => !shown.galley.text().contains("Closest"),
+                _ => true,
+            }),
+            "no Closest drawn"
+        );
     }
 
     /// The text the frame just stepped copied, if it copied any.
@@ -3813,8 +3940,8 @@ mod property_panel_drawn {
             "Elements: Edge3, Edge5 (the first 2 of 5)",
             "Parameter: edges",
             "Pick the edges again",
-            "CANDIDATES, CLOSEST FIRST",
-            "Closest · Edge2",
+            "CANDIDATES",
+            "Edge2",
             "Edge4",
         ];
         let tops: Vec<f32> = lines
@@ -4157,7 +4284,8 @@ mod property_panel_drawn {
         let fix = parameter_top + css::LH + css::EC_KV_MARGIN;
         let arrow = text(&h, "→");
         at(arrow.pos, Pos2::new(body_left, fix), "→");
-        let heading = text(&h, "CANDIDATES, CLOSEST FIRST");
+        // Unranked candidates (`with_candidates`): CANDIDATES alone.
+        let heading = text(&h, "CANDIDATES");
         let heading_top = fix + css::LH + css::EC_FIX_MARGIN;
         at(
             heading.pos,
@@ -4173,12 +4301,12 @@ mod property_panel_drawn {
             css::CAPITALS_SPACING
         );
         assert_eq!(colour(&heading, 0), css::CARD_ACCENT);
-        // `.cand`s: across the body, its lines and its padding high, 4 apart: the first
-        // two lines, its name and, under it, `.why`'s "Closest · " (10.5, in the accent, on
-        // the body's 16 px line); the second its name alone.
+        // `.cand`s: across the body, its line and its padding high, 4 apart, each its name
+        // alone (unranked, no why: a ranked row's why is placed by
+        // `each_candidate_says_why_the_core_ranked_it_under_its_name`).
         let body_right = inner_right - css::EC_HEAD_SIDE;
         let mut top = heading_top + css::LH + css::CANDS_MARGIN;
-        for (name, lines) in [("Edge2", 2.0), ("Edge4", 1.0)] {
+        for (name, lines) in [("Edge2", 1.0), ("Edge4", 1.0)] {
             let row = Rect::from_min_max(
                 Pos2::new(body_left, top),
                 Pos2::new(
@@ -4199,22 +4327,6 @@ mod property_panel_drawn {
             );
             assert_eq!(shown.galley.job.sections[0].format.font_id, mono());
             assert_eq!(colour(&shown, 0), css::CAND_TEXT);
-            if lines > 1.0 {
-                let why = text(&h, "Closest · ");
-                at(
-                    why.pos,
-                    Pos2::new(
-                        body_left + css::CAND_PADDING_X,
-                        top + css::CAND_PADDING_Y + css::LH,
-                    ),
-                    "Closest · ",
-                );
-                assert_eq!(
-                    why.galley.job.sections[0].format.font_id,
-                    body(css::CANDS_FS)
-                );
-                assert_eq!(colour(&why, 0), css::CARD_ACCENT);
-            }
             top = row.bottom() + css::CAND_MARGIN;
         }
         // `.ec-actions`: Edit Hole (`.btn-secondary`, Gray.300, off: its words Gray.750),
