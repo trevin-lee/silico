@@ -280,16 +280,15 @@ pub struct Frame<'a> {
     /// own. Where it lands is [`project`]'s: in perspective, a vertex nearer the eye than
     /// [`MIN_EYE_DISTANCE`] has none, and isn't picked. Finite and above 0.
     pub vertices: Option<f32>,
-    /// The colour behind the bodies, sRGB and not premultiplied: opaque, its alpha 255, the
-    /// frame composited over the pass as it is; or none, its alpha 0 (its colour unread),
-    /// the frame composited over what the pass already holds, so what the caller painted
-    /// under it shows wherever no body is (the app's canvas, a gradient, its theme's
-    /// `VIEWPORT_FRAME_BG`). There, what the frame holds is premultiplied, each pixel its
-    /// colour times its coverage and its alpha the coverage (its edges are alpha blended, not
-    /// drawn with alpha to coverage), and it's blended over the pass as such
-    /// (`BlendWithBackground::Premultiplied`). Any other alpha is refused: a frame isn't
-    /// translucent. A render's is its own, opaque ([`BACKGROUND`]).
-    pub background: [u8; 4],
+    /// The colour behind the bodies, sRGB, opaque, the frame composited over the pass as it
+    /// is; or none, the frame composited over what the pass already holds, so what the
+    /// caller painted under it shows wherever no body is (the app's canvas, a gradient, its
+    /// theme's `VIEWPORT_FRAME_BG`). There, what the frame holds is premultiplied, each pixel
+    /// its colour times its coverage and its alpha the coverage (its edges are alpha
+    /// blended, not drawn with alpha to coverage), and it's blended over the pass as such
+    /// (`BlendWithBackground::Premultiplied`). A frame isn't translucent: a colour has no
+    /// alpha to give. A render's is its own ([`BACKGROUND`]).
+    pub background: Option<[u8; 3]>,
 }
 
 /// The colours a frame's outlines are drawn in, sRGB: its highlights' (a selection's) and
@@ -608,14 +607,12 @@ impl Renderer {
             .iter()
             .map(|&b| (b, lit.get(&b).unwrap_or(&plain)))
             .collect();
-        let [red, green, blue, alpha] = frame.background;
         let built = self.build(
             &view,
             frame.pixels_per_point,
             Colours {
                 outlines: frame.outlines,
-                // Checked: 255 or 0.
-                background: (alpha == 255).then(|| srgb([red, green, blue])),
+                background: frame.background.map(srgb),
             },
             &drawn,
             picking.map(|(rect, id)| Picked {
@@ -826,15 +823,6 @@ impl Renderer {
                 numbers.sort_unstable();
                 numbers.dedup();
             }
-        }
-        let [red, green, blue, alpha] = frame.background;
-        if alpha != 255 && alpha != 0 {
-            return Err(InvalidParameter {
-                parameter: "background",
-                message: format!(
-                    "background [{red}, {green}, {blue}, {alpha}] must be opaque, its alpha 255, or none, its alpha 0: a frame isn't translucent"
-                ),
-            });
         }
         if let Some(radius) = frame.vertices
             && !(radius.is_finite() && radius > 0.0)

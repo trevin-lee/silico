@@ -60,11 +60,11 @@ fn frame<'a>(
 
 /// An opaque black behind the bodies, as the app's viewport's was before its gradient: the
 /// app's frames have none now ([`NO_BACKGROUND`]).
-const VIEWPORT_BG: [u8; 4] = [0, 0, 0, 255];
+const VIEWPORT_BG: Option<[u8; 3]> = Some([0, 0, 0]);
 
 /// No background: the app's frames' (its theme's `VIEWPORT_FRAME_BG`), composited over the
 /// gradient it paints under them.
-const NO_BACKGROUND: [u8; 4] = [0, 0, 0, 0];
+const NO_BACKGROUND: Option<[u8; 3]> = None;
 
 fn rect(min: [i32; 2], size: [u32; 2]) -> PixelRect {
     PixelRect { min, size }
@@ -523,7 +523,7 @@ fn a_frame_is_composited_into_the_pass_and_a_refused_one_not_at_all() {
             // The corner is the frame's background, opaque; the centre is the front face, not
             // it.
             let corner = at(1, 1);
-            assert_eq!(corner, VIEWPORT_BG);
+            assert_eq!(corner, [0, 0, 0, 255]);
             assert_ne!(at(32, 26), corner);
             assert_eq!(at(32, 26)[3], 255);
             // Composited again, without another frame: the same frame.
@@ -547,15 +547,10 @@ fn a_frames_background_is_the_colour_it_gives_and_a_renders_its_own() {
             // Each colour at the corner, off the box, to 1 of 255 (sRGB to linear and back);
             // the box's front face at the centre the same whatever's behind it.
             let mut centres = vec![];
-            for background in [
-                VIEWPORT_BG,
-                [255, 255, 255, 255],
-                [12, 200, 77, 255],
-                [230, 233, 237, 255],
-            ] {
+            for background in [[0, 0, 0], [255, 255, 255], [12, 200, 77], [230, 233, 237]] {
                 let commands = r
                     .prepare(&Frame {
-                        background,
+                        background: Some(background),
                         ..frame(&camera, &[1], &[], None)
                     })
                     .unwrap();
@@ -563,12 +558,13 @@ fn a_frames_background_is_the_colour_it_gives_and_a_renders_its_own() {
                 let at = |x: u32, y: u32| pixels[usize::try_from(y * WIDTH + x).unwrap()];
                 for (x, y) in [(1, 1), (62, 46), (32, 5)] {
                     let got = at(x, y);
-                    for k in 0..4 {
+                    for k in 0..3 {
                         assert!(
                             got[k].abs_diff(background[k]) <= 1,
                             "{background:?} at ({x}, {y}): {got:?}"
                         );
                     }
+                    assert_eq!(got[3], 255, "{background:?} at ({x}, {y}): {got:?}");
                 }
                 centres.push(at(32, 26));
             }
@@ -597,14 +593,6 @@ fn a_frames_background_is_the_colour_it_gives_and_a_renders_its_own() {
                     assert_eq!(at(x, y), [red, green, blue, 255], "{under:?} at ({x}, {y})");
                 }
                 assert_eq!(at(32, 26), centres[0], "{under:?}: the face");
-            }
-            // One translucent is refused, naming it: a frame has a background or none.
-            for alpha in [1, 128, 254] {
-                let translucent = Frame {
-                    background: [12, 200, 77, alpha],
-                    ..frame(&camera, &[1], &[], None)
-                };
-                assert_eq!(refused(r, &translucent), "background");
             }
             // A render keeps its own, the light grey.
             let [red, green, blue] = BACKGROUND;
@@ -674,8 +662,7 @@ fn a_frame_with_no_background_blends_an_edges_rim_over_the_pass_premultiplied_on
                     let got = pixel(&over, x, 19);
                     assert_eq!(got[3], 255, "{under:?}: ({x}, 19) {got:?}");
                     for k in 0..3 {
-                        let want =
-                            f64::from(EDGE[k]) * alpha + f64::from(under[k]) * (1.0 - alpha);
+                        let want = f64::from(EDGE[k]) * alpha + f64::from(under[k]) * (1.0 - alpha);
                         assert!(
                             (f64::from(got[k]) - want).abs() <= 1.5,
                             "{under:?}: ({x}, 19) {got:?}, channel {k}, against {want} (α {alpha})"

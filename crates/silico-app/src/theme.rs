@@ -496,9 +496,9 @@ pub const SKETCH_BAR_HEIGHT: f32 = 32.0;
 /// `viewport_background`, Gray.0. Each end its own constant, to be set from a screenshot.
 pub const VIEWPORT_BG_TOP: Rgba8 = rgba8(0x1e1f22);
 pub const VIEWPORT_BG_BOTTOM: Rgba8 = rgba8(0x3a3c41);
-/// The renderer's frames' own background: none, alpha 0, so they're composited over the
-/// canvas's gradient, painted under them, which shows wherever no body is.
-pub const VIEWPORT_FRAME_BG: Rgba8 = [0, 0, 0, 0];
+/// The renderer's frames' own background: none, so they're composited over the canvas's
+/// gradient, painted under them, which shows wherever no body is.
+pub const VIEWPORT_FRAME_BG: Option<[u8; 3]> = None;
 /// A body's colour (the prototype's; `re_ui` has none).
 pub const VIEWPORT_BODY: Rgba8 = rgba8(0xb9c0ca);
 /// A body's edges (the prototype's).
@@ -2248,7 +2248,6 @@ mod tests {
                 VIEWPORT_BG_BOTTOM,
                 [0x3a, 0x3c, 0x41, 0xff],
             ),
-            ("VIEWPORT_FRAME_BG", VIEWPORT_FRAME_BG, [0, 0, 0, 0]),
             // interact.js's `overlay`, its `dot`: a hovered vertex white, a selected one
             // #4676ff, each ringed `stroke="#000"`.
             (
@@ -2269,6 +2268,7 @@ mod tests {
         ] {
             assert_eq!(color, rgba, "{name}");
         }
+        assert_eq!(VIEWPORT_FRAME_BG, None);
         // The dot's `r="4.5"` and its ring's `stroke-width="1"`.
         assert_eq!((VIEWPORT_VERTEX_RADIUS, VIEWPORT_VERTEX_RING), (4.5, 1.0));
     }
