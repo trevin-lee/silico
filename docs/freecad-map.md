@@ -14,6 +14,7 @@ FreeCAD keeps tests in two places. Python tests are in `src/Mod/<Module>/<Module
 | Units and quantities | `src/Base/Unit.*`, `src/Base/Quantity.*`, `src/Base/UnitsSchema*` | |
 | Spreadsheet parameters | `src/Mod/Spreadsheet/App/Sheet.cpp`, `Cell.cpp`, `PropertySheet.cpp` | |
 | Sketch object and solving | `src/Mod/Sketcher/App/SketchObject.cpp` (recompute, the shape, restore), `SketchObjectConstraints.cpp` (solve, constraint edits), `SketchObjectGeometry.cpp`, `SketchObjectExternal.cpp`, `SketchObjectOperations.cpp` (editing tools), `Sketch.cpp`, `Constraint.cpp`, `SketchAnalysis.cpp` | On main, `SketchObject.cpp` was split into these in 2026; 1.1.3, the oracle's, has one `SketchObject.cpp`. They hold most of the edge cases. docs/ports/sketcher.md; editing (add, delete, split, trim, extend, merging ends): docs/ports/sketch-edit.md |
+| Sketch tools' inferred relations | `src/Mod/Sketcher/Gui/DrawSketchHandler.cpp`, `DrawSketchDefaultHandler.h`, `Utils.cpp`, `DrawSketchHandler*.h` | Which inferred relations a drawing tool leaves out as the sketch already implies them: docs/ports/sketch-tools.md |
 | Sketch solver (link, don't port) | `src/Mod/Sketcher/App/planegcs/` | |
 | Sketch-to-face conversion | `src/Mod/Part/App/FaceMaker*.cpp` | Handles nested profiles, holes, and islands. |
 | Attachment (sketch planes, datums) | `src/Mod/Part/App/Attacher.*` | |

@@ -34,8 +34,11 @@
 //!   about 1e-9 rad: an obround's join), so both hold where it's written. FreeCAD 1.1.3's
 //!   `seekAutoConstraint` adds both whatever; its main, since `d77c9647c3`, skips the
 //!   alignment wherever there's a tangency; this rule sits between them. Every one the
-//!   pointer shows at the accepting click is added, redundant or not (#278's G). Ctrl held,
-//!   or *Automatic relations* off, suppresses them all, and only them (#278's F).
+//!   pointer shows at the accepting click is added, and it shows none the sketch already
+//!   fixes (#278's G as amended, [`implied`]): an inferred relation asserting two points
+//!   level or plumb that the sketch already holds so, or reading only points it holds
+//!   fixed, is left out before it's shown. Ctrl held, or *Automatic relations* off,
+//!   suppresses them all, and only them (#278's F).
 //! - **Points lined up** (#278's E, and the coordinator's decision of 2026-10-31, as
 //!   SolidWorks wakes a point by hovering it): a point placed on nothing lines up only with
 //!   a woken point, one the pointer has passed within the pick tolerance of while the tool's
@@ -75,6 +78,7 @@ mod build;
 mod circle;
 mod dimension;
 mod geometry;
+mod implied;
 mod infer;
 mod line;
 mod point;
@@ -85,6 +89,7 @@ mod tests;
 use crate::command::{FeatureIds, Revision};
 use crate::document::sketch_edit::Members;
 use crate::document::{ElementId, FeatureId, Reference, Sketch};
+use crate::sketch_states::SketchStates;
 use crate::{Error, ErrorCode};
 use adds::Adds;
 
@@ -92,6 +97,7 @@ pub use dimension::{
     DimensionEvent, DimensionPreview, LEVEL, Offer, OfferChoice, OfferRequest, PARALLEL, Placement,
     PlacementKind, SmartDimension, TypedValue, freedoms, offer, read_typed,
 };
+pub use implied::implied_by;
 pub use infer::{ANGLE_TOLERANCE_DEGREES, CROSSING_CURVES, WAKE};
 
 /// A point or a vector in the sketch's plane, `[x, y]`, in millimetres.
@@ -126,7 +132,8 @@ impl ToolKind {
 /// What a tool works against: the sketch, by its feature's ID; the newest `sketch` read's
 /// members, as solved, and the revision of the model it read; the pick tolerance, in
 /// millimetres, that the viewport gives (a few pixels at its zoom); whether *Automatic
-/// relations* is on; and whether the tool draws for construction.
+/// relations* is on; whether the tool draws for construction; and the newest read's states,
+/// which points it fixes.
 #[derive(Debug, Clone, Copy)]
 pub struct Context<'a> {
     pub sketch_id: &'a FeatureId,
@@ -140,6 +147,12 @@ pub struct Context<'a> {
     /// construction either way, every other point not), and the relations inferred are the
     /// same. Smart Dimension, which adds no curve, doesn't read it.
     pub construction: bool,
+    /// The newest read's states: its points' (fully defined or not) are what a drawing tool
+    /// reads to leave out an inferred relation the sketch already fixes (#278's G as amended,
+    /// `implied`), and its constraints' and the sketch's are what Smart Dimension reads to
+    /// judge whether the dimension it placed over-defines the sketch, and so offers what it
+    /// may become (SD7). A sketch of free points has none to give: an empty read's are right.
+    pub states: &'a SketchStates,
 }
 
 /// The keys held with an event: Shift (a square), and Ctrl (no inferred relations).
@@ -438,6 +451,8 @@ pub struct SketchTool {
     /// The gesture and its preview before the press in progress, for [`Event::Cancel`] to
     /// put back: none with no press in progress.
     before_press: Option<BeforePress>,
+    /// The classes of the newest view, built once for it ([`implied::ViewClasses`]).
+    classes: implied::ViewClasses,
 }
 
 /// A tool's gesture and preview as they were before a press.
@@ -486,6 +501,7 @@ impl SketchTool {
             adds: Adds::new(),
             woken: Vec::new(),
             before_press: None,
+            classes: implied::ViewClasses::default(),
         }
     }
 
@@ -595,6 +611,7 @@ impl SketchTool {
         }
         let pending = self.adds.members();
         let view = infer::View::of(context.sketch, &pending);
+        self.classes.keep_for(&view.sketch, context.states);
         let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
             context.tolerance
         } else {
@@ -636,6 +653,7 @@ impl SketchTool {
                 tolerance,
                 infer: context.automatic_relations && !keys.ctrl,
                 woken: &woken,
+                classes: &self.classes,
             },
             shift: keys.shift,
             ids,
