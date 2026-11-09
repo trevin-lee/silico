@@ -2092,6 +2092,9 @@ impl<P: Clients + 'static> App<P> {
         // Smart Dimension's Modify box, at its dimension's text, and the over-define prompt
         // (SD7), each the prototype's.
         let modify = mode.modify_view();
+        // Known by the tab's session and the sketch mode's opening, so each sketch mode's
+        // boxes are its own.
+        let owner = sketch::dimension::modify_owner(&id, mode.serial);
         let offer = mode.offer_view(&name);
         let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
@@ -2118,8 +2121,8 @@ impl<P: Clients + 'static> App<P> {
         }
         *started |= action != BarAction::None;
         // Whole in the canvas, and clear of the palette.
-        if let Some(asked) =
-            modify.and_then(|view| sketch::dimension::modify_box(ui.ctx(), &view, canvas, palette))
+        if let Some(asked) = modify
+            .and_then(|view| sketch::dimension::modify_box(ui.ctx(), owner, &view, canvas, palette))
         {
             tab.sketch_modify(sessions, asked);
             *started = true;
