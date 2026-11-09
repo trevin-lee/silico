@@ -977,7 +977,7 @@ mod tests {
         for (name, rows) in [
             ("FILE", 5.0),
             ("EDIT", 4.0),
-            ("REBUILD", 3.0),
+            ("REBUILD", 4.0),
             ("VIEW", 12.0),
             ("SELECTION", 5.0),
             ("DIALOGS", 2.0),

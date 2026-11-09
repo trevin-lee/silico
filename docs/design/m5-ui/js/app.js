@@ -25,6 +25,7 @@
     del: { label: 'Delete', keys: ['Del'], group: 'Edit' },
     rebuild: { label: 'Rebuild', keys: ['Mod', 'B'], group: 'Rebuild', icon: 'rebuild', desc: 'Rebuilds what changed. Resumes a stopped rebuild' },
     rebuildAll: { label: 'Rebuild everything', keys: ['Mod', 'Shift', 'B'], group: 'Rebuild', desc: 'Every feature, ignoring the cache' },
+    reload: { label: 'Reload', keys: ['Mod', 'R'], group: 'Rebuild', desc: 'Reads the file from disk again, then rebuilds every feature' },
     stop: { label: 'Stop rebuild', keys: ['Esc'], group: 'Rebuild', icon: 'stop' },
     whatsWrong: { label: "What's wrong", keys: [], group: 'Rebuild', icon: 'error', desc: 'Every problem in the document' },
     createSketch: { label: 'Create Sketch', keys: [], group: 'Create', icon: 'sketch', desc: 'Pick an origin plane or a flat face, then sketch on it' },
@@ -32,11 +33,6 @@
     pocket: { label: 'Pocket', keys: [], group: 'Create', icon: 'pocket', desc: "Cuts a sketch's profile out of the solid" },
     revolve: { label: 'Revolve', keys: [], group: 'Create', icon: 'revolve', desc: 'Sweeps a profile around an axis' },
     groove: { label: 'Groove', keys: [], group: 'Create', icon: 'groove', desc: 'Cuts a profile swept around an axis' },
-    box: { label: 'Box', keys: [], group: 'Create', icon: 'box' },
-    cylinder: { label: 'Cylinder', keys: [], group: 'Create', icon: 'cylinder' },
-    sphere: { label: 'Sphere', keys: [], group: 'Create', icon: 'sphere' },
-    cone: { label: 'Cone', keys: [], group: 'Create', icon: 'cone' },
-    torus: { label: 'Torus', keys: [], group: 'Create', icon: 'torus' },
     fillet: { label: 'Fillet', keys: [], group: 'Modify', icon: 'fillet', desc: 'Rounds the selected edges' },
     chamfer: { label: 'Chamfer', keys: [], group: 'Modify', icon: 'chamfer', desc: 'Bevels the selected edges' },
     union: { label: 'Union', keys: [], group: 'Modify', icon: 'union' },
@@ -78,8 +74,10 @@
     cancel: { label: 'Cancel', keys: ['Esc'], group: 'Dialogs' },
     shortcuts: { label: 'Keyboard shortcuts', keys: ['?'], group: 'Help', icon: 'help' },
   };
-  const FEATURE_ICON = { sketch: 'sketch', pad: 'pad', pocket: 'pocket', fillet: 'fillet', chamfer: 'chamfer', revolve: 'revolve', groove: 'groove', box: 'box' };
-  const FEATURE_KIND = { sketch: 'Sketch', pad: 'Pad', pocket: 'Pocket', fillet: 'Fillet', chamfer: 'Chamfer' };
+  // The primitives' icons and names stay for those a file holds, which edit but are never made here
+  // (Trevin's decision of 2026-11-09: solids are made sketch-first).
+  const FEATURE_ICON = { sketch: 'sketch', pad: 'pad', pocket: 'pocket', fillet: 'fillet', chamfer: 'chamfer', revolve: 'revolve', groove: 'groove', box: 'box', cylinder: 'cylinder', sphere: 'sphere', cone: 'cone', torus: 'torus' };
+  const FEATURE_KIND = { sketch: 'Sketch', pad: 'Pad', pocket: 'Pocket', fillet: 'Fillet', chamfer: 'Chamfer', box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', cone: 'Cone', torus: 'Torus' };
 
   // ───────── Documents ─────────
   function bracketFeatures() {
@@ -441,7 +439,7 @@
             const bodyErr = d.problems.find((p) => p.severity === 'error');
             const lastHealthy = [...d.features].reverse().find((f) => f.type !== 'sketch' && d.health[f.id] === 'healthy');
             body += row({ id: 'body1', depth: 2, icon: 'body', name: 'Body1', meta: lastHealthy ? esc(lastHealthy.name) : '', eye: S.vis.body, hidden: !S.vis.body, selected: S.selRow === 'body1', mark: bodyErr ? 'error' : null, markTip: bodyErr ? bodyErr.title : '', act: 'bodyRow' });
-          } else body += `<div class="tree-empty">${d.features.length ? 'No body: ' + (d.problems[0] ? esc(d.problems[0].title) : 'nothing builds one yet') : 'None yet. A pad or a primitive makes one.'}</div>`;
+          } else body += `<div class="tree-empty">${d.features.length ? 'No body: ' + (d.problems[0] ? esc(d.problems[0].title) : 'nothing builds one yet') : 'None yet. A pad makes one.'}</div>`;
         }
         const sketches = d.features.filter((f) => f.type === 'sketch');
         body += row({ id: 'sketches', depth: 1, caret: E.sketches, icon: 'folder', name: 'Sketches', meta: sketches.length ? '' : '0' });
@@ -723,7 +721,7 @@
     if (roll >= d.features.length) items += rollBar();
     if (!d.features.length) items = '<span class="tl-empty">Features appear here, in order, as you add them.</span>';
     const errs = d.problems.filter((p) => p.severity === 'error').length;
-    $('#timeline').innerHTML = `<span class="tl-label">Timeline</span><div class="tl-track" role="toolbar" aria-label="Features in order">${items}</div>
+    $('#timeline').innerHTML = `<span class="tl-label">Timeline</span><div class="tl-track" role="toolbar" aria-label="Features in order" data-act="tlTrack">${items}</div>
       <div class="tl-right">${errs ? `<button class="st-item err-text" data-act="whatsWrong">${icon('error')} ${errs} error${errs > 1 ? 's' : ''}</button>` : ''}<span>${d.features.length} features</span><button class="ab-btn" data-act="noop" data-tip="Timeline options">${icon('gear')}</button></div>`;
   }
   function rollBar() { return `<div class="tl-roll" data-act="noop" data-roll="1" role="separator" aria-label="Rollback bar" data-tip="Rollback bar" data-tipd="Drag to see the part as it was at an earlier feature. (Onshape's; Fusion's marker is out of M5)"></div>`; }
@@ -870,6 +868,12 @@
         <div class="m-head">${icon('warn')}<span>Keep your edits</span></div>
         <div class="m-body"><p style="margin:0;color:var(--g750)">You keep working on your version. ${esc(d.file)} keeps its new contents on disk, and Save stays off until you reload or Save As. The status bar shows <span class="warn-text">Changed on disk</span> meanwhile.</p></div>
         <div class="m-foot"><button class="btn btn-secondary" data-act="closeModal">Back</button><button class="btn btn-secondary" data-act="keepMineConfirm">Keep working</button><button class="btn btn-primary" data-act="saveAsCmd">Save As now…</button></div></div></div>`;
+    }
+    if (M.type === 'reloadDirty') {
+      return `<div class="backdrop" data-act="closeModal"><div class="modal" role="dialog" aria-modal="true" data-stop="1">
+        <div class="m-head">${icon('rebuild')}<span>Reload ${esc(M.file)} from disk?</span></div>
+        <div class="m-body"><p style="margin:0;color:var(--g750)">It has ${M.edits} unsaved edit${M.edits === 1 ? '' : 's'}. Reloading drops them.</p></div>
+        <div class="m-foot"><button class="btn btn-danger" data-act="reloadDirtyDiscard">Reload, discard my edits</button><span style="flex:1"></span><button class="btn btn-secondary" data-act="closeModal">Cancel</button></div></div></div>`;
     }
     if (M.type === 'closeDirty') {
       return `<div class="backdrop" data-act="closeModal"><div class="modal" role="dialog" aria-modal="true" data-stop="1">
