@@ -187,6 +187,8 @@ pub struct CanvasMenu {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Drawn {
     pub pointed: Option<usize>,
+    /// The item the pointer is on, whether it's on or off (`pointed` is the one on).
+    pub hovered: Option<usize>,
     pub clicked: Option<usize>,
     pub plane: Option<OriginPlane>,
     pub planes_layer: Option<egui::LayerId>,
@@ -342,8 +344,11 @@ impl CanvasMenu {
                 menu::separator(ui, width);
             }
             let response: Response = menu::item(ui, &shown.line(lit == Some(at)), width);
-            if shown.off.is_none() && response.hovered() {
-                drawn.pointed = Some(at);
+            if response.hovered() {
+                drawn.hovered = Some(at);
+                if shown.off.is_none() {
+                    drawn.pointed = Some(at);
+                }
             }
             if response.clicked() {
                 drawn.clicked = Some(at);

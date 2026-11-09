@@ -212,10 +212,11 @@ struct Waiting {
 /// while they're open, and whether they're held open (Enter chose Create Sketch, till the
 /// keys light another item or the pointer moves onto anything in the menu but Create
 /// Sketch); whether it's yet to be drawn (its first frame lets go of any planes a menu
-/// before it held open); the rows the cast found (none if it wasn't cast); the item or row
-/// lit and the one the pointer was last over; what it was cast on (the selection's model,
-/// and each body drawn with its mesh); the wheel's steps not yet whole; the list's scroll,
-/// whether it was just stepped, and its width.
+/// before it held open); what the pointer was last on ([`Target`]); the rows the cast
+/// found (none if it wasn't cast); the item or row lit and the one the pointer was last
+/// over; what it was cast on (the selection's model, and each body drawn with its mesh);
+/// the wheel's steps not yet whole; the list's scroll, whether it was just stepped, and its
+/// width.
 #[derive(Debug)]
 struct Menu {
     phase: Phase,
@@ -227,6 +228,7 @@ struct Menu {
     planes_layer: Option<egui::LayerId>,
     planes_open: bool,
     fresh: bool,
+    target: Target,
     rows: Vec<Row>,
     lit: Option<usize>,
     pointed: Option<usize>,
@@ -780,6 +782,7 @@ impl SelectOther {
             planes_layer: None,
             planes_open: false,
             fresh: true,
+            target: Target::Off,
             rows,
             lit: None,
             pointed: None,
@@ -1227,32 +1230,48 @@ fn context_ui(ui: &mut Ui, menu: &mut Menu, act: &mut Option<Act>) {
         menu.planes_open,
         std::mem::take(&mut menu.fresh),
     );
-    let (pointed, clicked) = (drawn.pointed, drawn.clicked);
+    let (pointed, hovered, clicked) = (drawn.pointed, drawn.hovered, drawn.clicked);
     menu.planes_layer = drawn.planes_layer;
     if let Some(plane) = drawn.plane {
         *act = Some(Act::Plane(plane));
         return;
     }
-    let before = menu.pointed;
     if let Some(at) = pointer_lights(ui, pointed, &mut menu.pointed) {
         menu.lit = Some(at);
     }
     // Create Sketch's planes held open by Enter go once the pointer moves onto anything of
     // the menu but Create Sketch (another item, one that's off, the separator), as hovering
     // another item closes a submenu in every menu; a move into the planes, or off the menu,
-    // keeps them. Onto as [`pointer_lights`] has it: a nudge within the item the pointer
-    // rests on is no move onto it.
+    // keeps them. Onto: what the pointer is on changed ([`Target`]), so a nudge within what
+    // it rests on, or a move of none, is no move onto it.
     let over_menu = pointer_over(ui.ctx(), ui.layer_id());
+    let target = match hovered {
+        Some(at) => Target::Item(at),
+        None if over_menu => Target::Between,
+        None => Target::Off,
+    };
+    let before = std::mem::replace(&mut menu.target, target);
     let on_create_sketch = pointed
         .and_then(|at| menu.context.items.get(at))
         .is_some_and(|shown| shown.item == CanvasItem::CreateSketch);
-    let onto = pointed.is_none() || pointed != before;
+    let onto = target != before;
     if moved(ui) && over_menu && !on_create_sketch && onto {
         menu.planes_open = false;
     }
     if let Some(at) = clicked {
         *act = Some(Act::Context(at));
     }
+}
+
+/// What the context menu's pointer is on, as the last frame found it: off the menu (in
+/// Create Sketch's planes, or past the menu); on it at no item (the separator, the padding);
+/// or on the item at a place, whether that item is on or off. The pointer moves onto
+/// something only when this changes: a move within it, or a move of none, isn't one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Off,
+    Between,
+    Item(usize),
 }
 
 /// Whether the pointer is over `layer`, read outside any input closure.
@@ -1469,6 +1488,7 @@ mod tests {
             planes_layer: None,
             planes_open: false,
             fresh: true,
+            target: Target::Off,
             rows: (1..=u32::try_from(rows).unwrap()).map(row).collect(),
             lit: None,
             pointed: None,
@@ -2386,8 +2406,9 @@ mod tests {
     fn a_press_where_no_layer_is_closes_a_menu_whose_planes_arent_open() {
         // #444's mutants: with Create Sketch's planes not open, a press where egui finds no
         // layer at all is off the menu, and closes it; a press on the menu (Fit, 306 to 330)
-        // doesn't. Every point of a window egui lays out is on a layer (its root's, the
-        // panels', the background), so it's off them, past the screen's 1000 points.
+        // doesn't. With the planes closed, `on` is None only off every layer, past the
+        // screen's 1000 points here; the same rule with the planes open, a press on the
+        // background, is the next test's.
         let ctx = themed();
         let mut so = SelectOther {
             menu: Some(opened(2, Phase::Context)),
@@ -2424,6 +2445,115 @@ mod tests {
         });
         assert_eq!(found, Some(None), "no layer at the press");
         assert!(!so.is_open());
+    }
+
+    #[test]
+    fn a_press_on_the_background_with_the_planes_open_closes_the_menu() {
+        // #444's review (round 5, T16): Create Sketch's planes held open by Enter and drawn,
+        // two frames; a press at (50, 50), on the background's layer, neither the menu's
+        // nor the planes': off both, so the menu closes, as a press on the browser, the
+        // timeline, or the toolbar does.
+        let ctx = themed();
+        let mut so = SelectOther {
+            menu: Some(planes_held(&ctx)),
+            ..Default::default()
+        };
+        for time in 1..=2 {
+            pass(&ctx, time, Vec::new(), |ui| {
+                so.show(ui.ctx());
+            });
+        }
+        assert!(so.menu.as_ref().unwrap().planes_layer.is_some());
+        let (mut selection, mut view) = (Selection::default(), View::default());
+        let at = Pos2::new(50.0, 50.0);
+        let press = vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ];
+        pass(&ctx, 3, press, |ui| {
+            so.pressed_off(&mut selection, &mut view, ui.ctx());
+        });
+        assert!(!so.is_open());
+    }
+
+    #[test]
+    fn from_off_the_menu_or_its_planes_onto_the_separator_or_an_off_item_lets_the_planes_go() {
+        // #444's review (round 5, T15): the planes Enter held open; the pointer off the
+        // menu, or in the planes; then straight onto the separator (378 to 387) or Clear
+        // selection, off (387 to 411): onto something of the menu but Create Sketch, so the
+        // planes go.
+        for (onto, what) in [
+            (Pos2::new(330.0, 382.5), "the separator"),
+            (Pos2::new(330.0, 399.0), "Clear selection, off"),
+        ] {
+            for from_planes in [false, true] {
+                let ctx = themed();
+                let mut so = SelectOther {
+                    menu: Some(planes_held(&ctx)),
+                    ..Default::default()
+                };
+                let held = |so: &mut SelectOther, time: u32, at: Option<Pos2>| {
+                    let events = at.map(egui::Event::PointerMoved).into_iter().collect();
+                    pass(&ctx, time, events, |ui| {
+                        so.show(ui.ctx());
+                    });
+                    so.menu.as_ref().unwrap().planes_open
+                };
+                assert!(held(&mut so, 1, None));
+                assert!(held(&mut so, 2, None));
+                let from = if from_planes {
+                    let planes = so.menu.as_ref().unwrap().planes_layer.unwrap();
+                    ctx.memory(|memory| memory.area_rect(planes.id))
+                        .unwrap()
+                        .center()
+                } else {
+                    Pos2::new(20.0, 20.0)
+                };
+                assert!(
+                    held(&mut so, 3, Some(from)),
+                    "{what}, from the planes: {from_planes}"
+                );
+                assert!(
+                    !held(&mut so, 4, Some(onto)),
+                    "{what}, from the planes: {from_planes}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_move_of_none_over_an_off_item_keeps_the_planes_enter_held_open() {
+        // #444's review (round 5, Q24): the pointer resting on Clear selection, off (387 to
+        // 411), and the keys on Create Sketch, Enter holding its planes open; then a move to
+        // the same point, as a window may send: no move onto anything, so they stay.
+        let ctx = themed();
+        let mut menu = planes_held(&ctx);
+        menu.planes_open = false;
+        let mut so = SelectOther {
+            menu: Some(menu),
+            ..Default::default()
+        };
+        let held = |so: &mut SelectOther, time: u32, at: Option<Pos2>| {
+            let events = at.map(egui::Event::PointerMoved).into_iter().collect();
+            pass(&ctx, time, events, |ui| {
+                so.show(ui.ctx());
+            });
+            let menu = so.menu.as_ref().unwrap();
+            (menu.lit, menu.planes_open)
+        };
+        let clear = Pos2::new(330.0, 399.0);
+        held(&mut so, 1, None);
+        held(&mut so, 2, None);
+        assert_eq!(held(&mut so, 3, Some(clear)), (Some(4), false));
+        so.menu.as_mut().unwrap().planes_open = true;
+        assert_eq!(held(&mut so, 4, None), (Some(4), true));
+        assert_eq!(held(&mut so, 5, Some(clear)), (Some(4), true));
+        assert_eq!(held(&mut so, 6, Some(clear)), (Some(4), true));
     }
 
     #[test]

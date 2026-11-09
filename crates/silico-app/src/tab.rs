@@ -1408,7 +1408,8 @@ impl Tab {
     }
 
     /// The face the canvas's context menu is over, as read for its type
-    /// ([`menu_face_read`](Self::menu_face_read)): of nothing while no menu is open over one.
+    /// ([`menu_face_read`](Self::menu_face_read)): of nothing once its answer is taken, or
+    /// the menu closes or isn't over a face.
     pub fn menu_face(&self) -> &crate::measures::Measures {
         &self.menu_face
     }
@@ -1416,7 +1417,8 @@ impl Tab {
     /// The face the canvas's context menu is over read for its type, as the selection
     /// view's face is (`elements`, through `crate::measures`): asked as the menu opens over
     /// it, polled, and its answer given the menu, whose Sketch on this face is there only
-    /// for a plane; the read let go as the menu closes. Never waited on.
+    /// for a plane; the read let go once its answer is taken, or the menu closes or isn't
+    /// over a face. Never waited on.
     fn menu_face_read<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -1429,7 +1431,8 @@ impl Tab {
                 self.menu_face
                     .ask(sessions, &self.id, Some(*of), Some(measured.clone()));
             }
-            // No menu over a face: its read let go (`ask` does nothing when nothing changed).
+            // Its answer taken, or no menu over a face: its read let go (`ask` does nothing
+            // when nothing changed).
             None => self.menu_face.ask(sessions, &self.id, None, None),
         }
         self.menu_face.poll(sessions, &self.id);
