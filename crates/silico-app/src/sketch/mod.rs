@@ -108,24 +108,11 @@ pub fn prefix(state: SketchState) -> Option<&'static str> {
     }
 }
 
-/// Whether a sketch's browser row, `row` (its name's response), asks for Edit Sketch: by a
-/// double-click, or its context menu's Edit Sketch, on only while `can` (fusion.md, *Sketch
-/// mode*, [esk]).
+/// Whether a sketch's browser row, `row` (its name's response), asks for Edit Sketch by a
+/// double-click, on only while `can` (fusion.md, *Sketch mode*, [esk]). Its context menu's
+/// Edit Sketch is the feature's menu's (`crate::feature_menu`), as every feature row's is.
 pub fn edit_asked(row: Option<&egui::Response>, can: bool) -> bool {
-    let Some(row) = row else {
-        return false;
-    };
-    let mut asked = can && row.double_clicked();
-    row.context_menu(|ui| {
-        if ui
-            .add_enabled(can, egui::Button::new("Edit Sketch"))
-            .clicked()
-        {
-            asked = true;
-            ui.close();
-        }
-    });
-    asked
+    can && row.is_some_and(egui::Response::double_clicked)
 }
 
 /// A `sketch` read, answered: the revision of the model it read (none if it named none),

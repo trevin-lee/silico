@@ -653,19 +653,20 @@ mod tests {
         // Each group's height: its title's 16 line, 4, its 1 underline, 4, and 22 a row.
         let height =
             |rows: f32| css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN + rows * css::ROW_H;
-        // By hand: File 5 rows (135), Edit 2 (69), Rebuild 3 (91), View 12 (289),
-        // Selection 5 (135), Dialogs 2 (69), Sketch 9 (223), Help 1 (47). The least height
-        // that takes three columns, filled in order, is 438: below it View can't take
-        // Selection (289 + 14 + 135 = 438), and Selection to Help (135 + 14 + 69 + 14 + 223 +
-        // 14 + 47 = 516) take two more. At 438, File, Edit, and Rebuild (323); View and
-        // Selection (438); Dialogs, Sketch, and Help (69 + 14 + 223 + 14 + 47 = 367).
+        // By hand: File 5 rows (135), Edit 4 (113: Undo, Redo, Rename, Delete), Rebuild 3
+        // (91), View 12 (289), Selection 5 (135), Dialogs 2 (69), Sketch 9 (223), Help 1
+        // (47). The least height that takes three columns, filled in order, is 438: below it
+        // View can't take Selection (289 + 14 + 135 = 438), and Selection to Help (135 + 14 +
+        // 69 + 14 + 223 + 14 + 47 = 516) take two more. At 438, File, Edit, and Rebuild (135 +
+        // 14 + 113 + 14 + 91 = 367); View and Selection (438); Dialogs, Sketch, and Help (69 +
+        // 14 + 223 + 14 + 47 = 367).
         let placed = [
             ("FILE", 0, 0.0),
             ("EDIT", 0, height(5.0) + css::GROUP_GAP),
             (
                 "REBUILD",
                 0,
-                height(5.0) + height(2.0) + 2.0 * css::GROUP_GAP,
+                height(5.0) + height(4.0) + 2.0 * css::GROUP_GAP,
             ),
             ("VIEW", 1, 0.0),
             ("SELECTION", 1, height(12.0) + css::GROUP_GAP),
@@ -820,7 +821,7 @@ mod tests {
         let inside = frame_of(&h).shrink(css::BORDER);
         let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
         // The tallest column: View's and Selection's, their 17 rows and a gap (438, by hand;
-        // File's, Edit's, and Rebuild's are 323, and Dialogs', Sketch's, and Help's 367).
+        // File's, Edit's, and Rebuild's are 367, as are Dialogs', Sketch's, and Help's).
         let title = css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN;
         let tallest = top + 2.0 * title + 17.0 * css::ROW_H + css::GROUP_GAP;
         assert!(near(tallest - top, 438.0));
@@ -975,7 +976,7 @@ mod tests {
         let mut down = 0.0;
         for (name, rows) in [
             ("FILE", 5.0),
-            ("EDIT", 2.0),
+            ("EDIT", 4.0),
             ("REBUILD", 3.0),
             ("VIEW", 12.0),
             ("SELECTION", 5.0),

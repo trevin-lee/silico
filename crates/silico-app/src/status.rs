@@ -106,6 +106,9 @@ pub struct Bar {
     pub buttons: Option<(bool, bool)>,
     /// Refusals said to the person (the window's, then the tab's).
     pub messages: Vec<String>,
+    /// What the tab's last suppression or deletion did (the prototype's toast): what went
+    /// with the feature, or what was rewired in its place.
+    pub told: Option<String>,
     /// What the selection says (M5.7): what the pointer is over in the canvas, or how many
     /// elements are selected; and what the last change to it dropped, and why.
     pub selection: Vec<String>,
@@ -166,6 +169,7 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
         said,
         buttons: Some((tab.stoppable(), tab.can_rebuild())),
         messages: message.into_iter().chain(tab.message.clone()).collect(),
+        told: tab.told.clone(),
         selection: selection_words(tab.selection()),
         disk: status.and_then(|status| status.disk),
         saved: Some(saved),
@@ -182,6 +186,7 @@ pub fn unopened(warming: Option<Warming>, message: Option<String>) -> Bar {
         said: warming.map_or(Said::Nothing, Said::Warm),
         buttons: None,
         messages: message.into_iter().collect(),
+        told: None,
         selection: Vec::new(),
         disk: None,
         saved: None,
@@ -331,7 +336,8 @@ fn left_parts(ui: &mut Ui, bar: &Bar, asked: &mut Asked) {
     middle(ui, bar);
 }
 
-/// The middle: in sketch mode, the sketch's line; then the refusals said.
+/// The middle: in sketch mode, the sketch's line; then the refusals said, and what the last
+/// suppression, deletion, or repair did.
 ///
 /// Outside sketch mode, the selection's words ([`selection_words`]) after them: a sketch's
 /// line says what's being edited in their place.
@@ -341,6 +347,9 @@ fn middle(ui: &mut Ui, bar: &Bar) {
     }
     for message in &bar.messages {
         item(ui, None, message, theme::ERROR_TEXT);
+    }
+    if let Some(told) = &bar.told {
+        item(ui, None, told, theme::STATUS_TEXT);
     }
     if bar.sketch.is_none() {
         for words in &bar.selection {
@@ -1048,6 +1057,7 @@ mod tests {
             said,
             buttons: Some(buttons),
             messages: Vec::new(),
+            told: None,
             selection: Vec::new(),
             disk,
             saved: Some(saved),

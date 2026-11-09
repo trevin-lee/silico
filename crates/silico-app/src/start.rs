@@ -423,8 +423,7 @@ pub(crate) fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
 
 /// [`key_caps`], `gap` apart.
 pub(crate) fn key_caps_spaced(ui: &Ui, right: Pos2, caps: &[String], primary: bool, gap: f32) {
-    let painter = ui.painter();
-    let (fill, stroke, text) = if primary {
+    let colours = if primary {
         (
             Color32::TRANSPARENT,
             theme::KEY_CAP_ON_PRIMARY_STROKE,
@@ -437,6 +436,18 @@ pub(crate) fn key_caps_spaced(ui: &Ui, right: Pos2, caps: &[String], primary: bo
             theme::KEY_CAP_TEXT,
         )
     };
+    key_caps_coloured(ui, right, caps, colours, gap);
+}
+
+/// [`key_caps_spaced`], each cap filled, outlined, and lettered in `colours`.
+pub(crate) fn key_caps_coloured(
+    ui: &Ui,
+    right: Pos2,
+    caps: &[String],
+    (fill, stroke, text): (Color32, Color32, Color32),
+    gap: f32,
+) {
+    let painter = ui.painter();
     let mut x = right.x;
     for cap in caps.iter().rev() {
         let galley = painter.layout_no_wrap(

@@ -24,8 +24,9 @@
 //! - F5, SolidWorks' key for its filter toolbar, which the app hasn't: the app takes it
 //!   itself and says where the filters are (`App::keys`), as the prototype's F5 is no
 //!   command of its `CMD` and isn't on its sheet.
-//! - SEAM: F2 Rename, Delete, and S Search commands, once they're built; Search reaches
-//!   What's wrong, which has no keys, by its name, as the prototype's does.
+//! - SEAM: S Search, once it's built; Search reaches What's wrong, Suppress, and Find in
+//!   browser and Find in timeline, which have no keys, by their names, as the prototype's
+//!   does.
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Ui};
 
@@ -41,6 +42,11 @@ pub enum Command {
     Close,
     Undo,
     Redo,
+    Rename,
+    Delete,
+    Suppress,
+    FindInBrowser,
+    FindInTimeline,
     Rebuild,
     RebuildAll,
     Stop,
@@ -239,6 +245,62 @@ const REDO: Entry = Entry {
         None,
     )
 };
+/// The selected feature's name typed over in its own field, in the timeline or the browser,
+/// where it was selected (the prototype's `CMD.rename`, `renameSelected`).
+const RENAME: Entry = entry(
+    Command::Rename,
+    "Rename",
+    Group::Edit,
+    &[Chord::Exact(KeyboardShortcut::new(
+        Modifiers::NONE,
+        Key::F2,
+    ))],
+    None,
+);
+/// The prototype's `CMD.del`: Del, the Mac's ⌫ (its `KEYNAME.Del`), Backspace and Delete
+/// alike as its `keydown` takes them; each freshly pressed, never a key held down's repeat,
+/// so holding it deletes one feature. Its description is the prototype's `del`'s words.
+const DELETE: Entry = Entry {
+    elsewhere: Some(Chord::Exact(KeyboardShortcut::new(
+        Modifiers::NONE,
+        Key::Delete,
+    ))),
+    ..entry(
+        Command::Delete,
+        "Delete",
+        Group::Edit,
+        &[
+            Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::Backspace)),
+            Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::Delete)),
+        ],
+        Some("Removes the selected feature, rewiring what follows it"),
+    )
+};
+/// No keys, as the prototype has none (`ACT.suppress`): the timeline's and the browser's
+/// menus give it, Unsuppress for a feature suppressed.
+const SUPPRESS: Entry = entry(
+    Command::Suppress,
+    "Suppress",
+    Group::Edit,
+    &[],
+    Some("The feature, and what depends on it, left out of the rebuild"),
+);
+/// No keys: the timeline's menu gives it (the prototype's `contextmenu`).
+const FIND_IN_BROWSER: Entry = entry(
+    Command::FindInBrowser,
+    "Find in browser",
+    Group::Edit,
+    &[],
+    Some("Selects the feature and scrolls to its row"),
+);
+/// No keys: the browser's menu gives it.
+const FIND_IN_TIMELINE: Entry = entry(
+    Command::FindInTimeline,
+    "Find in timeline",
+    Group::Edit,
+    &[],
+    Some("Selects the feature and scrolls to its item"),
+);
 const REBUILD: Entry = entry(
     Command::Rebuild,
     "Rebuild",
@@ -469,7 +531,7 @@ const SHORTCUTS: Entry = entry(
 );
 
 /// Every command, in the order the sheet lists each group's.
-pub const REGISTRY: [Entry; 40] = [
+pub const REGISTRY: [Entry; 45] = [
     NEW,
     OPEN,
     SAVE,
@@ -477,6 +539,11 @@ pub const REGISTRY: [Entry; 40] = [
     CLOSE,
     UNDO,
     REDO,
+    RENAME,
+    DELETE,
+    SUPPRESS,
+    FIND_IN_BROWSER,
+    FIND_IN_TIMELINE,
     REBUILD,
     REBUILD_ALL,
     STOP,
@@ -523,6 +590,11 @@ impl Command {
             Command::Close => &CLOSE,
             Command::Undo => &UNDO,
             Command::Redo => &REDO,
+            Command::Rename => &RENAME,
+            Command::Delete => &DELETE,
+            Command::Suppress => &SUPPRESS,
+            Command::FindInBrowser => &FIND_IN_BROWSER,
+            Command::FindInTimeline => &FIND_IN_TIMELINE,
             Command::Rebuild => &REBUILD,
             Command::RebuildAll => &REBUILD_ALL,
             Command::Stop => &STOP,
@@ -598,11 +670,13 @@ pub fn joined(ctx: &egui::Context, caps: &[String]) -> String {
 }
 
 /// What a key's cap says where the prototype names it otherwise than egui (its `KEYNAME`):
-/// Esc, and ↵ for Enter.
+/// Esc, ↵ for Enter, and Del, which is ⌫ on macOS (its Backspace).
 fn key_name(key: Key) -> &'static str {
     match key {
         Key::Escape => "Esc",
         Key::Enter => "↵",
+        Key::Delete => "Del",
+        Key::Backspace => "⌫",
         key => key.symbol_or_name(),
     }
 }
@@ -629,6 +703,39 @@ pub fn take(ui: &mut Ui, command: Command) -> bool {
         taken |= take_chord(ui, *chord);
     }
     taken
+}
+
+/// Whether `command` was pressed this frame by any of its chords, as [`take`] would find
+/// it, taking nothing.
+pub fn pressed(ctx: &egui::Context, command: Command) -> bool {
+    ctx.input(|input| {
+        command.entry().keys.iter().any(|chord| {
+            input.events.iter().any(|event| match (chord, event) {
+                (
+                    Chord::Key(shortcut),
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    },
+                ) => {
+                    *key == shortcut.logical_key && modifiers.matches_logically(shortcut.modifiers)
+                }
+                (
+                    Chord::Exact(shortcut),
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    },
+                ) => *key == shortcut.logical_key && *modifiers == shortcut.modifiers,
+                _ => false,
+            })
+        })
+    })
 }
 
 /// Whether `chord` was pressed this frame, taking it if so.
@@ -923,6 +1030,133 @@ mod tests {
         assert_eq!(Command::Front.keys_text(&nix), "Ctrl+1");
         assert_eq!(Command::Redo.shown(&nix), Some(command(Key::Y)));
         assert_eq!(Command::Redo.shown(&mac), Some(key(SHIFT_COMMAND, Key::Z)));
+        // `KEYNAME.Del`: ⌫ on macOS (its Backspace), Del elsewhere (Delete); F2 as it is.
+        assert_eq!(Command::Delete.caps(&mac), ["⌫"]);
+        assert_eq!(Command::Delete.caps(&nix), ["Del"]);
+        assert_eq!(Command::Delete.caps(&windows), ["Del"]);
+        assert_eq!(Command::Rename.caps(&mac), ["F2"]);
+        assert_eq!(Command::Rename.caps(&nix), ["F2"]);
+    }
+
+    #[test]
+    fn pressed_finds_an_exact_chord_only_freshly_with_exactly_its_modifiers_and_a_key_as_egui_does()
+    {
+        // Ctrl as the platform's keyboard sends it off macOS: Ctrl, and Command with it.
+        let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+        let key = |key: Key, modifiers: Modifiers, pressed: bool| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        let down = |pressed: Key, modifiers: Modifiers| key(pressed, modifiers, true);
+        let up = |released: Key, modifiers: Modifiers| key(released, modifiers, false);
+        // Whether `command` was pressed in a frame of `events` on `ctx`, whose keys held
+        // down from frames before make a press of one of them egui's repeat of it.
+        let frame = |ctx: &egui::Context, command: Command, events: Vec<egui::Event>| {
+            let mut found = false;
+            ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| found = pressed(ui.ctx(), command),
+            )
+            .textures_delta
+            .clear();
+            found
+        };
+        // The same, in a frame of its own, no key held before it.
+        let pressed_in = |command: Command, events: Vec<egui::Event>| {
+            frame(&on(OperatingSystem::Nix), command, events)
+        };
+        // `Chord::Exact`: the key alone, freshly pressed. Rename's F2 (the prototype's
+        // `CMD.rename`), and Delete's ⌫ and Del, either of them.
+        assert!(pressed_in(
+            Command::Rename,
+            vec![down(Key::F2, Modifiers::NONE)]
+        ));
+        assert!(pressed_in(
+            Command::Delete,
+            vec![down(Key::Backspace, Modifiers::NONE)]
+        ));
+        assert!(pressed_in(
+            Command::Delete,
+            vec![down(Key::Delete, Modifiers::NONE)]
+        ));
+        // Its near misses: a modifier with it (Shift and Alt too, which egui's own match puts
+        // aside), its release, another key, and the system's repeat of the key held down.
+        for modifiers in [Modifiers::SHIFT, Modifiers::ALT, ctrl, Modifiers::MAC_CMD] {
+            assert!(
+                !pressed_in(Command::Rename, vec![down(Key::F2, modifiers)]),
+                "F2 with {modifiers:?}"
+            );
+            assert!(
+                !pressed_in(Command::Delete, vec![down(Key::Backspace, modifiers)]),
+                "⌫ with {modifiers:?}"
+            );
+        }
+        assert!(!pressed_in(
+            Command::Rename,
+            vec![up(Key::F2, Modifiers::NONE)]
+        ));
+        assert!(!pressed_in(
+            Command::Rename,
+            vec![down(Key::F3, Modifiers::NONE)]
+        ));
+        assert!(!pressed_in(
+            Command::Delete,
+            vec![down(Key::D, Modifiers::NONE)]
+        ));
+        let held = on(OperatingSystem::Nix);
+        assert!(frame(
+            &held,
+            Command::Rename,
+            vec![down(Key::F2, Modifiers::NONE)]
+        ));
+        assert!(
+            !frame(&held, Command::Rename, vec![down(Key::F2, Modifiers::NONE)]),
+            "the repeat of F2 held down"
+        );
+        // Let go and pressed again: fresh.
+        assert!(frame(
+            &held,
+            Command::Rename,
+            vec![up(Key::F2, Modifiers::NONE), down(Key::F2, Modifiers::NONE)]
+        ));
+        // A near miss before the chord in the frame hides it from none.
+        assert!(pressed_in(
+            Command::Rename,
+            vec![
+                down(Key::F2, Modifiers::SHIFT),
+                up(Key::F2, Modifiers::SHIFT),
+                down(Key::F2, Modifiers::NONE)
+            ]
+        ));
+        // `Chord::Key`, as egui's `consume_shortcut` matches it: Save's Ctrl+S, an extra Shift
+        // aside (so Save As is taken first) and a repeat too; never S alone, its release, or
+        // Ctrl with another key.
+        assert!(pressed_in(Command::Save, vec![down(Key::S, ctrl)]));
+        assert!(pressed_in(
+            Command::Save,
+            vec![down(Key::S, ctrl | Modifiers::SHIFT)]
+        ));
+        let held = on(OperatingSystem::Nix);
+        assert!(frame(&held, Command::Save, vec![down(Key::S, ctrl)]));
+        assert!(
+            frame(&held, Command::Save, vec![down(Key::S, ctrl)]),
+            "the repeat of Ctrl+S held down"
+        );
+        assert!(!pressed_in(
+            Command::Save,
+            vec![down(Key::S, Modifiers::NONE)]
+        ));
+        assert!(!pressed_in(Command::Save, vec![up(Key::S, ctrl)]));
+        assert!(!pressed_in(Command::Save, vec![down(Key::O, ctrl)]));
+        // Nothing pressed, nothing found.
+        assert!(!pressed_in(Command::Save, Vec::new()));
+        assert!(!pressed_in(Command::Rename, Vec::new()));
     }
 
     #[test]

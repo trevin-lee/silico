@@ -11,9 +11,9 @@ use silico_core::command::export::{Export, Exported};
 use silico_core::command::wire::Named;
 use silico_core::command::{
     Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, DiffAnswer, ExtendBy,
-    FieldSet, ModelChoice, Moved, NewMembers, Problems, RebuildState, Replaced, Response, Revision,
-    RolledBack, Running, SessionId, SessionInfo, Sessions, SketchCut, SketchEdited, SketchJoined,
-    Status, Stepped, TextAnswer, TimelineAnswer,
+    FieldSet, ModelChoice, Moved, NewMembers, Problems, RebuildState, Removed, Replaced, Response,
+    Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, SketchCut, SketchEdited,
+    SketchJoined, Status, Stepped, Suppressed, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::json::Node;
@@ -206,6 +206,17 @@ enum Queued {
         feature: FeatureId,
         before: Option<FeatureId>,
     },
+    /// A feature suppressed, or unsuppressed for `suppressed` false (`suppress_feature`),
+    /// from the timeline's or the browser's menu.
+    Suppress {
+        feature: FeatureId,
+        suppressed: bool,
+    },
+    /// A feature deleted (`remove_feature`), from a menu or by Del: what consumed it
+    /// rewired to its base.
+    Remove {
+        feature: FeatureId,
+    },
     /// A dialog's new feature (`add_feature`), of `kind`, of the dialog numbered `serial`:
     /// the members its dialog gave ([`Dialog::add`]), and, for a sweep, the body it builds
     /// on, read from the document when the add comes up ([`Body`]).
@@ -340,6 +351,10 @@ pub enum Sent {
     Edit(String),
     /// `move_feature`, of the feature, before the feature (none: to the end).
     Move(FeatureId, Option<FeatureId>),
+    /// `suppress_feature`, of the feature, suppressed or (false) unsuppressed.
+    Suppress(FeatureId, bool),
+    /// `remove_feature`, of the feature.
+    Remove(FeatureId),
     /// `replace_text`: Restore's edit.
     Replace,
     Undo(Option<Revision>),
@@ -400,6 +415,8 @@ impl Edits {
                 | Queued::Revert { .. }
                 | Queued::Step { .. }
                 | Queued::Move { .. }
+                | Queued::Suppress { .. }
+                | Queued::Remove { .. }
                 | Queued::Add { .. }
                 | Queued::Opened { .. }
                 | Queued::AddSketch { .. }
@@ -444,6 +461,17 @@ enum Under {
     Move {
         sending: Sending,
         running: Running<Moved>,
+    },
+    /// A suppression or an unsuppression, as it was sent.
+    Suppress {
+        sending: Sending,
+        running: Running<Suppressed>,
+    },
+    /// A deletion of `feature`, as it was sent.
+    Remove {
+        feature: FeatureId,
+        sending: Sending,
+        running: Running<Removed>,
     },
     /// A Save As, the path it was given, which the tab asks to replace if a file is
     /// there, whether the tab began the transaction it commits (rolled back if it's
@@ -758,6 +786,15 @@ pub struct Tab {
     /// The last refusal a command of the tab's answered, as said to the person, until
     /// their next action (an edit, a save, a revert, a step).
     pub message: Option<String>,
+    /// What the last suppression or deletion did, as said to the person (the prototype's
+    /// toast, in the status bar): what it suppressed with the feature, or rewired in its
+    /// place. Until their next action, as [`message`](Self::message) is.
+    pub told: Option<String>,
+    /// A feature's name being typed in its timeline item's or browser row's own field (F2,
+    /// or a menu's Rename), until Enter or a click away sends it or Esc drops it.
+    pub renaming: Option<crate::feature_menu::Renaming>,
+    /// Where the person last selected a feature: F2 renames it there.
+    pub selected_in: crate::feature_menu::Place,
     /// A save or a revert that was to close the tab was refused: the tab stays, and a quit
     /// waiting on it stops ([`take_close_refused`](Self::take_close_refused)).
     close_refused: bool,
@@ -821,6 +858,11 @@ pub struct Tab {
     exported: bool,
     /// The export out was sent from a dialog since cancelled, not the one open now.
     export_disowned: bool,
+    /// The broken reference's candidate whose card row the pointer is over (flow 6b), as
+    /// the frame before had it, which the canvas lights; and this frame's, as the cards
+    /// drawn so far have said it ([`hover_candidate`](Self::hover_candidate)).
+    candidate_hot: Option<String>,
+    candidate_next: Option<String>,
     /// The viewport's camera, meshes, and `meshes` read (M5.6).
     pub view: crate::viewport::View,
     /// Sketch mode's drag, from its press to the read of its edit: the tab's, not sketch
@@ -863,6 +905,11 @@ pub type Watch = Box<dyn FnMut(&eframe::egui::Painter, &crate::viewport::ViewFra
 /// answers it takes: for the crate's tests only.
 #[doc(hidden)]
 pub type AfterStatus = Box<dyn FnMut()>;
+
+/// A feature's name as the document reads a string (`set_field`'s value).
+pub(crate) fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxError> {
+    silico_core::document::json::read(crate::dialog::quoted(name).as_bytes())
+}
 
 /// What a refusal says to the person: its first error's message and suggestion.
 pub fn said(problems: &Problems) -> String {
@@ -940,6 +987,9 @@ impl Tab {
             mine_diff: None,
             hidden: std::collections::BTreeSet::new(),
             message: None,
+            told: None,
+            renaming: None,
+            selected_in: crate::feature_menu::Place::Timeline,
             close_refused: false,
             replace_asked: None,
             roll_back: false,
@@ -966,6 +1016,8 @@ impl Tab {
             export_replacing: None,
             exported: false,
             export_disowned: false,
+            candidate_hot: None,
+            candidate_next: None,
             view: crate::viewport::View::default(),
             drag: None,
             drag_sending: None,
@@ -1047,6 +1099,15 @@ impl Tab {
             &hidden,
         ) {
             self.toast = Some(toast);
+        }
+        let candidate = self
+            .candidate_hot
+            .as_deref()
+            .and_then(|name| self.selection.lit(name, &self.view));
+        if candidate != self.view.candidate {
+            // Drawn in the next frame: asked for, the pointer maybe still.
+            self.view.candidate = candidate;
+            painter.ctx().request_repaint();
         }
         if self.box_toggled() {
             // What the box took is sent from the dialog's pane, maybe drawn already.
@@ -1268,6 +1329,8 @@ impl Tab {
     fn changing(&self) -> bool {
         let queued = self.edits.queue.iter().any(|queued| match queued {
             Queued::Move { .. }
+            | Queued::Suppress { .. }
+            | Queued::Remove { .. }
             | Queued::Add { .. }
             | Queued::Replace { .. }
             | Queued::AddSketch { .. }
@@ -1294,6 +1357,8 @@ impl Tab {
         });
         let under = self.under.iter().any(|under| match under {
             Under::Move { .. }
+            | Under::Suppress { .. }
+            | Under::Remove { .. }
             | Under::Add { .. }
             | Under::Base { .. }
             | Under::Replace { .. }
@@ -1330,7 +1395,7 @@ impl Tab {
         replace: bool,
         then_close: bool,
     ) {
-        self.message = None;
+        self.hush();
         self.edits.queue.push_back(Queued::SaveAs {
             path,
             replace,
@@ -1706,7 +1771,7 @@ impl Tab {
         if self.editing() || self.closing() || self.restoring() {
             return;
         }
-        self.message = None;
+        self.hush();
         if let Some(reloaded) = &mut self.reloaded {
             reloaded.refused = None;
         }
@@ -1979,6 +2044,49 @@ impl Tab {
                     None
                 }
                 Err(running) => Some(Under::Move { sending, running }),
+            },
+            Under::Suppress { sending, running } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    match response.result {
+                        Ok(done) => {
+                            self.told =
+                                crate::feature_menu::suppressed_words(&done, |id| self.name_of(id));
+                        }
+                        Err(problems) => self.message = Some(said(&problems)),
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Suppress { sending, running }),
+            },
+            Under::Remove {
+                feature,
+                sending,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    match response.result {
+                        Ok(removed) => {
+                            // Selected no longer: its properties have nothing to show.
+                            if self.selection.has_feature(&removed.feature.id) {
+                                self.selection.clear();
+                            }
+                            self.told = Some(crate::feature_menu::removed_words(&removed, |id| {
+                                self.name_of(id)
+                            }));
+                        }
+                        Err(problems) => self.message = Some(said(&problems)),
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Remove {
+                    feature,
+                    sending,
+                    running,
+                }),
             },
             Under::Base {
                 serial,
@@ -2353,6 +2461,8 @@ impl Tab {
                         }
                         Err(problems) => {
                             self.message = Some(said(&problems));
+                            // What a repair said it did, it didn't.
+                            self.told = None;
                             self.refused.insert(field);
                         }
                     }
@@ -2452,6 +2562,35 @@ impl Tab {
                     self.under.push(Under::Move {
                         sending,
                         running: sessions.move_feature(&self.id, self.revision, feature, before),
+                    });
+                }
+                Queued::Suppress {
+                    feature,
+                    suppressed,
+                } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::Suppress(feature.clone(), suppressed));
+                    let sending = self.sending();
+                    self.under.push(Under::Suppress {
+                        sending,
+                        running: sessions.suppress_feature(
+                            &self.id,
+                            self.revision,
+                            feature,
+                            suppressed,
+                        ),
+                    });
+                }
+                Queued::Remove { feature } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::Remove(feature.clone()));
+                    let sending = self.sending();
+                    self.under.push(Under::Remove {
+                        feature: feature.clone(),
+                        sending,
+                        running: sessions.remove_feature(&self.id, self.revision, feature),
                     });
                 }
                 Queued::Opened { serial } => {
@@ -2800,6 +2939,8 @@ impl Tab {
                         | Under::Rollback { .. }
                         | Under::Step { .. }
                         | Under::Move { .. }
+                        | Under::Suppress { .. }
+                        | Under::Remove { .. }
                         | Under::Add { .. }
                         | Under::Base { .. }
                         | Under::AddSketch { .. }
@@ -2918,7 +3059,7 @@ impl Tab {
     /// `edit` made by the person: inside the tab's transaction, begun first if none is open
     /// (decision 1), and sent now if no edit is in flight, or else waiting (section 3).
     pub fn edit<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, edit: Edit) {
-        self.message = None;
+        self.hush();
         self.edits.push(edit);
         self.advance(sessions);
     }
@@ -2947,16 +3088,170 @@ impl Tab {
         if self.closing() {
             return;
         }
-        self.message = None;
+        self.hush();
         self.edits.queue.push_back(Queued::Move { feature, before });
         self.advance(sessions);
+    }
+
+    /// The feature `feature` suppressed, or unsuppressed for `suppressed` false
+    /// (`suppress_feature`), as a move is: inside the tab's transaction, so one undo takes it
+    /// back, and sent once everything asked before it has answered; never while a dialog is
+    /// open or the tab closes (the menus' item is off then). What it suppressed or
+    /// unsuppressed with it is said in the status bar, a refusal too.
+    pub fn suppress_feature<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        feature: FeatureId,
+        suppressed: bool,
+    ) {
+        if self.in_dialog() {
+            self.message = Some("Close the dialog before suppressing a feature".to_owned());
+            return;
+        }
+        if self.closing() {
+            return;
+        }
+        self.hush();
+        self.edits.queue.push_back(Queued::Suppress {
+            feature,
+            suppressed,
+        });
+        self.advance(sessions);
+    }
+
+    /// The feature `feature` deleted (`remove_feature`; the prototype's Delete, which asks
+    /// nothing), as a move is: one undo puts it back. What consumed it takes its base, which
+    /// the status bar lists; where nothing can stand in, the core refuses, naming both, and
+    /// that's said. Never while a dialog is open or the tab closes.
+    pub fn remove_feature<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        feature: FeatureId,
+    ) {
+        if self.in_dialog() {
+            self.message = Some("Close the dialog before deleting a feature".to_owned());
+            return;
+        }
+        if self.closing() || self.removing(&feature) {
+            // A second Del before the first answers: it's going already.
+            return;
+        }
+        self.hush();
+        self.edits.queue.push_back(Queued::Remove { feature });
+        self.advance(sessions);
+    }
+
+    /// Whether a deletion of `feature` is queued or running.
+    fn removing(&self, feature: &FeatureId) -> bool {
+        self.edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::Remove { feature: queued } if queued == feature))
+            || self.under.iter().any(
+                |under| matches!(under, Under::Remove { feature: under, .. } if under == feature),
+            )
+    }
+
+    /// The feature `feature` renamed `name` (`set_field` of `name`), as the property panel's
+    /// Name field renames it: an edit, coalesced with one of the same field waiting. A name
+    /// that doesn't read as a string is never sent.
+    pub fn rename<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        feature: FeatureId,
+        name: &str,
+    ) {
+        if let Ok(value) = name_value(name) {
+            self.edit(
+                sessions,
+                Edit {
+                    feature,
+                    field: "name".to_owned(),
+                    value,
+                },
+            );
+        }
+    }
+
+    /// The name typed in the feature `feature`'s own field, finished (Enter, or a click
+    /// away): sent trimmed, unless that leaves nothing (dropped, as Esc drops it) or the
+    /// name it has, or the timeline doesn't list it. Whether it was sent.
+    pub fn finish_rename<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        feature: FeatureId,
+        typed: &str,
+    ) -> bool {
+        let Some(name) = crate::feature_menu::finished(typed) else {
+            return false;
+        };
+        if self
+            .entry(feature.as_str())
+            .is_none_or(|entry| entry.name == name)
+        {
+            return false;
+        }
+        self.rename(sessions, feature, name);
+        true
+    }
+
+    /// The feature `feature`'s name typed in its own field, at `place`: its timeline item's
+    /// (the timeline scrolled to it, so the field over it is in view) or, if it has one, its
+    /// browser row's (the browser scrolled to it, its group opened; else its item's). Never while a dialog is open or the tab closes, nor
+    /// for a feature the timeline doesn't list.
+    pub fn start_rename(&mut self, feature: FeatureId, place: crate::feature_menu::Place) {
+        if self.in_dialog() || self.closing() {
+            return;
+        }
+        let Some(entry) = self.entry(feature.as_str()) else {
+            return;
+        };
+        let text = entry.name.clone();
+        let place = match place {
+            crate::feature_menu::Place::Browser if !self.in_browser(&feature) => {
+                crate::feature_menu::Place::Timeline
+            }
+            place => place,
+        };
+        match place {
+            crate::feature_menu::Place::Timeline => {
+                self.selection.select_feature(feature.clone());
+                self.timeline_scroll = Some(feature.clone());
+            }
+            crate::feature_menu::Place::Browser => {
+                self.selection.find_in_browser(feature.clone());
+            }
+        }
+        self.renaming = Some(crate::feature_menu::Renaming::new(feature, place, text));
+    }
+
+    /// Whether the browser has a row for the feature `id`: a body's or a sketch's.
+    pub fn in_browser(&self, id: &FeatureId) -> bool {
+        self.browser
+            .bodies
+            .iter()
+            .chain(&self.browser.sketches)
+            .any(|row| &row.id == id)
+    }
+
+    /// The feature `id`'s name, as the timeline last listed it: its ID if it doesn't.
+    fn name_of(&self, id: &FeatureId) -> String {
+        self.entry(id.as_str())
+            .map_or_else(|| id.as_str().to_owned(), |entry| entry.name.clone())
+    }
+
+    /// The person's next action: the last refusal said, and what the last suppression or
+    /// deletion did, let go.
+    fn hush(&mut self) {
+        self.message = None;
+        self.told = None;
     }
 
     /// Save (`commit`), then, if `then_close`, close: once everything asked before it has
     /// answered, so the commit saves every edit made before it. One queued last already takes
     /// `then_close` too. A save that comes up with nothing to save does nothing (or closes).
     pub fn save<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
-        self.message = None;
+        self.hush();
         match self.edits.queue.back_mut() {
             Some(Queued::Save { then_close: last }) => *last |= then_close,
             _ => self.edits.queue.push_back(Queued::Save { then_close }),
@@ -2972,7 +3267,7 @@ impl Tab {
     /// reloaded with edits held: the session reloads it once the transaction has ended
     /// (section 4).
     pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
-        self.message = None;
+        self.hush();
         // The session reloads the file changed on disk once the edits are gone: at the
         // person's asking.
         if self
@@ -3023,7 +3318,7 @@ impl Tab {
     /// Undo or redo one edit of the transaction, once the edits made before it have
     /// answered.
     pub fn step<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, undo: bool) {
-        self.message = None;
+        self.hush();
         // Sketch mode's own steps go no further back than where it opened.
         let (floor, sketch) = match &self.sketch {
             Some(mode) => (mode.undo_floor.or(mode.opened_at), Some(mode.serial)),
@@ -3080,7 +3375,7 @@ impl Tab {
     pub fn export_opened(&mut self) {
         self.export_said = None;
         self.export_replacing = None;
-        self.message = None;
+        self.hush();
         // An export still out (its dialog cancelled, its answer not in yet) isn't this
         // dialog's: its answer neither closes it nor asks it anything.
         self.export_disowned = self.exporting.is_some();
@@ -3367,7 +3662,7 @@ impl Tab {
     pub fn stop_quietly<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
         let stopped = self.halt(sessions).is_ok();
         if stopped {
-            self.message = None;
+            self.hush();
         }
         stopped
     }
@@ -3654,7 +3949,7 @@ impl Tab {
     /// A dialog opening: numbered, the revision it opens at marked in the queue, and what
     /// the last one left (a refusal said, its refused fields) let go. Its number.
     fn opening(&mut self) -> u64 {
-        self.message = None;
+        self.hush();
         self.refused.clear();
         self.before_dialog = None;
         self.dialogs += 1;
@@ -3793,7 +4088,270 @@ impl Tab {
                 self.show_in_timeline(id);
                 false
             }
+            crate::properties::CardAct::Use { broken, candidate } => {
+                self.use_candidate(sessions, &broken, &candidate)
+            }
+            crate::properties::CardAct::Remove(broken) => self.remove_reference(sessions, &broken),
         }
+    }
+
+    /// The fillet or chamfer `broken` is of, as the published model's document holds it,
+    /// if that's the document the session is at, the card was read at it too, and nothing of
+    /// the tab's is under way: what a broken reference's card mends. None otherwise.
+    fn dressing(&self, broken: &crate::repair::Broken) -> Option<crate::repair::Dressing> {
+        if !self.quiet() || broken.read != self.revision {
+            return None;
+        }
+        let (model, revision) = self.selection.model()?;
+        if revision != self.revision {
+            return None;
+        }
+        crate::repair::Dressing::of(model.document(), &broken.feature)
+    }
+
+    /// The name the timeline gives the feature `id`, or its ID.
+    fn named(&self, id: &FeatureId) -> String {
+        self.entry(id.as_str())
+            .map_or_else(|| id.to_string(), |entry| entry.name.clone())
+    }
+
+    /// Whether the open dialog edits the feature `id`.
+    fn dialog_of(&self, id: &FeatureId) -> bool {
+        self.dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.as_ref() == Some(id))
+    }
+
+    /// What a card of `said` offers to mend a broken reference (flow 6b), if it's one with
+    /// candidates (`errCard` offers Use and Remove the edge only then), read at the revision
+    /// of the `check` it came from (every card's text is that check's): Remove the edge off
+    /// for the feature's last edge, saying why, unless its dialog is open (whose box of
+    /// names may be emptied, its OK off until an edge is picked, as SolidWorks' Fillet
+    /// PropertyManager has it); and the candidate whose edge the canvas's pointer is over.
+    pub(crate) fn repair(&self, said: &Said) -> Option<crate::properties::Repair> {
+        let (read, _) = self.listed_for?;
+        let broken = crate::repair::Broken::of(said, read)?;
+        if broken.candidates.is_empty() {
+            return None;
+        }
+        let remove = if self.dialog_of(&broken.feature) {
+            Ok(())
+        } else {
+            self.dressing(&broken).map_or(Ok(()), |dressing| {
+                dressing.removable(&self.named(&broken.feature))
+            })
+        };
+        let marked = self.selection.hovered().and_then(|hovered| {
+            broken
+                .candidates
+                .iter()
+                .find(|name| {
+                    self.selection.lit(name, &self.view) == Some((hovered.body, hovered.element))
+                })
+                .cloned()
+        });
+        Some(crate::properties::Repair {
+            broken,
+            remove,
+            marked,
+        })
+    }
+
+    /// The candidate whose card row the pointer is over this frame, said by a card drawn.
+    pub(crate) fn hover_candidate(&mut self, name: Option<String>) {
+        if self.candidate_next.is_none() {
+            self.candidate_next = name;
+        }
+    }
+
+    /// A new frame: the candidate the cards said last frame is the one the canvas lights.
+    /// Whether that changed, so a frame is asked for to light it.
+    pub(crate) fn take_candidate_hover(&mut self) -> bool {
+        let next = self.candidate_next.take();
+        if next == self.candidate_hot {
+            return false;
+        }
+        self.candidate_hot = next;
+        true
+    }
+
+    /// The candidate whose card row the pointer is over, as the canvas lights it.
+    pub fn candidate_hovered(&self) -> Option<&str> {
+        self.candidate_hot.as_deref()
+    }
+
+    /// A broken reference's `candidate` used in its place (`useCand`): read in the
+    /// feature's base as its dialog reads a pick (the core's `resolve_in`), and written at
+    /// the broken name's place in `edges` (`set_field` of `edges.N`, one undoable edit), the
+    /// status bar saying so; or, its dialog open, put in the broken name's place in its box
+    /// of names, which the dialog sends as its own edit. Refused, saying why, for a
+    /// candidate that can't be stored there (unstable, or not on the base), a card read at
+    /// another revision than the session's or while anything of the tab's is under way, a
+    /// name the current model finds now, or a sketch open (its Cancel undoes to where it
+    /// opened). Whether a command was started.
+    pub(crate) fn use_candidate<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        broken: &crate::repair::Broken,
+        candidate: &str,
+    ) -> bool {
+        if self.closing() {
+            return false;
+        }
+        let name = self.named(&broken.feature);
+        if self.dialog_of(&broken.feature) {
+            return self.repair_in_dialog(sessions, broken, Some(candidate), &name);
+        }
+        if self.in_dialog() {
+            self.hush();
+            self.message = Some("Close the dialog before mending another feature".to_owned());
+            return false;
+        }
+        if self.in_sketch() {
+            // Its Cancel undoes to where it opened, a mend too, as a dialog's would.
+            self.hush();
+            self.message = Some("Finish or cancel the sketch first".to_owned());
+            return false;
+        }
+        let Some(dressing) = self.dressing(broken) else {
+            self.hush();
+            self.message = Some(crate::repair::STALE.to_owned());
+            return false;
+        };
+        let read = |name: &str, base: &FeatureId| self.selection.read_on(name, base);
+        match crate::repair::used(broken, candidate, &dressing, &read, &name) {
+            Ok((edit, told)) => {
+                self.edit(sessions, edit);
+                self.told = Some(told);
+                true
+            }
+            Err(why) => {
+                self.hush();
+                self.message = Some(why);
+                false
+            }
+        }
+    }
+
+    /// A broken reference's name dropped from its feature's `edges` (`removeRef`): one
+    /// undoable edit setting `edges` without it, the status bar saying so; or, its dialog
+    /// open, let go from its box of names. Never a closed feature's last edge, which is said;
+    /// refused as Use is for a card of another revision, a name found now, or a sketch open.
+    /// Whether a command was started.
+    pub(crate) fn remove_reference<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        broken: &crate::repair::Broken,
+    ) -> bool {
+        if self.closing() {
+            return false;
+        }
+        let name = self.named(&broken.feature);
+        if self.dialog_of(&broken.feature) {
+            return self.repair_in_dialog(sessions, broken, None, &name);
+        }
+        if self.in_dialog() {
+            self.hush();
+            self.message = Some("Close the dialog before mending another feature".to_owned());
+            return false;
+        }
+        if self.in_sketch() {
+            // Its Cancel undoes to where it opened, a mend too, as a dialog's would.
+            self.hush();
+            self.message = Some("Finish or cancel the sketch first".to_owned());
+            return false;
+        }
+        let Some(dressing) = self.dressing(broken) else {
+            self.hush();
+            self.message = Some(crate::repair::STALE.to_owned());
+            return false;
+        };
+        let read = |name: &str, base: &FeatureId| self.selection.read_on(name, base);
+        match crate::repair::removed(broken, &dressing, &read, &name) {
+            Ok((edit, told)) => {
+                self.edit(sessions, edit);
+                self.told = Some(told);
+                true
+            }
+            Err(why) => {
+                self.hush();
+                self.message = Some(why);
+                false
+            }
+        }
+    }
+
+    /// `broken` mended in the open dialog's box of names: `candidate`, read in the box's
+    /// base, put in its place, or, for none, the name let go; then sent as the dialog sends
+    /// its edits, the status bar saying what changed, and that the dialog's Cancel takes it
+    /// back, only if something was sent (a box emptied sends nothing, its OK off until an
+    /// edge is picked). Whether a command was started.
+    fn repair_in_dialog<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        broken: &crate::repair::Broken,
+        candidate: Option<&str>,
+        name: &str,
+    ) -> bool {
+        let Some(dialog) = self.dialog.as_ref() else {
+            return false;
+        };
+        let base = dialog
+            .names_input()
+            .and_then(|names| names.body.clone())
+            .or_else(|| {
+                self.entry(broken.feature.as_str())
+                    .and_then(|entry| entry.inputs.first().cloned())
+            });
+        let stored = match (candidate, base) {
+            (None, _) => None,
+            (Some(candidate), Some(base)) => match self.selection.read_on(candidate, &base) {
+                crate::selection::OnBase::Found(Ok(stored)) => Some(stored.to_string()),
+                crate::selection::OnBase::Found(Err(refusal)) => {
+                    self.hush();
+                    self.message = Some(said(&Problems::from(refusal)));
+                    return false;
+                }
+                crate::selection::OnBase::Missing => {
+                    self.hush();
+                    self.message = Some(format!(
+                        "{candidate} isn't on {base}, which {name} is built on: it can't take \
+                         that edge"
+                    ));
+                    return false;
+                }
+            },
+            (Some(_), None) => {
+                self.hush();
+                self.message = Some(crate::repair::STALE.to_owned());
+                return false;
+            }
+        };
+        let chamfer = self
+            .dialog
+            .as_ref()
+            .is_some_and(|d| d.kind == Kind::Chamfer);
+        let Some(dialog) = self.dialog.as_mut() else {
+            return false;
+        };
+        let used = stored.is_some();
+        if !dialog.repair(broken, stored) {
+            self.hush();
+            self.message = Some(crate::repair::STALE.to_owned());
+            return false;
+        }
+        self.hush();
+        // Sent first: an edit hushes what was said before it.
+        let started = self.dialog_changed(sessions);
+        if started {
+            let made = crate::repair::Made::Dialog;
+            self.told = Some(if used {
+                crate::repair::used_words(name, chamfer, made)
+            } else {
+                crate::repair::removed_words(name, made)
+            });
+        }
+        started
     }
 
     /// The dialog kind of the feature `id`, if the timeline lists it and a dialog edits it.
@@ -4300,7 +4858,7 @@ impl Tab {
         mode.selection.clear();
         // A new edit drops what was undone: Redo has nothing of sketch mode's to give back.
         mode.undone = 0;
-        self.message = None;
+        self.hush();
         self.edits.queue.push_back(match deletion {
             Deletion::Remove(members) => Queued::SketchRemove { sketch, members },
             Deletion::Join(point) => Queued::SketchJoin { sketch, point },
@@ -6269,6 +6827,171 @@ mod tests {
         taken_until(tab, sessions, |tab| tab.check_read.is_none());
     }
 
+    // ---- A broken reference's repair: made only of the document its card was read of ----
+
+    /// [`BLOCK`]'s block, and Round, a fillet of its Edge1 and Edge13, which no box has:
+    /// Edge13 broken, at `edges.1`.
+    const BROKEN_ROUND: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}, {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge13"], "radius": 0.1}]}"#;
+
+    /// Polled until nothing of the tab's is under way and the session's revision's model is
+    /// published, as the selection holds it.
+    fn published_quietly(tab: &mut Tab, sessions: &FakeSessions) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            tab.poll(sessions);
+            let published = tab.selection.model().map(|(_, revision)| revision);
+            if tab.quiet() && published == Some(tab.revision) {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "never published");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// A card of Round's name at `place`, `name`, read at `read`.
+    fn round_card(place: usize, name: &str, read: Revision) -> crate::repair::Broken {
+        crate::repair::Broken {
+            feature: FeatureId::new("f0000001").unwrap(),
+            place,
+            name: name.to_owned(),
+            candidates: vec!["k7f2qx3m.box.Edge12".to_owned()],
+            read,
+        }
+    }
+
+    /// `tab`'s `use_candidate` of Edge12 for `card` refused as stale: nothing sent.
+    fn refused_as_stale(
+        tab: &mut Tab,
+        sessions: &FakeSessions,
+        card: &crate::repair::Broken,
+        case: &str,
+    ) {
+        let sent = tab.sent.clone();
+        assert!(
+            !tab.use_candidate(sessions, card, "k7f2qx3m.box.Edge12"),
+            "{case}: started"
+        );
+        assert_eq!(tab.sent, sent, "{case}: sent");
+        assert_eq!(tab.message.as_deref(), Some(crate::repair::STALE), "{case}");
+        assert_eq!(tab.told, None, "{case}");
+        assert!(
+            !tab.remove_reference(sessions, card),
+            "{case}: Remove started"
+        );
+        assert_eq!(tab.sent, sent, "{case}: Remove sent");
+        assert_eq!(
+            tab.message.as_deref(),
+            Some(crate::repair::STALE),
+            "{case}: Remove"
+        );
+    }
+
+    #[test]
+    fn a_repair_with_a_sketch_open_is_refused_saying_why_and_made_once_it_closes() {
+        let (_dir, sessions, mut tab) = opened_on(BROKEN_ROUND, |_| {});
+        published_quietly(&mut tab, &sessions);
+        let card = round_card(1, "k7f2qx3m.box.Edge13", tab.revision);
+        // Sketch mode's Cancel undoes to where it opened, so a mend made under it would go
+        // with it, as under a dialog: Use and Remove the edge refused, saying why.
+        tab.sketch = Some(crate::sketch::SketchMode::new(1, None));
+        let sent = tab.sent.clone();
+        let why = Some("Finish or cancel the sketch first");
+        tab.told = Some("Round now rounds the edge you picked.".to_owned());
+        assert!(!tab.use_candidate(&sessions, &card, "k7f2qx3m.box.Edge12"));
+        assert_eq!(tab.message.as_deref(), why);
+        assert_eq!(tab.told, None);
+        tab.message = None;
+        assert!(!tab.remove_reference(&sessions, &card));
+        assert_eq!(tab.message.as_deref(), why);
+        assert_eq!(tab.sent, sent);
+        // The sketch closed: Use mends it, at the broken name's place.
+        tab.sketch = None;
+        assert!(tab.use_candidate(&sessions, &card, "k7f2qx3m.box.Edge12"));
+        assert_eq!(tab.sent.last(), Some(&Sent::Edit("edges.1".to_owned())));
+    }
+
+    #[test]
+    fn a_repair_is_made_only_of_a_card_read_at_the_sessions_revision_with_its_model_and_nothing_under_way()
+     {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // Every kernel request held while `holding` is set.
+        let holding = Arc::new(AtomicBool::new(false));
+        let mut hold = None;
+        let (_dir, sessions, mut tab) = opened_on(BROKEN_ROUND, |kernel| {
+            let holding = Arc::clone(&holding);
+            hold = Some(kernel.hold(move |_| holding.load(Ordering::SeqCst)));
+        });
+        let hold = hold.unwrap();
+        published_quietly(&mut tab, &sessions);
+        let opened = tab.revision;
+        assert_eq!(opened, Revision::OPENED);
+        let length = |value: &str| Edit {
+            feature: FeatureId::new("k7f2qx3m").unwrap(),
+            field: "length".to_owned(),
+            value: silico_core::document::json::read(value.as_bytes()).unwrap(),
+        };
+        // An edit of the tab's under way: the revision it makes isn't known yet.
+        tab.edit(&sessions, length("5"));
+        assert!(!tab.quiet());
+        refused_as_stale(
+            &mut tab,
+            &sessions,
+            &round_card(1, "k7f2qx3m.box.Edge13", opened),
+            "an edit under way",
+        );
+        published_quietly(&mut tab, &sessions);
+        let edited = tab.revision;
+        assert!(edited > opened);
+        // A card read at the revision before: whatever the document holds now.
+        refused_as_stale(
+            &mut tab,
+            &sessions,
+            &round_card(1, "k7f2qx3m.box.Edge13", opened),
+            "read at the revision before",
+        );
+        // The session's revision's model not published yet (its rebuild held): the card
+        // read at it, but the model the selection reads is the revision before's.
+        holding.store(true, Ordering::SeqCst);
+        tab.edit(&sessions, length("6"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !(tab.quiet() && tab.revision > edited) {
+            tab.poll(&sessions);
+            assert!(std::time::Instant::now() < deadline, "never answered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            tab.selection.model().map(|(_, revision)| revision),
+            Some(edited)
+        );
+        let now = tab.revision;
+        refused_as_stale(
+            &mut tab,
+            &sessions,
+            &round_card(1, "k7f2qx3m.box.Edge13", now),
+            "its model not published",
+        );
+        holding.store(false, Ordering::SeqCst);
+        hold.release();
+        published_quietly(&mut tab, &sessions);
+        // A name the model finds (Edge1, at its own place): never written over.
+        let now = tab.revision;
+        refused_as_stale(
+            &mut tab,
+            &sessions,
+            &round_card(0, "k7f2qx3m.box.Edge1", now),
+            "a name found",
+        );
+        // Read at the session's revision, its model published, nothing under way, its name
+        // broken: written at its place.
+        let card = round_card(1, "k7f2qx3m.box.Edge13", tab.revision);
+        assert!(tab.use_candidate(&sessions, &card, "k7f2qx3m.box.Edge12"));
+        assert_eq!(tab.sent.last(), Some(&Sent::Edit("edges.1".to_owned())));
+        assert_eq!(
+            tab.told.as_deref(),
+            Some("Round now rounds the edge you picked. Undo puts the broken reference back.")
+        );
+    }
+
     #[test]
     fn rebuild_everything_says_a_features_fault_as_the_features_never_the_documents() {
         // The gate passes the document (its timeline counts no problem of the gate's); the
@@ -6441,6 +7164,71 @@ mod tests {
         assert!(!tab.can_rebuild_all());
         tab.rebuild_all(&sessions);
         assert_eq!(tab.rebuilds_all, 1);
+    }
+
+    #[test]
+    fn a_rename_opens_where_asked_else_on_the_timeline_and_never_in_a_dialog_or_a_close() {
+        use crate::feature_menu::Place;
+        let block = FeatureId::new("a0000001").unwrap();
+        let cut = FeatureId::new("b0000001").unwrap();
+        // A block and the cut that consumed it: the browser lists bodies by the feature that
+        // ends their chain, so the cut has a row, and the block none.
+        let ready = || {
+            let mut tab = tab();
+            tab.timeline = Some(timeline(
+                0,
+                Some(Revision::OPENED),
+                vec![entry("a0000001", 0, 0), entry("b0000001", 0, 0)],
+            ));
+            tab.browser = Browser {
+                bodies: vec![Row {
+                    id: cut.clone(),
+                    name: "b0000001".to_owned(),
+                    health: Health::Healthy,
+                    marked_by: None,
+                }],
+                sketches: Vec::new(),
+            };
+            tab
+        };
+        // Nothing to rename under an open dialog (its Cancel undoes to where it opened) or in
+        // a tab closing (its edits would be dropped), from the timeline or the browser.
+        let mut in_dialog = ready();
+        in_dialog.loading = Some(1);
+        let mut closing = ready();
+        closing
+            .edits
+            .queue
+            .push_back(Queued::Save { then_close: true });
+        for (what, mut tab) in [("in a dialog", in_dialog), ("closing", closing)] {
+            for place in [Place::Timeline, Place::Browser] {
+                tab.start_rename(cut.clone(), place);
+                assert_eq!(tab.renaming, None, "{what}, at {place:?}");
+                assert_eq!(tab.selection().feature(), None, "{what}, at {place:?}");
+            }
+        }
+        // The cut's in its browser row, as asked, the browser scrolled to it; its name typed
+        // over.
+        let mut tab = ready();
+        tab.start_rename(cut.clone(), Place::Browser);
+        let renaming = tab.renaming.clone().unwrap();
+        assert_eq!(
+            (&renaming.feature, renaming.place, renaming.text.as_str()),
+            (&cut, Place::Browser, "b0000001")
+        );
+        assert_eq!(tab.selection().scroll_target(), Some(&cut));
+        assert_eq!(tab.timeline_scroll(), None);
+        // The block, asked in the browser, which has no row for it: its timeline item's, the
+        // timeline scrolled to it.
+        let mut tab = ready();
+        tab.start_rename(block.clone(), Place::Browser);
+        let renaming = tab.renaming.clone().unwrap();
+        assert_eq!(
+            (&renaming.feature, renaming.place),
+            (&block, Place::Timeline)
+        );
+        assert_eq!(tab.selection().feature(), Some(&block));
+        assert_eq!(tab.timeline_scroll(), Some(&block));
     }
 
     #[test]

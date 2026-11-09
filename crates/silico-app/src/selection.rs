@@ -577,6 +577,33 @@ impl Selection {
         }
     }
 
+    /// The published model the selection was last carried to, and its revision.
+    pub(crate) fn model(&self) -> Option<(&Arc<Model>, Revision)> {
+        Some((self.model.as_ref()?, self.of?.1))
+    }
+
+    /// The element `name` finds in the published model's bodies (the core's `resolve`, as a
+    /// pick reads it), as `view` draws it: its body's number and its face or edge; none if
+    /// it finds none, if the view's bodies aren't of that model, or if no body drawn is the
+    /// one it's in. What a broken reference's candidate lights (flow 6b).
+    pub fn lit(&self, name: &str, view: &View) -> Option<(u32, Element)> {
+        let model = self.model.as_ref()?;
+        if view.bodies_of() != self.of {
+            return None;
+        }
+        let found = rules::resolve(model, &[name], PARAMETER)
+            .ok()?
+            .kept
+            .into_iter()
+            .next()?;
+        let number = view
+            .bodies()
+            .iter()
+            .find(|(_, body)| body.feature == found.feature)
+            .map(|(number, _)| *number)?;
+        Some((number, drawn_as(found.element)?))
+    }
+
     /// Its items as they are, to put back later ([`restore`](Self::restore)).
     pub fn saved(&self) -> Vec<Item> {
         self.items.clone()
@@ -688,6 +715,13 @@ impl Selection {
         }
         self.said = None;
         self.click = None;
+    }
+
+    /// Feature `id` selected alone, and its browser row scrolled to once, its group opened
+    /// (the timeline's Find in browser).
+    pub fn find_in_browser(&mut self, id: FeatureId) {
+        self.select_feature(id.clone());
+        self.scroll = Some(id);
     }
 
     /// Everything let go (Esc, a click on empty canvas, SELECT's Clear selection), a click

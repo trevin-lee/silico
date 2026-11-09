@@ -628,6 +628,12 @@ pub const STATUS_BAR_HEIGHT: f32 = 24.0;
 /// A text field's height.
 pub const FIELD_HEIGHT: f32 = 22.0;
 
+/// A feature's rename field in the timeline (F2, or Rename in its menu), over its item: as
+/// wide as the property panel's Name field shows a name, the prototype's `prompt` giving
+/// none of its own; and the gap between it and the item.
+pub const TIMELINE_RENAME_WIDTH: f32 = 180.0;
+pub const TIMELINE_RENAME_GAP: f32 = 4.0;
+
 /// A key cap's height.
 pub const KEY_CAP_HEIGHT: f32 = 16.0;
 
@@ -642,6 +648,38 @@ pub const SMALL_CORNER_RADIUS: u8 = 4;
 
 /// A menu's padding (the prototype's `.menu`; `re_ui`'s is the view's 12).
 pub const MENU_PADDING: i8 = 4;
+
+/// A feature's menu as the prototype's `.menu` lays it out: 200 wide at least, its 1 border
+/// and its padding inside that (`box-sizing: border-box`).
+pub const MENU_MIN_WIDTH: f32 = 200.0;
+/// A menu item (`.menu .mi`): 24 high, 8 of padding at each side, 8 between its icon (or
+/// its 14 wide spacer), its words, and what's after them; its corners `--r-sm`.
+pub const MENU_ITEM_HEIGHT: f32 = 24.0;
+pub const MENU_ITEM_PADDING: f32 = 8.0;
+pub const MENU_ITEM_GAP: f32 = 8.0;
+/// An item's dim words after its label (the prototype's `subdued` span, `margin-left:
+/// 8px; font-size: 11px`), as Edit feature's "double-click".
+pub const MENU_ITEM_SUB_MARGIN: f32 = 8.0;
+pub const MENU_ITEM_SUB_SIZE: f32 = 11.0;
+pub const MENU_ITEM_SUB_TEXT: Color32 = TEXT_SUBDUED;
+/// An item's key caps (`.menu .mi .sc`): at its right, 24 of padding at their left.
+pub const MENU_KEYS_PADDING: f32 = 24.0;
+/// An item's words (`.menu .mi`, Gray.750), hovered (`--blue`, `--blue-text`), and off
+/// (`.menu .mi:disabled`, Gray.400).
+pub const MENU_ITEM_TEXT: Color32 = TEXT_DEFAULT;
+pub const MENU_ITEM_HOVER_BG: Color32 = SELECTION_BG;
+pub const MENU_ITEM_HOVER_TEXT: Color32 = ON_SELECTION;
+/// A hovered item's key caps (`.menu .mi:hover .kbd`): no fill, a white outline at 35%,
+/// and the hovered item's words' colour.
+pub const MENU_KEY_CAP_HOVER_STROKE: Color32 = hex_alpha(0xffffff, 89);
+/// The menu's head (`.menu .mh`: `padding: 6px 8px 2px`, 10 high capitals on the body's
+/// 16 line).
+pub const MENU_HEAD_TOP: f32 = 6.0;
+pub const MENU_HEAD_BOTTOM: f32 = 2.0;
+pub const MENU_LINE_HEIGHT: f32 = 16.0;
+/// Its separator (`.menu .msep`: 1 high, Gray.250, 4 above and below).
+pub const MENU_SEPARATOR_MARGIN: f32 = 4.0;
+pub const MENU_SEPARATOR: Color32 = GRAY_250;
 
 /// Menus' and popups' shadow (the prototype's `.menu`: `0 8px 28px`, black at 60%).
 pub const POPUP_SHADOW: Shadow = Shadow {
@@ -1212,6 +1250,13 @@ pub const ERROR_CARD_CANDIDATE_PADDING: Margin = Margin::symmetric(6, 5);
 pub const ERROR_CARD_CANDIDATE_BG: Color32 = with_alpha(GRAY_0, 64);
 pub const ERROR_CARD_CANDIDATE_MARGIN: f32 = 4.0;
 pub const ERROR_CARD_CANDIDATE_TEXT: Color32 = hex(0xffd1d6);
+/// A candidate's row while the pointer is over it, or over its edge in the canvas
+/// (`.cand:hover`: white at 8%, 20 of 255).
+pub const ERROR_CARD_CANDIDATE_HOVER_BG: Color32 = with_alpha(GRAY_1000, 20);
+/// The gap between a candidate's name and its Use (`.cand`'s `gap: 8px`).
+pub const ERROR_CARD_CANDIDATE_GAP: f32 = 8.0;
+/// A candidate's why under its name (`.cand .why`: 10.5, in the accent).
+pub const ERROR_CARD_CANDIDATE_WHY_SIZE: f32 = 10.5;
 /// The card's buttons (`.ec-actions`: wrapped, 6 apart each way), each `.btn`
 /// ([`BUTTON_HEIGHT`] high).
 pub const ERROR_CARD_ACTIONS_GAP: f32 = 6.0;
@@ -1260,15 +1305,12 @@ pub const SEGMENTED_HOVER_TEXT: Color32 = TEXT_STRONG;
 pub const SEGMENTED_ON_BG: Color32 = GRAY_350;
 pub const SEGMENTED_ON_TEXT: Color32 = TEXT_STRONG;
 
-/// A choice of several as a drop-down (`.field.select`), where its words don't fit `.seg`:
-/// a field's fill and corners, padded 6 at each side, its words Gray.800, its arrow 10
-/// square in Gray.550. A choice stays `.seg` only while each of its words fits its share
-/// with [`SEGMENTED_ROOM`] at each side (a proposal: `.seg` sets none, its words centred).
+/// A dialog's choice of several, a drop-down (`.field.select`): a field's fill and corners,
+/// padded 6 at each side, its words Gray.800, its arrow 10 square in Gray.550.
 pub const SELECT_PADDING: f32 = 6.0;
 pub const SELECT_TEXT: Color32 = GRAY_800;
 pub const SELECT_ARROW: Color32 = TEXT_SUBDUED;
 pub const SELECT_ARROW_SIZE: f32 = 10.0;
-pub const SEGMENTED_ROOM: f32 = 4.0;
 
 /// The preview's line in a dialog (`.dlg-status`): 8 above it, `--pad` at its sides; padded
 /// 6 by 8, corners `--r-sm`, Gray.150; its words `--fs-small` Gray.550, Gray.750 while it

@@ -797,6 +797,56 @@ impl Dialog {
         }
     }
 
+    /// Its box of names, active or not, if it has one (a fillet's or chamfer's edges).
+    pub fn names_input(&self) -> Option<&Names> {
+        self.inputs.iter().find_map(|input| match &input.value {
+            Value::Names(names) => Some(names),
+            _ => None,
+        })
+    }
+
+    /// `broken`'s name in its box of names put right (flow 6b): `stored` (a candidate's
+    /// Use, the name a store writes for it on the box's base) in its place, or, for none,
+    /// the name let go (Remove the edge), as the box's own remove button lets one go, so the
+    /// box may empty, its OK off until an edge is picked (SolidWorks' Fillet
+    /// PropertyManager, its missing references cleared). The name is found at the broken
+    /// one's place in the box, if that holds it, and only otherwise by its name (two long
+    /// names may share the part an error gives of them). Whether the box held the name.
+    pub fn repair(&mut self, broken: &crate::repair::Broken, stored: Option<String>) -> bool {
+        let Some(names) = self
+            .inputs
+            .iter_mut()
+            .find_map(|input| match &mut input.value {
+                Value::Names(names) => Some(names),
+                _ => None,
+            })
+        else {
+            return false;
+        };
+        let at_place = names
+            .names
+            .get(broken.place)
+            .is_some_and(|name| broken.is(name))
+            .then_some(broken.place);
+        let Some(at) = at_place.or_else(|| names.names.iter().position(|name| broken.is(name)))
+        else {
+            return false;
+        };
+        names.said = None;
+        match stored {
+            Some(stored) => {
+                if let Some(place) = names.names.get_mut(at) {
+                    *place = stored;
+                }
+            }
+            None => {
+                let gone = names.names.remove(at);
+                self.unpicked.push(gone);
+            }
+        }
+        true
+    }
+
     fn names_mut(&mut self) -> Option<&mut Names> {
         match self.active.and_then(|at| self.inputs.get_mut(at)) {
             Some(Input {
@@ -1005,10 +1055,14 @@ impl Dialog {
     ///
     /// Left out: the Name field (the property panel's renames a feature, a dialog's would be
     /// one more way).
-    pub fn ui(
+    ///
+    /// A card of a broken reference of its feature's offers its candidates' Use and Remove
+    /// the edge (its `Repair`): what they ask, and the candidate hovered, are `said`'s
+    /// `out`.
+    pub(crate) fn ui(
         &mut self,
         ui: &mut Ui,
-        said: &[(crate::tab::Said, Option<String>)],
+        said: &mut properties::Cards,
         preview: Option<properties::Preview>,
         named: &dyn Fn(&FeatureId) -> Option<String>,
         refused: &dyn Fn(&str) -> bool,
@@ -1083,16 +1137,22 @@ impl Dialog {
                         properties::section(ui, "Preview");
                         properties::preview(ui, preview, &rebuild);
                     }
-                    for (place, (said, name)) in said.iter().enumerate() {
-                        // Copy as JSON alone: the dialog is the feature's edit already.
-                        ui.push_id(("dialog-said", place), |ui| {
-                            properties::card(
-                                ui,
-                                said,
-                                name.as_deref(),
-                                properties::Offer::default(),
-                            )
-                        });
+                    let cards = &mut said.out;
+                    for (place, (said, name, repair)) in said.said.iter().enumerate() {
+                        // Copy as JSON, and a broken reference's repair: the dialog is the
+                        // feature's edit already.
+                        let out = ui
+                            .push_id(("dialog-said", place), |ui| {
+                                properties::repair_card(
+                                    ui,
+                                    said,
+                                    name.as_deref(),
+                                    properties::Offer::default(),
+                                    repair.as_ref(),
+                                )
+                            })
+                            .inner;
+                        *cards = std::mem::take(cards).or(out);
                     }
                 });
         });
@@ -1138,7 +1198,7 @@ impl Dialog {
 }
 
 /// `input`'s value in its row, labelled by `label` (its key's): a field with its unit, a
-/// toggle, a choice of a few, or a selection box (highlighted if it's the active one).
+/// toggle, a choice's drop-down, or a selection box (highlighted if it's the active one).
 fn input_ui(
     ui: &mut Ui,
     input: &mut Input,
@@ -1179,7 +1239,7 @@ fn input_ui(
         }
         Value::Choice { options, chosen } => {
             let shown: Vec<String> = options.iter().map(|(_, shown)| shown.clone()).collect();
-            if let Some(place) = properties::choice(ui, input.label, &shown, *chosen, enabled) {
+            if let Some(place) = properties::select(ui, input.label, &shown, *chosen, enabled) {
                 *chosen = place;
             }
         }
@@ -1676,6 +1736,44 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn a_repair_acts_on_the_broken_names_place_where_two_long_names_share_what_its_error_gives() {
+        // Two names of more than 200 characters, alike in their first 200: the error gives
+        // the second's cut short there, so its words fit either. The second's place is
+        // mended, the first left as it is.
+        let read = |text: &str| json::read(text.as_bytes()).unwrap();
+        let prefix = format!("k7f2qx3m.box.Edge5{}", "x".repeat(200));
+        let (first, second) = (format!("{prefix}a"), format!("{prefix}b"));
+        let fillet = read(&format!(
+            r#"{{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["{first}", "{second}"], "radius": 2.5}}"#
+        ));
+        let broken = |place: usize| crate::repair::Broken {
+            feature: FeatureId::new("f0000001").unwrap(),
+            place,
+            name: format!("{}…", prefix.chars().take(200).collect::<String>()),
+            candidates: vec!["k7f2qx3m.box.Edge4".to_owned()],
+            read: silico_core::command::Revision::OPENED,
+        };
+        let id = FeatureId::new("f0000001").unwrap();
+        let mut used = Dialog::load(Kind::Fillet, id.clone(), &fillet, 1).unwrap();
+        assert!(used.repair(&broken(1), Some("k7f2qx3m.box.Edge4".to_owned())));
+        assert_eq!(
+            used.names().unwrap().names,
+            [first.clone(), "k7f2qx3m.box.Edge4".to_owned()]
+        );
+        let mut removed = Dialog::load(Kind::Fillet, id.clone(), &fillet, 1).unwrap();
+        assert!(removed.repair(&broken(1), None));
+        assert_eq!(removed.names().unwrap().names, std::slice::from_ref(&first));
+        assert_eq!(removed.take_unpicked(), std::slice::from_ref(&second));
+        // Its place holding another name (an edit since moved it): found by its name.
+        let mut moved = Dialog::load(Kind::Fillet, id, &fillet, 1).unwrap();
+        assert!(moved.repair(&broken(5), Some("k7f2qx3m.box.Edge4".to_owned())));
+        assert_eq!(
+            moved.names().unwrap().names,
+            ["k7f2qx3m.box.Edge4".to_owned(), second]
+        );
     }
 
     #[test]
