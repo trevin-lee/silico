@@ -173,10 +173,10 @@ const PALETTE_FROM_CORNER: egui::Vec2 =
 fn sketch_inset(
     pixels_per_point: f32,
     canvas: Option<egui::Rect>,
-    panels: Option<(egui::Rect, egui::Rect)>,
+    panels: Option<sketch::Panels>,
 ) -> crate::navigate::Inset {
     let (top, right) = match (canvas, panels) {
-        (Some(canvas), Some((bar, palette))) => (
+        (Some(canvas), Some(sketch::Panels { bar, palette })) => (
             (bar.bottom() - canvas.top()) + (bar.top() - canvas.top()),
             (canvas.right() - palette.left()) + (canvas.right() - palette.right()),
         ),
@@ -2304,7 +2304,10 @@ impl<P: Clients + 'static> App<P> {
                 sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
             });
         let (look_at, palette) = (shown.inner, shown.response.rect);
-        mode.panels = Some((bar_drawn, palette));
+        mode.panels = Some(sketch::Panels {
+            bar: bar_drawn,
+            palette,
+        });
         match action {
             BarAction::None => {}
             BarAction::Finish => tab.finish_sketch(sessions, true),
@@ -2977,10 +2980,59 @@ mod tests {
     use silico_core::sketch::SketchSolver;
     use tempfile::TempDir;
 
-    use super::{Answered, App, Opening, Part, held_list, mine_row, split_answered, theirs_row};
+    use super::{
+        Answered, App, Opening, Part, held_list, mine_row, sketch_inset, split_answered, theirs_row,
+    };
     use crate::changes::{Changes, Listed, Row};
     use crate::tab::said;
     use crate::theme;
+
+    #[test]
+    fn sketch_modes_bands_are_the_drawn_panels_and_as_far_again_in_pixels_rounded_up() {
+        use crate::navigate::Inset;
+        use crate::sketch::Panels;
+        use eframe::egui::{Rect, pos2};
+        // A canvas from (200, 100) to (1000, 700) points; the bar 10 below its top and 32
+        // tall, the palette 12 in from its right and 212 wide.
+        let canvas = Rect::from_min_max(pos2(200.0, 100.0), pos2(1000.0, 700.0));
+        let panels = Panels {
+            bar: Rect::from_min_max(pos2(400.0, 110.0), pos2(800.0, 142.0)),
+            palette: Rect::from_min_max(pos2(776.0, 218.0), pos2(988.0, 600.0)),
+        };
+        // Top: 42 to the bar's bottom and 10 more, 52; right: 224 to the palette's left and
+        // 12 more, 236. At two pixels a point, 104 and 472.
+        let both = |top, right| Inset {
+            top,
+            right,
+            bottom: 0,
+            left: 0,
+        };
+        assert_eq!(
+            sketch_inset(2.0, Some(canvas), Some(panels)),
+            both(104, 472)
+        );
+        // A bar drawn 40 tall, not the 32 its constant says: the band follows what's drawn,
+        // 50 + 10 = 60, so 120.
+        let taller = Panels {
+            bar: Rect::from_min_max(pos2(400.0, 110.0), pos2(800.0, 150.0)),
+            ..panels
+        };
+        assert_eq!(
+            sketch_inset(2.0, Some(canvas), Some(taller)),
+            both(120, 472)
+        );
+        // Before they're drawn, where they're placed and their sizes: the same 52 and 236.
+        assert_eq!(sketch_inset(2.0, Some(canvas), None), both(104, 472));
+        assert_eq!(sketch_inset(2.0, None, Some(panels)), both(104, 472));
+        // At one and a half, 78 and 354; a bar half a point lower, 52.5 × 1.5 = 78.75, up
+        // to 79, so the band covers it.
+        assert_eq!(sketch_inset(1.5, Some(canvas), Some(panels)), both(78, 354));
+        let lower = Panels {
+            bar: Rect::from_min_max(pos2(400.0, 110.0), pos2(800.0, 142.5)),
+            ..panels
+        };
+        assert_eq!(sketch_inset(1.5, Some(canvas), Some(lower)), both(79, 354));
+    }
 
     /// A block: any document the gate takes.
     const BLOCK: &str = r#"{

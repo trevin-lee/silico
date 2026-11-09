@@ -367,8 +367,9 @@ pub const UNMENDED: &str =
 /// prototype's words.
 pub const LOOK_AT_NO_FACE: &str = "Look At: select a flat face first.";
 
-/// What Look At says of the one face selected while the core's measures of it haven't come
-/// (its `elements` read is out, or isn't asked while a dialog takes the selection).
+/// What Look At says of the one face selected while the core's measures of it haven't come:
+/// its `elements` read is out, or, while a dialog is open, not asked until the dialog closes
+/// (`Tab::measure`).
 pub const LOOK_AT_UNMEASURED: &str = "Look At: the face selected isn't measured yet.";
 
 /// What Look At says in sketch mode before the sketch's first read has come. Once it has, a

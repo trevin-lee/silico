@@ -124,6 +124,13 @@ pub struct Read {
     pub result: Result<SketchRead, Problems>,
 }
 
+/// Sketch mode's panels over the canvas, each's rectangle on the screen as a frame drew it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Panels {
+    pub bar: egui::Rect,
+    pub palette: egui::Rect,
+}
+
 /// What a left button did in the viewport, as the pane hands it over each frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerAction {
@@ -310,7 +317,7 @@ pub struct SketchMode {
     /// The sketch bar's and the palette's rectangles on the screen, as the last frame drew
     /// them: what the bands a fit keeps its box out of are measured from
     /// (`app::sketch_inset`).
-    pub panels: Option<(egui::Rect, egui::Rect)>,
+    pub panels: Option<Panels>,
     /// Where the Modify box open stands on the screen, as the last frame projected it.
     modify_screen: Option<Pos2>,
     /// The pick tolerance, in millimetres, at the last frame's view's middle: what Smart

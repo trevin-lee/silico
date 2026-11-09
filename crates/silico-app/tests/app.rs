@@ -28850,17 +28850,13 @@ const A_PIN: &str = r#"{
 }
 "#;
 
-#[test]
-fn a_selected_rim_is_a_circle_edge_with_its_length_and_radius_and_its_wall_a_cylinder() {
-    // The pin described as OCCT describes a cylinder, in the fake's numbering of it (its
-    // Edge1 the seam, from Vertex1 to Vertex2; Edge2 the circle Face2 is bounded by, at
-    // Vertex1; Edge3 Face3's, at Vertex2): its wall 2π · 2.5 · 12 = 60π mm², its top and
-    // bottom π · 2.5² each, its rims 2π · 2.5 = 5π long, each closed at its vertex.
+/// The fake describing A_PIN's cylinder as the kernel would: its wall a cylinder about z,
+/// radius 2.5 and 12 high, and its two caps planes facing +z and −z.
+fn describes_a_pin(f: &Fixture) {
     use silico_core::kernel::{
         Axis, Description, EdgeCurve, EdgeDescription, FaceDescription, Op, Surface,
     };
     use std::f64::consts::PI;
-    let f = fixture();
     let axis = |z: f64| Axis {
         origin: [0.0, 0.0, z],
         direction: [0.0, 0.0, 1.0],
@@ -28913,6 +28909,16 @@ fn a_selected_rim_is_a_circle_edge_with_its_length_and_radius_and_its_wall_a_cyl
         Op::DescribeAll { .. } => Some(silico_protocol::Reply::DescribedAll(description.clone())),
         _ => None,
     });
+}
+
+#[test]
+fn a_selected_rim_is_a_circle_edge_with_its_length_and_radius_and_its_wall_a_cylinder() {
+    // The pin described as OCCT describes a cylinder, in the fake's numbering of it (its
+    // Edge1 the seam, from Vertex1 to Vertex2; Edge2 the circle Face2 is bounded by, at
+    // Vertex1; Edge3 Face3's, at Vertex2): its wall 2π · 2.5 · 12 = 60π mm², its top and
+    // bottom π · 2.5² each, its rims 2π · 2.5 = 5π long, each closed at its vertex.
+    let f = fixture();
+    describes_a_pin(&f);
     let (mut h, _) = f.opened("pin.silico", A_PIN);
     step_until(&mut h, "the model published", |h| {
         h.state().tabs()[0].published.is_some()
@@ -39141,5 +39147,126 @@ fn look_at_a_sketch_whose_face_broke_says_its_planes_problem_and_the_view_stays(
         toast_said(h).is_some_and(|(text, _)| text == want)
     });
     assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_on_a_face_not_yet_measured_says_so_and_the_view_stays() {
+    // Face2 picked in place of the measured Face6, and Look At asked before a frame has asked
+    // the new selection's measures: there are none for the selection as it is now.
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    let before = view(&h).camera().clone();
+    {
+        use silico_app::selection::How;
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.selection_mut().pick("k7f2qx3m.box.Face2", How::Replace);
+        tab.look_at();
+    }
+    step(&mut h);
+    assert_eq!(
+        toast_said(&h).map(|(text, _)| text).as_deref(),
+        Some(silico_app::tab::LOOK_AT_UNMEASURED)
+    );
+    assert_eq!(view(&h).camera(), &before);
+    // Once measured, Look At turns square to it: from +x, +z up.
+    row_until(&mut h, "Area", "200.00 mm²");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "from the right", |h| {
+        looks(h, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_before_the_sketchs_first_read_says_so_and_the_view_stays() {
+    // Create Sketch with every solve held: its add answers and sketch mode opens, but its
+    // read waits on the held solve, so nothing has placed the sketch yet.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    step_until(&mut h, "Create Sketch on", |h| {
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    });
+    f.sketches.hold();
+    create_sketch(&mut h, "XY plane");
+    assert!(f.sketches.wait_held(WAIT), "the sketch's solve never held");
+    assert!(sketch_mode(&h).unwrap().drawable().is_none());
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_UNREAD)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    f.sketches.release();
+    sketch_read(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_on_a_curved_face_says_to_select_a_flat_one_and_turns_to_its_flat_cap() {
+    // The pin's wall is a cylinder: not flat, so Look At says so and the view stays. Its top
+    // cap, flat and facing +z, it turns square to from above, +y up.
+    let f = fixture();
+    describes_a_pin(&f);
+    let (mut h, _) = f.opened("pin.silico", A_PIN);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    use silico_app::selection::How;
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .pick("a91cw0de.cylinder.Face1", How::Replace);
+    // 60π = 188.4955… mm².
+    row_until(&mut h, "Area", "188.50 mm²");
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_NO_FACE)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .pick("a91cw0de.cylinder.Face2", How::Replace);
+    // π · 2.5² = 19.6349… mm².
+    row_until(&mut h, "Area", "19.63 mm²");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "from above", |h| {
+        looks(h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_perspective_front_in_a_first_sketch_still_keeps_its_top_clear_of_the_bar() {
+    // As the orthographic test, with the view switched to perspective (the ViewCube's menu):
+    // the sketch's plane holds the target, so its places there are drawn at the target's
+    // scale, the origin at the room's middle and the box's top below the bar.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    begin_sketch_on(&mut h, "Untitled", "XZ plane");
+    h.get_by_label("Orbit the view").click_secondary();
+    step(&mut h);
+    h.get_by_label("Perspective").click_accesskit();
+    step(&mut h);
+    assert!(view(&h).perspective());
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step_until(&mut h, "from the front", |h| {
+        looks(h, [0.0, -1.0, 0.0], [0.0, 0.0, 1.0])
+    });
+    step(&mut h);
+    assert!(matches!(
+        view(&h).camera().projection,
+        silico_protocol::Projection::Perspective { .. }
+    ));
+    in_the_room(&h, &[[-50.0, 50.0], [0.0, 50.0], [50.0, 50.0]], [0.0, 0.0]);
     assert_eq!(never_waits::waits(), 0);
 }
