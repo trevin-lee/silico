@@ -2275,11 +2275,23 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
     step_until(&mut h, "the timeline read", |h| {
         shows(h, "Timeline", "Hole")
     });
-    // Idle again: the frame asked for is a disk comparison's interval away.
-    for _ in 0..5 {
+    // Idle again once the reads the timeline's answer started (its check, the published
+    // model's) have answered, each asking the frame after it, in as many frames as a loaded
+    // machine takes: the wakes settle within the deadline (an endless round of reads never
+    // does), and then every frame no wake explains asks for a disk comparison's interval,
+    // never the display's rate.
+    quiet_wakes(&mut h);
+    step_until(&mut h, "idle again", |h| idle(delay(h)));
+    for _ in 0..10 {
+        let woken = h.state().wakes();
         step(&mut h);
+        std::thread::sleep(Duration::from_millis(2));
+        assert!(
+            idle(delay(&h)) || h.state().wakes() != woken,
+            "{:?}",
+            delay(&h)
+        );
     }
-    assert!(idle(delay(&h)), "{:?}", delay(&h));
     assert_eq!(never_waits::waits(), 0);
 }
 
