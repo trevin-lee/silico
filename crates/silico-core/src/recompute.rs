@@ -1078,8 +1078,9 @@ pub struct StepCount {
     pub features: FeatureStates,
     /// How long the recompute has run, on the monotonic clock: from its being asked for
     /// ([`Recompute::begin`], before its thread starts) to its count's end (its model
-    /// published, or its failure or stop), so far while it runs, and fixed once it ends. A
-    /// diagnostic, a clock, never a result (section 10).
+    /// published, or its failure), or to its stop (a cancel, or a newer recompute), though
+    /// its thread may yet drain a step then; so far while it runs, and fixed once it ends or
+    /// stops. A diagnostic, a clock, never a result (section 10).
     pub elapsed: Duration,
 }
 
@@ -1249,6 +1250,11 @@ struct Counted {
     /// ([`Recompute::begin`]). `count.elapsed` is read from it while the count runs, and
     /// fixed from it as the count ends.
     started: Instant,
+    /// How long it had run when it was stopped (cancelled, or superseded by a newer
+    /// recompute), if it was, before its count ended: its clock's end, though its thread may
+    /// still be draining a step ([`StepCounter::stopped`]). `count.elapsed` is this from
+    /// then on.
+    stopped: Option<Duration>,
     /// Where each feature is listed in `count.features`, by its place in the document: none
     /// for a suppressed feature.
     slots: Vec<Option<usize>>,
@@ -1285,6 +1291,7 @@ impl Default for Counted {
         Counted {
             count: StepCount::default(),
             started: Instant::now(),
+            stopped: None,
             slots: Vec::new(),
             rounds: 0,
             labels: BTreeMap::new(),
@@ -1304,9 +1311,14 @@ impl Counted {
     fn read(&self) -> StepCount {
         let mut count = self.count.clone();
         if !count.ended {
-            count.elapsed = self.started.elapsed();
+            count.elapsed = self.clock();
         }
         count
+    }
+
+    /// How long the recompute has run: to its stop, if it was stopped, else so far.
+    fn clock(&self) -> Duration {
+        self.stopped.unwrap_or_else(|| self.started.elapsed())
     }
 }
 
@@ -1520,7 +1532,7 @@ impl StepCounter {
             if !finished {
                 counted.count.features.none_running();
             }
-            let elapsed = counted.started.elapsed();
+            let elapsed = counted.clock();
             let count = &mut counted.count;
             if finished {
                 count.done = count.steps;
@@ -1531,6 +1543,17 @@ impl StepCounter {
         }
         // Told, not counted: the watcher tells the end once it's recorded.
         self.0.1.notify_all();
+    }
+
+    /// The recompute was stopped (cancelled, or superseded by a newer one): its clock ends
+    /// now, though its thread may yet drain the step it's on, so a stopped recompute's time
+    /// never runs on beside the model it leaves (`status`'s `done`). Of one that has ended,
+    /// or stopped already, it changes nothing.
+    fn stopped(&self) {
+        let mut counted = lock(&self.0.0);
+        if !counted.count.ended && counted.stopped.is_none() {
+            counted.stopped = Some(counted.started.elapsed());
+        }
     }
 }
 
@@ -2023,6 +2046,9 @@ struct EngineState {
     generation: Generation,
     /// The newest recompute's generation, whether or not it was cancelled since.
     newest_started: Generation,
+    /// The newest recompute's count, whose clock a cancel, or a newer recompute, stops
+    /// ([`StepCounter::stopped`]).
+    newest_progress: Option<StepCounter>,
     /// Whether the newest recompute was cancelled when no newer generation was left to
     /// supersede it with: it publishes nothing.
     cancelled: bool,
@@ -2246,6 +2272,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                 state: Mutex::new(EngineState {
                     generation,
                     newest_started: generation,
+                    newest_progress: None,
                     cancelled: false,
                     dropped: false,
                     results: BTreeMap::new(),
@@ -2341,7 +2368,7 @@ impl<K: Kernel + 'static> Recompute<K> {
         // Its clock starts here, as it's asked for, before its thread starts.
         let progress = StepCounter::default();
         progress.listing(&document);
-        let (generation, later) = {
+        let (generation, later, older) = {
             let mut state = lock(&self.engine.state);
             let newest = state.generation.0.max(self.engine.kernel.generation().0);
             let Some(next) = newest.checked_add(1) else {
@@ -2356,9 +2383,15 @@ impl<K: Kernel + 'static> Recompute<K> {
             state.generation = Generation(next);
             state.newest_started = Generation(next);
             state.cancelled = false;
+            let older = state.newest_progress.replace(progress.clone());
             let later = state.stop_older_solve(Generation(next));
-            (state.generation, later)
+            (state.generation, later, older)
         };
+        // The one this supersedes stopped, its clock with it: after the engine's lock, as
+        // the count's own lock is never taken under it.
+        if let Some(older) = older {
+            older.stopped();
+        }
         if let Some((after, number)) = later {
             Engine::stop_later(&self.engine, after, number);
         }
@@ -2431,6 +2464,7 @@ impl<K: Kernel + 'static> Recompute<K> {
     /// may be ending).
     fn supersede(&self, at_once: bool) {
         let mut state = lock(&self.engine.state);
+        let newest = state.newest_progress.clone();
         let next = state.generation.0.checked_add(1);
         let later = match next {
             Some(next) => {
@@ -2451,6 +2485,10 @@ impl<K: Kernel + 'static> Recompute<K> {
             }
         };
         drop(state);
+        // Its clock stopped with it (after the engine's lock, as in `begin`).
+        if let Some(newest) = newest {
+            newest.stopped();
+        }
         if let Some((after, number)) = later {
             Engine::stop_later(&self.engine, after, number);
         }
@@ -6218,6 +6256,43 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
         )
+    }
+
+    #[test]
+    fn a_stopped_counts_clock_ends_at_its_stop_and_its_end_keeps_that_time() {
+        let spin = |gap: Duration| {
+            let from = Instant::now();
+            while from.elapsed() < gap {
+                std::thread::yield_now();
+            }
+        };
+        // Stopped: its clock read at its stop from then on, though it hasn't ended; stopped
+        // again, nothing changes; ended, its time is its stop's.
+        let counter = StepCounter::default();
+        spin(Duration::from_millis(5));
+        counter.stopped();
+        let at_stop = counter.now();
+        assert!(!at_stop.ended);
+        assert!(at_stop.elapsed >= Duration::from_millis(5));
+        spin(Duration::from_millis(20));
+        counter.stopped();
+        assert_eq!(counter.now().elapsed, at_stop.elapsed);
+        counter.ended(false);
+        let ended = counter.now();
+        assert!(ended.ended);
+        assert_eq!(ended.elapsed, at_stop.elapsed);
+        // Ended first: a stop after its end changes nothing.
+        let finished = StepCounter::default();
+        finished.ended(true);
+        let end = finished.now().elapsed;
+        spin(Duration::from_millis(20));
+        finished.stopped();
+        assert_eq!(finished.now().elapsed, end);
+        // Never stopped: its clock runs on until its end.
+        let running = StepCounter::default();
+        let first = running.now().elapsed;
+        spin(Duration::from_millis(20));
+        assert!(running.now().elapsed >= first + Duration::from_millis(20));
     }
 
     #[test]

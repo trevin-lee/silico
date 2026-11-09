@@ -158,6 +158,9 @@ struct State {
 struct HoldRule {
     picks: Arc<Picks>,
     released: bool,
+    /// Whether a request it holds is held on past its supersede, until it's released
+    /// ([`FakeKernel::hold_past_supersede`]).
+    past_supersede: bool,
 }
 
 impl FakeKernel {
@@ -263,10 +266,28 @@ impl FakeKernel {
     /// Holds every request `picks` (called once for each request as it starts, with the
     /// kernel's state locked, so it mustn't call the kernel) until the hold is released.
     pub fn hold(&self, picks: impl Fn(&Op) -> bool + Send + Sync + 'static) -> Hold {
+        self.holding(picks, false)
+    }
+
+    /// Holds as [`hold`](Self::hold) does, but a request it holds is held on past its
+    /// supersede, until the hold is released, then comes to [`Outcome::Superseded`]: as the
+    /// pool lets a superseded request that's running go on for its grace
+    /// (`pool::STOP_AFTER`) before it stops its worker, so its caller is still waiting on it
+    /// after the supersede.
+    pub fn hold_past_supersede(&self, picks: impl Fn(&Op) -> bool + Send + Sync + 'static) -> Hold {
+        self.holding(picks, true)
+    }
+
+    fn holding(
+        &self,
+        picks: impl Fn(&Op) -> bool + Send + Sync + 'static,
+        past_supersede: bool,
+    ) -> Hold {
         let mut state = lock(&self.shared.state);
         state.holds.push(HoldRule {
             picks: Arc::new(picks),
             released: false,
+            past_supersede,
         });
         Hold {
             shared: Arc::clone(&self.shared),
@@ -643,12 +664,21 @@ fn serve(shared: &Shared) {
                 None => broken = Some(rule_panicked("hold", task.op())),
             }
         }
+        // Held while a rule holding it isn't released: one that holds past a supersede,
+        // whatever its generation; the others, until it's superseded.
+        let held = |state: &State, past: bool| {
+            holding.iter().any(|&index| {
+                state
+                    .holds
+                    .get(index)
+                    .is_some_and(|rule| !rule.released && (!past || rule.past_supersede))
+            })
+        };
         while broken.is_none()
             && !state.stopping
-            && !state.clients.superseded(task.client(), task.generation())
-            && holding
-                .iter()
-                .any(|&index| state.holds.get(index).is_some_and(|rule| !rule.released))
+            && (held(&state, true)
+                || (!state.clients.superseded(task.client(), task.generation())
+                    && held(&state, false)))
         {
             state = shared
                 .changed
