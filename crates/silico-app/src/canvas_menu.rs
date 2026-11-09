@@ -125,9 +125,10 @@ impl Shown {
         }
     }
 
-    /// What a screen reader (and a test) finds it by: its words, its dim words, its keys.
-    pub fn said(&self, ctx: &egui::Context) -> String {
-        self.line(false).said(ctx)
+    /// What a screen reader (and a test) finds it by: its words, then its dim words (its
+    /// keys are its keyboard shortcut, `crate::menu::item`).
+    pub fn said(&self) -> String {
+        self.line(false).said()
     }
 }
 
@@ -335,6 +336,10 @@ impl CanvasMenu {
             if shown.item == CanvasItem::CreateSketch && shown.off.is_none() {
                 let submenu = egui::containers::menu::SubMenu::id_from_widget_id(response.id);
                 if open_planes {
+                    // Marked shown first: egui 0.36.2's `MenuState::from_id` lets an open
+                    // item go that wasn't shown the frame before, as a submenu never opened
+                    // wasn't, and Enter is the app's key, not a click egui's submenu sees.
+                    egui::containers::menu::MenuState::mark_shown(ui.ctx(), submenu);
                     egui::containers::menu::MenuState::from_ui(ui, |state, _| {
                         state.open_item = Some(submenu);
                     });
@@ -398,10 +403,19 @@ mod tests {
         }
     }
 
+    /// Each item as a screen reader has it, its name then its keyboard shortcut, and whether
+    /// it's on.
     fn said(menu: &CanvasMenu, ctx: &egui::Context) -> Vec<(String, bool)> {
         menu.items
             .iter()
-            .map(|shown| (shown.said(ctx), shown.off.is_none()))
+            .map(|shown| {
+                let line = shown.line(false);
+                let said = match line.shortcut(ctx) {
+                    Some(keys) => format!("{} {keys}", line.said()),
+                    None => line.said(),
+                };
+                (said, shown.off.is_none())
+            })
             .collect()
     }
 

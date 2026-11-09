@@ -1179,7 +1179,7 @@ fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel
                 item.icon,
                 item.label,
                 item.caps.clone(),
-                item.on,
+                item.off,
                 item.separated,
             )
         })
@@ -1193,7 +1193,7 @@ fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel
                 None,
                 "End chain",
                 caps(&["Esc"]),
-                false,
+                Some("Nothing is being drawn"),
                 false
             ),
             (
@@ -1201,7 +1201,7 @@ fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel
                 Some(Icon::Dimension),
                 "Smart Dimension",
                 caps(&["D"]),
-                true,
+                None,
                 false
             ),
             (
@@ -1209,7 +1209,7 @@ fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel
                 Some(Icon::Check),
                 "Finish Sketch",
                 caps(&["Ctrl", "↵"]),
-                true,
+                None,
                 true
             ),
             (
@@ -1217,14 +1217,14 @@ fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel
                 None,
                 "Cancel sketch",
                 caps(&[]),
-                true,
+                None,
                 false
             ),
         ]
     );
     ctx.set_os(egui::os::OperatingSystem::Mac);
     assert_eq!(menu_items(&ctx, true)[2].caps, caps(&["⌘", "↵"]));
-    assert!(menu_items(&ctx, true)[0].on);
+    assert_eq!(menu_items(&ctx, true)[0].off, None);
     // Drawn: its buttons top to bottom in that order, each named by its words, its keys
     // its shortcut; Smart Dimension clicked asks for it.
     let asked = Rc::new(Cell::new(MenuAction::None));

@@ -2285,12 +2285,12 @@ impl<P: Clients + 'static> App<P> {
                 .fixed_pos(sketch::bar::menu_corner(at, ppp))
                 .order(egui::Order::Foreground)
                 .show(ui.ctx(), |ui| {
-                    *ui.visuals_mut() = sketch::bar::panel_visuals();
                     ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                         node.set_role(egui::accesskit::Role::Menu);
                         node.set_label("Sketch menu");
                     });
-                    egui::Frame::menu(ui.style()).show(ui, |ui| {
+                    // Framed as every menu is (`.menu`, the theme's), as the canvas's.
+                    crate::menu::frame(ui).show(ui, |ui| {
                         asked = sketch::bar::canvas_menu(ui, busy);
                     });
                 });

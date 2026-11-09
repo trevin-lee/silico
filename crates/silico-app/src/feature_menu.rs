@@ -584,7 +584,7 @@ mod tests {
         use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
         use egui::accesskit::Role;
         use egui_kittest::Harness;
-        use egui_kittest::kittest::Queryable;
+        use egui_kittest::kittest::{NodeT, Queryable};
 
         use super::super::{Item, Shown, draw};
         use crate::modal::tests::{
@@ -660,14 +660,28 @@ mod tests {
             let mut h = block();
             let items: Vec<Rect> = [
                 "Edit feature double-click",
-                "Rename F2",
+                "Rename",
                 "Suppress",
                 "Find in browser",
-                "Delete Del",
+                "Delete",
             ]
             .into_iter()
             .map(|label| widget(&h, Role::Button, label))
             .collect();
+            // Each named by its words and dim words, its keys its keyboard shortcut for a
+            // screen reader (#444's review, Q1: one form for every menu).
+            for (label, keys) in [
+                ("Edit feature double-click", None),
+                ("Rename", Some("F2")),
+                ("Delete", Some("Del")),
+            ] {
+                let node = h.get_by_role_and_label(Role::Button, label);
+                assert_eq!(
+                    node.accesskit_node().data().keyboard_shortcut(),
+                    keys,
+                    "{label}"
+                );
+            }
             // Each 24 high, all one width, the widest's (`white-space: nowrap`, in a menu
             // `.menu`'s least wide less its border and its padding at least): here Edit
             // feature's, its words, its gesture, and `.sc`'s padding with no caps in it.
@@ -799,7 +813,7 @@ mod tests {
             }
             // Hovered: filled blue at `--r-sm`, its words, icon, and caps `--blue-text`, the
             // caps unfilled with a faint white outline.
-            h.get_by_role_and_label(Role::Button, "Rename F2").hover();
+            h.get_by_role_and_label(Role::Button, "Rename").hover();
             h.run_steps(2);
             assert_eq!(
                 fills_at(&h, items[1]),
@@ -825,7 +839,7 @@ mod tests {
             );
             // Delete hovered is lit as the others are (`:hover` outweighs `.danger`); the
             // off Suppress, hovered, isn't.
-            h.get_by_role_and_label(Role::Button, "Delete Del").hover();
+            h.get_by_role_and_label(Role::Button, "Delete").hover();
             h.run_steps(2);
             same_colour(
                 colour(&text_shape(&h, "Delete")),
@@ -857,7 +871,7 @@ mod tests {
                 });
             theme::apply(&h.ctx);
             h.run_steps(4);
-            let rename = widget(&h, Role::Button, "Rename F2");
+            let rename = widget(&h, Role::Button, "Rename");
             assert!(near(
                 rename.width(),
                 MENU_MIN_W - 2.0 * (MENU_PAD + css::BORDER)
@@ -880,7 +894,7 @@ mod tests {
                 });
             theme::apply(&h.ctx);
             h.run_steps(4);
-            let item = widget(&h, Role::Button, "Rename Shift+F2");
+            let item = widget(&h, Role::Button, "Rename");
             let mut caps: Vec<Rect> = rects(&h)
                 .into_iter()
                 .filter(|shape| {
@@ -931,8 +945,13 @@ mod tests {
             let cap = (cap + 2.0 * (4.0 + css::BORDER)).max(16.0);
             let want = MI_PAD + css::ICON + MI_GAP + words + MI_GAP + SC_PAD + cap + MI_PAD;
             assert!(want > MENU_MIN_W);
-            let rename = widget(&h, Role::Button, "Rename F2");
-            let delete = widget(&h, Role::Button, &format!("{name} Del"));
+            let rename = widget(&h, Role::Button, "Rename");
+            // Delete, named by its words as Find is, told apart by its keys.
+            let delete = h
+                .query_all_by_role_and_label(Role::Button, name)
+                .find(|node| node.accesskit_node().data().keyboard_shortcut() == Some("Del"))
+                .expect("Delete, its keys Del")
+                .rect();
             sized(
                 rename,
                 Rect::from_min_size(rename.min, Vec2::new(want, MI_H)),
@@ -984,7 +1003,7 @@ mod tests {
                 "{:?}",
                 head.pos
             );
-            for label in ["Rename F2", "Delete Del"] {
+            for label in ["Rename", "Delete"] {
                 let item = widget(&h, Role::Button, label);
                 assert!(
                     near(item.width(), width),

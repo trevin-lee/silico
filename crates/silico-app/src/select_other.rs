@@ -41,7 +41,7 @@
 //! pointer's hover isn't asked, the menu holds the keyboard's focus, and no other shortcut
 //! acts (`crate::app`'s keys).
 //!
-//! Its lines are drawn as every menu's (`crate::menu`), in egui's menu frame ([`menu_frame`]);
+//! Its lines are drawn as every menu's (`crate::menu`), in egui's menu frame (`menu::frame`);
 //! its foot behind [`paint_foot`], of the theme's tokens.
 
 use std::sync::Arc;
@@ -210,9 +210,9 @@ struct Menu {
     at: Pos2,
     context: CanvasMenu,
     under: Option<Under>,
-    said: Context,
+    facts: Context,
     face: Option<FaceRead>,
-    planes: Option<egui::LayerId>,
+    planes_layer: Option<egui::LayerId>,
     open_planes: bool,
     rows: Vec<Row>,
     lit: Option<usize>,
@@ -360,18 +360,7 @@ impl SelectOther {
             return;
         };
         under.plane = Some(Planar { stored });
-        let lit = menu
-            .lit
-            .and_then(|at| menu.context.items.get(at))
-            .map(|shown| shown.item.clone());
-        menu.context = CanvasMenu::new(Some(under), &menu.said, ctx);
-        menu.lit = lit.and_then(|lit| {
-            menu.context
-                .items
-                .iter()
-                .position(|shown| shown.item == lit)
-        });
-        menu.pointed = None;
+        menu.remake(ctx);
         ctx.request_repaint();
     }
 
@@ -581,7 +570,7 @@ impl SelectOther {
         // Waiting, no menu is drawn: a press anywhere is off it. Create Sketch's planes, open
         // beside it, are its own.
         let layer = self.menu.as_ref().map(Menu::layer);
-        let planes = self.menu.as_ref().and_then(|menu| menu.planes);
+        let planes = self.menu.as_ref().and_then(|menu| menu.planes_layer);
         let presses: Vec<Pos2> = ctx.input(|input| {
             input
                 .events
@@ -773,9 +762,9 @@ impl SelectOther {
             },
             context: CanvasMenu::new(under.as_ref(), &context, ctx),
             under,
-            said: context,
+            facts: context,
             face,
-            planes: None,
+            planes_layer: None,
             open_planes: false,
             rows,
             lit: None,
@@ -969,7 +958,7 @@ impl SelectOther {
             .fixed_pos(at)
             .constrain(true)
             .show(ctx, |ui| {
-                menu_frame(ui).show(ui, |ui| {
+                menu::frame(ui).show(ui, |ui| {
                     ui.scope_builder(UiBuilder::new().id_salt("select_other"), |ui| {
                         // Its rows stacked, as the prototype's are: each its own padding.
                         ui.spacing_mut().item_spacing = Vec2::ZERO;
@@ -1046,6 +1035,31 @@ impl Menu {
 
     /// Whether its context menu's *Select Other…* can be chosen: something is under the
     /// pointer.
+    /// Its context menu made again from what it's made of (what's under the pointer, and
+    /// [`Menu::facts`]), as when its face's read answers: the one place it's made, but at
+    /// its opening. In the context menu, the item lit and the one the pointer was last over
+    /// are kept by what they are, not by their place, which an item put before them moves
+    /// (#444's review, R1 and R2); in the list, both are rows' places, and stay.
+    fn remake(&mut self, ctx: &egui::Context) {
+        let item = |at: Option<usize>| {
+            at.and_then(|at| self.context.items.get(at))
+                .map(|shown| shown.item.clone())
+        };
+        let (lit, pointed) = (item(self.lit), item(self.pointed));
+        self.context = CanvasMenu::new(self.under.as_ref(), &self.facts, ctx);
+        if self.phase == Phase::Context {
+            let place = |item: Option<CanvasItem>| {
+                let item = item?;
+                self.context
+                    .items
+                    .iter()
+                    .position(|shown| shown.item == item)
+            };
+            self.lit = place(lit);
+            self.pointed = place(pointed);
+        }
+    }
+
     fn listable(&self) -> bool {
         !self.rows.is_empty()
     }
@@ -1197,7 +1211,7 @@ fn context_ui(ui: &mut Ui, menu: &mut Menu, act: &mut Option<Act>) {
     let open_planes = std::mem::take(&mut menu.open_planes);
     let drawn = menu.context.draw(ui, menu.lit, open_planes);
     let (pointed, clicked) = (drawn.pointed, drawn.clicked);
-    menu.planes = drawn.planes;
+    menu.planes_layer = drawn.planes;
     if let Some(plane) = drawn.plane {
         *act = Some(Act::Plane(plane));
         return;
@@ -1287,13 +1301,6 @@ fn icon_of(element: Element) -> Icon {
         Element::Edge(_) => Icon::SelEdge,
         Element::Vertex(_) => Icon::SelVertex,
     }
-}
-
-/// A menu's frame (`.menu`): egui's, as the theme sets it for every menu (the feature
-/// menus' and the toolbar's drop-downs): Gray.200 inside a Gray.250 border, `--r`'s
-/// corners, the popups' shadow, padded [`theme::MENU_PADDING`].
-fn menu_frame(ui: &Ui) -> egui::Frame {
-    egui::Frame::menu(ui.style())
 }
 
 /// The foot's parts: words, and a key cap's.
@@ -1404,9 +1411,9 @@ mod tests {
             at: Pos2::ZERO,
             context: CanvasMenu::new(None, &context, &ctx),
             under: None,
-            said: context,
+            facts: context,
             face: None,
-            planes: None,
+            planes_layer: None,
             open_planes: false,
             rows: (1..=u32::try_from(rows).unwrap()).map(row).collect(),
             lit: None,
@@ -1418,6 +1425,118 @@ mod tests {
             stepped: false,
             width: None,
         }
+    }
+
+    /// The block's top, Face6, under the pointer, read for its type: what the menu over it
+    /// holds, its read `of`.
+    fn over_the_top(of: Of, phase: Phase) -> Menu {
+        let block = FeatureId::new("k7f2qx3m").unwrap();
+        let under = Under {
+            label: "Face6".to_owned(),
+            kind: "Face",
+            maker: block.clone(),
+            maker_name: "Block".to_owned(),
+            body: block.clone(),
+            body_name: "Block".to_owned(),
+            plane: None,
+        };
+        let base = menu(4, phase);
+        let facts = Context {
+            sketch_off: None,
+            ..base.facts.clone()
+        };
+        let name = Arc::clone(&base.rows[0].name);
+        Menu {
+            context: CanvasMenu::new(Some(&under), &facts, &egui::Context::default()),
+            under: Some(under),
+            facts,
+            face: Some(FaceRead {
+                of,
+                measured: Measured::One { body: block, name },
+                stored: Ok("k7f2qx3m.box.Face6".to_owned()),
+                typed: false,
+            }),
+            ..base
+        }
+    }
+
+    fn labels(so: &SelectOther) -> Vec<String> {
+        so.context()
+            .unwrap()
+            .items
+            .iter()
+            .map(|shown| shown.label.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_face_read_as_a_plane_keeps_what_was_lit_in_the_menu_and_in_the_list() {
+        // #444's review, R1 and T1. Over the top: Select Other…, Edit Block, and Hide Block,
+        // Hide lit by the keys. Another menu's answer is dropped; its own puts Sketch on this
+        // face before Hide, and Hide stays lit, now fourth.
+        let ctx = egui::Context::default();
+        let of = Of {
+            version: 7,
+            model: (1, Revision::from_number(3).unwrap()),
+        };
+        let mut so = SelectOther {
+            menu: Some(over_the_top(of, Phase::Context)),
+            ..Default::default()
+        };
+        so.menu.as_mut().unwrap().lit = Some(2);
+        let before = ["Select Other…", "Edit Block", "Hide Block"];
+        so.face_typed(Of { version: 6, ..of }, true, &ctx);
+        assert_eq!(labels(&so), before);
+        assert_eq!((so.lit(), so.face_read()), (Some(2), Some(false)));
+        so.face_typed(
+            Of {
+                model: (2, of.model.1),
+                ..of
+            },
+            true,
+            &ctx,
+        );
+        assert_eq!(labels(&so), before);
+        so.face_typed(of, true, &ctx);
+        assert_eq!(
+            labels(&so),
+            [
+                "Select Other…",
+                "Edit Block",
+                "Sketch on this face",
+                "Hide Block"
+            ]
+        );
+        assert_eq!((so.lit(), so.face_read()), (Some(3), Some(true)));
+        // Edit lit instead, the pointer resting on it: both stay on Edit, second.
+        let mut so = SelectOther {
+            menu: Some(Menu {
+                lit: Some(1),
+                pointed: Some(1),
+                ..over_the_top(of, Phase::Context)
+            }),
+            ..Default::default()
+        };
+        so.face_typed(of, true, &ctx);
+        let menu = so.menu.as_ref().unwrap();
+        assert_eq!((menu.lit, menu.pointed), (Some(1), Some(1)));
+        // In the list, row 2 lit and the pointer on it: a row's place, which the read
+        // answering leaves alone.
+        let mut list = SelectOther {
+            menu: Some(Menu {
+                lit: Some(2),
+                pointed: Some(2),
+                ..over_the_top(of, Phase::List)
+            }),
+            ..Default::default()
+        };
+        list.face_typed(of, true, &ctx);
+        let menu = list.menu.as_ref().unwrap();
+        assert_eq!(
+            (menu.lit, menu.pointed, menu.phase),
+            (Some(2), Some(2), Phase::List)
+        );
+        assert_eq!(list.face_read(), Some(true));
     }
 
     #[test]
@@ -2109,7 +2228,7 @@ mod tests {
             };
             so.open(waiting, &mut selection, &mut view, &facts, &ctx);
             // Cast on nothing: the meshes aren't the selection's model's.
-            let said = so.context().unwrap().items[2].said(&ctx);
+            let said = so.context().unwrap().items[2].said();
             assert_eq!(said, format!("{SELECT_OTHER} {UNREAD}"));
             so.menu.unwrap().at
         };

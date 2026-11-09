@@ -392,21 +392,39 @@ pub enum MenuAction {
     Cancel,
 }
 
+/// Why End chain is off: no tool's gesture is under way.
+pub const NOTHING_BEING_DRAWN: &str = "Nothing is being drawn";
+
 /// An item of the canvas's right-click menu in sketch mode: what it asks, its icon, its
-/// words, its keys' caps (the registry's, as the platform names them), whether it's on, and
-/// whether a separator comes before it.
+/// words, its keys' caps (the registry's, as the platform names them), why it's off if it
+/// is, and whether a separator comes before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuItem {
     pub action: MenuAction,
     pub icon: Option<crate::icons::Icon>,
     pub label: &'static str,
     pub caps: Vec<String>,
-    pub on: bool,
+    pub off: Option<&'static str>,
     pub separated: bool,
 }
 
+impl MenuItem {
+    /// It as every menu draws an item (`crate::menu`), lit by nothing but the pointer.
+    pub fn line(&self) -> crate::menu::Item<'_> {
+        crate::menu::Item {
+            icon: self.icon,
+            label: self.label,
+            sub: None,
+            caps: &self.caps,
+            off: self.off,
+            danger: false,
+            lit: false,
+        }
+    }
+}
+
 /// The canvas's right-click menu in sketch mode, as the prototype's `onContext` has it
-/// (js/interact.js), in its order: *End chain* (Esc), on only while a tool's gesture is
+/// (js/interact.js), in its order: *End chain* (Esc), off but while a tool's gesture is
 /// under way (`busy`); Smart Dimension (D), with its icon; a separator; Finish Sketch (its
 /// Ctrl+↵, ⌘↵ on macOS), with its icon; and Cancel sketch. Each cap is the registry's
 /// (`crate::shortcuts`): Smart Dimension's and Finish Sketch's their own commands', and End
@@ -420,7 +438,7 @@ pub fn menu_items(ctx: &egui::Context, busy: bool) -> Vec<MenuItem> {
             icon: None,
             label: "End chain",
             caps: Command::Stop.caps(ctx),
-            on: busy,
+            off: (!busy).then_some(NOTHING_BEING_DRAWN),
             separated: false,
         },
         MenuItem {
@@ -428,7 +446,7 @@ pub fn menu_items(ctx: &egui::Context, busy: bool) -> Vec<MenuItem> {
             icon: Some(Icon::Dimension),
             label: Command::Dimension.label(),
             caps: Command::Dimension.caps(ctx),
-            on: true,
+            off: None,
             separated: false,
         },
         MenuItem {
@@ -436,7 +454,7 @@ pub fn menu_items(ctx: &egui::Context, busy: bool) -> Vec<MenuItem> {
             icon: Some(Icon::Check),
             label: Command::FinishSketch.label(),
             caps: Command::FinishSketch.caps(ctx),
-            on: true,
+            off: None,
             separated: true,
         },
         MenuItem {
@@ -444,67 +462,30 @@ pub fn menu_items(ctx: &egui::Context, busy: bool) -> Vec<MenuItem> {
             icon: None,
             label: "Cancel sketch",
             caps: Vec::new(),
-            on: true,
+            off: None,
             separated: false,
         },
     ]
 }
 
-/// The canvas's right-click menu in sketch mode ([`menu_items`]), each item a button named
-/// by its words, its keys' caps drawn at its right and given a screen reader as its
-/// shortcut. The pane opens it; what was asked is given back.
+/// The canvas's right-click menu in sketch mode ([`menu_items`]), drawn as every menu over
+/// the window is (`crate::menu`, as the prototype's one `menu(...)` draws both of its
+/// canvas's menus): each item as wide as the widest, a separator before Finish Sketch. The
+/// pane opens it; what was asked is given back.
 pub fn canvas_menu(ui: &mut Ui, busy: bool) -> MenuAction {
     let items = menu_items(ui.ctx(), busy);
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let padding = ui.spacing().button_padding.x;
-    let gap = ui.spacing().icon_spacing;
-    // As wide as its widest item: its icon, its words, the caps' padding, and its caps.
-    let width = items
-        .iter()
-        .map(|item| {
-            let words = ui
-                .painter()
-                .layout_no_wrap(item.label.to_owned(), font.clone(), Color32::WHITE)
-                .size()
-                .x;
-            let icon = if item.icon.is_some() {
-                crate::icons::ICON_SIZE + gap
-            } else {
-                0.0
-            };
-            let caps = if item.caps.is_empty() {
-                0.0
-            } else {
-                crate::theme::MENU_KEYS_PADDING + crate::start::key_caps_width(ui, &item.caps)
-            };
-            2.0 * padding + icon + words + caps
-        })
-        .fold(0.0, f32::max);
+    let lines: Vec<crate::menu::Item<'_>> = items.iter().map(MenuItem::line).collect();
+    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+    let width = crate::menu::width(ui, None, &lines, 0.0);
     let mut action = MenuAction::None;
-    ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
-        ui.set_width(width);
-        for item in &items {
-            if item.separated {
-                ui.separator();
-            }
-            let button = match item.icon {
-                Some(icon) => egui::Button::image_and_text(crate::icons::icon(icon), item.label),
-                None => egui::Button::new(item.label),
-            };
-            let response = ui.add_enabled(item.on, button);
-            if !item.caps.is_empty() {
-                let right = Pos2::new(response.rect.right() - padding, response.rect.center().y);
-                crate::start::key_caps(ui, right, &item.caps, false);
-                let shortcut = crate::shortcuts::joined(ui.ctx(), &item.caps);
-                ui.ctx().accesskit_node_builder(response.id, |node| {
-                    node.set_keyboard_shortcut(shortcut);
-                });
-            }
-            if response.clicked() {
-                action = item.action;
-            }
+    for (item, line) in items.iter().zip(&lines) {
+        if item.separated {
+            crate::menu::separator(ui, width);
         }
-    });
+        if crate::menu::item(ui, line, width).clicked() {
+            action = item.action;
+        }
+    }
     if action != MenuAction::None {
         ui.close();
     }
