@@ -3,7 +3,7 @@
 //! the canvas's top, clear of the ViewCube, its icon, its title over a line that says more,
 //! and its buttons at its right, in its tone's colours, and under its words, if it has one,
 //! its list of what changed (`.diff`). What the file on disk did is told here: reloaded
-//! (purple), changed while edits are held (amber), or gone (red).
+//! (the info tone), changed while edits are held (amber), or gone (red).
 //!
 //! Its words are labels, so the accessibility tree has them as they're drawn. It takes the
 //! pointer over all of it, so a click or a drag on it never reaches the viewport under it.
@@ -22,7 +22,7 @@ use crate::theme;
 /// The banner's tone (`.canvas-banner.info`, `.warn`, `.err`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tone {
-    /// Purple: the session reloaded its file, nothing of the person's lost (6c).
+    /// The info tone: the session reloaded its file, nothing of the person's lost (6c).
     Info,
     /// Amber: the file changed on disk while edits are held (6d).
     Warning,
@@ -52,10 +52,11 @@ impl Tone {
         }
     }
 
-    /// Its icon (`renderBanner`'s): changed, a warning, or an error.
+    /// Its icon (`renderBanner`'s): reloaded (the reload glyph, Fusion's refresh), a warning,
+    /// or an error.
     fn icon(self) -> Icon {
         match self {
-            Tone::Info => Icon::Diff,
+            Tone::Info => Icon::Rebuild,
             Tone::Warning => Icon::Warn,
             Tone::Error => Icon::Error,
         }
@@ -706,7 +707,7 @@ mod tests {
         }
         h.run_steps(2);
         assert_eq!(h.state().under, 1);
-        // The purple banner's Dismiss.
+        // The info banner's Dismiss.
         let mut h = drawn(Tone::Info);
         h.get_by_role_and_label(Role::Button, DISMISS).click();
         h.run_steps(2);
@@ -996,13 +997,14 @@ mod tests {
 
     /// `.canvas-banner .diff`: `margin-top: 6px; grid-template-columns: auto auto 1fr; gap:
     /// 2px 10px; font-size: var(--fs-small)`, on `body`'s 16 lines; `.diff .k`, the
-    /// feature's name, `--purple` (#b780ff).
+    /// feature's name, `--outside` (the info tone, `--info` #adbbff; Trevin's change of
+    /// 2026-11-09, from purple).
     const DIFF_TOP: f32 = 6.0;
     const DIFF_ROW_GAP: f32 = 2.0;
     const DIFF_COLUMN_GAP: f32 = 10.0;
-    const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+    const OUTSIDE: Color32 = Color32::from_rgb(0xad, 0xbb, 0xff);
 
-    /// The purple banner over [`CANVAS`], Dismiss its one action, listing `rows` (each the
+    /// The info banner over [`CANVAS`], Dismiss its one action, listing `rows` (each the
     /// feature, the field, and what it went from and to) and then `after`.
     fn listing(
         rows: &[(&str, &str, &str)],
@@ -1091,7 +1093,7 @@ mod tests {
                 let what = format!("row {at}, column {column}");
                 self::at(cell.pos, Pos2::new(left, top), &what);
                 font(cell, css::FS_SMALL, &what);
-                let ink = if column == 0 { PURPLE } else { css::INFO.2 };
+                let ink = if column == 0 { OUTSIDE } else { css::INFO.2 };
                 assert_eq!(colour(cell), ink, "{what}'s ink");
                 let lines = cell.galley.rows.len() as f32;
                 assert!(near(cell.galley.size().y, lines * css::LH), "{what}");

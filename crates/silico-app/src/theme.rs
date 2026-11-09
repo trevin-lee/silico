@@ -341,9 +341,10 @@ pub const ALERT_WARNING_BG: Color32 = hex_alpha(0xdf7700, 46);
 pub const ALERT_WARNING_TEXT: Color32 = hex(0xffd28a);
 /// "Rebuilt" and ready dots (`success_text_color`, Green.700).
 pub const SUCCESS: Color32 = hex(0x00da7e);
-/// What an agent or another program changed on disk (Purple.600; approved, `re_ui` has no
-/// such token).
-pub const CHANGED_OUTSIDE: Color32 = hex(0xb780ff);
+/// What an agent or another program changed on disk (the prototype's `--outside`): the info
+/// tone, [`INFO`], light and unsaturated, apart from the selection's saturated Blue.500
+/// (Trevin's change of 2026-11-09: the purple it was didn't fit the theme).
+pub const CHANGED_OUTSIDE: Color32 = INFO;
 /// Links and information (`info_text_color`, Blue.700; the prototype's `--info`).
 pub const INFO: Color32 = hex(0xadbbff);
 
@@ -1576,10 +1577,12 @@ pub const BANNER_TITLE: Color32 = TEXT_STRONG;
 pub const BANNER_WARNING_BG: Color32 = hex(0x2a1d0b);
 pub const BANNER_WARNING_BORDER: Color32 = hex(0x6b4310);
 pub const BANNER_WARNING_TEXT: Color32 = ALERT_WARNING_TEXT;
-/// A banner saying the session reloaded its file (`.canvas-banner.info`): purple.
-pub const BANNER_INFO_BG: Color32 = hex(0x17142a);
-pub const BANNER_INFO_BORDER: Color32 = hex(0x463375);
-pub const BANNER_INFO_TEXT: Color32 = hex(0xe4d6ff);
+/// A banner saying the session reloaded its file (`.canvas-banner.info`): the info tone on
+/// a dark card as the other banners' (`--info-card-bg`, `--info-card-border`,
+/// `--info-card-text`; Trevin's change of 2026-11-09, from purple).
+pub const BANNER_INFO_BG: Color32 = hex(0x111a2d);
+pub const BANNER_INFO_BORDER: Color32 = hex(0x2b3c66);
+pub const BANNER_INFO_TEXT: Color32 = hex(0xdce3ff);
 /// A banner saying the file is gone (`.canvas-banner.err`).
 pub const BANNER_ERROR_BG: Color32 = hex(0x2a0a12);
 pub const BANNER_ERROR_BORDER: Color32 = hex(0x6e1228);
@@ -1596,12 +1599,13 @@ pub const BANNER_LIST_MARGIN_TOP: f32 = 6.0;
 pub const BANNER_LIST_ROW_GAP: f32 = 2.0;
 pub const BANNER_LIST_COLUMN_GAP: f32 = 10.0;
 
-/// The card in a feature's properties saying another program changed it (`.err-card.warn`,
-/// restyled purple as `featureProps` styles it): `rgba(183,128,255,.12)`, its border
-/// `#463375`, its words `#e4d6ff`.
-pub const OUTSIDE_CARD_BG: Color32 = Color32::from_rgba_unmultiplied_const(183, 128, 255, 31);
-pub const OUTSIDE_CARD_BORDER: Color32 = hex(0x463375);
-pub const OUTSIDE_CARD_TEXT: Color32 = hex(0xe4d6ff);
+/// The card in a feature's properties saying another program changed it (`.err-card.info`):
+/// the info banner's card, its head ([`INFO`]) and words (Trevin's change of 2026-11-09,
+/// from purple).
+pub const OUTSIDE_CARD_BG: Color32 = BANNER_INFO_BG;
+pub const OUTSIDE_CARD_BORDER: Color32 = BANNER_INFO_BORDER;
+pub const OUTSIDE_CARD_HEAD: Color32 = INFO;
+pub const OUTSIDE_CARD_TEXT: Color32 = BANNER_INFO_TEXT;
 /// A ghost button's words (`.btn-ghost`): Gray.750; hovered, on its fill
 /// ([`GHOST_BUTTON_HOVER_BG`]), white.
 pub const GHOST_BUTTON_TEXT: Color32 = GRAY_750;
