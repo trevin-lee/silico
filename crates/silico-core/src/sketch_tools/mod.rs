@@ -95,7 +95,7 @@ use adds::Adds;
 
 pub use dimension::{
     DimensionEvent, DimensionPreview, LEVEL, Offer, OfferChoice, OfferRequest, PARALLEL, Placement,
-    PlacementKind, SmartDimension, TypedValue, offer, read_typed,
+    PlacementKind, SmartDimension, TypedValue, freedoms, offer, read_typed,
 };
 pub use implied::implied_by;
 pub use infer::{ANGLE_TOLERANCE_DEGREES, CROSSING_CURVES, WAKE};
