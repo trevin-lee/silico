@@ -1288,6 +1288,29 @@ mod tests {
         asked: Rc<Cell<Option<Act>>>,
     }
 
+    #[test]
+    fn a_dialogs_command_says_why_its_off_only_while_its_off() {
+        // `why_closed` read only for a command that's off: on, Union's tooltip is its own
+        // words (it has none), whatever `why_closed` would say; off, the reason. A stub
+        // that always gives a reason tells the two apart.
+        let why = |_: Kind| Some("Needs two bodies");
+        let on = |_: Kind| true;
+        let off = |_: Kind| false;
+        let mut shown = Shown {
+            in_sketch: false,
+            create_sketch: Some(true),
+            can_open: &on,
+            why_closed: &why,
+            selected: false,
+            tool: None,
+            construction: false,
+            filter: Filter::default(),
+        };
+        assert_eq!(UNION.said(&shown), None);
+        shown.can_open = &off;
+        assert_eq!(UNION.said(&shown).as_deref(), Some("Needs two bodies"));
+    }
+
     fn drawn_with(in_sketch: bool, sketching: &Sketching) -> Harness<'static, bool> {
         let (tool, construction, asked) = (
             sketching.tool.clone(),

@@ -6111,6 +6111,61 @@ mod tests {
     }
 
     #[test]
+    fn a_body_box_says_it_took_a_pick_and_nothing_once_nothing_more_is_toggled() {
+        // A new union's box of one body takes the canvas's picks on the 2 by 1 by 1 box: a
+        // face picked, the box takes its body, and says so (the canvas asks for a frame);
+        // nothing toggled, before or since, it says nothing.
+        use crate::selection::How;
+        let mut tab = tab();
+        let model = crate::selection::tests::box_model();
+        tab.selection
+            .published(Some((model, Revision::from_number(1).unwrap())), 1);
+        let dialog = Dialog::new(Kind::Union, None, 1);
+        tab.selection.take_into(dialog.takes());
+        tab.dialog = Some(dialog);
+        assert!(!tab.box_toggled(), "nothing toggled");
+        tab.selection.pick("aaaaaaaa.box.Face1", How::Toggle);
+        assert!(tab.box_toggled());
+        assert_eq!(
+            tab.dialog.as_ref().unwrap().bodies(),
+            [FeatureId::new("aaaaaaaa").unwrap()]
+        );
+        assert!(!tab.box_toggled(), "nothing toggled since");
+    }
+
+    #[test]
+    fn why_closed_says_two_bodies_only_for_a_boolean_with_fewer_and_the_documents_problems_first() {
+        // Nothing before the timeline is read; then, for a boolean in a part of fewer than
+        // two bodies, that it needs two, and for any other kind nothing; two are enough;
+        // and a document the gate refused says that first, whatever the kind.
+        let mut tab = tab();
+        assert_eq!(tab.why_closed(Kind::Union), None, "no timeline read yet");
+        let row = |id: &str| Row {
+            id: FeatureId::new(id).unwrap(),
+            name: id.to_owned(),
+            health: Health::Healthy,
+            marked_by: None,
+        };
+        tab.timeline = Some(TimelineAnswer {
+            revision: Revision::OPENED,
+            model: Some(Revision::OPENED),
+            problems: 0,
+            features: Some(Vec::new()),
+            bodies: Vec::new(),
+        });
+        assert_eq!(tab.why_closed(Kind::Union), Some(NEEDS_TWO_BODIES));
+        assert_eq!(tab.why_closed(Kind::Box), None);
+        tab.browser.bodies = vec![row("aaaaaaaa")];
+        assert_eq!(tab.why_closed(Kind::Subtract), Some(NEEDS_TWO_BODIES));
+        assert_eq!(tab.why_closed(Kind::Box), None);
+        tab.browser.bodies.push(row("bbbbbbbb"));
+        assert_eq!(tab.why_closed(Kind::Union), None, "two bodies are enough");
+        tab.timeline.as_mut().unwrap().problems = 1;
+        assert_eq!(tab.why_closed(Kind::Union), Some(UNMENDED));
+        assert_eq!(tab.why_closed(Kind::Box), Some(UNMENDED));
+    }
+
+    #[test]
     fn a_let_go_the_box_takes_isnt_let_go_again_from_a_selection_that_took_it_back() {
         // A new fillet's box of edges takes the canvas's picks on the 2 by 1 by 1 box. Edge1
         // clicked: in the box and the selection. Then clicked twice before the box reads
