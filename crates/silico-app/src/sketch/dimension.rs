@@ -18,8 +18,6 @@
 //!   the same three choices, judged by the core's [`offer`] on the read of the revision it
 //!   made, as a placement is.
 
-use std::collections::BTreeSet;
-
 use eframe::egui::{self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Stroke, Ui, Vec2};
 use silico_core::command::sketch::SketchRead;
 use silico_core::command::{Revision, SessionId};
@@ -65,31 +63,22 @@ pub struct Edited {
     pub sketch: FeatureId,
     pub constraint: ElementId,
     pub read: Revision,
-    pub before: silico_core::sketch_states::SketchState,
-    pub flagged: BTreeSet<ElementId>,
-    /// Whether the read it was made on had its solve refused (`PlacementKind::Edit`'s).
-    pub before_refused: bool,
+    /// What the core's [`offer`] reads of the read it was made on
+    /// ([`PlacementKind::edit_on`]'s).
+    pub kind: PlacementKind,
     pub made: Option<Revision>,
 }
 
 impl Edited {
-    /// Of `constraint`, of the sketch `read` read at the revision `model`: the read's state,
-    /// the constraints it flags, and whether its solve was refused, which the core's
-    /// [`offer`] judges an edit by (`PlacementKind::Edit`).
+    /// Of `constraint`, of the sketch `read` read at the revision `model`: what the core's
+    /// [`offer`] judges an edit by of that read, by the core's own constructor
+    /// ([`PlacementKind::edit_on`]), as Smart Dimension records an add.
     pub fn of(read: &SketchRead, model: Revision, constraint: ElementId) -> Self {
         Edited {
             sketch: read.sketch.clone(),
             constraint,
             read: model,
-            before: read.states.state,
-            flagged: read
-                .states
-                .constraints
-                .iter()
-                .filter(|(_, state)| state.flagged())
-                .map(|(id, _)| id.clone())
-                .collect(),
-            before_refused: read.states.solve_problem.is_some(),
+            kind: PlacementKind::edit_on(&read.states),
             made: None,
         }
     }
@@ -110,11 +99,7 @@ impl Edited {
             constraint: self.constraint.clone(),
             revision: made,
             read: self.read,
-            before: self.before,
-            flagged: self.flagged.clone(),
-            kind: PlacementKind::Edit {
-                before_refused: self.before_refused,
-            },
+            kind: self.kind.clone(),
         };
         Some(offer(read, made, &placement))
     }
