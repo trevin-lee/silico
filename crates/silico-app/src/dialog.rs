@@ -463,6 +463,10 @@ pub struct Dialog {
     /// The names its boxes let go of (a chip's remove button) since the tab last took them:
     /// the tab lets them go from the selection too.
     unpicked: Vec<String>,
+    /// A new sweep's body as last sent: its add's `base`, then the `base` each sketch picked
+    /// after its add moved it to (`crate::tab`'s `base_of`). None for any other dialog, and
+    /// for a sweep added with no body; a sweep's own dialog (Edit Feature) never moves it.
+    pub base: Option<FeatureId>,
 }
 
 /// A length's input.
@@ -636,6 +640,7 @@ impl Dialog {
             active,
             serial,
             unpicked: Vec::new(),
+            base: None,
         }
     }
 
@@ -997,6 +1002,16 @@ impl Dialog {
         held.body = Some(body);
         self.sent.insert(field, text);
         true
+    }
+
+    /// The sketch its sketch box holds, if it has one and it's filled.
+    pub fn sketch(&self) -> Option<&FeatureId> {
+        self.inputs
+            .iter()
+            .find_map(|input| match (&input.part, &input.value) {
+                (Part::Sketch, Value::Selection(picked)) => picked.as_ref(),
+                _ => None,
+            })
     }
 
     /// The active selection box filled with `sketch`, if the dialog has one.
@@ -1807,17 +1822,23 @@ pub fn feature_node(kind: Kind, members: &[String], base: Option<&FeatureId>) ->
     if let Some(base) = base.filter(|_| kind.sweeps()) {
         members.push(format!("\"base\": {}", quoted(base.as_str())));
     }
-    json::read(format!("{{{}}}", members.join(", ")).as_bytes()).ok()
+    node_of(&members)
 }
 
 /// The sketch a new sweep's `members` (its dialog's [`Dialog::add`]) name, if they name one:
 /// what its base is found from (`crate::tab`'s `base_of`).
 pub fn sketch_of(members: &[String]) -> Option<FeatureId> {
-    let node = json::read(format!("{{{}}}", members.join(", ")).as_bytes()).ok()?;
-    match &member(&node, "sketch")?.value {
+    let node = node_of(members)?;
+    match &member(&node, Part::Sketch.field())?.value {
         Json::String(id) => FeatureId::new(id),
         _ => None,
     }
+}
+
+/// A dialog's `members` (each `"key": value`, as [`Dialog::add`] writes them) as the JSON
+/// object they make; none if they don't read as one.
+fn node_of(members: &[String]) -> Option<Node> {
+    json::read(format!("{{{}}}", members.join(", ")).as_bytes()).ok()
 }
 
 /// `text` as a JSON string.
