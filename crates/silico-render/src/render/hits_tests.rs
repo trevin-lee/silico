@@ -410,24 +410,27 @@ fn tested_from_here() -> impl Fn() -> u64 {
     move || super::TRIANGLES_TESTED.with(std::cell::Cell::get) - start
 }
 
-#[test]
-fn a_crowd_hidden_behind_a_face_of_eighty_thousand_triangles_is_cast_on_a_few_of_them() {
-    use Element::{Face, Vertex};
-    // A grid of 200 by 200 squares over (0, 0)–(20, 20) at z = 20, one face of 80,000
-    // triangles, and a thousand vertices at (15, 15, 0) under it, seen from above at (15, 15):
-    // the face first, at 80, then the nearest 255 vertices (at 100 less their reach), each
-    // hidden by the face. Each of those 255 casts, and the pointer's, meets the triangles
-    // about its ray through the tree, a few chunks of 8 of them, never the face's whole row
-    // of 80,000 (20 million, cast face by face).
-    let n = 200u32;
-    let step = 20.0 / f64::from(n);
-    let positions: Vec<[f64; 3]> = (0..=n)
-        .flat_map(|j| (0..=n).map(move |i| [f64::from(i) * step, f64::from(j) * step, 20.0]))
+/// How many of a tree's boxes the cast tests on this thread from now on.
+fn boxes_from_here() -> impl Fn() -> u64 {
+    let start = super::BOXES_TESTED.with(std::cell::Cell::get);
+    move || super::BOXES_TESTED.with(std::cell::Cell::get) - start
+}
+
+/// A face's corners and its triangles, their corners' numbers among its own.
+type FaceParts = (Vec<[f64; 3]>, Vec<[u32; 3]>);
+
+/// A face over (0, 0)–(20, 20) at `z`, `columns` by `rows` squares, two triangles a square,
+/// row by row from y = 0 (each row from x = 0): so its chunks of 8 triangles are runs of 4
+/// squares along a row. Its corners and triangles, numbered among its own.
+fn grid(columns: u32, rows: u32, z: f64) -> FaceParts {
+    let (dx, dy) = (20.0 / f64::from(columns), 20.0 / f64::from(rows));
+    let positions = (0..=rows)
+        .flat_map(|j| (0..=columns).map(move |i| [f64::from(i) * dx, f64::from(j) * dy, z]))
         .collect();
-    let corner = |i: u32, j: u32| j * (n + 1) + i;
-    let triangles: Vec<[u32; 3]> = (0..n)
+    let corner = |i: u32, j: u32| j * (columns + 1) + i;
+    let triangles = (0..rows)
         .flat_map(|j| {
-            (0..n).flat_map(move |i| {
+            (0..columns).flat_map(move |i| {
                 [
                     [corner(i, j), corner(i + 1, j), corner(i + 1, j + 1)],
                     [corner(i, j), corner(i + 1, j + 1), corner(i, j + 1)],
@@ -435,30 +438,195 @@ fn a_crowd_hidden_behind_a_face_of_eighty_thousand_triangles_is_cast_on_a_few_of
             })
         })
         .collect();
-    let mesh = Mesh {
+    (positions, triangles)
+}
+
+/// A mesh of `faces` (each a [`grid`]'s corners and triangles), numbered from 1 in order, and
+/// `vertex_points`; no edges.
+fn faces_and_vertices(faces: Vec<FaceParts>, vertex_points: Vec<[f64; 3]>) -> Mesh {
+    let mut positions = Vec::new();
+    let mut triangles = Vec::new();
+    let mut face_triangles = Vec::new();
+    for (corners, own) in faces {
+        let first = u32::try_from(positions.len()).unwrap();
+        positions.extend(corners);
+        face_triangles.push(u32::try_from(own.len()).unwrap());
+        triangles.extend(own.iter().map(|t| t.map(|c| c + first)));
+    }
+    Mesh {
         normals: vec![[0.0, 0.0, 1.0]; positions.len()],
         positions,
-        face_triangles: vec![u32::try_from(triangles.len()).unwrap()],
         triangles,
+        face_triangles,
         valid: None,
         edge_points: vec![],
         edge_point_counts: vec![],
-        vertex_points: vec![[15.0, 15.0, 0.0]; 1000],
-    };
-    let grid = Pickable::new(Arc::new(mesh));
-    let tested = tested_from_here();
-    let under = hits(
-        &from_above(),
-        SIZE,
-        1.0,
-        &[(1, &grid)],
-        above_px(15.0, 15.0).map(|c| c + 0.25),
-    );
+        vertex_points,
+    }
+}
+
+/// Where the tree tests below cast, (x, y) = (15.17578125, 14.921875), exact in binary: well
+/// inside a square, a chunk, and every box of the grids they cast on, so no rounding puts
+/// the line on a side. On a [`grid`] of 256 by 128 squares (0.078125 by 0.15625 mm), a
+/// quarter of the way across square 194 of row 95, in the run of squares 192 to 195 (x from
+/// 15 to 15.3125), 0.0781 mm from the row's sides; on one of 64 by 32 (0.3125 by 0.625 mm),
+/// in square 48 of row 23, the run 48 to 51 (x 15 to 16.25), 0.078 mm below the row's top.
+const ON_A_CHUNK: [f64; 2] = [15.175_781_25, 14.921_875];
+
+#[test]
+fn a_crowd_hidden_behind_a_face_of_sixty_five_thousand_triangles_is_cast_on_a_few_of_its_boxes() {
+    use Element::{Face, Vertex};
+    // A grid of 256 by 128 squares at z = 20, one face of 65,536 triangles in 8,192 chunks
+    // (2^13: 64 runs of 4 squares across, 128 rows), seen from above at `ON_A_CHUNK`. Each
+    // split halves a block of whole runs or whole rows along the way its centres spread most
+    // (rows, runs, rows, ...: 128 rows to 64 is a spread of 19.84 against 19.69), so each
+    // node's box is its block's and none overlaps another of its level; 11 splits make
+    // leaves of 4 chunks (8,192 / 2^11), a 2 by 2 block. A line through the one chunk meets
+    // one box of each level: the cast tests the root, both children of each of the 11 nodes
+    // on its way, and the leaf's 4 chunks, 1 + 22 + 4 = 27 boxes (twice log2 of the chunks'
+    // number, and one), and the 8 triangles of its chunk alone. In one leaf of all 8,192
+    // (no tree), 8,193; past the log, the tree's whole row.
+    let (x, y) = (ON_A_CHUNK[0], ON_A_CHUNK[1]);
+    let pointer = above_px(x, y);
+    let alone = Pickable::new(Arc::new(faces_and_vertices(
+        vec![grid(256, 128, 20.0)],
+        vec![],
+    )));
+    let (boxes, tested) = (boxes_from_here(), tested_from_here());
+    let under = hits(&from_above(), SIZE, 1.0, &[(1, &alone)], pointer);
+    assert_eq!(listed(&under), [(Face(1), false)]);
+    assert_at(&under[0], [x, y, 20.0], 80.0);
+    assert_eq!((boxes(), tested()), (27, 8));
+    // A thousand vertices under it at (x, y, 0): the face first, at 80, then the nearest 255
+    // vertices (at 100 less their reach), each hidden by the face. Each of those 255 casts,
+    // through its vertex, walks the same way, but stops at the first triangle met nearer
+    // (the face's, at 80): at most the 27 boxes and the 8 triangles the pointer's cast tests,
+    // so 256 walks at most 256 · 27 = 6,912 boxes and 2,048 triangles; not the face's whole
+    // row of 65,536 triangles each (16.8 million, cast face by face), nor every chunk's box
+    // (2 million, with no tree).
+    let crowd = Pickable::new(Arc::new(faces_and_vertices(
+        vec![grid(256, 128, 20.0)],
+        vec![[x, y, 0.0]; 1000],
+    )));
+    let (boxes, tested) = (boxes_from_here(), tested_from_here());
+    let under = hits(&from_above(), SIZE, 1.0, &[(1, &crowd)], pointer);
     let mut want = vec![(Face(1), false)];
     want.extend((1..=255).map(|n| (Vertex(n), true)));
     assert_eq!(listed(&under), want);
-    let tested = tested();
-    assert!(tested <= 256 * 64, "{tested} triangles tested");
+    let (boxes, tested) = (boxes(), tested());
+    assert!(boxes <= 256 * 27, "{boxes} boxes tested");
+    assert!(tested <= 256 * 8, "{tested} triangles tested");
+}
+
+#[test]
+fn vertices_in_front_of_a_stack_of_faces_are_judged_unhidden_by_its_root_box_alone() {
+    use Element::{Face, Vertex};
+    // Four grids of 64 by 32 squares at z = 20, 19, 18, and 17 (Face1 to Face4, 512 chunks
+    // each, 2,048 in all), and 252 vertices at (x, y, 25) in front of them, seen from above
+    // at `ON_A_CHUNK`: the vertices first (75 less their reach, 0.48), none hidden, then the
+    // top face (80), and the three under it, hidden: 256, the most. Whether a face hides a
+    // vertex is asked of the tree only nearer the eye than the vertex's 74.52, and its root's
+    // box is no nearer than the top face's 80: so each of the 252 casts tests the root's box
+    // alone, and goes no farther. The pointer's cast finds every face, so walks down to each
+    // layer's chunk on its line. Its blocks (runs by rows by layers, 16 by 32 by 4) halve
+    // along the way their centres spread most: rows, runs, rows, runs, rows, runs to 2 by 4
+    // by 4 (32 chunks), whose layers spread most (3 mm, the rows 1.875), then the layers,
+    // then rows and runs to leaves of a run by 2 rows by 2 layers. So the line is in one box
+    // of each of the first 7 levels and in two of each after: the root, both children of
+    // each of the 7 nodes on its way, both of each of the 2 nodes at each of the next two
+    // levels, and the 4 chunks of each of its 2 leaves: 1 + 14 + 4 + 4 + 8 = 31 boxes, and
+    // the 8 triangles of each of the 4 chunks it passes; 31 + 252 = 283 boxes in all. Asked
+    // of every box (no depth prune), each vertex's walk would go down all four faces as the
+    // pointer's does, 253 · 31 = 7,843; in one leaf (no tree), 2,049 + 252.
+    let (x, y) = (ON_A_CHUNK[0], ON_A_CHUNK[1]);
+    let stack = Pickable::new(Arc::new(faces_and_vertices(
+        [20.0, 19.0, 18.0, 17.0]
+            .map(|z| grid(64, 32, z))
+            .into_iter()
+            .collect(),
+        vec![[x, y, 25.0]; 252],
+    )));
+    let (boxes, tested) = (boxes_from_here(), tested_from_here());
+    let under = hits(&from_above(), SIZE, 1.0, &[(1, &stack)], above_px(x, y));
+    let mut want: Vec<(Element, bool)> = (1..=252).map(|n| (Vertex(n), false)).collect();
+    want.extend([
+        (Face(1), false),
+        (Face(2), true),
+        (Face(3), true),
+        (Face(4), true),
+    ]);
+    assert_eq!(listed(&under), want);
+    for (hit, depth) in under[252..].iter().zip([80.0, 81.0, 82.0, 83.0]) {
+        assert_at(hit, [x, y, 100.0 - depth], depth);
+    }
+    assert_eq!((boxes(), tested()), (31 + 252, 4 * 8));
+}
+
+#[test]
+fn triangles_no_line_can_meet_are_left_out_of_the_tree_so_a_crowd_behind_them_costs_no_box() {
+    use Element::Vertex;
+    // 100,002 triangles of one face on the pointer's line, none of any area: a third at one
+    // point, (x, y, 20); a third with their first two corners at (0, 0, 20) and the third at
+    // (20, 20, 20); a third with their first and last there. Each has its first corner
+    // repeated, so no line meets it (`Line::meets` divides by an exact 0), and it draws
+    // nothing; but in the tree, each chunk's box would hold the line, (0, 0)–(20, 20), so
+    // each of the 257 walks would test all 100,002 triangles (25.7 million) and every box.
+    // Left out, the tree is empty: no box, no triangle. 300 vertices behind them at (x, y,
+    // 0): the nearest 256, by number, none hidden, as nothing is met.
+    let (x, y) = (ON_A_CHUNK[0], ON_A_CHUNK[1]);
+    let mesh = Mesh {
+        positions: vec![[x, y, 20.0], [0.0, 0.0, 20.0], [20.0, 20.0, 20.0]],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        triangles: [[0, 0, 0], [1, 1, 2], [1, 2, 1]].repeat(33_334),
+        face_triangles: vec![100_002],
+        valid: None,
+        edge_points: vec![],
+        edge_point_counts: vec![],
+        vertex_points: vec![[x, y, 0.0]; 300],
+    };
+    let none = Pickable::new(Arc::new(mesh));
+    let (boxes, tested) = (boxes_from_here(), tested_from_here());
+    let under = hits(&from_above(), SIZE, 1.0, &[(1, &none)], above_px(x, y));
+    let want: Vec<(Element, bool)> = (1..=256).map(|n| (Vertex(n), false)).collect();
+    assert_eq!(listed(&under), want);
+    assert_eq!((boxes(), tested()), (0, 0));
+}
+
+#[test]
+fn a_node_left_unfilled_is_walked_as_nothing_never_round_for_ever() {
+    // A tree whose root `Tree::of` left as it was before filling it (never, but a range that
+    // can't be would): walked, its box holding the line, it's a leaf of no chunks, so the
+    // walk tests its box once and ends, meeting nothing. Were it a node of children (the
+    // root's own place among them), the walk would go round for ever.
+    let cube = Pickable::new(Arc::new(freecad_box(20.0, 20.0, 20.0)));
+    let camera = from_above();
+    let bodies = [(1, &cube)];
+    let caster = super::Caster::new(&camera, SIZE, 1.0, &bodies).unwrap();
+    let (origin, direction) = ray(&camera, SIZE, above_px(15.0, 15.0)).unwrap();
+    let line = super::Line {
+        origin,
+        direction,
+        whole: true,
+    };
+    let tree = super::Tree {
+        nodes: vec![super::TreeNode::unfilled(([0.0; 3], [20.0; 3]))],
+        chunks: vec![],
+    };
+    let asked = std::cell::Cell::new(0u32);
+    let boxes = boxes_from_here();
+    let met = tree.walk(
+        &caster,
+        cube.mesh(),
+        &line,
+        |_| {
+            asked.set(asked.get() + 1);
+            assert!(asked.get() < 1000, "the walk goes round");
+            true
+        },
+        |_, _, _| true,
+    );
+    assert!(!met);
+    assert_eq!((asked.get(), boxes()), (1, 1));
 }
 
 /// Orthographic from above the box's front, looking down at 45 degrees: from (10, −90, 110)
@@ -830,8 +998,9 @@ proptest::proptest! {
     /// hostile cases): no panic, the same list each time, each hit one of the box's
     /// elements, at a finite point, once; each face's point on the pointer's pixel and each
     /// edge's and vertex's within its threshold of it, by the renderer's own projection
-    /// (`project`); the faces nearest first. What's found is checked, both ways, by the next
-    /// test, whose cameras look at the box.
+    /// (`project`); the faces nearest first, the nearest of them alone unhidden (those as
+    /// near too). What's found is checked, both ways, by the next test, whose cameras look
+    /// at the box.
     #[test]
     fn any_cast_is_sane_and_agrees_with_the_projection(
         low in [coordinate(), coordinate(), coordinate()],
@@ -905,6 +1074,11 @@ proptest::proptest! {
         let faces: Vec<&Hit> = under.iter().filter(|h| matches!(h.element, Element::Face(_))).collect();
         for pair in faces.windows(2) {
             proptest::prop_assert!(pair[0].depth <= pair[1].depth, "{:?}", faces);
+        }
+        if let Some(first) = faces.first() {
+            for face in &faces {
+                proptest::prop_assert_eq!(face.hidden, face.depth > first.depth, "{:?}", face);
+            }
         }
     }
 

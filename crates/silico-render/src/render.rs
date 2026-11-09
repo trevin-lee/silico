@@ -1841,6 +1841,9 @@ thread_local! {
     /// How many triangles casts on this thread have tested a line against: for the tests
     /// that bound a cast's work.
     static TRIANGLES_TESTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many of a [`Tree`]'s boxes (its nodes' and its chunks') casts on this thread have
+    /// tested a line against: for the tests that bound a cast's work.
+    static BOXES_TESTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// A body's mesh as [`hits`] casts on it: the mesh (the same `Arc` the renderer was given);
@@ -1887,11 +1890,18 @@ impl Pickable {
 
 /// A body's triangles as a tree of boxes (a bounding volume hierarchy), made once with its
 /// [`Pickable`], so a line meets them in about the log of their number: each face's
-/// triangles in chunks of [`CHUNK_TRIANGLES`] run together in the mesh's order, each with
-/// its box; and over the chunks, a tree, each node's box holding its chunks', each leaf at
-/// most [`LEAF_CHUNKS`] of them. A node's chunks are split at the median of their boxes'
+/// triangles in chunks of at most [`CHUNK_TRIANGLES`] run together in the mesh's order, each
+/// with its box; and over the chunks, a tree, each node's box holding its chunks', each leaf
+/// at most [`LEAF_CHUNKS`] of them. A node's chunks are split at the median of their boxes'
 /// centres along the axis those spread most, ties by their place in the mesh: the same tree
 /// for the same mesh, every time.
+///
+/// What a walk of it costs is the boxes the line comes within rounding of: about twice the
+/// log of the chunks' number for a line through a mesh whose boxes don't overlap there, the
+/// most for one whose triangles' boxes all hold the line and none of which it meets (slivers
+/// crowded about one line, each of some area): then every box and every triangle, for each
+/// of a cast's walks ([`MAX_HITS`] and the pointer's). That's accepted: no kernel's mesh is
+/// that, and a triangle of no area that no line meets is never in the tree ([`Tree::of`]).
 #[derive(Debug, Clone, Default)]
 struct Tree {
     nodes: Vec<TreeNode>,
@@ -1899,7 +1909,8 @@ struct Tree {
 }
 
 /// Of a [`Tree`]: `count` triangles of the face numbered `face`, from `first` in the mesh's
-/// triangles, and their corners' box (of those whose corners are the mesh's positions).
+/// triangles, each of whose corners is one of its positions and that a line can meet
+/// ([`can_meet`]), and their corners' box.
 #[derive(Debug, Clone, Copy)]
 struct Chunk {
     first: usize,
@@ -1915,6 +1926,18 @@ struct TreeNode {
     holds: Holds,
 }
 
+impl TreeNode {
+    /// A node [`Tree::of`] hasn't filled yet, of box `bounds`: a leaf of no chunks, so one
+    /// left unfilled (by a range of chunks that can't be) is walked as nothing, never as a
+    /// node whose children are the root again, round for ever.
+    fn unfilled(bounds: Bounds) -> TreeNode {
+        TreeNode {
+            bounds,
+            holds: Holds::Chunks { first: 0, count: 0 },
+        }
+    }
+}
+
 /// What a [`TreeNode`] holds: a leaf's chunks, `count` of the tree's from `first`; or an
 /// inner node's two children, the nodes at `left` and the one after it.
 #[derive(Debug, Clone, Copy)]
@@ -1923,21 +1946,35 @@ enum Holds {
     Children { left: usize },
 }
 
+/// The box holding the boxes `a` and `b`.
+fn joined((low, high): Bounds, (l, h): Bounds) -> Bounds {
+    (
+        std::array::from_fn(|k| low[k].min(l[k])),
+        std::array::from_fn(|k| high[k].max(h[k])),
+    )
+}
+
 /// The box holding `boxes`; none for none.
 fn union(mut boxes: impl Iterator<Item = Bounds>) -> Option<Bounds> {
     let first = boxes.next()?;
-    Some(boxes.fold(first, |(low, high), (l, h)| {
-        (
-            std::array::from_fn(|k| low[k].min(l[k])),
-            std::array::from_fn(|k| high[k].max(h[k])),
-        )
-    }))
+    Some(boxes.fold(first, joined))
+}
+
+/// Whether some line could meet the triangle `[a, b, c]` ([`Line::meets`]): not if its first
+/// corner is repeated (`b` or `c` the same point as `a`), as every one of a mesh's
+/// triangles at one point is. Then one of the two sides `meets` crosses is exactly 0, and so
+/// is what it divides by (or that isn't finite), whatever the line: such a triangle is never
+/// met, and leaving it out changes nothing a cast finds.
+fn can_meet([a, b, c]: [[f64; 3]; 3]) -> bool {
+    a != b && a != c
 }
 
 impl Tree {
     /// `mesh`'s tree: each face's triangles, its triangles that run past the mesh's passed
-    /// over whole (as a face whose count doesn't add up is), and each triangle a corner of
-    /// which isn't a position left out of its chunk's box (and passed over where it's met).
+    /// over whole (as a face whose count doesn't add up is); a triangle a corner of which
+    /// isn't a position, or that no line can meet ([`can_meet`]), left out, ending the run a
+    /// chunk holds. So a mesh of a hundred thousand triangles at one point has nothing in
+    /// its tree, and a cast tests no box of it, not a hundred thousand for each of its walks.
     fn of(mesh: &Mesh) -> Tree {
         let mut chunks = Vec::new();
         let mut first = 0usize;
@@ -1945,24 +1982,29 @@ impl Tree {
             let count = usize::try_from(count).unwrap_or(usize::MAX);
             let end = first.saturating_add(count);
             if let Some(triangles) = mesh.triangles.get(first..end) {
-                for (at, run) in (first..)
-                    .step_by(CHUNK_TRIANGLES)
-                    .zip(triangles.chunks(CHUNK_TRIANGLES))
-                {
-                    let corners = run
-                        .iter()
-                        .filter_map(|triangle| corners_of(mesh, triangle))
-                        .flatten()
-                        .collect::<Vec<[f64; 3]>>();
-                    if let Some(bounds) = box_of(corners.iter()) {
-                        chunks.push(Chunk {
-                            first: at,
-                            count: run.len(),
-                            face,
-                            bounds,
-                        });
+                // The chunk being filled: the triangles from its first on, and their box.
+                let mut run: Option<Chunk> = None;
+                for (at, triangle) in (first..).zip(triangles) {
+                    let met = corners_of(mesh, triangle)
+                        .filter(|corners| can_meet(*corners))
+                        .and_then(|corners| box_of(corners.iter()));
+                    let Some(bounds) = met else {
+                        chunks.extend(run.take());
+                        continue;
+                    };
+                    let chunk = run.get_or_insert(Chunk {
+                        first: at,
+                        count: 0,
+                        face,
+                        bounds,
+                    });
+                    chunk.count += 1;
+                    chunk.bounds = joined(chunk.bounds, bounds);
+                    if chunk.count == CHUNK_TRIANGLES {
+                        chunks.extend(run.take());
                     }
                 }
+                chunks.extend(run);
             }
             first = end;
         }
@@ -1970,10 +2012,7 @@ impl Tree {
         let Some(bounds) = union(chunks.iter().map(|chunk| chunk.bounds)) else {
             return Tree::default();
         };
-        let placeholder = TreeNode {
-            bounds,
-            holds: Holds::Children { left: 0 },
-        };
+        let placeholder = TreeNode::unfilled(bounds);
         nodes.push(placeholder);
         // Each node to fill, and its chunks' range: a stack, as deep as the tree is (about the
         // log of the chunks' number, each split halving them).
@@ -2037,7 +2076,11 @@ impl Tree {
         wanted: impl Fn(Bounds) -> bool,
         mut met: impl FnMut(u32, [f64; 3], f64) -> bool,
     ) -> bool {
-        let near = |bounds: Bounds| line.meets_box(bounds, slack_of(bounds)) && wanted(bounds);
+        let near = |bounds: Bounds| {
+            #[cfg(test)]
+            BOXES_TESTED.with(|tested| tested.set(tested.get() + 1));
+            line.meets_box(bounds, slack_of(bounds)) && wanted(bounds)
+        };
         let mut stack = Vec::new();
         if !self.nodes.is_empty() {
             stack.push(0usize);
