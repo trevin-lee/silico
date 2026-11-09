@@ -15,3 +15,15 @@ pub const S0000003: &str = r#"{"id": "s0000003", "type": "sketch", "v": 1, "name
 pub const H0000002: &str = r#"{"id": "h0000002", "type": "pocket", "v": 1, "name": "Upright holes", "base": "h0000001", "sketch": "s0000003", "extent": {"type": "through_all", "reversed": true}}"#;
 
 pub const F0000001: &str = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "Inside corner", "base": "h0000002", "edges": ["p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000004)"], "radius": 5}"#;
+
+/// The seven features as one document, in timeline order, as the session's file held them
+/// before it was formatted: its header (naming 5), then each feature.
+pub fn whole() -> String {
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        [
+            S0000001, P0000001, S0000002, H0000001, S0000003, H0000002, F0000001
+        ]
+        .join(", ")
+    )
+}

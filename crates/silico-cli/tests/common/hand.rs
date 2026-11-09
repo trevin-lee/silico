@@ -7,6 +7,8 @@
 
 use serde_json::Value;
 
+use super::threemf::{Object, printable};
+
 /// π, as `std::f64::consts::PI`.
 pub const PI: f64 = std::f64::consts::PI;
 
@@ -77,6 +79,56 @@ pub fn bracket() -> Sum {
     let d = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
     sum.add(r * r * (1.0 - PI / 4.0) * 40.0, [5.0 + d, 20.0, 5.0 + d]);
     sum
+}
+
+/// One of the bracket's solids by hand: its volume and centre (`sum`), its area, and its
+/// faces, edges and vertices.
+pub struct Solid {
+    pub sum: Sum,
+    pub area: f64,
+    pub counts: [u64; 3],
+}
+
+/// The bracket's four solids by hand, in the order both its builds make them: the legs; the
+/// base's holes pocketed; the upright's too; and the inside corner filleted.
+/// - The legs, 40 wide: 60 · 40 · 5 + 5 · 40 · 45 = 21,000 mm³; 2 · 525 + 220 · 40 = 9,850
+///   mm²; the L-prism's 8 faces, 18 edges, and 12 vertices.
+/// - Each hole a cylinder of 37.8125π mm³ less ([`HOLE`]); it takes two discs of π · 2.75²
+///   from its leg's faces and adds a wall of 2π · 2.75 · 5, so 27.5π − 15.125π = 12.375π mm²
+///   more; and a face (its wall), three edges (two rims and a seam), and two vertices (on
+///   the seam). So the base's two holes 24.75π more area, the four 49.5π.
+/// - The fillet: the spandrel, (1 − π/4) · 5² · 40, more ([`bracket`]). It takes 5 · 40 from
+///   each leg's inner face and adds a quarter cylinder, (π/2) · 5 · 40 = 100π, and each end
+///   face gains the spandrel, 25(1 − π/4): 9,850 + 49.5π − 400 + 100π + 50 − 12.5π = 9,500 +
+///   137π mm². It adds a face for the corner's edge, its two lines and two arcs for the one
+///   edge, and four vertices for its two: 13 faces, 33 edges, 22 vertices.
+pub fn solids() -> [Solid; 4] {
+    let mut base = legs(40.0);
+    for y in [12.0, 28.0] {
+        base.add(-HOLE, [40.0, y, 2.5]);
+    }
+    [
+        Solid {
+            sum: legs(40.0),
+            area: 9850.0,
+            counts: [8, 18, 12],
+        },
+        Solid {
+            sum: base,
+            area: 9850.0 + 24.75 * PI,
+            counts: [10, 24, 16],
+        },
+        Solid {
+            sum: drilled(),
+            area: 9850.0 + 49.5 * PI,
+            counts: [12, 30, 20],
+        },
+        Solid {
+            sum: bracket(),
+            area: 9500.0 + 137.0 * PI,
+            counts: [13, 33, 22],
+        },
+    ]
 }
 
 /// The measure's bound on a volume or area by hand: OCCT's integration to a relative 1e-9
@@ -160,6 +212,63 @@ pub fn enclosed(volume: f64, rim: usize, arc: usize) -> f64 {
     let spandrel = arc as f64 * FILLET_R * FILLET_R / 2.0 * (theta - libm::sin(theta));
     assert!(spandrel <= arc as f64 * FILLET_R * FILLET_R * theta * theta * theta / 12.0);
     volume + 4.0 * 5.0 * hole_short + 40.0 * spandrel
+}
+
+/// The bracket's mesh, as a 3MF holds it, against the hand, meshed at the tolerance
+/// `tolerance`; the volume it encloses. Printable ([`printable`]); each hole's two rims of
+/// [`chords`]' count of points, and each of the fillet's two arcs one more than its chords;
+/// nothing else a vertex but the profile's five corners left at each end (the walls and the
+/// fillet are meshed with no nodes inside them, a cylinder's splitter placing none,
+/// docs/ports/mesh-export.md), so 8 rims, 2 arcs and 10 corners; and, closed and of genus 4
+/// (four through holes), V − E + F = 2 − 2 · 4 with E = 3F/2, so F = 2V + 12. Its box the
+/// part's, [0, 0, 0]–[60, 40, 50], exactly (its corners are the B-rep's vertices, whole
+/// numbers in 32 bits too); and its volume the part's and its chords' segments ([`enclosed`]),
+/// to what rounding each coordinate to 32 bits moves it ([`rounding`]).
+pub fn the_bracket_s_mesh(mesh: &Object, tolerance: f64) -> f64 {
+    let mesh_volume = printable(mesh);
+    let rim = chords(2.0 * PI, HOLE_R, tolerance);
+    let arc = chords(PI / 2.0, FILLET_R, tolerance);
+    let any = |_: &[f64; 3]| true;
+    for y in [12.0, 28.0] {
+        for at in [0.0, 5.0] {
+            let v = &mesh.vertices;
+            assert_eq!(
+                on_circle(v, 2, at, [40.0, y, at], HOLE_R, any),
+                rim,
+                "base, y {y}"
+            );
+            assert_eq!(
+                on_circle(v, 0, at, [at, y, 35.0], HOLE_R, any),
+                rim,
+                "upright, y {y}"
+            );
+        }
+    }
+    let corner = |v: &[f64; 3]| v[0] <= 10.0 && v[2] <= 10.0;
+    for y in [0.0, 40.0] {
+        let points = on_circle(&mesh.vertices, 1, y, [10.0, y, 10.0], FILLET_R, corner);
+        assert_eq!(points, arc + 1, "the fillet's arc at y {y}");
+    }
+    let vertices = 8 * rim + 2 * (arc + 1) + 2 * 5;
+    assert_eq!(mesh.vertices.len(), vertices);
+    assert_eq!(mesh.triangles.len(), 2 * vertices + 12);
+    let mut low = [f64::INFINITY; 3];
+    let mut high = [f64::NEG_INFINITY; 3];
+    for p in &mesh.vertices {
+        for i in 0..3 {
+            low[i] = low[i].min(p[i]);
+            high[i] = high[i].max(p[i]);
+        }
+    }
+    assert_eq!((low, high), ([0.0; 3], [60.0, 40.0, 50.0]));
+    let volume = 22000.0 - 401.25 * PI;
+    let enclosed = enclosed(volume, rim, arc);
+    let rounding = rounding();
+    assert!(
+        (mesh_volume - enclosed).abs() <= rounding,
+        "the mesh encloses {mesh_volume} mm³; by hand {enclosed} (the part's {volume}), to {rounding}"
+    );
+    mesh_volume
 }
 
 /// How far rounding each of the mesh's coordinates to 32 bits may move the volume it
