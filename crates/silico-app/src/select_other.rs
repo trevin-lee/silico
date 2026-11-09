@@ -74,7 +74,7 @@ use crate::icons::Icon;
 use crate::measures::{Measured, Of};
 use crate::menu;
 use crate::renderer::Element;
-use crate::selection::{How, Selection, centre_of, square};
+use crate::selection::{Cast, How, Selection, centre_of, square};
 use crate::theme;
 use crate::viewport::{LeftEvent, LeftKind, SecondaryClick, View, ViewFrame};
 
@@ -333,29 +333,33 @@ impl SelectOther {
     /// The face under `pixel`'s centre in `frame`: of the bodies it drew (`view`'s meshes of
     /// them), the one the ray meets first ([`face_hit`]), cast on their boxes. The
     /// selection's where an edge's stroke covers its pick and the filter takes faces but not
-    /// edges ([`Selection::overlay`]). None where no face is there, or while a body the frame
-    /// drew has no boxes made (or none can be): it never casts without a body that's drawn.
-    pub(crate) fn face_under(
-        &self,
-        view: &View,
-        frame: &ViewFrame,
-        pixel: [u32; 2],
-    ) -> Option<(u32, Element)> {
-        let bodies: Vec<(u32, &Pickable)> = frame
-            .drawn
-            .iter()
-            .filter_map(|n| view.bodies().get(n).map(|body| (*n, &body.mesh)))
-            .map(|(n, mesh)| self.boxes.made_of(n, mesh).map(|pickable| (n, pickable)))
-            .collect::<Option<_>>()?;
+    /// edges ([`Selection::overlay`]). [`Cast::Empty`] where no face is there, or where no box
+    /// can be made; [`Cast::Waiting`] while a body the frame drew has its boxes still to come
+    /// (asked for as the view takes its mesh, and a frame asked for as they're made): it
+    /// never casts without a body that's drawn.
+    pub(crate) fn face_under(&self, view: &View, frame: &ViewFrame, pixel: [u32; 2]) -> Cast {
+        let mut bodies: Vec<(u32, &Pickable)> = Vec::new();
+        for n in &frame.drawn {
+            let Some(body) = view.bodies().get(n) else {
+                continue;
+            };
+            match self.boxes.made_of(*n, &body.mesh) {
+                Some(pickable) => bodies.push((*n, pickable)),
+                None if self.boxes.failed() => return Cast::Empty,
+                None => return Cast::Waiting,
+            }
+        }
         let pointer = pixel.map(|c| f64::from(c) + 0.5);
-        face_hit(
+        match face_hit(
             &frame.camera,
             frame.size_px,
             frame.pixels_per_point,
             &bodies,
             pointer,
-        )
-        .map(|hit| (hit.body, hit.element))
+        ) {
+            Some(hit) => Cast::Face(hit.body, hit.element),
+            None => Cast::Empty,
+        }
     }
 
     /// Its boxes made by `build` from now on (a test's, to see where and when it runs):

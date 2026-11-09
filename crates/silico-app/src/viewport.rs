@@ -826,6 +826,13 @@ impl View {
         self.picked = Some(picking);
     }
 
+    /// As if another table of bodies had been read, of the same model: a selection's unit
+    /// tests' view.
+    #[cfg(test)]
+    pub(crate) fn tabled_again(&mut self) {
+        self.generation += 1;
+    }
+
     /// The read in flight polled: its answer taken if it has come.
     fn poll(&mut self, now: Instant) {
         let Some(reading) = self.reading.take() else {
