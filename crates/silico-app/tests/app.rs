@@ -32854,6 +32854,8 @@ fn a_sketch_opened_under_select_other_closes_it_and_the_wheel_zooms_in_sketch_mo
     step(&mut h);
     assert!(!select_other(&h).is_open());
     assert!(!select_other(&h).holds_keys());
+    // (Sketch mode's claim on the canvas, `Selection::canvas_claimed`, lets go of the hover
+    // too, so this holds whether the menu's close does or not.)
     assert!(!h.state().tabs()[0].selection().hover_held());
     // So the wheel zooms in sketch mode, as it does with no menu open (held, it wouldn't):
     // over the canvas's centre, clear of the sketch bar and the palette.
@@ -33874,5 +33876,56 @@ fn select_other_casts_through_the_centre_of_its_clicks_pixel() {
         rows_said(&h),
         ["Edge11 Edge · Block", "Edge10 Edge · Block · hidden"]
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_left_gives_the_canvas_back_a_right_click_opening_its_menu_and_the_wheel_zooming() {
+    use eframe::egui::{Key, Modifiers, MouseWheelUnit};
+    use silico_app::select_other::Phase;
+    use silico_core::document::OriginPlane;
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    let centre = above_at(&h, 20.0, 10.0, [0.0, 0.0]);
+    let sessions = Arc::clone(h.state().sessions());
+    h.state_mut().tabs_mut()[0].create_sketch(&sessions, OriginPlane::Xy);
+    step_until(&mut h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    // In sketch mode a right click is the sketch's: its menu, not Select Other's. Its Cancel
+    // sketch leaves sketch mode.
+    right_click(&mut h, centre, centre, Modifiers::NONE);
+    step_until(&mut h, "the sketch's menu", |h| {
+        h.query_by_role_and_label(Role::Menu, "Sketch menu")
+            .is_some()
+    });
+    assert!(!select_other(&h).is_open());
+    h.get_by_role_and_label(Role::Menu, "Sketch menu")
+        .get_by_role_and_label(Role::Button, "Cancel sketch")
+        .click();
+    step_until(&mut h, "sketch mode left", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    step_until(&mut h, "the meshes read", |h| {
+        !view(h).reading() && meshes_current(h)
+    });
+    boxes_made(&mut h);
+    // The canvas the selection's again: a right click opens the canvas's menu, cast on the
+    // box (`BY_THE_RIGHT_EDGE`)...
+    right_click(&mut h, at, at, Modifiers::NONE);
+    step_until(&mut h, "the canvas's menu", |h| {
+        anywhere(h, "Select Other… 4 under the pointer")
+    });
+    assert_eq!(select_other(&h).phase(), Some(Phase::Context));
+    assert!(h.query_by_role_and_label(Role::Menu, "Canvas").is_some());
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(!select_other(&h).is_open());
+    // ...and, closed, the wheel zooms.
+    let camera = view(&h).camera().clone();
+    wheel(&mut h, centre, MouseWheelUnit::Line, 1.0);
+    step(&mut h);
+    assert!(ortho_height(view(&h).camera()) < ortho_height(&camera));
     assert_eq!(never_waits::waits(), 0);
 }

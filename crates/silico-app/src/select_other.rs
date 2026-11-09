@@ -35,11 +35,11 @@
 //! press, its drag, and its release are the menu's, as the prototype's click closes a menu
 //! and selects nothing), another right click on the canvas (which opens another), the
 //! published model or a body's mesh changing, a modal or the shortcut sheet coming up over
-//! it, or the tab not shown, closes it. The canvas's right clicks and left presses are taken
-//! in the order they came, so a right click and then a press in one frame leave it closed.
-//! While it's open the pane's wheel doesn't zoom ([`View::wheel_held`]), the pointer's hover
-//! isn't asked, the menu holds the keyboard's focus, and no other shortcut acts
-//! (`crate::app`'s keys).
+//! it, a sketch opening, or the tab not shown, closes it. The canvas's right clicks and left
+//! presses are taken in the order they came, so a right click and then a press in one frame
+//! leave it closed. While it's open the pane's wheel doesn't zoom ([`View::wheel_held`]), the
+//! pointer's hover isn't asked, the menu holds the keyboard's focus, and no other shortcut
+//! acts (`crate::app`'s keys).
 //!
 //! Its lines are drawn as every menu's (`crate::menu`), in egui's menu frame ([`menu_frame`]);
 //! its foot behind [`paint_foot`], of the theme's tokens.
