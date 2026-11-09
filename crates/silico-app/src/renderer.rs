@@ -39,6 +39,10 @@ pub struct FrameData {
     pub picking: Option<PixelRect>,
     pub edges: bool,
     pub vertices: Option<f32>,
+    /// The shown sketches' lines, drawn among the bodies and picked by nothing, each
+    /// [`theme::VIEWPORT_SKETCH_WIDTH`](crate::theme::VIEWPORT_SKETCH_WIDTH) wide: none while
+    /// a sketch is open.
+    pub lines: Vec<crate::sketch::lines::FrameLines>,
 }
 
 impl FrameData {
@@ -335,10 +339,20 @@ fn prepared<R: ViewRenderer>(
     let highlights = drawn(&data.highlights);
     let hovered = drawn(&data.hovered);
     locked(shared).refused.extend(refused);
+    let lines: Vec<silico_render::render::Lines<'_>> = data
+        .lines
+        .iter()
+        .map(|line| silico_render::render::Lines {
+            strips: &line.strips,
+            colour: line.colour,
+            width: crate::theme::VIEWPORT_SKETCH_WIDTH,
+        })
+        .collect();
     let frame = Frame {
         bodies: &bodies,
         highlights: &highlights,
         hovered: &hovered,
+        lines: &lines,
         ..data.frame()
     };
     let prepared = renderer.prepare(&frame);
@@ -542,6 +556,7 @@ mod tests {
             picking: None,
             edges: true,
             vertices: None,
+            lines: Vec::new(),
         }
     }
 

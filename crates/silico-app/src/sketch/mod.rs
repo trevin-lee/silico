@@ -19,6 +19,7 @@ pub mod dimension;
 pub mod drag;
 pub mod draw;
 pub mod hit;
+pub mod lines;
 pub mod screen;
 pub mod style;
 pub mod tools;

@@ -1801,3 +1801,56 @@ fn a_renderer_backing_off_has_the_pane_ask_for_each_frame_at_once_until_it_stops
     assert!(idle(repaint_delay(&h)), "{:?}", repaint_delay(&h));
     assert_eq!(never_waits::waits(), 0);
 }
+
+/// A document of one sketch on XY, Huge, of `circles` circles of radius 100 m about the
+/// origin, nothing built from it.
+fn huge_sketch(circles: usize) -> String {
+    let members: Vec<String> = (0..circles)
+        .map(|k| {
+            format!(
+                r#"{{"id": "c{k:07}", "center": "pa000001", "radius": 100000, "construction": false}}"#
+            )
+        })
+        .collect();
+    format!(
+        r#"{{
+  "silico": 1,
+  "units": {{"length": "mm", "resolution": "1nm"}},
+  "naming": 5,
+  "features": [
+    {{"id": "s0000001", "type": "sketch", "v": 1, "name": "Huge", "plane": "xy", "points": [{{"id": "pa000001", "x": 0, "y": 0, "construction": false}}], "lines": [], "circles": [{}], "arcs": [], "constraints": []}}
+  ]
+}}
+"#,
+        members.join(", ")
+    )
+}
+
+#[test]
+fn a_shown_sketch_past_its_lines_cap_draws_none_and_the_frames_go_on() {
+    // 200 circles of 100 m, each at its most segments at the view the document opens in
+    // (Home's, a tenth of a metre across: 1024 segments, 1,025 points), 205,000 points in
+    // all, past the cap's 200,000. Its read held, it's drawn by no line, and the frames go
+    // on, none waiting.
+    let f = fixture();
+    let (mut h, record) = f.drawn("huge.silico", &huge_sketch(200), (1280.0, 800.0));
+    step_until(&mut h, "Huge read", |h| {
+        h.state().tabs().first().is_some_and(|tab| {
+            tab.prefixes
+                .held(&FeatureId::new("s0000001").unwrap())
+                .is_some()
+        })
+    });
+    let frames = h.state().frames();
+    for _ in 0..20 {
+        step(&mut h);
+        let told = record.lock().unwrap();
+        assert!(
+            told.frames
+                .last()
+                .is_some_and(|frame| frame.lines.is_empty())
+        );
+    }
+    assert!(h.state().frames() >= frames + 20);
+    assert_eq!(never_waits::waits(), 0);
+}

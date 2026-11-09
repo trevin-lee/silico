@@ -508,6 +508,9 @@ pub const VIEWPORT_BODY: Rgba8 = rgba8(0xb9c0ca);
 pub const VIEWPORT_EDGE: Rgba8 = rgba8(0x101010);
 /// Their width, in points.
 pub const VIEWPORT_EDGE_WIDTH: f32 = 1.5;
+/// A shown sketch's curves drawn among the bodies (the prototype's `syncSketchLines`
+/// lines), their width in points.
+pub const VIEWPORT_SKETCH_WIDTH: f32 = 1.5;
 /// A hovered face's tint: white, mixed in at [`VIEWPORT_HOVER_TINT_AMOUNT`].
 pub const VIEWPORT_HOVER_TINT: Rgba8 = rgba8(0xffffff);
 /// How much of [`VIEWPORT_HOVER_TINT`] a hovered face takes.

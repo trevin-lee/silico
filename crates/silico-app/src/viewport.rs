@@ -475,6 +475,9 @@ pub struct View {
     /// The bodies the browser hides, by feature, as the last frame had them: drawn by no
     /// frame, and so not in the reach a view is clamped by.
     hidden: BTreeSet<FeatureId>,
+    /// The boxes of the shown sketches' lines the last frame drew (`crate::sketch::lines`):
+    /// in the reach a view is clamped by, as the renderer takes them into its own.
+    sketch_boxes: Vec<[[f64; 3]; 2]>,
     notice: Option<Notice>,
     /// A held mesh an answer gave none of wasn't found: the next read holds none.
     hold_none: bool,
@@ -569,6 +572,7 @@ impl Default for View {
             said: None,
             said_for: None,
             hidden: BTreeSet::new(),
+            sketch_boxes: Vec::new(),
             notice: None,
             hold_none: false,
             reads: 0,
@@ -960,12 +964,13 @@ impl View {
 
     /// The boxes of the bodies drawn (those the browser hides left out), as the renderer
     /// takes their reach: a body's tight box, or, for one that couldn't be measured, its
-    /// mesh's own extent.
+    /// mesh's own extent; and the shown sketches' lines' boxes, which it takes too.
     fn drawn_boxes(&self) -> impl Iterator<Item = [[f64; 3]; 2]> + '_ {
         self.bodies
             .values()
             .filter(|body| !self.hidden.contains(&body.feature))
             .filter_map(|body| body.bounds.or_else(|| extent(&body.mesh)))
+            .chain(self.sketch_boxes.iter().copied())
     }
 
     /// The read to start at `now`, if one is wanted (section 3, *When the app reads*): none
@@ -1713,7 +1718,39 @@ pub fn show<P: Clients + 'static>(
         .filter(|row| !tab.shown(&crate::tab::Hideable::Feature(row.id.clone())))
         .map(|row| row.id.clone())
         .collect();
+    // The shown sketches' lines, each from its read as the tab holds it, and none while a
+    // sketch is open: sketch mode draws that one, and no other is drawn (the prototype's
+    // `if (S.sketch) setSketchLines([])`, app.js:979). A suppressed sketch has no read.
+    let shown_sketches: Vec<(FeatureId, Arc<silico_core::command::sketch::SketchRead>)> =
+        if tab.sketch.is_some() {
+            Vec::new()
+        } else {
+            tab.browser
+                .sketches
+                .iter()
+                .filter(|row| tab.shown(&crate::tab::Hideable::Feature(row.id.clone())))
+                .filter_map(|row| {
+                    let held = tab.prefixes.held(&row.id)?;
+                    Some((row.id.clone(), Arc::clone(&held.read)))
+                })
+                .collect()
+        };
+    let lines = tab.sketch_lines.frame(
+        shown_sketches.iter().map(|(id, read)| (id, read)),
+        &tab.view.camera,
+        rect.height(),
+    );
+    let sketch_boxes: Vec<[[f64; 3]; 2]> = lines
+        .iter()
+        .filter_map(|line| line.strips.bounds())
+        .map(|(low, high)| [low, high])
+        .collect();
     let view = &mut tab.view;
+    if sketch_boxes != view.sketch_boxes {
+        view.sketch_boxes = sketch_boxes;
+        // Lines reaching farther than the bodies raise the view's least allowed.
+        view.camera = navigate::clamped(view.camera.clone(), view.rows, view.drawn_boxes());
+    }
     if now_hidden != view.hidden {
         view.hidden = now_hidden;
         // A body shown again may reach farther than the view's least allowed.
@@ -1866,6 +1903,7 @@ pub fn show<P: Clients + 'static>(
         picking,
         edges: view.edges,
         vertices: view.vertices,
+        lines,
     };
     drawing.present(ui.painter(), rect, changes, Some(frame));
     paint_vertex_dots(
