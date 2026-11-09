@@ -30,7 +30,7 @@ use super::geometry::{
     add, angle_between, cross, distance, dot, left, scale, sub, to_segment, unit,
 };
 use super::{Relation, Shown, Xy};
-use crate::document::sketch_edit::{Geo, Members, crossings};
+use crate::document::sketch_edit::{Geo, Members, crossings, lies_along};
 use crate::document::{Direction, ElementId, Form, Reference, Sketch};
 
 /// How far from horizontal or vertical a line may be drawn, and from perpendicular,
@@ -578,7 +578,8 @@ impl Pointer<'_, '_> {
     }
 
     /// The curves within the tolerance of `at`: lines as drawn, circles, arcs where they're
-    /// drawn, and the axes, infinite.
+    /// drawn, and the axes, infinite, but where a line of the sketch lies along one
+    /// ([`covers`](Self::covers)).
     fn curves_near(&self, at: Xy) -> Vec<Near> {
         let mut near = Vec::new();
         let tolerance = self.tolerance;
@@ -589,6 +590,7 @@ impl Pointer<'_, '_> {
             let off = distance(foot, at);
             if off <= tolerance
                 && let Some(geo) = self.view.geo(&reference)
+                && !self.covers(&geo, foot, at)
             {
                 near.push(Near {
                     reference,
@@ -621,6 +623,29 @@ impl Pointer<'_, '_> {
             }
         }
         near
+    }
+
+    /// Whether a line of the sketch within the tolerance of `at` lies along the axis `axis`
+    /// ([`lies_along`], as [`crossings`] decides two lines overlap) and spans its place
+    /// `foot`, the axis's nearest `at`: there the sketch's own line covers the axis, and the
+    /// pointer finds the line alone, so what it takes never turns on two ways of working out
+    /// one place agreeing to the last bit.
+    fn covers(&self, axis: &Geo, foot: Xy, at: Xy) -> bool {
+        let Geo::Line {
+            from: origin,
+            to: along,
+        } = axis
+        else {
+            return false;
+        };
+        self.view.curves.values().any(|geo| match geo {
+            Geo::Line { from, to } => {
+                lies_along(*origin, *along, *from, *to)
+                    && to_segment(*from, *to, foot).1 <= LENGTH_TOLERANCE
+                    && to_segment(*from, *to, at).1 <= self.tolerance
+            }
+            Geo::Circle { .. } | Geo::Arc { .. } => false,
+        })
     }
 
     /// Where two of the curves `near` cross, nearest `at` and within the tolerance of it, on

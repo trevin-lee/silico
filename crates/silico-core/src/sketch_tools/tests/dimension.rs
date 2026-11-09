@@ -316,6 +316,39 @@ fn a_line_along_an_axis_is_picked_before_the_axis_whatever_its_id() {
 }
 
 #[test]
+fn a_line_along_an_axis_is_picked_where_its_foot_rounds() {
+    // Picked at (14.12, 0) on (10, 0)-(50, 0): the line's foot there, 10 + 40 · (4.12 / 40),
+    // rounds off the pointer by an ulp or two, the axis's foot doesn't; the line is picked
+    // all the same, on either axis (the review's T1).
+    for name in ["aa000001", "zz000001"] {
+        for (from, to, at) in [
+            ([10.0, 0.0], [50.0, 0.0], [14.12, 0.0]),
+            ([0.0, 10.0], [0.0, 50.0], [0.0, 14.12]),
+        ] {
+            let mut d = Dim::new(with_line(empty(), name, from, to));
+            d.click(at[0], at[1]);
+            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at {at:?}");
+        }
+    }
+}
+
+#[test]
+fn a_line_along_the_x_axis_is_picked_with_the_pointer_on_it_anywhere_along_it() {
+    // At (14.2842, 0) (the review's R1), and at a thousand places along it, (10.6, 0) to
+    // (49.4, 0), past the ends' tolerance (0.5, inclusive): the line every time, never the
+    // axis.
+    for name in ["aa000001", "zz000001"] {
+        let places =
+            std::iter::once(14.2842).chain((0..1000).map(|k| 10.6 + 38.8 * f64::from(k) / 999.0));
+        for x in places {
+            let mut d = Dim::new(with_line(empty(), name, [10.0, 0.0], [50.0, 0.0]));
+            d.click(x, 0.0);
+            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at ({x}, 0)");
+        }
+    }
+}
+
+#[test]
 fn an_axis_is_picked_where_no_line_of_the_sketch_lies_on_it() {
     // Past the end of a line along an axis, (70, 0) and (0, 70) are 20 from the line and 0
     // from the axis: the axis. And with the line 0.3 off the axis, (10, 0.3) to (50, 0.3)

@@ -694,6 +694,75 @@ fn a_point_where_a_line_along_an_axis_is_crossed_is_on_the_two_lines_whatever_th
     );
 }
 
+/// The curves the last add put its point `on`, sorted.
+fn ons(d: &Drive) -> Vec<Reference> {
+    let mut curves: Vec<Reference> = d
+        .made
+        .last()
+        .unwrap()
+        .constraints
+        .iter()
+        .filter_map(|c| match &c.form {
+            Form::On { curve, .. } => Some(curve.clone()),
+            _ => None,
+        })
+        .collect();
+    curves.sort();
+    curves
+}
+
+/// `xy` along the x axis as given, or, mirrored, along the y axis (x and y swapped).
+fn mirrored(xy: (f64, f64), y_axis: bool) -> (f64, f64) {
+    if y_axis { (xy.1, xy.0) } else { xy }
+}
+
+/// The line `name` along an axis, (10, 0) to (50, 0) or its mirror on the y axis, crossed
+/// by n0000001 from `from` to `to` (mirrored too), clicked at `at`: the point the click
+/// places is on the two lines, the sketch's own, never the axis, whatever `name` sorts as,
+/// on either axis.
+fn crossed_along_an_axis(from: (f64, f64), to: (f64, f64), at: (f64, f64)) {
+    for y_axis in [false, true] {
+        for name in ["aa000001", "zz000001"] {
+            let mut s = just_line(
+                name,
+                mirrored((10.0, 0.0), y_axis),
+                mirrored((50.0, 0.0), y_axis),
+            );
+            let (a, b) = (mirrored(from, y_axis), mirrored(to, y_axis));
+            s.points.push(point("q0000003", a.0, a.1));
+            s.points.push(point("q0000004", b.0, b.1));
+            s.lines.push(line("n0000001", "q0000003", "q0000004"));
+            let mut d = Drive::new(ToolKind::Point, s);
+            let at = mirrored(at, y_axis);
+            d.click(at.0, at.1);
+            let mut want = vec![
+                Reference::Element(id(name)),
+                Reference::Element(id("n0000001")),
+            ];
+            want.sort();
+            assert_eq!(ons(&d), want, "{name}, along the y axis: {y_axis}");
+        }
+    }
+}
+
+#[test]
+fn a_point_where_a_slanted_line_crosses_a_line_along_an_axis_is_on_the_two_lines() {
+    // n0000001 from (19.8, -8.77) to (19.33, 2.77) crosses the x axis, and the line along
+    // it, at (19.8 - 0.47 · 8.77 / 11.54, 0) ≈ (19.4428, 0): 0.1 from the click at
+    // (19.44, 0.1), within the tolerance; its middle (19.565, -3) and every end far. The two
+    // crossings are one place, worked out on two lines' arithmetic, so they may differ in
+    // the last bits: the point is on the two lines all the same (the review's T1).
+    crossed_along_an_axis((19.8, -8.77), (19.33, 2.77), (19.44, 0.1));
+}
+
+#[test]
+fn a_crossing_on_a_line_along_an_axis_takes_the_line_at_any_slant() {
+    // n0000001 from (24.715, -4.443) to (21.922, 2.942) crosses the x axis at
+    // (24.715 - 2.793 · 4.443 / 7.385, 0) ≈ (23.0347, 0), 0.1 from the click at
+    // (23.03, 0.1) (the review's R1).
+    crossed_along_an_axis((24.715, -4.443), (21.922, 2.942), (23.03, 0.1));
+}
+
 #[test]
 fn the_nearest_woken_point_lines_up_and_a_tie_goes_to_the_lower_id() {
     // Woken points at x = 30.2 and 30.4: a click at (30, 50) is 0.2 and 0.4 off their
