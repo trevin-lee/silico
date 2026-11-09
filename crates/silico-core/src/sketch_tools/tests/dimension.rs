@@ -2994,6 +2994,9 @@ fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
     d.click(20.0, 10.0).click(20.0, 30.0).escape();
     let k = d.tool.placement().unwrap().constraint;
     d.states.state = SketchState::OverDefined;
+    // The read refuses the solve, the dimension's own state flagged: offered, as c3 (Fable, 2026-11-08, g5-redundant-autoconstraints-fable.md §1.4)
+    // offers an add on a refused sketch.
+    d.states.solve_problem = Some(Error::new(ErrorCode::OverConstrained, "conflict"));
     d.states
         .constraints
         .insert(k.clone(), ConstraintState::Conflicting);
@@ -3143,6 +3146,9 @@ fn an_offer_holds_the_tool_until_its_dismissed() {
     d.click(20.0, 10.0).click(20.0, 30.0).escape();
     let k = d.tool.placement().unwrap().constraint;
     d.states.state = SketchState::OverDefined;
+    // The read refuses the solve, the dimension's own state flagged: offered, as c3 (Fable, 2026-11-08, g5-redundant-autoconstraints-fable.md §1.4)
+    // offers an add on a refused sketch.
+    d.states.solve_problem = Some(Error::new(ErrorCode::OverConstrained, "conflict"));
     d.states
         .constraints
         .insert(k.clone(), ConstraintState::Conflicting);
@@ -3172,6 +3178,9 @@ fn a_later_read_releases_an_open_offer() {
     d.click(20.0, 10.0).click(20.0, 30.0).escape();
     let k = d.tool.placement().unwrap().constraint;
     d.states.state = SketchState::OverDefined;
+    // The read refuses the solve, the dimension's own state flagged: offered, as c3 (Fable, 2026-11-08, g5-redundant-autoconstraints-fable.md §1.4)
+    // offers an add on a refused sketch.
+    d.states.solve_problem = Some(Error::new(ErrorCode::OverConstrained, "conflict"));
     d.states
         .constraints
         .insert(k.clone(), ConstraintState::Conflicting);
@@ -3257,7 +3266,8 @@ fn a_placement_knows_the_read_it_was_placed_on() {
 }
 
 #[test]
-fn with_an_edit_between_its_read_and_its_add_a_dimension_is_judged_by_its_own_state() {
+fn with_an_edit_between_its_read_and_its_add_a_dimension_is_judged_by_its_own_state_and_with_none_by_its_freedoms()
+ {
     // Round 4, item 1. Placed on revision 1's read (1000 freedoms, nothing flagged, under
     // defined); an agent's edit made revision 2, the add revision 3.
     let mut d = Dim::new(corner());
@@ -3294,7 +3304,9 @@ fn with_an_edit_between_its_read_and_its_add_a_dimension_is_judged_by_its_own_st
     );
     assert!(offer(&constraint, three, &between).is_some());
     // And with the agent's constraint the one flagged, the sketch newly over defined, the
-    // dimension satisfied: not the dimension's doing, not offered.
+    // dimension satisfied: not the dimension's doing, not offered. With nothing between, the
+    // dimension took a freedom (999, of 1000) on a sketch that solved: not offered either,
+    // whatever the contest newly flags (c3 (Fable, 2026-11-08, g5-redundant-autoconstraints-fable.md §1.4)).
     let theirs = read(
         &[
             ("t0000101", ConstraintState::Satisfied),
@@ -3303,7 +3315,7 @@ fn with_an_edit_between_its_read_and_its_add_a_dimension_is_judged_by_its_own_st
         999,
         SketchState::OverDefined,
     );
-    assert!(offer(&theirs, adjacent.revision, &adjacent).is_some());
+    assert_eq!(offer(&theirs, adjacent.revision, &adjacent), None);
     assert_eq!(offer(&theirs, three, &between), None);
 }
 
@@ -3442,9 +3454,9 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
 #[test]
 fn an_add_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_cancel() {
     // The corner with `length` of A, 25, driving, placed as t0000101 at revision 2 on a read
-    // under defined. A read of revision 2 over defined, or with no solution, offers it,
-    // whatever state the solve gave the dimension itself (PlaneGCS may flag another of its
-    // group).
+    // under defined. A read of revision 2 refused, over defined or with no solution, offers
+    // it, whatever state the solve gave the dimension itself (PlaneGCS may flag another of
+    // its group).
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
@@ -3459,7 +3471,11 @@ fn an_add_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_ca
             ConstraintState::Satisfied,
             ConstraintState::Unsolved,
         ] {
-            let read = read_of(d.sketch.clone(), "t0000101", state, sketch_state);
+            // Refused (a conflict, or no solution): offered by the state newly prompted,
+            // whatever the dimension's own (c3 (Fable, 2026-11-08,
+            // g5-redundant-autoconstraints-fable.md §1.4)).
+            let mut read = read_of(d.sketch.clone(), "t0000101", state, sketch_state);
+            read.states.solve_problem = Some(Error::new(ErrorCode::OverConstrained, "refused"));
             let offer = offer(&read, made, &placement).unwrap();
             assert_eq!(offer.constraint, id("t0000101"));
             assert_eq!(offer.state, state);
@@ -3495,39 +3511,70 @@ fn an_add_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_ca
 }
 
 #[test]
-fn an_add_that_flags_something_new_is_offered_whatever_the_state_before() {
-    // Round 2, item 1: SolidWorks prompts for each dimension. The sketch over defined or
-    // unsolvable before it (left so, or by an agent's edit), the add's read flags the
-    // dimension, which the read before couldn't: offered. So is a flag that leaves the
-    // sketch fully defined (PlaneGCS may flag a relation of the group, item 32's mixed
-    // group), and one of another constraint than the dimension.
+fn an_add_on_a_solved_sketch_is_offered_by_its_freedoms_and_on_a_refused_one_by_its_own_state() {
+    // c3 (Fable, 2026-11-08, g5-redundant-autoconstraints-fable.md §1.4). The corner's `length` of A placed as t0000101 on a read with D freedoms.
+    // Solved after it: offered exactly when the freedoms didn't drop, whatever the contest
+    // newly flags. D − 1 with k0000009 newly flagged redundant (the contest's pick moved to
+    // another member of a group): not offered. D, nothing new flagged, over defined: offered
+    // (dependent). Refused after it, from a state already prompted (so not newly): offered
+    // when the dimension itself is flagged; not for k0000009 newly flagged, the dimension
+    // unsolved.
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
     let made = placement.revision;
-    let flags_it = read_of(
-        d.sketch.clone(),
-        "t0000101",
-        ConstraintState::Conflicting,
+    let PlacementKind::Add { dofs } = placement.kind else {
+        panic!("{placement:?}")
+    };
+    let solved = |states: &[(&str, ConstraintState)], freedoms: i32, of: SketchState| {
+        let mut read = read_with(d.sketch.clone(), states, of);
+        read.states.dofs = freedoms;
+        read
+    };
+    let moved_pick = solved(
+        &[
+            ("t0000101", ConstraintState::Satisfied),
+            ("k0000009", ConstraintState::Redundant),
+        ],
+        dofs - 1,
+        SketchState::FullyDefined,
+    );
+    assert_eq!(offer(&moved_pick, made, &placement), None);
+    let dependent = solved(
+        &[("t0000101", ConstraintState::Redundant)],
+        dofs,
         SketchState::OverDefined,
     );
+    assert!(offer(&dependent, made, &placement).is_some());
+    let refused = |own: ConstraintState| {
+        let mut read = read_with(
+            d.sketch.clone(),
+            &[
+                ("t0000101", own),
+                ("k0000009", ConstraintState::Conflicting),
+            ],
+            SketchState::OverDefined,
+        );
+        read.states.solve_problem = Some(Error::new(ErrorCode::OverConstrained, "conflict"));
+        read
+    };
     for before in [SketchState::OverDefined, SketchState::NoSolution] {
         let earlier = Placement {
             before,
             ..placement.clone()
         };
-        let offer = offer(&flags_it, made, &earlier).unwrap();
-        assert_eq!(offer.state, ConstraintState::Conflicting, "{before:?}");
+        let offered = offer(&refused(ConstraintState::Conflicting), made, &earlier);
+        assert_eq!(
+            offered.map(|o| o.state),
+            Some(ConstraintState::Conflicting),
+            "{before:?}"
+        );
+        assert_eq!(
+            offer(&refused(ConstraintState::Unsolved), made, &earlier),
+            None,
+            "{before:?}"
+        );
     }
-    let redundant_relation = read_with(
-        d.sketch.clone(),
-        &[
-            ("t0000101", ConstraintState::Satisfied),
-            ("k0000009", ConstraintState::Redundant),
-        ],
-        SketchState::FullyDefined,
-    );
-    assert!(offer(&redundant_relation, made, &placement).is_some());
 }
 
 #[test]
@@ -3852,11 +3899,14 @@ fn an_edit_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_c
 }
 
 #[test]
-fn an_edit_that_newly_flags_a_constraint_is_offered() {
-    // Under defined, nothing flagged; the edit's read flags a relation redundant, the sketch
-    // still under defined at the same 3 freedoms: offered. Over defined before by k0000009,
-    // the edit's read flags the dimension too: offered, though the state isn't new; k0000009
-    // alone, as before: not.
+fn an_edit_is_offered_where_it_newly_prompts_or_refuses_or_is_newly_flagged_itself_not_for_another()
+{
+    // c3 (Fable, 2026-11-08, g5-redundant-autoconstraints-fable.md §1.4). Under defined, nothing flagged; the edit's read flags a relation redundant,
+    // the sketch still under defined at the same 3 freedoms, solved: another constraint
+    // newly flagged, not offered. The same edit taking the sketch to over defined (an
+    // agreeing dimension, solved): newly prompted, offered. Over defined before by k0000009,
+    // refused, the edit's read flags the dimension too: offered, its own state newly
+    // flagged, though the state isn't new; k0000009 alone, as before: not.
     let (sketch, edit) = edited(SketchState::UnderDefined, &[], false);
     let read = edit_read(
         &sketch,
@@ -3867,7 +3917,17 @@ fn an_edit_that_newly_flags_a_constraint_is_offered() {
         SketchState::UnderDefined,
         3,
     );
-    let offered = offer(&read, edit.revision, &edit).unwrap();
+    assert_eq!(offer(&read, edit.revision, &edit), None);
+    let prompted = edit_read(
+        &sketch,
+        &[
+            ("t0000101", ConstraintState::Satisfied),
+            ("k0000009", ConstraintState::Redundant),
+        ],
+        SketchState::OverDefined,
+        3,
+    );
+    let offered = offer(&prompted, edit.revision, &edit).unwrap();
     assert_eq!(offered.constraint, id("t0000101"));
     assert_eq!(offered.state, ConstraintState::Satisfied);
     // k0000009 conflicting before: the solve refused.

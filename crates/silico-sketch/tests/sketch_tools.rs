@@ -1045,6 +1045,52 @@ fn an_independent_dimension_on_overlapping_dependent_groups_is_never_offered() {
 }
 
 #[test]
+fn an_independent_dimension_the_contests_pick_moves_for_is_not_offered() {
+    // The five rows with their IDs so: y1 = 0 ka000002, y2 = 0 ka000003, `horizontal` p1-p2
+    // ka000001, y3 = 0 ka000004, `horizontal` p2-p3 ka000005: one of the 120 orders searched
+    // with the worker, each with three independent dimensions and two IDs, the pick moving in
+    // 180 of the 720. The free line's length, as drawn, added as zzzzzzzz, the last tag: it
+    // takes one freedom and joins no group, yet PlaneGCS's contest moves its flag from
+    // ka000003 to ka000002. The old rule offered it for that newly flagged ka000002, a
+    // dimension that over-defines nothing; c3 (Fable, 2026-11-08,
+    // g5-redundant-autoconstraints-fable.md §1.4) judges a solved sketch's add by its
+    // freedoms alone: not offered.
+    let constraints = r#"{"id": "ka000002", "type": "distance_y", "a": "origin", "b": "pa000001", "value": 0, "driving": true}, {"id": "ka000003", "type": "distance_y", "a": "origin", "b": "pa000002", "value": 0, "driving": true}, {"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000004", "type": "distance_y", "a": "origin", "b": "pa000003", "value": 0, "driving": true}, {"id": "ka000005", "type": "horizontal", "line": "na000002"}"#;
+    let points = r#"{"id": "pa000001", "x": 10, "y": 0, "construction": false}, {"id": "pa000002", "x": 30, "y": 0, "construction": false}, {"id": "pa000003", "x": 50, "y": 0, "construction": false}, {"id": "pa000004", "x": 10, "y": 20, "construction": false}, {"id": "pa000005", "x": 30, "y": 25, "construction": false}"#;
+    let lines = r#"{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000004", "to": "pa000005", "construction": false}"#;
+    let f = opened_with(ToolKind::Line, &sketch_doc(points, lines, constraints));
+    let (before, at) = f.read_at();
+    assert!(before.states.solve_problem.is_none(), "{:?}", before.states);
+    add_constraint(
+        &f,
+        "zzzzzzzz",
+        Form::Length {
+            line: Reference::Element(ElementId::new("na000003").unwrap()),
+            value: Length::rounded(f64::sqrt(425.0)).unwrap(),
+            driving: true,
+        },
+    );
+    let kind = silico_core::sketch_tools::PlacementKind::Add {
+        dofs: before.states.dofs,
+    };
+    let (after, offered) = judged(&f, &before, at, "zzzzzzzz", kind);
+    assert_eq!(after.states.dofs, before.states.dofs - 1);
+    let flags = |read: &SketchRead| {
+        flagged_in(read)
+            .iter()
+            .map(ElementId::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        (flags(&before), flags(&after)),
+        (vec!["ka000003".to_owned()], vec!["ka000002".to_owned()]),
+        "the contest's pick moved"
+    );
+    assert!(offered.is_none(), "{offered:?}, {:?}", after.states);
+}
+
+#[test]
 fn a_dependent_dimension_on_the_same_sketch_is_offered() {
     // y3 = 0 again, by a second driving distance: dependent (the freedoms stay), offered.
     let f = opened_with(ToolKind::Line, &overlapping(""));
