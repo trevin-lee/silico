@@ -378,6 +378,14 @@ jobs:
         with:
           name: mutants-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/out/mutants.out
+          # Only this run's summary reads a shard's artifact, and it copies every outcome's name
+          # into the run's own `mutants` artifact; the per-mutant logs and a stopped shard's
+          # baseline.log stay here alone. So a real run's shards are kept a week, and re-running
+          # its failed shards works only within it. A filler run's are read only by its summary,
+          # an hour or so later, so they're kept a day. At GitHub's default of 90 days, the
+          # shards filled the account's artifact storage (3.25 GB on 2026-11-08) and every
+          # upload failed.
+          retention-days: ${{ inputs.filler && 1 || 7 }}
       - name: Remove the test scratch
         if: ${{ always() }}
         run: bash .github/scratch.sh end
@@ -439,7 +447,7 @@ jobs:
           for ((n = 0; n < SHARDS; n++)); do
             dir=shards/mutants-shard-$n
             if [ ! -d "$dir" ]; then
-              echo "shard $n uploaded nothing (never started, or stopped before cargo-mutants)" >>all/incomplete.txt
+              echo "shard $n uploaded nothing (never started, stopped before cargo-mutants, or its artifact expired: a real run's shards are kept 7 days, so dispatch a new run)" >>all/incomplete.txt
               continue
             fi
             # cargo-mutants writes its list (an empty one for no mutants) before it tests.
