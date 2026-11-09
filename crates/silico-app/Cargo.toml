@@ -18,6 +18,8 @@ libm.workspace = true
 silico-font.workspace = true
 eframe.workspace = true
 egui_tiles.workspace = true
+# Sketch mode's profile fill, its outline's polylines in triangles.
+lyon_tessellation.workspace = true
 # The icons, drawn from SVG (`icons`).
 egui_extras.workspace = true
 # The backends eframe's renderer draws with (Metal, Vulkan), as the workspace chooses them.

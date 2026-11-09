@@ -624,6 +624,28 @@ crates/silico-app/src/dialog.rs | Dialog::ui | replace < with <= | #393
 # repaints at once (`InputState::wants_repaint_after`: events not empty). `&=` changes no
 # frame asked for, and nothing else reads `started`.
 crates/silico-app/src/app.rs | App<P>::after_drawing | replace |= with &= | #397
+# Sketch mode's drawing (#351). `aside`: `normal` is (−y, x) of a segment longer than
+# nothing (a zero one is returned straight down first) divided by that length, so its x and
+# y are never both 0; `normal.x <= 0.0` beside `normal.y == 0.0` differs from `<` only at
+# x = 0, which with y = 0 is that zero normal. `segments`: past `radius <= tolerance ||
+# sweep <= 0.0` (which returns 1), both finite and the tolerance above 0, the quotient
+# tolerance/radius is in (0, 1), so 1 − it is in (0, 1] and `step`, twice its acos, in
+# [0, π): finite, so `step <= 0.0 && !step.is_finite()` is never true, and the guard is
+# true only at a step of 0 (a radius so far past the tolerance that 1 − the quotient rounds
+# to 1), where the sweep, above 0, over it is infinite, at least the cap: the cap either way.
+crates/silico-app/src/sketch/draw.rs | aside | replace < with <= | #351
+crates/silico-app/src/sketch/draw.rs | segments | replace || with && | #351
+# Sketch mode's hit-testing (#351): a tolerance that's no number or below 0 finds nothing
+# either way. Every distance `hit` compares with it is a length (a point's, a box's, a
+# curve's, or a segment's), never below 0, or no number, which no comparison takes, so
+# `d <= tolerance` holds for none; `tolerance.is_nan() && tolerance < 0.0`, never true,
+# only takes away the early return from a search that then finds nothing.
+crates/silico-app/src/sketch/hit.rs | hit | replace || with && | #351
+# `keys`' answer (#351's Delete and Finish Sketch in sketch mode, as #298's): it only asks
+# egui for the next frame at once, which egui asks for itself after any input event, and a
+# key press is one, so no frame comes later for it.
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #351
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #351
 # A rename's first edit (#398): a modified ⌫ or Del while the name is still selected whole.
 # The guard leaves it to egui's TextEdit, which deletes the selection with any modifier
 # (`check_for_mutating_key_press`: `delete_selected`, or ⌘'s paragraph deletion, which

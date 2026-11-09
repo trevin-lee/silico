@@ -27,6 +27,7 @@ mod repair;
 pub mod selection;
 mod sheet;
 pub mod shortcuts;
+pub mod sketch;
 pub mod start;
 pub mod status;
 pub mod tab;

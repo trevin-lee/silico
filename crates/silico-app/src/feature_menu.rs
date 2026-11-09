@@ -187,14 +187,18 @@ pub fn label(item: Item, entry: &Entry, place: Place) -> &'static str {
 }
 
 /// Why the feature `entry` can't be changed in `tab` now, if it can't: the tab closing, a
-/// dialog open (its Cancel undoes to where it opened), or a document the gate refused,
-/// which takes no edit but of its text.
+/// dialog or a sketch open (its Cancel undoes to where it opened), or a document the gate
+/// refused, which takes no edit but of its text.
 fn unchangeable(tab: &Tab) -> Option<String> {
     if tab.closing() {
         return Some("The document is closing".to_owned());
     }
     if tab.in_dialog() {
         return Some("Close the open dialog first".to_owned());
+    }
+    if tab.in_sketch() {
+        // The prototype's words for a dialog asked for in sketch mode (`openDialog`).
+        return Some("Finish or cancel the sketch first".to_owned());
     }
     if tab
         .timeline
@@ -214,8 +218,14 @@ pub fn off(tab: &Tab, entry: &Entry, item: Item, place: Place) -> Option<String>
     match item {
         Item::Edit => {
             if entry.kind == "sketch" {
-                // SEAM(#351): sketch mode's Edit Sketch.
-                return Some("Sketch mode isn't built yet".to_owned());
+                // Sketch mode's Edit Sketch.
+                return if tab.can_sketch() {
+                    None
+                } else {
+                    Some(
+                        unchangeable(tab).unwrap_or_else(|| "The sketch can't open now".to_owned()),
+                    )
+                };
             }
             let Some(kind) = crate::dialog::Kind::of(entry.kind) else {
                 return Some(format!(
@@ -559,9 +569,8 @@ pub fn act<P: silico_core::kernel::Clients + 'static>(
 ) -> bool {
     match act {
         Act::Edit(id) => {
-            // SEAM(#351): `tab.edit_sketch_or_feature(sessions, &id)`, Edit Sketch for a
-            // sketch; until then a sketch's item is off.
-            tab.edit_feature(sessions, &id);
+            // Edit Sketch for a sketch, a feature's dialog for any other.
+            tab.edit_sketch_or_feature(sessions, &id);
             true
         }
         Act::Rename(id, place) => {

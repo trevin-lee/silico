@@ -29,6 +29,7 @@ use crate::properties;
 use crate::recent::Recents;
 use crate::sheet::{self, Sheet};
 use crate::shortcuts::{self, Command};
+use crate::sketch::{self, bar::BarAction};
 use crate::start::{self, Warm};
 use crate::tab::{DiskChoice, Tab, said};
 use crate::theme::{self, FieldKind};
@@ -132,6 +133,12 @@ fn enter_is_ok(ui: &mut Ui) -> bool {
         pressed
     })
 }
+
+/// Where sketch mode's panels stand in the canvas, as the prototype's: the sketch bar below
+/// its top, centred; the palette at its right, below the ViewCube.
+const SKETCH_BAR_FROM_TOP: f32 = 10.0;
+const PALETTE_FROM_CORNER: egui::Vec2 =
+    egui::Vec2::new(-12.0 - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
 
 /// What the app is asking the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,6 +297,9 @@ pub struct App<P: Clients + 'static> {
     /// Enter or Esc pressed this frame with a modal already open at its start: the modal's
     /// OK or Cancel, taken before anything else could read it.
     modal_key: Option<Key>,
+    /// The canvas's place in the window, as the panes last laid it out: where sketch mode's
+    /// palette floats.
+    canvas: Option<egui::Rect>,
     /// What the viewport's renderer holds, and how its frames reach it (M5.6).
     drawing: crate::viewport::Drawing,
     /// What opens the native file dialogs, the Browse… buttons beside the path fields: none
@@ -404,6 +414,7 @@ impl<P: Clients + 'static> App<P> {
             wakes: Arc::new(AtomicU64::new(0)),
             waker_set: false,
             modal_key: None,
+            canvas: None,
             drawing: crate::viewport::Drawing::default(),
             browser: None,
             browsing: None,
@@ -691,9 +702,12 @@ impl<P: Clients + 'static> App<P> {
                 .find_pane(&Pane::Viewport)
                 .and_then(|viewport| tree.tiles.rect(viewport))
                 .unwrap_or_else(|| ui.max_rect());
+            // Where sketch mode's panels float.
+            self.canvas = Some(canvas);
             self.disk_banner(ui, canvas, &mut started);
             self.show_toast(ui, canvas);
         });
+        self.sketch_canvas(ui, &mut started);
         // A toast the tab shown asked for this frame (a box's), drawn from the next; one a tab
         // not shown asked for (its drag ended as it was left) dropped, never shown later out
         // of its context.
@@ -1044,7 +1058,7 @@ impl<P: Clients + 'static> App<P> {
     fn save_as_offered(&self) -> bool {
         self.active_place()
             .and_then(|at| self.tabs.get(at))
-            .is_some_and(|tab| !tab.closing() && !tab.in_dialog())
+            .is_some_and(|tab| !tab.closing() && !tab.editing())
     }
 
     /// The place among the tabs of the one shown, if one is.
@@ -1065,6 +1079,9 @@ impl<P: Clients + 'static> App<P> {
     /// with a feature selected, F2 types its name over in its own field and Del (or ⌫)
     /// deletes it (the prototype's `keydown`), Esc dropping a name being typed and the
     /// document's commands (Save, Close, Undo, and the rest) sending it before they act.
+    /// In sketch mode, Del (or ⌫) deletes the sketch's selection instead, never a feature,
+    /// F2 says why it renames nothing (as its menu item is off), and Ctrl+Enter finishes
+    /// the sketch.
     /// With a modal open (the sheet too), none acts: Esc is the modal's Cancel (the sheet's
     /// close), and Enter its OK. With a dialog open, Enter and Esc are the dialog's, taken
     /// here and given to it once its inputs have taken this frame's typing (`Panes::dialog`,
@@ -1196,6 +1213,7 @@ impl<P: Clients + 'static> App<P> {
         // H hides or shows the selection (DESIGN.md, *Keyboard*), never a letter typed.
         let hide = !typing && shortcuts::take(ui, Command::Hide);
         // F2 renames the selected feature, and Del (or ⌫) deletes it: never a field's keys.
+        // In sketch mode Del (or ⌫) is the sketch's, below.
         let rename = !typing && shortcuts::take(ui, Command::Rename);
         let delete = !typing && shortcuts::take(ui, Command::Delete);
         // The view's keys, never a field's (Home moves its cursor).
@@ -1223,12 +1241,25 @@ impl<P: Clients + 'static> App<P> {
                 }
             })
         };
-        // SEAM(#351): `tab.in_sketch()`, once sketch mode is in; no sketch opens here yet.
-        let in_sketch = false;
+        let in_sketch = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .is_some_and(Tab::in_sketch);
+        // Ctrl+Enter (⌘↵) finishes the sketch (the prototype's key, as the toolbar's Finish
+        // Sketch names it).
+        let finish = in_sketch
+            && ui.input_mut(|input| {
+                input.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter))
+            });
+        // Del (or ⌫) in sketch mode deletes the sketch's selection, never a feature (the
+        // prototype's `keydown` gives a sketch its own keys and goes no further).
+        let (sketch_delete, delete) = (delete && in_sketch, delete && !in_sketch);
+        // SEAM(#351): `in_sketch` once the sketch's own keys are in (the wiring's X is
+        // Construction); until then the filters are taken in a sketch too.
         let filters = if typing {
             Vec::new()
         } else {
-            filter_keys(ui, in_sketch)
+            filter_keys(ui, false)
         };
         // F5: where the filters are (the prototype's, no command of the registry's).
         let filters_said =
@@ -1292,11 +1323,17 @@ impl<P: Clients + 'static> App<P> {
         let mut save_panel = None;
         if save && tab.is_untitled() {
             // Not while a Save As of its runs: its answer gives it its file.
-            if !tab.in_dialog() && !tab.closing() && !tab.saving_as() {
+            if !tab.editing() && !tab.closing() && !tab.saving_as() {
                 save_panel = Some(tab.id);
             }
-        } else if save && tab.unsaved() && !tab.in_dialog() {
+        } else if save && tab.unsaved() && !tab.editing() {
             tab.save(sessions, false);
+        }
+        if sketch_delete {
+            tab.sketch_delete(sessions);
+        }
+        if finish {
+            tab.finish_sketch(sessions, true);
         }
         if undo && tab.undoable() {
             tab.step(sessions, true);
@@ -1328,7 +1365,16 @@ impl<P: Clients + 'static> App<P> {
             self.close(id);
         }
         (
-            save || undo || redo || stop || close || enter || rebuild || rebuild_all || deleted,
+            save || undo
+                || redo
+                || stop
+                || close
+                || enter
+                || rebuild
+                || rebuild_all
+                || deleted
+                || sketch_delete
+                || finish,
             dialog_key,
         )
     }
@@ -1708,11 +1754,11 @@ impl<P: Clients + 'static> App<P> {
             .active_place()
             .filter(|_| !start_shown)
             .and_then(|at| self.tabs.get_mut(at));
-        // Off while a dialog is open: its OK or Cancel ends its edits first. On for an
-        // untitled part with no edits too, its first save writing it, but not while it closes
-        // or a Save As of its runs.
+        // Off while a dialog or a sketch is open: its OK or Finish, or its Cancel, ends its
+        // edits first. On for an untitled part with no edits too, its first save writing it,
+        // but not while it closes or a Save As of its runs.
         let unsaved = tab.as_ref().is_some_and(|tab| {
-            !tab.in_dialog()
+            !tab.editing()
                 && if tab.is_untitled() {
                     !tab.closing() && !tab.saving_as()
                 } else {
@@ -1883,10 +1929,8 @@ impl<P: Clients + 'static> App<P> {
             toolbar::show(
                 ui,
                 &toolbar::Shown {
-                    // Sketch mode (#351) wires these: `tab.in_sketch() -> bool`, and
-                    // `Some(tab.can_sketch())` (`tab.can_sketch() -> bool`).
-                    in_sketch: false,
-                    create_sketch: None,
+                    in_sketch: shown.is_some_and(Tab::in_sketch),
+                    create_sketch: Some(shown.is_some_and(Tab::can_sketch)),
                     can_open: &can_open,
                     selected: shown
                         .is_some_and(|tab| !tab.selection().is_empty() && !tab.in_dialog()),
@@ -1912,10 +1956,15 @@ impl<P: Clients + 'static> App<P> {
             Some(toolbar::Act::AllFilters) => {
                 tab.selection_mut().filter = crate::selection::Filter::default();
             }
-            // Sketch mode (#351) wires these: `CreateSketch(plane)` to
-            // `tab.create_sketch(&self.sessions, plane)` and `*started = true`, and
-            // `FinishSketch` to `tab.finish_sketch(&self.sessions, true)` (false is Cancel).
-            Some(toolbar::Act::CreateSketch(_) | toolbar::Act::FinishSketch) | None => {}
+            Some(toolbar::Act::CreateSketch(plane)) => {
+                tab.create_sketch(&self.sessions, plane);
+                *started = true;
+            }
+            Some(toolbar::Act::FinishSketch) => {
+                tab.finish_sketch(&self.sessions, true);
+                *started = true;
+            }
+            None => {}
         }
     }
 
@@ -1962,6 +2011,41 @@ impl<P: Clients + 'static> App<P> {
         if shortcuts {
             self.sheet = Some(Sheet::default());
         }
+    }
+
+    /// Sketch mode's panels in the canvas while a sketch is open in the tab shown (the
+    /// prototype's): the sketch bar at the canvas's top centre, its Finish Sketch and Cancel
+    /// taken, and the Sketch Palette at its right.
+    fn sketch_canvas(&mut self, ui: &mut Ui, started: &mut bool) {
+        let sessions = &self.sessions;
+        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
+            return;
+        };
+        let name = tab.sketch_name();
+        let (revision, enabled, id) = (tab.revision, !tab.closing(), tab.id);
+        let Some(mode) = tab.sketch.as_mut() else {
+            return;
+        };
+        let canvas = self.canvas.unwrap_or_else(|| ui.ctx().content_rect());
+        let bar = mode.bar_view(&name, enabled);
+        let view = mode.palette_view(revision);
+        let mut action = BarAction::None;
+        egui::Area::new(egui::Id::new(("sketch_bar", id.to_string())))
+            .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
+            .pivot(egui::Align2::CENTER_TOP)
+            .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar));
+        // Pinned at the canvas's top right, under the ViewCube, as the prototype's is.
+        egui::Area::new(egui::Id::new(("sketch_palette", id.to_string())))
+            .fixed_pos(canvas.right_top() + PALETTE_FROM_CORNER)
+            .show(ui.ctx(), |ui| {
+                sketch::bar::palette(ui, &view, &mut mode.settings)
+            });
+        match action {
+            BarAction::None => {}
+            BarAction::Finish => tab.finish_sketch(sessions, true),
+            BarAction::Cancel => tab.finish_sketch(sessions, false),
+        }
+        *started |= action != BarAction::None;
     }
 
     /// The banner over the canvas (section 4; DESIGN.md's 6c and 6d): a file changed on
@@ -2078,16 +2162,16 @@ impl<P: Clients + 'static> App<P> {
         });
         // Named by the revision it puts back (Fable's decision of 2026-11-04, section 2:
         // never "my version", which may be another program's earlier save). Off while a
-        // dialog is open, the tab closes, a Restore is under way, once it was refused, or
-        // once the session is known not to hold that revision (said, as Restore's read
-        // could only be refused).
+        // dialog or a sketch is open, the tab closes, a Restore is under way, once it was
+        // refused, or once the session is known not to hold that revision (said, as
+        // Restore's read could only be refused).
         let restore = format!("Restore revision {}", reloaded.from.number());
         let gone = format!(
             "Silico no longer holds revision {}: the file changed again before what changed \
              was read, so it can't be put back",
             reloaded.from.number()
         );
-        let on = !tab.in_dialog()
+        let on = !tab.editing()
             && !tab.closing()
             && !tab.restoring()
             && reloaded.refused.is_none()
@@ -3049,5 +3133,53 @@ mod tests {
                 .iter()
                 .any(|(text, _)| text == "Reading what changed…")
         );
+    }
+
+    // ---- #351's mutants: what sketch mode's panels say of the frame ----
+
+    #[test]
+    fn sketch_modes_panels_asked_nothing_leave_whether_a_command_was_started_as_it_was() {
+        // `started` says whether the frame started a command, so its next frame is asked for
+        // at once: the sketch bar and the palette, Finish Sketch and Cancel unclicked, start
+        // none, and never take back one started before them.
+        let (mut app, dir) = app();
+        let open = answered(&app, &dir, 1, "one.silico", true);
+        let id = session(&open);
+        app.take_opens(vec![open]);
+        app.tabs_mut()[0].sketch = Some(crate::sketch::SketchMode::new(1, None));
+        app.active = Some(id);
+        let ctx = eframe::egui::Context::default();
+        ctx.set_fonts(theme::fonts());
+        // A first pass, in which the panels' areas only take their sizes.
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+            app.sketch_canvas(ui, &mut false);
+        });
+        output.textures_delta.clear();
+        for before in [false, true] {
+            let mut after = None;
+            let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+                let mut started = before;
+                app.sketch_canvas(ui, &mut started);
+                after = Some(started);
+            });
+            output.textures_delta.clear();
+            assert_eq!(after, Some(before), "started {before}");
+            // Drawn, so not passed over: the sketch bar's Finish Sketch among what's painted.
+            fn texts(shape: &eframe::egui::Shape, into: &mut Vec<String>) {
+                match shape {
+                    eframe::egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| texts(s, into)),
+                    eframe::egui::Shape::Text(text) => into.push(text.galley.text().to_owned()),
+                    _ => {}
+                }
+            }
+            let mut painted = Vec::new();
+            for clipped in &output.shapes {
+                texts(&clipped.shape, &mut painted);
+            }
+            assert!(
+                painted.iter().any(|text| text == "Finish Sketch"),
+                "{painted:?}"
+            );
+        }
     }
 }

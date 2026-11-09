@@ -6,7 +6,8 @@
 //! (`crate::whats_wrong`). The rebuild runs visibly along it: the running
 //! step's item spins, the items not yet known built are dimmed, and once it ends each item
 //! shows its health, a failed one red ([`step_of_each`]). A click selects a feature, a
-//! double-click (or Edit feature in its menu) opens its dialog, a drag moves it
+//! double-click (or Edit feature in its menu) opens its dialog (a sketch's, Edit Sketch,
+//! sketch mode), a drag moves it
 //! (`move_feature`), and hovering it tints the faces it made in the viewport (`View::linked`).
 //! Its right-click menu is the feature's commands (`crate::feature_menu`): Edit feature,
 //! Rename (whose field opens over the item), Suppress or Unsuppress, Find in browser, and
@@ -439,9 +440,8 @@ fn features<P: Clients + 'static>(
         *started = true;
     }
     if let Some(id) = asked.edit {
-        // SEAM(#351): `tab.edit_sketch_or_feature(sessions, &id)`, Edit Sketch for a sketch;
-        // until then a sketch has no dialog, and this opens none.
-        tab.edit_feature(sessions, &id);
+        // Edit Sketch for a sketch, a feature's dialog for any other.
+        tab.edit_sketch_or_feature(sessions, &id);
         *started = true;
     }
 }
@@ -644,7 +644,11 @@ fn items(
         if response.drag_stopped() {
             dropped = Some(at);
         }
-        let editable = crate::dialog::Kind::of(entry.kind).is_some();
+        // A sketch's is Edit Sketch (fusion.md, *Sketch mode*, [esk]).
+        let editable = match entry.kind {
+            "sketch" => tab.can_sketch(),
+            kind => crate::dialog::Kind::of(kind).is_some(),
+        };
         if response.clicked() {
             asked.selected = Some(entry.id.clone());
         }

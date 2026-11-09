@@ -74,6 +74,8 @@ egui_extras = { version = "=0.36.2", default-features = false, features = ["svg"
 # Drives the app through its accessibility tree in tests, with no GPU (dev only).
 egui_kittest = "=0.36.2"
 silico-font = { path = "crates/silico-font" }
+# Sketch mode's profile fill: an outline and its holes, even-odd, in triangles (silico-app).
+lyon_tessellation = "1.0.23"
 # The app's native file dialogs (Open, Save As, Export's path): macOS's NSOpenPanel and
 # NSSavePanel, and on Linux the XDG desktop portal over D-Bus (libdbus loaded when it's
 # used, zenity if it isn't there), never GTK. Its async API only, so the UI thread never

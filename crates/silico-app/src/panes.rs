@@ -297,9 +297,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
             *self.started |= crate::feature_menu::act(tab, self.sessions, act);
         }
         if let Some(id) = asked.edit {
-            // SEAM(#351): `tab.edit_sketch_or_feature(self.sessions, &id)`, Edit Sketch for a
-            // sketch; until then a sketch has no dialog, and this opens none.
-            tab.edit_feature(self.sessions, &id);
+            // Edit Sketch for a sketch, a feature's dialog for any other.
+            tab.edit_sketch_or_feature(self.sessions, &id);
             *self.started = true;
         }
         if asked.root {
@@ -809,15 +808,15 @@ const ORIGIN: [(&str, Icon); 7] = [
 ];
 
 /// A sketch row's prefix, `(–)`, `(+)`, or `(?)` (DESIGN.md, *Errors*: SolidWorks'
-/// definition prefixes). SEAM(#351): `tab.prefixes.prefix(id)`; none until it lands.
-fn sketch_prefix(_tab: &Tab, _id: &FeatureId) -> Option<&'static str> {
-    None
+/// definition prefixes), from sketch mode's read of each sketch's state.
+fn sketch_prefix(tab: &Tab, id: &FeatureId) -> Option<&'static str> {
+    tab.prefixes.prefix(id)
 }
 
-/// Whether a sketch's row asks for Edit Sketch. SEAM(#351):
-/// `crate::sketch::edit_asked(Some(row), tab.can_sketch())`; none until it lands.
-fn sketch_edit_asked(_tab: &Tab, _row: &egui::Response) -> bool {
-    false
+/// Whether a sketch's row asks for Edit Sketch by a double-click (its context menu's is the
+/// feature's menu's).
+fn sketch_edit_asked(tab: &Tab, row: &egui::Response) -> bool {
+    crate::sketch::edit_asked(Some(row), tab.can_sketch())
 }
 
 /// A prefix's colour (`.row .prefix`, `.under`, `.over`).
