@@ -27460,6 +27460,167 @@ const JOINED_SUPPRESSED: &str = r#"{
 /// Why a sweep can't be built on the Block in [`JOINED_SUPPRESSED`], as its dialog says.
 const BLOCK_HELD_BY_JOINED: &str = "Block is the tool of Joined, which consumes it while suppressed: unsuppress or remove Joined to build on it";
 
+/// [`JOINED_SUPPRESSED`] with Joined not suppressed: the Block, its tool, is Joined's, and a
+/// sweep from Sketch2 builds on Joined.
+fn joined_unsuppressed() -> String {
+    JOINED_SUPPRESSED.replace(
+        r#""name": "Joined", "suppressed": true,"#,
+        r#""name": "Joined","#,
+    )
+}
+
+#[test]
+fn a_refusal_from_the_adds_own_read_is_said_and_kept_till_the_sketch_changes() {
+    // #443's review. A Pocket's dialog open, its sketch box empty, over the document with
+    // Joined unsuppressed (the Block's chain ends at Joined). Another client suppresses
+    // Joined, and in the very next frame Sketch2 is chosen: the dialog's check before the
+    // add, against the tab's timeline still of the revision before, passes, and the add is
+    // queued; its own read of the session's document refuses the Block (`Under::Base`).
+    // Nothing is added (no add is sent at all), OK is off, and the dialog says why, frame
+    // after frame. Loose picked instead lets it go, and is added on the tip.
+    let f = fixture();
+    describes_a_real_box(&f);
+    measures_the_box(&f);
+    let (mut h, _) = f.opened("joined.silico", &joined_unsuppressed());
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "its sketches listed", |h| {
+        shows(h, "Browser", "Sketch2") && shows(h, "Browser", "Loose")
+    });
+    create(&mut h, "Pocket");
+    settled(&mut h);
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.sketch().is_none())
+    );
+    let id = h.state().tabs()[0].id;
+    let joined = silico_core::document::FeatureId::new("j0000001").unwrap();
+    f.sessions
+        .set_field(
+            &id,
+            h.state().tabs()[0].revision,
+            joined,
+            "suppressed".to_owned(),
+            json::read(b"true").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    for _ in 0..20 {
+        step(&mut h);
+        assert!(dialog(&h).query_by_label(BLOCK_HELD_BY_JOINED).is_some());
+        assert!(!ok_enabled(&h));
+    }
+    let tab = &h.state().tabs()[0];
+    assert!(tab.dialog.as_ref().unwrap().feature.is_none());
+    assert!(
+        !tab.sent.iter().any(|sent| matches!(sent, Sent::Add)),
+        "{:?}",
+        tab.sent
+    );
+    assert_eq!(fields_of(&text_of(&f, &h), "Pocket"), None);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Loose")
+        .click();
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    assert!(dialog(&h).query_by_label(BLOCK_HELD_BY_JOINED).is_none());
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert!(ok_enabled(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`JOINED_SUPPRESSED`] without Joined, and Spare, a box apart, to suppress.
+fn with_spare() -> String {
+    JOINED_SUPPRESSED.replace(
+        r#"{"id": "j0000001", "type": "fuse", "v": 1, "name": "Joined", "suppressed": true, "base": "a91cw0de", "tool": "k7f2qx3m"}"#,
+        r#"{"id": "b0000009", "type": "box", "v": 1, "name": "Spare", "position": [60, 0, 0], "length": 5, "width": 5, "height": 5}"#,
+    )
+}
+
+#[test]
+fn an_old_dialogs_add_sent_while_a_new_dialog_is_open_leaves_the_new_ones_base_alone() {
+    // #443's review (the mutants of `dialog.serial == serial && kind.sweeps()` where a sweep's
+    // add is sent): a suppress held in the session's queue, so a Pocket's add from Sketch2
+    // (on the Block) waits in the tab's queue; that dialog cancelled and a Pocket's from
+    // Loose opened; then the queue let go. The first dialog's add is sent while the second is
+    // open: in every frame the second's base is none (its own add not sent) or the tip, the
+    // Pin, its own; never the first's, the Block.
+    let f = fixture();
+    describes_a_real_box(&f);
+    measures_the_box(&f);
+    let (mut h, _) = f.opened("spare.silico", &with_spare());
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "its features listed", |h| {
+        shows(h, "Browser", "Sketch2")
+            && shows(h, "Browser", "Loose")
+            && shows(h, "Timeline", "Spare")
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    menu_on(&mut h, "Timeline", "Spare");
+    menu_click(&mut h, "SPARE", "Suppress");
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pocket");
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_none() && dialog.base.is_none())
+    );
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the first dialog closed", |h| !dialog_open(h));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Loose")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pocket");
+    let second = h.state().tabs()[0].dialog.as_ref().unwrap().serial;
+    hold.release();
+    let _ = check.wait();
+    let pin = silico_core::document::FeatureId::new("a91cw0de").unwrap();
+    step_until(&mut h, "the second dialog's add answered", |h| {
+        let dialog = h.state().tabs()[0].dialog.as_ref().unwrap();
+        assert_eq!(dialog.serial, second);
+        assert!(
+            dialog.base.is_none() || dialog.base.as_ref() == Some(&pin),
+            "{:?}",
+            dialog.base
+        );
+        dialog.feature.is_some()
+    });
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "a91cw0de", "s0000009"))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn a_pocket_whose_new_body_is_refused_cant_be_okd_with_its_new_sketch() {
     // #443's review, M2 and L5. The walk from Sketch2's face ends at the Block, the tool of
@@ -27500,6 +27661,11 @@ fn a_pocket_whose_new_body_is_refused_cant_be_okd_with_its_new_sketch() {
             .is_none()
     );
     assert_eq!(text_of(&f, &h), before);
+    // Enter, OK's key, is off too: the dialog stays.
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    assert!(dialog_open(&h));
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
@@ -27518,6 +27684,15 @@ fn a_pocket_whose_new_body_is_refused_cant_be_okd_with_its_new_sketch() {
     });
     settled(&mut h);
     assert!(!ok_enabled(&h));
+    // Nothing sent for Sketch2: the pocket is Loose's on Joined still; and Enter is off.
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    assert!(dialog_open(&h));
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
