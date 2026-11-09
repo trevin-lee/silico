@@ -54,20 +54,22 @@
 //!   for closes, saying why.
 //! - **Over-defining** (SD7). The add is made whatever the solve will find. Once the app has
 //!   the `sketch` read of the revision the add made, [`offer`] gives SolidWorks' three
-//!   choices if the add flagged a constraint the read before it didn't, left a solved
-//!   sketch's degrees of freedom where they were (a dependent dimension), or took the sketch
-//!   to over defined or to no solution (when nothing came between the two reads; else if the
-//!   dimension itself is flagged): driven (`set_field` of its `driving` to false), leave it,
-//!   or Cancel (`undo`). SolidWorks prompts for each dimension, so the offer is modal: no
-//!   other dimension is placed, and the tool is [`busy`](SmartDimension::busy), until that
-//!   read has come with no offer, or, with one ([`open_offer`](SmartDimension::open_offer)),
-//!   until it's released (see `open_offer`). The app gives the tool each read
-//!   ([`settle`](SmartDimension::settle)), so it settles without a pointer event.
+//!   choices if the dimension over-defines the sketch by its own row, as c3 as amended (Fable,
+//!   2026-11-09, c3-refused-sketch-fable.md) has it: if it's flagged itself, or, with nothing
+//!   between that read and the one it was placed on, it left the sketch's degrees of freedom
+//!   where they were or higher (its row dependent) or newly had the solve refused, over
+//!   defined or with no solution. The three: driven (`set_field` of its `driving` to false),
+//!   leave it, or Cancel (`undo`). SolidWorks prompts for each dimension, so the offer is
+//!   modal: no other dimension is placed, and the tool is [`busy`](SmartDimension::busy),
+//!   until that read has come with no offer, or, with one
+//!   ([`open_offer`](SmartDimension::open_offer)), until it's released (see `open_offer`).
+//!   The app gives the tool each read ([`settle`](SmartDimension::settle)), so it settles
+//!   without a pointer event.
 //!   A dimension's value edited (`set_field`, M5.0 section 9: a dimension "placed or edited"
 //!   that over-defines is applied and offered the three) is judged by [`offer`] too, as a
-//!   [`PlacementKind::Edit`]: an edit adds no equation, so the freedoms say nothing of it,
-//!   and only a newly flagged constraint, a newly over defined or unsolvable sketch, or a
-//!   solved sketch's solve newly refused offers it. SolidWorks' help gives the prompt only
+//!   [`PlacementKind::Edit`]: an edit changes a value and no row, so it's offered where it
+//!   newly set a constraint in conflict (any, with nothing between the two reads; else the
+//!   dimension itself) or newly had the solve refused. SolidWorks' help gives the prompt only
 //!   "when you add an over defining dimension", and says nothing of a value changed to
 //!   over-define (docs/study/smart-dimension.md, §8); Silico applies the edit (SD7) and
 //!   offers the same three.
@@ -156,8 +158,8 @@ pub struct DimensionPreview {
 
 /// A dimension placed, or its value edited, once the core answered the change: the sketch,
 /// the constraint's ID, the revision the change made, and, of the read it was made on, its
-/// revision, the sketch's state and the constraints it flagged (conflicting, redundant, or
-/// partially redundant), and which change it was, with what [`offer`] judges it by.
+/// revision and what [`offer`]'s rule reads of it: whether it was a refusal the prompt is for,
+/// and, by the change, its freedoms or its constraints in conflict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
     pub sketch: FeatureId,
@@ -165,25 +167,27 @@ pub struct Placement {
     pub revision: Revision,
     /// The revision of the read it was made on.
     pub read: Revision,
-    pub before: SketchState,
-    pub flagged: BTreeSet<ElementId>,
+    /// Whether the read it was made on was a refusal the prompt is for: over defined or no
+    /// solution, its solve refused ([`prompted_refusal`]).
+    pub before_prompted_refusal: bool,
     pub kind: PlacementKind,
 }
 
-/// Which change a [`Placement`] is, which decides whether [`offer`] counts freedoms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which change a [`Placement`] is, with what [`offer`] reads of the read it was made on.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlacementKind {
     /// The dimension added (`sketch_add`, as Smart Dimension places it), on a read with
-    /// `dofs` degrees of freedom. A driving dimension adds an equation, so a solved add that
-    /// leaves the freedoms where they were (or higher) is dependent, and offered.
-    Add { dofs: i32 },
-    /// The dimension's value edited (`set_field` of its `value`), on a read whose solve was
-    /// refused or not (`before_refused`: its `solve_problem` there). An edit adds no
-    /// equation, so the freedoms say nothing of it: it's offered only where it flags a
-    /// constraint the read before didn't, takes the sketch to over defined or no solution,
-    /// or takes a solved sketch to a refused solve that's either (a redundant dimension that
-    /// agreed edited to disagree, flagged before and after).
-    Edit { before_refused: bool },
+    /// `dofs` degrees of freedom, where they count its constraints ([`freedoms`]). A driving
+    /// dimension adds an equation, so one that leaves them where they were (or higher) is
+    /// dependent, and offered.
+    Add { dofs: Option<i32> },
+    /// The dimension's value edited (`set_field` of its `value`), on a read that listed the
+    /// constraints `before_conflicting` in conflict ([`conflicting`]). An edit changes a
+    /// value and no row, so it's offered where it newly sets a constraint in conflict, or
+    /// newly has the solve refused.
+    Edit {
+        before_conflicting: BTreeSet<ElementId>,
+    },
 }
 
 /// Smart Dimension, between events. Not `Clone`, as a sketch tool isn't.
@@ -229,18 +233,17 @@ struct Modify {
 }
 
 /// The last dimension placed: its add's token, its constraint, the revision the add made
-/// once answered, the read it was placed on (its revision, the sketch's state, its flagged
-/// constraints, its degrees of freedom), and whether its offer is settled (a read of its
-/// revision has come with none) or open.
+/// once answered, the read it was placed on (its revision, whether it was a refusal the
+/// prompt is for, its degrees of freedom where they count its constraints), and whether its
+/// offer is settled (a read of its revision has come with none) or open.
 #[derive(Debug, Clone)]
 struct Placed {
     token: AddToken,
     constraint: ElementId,
     revision: Option<Revision>,
     read: Revision,
-    before: SketchState,
-    flagged: BTreeSet<ElementId>,
-    dofs: i32,
+    before_prompted_refusal: bool,
+    dofs: Option<i32>,
     /// Its read has come with no offer: another dimension may be placed.
     settled: bool,
     /// Its read has come with an offer, which holds the tool until it's released.
@@ -255,8 +258,7 @@ impl Placed {
             constraint: self.constraint.clone(),
             revision: self.revision?,
             read: self.read,
-            before: self.before,
-            flagged: self.flagged.clone(),
+            before_prompted_refusal: self.before_prompted_refusal,
             kind: PlacementKind::Add { dofs: self.dofs },
         })
     }
@@ -845,9 +847,8 @@ impl SmartDimension {
             constraint: id,
             revision: None,
             read,
-            before: states.state,
-            flagged: flagged(states),
-            dofs: states.dofs,
+            before_prompted_refusal: prompted_refusal(states),
+            dofs: freedoms(states),
             settled: false,
             offer: None,
         });
@@ -1463,12 +1464,31 @@ fn prompted(state: SketchState) -> bool {
     matches!(state, SketchState::OverDefined | SketchState::NoSolution)
 }
 
-/// The constraints `states` flag: conflicting, redundant, or partially redundant.
-fn flagged(states: &SketchStates) -> BTreeSet<ElementId> {
+/// Whether `states` are a refusal the over-defining prompt is for: over defined or with no
+/// solution, the solve refused. What a [`Placement`] records of the read it was made on, for
+/// Smart Dimension's adds and the app's edits alike.
+pub fn prompted_refusal(states: &SketchStates) -> bool {
+    states.solve_problem.is_some() && prompted(states.state)
+}
+
+/// A read's degrees of freedom, where they count its constraints: PlaneGCS's, for every
+/// answer but a translation's refusal (`invalid_input`), whose diagnosis is of the geometry
+/// alone and compares with nothing.
+pub fn freedoms(states: &SketchStates) -> Option<i32> {
+    let untranslated = states
+        .solve_problem
+        .as_ref()
+        .is_some_and(|e| e.code() == ErrorCode::InvalidInput);
+    (!untranslated).then_some(states.dofs)
+}
+
+/// The constraints `states` list in conflict: what a [`PlacementKind::Edit`] records of the
+/// read it was made on.
+pub fn conflicting(states: &SketchStates) -> BTreeSet<ElementId> {
     states
         .constraints
         .iter()
-        .filter(|(_, s)| s.flagged())
+        .filter(|(_, s)| **s == ConstraintState::Conflicting)
         .map(|(id, _)| id.clone())
         .collect()
 }
@@ -1476,39 +1496,46 @@ fn flagged(states: &SketchStates) -> BTreeSet<ElementId> {
 /// The offer for `placement`, given `read`, the `sketch` read of the model at `revision`:
 /// only for a read of the model the add (or the edit) made (an older one doesn't hold it,
 /// and a newer one is past the moment), of its sketch, where the dimension is there and
-/// still driving, and the change (SD7):
-/// - an add ([`PlacementKind::Add`]) on a sketch that solved: left its degrees of freedom
-///   where they were, or higher. A driving dimension adds an equation, so one that doesn't
-///   lower the rank is dependent, and one that does isn't, whatever PlaneGCS's greedy
-///   contest flagged: which member of a group it flags can move to another of overlapping
-///   groups as a column is added, so a constraint newly flagged says nothing of the
-///   dimension (a constraint flagged already can cover the new group, too: four of one
-///   horizontal distance flag no more than three);
-/// - an add on a sketch whose solve was refused, where its freedoms say nothing: took the
-///   sketch to over defined or no solution from a state that was neither, or is flagged
-///   itself (an independent row is in no group, so it's never the contest's pick; a
-///   conflicting group lists every member);
-/// - an edit ([`PlacementKind::Edit`]): took the sketch to over defined or no solution from
-///   a state that was neither; or from a solve that wasn't refused to one over defined or
-///   with no solution that is (over defined covers a redundant dimension that agrees,
-///   solved, a conflict, refused, and no solution, so an edit moving from the first to
-///   either of the others is new though the state's word may not be); or, on a refused
-///   sketch, is flagged itself where it wasn't before. A value changed adds no equation, so
-///   on a solved sketch the freedoms say nothing of it.
+/// still driving, and over-defines it by its own row (SD7), as c3 as amended (Fable,
+/// 2026-11-09, c3-refused-sketch-fable.md) has it. With *before* the read the change was made
+/// on, *after* this one, and the two *adjacent* where the change is the only one between them
+/// (its revision the next after that read's):
+/// - an add ([`PlacementKind::Add`]) is offered where its row is dependent: adjacent, and
+///   *after*'s degrees of freedom where *before*'s were or higher, both counting the
+///   constraints ([`freedoms`]); or where the dimension is flagged itself (conflicting,
+///   redundant, or partially redundant), on any read;
+/// - an edit ([`PlacementKind::Edit`]) is offered where, adjacent, any constraint is newly
+///   in conflict (in *after*, not in *before*); not adjacent, where the dimension itself is;
+/// - either is offered, adjacent, where *after* is a refusal the prompt is for, over defined
+///   or with no solution, its solve refused ([`prompted_refusal`]), and *before* wasn't.
+///
+/// Nothing there reads which member of a dependent group PlaneGCS's greedy contest flags,
+/// which follows the IDs' order. A driving dimension adds a row and no unknown, and the
+/// freedoms are PlaneGCS's unknowns less the rank of the rows (or, with nothing free, less
+/// the rows it didn't find redundant), on a solved read and a refused one alike:
+/// - an independent row raises the rank, so the freedoms drop, and it's in no group, so it's
+///   never flagged: not offered;
+/// - a dependent one with something free leaves the rank, and the freedoms, where they were:
+///   offered, whichever member is flagged;
+/// - a dependent one with nothing free leaves the freedoms where they were if its group is
+///   resolved as redundant, and is flagged itself if its group is left in conflict, which
+///   lists every member: offered.
+///
+/// A translation's refusal (`invalid_input`) diagnoses the geometry alone, so its freedoms
+/// count no constraint and compare with nothing: an add on or to one isn't judged by them.
+/// An edit changes a value and no row, so the rank, the groups, and the contest's picks are
+/// what they were, and whatever is newly in conflict is the edit's doing.
 ///
 /// So a sketch already over defined, left so, offers each dimension that adds to it, as
 /// SolidWorks prompts for each.
 ///
-/// Those compare the read the dimension was placed (or edited) on with the change's, so they
-/// hold only where the change is the one between them: its revision the next after that
-/// read's.
-/// Where another came between (another client's edit, an agent's, landing first), its
-/// flags, freedoms, and state would be taken for the dimension's (an added line raising the
-/// freedoms, an added constraint lowering them), so the dimension is judged by its own state
-/// alone: offered if it's flagged (conflicting, redundant, or partially redundant), and, an
-/// edit, if it wasn't flagged in the read before (a dimension over-defining already isn't
-/// offered again for another client's timing). The tool places nothing while its last
-/// offer is unsettled, so its own adds never come between.
+/// Where another change came between (another client's edit, an agent's, landing first),
+/// its flags, freedoms, and state would be taken for the dimension's (an added line raising
+/// the freedoms, an added constraint lowering them), so the dimension is judged by its own
+/// state alone: an add offered if it's flagged, an edit if it's newly in conflict (a
+/// dimension over-defining already isn't offered again for another client's timing). The
+/// tool places nothing while its last offer is unsettled, so its own adds never come
+/// between.
 ///
 /// A value that makes the geometry degenerate (circles tangent through a point, for one)
 /// lowers the rank at the new solution, so an add placing it reads as dependent and is
@@ -1541,33 +1568,35 @@ fn offer_of(
         .find(|SketchConstraint { id, .. }| *id == placement.constraint)
         .and_then(|c| c.form.driving())?;
     let state = *states.constraints.get(&placement.constraint)?;
-    let sketch_state = states.state;
-    let over_defines = if placement.read.next() == Some(placement.revision) {
-        let refused = states.solve_problem.is_some();
-        let newly_prompted = prompted(sketch_state) && !prompted(placement.before);
-        match placement.kind {
-            PlacementKind::Add { dofs } if !refused => states.dofs >= dofs,
-            PlacementKind::Add { .. } => newly_prompted || state.flagged(),
-            PlacementKind::Edit { before_refused } => {
-                let newly_refused = prompted(sketch_state) && refused && !before_refused;
-                let newly_own = refused
-                    && state.flagged()
-                    && !placement.flagged.contains(&placement.constraint);
-                newly_prompted || newly_refused || newly_own
-            }
+    let adjacent = placement.read.next() == Some(placement.revision);
+    let newly_refused = adjacent && prompted_refusal(states) && !placement.before_prompted_refusal;
+    let by_its_row = match &placement.kind {
+        PlacementKind::Add { dofs } => {
+            let dependent = adjacent
+                && matches!(
+                    (dofs, freedoms(states)),
+                    (Some(before), Some(after)) if after >= *before
+                );
+            dependent || state.flagged()
         }
-    } else {
-        match placement.kind {
-            PlacementKind::Add { .. } => state.flagged(),
-            PlacementKind::Edit { .. } => {
-                state.flagged() && !placement.flagged.contains(&placement.constraint)
+        PlacementKind::Edit { before_conflicting } => {
+            let newly_conflicting = |id: &ElementId, s: ConstraintState| {
+                s == ConstraintState::Conflicting && !before_conflicting.contains(id)
+            };
+            if adjacent {
+                states
+                    .constraints
+                    .iter()
+                    .any(|(id, s)| newly_conflicting(id, *s))
+            } else {
+                newly_conflicting(&placement.constraint, state)
             }
         }
     };
-    (driving && over_defines).then(|| Offer {
+    (driving && (newly_refused || by_its_row)).then(|| Offer {
         constraint: placement.constraint.clone(),
         state,
-        sketch_state,
+        sketch_state: states.state,
         placement: placement.clone(),
     })
 }

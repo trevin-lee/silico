@@ -25,7 +25,8 @@ use silico_core::command::Revision;
 use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, FeatureId, Form};
 use silico_core::sketch_tools::{
-    Offer, OfferChoice, OfferRequest, Placement, PlacementKind, offer, read_typed,
+    Offer, OfferChoice, OfferRequest, Placement, PlacementKind, conflicting, offer,
+    prompted_refusal, read_typed,
 };
 
 use super::style::*;
@@ -65,31 +66,27 @@ pub struct Edited {
     pub sketch: FeatureId,
     pub constraint: ElementId,
     pub read: Revision,
-    pub before: silico_core::sketch_states::SketchState,
-    pub flagged: BTreeSet<ElementId>,
-    /// Whether the read it was made on had its solve refused (`PlacementKind::Edit`'s).
-    pub before_refused: bool,
+    /// Whether the read it was made on was a refusal the over-define prompt is for
+    /// ([`prompted_refusal`], `Placement`'s).
+    pub before_prompted_refusal: bool,
+    /// The constraints the read it was made on listed in conflict ([`conflicting`],
+    /// `PlacementKind::Edit`'s).
+    pub before_conflicting: BTreeSet<ElementId>,
     pub made: Option<Revision>,
 }
 
 impl Edited {
-    /// Of `constraint`, of the sketch `read` read at the revision `model`: the read's state,
-    /// the constraints it flags, and whether its solve was refused, which the core's
-    /// [`offer`] judges an edit by (`PlacementKind::Edit`).
+    /// Of `constraint`, of the sketch `read` read at the revision `model`: whether the read
+    /// was a refusal the prompt is for, and the constraints it lists in conflict, which the
+    /// core's [`offer`] judges an edit by (`PlacementKind::Edit`), each by the core's own
+    /// function, as Smart Dimension records an add.
     pub fn of(read: &SketchRead, model: Revision, constraint: ElementId) -> Self {
         Edited {
             sketch: read.sketch.clone(),
             constraint,
             read: model,
-            before: read.states.state,
-            flagged: read
-                .states
-                .constraints
-                .iter()
-                .filter(|(_, state)| state.flagged())
-                .map(|(id, _)| id.clone())
-                .collect(),
-            before_refused: read.states.solve_problem.is_some(),
+            before_prompted_refusal: prompted_refusal(&read.states),
+            before_conflicting: conflicting(&read.states),
             made: None,
         }
     }
@@ -110,10 +107,9 @@ impl Edited {
             constraint: self.constraint.clone(),
             revision: made,
             read: self.read,
-            before: self.before,
-            flagged: self.flagged.clone(),
+            before_prompted_refusal: self.before_prompted_refusal,
             kind: PlacementKind::Edit {
-                before_refused: self.before_refused,
+                before_conflicting: self.before_conflicting.clone(),
             },
         };
         Some(offer(read, made, &placement))

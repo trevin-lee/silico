@@ -3814,18 +3814,71 @@ fn two_lengths_over() -> SketchRead {
 }
 
 /// The right side's length edited at revision 1, its edit made revision 2: what an edit's
-/// [`Edited`](dimension::Edited) holds, made on an under-defined read with nothing flagged.
+/// [`Edited`](dimension::Edited) holds, made on a read that solved, nothing in conflict.
 fn edited_right() -> dimension::Edited {
     let one = Revision::OPENED.next().unwrap();
     dimension::Edited {
         sketch: sketch_feature(),
         constraint: id("ka000002"),
         read: one,
-        before: SketchState::UnderDefined,
-        flagged: Default::default(),
-        before_refused: false,
+        before_prompted_refusal: false,
+        before_conflicting: Default::default(),
         made: one.next(),
     }
+}
+
+#[test]
+fn an_edit_records_of_its_read_whether_it_was_a_refusal_prompted_for_and_what_conflicts() {
+    // An edit made on a read refused `over_constrained`, over defined, ka000002 in conflict and
+    // ka000001 redundant: a refusal the prompt is for, ka000002 alone in conflict (a redundant
+    // constraint isn't). On the same read solved, over defined by the redundant ka000001
+    // alone: no refusal, nothing in conflict. On a refused read that isn't over defined
+    // (`invalid`, as a translation's refusal reads): no refusal the prompt is for.
+    let one = Revision::OPENED.next().unwrap();
+    let mut read = read(
+        rectangle(vec![
+            length("ka000001", "na000001", "40", true),
+            length("ka000002", "na000002", "20", true),
+        ]),
+        SketchState::OverDefined,
+        MemberState::UnderDefined,
+        &[
+            ("ka000001", ConstraintState::Redundant),
+            ("ka000002", ConstraintState::Conflicting),
+        ],
+    );
+    read.states.solve_problem = Some(silico_core::Error::new(
+        silico_core::ErrorCode::OverConstrained,
+        "conflict",
+    ));
+    let edited = dimension::Edited::of(&read, one, id("ka000002"));
+    assert_eq!(
+        edited,
+        dimension::Edited {
+            sketch: sketch_feature(),
+            constraint: id("ka000002"),
+            read: one,
+            before_prompted_refusal: true,
+            before_conflicting: [id("ka000002")].into_iter().collect(),
+            made: None,
+        }
+    );
+    let mut solved = read.clone();
+    solved.states.solve_problem = None;
+    solved
+        .states
+        .constraints
+        .insert(id("ka000002"), ConstraintState::Satisfied);
+    let edited = dimension::Edited::of(&solved, one, id("ka000002"));
+    assert!(!edited.before_prompted_refusal);
+    assert!(edited.before_conflicting.is_empty());
+    let mut invalid = read;
+    invalid.states.state = SketchState::Invalid;
+    invalid.states.solve_problem = Some(silico_core::Error::new(
+        silico_core::ErrorCode::InvalidInput,
+        "untranslated",
+    ));
+    assert!(!dimension::Edited::of(&invalid, one, id("ka000002")).before_prompted_refusal);
 }
 
 #[test]
