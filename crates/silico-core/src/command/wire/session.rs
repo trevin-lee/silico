@@ -239,10 +239,11 @@ impl ToWire for Closed {
 }
 
 impl ToWire for Rebuild {
-    /// The revision, what's become of its rebuild, its steps done and steps, and each
-    /// unsuppressed feature's state, `{"feature", "state"}` in timeline order (each `null` if
-    /// no rebuild of the revision has started); not the step running, which the design's
-    /// `status` doesn't give.
+    /// The revision, what's become of its rebuild, its steps done and steps, the whole
+    /// milliseconds it has run (`elapsed_ms`, floored), and each unsuppressed feature's
+    /// state, `{"feature", "state"}` in timeline order (each `null` if no rebuild of the
+    /// revision has started); not the step running, which the design's `status` doesn't
+    /// give.
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("revision", self.revision.to_wire()),
@@ -257,6 +258,12 @@ impl ToWire for Rebuild {
                 "steps",
                 Json::or_null(self.progress.as_ref(), |progress| {
                     Json::count(progress.steps)
+                }),
+            ),
+            (
+                "elapsed_ms",
+                Json::or_null(self.progress.as_ref(), |progress| {
+                    Json::whole(u64::try_from(progress.elapsed.as_millis()).unwrap_or(u64::MAX))
                 }),
             ),
             (
@@ -590,6 +597,10 @@ pub struct RebuildSchema {
     /// The steps in the rebuild's plan, none until it's made: progress, a diagnostic. Null
     /// if no rebuild of the revision has started.
     pub steps: Option<u64>,
+    /// The whole milliseconds the rebuild has run, from being asked for to its end (its
+    /// model published, or its failure or stop), so far while it runs: a diagnostic, a
+    /// clock, never a result. Null if no rebuild of the revision has started.
+    pub elapsed_ms: Option<u64>,
     /// Each unsuppressed feature's state in the rebuild, in timeline order, listed from its
     /// start and kept once it ends: progress, a diagnostic, not a result (which feature runs
     /// first depends on scheduling). A stopped rebuild leaves what it hadn't settled

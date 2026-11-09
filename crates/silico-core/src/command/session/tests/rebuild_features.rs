@@ -90,7 +90,7 @@ fn features_is_null_before_any_rebuild_of_the_revision() {
         crate::command::wire::write(&status.to_wire(), crate::command::wire::Layout::OneLine)
             .unwrap();
     assert!(
-        wire.contains(r#""steps": null, "features": null}"#),
+        wire.contains(r#""steps": null, "elapsed_ms": null, "features": null}"#),
         "{wire}"
     );
 }
