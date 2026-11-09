@@ -475,31 +475,40 @@ pub struct Dialog {
 }
 
 /// Why a new sweep's base is refused ([`Dialog::base_refused`]): the sketch it's refused
-/// for, the words the dialog says, and whether it came from the add's own read of the
-/// session's document (`Tab`'s `Under::Base`), which a check against the tab's timeline,
-/// older, mustn't undo: that one is kept until the sketch changes.
+/// for, the words the dialog says, and, if the add's own read of the session's document
+/// refused it (`Tab`'s `Under::Base`), the revision that read was of: a check against the
+/// tab's timeline older than that mustn't undo it, and one of that revision or newer decides
+/// again. None for the check's own refusal, against the tab's timeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaseRefused {
-    pub sketch: Option<FeatureId>,
+    pub sketch: FeatureId,
     pub why: String,
-    pub read: bool,
+    pub read: Option<silico_core::command::Revision>,
 }
 
 /// What the tab lets an open dialog do: anything at all (`enabled`, none while its tab
-/// closes), and OK (`ok`: `Tab::can_ok`'s one answer, which Enter takes too, so the button
-/// and the key can't disagree).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Allowed {
+/// closes), and OK (`ok`: the tab's one rule, `Tab::ok_for`, asked of the dialog as its
+/// inputs are once drawn this frame, as Enter asks it of them after, so an edit that makes
+/// an input invalid turns the button off in the frame it's made, and the button and the key
+/// can't disagree).
+#[derive(Clone, Copy)]
+pub(crate) struct Allowed<'a> {
     pub enabled: bool,
-    pub ok: bool,
+    pub ok: &'a dyn Fn(&Dialog) -> bool,
+}
+
+/// OK on, whatever the dialog: a dialog drawn alone, as the panes' tests draw one.
+#[cfg(test)]
+fn always(_: &Dialog) -> bool {
+    true
 }
 
 #[cfg(test)]
-impl Allowed {
-    /// Everything allowed: a dialog drawn alone, as the panes' tests draw one.
-    pub const ALL: Allowed = Allowed {
+impl Allowed<'static> {
+    /// Everything allowed.
+    pub const ALL: Allowed<'static> = Allowed {
         enabled: true,
-        ok: true,
+        ok: &always,
     };
 }
 
@@ -1039,6 +1048,14 @@ impl Dialog {
         true
     }
 
+    /// A new feature's add, sent and refused before it was (a sweep's base its own read
+    /// refused), let go: no longer adding, and nothing taken as sent, so the next time its
+    /// inputs may be added, they are.
+    pub fn forget_add(&mut self) {
+        self.adding = false;
+        self.sent.clear();
+    }
+
     /// The sketch its sketch box holds, if it has one and it's filled.
     pub fn sketch(&self) -> Option<&FeatureId> {
         self.inputs
@@ -1573,7 +1590,7 @@ impl Dialog {
         preview: Option<properties::Preview>,
         named: &dyn Fn(&FeatureId) -> Option<String>,
         refused: &dyn Fn(&str) -> bool,
-        allowed: Allowed,
+        allowed: Allowed<'_>,
     ) -> Action {
         let Allowed { enabled, ok } = allowed;
         let whole = ui.max_rect();
@@ -1594,7 +1611,6 @@ impl Dialog {
             .iter()
             .map(|input| self.readable(input))
             .collect();
-        let mut any_refused = false;
         let active = self.active;
         let serial = self.serial;
         let mut unpicked: Option<(usize, usize)> = None;
@@ -1615,7 +1631,6 @@ impl Dialog {
                             readable.get(at).copied().unwrap_or(true),
                             refused(input.part.field()),
                         );
-                        any_refused |= refused(input.part.field());
                         properties::row(ui, input.label, |ui, label| {
                             if input_ui(
                                 ui,
@@ -1693,9 +1708,10 @@ impl Dialog {
             names.said = None;
         }
         properties::footer_paint(ui, footer);
-        // The tab's one answer (`Tab::can_ok`: valid, its add answered, no box holding, no
-        // edit refused, a sweep's base neither refused nor waiting), as Enter takes it.
-        let ok = enabled && ok;
+        // The tab's one rule (`Tab::ok_for`: valid, its add answered, no box holding, no edit
+        // refused, a sweep's base neither refused nor waiting), asked of the inputs as drawn
+        // this frame, as Enter asks it after.
+        let ok = enabled && ok(self);
         let mut action = if closed && enabled {
             Action::Cancel
         } else {

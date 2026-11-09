@@ -451,7 +451,6 @@ impl<P: Clients + 'static> Panes<'_, P> {
             })
             .collect();
         let preview = preview_of(tab);
-        let ok = tab.can_ok();
         let Some(mut dialog) = tab.dialog.take() else {
             return;
         };
@@ -487,7 +486,10 @@ impl<P: Clients + 'static> Panes<'_, P> {
                     preview,
                     &named,
                     &refused,
-                    crate::dialog::Allowed { enabled, ok },
+                    crate::dialog::Allowed {
+                        enabled,
+                        ok: &|dialog: &crate::dialog::Dialog| tab.ok_for(dialog),
+                    },
                 )
             })
             .inner;

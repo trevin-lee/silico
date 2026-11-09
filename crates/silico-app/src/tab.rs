@@ -2384,48 +2384,7 @@ impl Tab {
                 running,
             } => match running.try_take() {
                 Ok(response) => {
-                    // The sweep's base at the revision it was read at, from the sketch the add
-                    // sends ([`base_of`]); read again if the read was refused (it names no
-                    // model when none is published, so it's refused only as every read is).
-                    let body = match response.result {
-                        Ok(timeline) => {
-                            let sketch = crate::dialog::sketch_of(&members);
-                            let base = match timeline.features.as_deref() {
-                                Some(entries) => base_of(entries, sketch.as_ref()),
-                                None => Ok(None),
-                            };
-                            match base {
-                                Ok(base) => Body::Read(base, timeline.revision),
-                                // A body no feature may take: nothing is added, and the
-                                // dialog says why (as its check before the add does).
-                                // Kept till the sketch changes: the tab's timeline, older than
-                                // this read, mustn't clear it and turn OK on.
-                                Err(why) => {
-                                    if let Some(dialog) = self
-                                        .dialog
-                                        .as_mut()
-                                        .filter(|dialog| dialog.serial == serial)
-                                    {
-                                        dialog.adding = false;
-                                        dialog.base_refused = Some(crate::dialog::BaseRefused {
-                                            sketch,
-                                            why,
-                                            read: true,
-                                        });
-                                    }
-                                    return None;
-                                }
-                            }
-                        }
-                        Err(_) => Body::Unread,
-                    };
-                    // Sent next, before anything queued after it.
-                    self.edits.queue.push_front(Queued::Add {
-                        serial,
-                        kind,
-                        members,
-                        body,
-                    });
+                    self.base_read(serial, kind, members, response.result);
                     None
                 }
                 Err(running) => Some(Under::Base {
@@ -4885,7 +4844,8 @@ impl Tab {
                 .timeline
                 .as_ref()
                 .and_then(|timeline| timeline.features.as_deref());
-            if base_refused_before_add(dialog, entries) {
+            let at = self.timeline.as_ref().map(|timeline| timeline.revision);
+            if base_refused_before_add(dialog, entries, at) {
                 return false;
             }
         }
@@ -4918,23 +4878,23 @@ impl Tab {
                 .timeline
                 .as_ref()
                 .and_then(|timeline| timeline.features.as_deref())
-                .map(|entries| rebased(entries, &feature, sketch)),
+                .map(|entries| (sketch.clone(), rebased(entries, &feature, sketch))),
             _ => None,
         };
         let mut changes = changes;
         let moved_to = match moved {
             // A body no feature may take: the sketch isn't sent (nothing builds on another
             // body for it), OK is off, and the dialog says why.
-            Some(Err(why)) => {
+            Some((sketch, Err(why))) => {
                 dialog.base_refused = Some(crate::dialog::BaseRefused {
-                    sketch: dialog.sketch().cloned(),
+                    sketch,
                     why,
-                    read: false,
+                    read: None,
                 });
                 changes.retain(|(field, _)| *field != crate::dialog::Part::Sketch.field());
                 None
             }
-            Some(Ok(base)) => {
+            Some((_, Ok(base))) => {
                 dialog.base_refused = None;
                 base.filter(|base| dialog.base.as_ref() != Some(base))
             }
@@ -5489,23 +5449,85 @@ impl Tab {
             .any(|under| matches!(under, Under::Base { .. }))
     }
 
+    /// A new sweep's base read (`Under::Base`), answered with `read`: the add queued next,
+    /// before anything queued after it, with the base worked out from the sketch it sends
+    /// ([`base_of`]) at the revision read; read again if the read was refused (it names no
+    /// model when none is published, so it's refused only as every read is). A body no
+    /// feature may take sends nothing: the dialog of `serial`, if open, forgets the add
+    /// ([`Dialog::forget_add`]) and says why, kept while the tab's timeline is older than
+    /// this read ([`base_refused_before_add`]).
+    fn base_read(
+        &mut self,
+        serial: u64,
+        kind: Kind,
+        members: Vec<String>,
+        read: Result<TimelineAnswer, Problems>,
+    ) {
+        let body = match read {
+            Ok(timeline) => {
+                let sketch = crate::dialog::sketch_of(&members);
+                let base = match timeline.features.as_deref() {
+                    Some(entries) => base_of(entries, sketch.as_ref()),
+                    None => Ok(None),
+                };
+                match base {
+                    Ok(base) => Body::Read(base, timeline.revision),
+                    Err(why) => {
+                        if let Some(dialog) = self
+                            .dialog
+                            .as_mut()
+                            .filter(|dialog| dialog.serial == serial)
+                        {
+                            dialog.forget_add();
+                            dialog.base_refused = sketch.map(|sketch| crate::dialog::BaseRefused {
+                                sketch,
+                                why,
+                                read: Some(timeline.revision),
+                            });
+                        }
+                        return;
+                    }
+                }
+            }
+            Err(_) => Body::Unread,
+        };
+        self.edits.queue.push_front(Queued::Add {
+            serial,
+            kind,
+            members,
+            body,
+        });
+    }
+
     /// Whether the dialog's inputs let it be OK'd: valid, no edit of one refused, and its
     /// add not unanswered (what's typed meanwhile is sent after it). While the tab closes,
     /// [`close_dialog`](Self::close_dialog) takes neither OK nor Cancel.
     pub fn can_ok(&self) -> bool {
-        self.dialog.as_ref().is_some_and(|dialog| {
-            !dialog.adding
-                && !dialog.holding()
-                && dialog.valid()
-                && !dialog
-                    .inputs
-                    .iter()
-                    .any(|input| self.field_refused(input.part.field()))
-                // A sweep's sketch and its base are one change: none while its base is
-                // refused, or its edit of the base waits, or was refused.
-                && dialog.base_refused.is_none()
-                && !self.base_held()
-        })
+        self.dialog
+            .as_ref()
+            .is_some_and(|dialog| self.ok_for(dialog))
+    }
+
+    /// Whether `dialog`, the tab's open one (taken out of the tab to be drawn, or not), can
+    /// be OK'd: valid, its add not unanswered, no box holding what isn't sent, no edit of an
+    /// input refused, and a sweep's base neither refused nor waiting (its sketch and its base
+    /// are one change). The one rule the button and Enter take.
+    pub(crate) fn ok_for(&self, dialog: &Dialog) -> bool {
+        let refused = |field: &str| {
+            dialog
+                .feature
+                .as_ref()
+                .is_some_and(|feature| self.refused.contains(&(feature.clone(), field.to_owned())))
+        };
+        !dialog.adding
+            && !dialog.holding()
+            && dialog.valid()
+            && !dialog
+                .inputs
+                .iter()
+                .any(|input| refused(input.part.field()))
+            && dialog.base_refused.is_none()
+            && !self.base_held_by(dialog)
     }
 
     /// Whether the open dialog, a sweep's, waits on its own edit of its `base` (queued or
@@ -5513,15 +5535,20 @@ impl Tab {
     /// without the base it was picked with. Never for another dialog (a boolean's base box
     /// is an input of its own, held by its box).
     pub fn base_held(&self) -> bool {
-        self.dialog.as_ref().is_some_and(|dialog| {
-            dialog.kind.sweeps()
-                && dialog.feature.as_ref().is_some_and(|feature| {
-                    self.edits.pending_field(feature, crate::dialog::BASE)
-                        || self
-                            .refused
-                            .contains(&(feature.clone(), crate::dialog::BASE.to_owned()))
-                })
-        })
+        self.dialog
+            .as_ref()
+            .is_some_and(|dialog| self.base_held_by(dialog))
+    }
+
+    /// [`base_held`](Self::base_held) of `dialog`, the tab's open one.
+    fn base_held_by(&self, dialog: &Dialog) -> bool {
+        dialog.kind.sweeps()
+            && dialog.feature.as_ref().is_some_and(|feature| {
+                self.edits.pending_field(feature, crate::dialog::BASE)
+                    || self
+                        .refused
+                        .contains(&(feature.clone(), crate::dialog::BASE.to_owned()))
+            })
     }
 
     /// Whether the last edit of `field` of the dialog's feature was refused.
@@ -5812,35 +5839,46 @@ fn base_of(entries: &[Entry], sketch: Option<&FeatureId>) -> Result<Option<Featu
 }
 
 /// Whether a new sweep's dialog, its add not sent, may not send it: its base worked out
-/// against `entries` (the tab's timeline) as its add will work it out ([`base_of`]), a body
-/// no feature may take refused, `dialog.base_refused` saying why. A refusal from the add's
-/// own read of the session's document (`Under::Base`, [`BaseRefused::read`]) stands till the
-/// sketch changes, whatever `entries`, maybe older than that read, say: else they could
-/// clear it, and turn OK on with nothing added.
+/// against `entries`, the tab's timeline, of the revision `at`, as its add will work it out
+/// ([`base_of`]), a body no feature may take refused, `dialog.base_refused` saying why. A
+/// refusal of the add's own read of the session's document (`Under::Base`,
+/// [`BaseRefused::read`]) for the same sketch stands while the timeline is older than that
+/// read: else it could clear the refusal, and turn OK on with nothing added. Once the
+/// timeline is of that revision or newer, or the sketch changed, the check decides.
 ///
 /// [`BaseRefused::read`]: crate::dialog::BaseRefused::read
-fn base_refused_before_add(dialog: &mut Dialog, entries: Option<&[Entry]>) -> bool {
-    let sketch = dialog.sketch().cloned();
-    let refused = sketch
-        .as_ref()
-        .zip(entries)
-        .and_then(|(sketch, entries)| base_of(entries, Some(sketch)).err());
-    if let Some(why) = refused {
-        dialog.base_refused = Some(crate::dialog::BaseRefused {
-            sketch,
-            why,
-            read: false,
-        });
+fn base_refused_before_add(
+    dialog: &mut Dialog,
+    entries: Option<&[Entry]>,
+    at: Option<Revision>,
+) -> bool {
+    let Some(sketch) = dialog.sketch().cloned() else {
+        dialog.base_refused = None;
+        return false;
+    };
+    let read_stands = dialog.base_refused.as_ref().is_some_and(|refused| {
+        refused.sketch == sketch
+            && refused
+                .read
+                .is_some_and(|read| at.is_none_or(|at| at < read))
+    });
+    if read_stands {
         return true;
     }
-    let kept = dialog
-        .base_refused
-        .as_ref()
-        .is_some_and(|refused| refused.read && refused.sketch == sketch);
-    if !kept {
-        dialog.base_refused = None;
+    match entries.and_then(|entries| base_of(entries, Some(&sketch)).err()) {
+        Some(why) => {
+            dialog.base_refused = Some(crate::dialog::BaseRefused {
+                sketch,
+                why,
+                read: None,
+            });
+            true
+        }
+        None => {
+            dialog.base_refused = None;
+            false
+        }
     }
-    kept
 }
 
 /// [`base_of`] for the open dialog's new sweep `own` from `sketch`, picked into it after its
@@ -6917,49 +6955,119 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_refusal_from_the_adds_read_stands_till_the_sketch_changes_whatever_an_older_timeline_says()
-    {
-        // #443's review: a Pocket's dialog from Sketch2 (s0000002, on the Block's face), its
-        // add refused by its own read (`Under::Base`); the tab's timeline, older, shows Joined
-        // unsuppressed, where the Block's chain ends at Joined, a base the gate takes. Checked
-        // against it frame after frame, the refusal stands, and nothing is sent. Loose
-        // (s0000009) picked instead: the refusal goes, and its add may be sent. A refusal of
-        // the check's own (not the read's) goes as soon as the timeline takes the base.
-        let fid = |text: &str| FeatureId::new(text).unwrap();
-        let older = [
+    /// Block, Pin, Loose (s0000009, on xy), Sketch2 (s0000002, on the Block's face), and
+    /// Joined, a fuse of the Pin and the Block, suppressed or not: suppressed, the gate counts
+    /// it as the Block's consumer, so no feature may take the Block as its base.
+    fn joined(suppressed: bool) -> Vec<Entry> {
+        vec![
             feature("k7f2qx3m", "box", false, &[]),
             feature("a91cw0de", "cylinder", false, &[]),
             feature("s0000009", "sketch", false, &[]),
             feature("s0000002", "sketch", false, &["k7f2qx3m"]),
-            feature("j0000001", "fuse", false, &["a91cw0de", "k7f2qx3m"]),
-        ];
-        let read = |sketch: &str| crate::dialog::BaseRefused {
-            sketch: Some(fid(sketch)),
-            why: "Block is the tool of Joined".to_owned(),
-            read: true,
-        };
+            feature("j0000001", "fuse", suppressed, &["a91cw0de", "k7f2qx3m"]),
+        ]
+    }
+
+    #[test]
+    fn a_reads_refusal_lifted_by_a_newer_timeline_sends_the_add_or_keeps_ok_off() {
+        // #443's review: a Pocket's dialog from Sketch2, its add refused by its own read at
+        // revision 3 (T1). Against the tab's timeline of revision 2 (T0, older, Joined
+        // unsuppressed, which takes the base) the refusal stands, frame after frame. Once the
+        // timeline is of revision 3 or newer the check decides: of T1's document (Joined
+        // suppressed), refused by the check itself; of a newer one that takes the base (T2,
+        // Joined unsuppressed again), lifted, and the add, forgotten when refused, is sent.
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let revision = |n: u64| Revision::from_number(n).unwrap();
         let mut dialog = Dialog::new(Kind::Pocket, Some(fid("s0000002")), 1);
-        dialog.base_refused = Some(read("s0000002"));
-        for _ in 0..3 {
-            assert!(base_refused_before_add(&mut dialog, Some(&older)));
-            assert_eq!(dialog.base_refused, Some(read("s0000002")));
-        }
-        dialog.pick(&fid("s0000009"));
-        assert!(!base_refused_before_add(&mut dialog, Some(&older)));
-        assert_eq!(dialog.base_refused, None);
-        // The check's own refusal, of a timeline that refuses: gone once one takes it.
-        let mut suppressed = older.to_vec();
-        suppressed[4] = feature("j0000001", "fuse", true, &["a91cw0de", "k7f2qx3m"]);
-        let mut own = Dialog::new(Kind::Pocket, Some(fid("s0000002")), 2);
-        assert!(base_refused_before_add(&mut own, Some(&suppressed)));
-        assert!(
-            own.base_refused
-                .as_ref()
-                .is_some_and(|refused| !refused.read)
+        let members = dialog.add().unwrap();
+        assert!(dialog.adding);
+        let mut tab = tab();
+        tab.dialog = Some(dialog);
+        let refusing = TimelineAnswer {
+            revision: revision(3),
+            ..timeline(0, Some(revision(3)), joined(true))
+        };
+        tab.base_read(1, Kind::Pocket, members, Ok(refusing));
+        assert!(tab.edits.queue.is_empty(), "nothing added");
+        let dialog = tab.dialog.as_mut().unwrap();
+        assert!(!dialog.adding);
+        let refused = dialog.base_refused.clone().unwrap();
+        assert_eq!(
+            (refused.sketch.as_str(), refused.read),
+            ("s0000002", Some(revision(3)))
         );
-        assert!(!base_refused_before_add(&mut own, Some(&older)));
-        assert_eq!(own.base_refused, None);
+        // T0, older: the read's refusal stands.
+        for _ in 0..3 {
+            assert!(base_refused_before_add(
+                dialog,
+                Some(&joined(false)),
+                Some(revision(2))
+            ));
+            assert_eq!(dialog.base_refused.as_ref(), Some(&refused));
+        }
+        // T1 itself: the check decides, and refuses, its own refusal now.
+        assert!(base_refused_before_add(
+            dialog,
+            Some(&joined(true)),
+            Some(revision(3))
+        ));
+        assert_eq!(dialog.base_refused.as_ref().unwrap().read, None);
+        // T2, newer, taking the base: lifted, and the add sent again.
+        dialog.base_refused = Some(refused.clone());
+        assert!(!base_refused_before_add(
+            dialog,
+            Some(&joined(false)),
+            Some(revision(4))
+        ));
+        assert_eq!(dialog.base_refused, None);
+        assert!(dialog.add().is_some(), "the refused add sent again");
+        // The read's refusal of another sketch than the dialog's now: the check decides.
+        let mut other = Dialog::new(Kind::Pocket, Some(fid("s0000009")), 2);
+        other.base_refused = Some(refused);
+        assert!(!base_refused_before_add(
+            &mut other,
+            Some(&joined(false)),
+            Some(revision(2))
+        ));
+        assert_eq!(other.base_refused, None);
+    }
+
+    #[test]
+    fn a_reads_refusal_is_marked_as_the_reads_and_outlasts_an_older_timelines_check() {
+        // #443's review: the refusal the add's own read gives is the read's (`read`, its
+        // revision), so the check against the tab's older timeline, which takes the base,
+        // doesn't clear it; marked as the check's own, it would.
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let revision = |n: u64| Revision::from_number(n).unwrap();
+        let mut dialog = Dialog::new(Kind::Pocket, Some(fid("s0000002")), 7);
+        let members = dialog.add().unwrap();
+        let mut tab = tab();
+        tab.dialog = Some(dialog);
+        tab.base_read(
+            7,
+            Kind::Pocket,
+            members,
+            Ok(TimelineAnswer {
+                revision: revision(5),
+                ..timeline(0, Some(revision(5)), joined(true))
+            }),
+        );
+        let dialog = tab.dialog.as_mut().unwrap();
+        assert!(dialog.base_refused.as_ref().unwrap().read.is_some());
+        assert!(base_refused_before_add(
+            dialog,
+            Some(&joined(false)),
+            Some(revision(4))
+        ));
+        assert!(dialog.base_refused.is_some());
+        // Another dialog's read answering changes nothing of this one.
+        let before = tab.dialog.clone();
+        let theirs = Dialog::new(Kind::Pocket, Some(fid("s0000002")), 8)
+            .add()
+            .unwrap();
+        tab.base_read(8, Kind::Pocket, theirs, Ok(timeline(0, None, joined(true))));
+        assert_eq!(tab.dialog, before);
+        assert!(tab.edits.queue.is_empty());
     }
 
     #[test]
@@ -6984,6 +7092,7 @@ mod tests {
         assert!(!tab.base_held());
         tab.edits.queue.push_back(edit("sketch"));
         assert!(!tab.base_held());
+        assert!(tab.can_ok());
         tab.edits.queue.push_back(edit("base"));
         assert!(tab.base_held());
         assert!(!tab.can_ok());
