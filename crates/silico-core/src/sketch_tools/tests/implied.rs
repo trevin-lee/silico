@@ -8,6 +8,7 @@
 
 use super::*;
 use crate::sketch_states::MemberState;
+use crate::sketch_tools::implied::Partition;
 use crate::sketch_tools::implied_by;
 
 /// `d`'s read marks the points `ids` fully defined.
@@ -26,8 +27,8 @@ fn shows(d: &Drive, relation: &Relation) -> bool {
         .any(|s| &s.relation == relation)
 }
 
-/// The L drawn from the origin (docs/ports/sketch-tools.md), by six clicks and a seventh back on its first
-/// point: (0, 0), (40, 0), (40, 10), (10, 10), (10, 30), (0, 30), (0, 0).
+/// The L drawn from the origin (docs/ports/sketch-tools.md), by six clicks and a seventh
+/// back on its first point: (0, 0), (40, 0), (40, 10), (10, 10), (10, 30), (0, 30), (0, 0).
 fn the_l(d: &mut Drive) {
     for (x, y) in [
         (0.0, 0.0),
@@ -123,6 +124,47 @@ fn a_chain_along_the_x_axis_from_the_origin_has_no_direction_at_all() {
 }
 
 #[test]
+fn a_chain_along_the_x_axis_on_a_read_that_never_catches_up_has_no_direction_at_all() {
+    // The chain above, (0, 0), (10, 0), (20, 0), (30, 0), each click's add left pending on a
+    // read that stays empty: the classes are of the view, the read with the pending adds on
+    // it, so each segment's start, a pending point `on` the x axis, is in the origin's Y class
+    // before its `horizontal` is judged, as on a read that catches up. Three segments, each
+    // with its end `on` the axis and no `horizontal` or `vertical` (the review's T10).
+    let sketch = empty();
+    let mut tool = SketchTool::new(ToolKind::Line);
+    let out = clicks_on_a_stale_read(
+        &mut tool,
+        &sketch,
+        &[[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [30.0, 0.0]],
+    );
+    let adds: Vec<&Members> = out.iter().filter_map(|o| o.add.as_ref()).collect();
+    assert_eq!(adds.len(), 3, "{out:?}");
+    for (k, add) in adds.iter().enumerate() {
+        let directions: Vec<&Form> = add
+            .constraints
+            .iter()
+            .map(|c| &c.form)
+            .filter(|form| matches!(form, Form::Horizontal { .. } | Form::Vertical { .. }))
+            .collect();
+        assert!(directions.is_empty(), "segment {k}: {directions:?}");
+        let on_the_axis = add
+            .constraints
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.form,
+                    Form::On {
+                        curve: Reference::XAxis,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(on_the_axis, 1, "segment {k}: {:?}", add.constraints);
+    }
+}
+
+#[test]
 fn a_line_between_two_fixed_points_gets_no_direction_level_or_not() {
     // (10, 10) and (40, 10.785), both fully defined: 0.785 over 30 is 1.499°, within the 2°
     // that shows `horizontal`. Both Y classes are fixed, so it goes, agreeing or not (here
@@ -184,6 +226,39 @@ fn a_line_from_a_point_on_the_axis_to_a_fixed_point_on_it_has_no_horizontal() {
 }
 
 #[test]
+fn a_line_from_a_point_named_as_the_tools_first_unnamed_one_judges_it_as_the_sketchs_point() {
+    // The test above with its point on the axis named zz000000, the first ID the tools give a
+    // gesture's point not yet named: the IDs they give are none the view holds, so the
+    // sketch's zz000000 is judged as itself, in the origin's fixed Y class, and the
+    // `horizontal` goes (the review's T13).
+    let mut s = empty();
+    s.points.push(point("zz000000", 10.0, 0.0));
+    s.points.push(point("q0000002", 40.0, 0.0));
+    let s = constrained(s, vec![on("zz000000", Reference::XAxis)]);
+    let mut d = Drive::new(ToolKind::Line, s);
+    fixed(&mut d, &["q0000002"]);
+    d.drag([10.0, 0.0], [40.0, 0.0]);
+    assert_eq!(d.adds(), [sorted(&["line #(10, 0)-#(40, 0)"])]);
+    // And a line from a new point, free, at (10, 10) to q0000002, now at (40, 10), with the
+    // sketch's zz000000, fully defined, at (70, 10): the new point is judged as a point of
+    // its own, not as zz000000, so its Y class is free and the `horizontal` stays.
+    let mut s = empty();
+    s.points.push(point("zz000000", 70.0, 10.0));
+    s.points.push(point("q0000002", 40.0, 10.0));
+    let mut d = Drive::new(ToolKind::Line, s);
+    fixed(&mut d, &["zz000000", "q0000002"]);
+    d.drag([10.0, 10.0], [40.0, 10.0]);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (10, 10)",
+            "line (10, 10)-#(40, 10)",
+            "horizontal line (10, 10)-#(40, 10)",
+        ])]
+    );
+}
+
+#[test]
 fn a_point_on_a_level_line_is_level_with_it_through_the_line() {
     // M from (10, 20) to (50, 20), `horizontal`; (20, 20) `on` M; (70, 20) level with M's
     // first end by `horizontal_points`. The point on M is in M's Y class (a point on the
@@ -192,18 +267,17 @@ fn a_point_on_a_level_line_is_level_with_it_through_the_line() {
     let mut s = with_line(empty(), "m0000001", [10.0, 20.0], [50.0, 20.0]);
     s.points.push(point("q0000001", 20.0, 20.0));
     s.points.push(point("q0000002", 70.0, 20.0));
-    let r = |text: &str| Reference::Element(id(text));
     for (k, form) in [
         Form::Horizontal {
-            line: r("m0000001"),
+            line: el("m0000001"),
         },
         Form::On {
-            point: r("q0000001"),
-            curve: r("m0000001"),
+            point: el("q0000001"),
+            curve: el("m0000001"),
         },
         Form::HorizontalPoints {
-            a: r("q0000002"),
-            b: r("f0000001"),
+            a: el("q0000002"),
+            b: el("f0000001"),
         },
     ]
     .into_iter()
@@ -223,8 +297,9 @@ fn a_point_on_a_level_line_is_level_with_it_through_the_line() {
 fn a_point_at_the_middle_of_a_line_on_the_axis_is_its_midpoint_alone() {
     // `covers`' regression, not the classes': the Point tool at (30, 0.1), the middle of
     // (10, 0)-(50, 0), which lies along the x axis: `midpoint`, and no `on` of the axis,
-    // which the line covers there, so the snap never offers it to be judged. At the middle of (30, -10)-(30, 10), which the x
-    // axis crosses there, (30, 0): both, `midpoint` and `on` the axis, each joining classes.
+    // which the line covers there, so the snap never offers it to be judged. At the middle
+    // of (30, -10)-(30, 10), which the x axis crosses there, (30, 0): both, `midpoint` and
+    // `on` the axis, each joining classes.
     let mut d = Drive::new(
         ToolKind::Point,
         with_line(empty(), "n0000001", [10.0, 0.0], [50.0, 0.0]),
@@ -262,19 +337,18 @@ fn a_point_at_the_middle_of_a_level_line_is_on_a_line_level_with_it_only_once() 
     for joined in [true, false] {
         let mut s = with_line(empty(), "m0000001", [10.0, 20.0], [50.0, 20.0]);
         s = with_line(s, "n0000002", [0.0, 20.0], [60.0, 20.0]);
-        let r = |text: &str| Reference::Element(id(text));
         let mut forms = vec![
             Form::Horizontal {
-                line: r("m0000001"),
+                line: el("m0000001"),
             },
             Form::Horizontal {
-                line: r("n0000002"),
+                line: el("n0000002"),
             },
         ];
         if joined {
             forms.push(Form::HorizontalPoints {
-                a: r("f0000002"),
-                b: r("f0000001"),
+                a: el("f0000002"),
+                b: el("f0000001"),
             });
         }
         for (k, form) in forms.into_iter().enumerate() {
@@ -285,6 +359,41 @@ fn a_point_at_the_middle_of_a_level_line_is_on_a_line_level_with_it_only_once() 
         }
         let mut d = Drive::new(ToolKind::Point, s);
         d.click(30.0, 20.1);
+        let types = types(&d);
+        let count = |t: &str| types.iter().filter(|u| **u == t).count();
+        assert_eq!(
+            (count("midpoint"), count("on")),
+            (1, usize::from(!joined)),
+            "joined: {joined}: {:?}",
+            d.adds()
+        );
+    }
+}
+
+#[test]
+fn a_point_at_the_middle_of_a_plumb_line_is_on_a_line_plumb_with_it_only_once() {
+    // The x twin of the test above: M (20, 10)-(20, 50) and N (20, 0)-(20, 60), both
+    // `vertical`, and N's first end plumb with M's by `vertical_points`: one X class. The
+    // Point tool at M's middle, (20, 30), which N runs through exactly: `midpoint` of M, and
+    // no `on` of N (the middle is plumb with N's ends already, through M). Without the
+    // `vertical_points`, M and N are two classes, and the `on` of N joins them: kept (the
+    // review's T11).
+    for joined in [true, false] {
+        let mut s = with_line(empty(), "m0000001", [20.0, 10.0], [20.0, 50.0]);
+        s = with_line(s, "n0000002", [20.0, 0.0], [20.0, 60.0]);
+        let mut forms = vec![
+            Form::Vertical {
+                line: el("m0000001"),
+            },
+            Form::Vertical {
+                line: el("n0000002"),
+            },
+        ];
+        if joined {
+            forms.push(plumb("f0000002", "f0000001"));
+        }
+        let mut d = Drive::new(ToolKind::Point, constrained(s, forms));
+        d.click(20.1, 30.0);
         let types = types(&d);
         let count = |t: &str| types.iter().filter(|u| **u == t).count();
         assert_eq!(
@@ -354,6 +463,50 @@ fn a_tangent_from_an_arcs_fixed_end_to_a_fixed_point_goes_and_to_a_free_end_stay
         let want: &[&str] = if far_fixed { &[] } else { &["tangent_at"] };
         assert_eq!(types(&d), want, "far end fixed: {far_fixed}");
     }
+}
+
+#[test]
+fn a_perpendicular_to_a_line_not_fixed_whole_stays_however_fixed_the_new_line_is() {
+    // The test above's K (10, 10)-(30, 20) and the line from its end (30, 20) to (20, 40),
+    // fully defined, as is K's end there; K's first end (10, 10) free. The new line's every
+    // point is fixed, but K's direction isn't: `perpendicular` reads a value nothing holds,
+    // so it stays (Rule F reads both lines' points; the review's T12).
+    let mut s = with_line(empty(), "n0000001", [10.0, 10.0], [30.0, 20.0]);
+    s.points.push(point("q0000001", 20.0, 40.0));
+    let mut d = Drive::new(ToolKind::Line, s);
+    fixed(&mut d, &["t0000001", "q0000001"]);
+    d.drag([30.0, 20.0], [20.0, 40.0]);
+    assert_eq!(d.made.len(), 1);
+    assert_eq!(types(&d), ["perpendicular"]);
+}
+
+#[test]
+fn a_tangent_to_an_arc_whose_centre_isnt_fixed_stays_however_fixed_the_rest_is() {
+    // The test above's arc about (50, 50), radius 10, from (60, 50) to 45°, and the line from
+    // its end along 135°, 20 long, to a point fully defined, as are both the arc's ends; the
+    // arc's centre free. The line's every point is fixed, and the point they meet at, but the
+    // arc's centre isn't: `tangent_at` reads a value nothing holds, so it stays (Rule F reads
+    // both curves' points; the review's T12).
+    let h = 5.0 * std::f64::consts::SQRT_2;
+    let end = [50.0 + h, 50.0 + h];
+    let far = [end[0] - 2.0 * h, end[1] + 2.0 * h];
+    let mut s = empty();
+    s.points.push(point("c0000001", 50.0, 50.0));
+    s.points.push(point("q0000101", 60.0, 50.0));
+    s.points.push(point("q0000102", end[0], end[1]));
+    s.points.push(point("q0000001", far[0], far[1]));
+    s.arcs.push(crate::document::SketchArc {
+        id: id("a0000001"),
+        center: id("c0000001"),
+        start: id("q0000101"),
+        end: id("q0000102"),
+        construction: false,
+    });
+    let mut d = Drive::new(ToolKind::Line, s);
+    fixed(&mut d, &["q0000101", "q0000102", "q0000001"]);
+    d.drag(end, far);
+    assert_eq!(d.made.len(), 1);
+    assert_eq!(types(&d), ["tangent_at"]);
 }
 
 #[test]
@@ -454,17 +607,6 @@ fn ids_handed_out_in_reverse_order_leave_the_same_relations_out() {
 
 // ---- #431's review, round 1: what the classes read, and how much work they take ----
 
-/// `forms` as `s`'s constraints, numbered k0000001 on, in order.
-fn constrained(mut s: Sketch, forms: Vec<Form>) -> Sketch {
-    for (k, form) in forms.into_iter().enumerate() {
-        s.constraints.push(SketchConstraint {
-            id: id(&format!("k{:07}", k + 1)),
-            form,
-        });
-    }
-    s
-}
-
 /// A read's states marking the points `ids` fully defined, and nothing else.
 fn fixing(ids: &[&str]) -> SketchStates {
     let mut states = no_states().clone();
@@ -472,10 +614,6 @@ fn fixing(ids: &[&str]) -> SketchStates {
         states.points.insert(id(p), MemberState::FullyDefined);
     }
     states
-}
-
-fn el(text: &str) -> Reference {
-    Reference::Element(id(text))
 }
 
 fn on(point: &str, curve: Reference) -> Form {
@@ -545,27 +683,73 @@ fn a_line_from_the_origin_up_the_y_axis_has_no_vertical() {
 /// defined, and q0000003 at (70, 10.5), fully defined: `free`'s Y class is fixed through
 /// `held`, so `horizontal_points` of `free` and q0000003 reads two fixed Y classes and is
 /// implied (Rule E). Its X class is its own, free, so `vertical_points` of the two isn't.
-fn fixed_through(free: &str, held: &str) {
+/// If `grown`, `held` is held level with q0000004 at (100, 10), free, first: `held`'s class
+/// is the larger when `free` joins it.
+fn fixed_through(free: &str, held: &str, grown: bool) {
     let mut s = empty();
     s.points.push(point(free, 10.0, 10.0));
     s.points.push(point(held, 40.0, 10.0));
     s.points.push(point("q0000003", 70.0, 10.5));
-    let s = constrained(s, vec![level(free, held)]);
+    s.points.push(point("q0000004", 100.0, 10.0));
+    let mut forms = Vec::new();
+    if grown {
+        forms.push(level(held, "q0000004"));
+    }
+    forms.push(level(free, held));
+    let s = constrained(s, forms);
     let states = fixing(&[held, "q0000003"]);
     assert!(implied_by(&s, &states, &level(free, "q0000003")));
     assert!(!implied_by(&s, &states, &plumb(free, "q0000003")));
 }
 
 #[test]
-fn a_point_held_level_with_a_fixed_point_of_a_later_id_is_fixed_through_it() {
-    // The free point's ID first: their class's root is the free point's.
-    fixed_through("q0000001", "q0000002");
+fn a_point_held_level_with_a_fixed_point_is_fixed_through_it() {
+    // Two classes of one point each: the tie goes to the class of the point the relation
+    // names first, the free one, so the fixed point's class is the smaller, hung under it.
+    fixed_through("q0000001", "q0000002", false);
 }
 
 #[test]
-fn a_point_held_level_with_a_fixed_point_of_an_earlier_id_is_fixed_through_it() {
-    // The fixed point's ID first: their class's root is the fixed point's.
-    fixed_through("q0000002", "q0000001");
+fn a_point_held_level_with_a_larger_fixed_class_is_fixed_through_it() {
+    // The fixed point's class grown to two first: the free point's class is the smaller,
+    // hung under the fixed one, which stays fixed (the review's T9).
+    fixed_through("q0000001", "q0000002", true);
+}
+
+#[test]
+fn a_fixed_class_stays_fixed_when_a_free_point_joins_it_as_the_smaller() {
+    // q0000001 and q0000002 fully defined and held level: one fixed Y class of two. q0000003
+    // held level with q0000001: a free class of one, joined to it as the smaller, so the
+    // class stays fixed. q0000005 and q0000006 each `on` the x axis: q0000005 joins the
+    // origin's fixed class (a tie, its own class taking the origin's under it), and q0000006,
+    // free, joins that class of two as the smaller: it stays fixed too. q0000004, fully
+    // defined, is a fixed class of its own. So `horizontal_points` of q0000003 or q0000006
+    // with q0000004 reads two fixed Y classes and is implied (Rule E); q0000003's X class is
+    // its own, free, so `vertical_points` of it and q0000004 isn't (the review's T9).
+    let mut s = empty();
+    for (name, x, y) in [
+        ("q0000001", 10.0, 10.0),
+        ("q0000002", 40.0, 10.0),
+        ("q0000003", 70.0, 10.0),
+        ("q0000004", 100.0, 10.0),
+        ("q0000005", 10.0, 0.0),
+        ("q0000006", 20.0, 0.0),
+    ] {
+        s.points.push(point(name, x, y));
+    }
+    let s = constrained(
+        s,
+        vec![
+            level("q0000001", "q0000002"),
+            level("q0000003", "q0000001"),
+            on("q0000005", Reference::XAxis),
+            on("q0000006", Reference::XAxis),
+        ],
+    );
+    let states = fixing(&["q0000001", "q0000002", "q0000004"]);
+    assert!(implied_by(&s, &states, &level("q0000003", "q0000004")));
+    assert!(implied_by(&s, &states, &level("q0000006", "q0000004")));
+    assert!(!implied_by(&s, &states, &plumb("q0000003", "q0000004")));
 }
 
 #[test]
@@ -601,6 +785,49 @@ fn a_point_on_a_line_is_level_with_it_whatever_order_its_relations_come_in() {
 }
 
 #[test]
+fn a_point_on_a_plumb_line_is_plumb_with_it_whatever_order_its_relations_come_in() {
+    // The x twin of the test above: M (20, 10)-(20, 50) `vertical`; q0000001 (20, 20) `on`
+    // M; q0000002 (20, 70) plumb with M's first end by `vertical_points`: one X class, so
+    // `vertical_points` of the two points is implied (Rule E), and so is an `on` of M for
+    // q0000002 (plumb with M's ends, M plumb), in each of the six orders the three can come
+    // in. Their y is held by nothing: `horizontal_points` of the two isn't (the review's
+    // T11).
+    let mut base = with_line(empty(), "m0000001", [20.0, 10.0], [20.0, 50.0]);
+    base.points.push(point("q0000001", 20.0, 20.0));
+    base.points.push(point("q0000002", 20.0, 70.0));
+    let forms = [
+        Form::Vertical {
+            line: el("m0000001"),
+        },
+        on("q0000001", el("m0000001")),
+        plumb("q0000002", "f0000001"),
+    ];
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let s = constrained(base.clone(), order.map(|i| forms[i].clone()).to_vec());
+        let states = fixing(&[]);
+        assert!(
+            implied_by(&s, &states, &plumb("q0000001", "q0000002")),
+            "{order:?}"
+        );
+        assert!(
+            implied_by(&s, &states, &on("q0000002", el("m0000001"))),
+            "{order:?}"
+        );
+        assert!(
+            !implied_by(&s, &states, &level("q0000001", "q0000002")),
+            "{order:?}"
+        );
+    }
+}
+
+#[test]
 fn a_point_on_a_line_whose_end_is_on_a_level_line_is_level_with_it_once_that_line_is() {
     // N (10, 20)-(50, 20), made `horizontal` last; L (90, 20)-(70, 20), its first end level
     // with N's by `horizontal_points`, its second `on` N; q0000001 (80, 20) `on` L, before
@@ -624,9 +851,10 @@ fn a_point_on_a_line_whose_end_is_on_a_level_line_is_level_with_it_once_that_lin
     assert!(implied_by(&s, &fixing(&[]), &level("q0000001", "f0000001")));
 }
 
-/// A `distance_y` (`y` true) or `distance_x` of `nm` nanometres between q0000001 (10, 10)
-/// and q0000002 (40, 10), driving or not, as their one constraint.
-fn distance(y: bool, nm: i64, driving: bool) -> Sketch {
+/// A `distance_y` (`partition` Y, the y the two would share) or `distance_x` (X) of `nm`
+/// nanometres between q0000001 (10, 10) and q0000002 (40, 10), driving or not, as their one
+/// constraint.
+fn distance(partition: Partition, nm: i64, driving: bool) -> Sketch {
     let mut s = empty();
     s.points.push(point("q0000001", 10.0, 10.0));
     s.points.push(point("q0000002", 40.0, 10.0));
@@ -635,7 +863,7 @@ fn distance(y: bool, nm: i64, driving: bool) -> Sketch {
         el("q0000002"),
         crate::document::Length::from_nm(nm),
     );
-    let form = if y {
+    let form = if partition == Partition::Y {
         Form::DistanceY {
             a,
             b,
@@ -660,11 +888,23 @@ fn a_driving_distance_of_zero_holds_two_points_level_and_no_other_does() {
     // asserts they differ; a reference one of 0 asserts nothing: two classes either way.
     let states = fixing(&[]);
     let (a, b) = ("q0000001", "q0000002");
-    assert!(implied_by(&distance(true, 0, true), &states, &level(a, b)));
-    assert!(!implied_by(&distance(true, 0, true), &states, &plumb(a, b)));
-    assert!(!implied_by(&distance(true, 1, true), &states, &level(a, b)));
+    assert!(implied_by(
+        &distance(Partition::Y, 0, true),
+        &states,
+        &level(a, b)
+    ));
     assert!(!implied_by(
-        &distance(true, 0, false),
+        &distance(Partition::Y, 0, true),
+        &states,
+        &plumb(a, b)
+    ));
+    assert!(!implied_by(
+        &distance(Partition::Y, 1, true),
+        &states,
+        &level(a, b)
+    ));
+    assert!(!implied_by(
+        &distance(Partition::Y, 0, false),
         &states,
         &level(a, b)
     ));
@@ -675,19 +915,23 @@ fn a_driving_x_distance_of_zero_holds_two_points_plumb_and_no_other_does() {
     // The x twin: a driving `distance_x` of exactly 0 asserts x1 = x2, one X class.
     let states = fixing(&[]);
     let (a, b) = ("q0000001", "q0000002");
-    assert!(implied_by(&distance(false, 0, true), &states, &plumb(a, b)));
-    assert!(!implied_by(
-        &distance(false, 0, true),
-        &states,
-        &level(a, b)
-    ));
-    assert!(!implied_by(
-        &distance(false, 1, true),
+    assert!(implied_by(
+        &distance(Partition::X, 0, true),
         &states,
         &plumb(a, b)
     ));
     assert!(!implied_by(
-        &distance(false, 0, false),
+        &distance(Partition::X, 0, true),
+        &states,
+        &level(a, b)
+    ));
+    assert!(!implied_by(
+        &distance(Partition::X, 1, true),
+        &states,
+        &plumb(a, b)
+    ));
+    assert!(!implied_by(
+        &distance(Partition::X, 0, false),
         &states,
         &plumb(a, b)
     ));
@@ -732,6 +976,11 @@ fn a_tangent_at_between_two_arcs_is_not_implied_by_their_centres_alone() {
         &fixing(&["c0000001", "c0000002"]),
         &tangent
     ));
+    // The point fixed and either centre free: it still reads a value nothing holds, so it
+    // isn't implied, whichever of the two arcs is the free one (the review's T12).
+    for fixed in [["c0000002", "j0000001"], ["c0000001", "j0000001"]] {
+        assert!(!implied_by(&s, &fixing(&fixed), &tangent), "{fixed:?}");
+    }
     assert!(implied_by(
         &s,
         &fixing(&["c0000001", "c0000002", "j0000001"]),

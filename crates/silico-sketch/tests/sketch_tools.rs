@@ -1061,6 +1061,35 @@ fn candidates(read: &SketchRead) -> Vec<Form> {
     forms
 }
 
+/// Whether `form` is one of the equalities the implied classes read: a `horizontal`,
+/// `vertical`, `horizontal_points`, `vertical_points`, or `on` of an axis.
+fn is_read_equality(form: &Form) -> bool {
+    matches!(
+        form,
+        Form::Horizontal { .. }
+            | Form::Vertical { .. }
+            | Form::HorizontalPoints { .. }
+            | Form::VerticalPoints { .. }
+            | Form::On {
+                curve: Reference::XAxis | Reference::YAxis,
+                ..
+            }
+    )
+}
+
+/// Whether a constraint read `state` is flagged as the rule expects of one it leaves out:
+/// redundant, partially redundant, or conflicting.
+fn flagged(state: Option<ConstraintState>) -> bool {
+    matches!(
+        state,
+        Some(
+            ConstraintState::Redundant
+                | ConstraintState::PartiallyRedundant
+                | ConstraintState::Conflicting
+        )
+    )
+}
+
 /// `form` added to the session inside a transaction, its read, then rolled back: the
 /// freedoms it leaves, and its own state.
 fn tried(f: &mut Fixture, form: &Form, n: &mut u32) -> (i32, Option<ConstraintState>) {
@@ -1112,46 +1141,19 @@ fn a_relation_the_tools_leave_out_is_one_planegcs_finds_redundant_or_conflicting
         // What the tools added (every constraint, the sketch begun empty): none of the
         // equalities the classes read is redundant or conflicting.
         for c in &read.members.constraints {
-            let equality = matches!(
-                c.form,
-                Form::Horizontal { .. }
-                    | Form::Vertical { .. }
-                    | Form::HorizontalPoints { .. }
-                    | Form::VerticalPoints { .. }
-                    | Form::On {
-                        curve: Reference::XAxis | Reference::YAxis,
-                        ..
-                    }
-            );
             let state = read.states.constraints.get(&c.id).copied();
             assert!(
-                !equality
-                    || !matches!(
-                        state,
-                        Some(
-                            ConstraintState::Redundant
-                                | ConstraintState::PartiallyRedundant
-                                | ConstraintState::Conflicting
-                        )
-                    ),
+                !is_read_equality(&c.form) || !flagged(state),
                 "sketch {sketch}: the tools added {:?}, read {state:?}; the sketch: {:?}",
                 c.form,
                 read.members
             );
         }
-        let equalities_only = read.members.constraints.iter().all(|c| {
-            matches!(
-                c.form,
-                Form::Horizontal { .. }
-                    | Form::Vertical { .. }
-                    | Form::HorizontalPoints { .. }
-                    | Form::VerticalPoints { .. }
-                    | Form::On {
-                        curve: Reference::XAxis | Reference::YAxis,
-                        ..
-                    }
-            )
-        });
+        let equalities_only = read
+            .members
+            .constraints
+            .iter()
+            .all(|c| is_read_equality(&c.form));
         if sketch % 2 == 1 {
             // Some points fixed where they are: a driving distance x and y from the origin.
             let mut constraints = Vec::new();
@@ -1204,15 +1206,7 @@ fn a_relation_the_tools_leave_out_is_one_planegcs_finds_redundant_or_conflicting
                 *left_out_by_form.entry(form.type_name()).or_default() += 1;
                 let (dofs, state) = tried(&mut f, &form, &mut n);
                 assert!(
-                    dofs == before
-                        || matches!(
-                            state,
-                            Some(
-                                ConstraintState::Redundant
-                                    | ConstraintState::PartiallyRedundant
-                                    | ConstraintState::Conflicting
-                            )
-                        ),
+                    dofs == before || flagged(state),
                     "sketch {sketch}: {form:?} left out, but added it leaves {dofs} freedoms of \
                      {before}, read {state:?}; the sketch: {:?}",
                     read.members

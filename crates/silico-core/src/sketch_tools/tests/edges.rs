@@ -451,12 +451,7 @@ fn a_constrained_sketch_at_the_gates_limits_propagates_its_classes_in_bounded_wo
             });
         }
     }
-    for (k, form) in forms.into_iter().enumerate() {
-        s.constraints.push(SketchConstraint {
-            id: id(&format!("k{k:07}")),
-            form,
-        });
-    }
+    let s = constrained(s, forms);
     assert_eq!(
         (s.points.len(), s.lines.len(), s.constraints.len()),
         (512, 256, 10_000)
