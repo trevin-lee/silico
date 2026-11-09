@@ -4,12 +4,15 @@
 //! points it's level with or above, and the direction a line would take.
 //!
 //! The pointer looks, nearest first within each kind, ties in [`Reference`]'s order (the
-//! sketch's own curves by ID, then the axes: Silico's rule, since a tie must never turn on a
-//! random ID), in this order:
+//! sketch's own curves by ID, then the axes: Silico's rule; among the sketch's own curves a
+//! tie goes by ID, the document's own order, and against the origin or an axis a tie never
+//! turns on an ID), in this order:
 //! 1. a point of the sketch, shared (D2), always, whatever the setting and Ctrl (#278's F);
 //! 2. with relations inferred: the origin (#278's A), then a line's middle (with an `on` of
-//!    each other curve through it exactly, #278's G), then where two curves cross (two
-//!    `on`s), then a curve (`on`), each within the pick tolerance. The pointer finds a line
+//!    each other curve through it exactly, #278's G, but an axis the line lies along: the
+//!    line stands for the axis there), then where two curves cross (two `on`s; at one
+//!    place, the sketch's own pair before one with an axis), then a curve (`on`), each
+//!    within the pick tolerance. The pointer finds a line
 //!    and an arc only where they're drawn (not past a line's end, nor on an arc's circle
 //!    where the arc isn't), a circle all round, and the axes anywhere along them; the `on`
 //!    it leaves holds the point on the line through a line's ends, or an arc's whole circle,
@@ -484,6 +487,15 @@ pub(super) struct Pointer<'v, 's> {
     pub(super) states: &'v SketchStates,
 }
 
+/// Where two curves near the pointer cross: how far from it, the place, whether one of the
+/// two is an axis, and the pair, in [`Reference`]'s order.
+struct Crossing {
+    d: f64,
+    at: Xy,
+    axis: bool,
+    pair: (Reference, Reference),
+}
+
 /// A curve near the pointer: the reference, its shape, where the pointer's nearest to it, and
 /// how far that is.
 struct Near {
@@ -700,9 +712,14 @@ impl Pointer<'_, '_> {
     }
 
     /// Where two of the curves `near` cross, nearest `at` and within the tolerance of it, on
-    /// both as drawn: of the [`CROSSING_CURVES`] nearest curves only. At a tie, the pair
-    /// first in [`Reference`]'s order: two of the sketch's own curves, by ID, before one with
-    /// an axis.
+    /// both as drawn: of the [`CROSSING_CURVES`] nearest curves only. The nearest crossing
+    /// is taken by its distance, then whether its pair includes an axis, then the pair in
+    /// [`Reference`]'s order; then, of every crossing within [`LENGTH_TOLERANCE`] of its
+    /// place (one place, as the kernel and [`crossings`] take it), the one whose pair has no
+    /// axis, then the pair first in that order. So where curves of the sketch cross on an
+    /// axis, which crosses them there too by other arithmetic, an ulp or so off, the point is
+    /// on the sketch's own two; among the sketch's own curves a tie goes by ID, the
+    /// document's own order, and against an axis a tie never turns on an ID.
     fn crossing_near(&self, at: Xy, near: &[Near]) -> Option<(Xy, Reference, Reference)> {
         let mut nearest_first: Vec<&Near> = near.iter().collect();
         nearest_first.sort_by(|a, b| {
@@ -723,13 +740,25 @@ impl Pointer<'_, '_> {
                     let d = distance(x, at);
                     let on = |n: &Near| n.infinite || n.geo.spans(x);
                     if d <= self.tolerance && on(a) && on(b) {
-                        let key = (a.reference.clone(), b.reference.clone());
-                        found.push((d, key, (x, a.reference.clone(), b.reference.clone())));
+                        found.push(Crossing {
+                            d,
+                            at: x,
+                            axis: a.infinite || b.infinite,
+                            pair: (a.reference.clone(), b.reference.clone()),
+                        });
                     }
                 }
             }
         }
-        nearest(found.into_iter())
+        let rank = |c: &Crossing| (c.axis, c.pair.clone());
+        let first = found
+            .iter()
+            .min_by(|a, b| a.d.total_cmp(&b.d).then_with(|| rank(a).cmp(&rank(b))))?;
+        let taken = found
+            .iter()
+            .filter(|c| distance(c.at, first.at) <= LENGTH_TOLERANCE)
+            .min_by_key(|c| rank(c))?;
+        Some((taken.at, taken.pair.0.clone(), taken.pair.1.clone()))
     }
 
     /// `placed`, placed on nothing, lined up with the woken points within the tolerance of

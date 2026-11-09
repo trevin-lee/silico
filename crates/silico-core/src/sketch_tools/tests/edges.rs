@@ -755,6 +755,154 @@ fn a_crossing_on_a_line_along_an_axis_takes_the_line_at_any_slant() {
     crossed_along_an_axis([24.715, -4.443], [21.922, 2.942], [23.03, 0.1]);
 }
 
+/// The curve `name`: a line from `from` to `to`, or a circle about `from` of radius `to[0]`.
+fn curve(s: Sketch, name: &str, from: Xy, to: Xy, circle: bool) -> Sketch {
+    if !circle {
+        return with_line(s, name, from, to);
+    }
+    let mut s = s;
+    let c = format!("c{}", &name[1..]);
+    s.points.push(point(&c, from[0], from[1]));
+    s.circles.push(crate::document::SketchCircle {
+        id: id(name),
+        center: id(&c),
+        radius: Coordinate::new(to[0]).unwrap(),
+        construction: false,
+    });
+    s
+}
+
+#[test]
+fn a_point_where_two_curves_cross_on_an_axis_is_on_the_two_curves() {
+    // The circle about (20, 0) of radius 5 and the line (24, -6)-(25.5, 3) cross at
+    // (25, 0), on the x axis (the line's y is 0 at t = 2/3, x = 24 + 1.5 · 2/3); the lines
+    // (27.2, -3.4)-(31.7, 6.8) and (26, -3.2)-(34.1, 6.4) cross at (28.7, 0) (each's y is 0
+    // at t = 1/3). The axis crosses each curve there too, a place worked out on other
+    // arithmetic, an ulp or so apart. Clicked 0.3 either side of the crossing and at it, 0.1,
+    // 0.2, and 0.3 above and below (all within 0.5 of it), with the IDs in either order:
+    // the point is on the two curves, the sketch's own, never the axis (the review's R2).
+    let cases: [(Xy, Xy, bool, Xy, Xy, Xy); 2] = [
+        (
+            [20.0, 0.0],
+            [5.0, 0.0],
+            true,
+            [24.0, -6.0],
+            [25.5, 3.0],
+            [25.0, 0.0],
+        ),
+        (
+            [27.2, -3.4],
+            [31.7, 6.8],
+            false,
+            [26.0, -3.2],
+            [34.1, 6.4],
+            [28.7, 0.0],
+        ),
+    ];
+    for (a_from, a_to, a_circle, b_from, b_to, cross) in cases {
+        for (first, second) in [("aa000001", "zz000002"), ("zz000001", "aa000002")] {
+            for dx in [-0.3, 0.0, 0.3] {
+                for dy in [-0.3, -0.2, -0.1, 0.1, 0.2, 0.3] {
+                    let s = curve(empty(), first, a_from, a_to, a_circle);
+                    let s = curve(s, second, b_from, b_to, false);
+                    let mut d = Drive::new(ToolKind::Point, s);
+                    let at = [cross[0] + dx, cross[1] + dy];
+                    d.click(at[0], at[1]);
+                    let mut want = vec![
+                        Reference::Element(id(first)),
+                        Reference::Element(id(second)),
+                    ];
+                    want.sort();
+                    assert_eq!(ons(&d), want, "{first} and {second} at {at:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn two_crossings_as_near_take_the_sketchs_own_pair_whatever_the_ids() {
+    // e, (20, -8)-(20, 24), crosses the x axis at (20, 0); bb000001, (20.25, -8)-(20.25, 16),
+    // crosses cc000001, (18.25, -7.75)-(24.25, 16.25), at (20.25, 0.25) (cc's x is 20.25 at
+    // t = 1/3, its y −7.75 + 24/3). The click at (20, 0.25) is 0.25 from both crossings, two
+    // places: the sketch's own pair, bb and cc, whatever e's ID sorts as (the review's T3).
+    for e in ["aa000001", "zz000001"] {
+        let s = with_line(empty(), e, [20.0, -8.0], [20.0, 24.0]);
+        let s = with_line(s, "bb000001", [20.25, -8.0], [20.25, 16.0]);
+        let s = with_line(s, "cc000001", [18.25, -7.75], [24.25, 16.25]);
+        let mut d = Drive::new(ToolKind::Point, s);
+        d.click(20.0, 0.25);
+        assert_eq!(
+            ons(&d),
+            [
+                Reference::Element(id("bb000001")),
+                Reference::Element(id("cc000001"))
+            ],
+            "e {e}"
+        );
+    }
+}
+
+#[test]
+fn a_line_within_a_tenth_of_a_micrometre_of_an_axis_covers_it() {
+    // A line along the x axis but 0.5e-7 off it, (10, ±0.5e-7)-(50, ±0.5e-7): within
+    // LENGTH_TOLERANCE (1e-7), so it lies along the axis and covers it; a click 0.1 on the
+    // far side of the axis from it, nearer the axis by 0.5e-7, is on the line. At ±2e-7,
+    // beyond it, it doesn't cover the axis: the click is on the axis, the nearer (the
+    // review's T4).
+    for (y, covered) in [
+        (0.5e-7, true),
+        (-0.5e-7, true),
+        (2e-7, false),
+        (-2e-7, false),
+    ] {
+        let s = with_line(empty(), "zz000001", [10.0, y], [50.0, y]);
+        let mut d = Drive::new(ToolKind::Point, s);
+        let at = [20.0, -0.1 * y.signum()];
+        d.click(at[0], at[1]);
+        let want = if covered {
+            Reference::Element(id("zz000001"))
+        } else {
+            Reference::XAxis
+        };
+        assert_eq!(ons(&d), [want], "at y {y}");
+    }
+}
+
+#[test]
+fn a_point_at_the_middle_of_a_line_along_an_axis_is_on_the_line_only() {
+    // The middle of (10, 0)-(50, 0), clicked at (30, 0.1): the line stands for the axis
+    // where it lies along it, so the point is its midpoint, with no `on` of the axis (as
+    // #278's G as amended leaves out the same `on`; the review's T5).
+    let mut d = Drive::new(
+        ToolKind::Point,
+        with_line(empty(), "zz000001", [10.0, 0.0], [50.0, 0.0]),
+    );
+    d.click(30.0, 0.1);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (30, 0)",
+            "midpoint (30, 0) line #(10, 0)-#(50, 0)",
+        ])]
+    );
+}
+
+#[test]
+fn a_point_as_near_a_line_beside_an_axis_as_the_axis_is_on_the_line() {
+    // (10, 0.5)-(50, 0.5), half a millimetre off the x axis, and a click at (20, 0.25):
+    // exactly 0.25 from both. The tie goes to the sketch's own line, whatever its ID (the
+    // review's T6).
+    for name in ["aa000001", "zz000001"] {
+        let mut d = Drive::new(
+            ToolKind::Point,
+            with_line(empty(), name, [10.0, 0.5], [50.0, 0.5]),
+        );
+        d.click(20.0, 0.25);
+        assert_eq!(ons(&d), [Reference::Element(id(name))], "{name}");
+    }
+}
+
 #[test]
 fn the_nearest_woken_point_lines_up_and_a_tie_goes_to_the_lower_id() {
     // Woken points at x = 30.2 and 30.4: a click at (30, 50) is 0.2 and 0.4 off their
