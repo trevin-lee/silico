@@ -187,7 +187,8 @@ pub enum PlacementKind {
     /// The dimension's value edited (`set_field` of its `value`), on a read that listed the
     /// constraints `before_conflicting` in conflict. An edit changes a value and no row, so
     /// it's offered where it newly sets a constraint in conflict, or newly has the solve
-    /// refused.
+    /// refused (or, ending its group's conflict, uncovers one decision 5 hadn't judged;
+    /// [`offer`]).
     Edit {
         before_prompted_refusal: bool,
         before_conflicting: BTreeSet<ElementId>,
@@ -1544,12 +1545,13 @@ fn conflicting(states: &SketchStates) -> BTreeSet<ElementId> {
 /// - an edit ([`PlacementKind::Edit`]) is offered where, adjacent, any constraint is newly
 ///   in conflict (in *after*, not in *before*); not adjacent, where the dimension itself is;
 /// - either is offered, adjacent, where *after* is a refusal the prompt is for, over defined
-///   or with no solution, its solve refused ([`prompted_refusal`]), and *before* wasn't.
+///   or with no solution, its solve refused (`prompted_refusal`), and *before* wasn't.
 ///
-/// Nothing there reads which member of a dependent group PlaneGCS's greedy contest flags,
-/// which follows the IDs' order. A driving dimension adds a row and no unknown, and the
-/// freedoms are PlaneGCS's unknowns less the rank of the rows (or, with nothing free, less
-/// the rows it didn't find redundant), on a solved read and a refused one alike:
+/// With nothing between, the offer doesn't depend on which member of a dependent group
+/// PlaneGCS's greedy contest flags, which follows the IDs' order. A driving dimension adds a
+/// row and no unknown, and the freedoms are PlaneGCS's unknowns less the rank of the rows
+/// (or, with nothing free, less the rows it didn't find redundant), on a solved read and a
+/// refused one alike:
 /// - an independent row raises the rank, so the freedoms drop, and it's in no group, so it's
 ///   never flagged: not offered;
 /// - a dependent one with something free leaves the rank, and the freedoms, where they were:
@@ -1558,26 +1560,44 @@ fn conflicting(states: &SketchStates) -> BTreeSet<ElementId> {
 ///   resolved as redundant, and is flagged itself if its group is left in conflict, which
 ///   lists every member: offered.
 ///
+/// So a sketch already over defined, left so, offers each dimension that adds to it, as
+/// SolidWorks prompts for each. One add is a known miss (c3 as amended, §4, its first item):
+/// an independent one on a sketch already refused that makes PlaneGCS's reduced solve fail.
+/// Every group the sketch had is then listed in conflict, its own row in none; its rank rose
+/// and the solve was refused before, so it isn't offered, though the sketch's conflicts grew.
+/// No ID enters, and the state stays over defined (silico-sketch's
+/// `an_independent_add_that_fails_a_refused_sketchs_reduced_solve_is_never_offered_a_known_miss`).
+///
 /// A translation's refusal (`invalid_input`) diagnoses the geometry alone, so its freedoms
 /// count no constraint and compare with nothing: an add on or to one isn't judged by them.
-/// An edit changes a value and no row, so the rank, the groups, and the contest's picks are
-/// what they were, and whatever is newly in conflict is the edit's doing.
 ///
-/// So a sketch already over defined, left so, offers each dimension that adds to it, as
-/// SolidWorks prompts for each.
+/// An edit changes a value and no row. For a solved sketch the diagnosis is taken again at
+/// its solution (M3.4's load), so an edit that moves the solution can move the rank and the
+/// groups with it: a configuration grown degenerate makes rows dependent that weren't,
+/// agreeing there, so a dimension reads newly redundant and the sketch over defined, solved,
+/// with a freedom more. That isn't offered: nothing is in conflict or refused, the edited
+/// dimension needn't be in the new group, and SolidWorks prompts for no edit; the state says
+/// it. What an edit is offered for is what it newly made unsolvable: any constraint newly in
+/// conflict, or the solve newly refused, which between adjacent reads follow from the edited
+/// value alone, but for one case: an edit that ends the conflict its own group was in lets
+/// decision 5 run (a conflict PlaneGCS lists is refused before it), and a disagreement it
+/// then finds in another group, there before but unjudged (`redundant`, PlaneGCS's word),
+/// reads as newly in conflict. The dimension is offered: it is dependent, agreeing with its
+/// group again, so the offer is true of it, and wrong only in laying it to the edit. No ID
+/// enters either way.
 ///
 /// Where another change came between (another client's edit, an agent's, landing first),
 /// its flags, freedoms, and state would be taken for the dimension's (an added line raising
 /// the freedoms, an added constraint lowering them), so the dimension is judged by its own
-/// state alone: an add offered if it's flagged, an edit if it's newly in conflict (a
-/// dimension over-defining already isn't offered again for another client's timing). The
-/// tool places nothing while its last offer is unsettled, so its own adds never come
-/// between.
+/// state alone, which can follow the contest's pick: an add offered if it's flagged, an edit
+/// if it's newly in conflict (a dimension over-defining already isn't offered again for
+/// another client's timing). The tool places nothing while its last offer is unsettled, so
+/// its own adds never come between.
 ///
 /// A value that makes the geometry degenerate (circles tangent through a point, for one)
-/// lowers the rank at the new solution, so an add placing it reads as dependent and is
-/// offered: the first-order fact, as the diagnosis reads it (item 32's Addendum 5), not a
-/// false offer.
+/// lowers the rank at the new solution (the diagnosis is taken again at the solution, by
+/// M3.4's load), so an add placing it reads as dependent and is offered: the first-order
+/// fact, as the diagnosis reads it (item 32's Addendum 5), not a false offer.
 pub fn offer(read: &SketchRead, revision: Revision, placement: &Placement) -> Option<Offer> {
     offer_of(
         &read.sketch,
