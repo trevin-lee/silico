@@ -20031,6 +20031,10 @@ fn a_line_chain_ends_by_enter_esc_leaves_the_tool_then_the_selection_and_its_let
     use silico_app::sketch::tools::Choice;
     use silico_core::sketch_tools::ToolKind;
     let f = fixture();
+    // The triangle's values free, as PlaneGCS finds an unconstrained sketch's (the fake's own
+    // answer reads every point fully defined, which the tools now read: a direction between
+    // fixed points is left out, #278's G as amended).
+    counting(&f);
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
     double_click(&mut h, "Browser", "Triangle");

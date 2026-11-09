@@ -602,6 +602,7 @@ impl SmartDimension {
             tolerance,
             infer: true,
             woken: &[],
+            states,
         };
         let event = match event {
             Some(DimensionEvent::Cancel) => {

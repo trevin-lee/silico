@@ -943,15 +943,21 @@ pub(crate) fn end_ids(sketch: &Sketch, curve: &ElementId) -> Vec<ElementId> {
         .unwrap_or_default()
 }
 
+/// Whether the line from `r` to `s` lies along the line through `p` and `q`: both its ends
+/// within [`LENGTH_TOLERANCE`] of it, as the kernel takes two places for one.
+pub(crate) fn lies_along(p: [f64; 2], q: [f64; 2], r: [f64; 2], s: [f64; 2]) -> bool {
+    [r, s]
+        .iter()
+        .all(|x| distance(project_on_line(p, q, *x), *x) <= LENGTH_TOLERANCE)
+}
+
 /// Where the carriers of `a` and `b` (a line through its ends, a round's whole circle)
 /// meet: crossings, and a tangent contact where the gap is at most 1e-7 mm. None where they
-/// overlap: an overlap's cuts are the ends of each on the other.
+/// overlap ([`lies_along`]): an overlap's cuts are the ends of each on the other.
 pub(crate) fn crossings(a: &Geo, b: &Geo) -> Vec<[f64; 2]> {
     match (a, b) {
         (Geo::Line { from: p, to: q }, Geo::Line { from: r, to: s }) => {
-            let collinear = [*r, *s]
-                .iter()
-                .all(|x| distance(project_on_line(*p, *q, *x), *x) <= LENGTH_TOLERANCE);
+            let collinear = lies_along(*p, *q, *r, *s);
             let (d1, d2) = ([q[0] - p[0], q[1] - p[1]], [s[0] - r[0], s[1] - r[1]]);
             let det = d1[0] * d2[1] - d1[1] * d2[0];
             if collinear || det == 0.0 {

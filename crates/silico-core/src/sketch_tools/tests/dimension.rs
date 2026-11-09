@@ -54,6 +54,7 @@ impl Dim {
             tolerance: self.tolerance,
             automatic_relations: true,
             construction: false,
+            states: &self.states,
         };
         let outcome = self
             .tool
@@ -147,15 +148,6 @@ fn mm(v: &str) -> Length {
 
 fn deg(v: &str) -> Angle {
     Angle::parse(v).unwrap()
-}
-
-fn with_line(mut s: Sketch, name: &str, from: [f64; 2], to: [f64; 2]) -> Sketch {
-    // Its points: `f` and `t` in place of its ID's first character.
-    let (f, t) = (format!("f{}", &name[1..]), format!("t{}", &name[1..]));
-    s.points.push(point(&f, from[0], from[1]));
-    s.points.push(point(&t, to[0], to[1]));
-    s.lines.push(line(name, &f, &t));
-    s
 }
 
 fn with_point(mut s: Sketch, name: &str, at: [f64; 2]) -> Sketch {
@@ -269,30 +261,12 @@ fn a_point_or_an_axis_alone_places_nothing() {
     assert!(d.made.is_empty() && d.messages.is_empty());
 }
 
-/// A line along the x axis, (10, 0) to (50, 0), and one along the y axis, (0, 10) to
-/// (0, 50), each 40 long and named `name`; each with a place on it, mid-way between its end
-/// and its middle (beyond the pick tolerance of both), and a place 10 off it.
-fn along_the_axes(name: &str) -> [(Sketch, [f64; 2], [f64; 2]); 2] {
-    [
-        (
-            with_line(empty(), name, [10.0, 0.0], [50.0, 0.0]),
-            [20.0, 0.0],
-            [20.0, 10.0],
-        ),
-        (
-            with_line(empty(), name, [0.0, 10.0], [0.0, 50.0]),
-            [0.0, 20.0],
-            [10.0, 20.0],
-        ),
-    ]
-}
-
 #[test]
 fn a_line_along_an_axis_is_picked_before_the_axis_whatever_its_id() {
     // Picked on it, the line is 0 from the pointer, and so is its axis. The sketch's own
-    // curve is picked (SolidWorks picks the sketch's entity over the origin's axes), whether
-    // its ID sorts before the axes' names ("aa…" < "x_axis" < "y_axis") or after them
-    // ("zz…"): placed off it, its length, 40.
+    // curve is picked (Silico's rule: where a line lies along an axis it covers the axis, and
+    // a tie never turns on a random ID), whether its ID sorts before the axes' names
+    // ("aa…" < "x_axis" < "y_axis") or after them ("zz…"): placed off it, its length, 40.
     for name in ["aa000001", "zz000001"] {
         for (sketch, on, off) in along_the_axes(name) {
             let mut d = Dim::new(sketch);
@@ -311,6 +285,39 @@ fn a_line_along_an_axis_is_picked_before_the_axis_whatever_its_id() {
                     driving: true
                 }
             );
+        }
+    }
+}
+
+#[test]
+fn a_line_along_an_axis_is_picked_where_its_foot_rounds() {
+    // Picked at (14.12, 0) on (10, 0)-(50, 0): the line's foot there, 10 + 40 · (4.12 / 40),
+    // rounds off the pointer by an ulp or two, the axis's foot doesn't; the line is picked
+    // all the same, on either axis (the review's T1).
+    for name in ["aa000001", "zz000001"] {
+        for (from, to, at) in [
+            ([10.0, 0.0], [50.0, 0.0], [14.12, 0.0]),
+            ([0.0, 10.0], [0.0, 50.0], [0.0, 14.12]),
+        ] {
+            let mut d = Dim::new(with_line(empty(), name, from, to));
+            d.click(at[0], at[1]);
+            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at {at:?}");
+        }
+    }
+}
+
+#[test]
+fn a_line_along_the_x_axis_is_picked_with_the_pointer_on_it_anywhere_along_it() {
+    // At (14.2842, 0) (the review's R1), and at a thousand places along it, (10.6, 0) to
+    // (49.4, 0), past the ends' tolerance (0.5, inclusive): the line every time, never the
+    // axis.
+    for name in ["aa000001", "zz000001"] {
+        let places =
+            std::iter::once(14.2842).chain((0..1000).map(|k| 10.6 + 38.8 * f64::from(k) / 999.0));
+        for x in places {
+            let mut d = Dim::new(with_line(empty(), name, [10.0, 0.0], [50.0, 0.0]));
+            d.click(x, 0.0);
+            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at ({x}, 0)");
         }
     }
 }
@@ -1665,6 +1672,7 @@ fn a_dimension_placed_before_a_read_shows_it_keeps_its_id_taken() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Lowest;
@@ -1694,6 +1702,7 @@ fn another_sketch_starts_the_tool_afresh() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     d.tool.handle(
         &context,
@@ -1755,6 +1764,7 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
@@ -2752,6 +2762,7 @@ fn another_sketch_forgets_the_placement() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     d.tool.handle(
         &context,
@@ -2848,6 +2859,7 @@ fn settle_takes_a_read_with_no_event() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let out = d.tool.settle(&context, &under());
     assert_eq!(out, Outcome::default());
@@ -2862,6 +2874,7 @@ fn settle_takes_a_read_with_no_event() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let out = d.tool.settle(&context, &under());
     assert_eq!(out.message, Some(Message::DimensionChanged));
@@ -3088,6 +3101,7 @@ fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
@@ -3187,6 +3201,7 @@ fn a_placement_not_yet_answered_holds_the_next() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
@@ -3278,6 +3293,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
+            states: no_states(),
         };
         let mut tool = SmartDimension::new();
         let mut ids = Counter(0);
@@ -3299,6 +3315,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
+            states: no_states(),
         };
         tool.settle(&context, &states);
         let placement = tool.placement().unwrap();
@@ -3480,6 +3497,7 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SmartDimension::new();
     for at in [[20.0, 10.0], [20.0, 30.0]] {

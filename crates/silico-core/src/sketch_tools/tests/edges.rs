@@ -231,6 +231,7 @@ fn a_refused_add_mid_chain_is_forgotten_with_the_chain() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SketchTool::new(ToolKind::Line);
     let mut ids = Counter(0);
@@ -301,6 +302,7 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
+            states: no_states(),
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -316,6 +318,7 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut ids = Counter(0);
     line.handle(&context(&sid), &mut ids, Event::Press([1.0, 2.0]), keys);
@@ -383,6 +386,7 @@ fn a_sketch_at_the_gates_limits_builds_each_shape_once_and_tries_few_crossings()
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SketchTool::new(ToolKind::Point);
     let mut ids = Counter(0);
@@ -580,19 +584,9 @@ fn the_nearest_curve_wins_over_an_axis() {
     );
 }
 
-/// The sketch of one line, `name`, from `from` to `to`, its points `q0000001` and
-/// `q0000002`.
-fn just_line(name: &str, from: (f64, f64), to: (f64, f64)) -> Sketch {
-    let mut s = empty();
-    s.points.push(point("q0000001", from.0, from.1));
-    s.points.push(point("q0000002", to.0, to.1));
-    s.lines.push(line(name, "q0000001", "q0000002"));
-    s
-}
-
 /// A place as the adds describe it.
-fn place(at: (f64, f64)) -> String {
-    format!("({}, {})", at.0, at.1)
+fn place(at: Xy) -> String {
+    format!("({}, {})", mm(at[0]), mm(at[1]))
 }
 
 #[test]
@@ -600,16 +594,16 @@ fn a_point_on_a_line_along_an_axis_is_on_the_line_not_the_axis_whatever_its_id()
     // A line along the x axis, (10, 0) to (50, 0), and one along the y axis, (0, 10) to
     // (0, 50): a click on it at (20, 0) or (0, 20), mid-way between its end and its middle
     // (beyond the tolerance of both), is 0 from the line and from its axis. The point is on
-    // the sketch's own curve (SolidWorks' relation is to the sketch's entity), whether the
-    // line's ID sorts before the axes' names ("aa…" < "x_axis" < "y_axis") or after them
-    // ("zz…").
+    // the sketch's own curve (Silico's rule: where a line lies along an axis it covers the
+    // axis), whether the line's ID sorts before the axes' names ("aa…" < "x_axis" <
+    // "y_axis") or after them ("zz…").
     for name in ["aa000001", "zz000001"] {
-        for (from, to, on) in [
-            ((10.0, 0.0), (50.0, 0.0), (20.0, 0.0)),
-            ((0.0, 10.0), (0.0, 50.0), (0.0, 20.0)),
-        ] {
-            let mut d = Drive::new(ToolKind::Point, just_line(name, from, to));
-            d.click(on.0, on.1);
+        for ((sketch, on, _), (from, to)) in along_the_axes(name)
+            .into_iter()
+            .zip([([10.0, 0.0], [50.0, 0.0]), ([0.0, 10.0], [0.0, 50.0])])
+        {
+            let mut d = Drive::new(ToolKind::Point, sketch);
+            d.click(on[0], on[1]);
             let segment = format!("line #{}-#{}", place(from), place(to));
             assert_eq!(
                 d.adds(),
@@ -631,13 +625,13 @@ fn a_point_is_on_an_axis_where_no_line_of_the_sketch_lies_on_it() {
     // 0.2 from the line: on the axis, the nearer, at its foot, whatever the line's ID.
     for name in ["aa000001", "zz000001"] {
         for (from, to, at, foot, axis) in [
-            ((10.0, 0.0), (50.0, 0.0), (70.0, 0.0), (70.0, 0.0), "x_axis"),
-            ((0.0, 10.0), (0.0, 50.0), (0.0, 70.0), (0.0, 70.0), "y_axis"),
-            ((10.0, 0.3), (50.0, 0.3), (20.0, 0.1), (20.0, 0.0), "x_axis"),
-            ((0.3, 10.0), (0.3, 50.0), (0.1, 20.0), (0.0, 20.0), "y_axis"),
+            ([10.0, 0.0], [50.0, 0.0], [70.0, 0.0], [70.0, 0.0], "x_axis"),
+            ([0.0, 10.0], [0.0, 50.0], [0.0, 70.0], [0.0, 70.0], "y_axis"),
+            ([10.0, 0.3], [50.0, 0.3], [20.0, 0.1], [20.0, 0.0], "x_axis"),
+            ([0.3, 10.0], [0.3, 50.0], [0.1, 20.0], [0.0, 20.0], "y_axis"),
         ] {
-            let mut d = Drive::new(ToolKind::Point, just_line(name, from, to));
-            d.click(at.0, at.1);
+            let mut d = Drive::new(ToolKind::Point, with_line(empty(), name, from, to));
+            d.click(at[0], at[1]);
             assert_eq!(
                 d.adds(),
                 [sorted(&[
@@ -654,11 +648,10 @@ fn a_point_is_on_an_axis_where_no_line_of_the_sketch_lies_on_it() {
 fn a_point_where_a_line_along_an_axis_is_crossed_is_on_the_two_lines_whatever_their_ids() {
     // The line `name` along the x axis, (10, 0) to (50, 0), and n0000001 across it, (20, -5)
     // to (20, 15) (its middle, (20, 5), and every end beyond the tolerance of (20, 0)): at
-    // (20, 0) the two lines cross, and so do n0000001 and the x axis. The point is on the two
-    // lines, the sketch's own, whether `name` sorts before "x_axis" ("aa…": the pairs'
-    // texts "aa… n0000001" and "n0000001 x_axis") or after it ("zz…": "n0000001 x_axis"
-    // and "n0000001 zz…"). Without the line along the axis, the point is on n0000001 and
-    // the axis.
+    // (20, 0) the two lines cross, where n0000001 crosses the x axis too. The line along the
+    // axis covers it there, so the point is on the two lines, the sketch's own, whether
+    // `name` sorts before "x_axis" ("aa…") or after it ("zz…"). Without the line along the
+    // axis, the point is on n0000001 and the axis.
     let across = |mut s: Sketch| {
         s.points.push(point("q0000003", 20.0, -5.0));
         s.points.push(point("q0000004", 20.0, 15.0));
@@ -667,10 +660,8 @@ fn a_point_where_a_line_along_an_axis_is_crossed_is_on_the_two_lines_whatever_th
     };
     let crossed = "line #(20, -5)-#(20, 15)";
     for name in ["aa000001", "zz000001"] {
-        let mut d = Drive::new(
-            ToolKind::Point,
-            across(just_line(name, (10.0, 0.0), (50.0, 0.0))),
-        );
+        let sketch = with_line(empty(), name, [10.0, 0.0], [50.0, 0.0]);
+        let mut d = Drive::new(ToolKind::Point, across(sketch));
         d.click(20.0, 0.1);
         assert_eq!(
             d.adds(),
@@ -692,6 +683,76 @@ fn a_point_where_a_line_along_an_axis_is_crossed_is_on_the_two_lines_whatever_th
             &format!("on (20, 0) {crossed}"),
         ])]
     );
+}
+
+/// The curves the last add put its point `on`, sorted.
+fn ons(d: &Drive) -> Vec<Reference> {
+    let mut curves: Vec<Reference> = d
+        .made
+        .last()
+        .unwrap()
+        .constraints
+        .iter()
+        .filter_map(|c| match &c.form {
+            Form::On { curve, .. } => Some(curve.clone()),
+            _ => None,
+        })
+        .collect();
+    curves.sort();
+    curves
+}
+
+/// `xy` along the x axis as given, or, mirrored, along the y axis (x and y swapped).
+fn mirrored(xy: Xy, y_axis: bool) -> Xy {
+    if y_axis { [xy[1], xy[0]] } else { xy }
+}
+
+/// The line `name` along an axis, (10, 0) to (50, 0) or its mirror on the y axis, crossed
+/// by n0000001 from `from` to `to` (mirrored too), clicked at `at`: the point the click
+/// places is on the two lines, the sketch's own, never the axis, whatever `name` sorts as,
+/// on either axis.
+fn crossed_along_an_axis(from: Xy, to: Xy, at: Xy) {
+    for y_axis in [false, true] {
+        for name in ["aa000001", "zz000001"] {
+            let mut s = with_line(
+                empty(),
+                name,
+                mirrored([10.0, 0.0], y_axis),
+                mirrored([50.0, 0.0], y_axis),
+            );
+            let (a, b) = (mirrored(from, y_axis), mirrored(to, y_axis));
+            s.points.push(point("q0000003", a[0], a[1]));
+            s.points.push(point("q0000004", b[0], b[1]));
+            s.lines.push(line("n0000001", "q0000003", "q0000004"));
+            let mut d = Drive::new(ToolKind::Point, s);
+            let at = mirrored(at, y_axis);
+            d.click(at[0], at[1]);
+            let mut want = vec![
+                Reference::Element(id(name)),
+                Reference::Element(id("n0000001")),
+            ];
+            want.sort();
+            assert_eq!(ons(&d), want, "{name}, along the y axis: {y_axis}");
+        }
+    }
+}
+
+#[test]
+fn a_point_where_a_slanted_line_crosses_a_line_along_an_axis_is_on_the_two_lines() {
+    // n0000001 from (19.8, -8.77) to (19.33, 2.77) crosses the x axis, and the line along
+    // it, at (19.8 - 0.47 · 8.77 / 11.54, 0) ≈ (19.4428, 0): 0.1 from the click at
+    // (19.44, 0.1), within the tolerance; its middle (19.565, -3) and every end far. The two
+    // crossings are one place, worked out on two lines' arithmetic, so they may differ in
+    // the last bits: the point is on the two lines all the same (the review's T1).
+    crossed_along_an_axis([19.8, -8.77], [19.33, 2.77], [19.44, 0.1]);
+}
+
+#[test]
+fn a_crossing_on_a_line_along_an_axis_takes_the_line_at_any_slant() {
+    // n0000001 from (24.715, -4.443) to (21.922, 2.942) crosses the x axis at
+    // (24.715 - 2.793 · 4.443 / 7.385, 0) ≈ (23.0347, 0), 0.1 from the click at
+    // (23.03, 0.1) (the review's R1).
+    crossed_along_an_axis([24.715, -4.443], [21.922, 2.942], [23.03, 0.1]);
 }
 
 #[test]
@@ -1204,6 +1265,7 @@ fn an_id_source_that_gives_a_taken_id_is_caught() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let mut tool = SketchTool::new(ToolKind::Point);
     let keys = Modifiers::default();
@@ -1622,6 +1684,7 @@ fn each_add_is_answered_by_its_token_whatever_the_order() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
+            states: no_states(),
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -1852,6 +1915,7 @@ fn another_tools_token_answers_nothing() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
+            states: no_states(),
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -2331,6 +2395,7 @@ fn what_a_tool_added_keeps_its_ids_taken_before_a_read_shows_them() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: no_states(),
     };
     let keys = Modifiers::default();
     for (kind, clicks) in [

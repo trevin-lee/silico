@@ -3,8 +3,9 @@
 //! would put a point, the point it would share or the relation it would leave there, the
 //! points it's level with or above, and the direction a line would take.
 //!
-//! The pointer looks, nearest first within each kind, ties by ID (a curve of the sketch
-//! before an axis, as SolidWorks picks the sketch's entity over the origin's), in this order:
+//! The pointer looks, nearest first within each kind, ties in [`Reference`]'s order (the
+//! sketch's own curves by ID, then the axes: Silico's rule, since a tie must never turn on a
+//! random ID), in this order:
 //! 1. a point of the sketch, shared (D2), always, whatever the setting and Ctrl (#278's F);
 //! 2. with relations inferred: the origin (#278's A), then a line's middle (with an `on` of
 //!    each other curve through it exactly, #278's G), then where two curves cross (two
@@ -29,9 +30,11 @@ use silico_protocol::{LENGTH_TOLERANCE, arc_from_points};
 use super::geometry::{
     add, angle_between, cross, distance, dot, left, scale, sub, to_segment, unit,
 };
+use super::implied::{Axis, Implied, Key, Rel};
 use super::{Relation, Shown, Xy};
-use crate::document::sketch_edit::{Geo, Members, crossings};
+use crate::document::sketch_edit::{Geo, Members, crossings, lies_along};
 use crate::document::{Direction, ElementId, Form, Reference, Sketch};
+use crate::sketch_states::SketchStates;
 
 /// How far from horizontal or vertical a line may be drawn, and from perpendicular,
 /// parallel, or tangent, for the pointer to show it: 2°, FreeCAD 1.1.3's, since SolidWorks'
@@ -348,6 +351,34 @@ impl Placed {
         placed
     }
 
+    /// Its relations merged into `implied`, the point it places known by `key`: the classes a
+    /// gesture's later relations are judged against.
+    pub(super) fn assert_into(&self, implied: &mut Implied, key: &Key) {
+        let mut rels = match &self.target {
+            Target::Shared(_) | Target::Free => Vec::new(),
+            Target::Origin => vec![
+                Rel::Same(Axis::Level, key.clone(), Key::Origin),
+                Rel::Same(Axis::Plumb, key.clone(), Key::Origin),
+            ],
+            Target::Midpoint(line, ons) => {
+                let mut rels = vec![Rel::OnLine(key.clone(), line.clone())];
+                rels.extend(ons.iter().map(|on| implied.on(key.clone(), on)));
+                rels
+            }
+            Target::On(curve) => vec![implied.on(key.clone(), curve)],
+            Target::Crossing(a, b) => vec![implied.on(key.clone(), a), implied.on(key.clone(), b)],
+        };
+        if let Some(q) = &self.level_with {
+            rels.push(Rel::Same(Axis::Level, key.clone(), Key::Point(q.clone())));
+        }
+        if let Some(q) = &self.above {
+            rels.push(Rel::Same(Axis::Plumb, key.clone(), Key::Point(q.clone())));
+        }
+        for rel in &rels {
+            implied.assert(rel);
+        }
+    }
+
     /// The relations a new point placed so keeps, `point` being its ID.
     pub(super) fn relations(&self, point: &ElementId) -> Vec<Form> {
         let p = || Reference::Element(point.clone());
@@ -448,6 +479,9 @@ pub(super) struct Pointer<'v, 's> {
     /// The points the pointer has woken, the newest first: the only ones a point lines up
     /// with.
     pub(super) woken: &'v [ElementId],
+    /// The newest read's member states: which points are fully defined, so which of the
+    /// relations it infers the sketch already implies ([`Implied`]).
+    pub(super) states: &'v SketchStates,
 }
 
 /// A curve near the pointer: the reference, its shape, where the pointer's nearest to it, and
@@ -471,15 +505,6 @@ fn nearest<K: Ord, T>(items: impl Iterator<Item = (f64, K, T)>) -> Option<T> {
     items
         .min_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)))
         .map(|(_, _, t)| t)
-}
-
-impl Near {
-    /// The order a tie in distance goes in: the sketch's own curves, by ID, before the axes.
-    /// A line drawn along an axis is as near the pointer as the axis everywhere along it, and
-    /// SolidWorks picks the sketch's entity there, not the origin's axis.
-    fn tie(&self) -> (bool, &str) {
-        (self.infinite, self.reference.as_str())
-    }
 }
 
 impl Pointer<'_, '_> {
@@ -515,29 +540,55 @@ impl Pointer<'_, '_> {
         }
         let near = self.curves_near(at);
         if let Some((mid, line)) = self.midpoint_near(at) {
-            // Each other curve through the middle exactly, as where it crosses the line.
-            let ons = near
+            // Each other curve through the middle exactly, as where it crosses the line, but
+            // one the sketch already holds the middle on (#278's G as amended).
+            let mut ons: Vec<Reference> = near
                 .iter()
                 .filter(|n| n.reference != Reference::Element(line.clone()))
                 .filter(|n| n.geo.off(mid) <= EXACT && (n.infinite || n.geo.spans(mid)))
                 .map(|n| n.reference.clone())
                 .collect();
+            ons.sort();
+            let ons = self.ons_not_implied(&line, ons);
             return Placed::new(mid, Target::Midpoint(line, ons));
         }
         if let Some((cross, a, b)) = self.crossing_near(at, &near) {
             return Placed::new(cross, Target::Crossing(a, b));
         }
-        if let Some(curve) = nearest(near.iter().map(|n| (n.off, n.tie(), n))) {
+        if let Some(curve) = nearest(near.iter().map(|n| (n.off, &n.reference, n))) {
             return Placed::new(curve.foot, Target::On(curve.reference.clone()));
         }
         Placed::new(at, Target::Free)
     }
 
+    /// Of `ons`, in [`Reference`]'s order, the `on`s of a new point at the middle of `line`
+    /// the sketch doesn't already imply ([`Implied`], Rule E), the `midpoint` asserted first
+    /// and each `on` kept merged before the next: an `on` of the x axis at the middle of a
+    /// level line along it, or of a line level with it, goes.
+    fn ons_not_implied(&self, line: &ElementId, ons: Vec<Reference>) -> Vec<Reference> {
+        if ons.is_empty() {
+            return ons;
+        }
+        let mut implied = Implied::of(&self.view.sketch, self.states);
+        let point = Key::Fresh(0);
+        implied.assert(&Rel::OnLine(point.clone(), line.clone()));
+        let mut kept = Vec::new();
+        for curve in ons {
+            let rel = implied.on(point.clone(), &curve);
+            if !implied.implies(&rel) {
+                implied.assert(&rel);
+                kept.push(curve);
+            }
+        }
+        kept
+    }
+
     /// What a click at `at` picks to dimension (Smart Dimension): a point of the sketch
     /// within the tolerance, or the origin where it's nearer, as [`snap`](Self::snap) finds
     /// them; else the curve nearest, within the tolerance, as `snap` finds curves (a line or
-    /// an arc where it's drawn, a circle all round, an axis anywhere along it), ties as
-    /// `snap`'s (the sketch's own curves, by ID, before the axes); else nothing. Whether relations are inferred plays no part: a pick is no relation.
+    /// an arc where it's drawn, a circle all round, an axis anywhere along it but where a
+    /// line of the sketch lies along it), ties as `snap`'s (in [`Reference`]'s order); else
+    /// nothing. Whether relations are inferred plays no part: a pick is no relation.
     pub(super) fn pick(&self, at: Xy) -> Option<Reference> {
         let point = self.point_near(at);
         let origin = distance(at, [0.0, 0.0]);
@@ -548,7 +599,7 @@ impl Pointer<'_, '_> {
             None => {}
         }
         let near = self.curves_near(at);
-        nearest(near.iter().map(|n| (n.off, n.tie(), n))).map(|n| n.reference.clone())
+        nearest(near.iter().map(|n| (n.off, &n.reference, n))).map(|n| n.reference.clone())
     }
 
     /// Only a point of the sketch the click shares, else nothing: where a tool fixes the
@@ -578,7 +629,8 @@ impl Pointer<'_, '_> {
     }
 
     /// The curves within the tolerance of `at`: lines as drawn, circles, arcs where they're
-    /// drawn, and the axes, infinite.
+    /// drawn, and the axes, infinite, but where a line of the sketch lies along one
+    /// ([`covers`](Self::covers)).
     fn curves_near(&self, at: Xy) -> Vec<Near> {
         let mut near = Vec::new();
         let tolerance = self.tolerance;
@@ -589,6 +641,7 @@ impl Pointer<'_, '_> {
             let off = distance(foot, at);
             if off <= tolerance
                 && let Some(geo) = self.view.geo(&reference)
+                && !self.covers(&geo, foot, at)
             {
                 near.push(Near {
                     reference,
@@ -623,10 +676,33 @@ impl Pointer<'_, '_> {
         near
     }
 
+    /// Whether a line of the sketch within the tolerance of `at` lies along the axis `axis`
+    /// ([`lies_along`], as [`crossings`] decides two lines overlap) and spans its place
+    /// `foot`, the axis's nearest `at`: there the sketch's own line covers the axis, and the
+    /// pointer finds the line alone, so what it takes never turns on two ways of working out
+    /// one place agreeing to the last bit.
+    fn covers(&self, axis: &Geo, foot: Xy, at: Xy) -> bool {
+        let Geo::Line {
+            from: origin,
+            to: along,
+        } = axis
+        else {
+            return false;
+        };
+        self.view.curves.values().any(|geo| match geo {
+            Geo::Line { from, to } => {
+                lies_along(*origin, *along, *from, *to)
+                    && to_segment(*from, *to, foot).1 <= LENGTH_TOLERANCE
+                    && to_segment(*from, *to, at).1 <= self.tolerance
+            }
+            Geo::Circle { .. } | Geo::Arc { .. } => false,
+        })
+    }
+
     /// Where two of the curves `near` cross, nearest `at` and within the tolerance of it, on
-    /// both as drawn: of the [`CROSSING_CURVES`] nearest curves only. At a tie, a crossing of
-    /// two of the sketch's own curves comes before one with an axis (a line drawn along an
-    /// axis crosses another line where the axis does), then by the pair's IDs.
+    /// both as drawn: of the [`CROSSING_CURVES`] nearest curves only. At a tie, the pair
+    /// first in [`Reference`]'s order: two of the sketch's own curves, by ID, before one with
+    /// an axis.
     fn crossing_near(&self, at: Xy, near: &[Near]) -> Option<(Xy, Reference, Reference)> {
         let mut nearest_first: Vec<&Near> = near.iter().collect();
         nearest_first.sort_by(|a, b| {
@@ -647,10 +723,7 @@ impl Pointer<'_, '_> {
                     let d = distance(x, at);
                     let on = |n: &Near| n.infinite || n.geo.spans(x);
                     if d <= self.tolerance && on(a) && on(b) {
-                        let key = (
-                            a.infinite || b.infinite,
-                            format!("{} {}", a.reference, b.reference),
-                        );
+                        let key = (a.reference.clone(), b.reference.clone());
                         found.push((d, key, (x, a.reference.clone(), b.reference.clone())));
                     }
                 }
