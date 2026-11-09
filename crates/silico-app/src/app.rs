@@ -135,8 +135,9 @@ fn enter_is_ok(ui: &mut Ui) -> bool {
 }
 
 /// Sketch mode's tools' keys (the prototype's, DESIGN.md *Keyboard*): L line, R rectangle,
-/// C circle, A arc (the 3-point arc, Fusion's first), P point, and T trim.
-const SKETCH_KEYS: [(Key, sketch::tools::Choice); 6] = {
+/// C circle, A arc (the 3-point arc, Fusion's first), P point, T trim, and D Smart
+/// Dimension.
+const SKETCH_KEYS: [(Key, sketch::tools::Choice); 7] = {
     use silico_core::sketch_tools::ToolKind;
     use sketch::tools::Choice;
     [
@@ -146,6 +147,7 @@ const SKETCH_KEYS: [(Key, sketch::tools::Choice); 6] = {
         (Key::A, Choice::Draw(ToolKind::ThreePointArc)),
         (Key::P, Choice::Draw(ToolKind::Point)),
         (Key::T, Choice::Trim),
+        (Key::D, Choice::Dimension),
     ]
 };
 
@@ -2066,6 +2068,15 @@ impl<P: Clients + 'static> App<P> {
     /// prototype's): the sketch bar at the canvas's top centre, its Finish Sketch and Cancel
     /// taken, and the Sketch Palette at its right.
     fn sketch_canvas(&mut self, ui: &mut Ui, started: &mut bool) {
+        // A tab not shown has no menu open: it closes as the tab is hidden.
+        let shown_at = self.active_place();
+        for (at, tab) in self.tabs.iter_mut().enumerate() {
+            if Some(at) != shown_at
+                && let Some(mode) = tab.sketch.as_mut()
+            {
+                mode.menu_at = None;
+            }
+        }
         let sessions = &self.sessions;
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return;
@@ -2077,7 +2088,12 @@ impl<P: Clients + 'static> App<P> {
         };
         let canvas = self.canvas.unwrap_or_else(|| ui.ctx().content_rect());
         let bar = mode.bar_view(&name, enabled);
-        let view = mode.palette_view(revision);
+        let view = mode.palette_view(revision, tab.drag.as_ref());
+        // Smart Dimension's Modify box, at its dimension's text, and the over-define prompt
+        // (SD7), each the prototype's.
+        let modify = mode.modify_view();
+        let offer = mode.offer_view(&name);
+        let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
         egui::Area::new(egui::Id::new(("sketch_bar", id.to_string())))
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
@@ -2095,6 +2111,55 @@ impl<P: Clients + 'static> App<P> {
             BarAction::Cancel => tab.finish_sketch(sessions, false),
         }
         *started |= action != BarAction::None;
+        if let Some(asked) = modify.and_then(|view| sketch::dimension::modify_box(ui.ctx(), &view))
+        {
+            tab.sketch_modify(sessions, asked);
+            *started = true;
+        }
+        // The canvas's right-click menu, at the click (the prototype's): what it asks done,
+        // and closed by it, or by any button pressed outside it (a click, a drag, a right
+        // click, there or off the canvas).
+        if let Some((at, busy)) = menu {
+            let mut asked = sketch::bar::MenuAction::None;
+            let shown = egui::Area::new(egui::Id::new(("sketch_menu", id.to_string())))
+                .fixed_pos(at)
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    *ui.visuals_mut() = sketch::bar::panel_visuals();
+                    ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                        node.set_role(egui::accesskit::Role::Menu);
+                        node.set_label("Sketch menu");
+                    });
+                    egui::Frame::menu(ui.style()).show(ui, |ui| {
+                        asked = sketch::bar::canvas_menu(ui, busy);
+                    });
+                });
+            match asked {
+                sketch::bar::MenuAction::None => {}
+                sketch::bar::MenuAction::EndChain => tab.sketch_end_chain(sessions),
+                sketch::bar::MenuAction::Finish => tab.finish_sketch(sessions, true),
+                sketch::bar::MenuAction::Cancel => tab.finish_sketch(sessions, false),
+            }
+            let menu_rect = shown.response.rect;
+            let away = ui.input(|i| {
+                i.pointer.any_pressed()
+                    && i.pointer
+                        .press_origin()
+                        .is_some_and(|origin| !menu_rect.contains(origin))
+            });
+            if (asked != sketch::bar::MenuAction::None || away)
+                && let Some(mode) = tab.sketch.as_mut()
+            {
+                mode.menu_at = None;
+            }
+            *started |= asked != sketch::bar::MenuAction::None;
+        }
+        if let Some(choice) =
+            offer.and_then(|view| sketch::dimension::offer_prompt(ui.ctx(), &view))
+        {
+            tab.sketch_offer(sessions, choice);
+            *started = true;
+        }
     }
 
     /// The banner over the canvas (section 4; DESIGN.md's 6c and 6d): a file changed on

@@ -9,9 +9,14 @@
 //! The viewport calls [`SketchMode::frame`] each frame (through `Tab::sketch_frame`, which
 //! then sends what the tool asked) with its left button's events, a projection to the
 //! screen, and the pointer's way back onto the sketch's plane; nothing here knows of a
-//! camera. A tool on takes the left button before the selection does.
+//! camera. A drag under way takes the left button first; then a tool on; then, with none,
+//! a press on an under-defined point or curve that moves begins a drag ([`drag`]), and
+//! anything else is the selection's, a double-click on a dimension opening its Modify box
+//! ([`dimension`]).
 
 pub mod bar;
+pub mod dimension;
+pub mod drag;
 pub mod draw;
 pub mod hit;
 pub mod style;
@@ -22,18 +27,21 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Painter, Pos2, Rect, Vec2};
 use silico_core::Error;
+use silico_core::command::DragGrab;
 use silico_core::command::sketch::SketchRead;
 use silico_core::command::{ModelChoice, Problems, Revision, Running, SessionId, Sessions};
 use silico_core::document::{ElementId, ElementKind, FeatureId, Reference};
 use silico_core::kernel::{Clients, SketchPlane};
-use silico_core::sketch_states::SketchState;
-use silico_core::sketch_tools::{Event, Modifiers};
+use silico_core::sketch_states::{MemberState, SketchState};
+use silico_core::sketch_tools::{DimensionEvent, Event, Modifiers, Offer, OfferChoice};
 
 use crate::tab::{Row, said};
-use bar::{PaletteView, Settings, StateShown, StatusLine};
+use bar::{DimensionShown, PaletteView, Settings, StateShown, StatusLine};
+use dimension::{Ask, EditBox, Edited, ModifyAction, ModifyView, OfferView, value_of};
+use drag::Drag;
 use draw::{
-    Drawn, RegionFill, Scale, Shown, View, bounds, drawing, fill_scale, preview, region_fills,
-    to_shapes,
+    Curve, Drawn, Geometry, RegionFill, Scale, Shown, View, add, angle, bounds, dimension_preview,
+    direction, dot, drawing, fill_scale, ghost, length, mul, preview, region_fills, sub, to_shapes,
 };
 use hit::{Hit, hit};
 use style::*;
@@ -124,6 +132,10 @@ pub enum PointerAction {
     /// A press that ends without a release (the pointer gone, focus lost, a navigation tool
     /// taking over, the tab hidden): every press ends in one release or one of these.
     Cancel,
+    /// A right-click (the secondary button's), outside the left button's presses: Smart
+    /// Dimension's, which locks the kind its preview shows (section 9); otherwise the
+    /// canvas's menu's, which it opens at the click.
+    RightClick,
 }
 
 /// One left-button event, at a place in the viewport (in the same space `to_plane` takes),
@@ -134,6 +146,62 @@ pub struct PointerEvent {
     pub at: Pos2,
     pub shift: bool,
     pub ctrl: bool,
+}
+
+/// The pane's left-button events and right clicks of one frame (`ViewFrame::left` and
+/// `ViewFrame::secondary`), as sketch mode takes them: one stream in the pane's order, by
+/// each event's `seq` (which puts a Cancel a navigation tool forces first, a Cancel just
+/// before the Press that forced it, and a DoubleClick just after its Release); each place
+/// from physical pixels to points, `at_px / pixels_per_point`, from the viewport's top left
+/// at `viewport_origin`, never clamped (a drag past the viewport's edge keeps going); each
+/// left kind as its action, a right click as [`PointerAction::RightClick`], with Shift and
+/// Ctrl as held.
+pub fn frame_events(
+    left: &[crate::viewport::LeftEvent],
+    secondary: &[crate::viewport::SecondaryClick],
+    pixels_per_point: f32,
+    viewport_origin: Pos2,
+) -> Vec<PointerEvent> {
+    use crate::viewport::LeftKind;
+    let point =
+        |at_px: [f32; 2]| viewport_origin + Vec2::new(at_px[0], at_px[1]) / pixels_per_point;
+    let mut events: Vec<(u32, PointerEvent)> = left
+        .iter()
+        .map(|event| {
+            let action = match event.kind {
+                LeftKind::Press => PointerAction::Press,
+                LeftKind::Move => PointerAction::Move,
+                LeftKind::Release => PointerAction::Release,
+                LeftKind::DoubleClick => PointerAction::DoubleClick,
+                LeftKind::Cancel => PointerAction::Cancel,
+            };
+            let at = point(event.at_px);
+            (
+                event.seq,
+                PointerEvent {
+                    action,
+                    at,
+                    shift: event.shift,
+                    ctrl: event.ctrl,
+                },
+            )
+        })
+        .chain(secondary.iter().map(|click| {
+            let at = point(click.at_px);
+            let action = PointerAction::RightClick;
+            (
+                click.seq,
+                PointerEvent {
+                    action,
+                    at,
+                    shift: click.shift,
+                    ctrl: click.ctrl,
+                },
+            )
+        }))
+        .collect();
+    events.sort_by_key(|(seq, _)| *seq);
+    events.into_iter().map(|(_, event)| event).collect()
 }
 
 /// What the viewport gives sketch mode each frame: the left button's events, the pointer
@@ -165,6 +233,8 @@ pub enum Deletion {
 #[derive(Debug, Clone, PartialEq)]
 struct DrawnOf {
     read: u64,
+    /// The drag's solved frames drawn, while a drag's frame is drawn in the read's place.
+    drag: Option<u64>,
     selected: BTreeSet<ElementId>,
     shown: Shown,
     probes: [Option<Pos2>; 3],
@@ -218,6 +288,24 @@ pub struct SketchMode {
     /// For Create Sketch, the revision its add came to: its undo goes no further back, so it
     /// never undoes the sketch it's in (Cancel still goes back to where it opened).
     pub undo_floor: Option<Revision>,
+    /// A placed dimension's Modify box, open; how many have opened; its edit sent, to be
+    /// judged on the read of the revision it made; and the offer that judgement made (SD7),
+    /// with that revision, open until it's answered or a later read comes.
+    pub edit_box: Option<EditBox>,
+    edit_boxes: u64,
+    pub edited: Option<Edited>,
+    edit_offer: Option<(Offer, Revision)>,
+    /// What it asks of the core besides its tools' requests, until the tab takes it.
+    asks: Vec<Ask>,
+    /// Where the canvas's right-click menu (End chain, Finish Sketch, Cancel sketch) is open,
+    /// on the screen, if it is: opened by a right-click with no tool on, or a tool other
+    /// than Smart Dimension, whose right-click locks its kind instead.
+    pub menu_at: Option<Pos2>,
+    /// Where the Modify box open stands on the screen, as the last frame projected it.
+    modify_screen: Option<Pos2>,
+    /// The pick tolerance, in millimetres, at the last frame's view's middle: what Smart
+    /// Dimension is given with a read or the Modify box, between pointer events.
+    tolerance: f64,
 }
 
 impl SketchMode {
@@ -244,6 +332,14 @@ impl SketchMode {
             pointer: None,
             undone: 0,
             undo_floor: None,
+            edit_box: None,
+            edit_boxes: 0,
+            edited: None,
+            edit_offer: None,
+            asks: Vec::new(),
+            modify_screen: None,
+            tolerance: 0.0,
+            menu_at: None,
         }
     }
 
@@ -287,14 +383,52 @@ impl SketchMode {
         self.reading = Some(sessions.sketch(session, ModelChoice::Published, sketch.clone()));
     }
 
-    /// `read` kept as the newest, and the selection kept to what it still holds.
+    /// `read` kept as the newest, and the selection kept to what it still holds; Smart
+    /// Dimension given it (`settle`); and an edit of a dimension judged on it, if it's of the
+    /// revision the edit made, or its offer let go, if it's of a later one.
     pub(crate) fn took(&mut self, read: Read) {
         if let Ok(sketch) = &read.result {
             let held: BTreeSet<&ElementId> = sketch.members.elements().map(|(id, _)| id).collect();
             self.selection.retain(|hit| held.contains(&hit.id));
+            if let Some(edit) = &self.edit_box
+                && !held.contains(&edit.constraint)
+            {
+                self.edit_box = None;
+            }
         }
         self.read = Some(read);
         self.taken += 1;
+        if let Some(input) = tool_input(
+            &self.read,
+            self.sketch.as_ref(),
+            &self.settings,
+            self.tolerance,
+        ) {
+            self.tools.settle(&input);
+        }
+        self.judge();
+    }
+
+    /// An edit of a dimension judged on the newest read, if it's of the revision the edit
+    /// made (the offer the core gives there opened, if it gives one), or let go if it's of a
+    /// later one; an edit's offer open let go on a read past the revision it's for.
+    fn judge(&mut self) {
+        let model = self.read.as_ref().and_then(|read| read.model);
+        let (Some(model), Some(sketch)) = (model, self.drawable()) else {
+            return;
+        };
+        if let Some(judged) = self.edited.as_ref().and_then(|e| e.judged(sketch, model)) {
+            let made = self.edited.as_ref().and_then(|e| e.made);
+            self.edited = None;
+            self.edit_offer = judged.zip(made);
+        }
+        if self
+            .edit_offer
+            .as_ref()
+            .is_some_and(|(_, made)| model > *made)
+        {
+            self.edit_offer = None;
+        }
     }
 
     /// A click in the viewport, on `hit` (none: empty space), with Ctrl or not (open item
@@ -364,12 +498,20 @@ impl SketchMode {
     /// drawn of the sketch is worked out again only when the read, the selection, what's
     /// shown, or the view changes, and its profile's fill only for a new read or a zoom past
     /// a power of two.
-    pub fn frame(&mut self, painter: &Painter, input: &FrameInput<'_>) {
+    /// The tab's drag, `dragged`, is given it: begun by a press here, moved and ended by the
+    /// frame's events, and drawn in the read's place while it lasts.
+    pub fn frame(&mut self, painter: &Painter, input: &FrameInput<'_>, dragged: &mut Option<Drag>) {
+        if dragged.as_ref().is_some_and(Drag::over) {
+            *dragged = None;
+        }
         self.pointer = input.pointer.and_then(|p| (input.to_plane)(p));
         let clip = painter.clip_rect();
         let scale = scale_at(input.to_plane, clip.center()).unwrap_or(Scale(1.0));
-        // A tool on takes the left button, before the selection (the plan's precedence).
-        let selecting: &[PointerEvent] = if self.tools.choice().is_some() {
+        self.tolerance = scale.mm(SKETCH_PICK_TOLERANCE);
+        // A drag's press takes the left button till it ends; then a tool on, before the
+        // selection (the plan's precedence).
+        let dragging = dragged.as_ref().is_some_and(Drag::held);
+        let selecting: &[PointerEvent] = if self.tools.choice().is_some() && !dragging {
             self.pressed = None;
             let held = painter.ctx().input(|i| Modifiers {
                 shift: i.modifiers.shift,
@@ -383,14 +525,36 @@ impl SketchMode {
         for event in selecting {
             match event.action {
                 PointerAction::Press => {
-                    let found = self.drawable().and_then(|read| {
-                        let scale = scale_at(input.to_plane, event.at)?;
-                        let at = (input.to_plane)(event.at)?;
-                        hit(read, at, scale.mm(SKETCH_PICK_TOLERANCE), scale)
-                    });
+                    let found = self.found(input, event.at, dragged.as_ref());
+                    if dragged.is_none() {
+                        *dragged = found
+                            .as_ref()
+                            .and_then(|hit| self.grab(hit, input, event.at));
+                    }
                     self.pressed = Some((found, event.ctrl));
                 }
+                PointerAction::Move => {
+                    if let Some(drag) = dragged.as_mut().filter(|drag| drag.held()) {
+                        if !drag.moved && (event.at - drag.press).length() > SKETCH_DRAG_THRESHOLD {
+                            // A drag, not a click: its release selects nothing.
+                            drag.moved = true;
+                            self.pressed = None;
+                        }
+                        if let Some(at) = (input.to_plane)(event.at) {
+                            drag.cursor(at);
+                        }
+                    }
+                }
+                PointerAction::Release if dragged.as_ref().is_some_and(|d| d.held() && d.moved) => {
+                    if let Some(drag) = dragged.as_mut() {
+                        drag.release((input.to_plane)(event.at));
+                    }
+                }
                 PointerAction::Release => {
+                    // A press that never moved is a click: no drag.
+                    if dragged.as_ref().is_some_and(Drag::held) {
+                        *dragged = None;
+                    }
                     if let Some((found, ctrl)) = self.pressed.take() {
                         // What the press was on, if the read now still holds it: a read
                         // taken between the press and its release may have let it go.
@@ -402,8 +566,21 @@ impl SketchMode {
                         self.click(held, ctrl);
                     }
                 }
-                PointerAction::Cancel => self.pressed = None,
-                PointerAction::Move | PointerAction::DoubleClick => {}
+                PointerAction::Cancel => {
+                    self.pressed = None;
+                    match dragged.as_mut() {
+                        Some(drag) if drag.held() && drag.moved => {
+                            drag.cancel();
+                        }
+                        Some(drag) if drag.held() => *dragged = None,
+                        _ => {}
+                    }
+                }
+                PointerAction::DoubleClick => {
+                    self.edit_dimension_at(input, event.at, dragged.as_ref());
+                }
+                // With no tool on, the canvas's menu, at the click.
+                PointerAction::RightClick => self.menu_at = Some(event.at),
             }
         }
         let corners = [
@@ -423,9 +600,110 @@ impl SketchMode {
             visible,
             chord_tolerance: SKETCH_CHORD_TOLERANCE,
         };
-        let mut drawn = self.drawing(&view, clip);
+        let mut drawn = self.drawing(&view, clip, dragged.as_ref());
         drawn.extend(preview(self.tools.preview(), &view));
+        if let (Some(dimension), Some(read)) = (self.tools.dimension_preview(), self.drawable()) {
+            drawn.extend(dimension_preview(
+                dimension,
+                read,
+                &view,
+                self.tools.modify_at(),
+            ));
+        }
+        self.modify_screen = match (&self.edit_box, self.tools.modify_at()) {
+            (Some(edit), _) => (input.project)(edit.at),
+            (None, Some(at)) => (input.project)(at),
+            (None, None) => None,
+        };
         painter.extend(to_shapes(painter, &drawn));
+    }
+
+    /// What's under `at` on the screen, within the pick tolerance at the view's scale there:
+    /// of what's drawn, the drag's last frame while it lasts (once it has ended, until the
+    /// read of its edit comes), or else the newest read.
+    fn found(&self, input: &FrameInput<'_>, at: Pos2, dragged: Option<&Drag>) -> Option<Hit> {
+        let read = dragged.and_then(Drag::shown).or_else(|| self.drawable())?;
+        let scale = scale_at(input.to_plane, at)?;
+        let on = (input.to_plane)(at)?;
+        hit(read, on, scale.mm(SKETCH_PICK_TOLERANCE), scale)
+    }
+
+    /// A drag of `hit`, pressed at `at` on the screen: a point, or a line's, a circle's, or
+    /// an arc's edge, if the newest read, of a model it names, has it under defined (section
+    /// 9, *Dragging*); its press put on the exact curve (section 7: the core refuses a press
+    /// more than 1e-7 mm off it, and a pick lies within the tolerance of it). None for
+    /// anything else, which a press selects.
+    fn grab(&self, hit: &Hit, input: &FrameInput<'_>, at: Pos2) -> Option<Drag> {
+        let read = self.drawable()?;
+        let sketch = self
+            .sketch
+            .clone()
+            .filter(|sketch| *sketch == read.sketch)?;
+        let model = self.read.as_ref()?.model?;
+        let states = &read.states;
+        let free = |state: Option<&MemberState>| state == Some(&MemberState::UnderDefined);
+        let grab = match hit.kind {
+            ElementKind::Point => {
+                free(states.points.get(&hit.id)).then(|| DragGrab::Point(hit.id.clone()))?
+            }
+            ElementKind::Line | ElementKind::Circle | ElementKind::Arc => {
+                let state = match hit.kind {
+                    ElementKind::Line => states.lines.get(&hit.id),
+                    ElementKind::Circle => states.circles.get(&hit.id),
+                    _ => states.arcs.get(&hit.id),
+                };
+                if !free(state) {
+                    return None;
+                }
+                let curve = Geometry::of(read).curve(&Reference::Element(hit.id.clone()))?;
+                let press = on_curve(curve, (input.to_plane)(at)?)?;
+                DragGrab::Edge {
+                    curve: hit.id.clone(),
+                    press,
+                }
+            }
+            ElementKind::Constraint => return None,
+        };
+        Some(Drag::pressed(sketch, grab, read.clone(), model, at))
+    }
+
+    /// A double-click at `at` on the screen: on a driving dimension, its Modify box opened
+    /// with its value (section 9: a placed dimension edited), unless an offer is open or an
+    /// edit's answer is awaited. A driven one's value is measured, never typed, so it opens
+    /// none, as SolidWorks edits none.
+    fn edit_dimension_at(&mut self, input: &FrameInput<'_>, at: Pos2, dragged: Option<&Drag>) {
+        if self.offer().is_some() || self.edit_box.as_ref().is_some_and(|edit| edit.sent) {
+            return;
+        }
+        let Some(found) = self.found(input, at, dragged) else {
+            return;
+        };
+        let Some(read) = self.drawable() else {
+            return;
+        };
+        let Some((text, unit)) = read
+            .members
+            .constraints
+            .iter()
+            .find(|c| c.id == found.id)
+            .filter(|c| c.form.driving() != Some(false))
+            .and_then(|c| value_of(&c.form))
+        else {
+            return;
+        };
+        let Some(on) = (input.to_plane)(at) else {
+            return;
+        };
+        self.edit_boxes += 1;
+        self.edit_box = Some(EditBox {
+            constraint: found.id,
+            text,
+            unit,
+            at: on,
+            opened: self.edit_boxes,
+            sent: false,
+            said: None,
+        });
     }
 
     /// The frame's left-button events given to the tool on, in the sketch's millimetres
@@ -441,6 +719,13 @@ impl SketchMode {
             scale_at(input.to_plane, at).map_or(0.0, |scale| scale.mm(SKETCH_PICK_TOLERANCE))
         };
         for event in input.events {
+            // A right-click is Smart Dimension's lock; with any other tool, the menu's.
+            if event.action == PointerAction::RightClick
+                && self.tools.choice() != Some(tools::Choice::Dimension)
+            {
+                self.menu_at = Some(event.at);
+                continue;
+            }
             let Some(context) = tool_input(
                 &self.read,
                 self.sketch.as_ref(),
@@ -472,7 +757,10 @@ impl SketchMode {
                 (PointerAction::Release, None) | (PointerAction::Cancel, _) => {
                     tools.cancel(Some(&context));
                 }
-                (PointerAction::Press | PointerAction::Move, None) => {}
+                (PointerAction::RightClick, Some(at)) => {
+                    tools.dimension(&context, DimensionEvent::RightClick(at));
+                }
+                (PointerAction::Press | PointerAction::Move | PointerAction::RightClick, None) => {}
             }
         }
         let Some(pointer) = input.pointer else {
@@ -497,16 +785,19 @@ impl SketchMode {
     /// What's drawn of the read through `view`, in `clip`: the last frame's, if nothing it's
     /// of has changed; otherwise worked out again, with the profile's fill worked out again
     /// only for a new read or another power-of-two scale.
-    fn drawing(&mut self, view: &View<'_>, clip: Rect) -> Vec<Drawn> {
-        let Some(read) = self
-            .read
-            .as_ref()
-            .and_then(|read| read.result.as_ref().ok())
-        else {
+    fn drawing(&mut self, view: &View<'_>, clip: Rect, drag: Option<&Drag>) -> Vec<Drawn> {
+        // A drag's frame is drawn in the read's place, over its begin state's ghost.
+        let dragged = drag.and_then(|drag| Some((drag.shown()?, drag.begin(), drag.frames)));
+        let Some(read) = dragged.map(|(shown, ..)| shown).or_else(|| {
+            self.read
+                .as_ref()
+                .and_then(|read| read.result.as_ref().ok())
+        }) else {
             return Vec::new();
         };
         let of = DrawnOf {
             read: self.taken,
+            drag: dragged.map(|(.., frames)| frames),
             selected: self.selection.iter().map(|hit| hit.id.clone()).collect(),
             shown: self.shown(),
             probes: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]].map(|p| (view.project)(p)),
@@ -525,7 +816,7 @@ impl SketchMode {
         // outline is drawn at, so the two share their vertices whatever it is.
         let key = (self.taken, bucket, view.chord_tolerance.to_bits());
         self.fills.retain(|(had, _)| had.0 == self.taken);
-        if !self.fills.iter().any(|(had, _)| *had == key) {
+        if dragged.is_none() && !self.fills.iter().any(|(had, _)| *had == key) {
             self.fill_builds += 1;
             self.fills
                 .push((key, region_fills(read, at, view.chord_tolerance)));
@@ -533,12 +824,19 @@ impl SketchMode {
                 self.fills.remove(0);
             }
         }
+        // A drag's frame has no fill: the read's is of where it began.
         let fills = self
             .fills
             .iter()
-            .find(|(had, _)| *had == key)
+            .find(|(had, _)| *had == key && dragged.is_none())
             .map_or(&[][..], |(_, fills)| fills.as_slice());
-        let drawn = drawing(read, view, of.shown, &of.selected, fills);
+        let mut drawn = drawing(read, view, of.shown, &of.selected, fills);
+        if let Some((shown, begin, _)) = dragged {
+            let begun = drawing(begin, view, of.shown, &BTreeSet::new(), &[]);
+            let mut ghosted = ghost(&begun, begin, shown);
+            ghosted.append(&mut drawn);
+            drawn = ghosted;
+        }
         self.drawings += 1;
         self.drawn = Some((of, drawn.clone()));
         drawn
@@ -589,7 +887,7 @@ impl SketchMode {
     /// What the palette shows, the tab at `revision`: the state's words; the read's refusal
     /// if it's of the session's own revision (one of an older model, from before the sketch
     /// was added, waits for the next); and the plane's problem.
-    pub fn palette_view(&self, revision: Revision) -> PaletteView {
+    pub fn palette_view(&self, revision: Revision, drag: Option<&Drag>) -> PaletteView {
         let said = match &self.read {
             Some(Read {
                 result: Err(problems),
@@ -602,6 +900,15 @@ impl SketchMode {
             hint: self.state().and_then(hint),
             tool: self.tools.choice(),
             tool_said: self.tools.said().map(str::to_owned),
+            dimension: self
+                .tools
+                .dimension_preview()
+                .map(|preview| DimensionShown {
+                    picks: preview.picks.len(),
+                    locked: preview.locked,
+                    unavailable: preview.unavailable.as_ref().map(|m| m.text()),
+                }),
+            dragging: drag.is_some_and(|drag| drag.moved && !drag.over()),
             said,
             plane_problem: self.plane_problem().map(|error| {
                 (
@@ -614,6 +921,196 @@ impl SketchMode {
 }
 
 impl SketchMode {
+    /// The offer open for a dimension that over-defines (SD7): an edit's, or Smart
+    /// Dimension's for the last it placed. One at a time: neither places nor edits another
+    /// while one is open.
+    pub fn offer(&self) -> Option<&Offer> {
+        self.edit_offer
+            .as_ref()
+            .map(|(offer, _)| offer)
+            .or_else(|| self.tools.open_offer())
+    }
+
+    /// What the over-define prompt shows of the offer open, the sketch named `name`: the
+    /// dimension's value, and the constraints the read flags, by ID.
+    pub fn offer_view(&self, name: &str) -> Option<OfferView> {
+        let offer = self.offer()?;
+        let read = self.drawable();
+        let value = read
+            .and_then(|read| {
+                read.members
+                    .constraints
+                    .iter()
+                    .find(|c| c.id == offer.constraint)
+            })
+            .and_then(|c| value_of(&c.form))
+            .map(|(text, unit)| format!("{text} {unit}"));
+        let flagged = read.map_or_else(Vec::new, |read| {
+            read.states
+                .constraints
+                .iter()
+                .filter(|(_, state)| state.flagged())
+                .map(|(id, _)| id.to_string())
+                .collect()
+        });
+        Some(OfferView {
+            sketch: name.to_owned(),
+            value,
+            flagged,
+        })
+    }
+
+    /// The offer open answered with `choice` (SD7): what it sends asked, made against the
+    /// revision its add or edit made (Driven's `set_field`, Cancel's `undo`; Leave's
+    /// nothing), and the offer let go, so the next dimension may be placed. Whether one was
+    /// open to answer.
+    pub fn answer_offer(&mut self, choice: OfferChoice) -> bool {
+        let request = if let Some((offer, _)) = self.edit_offer.take() {
+            offer.request(choice)
+        } else if let Some(offer) = self.tools.open_offer() {
+            let request = offer.request(choice);
+            self.tools.dismiss_offer();
+            request
+        } else {
+            return false;
+        };
+        self.asks.extend(request.map(Ask::Offer));
+        true
+    }
+
+    /// What the Modify box open shows, if one is and the last frame placed it: a placed
+    /// dimension's, or Smart Dimension's.
+    pub fn modify_view(&self) -> Option<ModifyView> {
+        let at = self.modify_screen?;
+        if let Some(edit) = &self.edit_box {
+            return Some(ModifyView {
+                text: edit.text.clone(),
+                unit: edit.unit,
+                at,
+                opened: edit.opened,
+                said: edit.said.clone(),
+                waiting: edit.sent,
+                placing: false,
+            });
+        }
+        let preview = self.tools.dimension_preview()?;
+        let text = preview.modify.clone()?;
+        let unit = match &preview.dimension {
+            Some(silico_core::document::Form::Angle { .. }) => "°",
+            _ => "mm",
+        };
+        Some(ModifyView {
+            text,
+            unit,
+            at,
+            // Kept apart from the placed dimensions' boxes' numbers.
+            opened: u64::MAX - self.tools.modify_opened,
+            said: self.tools.said().map(str::to_owned),
+            waiting: false,
+            placing: true,
+        })
+    }
+
+    /// The Modify box open was asked `action`. A placed dimension's: its text kept as
+    /// typed; accepted, read whole by the core's `read_typed`, as Smart Dimension's box is
+    /// (SD9), and asked as a `set_field` of its value, its judgement to come on the read of
+    /// the revision it makes (a refusal said in the box, nothing sent); skipped, closed. Smart
+    /// Dimension's: given to it (`Typed`, `Enter`, or `Escape`, which places the measured
+    /// value, SD2).
+    pub fn modify(&mut self, action: ModifyAction) {
+        if let Some(edit) = self.edit_box.as_mut() {
+            match action {
+                ModifyAction::Typed(text) if !edit.sent => {
+                    edit.text = text;
+                    edit.said = None;
+                }
+                ModifyAction::Typed(_) => {}
+                ModifyAction::Skip => self.edit_box = None,
+                ModifyAction::Accept if edit.sent => {}
+                ModifyAction::Accept => {
+                    let (Some(read), Some(model), Some(sketch)) = (
+                        self.read.as_ref().and_then(|r| r.result.as_ref().ok()),
+                        self.read.as_ref().and_then(|r| r.model),
+                        self.sketch.clone(),
+                    ) else {
+                        return;
+                    };
+                    let Some(form) = read
+                        .members
+                        .constraints
+                        .iter()
+                        .find(|c| c.id == edit.constraint)
+                        .map(|c| &c.form)
+                    else {
+                        return;
+                    };
+                    match dimension::edit_value(form, &edit.text) {
+                        Ok(value) => {
+                            edit.sent = true;
+                            self.edited = Some(Edited::of(read, model, edit.constraint.clone()));
+                            self.asks.push(Ask::Value {
+                                sketch,
+                                constraint: edit.constraint.clone(),
+                                value,
+                            });
+                        }
+                        Err(said) => edit.said = Some(said),
+                    }
+                }
+            }
+            return;
+        }
+        let Some(input) = tool_input(
+            &self.read,
+            self.sketch.as_ref(),
+            &self.settings,
+            self.tolerance,
+        ) else {
+            return;
+        };
+        let event = match action {
+            ModifyAction::Typed(text) => DimensionEvent::Typed(text),
+            ModifyAction::Accept => DimensionEvent::Enter,
+            ModifyAction::Skip => DimensionEvent::Escape,
+        };
+        self.tools.dimension(&input, event);
+    }
+
+    /// The core's answer to a placed dimension's `set_field`, the session at `made`: taken
+    /// (the box closed; its judgement to come on the read of `made`, if it changed the
+    /// document), or refused, said in the box, which stays open.
+    pub fn value_answered(&mut self, made: Revision, result: Result<bool, String>) {
+        match result {
+            Ok(changed) => {
+                self.edit_box = None;
+                match self.edited.as_mut() {
+                    Some(edited) if changed => edited.made = Some(made),
+                    _ => self.edited = None,
+                }
+                // A read of `made` may have come already.
+                self.judge();
+            }
+            Err(said) => {
+                self.edited = None;
+                if let Some(edit) = self.edit_box.as_mut() {
+                    edit.sent = false;
+                    edit.said = Some(said);
+                }
+            }
+        }
+    }
+
+    /// What it asks of the core besides its tools, since this was last taken, in order.
+    pub fn take_asks(&mut self) -> Vec<Ask> {
+        std::mem::take(&mut self.asks)
+    }
+
+    /// The press under way let go, so its release clicks nothing: what Esc does to a press
+    /// on something that would have been dragged, as it ends.
+    pub fn let_go_press(&mut self) {
+        self.pressed = None;
+    }
+
     /// Esc, with a tool on: the gesture ended and the tool left, the tool told if the sketch
     /// is read (section 9, *Line*). Whether a tool was on to take it.
     pub fn escape_tool(&mut self) -> bool {
@@ -676,6 +1173,45 @@ fn tool_input<'a>(
         construction: settings.construction,
         trim: settings.trim,
     })
+}
+
+/// `at` put on `curve`, exactly: a line's nearest place on its segment, an arc's on its
+/// sweep (past it, its nearer end), a circle's on its round; none at a round's centre, which
+/// is as near every place of it, or for a place that isn't one.
+pub(crate) fn on_curve(curve: Curve, at: [f64; 2]) -> Option<[f64; 2]> {
+    let on = match curve {
+        Curve::Line { from, to } => {
+            let d = sub(to, from);
+            let dd = dot(d, d);
+            let t = if dd > 0.0 {
+                (dot(sub(at, from), d) / dd).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            add(from, mul(d, t))
+        }
+        Curve::Round {
+            centre,
+            radius,
+            start,
+            sweep,
+        } => {
+            let off = sub(at, centre);
+            if !(length(off) > 0.0 && length(off).is_finite()) {
+                return None;
+            }
+            let along = (angle(off) - start).rem_euclid(std::f64::consts::TAU);
+            let along = if sweep >= std::f64::consts::TAU || along <= sweep {
+                along
+            } else if along - sweep < std::f64::consts::TAU - along {
+                sweep
+            } else {
+                0.0
+            };
+            add(centre, mul(direction(start + along), radius))
+        }
+    };
+    (on[0].is_finite() && on[1].is_finite()).then_some(on)
 }
 
 /// Millimetres per screen point on the plane at `at`: the mean of how far one point across

@@ -20,13 +20,20 @@ use silico_core::document::json::Node;
 use silico_core::document::{ElementId, FeatureId, Reference};
 use silico_core::extend::End;
 use silico_core::kernel::Clients;
-use silico_core::sketch_tools::AddToken;
+use silico_core::sketch_tools::{AddToken, OfferChoice, OfferRequest};
 use silico_core::timeline::{Entry, Health};
 
 use crate::changes::{self, Changes};
 use crate::dialog::{Dialog, Kind, feature_node, quoted};
+use crate::sketch::dimension::{Ask, ModifyAction};
+use crate::sketch::drag::{Drag, News};
 use crate::sketch::tools::{Choice, Request};
 use crate::sketch::{Deletion, FrameInput, Prefixes, SketchMode};
+
+/// What's said when an over-defining dimension's choice is refused as a `conflict`: the
+/// session moved on before it was sent, so it was overtaken, and isn't sent again (SD7: its
+/// requests are made against the revision its add or edit made).
+pub const OVERTAKEN: &str = "The dimension's choice wasn't applied: the sketch changed after it was placed (another edit came first), so it isn't sent again";
 
 /// What a feature's mark says: its first problem's (or warning's) message, its cause and
 /// the elements it names, if it has them, and how many elements are at fault in all (more
@@ -267,6 +274,20 @@ enum Queued {
         end: End,
         by: ExtendBy,
     },
+    /// A placed dimension's value, of sketch mode numbered `serial`: `set_field` of the
+    /// sketch's `constraints.ID.value` to `value`, as the Modify box's text read.
+    DimensionValue {
+        serial: u64,
+        sketch: FeatureId,
+        constraint: ElementId,
+        value: Node,
+    },
+    /// An over-defining dimension's choice (SD7), of sketch mode numbered `serial`: its
+    /// request, sent against the revision it names, never the tab's.
+    Offer {
+        serial: u64,
+        request: OfferRequest,
+    },
     /// Edit Feature's read of the feature `feature`, of `kind`, for the dialog numbered
     /// `serial`: sent once everything asked before it has answered, so the values it loads
     /// are those the edits before it left.
@@ -340,7 +361,8 @@ pub enum Sent {
     Commit,
     Rollback,
     /// A sketch edit, by its command's name (`sketch_remove`, `sketch_join`, `sketch_add`,
-    /// `sketch_trim`, `sketch_split`, `sketch_extend`).
+    /// `sketch_trim`, `sketch_split`, `sketch_extend`), or a drag's (`drag_begin`,
+    /// `drag_end`).
     SketchEdit(&'static str),
 }
 
@@ -403,6 +425,8 @@ impl Edits {
                 | Queued::SketchTrim { .. }
                 | Queued::SketchSplit { .. }
                 | Queued::SketchExtend { .. }
+                | Queued::DimensionValue { .. }
+                | Queued::Offer { .. }
                 | Queued::Load { .. }
                 | Queued::Closed { .. }
                 | Queued::Restore { .. }
@@ -424,11 +448,13 @@ enum Under {
         running: Running<RolledBack>,
         then_close: bool,
     },
-    /// An undo or a redo, and the sketch mode it was asked in, if it was.
+    /// An undo or a redo, the sketch mode it was asked in, if it was, and whether it's an
+    /// over-defining dimension's Cancel (SD7), whose `conflict` is said as overtaken.
     Step {
         running: Running<Stepped>,
         undo: bool,
         sketch: Option<u64>,
+        offered: bool,
     },
     /// A move along the timeline, as it was sent.
     Move {
@@ -501,6 +527,17 @@ enum Under {
     SketchCut {
         sending: Sending,
         running: Running<SketchCut>,
+    },
+    /// A placed dimension's value, of sketch mode numbered `serial`, as it was sent.
+    DimensionValue {
+        serial: u64,
+        sending: Sending,
+        running: Running<FieldSet>,
+    },
+    /// An over-defining dimension's Driven (SD7), as it was sent.
+    OfferField {
+        sending: Sending,
+        running: Running<FieldSet>,
     },
     /// An existing feature's text, read for its dialog (Edit Feature), of `kind`, numbered
     /// `serial`.
@@ -826,6 +863,12 @@ pub struct Tab {
     candidate_next: Option<String>,
     /// The viewport's camera, meshes, and `meshes` read (M5.6).
     pub view: crate::viewport::View,
+    /// Sketch mode's drag, from its press to the read of its edit: the tab's, not sketch
+    /// mode's, so what waits behind it (the queue, Finish's and Cancel's close) still sees
+    /// it once sketch mode has closed. And the drag as its begin was sent: what its end's
+    /// edit is told against.
+    pub drag: Option<Drag>,
+    drag_sending: Option<Sending>,
     /// A test's watch on what [`overlay`](Self::overlay) is given: called after it each
     /// frame with the same painter and frame. For the crate's tests only; None otherwise.
     #[doc(hidden)]
@@ -835,6 +878,20 @@ pub struct Tab {
     /// as they may in any frame. For the crate's tests only; None otherwise.
     #[doc(hidden)]
     pub after_status: Option<AfterStatus>,
+}
+
+/// What an over-defining dimension's refused choice says: [`OVERTAKEN`] for a `conflict`,
+/// else the refusal, as [`said`] words it.
+fn overtaken_or(problems: &Problems) -> String {
+    if problems
+        .errors()
+        .first()
+        .is_some_and(|error| error.code() == ErrorCode::Conflict)
+    {
+        OVERTAKEN.to_owned()
+    } else {
+        said(problems)
+    }
 }
 
 /// What a test sees of each frame a tab's overlay is given, and draws with its painter:
@@ -960,6 +1017,8 @@ impl Tab {
             candidate_hot: None,
             candidate_next: None,
             view: crate::viewport::View::default(),
+            drag: None,
+            drag_sending: None,
             watch: None,
             after_status: None,
         }
@@ -1230,10 +1289,11 @@ impl Tab {
             || (self.transaction && !self.quiet())
     }
 
-    /// Whether a move, a dialog's add, Restore's edit, or sketch mode's add or edit is queued
-    /// or running: each changes the document, and may be under way before the transaction
-    /// its `begin` opens is. Restore's read of the text it puts back changes nothing: until
-    /// it answers, a file changed on disk is no reason to offer to keep edits.
+    /// Whether a move, a dialog's add, Restore's edit, or sketch mode's add, edit,
+    /// dimension's value, or over-defining dimension's choice is queued or running: each
+    /// changes the document, and may be under way before the transaction its `begin` opens
+    /// is. Restore's read of the text it puts back changes nothing: until it answers, a file
+    /// changed on disk is no reason to offer to keep edits.
     fn changing(&self) -> bool {
         self.edits.queue.iter().any(|queued| {
             matches!(
@@ -1250,6 +1310,8 @@ impl Tab {
                     | Queued::SketchTrim { .. }
                     | Queued::SketchSplit { .. }
                     | Queued::SketchExtend { .. }
+                    | Queued::DimensionValue { .. }
+                    | Queued::Offer { .. }
             )
         }) || self.under.iter().any(|under| {
             matches!(
@@ -1265,6 +1327,8 @@ impl Tab {
                     | Under::SketchJoin { .. }
                     | Under::SketchAdd { .. }
                     | Under::SketchCut { .. }
+                    | Under::DimensionValue { .. }
+                    | Under::OfferField { .. }
             )
         })
     }
@@ -1394,6 +1458,7 @@ impl Tab {
         self.read_timeline(sessions);
         self.read_check(sessions);
         self.sketch_requests(sessions);
+        self.drive_drag(sessions);
         self.read_sketches(sessions);
     }
 
@@ -1403,6 +1468,10 @@ impl Tab {
     fn read_sketches<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if let Some(mode) = self.sketch.as_mut() {
             mode.poll(sessions, &self.id, self.published);
+            // A drag ended at the newest read's revision or before is drawn by the read.
+            if let Some(drag) = self.drag.as_mut() {
+                drag.read(mode.read.as_ref().and_then(|read| read.model));
+            }
         }
         self.prefixes.poll(
             sessions,
@@ -1787,6 +1856,7 @@ impl Tab {
                 running,
                 undo,
                 sketch,
+                offered,
             } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
@@ -1811,6 +1881,7 @@ impl Tab {
                         // Typing queued after it is applied next: the field keeps it.
                         Ok(_) if self.edits.idle() => self.resets += 1,
                         Ok(_) => {}
+                        Err(problems) if offered => self.message = Some(overtaken_or(&problems)),
                         Err(problems) => self.message = Some(said(&problems)),
                     }
                     None
@@ -1819,6 +1890,7 @@ impl Tab {
                     running,
                     undo,
                     sketch,
+                    offered,
                 }),
             },
             Under::Add {
@@ -1976,6 +2048,7 @@ impl Tab {
                             // Nothing to edit: sketch mode leaves, as Cancel does, the
                             // transaction its add began, if it did, rolled back.
                             if ours {
+                                self.leave_drag();
                                 self.sketch = None;
                                 self.edits.queue.push_front(Queued::Closed {
                                     ok: false,
@@ -2061,6 +2134,47 @@ impl Tab {
                     None
                 }
                 Err(running) => Some(Under::SketchCut { sending, running }),
+            },
+            Under::DimensionValue {
+                serial,
+                sending,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    let made = response
+                        .session
+                        .as_ref()
+                        .map_or(self.revision, |session| session.revision);
+                    let answered = match &response.result {
+                        Ok(set) => Ok(set.changed),
+                        Err(problems) => {
+                            self.message = Some(said(problems));
+                            Err(said(problems))
+                        }
+                    };
+                    if let Some(mode) = self.sketch.as_mut().filter(|mode| mode.serial == serial) {
+                        mode.value_answered(made, answered);
+                    }
+                    None
+                }
+                Err(running) => Some(Under::DimensionValue {
+                    serial,
+                    sending,
+                    running,
+                }),
+            },
+            Under::OfferField { sending, running } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    if let Err(problems) = response.result {
+                        self.message = Some(overtaken_or(&problems));
+                    }
+                    None
+                }
+                Err(running) => Some(Under::OfferField { sending, running }),
             },
             Under::Load {
                 serial,
@@ -2470,6 +2584,53 @@ impl Tab {
                         sessions.sketch_extend(&self.id, self.revision, sketch, curve, end, by);
                     self.under.push(Under::SketchEdit { sending, running });
                 }
+                Queued::DimensionValue {
+                    serial,
+                    sketch,
+                    constraint,
+                    value,
+                } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    let field = format!("constraints.{constraint}.value");
+                    self.record(Sent::Edit(field.clone()));
+                    let sending = self.sending();
+                    let running = sessions.set_field(&self.id, self.revision, sketch, field, value);
+                    self.under.push(Under::DimensionValue {
+                        serial,
+                        sending,
+                        running,
+                    });
+                }
+                Queued::Offer { serial, request } => {
+                    self.supersede_preview();
+                    match request {
+                        OfferRequest::SetField {
+                            revision,
+                            feature,
+                            field,
+                            value,
+                        } => {
+                            self.record(Sent::Edit(field.clone()));
+                            let sending = Sending {
+                                against: revision,
+                                state: self.state_of(revision),
+                            };
+                            let running =
+                                sessions.set_field(&self.id, revision, feature, field, value);
+                            self.under.push(Under::OfferField { sending, running });
+                        }
+                        OfferRequest::Undo { revision, to } => {
+                            self.record(Sent::Undo(to));
+                            self.under.push(Under::Step {
+                                running: sessions.undo(&self.id, revision, to),
+                                undo: true,
+                                sketch: Some(serial),
+                                offered: true,
+                            });
+                        }
+                    }
+                }
                 Queued::Load {
                     serial,
                     kind,
@@ -2559,6 +2720,7 @@ impl Tab {
                             running: sessions.undo(&self.id, self.revision, Some(base)),
                             sketch: None,
                             undo: true,
+                            offered: false,
                         });
                     }
                 }
@@ -2643,6 +2805,7 @@ impl Tab {
                         running,
                         undo,
                         sketch,
+                        offered: false,
                     });
                 }
             }
@@ -2668,6 +2831,7 @@ impl Tab {
     /// its body's read) running.
     fn blocked(&self) -> bool {
         self.edits.in_flight.is_some()
+            || self.dragging()
             || self.under.iter().any(|under| {
                 matches!(
                     under,
@@ -2685,10 +2849,53 @@ impl Tab {
                         | Under::SketchJoin { .. }
                         | Under::SketchAdd { .. }
                         | Under::SketchCut { .. }
+                        | Under::DimensionValue { .. }
+                        | Under::OfferField { .. }
                         | Under::Restore { .. }
                         | Under::Replace { .. }
                 )
             })
+    }
+
+    /// Whether sketch mode's drag has anything under way with the core: its begin, moves,
+    /// or end. What's queued waits for it, as an edit landing would end it.
+    fn dragging(&self) -> bool {
+        self.drag.as_ref().is_some_and(Drag::in_flight)
+    }
+
+    /// Sketch mode leaving (Finish, Cancel, a revert, or Create Sketch's add refused), with a
+    /// drag: one whose press is still held ended from its begin state (`drag_end` with none,
+    /// once its begin answers); one whose begin never went out let go; one released kept, so
+    /// its edit lands, and what's queued after it (the leaving's close) waits for its end.
+    /// Its end is sent as the drag is next driven (each poll).
+    fn leave_drag(&mut self) {
+        let Some(drag) = self.drag.as_mut() else {
+            return;
+        };
+        if !drag.begun_sent() {
+            self.drag = None;
+            return;
+        }
+        drag.cancel();
+    }
+
+    /// Esc, or a cancel of the press, with a drag under way: ended from its begin state
+    /// (`drag_end` with none, once its begin has answered; nothing, if it never began); a
+    /// press that never moved let go, its release clicking nothing. Whether one was held.
+    fn cancel_drag<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
+        let Some(drag) = self.drag.as_mut().filter(|drag| drag.held()) else {
+            return false;
+        };
+        if let Some(mode) = self.sketch.as_mut() {
+            mode.let_go_press();
+        }
+        if !drag.moved {
+            self.drag = None;
+            return true;
+        }
+        drag.cancel();
+        self.drive_drag(sessions);
+        true
     }
 
     /// Whether nothing of the tab's is under way: no edit in flight or queued, nothing
@@ -2698,6 +2905,7 @@ impl Tab {
             && self.edits.queue.is_empty()
             && self.under.is_empty()
             && !self.beginning
+            && !self.dragging()
     }
 
     /// Whether anything of the tab's is under way: an edit, a save, a revert, a step, a
@@ -2968,7 +3176,9 @@ impl Tab {
         // to edit.
         self.dialog = None;
         self.loading = None;
+        self.leave_drag();
         self.sketch = None;
+        self.drive_drag(sessions);
         let kept = self
             .edits
             .queue
@@ -3292,8 +3502,38 @@ impl Tab {
     /// none of them, a rebuild running stopped quietly
     /// ([`stop_quietly`](Self::stop_quietly)).
     pub fn escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        // A drag held ends from its begin state: section 3's first, before anything else.
+        if self.cancel_drag(sessions) {
+            return;
+        }
+        // The canvas's right-click menu closes.
+        if self
+            .sketch
+            .as_mut()
+            .is_some_and(|mode| mode.menu_at.take().is_some())
+        {
+            return;
+        }
+        // The over-define prompt's Esc is its Cancel (the prototype's key).
+        if self
+            .sketch
+            .as_ref()
+            .is_some_and(|mode| mode.offer().is_some())
+        {
+            self.sketch_offer(sessions, OfferChoice::Cancel);
+            return;
+        }
+        // A placed dimension's Modify box closes, its value as it was.
+        if self
+            .sketch
+            .as_mut()
+            .is_some_and(|mode| mode.edit_box.take().is_some())
+        {
+            return;
+        }
         let tool_left = self.sketch.as_mut().is_some_and(SketchMode::escape_tool);
         if tool_left {
+            self.sketch_requests(sessions);
             return;
         }
         if let Some(mode) = self
@@ -4216,9 +4456,13 @@ impl Tab {
     /// transaction: as a dialog's OK and Cancel are ([`close_dialog`](Self::close_dialog)).
     /// Neither while the tab closes.
     pub fn finish_sketch<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, ok: bool) {
-        if self.closing() || self.sketch.take().is_none() {
+        if self.closing() || self.sketch.is_none() {
             return;
         }
+        // Its close waits for a drag's end (the queue waits while one is under way).
+        self.leave_drag();
+        self.sketch = None;
+        self.drive_drag(sessions);
         self.edits
             .queue
             .push_back(Queued::Closed { ok, sketch: true });
@@ -4237,6 +4481,8 @@ impl Tab {
     pub fn sketch_choose(&mut self, choice: Option<Choice>) {
         if let Some(mode) = self.sketch.as_mut() {
             mode.tools.choose(choice);
+            // The canvas menu was of the tool before.
+            mode.menu_at = None;
         }
     }
 
@@ -4250,9 +4496,99 @@ impl Tab {
         input: &FrameInput<'_>,
     ) {
         if let Some(mode) = self.sketch.as_mut() {
-            mode.frame(painter, input);
+            mode.frame(painter, input, &mut self.drag);
         }
         self.sketch_requests(sessions);
+        self.drive_drag(sessions);
+    }
+
+    /// The over-define prompt's `choice` (SD7): what it sends queued, against the revision
+    /// its dimension's add or edit made, and the prompt closed. Nothing while the tab
+    /// closes, whose queue takes no edit (the prompt closes all the same).
+    pub fn sketch_offer<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        choice: OfferChoice,
+    ) {
+        if let Some(mode) = self.sketch.as_mut()
+            && mode.answer_offer(choice)
+        {
+            self.message = None;
+        }
+        self.sketch_requests(sessions);
+    }
+
+    /// The Modify box asked `action` ([`SketchMode::modify`]); what it asks sent.
+    pub fn sketch_modify<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        action: ModifyAction,
+    ) {
+        if let Some(mode) = self.sketch.as_mut() {
+            mode.modify(action);
+        }
+        self.sketch_requests(sessions);
+    }
+
+    /// Sketch mode's drag driven, never waited on: its begin sent once its press has moved
+    /// and nothing of the tab's is under way (a transaction begun first, so its end's edit
+    /// is held and undone as any other's), and its answers polled and its moves and end sent
+    /// ([`Drag::poll`]); its refusals said, its end's edit taken as an edit's is.
+    fn drive_drag<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let ready = self.quiet() && !self.closing() && self.sketch.is_some();
+        let Some(mut drag) = self.drag.take() else {
+            return;
+        };
+        // Only from a read of the state the session is at: a press on an older one (an edit
+        // since, its read still to come) drags nothing.
+        if drag.wants_begin() && ready && self.state_of(drag.model) != self.state_of(self.revision)
+        {
+            if let Some(mode) = self.sketch.as_mut() {
+                mode.let_go_press();
+            }
+            return;
+        }
+        if drag.wants_begin() && ready {
+            self.message = None;
+            self.begin_if_none(sessions);
+            self.supersede_preview();
+            self.record(Sent::SketchEdit("drag_begin"));
+            self.drag_sending = Some(self.sending());
+            drag.begun(sessions.drag_begin(&self.id, drag.sketch.clone(), drag.grab.clone()));
+        }
+        for news in drag.poll(sessions, &self.id) {
+            match news {
+                News::EndSent => self.record(Sent::SketchEdit("drag_end")),
+                News::Refused(problems) => self.message = Some(said(&problems)),
+                News::Ended(response) => {
+                    self.took_session(&response);
+                    if let Some(sending) = self.drag_sending.take() {
+                        self.applied(sending, &response);
+                    }
+                    match &response.result {
+                        Ok(ended) if ended.changed => {
+                            if let Some(mode) = self.sketch.as_mut() {
+                                mode.undone = 0;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(problems) => self.message = Some(said(problems)),
+                    }
+                }
+            }
+        }
+        if self.sketch.is_none() {
+            drag.unshown();
+        }
+        let in_flight = drag.in_flight();
+        // Kept till it's over; then let go, so the next press may begin another.
+        if self.drag.is_none() && !drag.over() {
+            self.drag = Some(drag);
+        }
+        // Its end answered: what waited behind it (a close among them) goes now.
+        if !in_flight {
+            self.advance(sessions);
+        }
     }
 
     /// Enter in sketch mode: a tool's chain ended, the tool kept (section 9, *Line*).
@@ -4282,8 +4618,44 @@ impl Tab {
         let Some(mode) = self.sketch.as_mut() else {
             return;
         };
+        let asks = mode.take_asks();
+        let serial = mode.serial;
+        let mut asked = false;
+        for ask in asks {
+            if closing {
+                continue;
+            }
+            let next = match ask {
+                Ask::Value {
+                    sketch,
+                    constraint,
+                    value,
+                } => {
+                    mode.undone = 0;
+                    Queued::DimensionValue {
+                        serial,
+                        sketch,
+                        constraint,
+                        value,
+                    }
+                }
+                Ask::Offer(request) => {
+                    // Driven is an edit: Redo has nothing of sketch mode's to give back.
+                    if matches!(request, OfferRequest::SetField { .. }) {
+                        mode.undone = 0;
+                    }
+                    Queued::Offer { serial, request }
+                }
+            };
+            self.message = None;
+            self.edits.queue.push_back(next);
+            asked = true;
+        }
         let requests = mode.tools.take_requests();
         if requests.is_empty() {
+            if asked {
+                self.advance(sessions);
+            }
             return;
         }
         let Some(sketch) = mode.sketch.clone() else {

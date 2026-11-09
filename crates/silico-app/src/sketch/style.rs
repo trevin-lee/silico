@@ -4,7 +4,7 @@
 //! move deletes them; the sketch's own follow, under the names agreed for it. The app is
 //! dark only, as the prototype is.
 
-use eframe::egui::{Color32, Margin, Stroke};
+use eframe::egui::{self, Color32, Margin, Stroke};
 
 // ---- Stand-ins for `theme.rs`'s shared tokens: its names, types, and values ----
 
@@ -155,3 +155,65 @@ pub const SKETCH_BAR_HEIGHT: f32 = 32.0;
 /// points.
 pub const SKETCH_CHORD_TOLERANCE: f32 = 0.25;
 pub const SKETCH_PICK_TOLERANCE: f32 = 7.0;
+
+// ---- M5.11c: Smart Dimension, the over-define prompt, and drags ----
+
+/// A drag's ghost (section 9, *Ghost image on drag*): the begin state drawn at this share
+/// of its colour.
+pub const SKETCH_GHOST_OPACITY: f32 = 0.35;
+/// How far a press must move, in points, before it's a drag rather than a click: behaviour,
+/// which stays here.
+pub const SKETCH_DRAG_THRESHOLD: f32 = 3.0;
+
+/// The Modify box (the prototype's `.modify-box`): its frame's fill (Gray.200) and border
+/// (Blue.500), and its field's width; a field's fill (Gray.150, a dialog's Gray.200, which
+/// Gray.250 when hovered), border (Gray.350; none in a dialog), its border focused (the focus
+/// blue), and invalid (Red.550). Its hint's size; and the over-define prompt's width (the
+/// prototype's `.modal`), its choices' border (Gray.250), and the keys' fill (Gray.250) and
+/// border (Gray.350).
+pub const SKETCH_MODIFY_BG: Color32 = hex(0x212121);
+pub const SKETCH_MODIFY_STROKE: Color32 = SELECTION_BG;
+pub const SKETCH_MODIFY_FIELD_WIDTH: f32 = 72.0;
+pub const FIELD_BG: Color32 = hex(0x212121);
+pub const FIELD_BG_HOVERED: Color32 = hex(0x272626);
+pub const MODIFY_FIELD_BG: Color32 = hex(0x171717);
+pub const MODIFY_FIELD_STROKE: Color32 = GRAY_350;
+pub const SKETCH_MODIFY_HINT_SIZE: f32 = 10.5;
+/// The most characters the Modify box's field takes: far past any number a document
+/// writes, so nothing typed there is cut, while a paste of a page isn't held.
+pub const MODIFY_CHAR_LIMIT: usize = 256;
+pub const SKETCH_PROMPT_WIDTH: f32 = 440.0;
+pub const SKETCH_PROMPT_CHOICE_STROKE: Color32 = PANEL_BORDER;
+pub const SKETCH_KEY_BG: Color32 = PANEL_BORDER;
+pub const SKETCH_KEY_STROKE: Color32 = GRAY_350;
+
+/// Which field a frame is for: a feature dialog's, or the Modify box's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    Dialog,
+    Modify,
+}
+
+/// A field's frame, as the prototype draws one (`.field`, `.modify-box input`): a stand-in
+/// of `theme::field_frame`'s exact signature, until the theme lands, which this then
+/// becomes. Its fill by its kind (a dialog's lighter when `hovered`); its border the focus
+/// blue when `focused`, red when `invalid` (which wins), else its kind's.
+pub fn field_frame(kind: FieldKind, hovered: bool, focused: bool, invalid: bool) -> egui::Frame {
+    let (fill, rest) = match kind {
+        FieldKind::Dialog if hovered && !focused => (FIELD_BG_HOVERED, Color32::TRANSPARENT),
+        FieldKind::Dialog => (FIELD_BG, Color32::TRANSPARENT),
+        FieldKind::Modify => (MODIFY_FIELD_BG, MODIFY_FIELD_STROKE),
+    };
+    let border = if invalid {
+        ERROR_TEXT
+    } else if focused {
+        FOCUS
+    } else {
+        rest
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0, border))
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(Margin::symmetric(6, 2))
+}

@@ -133,7 +133,7 @@ impl Desk {
                 project: &hand,
                 to_plane: &unhand,
             };
-            mode.frame(painter, &input);
+            mode.frame(painter, &input, &mut None);
         });
         self.take();
     }
@@ -976,6 +976,7 @@ fn no_tool_works_before_its_sketch_is_read_or_on_a_read_of_another() {
                 project: &hand,
                 to_plane: &unhand,
             },
+            &mut None,
         );
     });
     assert!(!mode.tools.busy());
@@ -995,6 +996,7 @@ fn no_tool_works_before_its_sketch_is_read_or_on_a_read_of_another() {
                 project: &hand,
                 to_plane: &unhand,
             },
+            &mut None,
         );
     });
     assert!(!mode.tools.busy());
@@ -1479,6 +1481,365 @@ fn a_drag_released_off_its_line_past_its_end_trims_where_it_crossed() {
             pick: [30.0, 0.0]
         }]
     );
+}
+
+// ---- Smart Dimension (M5.11c), through #345's API ----
+
+/// A 40 × 20 rectangle from the origin: pa000001 (0, 0), pa000002 (40, 0), pa000003
+/// (40, 20), pa000004 (0, 20), its sides na000001 to na000004 counter-clockwise from the
+/// bottom, and no constraints.
+fn boxed() -> Sketch {
+    Sketch {
+        points: vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 40.0, 0.0),
+            point("pa000003", 40.0, 20.0),
+            point("pa000004", 0.0, 20.0),
+        ],
+        lines: vec![
+            line("na000001", "pa000001", "pa000002"),
+            line("na000002", "pa000002", "pa000003"),
+            line("na000003", "pa000003", "pa000004"),
+            line("na000004", "pa000004", "pa000001"),
+        ],
+        ..empty()
+    }
+}
+
+/// The Modify box's text, as Smart Dimension holds it.
+fn modify_text(desk: &Desk) -> Option<String> {
+    desk.mode
+        .tools
+        .dimension_preview()
+        .and_then(|preview| preview.modify.clone())
+}
+
+/// The length the add `members` places: its line and its value, as the document writes it.
+fn length_of(members: &Members) -> (Reference, String, bool) {
+    match members.constraints.as_slice() {
+        [c] => match &c.form {
+            Form::Length {
+                line,
+                value,
+                driving,
+            } => (line.clone(), value.to_string(), *driving),
+            other => panic!("not a length: {other:?}"),
+        },
+        other => panic!("not one constraint: {other:?}"),
+    }
+}
+
+#[test]
+fn smart_dimensions_modify_box_text_reaches_the_core_whole_and_what_it_reads_is_placed() {
+    use crate::sketch::dimension::ModifyAction;
+    use silico_core::sketch_tools::{Message, OfferChoice};
+    let mut desk = Desk::new(Choice::Dimension, boxed());
+    // The right side, na000002, (40, 0) to (40, 20), picked at (40, 10); then a click at
+    // (55, 10), off everything: its length, 20, placed there, and the Modify box opened
+    // holding it.
+    desk.frame(&click(40.0, 10.0));
+    assert!(modify_text(&desk).is_none());
+    desk.frame(&click(55.0, 10.0));
+    assert_eq!(modify_text(&desk).as_deref(), Some("20"));
+    assert_eq!(desk.mode.tools.modify_at(), Some([55.0, 10.0]));
+    // The box stands at that click, as the frame projected it: (100 + 550, 500 − 100).
+    let view = desk.mode.modify_view().unwrap();
+    assert_eq!(view.at, Pos2::new(650.0, 400.0));
+    assert_eq!((view.unit, view.placing, view.said), ("mm", true, None));
+    let first = view.opened;
+    // "25mm" reaches the core as typed; the core reads no number of it (SD9), says so, and
+    // the box stays open with the text kept.
+    desk.mode.modify(ModifyAction::Typed("25mm".to_owned()));
+    assert_eq!(modify_text(&desk).as_deref(), Some("25mm"));
+    desk.mode.modify(ModifyAction::Accept);
+    desk.take();
+    assert!(desk.adds.is_empty());
+    let refused = Message::NotANumber.text();
+    assert_eq!(desk.said(), Some(refused.as_str()));
+    assert_eq!(
+        desk.mode.modify_view().unwrap().said.as_deref(),
+        Some(refused.as_str())
+    );
+    assert_eq!(modify_text(&desk).as_deref(), Some("25mm"));
+    // " 25 ", its spaces and all, as typed: what's said goes with the old text, and the
+    // core's reader takes JSON's spaces round the number, 25.
+    desk.mode.modify(ModifyAction::Typed(" 25 ".to_owned()));
+    assert_eq!(modify_text(&desk).as_deref(), Some(" 25 "));
+    assert_eq!(desk.said(), None);
+    desk.mode.modify(ModifyAction::Accept);
+    desk.take();
+    assert_eq!(desk.adds.len(), 1);
+    assert_eq!(
+        length_of(&desk.adds[0]),
+        (Reference::Element(id("na000002")), "25".to_owned(), true)
+    );
+    // Its read leaves the freedoms where they were (the desk's reads all say 0), which the
+    // core takes for a dependent dimension (SD7): its offer holds the tool, and a third
+    // click places nothing but says why.
+    assert!(desk.mode.offer().is_some());
+    desk.frame(&click(20.0, 20.0));
+    desk.frame(&click(20.0, 30.0));
+    assert_eq!(desk.adds.len(), 1);
+    assert!(modify_text(&desk).is_none());
+    // Left driving: nothing asked, and the tool free for the next.
+    assert!(desk.mode.answer_offer(OfferChoice::Leave));
+    assert!(desk.mode.take_asks().is_empty());
+    assert!(desk.mode.offer().is_none());
+    // The top, na000003, 40 long, still picked: placed at (20, 30), and set to "1e1", an
+    // exponent the document reads exactly, 10.
+    desk.frame(&click(20.0, 30.0));
+    assert_eq!(modify_text(&desk).as_deref(), Some("40"));
+    assert!(desk.mode.modify_view().unwrap().opened != first);
+    desk.mode.modify(ModifyAction::Typed("1e1".to_owned()));
+    desk.mode.modify(ModifyAction::Accept);
+    desk.take();
+    assert_eq!(desk.adds.len(), 2);
+    assert_eq!(
+        length_of(&desk.adds[1]),
+        (Reference::Element(id("na000003")), "10".to_owned(), true)
+    );
+}
+
+#[test]
+fn an_offers_three_choices_ask_driven_against_the_revision_its_add_made_cancel_undo_leave_nothing()
+{
+    use crate::sketch::dimension::{Ask, ModifyAction};
+    use silico_core::document::json::Value;
+    use silico_core::sketch_tools::{OfferChoice, OfferRequest};
+    let mut desk = Desk::new(Choice::Dimension, boxed());
+    let place = |desk: &mut Desk, side: [f64; 2], at: [f64; 2]| {
+        desk.frame(&click(side[0], side[1]));
+        desk.frame(&click(at[0], at[1]));
+        desk.mode.modify(ModifyAction::Accept);
+        desk.take();
+        let added = desk.adds.last().unwrap().constraints[0].id.clone();
+        (added, desk.revision)
+    };
+    // Each placement offers (the desk's reads leave the freedoms at 0: dependent).
+    let (added, made) = place(&mut desk, [40.0, 10.0], [55.0, 10.0]);
+    assert_eq!(
+        desk.mode.offer().map(|o| o.constraint.clone()),
+        Some(added.clone())
+    );
+    assert!(desk.mode.answer_offer(OfferChoice::Driven));
+    assert!(desk.mode.offer().is_none());
+    match desk.mode.take_asks().as_slice() {
+        [
+            Ask::Offer(OfferRequest::SetField {
+                revision,
+                feature,
+                field,
+                value,
+            }),
+        ] => {
+            assert_eq!(*revision, made);
+            assert_eq!(*feature, sketch_id());
+            assert_eq!(*field, format!("constraints.{added}.driving"));
+            assert_eq!(value.value, Value::Bool(false));
+        }
+        other => panic!("{other:?}"),
+    }
+    let (_, made) = place(&mut desk, [20.0, 20.0], [20.0, 30.0]);
+    assert!(desk.mode.answer_offer(OfferChoice::Cancel));
+    assert_eq!(
+        desk.mode.take_asks(),
+        [Ask::Offer(OfferRequest::Undo {
+            revision: made,
+            to: None
+        })]
+    );
+    // With none open, a choice answers nothing.
+    assert!(!desk.mode.answer_offer(OfferChoice::Driven));
+    assert!(desk.mode.take_asks().is_empty());
+}
+
+#[test]
+fn a_pick_a_newer_read_no_longer_holds_is_dropped_and_an_open_box_on_it_closes_saying_why() {
+    use silico_core::sketch_tools::Message;
+    let mut desk = Desk::new(Choice::Dimension, boxed());
+    desk.frame(&click(40.0, 10.0));
+    let picks = |desk: &Desk| desk.mode.tools.dimension_preview().unwrap().picks.clone();
+    assert_eq!(picks(&desk), [Reference::Element(id("na000002"))]);
+    // Another client removes the right side mid-pick: the next read drops the pick.
+    desk.sketch.lines.retain(|l| l.id != id("na000002"));
+    desk.revision = desk.revision.next().unwrap();
+    desk.publish();
+    assert!(picks(&desk).is_empty());
+    // A box open on the top when it goes closes, saying the dimension changed.
+    desk.frame(&click(20.0, 20.0));
+    desk.frame(&click(20.0, 30.0));
+    assert_eq!(modify_text(&desk).as_deref(), Some("40"));
+    desk.sketch.lines.retain(|l| l.id != id("na000003"));
+    desk.revision = desk.revision.next().unwrap();
+    desk.publish();
+    assert!(modify_text(&desk).is_none());
+    assert!(desk.mode.modify_view().is_none());
+    assert_eq!(desk.said(), Some(Message::DimensionChanged.text().as_str()));
+    assert!(desk.adds.is_empty());
+}
+
+#[test]
+fn a_right_click_locks_smart_dimensions_kind_and_a_pointer_off_the_plane_does_nothing() {
+    let mut desk = Desk::new(Choice::Dimension, boxed());
+    // The bottom-left corner and the top-right one, (0, 0) and (40, 20): with the pointer
+    // inside the box they span, a slanted distance; locked there by a right-click, it stays
+    // one with the pointer above the box, where it would be a horizontal one.
+    desk.frame(&click(0.0, 0.0));
+    desk.frame(&click(40.0, 20.0));
+    desk.frame(&[ev(PointerAction::Move, 20.0, 10.0)]);
+    let kind = |desk: &Desk| {
+        let preview = desk.mode.tools.dimension_preview().unwrap();
+        (
+            preview.locked,
+            preview.dimension.as_ref().map(|form| match form {
+                Form::Distance { .. } => "distance",
+                Form::DistanceX { .. } => "distance_x",
+                Form::DistanceY { .. } => "distance_y",
+                _ => "other",
+            }),
+        )
+    };
+    assert_eq!(kind(&desk), (false, Some("distance")));
+    desk.frame(&[ev(PointerAction::Move, 20.0, 30.0)]);
+    assert_eq!(kind(&desk), (false, Some("distance_x")));
+    desk.frame(&[ev(PointerAction::Move, 20.0, 10.0)]);
+    desk.frame(&[ev(PointerAction::RightClick, 20.0, 10.0)]);
+    desk.frame(&[ev(PointerAction::Move, 20.0, 30.0)]);
+    assert_eq!(kind(&desk), (true, Some("distance")));
+    // A right-click where the plane gives no place is no event of the tool's.
+    let before = kind(&desk);
+    let nowhere = PointerEvent {
+        action: PointerAction::RightClick,
+        at: Pos2::new(f32::NAN, f32::NAN),
+        shift: false,
+        ctrl: false,
+    };
+    desk.frame_at(&[nowhere], None);
+    assert_eq!(kind(&desk), before);
+}
+
+#[test]
+fn a_cancelled_press_keeps_smart_dimensions_picks_and_leaves_no_press_held() {
+    let mut desk = Desk::new(Choice::Dimension, boxed());
+    let picks = |desk: &Desk| desk.mode.tools.dimension_preview().unwrap().picks.clone();
+    // A press on nothing, cancelled (focus lost): nothing under way after it.
+    desk.frame(&[ev(PointerAction::Press, 20.0, 10.0)]);
+    assert!(desk.mode.tools.busy());
+    desk.frame(&[ev(PointerAction::Cancel, 20.0, 10.0)]);
+    assert!(!desk.mode.tools.busy());
+    // The right side picked; a press on the top, cancelled: the pick kept, the top not
+    // picked, and nothing placed.
+    desk.frame(&click(40.0, 10.0));
+    desk.frame(&[ev(PointerAction::Press, 20.0, 20.0)]);
+    desk.frame(&[ev(PointerAction::Cancel, 20.0, 20.0)]);
+    assert_eq!(picks(&desk), [Reference::Element(id("na000002"))]);
+    assert!(modify_text(&desk).is_none());
+    assert!(desk.adds.is_empty());
+    // The next click places the right side's length, as it would have.
+    desk.frame(&click(55.0, 10.0));
+    assert_eq!(modify_text(&desk).as_deref(), Some("20"));
+}
+
+#[test]
+fn a_refused_dimension_add_frees_smart_dimension_for_the_next() {
+    use crate::sketch::dimension::ModifyAction;
+    let mut desk = Desk::new(Choice::Dimension, boxed());
+    desk.holding = true;
+    // The right side's length placed: its add sent, unanswered, holds the tool.
+    desk.frame(&click(40.0, 10.0));
+    desk.frame(&click(55.0, 10.0));
+    desk.mode.modify(ModifyAction::Accept);
+    desk.take();
+    let [(token, _)] = desk.held.as_slice() else {
+        panic!("{:?}", desk.held);
+    };
+    let token = *token;
+    assert!(desk.mode.tools.busy());
+    // Refused: forgotten, the tool free, and the next placement opens its box.
+    desk.mode.tools.refused(token);
+    assert!(!desk.mode.tools.busy());
+    desk.frame(&click(20.0, 20.0));
+    desk.frame(&click(20.0, 30.0));
+    assert_eq!(modify_text(&desk).as_deref(), Some("40"));
+}
+
+#[test]
+fn smart_dimensions_boxes_count_down_from_the_top_and_a_reload_closes_the_one_open() {
+    let mut desk = Desk::new(Choice::Dimension, boxed());
+    // The first box opened is u64::MAX − 1, apart from placed dimensions' boxes, which count
+    // up from 1.
+    desk.frame(&click(40.0, 10.0));
+    desk.frame(&click(55.0, 10.0));
+    assert_eq!(modify_text(&desk).as_deref(), Some("20"));
+    assert_eq!(desk.mode.modify_view().unwrap().opened, u64::MAX - 1);
+    // The session gone back to its file (a reload): the box closed, nothing under way, and
+    // with the reload's read, none drawn.
+    desk.mode.tools.forget_pending();
+    assert_eq!(desk.mode.tools.modify_at(), None);
+    assert!(!desk.mode.tools.busy());
+    desk.publish();
+    assert!(modify_text(&desk).is_none());
+    assert!(desk.adds.is_empty());
+    // The next is u64::MAX − 2.
+    desk.frame(&click(20.0, 20.0));
+    desk.frame(&click(20.0, 30.0));
+    assert_eq!(modify_text(&desk).as_deref(), Some("40"));
+    assert_eq!(desk.mode.modify_view().unwrap().opened, u64::MAX - 2);
+}
+
+#[test]
+fn both_modify_boxes_read_the_same_text_the_same_way() {
+    use crate::sketch::dimension::{ModifyAction, edit_value};
+    // Each text typed in Smart Dimension's box, placing the right side's length, and given
+    // to a placed length's box: the same value placed and sent, or the same words said.
+    for text in [
+        "25",
+        " 25 ",
+        "1e1",
+        "25.000001",
+        "1.2345678",
+        "25mm",
+        "abc",
+        "true",
+        "null",
+        "\"25\"",
+        "",
+        "0",
+        "-3",
+        "1e7",
+    ] {
+        let mut desk = Desk::new(Choice::Dimension, boxed());
+        desk.frame(&click(40.0, 10.0));
+        desk.frame(&click(55.0, 10.0));
+        let measured = desk
+            .mode
+            .tools
+            .dimension_preview()
+            .and_then(|p| p.dimension.clone())
+            .unwrap();
+        desk.mode.modify(ModifyAction::Typed(text.to_owned()));
+        desk.holding = true;
+        desk.mode.modify(ModifyAction::Accept);
+        desk.take();
+        let placed = match desk.held.as_slice() {
+            [(_, members)] => match &members.constraints[0].form {
+                Form::Length { value, .. } => Ok(value.to_string()),
+                other => panic!("{other:?}"),
+            },
+            [] => Err(desk.said().unwrap_or_default().to_owned()),
+            other => panic!("{other:?}"),
+        };
+        let sent = edit_value(&measured, text).map(|node| match node.value {
+            silico_core::document::json::Value::Number(number) => number,
+            other => panic!("{other:?}"),
+        });
+        // The gate's range (above 0, within reach) is the add's or the edit's to meet: a
+        // value Smart Dimension's own check refuses there is still one the edit sends.
+        match (&placed, &sent) {
+            (Err(_), Ok(_)) if ["0", "-3", "1e7"].contains(&text) => {}
+            _ => assert_eq!(placed, sent, "{text:?}"),
+        }
+    }
 }
 
 // ---- #364's mutants: the pick's edges, an arc's turn, and where a drag heads ----

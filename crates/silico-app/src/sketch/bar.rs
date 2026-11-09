@@ -163,15 +163,27 @@ impl Default for Settings {
     }
 }
 
+/// What the palette shows of Smart Dimension while it's on: how many are picked, whether a
+/// right-click locked the kind, and why nothing is offered for what's picked, if nothing is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DimensionShown {
+    pub picks: usize,
+    pub locked: bool,
+    pub unavailable: Option<String>,
+}
+
 /// What the palette shows: the sketch's state, and a word on what it means; the tool on,
-/// and what it last said; the read's refusal, as said; and why the sketch's face wasn't
-/// found (#347), with its suggestion.
+/// and what it last said; Smart Dimension's picks and lock; whether a drag is under way;
+/// the read's refusal, as said; and why the sketch's face wasn't found (#347), with its
+/// suggestion.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaletteView {
     pub state: Option<StateShown>,
     pub hint: Option<&'static str>,
     pub tool: Option<Choice>,
     pub tool_said: Option<String>,
+    pub dimension: Option<DimensionShown>,
+    pub dragging: bool,
     pub said: Option<String>,
     pub plane_problem: Option<(String, Option<String>)>,
 }
@@ -194,6 +206,7 @@ pub fn tool_name(tool: ToolKind) -> &'static str {
 pub fn choice_name(choice: Choice) -> &'static str {
     match choice {
         Choice::Draw(tool) => tool_name(tool),
+        Choice::Dimension => "Smart Dimension",
         Choice::Trim => "Trim",
         Choice::Split => "Split",
     }
@@ -228,6 +241,9 @@ fn usage(choice: Choice, trim: TrimMode) -> &'static str {
             "Click a curve to trim it to its closest cuts. Drag from one to extend it."
         }
         (Choice::Split, _) => "Click a curve to split it there. A circle takes two clicks.",
+        (Choice::Dimension, _) => {
+            "Click a line, a circle, or an arc, or two points or lines, then where the dimension goes. Right-click locks its kind. Esc undoes the last pick."
+        }
     }
 }
 
@@ -295,14 +311,36 @@ fn tool_section(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
                 ui.radio_value(&mut settings.trim, TrimMode::Power, "Power trim");
                 ui.radio_value(&mut settings.trim, TrimMode::Closest, "Trim to closest");
             }
+            if let Some(shown) = &view.dimension {
+                let picked = match shown.picks {
+                    0 => "Nothing picked".to_owned(),
+                    1 => "1 picked".to_owned(),
+                    n => format!("{n} picked"),
+                };
+                let locked = if shown.locked { " · kind locked" } else { "" };
+                ui.label(small(&format!("{picked}{locked}")).color(TEXT_DEFAULT));
+                if let Some(unavailable) = &shown.unavailable {
+                    ui.label(small(unavailable).color(WARNING));
+                }
+            }
             if let Some(said) = &view.tool_said {
                 ui.label(small(said).color(WARNING));
             }
         }
+        None if view.dragging => {
+            ui.label(RichText::new("Dragging").color(TEXT_STRONG));
+            ui.label(small("Release to place it, Esc to put it back.").color(TEXT_SUBDUED));
+        }
         None => {
             ui.label(
-                small("None. Line L, Rectangle R, Circle C, Arc A, Point P, Trim T")
+                small("None. Line L, Rectangle R, Circle C, Arc A, Point P, Trim T, Dimension D")
                     .color(TEXT_SUBDUED),
+            );
+            ui.label(
+                small(
+                    "Drag a blue point or curve to move it: what's fully defined stays put. Double-click a dimension to change it.",
+                )
+                .color(TEXT_SUBDUED),
             );
         }
     }
