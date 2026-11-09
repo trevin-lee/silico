@@ -4036,3 +4036,163 @@ fn an_edge_as_long_as_the_renderer_draws_across_a_perspective_view_is_cut_then_m
         },
     );
 }
+
+#[test]
+fn an_edge_is_drawn_again_for_picking_within_half_its_stroke_and_a_pixel_of_the_rectangle_and_no_farther()
+ {
+    on_lavapipe(
+        "render::frame_tests::an_edge_is_drawn_again_for_picking_within_half_its_stroke_and_a_pixel_of_the_rectangle_and_no_farther",
+        |r| {
+            // The front view's box and two edges across its front face, (10, 0, z)–(30, 0, z),
+            // columns 20 to 41.82: at z = 4.5 along row 24 + 2.5 × 12/11 = 26.73, and at z = 4
+            // along row 24 + 3 × 12/11 = 27.27. At a pixel a point, a frame picking the pixel
+            // (32, 24), rows 24 to 25, draws again the edges whose box lands within half their
+            // stroke (a point, a pixel) and a pixel more of it: rows 22 to 27, columns 30 to 35.
+            // So the first, 0.27 inside, and not the second, 0.27 past, nor any of the box's
+            // twelve (along rows 20.73 and 31.64, down columns 9.09 and 52.73, or at their
+            // corners); picking the pixel below, rows 23 to 28, both. A margin a pixel wider
+            // (rows 21 to 28) would take both at once; one of the pixel alone (rows 23 to 26,
+            // then 24 to 27), neither, then only the first.
+            let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+            for z in [4.5, 4.0] {
+                mesh.edge_points.extend([[10.0, 0.0, z], [30.0, 0.0, z]]);
+                mesh.edge_point_counts.push(2);
+            }
+            r.upload(1, &Arc::new(mesh)).unwrap();
+            let camera = front();
+            for (z, row) in [(4.5, 24.0 + 30.0 / 11.0), (4.0, 24.0 + 36.0 / 11.0)] {
+                assert_pixel(
+                    project(&camera, [WIDTH, HEIGHT], [21.0, 0.0, z]),
+                    [32.0, row],
+                    1e-6,
+                );
+            }
+            let drawn = || super::EDGE_PICKS_DRAWN.with(std::cell::Cell::get);
+            for (row, more) in [(24, 1), (25, 2)] {
+                let before = drawn();
+                draw(r, &frame(&camera, &[1], &[], Some(rect([32, row], [1, 1]))));
+                assert_eq!(drawn(), before + more, "picking row {row}");
+            }
+        },
+    );
+}
+
+#[test]
+fn at_four_pixels_a_point_a_concave_edge_is_picked_two_and_a_half_pixels_off_its_line() {
+    on_lavapipe(
+        "render::frame_tests::at_four_pixels_a_point_a_concave_edge_is_picked_two_and_a_half_pixels_off_its_line",
+        |r| {
+            use Element::{Edge, Face};
+            // The L from (45, 10, 85) about the concave edge's middle, (5, 10, 5), z up,
+            // orthographic and 100 mm high over 800 rows: 0.125 mm a pixel. Its axes by hand:
+            // back (1, 0, 2)/√5, up (−2, 0, 1)/√5, right up × back = (0, 1, 0); a point lands at
+            // column 400 + 8 (y − 10) and row 400 + 8 (2 (x − 5) − (z − 5))/√5. Edge1,
+            // (5, y, 5), lies along row 400 from column 320 to 480, and the floor (Face1, z = 5)
+            // below it, a millimetre of x 16/√5 pixels down and 1/√5 mm toward the eye: half a
+            // pixel of depth a pixel. The pixel (400, 402), its centre 2.5 pixels below the
+            // line, is inside the stroke's half width at 4 pixels a point (a point, 4 pixels),
+            // and the floor there is 1.25 pixels of depth nearer the eye than the line: it hides
+            // the drawn stroke, and not the picking strip, 2 pixels of depth toward the eye. So
+            // the pixel is the edge's at 4 pixels a point, and the floor's at 1, whose 1-pixel
+            // stroke misses it. The strip is drawn for a rectangle its box lands within half
+            // the stroke and a pixel of, rows 397 to 408 at 4 pixels a point; within a quarter
+            // of a pixel and a pixel (rows 400.75 to 404.25), or a pixel alone, it would be left
+            // out. The L's other edges along y lie along rows 382.1 (x and z 0) and farther,
+            // and those across it down columns 320 and 480: the strip is Edge1's alone.
+            let mesh = Arc::new(l_mesh());
+            r.upload(1, &mesh).unwrap();
+            let camera = Camera {
+                projection: Projection::Orthographic { view_height: 100.0 },
+                eye: [45.0, 10.0, 85.0],
+                target: [5.0, 10.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            let r5 = 5f64.sqrt();
+            for (p, want) in [
+                ([5.0, 10.0, 5.0], [400.0, 400.0]),
+                ([5.0, 20.0, 5.0], [480.0, 400.0]),
+                ([7.0, 10.0, 5.0], [400.0, 400.0 + 32.0 / r5]),
+                ([0.0, 10.0, 0.0], [400.0, 400.0 - 40.0 / r5]),
+            ] {
+                assert_pixel(project(&camera, SQUARE, p), want, 1e-4);
+            }
+            let at = [400, 402];
+            let picking = |ppp: f32| Frame {
+                size_px: SQUARE,
+                pixels_per_point: ppp,
+                ..frame(&camera, &[1], &[], Some(rect([400, 402], [1, 1])))
+            };
+            let drawn = || super::EDGE_PICKS_DRAWN.with(std::cell::Cell::get);
+            let before = drawn();
+            assert_eq!(hit(r, &picking(4.0)), Some((1, Edge(1), at)));
+            assert_eq!(drawn(), before + 1);
+            assert_eq!(hit(r, &picking(1.0)), Some((1, Face(1), at)));
+        },
+    );
+}
+
+#[test]
+fn a_body_behind_a_perspective_eye_has_no_edge_drawn_again_for_picking_though_its_box_meets_the_rectangle()
+ {
+    on_lavapipe(
+        "render::frame_tests::a_body_behind_a_perspective_eye_has_no_edge_drawn_again_for_picking_though_its_box_meets_the_rectangle",
+        |r| {
+            // From (0, −100, 0) along +y, 90° high, 64 by 48: a point (x, y, z) at depth
+            // d = y + 100 lands at column 32 + 24 x / d and row 24 − 24 z / d. Body 2, an edge
+            // (−10, 0, 0)–(10, 0, 0), lies along row 24 from column 29.6 to 34.4, through the
+            // picking pixel (32, 24). Body 1, an edge (−100, −110, −100)–(100, −110, 100), 10 mm
+            // behind the eye, is wholly outside the frustum its stroke reaches the image from
+            // (whose depths are above 0). The rectangle a frame's edges are drawn again within,
+            // at a pixel a point columns 30 to 35 and rows 22 to 27, has its sides, times the
+            // depth, 24 x + 2 d, 3 d − 24 x, 2 d − 24 z, and 24 z + 3 d, each at least 0 inside;
+            // behind the eye their signs turn, and a corner of body 1's box (d = −10, x and z
+            // ±100) gives each 2370 or more, so that test alone takes it. Only the frustum keeps
+            // it out: the edge drawn again is body 2's alone, and it's picked.
+            let edge = |a: [f64; 3], b: [f64; 3]| {
+                Arc::new(Mesh {
+                    positions: vec![],
+                    normals: vec![],
+                    triangles: vec![],
+                    face_triangles: vec![],
+                    edge_points: vec![a, b],
+                    edge_point_counts: vec![2],
+                    vertex_points: vec![],
+                    valid: None,
+                })
+            };
+            let (low, high) = ([-100.0, -110.0, -100.0], [100.0, -110.0, 100.0]);
+            r.upload(1, &edge(low, high)).unwrap();
+            r.upload(2, &edge([-10.0, 0.0, 0.0], [10.0, 0.0, 0.0]))
+                .unwrap();
+            let camera = Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 90.0,
+                },
+                eye: [0.0, -100.0, 0.0],
+                target: [0.0; 3],
+                up: [0.0, 0.0, 1.0],
+            };
+            let size = [WIDTH, HEIGHT];
+            assert_pixel(
+                project(&camera, size, [10.0, 0.0, -5.0]),
+                [34.4, 25.2],
+                1e-9,
+            );
+            assert_eq!(project(&camera, size, high), None);
+            let centre = rect([32, 24], [1, 1]);
+            let projector = super::Projector::new(&camera, size).unwrap();
+            assert!(
+                super::Near::of(centre, 1.0)
+                    .sides(&projector)
+                    .meets_box((low, high))
+            );
+            let drawn = || super::EDGE_PICKS_DRAWN.with(std::cell::Cell::get);
+            let before = drawn();
+            assert_eq!(
+                hit(r, &frame(&camera, &[1, 2], &[], Some(centre))),
+                Some((2, Element::Edge(1), [32, 24]))
+            );
+            assert_eq!(drawn(), before + 1);
+        },
+    );
+}
