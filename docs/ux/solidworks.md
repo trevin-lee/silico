@@ -147,7 +147,7 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 
 ### Sketch visibility
 
-- A sketch a feature absorbs (an extrude's or a cut's) is hidden once the feature is made, and users report it can't be turned off; a sketch nothing absorbs shows. *(Unofficial: the help's Hide/Show Sketch pages cover drawings only and don't state the rule. Reported in an Eng-Tips thread, "How do I make sketch lines that are behind a solid not show?", and a Siemens community thread comparing NX with how SolidWorks hides a sketch once it's extruded.)*
+- A sketch a feature absorbs (an extrude's or a cut's) is hidden once the feature is made, and users report it can't be turned off; a sketch nothing absorbs shows. *(Unofficial: the help's *Hiding and Showing Sketches* page ([2022 help](https://help.solidworks.com/2022/english/SolidWorks/sldworks/t_hiding_and_showing_sketches.htm)) covers drawings only and doesn't state the rule. Reported in an Eng-Tips thread ([Eng-Tips, "How do I make sketch lines that are behind a solid not show?"](https://www.eng-tips.com/threads/how-do-i-make-sketch-lines-that-are-behind-a-solid-not-show.273813/)) and a Siemens community thread comparing NX with "how solidworks hides the sketch once u use it for an extrude or cut" ([Siemens Community, "Is there a way to make the sketches disappear after I create a feature?", 2024](https://community.sw.siemens.com/s/question/0D5Vb00000PePNGKA3/)).)*
 
 ## 5. Features
 
@@ -270,5 +270,6 @@ What this note looked for and couldn't source from the help:
 - Dimensioning: Smart Dimension's type chosen from the pick, the Modify box, Enter and Esc, a value driving the geometry. Not read for this note; read from the help for M5.11 in docs/study/smart-dimension.md, which the decisions SD1 to SD9 (M5.0, section 9) take.
 - Starting a sketch beyond the view: which planes and faces may be picked. (*Auto-rotate view normal to sketch plane on sketch creation and sketch edit* is an option, and the view reverts if the changes are discarded: [Sketch Options](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_OPTIONS_SKETCH.htm).)
 - The export dialog (M5.12), what happens to a selection when a rebuild removes its entity (M5.7), and the pick tolerance.
+- Whether a sketch a feature absorbs is hidden (only from unofficial sources: §4, *Sketch visibility*).
 
 The draft M5 plan's corner rectangle (M5.11) and suppression (M5.1) follow §4 and §5 above.
