@@ -378,6 +378,11 @@ jobs:
         with:
           name: mutants-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/out/mutants.out
+          # Only this run's summary reads a shard's artifact, and it copies every outcome into
+          # the run's own `mutants` artifact, so a week is plenty. At GitHub's default of 90
+          # days, the shards filled the account's artifact storage (3.25 GB on 2026-11-08) and
+          # every upload failed.
+          retention-days: 7
       - name: Remove the test scratch
         if: ${{ always() }}
         run: bash .github/scratch.sh end
