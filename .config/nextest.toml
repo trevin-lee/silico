@@ -2,6 +2,15 @@
 [profile.default]
 slow-timeout = { period = "30s", terminate-after = 4 }
 
+# M5.12's scripted slice (silico-app's tests/slice.rs): the bracket built through the app on
+# the real workers and lavapipe, its exports read back by FreeCAD: about 135 s unloaded, 225 s
+# on CI's gate (2026-11-09). Before `stress|oracle`, which its name also matches: nextest takes
+# each setting from the first override that matches. Named here: renaming it means renaming
+# it here and in tests/mutants.sh.
+[[profile.default.overrides]]
+filter = 'package(silico-app) & test(=the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_reads_back)'
+slow-timeout = { period = "60s", terminate-after = 10 }
+
 # The stress and oracle suites legitimately run for minutes.
 [[profile.default.overrides]]
 filter = 'test(/stress|oracle/)'
@@ -39,14 +48,6 @@ render = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = 'package(silico-core) & test(/_promptly$|size_or_memory_limits|opens_exactly_when|exactly_the_size|exponent_past_i128|loosely_spelled|exactly_when_it_takes_more|exactly_when_they_take_more/)'
 test-group = 'document-heavy'
-slow-timeout = { period = "60s", terminate-after = 10 }
-
-# M5.12's scripted slice (silico-app's tests/slice.rs): the bracket built through the app on
-# the real workers and lavapipe, its exports read back by FreeCAD: about 155 s unloaded, 225 s
-# on CI's gate (2026-11-09). Named here: renaming it means renaming it here and in
-# tests/mutants.sh.
-[[profile.default.overrides]]
-filter = 'package(silico-app) & test(=the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_reads_back)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
 # The 300 mm sphere and torus exported at 0.01 (silico-kernel adversarial_export): 22 s of

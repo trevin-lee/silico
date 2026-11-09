@@ -403,18 +403,15 @@ fn fully_defined(h: &mut AppUi<KernelPool>) {
     assert_eq!(palette_status(h), "Fully defined");
 }
 
-/// The open sketch, drawn and not yet dimensioned, under defined: the palette's Status says
-/// so, with the freedoms its read leaves.
-fn under_defined(h: &mut AppUi<KernelPool>) {
+/// The open sketch, drawn and not yet dimensioned, under defined with `n` freedoms (the
+/// hand's count): its read's, and the palette's Status saying so.
+fn under_defined(h: &mut AppUi<KernelPool>, n: i32) {
     step(h);
     let dofs = sketch_mode(h)
         .and_then(|mode| mode.drawable())
         .map(|read| read.states.dofs);
-    let status = palette_status(h);
-    assert!(
-        status.starts_with("Under defined ·") && dofs.is_some_and(|d| d > 0),
-        "{status:?}, {dofs:?} freedoms"
-    );
+    assert_eq!(dofs, Some(n));
+    assert_eq!(palette_status(h), format!("Under defined · {n} DOF"));
 }
 
 /// A sketch's points, each as (x, y), and its circles' centres and radii, each sorted.
@@ -445,34 +442,12 @@ fn geometry(sketch: &silico_core::document::Sketch) -> Geometry {
 
 // --- The timeline ------------------------------------------------------------------------
 
-/// A timeline entry, as the tab last read it.
-#[derive(Debug)]
-struct Entry {
-    id: String,
-    kind: &'static str,
-    name: String,
-    problems: u64,
-    warnings: u64,
-}
-
 /// The timeline's entries, as the tab last read them.
-fn entries(h: &AppUi<KernelPool>) -> Vec<Entry> {
+fn entries(h: &AppUi<KernelPool>) -> Vec<silico_core::timeline::Entry> {
     h.state().tabs()[0]
         .timeline
         .as_ref()
-        .and_then(|t| t.features.as_ref())
-        .map(|features| {
-            features
-                .iter()
-                .map(|e| Entry {
-                    id: e.id.to_string(),
-                    kind: e.kind,
-                    name: e.name.clone(),
-                    problems: e.problems,
-                    warnings: e.warnings,
-                })
-                .collect()
-        })
+        .and_then(|t| t.features.clone())
         .unwrap_or_default()
 }
 
@@ -687,7 +662,9 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         read_until(h, "the L's six lines", |s| s.lines.len() == 6);
         settled(h);
         let inferred = drawn(h, "sketch 1");
-        under_defined(h);
+        // The L's 6 points, 12 coordinates, less the 8 relations the tools inferred: 4
+        // freedoms, its four lengths'.
+        under_defined(h, 4);
         // D, Smart Dimension: each line picked, its length placed beside it, typed.
         h.key_press(Key::D);
         step(h);
@@ -981,11 +958,11 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         assert_eq!(fillet["radius"], 5);
         assert_eq!(fillet["base"], ours[2]["id"]);
 
-        // --- The 3MF, as bracket.rs checks it ([`hand::the_bracket_s_mesh`]): one object,
-        // the bracket, printable; meshed at 0.1 mm, each rim 126 chords and each fillet arc
-        // 32 (OCCT's rule by hand), so 8 · 126 + 2 · 33 + 2 · 5 = 1,084 vertices and, closed
-        // and of genus 4, 2 · 1,084 + 12 = 2,180 triangles; its box the part's exactly; and
-        // its volume the part's and its chords' segments', within the 32-bit rounding.
+        // --- The 3MF, as bracket.rs checks it ([`hand::assert_bracket_mesh_as_by_hand`], its
+        // derivation there): one object, the bracket, printable; at 0.1 mm, 126 chords a rim
+        // and 32 an arc of the fillet, so 1,084 vertices and 2,180 triangles; its box the
+        // part's; and its volume the part's and its chords' segments', within the 32-bit
+        // rounding.
         let archive = std::fs::read(dir.join("bracket.3mf")).unwrap();
         let meshes = model(&archive);
         assert_eq!(meshes.len(), 1, "one object, the bracket's");
@@ -996,9 +973,8 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
             chords(PI / 2.0, FILLET_R, TOLERANCE),
         );
         assert_eq!((rim, arc), (126, 32));
-        hand::the_bracket_s_mesh(mesh, TOLERANCE);
+        hand::assert_bracket_mesh_as_by_hand(mesh, TOLERANCE);
         assert_eq!((mesh.vertices.len(), mesh.triangles.len()), (1084, 2180));
-        let volume = 22000.0 - 401.25 * PI;
 
         // --- The STEP, read back by FreeCAD as silico-oracle's STEP tests read theirs:
         // `Part.read`, its volume and area the bracket's by hand within the measure's bound
@@ -1033,7 +1009,7 @@ print("SILICO_ORACLE " + json.dumps({{
                 "{what}: {got}, by hand {hand} ({read})"
             );
         };
-        within("STEP's volume", &read["volume"], volume);
+        within("STEP's volume", &read["volume"], hands[3].sum.volume);
         within("STEP's area", &read["area"], 9500.0 + 137.0 * PI);
         assert_eq!(read["faces"], 13, "{read}");
         assert_eq!(read["solids"], 1, "{read}");
@@ -1106,7 +1082,9 @@ fn sketch_holes(
         settled(h);
     }
     let inferred = drawn(h, "a sketch of holes");
-    under_defined(h);
+    // Two centres and two radii, 6 values, less the one relation the tools inferred (the
+    // second centre plumb or level with the first): 5 freedoms.
+    under_defined(h, 5);
     h.key_press(Key::D);
     step(h);
     let mut count = inferred;

@@ -6,8 +6,18 @@
 //!
 //! These are tests/app.rs's pure-UI helpers, made generic. They move here, and app.rs takes
 //! them from here, by #441, once the PRs open on app.rs have landed: until then app.rs keeps
-//! its own, and a helper here that does otherwise than app.rs's has a name of its own
-//! (`click_as_a_person`, `SLICE_WAIT`), so the move is a delete.
+//! its own. Where the two differ, the move keeps one behaviour:
+//! - `step_until`, and every helper that waits through it, waits up to [`SLICE_WAIT`] (120 s),
+//!   app.rs's `WAIT` 60 s;
+//! - `create` clicks the kind on the CREATE toolbar; app.rs's opens the CREATE menu for a
+//!   primitive;
+//! - `open_export` takes the dialog's title; app.rs's knows its own fixture's;
+//! - `on_lavapipe` passes the re-run test's stderr on when it passes (the slice's record);
+//! - `click_as_a_person` (a pause, then the press and the release over separate frames) where
+//!   app.rs has `click_at`; `type_over` (Home and a Delete for each character the field
+//!   holds) where it has `set_field` and `retype`; `tick` finds a checkbox by its own label.
+//!
+//! The others do what app.rs's do, but for their paths and genericity.
 #![allow(dead_code)]
 
 use std::path::Path;
@@ -231,11 +241,6 @@ pub fn modify<P: Clients + 'static>(h: &mut AppUi<P>, kind: &str) {
     step_until(h, "the dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, kind).is_some()
     });
-}
-
-/// The dialog's input labelled `label`.
-pub fn input<'a, P: Clients + 'static>(h: &'a AppUi<P>, label: &'a str) -> egui_kittest::Node<'a> {
-    dialog(h).get_by_role_and_label(Role::TextInput, label)
 }
 
 /// Whether the dialog's choice `key`, a drop-down, shows `option` chosen.
