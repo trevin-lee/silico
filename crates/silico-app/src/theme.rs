@@ -493,9 +493,11 @@ pub const SKETCH_BAR_HEIGHT: f32 = 32.0;
 /// The canvas: a vertical gradient, soft charcoal along its top to a lighter grey along its
 /// bottom, as Fusion's dark theme's canvas is (Trevin's change of 2026-11-09, DESIGN.md's
 /// *Changes since approval*: a black canvas "looks like the void"), in place of `re_ui`'s
-/// `viewport_background`, Gray.0. Each end its own constant, to be set from a screenshot.
-pub const VIEWPORT_BG_TOP: Rgba8 = rgba8(0x1e1f22);
-pub const VIEWPORT_BG_BOTTOM: Rgba8 = rgba8(0x3a3c41);
+/// `viewport_background`, Gray.0, then darkened by him the same day once he saw it: its
+/// first ends, #1e1f22 and #3a3c41, were "too light". Each end its own constant, to be set
+/// from a screenshot.
+pub const VIEWPORT_BG_TOP: Rgba8 = rgba8(0x141517);
+pub const VIEWPORT_BG_BOTTOM: Rgba8 = rgba8(0x2a2c30);
 /// The renderer's frames' own background: none, so they're composited over the canvas's
 /// gradient, painted under them, which shows wherever no body is.
 pub const VIEWPORT_FRAME_BG: Option<[u8; 3]> = None;
@@ -2245,11 +2247,11 @@ mod tests {
                 VIEWPORT_CANDIDATE,
                 [0xff, 0x7a, 0x0c, 0xff],
             ),
-            ("VIEWPORT_BG_TOP", VIEWPORT_BG_TOP, [0x1e, 0x1f, 0x22, 0xff]),
+            ("VIEWPORT_BG_TOP", VIEWPORT_BG_TOP, [0x14, 0x15, 0x17, 0xff]),
             (
                 "VIEWPORT_BG_BOTTOM",
                 VIEWPORT_BG_BOTTOM,
-                [0x3a, 0x3c, 0x41, 0xff],
+                [0x2a, 0x2c, 0x30, 0xff],
             ),
             // interact.js's `overlay`, its `dot`: a hovered vertex white, a selected one
             // #4676ff, each ringed `stroke="#000"`.

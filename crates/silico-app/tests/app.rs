@@ -11349,16 +11349,17 @@ fn the_view_cube_and_the_navigation_bar_have_their_bounds_where_theyre_drawn() {
 
 #[test]
 fn the_canvas_is_a_gradient_from_charcoal_at_its_top_to_grey_at_its_bottom_under_the_bodies() {
-    // Trevin's (2026-11-09), styles.css's `--canvas-top` and `--canvas-bottom`: a mesh over
-    // the whole canvas, #1e1f22 along its top and #3a3c41 along its bottom, painted before
-    // the bodies' frame (a test's renderer marks where that's presented).
+    // Trevin's (2026-11-09, darkened the same day), styles.css's `--canvas-top` and
+    // `--canvas-bottom`: a mesh over the whole canvas, #141517 along its top and #2a2c30
+    // along its bottom, painted before the bodies' frame (a test's renderer marks where
+    // that's presented).
     let f = fixture();
     let (mut h, _seen) = f.overlaid(EXAMPLE);
     step(&mut h);
     let canvas = the_viewport(&h);
     let shapes = painted(&h);
-    let top = eframe::egui::Color32::from_rgb(0x1e, 0x1f, 0x22);
-    let bottom = eframe::egui::Color32::from_rgb(0x3a, 0x3c, 0x41);
+    let top = eframe::egui::Color32::from_rgb(0x14, 0x15, 0x17);
+    let bottom = eframe::egui::Color32::from_rgb(0x2a, 0x2c, 0x30);
     let gradient = shapes
         .iter()
         .position(|shape| match shape {
@@ -11893,11 +11894,11 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
             let on_face = pixel(centre.x, centre.y - 2.5 * mm);
             let past_it = pixel(centre.x, centre.y - 7.5 * mm);
             assert!(differs(on_face, past_it), "{on_face:?} against {past_it:?}");
-            // Trevin's (2026-11-09): #1e1f22 along the canvas's top to #3a3c41 along its
-            // bottom, blended in sRGB as egui blends a mesh's colours (and CSS a
-            // `linear-gradient`'s), so at a pixel row's middle a part t of the way down,
-            // top + t · (bottom − top), to 2 of 255 for egui's dithering.
-            let (top, bottom) = ([30.0f32, 31.0, 34.0], [58.0f32, 60.0, 65.0]);
+            // Trevin's (2026-11-09, darkened the same day): #141517 along the canvas's top
+            // to #2a2c30 along its bottom, blended in sRGB as egui blends a mesh's colours
+            // (and CSS a `linear-gradient`'s), so at a pixel row's middle a part t of the
+            // way down, top + t · (bottom − top), to 2 of 255 for egui's dithering.
+            let (top, bottom) = ([20.0f32, 21.0, 23.0], [42.0f32, 44.0, 48.0]);
             let (top_px, height_px) = (rect.top() * ppp, rect.height() * ppp);
             let column = ((rect.left() + rect.width() * 0.25) * ppp) as u32;
             let first = top_px.ceil() as u32;

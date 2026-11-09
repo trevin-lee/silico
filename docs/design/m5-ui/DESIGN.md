@@ -101,7 +101,7 @@ All colours are re_ui 0.38.1 dark-theme values (resolved through `color_table.ro
 
 | Token | Value | re_ui source | Use |
 |---|---|---|---|
-| canvas | `#1e1f22` at the top to `#3a3c41` at the bottom | Fusion's dark theme (*changed*: Trevin, 2026-11-09; was Gray.0 `#000000`, `viewport_background`) | the viewport behind the part |
+| canvas | `#141517` at the top to `#2a2c30` at the bottom | Fusion's dark theme (*changed*: Trevin, 2026-11-09, then darkened by him the same day; was Gray.0 `#000000`, `viewport_background`) | the viewport behind the part |
 | bar / panel | `#0d0d0d` | Gray.100, `top_bar_color`, `panel_bg_color` | app bar, toolbar, side panels |
 | bottom bar | `#171717` | Gray.150, `bottom_bar_color` | timeline, status |
 | floating / field | `#212121` | Gray.200, `floating_color`, `text_edit_bg_color` | menus, dialogs, inputs, nav bar |
@@ -215,4 +215,4 @@ Trevin: "looks good, build it". The open questions are taken as recommended abov
 
 ## Changes since approval
 
-**The canvas (Trevin, 2026-11-09).** "The background of the part shouldn't be pitch black, it looks like the void." The canvas is Fusion's dark-theme canvas instead of Gray.0: a vertical gradient, soft charcoal `#1e1f22` along its top to a lighter `#3a3c41` along its bottom (styles.css's `--canvas-top` and `--canvas-bottom`), the dark UI around it and the grey part still standing out. The WebGL canvas is cleared transparent over it (viewport.js's `setClearColor(0x000000, 0)`, for the viewport and the start page's thumbnails), as the app paints the gradient with egui's painter under `re_renderer`'s frame, which has no background of its own there. The values are theme.rs's `VIEWPORT_BG_TOP` and `VIEWPORT_BG_BOTTOM`, one constant each, to be adjusted from a screenshot. Agents' renders (`render`'s PNGs) keep their own flat light grey: they're read for the part, not the app's look.
+**The canvas (Trevin, 2026-11-09).** "The background of the part shouldn't be pitch black, it looks like the void." The canvas is Fusion's dark-theme canvas instead of Gray.0: a vertical gradient, soft charcoal `#141517` along its top to a lighter `#2a2c30` along its bottom (styles.css's `--canvas-top` and `--canvas-bottom`), the dark UI around it and the grey part still standing out. Trevin darkened it the same day, after seeing it in the app: the first values, `#1e1f22` to `#3a3c41`, were "too light". The WebGL canvas is cleared transparent over it (viewport.js's `setClearColor(0x000000, 0)`, for the viewport and the start page's thumbnails), as the app paints the gradient with egui's painter under `re_renderer`'s frame, which has no background of its own there. The values are theme.rs's `VIEWPORT_BG_TOP` and `VIEWPORT_BG_BOTTOM`, one constant each, to be adjusted from a screenshot. Agents' renders (`render`'s PNGs) keep their own flat light grey: they're read for the part, not the app's look.

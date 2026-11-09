@@ -32,9 +32,10 @@
   --g1000: #ffffff; /* text_strong */
   /* The canvas (Trevin's change of 2026-11-09, DESIGN.md's *Changes since approval*): Fusion's
      dark-theme canvas, soft charcoal at the top to a lighter grey at the bottom,
-     in place of Gray.0 ("it looks like the void"). */
-  --canvas-top: #1e1f22;
-  --canvas-bottom: #3a3c41;
+     in place of Gray.0 ("it looks like the void"), darkened the same day once he saw it
+     ("too light"). */
+  --canvas-top: #141517;
+  --canvas-bottom: #2a2c30;
   --canvas: linear-gradient(to bottom, var(--canvas-top), var(--canvas-bottom));
 
   /* Accent and state */

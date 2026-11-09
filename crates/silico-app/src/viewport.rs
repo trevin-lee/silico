@@ -3942,7 +3942,7 @@ mod tests {
     }
 
     /// The canvas's gradient: a mesh of two triangles over the rectangle, its top corners
-    /// #1e1f22 and its bottom ones #3a3c41 (styles.css's `--canvas-top` and
+    /// #141517 and its bottom ones #2a2c30 (styles.css's `--canvas-top` and
     /// `--canvas-bottom`).
     #[test]
     fn the_canvas_background_runs_from_its_top_colour_to_its_bottom_one() {
@@ -3950,8 +3950,8 @@ mod tests {
         let egui::Shape::Mesh(mesh) = canvas_background(rect) else {
             panic!("not a mesh");
         };
-        let top = egui::Color32::from_rgb(0x1e, 0x1f, 0x22);
-        let bottom = egui::Color32::from_rgb(0x3a, 0x3c, 0x41);
+        let top = egui::Color32::from_rgb(0x14, 0x15, 0x17);
+        let bottom = egui::Color32::from_rgb(0x2a, 0x2c, 0x30);
         let corners: Vec<(Pos2, egui::Color32)> =
             mesh.vertices.iter().map(|v| (v.pos, v.color)).collect();
         assert_eq!(
