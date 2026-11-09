@@ -21265,6 +21265,67 @@ fn every_sketchs_modify_box_takes_the_keyboard_as_it_opens_not_only_the_first_sk
 }
 
 #[test]
+fn the_sketch_bar_and_the_palette_are_bounded_around_their_controls_in_the_tree() {
+    // Each panel's group in the accessibility tree has bounds of its own (a ui's node, which
+    // egui bounds no other way), finite and not empty, holding every button and checkbox in
+    // it: so a test, or a screen reader, can tell where it is. In a window tall enough that
+    // the palette's sections all show, unscrolled.
+    let f = fixture();
+    let path = f.file("example.silico", EXAMPLE);
+    let app = App::new(Arc::clone(&f.sessions));
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0, 1400.0))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    silico_app::theme::apply(&h.ctx);
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(&mut h, "the timeline read", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.timeline.is_some())
+    });
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    for (role, label, least) in [
+        (Role::Toolbar, "Sketch bar", 2),
+        (Role::Group, "Sketch Palette", 6),
+    ] {
+        let group = h.get_by_role_and_label(role, label);
+        let b = group
+            .accesskit_node()
+            .bounding_box()
+            .unwrap_or_else(|| panic!("{label} has no bounds"));
+        assert!(
+            [b.x0, b.y0, b.x1, b.y1].iter().all(|v| v.is_finite()) && b.x1 > b.x0 && b.y1 > b.y0,
+            "{label}: {b:?}"
+        );
+        let controls: Vec<_> = group
+            .query_all_by_role(Role::Button)
+            .chain(group.query_all_by_role(Role::CheckBox))
+            .map(|node| {
+                let label = node.accesskit_node().label();
+                (label, node.accesskit_node().bounding_box().unwrap())
+            })
+            .collect();
+        assert!(controls.len() >= least, "{label}: {controls:?}");
+        for (control, c) in controls {
+            assert!(
+                c.x0 >= b.x0 && c.y0 >= b.y0 && c.x1 <= b.x1 && c.y1 <= b.y1,
+                "{label}'s {control:?} at {c:?}, outside {b:?}"
+            );
+        }
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_placed_dimension_double_clicked_is_set_as_typed_and_an_over_defining_edit_offers_the_three() {
     use silico_app::sketch::dimension::ModifyAction;
     use silico_core::sketch_states::SketchState;
