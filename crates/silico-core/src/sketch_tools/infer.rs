@@ -480,14 +480,23 @@ impl Unnamed {
     /// The first three IDs of `zz000000`, `zz000001`, ... that `view` doesn't hold as a point
     /// or a curve: none only if it holds all million (more than the gate takes).
     pub(super) fn of(view: &View<'_>) -> Option<Unnamed> {
-        let mut free = (0u32..1_000_000)
-            .filter_map(|k| ElementId::new(&format!("zz{k:06}")))
-            .filter(|id| view.point(id).is_none() && !view.has_curve(id));
+        let mut free = Self::ids(view, 3)?.into_iter();
         Some(Unnamed {
             start: free.next()?,
             end: free.next()?,
             line: free.next()?,
         })
+    }
+
+    /// The first `n` IDs of `zz000000`, `zz000001`, ... that `view` doesn't hold as a point
+    /// or a curve: none only if fewer than `n` of the million are free.
+    pub(super) fn ids(view: &View<'_>, n: usize) -> Option<Vec<ElementId>> {
+        let ids: Vec<ElementId> = (0u32..1_000_000)
+            .filter_map(|k| ElementId::new(&format!("zz{k:06}")))
+            .filter(|id| view.point(id).is_none() && !view.has_curve(id))
+            .take(n)
+            .collect();
+        (ids.len() == n).then_some(ids)
     }
 }
 
@@ -541,16 +550,17 @@ impl Pointer<'_, '_> {
     /// pointer infers; then, if it infers, the origin, a line's middle, two curves' crossing,
     /// or a curve; or nothing.
     pub(super) fn snap(&self, at: Xy) -> Placed {
-        self.snap_after(at, None)
+        self.snap_after(at, &[])
     }
 
-    /// Where a click at `at` puts a segment's end, after its start: as [`snap`](Self::snap),
-    /// but with a new start (`start`, the point it placed; none for a point of the sketch,
-    /// which brings no relation of its own) its relations are merged into the classes first,
-    /// so the `on`s beside the end's `midpoint` are judged after them, as the add writes them
+    /// Where a click at `at` puts a gesture's later point, after the points it placed before
+    /// it, `before`, in their order (a segment's start; an arc's start, or its centre and
+    /// start; a rectangle's first point): as [`snap`](Self::snap), but their relations are
+    /// merged into the classes first (a point of the sketch has none of its own), so the
+    /// `on`s beside this point's `midpoint` are judged after them, as the add writes them
     /// (docs/ports/sketch-tools.md: the start point's relations, then the end point's, each
     /// kept merged before the next).
-    pub(super) fn snap_after(&self, at: Xy, start: Option<&Placed>) -> Placed {
+    pub(super) fn snap_after(&self, at: Xy, before: &[&Placed]) -> Placed {
         let point = self.point_near(at);
         if !self.infer {
             return match point {
@@ -580,7 +590,7 @@ impl Pointer<'_, '_> {
                 .map(|n| n.reference.clone())
                 .collect();
             ons.sort();
-            let ons = self.ons_not_implied(mid, &line, ons, start);
+            let ons = self.ons_not_implied(mid, &line, ons, before);
             return Placed::new(mid, Target::Midpoint(line, ons));
         }
         if let Some((cross, a, b)) = self.crossing_near(at, &near) {
@@ -595,36 +605,36 @@ impl Pointer<'_, '_> {
     /// Of `ons`, in [`Reference`]'s order, the `on`s of a new point at `mid`, the middle of
     /// `line`, the sketch doesn't already imply ([`Implied`], Rule E): the forms the add
     /// writes for it ([`Placed::relations`]), judged in their order, the `midpoint` first
-    /// and asserted, and each `on` kept merged before the next. A segment's new `start`'s
-    /// relations are merged before them, as [`snap_after`](Self::snap_after) says. An `on`
-    /// of the x axis at the middle of a level line along it, or of a line level with it,
-    /// goes.
+    /// and asserted, and each `on` kept merged before the next. The relations of the
+    /// gesture's points placed `before` it are merged before them, as
+    /// [`snap_after`](Self::snap_after) says. An `on` of the x axis at the middle of a level
+    /// line along it, or of a line level with it, goes.
     fn ons_not_implied(
         &self,
         mid: Xy,
         line: &ElementId,
         ons: Vec<Reference>,
-        start: Option<&Placed>,
+        before: &[&Placed],
     ) -> Vec<Reference> {
-        let Some(unnamed) = Unnamed::of(self.view).filter(|_| !ons.is_empty()) else {
+        let Some(mut ids) = Unnamed::ids(self.view, before.len() + 1).filter(|_| !ons.is_empty())
+        else {
+            return ons;
+        };
+        // This point is the gesture's last so far, each before it one of its own, in order,
+        // as a segment's are when its directions are judged (`line.rs`'s `not_implied`).
+        let Some(point) = ids.pop() else {
             return ons;
         };
         let mut implied = self.implied().clone();
-        // A segment's new start is the gesture's first point, the end its second, as the
-        // segment's directions are judged (`line.rs`'s `not_implied`).
-        let point = match start {
-            Some(start) => {
-                for form in start.relations(&unnamed.start) {
-                    let rel = implied.rel(&form);
-                    implied.merge(&rel);
-                }
-                &unnamed.end
+        for (earlier, id) in before.iter().zip(&ids) {
+            for form in earlier.relations(id) {
+                let rel = implied.rel(&form);
+                implied.merge(&rel);
             }
-            None => &unnamed.start,
-        };
+        }
         let placed = Placed::new(mid, Target::Midpoint(line.clone(), ons));
         let mut kept = Vec::new();
-        for form in placed.relations(point) {
+        for form in placed.relations(&point) {
             let rel = implied.rel(&form);
             match form {
                 Form::On { curve, .. } => {
