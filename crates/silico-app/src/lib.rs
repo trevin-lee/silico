@@ -10,6 +10,7 @@ pub mod app;
 mod banner;
 pub mod bar;
 pub mod box_select;
+pub mod boxes;
 pub mod browse;
 pub mod canvas_menu;
 pub mod changes;

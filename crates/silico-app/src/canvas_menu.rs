@@ -3,13 +3,15 @@
 //! (js/interact.js) builds it, drawn as every menu is (`crate::menu`). Over an element, what a
 //! click there would select (the selection's hover): headed by it and its kind ("Face6 ·
 //! Face"), then *Select Other…* with how many are under the pointer, Edit and the feature
-//! that made it, a separator, and Hide and its body, H. Over nothing: Fit (F6), Home view
+//! that made it, a separator, and Hide and its body. Over nothing: Fit (F6), Home view
 //! (Home), *Select Other…*, a separator, and Clear selection (Esc). *Select Other…* opens
 //! the list of what's under the pointer (`crate::select_other`, which holds this menu while
 //! it's open); every other item is done by the tab ([`CanvasAct`]) as its command is
-//! elsewhere: Fit, Home view, Hide, and Clear selection the registry's (`crate::shortcuts`,
-//! their caps its), and Edit as the feature menus' Edit feature (`crate::feature_menu`,
-//! off with its reason where that is).
+//! elsewhere: Fit, Home view, and Clear selection the registry's (`crate::shortcuts`, their
+//! caps its), Hide as a body's eye in the browser hides it (with no key's cap: H, the
+//! registry's Hide, hides the feature selected, not the body under the pointer), and Edit as
+//! the feature menus' Edit feature (`crate::feature_menu`, off with its reason where that
+//! is).
 //!
 //! Left out of the prototype's items, none a command the app has yet:
 //! - SEAM(#351): Sketch on this face and Create Sketch, sketch mode's;
@@ -33,23 +35,24 @@ pub const SELECT_OTHER: &str = "Select Other…";
 /// read against: nothing was cast.
 pub const UNREAD: &str = "the model's meshes aren't shown yet";
 
-/// One of the menu's items.
+/// What *Select Other…* says when a body's boxes to cast on can't be made (`crate::boxes`:
+/// the thread that makes them couldn't be started, or ended): nothing was cast.
+pub const UNCAST: &str = "what's under the pointer can't be found";
+
+/// One of the menu's items: *Select Other…*, which the menu does itself, or one the tab
+/// does once it's chosen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanvasItem {
     SelectOther,
-    /// Edit feature, of the feature that made the element under the pointer.
-    Edit(FeatureId),
-    /// Hide, of the body under the pointer (by the feature that ends its chain).
-    Hide(FeatureId),
-    Fit,
-    Home,
-    ClearSelection,
+    Act(CanvasAct),
 }
 
 /// What a chosen item asks the tab to do, the menu closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanvasAct {
+    /// Edit feature, of the feature that made the element under the pointer.
     Edit(FeatureId),
+    /// Hide, of the body under the pointer (by the feature that ends its chain).
     Hide(FeatureId),
     Fit,
     Home,
@@ -151,29 +154,38 @@ impl CanvasMenu {
         match under {
             Some(under) => {
                 let mut edit = Shown::of(
-                    CanvasItem::Edit(under.maker.clone()),
+                    CanvasItem::Act(CanvasAct::Edit(under.maker.clone())),
                     Some(Icon::Edit),
                     format!("Edit {}", under.maker_name),
                 );
                 edit.off = context.edit_off.clone();
+                // No key's cap: H hides the feature selected, not the body under the
+                // pointer this hides.
                 let hide = Shown::of(
-                    CanvasItem::Hide(under.body.clone()),
+                    CanvasItem::Act(CanvasAct::Hide(under.body.clone())),
                     Some(Icon::EyeOff),
                     format!("Hide {}", under.body_name),
-                )
-                .keys(Command::Hide, ctx);
+                );
                 CanvasMenu {
                     head: Some(format!("{} · {}", under.label, under.kind)),
                     items: vec![select_other, edit, hide],
                 }
             }
             None => {
-                let fit = Shown::of(CanvasItem::Fit, Some(Icon::Fit), Command::Fit.label())
-                    .keys(Command::Fit, ctx);
-                let home = Shown::of(CanvasItem::Home, Some(Icon::Home), Command::Home.label())
-                    .keys(Command::Home, ctx);
+                let fit = Shown::of(
+                    CanvasItem::Act(CanvasAct::Fit),
+                    Some(Icon::Fit),
+                    Command::Fit.label(),
+                )
+                .keys(Command::Fit, ctx);
+                let home = Shown::of(
+                    CanvasItem::Act(CanvasAct::Home),
+                    Some(Icon::Home),
+                    Command::Home.label(),
+                )
+                .keys(Command::Home, ctx);
                 let mut clear = Shown::of(
-                    CanvasItem::ClearSelection,
+                    CanvasItem::Act(CanvasAct::ClearSelection),
                     None,
                     Command::ClearSelection.label(),
                 )
@@ -193,7 +205,10 @@ impl CanvasMenu {
     /// and before Clear selection).
     fn separated(&self, at: usize) -> bool {
         self.items.get(at).is_some_and(|shown| {
-            matches!(shown.item, CanvasItem::Hide(_) | CanvasItem::ClearSelection)
+            matches!(
+                shown.item,
+                CanvasItem::Act(CanvasAct::Hide(_) | CanvasAct::ClearSelection)
+            )
         })
     }
 
@@ -292,7 +307,8 @@ mod tests {
     fn over_an_element_and_over_nothing_its_items_are_the_prototypes_in_its_order() {
         // js/interact.js's `onContext`, of the items the app has commands for: over an
         // element its head (the element and its kind), Select Other… with its count, Edit
-        // and the maker, and Hide and the body with H; over nothing Fit with F6, Home view
+        // and the maker, and Hide and the body, with no key (H hides the feature selected,
+        // not the body under the pointer); over nothing Fit with F6, Home view
         // with Home, Select Other…, and Clear selection with Esc (off with nothing selected).
         let ctx = egui::Context::default();
         ctx.set_os(egui::os::OperatingSystem::Nix);
@@ -303,7 +319,7 @@ mod tests {
             [
                 ("Select Other… 4 under the pointer".to_owned(), true),
                 ("Edit Block".to_owned(), true),
-                ("Hide Plate H".to_owned(), true),
+                ("Hide Plate".to_owned(), true),
             ]
         );
         assert_eq!(
@@ -313,10 +329,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 CanvasItem::SelectOther,
-                CanvasItem::Edit(fid("k7f2qx3m")),
-                CanvasItem::Hide(fid("p0000001")),
+                CanvasItem::Act(CanvasAct::Edit(fid("k7f2qx3m"))),
+                CanvasItem::Act(CanvasAct::Hide(fid("p0000001"))),
             ]
         );
+        assert!(over.items[2].caps.is_empty(), "{:?}", over.items[2]);
         assert!(!over.separated(1) && over.separated(2));
         let off = CanvasMenu::new(None, &context(false, false), &ctx);
         assert_eq!(off.head, None);

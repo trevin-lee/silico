@@ -1335,10 +1335,15 @@ impl Tab {
         &self.select_other
     }
 
-    /// `key` for Select Other's menu, taken by the window's keys while it's open, before
-    /// the pane draws: applied in this frame's overlay.
+    /// `key` for Select Other's menu, taken by the window's keys while it's open (or a right
+    /// click waits to open it), before the pane draws: applied in this frame's overlay.
     pub(crate) fn select_other_key(&mut self, key: crate::select_other::MenuKey) {
         self.select_other.key(key);
+    }
+
+    /// Select Other's boxes made by `build` from now on ([`crate::App::boxing`]).
+    pub(crate) fn boxing(&mut self, build: crate::boxes::Build) {
+        self.select_other.building(build);
     }
 
     /// What's selected (M5.7), and what the pointer is over in the canvas: one selection,

@@ -8793,10 +8793,25 @@ impl Fixture {
     }
 
     fn drawn_on(&self, name: &str, text: &str, clock: Option<Clock>) -> (AppHarness, Record) {
+        self.drawn_with(name, text, clock, None)
+    }
+
+    /// [`Fixture::drawn_on`], each tab's boxes for Select Other made by `boxing`, if given.
+    fn drawn_with(
+        &self,
+        name: &str,
+        text: &str,
+        clock: Option<Clock>,
+        boxing: Option<silico_app::boxes::Build>,
+    ) -> (AppHarness, Record) {
         let path = self.file(name, text);
         let record = Record::default();
         let recorder = Box::new(Recorder(FakeRenderer(Arc::clone(&record))));
         let app = App::new(Arc::clone(&self.sessions));
+        let app = match boxing {
+            None => app,
+            Some(build) => app.boxing(build),
+        };
         let app = match clock {
             None => app.presenting(recorder),
             Some(clock) => app.presenting_clocked(recorder, clock),
@@ -32439,8 +32454,18 @@ fn on_lavapipe_a_hovered_candidate_lights_its_edge_beside_the_broken_fillets_car
 /// along x at y = 20, Edge6 the side's along z at (40, 20); Vertex7 the corner (40, 20, 10),
 /// Vertex8 (40, 20, 0).
 fn box_from_above(f: &Fixture) -> (AppHarness, Record) {
+    let (mut h, record) = box_from_above_made(f, None);
+    boxes_made(&mut h);
+    (h, record)
+}
+
+/// [`box_from_above`], Select Other's boxes made by `boxing`, if given, and not waited for.
+fn box_from_above_made(
+    f: &Fixture,
+    boxing: Option<silico_app::boxes::Build>,
+) -> (AppHarness, Record) {
     meshes_a_real_box(f);
-    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    let (mut h, record) = f.drawn_with("box.silico", A_BOX, None, boxing);
     meshes_settled(&mut h);
     view_mut(&mut h).set_camera(silico_protocol::Camera {
         projection: silico_protocol::Projection::Orthographic { view_height: 40.0 },
@@ -32476,6 +32501,81 @@ fn above_at(h: &AppHarness, x: f64, y: f64, by: [f64; 2]) -> eframe::egui::Pos2 
 
 fn select_other(h: &AppHarness) -> &silico_app::select_other::SelectOther {
     h.state().tabs()[0].select_other()
+}
+
+/// Frames stepped until every body the first tab's view holds has its boxes for Select
+/// Other made (off the UI thread, `silico_app::boxes`), so a right click casts at once.
+fn boxes_made(h: &mut AppHarness) {
+    step_until(h, "the boxes made", |h| {
+        view(h).bodies().values().all(|body| {
+            select_other(h)
+                .kept_meshes()
+                .iter()
+                .any(|kept| Arc::ptr_eq(kept, &body.mesh))
+        })
+    });
+}
+
+/// What makes Select Other's boxes in the tests that watch it: each mesh's boxes made by
+/// `Pickable::new`, the thread they're made on and the mesh they're of written down (its
+/// address, while something holds it), and held until released while it's held.
+#[derive(Default)]
+struct Making {
+    made: Mutex<Vec<(std::thread::ThreadId, usize)>>,
+    held: Mutex<bool>,
+    released: Condvar,
+}
+
+impl Making {
+    fn build(self: &Arc<Self>) -> silico_app::boxes::Build {
+        let making = Arc::clone(self);
+        Arc::new(move |mesh| {
+            let of = Arc::as_ptr(&mesh) as usize;
+            making
+                .made
+                .lock()
+                .unwrap()
+                .push((std::thread::current().id(), of));
+            let held = making.held.lock().unwrap();
+            drop(
+                making
+                    .released
+                    .wait_timeout_while(held, WAIT, |held| *held)
+                    .unwrap(),
+            );
+            silico_render::render::Pickable::new(mesh)
+        })
+    }
+
+    fn hold(&self) {
+        *self.held.lock().unwrap() = true;
+    }
+
+    fn release(&self) {
+        *self.held.lock().unwrap() = false;
+        self.released.notify_all();
+    }
+
+    /// How many times `mesh`'s were.
+    fn made_of(&self, mesh: &Arc<silico_protocol::Mesh>) -> usize {
+        let of = Arc::as_ptr(mesh) as usize;
+        self.made
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, made)| *made == of)
+            .count()
+    }
+
+    /// The threads they were made on.
+    fn threads(&self) -> Vec<std::thread::ThreadId> {
+        self.made
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(on, _)| *on)
+            .collect()
+    }
 }
 
 /// What each of the open list's rows says, in order.
@@ -32856,7 +32956,7 @@ fn context_at(h: &mut AppHarness, at: eframe::egui::Pos2) {
 }
 
 #[test]
-fn over_an_element_the_context_menu_is_headed_by_it_and_hides_its_body_as_h_does() {
+fn over_an_element_the_context_menu_is_headed_by_it_and_hides_its_body_with_no_keys_cap() {
     use silico_app::renderer::Element::Face;
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
@@ -32872,19 +32972,23 @@ fn over_an_element_the_context_menu_is_headed_by_it_and_hides_its_body_as_h_does
     let menu = select_other(&h).context().unwrap();
     assert_eq!(menu.head.as_deref(), Some("Face6 · Face"));
     assert!(anywhere(&h, "FACE6 · FACE"));
+    // Hide has no key's cap: H hides the feature selected (none is), not the body under the
+    // pointer, which Hide does.
     assert_eq!(
         context_said(&h),
         [
             ("Select Other… 2 under the pointer".to_owned(), true),
             ("Edit Block".to_owned(), true),
-            ("Hide Block H".to_owned(), true),
+            ("Hide Block".to_owned(), true),
         ]
     );
+    let menu = || h.get_by_role_and_label(Role::Menu, "Canvas");
     for (label, _) in context_said(&h) {
-        assert!(anywhere(&h, &label), "{label}");
+        assert!(menu().query_by_label(&label).is_some(), "{label}");
     }
-    // Hide Block: the body hidden, as H hides it, and the menu closed.
-    h.get_by_label("Hide Block H").click();
+    // Hide Block (the menu's, not the browser's eye of the same words): the body hidden, as
+    // its eye hides it, and the menu closed.
+    menu().get_by_label("Hide Block").click();
     step_until(&mut h, "the body hidden", |h| {
         h.state().tabs()[0]
             .hidden
@@ -33168,6 +33272,172 @@ fn a_model_published_lets_go_of_the_boxes_select_other_kept_of_its_old_meshes() 
             .all(|kept| !Arc::ptr_eq(kept, &old)),
         "an old mesh kept"
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn select_others_boxes_are_made_off_the_ui_thread_and_a_right_click_before_them_opens_once_made() {
+    use eframe::egui::Modifiers;
+    use silico_app::select_other::Phase;
+    let f = fixture();
+    // Every box's making held until released: the meshes read and drawn meanwhile, the
+    // window going on.
+    let making = Arc::new(Making::default());
+    making.hold();
+    let (mut h, _record) = box_from_above_made(&f, Some(making.build()));
+    // A right click before they're made: its menu waits, nothing cast without the box, which
+    // is drawn, so nothing listed and nothing open, however many frames.
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    right_click(&mut h, at, at, Modifiers::NONE);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(select_other(&h).is_waiting());
+    assert!(!select_other(&h).is_open());
+    assert!(h.query_by_role_and_label(Role::Menu, "Canvas").is_none());
+    assert!(!anywhere(&h, "Select Other… 4 under the pointer"));
+    // Made: the menu opens, cast on the box as it would have been at the click, its four by
+    // hand (`BY_THE_RIGHT_EDGE`).
+    making.release();
+    step_until(&mut h, "the context menu", |h| {
+        anywhere(h, "Select Other… 4 under the pointer")
+    });
+    assert!(!select_other(&h).is_waiting());
+    assert_eq!(select_other(&h).phase(), Some(Phase::Context));
+    // Frames for egui to lay it out: a new area's first frame is an invisible sizing pass,
+    // drawn and placed as it will be only from the next.
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    h.get_by_label("Select Other… 4 under the pointer").click();
+    step_until(&mut h, "the list", |h| {
+        select_other(h).phase() == Some(Phase::List)
+    });
+    assert_eq!(rows_said(&h), BY_THE_RIGHT_EDGE);
+    // No box was made on the UI thread (this test's, which steps every frame).
+    let threads = making.threads();
+    assert!(!threads.is_empty());
+    assert!(
+        threads.iter().all(|on| *on != std::thread::current().id()),
+        "{threads:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_click_waiting_for_its_boxes_is_let_go_by_esc_or_a_press_and_never_opens() {
+    use eframe::egui::{Key, Modifiers};
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let making = Arc::new(Making::default());
+    making.hold();
+    let (mut h, record) = box_from_above_made(&f, Some(making.build()));
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    // A click there selects the top, as the renderer's pick finds it.
+    answering(&record, Some((1, Face(6), pixel_at(&h, at))), None);
+    // Esc while it waits: let go.
+    right_click(&mut h, at, at, Modifiers::NONE);
+    assert!(select_other(&h).is_waiting());
+    h.key_press(Key::Escape);
+    step(&mut h);
+    assert!(!select_other(&h).is_waiting());
+    // A press on the canvas while it waits: let go, and the press is its own, so it selects
+    // nothing, as a press closing an open menu doesn't: whether the boxes were made in time
+    // changes nothing a press does.
+    right_click(&mut h, at, at, Modifiers::NONE);
+    assert!(select_other(&h).is_waiting());
+    click_canvas(&mut h, at, false);
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert!(!select_other(&h).is_waiting());
+    assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+    // Made after: neither opens; and the next click selects.
+    making.release();
+    boxes_made(&mut h);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(!select_other(&h).is_open());
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn select_others_boxes_are_kept_through_the_body_hidden_and_the_tab_hidden_made_once_a_mesh() {
+    use eframe::egui::{Key, Modifiers, PointerButton};
+    let f = fixture();
+    let making = Arc::new(Making::default());
+    let (mut h, _record) = box_from_above_made(&f, Some(making.build()));
+    boxes_made(&mut h);
+    let mesh = Arc::clone(&view(&h).bodies()[&1].mesh);
+    assert_eq!(making.made_of(&mesh), 1);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    list_at(&mut h, at, "4 under the pointer");
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    // The body hidden in the browser, and a right click there, which casts on no body.
+    let id = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
+    let hidden = silico_app::tab::Hideable::Feature(id);
+    h.state_mut().tabs_mut()[0].hidden.insert(hidden.clone());
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    right_click(&mut h, at, at, Modifiers::NONE);
+    step_until(&mut h, "the context menu", |h| {
+        anywhere(h, "Select Other… nothing under the pointer")
+    });
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    h.state_mut().tabs_mut()[0].hidden.remove(&hidden);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    // The tab hidden mid-drag (its drag's end given it unshown, as another document's tab is
+    // shown over it), and shown again.
+    h.hover_at(at);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    // Another box (another key, so its meshes aren't the box's: the core gives a model's
+    // meshes to every session that reads them, each tab making their boxes).
+    let other = f.file(
+        "other.silico",
+        &A_BOX.replace("\"height\": 10", "\"height\": 12"),
+    );
+    h.state_mut().open(other.to_str().unwrap(), false);
+    step_until(&mut h, "two tabs", |h| h.state().tabs().len() == 2);
+    let shown = |h: &AppHarness, name: &str| {
+        h.get_by_role_and_label(Role::Button, name)
+            .accesskit_node()
+            .toggled()
+            == Some(eframe::egui::accesskit::Toggled::True)
+    };
+    step_until(&mut h, "the other shown", |h| shown(h, "other.silico"));
+    button_event(&h, at, PointerButton::Primary, false, Modifiers::NONE);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    h.get_by_role_and_label(Role::Button, "box.silico").click();
+    step_until(&mut h, "the box shown", |h| shown(h, "box.silico"));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    // The same mesh all the while, its boxes kept: cast on at once, never made again.
+    assert!(Arc::ptr_eq(&view(&h).bodies()[&1].mesh, &mesh));
+    assert!(
+        select_other(&h)
+            .kept_meshes()
+            .iter()
+            .any(|kept| Arc::ptr_eq(kept, &mesh))
+    );
+    right_click(&mut h, at, at, Modifiers::NONE);
+    assert!(select_other(&h).is_open());
+    list_at(&mut h, at, "4 under the pointer");
+    assert_eq!(rows_said(&h), BY_THE_RIGHT_EDGE);
+    assert_eq!(making.made_of(&mesh), 1);
     assert_eq!(never_waits::waits(), 0);
 }
 

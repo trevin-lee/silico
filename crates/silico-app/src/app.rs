@@ -345,6 +345,11 @@ pub struct App<P: Clients + 'static> {
     /// The platform's Documents folder: the workspace Copy MCP config names when no
     /// document is shown and none listed in Recent will do.
     documents: Option<PathBuf>,
+    /// What makes each tab's boxes for Select Other's cast, if not [`Pickable::new`]: a
+    /// test's.
+    ///
+    /// [`Pickable::new`]: silico_render::render::Pickable::new
+    boxing: Option<crate::boxes::Build>,
     /// The toast shown over the canvas's bottom right (DESIGN.md's *Toasts*), and when it
     /// was shown, by egui's clock: F5's word on where the filters are, or a box's.
     toast: Option<(String, f64)>,
@@ -446,7 +451,16 @@ impl<P: Clients + 'static> App<P> {
             documents: directories::UserDirs::new()
                 .and_then(|dirs| dirs.document_dir().map(std::path::Path::to_path_buf)),
             toast: None,
+            boxing: None,
         }
+    }
+
+    /// The app, each tab's boxes for Select Other's cast (`crate::boxes`) made by `build`, on
+    /// the tab's thread for them: a test's, to see where it runs and to hold it.
+    #[must_use]
+    pub fn boxing(mut self, build: crate::boxes::Build) -> Self {
+        self.boxing = Some(build);
+        self
     }
 
     /// The app, Copy MCP config falling back to `documents` as the workspace (else to the
@@ -1067,10 +1081,13 @@ impl<P: Clients + 'static> App<P> {
             .values()
             .max()
             .is_none_or(|&newest| number > newest);
-        let tab = match part {
+        let mut tab = match part {
             Part::File(path) => Tab::opened(id, path, &opened.problems),
             Part::Untitled(name) => Tab::untitled(id, name, &opened.problems),
         };
+        if let Some(build) = &self.boxing {
+            tab.boxing(Arc::clone(build));
+        }
         self.tabs.insert(at, tab);
         self.open_numbers.insert(id, number);
         if shown {
@@ -1208,11 +1225,12 @@ impl<P: Clients + 'static> App<P> {
         if let Some(tab) = self
             .active_place()
             .and_then(|at| self.tabs.get_mut(at))
-            .filter(|tab| tab.select_other().is_open())
+            .filter(|tab| tab.select_other().holds_keys())
         {
-            // Select Other's menu takes the keys while it's open and its tab shown (the
-            // prototype's menus): Esc closes it, Tab and the arrows step it, Enter chooses; no
-            // other document's command acts under it, as none does under a modal.
+            // Select Other's menu takes the keys while it's open (or a right click waits to
+            // open it) and its tab shown (the prototype's menus): Esc closes it, Tab and the
+            // arrows step it, Enter chooses; no other document's command acts under it, as
+            // none does under a modal.
             for key in crate::select_other::keys(ui.ctx()) {
                 tab.select_other_key(key);
             }

@@ -13,8 +13,13 @@
 //! model than the selection's (a model published, its meshes not read yet): the menu says
 //! so. Each row is named as the element map names it ([`crate::viewport::ViewBody::name_of`]):
 //! its element ("Face6"), its kind, the feature that made it, and "· hidden" where a face
-//! hides it (`hits`' rule). Each body's boxes are made once for each mesh it's cast on, and
-//! let go the frame its body's mesh is no longer the view's.
+//! hides it (`hits`' rule). Each body's boxes are made off the UI thread as the view takes
+//! its mesh (`crate::boxes`), kept while the view holds it (the tab hidden, the body hidden
+//! too), and let go the frame it doesn't. A right click before the boxes of a body it would
+//! cast on are made waits for them, its menu opened once they are, a frame or more later, as
+//! it would have opened at the click (the part 3 design's section 2): it never casts without
+//! a body that's drawn. Waiting, it's let go as an open menu is closed, and takes the keys
+//! as one does (Esc lets it go; the rest do nothing).
 //!
 //! **The list.** Choosing *Select Other…* opens it beside the click, its first row lit. The
 //! row lit is the selection's hover ([`Selection::hold_hover`]: its face or edge outlined, its
@@ -39,7 +44,6 @@
 //! Its lines are drawn as every menu's (`crate::menu`), in egui's menu frame ([`menu_frame`]);
 //! its foot behind [`paint_foot`], of the theme's tokens.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use eframe::egui::{
@@ -47,12 +51,14 @@ use eframe::egui::{
     Vec2, WidgetInfo, WidgetType,
 };
 use silico_core::command::Revision;
+use silico_core::command::meshes::MeshElement;
 use silico_core::document::FeatureId;
 use silico_core::naming::Name;
 use silico_protocol::Mesh;
 use silico_render::render::{Hit, MAX_HITS, Pickable, hits};
 
-use crate::canvas_menu::{CanvasAct, CanvasItem, CanvasMenu, Context, UNREAD, Under};
+use crate::boxes::{Boxes, Build};
+use crate::canvas_menu::{CanvasAct, CanvasItem, CanvasMenu, Context, UNCAST, UNREAD, Under};
 use crate::icons::Icon;
 use crate::menu;
 use crate::renderer::Element;
@@ -153,17 +159,33 @@ pub(crate) struct Facts<'a> {
     pub(crate) edit_off: &'a dyn Fn(&FeatureId) -> Option<String>,
 }
 
-/// The canvas's Select Other: its menu, while one is open; each body's boxes, as the last cast
-/// made them, while their meshes are the view's; the keys taken for the menu and not yet
-/// applied; whether a left press closed it (its stream, to its end, is the menu's); and the
-/// egui pass it was last given a frame in.
+/// The canvas's Select Other: its menu, while one is open, or the right click waiting for its
+/// bodies' boxes to open one; each body's boxes, while the view holds its mesh; the keys
+/// taken for the menu and not yet applied; whether a left press closed it (its stream, to
+/// its end, is the menu's); and the egui pass it was last given a frame in.
 #[derive(Debug, Default)]
 pub struct SelectOther {
     menu: Option<Menu>,
-    pickables: BTreeMap<u32, Pickable>,
+    waiting: Option<Waiting>,
+    boxes: Boxes,
     keys: Vec<MenuKey>,
     swallowing: bool,
     shown: Option<u64>,
+}
+
+/// A right click whose menu waits for the boxes of the bodies it casts on: what it's opened
+/// with once they're made, as it would have been at the click. The click; its frame (its
+/// events let go); the bodies that frame drew, each with its mesh; what the pointer was over
+/// then (none while a menu held the hover); the selection's model then; and whether the
+/// bodies were of it (only then is a cast made).
+#[derive(Debug)]
+struct Waiting {
+    click: SecondaryClick,
+    frame: ViewFrame,
+    meshes: Vec<(u32, Arc<Mesh>)>,
+    hovered: Option<(u32, Element, Arc<Name>)>,
+    model: Option<(u64, Revision)>,
+    current: bool,
 }
 
 /// An open menu: which; where its right click was, in points; the context menu, its items
@@ -238,10 +260,26 @@ impl SelectOther {
         self.menu.as_ref().and_then(|menu| menu.lit)
     }
 
-    /// The meshes whose boxes are kept for the next cast, by their bodies' numbers: each the
-    /// view's, never one it has let go.
+    /// Whether a right click waits for its bodies' boxes to open its menu.
+    pub fn is_waiting(&self) -> bool {
+        self.waiting.is_some()
+    }
+
+    /// Whether it takes the window's keys: a menu open, or a right click waiting to open one.
+    pub fn holds_keys(&self) -> bool {
+        self.menu.is_some() || self.waiting.is_some()
+    }
+
+    /// The meshes whose boxes are kept for the next cast, in the order they were made: each
+    /// the view's, never one it has let go.
     pub fn kept_meshes(&self) -> Vec<&Arc<Mesh>> {
-        self.pickables.values().map(Pickable::mesh).collect()
+        self.boxes.meshes().collect()
+    }
+
+    /// Its boxes made by `build` from now on (a test's, to see where and when it runs):
+    /// those made before let go.
+    pub(crate) fn building(&mut self, build: Build) {
+        self.boxes = Boxes::new(build);
     }
 
     /// `key`, taken for the menu by the window's keys, applied when the tab's overlay is
@@ -276,12 +314,12 @@ impl SelectOther {
             .is_some_and(|last| last.saturating_add(1) >= pass);
         self.shown = Some(pass);
         // A tab not shown (its drag's end given it with a painter drawing nothing), or one
-        // that wasn't last pass: its menu is let go, not drawn where it isn't.
+        // that wasn't last pass: its menu is let go, not drawn where it isn't. Its boxes are
+        // kept: the view holds its meshes still.
         if !painter.is_visible() || !shown_last {
             self.close(selection, view, &ctx);
             self.keys.clear();
             if !painter.is_visible() {
-                self.pickables.clear();
                 // Its left events still ended as the menu's, its right clicks not taken.
                 let unshown = ViewFrame {
                     secondary: Vec::new(),
@@ -296,34 +334,47 @@ impl SelectOther {
                 return (self.canvas_events(selection, view, &given).0, None);
             }
         }
-        if self
+        // Each body's boxes asked for as the view takes its mesh, made off the UI thread, and
+        // those of a mesh it no longer holds let go: nothing keeps an old mesh.
+        self.boxes
+            .hold(view.bodies().values().map(|body| &body.mesh), &ctx);
+        let menu_changed = self
             .menu
             .as_ref()
-            .is_some_and(|menu| !menu.still(selection, view, frame))
-        {
+            .is_some_and(|menu| !still(menu.model, &menu.meshes, selection, view, frame));
+        let waiting_changed = self
+            .waiting
+            .as_ref()
+            .is_some_and(|waiting| !still(waiting.model, &waiting.meshes, selection, view, frame));
+        if menu_changed {
             tracing::debug!("the model or a mesh changed under Select Other: closed");
             self.close(selection, view, &ctx);
         }
-        // The boxes of a mesh no longer the view's let go: nothing keeps an old mesh.
-        self.pickables.retain(|number, pickable| {
-            view.bodies()
-                .get(number)
-                .is_some_and(|body| Arc::ptr_eq(&body.mesh, pickable.mesh()))
-        });
+        if waiting_changed {
+            tracing::debug!("the model or a mesh changed under Select Other's click: let go");
+            self.waiting = None;
+        }
         let given = Given {
             frame,
             current,
             facts,
             ctx: &ctx,
         };
-        let (kept, opened) = self.canvas_events(selection, view, &given);
-        // A menu open since before this frame, closed by a press anywhere off it; one this
-        // frame's right click opened is the canvas's events' to close.
-        if !opened {
+        let (kept, clicked) = self.canvas_events(selection, view, &given);
+        // A menu open (or waiting) since before this frame, closed by a press anywhere off
+        // it; one this frame's right click opened is the canvas's events' to close.
+        if !clicked {
             self.pressed_off(selection, view, &ctx);
         }
+        // A right click waiting for its bodies' boxes, opened once they're made.
+        self.open_waiting(selection, view, facts, &ctx);
         let mut asked = None;
         for key in std::mem::take(&mut self.keys) {
+            // Waiting, Esc lets it go; the rest are dropped, nothing lit to step or choose.
+            if self.menu.is_none() && key == MenuKey::Close && self.waiting.take().is_some() {
+                tracing::debug!("Esc let go of Select Other's click");
+                continue;
+            }
             if let Some(act) = self.apply(key, selection, view, &ctx) {
                 asked = Some(act);
             }
@@ -361,10 +412,11 @@ impl SelectOther {
     }
 
     /// The frame's left events and right clicks, in the order they came (their `seq`): a
-    /// right click opens the menu (the frame's last; one before it, another, closes it), a
-    /// left press while it's open closes it, and that press's stream (its moves, its release
-    /// or cancel, and the double-click straight after its release) is the menu's. The left
-    /// events but those, and whether a right click opened the menu.
+    /// right click opens the menu, or waits to (the frame's last; one before it, another,
+    /// closes it), a left press while it's open or waiting closes it, and that press's stream
+    /// (its moves, its release or cancel, and the double-click straight after its release)
+    /// is the menu's, whether its boxes were made in time or not. The left events but those,
+    /// and whether a right click opened the menu or waits to.
     fn canvas_events(
         &mut self,
         selection: &mut Selection,
@@ -392,7 +444,7 @@ impl SelectOther {
         for (_, event) in events {
             let event = match event {
                 CanvasEvent::Right(click, true) => {
-                    self.open(click, selection, view, given);
+                    self.clicked(click, selection, view, given);
                     opened = true;
                     continue;
                 }
@@ -414,7 +466,7 @@ impl SelectOther {
                 }
                 continue;
             }
-            if self.menu.is_some() && event.kind == LeftKind::Press {
+            if self.holds_keys() && event.kind == LeftKind::Press {
                 tracing::debug!("a press on the canvas closed Select Other");
                 self.close(selection, view, given.ctx);
                 // Closed after a right click this frame: no press is to close it again.
@@ -431,9 +483,11 @@ impl SelectOther {
     /// own hit test (the layer at the press) isn't the menu's, as it decides whether the canvas
     /// under it takes the press, so a press is the menu's or another's, never both or neither.
     fn pressed_off(&mut self, selection: &mut Selection, view: &mut View, ctx: &egui::Context) {
-        let Some(layer) = self.menu.as_ref().map(Menu::layer) else {
+        if !self.holds_keys() {
             return;
-        };
+        }
+        // Waiting, no menu is drawn: a press anywhere is off it.
+        let layer = self.menu.as_ref().map(Menu::layer);
         let presses: Vec<Pos2> = ctx.input(|input| {
             input
                 .events
@@ -446,38 +500,35 @@ impl SelectOther {
                 })
                 .collect()
         });
-        if presses.iter().any(|at| ctx.layer_id_at(*at) != Some(layer)) {
+        if presses
+            .iter()
+            .any(|at| layer.is_none() || ctx.layer_id_at(*at) != layer)
+        {
             tracing::debug!("a press off Select Other closed it");
             self.close(selection, view, ctx);
         }
     }
 
-    /// The context menu opened at `click`, cast (if the frame's bodies are current) on what
-    /// the frame drew, over what a click there would select.
-    fn open(
+    /// A right click at `click`: the context menu opened at once if it casts nothing (the
+    /// frame's bodies aren't the selection's model's) or every body the frame drew has its
+    /// boxes made (or none can be); else the click waits for them, its menu opened once they
+    /// are ([`open_waiting`](Self::open_waiting)), as it would have been now.
+    fn clicked(
         &mut self,
         click: &SecondaryClick,
         selection: &mut Selection,
         view: &mut View,
         given: &Given<'_>,
     ) {
-        let Given {
-            frame,
-            current,
-            facts,
-            ctx,
-        } = *given;
-        let _span = tracing::debug_span!("select_other_open", current).entered();
         // The hover a menu held, if one was open, is its row's, not the pointer's.
         let held = selection.hover_held();
         let hovered = selection
             .hovered()
             .filter(|_| !held)
             .map(|hovered| (hovered.body, hovered.element, Arc::clone(&hovered.name)));
-        self.close(selection, view, ctx);
-        let ppp = frame.pixels_per_point;
-        let at = frame.rect.min + Vec2::new(click.at_px[0], click.at_px[1]) / ppp;
-        let meshes: Vec<(u32, Arc<Mesh>)> = frame
+        self.close(selection, view, given.ctx);
+        let meshes: Vec<(u32, Arc<Mesh>)> = given
+            .frame
             .drawn
             .iter()
             .filter_map(|n| {
@@ -486,10 +537,86 @@ impl SelectOther {
                     .map(|body| (*n, Arc::clone(&body.mesh)))
             })
             .collect();
-        let rows = if current {
-            self.cast(click, view, frame, &meshes, facts.names)
+        let waiting = Waiting {
+            click: *click,
+            frame: ViewFrame {
+                left: Vec::new(),
+                secondary: Vec::new(),
+                ..given.frame.clone()
+            },
+            meshes,
+            hovered,
+            model: selection.model_of(),
+            current: given.current,
+        };
+        if waiting.current && !self.boxes.failed() && !self.made(&waiting.meshes) {
+            tracing::debug!(bodies = waiting.meshes.len(), "select_other_waits");
+            self.waiting = Some(waiting);
         } else {
-            Vec::new()
+            self.open(waiting, selection, view, given.facts, given.ctx);
+        }
+    }
+
+    /// Whether every one of `meshes` has its boxes made.
+    fn made(&self, meshes: &[(u32, Arc<Mesh>)]) -> bool {
+        meshes
+            .iter()
+            .all(|(_, mesh)| self.boxes.made_of(mesh).is_some())
+    }
+
+    /// The right click waiting, its menu opened if its bodies' boxes are made now, or none
+    /// can be.
+    fn open_waiting(
+        &mut self,
+        selection: &mut Selection,
+        view: &mut View,
+        facts: &Facts<'_>,
+        ctx: &egui::Context,
+    ) {
+        let Some(waiting) = self.waiting.take() else {
+            return;
+        };
+        if self.boxes.failed() || self.made(&waiting.meshes) {
+            tracing::debug!("select_other_waited");
+            self.open(waiting, selection, view, facts, ctx);
+        } else {
+            self.waiting = Some(waiting);
+        }
+    }
+
+    /// The context menu opened for the right click `at` waited for, cast (if its frame's
+    /// bodies are current) on what that frame drew, over what a click there would select.
+    fn open(
+        &mut self,
+        at: Waiting,
+        selection: &mut Selection,
+        view: &mut View,
+        facts: &Facts<'_>,
+        ctx: &egui::Context,
+    ) {
+        let Waiting {
+            click,
+            frame,
+            meshes,
+            hovered,
+            model,
+            current,
+        } = at;
+        let _span = tracing::debug_span!("select_other_open", current).entered();
+        let ppp = frame.pixels_per_point;
+        let at = frame.rect.min + Vec2::new(click.at_px[0], click.at_px[1]) / ppp;
+        let cast = if current {
+            self.cast(&click, view, &frame, &meshes, facts.names)
+        } else {
+            None
+        };
+        let (rows, count) = match cast {
+            Some((rows, found)) => {
+                let count = count_said(rows.len(), found);
+                (rows, count)
+            }
+            None if current => (Vec::new(), UNCAST.to_owned()),
+            None => (Vec::new(), UNREAD.to_owned()),
         };
         tracing::debug!(rows = rows.len(), "select_other_cast");
         // What a click there would select: the pointer's hover; or, while a menu held it,
@@ -509,15 +636,6 @@ impl SelectOther {
                     .map(|row| (row.body, row.element, Arc::clone(&row.name)))
             })
             .and_then(|(body, element, name)| under_of(view, facts, body, element, &name));
-        let count = if current {
-            match rows.len() {
-                0 => "nothing under the pointer".to_owned(),
-                n if n >= MAX_HITS => format!("{n} or more under the pointer"),
-                n => format!("{n} under the pointer"),
-            }
-        } else {
-            UNREAD.to_owned()
-        };
         let context = Context {
             count,
             listable: !rows.is_empty(),
@@ -537,7 +655,7 @@ impl SelectOther {
             rows,
             lit: None,
             pointed: None,
-            model: selection.model_of(),
+            model,
             meshes,
             wheel: 0.0,
             scroll: 0.0,
@@ -547,42 +665,32 @@ impl SelectOther {
         selection.hold_hover(None);
     }
 
-    /// What's under `click`'s pixel, of `meshes` (the bodies drawn, by number), as rows: each
-    /// body's boxes kept from the last cast while its mesh is the same.
+    /// What's under `click`'s pixel in `frame`, of `meshes` (the bodies it drew, by number),
+    /// as rows, and how many the cast found (some of which may not be rows: one its body's
+    /// names don't name); none if a body's boxes aren't made, as no cast leaves one out.
     fn cast(
-        &mut self,
+        &self,
         click: &SecondaryClick,
         view: &View,
         frame: &ViewFrame,
         meshes: &[(u32, Arc<Mesh>)],
         names: &dyn Fn(&FeatureId) -> Option<String>,
-    ) -> Vec<Row> {
-        self.pickables.retain(|number, pickable| {
-            meshes
-                .iter()
-                .any(|(n, mesh)| n == number && Arc::ptr_eq(mesh, pickable.mesh()))
-        });
-        for (number, mesh) in meshes {
-            self.pickables
-                .entry(*number)
-                .or_insert_with(|| Pickable::new(Arc::clone(mesh)));
-        }
+    ) -> Option<(Vec<Row>, usize)> {
         let bodies: Vec<(u32, &Pickable)> = meshes
             .iter()
-            .filter_map(|(n, _)| self.pickables.get(n).map(|pickable| (*n, pickable)))
-            .collect();
+            .map(|(n, mesh)| self.boxes.made_of(mesh).map(|pickable| (*n, pickable)))
+            .collect::<Option<_>>()?;
         let pixel = centre_of(square(click.at_px, frame.size_px, 0));
         let pointer = pixel.map(|c| f64::from(c) + 0.5);
-        hits(
+        let found = hits(
             &frame.camera,
             frame.size_px,
             frame.pixels_per_point,
             &bodies,
             pointer,
-        )
-        .iter()
-        .filter_map(|hit| row_of(hit, view, names))
-        .collect()
+        );
+        let named = |hit: &Hit| view.bodies().get(&hit.body)?.name_of(hit.element);
+        Some((rows_of(&found, named, names), found.len()))
     }
 
     /// `key` applied to the open menu: what an item it chose asks of the tab.
@@ -625,11 +733,7 @@ impl SelectOther {
                 menu.list();
                 return None;
             }
-            CanvasItem::Edit(id) => CanvasAct::Edit(id),
-            CanvasItem::Hide(id) => CanvasAct::Hide(id),
-            CanvasItem::Fit => CanvasAct::Fit,
-            CanvasItem::Home => CanvasAct::Home,
-            CanvasItem::ClearSelection => CanvasAct::ClearSelection,
+            CanvasItem::Act(act) => act,
         };
         tracing::debug!(?act, "canvas_menu_chosen");
         self.close(selection, view, ctx);
@@ -696,15 +800,16 @@ impl SelectOther {
         selection.pick(&row.name.to_string(), how);
     }
 
-    /// The menu closed: the hover and the wheel let go, and the keyboard's focus. The tab's,
-    /// as a modal or the shortcut sheet comes up over it (and sketch mode, when it takes the
-    /// canvas: SEAM(#351)).
+    /// The menu closed, or the right click waiting to open one let go: the hover and the
+    /// wheel let go, and the keyboard's focus. The tab's, as a modal or the shortcut sheet
+    /// comes up over it (and sketch mode, when it takes the canvas: SEAM(#351)).
     pub(crate) fn close(
         &mut self,
         selection: &mut Selection,
         view: &mut View,
         ctx: &egui::Context,
     ) {
+        self.waiting = None;
         if self.menu.take().is_some() {
             selection.release_hover();
             view.wheel_held = false;
@@ -774,25 +879,28 @@ impl SelectOther {
     }
 }
 
-impl Menu {
-    /// Whether what it was cast on is still what's drawn: the selection's model, and each
-    /// body drawn with the same mesh.
-    fn still(&self, selection: &Selection, view: &View, frame: &ViewFrame) -> bool {
-        self.model == selection.model_of()
-            && self.meshes.len() == frame.drawn.len()
-            && self
-                .meshes
-                .iter()
-                .zip(&frame.drawn)
-                .all(|((n, mesh), drawn)| {
-                    n == drawn
-                        && view
-                            .bodies()
-                            .get(n)
-                            .is_some_and(|body| Arc::ptr_eq(&body.mesh, mesh))
-                })
-    }
+/// Whether what a menu was cast on (or is to be), the selection's `model` and the bodies
+/// drawn with their `meshes`, is still what `frame` draws: the selection's model, and each
+/// body drawn with the same mesh.
+fn still(
+    model: Option<(u64, Revision)>,
+    meshes: &[(u32, Arc<Mesh>)],
+    selection: &Selection,
+    view: &View,
+    frame: &ViewFrame,
+) -> bool {
+    model == selection.model_of()
+        && meshes.len() == frame.drawn.len()
+        && meshes.iter().zip(&frame.drawn).all(|((n, mesh), drawn)| {
+            n == drawn
+                && view
+                    .bodies()
+                    .get(n)
+                    .is_some_and(|body| Arc::ptr_eq(&body.mesh, mesh))
+        })
+}
 
+impl Menu {
     /// The layer it's drawn on: each of its two menus an area of its own.
     fn layer(&self) -> egui::LayerId {
         let which = match self.phase {
@@ -904,18 +1012,40 @@ fn under_of(
     })
 }
 
-/// `hit` as a row: named as its body's mesh names it, its note its kind, the feature that
-/// made it (by its name, as `names` gives it, or its ID), and whether it's hidden; none if
-/// its body or its name isn't the view's.
-fn row_of(hit: &Hit, view: &View, names: &dyn Fn(&FeatureId) -> Option<String>) -> Option<Row> {
-    let named_as = view.bodies().get(&hit.body)?.name_of(hit.element)?;
+/// What *Select Other…* says of a cast that found `found` and made `rows` rows of them: how
+/// many rows, "or more" where the cast found its most ([`MAX_HITS`]), whatever rows it made
+/// of them; "nothing" for no row.
+fn count_said(rows: usize, found: usize) -> String {
+    match rows {
+        0 => "nothing under the pointer".to_owned(),
+        n if found >= MAX_HITS => format!("{n} or more under the pointer"),
+        n => format!("{n} under the pointer"),
+    }
+}
+
+/// `found` as rows, nearest first, each named as `named` names it (its body's mesh's name of
+/// its element), and the feature that made it by `names`: none for one `named` doesn't name.
+fn rows_of<'a>(
+    found: &[Hit],
+    named: impl Fn(&Hit) -> Option<&'a MeshElement>,
+    names: &dyn Fn(&FeatureId) -> Option<String>,
+) -> Vec<Row> {
+    found
+        .iter()
+        .filter_map(|hit| Some(row_of(hit, named(hit)?, names)))
+        .collect()
+}
+
+/// `hit` as a row: named `named_as`, its note its kind, the feature that made it (by its
+/// name, as `names` gives it, or its ID), and whether it's hidden.
+fn row_of(hit: &Hit, named_as: &MeshElement, names: &dyn Fn(&FeatureId) -> Option<String>) -> Row {
     let (kind, number) = kind_of(hit.element);
     let made_by = named(names, named_as.name.feature());
     let mut note = format!("{kind} · {made_by}");
     if hit.hidden {
         note.push_str(" · hidden");
     }
-    Some(Row {
+    Row {
         body: hit.body,
         element: hit.element,
         name: Arc::clone(&named_as.name),
@@ -923,7 +1053,7 @@ fn row_of(hit: &Hit, view: &View, names: &dyn Fn(&FeatureId) -> Option<String>) 
         hidden: hit.hidden,
         label: format!("{kind}{number}"),
         note,
-    })
+    }
 }
 
 /// The context menu (`crate::canvas_menu`): the pointer onto an item lights it, and a click
@@ -1205,6 +1335,60 @@ mod tests {
         assert_eq!(wheel_steps(&mut held, f32::NEG_INFINITY, 5), 0);
         assert_eq!(held, 0.0);
         assert_eq!(wheel_steps(&mut held, -3.0, 0), 1);
+    }
+
+    #[test]
+    fn a_cast_at_its_most_says_or_more_by_what_it_found_whatever_rows_it_made_of_them() {
+        // 256 found, the cast's most: Face1 to Face256 of body 1, nearest first, Face1 alone
+        // unhidden; Face100's name not the view's, so 255 rows. "Or more" is of what the cast
+        // found, not the rows: 255 rows of 256 found say "255 or more", where by the rows
+        // alone they'd say 255, as if the cast had found all.
+        let element = |n: u32| MeshElement {
+            name: Arc::new(Name::Element {
+                feature: FeatureId::new("k7f2qx3m").unwrap(),
+                made: silico_core::naming::TypeWord::Primitive(
+                    silico_core::naming::PrimitiveKind::Box,
+                ),
+                element: silico_protocol::ElementRef {
+                    kind: silico_protocol::ElementKind::Face,
+                    index: n,
+                },
+            }),
+            stable: true,
+            count: None,
+        };
+        let elements: Vec<MeshElement> = (1..=256).map(element).collect();
+        let found: Vec<Hit> = (1..=256u32)
+            .map(|n| Hit {
+                body: 1,
+                element: Element::Face(n),
+                point: [0.0; 3],
+                depth: f64::from(n),
+                hidden: n > 1,
+            })
+            .collect();
+        assert_eq!(found.len(), MAX_HITS);
+        let named = |hit: &Hit| match hit.element {
+            Element::Face(100) => None,
+            Element::Face(n) => elements.get(usize::try_from(n).unwrap() - 1),
+            Element::Edge(_) | Element::Vertex(_) => None,
+        };
+        let names = |_: &FeatureId| Some("Block".to_owned());
+        let rows = rows_of(&found, named, &names);
+        assert_eq!(rows.len(), 255);
+        assert!(!rows.iter().any(|row| row.label == "Face100"));
+        assert_eq!(rows[0].said(), "Face1 Face · Block");
+        assert_eq!(rows[98].said(), "Face99 Face · Block · hidden");
+        assert_eq!(rows[99].said(), "Face101 Face · Block · hidden");
+        assert_eq!(
+            count_said(rows.len(), found.len()),
+            "255 or more under the pointer"
+        );
+        // At the most with every row; under it, with one dropped or none; and no row.
+        assert_eq!(count_said(256, 256), "256 or more under the pointer");
+        assert_eq!(count_said(3, 4), "3 under the pointer");
+        assert_eq!(count_said(255, 255), "255 under the pointer");
+        assert_eq!(count_said(0, 300), "nothing under the pointer");
     }
 
     #[test]
