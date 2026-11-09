@@ -24,7 +24,7 @@ mod trim;
 pub use add::{Members, add};
 pub use join::{Joined, join};
 pub use split::{Split, split, split_with};
-pub(crate) use trim::{Geo, crossings, end_ids};
+pub(crate) use trim::{Geo, crossings, end_ids, lies_along};
 pub use trim::{Trim, trim, trim_with};
 
 /// A sketch edited, and what changed (docs/design/m5.0-app.md, section 7, *The sketch

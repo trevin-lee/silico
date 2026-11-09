@@ -24,8 +24,8 @@
 //! by. A hover asks again each frame the pointer moves to another pixel, but while a drag
 //! navigates; what it found is let go when the camera or the bodies change under it, and
 //! answers asked before that change are passed over. A pick takes an edge within
-//! [`EDGE_BAND_POINTS`] of the pointer before the face under it, as SolidWorks takes an
-//! edge near the pointer.
+//! [`EDGE_BAND_POINTS`] of the pointer (the prototype's 6, Select Other's too) before the
+//! face under it, as SolidWorks takes an edge near the pointer.
 //!
 //! A pick is named, and the selection's elements drawn, only on bodies read from the model
 //! the selection is read against ([`View::bodies_of`]): a model published, its meshes not
@@ -64,6 +64,7 @@ use silico_core::recompute::Model;
 use silico_core::selection::{self as rules, Carry, Gone, Resolved, Selected};
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{ElementKind, ElementRef};
+use silico_render::render::{HIT_EDGE_POINTS, HIT_VERTEX_POINTS, MAX_PICKING_SIDE};
 
 use crate::renderer::{Element, Outlines, Picking, PixelRect};
 use crate::theme;
@@ -74,14 +75,20 @@ use crate::viewport::{LeftKind, View, ViewBody, ViewFrame};
 pub const PARAMETER: &str = "selection";
 
 /// How far from the pointer an edge is taken before the face under it, in points: the
-/// picking rectangle is a square this far out on each side of the pointer's pixel.
-pub const EDGE_BAND_POINTS: f32 = 3.0;
+/// picking rectangle is a square this far out on each side of the pointer's pixel. The
+/// prototype's (viewport.js: its `pick`, the hover and the click, takes `pickAll`'s `d < 6`),
+/// so one threshold with Select Other's cast, [`HIT_EDGE_POINTS`]. The two still part a
+/// little past it: the square takes an edge drawn anywhere in it, out to the square's
+/// corners, and the edge is drawn 2 points wide about its line, where the cast measures to
+/// the line itself (docs/design/m5.0-app.md, section 9, Select Other as built).
+pub const EDGE_BAND_POINTS: f32 = HIT_EDGE_POINTS as f32;
 
 /// How far from a vertex the pointer takes it, in points: the radius of the disc the
 /// renderer picks it by ([`crate::renderer::Frame::vertices`]), the prototype's (viewport.js,
-/// `d < 7`). The disc wins the pixels it shares with the faces and edges under it, so a
-/// vertex is taken before an edge, and an edge before a face.
-pub const VERTEX_PICK_POINTS: f32 = 7.0;
+/// `d < 7`), Select Other's cast's too ([`HIT_VERTEX_POINTS`]). The disc wins the pixels it
+/// shares with the faces and edges under it, so a vertex is taken before an edge, and an edge
+/// before a face.
+pub const VERTEX_PICK_POINTS: f32 = HIT_VERTEX_POINTS as f32;
 
 /// How many frames a click waits for its pick's answer, asking again each frame: past
 /// this (a second at 60 Hz: a renderer that answers none, or none installed), it's let go,
@@ -264,6 +271,15 @@ pub enum OnBase {
     Missing,
 }
 
+/// A name read in one feature's solid alone ([`Selection::read_on`], [`Selection::holds_in`]):
+/// kept there, with what a store writes for it or why it can't; missing, that solid holding
+/// no element by it; or unread, and why.
+enum InSolid {
+    Kept(Result<Arc<Name>, Error>),
+    Missing,
+    Unread(Error),
+}
+
 /// What [`Selection::keep_only`] let go of: how many elements of each kind, and how many
 /// features.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -296,11 +312,7 @@ impl LeftOut {
             };
             parts.push(format!("{} {word}", self.features));
         }
-        match parts.as_slice() {
-            [] => None,
-            [one] => Some(one.clone()),
-            [rest @ .., last] => Some(format!("{} and {last}", rest.join(", "))),
-        }
+        (!parts.is_empty()).then(|| crate::words::listed(&parts, "and"))
     }
 }
 
@@ -410,6 +422,9 @@ pub struct Selection {
     toggled: Vec<Toggled>,
     /// The version and bodies table the highlights were last worked out for.
     drawn: Option<(u64, u64)>,
+    /// Whether a menu over the canvas holds the hover (Select Other's,
+    /// `crate::select_other`): the pointer's isn't asked meanwhile.
+    hover_held: bool,
 }
 
 impl Selection {
@@ -540,24 +555,42 @@ impl Selection {
     /// [`OnBase::Missing`], that solid holding no element by it (`reference_broken`). Names
     /// no element map and waits for none: the UI's thread calls it.
     pub fn read_on(&self, name: &str, feature: &FeatureId) -> OnBase {
+        match self.read_in(name, feature) {
+            InSolid::Kept(stored) => OnBase::Found(stored),
+            InSolid::Missing => OnBase::Missing,
+            InSolid::Unread(why) => OnBase::Found(Err(why)),
+        }
+    }
+
+    /// `name`, picked on the published model, read in the feature `feature`'s solid alone
+    /// (the core's `resolve_in`): kept there, with what a store writes for it or why it
+    /// can't; missing, that solid holding no element by it (`reference_broken`); or unread,
+    /// and why (no model; that solid's elements not named yet, or never named; `feature`
+    /// with no solid; the name's own feature failed). Names no element map and waits for
+    /// none.
+    fn read_in(&self, name: &str, feature: &FeatureId) -> InSolid {
         let Some(model) = &self.model else {
-            return OnBase::Found(Err(Error::new(
-                ErrorCode::Conflict,
-                format!("{name} isn't answered yet: no model is built yet"),
-            )
-            .with_element(name)
-            .with_suggestion("select it again once the model has rebuilt")));
-        };
-        match rules::resolve_in(model, &[name], PARAMETER, feature) {
-            Err(error) => OnBase::Found(Err(error)),
-            Ok(answer) => match answer.kept.into_iter().next() {
-                Some(found) => OnBase::Found(found.stored),
-                None if !answer.pending.is_empty() => OnBase::Found(Err(Error::new(
+            return InSolid::Unread(
+                Error::new(
                     ErrorCode::Conflict,
-                    format!("{name} isn't answered yet: {feature}'s elements aren't named yet"),
+                    format!("{name} isn't answered yet: no model is built yet"),
                 )
                 .with_element(name)
-                .with_suggestion("select it again once the model has rebuilt"))),
+                .with_suggestion("select it again once the model has rebuilt"),
+            );
+        };
+        match rules::resolve_in(model, &[name], PARAMETER, feature) {
+            Err(error) => InSolid::Unread(error),
+            Ok(answer) => match answer.kept.into_iter().next() {
+                Some(found) => InSolid::Kept(found.stored),
+                None if !answer.pending.is_empty() => InSolid::Unread(
+                    Error::new(
+                        ErrorCode::Conflict,
+                        format!("{name} isn't answered yet: {feature}'s elements aren't named yet"),
+                    )
+                    .with_element(name)
+                    .with_suggestion("select it again once the model has rebuilt"),
+                ),
                 // Not in that solid only if that's why: any other reason (its elements
                 // never named, the name's feature failed) is said as it is.
                 None => match answer.gone.first() {
@@ -566,12 +599,12 @@ impl Selection {
                             if gone.failed.is_none()
                                 && why.code() == ErrorCode::ReferenceBroken =>
                         {
-                            OnBase::Missing
+                            InSolid::Missing
                         }
-                        Some(why) => OnBase::Found(Err(why.clone())),
-                        None => OnBase::Found(Err(unread(name, feature))),
+                        Some(why) => InSolid::Unread(why.clone()),
+                        None => InSolid::Unread(unread(name, feature)),
                     },
-                    None => OnBase::Found(Err(unread(name, feature))),
+                    None => InSolid::Unread(unread(name, feature)),
                 },
             },
         }
@@ -661,9 +694,37 @@ impl Selection {
         }
     }
 
-    /// What the pointer is over in the canvas, if anything.
+    /// What the pointer is over in the canvas, if anything; or, while a menu holds the hover
+    /// ([`hold_hover`](Self::hold_hover)), the row it lights.
     pub fn hovered(&self) -> Option<&Hovered> {
         self.hovered.as_ref()
+    }
+
+    /// The hover held by a menu over the canvas (Select Other's, `crate::select_other`), for
+    /// as long as it's open: the pointer's hover isn't asked, nor is an answer to one taken.
+    /// With `to` (a row of the menu: its body, element, name, and whether that's stable),
+    /// that's what's hovered, read against the published model as a hover the pointer finds
+    /// is; with none, what's hovered stays as it was.
+    pub(crate) fn hold_hover(&mut self, to: Option<(u32, Element, Arc<Name>, bool)>) {
+        self.hover_held = true;
+        if let Some((body, element, name, stable)) = to {
+            self.hover_on(body, element, name, stable);
+        }
+    }
+
+    /// The hover let go by the menu that held it ([`hold_hover`](Self::hold_hover)): nothing
+    /// is hovered, and the pointer's hover is asked again at once.
+    pub(crate) fn release_hover(&mut self) {
+        if self.hover_held {
+            self.hover_held = false;
+            self.hovered = None;
+            self.hover_asked = None;
+        }
+    }
+
+    /// Whether a menu holds the hover.
+    pub fn hover_held(&self) -> bool {
+        self.hover_held
     }
 
     /// The feature that made what the pointer is over (the timeline outlines it, DESIGN.md's
@@ -715,6 +776,32 @@ impl Selection {
         }
         self.said = None;
         self.click = None;
+    }
+
+    /// The features `ids` selected, in order, and nothing else (a boolean's dialog's boxes:
+    /// each body they hold, lit whole in the canvas and marked in the browser). A click in
+    /// the canvas waiting for its pick is let go: it came before.
+    pub fn select_features(&mut self, ids: Vec<FeatureId>) {
+        let items: Vec<Item> = ids.into_iter().map(Item::Feature).collect();
+        if items != self.items {
+            self.set(items);
+        }
+        self.said = None;
+        self.click = None;
+    }
+
+    /// Whether the feature `feature`'s solid holds an element by `name`, picked on the
+    /// published model, read as [`read_on`](Self::read_on) reads it: whether it does, its
+    /// name stable there or not (a boolean's box takes the body, not the name); or why that
+    /// can't be read, as `read_on` says it (no model; that solid's elements not named yet,
+    /// or never named; `feature` with no solid; the name's own feature failed). Names no
+    /// element map and waits for none: the UI's thread calls it.
+    pub fn holds_in(&self, name: &str, feature: &FeatureId) -> Result<bool, Error> {
+        match self.read_in(name, feature) {
+            InSolid::Kept(_) => Ok(true),
+            InSolid::Missing => Ok(false),
+            InSolid::Unread(why) => Err(why),
+        }
     }
 
     /// Feature `id` selected alone, and its browser row scrolled to once, its group opened
@@ -1201,7 +1288,10 @@ impl Selection {
                 // An answer to a pick asked before the click: neither the click's nor, now,
                 // the hover's.
                 Some(_) => {}
-                None if current && self.stale_to.is_none_or(|stale| picking.frame > stale) => {
+                None if current
+                    && !self.hover_held
+                    && self.stale_to.is_none_or(|stale| picking.frame > stale) =>
+                {
                     self.hover_answered(&picking, view.bodies());
                 }
                 None => {}
@@ -1275,6 +1365,7 @@ impl Selection {
         self.press = None;
         self.hovered = None;
         self.hover_asked = None;
+        self.hover_held = false;
     }
 
     /// What's hovered let go if the camera or the bodies changed since the last frame: the
@@ -1289,7 +1380,10 @@ impl Selection {
         };
         if self.seen.as_ref() != Some(&now) {
             if let Some(seen) = &self.seen {
-                self.hovered = None;
+                // A menu's row stays lit: it's an element, not what's under the pointer.
+                if !self.hover_held {
+                    self.hovered = None;
+                }
                 self.stale_to = view.last_asked();
                 if seen.camera != now.camera && self.click.take().is_some() {
                     tracing::debug!("the camera moved under a click waiting for its pick: let go");
@@ -1362,6 +1456,10 @@ impl Selection {
                 return;
             }
         }
+        if self.hover_held {
+            // A menu lights its own row: the pointer's isn't asked.
+            return;
+        }
         let Some(pointer) = frame.pointer_px else {
             self.hovered = None;
             self.hover_asked = None;
@@ -1402,6 +1500,12 @@ impl Selection {
             self.hovered = None;
             return;
         };
+        self.hover_on(body, element, name, stable);
+    }
+
+    /// `element` of body `body` hovered, by `name` (`stable` or not), read against the
+    /// published model when it's another element than the one hovered before.
+    fn hover_on(&mut self, body: u32, element: Element, name: Arc<Name>, stable: bool) {
         if self
             .hovered
             .as_ref()
@@ -1446,11 +1550,14 @@ impl Selection {
         Some((pick.body, pick.hit, Arc::clone(&named.name), named.stable))
     }
 
-    /// The highlights and the hover set on `view`: the highlights worked out again only
-    /// when the selection or the bodies table changed (which model the bodies are of
-    /// changes only with the table).
+    /// The highlights and the hover set on `view`, and what its picks take ([`Self::picks`]:
+    /// its vertex discs, and its edges' picking strips, only for kinds picked): the
+    /// highlights worked out again only when the selection or the bodies table changed
+    /// (which model the bodies are of changes only with the table).
     fn draw(&mut self, view: &mut View) {
-        view.vertices = self.picks().vertices.then_some(VERTEX_PICK_POINTS);
+        let picks = self.picks();
+        view.vertices = picks.vertices.then_some(VERTEX_PICK_POINTS);
+        view.edges = picks.edges;
         let key = (self.version, view.table());
         if self.drawn != Some(key) {
             view.highlights = highlights(&self.items, view.bodies(), view.bodies_of());
@@ -1678,11 +1785,7 @@ fn gone_words(
             }
         })
         .collect();
-    let what = match parts.as_slice() {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    };
+    let what = crate::words::listed(&parts, "and");
     let verb = if dropped.len() == 1 { "is" } else { "are" };
     let mut said = format!("{what} {verb} gone after the rebuild");
     if let [(_, one)] = dropped {
@@ -1694,12 +1797,18 @@ fn gone_words(
     })
 }
 
-/// The edge band, in physical pixels, at `ppp` pixels a point: at least one.
+/// The edge band, in physical pixels, at `ppp` pixels a point: at least one, and at most
+/// [`MOST_BAND_PX`].
 pub(crate) fn band_px(ppp: f32) -> u32 {
-    // At most MAX_PIXELS_PER_POINT (32) × 3 points: well inside a u32, and the square
-    // (2 · band + 1) inside the most a picking takes on a side (256).
-    (EDGE_BAND_POINTS * ppp).ceil().clamp(1.0, 96.0) as u32
+    (EDGE_BAND_POINTS * ppp)
+        .ceil()
+        .clamp(1.0, MOST_BAND_PX as f32) as u32
 }
+
+/// The most the edge band is, in pixels: its square (2 · band + 1 on a side) the most a
+/// picking takes ([`MAX_PICKING_SIDE`], 256) can hold, 255. Reached past 21 pixels a point
+/// (6 points of 21.2 are 127.2).
+pub(crate) const MOST_BAND_PX: u32 = (MAX_PICKING_SIDE - 1) / 2;
 
 /// The square `band` pixels out on each side of the pixel `at_px` (physical pixels from
 /// the viewport's top left, maybe outside it) is in, the pixel clamped into the viewport,
@@ -1977,6 +2086,7 @@ pub(crate) mod tests {
             pointer_px: None,
             left,
             secondary: Vec::new(),
+            drawn: Vec::new(),
             now: Instant::now(),
         }
     }
@@ -2124,8 +2234,16 @@ pub(crate) mod tests {
 
     #[test]
     fn a_picks_square_is_the_band_about_the_pointers_pixel_clamped_into_the_view() {
-        // 3 points at 1 and at 2 pixels a point: 3 and 6 pixels out on each side.
-        assert_eq!((band_px(1.0), band_px(2.0), band_px(1.5)), (3, 6, 5));
+        // The prototype's 6 points (viewport.js, `d < 6`) at 1, 2, and 1.5 pixels a point: 6,
+        // 12, and 9 pixels out on each side; at 32, the square no wider than a picking's 256:
+        // 127 out, 255 across.
+        assert_eq!(EDGE_BAND_POINTS, 6.0);
+        assert_eq!((band_px(1.0), band_px(2.0), band_px(1.5)), (6, 12, 9));
+        assert_eq!(
+            (band_px(21.0), band_px(21.2), band_px(32.0)),
+            (126, 127, 127)
+        );
+        assert_eq!(2 * band_px(32.0) + 1, 255);
         let rect = square([10.7, 20.2], [100, 50], 3);
         assert_eq!(
             rect,
@@ -2256,6 +2374,43 @@ pub(crate) mod tests {
         assert_eq!(selection.hovered, Some(hovered));
     }
 
+    #[test]
+    fn the_camera_moving_lets_go_of_the_pointers_hover_but_not_of_a_menus_row() {
+        // The pointer may be over something else once the camera moves, so its hover is let
+        // go; a menu's lit row (Select Other's) is an element, not what's under the pointer,
+        // so it stays.
+        let view = View::default();
+        let mut frame = frame_of(Vec::new());
+        let mut selection = Selection::default();
+        selection.view_changed(&view, &frame);
+        let hovered = Hovered {
+            body: 1,
+            element: Element::Face(3),
+            name: named("k7f2qx3m", face(3)),
+            stable: true,
+            found: None,
+        };
+        let moved = |frame: &mut ViewFrame| frame.camera.eye[0] += 1.0;
+        // Nothing moved: kept.
+        selection.hovered = Some(hovered.clone());
+        selection.view_changed(&view, &frame);
+        assert_eq!(selection.hovered, Some(hovered.clone()));
+        // The pointer's, the camera moved: let go.
+        moved(&mut frame);
+        selection.view_changed(&view, &frame);
+        assert_eq!(selection.hovered, None);
+        // A menu's row, the camera moved: kept.
+        selection.hold_hover(Some((
+            hovered.body,
+            hovered.element,
+            Arc::clone(&hovered.name),
+            hovered.stable,
+        )));
+        moved(&mut frame);
+        selection.view_changed(&view, &frame);
+        assert_eq!(selection.hovered, Some(hovered));
+    }
+
     // ---- Models built on the fake kernel, as the core's selection tests build them ----
 
     use silico_core::kernel::{
@@ -2366,7 +2521,7 @@ pub(crate) mod tests {
 
     /// The history of a fuse whose tool is `tool` (the fake's description of it), as the
     /// core's carried-text proof gives them.
-    fn fusing(tool: &str) -> History {
+    pub(crate) fn fusing(tool: &str) -> History {
         if tool.contains("box(3,") {
             renumbering_fuse()
         } else if tool.contains("box(2,") {
@@ -2800,7 +2955,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             three.words().as_deref(),
-            Some("1 face, 2 vertices and 2 features")
+            Some("1 face, 2 vertices, and 2 features")
         );
     }
 
@@ -3140,6 +3295,32 @@ pub(crate) mod tests {
         );
         selection.draw(&mut view);
         assert_eq!(view.vertices, Some(VERTEX_PICK_POINTS));
+    }
+
+    #[test]
+    fn the_edge_filter_sets_whether_the_frames_edges_are_picked() {
+        // On, as the filter starts: the frame draws each edge near its square again toward
+        // the eye (N5). Off (E), not, so a concave edge's faces are picked to its line; and
+        // while a box takes faces alone (a dialog's), not either, whatever the filter.
+        let mut selection = Selection::default();
+        let mut view = View::default();
+        assert!(view.edges);
+        selection.filter.edges = false;
+        selection.draw(&mut view);
+        assert!(!view.edges);
+        selection.filter.edges = true;
+        selection.draw(&mut view);
+        assert!(view.edges);
+        selection.take_into(Some(Filter {
+            faces: true,
+            edges: false,
+            vertices: false,
+        }));
+        selection.draw(&mut view);
+        assert!(!view.edges);
+        selection.take_into(None);
+        selection.draw(&mut view);
+        assert!(view.edges);
     }
 
     #[test]

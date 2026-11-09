@@ -61,6 +61,34 @@ fn line(name: &str, from: &str, to: &str) -> SketchLine {
     }
 }
 
+/// `s` with the line `name` from `from` to `to` and its two points.
+fn with_line(mut s: Sketch, name: &str, from: Xy, to: Xy) -> Sketch {
+    // Its points: `f` and `t` in place of its ID's first character.
+    let (f, t) = (format!("f{}", &name[1..]), format!("t{}", &name[1..]));
+    s.points.push(point(&f, from[0], from[1]));
+    s.points.push(point(&t, to[0], to[1]));
+    s.lines.push(line(name, &f, &t));
+    s
+}
+
+/// A line along the x axis, (10, 0) to (50, 0), and one along the y axis, (0, 10) to
+/// (0, 50), each 40 long and named `name`; each with a place on it, mid-way between its end
+/// and its middle (beyond the pick tolerance of both), and a place 10 off it.
+fn along_the_axes(name: &str) -> [(Sketch, Xy, Xy); 2] {
+    [
+        (
+            with_line(empty(), name, [10.0, 0.0], [50.0, 0.0]),
+            [20.0, 0.0],
+            [20.0, 10.0],
+        ),
+        (
+            with_line(empty(), name, [0.0, 10.0], [0.0, 50.0]),
+            [0.0, 20.0],
+            [10.0, 20.0],
+        ),
+    ]
+}
+
 fn empty() -> Sketch {
     Sketch {
         plane: Plane::Origin(crate::document::OriginPlane::Xy),

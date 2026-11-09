@@ -9,6 +9,7 @@
     "state": "running",
     "done": 3,
     "steps": 9,
+    "elapsed_ms": 412,
     "features": [
       {"feature": "s0000001", "state": "built"},
       {"feature": "p0000001", "state": "running"},

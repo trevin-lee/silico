@@ -267,18 +267,18 @@ fn a_centre_that_moved_is_drift_naming_it_between_the_area_and_the_box() {
 }
 
 #[test]
-fn a_fingerprint_stored_before_the_centre_reads_and_drifts_on_it_and_a_save_writes_it() {
-    // A fingerprint without a centre (as saved before it was measured) reads, as none, and
-    // is drift on `center` alone: the migration is the drift rule's.
+fn a_fingerprint_stored_before_the_centre_reads_isnt_compared_on_it_and_a_save_writes_it() {
+    // A fingerprint without a centre beside its box (as saved before it was measured, #389)
+    // reads, as none, and recorded no centre: not compared on it, so no drift (Fable's
+    // decision of 2026-11-09, which replaced #389's drift on `center none → […]`; `check`
+    // warns `fingerprint_incomplete` instead).
     let document = tampered(r#""center": [20, 10, 5], "#, "");
-    assert_eq!(document.features[0].fingerprint.unwrap().center, None);
+    let fingerprint = document.features[0].fingerprint.unwrap();
+    assert_eq!(fingerprint.center, None);
+    assert!(fingerprint.bbox.is_some());
+    assert!(!fingerprint.records_center());
     let errors = drift(&document);
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert_eq!(errors[0].parameter(), Some("fingerprint.center"));
-    assert_eq!(
-        errors[0].message(),
-        "feature k7f2qx3m rebuilt to other measures than its fingerprint: center none → [20, 10, 5]"
-    );
+    assert!(errors.is_empty(), "{errors:?}");
     // `format`'s save writes the centre as rebuilt.
     let model = published(&engine(), Checked::new(document).unwrap());
     assert_eq!(write(&model.saved()).unwrap(), saved(EXAMPLE));

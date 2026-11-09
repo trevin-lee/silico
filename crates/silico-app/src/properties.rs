@@ -84,17 +84,25 @@ pub(crate) fn field_rect(ui: &Ui, width: f32) -> Rect {
     )
 }
 
-/// A label of `job`, cut short with an ellipsis where it doesn't fit.
-fn truncated(ui: &mut Ui, mut job: LayoutJob) -> Response {
-    job.wrap = TextWrapping::truncate_at_width(ui.available_width());
-    ui.add(Label::new(job).selectable(false))
+/// A label of `job`, cut short with an ellipsis where it doesn't fit its ui's width (its
+/// cell's: `.prop .k` and `.prop .v`'s `text-overflow: ellipsis`), its whole text the
+/// tooltip then (egui's own, once it's cut). A label lays its words out by its ui's wrap
+/// mode, whatever its job's wrap says: so it's told to truncate.
+fn truncated(ui: &mut Ui, job: LayoutJob) -> Response {
+    ui.add(Label::new(job).selectable(false).truncate())
 }
 
 /// A side panel's title (`.panel-title`, the browser's and the property panel's): `icon`,
 /// if it has one (a dialog's), and `text` in capitals, on a [`theme::TITLE_BAR_HEIGHT`]
 /// row; and at its right, if `close` names one, a close button (`.panel-title .ab-btn`)
-/// labelled so: whether it was clicked.
-pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str, close: Option<&str>) -> bool {
+/// labelled so, its tooltip the command it does (a dialog's Cancel, the selection's Clear
+/// selection) with its keys: whether it was clicked.
+pub(crate) fn title(
+    ui: &mut Ui,
+    icon: Option<Icon>,
+    text: &str,
+    close: Option<(&str, crate::shortcuts::Command)>,
+) -> bool {
     let (rect, _) = ui.allocate_exact_size(
         vec2(ui.available_width(), theme::TITLE_BAR_HEIGHT),
         Sense::hover(),
@@ -108,14 +116,14 @@ pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str, close: Option<&
     );
     let mut clicked = false;
     let words = match close {
-        Some(label) => {
+        Some((label, command)) => {
             let side = theme::PANEL_TITLE_BUTTON_SIZE;
             let button = Rect::from_min_size(
                 pos2(inner.right() - side, inner.center().y - side / 2.0),
                 Vec2::splat(side),
             );
             clicked = within(ui, button, ("title-close", text), |ui| {
-                close_button(ui, label)
+                close_button(ui, label, command)
             })
             .clicked();
             Rect::from_min_max(
@@ -152,8 +160,9 @@ pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str, close: Option<&
 }
 
 /// The title's close button (`.panel-title .ab-btn`): its × in Gray.750, white on Gray.300
-/// hovered, labelled `label`, with Cancel's tooltip.
-fn close_button(ui: &mut Ui, label: &str) -> Response {
+/// hovered, labelled `label`, its tooltip `command`'s words and keys (`data-tip`,
+/// `data-tipk`).
+fn close_button(ui: &mut Ui, label: &str, command: crate::shortcuts::Command) -> Response {
     let side = theme::PANEL_TITLE_BUTTON_SIZE;
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
@@ -178,13 +187,13 @@ fn close_button(ui: &mut Ui, label: &str) -> Response {
         ui,
         Rect::from_center_size(rect.center(), Vec2::splat(IconSize::Small.points())),
     );
-    let cancel = crate::shortcuts::Command::Cancel;
-    let said = format!("{} ({})", cancel.label(), cancel.keys_text(ui.ctx()));
+    let said = format!("{} ({})", command.label(), command.keys_text(ui.ctx()));
     response.on_hover_text(said)
 }
 
-/// The head (`.prop-head`): `icon` in its box, `title` over `sub`.
-pub(crate) fn head(ui: &mut Ui, icon: Icon, title: &str, sub: LayoutJob) {
+/// The head (`.prop-head`): `icon` in its box, `title` over `sub`. Its title's line and its
+/// sub-line's, each as wide as the head's words may be.
+pub(crate) fn head(ui: &mut Ui, icon: Icon, title: &str, sub: LayoutJob) -> [Rect; 2] {
     let words = 2.0 * theme::BODY_LINE_HEIGHT;
     let (rect, _) = ui.allocate_exact_size(
         vec2(
@@ -216,23 +225,22 @@ pub(crate) fn head(ui: &mut Ui, icon: Icon, title: &str, sub: LayoutJob) {
     let line =
         |at: f32| Rect::from_min_max(pos2(left, at), pos2(right, at + theme::BODY_LINE_HEIGHT));
     // Painted, not labelled: the document's name is its tab's, and a feature's its Name
-    // field's, so the accessibility tree has each once.
-    for (at, mut job) in [
-        (
-            top,
-            LayoutJob::single_section(
-                title.to_owned(),
-                format(theme::TITLE_SIZE, theme::PROPERTY_HEAD_TITLE, false),
-            ),
+    // field's, so the accessibility tree has each once (a selection's head, which no other
+    // widget says, is labelled by its caller, over the lines given back).
+    let lines = [line(top), line(top + theme::BODY_LINE_HEIGHT)];
+    for (line, mut job) in lines.into_iter().zip([
+        LayoutJob::single_section(
+            title.to_owned(),
+            format(theme::TITLE_SIZE, theme::PROPERTY_HEAD_TITLE, false),
         ),
-        (top + theme::BODY_LINE_HEIGHT, sub),
-    ] {
-        let line = line(at);
+        sub,
+    ]) {
         job.wrap = TextWrapping::truncate_at_width(line.width());
         let galley = ui.painter().layout_job(job);
         let at = pos2(line.left(), line.center().y - galley.size().y / 2.0);
         ui.painter().galley(at, galley, theme::PROPERTY_HEAD_TITLE);
     }
+    lines
 }
 
 /// A section's header (`.section`): `text` in capitals, and the rule after it.
@@ -304,6 +312,227 @@ pub(crate) fn row<R>(ui: &mut Ui, key: &str, value: impl FnOnce(&mut Ui, egui::I
 /// A row whose value is `value`'s text, cut short where it doesn't fit.
 pub(crate) fn text_row(ui: &mut Ui, key: &str, value: LayoutJob) {
     row(ui, key, |ui, _| truncated(ui, value));
+}
+
+/// A row whose value is `value` in the monospace type (`.prop .v .mono`), cut short where it
+/// doesn't fit, its whole its tooltip; and at the value's right (`.prop .v .copy`, `margin-
+/// left: auto`, [`theme::PROPERTY_COPY_GAP`] after the text) the copy icon, Gray.550, white
+/// hovered, a button labelled Copy, which puts `value` on the clipboard as it's written.
+pub(crate) fn copy_row(ui: &mut Ui, key: &str, value: &str) {
+    row(ui, key, |ui, _| {
+        let whole = ui.max_rect();
+        let side = IconSize::Small.points();
+        let button = Rect::from_center_size(
+            pos2(whole.right() - side / 2.0, whole.center().y),
+            Vec2::splat(side),
+        );
+        let job = LayoutJob::single_section(
+            value.to_owned(),
+            format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
+        );
+        // A label lays its words out in the width its ui has left, whatever its job's wrap
+        // says: the ui is left the room before the icon and its gap, and no more.
+        let room = whole.width() - side - theme::PROPERTY_COPY_GAP;
+        ui.set_max_width(room.max(0.0));
+        // Its whole value its one tooltip, cut or not (the prototype's `title`): egui's own,
+        // shown once it's cut, would be a second.
+        ui.add(
+            Label::new(job)
+                .selectable(false)
+                .truncate()
+                .show_tooltip_when_elided(false),
+        )
+        .on_hover_text(value);
+        let response = ui.interact(button, ui.id().with("copy"), Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Copy"));
+        let ink = if response.hovered() {
+            theme::TEXT_STRONG
+        } else {
+            theme::TEXT_SUBDUED
+        };
+        Icon::Copy
+            .image(IconSize::Small)
+            .tint(ink)
+            .paint_at(ui, button);
+        if response
+            .on_hover_text("Copy, as an agent would write it")
+            .clicked()
+        {
+            ui.ctx().copy_text(value.to_owned());
+        }
+    });
+}
+
+/// A row whose value is a link (`.link`): `text` in `--info`, white and underlined hovered,
+/// cut short where it doesn't fit, labelled `text` as a link. Whether it was clicked.
+pub(crate) fn link_row(ui: &mut Ui, key: &str, text: &str) -> bool {
+    row(ui, key, |ui, _| {
+        let room = ui.available_width();
+        let laid = |ink: Color32, underline: Stroke| {
+            let mut job = LayoutJob::single_section(
+                text.to_owned(),
+                TextFormat {
+                    underline,
+                    ..format(theme::BODY_SIZE, ink, false)
+                },
+            );
+            job.wrap = TextWrapping::truncate_at_width(room);
+            job
+        };
+        let size = ui
+            .painter()
+            .layout_job(laid(theme::INFO, Stroke::NONE))
+            .size();
+        let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, text));
+        let job = if response.hovered() {
+            laid(
+                theme::TEXT_STRONG,
+                Stroke::new(theme::BORDER_WIDTH, theme::TEXT_STRONG),
+            )
+        } else {
+            laid(theme::INFO, Stroke::NONE)
+        };
+        let galley = ui.painter().layout_job(job);
+        ui.painter().galley(
+            pos2(rect.left(), rect.center().y - galley.size().y / 2.0),
+            galley,
+            theme::INFO,
+        );
+        response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+    })
+}
+
+/// A row of buttons under a view's rows (`selectionProps`' `display: flex; gap: 6px;
+/// padding: 10px var(--pad); flex-wrap: wrap`): each as a modal paints it, in a line until
+/// the next doesn't fit, [`theme::PROPERTY_BUTTONS_GAP`] apart each way. Which was clicked,
+/// if one was (an off one never is).
+pub(crate) fn buttons(ui: &mut Ui, buttons: &[modal::Button<'_>]) -> Option<usize> {
+    if buttons.is_empty() {
+        return None;
+    }
+    let widths: Vec<f32> = buttons
+        .iter()
+        .map(|button| modal::natural_width(ui, button))
+        .collect();
+    let outer = ui.available_width();
+    let (places, height) = wrapped(
+        &widths,
+        (outer - 2.0 * pad()).max(0.0),
+        theme::PROPERTY_BUTTONS_GAP,
+    );
+    let (whole, _) = ui.allocate_exact_size(
+        vec2(outer, height + 2.0 * theme::PROPERTY_BUTTONS_PADDING),
+        Sense::hover(),
+    );
+    let origin = whole.min.to_vec2() + vec2(pad(), theme::PROPERTY_BUTTONS_PADDING);
+    // Painted in a child of their own, so the row's cursor stays under its padding.
+    let salt = ("buttons", buttons.first().map(|button| button.text));
+    let mut row = ui.new_child(UiBuilder::new().id_salt(salt).max_rect(whole));
+    let mut clicked = None;
+    for (at, (button, place)) in buttons.iter().zip(places).enumerate() {
+        if modal::paint(&mut row, place.translate(origin), button).clicked() {
+            clicked = Some(at);
+        }
+    }
+    clicked
+}
+
+/// Where buttons `widths` wide go as `flex-wrap` places them in a box `width` wide, `gap`
+/// apart each way, from the box's top left: each in a line until the next doesn't fit.
+/// Each one's place, and the height they take.
+fn wrapped(widths: &[f32], width: f32, gap: f32) -> (Vec<Rect>, f32) {
+    let (mut x, mut y) = (0.0f32, 0.0f32);
+    let mut places = Vec::with_capacity(widths.len());
+    for &wide in widths {
+        if x > 0.0 && x + wide > width {
+            x = 0.0;
+            y += theme::BUTTON_HEIGHT + gap;
+        }
+        places.push(Rect::from_min_size(
+            pos2(x, y),
+            vec2(wide, theme::BUTTON_HEIGHT),
+        ));
+        x += wide + gap;
+    }
+    (places, y + theme::BUTTON_HEIGHT)
+}
+
+/// `steps` of a quantity a unit of which is `per` steps (a length's nanometres a mm, an
+/// area's millionths a mm², an angle's nanodegrees a degree), as the prototype's `fmtF`
+/// writes a measure (app.js: `toLocaleString('en-US', {minimumFractionDigits: 2,
+/// maximumFractionDigits: 2})`): to exactly two decimals, rounded half away from zero as
+/// `Intl.NumberFormat` rounds, its whole part grouped by threes with commas, `-` only
+/// before what doesn't round to 0. Worked from the core's exact steps, never a float, so
+/// it's the value the core gives, rounded once.
+pub(crate) fn fixed(steps: i128, per: i128) -> String {
+    written(steps, per, true)
+}
+
+/// [`fixed`], but as the prototype's `fmt` writes a value (`minimumFractionDigits: 0`):
+/// at most two decimals, none of them a trailing 0.
+pub(crate) fn trimmed(steps: i128, per: i128) -> String {
+    written(steps, per, false)
+}
+
+/// [`fixed`] if `both` decimals are always written, else [`trimmed`].
+fn written(steps: i128, per: i128, both: bool) -> String {
+    let step = (per / 100).max(1);
+    let (whole, rest) = (steps / step, steps % step);
+    let hundredths = if 2 * rest.abs() >= step {
+        whole + steps.signum()
+    } else {
+        whole
+    };
+    let sign = if hundredths < 0 { "-" } else { "" };
+    let magnitude = hundredths.unsigned_abs();
+    let units = grouped(magnitude / 100);
+    match (both, magnitude % 100) {
+        (true, part) => format!("{sign}{units}.{part:02}"),
+        (false, 0) => format!("{sign}{units}"),
+        (false, part) if part.is_multiple_of(10) => format!("{sign}{units}.{}", part / 10),
+        (false, part) => format!("{sign}{units}.{part:02}"),
+    }
+}
+
+/// `units`' digits, grouped by threes from the right with commas (`en-US`'s grouping).
+fn grouped(units: u128) -> String {
+    let digits = units.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// A direction (a normal, an axis) as the prototype writes one (`(${normal.join(', ')})`):
+/// each component exactly, as JavaScript writes a number ([`script_number`]).
+pub(crate) fn direction(direction: [f64; 3]) -> String {
+    let [x, y, z] = direction.map(script_number);
+    format!("({x}, {y}, {z})")
+}
+
+/// `value` as JavaScript's `Number.prototype.toString` writes it: the shortest decimal that
+/// reads back as it, in an exponent's form where JavaScript uses one (under 1e-6 or from
+/// 1e21 on, its exponent signed: `6.123233995736766e-17`, `1e+21`), never rounded further;
+/// `-0` written `0`. Kernel noise in a unit vector stays readable, and exact.
+fn script_number(value: f64) -> String {
+    let value = if value == 0.0 { 0.0 } else { value };
+    let magnitude = value.abs();
+    if magnitude == 0.0 || (1e-6..1e21).contains(&magnitude) {
+        return format!("{value}");
+    }
+    // Rust's `{:e}` is the same shortest digits, its exponent unsigned when it's positive.
+    let written = format!("{value:e}");
+    match written.split_once('e') {
+        Some((digits, power)) if !power.starts_with('-') => format!("{digits}e+{power}"),
+        _ => written,
+    }
 }
 
 /// A row of a modal's list (`.prop` with `padding: 0`, as the prototype's "What changed on
@@ -552,10 +781,8 @@ impl CardLook {
 /// words alone is its message and suggestion. What a button asked, if one was.
 ///
 /// A broken reference's card, given `repair`, offers each candidate's Use and Remove the
-/// edge (flow 6b), and says which candidate's row the pointer is over.
-///
-/// SEAM: each candidate's why (`.cand .why`), which the core doesn't give: the first's
-/// row says only "Closest · ".
+/// edge (flow 6b), and says which candidate's row the pointer is over. Each candidate's
+/// why is the core's ranking of it, in words ([`worded`]).
 pub(crate) fn card(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> Option<CardAct> {
     repair_card(ui, said, name, offer, None).asked
 }
@@ -764,7 +991,7 @@ fn card_body(
         });
         ui.add_space(theme::ERROR_CARD_FIX_MARGIN);
     }
-    let mut out = candidates(ui, said.candidates(), repair);
+    let mut out = candidates(ui, said.candidates(), said.ranking(), repair);
     out.asked = card_buttons(ui, said, name, offer, repair).or(out.asked);
     out
 }
@@ -996,21 +1223,36 @@ fn element_chips(
     y + line
 }
 
-/// The names a broken reference's error offers in its place, closest first (`errCard`'s
-/// candidates): a heading in capitals, then each name in a row of its own (`.cand`), its
-/// name in the monospace font, cut short with an ellipsis where it doesn't fit, the first's
-/// "Closest · " under it (`.why`); and, given `repair`, each row's Use (`.btn-secondary`)
-/// at its right, the row lit as `.cand:hover` lights it while the pointer is over it, or
-/// while the canvas's pointer is over its edge (`repair`'s `marked`, the row selected in
-/// the accessibility tree). What a Use asked, and the candidate whose row the pointer is
-/// over, given `repair`.
-fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut {
+/// The names a broken reference's error offers in its place (`errCard`'s candidates): a
+/// heading in capitals, then each name in a row of its own (`.cand`), its name in the
+/// monospace font, cut short with an ellipsis where it doesn't fit. Ranked by the core
+/// (`ranking`), they're closest first: the heading says so, and under each name is its why
+/// (`.why`), worded from its rank ([`worded`]), wrapped, the first's after "Closest · ";
+/// the why alone is the row's description in the accessibility tree. Unranked (they follow
+/// another rule, which the suggestion states), the heading says only CANDIDATES and no row
+/// says it's closest. Given `repair`, each row's Use (`.btn-secondary`) at its right, the
+/// row lit as `.cand:hover` lights it while the pointer is over it, or while the canvas's
+/// pointer is over its edge (`repair`'s `marked`, the row selected in the accessibility
+/// tree). What a Use asked, and the candidate whose row the pointer is over, given
+/// `repair`.
+fn candidates(
+    ui: &mut Ui,
+    names: &[String],
+    ranking: &[silico_core::Rank],
+    repair: Option<&Repair>,
+) -> CardOut {
     let mut out = CardOut::default();
     if names.is_empty() {
         return out;
     }
+    let ranked = !ranking.is_empty();
     let heading = LayoutJob::single_section(
-        "CANDIDATES, CLOSEST FIRST".to_owned(),
+        if ranked {
+            "CANDIDATES, CLOSEST FIRST"
+        } else {
+            "CANDIDATES"
+        }
+        .to_owned(),
         TextFormat {
             line_height: Some(theme::BODY_LINE_HEIGHT),
             extra_letter_spacing: theme::CAPITALS_LETTER_SPACING,
@@ -1044,12 +1286,20 @@ fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut
                 )
             },
         );
-        job.wrap = TextWrapping::truncate_at_width((width - pad.sum().x - room).max(1.0));
+        let text_width = (width - pad.sum().x - room).max(1.0);
+        job.wrap = TextWrapping::truncate_at_width(text_width);
         let named = ui.painter().layout_job(job);
-        // SEAM: the core gives no why; the first says only that it's the closest.
-        let why = (at == 0).then(|| {
-            ui.painter().layout_job(LayoutJob::single_section(
-                CLOSEST.to_owned(),
+        // Its why, as the core ranked it (its ranking one for each candidate, or none, by
+        // construction: `Error::with_ranked`); the first's after "Closest · ".
+        let reason = ranking.get(at).map(|rank| worded(name, rank));
+        let line = match (&reason, at) {
+            (Some(reason), 0) => format!("{CLOSEST}{reason}"),
+            (Some(reason), _) => reason.clone(),
+            (None, _) => String::new(),
+        };
+        let why = (!line.is_empty()).then(|| {
+            let mut job = LayoutJob::single_section(
+                line.clone(),
                 TextFormat {
                     line_height: Some(theme::BODY_LINE_HEIGHT),
                     ..format(
@@ -1058,7 +1308,10 @@ fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut
                         false,
                     )
                 },
-            ))
+            );
+            // Names whole, as the core writes them: wrapped, never cut.
+            job.wrap = TextWrapping::wrap_at_width(text_width);
+            ui.painter().layout_job(job)
         });
         let words = named.size().y + why.as_ref().map_or(0.0, |why| why.size().y);
         let inner = words.max(button.as_ref().map_or(0.0, |_| theme::BUTTON_HEIGHT));
@@ -1082,14 +1335,18 @@ fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut
             ui.painter()
                 .galley(pos2(left, top + name_height), why, theme::ERROR_CARD_ACCENT);
         }
-        let said = if at == 0 {
+        let said = if ranked && at == 0 {
             format!("{CLOSEST}{name}")
         } else {
             name.clone()
         };
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
-        ui.ctx()
-            .accesskit_node_builder(response.id, |node| node.set_selected(marked));
+        ui.ctx().accesskit_node_builder(response.id, |node| {
+            node.set_selected(marked);
+            if let Some(reason) = &reason {
+                node.set_description(reason.as_str());
+            }
+        });
         let response = response.on_hover_text(name.as_str());
         if let (Some(repair), Some(button)) = (repair, button) {
             let place = Rect::from_min_size(
@@ -1122,6 +1379,57 @@ fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut
 
 /// What the closest candidate's row says under its name (`errCard`'s `'Closest · '`).
 pub(crate) const CLOSEST: &str = "Closest · ";
+
+/// Why the core ranked the candidate `name` where it is (`.cand .why`), worded from its
+/// `rank` (Fable's decision for #417: the core gives `shared`, `unshared`, `same_feature`,
+/// and `nearest` as data, the app words them), every name whole as the core writes it:
+/// - made from what the broken name is made from: "Made from A and B, as the broken name
+///   is", then, if the broken name is made from more, ", but not from C or D";
+/// - none shared, a name by number: "Numbered 1 from C", or, if what's numbered nearest is
+///   an element the candidate is made from, "Made from D, which is numbered 1 from C";
+/// - either, if the candidate isn't the broken name's own feature's (which the core ranks
+///   after its own), said first, of the candidate: "Another feature's: made from …".
+///
+/// Each list names at most [`MOST_NAMED`], the rest counted ("or 3 others"): a name can be
+/// made from thousands (the reader's `MOST_WEIGHT`), and the card stays a card; the whole
+/// list is the error's, which Copy as JSON gives. Nothing for a rank that's neither (never,
+/// as the core ranks).
+fn worded(name: &str, rank: &silico_core::Rank) -> String {
+    let listed = |names: &[String], conjunction| {
+        crate::words::listed_at_most(names, conjunction, MOST_NAMED)
+    };
+    let broken = listed(&rank.unshared, "or");
+    let said = match (rank.shared.as_slice(), &rank.nearest) {
+        ([], Some(nearest)) if nearest.element == name => {
+            format!("numbered {} from {broken}", nearest.gap)
+        }
+        ([], Some(nearest)) => format!(
+            "made from {}, which is numbered {} from {broken}",
+            nearest.element, nearest.gap
+        ),
+        ([], None) => return String::new(),
+        (shared, _) if rank.unshared.is_empty() => {
+            format!("made from {}, as the broken name is", listed(shared, "and"))
+        }
+        (shared, _) => format!(
+            "made from {}, as the broken name is, but not from {broken}",
+            listed(shared, "and")
+        ),
+    };
+    if rank.same_feature {
+        let mut chars = said.chars();
+        chars
+            .next()
+            .map(|first| first.to_uppercase().chain(chars).collect())
+            .unwrap_or_default()
+    } else {
+        format!("Another feature's: {said}")
+    }
+}
+
+/// How many names of a list in a why are named before the rest is counted: enough to read,
+/// few enough that the card stays a card.
+const MOST_NAMED: usize = 5;
 
 /// The words of a broken reference's card's Remove the edge (`errCard`'s `removeRef`).
 pub(crate) const REMOVE_THE_EDGE: &str = "Remove the edge";
@@ -1185,22 +1493,15 @@ fn card_buttons(
     }
     // Placed as `flex-wrap` places them: in a line until the next doesn't fit.
     let width = ui.available_width();
-    let gap = theme::ERROR_CARD_ACTIONS_GAP;
-    let (mut x, mut y) = (0.0f32, 0.0f32);
-    let mut places = Vec::with_capacity(buttons.len());
-    for (_, button) in &buttons {
-        let wide = modal::natural_width(ui, button);
-        if x > 0.0 && x + wide > width {
-            x = 0.0;
-            y += theme::BUTTON_HEIGHT + gap;
-        }
-        places.push((x, y, wide));
-        x += wide + gap;
-    }
-    let (whole, _) = ui.allocate_exact_size(vec2(width, y + theme::BUTTON_HEIGHT), Sense::hover());
+    let widths: Vec<f32> = buttons
+        .iter()
+        .map(|(_, button)| modal::natural_width(ui, button))
+        .collect();
+    let (places, height) = wrapped(&widths, width, theme::ERROR_CARD_ACTIONS_GAP);
+    let (whole, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let mut asked = None;
-    for ((which, button), (x, y, wide)) in buttons.iter().zip(places) {
-        let rect = Rect::from_min_size(whole.min + vec2(x, y), vec2(wide, theme::BUTTON_HEIGHT));
+    for ((which, button), place) in buttons.iter().zip(places) {
+        let rect = place.translate(whole.min.to_vec2());
         let response = modal::paint(ui, rect, button);
         let clicked = match which {
             Which::Copy => response
@@ -1491,14 +1792,14 @@ pub enum Preview {
     Stopped,
     /// Built with errors: OK keeps the feature with them.
     Errors(u64),
-    /// Built, at the revision.
-    UpToDate(u64),
+    /// Built, at the revision, in the whole milliseconds the core says its rebuild took, if
+    /// it says.
+    UpToDate { revision: u64, ms: Option<u64> },
 }
 
 /// The preview's line (`.dlg-status`): its mark, its words, and, while it runs, what stops
-/// it. `rebuild` names Rebuild's shortcut.
-///
-/// SEAM: the preview's time (`· 84 ms`), as the status bar's rebuild's: `status` gives none.
+/// it. `rebuild` names Rebuild's shortcut. Up to date, its time (`· 84 ms`), as the status
+/// bar's rebuild's.
 pub(crate) fn preview(ui: &mut Ui, preview: Preview, rebuild: &str) {
     let plural = |n: u64| if n == 1 { "" } else { "s" };
     let (mark, words, ink) = match preview {
@@ -1523,9 +1824,12 @@ pub(crate) fn preview(ui: &mut Ui, preview: Preview, rebuild: &str) {
             ),
             theme::ERROR_TEXT,
         ),
-        Preview::UpToDate(revision) => (
+        Preview::UpToDate { revision, ms } => (
             Some(Icon::Check),
-            format!("Preview up to date · revision {revision}"),
+            match ms {
+                Some(ms) => format!("Preview up to date · revision {revision} · {ms} ms"),
+                None => format!("Preview up to date · revision {revision}"),
+            },
             theme::DIALOG_STATUS_TEXT,
         ),
     };
@@ -1745,8 +2049,8 @@ mod tests {
 
     use super::*;
     use crate::modal::tests::{
-        at, at_opacity, cap_border, colour, fills_at, font, icon_at, kbd_border, near, near_rect,
-        painted, rects, sized, text_shape, widget,
+        at, at_opacity, cap_border, colour, drawn_characters, fills_at, font, icon_at, kbd_border,
+        near, near_rect, painted, rects, sized, text_shape, widget,
     };
 
     /// styles.css: `.dlg-footer .btn { flex: 1; height: 26px }`; `.btn { gap: 6px }`;
@@ -1757,6 +2061,217 @@ mod tests {
     const KBD_H: f32 = 16.0;
     const KBD_OPACITY: f32 = 0.55;
     const G750: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcf);
+
+    /// A rank as the core writes one (#417's `Rank`), its names as given, of the broken
+    /// name's own feature.
+    fn rank(shared: &[&str], unshared: &[&str], nearest: Option<(&str, u64)>) -> silico_core::Rank {
+        silico_core::Rank {
+            shared: shared.iter().map(|name| (*name).to_owned()).collect(),
+            unshared: unshared.iter().map(|name| (*name).to_owned()).collect(),
+            same_feature: true,
+            nearest: nearest.map(|(element, gap)| silico_core::Nearest {
+                element: element.to_owned(),
+                gap,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_candidates_why_says_what_it_shares_with_the_broken_name_and_what_it_doesnt() {
+        // m4.1's worked example (#417): the broken edge between the box's Face6 and the
+        // cylinder's Face1, the candidate between its Face5 and the same Face1.
+        let candidate = "m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face5, G a91cw0de.cylinder.Face1)";
+        assert_eq!(
+            worded(
+                candidate,
+                &rank(&["a91cw0de.cylinder.Face1"], &["k7f2qx3m.box.Face6"], None)
+            ),
+            "Made from a91cw0de.cylinder.Face1, as the broken name is, but not from \
+             k7f2qx3m.box.Face6"
+        );
+        // The cut's piece for a selection's gone face: made from everything the broken
+        // name is made from (the face itself), so nothing it isn't; and another feature's.
+        let mut cut = rank(&["b0000001.box.Face2"], &[], None);
+        cut.same_feature = false;
+        assert_eq!(
+            worded("c0000001.cut.Face(I b0000001.box.Face2)", &cut),
+            "Another feature's: made from b0000001.box.Face2, as the broken name is"
+        );
+        // Lists in words, in the core's order: what it's made from with "and", what it
+        // isn't with "or" (none of them).
+        assert_eq!(
+            worded("x", &rank(&["A", "B"], &["C", "D", "E"], None)),
+            "Made from A and B, as the broken name is, but not from C, D, or E"
+        );
+        assert_eq!(
+            worded("x", &rank(&["A", "B", "C"], &[], None)),
+            "Made from A, B, and C, as the broken name is"
+        );
+        // A list past five names five, the rest counted.
+        let seven = ["N1", "N2", "N3", "N4", "N5", "N6", "N7"];
+        assert_eq!(
+            worded("x", &rank(&["A"], &seven, None)),
+            "Made from A, as the broken name is, but not from N1, N2, N3, N4, N5, or 2 others"
+        );
+    }
+
+    #[test]
+    fn a_why_beside_its_rows_use_wraps_short_of_it_and_loses_no_character() {
+        // A broken edge's card with Use on its row (flow 6b), 300 wide: m4.1's worked
+        // example's why wraps under its name, its right short of Use by the row's gap, and
+        // every character of it drawn, never cut.
+        let candidate = "m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face5, G a91cw0de.cylinder.Face1)";
+        let error = silico_core::Error::new(
+            silico_core::ErrorCode::ReferenceBroken,
+            "An edge the fillet names is gone",
+        )
+        .with_feature("f0000001")
+        .with_ranked([(
+            candidate,
+            rank(&["a91cw0de.cylinder.Face1"], &["k7f2qx3m.box.Face6"], None),
+        )]);
+        let said = Said::of(&error);
+        let repair = Repair {
+            broken: Broken {
+                feature: FeatureId::new("f0000001").unwrap(),
+                place: 0,
+                name: "m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)"
+                    .to_owned(),
+                candidates: vec![candidate.to_owned()],
+                read: silico_core::command::Revision::OPENED,
+            },
+            remove: Ok(()),
+            marked: None,
+        };
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(300.0, 700.0))
+            .build_ui(move |ui| {
+                repair_card(
+                    ui,
+                    &said,
+                    Some("Inside corner"),
+                    Offer::default(),
+                    Some(&repair),
+                );
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let words = "Closest · Made from a91cw0de.cylinder.Face1, as the broken name is, but \
+                     not from k7f2qx3m.box.Face6";
+        let why = text_shape(&h, words);
+        assert!(
+            why.galley.rows.len() >= 2,
+            "{} lines",
+            why.galley.rows.len()
+        );
+        assert!(!why.galley.elided);
+        let whole: String = words.chars().filter(|chr| !chr.is_whitespace()).collect();
+        assert_eq!(drawn_characters(&why), whole);
+        let used = widget(&h, Role::Button, &format!("Use {candidate}"));
+        let right = why.pos.x + why.galley.size().x;
+        assert!(
+            right <= used.left() - theme::ERROR_CARD_CANDIDATE_GAP + 0.5,
+            "the why's right {right}, Use's left {}",
+            used.left()
+        );
+    }
+
+    #[test]
+    fn a_candidate_by_number_says_how_far_its_number_is_from_the_broken_ones() {
+        // The block's Edge5 gone: its Edge4 and Edge6, each 1 away (references.rs's
+        // `Index::nearest`); a box's Face9, 3 past its last, Face6.
+        let edge5 = ["k7f2qx3m.box.Edge5"];
+        assert_eq!(
+            worded(
+                "k7f2qx3m.box.Edge4",
+                &rank(&[], &edge5, Some(("k7f2qx3m.box.Edge4", 1)))
+            ),
+            "Numbered 1 from k7f2qx3m.box.Edge5"
+        );
+        assert_eq!(
+            worded(
+                "k7f2qx3m.box.Face6",
+                &rank(
+                    &[],
+                    &["k7f2qx3m.box.Face9"],
+                    Some(("k7f2qx3m.box.Face6", 3))
+                )
+            ),
+            "Numbered 3 from k7f2qx3m.box.Face9"
+        );
+        // What's numbered nearest is an element the candidate is made from, not itself: a
+        // candidate of another feature, as the core ranks one by number (its own feature's
+        // are the elements numbered).
+        let mut fillet = rank(&[], &edge5, Some(("k7f2qx3m.box.Edge4", 1)));
+        fillet.same_feature = false;
+        assert_eq!(
+            worded("f0000001.fillet.Face(G k7f2qx3m.box.Edge4)", &fillet),
+            "Another feature's: made from k7f2qx3m.box.Edge4, which is numbered 1 from \
+             k7f2qx3m.box.Edge5"
+        );
+    }
+
+    #[test]
+    fn a_measure_is_written_as_fmt_f_writes_it_and_a_value_as_fmt_does() {
+        // By hand, as `Number(n).toLocaleString('en-US', {minimumFractionDigits: d,
+        // maximumFractionDigits: 2})` writes the exact decimal: half away from zero, the
+        // whole part grouped by threes, no sign on what rounds to 0. In nanometres a mm.
+        const MM: i128 = 1_000_000;
+        for (nm, fixed_words, trimmed_words) in [
+            (0, "0.00", "0"),
+            (10_000_000, "10.00", "10"),
+            (15_707_963, "15.71", "15.71"),
+            // A half: away from zero, either way (`Intl`'s halfExpand).
+            (125_000, "0.13", "0.13"),
+            (-125_000, "-0.13", "-0.13"),
+            (124_999, "0.12", "0.12"),
+            (2_500_000, "2.50", "2.5"),
+            (2_005_000, "2.01", "2.01"),
+            (2_004_999, "2.00", "2"),
+            // Under half a hundredth either side of 0: 0, unsigned.
+            (-4_999, "0.00", "0"),
+            (-5_000, "-0.01", "-0.01"),
+            (999_995_000, "1,000.00", "1,000"),
+            (1_234_567_891_000, "1,234,567.89", "1,234,567.89"),
+            (-1_234_000_000, "-1,234.00", "-1,234"),
+            (100_000_000_000, "100,000.00", "100,000"),
+        ] {
+            assert_eq!(fixed(nm, MM), fixed_words, "{nm} nm");
+            assert_eq!(trimmed(nm, MM), trimmed_words, "{nm} nm");
+        }
+        // Nanodegrees a degree: 89.999999999° to two decimals is 90.00°.
+        assert_eq!(fixed(89_999_999_999, 1_000_000_000), "90.00");
+        assert_eq!(fixed(45_005_000_000, 1_000_000_000), "45.01");
+    }
+
+    #[test]
+    fn a_direction_is_written_as_the_prototypes_javascript_writes_its_components() {
+        assert_eq!(direction([0.0, 0.0, 1.0]), "(0, 0, 1)");
+        assert_eq!(direction([-1.0, -0.0, 0.0]), "(-1, 0, 0)");
+        assert_eq!(
+            direction([std::f64::consts::FRAC_1_SQRT_2, 0.0, -0.5]),
+            "(0.7071067811865476, 0, -0.5)"
+        );
+        // Kernel noise: cos(π/2) as an f64, as `String(Math.cos(Math.PI / 2))` writes it.
+        assert_eq!(
+            direction([6.123233995736766e-17, 0.0, -1.0]),
+            "(6.123233995736766e-17, 0, -1)"
+        );
+        // JavaScript's bounds, by hand from `Number.prototype.toString`: 1e-6 is the least
+        // written plainly, and anything under it, or from 1e21 on, with an exponent.
+        for (value, written) in [
+            (1e-6, "0.000001"),
+            (-1.5e-6, "-0.0000015"),
+            (9.99e-7, "9.99e-7"),
+            (-1e-7, "-1e-7"),
+            (5e-324, "5e-324"),
+            (123_456_789_012_345_680_000.0, "123456789012345680000"),
+            (1e21, "1e+21"),
+            (-2.5e22, "-2.5e+22"),
+        ] {
+            assert_eq!(script_number(value), written, "{value:e}");
+        }
+    }
 
     #[test]
     fn a_footer_buttons_key_cap_is_8_after_its_words_and_bordered_2_at_its_bottom() {
@@ -2566,5 +3081,220 @@ mod tests {
         let wide = "é".repeat(35);
         assert_eq!(chip_text(&wide), format!("{}…", "é".repeat(32)));
         assert_eq!(chip_text(&"é".repeat(34)), "é".repeat(34));
+    }
+
+    /// `.prop .v`: `display: flex; gap: 6px`; `.prop .v .copy { margin-left: auto }`.
+    const V_GAP: f32 = 6.0;
+    /// `--info`, `.link`'s.
+    const INFO: Color32 = Color32::from_rgb(0xad, 0xbb, 0xff);
+
+    #[test]
+    fn a_copy_rows_value_too_long_is_cut_short_6_before_its_copy_icon_at_the_rows_right() {
+        // `.prop` in a 295 wide panel, `--pad` in each side: the copy icon (`--icon`) at the
+        // value's right, centred on the row; the value from 12 + 96 + 8 in, a name too long
+        // for its column cut short with an ellipsis, ending within a glyph of `.mono`'s 11 px
+        // (under 8) of 6 before the icon (`gap: 6px`), never past that.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(295.0, 60.0));
+        let name = "k7f2qx3m.fillet.Edge111111111111111111111111111111111111111111";
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 120.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    copy_row(ui, "Stable name", name);
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let copy = widget(&h, Role::Button, "Copy");
+        sized(
+            copy,
+            Rect::from_min_size(
+                Pos2::new(
+                    place.right() - PAD - ICON,
+                    place.top() + (ROW_H - ICON) / 2.0,
+                ),
+                Vec2::splat(ICON),
+            ),
+            "the copy button",
+        );
+        let shown = text_shape(&h, name);
+        let left = place.left() + PAD + KEY_W + ROW_GAP;
+        assert!(near(shown.pos.x, left), "the value at {:?}", shown.pos);
+        let whole = h.ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(name.to_owned(), FontId::monospace(11.0), Color32::WHITE)
+                .size()
+                .x
+        });
+        assert!(
+            left + whole > copy.right(),
+            "{name} fits the row: the case is gone"
+        );
+        let right = shown.pos.x + shown.galley.size().x;
+        let end = copy.left() - V_GAP;
+        assert!(
+            right <= end + egui::emath::GUI_ROUNDING && right > end - 8.0,
+            "the value ends at {right}, the copy icon at {copy:?}"
+        );
+        // Cut with an ellipsis on its one line, never wrapped; whole in the accessibility
+        // tree, as Copy copies it.
+        assert!(shown.galley.elided);
+        assert_eq!(shown.galley.rows.len(), 1);
+        let last = shown
+            .galley
+            .rows
+            .last()
+            .and_then(|row| row.glyphs.last())
+            .map(|glyph| glyph.chr);
+        assert_eq!(last, Some('…'));
+        assert!(h.query_by_label(name).is_some());
+        // Hovered: its whole value, once (the prototype's one `title`), never egui's own
+        // tooltip for a cut label beside it.
+        h.ctx
+            .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
+        h.get_by_label(name).hover();
+        h.run_steps(3);
+        let said = painted(&h)
+            .into_iter()
+            .filter(|shape| matches!(shape, egui::Shape::Text(text) if text.galley.text() == name))
+            .count();
+        assert_eq!(said, 2, "the value and one tooltip");
+    }
+
+    #[test]
+    fn a_text_rows_long_key_and_value_are_each_cut_short_within_their_column() {
+        // `.prop .k` and `.prop .v`: `overflow: hidden; text-overflow: ellipsis; white-space:
+        // nowrap`. In a 295 wide panel, a key longer than its 96 and a value longer than the
+        // rest: each one line, cut with an ellipsis, ending within its own column.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(295.0, 60.0));
+        let key = "A key far too long for its column of ninety-six";
+        let value =
+            "p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000001, G s0000001.sketch.Edge.na000002)";
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 120.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    text_row(ui, key, body(value, theme::PROPERTY_VALUE));
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        for (text, right) in [
+            (key, place.left() + PAD + KEY_W),
+            (value, place.right() - PAD),
+        ] {
+            let shown = text_shape(&h, text);
+            assert!(shown.galley.elided, "{text} cut");
+            assert_eq!(shown.galley.rows.len(), 1, "{text} on one line");
+            let end = shown.pos.x + shown.galley.size().x;
+            // Cut at its column's right, within a glyph (under 8 at 11 and 12 px), never
+            // short of that, nor past it.
+            assert!(
+                end <= right + egui::emath::GUI_ROUNDING && end > right - 8.0,
+                "{text} ends at {end}, not within a glyph of its column's {right}"
+            );
+        }
+        // The value cut, hovered: its whole text, egui's one tooltip.
+        h.ctx
+            .all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
+        h.get_by_label(value).hover();
+        h.run_steps(3);
+        let said = painted(&h)
+            .into_iter()
+            .filter(|shape| matches!(shape, egui::Shape::Text(text) if text.galley.text() == value))
+            .count();
+        assert_eq!(said, 2, "the value and one tooltip");
+    }
+
+    #[test]
+    fn a_link_is_info_at_rest_and_white_and_underlined_hovered() {
+        // `.link { color: var(--info) }`, `.link:hover { color: #fff; text-decoration:
+        // underline }`: a line under its words hovered, a pixel thick (a browser's at 12 px),
+        // in their white; none at rest.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(295.0, 60.0));
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 120.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    link_row(ui, "Made by", "Block");
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let shown = text_shape(&h, "Block");
+        assert_eq!(colour(&shown), INFO, "at rest");
+        assert_eq!(
+            shown.galley.job.sections[0].format.underline,
+            Stroke::NONE,
+            "at rest"
+        );
+        h.get_by_role_and_label(Role::Link, "Block").hover();
+        h.run_steps(2);
+        let shown = text_shape(&h, "Block");
+        assert_eq!(colour(&shown), Color32::WHITE, "hovered");
+        assert_eq!(
+            shown.galley.job.sections[0].format.underline,
+            Stroke::new(1.0, Color32::WHITE),
+            "hovered"
+        );
+    }
+
+    /// `selectionProps`' buttons: `display: flex; gap: 6px; padding: 10px var(--pad);
+    /// flex-wrap: wrap`.
+    const BUTTONS_PADDING: f32 = 10.0;
+    const BUTTONS_GAP: f32 = 6.0;
+
+    #[test]
+    fn a_views_buttons_share_a_line_they_just_fit_inside_its_padding_and_wrap_a_point_narrower() {
+        // Fillet and Edit Block, measured in a wide row; then a row exactly as wide as the
+        // two, the gap, and `--pad` at each side: on one line, Fillet 12 in and 10 down, Edit
+        // Block 6 after it. A point narrower, Edit Block wraps, first on the next line, 6
+        // under Fillet.
+        let labels = ["Fillet", "Edit Block"];
+        let drawn = |width: f32| {
+            let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(width, 100.0));
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(width + 80.0, 160.0))
+                .build_ui(move |ui| {
+                    ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                        super::buttons(
+                            ui,
+                            &[
+                                modal::Button::new("Fillet", Kind::Secondary).icon(Icon::Fillet),
+                                modal::Button::new("Edit Block", Kind::Ghost).icon(Icon::Edit),
+                            ],
+                        );
+                    });
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(2);
+            let [fillet, edit] = labels.map(|label| widget(&h, Role::Button, label));
+            (place, fillet, edit)
+        };
+        let (_, fillet, edit) = drawn(600.0);
+        let both = fillet.width() + BUTTONS_GAP + edit.width();
+        let width = both + 2.0 * PAD;
+        let (place, fillet, edit) = drawn(width);
+        at(
+            fillet.min,
+            Pos2::new(place.left() + PAD, place.top() + BUTTONS_PADDING),
+            "Fillet",
+        );
+        at(
+            edit.min,
+            Pos2::new(fillet.right() + BUTTONS_GAP, fillet.top()),
+            "Edit Block, just fitting",
+        );
+        let (place, fillet, edit) = drawn(width - 1.0);
+        at(
+            fillet.min,
+            Pos2::new(place.left() + PAD, place.top() + BUTTONS_PADDING),
+            "Fillet",
+        );
+        at(
+            edit.min,
+            Pos2::new(place.left() + PAD, fillet.bottom() + BUTTONS_GAP),
+            "Edit Block, wrapped",
+        );
     }
 }

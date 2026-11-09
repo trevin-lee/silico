@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
@@ -76,6 +77,14 @@ fn opened() -> Fixture {
     }
 }
 
+/// `progress` but its clock, which no test can pin: its `elapsed` zero.
+fn clockless(progress: Option<Progress>) -> Option<Progress> {
+    progress.map(|progress| Progress {
+        elapsed: Duration::ZERO,
+        ..progress
+    })
+}
+
 fn is_box(op: &Op) -> bool {
     matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
 }
@@ -132,9 +141,13 @@ fn cancel_naming_the_running_check_stops_its_rebuild_and_the_check_answers_cance
         status.running,
         Some(RunningCommand::Command(SessionCommand::Check))
     );
-    // One box, one step, held: none done, the box's running.
+    // One box, one step, held: none done, the box's running (its clock aside, which no
+    // test can pin).
     assert_eq!(
-        status.rebuild,
+        Rebuild {
+            progress: clockless(status.rebuild.progress),
+            ..status.rebuild
+        },
         Rebuild {
             revision: Revision::OPENED,
             state: RebuildState::Running,
@@ -143,6 +156,7 @@ fn cancel_naming_the_running_check_stops_its_rebuild_and_the_check_answers_cance
                 steps: 1,
                 running: Some("k7f2qx3m box".to_owned()),
                 features: [(id("k7f2qx3m"), StepState::Running)].into_iter().collect(),
+                elapsed: Duration::ZERO,
             }),
         }
     );
@@ -242,12 +256,13 @@ fn cancel_naming_another_command_is_refused_with_whats_running_as_the_candidate(
     );
     assert_eq!(status.rebuild.revision, Revision::OPENED);
     assert_eq!(
-        status.rebuild.progress,
+        clockless(status.rebuild.progress),
         Some(Progress {
             done: 0,
             steps: 1,
             running: Some("k7f2qx3m box".to_owned()),
             features: [(id("k7f2qx3m"), StepState::Running)].into_iter().collect(),
+            elapsed: Duration::ZERO,
         })
     );
     assert!(

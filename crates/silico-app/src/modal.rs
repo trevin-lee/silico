@@ -622,6 +622,17 @@ pub(crate) mod tests {
             .collect()
     }
 
+    /// The characters `shown` draws, its rows joined, spaces left out: what a cut would lose.
+    pub(crate) fn drawn_characters(shown: &TextShape) -> String {
+        shown
+            .galley
+            .rows
+            .iter()
+            .flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr))
+            .filter(|chr| !chr.is_whitespace())
+            .collect()
+    }
+
     /// The one text `text` painted.
     #[track_caller]
     pub(crate) fn text_shape<S>(h: &Harness<'_, S>, text: &str) -> TextShape {
