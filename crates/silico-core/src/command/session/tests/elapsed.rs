@@ -304,15 +304,24 @@ fn a_new_revision_reads_null_until_a_read_rebuilds_it() {
             elapsed_ms: None,
         }
     );
+    // 50 ms pass by the test's own clock after the first rebuild ended: a start kept per
+    // session or per engine, not per rebuild, would make the second read at least 50.
+    spin_past(Instant::now(), Duration::from_millis(50));
+    let before = Instant::now();
     f.sessions
         .check(&f.id, CheckModel::Current { fresh: false })
         .wait()
         .result
         .unwrap();
+    let wall = ms(before.elapsed());
     let rebuilt = said(&f);
     assert_eq!(
         (rebuilt.state.as_str(), rebuilt.done, rebuilt.steps),
         ("done", Some(1), Some(1))
     );
-    assert!(rebuilt.elapsed_ms.is_some());
+    let elapsed = rebuilt.elapsed_ms.unwrap();
+    assert!(
+        elapsed <= wall,
+        "{elapsed} ms, more than the {wall} ms since just before its check"
+    );
 }
