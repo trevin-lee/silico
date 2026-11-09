@@ -35,6 +35,13 @@
 //! budget, 2 ms on the UI thread (docs/design/m5.0-app.md, section 9, as built), is read
 //! from these lines.
 //!
+//! Last, the edge batch (N5: a frame that picks draws each edge whose box lands near its
+//! square again, toward the eye, so a concave edge is picked): the ten copies drawn as ten
+//! bodies at 1920 by 1080, picking each frame, the view still and orbiting, with the edges
+//! picked and not (`Frame::edges`), each run's frames and the CPU's placing of the faces and
+//! edges (`Renderer::placed`, where every edge's box is tested against the square) by their
+//! medians; the batch's cost is the difference.
+//!
 //! Recorded, never budgeted: it fails on no time. Run with
 //! `SILICO_KERNEL_WORKER=target/release/silico-kernel-worker SILICO_BENCH_BREP=part.brep
 //! pixi run cargo bench -p silico-render --bench picking`, the B-rep Silico's (as
@@ -230,8 +237,122 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     out += &cast(&mesh, extent, View::Fitted);
     out += &cast(&mesh, extent, View::Crowd);
+    out += &edge_batch(&mut renderer, &device, &queue, &mesh, extent, &mut serial)?;
     std::io::stdout().write_all(out.as_bytes())?;
     Ok(())
+}
+
+/// The edge batch's cost (N5): ten copies of the part (as [`cast`] lays them), ten bodies in a
+/// 1920 by 1080 perspective view of them all, each frame picking the selection's square under
+/// a pointer across the view's middle third and taking the answer the frame before asked for,
+/// as the hover does; the view still and orbiting, with the edges picked (each edge whose box
+/// lands near the square drawn again toward the eye, `Frame::edges`) and not. Each line gives
+/// the frames' median and 95th percentile, and the median of the CPU's placing of the faces
+/// and edges (`Renderer::placed`), where every edge's box is tested against the square, so
+/// the batch's cost is the difference between a run with the edges picked and one without.
+fn edge_batch(
+    renderer: &mut Renderer,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    mesh: &Mesh,
+    extent: f64,
+    serial: &mut u64,
+) -> Result<String, Box<dyn Error>> {
+    let (width, height) = (1920u32, 1080u32);
+    let copies = copies_of(mesh, 10, extent);
+    // Bodies 2 to 11, after the part's own.
+    let bodies: Vec<u32> = (2..=11).collect();
+    for (body, copy) in bodies.iter().zip(&copies) {
+        renderer.upload(*body, copy).map_err(|f| f.to_string())?;
+    }
+    let (low, high) = copies.iter().map(|copy| bounds(copy)).fold(
+        ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
+        |(lo, hi), (l, h)| {
+            (
+                std::array::from_fn(|k| lo[k].min(l[k])),
+                std::array::from_fn(|k| hi[k].max(h[k])),
+            )
+        },
+    );
+    let target: [f64; 3] = std::array::from_fn(|k| (low[k] + high[k]) / 2.0);
+    let reach = (0..3)
+        .map(|k| (high[k] - low[k]) / 2.0)
+        .map(|h| h * h)
+        .sum::<f64>()
+        .sqrt();
+    let edges_drawn: usize = copies.iter().map(|c| c.edge_point_counts.len()).sum();
+    let mut out = String::new();
+    for (orbiting, edges) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut frame = |i: usize, serial: u64| {
+            let camera = orbit(target, reach, if orbiting { i } else { 0 });
+            let at = |side: u32, step: usize| {
+                let third = side / 3;
+                let moved = u32::try_from(step).unwrap_or(0) % third.max(1);
+                i32::try_from(third + moved).unwrap_or(0) - (SQUARE / 2) as i32
+            };
+            let picking = PixelRect {
+                min: [at(width, i), at(height, i / 3)],
+                size: [SQUARE, SQUARE],
+            };
+            let started = Instant::now();
+            let commands = renderer
+                .prepare(&Frame {
+                    serial,
+                    camera: &camera,
+                    size_px: [width, height],
+                    pixels_per_point: 1.0,
+                    bodies: &bodies,
+                    highlights: &[],
+                    hovered: &[],
+                    outlines: Outlines::DEFAULT,
+                    picking: Some(picking),
+                    edges,
+                    vertices: None,
+                    background: [0x00, 0x00, 0x00, 0xff],
+                })
+                .map_err(|f| f.to_string())?;
+            let placed = renderer.placed();
+            queue.submit([commands]);
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(Duration::from_secs(60)),
+                })
+                .map_err(|e| e.to_string())?;
+            let answer = renderer.take_picking();
+            Ok::<_, String>((started.elapsed(), placed, answer))
+        };
+        // The copies' faces uploaded, and the readbacks under way.
+        for i in 0..3 {
+            *serial += 1;
+            frame(i, *serial)?;
+        }
+        let mut times = Vec::with_capacity(FRAMES);
+        let mut placing = Vec::with_capacity(FRAMES);
+        let (mut answered, mut on_edges) = (0usize, 0usize);
+        for i in 0..FRAMES {
+            *serial += 1;
+            let (took, placed, answer) = frame(i, *serial)?;
+            times.push(took);
+            placing.push(placed);
+            if let Some(answer) = answer {
+                answered += 1;
+                on_edges += usize::from(answer.edge.is_some());
+            }
+        }
+        times.sort();
+        placing.sort();
+        let ms = |d: Duration| d.as_secs_f64() * 1e3;
+        out += &format!(
+            "edge_batch copies 10 edges {edges_drawn} size {width}x{height} view {} edges_picked {} renderer_frame_median_ms {:.2} renderer_frame_p95_ms {:.2} placed_median_ms {:.3} picks_answered {answered}/{FRAMES} picks_with_an_edge {on_edges}\n",
+            if orbiting { "orbiting" } else { "still" },
+            if edges { "on" } else { "off" },
+            ms(times[FRAMES / 2]),
+            ms(times[FRAMES * 95 / 100]),
+            ms(placing[FRAMES / 2]),
+        );
+    }
+    Ok(out)
 }
 
 /// Where Select Other's casts are made from: the copies filling the view, the pointers across
