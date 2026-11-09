@@ -407,7 +407,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 *self.started = true;
             }
             Some(Viewed::SketchOn(face)) => {
-                tab.create_sketch_on_face(sessions, &face);
+                tab.create_sketch_on_face(sessions, &face.to_string());
                 *self.started = true;
             }
         }
@@ -639,13 +639,13 @@ fn feature<P: Clients + 'static>(
 
 /// What the selection view asked (`selectionProps`' link and buttons): a feature selected
 /// (Made by), its dialog opened (Edit), Fillet started with the selection, or a sketch
-/// created on the planar face by this name (Sketch on this face).
+/// created on the planar face a store names so (Sketch on this face).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Viewed {
     Select(FeatureId),
     Edit(FeatureId),
     Fillet,
-    SketchOn(String),
+    SketchOn(Arc<silico_core::naming::Name>),
 }
 
 /// The selection's faces, edges, and vertices (`selectionProps`, M5.7): one element's view
@@ -721,17 +721,20 @@ fn one_selected(ui: &mut Ui, tab: &Tab, picked: &Picked, answers: &Answers) -> O
         .map(|maker| format!("Edit {}", tab.name_of(maker)));
     let mut buttons = Vec::new();
     let mut acts = Vec::new();
-    // A face `elements` says is a plane (`selectionProps`' `sketchOnFace`), by the name the
-    // pick holds: the core judges it again, and a refusal is said, sketch mode left.
+    // A face `elements` says is a plane (`selectionProps`' `sketchOnFace`), by the name a
+    // store writes for it (`Selected::stored`), as every store takes a selection's: off
+    // while none of its names is stable (its Stability card says why), or while sketch
+    // mode can't open.
     if kind == Some(ElementKind::Face)
         && entry.is_some_and(|entry| entry.r#type == ElementType::Plane)
     {
+        let stored = found.and_then(|found| found.stored.as_ref().ok());
         buttons.push(
             crate::modal::Button::new(SKETCH_ON_FACE, crate::modal::Kind::Secondary)
                 .icon(Icon::Sketch)
-                .enabled(tab.can_sketch()),
+                .enabled(stored.is_some() && tab.can_sketch()),
         );
-        acts.push(Viewed::SketchOn(picked.name.clone()));
+        acts.push(stored.map(|face| Viewed::SketchOn(Arc::clone(face))));
     }
     if kind == Some(ElementKind::Edge) {
         buttons.push(
@@ -739,7 +742,7 @@ fn one_selected(ui: &mut Ui, tab: &Tab, picked: &Picked, answers: &Answers) -> O
                 .icon(Icon::Fillet)
                 .enabled(tab.can_open(crate::dialog::Kind::Fillet)),
         );
-        acts.push(Viewed::Fillet);
+        acts.push(Some(Viewed::Fillet));
     }
     if let (Some(maker), Some(words)) = (&maker, &edit) {
         buttons.push(
@@ -747,10 +750,10 @@ fn one_selected(ui: &mut Ui, tab: &Tab, picked: &Picked, answers: &Answers) -> O
                 .icon(Icon::Edit)
                 .enabled(tab.can_edit(maker)),
         );
-        acts.push(Viewed::Edit(maker.clone()));
+        acts.push(Some(Viewed::Edit(maker.clone())));
     }
     if let Some(at) = properties::buttons(ui, &buttons) {
-        viewed = acts.get(at).cloned();
+        viewed = acts.get(at).cloned().flatten();
     }
     let modifier = crate::start::modifier_caps(ui.ctx(), egui::Modifiers::COMMAND)
         .into_iter()
@@ -4871,7 +4874,7 @@ mod property_panel_drawn {
     }
 
     #[test]
-    fn one_face_is_drawn_as_selection_props_its_measures_name_edit_and_hint() {
+    fn one_planar_face_is_drawn_as_selection_props_its_measures_name_sketch_on_it_edit_and_hint() {
         use silico_core::command::elements::ElementType;
         // Face5, by hand the block's bottom: 2 by 1, so 2 mm², facing −z.
         let mut face = element("Face5");
@@ -4973,6 +4976,22 @@ mod property_panel_drawn {
         assert!(!tab.can_sketch());
         h.run_steps(2);
         assert!(sketch_off(&h));
+    }
+
+    #[test]
+    fn a_face_not_measured_yet_offers_no_sketch_on_it_till_elements_says_its_a_plane() {
+        // Whether a face is a plane is `elements`' to say: unanswered, its Area says so, and
+        // there's no Sketch on this face, Edit Block alone.
+        let h = drawn(selecting(&["Face5"], Answers::default()));
+        assert!(h.query_by_label("Not measured yet").is_some());
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Sketch on this face")
+                .is_none()
+        );
+        assert!(
+            h.query_by_role_and_label(Role::Button, "Edit Block")
+                .is_some()
+        );
     }
 
     #[test]

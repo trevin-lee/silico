@@ -26780,11 +26780,12 @@ fn one_element_waiting_on_a_feature_that_failed_says_so_in_its_measures_never_no
 }
 
 #[test]
-fn sketch_on_this_face_creates_a_sketch_on_the_picked_face_by_the_name_it_holds() {
+fn sketch_on_this_face_creates_a_sketch_on_the_picked_face() {
     // The block's top selected, a plane facing +z: Sketch on this face adds an empty sketch
-    // on it, by the name the pick holds, its x +x (the attacher's default for a normal along
-    // z, filled in by the core), and opens sketch mode on it. Cancel leaves the document as
-    // it was. (Off while sketch mode can't open: the property panel's own test.)
+    // on it, by the name a store writes for it (its own, stable), its x +x (the attacher's
+    // default for a normal along z, filled in by the core), and opens sketch mode on it.
+    // Cancel leaves the document as it was. (Off while sketch mode can't open: the property
+    // panel's own test; off for an unstable face: the test after this.)
     let f = fixture();
     let mut h = a_measured_box(&f);
     select_in_box(&mut h, &["Face6"]);
@@ -26807,6 +26808,53 @@ fn sketch_on_this_face_creates_a_sketch_on_the_picked_face_by_the_name_it_holds(
     assert!(sketch_mode(&h).unwrap().plane_problem().is_none());
     leave_sketch(&mut h, false);
     assert_eq!(text_of(&f, &h), A_BOX);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_on_this_face_is_off_for_a_face_no_store_can_name_and_on_for_a_stable_one() {
+    // FUSED, its faces planes: the fuse's Face1, named only by its number, is unstable, so
+    // no store takes it (its Stability card says why) and Sketch on this face is off; the
+    // base's Face2, kept, stable, is a face a sketch can stand on, and it's on.
+    let f = fixture();
+    planar_boxes(&f.kernel);
+    f.kernel.answer_instead(|op| match op {
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                shape: FakeKernel::resized(base, 1.0)?,
+                history: numbering_fuse(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, _) = f.opened("fused.silico", FUSED);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    let off = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .query_by_role_and_label(Role::Button, "Sketch on this face")
+            .map(|button| button.accesskit_node().is_disabled())
+    };
+    for (name, stable) in [("rrrrrrrr.fuse.Face1", false), ("aaaaaaaa.box.Face2", true)] {
+        h.state_mut().tabs_mut()[0]
+            .selection_mut()
+            .pick(name, silico_app::selection::How::Replace);
+        selected_until(&mut h, &[name]);
+        step_until(&mut h, &format!("{name}'s planar face measured"), |h| {
+            off(h).is_some()
+        });
+        step(&mut h);
+        assert_eq!(
+            row_value(&h, "Stability").as_deref(),
+            Some(if stable { "Stable" } else { "Unstable" })
+        );
+        assert_eq!(off(&h), Some(!stable), "{name}");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 
