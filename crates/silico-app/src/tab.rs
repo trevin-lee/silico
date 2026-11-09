@@ -2911,8 +2911,8 @@ impl Tab {
                         return;
                     }
                     // The reload its read makes is the person's, whatever a Reload before it
-                    // came to.
-                    self.reload_asked = true;
+                    // came to (an untitled part's reads no file).
+                    self.reload_asked = !self.is_untitled();
                     self.rebuild_all(sessions);
                     if self.check_read.is_some() {
                         self.reload_out = true;
@@ -3258,7 +3258,10 @@ impl Tab {
     /// Whether what's queued waits: an edit, a save, a revert, a step, or a dialog's add (or
     /// its body's read) running.
     fn blocked(&self) -> bool {
+        // Reload's check out: what's asked after it waits for it, so an edit's begin never
+        // cancels it before it has read the file.
         self.edits.in_flight.is_some()
+            || self.reload_out
             || self.dragging()
             || self.under.iter().any(|under| {
                 matches!(
@@ -3329,8 +3332,14 @@ impl Tab {
     /// Whether nothing of the tab's is under way: no edit in flight or queued, nothing
     /// queued, no command running. A revision that moves then isn't the tab's.
     fn quiet(&self) -> bool {
+        // A Reload waiting for the tab's check to answer is no change of the tab's: a reload
+        // meanwhile is seen as the session's.
         self.edits.in_flight.is_none()
-            && self.edits.queue.is_empty()
+            && self
+                .edits
+                .queue
+                .iter()
+                .all(|queued| matches!(queued, Queued::Reload))
             && self.under.is_empty()
             && !self.beginning
             && !self.dragging()
@@ -3947,13 +3956,13 @@ impl Tab {
             ));
             return;
         }
-        if self.is_untitled() {
-            self.rebuild_all(sessions);
-            return;
-        }
-        self.reload_asked = true;
-        if self.unsaved() || self.transaction {
-            self.revert(sessions, false);
+        // An untitled part has no file to read and its edits are all it is: nothing reverted,
+        // its rebuild queued as a titled part's is.
+        if !self.is_untitled() {
+            self.reload_asked = true;
+            if self.unsaved() || self.transaction {
+                self.revert(sessions, false);
+            }
         }
         self.edits.queue.push_back(Queued::Reload);
         self.advance(sessions);

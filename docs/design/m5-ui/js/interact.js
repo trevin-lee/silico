@@ -211,7 +211,7 @@
     // Trevin's ask of 2026-11-09: ⌘/Ctrl-click on the selected item takes it out; a click on the track's
     // empty space clears the selection (tlTrack); neither while a dialog's boxes hold the selection.
     tlItem(el, e) {
-      if (e && (e.metaKey || e.ctrlKey) && S.selFeature === el.dataset.id && !S.dialog) { S.selFeature = null; A.syncHighlight(); A.render(); return; }
+      if (e && isMod(e) && S.selFeature === el.dataset.id && !S.dialog) { S.selFeature = null; A.syncHighlight(); A.render(); return; }
       selectFeature(el.dataset.id);
     },
     tlTrack(el, e) { if (e.target !== el || S.dialog) return; S.selFeature = null; S.sel = []; S.selRow = null; A.syncHighlight(); A.render(); },

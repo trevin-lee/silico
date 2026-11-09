@@ -35731,3 +35731,73 @@ fn command_r_while_a_first_rename_is_typed_names_it_once_its_transaction_opens()
     });
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn with_a_union_open_a_cmd_click_on_a_boxed_body_goes_to_its_box_and_the_selection_stays_its_bodies()
+ {
+    // A dialog's boxes hold what the selection shows: a Cmd-click on a body row is the
+    // box's, as a plain click is, never a deselect that would leave the box holding a body
+    // the canvas no longer lights.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("sketched.silico", SKETCHED);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's rows", |h| {
+        shows(h, "Browser", "Washer")
+    });
+    // Plate alone selected as the union opens: its target box takes it, its tool box
+    // waits, and nothing is added yet, so both rows are there.
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .select_features(vec![
+            silico_core::document::FeatureId::new("b0000001").unwrap(),
+        ]);
+    modify(&mut h, "Union");
+    settled(&mut h);
+    assert_eq!(boxed_bodies(&h), held(&[Some("b0000001"), None]));
+    assert_eq!(selected_features(&h), ["b0000001"]);
+    let plate = browser(&h).get_by_label("Plate").rect().center();
+    click_canvas(&mut h, plate, true);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let boxed: Vec<String> = boxed_bodies(&h).into_iter().flatten().collect();
+    assert_eq!(selected_features(&h), boxed);
+    assert!(dialog_open(&h));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_a_fillet_open_a_click_on_the_timelines_empty_space_keeps_its_edges_selected() {
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    click_edge(&mut h, &record, 1, 5, true);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    // The track's middle: its items are at its left, the summary at its right.
+    let timeline = h.get_by_role_and_label(Role::Pane, "Timeline");
+    let block = timeline.get_by_label("Block").rect();
+    let at = eframe::egui::pos2(timeline.rect().center().x, block.center().y);
+    assert!(at.x > block.right() + 100.0);
+    click_canvas(&mut h, at, false);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(
+        selected_names(&h),
+        ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]
+    );
+    assert!(dialog(&h).query_by_label("2 edges").is_some());
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
