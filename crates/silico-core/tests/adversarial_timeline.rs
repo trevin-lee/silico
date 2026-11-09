@@ -57,8 +57,10 @@ fn rebuilt_with(
     )
 }
 
-/// A box 7 × 1 × 1 stored with volume 8: it measures 7 (by formula), so it drifts.
-const STALE_BOX: &str = r#"{"id": "dddddddd", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 7, "width": 1, "height": 1, "fingerprint": {"volume": 8, "area": 30, "bbox": [0, 0, 0, 7, 1, 1], "faces": 6, "edges": 12, "vertices": 8}}"#;
+/// A box 7 × 1 × 1 stored with volume 8: it measures 7 (by formula), so it drifts; its
+/// other measures as it measures them (area 2(7 + 7 + 1) = 30, centre its middle,
+/// (3.5, 0.5, 0.5)), so on its volume alone.
+const STALE_BOX: &str = r#"{"id": "dddddddd", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 7, "width": 1, "height": 1, "fingerprint": {"volume": 8, "area": 30, "center": [3.5, 0.5, 0.5], "bbox": [0, 0, 0, 7, 1, 1], "faces": 6, "edges": 12, "vertices": 8}}"#;
 
 // --- Drift excepted by the session's check, reported by the timeline -----------------------
 
@@ -542,4 +544,47 @@ fn a_built_feature_whose_measure_the_kernel_refused_is_an_error_as_check_counts_
         mark(entry(&got.features, "dddddddd")),
         (Health::Error, 1, 0)
     );
+}
+
+#[test]
+fn a_fingerprint_without_its_centre_warns_only_of_a_feature_measured_and_marks_its_drift_or_fault()
+{
+    // STALE_BOX stored as before #389, its centre left out: it drifts on its volume and
+    // warns `fingerprint_incomplete`, one problem and one warning. Measured by nothing (the
+    // worker crashes on every measure), its centre isn't known, so it warns of nothing:
+    // unknown, as the fault is. Its measure refused, an error as check counts it, and no
+    // warning, since no centre was measured either.
+    let stored = STALE_BOX.replacen(r#""center": [3.5, 0.5, 0.5], "#, "", 1);
+    let text = document(&[stored.as_str()]);
+    assert!(!text.contains("center"), "{text}");
+    let clean = rebuilt_with(&text, |_| None);
+    let got = timeline(clean.document(), Some(&clean), &Excepted::default());
+    assert_eq!(
+        mark(entry(&got.features, "dddddddd")),
+        (Health::Error, 1, 1)
+    );
+    assert_totals_agree(&clean, &BTreeSet::new());
+    for (code, health, problems) in [
+        (ErrorCode::WorkerCrashed, Health::Unknown, 0),
+        (ErrorCode::KernelFailed, Health::Error, 1),
+    ] {
+        let model = rebuilt_with(&text, move |op| {
+            matches!(op, Op::Summarize { .. }).then(|| Error::new(code, "the measure failed"))
+        });
+        assert!(matches!(
+            model.outcome(&id("dddddddd")),
+            Some(FeatureOutcome::Built { .. })
+        ));
+        assert!(
+            silico_core::warnings::of(&model, &BTreeSet::new()).is_empty(),
+            "{code:?}"
+        );
+        let got = timeline(model.document(), Some(&model), &Excepted::default());
+        assert_eq!(
+            mark(entry(&got.features, "dddddddd")),
+            (health, problems, 0),
+            "{code:?}"
+        );
+        assert_totals_agree(&model, &BTreeSet::new());
+    }
 }

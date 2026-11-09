@@ -828,6 +828,7 @@ mod tests {
                 steps: 0,
                 running: running.map(str::to_owned),
                 features: FeatureStates::default(),
+                elapsed: std::time::Duration::ZERO,
             }),
         }
     }
@@ -1672,6 +1673,7 @@ mod tests {
                     steps: 4,
                     running: Some("p0000001 pad".to_owned()),
                     features: FeatureStates::default(),
+                    elapsed: std::time::Duration::ZERO,
                 }),
             },
         );

@@ -345,6 +345,11 @@ pub struct App<P: Clients + 'static> {
     /// The platform's Documents folder: the workspace Copy MCP config names when no
     /// document is shown and none listed in Recent will do.
     documents: Option<PathBuf>,
+    /// What makes each tab's boxes for Select Other's cast, if not [`Pickable::new`]: a
+    /// test's.
+    ///
+    /// [`Pickable::new`]: silico_render::render::Pickable::new
+    boxing: Option<crate::boxes::Build>,
     /// The toast shown over the canvas's bottom right (DESIGN.md's *Toasts*), and when it
     /// was shown, by egui's clock: F5's word on where the filters are, or a box's.
     toast: Option<(String, f64)>,
@@ -446,7 +451,16 @@ impl<P: Clients + 'static> App<P> {
             documents: directories::UserDirs::new()
                 .and_then(|dirs| dirs.document_dir().map(std::path::Path::to_path_buf)),
             toast: None,
+            boxing: None,
         }
+    }
+
+    /// The app, each tab's boxes for Select Other's cast (`crate::boxes`) made by `build`, on
+    /// the tab's thread for them: a test's, to see where it runs and to hold it.
+    #[must_use]
+    pub fn boxing(mut self, build: crate::boxes::Build) -> Self {
+        self.boxing = Some(build);
+        self
     }
 
     /// The app, Copy MCP config falling back to `documents` as the workspace (else to the
@@ -649,6 +663,13 @@ impl<P: Clients + 'static> App<P> {
         // acts, so it comes first in the tab's queue.
         let renamed = self.rename_clicked_away(ui.ctx());
         let (mut started, dialog_key) = self.keys(ui);
+        // The canvas's Select Other closed under a modal, the shortcut sheet, or What's
+        // Wrong (one its keys just opened, `?`, too): the focus and the keys are theirs.
+        let over =
+            self.asking.is_some() || self.sheet.is_some() || self.whats_wrong_shown().is_some();
+        if over && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
+            tab.close_select_other(ui.ctx());
+        }
         started |= renamed;
         started |= self.take_browsed();
         self.app_bar(ui, &mut started);
@@ -703,6 +724,7 @@ impl<P: Clients + 'static> App<P> {
                 sessions,
                 name,
                 drawing,
+                remembered,
                 ..
             } = self;
             let mut panes = Panes {
@@ -712,6 +734,7 @@ impl<P: Clients + 'static> App<P> {
                 started: &mut started,
                 drawing,
                 dialog_key,
+                remembered,
             };
             panes::fit(tree, ui.available_width());
             tree.ui(&mut panes, ui);
@@ -1060,10 +1083,13 @@ impl<P: Clients + 'static> App<P> {
             .values()
             .max()
             .is_none_or(|&newest| number > newest);
-        let tab = match part {
+        let mut tab = match part {
             Part::File(path) => Tab::opened(id, path, &opened.problems),
             Part::Untitled(name) => Tab::untitled(id, name, &opened.problems),
         };
+        if let Some(build) = &self.boxing {
+            tab.boxing(Arc::clone(build));
+        }
         self.tabs.insert(at, tab);
         self.open_numbers.insert(id, number);
         if shown {
@@ -1195,6 +1221,20 @@ impl<P: Clients + 'static> App<P> {
             let leave = shortcuts::take(ui, Command::Stop) || shortcuts::take(ui, Command::Close);
             if leave {
                 self.home = false;
+            }
+            return (false, None);
+        }
+        if let Some(tab) = self
+            .active_place()
+            .and_then(|at| self.tabs.get_mut(at))
+            .filter(|tab| tab.select_other().holds_keys())
+        {
+            // Select Other's menu takes the keys while it's open (or a right click waits to
+            // open it) and its tab shown (the prototype's menus): Esc closes it, Tab and the
+            // arrows step it, Enter chooses; no other document's command acts under it, as
+            // none does under a modal.
+            for key in crate::select_other::keys(ui.ctx()) {
+                tab.select_other_key(key);
             }
             return (false, None);
         }
@@ -1968,13 +2008,15 @@ impl<P: Clients + 'static> App<P> {
             .and_then(|active| self.tabs.iter_mut().find(|tab| tab.id == active));
         let act = {
             let shown = tab.as_deref();
-            let can_open = |kind| shown.is_some_and(|tab| tab.can_open(kind));
+            let can_open = |kind| shown.is_some_and(|tab| tab.can_create(kind));
+            let why_closed = |kind| shown.and_then(|tab| tab.why_closed(kind));
             toolbar::show(
                 ui,
                 &toolbar::Shown {
                     in_sketch: shown.is_some_and(Tab::in_sketch),
                     create_sketch: Some(shown.is_some_and(Tab::can_sketch)),
                     can_open: &can_open,
+                    why_closed: &why_closed,
                     selected: shown
                         .is_some_and(|tab| !tab.selection().is_empty() && !tab.in_dialog()),
                     filter: shown.map_or_else(crate::selection::Filter::default, |tab| {
@@ -2098,7 +2140,7 @@ impl<P: Clients + 'static> App<P> {
         let offer = mode.offer_view(&name);
         let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
-        egui::Area::new(egui::Id::new(("sketch_bar", id.to_string())))
+        egui::Area::new(sketch::dimension::bar_area(&id))
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
             .pivot(egui::Align2::CENTER_TOP)
             .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar));
@@ -2107,7 +2149,7 @@ impl<P: Clients + 'static> App<P> {
         // doesn't fit.
         let palette_at = canvas.right_top() + PALETTE_FROM_CORNER;
         let palette_height = canvas.bottom() - PALETTE_MARGIN - palette_at.y;
-        let palette = egui::Area::new(egui::Id::new(("sketch_palette", id.to_string())))
+        let palette = egui::Area::new(sketch::dimension::palette_area(&id))
             .fixed_pos(palette_at)
             .show(ui.ctx(), |ui| {
                 sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)

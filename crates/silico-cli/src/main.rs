@@ -1020,7 +1020,8 @@ fn fmt(
                 }
             } else {
                 // A feature whose drift it accepted had a fingerprint stored, which it
-                // rewrote; every other had none.
+                // rewrote; every other had none, or one that lacked a measure a later Silico
+                // added (`fingerprint_incomplete`), which it wrote whole.
                 for id in &formatted.refingerprinted {
                     let what = if formatted.accepted.contains(id) {
                         "rewrote"

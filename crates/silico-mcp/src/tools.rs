@@ -209,6 +209,10 @@ pub const NAMES_FROM_ELEMENTS: &str =
 /// That a part can be made with no file (an untitled one), said in `initialize`'s
 /// instructions and in `open`'s description, as the three above are in theirs.
 pub const UNTITLED: &str = "For a part with no file yet, open with `path: null` and `create: true`: an untitled part, nothing on disk, its edits made inside a transaction, and its first `commit` given a path to save it there.";
+/// How to make a solid: from sketches, as a person does in the app (the maintainer's decision
+/// of 2026-11-09, that the app makes solids sketch-first, as SolidWorks does), said in
+/// `initialize`'s instructions and in `add_feature`'s description.
+pub const SKETCH_FIRST: &str = "Build solids from sketches, as a person does in the app: a sketch on a plane or a face, then a pad, pocket, revolve, or groove of it, and fillets and chamfers on the result. The primitives (box, cylinder, sphere, cone, torus) are still read, but a part built from sketches is one a person can edit the way they'd have built it.";
 
 /// `command`'s title and description, for an agent: every command matched.
 fn words(command: Command) -> (&'static str, String) {
@@ -227,7 +231,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Status => (
             "Session status",
-            "What a session holds, answered at once even while another of its commands runs: its features; the transaction open, if one is, with whether its document differs from the one it began from (unsaved), and the edits `undo` and `redo` can step through; what's running; and how far its rebuild has got.",
+            "What a session holds, answered at once even while another of its commands runs: its features; the transaction open, if one is, with whether its document differs from the one it began from (unsaved), and the edits `undo` and `redo` can step through; what's running; and how far its rebuild has got, and how long it has run.",
         ),
         Command::ReadLogs => (
             "Read logs",
@@ -395,9 +399,9 @@ fn words(command: Command) -> (&'static str, String) {
         ),
     };
     let tips: &[&str] = match command {
+        Command::AddFeature => &[SKETCH_FIRST, IN_A_TRANSACTION, READ_CURRENT],
         Command::Begin
         | Command::Commit
-        | Command::AddFeature
         | Command::SetField
         | Command::RemoveFeature
         | Command::ReplaceText

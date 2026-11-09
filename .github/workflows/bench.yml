@@ -13,7 +13,7 @@ on:
         description: "Branch, tag, or commit to measure (empty: the branch this runs on)"
         default: ""
       bench:
-        description: "What to measure: drag (the sketch worker's drag latency), render (M4.6's bench: a 4096 by 4096 render on lavapipe through the worker's renderer, its time and memory), warm (M5.3's: a first rebuild with and without the workers' warm start), views (a view change's cost: NIST's CTC 02, from the corpus, drawn from an orbit of cameras through the worker's renderer), or picking (M5.7's: the renderer's frame alone, as the app draws it, on CTC 02, picking under the pointer each frame, its answer taken)"
+        description: "What to measure: drag (the sketch worker's drag latency), render (M4.6's bench: a 4096 by 4096 render on lavapipe through the worker's renderer, its time and memory), warm (M5.3's: a first rebuild with and without the workers' warm start), views (a view change's cost: NIST's CTC 02, from the corpus, drawn from an orbit of cameras through the worker's renderer), or picking (M5.7's: the renderer's frame alone, as the app draws it, on CTC 02, picking under the pointer each frame, its answer taken; and Select Other's cast on ten copies, on the CPU)"
         type: choice
         options: [drag, render, warm, views, picking]
         default: drag
@@ -217,6 +217,6 @@ jobs:
             echo "## Picking: $(git log -1 --format='%h %s')"
             echo
             echo '```'
-            grep -e '^adapter' -e '^part' -e '^scope' -e '^size' -e '^model name' "$RUNNER_TEMP/picking.txt"
+            grep -e '^adapter' -e '^part' -e '^scope' -e '^size' -e '^cast' -e '^model name' "$RUNNER_TEMP/picking.txt"
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"

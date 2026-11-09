@@ -678,8 +678,11 @@ impl TimelineAnswer {
                 };
             }
         };
-        let Timeline { features, bodies } =
-            timeline(document, Some(model), &read.checking.excepted(read.reached));
+        let Timeline { features, bodies } = timeline(
+            document,
+            Some(model),
+            &read.checking.excepted(model, read.reached),
+        );
         TimelineAnswer {
             revision,
             model: Some(read.read.revision),
@@ -1141,16 +1144,27 @@ pub struct Rebuild {
 /// kept from before, or never to run; all of them once it finishes), the steps of its plan
 /// (none until its plan is made, after the sketches it sweeps are solved), the step
 /// started last of those running, as its feature and the feature's type (`f0000001
-/// fillet`, MCP's progress message), none while no step runs, and each unsuppressed
-/// feature's state, in timeline order (queued, running, built, failed, blocked, or faulted:
-/// issue #367), kept once it ends. A diagnostic, not a result (section 10): which step
-/// finishes first depends on scheduling.
+/// fillet`, MCP's progress message), none while no step runs, each unsuppressed feature's
+/// state, in timeline order (queued, running, built, failed, blocked, or faulted: issue
+/// #367), kept once it ends, and how long it has run, from being asked for to its end (its
+/// model published, or its failure or stop), so far while it runs (`elapsed_ms`, amended in
+/// M5). A diagnostic, not a result (section 10): which step finishes first depends on
+/// scheduling, and the time is a clock's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Progress {
     pub done: usize,
     pub steps: usize,
     pub running: Option<String>,
     pub features: FeatureStates,
+    pub elapsed: Duration,
+}
+
+impl Progress {
+    /// [`elapsed`](Self::elapsed) in whole milliseconds, floored, as `elapsed_ms` writes it
+    /// (`u64::MAX` past that).
+    pub fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.elapsed.as_millis()).unwrap_or(u64::MAX)
+    }
 }
 
 impl From<&StepCount> for Progress {
@@ -1160,6 +1174,7 @@ impl From<&StepCount> for Progress {
             steps: count.steps,
             running: count.running.clone(),
             features: count.features.clone(),
+            elapsed: count.elapsed,
         }
     }
 }

@@ -19,15 +19,14 @@
 //! rollback bar is out of M5, DESIGN.md's Proposal 5); the item goes between Find in… and
 //! Delete once it has one.
 
-use eframe::egui::{
-    self, Color32, FontId, Pos2, Rect, Sense, Ui, Vec2, WidgetInfo, WidgetType, vec2,
-};
+use eframe::egui::{self, Rect, Ui, Vec2};
 use silico_core::command::{Removed, Suppressed};
 use silico_core::document::FeatureId;
 use silico_core::document::chain::Rewired;
 use silico_core::timeline::{Entry, Health};
 
-use crate::icons::{ICON_SIZE, Icon, IconSize};
+use crate::icons::Icon;
+use crate::menu;
 use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::theme;
@@ -205,10 +204,7 @@ fn unchangeable(tab: &Tab) -> Option<String> {
         .as_ref()
         .is_some_and(|timeline| timeline.problems > 0)
     {
-        return Some(
-            "The document has problems of its own: no feature changes until they're mended"
-                .to_owned(),
-        );
+        return Some(crate::tab::UNMENDED.to_owned());
     }
     None
 }
@@ -249,13 +245,19 @@ pub fn off(tab: &Tab, entry: &Entry, item: Item, place: Place) -> Option<String>
 }
 
 /// Why the browser has no row for `entry`: it lists bodies and sketches, a body by the
-/// feature that ends its chain; a feature that failed there built none.
+/// feature that ends its chain; a feature that failed there built none. It's inside a body
+/// if a feature other than a sketch names it as an input, as the gate counts consumers
+/// (`Operation::inputs`): a sketch on its face consumes nothing.
 fn no_row(tab: &Tab, entry: &Entry) -> String {
     let consumed = tab
         .timeline
         .as_ref()
         .and_then(|timeline| timeline.features.as_ref())
-        .is_some_and(|entries| entries.iter().any(|other| other.inputs.contains(&entry.id)));
+        .is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|other| other.kind != "sketch" && other.inputs.contains(&entry.id))
+        });
     if consumed {
         "It's inside a body: the browser lists bodies and sketches".to_owned()
     } else if entry.health == Health::Error {
@@ -282,232 +284,32 @@ pub fn items(tab: &Tab, entry: &Entry, place: Place, ctx: &egui::Context) -> Vec
         .collect()
 }
 
-/// What a menu's lines take: the widest of its head's and its items', and the least
-/// `.menu` gives (`min-width: 200px`, less its border and its padding).
-fn width(ui: &Ui, head: &egui::Galley, shown: &[(Shown, Lines)]) -> f32 {
-    let least =
-        theme::MENU_MIN_WIDTH - 2.0 * (f32::from(theme::MENU_PADDING) + theme::BORDER_WIDTH);
-    shown
-        .iter()
-        .map(|(shown, lines)| {
-            let sub = lines.sub.as_ref().map_or(0.0, |sub| {
-                theme::MENU_ITEM_GAP + theme::MENU_ITEM_SUB_MARGIN + sub.size().x
-            });
-            // `.sc`, at the right, is there with no keys too: its gap and its padding. Its
-            // caps sit in one `.keys` span, 2 apart (`.keys { gap: 2px }`).
-            2.0 * theme::MENU_ITEM_PADDING
-                + ICON_SIZE
-                + theme::MENU_ITEM_GAP
-                + lines.label.size().x
-                + sub
-                + theme::MENU_ITEM_GAP
-                + theme::MENU_KEYS_PADDING
-                + crate::start::key_caps_width_spaced(ui, &shown.caps, theme::KEY_CAP_GAP)
-        })
-        .fold(
-            least.max(head.size().x + 2.0 * theme::MENU_ITEM_PADDING),
-            f32::max,
-        )
-}
-
-/// An item's words laid out: its label's and its dim gesture's.
-struct Lines {
-    label: std::sync::Arc<egui::Galley>,
-    sub: Option<std::sync::Arc<egui::Galley>>,
-}
-
-fn lines(ui: &Ui, shown: &Shown) -> Lines {
-    let painter = ui.painter();
-    Lines {
-        label: painter.layout_no_wrap(
-            shown.label.clone(),
-            FontId::proportional(theme::BODY_SIZE),
-            theme::MENU_ITEM_TEXT,
-        ),
-        sub: shown.sub.map(|sub| {
-            painter.layout_no_wrap(
-                sub.to_owned(),
-                FontId::proportional(theme::MENU_ITEM_SUB_SIZE),
-                theme::MENU_ITEM_SUB_TEXT,
-            )
-        }),
-    }
-}
-
-/// The menu's head (`.menu .mh`): the feature's name, in capitals, laid out.
-fn head_galley(ui: &Ui, name: &str) -> std::sync::Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        &name.to_uppercase(),
-        0.0,
-        egui::TextFormat {
-            font_id: FontId::proportional(theme::TOOLBAR_LABEL_SIZE),
-            color: theme::TOOLBAR_LABEL_TEXT,
-            extra_letter_spacing: theme::CAPITALS_LETTER_SPACING,
-            ..Default::default()
-        },
-    );
-    ui.painter().layout_job(job)
-}
-
-/// The head, `width` wide: 6 above its line and 2 under it, 8 in from the left.
-fn head(ui: &mut Ui, galley: std::sync::Arc<egui::Galley>, width: f32) {
-    let height = theme::MENU_HEAD_TOP + theme::MENU_LINE_HEIGHT + theme::MENU_HEAD_BOTTOM;
-    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
-    let text = galley.text().to_owned();
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
-    let line = rect.top() + theme::MENU_HEAD_TOP;
-    let at = Pos2::new(
-        rect.left() + theme::MENU_ITEM_PADDING,
-        line + (theme::MENU_LINE_HEIGHT - galley.size().y) / 2.0,
-    );
-    ui.painter().galley(at, galley, theme::TOOLBAR_LABEL_TEXT);
-}
-
-/// The separator before Delete (`.menu .msep`), `width` wide.
-fn separator(ui: &mut Ui, width: f32) {
-    let height = theme::BORDER_WIDTH + 2.0 * theme::MENU_SEPARATOR_MARGIN;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
-    let line = Rect::from_min_size(
-        Pos2::new(rect.left(), rect.top() + theme::MENU_SEPARATOR_MARGIN),
-        vec2(width, theme::BORDER_WIDTH),
-    );
-    ui.painter().rect_filled(line, 0.0, theme::MENU_SEPARATOR);
-}
-
-/// What a screen reader is told an item is: its words, then its gesture or its keys.
-fn said(ctx: &egui::Context, shown: &Shown) -> String {
-    match (shown.sub, shown.caps.is_empty()) {
-        (Some(sub), _) => format!("{} {sub}", shown.label),
-        (None, false) => format!(
-            "{} {}",
-            shown.label,
-            crate::shortcuts::joined(ctx, &shown.caps)
-        ),
-        (None, true) => shown.label.clone(),
-    }
-}
-
-/// One item (`.menu .mi`), `width` wide, on or off: its icon or its spacer, its words, its
-/// gesture dim after them, and its caps at its right. Hovered (or focused, the prototype's
-/// `.kfocus`) it's filled blue; off, its words are Gray.400 and its reason is its hover text
-/// and its description for a screen reader; Delete's words are red (`.danger`), off too.
-/// Whether it was clicked.
-fn item(ui: &mut Ui, shown: &Shown, lines: Lines, width: f32) -> bool {
-    let said = said(ui.ctx(), shown);
-    // Painted at the menu's opacity, not faded further when off: `.menu .mi:disabled` is
-    // Gray.400 itself.
-    let opacity = ui.opacity();
-    let response = ui.add_enabled(shown.off.is_none(), |ui: &mut Ui| {
-        ui.set_opacity(opacity);
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(width, theme::MENU_ITEM_HEIGHT), Sense::click());
-        let enabled = ui.is_enabled();
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, &said));
-        if !ui.is_rect_visible(rect) {
-            return response;
-        }
-        let lit = enabled && (response.hovered() || response.has_focus());
-        // `.menu .mi:hover:not(:disabled)` outweighs `.danger` (a class and two
-        // pseudo-classes to two classes), so a hovered Delete is lit as the others are;
-        // `.danger` comes after `.menu .mi:disabled`, of the same weight, so an off Delete
-        // is red still.
-        let ink = if lit {
-            theme::MENU_ITEM_HOVER_TEXT
-        } else if shown.item == Item::Delete {
-            theme::ERROR_TEXT
-        } else if !enabled {
-            theme::TEXT_DISABLED
-        } else {
-            theme::MENU_ITEM_TEXT
-        };
-        if lit {
-            ui.painter()
-                .rect_filled(rect, theme::SMALL_CORNER_RADIUS, theme::MENU_ITEM_HOVER_BG);
-        }
-        let middle = rect.center().y;
-        let icon_rect = Rect::from_min_size(
-            Pos2::new(
-                rect.left() + theme::MENU_ITEM_PADDING,
-                middle - ICON_SIZE / 2.0,
-            ),
-            Vec2::splat(ICON_SIZE),
-        );
-        if let Some(icon) = icon(shown.item) {
-            icon.image(IconSize::Small)
-                .tint(ink)
-                .paint_at(ui, icon_rect);
-        }
-        let label_at = Pos2::new(
-            icon_rect.right() + theme::MENU_ITEM_GAP,
-            middle - lines.label.size().y / 2.0,
-        );
-        let label_right = label_at.x + lines.label.size().x;
-        ui.painter()
-            .galley_with_override_text_color(label_at, lines.label, ink);
-        if let Some(sub) = lines.sub {
-            let at = Pos2::new(
-                label_right + theme::MENU_ITEM_GAP + theme::MENU_ITEM_SUB_MARGIN,
-                middle - sub.size().y / 2.0,
-            );
-            ui.painter().galley(at, sub, theme::MENU_ITEM_SUB_TEXT);
-        }
-        if !shown.caps.is_empty() {
-            // `.menu .mi:hover .kbd`: no fill, a faint white outline, the item's words'
-            // colour; else `.kbd`'s own, off or on. 2 apart, as `.keys` sets them.
-            let colours = if lit {
-                (
-                    Color32::TRANSPARENT,
-                    theme::MENU_KEY_CAP_HOVER_STROKE,
-                    theme::MENU_ITEM_HOVER_TEXT,
-                )
-            } else {
-                (
-                    theme::KEY_CAP_BG,
-                    theme::KEY_CAP_STROKE,
-                    theme::KEY_CAP_TEXT,
-                )
-            };
-            crate::start::key_caps_coloured(
-                ui,
-                Pos2::new(rect.right() - theme::MENU_ITEM_PADDING, middle),
-                &shown.caps,
-                colours,
-                theme::KEY_CAP_GAP,
-            );
-        }
-        response
-    });
-    if let Some(off) = &shown.off {
-        ui.ctx().accesskit_node_builder(response.id, |node| {
-            node.set_description(off.to_owned());
-        });
-        return response.on_disabled_hover_text(off).clicked();
-    }
-    response.clicked()
-}
-
 /// A menu headed `name`, of `shown`'s items, in order, Delete after a separator: which was
 /// clicked, the menu closed.
 fn draw(ui: &mut Ui, name: &str, shown: Vec<Shown>) -> Option<Item> {
-    // `.menu`'s lines stacked, none apart.
+    // `.menu`'s lines stacked, none apart, each drawn as every menu's are
+    // (`crate::menu`); Delete's words red (`.danger`).
     ui.spacing_mut().item_spacing = Vec2::ZERO;
-    let head_text = head_galley(ui, name);
-    let laid: Vec<(Shown, Lines)> = shown
-        .into_iter()
-        .map(|shown| {
-            let lines = lines(ui, &shown);
-            (shown, lines)
+    let lines: Vec<menu::Item<'_>> = shown
+        .iter()
+        .map(|shown| menu::Item {
+            icon: icon(shown.item),
+            label: &shown.label,
+            sub: shown.sub,
+            caps: &shown.caps,
+            off: shown.off.as_deref(),
+            danger: shown.item == Item::Delete,
+            lit: false,
         })
         .collect();
-    let width = width(ui, &head_text, &laid);
-    head(ui, head_text, width);
+    let width = menu::width(ui, Some(name), &lines, 0.0);
+    menu::head(ui, name, width);
     let mut clicked = None;
-    for (shown, lines) in laid {
+    for (shown, line) in shown.iter().zip(&lines) {
         if shown.item == Item::Delete {
-            separator(ui, width);
+            menu::separator(ui, width);
         }
-        if item(ui, &shown, lines, width) {
+        if menu::item(ui, line, width).clicked() {
             clicked = Some(shown.item);
             ui.close();
         }
@@ -717,16 +519,6 @@ pub fn finished(typed: &str) -> Option<&str> {
     Some(typed.trim()).filter(|name| !name.is_empty())
 }
 
-/// `names` as a list in words: "A", "A and B", "A, B, and C".
-fn listed(names: &[String]) -> String {
-    match names {
-        [] => String::new(),
-        [one] => one.clone(),
-        [one, two] => format!("{one} and {two}"),
-        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
-    }
-}
-
 /// What the status bar says a suppression did, each feature by `name`: the feature, then
 /// what went with it (its dependents, suppressed; what it needs, unsuppressed). Nothing
 /// for one that changed nothing.
@@ -751,7 +543,10 @@ pub fn suppressed_words(done: &Suppressed, name: impl Fn(&FeatureId) -> String) 
         (true, _) => "which depend on it",
         (false, _) => "which it needs",
     };
-    Some(format!("{word} {feature}, and {}, {with}", listed(&others)))
+    Some(format!(
+        "{word} {feature}, and {}, {with}",
+        crate::words::listed(&others, "and")
+    ))
 }
 
 /// What the status bar says a deletion did: the feature deleted, then each feature rewired
@@ -1486,15 +1281,6 @@ mod tests {
         );
         // Changing nothing says nothing.
         assert_eq!(said(&suppressed("c0000001", &[], &[])), None);
-    }
-
-    #[test]
-    fn a_list_in_words_has_its_and_and_its_commas() {
-        let names = |n: &[&str]| n.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        assert_eq!(listed(&names(&[])), "");
-        assert_eq!(listed(&names(&["A"])), "A");
-        assert_eq!(listed(&names(&["A", "B"])), "A and B");
-        assert_eq!(listed(&names(&["A", "B", "C"])), "A, B, and C");
     }
 
     #[test]

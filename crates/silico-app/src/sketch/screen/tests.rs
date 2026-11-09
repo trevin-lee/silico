@@ -358,6 +358,7 @@ fn frame(camera: Camera) -> ViewFrame {
         pointer_px: None,
         left: Vec::new(),
         secondary: Vec::new(),
+        drawn: Vec::new(),
         now: std::time::Instant::now(),
     }
 }

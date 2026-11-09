@@ -904,6 +904,90 @@ fn a_point_as_near_a_line_beside_an_axis_as_the_axis_is_on_the_line() {
 }
 
 #[test]
+fn a_crossing_with_an_axis_nearer_than_the_sketchs_own_is_taken() {
+    // n, (20, -5)-(20, 15), crosses the x axis at (20, 0), 0.05 from the click at (20, 0.05),
+    // and pp000001, (5, 0.3)-(30, 0.3), at (20, 0.3), 0.25 from it: two places. The nearer,
+    // with the axis, is taken, whatever n's ID: an axis's crossing is set aside only at the
+    // sketch's own crossing's place (the review's T7).
+    for n in ["aa000001", "zz000001"] {
+        let s = with_line(empty(), n, [20.0, -5.0], [20.0, 15.0]);
+        let s = with_line(s, "pp000001", [5.0, 0.3], [30.0, 0.3]);
+        let mut d = Drive::new(ToolKind::Point, s);
+        d.click(20.0, 0.05);
+        assert_eq!(
+            ons(&d),
+            [Reference::Element(id(n)), Reference::XAxis],
+            "{n}"
+        );
+    }
+}
+
+#[test]
+fn a_sketch_crossing_within_a_tenth_of_a_micrometre_of_an_axis_crossing_is_one_place() {
+    // n, (20, -5)-(20, 15), and pp000001, (15, -5 + e)-(35, 15 + e), slope 1, cross at
+    // (20, e); n crosses the x axis at (20, 0). At e = ±0.5e-7 the two are within
+    // LENGTH_TOLERANCE (1e-7), one place: the sketch's own pair. At ±2e-7, two places; the
+    // click at (20, -0.1 · sign(e)), on the axis's side, is nearer the axis's: n and the
+    // axis (the review's T7).
+    for (e, one_place) in [
+        (0.5e-7, true),
+        (-0.5e-7, true),
+        (2e-7, false),
+        (-2e-7, false),
+    ] {
+        let s = with_line(empty(), "n0000001", [20.0, -5.0], [20.0, 15.0]);
+        let s = with_line(s, "pp000001", [15.0, -5.0 + e], [35.0, 15.0 + e]);
+        let mut d = Drive::new(ToolKind::Point, s);
+        d.click(20.0, -0.1 * f64::signum(e));
+        let other = if one_place {
+            Reference::Element(id("pp000001"))
+        } else {
+            Reference::XAxis
+        };
+        assert_eq!(
+            ons(&d),
+            [Reference::Element(id("n0000001")), other],
+            "e {e}"
+        );
+    }
+}
+
+#[test]
+fn three_curves_through_one_place_take_the_two_lowest_ids() {
+    // (27.2, 26.6)-(31.7, 36.8), (26, 26.8)-(34.1, 36.4), and (22.7, 27)-(40.7, 36) each reach
+    // (28.7, 30) at t = 1/3: three crossings at one place, worked out on three pairs'
+    // arithmetic. Their IDs in each rotated order, the click on a grid 0.3 apart about the
+    // crossing (every end and middle beyond 0.5): the point is on the two lowest IDs, the
+    // first pair in the document's order (the review's T8).
+    let lines = [
+        ([27.2, 26.6], [31.7, 36.8]),
+        ([26.0, 26.8], [34.1, 36.4]),
+        ([22.7, 27.0], [40.7, 36.0]),
+    ];
+    let names = ["aa000001", "mm000001", "zz000001"];
+    for turn in 0..3 {
+        let mut s = empty();
+        for (k, (from, to)) in lines.iter().enumerate() {
+            s = with_line(s, names[(k + turn) % 3], *from, *to);
+        }
+        for dx in [-0.3, 0.0, 0.3] {
+            for dy in [-0.3, 0.0, 0.3] {
+                let mut d = Drive::new(ToolKind::Point, s.clone());
+                d.click(28.7 + dx, 30.0 + dy);
+                assert_eq!(
+                    ons(&d),
+                    [
+                        Reference::Element(id("aa000001")),
+                        Reference::Element(id("mm000001"))
+                    ],
+                    "turn {turn} at ({dx}, {dy})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn the_nearest_woken_point_lines_up_and_a_tie_goes_to_the_lower_id() {
     // Woken points at x = 30.2 and 30.4: a click at (30, 50) is 0.2 and 0.4 off their
     // verticals, so above the first. Woken at 29.75 and 30.25: 0.25 each, the lower ID.

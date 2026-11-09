@@ -13,7 +13,7 @@ use silico_core::command::{
     Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, DiffAnswer, ExtendBy,
     FieldSet, ModelChoice, Moved, NewMembers, Problems, RebuildState, Removed, Replaced, Response,
     Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, SketchCut, SketchEdited,
-    SketchJoined, Status, Stepped, Suppressed, TextAnswer, TimelineAnswer,
+    SketchJoined, Status, StepState, Stepped, Suppressed, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::json::Node;
@@ -24,7 +24,7 @@ use silico_core::sketch_tools::{AddToken, OfferChoice, OfferRequest};
 use silico_core::timeline::{Entry, Health};
 
 use crate::changes::{self, Changes};
-use crate::dialog::{Dialog, Kind, feature_node, quoted};
+use crate::dialog::{Dialog, Kind, Standing, feature_node, quoted};
 use crate::sketch::dimension::{Ask, ModifyAction};
 use crate::sketch::drag::{Drag, News};
 use crate::sketch::screen::Screen;
@@ -41,8 +41,8 @@ pub const OVERTAKEN: &str = "The dimension's choice wasn't applied: the sketch c
 /// than it names where there are too many to list, ARCHITECTURE.md's invariant 9), and its
 /// suggestion, from a `check` of the model the timeline's marks came from; whether it's a
 /// warning's; and the core's error or warning itself, whole, if it's one (a refusal said
-/// in words alone isn't): what its card reads its code, feature, parameter, and candidates
-/// from, and copies as the JSON an agent gets.
+/// in words alone isn't): what its card reads its code, feature, parameter, candidates,
+/// and their ranking from, and copies as the JSON an agent gets.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Said {
     pub warning: bool,
@@ -129,6 +129,14 @@ impl Said {
         self.source
             .as_ref()
             .map_or(&[], |source| source.said().candidates)
+    }
+
+    /// Why each of its [`candidates`](Self::candidates) is where it is, as the core ranked
+    /// them: one for each, or none where they follow another rule.
+    pub fn ranking(&self) -> &[silico_core::Rank] {
+        self.source
+            .as_ref()
+            .map_or(&[], |source| source.said().ranking)
     }
 
     /// The core's error or warning as the command API writes it, byte for byte: the error
@@ -342,6 +350,14 @@ struct Sending {
 /// How many of the commands it sent a tab keeps in its record ([`Tab::sent`]): the newest.
 pub const SENT_KEPT: usize = 256;
 
+/// Why a boolean's command is off in a part of fewer than two bodies ([`Tab::why_closed`]).
+pub const NEEDS_TWO_BODIES: &str = "Needs two bodies";
+
+/// Why nothing of a document the gate (or the reader) refused changes but its text: a
+/// feature's menu's items and the toolbar's dialogs say it.
+pub const UNMENDED: &str =
+    "The document has problems of its own: no feature changes until they're mended";
+
 /// A command a tab sent that changes its transaction, as it sent it: what a test reads
 /// as the call record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -377,18 +393,38 @@ struct Group {
     end: Revision,
 }
 
+/// An edit in flight: its feature and field, and its value, as it was sent, and its answer
+/// to come.
+struct Flying {
+    field: (FeatureId, String),
+    value: Node,
+    sending: Sending,
+    running: Running<FieldSet>,
+}
+
 /// A tab's edits and what waits with them: at most one edit in flight, the rest queued
 /// ([`Queued`]).
 #[derive(Default)]
 pub struct Edits {
-    /// The edit in flight: its feature and field, as it was sent, and its answer to come.
-    in_flight: Option<((FeatureId, String), Sending, Running<FieldSet>)>,
+    /// The edit in flight.
+    in_flight: Option<Flying>,
     queue: std::collections::VecDeque<Queued>,
     /// How many edits it has sent: what a test counts.
     pub sent: u64,
 }
 
 impl Edits {
+    /// Whether an edit of `feature` is in flight or queued.
+    fn pending_for(&self, feature: &FeatureId) -> bool {
+        self.in_flight
+            .as_ref()
+            .is_some_and(|flying| &flying.field.0 == feature)
+            || self
+                .queue
+                .iter()
+                .any(|queued| matches!(queued, Queued::Edit(edit) if &edit.feature == feature))
+    }
+
     /// Whether no edit is in flight or queued.
     pub fn idle(&self) -> bool {
         self.in_flight.is_none()
@@ -671,6 +707,11 @@ pub struct Tab {
     /// The newest `status`, and the revision it was of.
     pub status: Option<Status>,
     status_revision: Revision,
+    /// The last rebuild `status` showed whole (done, every step of its plan settled and no
+    /// feature left queued or running): its revision, and the core's time for it, in whole
+    /// milliseconds (`elapsed_ms`). What the bar and a dialog's preview say of the
+    /// revision's rebuild ([`Tab::rebuilt_ms`]).
+    rebuilt: Option<(Revision, u64)>,
     /// The revision of the newest model published, if there's one.
     pub published: Option<Revision>,
     /// The newest model published, as last seen (held weakly: only to tell it from
@@ -764,6 +805,12 @@ pub struct Tab {
     selection: crate::selection::Selection,
     /// The canvas's box selection (M5.7): a left drag, on geometry or empty space.
     box_select: crate::box_select::BoxSelect,
+    /// The canvas's Select Other (M5.7): its right click's menu, and the list of what's
+    /// under the pointer.
+    select_other: crate::select_other::SelectOther,
+    /// What the core says of the selection's elements, for the property panel's selection
+    /// view (M5.7's measures): one element's entry, or two's distance and angle.
+    measures: crate::measures::Measures,
     /// What a toast is to say for the tab (a box's count, or why it took nothing), until
     /// the app takes it.
     toast: Option<String>,
@@ -944,6 +991,7 @@ impl Tab {
             transaction: false,
             status: None,
             status_revision: Revision::OPENED,
+            rebuilt: None,
             published: None,
             published_model: None,
             published_models: 0,
@@ -979,6 +1027,8 @@ impl Tab {
             reloaded_to: None,
             selection: crate::selection::Selection::default(),
             box_select: crate::box_select::BoxSelect::default(),
+            select_other: crate::select_other::SelectOther::default(),
+            measures: crate::measures::Measures::default(),
             toast: None,
             reload_diff: None,
             outside: BTreeMap::new(),
@@ -1037,7 +1087,9 @@ impl Tab {
     /// a drag's move goes out in the frame it happened.
     ///
     /// While a sketch is open, they're sketch mode's: the selection's canvas is claimed
-    /// (a click of the selection's waiting let go, and a box drawn), and sketch mode's frame
+    /// (a click of the selection's waiting let go, and a box drawn), Select Other's menu
+    /// closed (one open, or a right click waiting for its boxes, as the sketch opened, let
+    /// go, and the hover, the wheel, and the window's keys with it), and sketch mode's frame
     /// ([`sketch_frame`](Self::sketch_frame)) is given the frame's events and pointer in
     /// points, and its sketch's plane on the screen and back through the frame's camera
     /// ([`Screen`]). SEAM: a face pick for Create Sketch, reading
@@ -1048,7 +1100,10 @@ impl Tab {
     /// geometry what's under its press, and a drag from empty space a box
     /// (`crate::box_select`), each read against the published model the tab last polled,
     /// which asks the session nothing more. The box select comes after the selection, so
-    /// it reads the hover this frame's answer gave.
+    /// it reads the hover this frame's answer gave. A right click opens the canvas's context
+    /// menu (`crate::canvas_menu`, through `crate::select_other`), first of them: while it's
+    /// open it holds the hover and the wheel, and a left press that closes it is given to
+    /// neither; an item chosen in it is done here, as its command is elsewhere.
     pub fn overlay<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -1058,6 +1113,8 @@ impl Tab {
         if let Some(mode) = self.sketch.as_ref() {
             self.selection.canvas_claimed();
             self.box_select = Default::default();
+            self.select_other
+                .close(&mut self.selection, &mut self.view, painter.ctx());
             let (ppp, origin) = (frame.pixels_per_point, frame.rect.left_top());
             let events = sketch::frame_events(&frame.left, &frame.secondary, ppp, origin);
             let pointer = frame
@@ -1075,13 +1132,81 @@ impl Tab {
             self.sketch_frame(sessions, painter, &input);
             return;
         }
-        self.selection.overlay(&mut self.view, frame, painter.ctx());
         // The bodies are of the model the selection is read against: the one published
         // last, as counted.
         let current = matches!(
             (self.published, self.view.bodies_of()),
             (Some(revision), Some(of)) if of == (self.published_models, revision)
         );
+        // Select Other first (`crate::select_other`): while its menu is open it holds the
+        // hover and the wheel, and a left press that closes it is its own, given to neither
+        // the selection nor the box. Sketch mode claims the canvas before this, so Select
+        // Other, the selection's, never opens in a sketch (one open, or waiting, as a sketch
+        // opens is closed there).
+        // Why Edit can't open each feature's dialog, as the feature menus say it: worked out
+        // only in a frame a right click may open the menu in.
+        let edit_off: BTreeMap<silico_core::document::FeatureId, Option<String>> =
+            if frame.secondary.is_empty() {
+                BTreeMap::new()
+            } else {
+                let entries = self
+                    .timeline
+                    .as_ref()
+                    .and_then(|timeline| timeline.features.as_deref())
+                    .unwrap_or_default();
+                entries
+                    .iter()
+                    .map(|entry| {
+                        let off = crate::feature_menu::off(
+                            self,
+                            entry,
+                            crate::feature_menu::Item::Edit,
+                            crate::feature_menu::Place::Browser,
+                        );
+                        (entry.id.clone(), off)
+                    })
+                    .collect()
+            };
+        let entries = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
+        let names = |id: &silico_core::document::FeatureId| {
+            entries
+                .iter()
+                .find(|entry| &entry.id == id)
+                .map(|entry| entry.name.clone())
+        };
+        let edit = |id: &silico_core::document::FeatureId| {
+            edit_off
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| Some("Its feature isn't in the timeline yet".to_owned()))
+        };
+        let facts = crate::select_other::Facts {
+            names: &names,
+            edit_off: &edit,
+        };
+        let (left, asked) = self.select_other.overlay(
+            &mut self.selection,
+            &mut self.view,
+            frame,
+            painter,
+            current,
+            &facts,
+        );
+        let passed;
+        let frame = if left.len() == frame.left.len() {
+            frame
+        } else {
+            passed = crate::viewport::ViewFrame {
+                left,
+                ..frame.clone()
+            };
+            &passed
+        };
+        self.selection.overlay(&mut self.view, frame, painter.ctx());
         let hidden: std::collections::BTreeSet<silico_core::document::FeatureId> = self
             .hidden
             .iter()
@@ -1113,14 +1238,50 @@ impl Tab {
             // What the box took is sent from the dialog's pane, maybe drawn already.
             painter.ctx().request_repaint();
         }
+        if let Some(asked) = asked {
+            self.canvas_act(sessions, asked);
+            painter.ctx().request_repaint();
+        }
     }
 
-    /// What clicks toggled in the selection while the dialog's box of names took the
-    /// canvas's picks, taken into the box (`Dialog::toggled`): a pick on the body the
+    /// What the canvas's context menu asked, done as its command is elsewhere: Edit as the
+    /// feature menus' Edit feature (`crate::feature_menu::act`), Hide as H hides a body, Fit
+    /// and Home view as F6 and Home, and Clear selection as Esc clears it.
+    fn canvas_act<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        asked: crate::canvas_menu::CanvasAct,
+    ) {
+        use crate::canvas_menu::CanvasAct;
+        use crate::viewport::ViewAsk;
+        match asked {
+            CanvasAct::Edit(id) => {
+                crate::feature_menu::act(self, sessions, crate::feature_menu::Act::Edit(id));
+            }
+            CanvasAct::Hide(id) => self.toggle_shown(Hideable::Feature(id)),
+            CanvasAct::Fit => self.view.ask(ViewAsk::Fit),
+            CanvasAct::Home => self.view.ask(ViewAsk::Named(crate::navigate::HOME)),
+            CanvasAct::ClearSelection => self.selection.clear(),
+        }
+    }
+
+    /// The canvas's Select Other menu closed, if it's open: a modal or the shortcut sheet has
+    /// come up over it, and takes the keyboard's focus and its keys.
+    pub(crate) fn close_select_other(&mut self, ctx: &eframe::egui::Context) {
+        self.select_other
+            .close(&mut self.selection, &mut self.view, ctx);
+    }
+
+    /// What clicks toggled in the selection while the dialog's box took the canvas's picks,
+    /// taken into the box. A box of names (`Dialog::toggled`): a pick on the body the
     /// dialog's feature is built into read against the box's base (the timeline's chains say
     /// which bodies are, [`built_through`]); each the box refused, or removed as the click
     /// added it to the selection, let go from the selection again, so the canvas shows what
-    /// the box holds. Whether any was.
+    /// the box holds. A box of one body (`Dialog::took_body`): each body picked once, in the
+    /// order picked (a box drawn over a body's edges picks it once), where it stands to the
+    /// dialog's feature ([`standing`]), a pick on the feature's own body read against the
+    /// bodies its boxes hold (`Selection::holds_in`); and the selection then the bodies the
+    /// boxes hold, each lit whole. Whether any was.
     fn box_toggled(&mut self) -> bool {
         use crate::dialog::Taken;
         let toggled = self.selection.take_toggled();
@@ -1133,6 +1294,29 @@ impl Tab {
             .and_then(|timeline| timeline.features.as_deref())
             .unwrap_or_default();
         let own = dialog.feature.clone();
+        if dialog.takes_bodies() {
+            // A box of one body: each body picked once, in the order picked (a box drawn over
+            // a body's edges picks it once), and the selection the bodies the boxes hold.
+            let mut seen: Vec<&FeatureId> = Vec::new();
+            for toggled in &toggled {
+                if let Some(body) = &toggled.body {
+                    if seen.contains(&body) {
+                        continue;
+                    }
+                    seen.push(body);
+                }
+                let standing = toggled.body.as_ref().map_or(Standing::Before, |body| {
+                    standing(entries, body, own.as_ref())
+                });
+                let selection = &self.selection;
+                let holds = |body: &FeatureId| selection.holds_in(&toggled.name, body);
+                dialog.took_body(toggled, standing, &holds);
+            }
+            if !toggled.is_empty() {
+                self.selection.select_features(dialog.bodies());
+            }
+            return !toggled.is_empty();
+        }
         for toggled in &toggled {
             let through_own = match (&own, &toggled.body) {
                 (Some(own), Some(body)) => built_through(entries, body, own),
@@ -1154,6 +1338,22 @@ impl Tab {
         self.toast.take()
     }
 
+    /// The canvas's Select Other (M5.7): the menu open, if one is, and its rows.
+    pub fn select_other(&self) -> &crate::select_other::SelectOther {
+        &self.select_other
+    }
+
+    /// `key` for Select Other's menu, taken by the window's keys while it's open (or a right
+    /// click waits to open it), before the pane draws: applied in this frame's overlay.
+    pub(crate) fn select_other_key(&mut self, key: crate::select_other::MenuKey) {
+        self.select_other.key(key);
+    }
+
+    /// Select Other's boxes made by `build` from now on ([`crate::App::boxing`]).
+    pub(crate) fn boxing(&mut self, build: crate::boxes::Build) {
+        self.select_other.building(build);
+    }
+
     /// What's selected (M5.7), and what the pointer is over in the canvas: one selection,
     /// the browser's, the timeline's, and the canvas's.
     pub fn selection(&self) -> &crate::selection::Selection {
@@ -1165,10 +1365,50 @@ impl Tab {
         &mut self.selection
     }
 
+    /// What the core says of the selection's elements (M5.7's measures), as last answered.
+    pub fn measures(&self) -> &crate::measures::Measures {
+        &self.measures
+    }
+
+    /// The measures of the selection as it is now asked, if they're not what was asked last
+    /// (a pick or a rebuild since), and their reads out polled; none asked while a dialog
+    /// holds the panel (or is being read), which shows no measures, and whose preview's
+    /// rebuild a distance would wait behind.
+    pub fn measure<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        self.measures.poll(sessions, &self.id);
+        if self.in_dialog() {
+            return;
+        }
+        let of = crate::measures::Of::now(&self.selection);
+        // The same version of the selection on the same model: the same elements, as they
+        // were found, so nothing more to ask (and nothing to work out each frame).
+        if of == self.measures.of() {
+            return;
+        }
+        let measured = crate::measures::Measured::of(&self.selection);
+        self.measures.ask(sessions, &self.id, of, measured);
+    }
+
+    /// The measures, for a crate's test to answer as if read (`Measures::answered_as`).
+    #[cfg(test)]
+    pub(crate) fn measures_mut(&mut self) -> &mut crate::measures::Measures {
+        &mut self.measures
+    }
+
     /// Whether anything is wrong: the gate's problems, or a feature's problems or warnings,
     /// as its timeline marks them (What's Wrong lists them).
     pub fn anything_wrong(&self) -> bool {
         self.timeline.as_ref().is_some_and(marked)
+    }
+
+    /// The core's time for the rebuild of the revision `status` says is rebuilt, in whole
+    /// milliseconds: that revision's last rebuild done whole, if one was seen, never
+    /// another's (a stopped one's, or another revision's model's).
+    pub fn rebuilt_ms(&self) -> Option<u64> {
+        let revision = self.status.as_ref()?.rebuild.revision;
+        self.rebuilt
+            .filter(|(of, _)| *of == revision)
+            .map(|(_, ms)| ms)
     }
 
     /// The errors its timeline counts: the gate's, and each feature's problems (the
@@ -1461,6 +1701,21 @@ impl Tab {
                 if self.quiet() && !matches!(status.disk, Some(Disk::Changed | Disk::Gone)) {
                     self.reload_asked = false;
                 }
+                // A rebuild done whole: its time kept with its revision. One done but not
+                // whole (a full rebuild stopped, the revision keeping the model it had: what
+                // it hadn't settled left queued, even before its plan, at 0 of 0) or with no
+                // rebuild of its own (a save's model, rebound; a rollback's, kept) leaves
+                // the last kept.
+                if status.rebuild.state == RebuildState::Done
+                    && let Some(progress) = status.rebuild.progress.as_ref().filter(|progress| {
+                        progress.done == progress.steps
+                            && progress.features.iter().all(|(_, state)| {
+                                !matches!(state, StepState::Queued | StepState::Running)
+                            })
+                    })
+                {
+                    self.rebuilt = Some((status.rebuild.revision, progress.elapsed_ms()));
+                }
                 self.status = Some(status);
             }
             // Its session isn't open any more: the tab goes.
@@ -1509,6 +1764,7 @@ impl Tab {
         self.sketch_requests(sessions);
         self.drive_drag(sessions);
         self.read_sketches(sessions);
+        self.measure(sessions);
     }
 
     /// The sketch reads polled and started, without waiting: sketch mode's, of its sketch,
@@ -2007,8 +2263,7 @@ impl Tab {
                     match response.result {
                         Ok(added) => {
                             if let Some(dialog) = dialog {
-                                dialog.adding = false;
-                                dialog.feature = Some(added.feature.id.clone());
+                                dialog.added(added.feature.id.clone());
                                 // Selected, so its mark's text is read and the property
                                 // panel shows it; but not over the elements a box of
                                 // names takes from the selection (its mark's text is read
@@ -2309,7 +2564,13 @@ impl Tab {
                                 // canvas shows what the box takes from it.
                                 if let Some(kinds) = dialog.takes() {
                                     self.before_dialog = Some(self.selection.saved());
-                                    self.selection.clear();
+                                    // A boolean's boxes hold its bodies: selected, so the
+                                    // canvas lights what of them it shows.
+                                    if dialog.takes_bodies() {
+                                        self.selection.select_features(dialog.bodies());
+                                    } else {
+                                        self.selection.clear();
+                                    }
                                     self.selection.take_into(Some(kinds));
                                 }
                                 self.dialog = Some(dialog);
@@ -2448,27 +2709,45 @@ impl Tab {
     /// revert that comes up with no transaction open (a save before it took every edit, or a
     /// revert ended it) has nothing to do: closes, if it was to close, or else is dropped.
     fn advance<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if let Some((field, sending, running)) = self.edits.in_flight.take() {
+        if let Some(Flying {
+            field,
+            value,
+            sending,
+            running,
+        }) = self.edits.in_flight.take()
+        {
             match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
                     self.applied(sending, &response);
                     // Said, the field keeping what the person typed (#298's review): a
                     // conflict's too, whose next edit is sent against the reloaded revision.
+                    // A box of one body shows what the document holds instead, so it isn't
+                    // marked once it does.
                     match response.result {
                         Ok(_) => {
                             self.refused.remove(&field);
+                            self.dialog_answered(&field, &value, true);
                         }
                         Err(problems) => {
                             self.message = Some(said(&problems));
                             // What a repair said it did, it didn't.
                             self.told = None;
-                            self.refused.insert(field);
+                            if self.dialog_answered(&field, &value, false) {
+                                self.refused.remove(&field);
+                            } else {
+                                self.refused.insert(field);
+                            }
                         }
                     }
                 }
                 Err(running) => {
-                    self.edits.in_flight = Some((field, sending, running));
+                    self.edits.in_flight = Some(Flying {
+                        field,
+                        value,
+                        sending,
+                        running,
+                    });
                     return;
                 }
             }
@@ -2484,6 +2763,7 @@ impl Tab {
                     self.edits.sent += 1;
                     self.record(Sent::Edit(edit.field.clone()));
                     let field = (edit.feature.clone(), edit.field.clone());
+                    let value = edit.value.clone();
                     let sending = self.sending();
                     let running = sessions.set_field(
                         &self.id,
@@ -2492,7 +2772,12 @@ impl Tab {
                         edit.field,
                         edit.value,
                     );
-                    self.edits.in_flight = Some((field, sending, running));
+                    self.edits.in_flight = Some(Flying {
+                        field,
+                        value,
+                        sending,
+                        running,
+                    });
                 }
                 // A sweep's body read at another revision than the session's now: read again.
                 Queued::Add {
@@ -3235,7 +3520,7 @@ impl Tab {
     }
 
     /// The feature `id`'s name, as the timeline last listed it: its ID if it doesn't.
-    fn name_of(&self, id: &FeatureId) -> String {
+    pub(crate) fn name_of(&self, id: &FeatureId) -> String {
         self.entry(id.as_str())
             .map_or_else(|| id.as_str().to_owned(), |entry| entry.name.clone())
     }
@@ -3887,6 +4172,26 @@ impl Tab {
             && (!(kind.cuts() || kind.dresses()) || self.tip().is_some())
     }
 
+    /// Whether a new feature's dialog of `kind` can open (its command, on the toolbar): as
+    /// any dialog can ([`can_open`](Self::can_open)), and, for a boolean, with two bodies to
+    /// combine, as the browser lists them (the bodies it could pick). An existing boolean's
+    /// Edit Feature needs none: it consumes the bodies it combines.
+    pub fn can_create(&self, kind: Kind) -> bool {
+        self.can_open(kind) && (!kind.combines() || self.browser.bodies.len() >= 2)
+    }
+
+    /// Why a new feature's dialog of `kind` can't open, if it's for want of what the
+    /// document has, said in its command's tooltip, once the timeline is read: a document
+    /// the gate (or the reader) refused, as a feature's menu says it ([`UNMENDED`]); else a
+    /// boolean with fewer than two bodies.
+    pub fn why_closed(&self, kind: Kind) -> Option<&'static str> {
+        let timeline = self.timeline.as_ref()?;
+        if timeline.problems > 0 {
+            return Some(UNMENDED);
+        }
+        (kind.combines() && self.browser.bodies.len() < 2).then_some(NEEDS_TWO_BODIES)
+    }
+
     /// A new feature's dialog opened (section 9): its inputs at their defaults, or those its
     /// kind was last OK'd with, if it remembers them (`remembered`); a sweep's sketch the one
     /// selected if it's one, and its body the tip. Its feature is added as soon as its
@@ -3897,7 +4202,7 @@ impl Tab {
         kind: Kind,
         remembered: &crate::dialog::Remembered,
     ) {
-        if !self.can_open(kind) {
+        if !self.can_create(kind) {
             return;
         }
         let serial = self.opening();
@@ -3910,7 +4215,11 @@ impl Tab {
         remembered.apply(&mut dialog);
         if let Some(kinds) = dialog.takes() {
             self.before_dialog = Some(self.selection.saved());
-            self.take_selection(&mut dialog, kinds);
+            if dialog.takes_bodies() {
+                self.take_bodies(&mut dialog, kinds);
+            } else {
+                self.take_selection(&mut dialog, kinds);
+            }
         }
         self.dialog = Some(dialog);
         self.dialog_changed(sessions);
@@ -3926,8 +4235,8 @@ impl Tab {
         let left_out = self.selection.keep_only(kinds).words().and_then(|words| {
             dialog.names().map(|names| {
                 format!(
-                    "{words} left out: a {} takes {}",
-                    names.of,
+                    "{words} left out: {} takes {}",
+                    names.of.a_noun(),
                     names.takes.plural()
                 )
             })
@@ -3943,6 +4252,43 @@ impl Tab {
             self.selection.clear();
         }
         dialog.take_selection(stored, &bodies, left_out);
+        self.selection.take_into(Some(kinds));
+    }
+
+    /// The selection taken into `dialog`'s boxes of one body, which take `kinds` from the
+    /// canvas: the bodies selected (the browser's body rows), in the order selected, the
+    /// first its target and the second its tool; what else is selected (a face, an edge, or
+    /// a vertex, which fills no body box, as SolidWorks' help doesn't say one does; another
+    /// feature; a third body) left out, and said; the selection then the bodies the boxes
+    /// hold, and the canvas's picks the boxes' from then.
+    fn take_bodies(&mut self, dialog: &mut Dialog, kinds: crate::selection::Filter) {
+        let mut bodies: Vec<FeatureId> = Vec::new();
+        for item in self.selection.items() {
+            if let crate::selection::Item::Feature(id) = item
+                && bodies.len() < 2
+                && !bodies.contains(id)
+                && self.browser.bodies.iter().any(|row| &row.id == id)
+            {
+                bodies.push(id.clone());
+            }
+        }
+        // Everything else let go and counted, as a box of names counts what it leaves out:
+        // every feature but the bodies taken, and every element.
+        let none = crate::selection::Filter {
+            faces: false,
+            edges: false,
+            vertices: false,
+        };
+        let mut left = self.selection.keep_only(none);
+        left.features = left.features.saturating_sub(bodies.len());
+        let left_out = left.words().map(|words| {
+            format!(
+                "{words} left out: {} takes two bodies",
+                dialog.kind.a_noun()
+            )
+        });
+        dialog.take_bodies(&bodies, left_out);
+        self.selection.select_features(dialog.bodies());
         self.selection.take_into(Some(kinds));
     }
 
@@ -4369,6 +4715,12 @@ impl Tab {
     /// an edit of each field that changed, coalesced as the property panel's are. Whether
     /// anything was.
     pub fn dialog_changed<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
+        // An edit of its feature still to answer: its boxes of one body wait for it.
+        let waiting = self
+            .dialog
+            .as_ref()
+            .and_then(|dialog| dialog.feature.as_ref())
+            .is_some_and(|feature| self.edits.pending_for(feature));
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
         };
@@ -4390,7 +4742,7 @@ impl Tab {
         let Some(feature) = dialog.feature.clone() else {
             return false;
         };
-        let changes = dialog.changes();
+        let changes = dialog.changes(waiting);
         let changed = !changes.is_empty();
         for (field, value) in changes {
             self.edit(
@@ -4866,6 +5218,40 @@ impl Tab {
         self.advance(sessions);
     }
 
+    /// The browser's row of the feature `id` chosen while the dialog's active box takes a
+    /// body: taken into it, if it's a body's row (one the dialog's own feature isn't built
+    /// into), or refused, said under it; and the selection the bodies the boxes hold. Whether
+    /// the box took the row (taken or refused), so it isn't selected as itself: false if no
+    /// box of one body is active.
+    pub fn pick_body(&mut self, id: &FeatureId) -> bool {
+        let Some(dialog) = self.dialog.as_mut() else {
+            return false;
+        };
+        if !dialog.takes_bodies() {
+            return false;
+        }
+        let is_body = self.browser.bodies.iter().any(|row| &row.id == id);
+        let entries = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
+        let standing = standing(entries, id, dialog.feature.as_ref());
+        dialog.took_row(id, is_body, standing);
+        self.selection.select_features(dialog.bodies());
+        true
+    }
+
+    /// An edit of `field` to `value` answered, `ok` if the core took it: if it's of the open
+    /// dialog's feature, the dialog told (`Dialog::answered`), so a box of one body shows
+    /// what the document holds. Whether a refused one's box went back to it.
+    fn dialog_answered(&mut self, field: &(FeatureId, String), value: &Node, ok: bool) -> bool {
+        self.dialog
+            .as_mut()
+            .filter(|dialog| dialog.feature.as_ref() == Some(&field.0))
+            .is_some_and(|dialog| dialog.answered(&field.1, value, ok))
+    }
+
     /// The sketch `id` chosen in the browser: the dialog's selection box takes it, if the
     /// dialog has one.
     pub fn pick(&mut self, id: &FeatureId) {
@@ -4895,6 +5281,7 @@ impl Tab {
     pub fn can_ok(&self) -> bool {
         self.dialog.as_ref().is_some_and(|dialog| {
             !dialog.adding
+                && !dialog.holding()
                 && dialog.valid()
                 && !dialog
                     .inputs
@@ -5055,16 +5442,37 @@ fn built_through(entries: &[Entry], body: &FeatureId, own: &FeatureId) -> bool {
     false
 }
 
+/// Where `body` stands to the open dialog's feature `own`, as `entries` (the timeline, in
+/// order) have them: its own body or one built on it ([`built_through`]); after it, not
+/// built on it, which it may not use; or before it, or with no feature of the dialog's yet
+/// (a new one's add goes at the end).
+fn standing(entries: &[Entry], body: &FeatureId, own: Option<&FeatureId>) -> Standing {
+    let Some(own) = own else {
+        return Standing::Before;
+    };
+    if built_through(entries, body, own) {
+        return Standing::Through;
+    }
+    let place = |id: &FeatureId| entries.iter().position(|entry| &entry.id == id);
+    match (place(body), place(own)) {
+        (Some(body), Some(own)) if body > own => Standing::After,
+        _ => Standing::Before,
+    }
+}
+
 /// The body a new sweep builds on, as FreeCAD's PartDesign takes its body's tip, from a
 /// document's features as `timeline` lists them, in order: the last that stands for a solid
 /// and that no feature consumes. A feature stands for a solid if it makes one (it isn't a
 /// sketch) and isn't suppressed, or if it's suppressed and its base stands for one (its
 /// chain passes it through, as `document::suppression`'s `standing` has it). A feature is
-/// consumed if any feature names it as an input, as the gate counts consumers: built or
-/// not, suppressed or not (a sketch a sweep names is among them, and stands for nothing).
+/// consumed if a feature other than a sketch names it as an input, built or not, suppressed
+/// or not, as the gate counts consumers (`Operation::inputs`: a feature's base and tool). A
+/// sketch consumes nothing, so a sketch on a face leaves the face's feature standing; the
+/// sketch a sweep names is among a sweep's inputs, and stands for nothing.
 fn tip_of(entries: &[Entry]) -> Option<FeatureId> {
     let consumed: std::collections::BTreeSet<&FeatureId> = entries
         .iter()
+        .filter(|entry| entry.kind != "sketch")
         .flat_map(|entry| entry.inputs.iter())
         .collect();
     let mut stands: BTreeMap<&FeatureId, bool> = BTreeMap::new();
@@ -5859,6 +6267,36 @@ mod tests {
     }
 
     #[test]
+    fn a_sketch_on_a_face_consumes_nothing_and_leaves_its_faces_feature_the_tip() {
+        let id = |text: &str| Some(FeatureId::new(text).unwrap());
+        // A box, and a sketch on one of its faces: the timeline lists the face's feature among
+        // the sketch's inputs, but the gate counts base and tool alone as consuming a solid,
+        // and a sketch has neither: the box is the tip.
+        let mut entries = vec![
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &["b0000001"]),
+        ];
+        assert_eq!(tip_of(&entries), id("b0000001"));
+        // A pocket of the box from that sketch: its base, the box, is consumed, and the pocket
+        // is the tip.
+        entries.push(feature(
+            "p0000001",
+            "pocket",
+            false,
+            &["b0000001", "s0000001"],
+        ));
+        assert_eq!(tip_of(&entries), id("p0000001"));
+        // A sketch on a face of a box that a later fuse consumes: the fuse is the tip.
+        let fused = [
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &["b0000001"]),
+            feature("b0000002", "box", false, &[]),
+            feature("z0000001", "fuse", false, &["b0000001", "b0000002"]),
+        ];
+        assert_eq!(tip_of(&fused), id("z0000001"));
+    }
+
+    #[test]
     fn the_call_record_keeps_the_newest_it_holds() {
         let mut tab = tab();
         for at in 0..SENT_KEPT + 10 {
@@ -5896,6 +6334,61 @@ mod tests {
         tab.ended(Ok(()), false, &mut close);
         assert!(tab.groups.is_empty());
         assert!(tab.restored.is_empty());
+    }
+
+    #[test]
+    fn a_body_box_says_it_took_a_pick_and_nothing_once_nothing_more_is_toggled() {
+        // A new union's box of one body takes the canvas's picks on the 2 by 1 by 1 box: a
+        // face picked, the box takes its body, and says so (the canvas asks for a frame);
+        // nothing toggled, before or since, it says nothing.
+        use crate::selection::How;
+        let mut tab = tab();
+        let model = crate::selection::tests::box_model();
+        tab.selection
+            .published(Some((model, Revision::from_number(1).unwrap())), 1);
+        let dialog = Dialog::new(Kind::Union, None, 1);
+        tab.selection.take_into(dialog.takes());
+        tab.dialog = Some(dialog);
+        assert!(!tab.box_toggled(), "nothing toggled");
+        tab.selection.pick("aaaaaaaa.box.Face1", How::Toggle);
+        assert!(tab.box_toggled());
+        assert_eq!(
+            tab.dialog.as_ref().unwrap().bodies(),
+            [FeatureId::new("aaaaaaaa").unwrap()]
+        );
+        assert!(!tab.box_toggled(), "nothing toggled since");
+    }
+
+    #[test]
+    fn why_closed_says_two_bodies_only_for_a_boolean_with_fewer_and_the_documents_problems_first() {
+        // Nothing before the timeline is read; then, for a boolean in a part of fewer than
+        // two bodies, that it needs two, and for any other kind nothing; two are enough;
+        // and a document the gate refused says that first, whatever the kind.
+        let mut tab = tab();
+        assert_eq!(tab.why_closed(Kind::Union), None, "no timeline read yet");
+        let row = |id: &str| Row {
+            id: FeatureId::new(id).unwrap(),
+            name: id.to_owned(),
+            health: Health::Healthy,
+            marked_by: None,
+        };
+        tab.timeline = Some(TimelineAnswer {
+            revision: Revision::OPENED,
+            model: Some(Revision::OPENED),
+            problems: 0,
+            features: Some(Vec::new()),
+            bodies: Vec::new(),
+        });
+        assert_eq!(tab.why_closed(Kind::Union), Some(NEEDS_TWO_BODIES));
+        assert_eq!(tab.why_closed(Kind::Box), None);
+        tab.browser.bodies = vec![row("aaaaaaaa")];
+        assert_eq!(tab.why_closed(Kind::Subtract), Some(NEEDS_TWO_BODIES));
+        assert_eq!(tab.why_closed(Kind::Box), None);
+        tab.browser.bodies.push(row("bbbbbbbb"));
+        assert_eq!(tab.why_closed(Kind::Union), None, "two bodies are enough");
+        tab.timeline.as_mut().unwrap().problems = 1;
+        assert_eq!(tab.why_closed(Kind::Union), Some(UNMENDED));
+        assert_eq!(tab.why_closed(Kind::Box), Some(UNMENDED));
     }
 
     #[test]

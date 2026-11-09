@@ -1422,7 +1422,7 @@
         "readOnlyHint": true,
         "title": "Session status"
       },
-      "description": "What a session holds, answered at once even while another of its commands runs: its features; the transaction open, if one is, with whether its document differs from the one it began from (unsaved), and the edits `undo` and `redo` can step through; what's running; and how far its rebuild has got.",
+      "description": "What a session holds, answered at once even while another of its commands runs: its features; the transaction open, if one is, with whether its document differs from the one it began from (unsaved), and the edits `undo` and `redo` can step through; what's running; and how far its rebuild has got, and how long it has run.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -1794,6 +1794,14 @@
                   "null"
                 ]
               },
+              "elapsed_ms": {
+                "description": "The whole milliseconds the rebuild has run, from being asked for to its end (its\nmodel published, or its failure or stop), so far while it runs: a diagnostic, a\nclock, never a result. Null if no rebuild of the revision has started.",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "features": {
                 "description": "Each unsuppressed feature's state in the rebuild, in timeline order, listed from its\nstart and kept once it ends: progress, a diagnostic, not a result (which feature runs\nfirst depends on scheduling). A stopped rebuild leaves what it hadn't settled\n`queued`. Null if no rebuild of the revision has started.",
                 "items": {
@@ -1823,6 +1831,7 @@
             },
             "required": [
               "done",
+              "elapsed_ms",
               "features",
               "revision",
               "state",
@@ -4446,7 +4455,7 @@
         "readOnlyHint": false,
         "title": "Add a feature"
       },
-      "description": "Add a feature at the end of the session's timeline (`before: null`), or before another: then each input it takes (its base, its tool) that a feature after it consumed is consumed by it instead, that feature's field rewired to it, listed in `rewired`. A sketch on a face may leave out its plane's `x`: the core writes the face's `default_x`, as `elements` reports it, waiting for the model's rebuild. Give the revision the edit was made against, as the session's last answer says it. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "description": "Add a feature at the end of the session's timeline (`before: null`), or before another: then each input it takes (its base, its tool) that a feature after it consumed is consumed by it instead, that feature's field rewired to it, listed in `rewired`. A sketch on a face may leave out its plane's `x`: the core writes the face's `default_x`, as `elements` reports it, waiting for the model's rebuild. Give the revision the edit was made against, as the session's last answer says it. Build solids from sketches, as a person does in the app: a sketch on a plane or a face, then a pad, pocket, revolve, or groove of it, and fillets and chamfers on the result. The primitives (box, cylinder, sphere, cone, torus) are still read, but a part built from sketches is one a person can edit the way they'd have built it. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
       "inputSchema": {
         "$defs": {
           "Angle": {
@@ -12250,7 +12259,8 @@
                   "ends_not_joined",
                   "constraints_redundant",
                   "fingerprint_missing",
-                  "constraints_partially_redundant"
+                  "constraints_partially_redundant",
+                  "fingerprint_incomplete"
                 ],
                 "type": "string"
               },

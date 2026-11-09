@@ -201,6 +201,17 @@ impl Icon {
 }
 
 impl Icon {
+    /// An element's icon, by its kind: the selection filters' (a selection's head, a box of
+    /// names' chips); a solid's the face's.
+    pub fn of_element(kind: silico_protocol::ElementKind) -> Icon {
+        use silico_protocol::ElementKind;
+        match kind {
+            ElementKind::Face | ElementKind::Solid => Icon::SelFace,
+            ElementKind::Edge => Icon::SelEdge,
+            ElementKind::Vertex => Icon::SelVertex,
+        }
+    }
+
     /// A feature's icon, by its `type` as the document writes it: the prototype's
     /// (`FEATURE_ICON` in `js/app.js`) for a sketch, the sweeps, the fillet and chamfer, and
     /// the box; the toolbar's for the other primitives and the booleans (Union, Subtract,

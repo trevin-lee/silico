@@ -333,3 +333,163 @@ fn the_golden_models_centres_are_where_their_material_is_by_hand() {
         assert_eq!(centre(model, feature), want.map(nm), "{model}: {feature}");
     }
 }
+
+/// `text` with every fingerprint's centre taken out (`"center": [x, y, z], `), as Silico
+/// wrote fingerprints before #389; a circle's centre, a point's ID, is left.
+fn without_centres(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(r#""center": ["#) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at..];
+        let end = after.find("], ").unwrap() + "], ".len();
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The `warning: CODE:` lines `stderr` says, by code.
+fn warned(stderr: &str, code: &str) -> usize {
+    stderr
+        .lines()
+        .filter(|line| line.contains(&format!(": warning: {code}: ")))
+        .count()
+}
+
+#[test]
+fn a_golden_model_saved_before_fingerprints_held_centres_checks_clean_and_formats_to_its_bytes() {
+    // Fable's decision of 2026-11-09: a fingerprint stored before #389 holds its box and no
+    // centre. `check` compares nothing on a centre it never recorded, so every feature
+    // checks clean (exit 0, no drift), and warns `fingerprint_incomplete` once for each
+    // fingerprint the model holds; `fmt` writes exactly the committed model, its centres
+    // back in; and then nothing warns.
+    for model in MODELS {
+        let scratch = Scratch::new(&format!(
+            "before-centres-{}",
+            model.trim_end_matches(".silico")
+        ));
+        let committed = std::fs::read_to_string(golden().join(model)).unwrap();
+        let centres = committed.matches(r#""center": ["#).count();
+        assert!(centres > 0, "{model}");
+        let before = without_centres(&committed);
+        assert!(!before.contains(r#""center": ["#), "{model}");
+        let file = scratch.0.join(model);
+        std::fs::write(&file, &before).unwrap();
+        let checked = silico(&scratch, &["check"], &file);
+        let said = String::from_utf8_lossy(&checked.stderr).into_owned();
+        assert_eq!(checked.status.code(), Some(0), "{model}: {said}");
+        assert_eq!(
+            warned(&said, "fingerprint_incomplete"),
+            centres,
+            "{model}: {said}"
+        );
+        assert_eq!(
+            said.lines().count(),
+            centres,
+            "{model}: nothing else said: {said}"
+        );
+        let saved = silico(&scratch, &["fmt"], &file);
+        assert_eq!(
+            saved.status.code(),
+            Some(0),
+            "{model}: {}",
+            String::from_utf8_lossy(&saved.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            committed,
+            "{model}"
+        );
+        let again = silico(&scratch, &["check"], &file);
+        assert_eq!(again.status.code(), Some(0), "{model}");
+        assert!(
+            again.stderr.is_empty(),
+            "{model}: {}",
+            String::from_utf8_lossy(&again.stderr)
+        );
+    }
+}
+
+#[test]
+fn m4s_live_bracket_saved_before_centres_checks_with_no_error_and_a_warning_a_feature() {
+    // Main's (2026-11-09): M4's live bracket, as recorded (docs/walkthrough/m4-live,
+    // saved 2026-10-29, before #389), opened all-red before Fable's decision, each feature
+    // drifting on `center none → [x, y, z]`. Now: no error, and one
+    // `fingerprint_incomplete` for each of its six fingerprints; formatted (in a copy, the
+    // record kept as it is), each centre written and nothing warns.
+    let recorded =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/walkthrough/m4-live/bracket.silico");
+    let text = std::fs::read_to_string(&recorded).unwrap();
+    let fingerprints = text.matches(r#""fingerprint": {"#).count();
+    assert_eq!(fingerprints, 6);
+    assert!(
+        !text.contains(r#""center": ["#),
+        "the recorded bracket holds no centre"
+    );
+    let scratch = Scratch::new("m4-live-bracket");
+    let file = scratch.0.join("bracket.silico");
+    std::fs::write(&file, &text).unwrap();
+    let checked = silico(&scratch, &["check"], &file);
+    let said = String::from_utf8_lossy(&checked.stderr).into_owned();
+    assert_eq!(checked.status.code(), Some(0), "{said}");
+    // Each line said a warning of the new code: no error, no drift.
+    assert!(
+        said.lines()
+            .all(|line| line.contains(": warning: fingerprint_incomplete: ")),
+        "{said}"
+    );
+    assert_eq!(
+        warned(&said, "fingerprint_incomplete"),
+        fingerprints,
+        "{said}"
+    );
+    assert_eq!(
+        said.lines().count(),
+        fingerprints,
+        "nothing else said: {said}"
+    );
+    let saved = silico(&scratch, &["fmt"], &file);
+    assert_eq!(
+        saved.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&saved.stderr)
+    );
+    let formatted = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(formatted.matches(r#""center": ["#).count(), fingerprints);
+    // The centres it wrote, by hand, to the nanometre: the base leg 60 × 40 × 5 at its
+    // middle, (30, 20, 2.5); the upright 5 × 40 × 50, (2.5, 20, 25); and their fuse, the
+    // two less the 5 × 40 × 5 block they share at (2.5, 20, 2.5), so x = (12000 · 30 +
+    // 10000 · 2.5 − 1000 · 2.5) / 21000 = 382500 / 21000 and z = (12000 · 2.5 + 10000 · 25
+    // − 1000 · 2.5) / 21000 = 277500 / 21000, y 20.
+    let document = silico_core::document::read(formatted.as_bytes()).unwrap();
+    let centre = |feature: &str| {
+        document
+            .features
+            .iter()
+            .find(|f| f.id.as_str() == feature)
+            .and_then(|f| f.fingerprint.as_ref())
+            .and_then(|f| f.center)
+            .map(|c| c.map(silico_core::document::Length::nm))
+            .unwrap_or_else(|| panic!("{feature} has no centre"))
+    };
+    let nm = |mm: f64| (mm * 1e6).round() as i64;
+    for (feature, want) in [
+        ("base0000", [30.0, 20.0, 2.5]),
+        ("rght0000", [2.5, 20.0, 25.0]),
+        (
+            "merge000",
+            [382_500.0 / 21_000.0, 20.0, 277_500.0 / 21_000.0],
+        ),
+    ] {
+        assert_eq!(centre(feature), want.map(nm), "{feature}");
+    }
+    let again = silico(&scratch, &["check"], &file);
+    assert_eq!(again.status.code(), Some(0));
+    assert!(
+        again.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+}
