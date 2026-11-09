@@ -25,7 +25,8 @@
 //!   (`crate::toolbar::planes`), open beside it as a submenu, and a plane chosen starts a
 //!   sketch on it as the toolbar's does (`Tab::create_sketch`); on and off as the toolbar's
 //!   is (`Tab::can_sketch`), off with sketch mode's reason. Enter on it opens its planes;
-//!   SEAM: its planes are the pointer's, the keys stepping this menu's items alone.
+//!   SEAM: a plane is chosen by the pointer: the keys step this menu's items alone (Tab,
+//!   the arrows, Enter), and Esc closes the menu and its planes with it.
 //!
 //! Left out of the prototype's items, none a command the app has yet:
 //! - SEAM: Look At (Ctrl+8), once the view can turn square to a face (`crate::shortcuts`'
@@ -34,8 +35,11 @@
 //!   app's remembered inputs), not from a command of the registry;
 //! - SEAM: Copy name ("as agents write it"), no command of the registry copies a name.
 
+use std::sync::Arc;
+
 use eframe::egui::{self, Response, Ui, Vec2};
 use silico_core::document::{FeatureId, OriginPlane};
+use silico_core::naming::Name;
 
 use crate::icons::Icon;
 use crate::menu;
@@ -53,12 +57,13 @@ pub const UNREAD: &str = "the model's meshes aren't shown yet";
 pub const UNCAST: &str = "what's under the pointer can't be found";
 
 /// One of the menu's items: *Select Other…*, which the menu does itself; Sketch on this
-/// face, whose face the menu holds; Create Sketch, whose planes it opens; or one the tab
+/// face, with the name a store writes for its face, if one can be written (none: the item
+/// is off, with the store's refusal); Create Sketch, whose planes it opens; or one the tab
 /// does once it's chosen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanvasItem {
     SelectOther,
-    SketchOnFace,
+    SketchOnFace(Option<Arc<Name>>),
     CreateSketch,
     Act(CanvasAct),
 }
@@ -70,7 +75,7 @@ pub enum CanvasAct {
     Edit(FeatureId),
     /// Sketch on this face: a sketch created on the face under the pointer, by the name a
     /// store writes for it.
-    SketchOnFace(String),
+    SketchOnFace(Arc<Name>),
     /// Hide, of the body under the pointer (by the feature that ends its chain).
     Hide(FeatureId),
     Fit,
@@ -153,7 +158,7 @@ pub struct Under {
 /// Stability card says it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Planar {
-    pub stored: Result<String, String>,
+    pub stored: Result<Arc<Name>, String>,
 }
 
 /// What the menu says of the rest: how many are under the pointer (*Select Other…*'s dim
@@ -208,7 +213,7 @@ impl CanvasMenu {
                 // while no store can name the face.
                 let sketch = under.plane.as_ref().map(|plane| {
                     let mut sketch = Shown::of(
-                        CanvasItem::SketchOnFace,
+                        CanvasItem::SketchOnFace(plane.stored.clone().ok()),
                         Some(Icon::Sketch),
                         crate::panes::SKETCH_ON_FACE,
                     );
@@ -310,7 +315,8 @@ impl CanvasMenu {
 
     /// It drawn, its item `lit` lit; Create Sketch's planes open beside it (egui's submenu,
     /// as CREATE's drop-down opens them), while the pointer is on it or they are, or from
-    /// `open_planes` (Enter on it). What was pointed at, clicked, or chosen.
+    /// `open_planes` (the app's Enter on it chose it, `crate::select_other`), marked shown
+    /// first so egui keeps them open. What was pointed at, clicked, or chosen.
     pub fn draw(&self, ui: &mut Ui, lit: Option<usize>, open_planes: bool) -> Drawn {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         let width = self.width(ui);
@@ -599,9 +605,21 @@ mod tests {
         // mode's reason first.
         let ctx = egui::Context::default();
         ctx.set_os(egui::os::OperatingSystem::Nix);
+        let top = || {
+            Arc::new(Name::Element {
+                feature: fid("k7f2qx3m"),
+                made: silico_core::naming::TypeWord::Primitive(
+                    silico_core::naming::PrimitiveKind::Box,
+                ),
+                element: silico_protocol::ElementRef {
+                    kind: silico_protocol::ElementKind::Face,
+                    index: 6,
+                },
+            })
+        };
         let face = |stored: Result<&str, &str>| Under {
             plane: Some(Planar {
-                stored: stored.map(str::to_owned).map_err(str::to_owned),
+                stored: stored.map(|_| top()).map_err(str::to_owned),
             }),
             ..under()
         };
@@ -619,7 +637,7 @@ mod tests {
                 ("Hide Plate".to_owned(), true),
             ]
         );
-        assert_eq!(over.items[2].item, CanvasItem::SketchOnFace);
+        assert_eq!(over.items[2].item, CanvasItem::SketchOnFace(Some(top())));
         assert_eq!(over.items[2].icon, Some(Icon::Sketch));
         assert!(over.items[2].caps.is_empty());
         assert!(!over.separated(2) && over.separated(3));
@@ -653,7 +671,7 @@ mod tests {
             plain
                 .items
                 .iter()
-                .all(|shown| shown.item != CanvasItem::SketchOnFace)
+                .all(|shown| !matches!(shown.item, CanvasItem::SketchOnFace(_)))
         );
     }
 

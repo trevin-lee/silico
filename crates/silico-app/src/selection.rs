@@ -618,7 +618,7 @@ impl Selection {
     /// The element `name` finds in the published model's bodies (the core's `resolve`, as a
     /// pick reads it): its body, its number there, and the name a store writes for it. None
     /// if it finds none, or no model is published.
-    pub(crate) fn found(&self, name: &str) -> Option<Selected> {
+    pub(crate) fn resolve_one(&self, name: &str) -> Option<Selected> {
         let model = self.model.as_ref()?;
         rules::resolve(model, &[name], PARAMETER)
             .ok()?
@@ -635,7 +635,7 @@ impl Selection {
         if view.bodies_of() != self.of {
             return None;
         }
-        let found = self.found(name)?;
+        let found = self.resolve_one(name)?;
         let number = view
             .bodies()
             .iter()
@@ -1537,11 +1537,7 @@ impl Selection {
         {
             return;
         }
-        let found = self.model.as_ref().and_then(|model| {
-            rules::resolve(model, &[name.to_string()], PARAMETER)
-                .ok()
-                .and_then(|answer| answer.kept.into_iter().next())
-        });
+        let found = self.resolve_one(&name.to_string());
         self.hovered = Some(Hovered {
             body,
             element,

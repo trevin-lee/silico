@@ -28,14 +28,22 @@
 //! A click on a row, or Enter, chooses it as a click on the canvas would: it replaces the
 //! selection, Ctrl (Cmd on macOS) toggling it, and while a dialog's box of names takes the
 //! canvas's picks, it toggles it into the box, which says if it can't take it. In the context
-//! menu the keys step through its items that are on, and Enter chooses the one lit; any
-//! other item is the tab's to do ([`CanvasAct`]).
+//! menu the keys step through its items that are on, and Enter chooses the one lit: Create
+//! Sketch's opens its planes beside it, which the pointer chooses from; any other item is the
+//! tab's to do ([`CanvasAct`]).
+//!
+//! **The face read.** A context menu opened over a face (what a click there would select)
+//! reads it for its type as the selection view reads one (`crate::measures`, `elements`, the
+//! tab's), keyed by this menu ([`FaceRead`]), never waited on: once its answer says it's a
+//! plane, Sketch on this face is among the menu's items ([`Menu::remake`]), the item lit and
+//! the one under the pointer kept by what they are; in the list the read changes no row.
 //!
 //! **Closing.** Esc, a press anywhere off the menu (on the canvas it does nothing more: its
 //! press, its drag, and its release are the menu's, as the prototype's click closes a menu
 //! and selects nothing), another right click on the canvas (which opens another), the
 //! published model or a body's mesh changing, a modal or the shortcut sheet coming up over
-//! it, a sketch opening, or the tab not shown, closes it. The canvas's right clicks and left
+//! it, a sketch opening, or the tab not shown, closes it; a plane chosen from Create Sketch's
+//! planes closes it too (a press on them is the menu's, not off it). The canvas's right clicks and left
 //! presses are taken in the order they came, so a right click and then a press in one frame
 //! leave it closed. While it's open the pane's wheel doesn't zoom ([`View::wheel_held`]), the
 //! pointer's hover isn't asked, the menu holds the keyboard's focus, and no other shortcut
@@ -234,7 +242,7 @@ struct Menu {
 struct FaceRead {
     of: Of,
     measured: Measured,
-    stored: Result<String, String>,
+    stored: Result<Arc<Name>, String>,
     typed: bool,
 }
 
@@ -724,8 +732,9 @@ impl SelectOther {
         // A face, read for its type as the selection view's is: found in the selection's
         // model as a pick is, for its body and the name a store writes for it.
         let face = match (&pointed, &under, selection.model_of()) {
-            (Some((_, Element::Face(_), name)), Some(_), Some(model)) => {
-                selection.found(&name.to_string()).map(|found| FaceRead {
+            (Some((_, Element::Face(_), name)), Some(_), Some(model)) => selection
+                .resolve_one(&name.to_string())
+                .map(|found| FaceRead {
                     of: Of {
                         version: self.opened,
                         model,
@@ -737,11 +746,10 @@ impl SelectOther {
                     stored: found
                         .stored
                         .as_ref()
-                        .map(ToString::to_string)
+                        .map(Arc::clone)
                         .map_err(|why| why.message().to_owned()),
                     typed: false,
-                })
-            }
+                }),
             _ => None,
         };
         let context = Context {
@@ -830,7 +838,8 @@ impl SelectOther {
     }
 
     /// The context menu's item `at` chosen, if it's on: *Select Other…* opens the list;
-    /// another closes the menu and is the tab's to do.
+    /// Create Sketch opens its planes beside it, the menu staying open for one of them to be
+    /// chosen; another closes the menu and is the tab's to do.
     fn context_chosen(
         &mut self,
         at: usize,
@@ -852,10 +861,8 @@ impl SelectOther {
                 menu.open_planes = true;
                 return None;
             }
-            CanvasItem::SketchOnFace => {
-                let face = menu.under.as_ref()?.plane.as_ref()?.stored.clone().ok()?;
-                CanvasAct::SketchOnFace(face)
-            }
+            // Off with no stored name (the store's refusal its reason): never chosen.
+            CanvasItem::SketchOnFace(stored) => CanvasAct::SketchOnFace(stored?),
             CanvasItem::Act(act) => act,
         };
         tracing::debug!(?act, "canvas_menu_chosen");
@@ -1452,8 +1459,11 @@ mod tests {
             facts,
             face: Some(FaceRead {
                 of,
-                measured: Measured::One { body: block, name },
-                stored: Ok("k7f2qx3m.box.Face6".to_owned()),
+                measured: Measured::One {
+                    body: block,
+                    name: Arc::clone(&name),
+                },
+                stored: Ok(name),
                 typed: false,
             }),
             ..base

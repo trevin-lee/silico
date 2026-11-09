@@ -1283,7 +1283,9 @@ impl Tab {
             CanvasAct::Edit(id) => {
                 crate::feature_menu::act(self, sessions, crate::feature_menu::Act::Edit(id));
             }
-            CanvasAct::SketchOnFace(face) => self.create_sketch_on_face(sessions, &face),
+            CanvasAct::SketchOnFace(face) => {
+                self.create_sketch_on_face(sessions, &face.to_string());
+            }
             CanvasAct::Hide(id) => self.toggle_shown(Hideable::Feature(id)),
             CanvasAct::Fit => self.view.ask(ViewAsk::Fit),
             CanvasAct::Home => self.view.ask(ViewAsk::Named(crate::navigate::HOME)),
