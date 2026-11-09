@@ -21644,6 +21644,132 @@ fn after_an_edit_each_sketch_is_read_once_more_and_a_changed_state_shows_its_pre
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// [`FOUR_SKETCHES`] opened, and frames stepped until each of its four sketches is read
+/// whole, the reads' count then 4.
+fn four_read(f: &Fixture) -> AppHarness {
+    let (mut h, _) = f.opened("four.silico", FOUR_SKETCHES);
+    step_until(&mut h, "every sketch read", |h| {
+        ["s0000001", "s0000002", "s0000003", "s0000004"]
+            .iter()
+            .all(|id| h.state().tabs()[0].prefixes.held(&sketch_id(id)).is_some())
+    });
+    assert_eq!(h.state().tabs()[0].prefixes.reads, 4);
+    h
+}
+
+#[test]
+fn showing_or_hiding_a_sketch_reads_nothing_and_its_read_is_kept_whole() {
+    // The study's test 11: each sketch's read, whole (its plane and members, which the
+    // viewport's lines are drawn from, not its state alone), from the prefixes' own four
+    // reads; its eye clicked shut and open again sends none.
+    let f = fixture();
+    let mut h = four_read(&f);
+    let tab = &h.state().tabs()[0];
+    let tight = tab.prefixes.held(&sketch_id("s0000002")).unwrap();
+    assert_eq!(tight.read.sketch, sketch_id("s0000002"));
+    assert_eq!(tight.read.members.points.len(), 2);
+    assert!(tight.read.plane.is_ok());
+    for eye in ["Hide Tight", "Show Tight", "Hide Loose"] {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label(eye)
+            .click();
+        for _ in 0..10 {
+            step(&mut h);
+        }
+    }
+    assert_eq!(h.state().tabs()[0].prefixes.reads, 4);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn after_an_edit_the_shown_sketches_are_read_first() {
+    // The study's ordering: Tight and Stuck hidden, Loose's point deleted in sketch mode (as
+    // the prefix test above edits it). Of the three read again of the model the edit
+    // published (Loose, open, is sketch mode's), the first is Fixed, the one shown, then the
+    // hidden in their order.
+    let f = fixture();
+    let mut h = four_read(&f);
+    for eye in ["Hide Tight", "Hide Stuck"] {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label(eye)
+            .click();
+        step(&mut h);
+    }
+    double_click(&mut h, "Browser", "Loose");
+    sketch_read(&mut h);
+    select_member(
+        &mut h,
+        "pa000001",
+        silico_core::document::ElementKind::Point,
+    );
+    h.key_press(eframe::egui::Key::Delete);
+    let order = std::cell::RefCell::new(Vec::new());
+    step_until(&mut h, "the three read again", |h| {
+        let reads = &h.state().tabs()[0].prefixes;
+        let mut order = order.borrow_mut();
+        if let Some(id) = reads.reading()
+            && reads.reads > 4
+            && order.last() != Some(id)
+        {
+            order.push(id.clone());
+        }
+        reads.reads == 7 && reads.reading().is_none()
+    });
+    assert_eq!(
+        order.into_inner(),
+        [
+            sketch_id("s0000004"),
+            sketch_id("s0000002"),
+            sketch_id("s0000003")
+        ]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketchs_read_is_held_till_the_next_revisions_answers_and_never_lapses_between() {
+    // The study's test 12: Tight's distance set from 5 to 6 by another client, the solves
+    // held, so the model it publishes waits: every frame meanwhile holds each sketch's read
+    // of the revision before. Released, each is read again, one at a time, of the new
+    // revision: in no frame between is a sketch's read gone.
+    let f = fixture();
+    let mut h = four_read(&f);
+    let ids = ["s0000001", "s0000002", "s0000003", "s0000004"].map(sketch_id);
+    let revisions = |h: &AppHarness| {
+        ids.clone().map(|id| {
+            h.state().tabs()[0]
+                .prefixes
+                .held(&id)
+                .map(|held| held.revision)
+        })
+    };
+    let before = revisions(&h);
+    assert!(before.iter().all(Option::is_some));
+    let id = h.state().tabs()[0].id;
+    f.sketches.hold();
+    let theirs = f.sessions.set_field(
+        &id,
+        h.state().tabs()[0].revision,
+        sketch_id("s0000002"),
+        "constraints.ka000001.value".to_owned(),
+        json::read(b"6").unwrap(),
+    );
+    assert!(f.sketches.wait_held(WAIT));
+    for _ in 0..20 {
+        step(&mut h);
+        assert_eq!(revisions(&h), before);
+    }
+    f.sketches.release();
+    step_until(&mut h, "each read again", |h| {
+        let now = revisions(h);
+        assert!(now.iter().all(Option::is_some), "a read gone: {now:?}");
+        now.iter().zip(&before).all(|(now, before)| now > before)
+    });
+    assert_eq!(h.state().tabs()[0].prefixes.reads, 8);
+    theirs.wait().result.unwrap();
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// Ctrl (⌘) and `key` pressed, a frame after the last answer so the status read is of the
 /// revision it came to, and everything it sent answered.
 fn chord(h: &mut AppHarness, key: eframe::egui::Key) {

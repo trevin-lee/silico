@@ -1230,21 +1230,38 @@ pub fn scale_at(to_plane: &dyn Fn(Pos2) -> Option<[f64; 2]>, at: Pos2) -> Option
     (mm > 0.0 && mm.is_finite()).then_some(Scale(mm))
 }
 
-/// Each sketch's state, for the browser's prefixes: read one sketch at a time, of the
-/// newest published model, each once for each revision of it.
+/// Each sketch's read, kept whole: for the browser's prefixes (its state), and for what the
+/// viewport draws of a shown sketch (its plane and members). Read one sketch at a time, of
+/// the newest published model, each once for each revision of it, the shown sketches first,
+/// so a burst of revisions refreshes what's drawn before what isn't. Each answer is kept as
+/// the newest: while the next revision's read is in flight, the last is held, so nothing
+/// drawn of it ever lapses between them, as every answer is drawn as of its own revision
+/// (docs/design/m5.0-app.md, decision 33). An answer equal to the one held keeps the held
+/// one (the same `Arc`), so what's made of it needn't be made again. A refused read (a
+/// suppressed sketch, a worker's failure) holds none. The sketch open in sketch mode isn't
+/// read here: its state is its read's.
 #[derive(Default)]
-pub struct Prefixes {
+pub struct SketchReads {
     states: BTreeMap<FeatureId, SketchState>,
+    held: BTreeMap<FeatureId, Held>,
     asked: BTreeMap<FeatureId, Revision>,
-    reading: Option<(FeatureId, Running<SketchRead>)>,
+    reading: Option<(FeatureId, Revision, Running<SketchRead>)>,
     /// How many reads it has sent: what a test counts.
     pub reads: u64,
 }
 
-impl Prefixes {
+/// A sketch's newest read, and the published revision it's of.
+#[derive(Debug, Clone)]
+pub struct Held {
+    pub read: Arc<SketchRead>,
+    pub revision: Revision,
+}
+
+impl SketchReads {
     /// The read in flight polled, without waiting; and, if none is, the first of `rows`
-    /// (the browser's sketches) not read of the model `published`, read. The sketch open in
-    /// sketch mode, `open`, isn't read here: its state is its read's.
+    /// (the browser's sketches) not read of the model `published`, read: the first that's
+    /// `shown`, else the first of the rest. The sketch open in sketch mode, `open`, isn't
+    /// read here: its state is its read's.
     pub fn poll<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -1252,44 +1269,65 @@ impl Prefixes {
         rows: &[Row],
         published: Option<Revision>,
         open: Option<&SketchMode>,
+        shown: &dyn Fn(&FeatureId) -> bool,
     ) {
         let open_id = open.and_then(|mode| mode.sketch.as_ref());
         if let (Some(id), Some(read)) = (open_id, open.and_then(SketchMode::drawable)) {
             self.states.insert(id.clone(), read.states.state);
         }
-        if let Some((id, running)) = self.reading.take() {
+        if let Some((id, asked, running)) = self.reading.take() {
             match running.try_take() {
-                Ok(response) => match response.result {
-                    Ok(read) => {
-                        self.states.insert(id, read.states.state);
+                Ok(response) => {
+                    // Of the model the answer says it read, or the one it was asked of.
+                    let revision = response
+                        .model
+                        .as_ref()
+                        .map_or(asked, |model| model.revision);
+                    match response.result {
+                        Ok(read) => {
+                            self.states.insert(id.clone(), read.states.state);
+                            let kept = self
+                                .held
+                                .get(&id)
+                                .map(|held| &held.read)
+                                .filter(|held| ***held == read)
+                                .map(Arc::clone);
+                            let read = kept.unwrap_or_else(|| Arc::new(read));
+                            self.held.insert(id, Held { read, revision });
+                        }
+                        // A suppressed sketch, or one a worker's failure left unread: no
+                        // prefix, and nothing to draw.
+                        Err(_) => {
+                            self.states.remove(&id);
+                            self.held.remove(&id);
+                        }
                     }
-                    // A suppressed sketch, or one a worker's failure left unread: no prefix.
-                    Err(_) => {
-                        self.states.remove(&id);
-                    }
-                },
+                }
                 Err(running) => {
-                    self.reading = Some((id, running));
+                    self.reading = Some((id, asked, running));
                     return;
                 }
             }
         }
-        self.states
-            .retain(|id, _| rows.iter().any(|row| &row.id == id));
-        self.asked
-            .retain(|id, _| rows.iter().any(|row| &row.id == id));
+        let listed = |id: &FeatureId| rows.iter().any(|row| &row.id == id);
+        self.states.retain(|id, _| listed(id));
+        self.held.retain(|id, _| listed(id));
+        self.asked.retain(|id, _| listed(id));
         let Some(published) = published else {
             return;
         };
-        if let Some(row) = rows
+        let unread =
+            |row: &&Row| Some(&row.id) != open_id && self.asked.get(&row.id) != Some(&published);
+        let next = rows
             .iter()
-            .filter(|row| Some(&row.id) != open_id)
-            .find(|row| self.asked.get(&row.id) != Some(&published))
-        {
+            .filter(unread)
+            .find(|row| shown(&row.id))
+            .or_else(|| rows.iter().find(unread));
+        if let Some(row) = next {
             self.asked.insert(row.id.clone(), published);
             self.reads += 1;
             let running = sessions.sketch(session, ModelChoice::Published, row.id.clone());
-            self.reading = Some((row.id.clone(), running));
+            self.reading = Some((row.id.clone(), published, running));
         }
     }
 
@@ -1301,6 +1339,17 @@ impl Prefixes {
     /// The sketch `id`'s state, if it's read.
     pub fn state(&self, id: &FeatureId) -> Option<SketchState> {
         self.states.get(id).copied()
+    }
+
+    /// The sketch `id`'s newest read held, if one is: its read whole, and the revision it's
+    /// of.
+    pub fn held(&self, id: &FeatureId) -> Option<&Held> {
+        self.held.get(id)
+    }
+
+    /// The sketch whose read is in flight, if one is.
+    pub fn reading(&self) -> Option<&FeatureId> {
+        self.reading.as_ref().map(|(id, ..)| id)
     }
 }
 

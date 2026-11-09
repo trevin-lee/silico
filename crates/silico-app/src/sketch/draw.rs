@@ -1217,12 +1217,38 @@ fn grid(view: &View<'_>, axes: [Color32; 2]) -> Vec<Drawn> {
     drawn
 }
 
+/// `curve`'s polyline in the sketch's millimetres, at `scale` and `tolerance`: a line its
+/// two ends; a circle or an arc its points from its start round its sweep, as many segments
+/// as [`curve_segments`] says keep every chord within `tolerance` points at `scale`, the
+/// first and the last its ends (a circle's the same point). The one polyline of a curve:
+/// region fills ([`walk`]) and the 3D view's lines meet outlines vertex for vertex.
+pub(crate) fn polyline(curve: Curve, scale: Scale, tolerance: f32) -> Vec<[f64; 2]> {
+    match curve {
+        Curve::Line { from, to } => vec![from, to],
+        Curve::Round {
+            centre,
+            radius,
+            start,
+            sweep,
+        } => {
+            let n = curve_segments(radius, sweep, scale, tolerance);
+            (0..=n)
+                .map(|k| {
+                    add(
+                        centre,
+                        mul(direction(start + sweep * k as f64 / n as f64), radius),
+                    )
+                })
+                .collect()
+        }
+    }
+}
+
 /// The polygon a loop of `curves` walks, in order, in the sketch's millimetres, its arcs and
 /// circles at `scale`'s and `tolerance`'s segments ([`curve_segments`]), its vertices on them
-/// as its
-/// outline's: each curve run from the end the last one ended at (the first, toward the one
-/// after it). None for a curve the read hasn't, or a loop whose curves don't meet end to
-/// end.
+/// as its outline's: each curve run from the end the last one ended at (the first, toward
+/// the one after it). None for a curve the read hasn't, or a loop whose curves don't meet
+/// end to end.
 fn walk(
     curves: &[ElementId],
     geometry: &Geometry,
@@ -1230,25 +1256,7 @@ fn walk(
     tolerance: f32,
 ) -> Option<Vec<[f64; 2]>> {
     let polyline = |id: &ElementId| -> Option<Vec<[f64; 2]>> {
-        Some(match geometry.curves.get(id)?.0 {
-            Curve::Line { from, to } => vec![from, to],
-            Curve::Round {
-                centre,
-                radius,
-                start,
-                sweep,
-            } => {
-                let n = curve_segments(radius, sweep, scale, tolerance);
-                (0..=n)
-                    .map(|k| {
-                        add(
-                            centre,
-                            mul(direction(start + sweep * k as f64 / n as f64), radius),
-                        )
-                    })
-                    .collect()
-            }
-        })
+        Some(polyline(geometry.curves.get(id)?.0, scale, tolerance))
     };
     let [first, rest @ ..] = curves else {
         return None;
