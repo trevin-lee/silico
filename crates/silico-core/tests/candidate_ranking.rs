@@ -308,8 +308,9 @@ fn a_broken_references_ranked_candidates_are_the_same_bytes_run_to_run() {
     // A pad of a rectangle filleted at [`BOTH`], which no element is, but edges made from
     // either of its elements share one (rule a); and a box beside it filleted at its Edge13,
     // past a box's twelve (rule b). `check` in a fresh session on fake kernels of 1, 2, and
-    // 4 threads, the box's step held or not until the pad's is running: the same bytes each
-    // time. Held by the kernel's holds, never by a sleep.
+    // 4 threads, the box's step held until it's running, then released, or not held: the
+    // same bytes each time. Six sessions, kernels, and caches of their own, not one run
+    // read twice. Held by the kernel's holds, never by a sleep.
     use silico_core::cache::Cache;
     use silico_core::command::{Call, Sessions};
     use silico_core::kernel::{Op, Primitive};
