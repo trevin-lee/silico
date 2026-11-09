@@ -3482,6 +3482,68 @@ fn a_double_click_on_a_dimension_opens_its_box_with_its_value_whose_text_is_aske
 }
 
 #[test]
+fn each_double_clicked_box_of_one_sketch_mode_is_numbered_anew() {
+    // The bottom's length, 40, double-clicked three times, its box closed between (Esc's
+    // way): each box numbered anew as it opens, 1, 2, 3, so each is a box of its own to egui
+    // (its keyboard taken once, its field's own cursor). Then Smart Dimension's box, the
+    // right side picked at (40, 10) and placed at (55, 10), and, the tool chosen again, its
+    // second, placed at (60, 10): each numbered apart from every double-clicked box, and
+    // from each other; and the next double-clicked box after them is the fourth (the
+    // review's T6).
+    use dimension::ModifyAction;
+    let read = under(rectangle(vec![length("ka000001", "na000001", "40", true)]));
+    let mut mode = mode_at(read);
+    let mut dragged: Option<drag::Drag> = None;
+    frame_of(&mut mode, &mut dragged, &[]);
+    let label = mode
+        .last_drawn()
+        .iter()
+        .find_map(|d| match d {
+            Drawn::Label {
+                of: Some(of), at, ..
+            } if of.as_str() == "ka000001" => Some(*at),
+            _ => None,
+        })
+        .unwrap();
+    let mut clicks = press(label, false).to_vec();
+    clicks.extend(press(label, false));
+    clicks.push(event(PointerAction::DoubleClick, label, false));
+    let double_clicked = |mode: &mut SketchMode, dragged: &mut Option<drag::Drag>| {
+        frame_of(mode, dragged, &clicks);
+        let view = mode.modify_view().unwrap();
+        assert!(!view.placing);
+        mode.modify(ModifyAction::Skip);
+        assert!(mode.edit_box.is_none() && mode.modify_view().is_none());
+        view.opened
+    };
+    let numbers: Vec<u64> = (0..3)
+        .map(|_| double_clicked(&mut mode, &mut dragged))
+        .collect();
+    assert_eq!(numbers, [1, 2, 3]);
+    // Smart Dimension's two boxes, each closed by leaving the tool.
+    let mut smart = Vec::new();
+    for place in [55.0, 60.0] {
+        mode.tools.choose(Some(tools::Choice::Dimension));
+        frame_of(&mut mode, &mut dragged, &press(at_mm(40.0, 10.0), false));
+        frame_of(&mut mode, &mut dragged, &press(at_mm(place, 10.0), false));
+        let view = mode.modify_view().unwrap();
+        assert!(view.placing, "placed at {place}");
+        assert_eq!(view.text, "20", "placed at {place}");
+        smart.push(view.opened);
+        mode.tools.choose(None);
+        assert!(mode.modify_view().is_none(), "placed at {place}");
+    }
+    assert_ne!(smart[0], smart[1]);
+    for number in &smart {
+        assert!(!numbers.contains(number), "{number} among {numbers:?}");
+    }
+    // The next double-clicked box is the fourth, none of Smart Dimension's.
+    let fourth = double_clicked(&mut mode, &mut dragged);
+    assert_eq!(fourth, 4);
+    assert!(!smart.contains(&fourth), "{fourth} among {smart:?}");
+}
+
+#[test]
 fn a_driven_dimension_double_clicked_opens_no_modify_box() {
     let read = under(rectangle(vec![length("ka000001", "na000001", "40", false)]));
     let mut mode = mode_at(read);
@@ -3989,6 +4051,18 @@ fn each_sketch_modes_box_has_a_field_of_its_own() {
     let b = keyboard_after(&mut h, &cell, (egui::Id::new("sketch mode B"), 1));
     assert!(a.is_some() && b.is_some(), "{a:?} {b:?}");
     assert_ne!(a, b);
+}
+
+#[test]
+fn each_tabs_sketch_bar_and_palette_have_areas_of_their_own() {
+    // Two tabs' sessions, s1 and s2: each tab's sketch bar, and its palette, is an area of
+    // its own, so neither's place or size is the other tab's (the review's T8).
+    let session = |text: &str| silico_core::command::SessionId::parse(text).unwrap();
+    let (s1, s2) = (session("s1"), session("s2"));
+    assert_ne!(dimension::bar_area(&s1), dimension::bar_area(&s2));
+    assert_ne!(dimension::palette_area(&s1), dimension::palette_area(&s2));
+    // Nor is one tab's bar its palette.
+    assert_ne!(dimension::bar_area(&s1), dimension::palette_area(&s1));
 }
 
 #[test]
