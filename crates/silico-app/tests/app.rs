@@ -28017,8 +28017,11 @@ fn made_by_selects_its_feature_edit_opens_its_dialog_and_fillet_starts_with_the_
     let f = fixture();
     let mut h = a_measured_box(&f);
     let block = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
-    // Made by: Block, a link that selects it.
+    // Made by: Block, a link that selects it. Each click waits for its card's measures: the
+    // face's read, landing, adds a row (Normal) and a button (Sketch on this face) and
+    // moves what's below them, so a click aimed before it lands can miss.
     select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
     row_until(&mut h, "Made by", "Block");
     h.get_by_role_and_label(Role::Pane, "Properties")
         .get_by_role_and_label(Role::Link, "Block")
@@ -28028,7 +28031,7 @@ fn made_by_selects_its_feature_edit_opens_its_dialog_and_fillet_starts_with_the_
     });
     // Edit Block: the box's dialog, as Edit Feature opens it.
     select_in_box(&mut h, &["Face6"]);
-    step(&mut h);
+    row_until(&mut h, "Area", "800.00 mm²");
     h.get_by_role_and_label(Role::Pane, "Properties")
         .get_by_role_and_label(Role::Button, "Edit Block")
         .click();
@@ -28044,7 +28047,7 @@ fn made_by_selects_its_feature_edit_opens_its_dialog_and_fillet_starts_with_the_
     // Fillet, with Edge12 selected: the fillet's dialog, its edges box holding Edge12, as the
     // toolbar's Fillet takes the selection.
     select_in_box(&mut h, &["Edge12"]);
-    step(&mut h);
+    row_until(&mut h, "Length", "40.00 mm");
     h.get_by_role_and_label(Role::Pane, "Properties")
         .get_by_role_and_label(Role::Button, "Fillet")
         .click();
@@ -33061,12 +33064,14 @@ fn suppress_then_unsuppress_writes_and_drops_suppressed_and_undo_restores_each_t
     });
     settled(&mut h);
     assert_eq!(text_of(&f, &h), EXAMPLE_PIN_SUPPRESSED);
-    step_until(&mut h, "both shown suppressed", |h| {
+    // The block stands, as it was (warned of only for the fingerprint EXAMPLE doesn't store),
+    // once the rebuild the timeline's read starts in the transaction reaches it: until then
+    // it's queued.
+    step_until(&mut h, "both shown suppressed, the block as it was", |h| {
         item_said(h, "Pin").as_deref() == Some("Cylinder · Suppressed")
             && item_said(h, "Hole").as_deref() == Some("Subtract · Suppressed")
+            && item_said(h, "Block").as_deref() == Some("Box · Warning")
     });
-    // The block stands, as it was (warned of only for the fingerprint EXAMPLE doesn't store).
-    assert_eq!(item_said(&h, "Block").as_deref(), Some("Box · Warning"));
     // The hole unsuppressed: its tool, which it needs, comes back with it.
     menu_on(&mut h, "Timeline", "Hole");
     assert_eq!(menu_items(&h, "HOLE")[2], ("Unsuppress".to_owned(), None));
