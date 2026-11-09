@@ -226,7 +226,7 @@ fn a_cancel_naming_the_call_by_another_spelling_of_its_id_cancels_it() {
 
 /// The refusal a call past the bound gets, as the note words it.
 fn past_the_bound() -> Value {
-    json!({"ok": false, "session": null, "model": null, "errors": [{"code": "invalid_input", "message": "64 calls are already running in this server, the most it runs at once", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": "wait for one to answer, or cancel one, and call again", "candidates": [], "advice": null}], "total": 1})
+    json!({"ok": false, "session": null, "model": null, "errors": [{"code": "invalid_input", "message": "64 calls are already running in this server, the most it runs at once", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": "wait for one to answer, or cancel one, and call again", "candidates": [], "ranking": [], "advice": null}], "total": 1})
 }
 
 #[test]

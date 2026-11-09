@@ -28,7 +28,7 @@ use silico_core::cache::Cache;
 use silico_core::command::{self, CheckModel, Problems, Response, SessionId, Sessions, Warnings};
 use silico_core::file::opened_and_read;
 use silico_core::pool::KernelPool;
-use silico_core::{Error, ErrorCode, Said};
+use silico_core::{Error, ErrorCode, Rank, Said};
 
 /// A line on stderr (the workspace forbids `eprintln!`, which panics if stderr is closed).
 macro_rules! say {
@@ -861,7 +861,44 @@ struct LineError<'a> {
     feature: Option<&'a str>,
     message: &'a str,
     parameter: Option<&'a str>,
+    ranking: Vec<LineRank<'a>>,
     suggestion: Option<&'a str>,
+}
+
+/// Why a candidate is where it is ([`Rank`]), as a line holds it: its keys sorted.
+#[derive(Serialize)]
+struct LineRank<'a> {
+    nearest: Option<LineNearest<'a>>,
+    same_feature: bool,
+    shared: &'a [String],
+    unshared: &'a [String],
+}
+
+/// A rank's nearest element, as a line holds it: its keys sorted.
+#[derive(Serialize)]
+struct LineNearest<'a> {
+    element: &'a str,
+    gap: u64,
+}
+
+impl<'a> LineRank<'a> {
+    fn of(rank: &'a Rank) -> Self {
+        let Rank {
+            shared,
+            unshared,
+            same_feature,
+            nearest,
+        } = rank;
+        LineRank {
+            nearest: nearest.as_ref().map(|nearest| LineNearest {
+                element: &nearest.element,
+                gap: nearest.gap,
+            }),
+            same_feature: *same_feature,
+            shared,
+            unshared,
+        }
+    }
 }
 
 impl<'a> LineError<'a> {
@@ -883,6 +920,7 @@ impl<'a> LineError<'a> {
             cause,
             suggestion,
             candidates,
+            ranking,
             advice,
         } = said;
         LineError {
@@ -895,6 +933,7 @@ impl<'a> LineError<'a> {
             feature,
             message,
             parameter,
+            ranking: ranking.iter().map(LineRank::of).collect(),
             suggestion,
         }
     }
@@ -1433,7 +1472,18 @@ mod tests {
             .with_parameter("edges")
             .with_cause("c")
             .with_suggestion("s")
-            .with_candidates(["Edge3"])
+            .with_ranked([(
+                "Edge3",
+                silico_core::Rank {
+                    shared: vec!["Face1".to_owned()],
+                    unshared: vec!["Face2".to_owned()],
+                    same_feature: true,
+                    nearest: Some(silico_core::Nearest {
+                        element: "Edge3".to_owned(),
+                        gap: 1,
+                    }),
+                },
+            )])
     }
 
     #[test]
@@ -1487,13 +1537,15 @@ mod tests {
                 r#"{"file":"a b.silico","ok":false,"problems":["#,
                 r#"{"advice":null,"candidates":["Edge3"],"cause":"c","code":"reference_broken","#,
                 r#""elements":["Edge1","Edge2"],"elements_total":5,"feature":"k7f2qx3m","#,
-                r#""message":"m \"q\"","parameter":"edges","suggestion":"s"},"#,
+                r#""message":"m \"q\"","parameter":"edges","ranking":[{"nearest":{"element":"Edge3","#,
+                r#""gap":1},"same_feature":true,"shared":["Face1"],"unshared":["Face2"]}],"#,
+                r#""suggestion":"s"},"#,
                 r#"{"advice":null,"candidates":[],"cause":null,"code":"invalid_input","elements":[],"#,
                 r#""elements_total":0,"feature":null,"message":"n","parameter":null,"#,
-                r#""suggestion":null}],"total":7,"warnings":["#,
+                r#""ranking":[],"suggestion":null}],"total":7,"warnings":["#,
                 r#"{"advice":null,"candidates":[],"cause":"w","code":"ends_not_joined","#,
                 r#""elements":["pa000001","pa000002"],"elements_total":3,"feature":"s0000001","#,
-                r#""message":"apart","parameter":null,"suggestion":"join"}],"#,
+                r#""message":"apart","parameter":null,"ranking":[],"suggestion":"join"}],"#,
                 r#""warnings_total":1}"#,
             )
         );
@@ -1519,14 +1571,16 @@ mod tests {
             concat!(
                 r#"{"error":{"advice":null,"candidates":["Edge3"],"cause":"c","code":"reference_broken","#,
                 r#""elements":["Edge1","Edge2"],"elements_total":5,"feature":"k7f2qx3m","#,
-                r#""message":"m \"q\"","parameter":"edges","suggestion":"s"},"#,
+                r#""message":"m \"q\"","parameter":"edges","ranking":[{"nearest":{"element":"Edge3","#,
+                r#""gap":1},"same_feature":true,"shared":["Face1"],"unshared":["Face2"]}],"#,
+                r#""suggestion":"s"},"#,
                 r#""file":"m.silico","ok":false,"problems":["#,
                 r#"{"advice":null,"candidates":[],"cause":null,"code":"drift","elements":[],"#,
                 r#""elements_total":0,"feature":"m0000002","message":"d","parameter":null,"#,
-                r#""suggestion":null}],"total":4,"warnings":["#,
+                r#""ranking":[],"suggestion":null}],"total":4,"warnings":["#,
                 r#"{"advice":null,"candidates":[],"cause":"w","code":"ends_not_joined","#,
                 r#""elements":["pa000001","pa000002"],"elements_total":3,"feature":"s0000001","#,
-                r#""message":"apart","parameter":null,"suggestion":"join"}],"#,
+                r#""message":"apart","parameter":null,"ranking":[],"suggestion":"join"}],"#,
                 r#""warnings_total":1}"#,
             )
         );
@@ -1557,8 +1611,8 @@ mod tests {
         };
         let invalid = Error::new(ErrorCode::InvalidInput, "bad");
         let io = Error::new(ErrorCode::IoFailed, "gone");
-        let bad = r#"{"advice":null,"candidates":[],"cause":null,"code":"invalid_input","elements":[],"elements_total":0,"feature":null,"message":"bad","parameter":null,"suggestion":null}"#;
-        let gone = r#"{"advice":null,"candidates":[],"cause":null,"code":"io_failed","elements":[],"elements_total":0,"feature":null,"message":"gone","parameter":null,"suggestion":null}"#;
+        let bad = r#"{"advice":null,"candidates":[],"cause":null,"code":"invalid_input","elements":[],"elements_total":0,"feature":null,"message":"bad","parameter":null,"ranking":[],"suggestion":null}"#;
+        let gone = r#"{"advice":null,"candidates":[],"cause":null,"code":"io_failed","elements":[],"elements_total":0,"feature":null,"message":"gone","parameter":null,"ranking":[],"suggestion":null}"#;
         // Three reasons, two listed, the second the one that stopped it.
         let refusal = Refusal::of(vec![invalid.clone(), io.clone()], 3, false);
         assert_eq!(
@@ -1609,7 +1663,7 @@ mod tests {
         let core = keys(serde_json::to_string(&error).unwrap());
         let line = keys(serde_json::to_string(&LineError::new(&error)).unwrap());
         assert_eq!(line, core);
-        assert_eq!(core.len(), 10);
+        assert_eq!(core.len(), 11);
         // And each value as the core writes it.
         let core: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&error).unwrap()).unwrap();

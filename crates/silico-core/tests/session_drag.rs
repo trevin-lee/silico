@@ -1455,7 +1455,14 @@ fn each_drag_snapshot_has_the_names_an_agent_reads() {
             "DragEndRequest",
             &["Coordinate"],
             "DragEndResult",
-            &["CommitResult", "Error", "FeatureId", "Kept"],
+            &[
+                "CommitResult",
+                "Error",
+                "FeatureId",
+                "Kept",
+                "Nearest",
+                "Rank",
+            ],
         ),
     ] {
         let (req, res) = (schema_of(of, "request"), schema_of(of, "result"));

@@ -304,7 +304,7 @@ fn read<'a>(
                 .entry((feature, element.kind))
                 .or_insert_with(|| Candidates::of(&[map], element.kind))
                 .of_name(&name);
-            refused(&at, text, &unstable(element.kind), element.kind, candidates)
+            refused(&at, text, &unstable(element.kind), element.kind).with_ranked(candidates)
         };
         let stored = match (map.is_unstable(&name), carry) {
             (false, _) => Ok(Arc::clone(&name)),
@@ -580,6 +580,20 @@ mod tests {
         assert_eq!(
             refreshed.gone[1].why.errors()[0].candidates(),
             ["c0000001.cut.Edge(I b0000001.box.Edge3)"]
+        );
+        // Each ranked by the names alone: the piece is made from the gone name's one
+        // element, the whole of it shared, nothing unshared, and it's the cut's, not the
+        // box's.
+        let rank = |shared: &str| crate::Rank {
+            shared: vec![shared.to_owned()],
+            unshared: Vec::new(),
+            same_feature: false,
+            nearest: None,
+        };
+        assert_eq!(face.ranking(), [rank("b0000001.box.Face2")]);
+        assert_eq!(
+            refreshed.gone[1].why.errors()[0].ranking(),
+            [rank("b0000001.box.Edge3")]
         );
         // Worded for a model, which has no place in a timeline as a document's reference
         // does ("before this one").

@@ -46,6 +46,8 @@ mod adversarial_step_export;
 mod adversarial_sweep_recompute;
 #[path = "adversarial_sweep_refusals.rs"]
 mod adversarial_sweep_refusals;
+#[path = "candidate_ranking.rs"]
+mod candidate_ranking;
 #[path = "distance_request.rs"]
 mod distance_request;
 #[path = "error.rs"]

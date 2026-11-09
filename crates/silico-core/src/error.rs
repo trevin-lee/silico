@@ -5,9 +5,9 @@
 //! underlying cause, a suggestion, and candidate fixes.
 //!
 //! The JSON form is the contract with agents (tests/contract/): every field is always
-//! present, `null` when absent and `[]` for no elements or candidates, so there's one shape
-//! to parse. `elements_total` is how many elements are at fault, `0` for none: more than
-//! `elements` lists only when the list is cut short.
+//! present, `null` when absent and `[]` for no elements, candidates, or ranking, so there's
+//! one shape to parse. `elements_total` is how many elements are at fault, `0` for none:
+//! more than `elements` lists only when the list is cut short.
 //!
 //! The elements are the named feature's, with one rule: a pad's, pocket's, revolve's, or
 //! groove's refusal for its sketch (no profile, several regions, an axis across it, a slit
@@ -196,6 +196,11 @@ struct Fields<C> {
     cause: Option<String>,
     suggestion: Option<String>,
     candidates: Vec<String>,
+    /// Why each candidate is where it is among them, one a candidate, in their order; or
+    /// none, where the candidates follow another rule, which the suggestion states. Set
+    /// only with the candidates ([`Error::with_ranked`]), so it's empty or as long as they
+    /// are.
+    ranking: Vec<Rank>,
     /// What a kernel worker said, as data, that this error was worded from (a measure's
     /// refusal): never written out, and no part of what the error is (two errors are equal
     /// by what they say), but kept by the rebuild cache, so the core that reads it back
@@ -232,6 +237,7 @@ impl<C: PartialEq> PartialEq for Fields<C> {
             cause,
             suggestion,
             candidates,
+            ranking,
             worker: _,
             advice,
         } = self;
@@ -246,6 +252,7 @@ impl<C: PartialEq> PartialEq for Fields<C> {
             cause,
             suggestion,
             candidates,
+            ranking,
             word(advice),
         ) == (
             &other.code,
@@ -257,6 +264,7 @@ impl<C: PartialEq> PartialEq for Fields<C> {
             &other.cause,
             &other.suggestion,
             &other.candidates,
+            &other.ranking,
             word(&other.advice),
         )
     }
@@ -277,6 +285,7 @@ impl<C> Fields<C> {
             cause: None,
             suggestion: None,
             candidates: Vec::new(),
+            ranking: Vec::new(),
             worker: None,
             advice: None,
         }
@@ -303,6 +312,7 @@ impl<C: Copy> Fields<C> {
             cause,
             suggestion,
             candidates,
+            ranking,
             // What it was worded from, never written out.
             worker: _,
             advice,
@@ -317,6 +327,7 @@ impl<C: Copy> Fields<C> {
             cause: cause.as_deref(),
             suggestion: suggestion.as_deref(),
             candidates,
+            ranking,
             advice: advice.as_deref().and_then(Advice::word),
         }
     }
@@ -339,10 +350,42 @@ pub struct Said<'a> {
     pub cause: Option<&'a str>,
     pub suggestion: Option<&'a str>,
     pub candidates: &'a [String],
+    /// Why each candidate is where it is ([`Rank`]): empty, or one a candidate.
+    pub ranking: &'a [Rank],
     /// What the suggestion advises, as data, for a worker's fault: `change_the_values`,
     /// `simplify_or_wait`, `try_again`, or `try_once_more`; none for any other error, a
     /// fault whose advice is its words alone, and every warning.
     pub advice: Option<&'static str>,
+}
+
+/// Why a broken name's candidate is where it is among them (an error's `ranking`, one a
+/// candidate, in their order: docs/design/m4.1-command-api.md, section 2), as data for a
+/// client to word. Read off the two names: the elements they're both made from, those of
+/// the broken name's the candidate isn't made from, whether the candidate is the broken
+/// name's own feature's, and, where no element shares any of what the broken name is made
+/// from, the candidate's element numbered nearest it. The candidates' order follows from
+/// these: more `shared` first, then the broken name's own feature's, then by name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Rank {
+    /// The elements both names are made from, by their own names (a sketch's by its ID),
+    /// whole, in the names' order.
+    pub shared: Vec<String>,
+    /// The broken name's other elements, in the names' order: with `shared`, every element
+    /// the broken name is made from.
+    pub unshared: Vec<String>,
+    /// Whether the candidate is an element of the broken name's own feature.
+    pub same_feature: bool,
+    /// For a name by number that finds nothing and shares nothing with any element, the
+    /// candidate's element numbered nearest it, and how far: none otherwise.
+    pub nearest: Option<Nearest>,
+}
+
+/// A candidate's element numbered nearest a broken name by number (`k7f2qx3m.box.Face6` for
+/// `k7f2qx3m.box.Face7`), and how many numbers apart they are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Nearest {
+    pub element: String,
+    pub gap: u64,
 }
 
 /// A kernel worker's failure, as data, and the operation it was for, from which the core
@@ -482,7 +525,8 @@ impl Error {
         self.0.advice.as_deref()
     }
 
-    /// Candidate fixes, such as the elements a broken reference might have meant.
+    /// Candidate fixes, such as the elements a broken reference might have meant, with no
+    /// ranking: they follow a rule of their own, which the suggestion states.
     #[must_use]
     pub fn with_candidates<I, S>(mut self, candidates: I) -> Self
     where
@@ -490,6 +534,22 @@ impl Error {
         S: Into<String>,
     {
         self.0.candidates = candidates.into_iter().map(Into::into).collect();
+        self.0.ranking = Vec::new();
+        self
+    }
+
+    /// Candidates, each with why it's where it is among them ([`Rank`]): the candidates and
+    /// the ranking set together, so the ranking is one a candidate, in their order.
+    #[must_use]
+    pub fn with_ranked<I, S>(mut self, ranked: I) -> Self
+    where
+        I: IntoIterator<Item = (S, Rank)>,
+        S: Into<String>,
+    {
+        (self.0.candidates, self.0.ranking) = ranked
+            .into_iter()
+            .map(|(candidate, rank)| (candidate.into(), rank))
+            .unzip();
         self
     }
 
@@ -549,6 +609,11 @@ impl Error {
 
     pub fn candidates(&self) -> &[String] {
         &self.0.candidates
+    }
+
+    /// Why each candidate is where it is: one a candidate, or none.
+    pub fn ranking(&self) -> &[Rank] {
+        &self.0.ranking
     }
 
     /// Whether the worker's advice says the request's values crashed it, and the same request
@@ -746,8 +811,8 @@ impl Warning {
         self.0.suggestion.as_deref()
     }
 
-    /// What it says, every field the error contract writes (its candidates none: nothing's
-    /// broken for it to have meant).
+    /// What it says, every field the error contract writes (its candidates and ranking none:
+    /// nothing's broken for it to have meant).
     pub fn said(&self) -> Said<'_> {
         self.0.said(WarningCode::as_str)
     }

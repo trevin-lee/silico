@@ -13,6 +13,7 @@
         "feature": "k7f2qx3m",
         "message": "box length must be a length above 1e-7 mm and at most 1e6 mm (a kilometre), got 0",
         "parameter": "length",
+        "ranking": [],
         "suggestion": "give the box a valid length"
       }
     ],
@@ -31,6 +32,7 @@
       "feature": null,
       "message": "couldn't be read: No such file or directory (os error 2)",
       "parameter": null,
+      "ranking": [],
       "suggestion": "check the file's name, and that it's a regular file this user may read"
     },
     "file": "missing.silico",

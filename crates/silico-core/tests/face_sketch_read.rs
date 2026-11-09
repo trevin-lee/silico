@@ -164,6 +164,7 @@ fn error(
         "cause": null,
         "suggestion": suggestion,
         "candidates": candidates,
+        "ranking": [],
         "advice": null,
     })
 }
@@ -171,7 +172,7 @@ fn error(
 /// The refusal of s0000001's face, `b0000001.box.Face7`, which names nothing: its nearest by
 /// number, Face6, the candidate (`face_plane.rs`'s wording).
 fn face7_broken() -> Value {
-    error(
+    let broken = error(
         "reference_broken",
         "plane.face, \"b0000001.box.Face7\", names no face of the solids live at the sketch's place: it isn't one of the faces they're made from, or an edit before this sketch removed or remade it",
         "s0000001",
@@ -179,7 +180,12 @@ fn face7_broken() -> Value {
         Some("plane.face"),
         "name the face as its feature now names it: the candidates are the likeliest, none taken for it",
         &["b0000001.box.Face6"],
-    )
+    );
+    // Face6's rank, from the names: Face7 shares nothing with any face, and Face6, the
+    // box's own, is numbered 1 from it.
+    let mut broken = broken;
+    broken["ranking"] = json!([{"shared": [], "unshared": ["b0000001.box.Face7"], "same_feature": true, "nearest": {"element": "b0000001.box.Face6", "gap": 1}}]);
+    broken
 }
 
 const XY_FRAME: &str =
@@ -374,6 +380,7 @@ fn a_face_sketch_whose_faces_description_crashed_the_worker_reads_with_the_fault
                 "cause": "it was killed by signal 9",
                 "suggestion": "restart the worker; then check with fresh to try it again",
                 "candidates": [],
+                "ranking": [],
                 "advice": null,
             }),
             "{sketch}: {text}"
@@ -674,6 +681,7 @@ fn a_face_sketch_whose_faces_solid_couldnt_be_described_reads_the_fault_as_the_s
             "cause": null,
             "suggestion": suggestion,
             "candidates": [],
+            "ranking": [],
             "advice": null,
         }),
         "{read}"

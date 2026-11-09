@@ -386,6 +386,7 @@ mod tests {
             "cause": "it was killed by signal 9",
             "suggestion": "check with fresh to try it once more: the worker was slow to start",
             "candidates": [],
+            "ranking": [],
             "advice": "try_once_more",
         });
         for sketch in ["s0000001", "s0000002"] {

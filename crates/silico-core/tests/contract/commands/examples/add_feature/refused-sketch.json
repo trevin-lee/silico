@@ -1,1 +1,1 @@
-{"code": "invalid_input", "message": "sketch s0000003 isn't the ID of any feature", "feature": "q7m2x9kd", "elements": [], "elements_total": 0, "parameter": "sketch", "cause": null, "suggestion": "use the ID of a sketch before this feature", "candidates": [], "advice": null}
+{"code": "invalid_input", "message": "sketch s0000003 isn't the ID of any feature", "feature": "q7m2x9kd", "elements": [], "elements_total": 0, "parameter": "sketch", "cause": null, "suggestion": "use the ID of a sketch before this feature", "candidates": [], "ranking": [], "advice": null}

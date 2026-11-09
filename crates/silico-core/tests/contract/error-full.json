@@ -14,5 +14,33 @@
     "Edge2",
     "Edge4"
   ],
+  "ranking": [
+    {
+      "shared": [
+        "Face1"
+      ],
+      "unshared": [
+        "Face4"
+      ],
+      "same_feature": true,
+      "nearest": {
+        "element": "Edge2",
+        "gap": 1
+      }
+    },
+    {
+      "shared": [
+        "Face4"
+      ],
+      "unshared": [
+        "Face1"
+      ],
+      "same_feature": false,
+      "nearest": {
+        "element": "Edge4",
+        "gap": 1
+      }
+    }
+  ],
   "advice": null
 }

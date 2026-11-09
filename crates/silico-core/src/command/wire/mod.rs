@@ -57,7 +57,7 @@ use crate::document::{
     NumberError, PROBLEMS_LISTED, Position, Sketch,
 };
 use crate::warnings::Warnings;
-use crate::{Error, ErrorCode, Said, Warning, WarningCode};
+use crate::{Error, ErrorCode, Rank, Said, Warning, WarningCode};
 
 pub use crate::document::write::{Layout, TooLong};
 
@@ -502,6 +502,7 @@ fn said_as<'a>(said: Said<'a>, suggestion: Json<'a>) -> Json<'a> {
         cause,
         suggestion: _,
         candidates,
+        ranking,
         advice,
     } = said;
     Json::object([
@@ -520,7 +521,32 @@ fn said_as<'a>(said: Said<'a>, suggestion: Json<'a>) -> Json<'a> {
             "candidates",
             Json::array(candidates.iter().map(|c| Json::str(c))),
         ),
+        ("ranking", Json::array(ranking.iter().map(rank))),
         ("advice", Json::or_null(advice, Json::str)),
+    ])
+}
+
+/// Names, as a list of strings.
+fn names(names: &[String]) -> Json<'_> {
+    Json::array(names.iter().map(|n| Json::str(n)))
+}
+
+/// Why a candidate is where it is, in the error contract's shape: `shared`, `unshared`,
+/// `same_feature`, and `nearest` (`{"element", "gap"}`, or null).
+fn rank(rank: &Rank) -> Json<'_> {
+    Json::object([
+        ("shared", names(&rank.shared)),
+        ("unshared", names(&rank.unshared)),
+        ("same_feature", Json::bool(rank.same_feature)),
+        (
+            "nearest",
+            Json::or_null(rank.nearest.as_ref(), |nearest| {
+                Json::object([
+                    ("element", Json::str(&nearest.element)),
+                    ("gap", Json::whole(nearest.gap)),
+                ])
+            }),
+        ),
     ])
 }
 
@@ -1673,6 +1699,12 @@ pub struct ErrorSchema {
     pub suggestion: Option<String>,
     /// What might have been meant, such as the names nearest one that found nothing.
     pub candidates: Vec<String>,
+    /// Why each candidate is where it is, one a candidate, in their order: what it's made
+    /// from that the broken name is (`shared`), what of the broken name it isn't
+    /// (`unshared`), whether it's the name's own feature's, and, for a name by number that
+    /// finds nothing, the nearest number and its gap. Empty where the candidates follow
+    /// another rule, which the suggestion states.
+    pub ranking: Vec<RankSchema>,
     /// What the suggestion advises, as data, for a kernel fault whose worker said:
     /// `change_the_values` (the request's values crashed the worker, and would again: change
     /// them, never retry as is), `simplify_or_wait` (it ran past its time: simplify the
@@ -1682,6 +1714,35 @@ pub struct ErrorSchema {
     /// suggestion's words alone.
     #[schemars(schema_with = "advice_schema")]
     pub advice: Option<String>,
+}
+
+/// Why a candidate for a broken name is where it is among them. The candidates' order
+/// follows from it: more `shared` first, then `same_feature`, then by name.
+#[derive(JsonSchema)]
+#[schemars(rename = "Rank", transform = wire_shape)]
+pub struct RankSchema {
+    /// The elements both the candidate's name and the broken one are made from, by their
+    /// own names (a sketch's element by its ID), whole, in the names' order.
+    pub shared: Vec<String>,
+    /// The broken name's other elements, in the names' order: with `shared`, every element
+    /// the broken name is made from.
+    pub unshared: Vec<String>,
+    /// Whether the candidate is an element of the broken name's own feature.
+    pub same_feature: bool,
+    /// For a name by number that finds nothing and shares nothing with any element, the
+    /// candidate's element numbered nearest it, and how far; null otherwise.
+    pub nearest: Option<NearestSchema>,
+}
+
+/// A candidate's element numbered nearest a broken name by number.
+#[derive(JsonSchema)]
+#[schemars(rename = "Nearest", transform = wire_shape)]
+pub struct NearestSchema {
+    /// The element, by its own name (`k7f2qx3m.box.Face6`).
+    pub element: String,
+    /// How many numbers apart it and the broken name are.
+    #[schemars(range(min = 1))]
+    pub gap: u64,
 }
 
 /// An error's or a warning's `advice`: one of the worker's advice's words, in their order
@@ -1730,6 +1791,9 @@ pub struct WarningSchema {
     pub suggestion: Option<String>,
     /// What might have been meant, if anything.
     pub candidates: Vec<String>,
+    /// Why each candidate is where it is, as an error's `ranking`: empty where there are
+    /// none.
+    pub ranking: Vec<RankSchema>,
     /// Null: a warning is never a worker's fault, so it advises nothing as data, where an
     /// error's `advice` may.
     #[schemars(schema_with = "no_advice_schema")]

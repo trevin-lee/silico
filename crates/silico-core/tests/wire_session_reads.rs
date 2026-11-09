@@ -1237,7 +1237,7 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
             "OpenRequest",
             &[],
             "OpenResult",
-            &["Error", "FeatureId"],
+            &["Error", "FeatureId", "Nearest", "Rank"],
         ),
         ("close", "CloseRequest", &[], "CloseResult", &[]),
         (
@@ -1274,7 +1274,7 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
             "CheckRequest",
             &["ModelChoice"],
             "CheckResult",
-            &["Error", "Warning"],
+            &["Error", "Nearest", "Rank", "Warning"],
         ),
     ] {
         let value = snapshot_value(of).unwrap();

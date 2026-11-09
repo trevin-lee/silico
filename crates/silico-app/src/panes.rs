@@ -3770,7 +3770,7 @@ mod property_panel_drawn {
 
     /// [`broken`] as the command API writes it, typed by hand from the error contract
     /// (`tests/contract/error-full.json`'s fields, in its order), on one line as MCP sends it.
-    const BROKEN_JSON: &str = r#"{"code": "reference_broken", "message": "An edge the fillet names is gone", "feature": "c0000001", "elements": ["Edge3", "Edge5"], "elements_total": 5, "parameter": "edges", "cause": "Edge3 and Edge5 aren't in its base", "suggestion": "Pick the edges again", "candidates": ["Edge2", "Edge4"], "advice": null}"#;
+    const BROKEN_JSON: &str = r#"{"code": "reference_broken", "message": "An edge the fillet names is gone", "feature": "c0000001", "elements": ["Edge3", "Edge5"], "elements_total": 5, "parameter": "edges", "cause": "Edge3 and Edge5 aren't in its base", "suggestion": "Pick the edges again", "candidates": ["Edge2", "Edge4"], "ranking": [], "advice": null}"#;
 
     /// [`part`] with Hole selected, its card [`broken`]'s.
     fn broken_hole() -> Tab {
@@ -3865,7 +3865,7 @@ mod property_panel_drawn {
         assert_eq!(
             said.json().as_deref(),
             Some(
-                r#"{"code": "fingerprint_missing", "message": "Hole stores no fingerprint", "feature": "c0000001", "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": null, "candidates": [], "advice": null}"#
+                r#"{"code": "fingerprint_missing", "message": "Hole stores no fingerprint", "feature": "c0000001", "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": null, "candidates": [], "ranking": [], "advice": null}"#
             )
         );
         // A refusal said in words alone has none to copy.

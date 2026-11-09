@@ -1,1 +1,1 @@
-{"code": "invalid_input", "message": "16 sessions are open, the most one process holds", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": "close a session you're done with, then open this one", "candidates": [], "advice": null}
+{"code": "invalid_input", "message": "16 sessions are open, the most one process holds", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": "close a session you're done with, then open this one", "candidates": [], "ranking": [], "advice": null}

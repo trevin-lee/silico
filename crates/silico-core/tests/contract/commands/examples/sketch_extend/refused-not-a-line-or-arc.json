@@ -1,1 +1,1 @@
-{"code": "invalid_input", "message": "circle cb000001 can't be extended: only a line or an arc can", "feature": "s0000002", "elements": ["cb000001"], "elements_total": 1, "parameter": "curve", "cause": null, "suggestion": "name a line or an arc", "candidates": [], "advice": null}
+{"code": "invalid_input", "message": "circle cb000001 can't be extended: only a line or an arc can", "feature": "s0000002", "elements": ["cb000001"], "elements_total": 1, "parameter": "curve", "cause": null, "suggestion": "name a line or an arc", "candidates": [], "ranking": [], "advice": null}

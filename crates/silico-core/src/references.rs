@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::document::{ElementName, FeatureId, PROBLEMS_LISTED};
 use crate::kernel::{ElementKind, ElementRef};
 use crate::naming::{ElementMap, Maker, Name, OpCode, TypeWord};
-use crate::{Error, ErrorCode};
+use crate::{Error, ErrorCode, Nearest, Rank};
 
 /// A feature's broken references: the first [`PROBLEMS_LISTED`], each its
 /// `reference_broken` error, and how many there are, listed or not; or, in their place, a
@@ -200,8 +200,8 @@ pub(crate) fn resolve(
                 edge.as_str(),
                 &why,
                 ElementKind::Edge,
-                candidates,
             )
+            .with_ranked(candidates)
             .with_feature(feature.as_str()),
         );
     }
@@ -228,15 +228,10 @@ pub(crate) fn unstable(kind: ElementKind) -> String {
 }
 
 /// A stored reference's refusal of the name `text`, at `parameter` (`edges.0`): a
-/// `reference_broken` error saying `why`, with `candidates` for it, none taken, and the
-/// advice to name the element, of `kind`, as its feature now names it.
-pub(crate) fn refused(
-    parameter: &str,
-    text: &str,
-    why: &str,
-    kind: ElementKind,
-    candidates: Vec<String>,
-) -> Error {
+/// `reference_broken` error saying `why`, and the advice to name the element, of `kind`, as
+/// its feature now names it, none of the candidates taken. The caller gives the candidates:
+/// ranked ([`Candidates::of_name`], [`Error::with_ranked`]), or by a rule of their own.
+pub(crate) fn refused(parameter: &str, text: &str, why: &str, kind: ElementKind) -> Error {
     Error::new(
         ErrorCode::ReferenceBroken,
         format!("{parameter}, {}, {why}", crate::document::json::shown(text)),
@@ -245,7 +240,6 @@ pub(crate) fn refused(
     // As written, cut short as the message is: a name can be long, and the parameter says
     // where it is in full.
     .with_element(cut_short(text))
-    .with_candidates(candidates)
     .with_suggestion(format!(
         "name the {} as its feature now names it: the candidates are the likeliest, none \
          taken for it",
@@ -267,11 +261,24 @@ impl Candidates {
         }
     }
 
-    /// The elements a broken `name` most likely meant, as one list: those whose names share
-    /// the most of what it's made from, then those of `name`'s own feature, then by name;
-    /// or, if none shares any, each map's nearest by number ([`Index::nearest`]), by name;
-    /// at most [`CANDIDATES`].
-    pub(crate) fn of_name(&self, name: &Name) -> Vec<String> {
+    /// The elements a broken `name` most likely meant, as one list, each with why it's
+    /// where it is ([`Rank`]): those whose names share the most of what it's made from,
+    /// then those of `name`'s own feature, then by name; or, if none shares any, each map's
+    /// nearest by number ([`Index::nearest`]), by name (those of `name`'s own feature
+    /// first, as its elements' names sort first); at most [`CANDIDATES`].
+    pub(crate) fn of_name(&self, name: &Name) -> Vec<(String, Rank)> {
+        let own = leaves(name);
+        let rank = |named: &Name, nearest: Option<Nearest>| {
+            let theirs = leaves(named);
+            let (shared, unshared): (Vec<&Name>, Vec<&Name>) =
+                own.iter().partition(|leaf| theirs.contains(*leaf));
+            Rank {
+                shared: shared.into_iter().map(ToString::to_string).collect(),
+                unshared: unshared.into_iter().map(ToString::to_string).collect(),
+                same_feature: named.feature() == name.feature(),
+                nearest,
+            }
+        };
         let mut scored: Vec<(usize, bool, &Arc<Name>)> = self
             .indexes
             .iter()
@@ -279,14 +286,20 @@ impl Candidates {
             .map(|(count, named)| (count, named.feature() != name.feature(), named))
             .collect();
         if scored.is_empty() {
-            let mut nearest: Vec<&Arc<Name>> =
+            let mut nearest: Vec<(&Arc<Name>, &Name, u32)> =
                 self.indexes.iter().flat_map(|i| i.nearest(name)).collect();
             nearest.sort();
-            nearest.dedup();
+            nearest.dedup_by(|a, b| a.0 == b.0);
             return nearest
                 .into_iter()
                 .take(CANDIDATES)
-                .map(ToString::to_string)
+                .map(|(named, leaf, gap)| {
+                    let nearest = Nearest {
+                        element: leaf.to_string(),
+                        gap: u64::from(gap),
+                    };
+                    (named.to_string(), rank(named, Some(nearest)))
+                })
                 .collect();
         }
         scored.sort_by(|a, b| {
@@ -298,7 +311,7 @@ impl Candidates {
         scored
             .into_iter()
             .take(CANDIDATES)
-            .map(|(_, _, named)| named.to_string())
+            .map(|(_, _, named)| (named.to_string(), rank(named, None)))
             .collect()
     }
 }
@@ -349,9 +362,10 @@ impl Index {
 
     /// For `name`, an element by its number that names nothing (`box.Face7`), the elements
     /// made from one of the same feature's own elements of its kind numbered nearest it
-    /// (`box.Face6`): each as its own name, by name, every one (its caller cuts the list). None
-    /// for any other name.
-    fn nearest(&self, name: &Name) -> Vec<&Arc<Name>> {
+    /// (`box.Face6`): each as its own name, with that element (the first by name, if it's
+    /// made from more than one so near) and how far it's numbered from `name`'s, by name,
+    /// every one (its caller cuts the list). None for any other name.
+    fn nearest(&self, name: &Name) -> Vec<(&Arc<Name>, &Name, u32)> {
         let Name::Element {
             feature,
             made,
@@ -373,14 +387,18 @@ impl Index {
         let Some(least) = self.by_leaf.keys().filter_map(gap).min() else {
             return Vec::new();
         };
-        let mut found: Vec<&Arc<Name>> = self
+        let mut found: Vec<(&Arc<Name>, &Name, u32)> = self
             .by_leaf
             .iter()
             .filter(|(leaf, _)| gap(leaf) == Some(least))
-            .flat_map(|(_, at)| at.iter().filter_map(|&at| self.names.get(at)))
+            .flat_map(|(leaf, at)| {
+                at.iter()
+                    .filter_map(|&at| self.names.get(at))
+                    .map(move |named| (named, leaf, least))
+            })
             .collect();
         found.sort();
-        found.dedup();
+        found.dedup_by(|a, b| a.0 == b.0);
         found
     }
 }
@@ -534,6 +552,44 @@ mod tests {
         format!("rrrrrrrr.fuse.Edge({})", sources.join(", "))
     }
 
+    /// The cube's faces `faces`, by name.
+    fn faces(faces: &[u32]) -> Vec<String> {
+        faces
+            .iter()
+            .map(|f| format!("aaaaaaaa.box.Face{f}"))
+            .collect()
+    }
+
+    /// A rank by rule (a): the cube's faces `shared` and `unshared`, and whether it's the
+    /// broken name's own feature's.
+    fn alike(shared: &[u32], unshared: &[u32], same_feature: bool) -> Rank {
+        Rank {
+            shared: faces(shared),
+            unshared: faces(unshared),
+            same_feature,
+            nearest: None,
+        }
+    }
+
+    /// A rank by rule (b): nothing shared, `broken` the broken name's one element, and the
+    /// candidate's element `element` numbered `gap` from it.
+    fn near(broken: &str, element: &str, gap: u64) -> Rank {
+        Rank {
+            shared: Vec::new(),
+            unshared: vec![broken.to_owned()],
+            same_feature: true,
+            nearest: Some(Nearest {
+                element: element.to_owned(),
+                gap,
+            }),
+        }
+    }
+
+    /// Each candidate's name and rank, as `of_name` gives them.
+    fn ranked(candidates: Vec<(String, Rank)>) -> (Vec<String>, Vec<Rank>) {
+        candidates.into_iter().unzip()
+    }
+
     #[test]
     fn candidates_of_several_maps_rank_the_most_alike_first_whichever_map_holds_them() {
         // The broken name is made from Face1, Face2, and Face3. The first map's edges share
@@ -544,9 +600,19 @@ mod tests {
         // name, puts them in it.
         let first = generated(&[&[1, 5], &[1, 4]]);
         let second = generated(&[&[2, 3]]);
+        // Each rank read off the names by hand: the broken name's Face1, Face2, and Face3,
+        // those the candidate is made from shared, the rest not; every candidate the fuse's,
+        // as the broken name is.
         assert_eq!(
-            Candidates::of(&[&first, &second], ElementKind::Edge).of_name(&broken),
-            [edge(&[2, 3]), edge(&[1, 4]), edge(&[1, 5])]
+            ranked(Candidates::of(&[&first, &second], ElementKind::Edge).of_name(&broken)),
+            (
+                vec![edge(&[2, 3]), edge(&[1, 4]), edge(&[1, 5])],
+                vec![
+                    alike(&[2, 3], &[1], true),
+                    alike(&[1], &[2, 3], true),
+                    alike(&[1], &[2, 3], true),
+                ]
+            )
         );
         // Seven alike: the first five by name, no more.
         let many = generated(&[
@@ -559,14 +625,23 @@ mod tests {
             &[1, 4],
         ]);
         assert_eq!(
-            Candidates::of(&[&many], ElementKind::Edge).of_name(&broken),
-            [
-                edge(&[1, 4]),
-                edge(&[1, 5]),
-                edge(&[1, 6]),
-                edge(&[2, 4]),
-                edge(&[2, 5]),
-            ]
+            ranked(Candidates::of(&[&many], ElementKind::Edge).of_name(&broken)),
+            (
+                vec![
+                    edge(&[1, 4]),
+                    edge(&[1, 5]),
+                    edge(&[1, 6]),
+                    edge(&[2, 4]),
+                    edge(&[2, 5]),
+                ],
+                vec![
+                    alike(&[1], &[2, 3], true),
+                    alike(&[1], &[2, 3], true),
+                    alike(&[1], &[2, 3], true),
+                    alike(&[2], &[1, 3], true),
+                    alike(&[2], &[1, 3], true),
+                ]
+            )
         );
     }
 
@@ -598,15 +673,30 @@ mod tests {
         // candidate is the one numbered nearest it, Edge12; Edge40 too. A face's name, its
         // kind another's, finds no edge near it.
         let map = cube("aaaaaaaa");
-        for broken in ["aaaaaaaa.box.Edge13", "aaaaaaaa.box.Edge40"] {
+        // Edge12 is 1 from Edge13 and 28 from Edge40, by hand; the broken name its one
+        // element, shared with nothing; Edge12 the box's own, as the broken name is.
+        for (broken, gap) in [("aaaaaaaa.box.Edge13", 1), ("aaaaaaaa.box.Edge40", 28)] {
             let errors = resolved(&map, &[broken]).unwrap_err();
             assert_eq!(errors[0].candidates(), ["aaaaaaaa.box.Edge12"], "{broken}");
+            assert_eq!(
+                errors[0].ranking(),
+                [near(broken, "aaaaaaaa.box.Edge12", gap)],
+                "{broken}"
+            );
+        }
+        // A box has six faces: Face7 is 1 from Face6, Face9 3.
+        for (broken, gap) in [("aaaaaaaa.box.Face7", 1), ("aaaaaaaa.box.Face9", 3)] {
+            let face = Name::parse(broken, &makers).unwrap();
+            assert_eq!(
+                ranked(Candidates::of(&[&map], ElementKind::Face).of_name(&face)),
+                (
+                    vec!["aaaaaaaa.box.Face6".to_owned()],
+                    vec![near(broken, "aaaaaaaa.box.Face6", gap)]
+                ),
+                "{broken}"
+            );
         }
         let face = Name::parse("aaaaaaaa.box.Face7", &makers).unwrap();
-        assert_eq!(
-            Candidates::of(&[&map], ElementKind::Face).of_name(&face),
-            ["aaaaaaaa.box.Face6"]
-        );
         assert!(
             Candidates::of(&[&map], ElementKind::Edge)
                 .of_name(&face)
@@ -649,6 +739,18 @@ mod tests {
                 edge(&[2, 3]),
             ]
         );
+        // Each read off the names: the first made from both of the broken name's faces, the
+        // rest from one, the other not.
+        assert_eq!(
+            errors[0].ranking(),
+            [
+                alike(&[1, 2], &[], true),
+                alike(&[1], &[2], true),
+                alike(&[1], &[2], true),
+                alike(&[1], &[2], true),
+                alike(&[2], &[1], true),
+            ]
+        );
     }
 
     #[test]
@@ -661,6 +763,10 @@ mod tests {
         let errors = resolved(&map, &[&edge(&[5, 6])]).unwrap_err();
         assert!(edge(&[1, 5]) < edge(&[1, 5, 6]));
         assert_eq!(errors[0].candidates(), [edge(&[1, 5, 6]), edge(&[1, 5])]);
+        assert_eq!(
+            errors[0].ranking(),
+            [alike(&[5, 6], &[], true), alike(&[5], &[6], true)]
+        );
     }
 
     #[test]
@@ -676,6 +782,11 @@ mod tests {
         let errors = resolved(&map, &[nested]).unwrap_err();
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].candidates(), [edge(&[1, 3]), edge(&[2, 4])]);
+        // Its elements all the way down, Face1, Face2, and Face3, never the face between.
+        assert_eq!(
+            errors[0].ranking(),
+            [alike(&[1, 3], &[2], true), alike(&[2], &[1, 3], true)]
+        );
     }
 
     #[test]
