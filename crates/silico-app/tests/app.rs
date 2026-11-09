@@ -33689,3 +33689,190 @@ fn question_mark_over_select_other_closes_it_and_the_sheets_filter_takes_the_typ
     step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn a_right_click_is_headed_by_the_pointers_hover_or_while_a_menu_holds_it_by_the_cast() {
+    use eframe::egui::{Event, Key, Modifiers, PointerButton};
+    use silico_app::renderer::Element::Face;
+    use silico_app::select_other::Phase;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    let head = |h: &AppHarness| select_other(h).context().unwrap().head.clone();
+    // The renderer's hover there the top (the fake's answer), though the cast's first is the
+    // top's edge (`BY_THE_RIGHT_EDGE`): headed by what a click there would select, the hover.
+    answering(&record, Some((1, Face(6), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the top hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    context_at(&mut h, at);
+    assert_eq!(head(&h).as_deref(), Some("Face6 · Face"));
+    // The list open, back from its first row round to its last, the bottom: the hover the
+    // list's row.
+    h.get_by_label("Select Other… 4 under the pointer").click();
+    step_until(&mut h, "the list", |h| {
+        select_other(h).phase() == Some(Phase::List)
+    });
+    // The pointer back at the click, off the list, so what's lit is the keys'.
+    h.hover_at(at);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(select_other(&h).lit(), Some(0));
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(hover_name(&h).as_deref(), Some("k7f2qx3m.box.Face5"));
+    // A right click there, pressed and let go in one frame (so no press closes the list
+    // before it): headed by the cast's first row that no face hides, of a kind the filters
+    // take, the top's edge, not by the row the list held.
+    let button = |pressed| Event::PointerButton {
+        pos: at,
+        button: PointerButton::Secondary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    h.input_mut().events.extend([button(true), button(false)]);
+    step(&mut h);
+    assert_eq!(select_other(&h).phase(), Some(Phase::Context));
+    assert_eq!(head(&h).as_deref(), Some("Edge11 · Edge"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_no_hover_the_context_menu_is_headed_by_the_casts_first_no_face_hides_the_filters_take() {
+    use eframe::egui::Key;
+    use silico_app::selection::Filter;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    // Nothing found for the hover there: what a click would select is the first of the cast's
+    // rows (`BY_THE_RIGHT_EDGE`: the top's edge, the top, and behind the top the bottom's edge
+    // and the bottom) that no face hides, of a kind the filters take.
+    answering(&record, None, None);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    h.hover_at(at);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(hover_name(&h), None);
+    let head = |h: &mut AppHarness, filter: Filter| {
+        h.state_mut().tabs_mut()[0].selection_mut().filter = filter;
+        step(h);
+        context_at(h, at);
+        let head = select_other(h).context().unwrap().head.clone();
+        h.key_press(Key::Escape);
+        step(h);
+        step(h);
+        assert!(!select_other(h).is_open());
+        head
+    };
+    let every = Filter {
+        faces: true,
+        edges: true,
+        vertices: true,
+    };
+    // Every kind: the top's edge.
+    assert_eq!(head(&mut h, every).as_deref(), Some("Edge11 · Edge"));
+    // No edges: the top, the bottom hidden behind it.
+    let no_edges = Filter {
+        edges: false,
+        ..every
+    };
+    assert_eq!(head(&mut h, no_edges).as_deref(), Some("Face6 · Face"));
+    // Vertices alone: none of the four, so over nothing.
+    let vertices = Filter {
+        faces: false,
+        edges: false,
+        vertices: true,
+    };
+    assert_eq!(head(&mut h, vertices), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn over_another_models_meshes_a_right_click_opens_at_once_its_boxes_unmade() {
+    use eframe::egui::Modifiers;
+    let f = fixture();
+    // No box ever made while the test runs, and the box made taller, its new meshes held: the
+    // model published, the view drawing the old one's.
+    let making = Arc::new(Making::default());
+    making.hold();
+    let (mut h, _record) = box_from_above_made(&f, Some(making.build()));
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    let (models, revision) = models_and_revision(&f, &h);
+    let session = h.state().tabs()[0].id;
+    f.sessions
+        .set_field(
+            &session,
+            revision,
+            silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+            "height".to_owned(),
+            json::read(b"12").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the new model", |h| {
+        h.state().tabs()[0].published_models != models
+    });
+    assert!(!meshes_current(&h));
+    // Nothing is cast on meshes of another model, so there's nothing to wait for: its menu
+    // opens at the click, saying so, though no box is made.
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    right_click(&mut h, at, at, Modifiers::NONE);
+    assert!(!select_other(&h).is_waiting());
+    assert!(select_other(&h).is_open());
+    let item = format!("Select Other… {}", silico_app::canvas_menu::UNREAD);
+    step_until(&mut h, "the context menu", |h| anywhere(h, &item));
+    assert!(select_other(&h).kept_meshes().is_empty());
+    hold.release();
+    making.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn select_other_casts_through_the_centre_of_its_clicks_pixel() {
+    use eframe::egui::vec2;
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    // The view moved a quarter of a pixel left (its eye and target 0.25 of a pixel's mm less
+    // in x): the top's right edge, x = 40, seen w / 2 + (40 − 20) mm + 0.25 = (w + h) / 2 +
+    // 0.25 pixels across, w and h the canvas's pixels, a millimetre h / 40 of them.
+    let [w, height] = view(&h).frame().unwrap().size_px.map(f64::from);
+    let mm = height / 40.0;
+    let mut camera = view(&h).camera().clone();
+    camera.eye[0] -= 0.25 / mm;
+    camera.target[0] -= 0.25 / mm;
+    view_mut(&mut h).set_camera(camera);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    step_until(&mut h, "the meshes read", |h| {
+        !view(h).reading() && meshes_current(h)
+    });
+    boxes_made(&mut h);
+    let edge = (w + height) / 2.0 + 0.25;
+    // The first pixel whose centre is past the edge, by a quarter or three quarters of a
+    // pixel: a ray through its centre meets no face of the box, where one a pixel back (its
+    // corner less half a pixel) would meet the top and the bottom.
+    let pixel = (edge - 0.5).ceil();
+    let past = pixel + 0.5 - edge;
+    assert!(
+        (past - 0.25).abs() < 1e-9 || (past - 0.75).abs() < 1e-9,
+        "{past}"
+    );
+    // Its middle row, y = 10.
+    let row = (height / 2.0).floor() + 0.5;
+    let frame = view(&h).frame().unwrap();
+    let ppp = f64::from(frame.pixels_per_point);
+    let at = frame.rect.min + vec2(((pixel + 0.5) / ppp) as f32, (row / ppp) as f32);
+    // Only the edges along it within 6 points, the top's (at 90, less its reach) and the
+    // bottom's (100), hidden behind the top on the ray through its own point.
+    list_at(&mut h, at, "2 under the pointer");
+    assert_eq!(
+        rows_said(&h),
+        ["Edge11 Edge · Block", "Edge10 Edge · Block · hidden"]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
