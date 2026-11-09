@@ -265,7 +265,8 @@ fn show_point(preview: &mut Preview, placed: &Placed) {
 }
 
 /// Where a segment from `start` ends with the pointer at `at`, and the direction it shows:
-/// the point the pointer places; then, for a point placed on nothing, moved onto the
+/// the point the pointer places (the `on`s beside its `midpoint` judged after a new start's
+/// relations, `Pointer::snap_after`); then, for a point placed on nothing, moved onto the
 /// direction it shows (horizontal, vertical, tangent, perpendicular, parallel), and lined up
 /// with the points it's level with or above as guides only, which keep the direction it
 /// shows (#278's E: a horizontal line's end above a point is the help's own example of a
@@ -274,7 +275,11 @@ fn show_point(preview: &mut Preview, placed: &Placed) {
 /// already fixes it ([`not_implied`], #278's G as amended).
 fn end_of(step: &Step<'_, '_, '_>, start: &Start, at: Xy) -> End {
     let pointer = &step.pointer;
-    let mut placed = pointer.snap(at);
+    let new_start = match start {
+        Start::New(placed) => Some(placed),
+        Start::Point(..) => None,
+    };
+    let mut placed = pointer.snap_after(at, new_start);
     if !pointer.infer {
         return End {
             placed,

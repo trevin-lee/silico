@@ -541,6 +541,16 @@ impl Pointer<'_, '_> {
     /// pointer infers; then, if it infers, the origin, a line's middle, two curves' crossing,
     /// or a curve; or nothing.
     pub(super) fn snap(&self, at: Xy) -> Placed {
+        self.snap_after(at, None)
+    }
+
+    /// Where a click at `at` puts a segment's end, after its start: as [`snap`](Self::snap),
+    /// but with a new start (`start`, the point it placed; none for a point of the sketch,
+    /// which brings no relation of its own) its relations are merged into the classes first,
+    /// so the `on`s beside the end's `midpoint` are judged after them, as the add writes them
+    /// (docs/ports/sketch-tools.md: the start point's relations, then the end point's, each
+    /// kept merged before the next).
+    pub(super) fn snap_after(&self, at: Xy, start: Option<&Placed>) -> Placed {
         let point = self.point_near(at);
         if !self.infer {
             return match point {
@@ -570,7 +580,7 @@ impl Pointer<'_, '_> {
                 .map(|n| n.reference.clone())
                 .collect();
             ons.sort();
-            let ons = self.ons_not_implied(mid, &line, ons);
+            let ons = self.ons_not_implied(mid, &line, ons, start);
             return Placed::new(mid, Target::Midpoint(line, ons));
         }
         if let Some((cross, a, b)) = self.crossing_near(at, &near) {
@@ -585,16 +595,36 @@ impl Pointer<'_, '_> {
     /// Of `ons`, in [`Reference`]'s order, the `on`s of a new point at `mid`, the middle of
     /// `line`, the sketch doesn't already imply ([`Implied`], Rule E): the forms the add
     /// writes for it ([`Placed::relations`]), judged in their order, the `midpoint` first
-    /// and asserted, and each `on` kept merged before the next. An `on` of the x axis at the
-    /// middle of a level line along it, or of a line level with it, goes.
-    fn ons_not_implied(&self, mid: Xy, line: &ElementId, ons: Vec<Reference>) -> Vec<Reference> {
+    /// and asserted, and each `on` kept merged before the next. A segment's new `start`'s
+    /// relations are merged before them, as [`snap_after`](Self::snap_after) says. An `on`
+    /// of the x axis at the middle of a level line along it, or of a line level with it,
+    /// goes.
+    fn ons_not_implied(
+        &self,
+        mid: Xy,
+        line: &ElementId,
+        ons: Vec<Reference>,
+        start: Option<&Placed>,
+    ) -> Vec<Reference> {
         let Some(unnamed) = Unnamed::of(self.view).filter(|_| !ons.is_empty()) else {
             return ons;
         };
         let mut implied = self.implied().clone();
+        // A segment's new start is the gesture's first point, the end its second, as the
+        // segment's directions are judged (`line.rs`'s `not_implied`).
+        let point = match start {
+            Some(start) => {
+                for form in start.relations(&unnamed.start) {
+                    let rel = implied.rel(&form);
+                    implied.merge(&rel);
+                }
+                &unnamed.end
+            }
+            None => &unnamed.start,
+        };
         let placed = Placed::new(mid, Target::Midpoint(line.clone(), ons));
         let mut kept = Vec::new();
-        for form in placed.relations(&unnamed.start) {
+        for form in placed.relations(point) {
             let rel = implied.rel(&form);
             match form {
                 Form::On { curve, .. } => {

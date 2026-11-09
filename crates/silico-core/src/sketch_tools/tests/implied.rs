@@ -1155,3 +1155,56 @@ fn a_line_beside_a_level_line_named_as_the_tools_unnamed_line_keeps_its_horizont
     d.drag([10.0, 10.0], [40.0, 10.785]);
     assert_eq!(types(&d), ["horizontal"], "{:?}", d.adds());
 }
+
+#[test]
+fn a_lines_end_at_a_middle_is_judged_after_its_new_starts_relations() {
+    // #431 round 3, T16 (docs/ports/sketch-tools.md: the start point's relations, then the
+    // end point's, each kept merged before the next). Three lines, none fixed: n0000001
+    // (0, 20)-(110, 20) and n0000002 (40, 20)-(80, 20), each held `horizontal`, so each
+    // one's ends are a Y class of their own; n0000003 (50, 10)-(50, 30), held by nothing. A
+    // line dragged from (50, 20) to (60, 20), within the pick tolerance of no point:
+    // - its start snaps to n0000003's middle, (50, 20), through which n0000001 and n0000002
+    //   both run: `midpoint` of n0000003 (whose ends share no class, so it joins none),
+    //   `on` n0000001 (the new point's own class joins n0000001's: kept), and `on` n0000002
+    //   (n0000001's class and n0000002's apart: kept, and now one);
+    // - its end snaps to n0000002's middle, (60, 20), through which n0000001 runs:
+    //   `midpoint` of n0000002 puts it in n0000002's class, which the start's `on`s have
+    //   joined to n0000001's, so its `on` n0000001 is implied (Rule E) and goes. Judged on
+    //   the view's classes alone, without the start's, the two were apart and it stayed:
+    //   three `on`s.
+    // The segment's `horizontal` goes too, its ends in one class. Two `on`s, the start's.
+    let mut s = with_line(empty(), "n0000001", [0.0, 20.0], [110.0, 20.0]);
+    s = with_line(s, "n0000002", [40.0, 20.0], [80.0, 20.0]);
+    s = with_line(s, "n0000003", [50.0, 10.0], [50.0, 30.0]);
+    let s = constrained(
+        s,
+        vec![
+            Form::Horizontal {
+                line: el("n0000001"),
+            },
+            Form::Horizontal {
+                line: el("n0000002"),
+            },
+        ],
+    );
+    let mut d = Drive::new(ToolKind::Line, s);
+    d.drag([50.0, 20.0], [60.0, 20.0]);
+    let ons = d.made[0]
+        .constraints
+        .iter()
+        .filter(|c| matches!(c.form, Form::On { .. }))
+        .count();
+    assert_eq!(ons, 2, "{:?}", d.adds());
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (50, 20)",
+            "point (60, 20)",
+            "line (50, 20)-(60, 20)",
+            "midpoint (50, 20) line #(50, 10)-#(50, 30)",
+            "on (50, 20) line #(0, 20)-#(110, 20)",
+            "on (50, 20) line #(40, 20)-#(80, 20)",
+            "midpoint (60, 20) line #(40, 20)-#(80, 20)",
+        ])]
+    );
+}
