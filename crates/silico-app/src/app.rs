@@ -2100,8 +2100,9 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The toolbar (section 8; `toolbar`): the Design workspace's SOLID tab and its panels,
-    /// CREATE's tools each opening its feature's dialog (M5.8): the primitives, and the
-    /// features that sweep a sketch's profile (those that cut, only with a body to cut); and
+    /// CREATE's tools each opening its feature's dialog (M5.8): the features that sweep a
+    /// sketch's profile (those that cut, only with a body to cut), solids being made
+    /// sketch-first (Trevin's decision of 2026-11-09), never as primitives; and
     /// SELECT's Clear selection. In a sketch, SKETCH's: a tool chosen, or left if it's on,
     /// Construction turned on or off, as their keys do, and Finish Sketch.
     fn toolbar(&mut self, ui: &mut Ui, started: &mut bool) {

@@ -733,17 +733,17 @@ pub const TOOLTIP_SHADOW: Shadow = Shadow {
 
 /// The ViewCube's side, and its margin from the canvas's top and right (the prototype's
 /// viewport.js:101, `CUBE` and `CUBE_M`); the Home button sits above it, this high. The
-/// prototype's Home is a 22 high button 4 to the cube's left (app.js:782), which the
-/// viewport's overlay places.
+/// prototype's Home is a 22 high button 4 to the cube's left (app.js's `renderCanvasUI`,
+/// `home3d`), which the viewport's overlay places.
 pub const VIEW_CUBE_SIDE: f32 = 92.0;
 pub const VIEW_CUBE_MARGIN: f32 = 16.0;
 pub const VIEW_CUBE_HOME_HEIGHT: f32 = 20.0;
 
 /// The navigation bar's width and height, and its margin from the canvas's bottom (the
 /// prototype's `.nav-bar`, 12 from the bottom). Its height is a 24 high button, 3 of padding,
-/// and a 1 border, each above and below; its width, its seven buttons as app.js:771 lays
-/// them out (five of 26, the display menu's 42, and the grid's 26), its separator (7), the
-/// 1 between each, and the same padding and border at each side.
+/// and a 1 border, each above and below; its width, its seven buttons as app.js's
+/// `renderCanvasUI` lays them out (five of 26, the display menu's 42, and the grid's 26),
+/// its separator (7), the 1 between each, and the same padding and border at each side.
 pub const NAVIGATION_BAR_WIDTH: f32 = 220.0;
 pub const NAVIGATION_BAR_HEIGHT: f32 = 32.0;
 pub const NAVIGATION_BAR_MARGIN: f32 = 12.0;
@@ -2206,7 +2206,7 @@ mod tests {
                 [0xff, 0x7a, 0x0c, 0xff],
             ),
             ("VIEWPORT_BG", VIEWPORT_BG, [0, 0, 0, 0xff]),
-            // interact.js:473-475, `overlay`'s `dot`: a hovered vertex white, a selected one
+            // interact.js's `overlay`, its `dot`: a hovered vertex white, a selected one
             // #4676ff, each ringed `stroke="#000"`.
             (
                 "VIEWPORT_HOVER_VERTEX",

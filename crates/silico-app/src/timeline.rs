@@ -76,9 +76,9 @@ impl Step {
 }
 
 /// A feature's type in words, as the prototype says it (`FEATURE_KIND` in `js/app.js`) for
-/// the types it lists, and as the toolbar's commands name the rest (the primitives, and
-/// Union, Subtract, and Intersect for the booleans); the type as written for one neither
-/// names.
+/// the types it lists (the primitives a file holds among them), and as the toolbar's
+/// commands name the rest (Revolve, Groove, and Union, Subtract, and Intersect for the
+/// booleans); the type as written for one neither names.
 pub fn kind_words(kind: &str) -> &str {
     match kind {
         "sketch" => "Sketch",
@@ -1105,7 +1105,8 @@ mod tests {
 
     #[test]
     fn a_features_type_is_said_as_the_prototype_says_it() {
-        // `FEATURE_KIND` in js/app.js; the toolbar's names for the rest.
+        // `FEATURE_KIND` in js/app.js (the primitives among them); the toolbar's names for
+        // the rest.
         for (kind, words) in [
             ("sketch", "Sketch"),
             ("pad", "Pad"),

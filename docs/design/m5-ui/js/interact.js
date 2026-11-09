@@ -66,7 +66,7 @@
       case 'whatsWrong': if (d) { S.modal = { type: 'whatswrong' }; A.syncHighlight(); A.render(); } return;
       case 'createSketch': if (!d) { runCmd('newDoc'); return; } if (S.sketch) return; startPickPlane(); return;
       case 'pad': if (d) A.openDialog('pad', null); return;
-      case 'pocket': case 'revolve': case 'groove': case 'box': case 'cylinder': case 'sphere': case 'cone': case 'torus': case 'chamfer': case 'union': case 'subtract': case 'intersect':
+      case 'pocket': case 'revolve': case 'groove': case 'chamfer': case 'union': case 'subtract': case 'intersect':
         A.toast(A.CMD[id].label + ' opens its dialog here, docked at the right, like Pad.'); return;
       case 'fillet': if (d && d.kind === 'bracket') A.openDialog('fillet', 'f0000001'); return;
       case 'measure': A.toast('Measure: select two faces. The Properties panel shows their distance or angle.'); return;
@@ -181,7 +181,9 @@
         { label: 'Close', keys: ['Mod', 'W'], disabled: !d, run: () => runCmd('close') },
       ]);
     },
-    createMenu(el) { const r = el.getBoundingClientRect(); menu(r.left, r.bottom + 2, ['createSketch', 'sep', 'pad', 'pocket', 'revolve', 'groove', 'sep', { head: 'Primitives' }, 'box', 'cylinder', 'sphere', 'cone', 'torus'].map(cmdItem)); },
+    // Trevin's decision of 2026-11-09: solids are made sketch-first, as SolidWorks makes them, so
+    // CREATE holds no primitives; a primitive a file holds is edited (editFeature), never made here.
+    createMenu(el) { const r = el.getBoundingClientRect(); menu(r.left, r.bottom + 2, ['createSketch', 'sep', 'pad', 'pocket', 'revolve', 'groove'].map(cmdItem)); },
     modifyMenu(el) { const r = el.getBoundingClientRect(); menu(r.left, r.bottom + 2, ['fillet', 'chamfer', 'sep', { head: 'Combine' }, 'union', 'subtract', 'intersect'].map(cmdItem)); },
     selectMenu(el) {
       const r = el.getBoundingClientRect();

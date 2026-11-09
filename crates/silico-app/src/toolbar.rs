@@ -225,16 +225,6 @@ const GROOVE: Command = command(
     Some("Cuts a profile swept around an axis"),
     Does::Dialog(Kind::Groove),
 );
-const BOX: Command = command("Box", Icon::Box, None, Does::Dialog(Kind::Box));
-const CYLINDER: Command = command(
-    "Cylinder",
-    Icon::Cylinder,
-    None,
-    Does::Dialog(Kind::Cylinder),
-);
-const SPHERE: Command = command("Sphere", Icon::Sphere, None, Does::Dialog(Kind::Sphere));
-const CONE: Command = command("Cone", Icon::Cone, None, Does::Dialog(Kind::Cone));
-const TORUS: Command = command("Torus", Icon::Torus, None, Does::Dialog(Kind::Torus));
 const FILLET: Command = command(
     "Fillet",
     Icon::Fillet,
@@ -368,7 +358,8 @@ const DIMENSION: Command = keyed(
     shortcuts::Command::Dimension,
 );
 
-/// A constraint's button (app.js:387): its name, and the prototype's line on them all.
+/// A constraint's button (app.js's `renderToolbar`, CONSTRAINTS): its name, and the
+/// prototype's line on them all.
 const fn constraint(label: &'static str, icon: Icon) -> Command {
     command(
         label,
@@ -399,7 +390,10 @@ struct Panel {
     menu: Option<&'static [Entry]>,
 }
 
-/// SOLID's panels (app.js:394, interact.js:170): the primitives in CREATE's drop-down alone.
+/// SOLID's panels (app.js's `renderToolbar`; interact.js's `createMenu`, `modifyMenu`, and
+/// `selectMenu`). CREATE makes solids sketch-first, as
+/// SolidWorks does (Trevin's decision of 2026-11-09, docs/design/m5-ui/DESIGN.md): Create
+/// Sketch and the sweeps, and no primitive; one a file holds is edited, from Edit Feature.
 const SOLID: &[Panel] = &[
     Panel {
         label: "CREATE",
@@ -411,13 +405,6 @@ const SOLID: &[Panel] = &[
             Entry::Command(POCKET),
             Entry::Command(REVOLVE),
             Entry::Command(GROOVE),
-            Entry::Separator,
-            Entry::Heading("PRIMITIVES"),
-            Entry::Command(BOX),
-            Entry::Command(CYLINDER),
-            Entry::Command(SPHERE),
-            Entry::Command(CONE),
-            Entry::Command(TORUS),
         ]),
     },
     Panel {
@@ -453,7 +440,7 @@ const SOLID: &[Panel] = &[
     },
 ];
 
-/// SKETCH's panels (app.js:384), before Finish Sketch.
+/// SKETCH's panels (app.js's `renderToolbar`, in a sketch), before Finish Sketch.
 const SKETCH: &[Panel] = &[
     Panel {
         label: "CREATE",
@@ -477,7 +464,8 @@ const SKETCH: &[Panel] = &[
     },
 ];
 
-/// CONSTRAINTS' row: Smart Dimension, then the constraints in app.js:387's order.
+/// CONSTRAINTS' row: Smart Dimension, then the constraints in the order app.js's
+/// `renderToolbar` gives them.
 const CONSTRAINTS: [Command; 11] = [
     DIMENSION,
     constraint("Horizontal", Icon::CHorizontal),
@@ -1139,11 +1127,11 @@ mod tests {
     use super::*;
 
     /// A dialog's command is labelled with its kind's title, which the dialog's heading
-    /// and the tests find it by; every kind but MODIFY's is in CREATE's drop-down once,
-    /// and the sweeps in its row too (app.js:394), the primitives not; the dressings and the
-    /// booleans are in MODIFY's row and drop-down once each (app.js:397, interact.js:176).
+    /// and the tests find it by; each sweep is in CREATE's drop-down once and in its row
+    /// once (app.js's `renderToolbar`, interact.js's `createMenu`); the dressings and the
+    /// booleans are in MODIFY's row and drop-down once each (`renderToolbar`, `modifyMenu`).
     #[test]
-    fn every_dialog_is_in_creates_drop_down_under_its_title_and_the_sweeps_in_its_row() {
+    fn each_sweep_and_modify_dialog_is_offered_once_under_its_title() {
         let create = &SOLID[0];
         let menu = create.menu.unwrap_or_default();
         let modify = &SOLID[1];
@@ -1174,7 +1162,7 @@ mod tests {
                 "{kind:?}"
             );
         }
-        for kind in Kind::ALL.into_iter().filter(|kind| !kind.modifies()) {
+        for kind in Kind::ALL.into_iter().filter(|kind| kind.sweeps()) {
             let in_menu: Vec<_> = menu
                 .iter()
                 .filter_map(|entry| match entry {
@@ -1189,7 +1177,54 @@ mod tests {
                 .iter()
                 .filter(|command| command.does == Does::Dialog(kind))
                 .count();
-            assert_eq!(in_row, usize::from(kind.sweeps()), "{kind:?}");
+            assert_eq!(in_row, 1, "{kind:?}");
+        }
+    }
+
+    /// Solids are made sketch-first, as SolidWorks makes them (Trevin's decision of
+    /// 2026-11-09): no panel of SOLID's or SKETCH's, in its row or its drop-down, makes a
+    /// box, a cylinder, a sphere, a cone, or a torus, and none is labelled as one; the
+    /// primitives' dialogs open only to edit a feature a file holds. Every kind but these
+    /// five is offered somewhere, so the check can't pass by offering nothing.
+    #[test]
+    fn no_panel_makes_a_primitive() {
+        let primitives = [
+            Kind::Box,
+            Kind::Cylinder,
+            Kind::Sphere,
+            Kind::Cone,
+            Kind::Torus,
+        ];
+        let titles = ["Box", "Cylinder", "Sphere", "Cone", "Torus"];
+        let mut offered: Vec<&Command> = Vec::new();
+        for panel in SOLID.iter().chain(SKETCH) {
+            offered.extend(panel.row);
+            for entry in panel.menu.unwrap_or_default() {
+                match entry {
+                    Entry::Command(command) => offered.push(command),
+                    Entry::Heading(text) => {
+                        assert_ne!(*text, "PRIMITIVES", "{}", panel.label);
+                    }
+                    Entry::Separator | Entry::AllFilters | Entry::ClearSelection => {}
+                }
+            }
+        }
+        for command in &offered {
+            if let Does::Dialog(kind) = command.does {
+                assert!(!primitives.contains(&kind), "{}: {kind:?}", command.label);
+            }
+            assert!(!titles.contains(&command.label), "{}", command.label);
+        }
+        for kind in Kind::ALL
+            .into_iter()
+            .filter(|kind| !primitives.contains(kind))
+        {
+            assert!(
+                offered
+                    .iter()
+                    .any(|command| command.does == Does::Dialog(kind)),
+                "{kind:?} offered nowhere"
+            );
         }
     }
 

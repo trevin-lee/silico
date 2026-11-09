@@ -1345,7 +1345,7 @@ fn tree(
     let no_body = match tab.document_problems.first() {
         Some(said) if any_features => format!("No body: {}", said.message),
         None if any_features => "No body: nothing builds one yet".to_owned(),
-        _ => "None yet. A pad or a primitive makes one.".to_owned(),
+        _ => "None yet. A pad makes one.".to_owned(),
     };
     let groups = [
         ("Bodies", &tab.browser.bodies, Icon::Body, no_body),
@@ -3055,7 +3055,7 @@ mod tests {
             ..Said::default()
         };
         let down = |n: f32| css::TITLE_H + n * css::ROW_H;
-        let none_yet = "None yet. A pad or a primitive makes one.";
+        let none_yet = "None yet. A pad makes one.";
         for (features, problem, bodies) in [
             (&[][..], None, none_yet),
             (&[][..], Some(problem()), none_yet),
@@ -4988,9 +4988,9 @@ mod property_panel_drawn {
         y = row_at(&h, "Made by", "Block", y, body(css::FS), css::INFO);
         assert!(h.query_by_role_and_label(Role::Link, "Block").is_some());
         y = row_at(&h, "Stability", "Stable", y, body(css::FS), css::GREEN);
-        // A planar face's buttons, 10 under the rows (app.js:582): Sketch on this face
-        // (`.btn-secondary`, Gray.300) first, then Edit Block (`.btn-ghost`, no fill), 6
-        // after it.
+        // A planar face's buttons, 10 under the rows (app.js's `selectionProps`): Sketch on
+        // this face (`.btn-secondary`, Gray.300) first, then Edit Block (`.btn-ghost`, no
+        // fill), 6 after it.
         let sketch = h
             .get_by_role_and_label(Role::Button, "Sketch on this face")
             .rect();
@@ -5218,11 +5218,11 @@ mod property_panel_drawn {
     #[test]
     fn every_element_type_has_its_words_for_each_kind_of_element_it_can_be() {
         use silico_core::command::elements::ElementType as T;
-        // By hand: the prototype's words where it has them (app.js:567-573: "Planar face",
-        // "Cylindrical face", "Line edge", "Arc edge", "Vertex"); for each other type the
-        // core gives (`ElementType`, its geometry as OCCT names it), a face its adjective
-        // before "face", an edge its curve's noun before "edge", as those are; the kind alone
-        // for a type of no name (`Other`). The words past the prototype's are #414's
+        // By hand: the prototype's words where it has them (app.js's `selectionProps`:
+        // "Planar face", "Cylindrical face", "Line edge", "Arc edge", "Vertex"); for each
+        // other type the core gives (`ElementType`, its geometry as OCCT names it), a face its
+        // adjective before "face", an edge its curve's noun before "edge", as those are; the
+        // kind alone for a type of no name (`Other`). The words past the prototype's are #414's
         // approved ones, pinned.
         let (face, edge, vertex) = (ElementKind::Face, ElementKind::Edge, ElementKind::Vertex);
         let table = [
@@ -5279,7 +5279,7 @@ mod property_panel_drawn {
 
     #[test]
     fn a_vertex_not_measured_yet_says_its_position_isnt_and_offers_edit_alone() {
-        // `selectionProps`' vertex (app.js:573): "Vertex" on its body, and its one measure,
+        // `selectionProps`' vertex (app.js): "Vertex" on its body, and its one measure,
         // Position, which says it isn't measured till `elements` answers, in `.subdued`,
         // never a dash; no Sketch on this face, no Fillet: Edit Block alone, 10 under the rows.
         let h = drawn(selecting(&["Vertex1"], Answers::default()));
