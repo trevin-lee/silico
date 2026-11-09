@@ -297,6 +297,9 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 tab.selection_mut().select_feature(id);
             }
         }
+        if let Some(id) = asked.deselected {
+            tab.selection_mut().deselect_feature(&id);
+        }
         if let Some(id) = asked.menu_selected
             && tab.selection().feature() != Some(&id)
         {
@@ -1211,6 +1214,8 @@ fn units() -> String {
 struct Asked {
     toggled: Vec<Hideable>,
     selected: Option<FeatureId>,
+    /// A selected row Ctrl-clicked (Cmd on macOS): its feature taken out of the selection.
+    deselected: Option<FeatureId>,
     /// A row right-clicked, selected as its menu opens.
     menu_selected: Option<FeatureId>,
     edit: Option<FeatureId>,
@@ -1405,7 +1410,13 @@ fn tree(
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
                     asked.toggled.push(what);
                 } else if answer.row.clicked() {
-                    asked.selected = Some(each.id.clone());
+                    if tab.selection().has_feature(&each.id)
+                        && ui.input(|input| input.modifiers.command)
+                    {
+                        asked.deselected = Some(each.id.clone());
+                    } else {
+                        asked.selected = Some(each.id.clone());
+                    }
                 }
                 if let Some(entry) = tab.entry(each.id.as_str()) {
                     answer.row.context_menu(|ui| {

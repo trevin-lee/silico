@@ -188,6 +188,9 @@ enum Asking {
     /// What changed on disk while `session`'s edits are held (DESIGN.md, 6d's Show
     /// changes): the tab's `held_changes`.
     Changes(SessionId),
+    /// Whether to drop `session`'s unsaved edits to reload its file (Reload, Trevin's ask of
+    /// 2026-11-09), naming them: the tab's `held_changes`' own.
+    Reload(SessionId),
 }
 
 /// What a native dialog's answer goes to.
@@ -1170,7 +1173,7 @@ impl<P: Clients + 'static> App<P> {
     /// its own field first, as a click away does (SolidWorks commits a name typed in place
     /// when another command is invoked): Esc drops it instead, and the rest never act
     /// while it's typed.
-    const COMMANDS_AFTER_RENAME: [Command; 9] = [
+    const COMMANDS_AFTER_RENAME: [Command; 10] = [
         Command::New,
         Command::Open,
         Command::Save,
@@ -1180,6 +1183,7 @@ impl<P: Clients + 'static> App<P> {
         Command::Redo,
         Command::Rebuild,
         Command::RebuildAll,
+        Command::Reload,
     ];
 
     /// The active tab's rename field, which has had the focus, if a shortcut of
@@ -1266,6 +1270,10 @@ impl<P: Clients + 'static> App<P> {
         );
         let rebuild_all = shortcuts::take(ui, Command::RebuildAll) && !typing;
         let rebuild = shortcuts::take(ui, Command::Rebuild);
+        // ⌘R (Ctrl+R elsewhere) before sketch mode's letters, though R alone is Rectangle's
+        // and an exact chord's. Done while typing too, as Save is: it's no key of a field's,
+        // and what it would drop is asked about first.
+        let reload = shortcuts::take(ui, Command::Reload);
         // Esc with a menu open (a feature's right-click menu, a drop-down) closes the menu
         // alone, as the prototype's `keydown` has it: left for the menu to take.
         let stop = !egui::Popup::is_any_open(ui.ctx()) && shortcuts::take(ui, Command::Stop);
@@ -1442,11 +1450,15 @@ impl<P: Clients + 'static> App<P> {
             let ctx = ui.ctx().clone();
             self.ask_save_as(id, false, &ctx);
         }
+        if reload && let Some(id) = self.active {
+            self.reload(id);
+        }
         if close && let Some(id) = self.active {
             self.close(id);
         }
         (
             save || undo
+                || reload
                 || redo
                 || stop
                 || close
@@ -1482,6 +1494,24 @@ impl<P: Clients + 'static> App<P> {
     /// The toast shown now, if one is, and when it was shown, by egui's clock.
     pub fn toast(&self) -> Option<(&str, f64)> {
         self.toast.as_ref().map(|(text, at)| (text.as_str(), *at))
+    }
+
+    /// Reload the tab of session `id` (Trevin's ask of 2026-11-09): asking first, naming
+    /// them, if it would drop unsaved edits, as Close asks before it drops them; never of a
+    /// file gone from disk, whose Reload drops nothing ([`Tab::reload`]).
+    fn reload(&mut self, id: SessionId) {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+            return;
+        };
+        if tab.closing() {
+            return;
+        }
+        if tab.unsaved() && !tab.file_gone() {
+            tab.show_changes(&self.sessions);
+            self.asking = Some(Asking::Reload(id));
+        } else {
+            tab.reload(&self.sessions);
+        }
     }
 
     /// Close the tab of session `id`: asking first if it holds edits (decision 1).
@@ -1581,7 +1611,11 @@ impl<P: Clients + 'static> App<P> {
                     form.browsed(path);
                 }
             }
-            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } | Asking::Changes(_) => {}
+            Asking::Close(_)
+            | Asking::Quit
+            | Asking::Replace { .. }
+            | Asking::Changes(_)
+            | Asking::Reload(_) => {}
         }
         false
     }
@@ -1776,7 +1810,11 @@ impl<P: Clients + 'static> App<P> {
                     file_name: browse::file_name_of(&form.path),
                 }
             }
-            Asking::Close(_) | Asking::Quit | Asking::Replace { .. } | Asking::Changes(_) => {
+            Asking::Close(_)
+            | Asking::Quit
+            | Asking::Replace { .. }
+            | Asking::Changes(_)
+            | Asking::Reload(_) => {
                 return None;
             }
         };
@@ -1942,6 +1980,21 @@ impl<P: Clients + 'static> App<P> {
         {
             if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
                 tab.revert(&self.sessions, false);
+                *started = true;
+            }
+            ui.close();
+        }
+        // Reload (⌘R, Ctrl+R elsewhere), off while the tab closes, as Revert is.
+        let reloadable = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .is_some_and(|tab| !tab.closing());
+        if ui
+            .add_enabled(reloadable, egui::Button::new("Reload"))
+            .clicked()
+        {
+            if let Some(id) = self.active {
+                self.reload(id);
                 *started = true;
             }
             ui.close();
@@ -2482,6 +2535,45 @@ impl<P: Clients + 'static> App<P> {
                     }
                 }
             }
+            Asking::Reload(id) => {
+                let sessions = &self.sessions;
+                let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+                    done = true;
+                    return;
+                };
+                modal::head(
+                    ui,
+                    Some(Icon::Rebuild),
+                    &format!("Reload {} from disk?", tab.name()),
+                );
+                let held = tab.held_changes.as_ref();
+                modal::body(ui, |ui| {
+                    modal::text(
+                        ui,
+                        "It has unsaved edits. Reloading drops them:",
+                        theme::MODAL_TEXT,
+                    );
+                    modal::label(ui, "Your unsaved edits");
+                    held_list(ui, "mine", held.map(|held| &held.mine), mine_row);
+                });
+                let ([], [cancel, reload]) = modal::foot(
+                    ui,
+                    [],
+                    [
+                        Button::new("Cancel", Kind::Secondary),
+                        Button::new("Reload, discard my edits", Kind::Danger)
+                            .enabled(!tab.closing()),
+                    ],
+                );
+                if reload {
+                    tab.reload(sessions);
+                    *started = true;
+                    done = true;
+                }
+                if cancel || escape {
+                    done = true;
+                }
+            }
             Asking::Changes(id) => {
                 let sessions = &self.sessions;
                 let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
@@ -2739,7 +2831,7 @@ impl<P: Clients + 'static> App<P> {
         if done {
             match self.asking {
                 Some(Asking::Export(_)) => self.export = None,
-                Some(Asking::Changes(id)) => {
+                Some(Asking::Changes(id) | Asking::Reload(id)) => {
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
                         tab.hide_changes();
                     }

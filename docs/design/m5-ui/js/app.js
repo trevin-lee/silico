@@ -25,6 +25,7 @@
     del: { label: 'Delete', keys: ['Del'], group: 'Edit' },
     rebuild: { label: 'Rebuild', keys: ['Mod', 'B'], group: 'Rebuild', icon: 'rebuild', desc: 'Rebuilds what changed. Resumes a stopped rebuild' },
     rebuildAll: { label: 'Rebuild everything', keys: ['Mod', 'Shift', 'B'], group: 'Rebuild', desc: 'Every feature, ignoring the cache' },
+    reload: { label: 'Reload', keys: ['Mod', 'R'], group: 'Rebuild', desc: 'Reads the file from disk again, then rebuilds every feature' },
     stop: { label: 'Stop rebuild', keys: ['Esc'], group: 'Rebuild', icon: 'stop' },
     whatsWrong: { label: "What's wrong", keys: [], group: 'Rebuild', icon: 'error', desc: 'Every problem in the document' },
     createSketch: { label: 'Create Sketch', keys: [], group: 'Create', icon: 'sketch', desc: 'Pick an origin plane or a flat face, then sketch on it' },

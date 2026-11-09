@@ -330,6 +330,10 @@ fn words(ui: &mut Ui, rect: Rect, words: &str) {
 #[derive(Default)]
 struct Asked {
     selected: Option<FeatureId>,
+    /// A selected item Ctrl-clicked (Cmd on macOS): taken out of the selection.
+    deselected: Option<FeatureId>,
+    /// The track's empty space clicked: the selection cleared.
+    cleared: bool,
     edit: Option<FeatureId>,
     hovered: Option<FeatureId>,
     moved: Option<(FeatureId, Option<FeatureId>)>,
@@ -384,6 +388,11 @@ fn features<P: Clients + 'static>(
                 node.set_role(egui::accesskit::Role::Group);
                 node.set_label(TRACK_LABEL);
             });
+            // The track's empty space, under its items, which take a click on them first:
+            // a click there lets the selection go (Trevin's ask of 2026-11-09), as one on the
+            // canvas's empty space does.
+            let empty = ui.interact(track, ui.id().with("empty"), Sense::click());
+            asked.cleared = empty.clicked();
             egui::ScrollArea::horizontal()
                 .id_salt("timeline-track")
                 .scroll_source(egui::scroll_area::ScrollSource {
@@ -431,6 +440,10 @@ fn features<P: Clients + 'static>(
     if let Some(id) = asked.selected {
         tab.selected_in = feature_menu::Place::Timeline;
         tab.selection_mut().select_feature(id);
+    } else if let Some(id) = asked.deselected {
+        tab.selection_mut().deselect_feature(&id);
+    } else if asked.cleared {
+        tab.selection_mut().clear();
     }
     if let Some(act) = asked.act {
         *started |= feature_menu::act(tab, sessions, act);
@@ -650,7 +663,11 @@ fn items(
             kind => crate::dialog::Kind::of(kind).is_some(),
         };
         if response.clicked() {
-            asked.selected = Some(entry.id.clone());
+            if selected && ui.input(|input| input.modifiers.command) {
+                asked.deselected = Some(entry.id.clone());
+            } else {
+                asked.selected = Some(entry.id.clone());
+            }
         }
         if response.double_clicked() {
             asked.edit = Some(entry.id.clone());

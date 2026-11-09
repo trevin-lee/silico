@@ -797,6 +797,13 @@ pub struct Tab {
     /// program's, so it shows no [`reloaded`](Self::reloaded) banner. Let go once the file
     /// is as the session holds it again.
     reload_asked: bool,
+    /// Reload asked (⌘R, Ctrl+R elsewhere, File > Reload; Trevin's ask of 2026-11-09): its
+    /// Rebuild everything waits until nothing of the tab's is under way (its revert
+    /// answered), then is sent ([`reload`](Self::reload)).
+    reload_wanted: bool,
+    /// The check out is Reload's: until it answers, a reload of the file the session makes
+    /// is the person's, so [`reload_asked`](Self::reload_asked) is kept.
+    reload_out: bool,
     /// The revision the newest reload the tab saw came to. A `status` of an older revision
     /// compared the file with the bytes that reload replaced.
     reloaded_to: Option<Revision>,
@@ -1024,6 +1031,8 @@ impl Tab {
             disk_choice: DiskChoice::None,
             reloaded: None,
             reload_asked: false,
+            reload_wanted: false,
+            reload_out: false,
             reloaded_to: None,
             selection: crate::selection::Selection::default(),
             box_select: crate::box_select::BoxSelect::default(),
@@ -1698,7 +1707,12 @@ impl Tab {
             Ok(status) => {
                 // The file as the session holds it, nothing of the tab's under way: no
                 // reload of the person's is still to come.
-                if self.quiet() && !matches!(status.disk, Some(Disk::Changed | Disk::Gone)) {
+                // Nor one Reload has yet to read.
+                if self.quiet()
+                    && !self.reload_wanted
+                    && !self.reload_out
+                    && !matches!(status.disk, Some(Disk::Changed | Disk::Gone))
+                {
                     self.reload_asked = false;
                 }
                 // A rebuild done whole: its time kept with its revision. One done but not
@@ -1758,6 +1772,7 @@ impl Tab {
             self.nothing_published = false;
         }
         self.take_answers(sessions);
+        self.send_reload(sessions);
         self.offer_disk_choice();
         self.read_timeline(sessions);
         self.read_check(sessions);
@@ -1916,6 +1931,16 @@ impl Tab {
     /// edit), which the newest timeline's revision, past the one the check read, shows.
     /// The newest's is asked next, if it's wanted.
     fn took_check_answer(&mut self, gate: bool, response: Response<CheckAnswer>) {
+        // Reload's, which read the file and found it as the session held it: no reload of
+        // the person's is still to come.
+        if std::mem::take(&mut self.reload_out)
+            && !response
+                .session
+                .as_ref()
+                .is_some_and(|session| session.reloaded)
+        {
+            self.reload_asked = false;
+        }
         let superseded = std::mem::take(&mut self.check_superseded);
         let fresh = std::mem::take(&mut self.fresh_out);
         if fresh {
@@ -3868,6 +3893,56 @@ impl Tab {
             sessions.check(&self.id, CheckModel::Current { fresh: true }),
         ));
         self.rebuilds_all += 1;
+    }
+
+    /// Whether the session last found its file gone from disk (`status.disk`).
+    pub fn file_gone(&self) -> bool {
+        self.status
+            .as_ref()
+            .is_some_and(|status| status.disk == Some(Disk::Gone))
+    }
+
+    /// Reload (Trevin's ask of 2026-11-09; ⌘R on macOS, Ctrl+R elsewhere, and File >
+    /// Reload): the part's file read from disk again now, then every feature rebuilt, as
+    /// Rebuild everything rebuilds them; the edits held dropped first, as Revert drops them
+    /// (the app asks before, naming them). Outside a transaction every command reads the file
+    /// first, so Rebuild everything's `check` is the read: a file changed on disk is reloaded
+    /// by it, before the disk watch's next comparison, and that is what's rebuilt; the
+    /// reload is the person's, so no banner says another program's. An untitled part has no
+    /// file: it's only rebuilt. A file gone from disk is never reloaded and nothing is
+    /// dropped: the part open here is the only copy of the work, so it's said, with Save As
+    /// to keep it, and everything stays as it is (Main's ruling of 2026-11-09; the core
+    /// refuses a read of a gone file outside a transaction, so nothing can be rebuilt).
+    /// Nothing while the tab closes or before the document is read.
+    pub fn reload<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if self.closing() || self.timeline.is_none() {
+            return;
+        }
+        if self.file_gone() {
+            self.toast = Some(format!(
+                "{} is gone from disk: nothing to reload. Save As keeps your work",
+                self.name()
+            ));
+            return;
+        }
+        if !self.is_untitled() {
+            self.reload_asked = true;
+        }
+        if self.unsaved() || self.transaction {
+            self.revert(sessions, false);
+        }
+        self.reload_wanted = true;
+        self.send_reload(sessions);
+    }
+
+    /// Reload's Rebuild everything, once it's wanted, nothing of the tab's is under way
+    /// (its revert answered, the transaction ended), and Rebuild everything may be sent.
+    fn send_reload<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if self.reload_wanted && self.quiet() && !self.transaction && self.can_rebuild_all() {
+            self.reload_wanted = false;
+            self.reload_out = true;
+            self.rebuild_all(sessions);
+        }
     }
 
     /// Whether Rebuild everything may be sent: the document read, no dialog open (its

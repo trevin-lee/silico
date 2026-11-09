@@ -17781,6 +17781,27 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                     Key::B
                 ))]
             ),
+            // Its keys and the File menu's Reload each rebuild everything once, as Rebuild
+            // everything does (its own tests: command_r_reads_a_file_changed_on_disk_….
+            Command::Reload => {
+                let f = fixture();
+                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
+                settled(&mut h);
+                let mut asked = 0;
+                let mut reload = |h: &mut AppHarness, how: &dyn Fn(&mut AppHarness)| {
+                    how(h);
+                    asked += 1;
+                    step_until(h, "rebuilt everything", |h| {
+                        let tab = &h.state().tabs()[0];
+                        tab.rebuilds_all == asked && !tab.checking()
+                    });
+                };
+                for chord in keys_of(command) {
+                    reload(&mut h, &|h| press_chord(h, chord));
+                }
+                reload(&mut h, &|h| from_file_menu(h, entry.label));
+            }
             Command::Fit => same_view(command, |h| {
                 h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
                     .get_by_label(entry.label)
@@ -35230,5 +35251,310 @@ fn a_sketch_left_gives_the_canvas_back_a_right_click_opening_its_menu_and_the_wh
     wheel(&mut h, centre, MouseWheelUnit::Line, 1.0);
     step(&mut h);
     assert!(ortho_height(view(&h).camera()) < ortho_height(&camera));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Deselecting a feature (Trevin, 2026-11-09: "I also cant deselect an operation in the
+// timeline"), as SolidWorks' selection does (docs/ux/solidworks.md) ----
+
+/// Whether the property panel shows the document's view, as with nothing selected.
+fn shows_the_document(h: &AppHarness) -> bool {
+    shows(h, "Properties", "DOCUMENT")
+}
+
+/// Pin selected on the timeline, its properties shown.
+fn pin_selected(h: &mut AppHarness) {
+    step_until(h, "its features", |h| shows(h, "Timeline", "Hole"));
+    select(h, "Pin");
+    assert_eq!(selected_features(h), ["a91cw0de"]);
+    assert!(!shows_the_document(h));
+}
+
+/// Stepped until nothing is selected and the property panel is back at the document.
+fn deselected(h: &mut AppHarness, how: &str) {
+    step_until(h, how, |h| {
+        h.state().tabs()[0].selection().is_empty() && shows_the_document(h)
+    });
+}
+
+#[test]
+fn a_click_on_the_timelines_empty_space_deselects_its_feature() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    pin_selected(&mut h);
+    // Past the last item, on the items' line, before the summary: nothing there.
+    let timeline = h.get_by_role_and_label(Role::Pane, "Timeline");
+    let items = ["Block", "Pin", "Hole"].map(|name| timeline.get_by_label(name).rect());
+    let last = items
+        .iter()
+        .map(|item| item.right())
+        .fold(f32::MIN, f32::max);
+    let at = eframe::egui::pos2(last + 30.0, items[1].center().y);
+    assert!(timeline.rect().contains(at));
+    click_canvas(&mut h, at, false);
+    deselected(
+        &mut h,
+        "deselected by a click on the timeline's empty space",
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_ctrl_or_cmd_click_on_a_selected_feature_takes_it_out_of_the_selection() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    pin_selected(&mut h);
+    let pin = h
+        .get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label("Pin")
+        .rect()
+        .center();
+    click_canvas(&mut h, pin, true);
+    deselected(&mut h, "Pin taken out by a Cmd-click");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_clears_a_feature_selected_on_the_timeline_or_in_the_browser() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    pin_selected(&mut h);
+    h.key_press(eframe::egui::Key::Escape);
+    deselected(&mut h, "Pin cleared by Esc");
+    // The browser's Hole, selected there, likewise.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Hole")
+        .click();
+    step_until(&mut h, "Hole selected", |h| {
+        selected_features(h) == ["m3tq8v0z"]
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    deselected(&mut h, "Hole cleared by Esc");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_on_the_canvas_where_nothing_is_clears_a_feature_selected_on_the_timeline() {
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    pin_selected(&mut h);
+    // The pick finds nothing under the pointer: as it clears picked elements, it clears
+    // the feature.
+    answering(&record, None, None);
+    let at = the_viewport(&h).center();
+    click_canvas(&mut h, at, false);
+    deselected(&mut h, "Pin cleared by a click on the empty canvas");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Reload (Trevin, 2026-11-09: "I want command + r or ctrl r to reload the part and
+// rebuild") ----
+
+/// [`EXAMPLE`] as another program wrote it: its Hole renamed Drill.
+fn example_theirs() -> String {
+    EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#)
+}
+
+/// ⌘R, or Ctrl+R off macOS: the platform's Command with R (Ctrl sends Command with it).
+fn command_r(h: &mut AppHarness) {
+    use eframe::egui::os::OperatingSystem;
+    use eframe::egui::{Key, Modifiers};
+    let modifiers = if h.ctx.os() == OperatingSystem::Mac {
+        Modifiers::MAC_CMD | Modifiers::COMMAND
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    };
+    h.key_press_modifiers(modifiers, Key::R);
+}
+
+#[test]
+fn command_r_reads_a_file_changed_on_disk_that_no_watch_has_found_and_rebuilds_every_feature() {
+    // No disk watch: only a command reads the file, so Reload's own read finds the change.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
+    settled(&mut h);
+    assert_eq!(boxes_asked(&f), 1);
+    let theirs = example_theirs();
+    std::fs::write(&path, &theirs).unwrap();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(shows(&h, "Timeline", "Hole"), "nothing read the file yet");
+    command_r(&mut h);
+    step_until(&mut h, "the file read again", |h| {
+        shows(h, "Timeline", "Drill")
+    });
+    // Every step built anew, the box too, which the session and the cache hold: Rebuild
+    // everything's.
+    step_until(&mut h, "the box made again", |h| {
+        boxes_asked(&f) == 2 && !h.state().tabs()[0].checking()
+    });
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 1);
+    settled(&mut h);
+    // The person's reload: no banner says another program changed it.
+    assert!(h.state().tabs()[0].reloaded.is_none());
+    assert!(!anywhere(
+        &h,
+        "Reloaded example.silico: another program changed it on disk"
+    ));
+    assert_eq!(text_of(&f, &h), theirs);
+    // With nothing changed, a Reload reads the file and rebuilds all the same.
+    command_r(&mut h);
+    step_until(&mut h, "rebuilt again", |h| {
+        boxes_asked(&f) == 3 && !h.state().tabs()[0].checking()
+    });
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 2);
+    // And the File menu's Reload is the same command.
+    file_menu_item(&mut h, "Reload");
+    step_until(&mut h, "rebuilt from the menu", |h| {
+        boxes_asked(&f) == 4 && !h.state().tabs()[0].checking()
+    });
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 3);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_r_reloads_on_windows_and_linux() {
+    use eframe::egui::os::OperatingSystem;
+    for os in [OperatingSystem::Windows, OperatingSystem::Nix] {
+        let f = fixture();
+        let (mut h, path) = f.opened("example.silico", EXAMPLE);
+        h.ctx.set_os(os);
+        step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
+        settled(&mut h);
+        std::fs::write(&path, example_theirs()).unwrap();
+        // ⌘ isn't Ctrl there: the Mac's Command alone does nothing.
+        h.key_press_modifiers(eframe::egui::Modifiers::MAC_CMD, eframe::egui::Key::R);
+        for _ in 0..10 {
+            step(&mut h);
+        }
+        assert!(shows(&h, "Timeline", "Hole"), "{os:?}");
+        assert_eq!(h.state().tabs()[0].rebuilds_all, 0, "{os:?}");
+        command_r(&mut h);
+        step_until(&mut h, "the file read again", |h| {
+            shows(h, "Timeline", "Drill") && !h.state().tabs()[0].checking()
+        });
+        assert_eq!(h.state().tabs()[0].rebuilds_all, 1, "{os:?}");
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reload_drops_them() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.transaction && tab.edits.idle() && shows(h, "Timeline", "Pins")
+    });
+    let theirs = example_theirs();
+    std::fs::write(&path, &theirs).unwrap();
+    // Inside the transaction, `text` reads the session's document, never the file.
+    let mine = text_of(&f, &h);
+    assert!(mine.contains(r#""name": "Pins""#), "{mine}");
+    let asked = "Reload example.silico from disk?";
+    command_r(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    assert!(anywhere(&h, "It has unsaved edits. Reloading drops them:"));
+    // The edits named as Show changes names them.
+    let edit = r#"Pins · name · "Pin" → "Pins""#;
+    step_until(&mut h, "its edits named", |h| anywhere(h, edit));
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 0);
+    // Cancel keeps everything.
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs()[0].unsaved());
+    assert!(shows(&h, "Timeline", "Pins"));
+    assert_eq!(text_of(&f, &h), mine);
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 0);
+    // Asked again, Reload: the edits dropped, the file read again, every feature rebuilt.
+    command_r(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
+        .click();
+    step_until(&mut h, "reloaded and rebuilt", |h| {
+        let tab = &h.state().tabs()[0];
+        shows(h, "Timeline", "Drill")
+            && shows(h, "Timeline", "Pin")
+            && !tab.unsaved()
+            && tab.rebuilds_all == 1
+            && !tab.checking()
+    });
+    assert!(!anywhere(&h, asked));
+    settled(&mut h);
+    assert!(h.state().tabs()[0].reloaded.is_none());
+    assert_eq!(text_of(&f, &h), theirs);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn command_r_on_a_file_gone_from_disk_says_so_and_drops_none_of_the_edits() {
+    // Main's ruling of 2026-11-09: with the file gone, the open document is the only copy
+    // of the work, so Reload never drops it, and asks nothing.
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "G");
+    step_until(&mut h, "the edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.transaction && tab.edits.idle() && shows(h, "Timeline", "PinG")
+    });
+    let mine = text_of(&f, &h);
+    std::fs::remove_file(&path).unwrap();
+    step_until(&mut h, "found gone", |h| h.state().tabs()[0].file_gone());
+    command_r(&mut h);
+    let said = "example.silico is gone from disk: nothing to reload. Save As keeps your work";
+    step_until(&mut h, "said", |h| {
+        h.state().toast().is_some_and(|(text, _)| text == said)
+    });
+    assert!(!anywhere(&h, "Reload example.silico from disk?"));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    let tab = &h.state().tabs()[0];
+    assert!(tab.unsaved() && tab.transaction);
+    assert_eq!(tab.rebuilds_all, 0);
+    assert!(shows(&h, "Timeline", "PinG"));
+    assert_eq!(text_of(&f, &h), mine);
+    assert!(!path.exists());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_sketch_mode_r_alone_is_rectangle_and_command_r_reloads_never_choosing_it() {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let mut h = boxed_sketch(&f);
+    assert!(!h.state().tabs()[0].unsaved());
+    command_r(&mut h);
+    step_until(&mut h, "rebuilt everything", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.rebuilds_all == 1 && !tab.checking()
+    });
+    assert_eq!(sketch_mode(&h).unwrap().tools.choice(), None);
+    h.key_press(eframe::egui::Key::R);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Draw(ToolKind::CornerRectangle))
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(
+        h.state().tabs()[0].rebuilds_all,
+        1,
+        "R alone reloads nothing"
+    );
     assert_eq!(never_waits::waits(), 0);
 }

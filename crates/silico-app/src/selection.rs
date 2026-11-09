@@ -778,6 +778,23 @@ impl Selection {
         self.click = None;
     }
 
+    /// Feature `id` taken out of the selection, the rest kept (a Ctrl-click, Cmd on macOS, on
+    /// its selected timeline item or browser row: Trevin's ask of 2026-11-09). A click in the
+    /// canvas waiting for its pick is let go: it came before.
+    pub fn deselect_feature(&mut self, id: &FeatureId) {
+        if self.has_feature(id) {
+            let rest = self
+                .items
+                .iter()
+                .filter(|item| !matches!(item, Item::Feature(each) if each == id))
+                .cloned()
+                .collect();
+            self.set(rest);
+        }
+        self.said = None;
+        self.click = None;
+    }
+
     /// The features `ids` selected, in order, and nothing else (a boolean's dialog's boxes:
     /// each body they hold, lit whole in the canvas and marked in the browser). A click in
     /// the canvas waiting for its pick is let go: it came before.

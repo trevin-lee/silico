@@ -54,6 +54,9 @@
       case 'shortcuts': S.modal = { type: 'shortcuts', q: '' }; A.render(); setTimeout(() => { const i = $('[data-key="sc-q"]'); i && i.focus(); }, 0); return;
       case 'rebuild': if (d) A.resumeRebuild(); return;
       case 'rebuildAll': if (d) { A.startRebuild(d); A.toast('Rebuilding every feature, ignoring the cache'); } return;
+      // Trevin's ask of 2026-11-09: the file read again, then every feature rebuilt. The app asks first if
+      // it would drop unsaved edits, and drops none of a file gone from disk; the prototype has no disk.
+      case 'reload': if (d) { if (A.dirty(d)) { A.restore(d, d.saved); d.undo = []; d.redo = []; d.rev++; } A.startRebuild(d); A.toast('Reloaded from disk, rebuilding every feature'); } return;
       case 'stop': A.stopRebuild(); return;
       case 'whatsWrong': if (d) { S.modal = { type: 'whatswrong' }; A.syncHighlight(); A.render(); } return;
       case 'createSketch': if (!d) { runCmd('newDoc'); return; } if (S.sketch) return; startPickPlane(); return;
@@ -534,7 +537,7 @@
     if (key === '?' || (key === '/' && e.shiftKey)) { e.preventDefault(); runCmd('shortcuts'); return; }
     if (isMod(e)) {
       const k = key.toLowerCase();
-      const map = { n: 'newDoc', o: 'open', s: e.shiftKey ? 'saveAs' : 'save', w: 'close', z: e.shiftKey ? 'redo' : 'undo', y: 'redo', b: e.shiftKey ? 'rebuildAll' : 'rebuild', k: 'search', '1': 'vFront', '2': 'vBack', '3': 'vLeft', '4': 'vRight', '5': 'vTop', '6': 'vBottom', '7': 'vIso', '8': 'lookAt', enter: 'finishSketch' };
+      const map = { n: 'newDoc', o: 'open', s: e.shiftKey ? 'saveAs' : 'save', w: 'close', z: e.shiftKey ? 'redo' : 'undo', y: 'redo', b: e.shiftKey ? 'rebuildAll' : 'rebuild', r: 'reload', k: 'search', '1': 'vFront', '2': 'vBack', '3': 'vLeft', '4': 'vRight', '5': 'vTop', '6': 'vBottom', '7': 'vIso', '8': 'lookAt', enter: 'finishSketch' };
       if (map[k]) { if (map[k] === 'finishSketch' && !S.sketch) return; e.preventDefault(); runCmd(map[k]); }
       return;
     }
