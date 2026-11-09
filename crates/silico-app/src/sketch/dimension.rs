@@ -219,6 +219,12 @@ pub fn modify_area(owner: egui::Id, opened: u64) -> egui::Id {
     owner.with(("sketch_modify", opened))
 }
 
+/// The field of the Modify box numbered `opened` of the sketch mode `owner` names: what
+/// egui keeps of it (its cursor, its undo) and gives the keyboard to, its box's own.
+pub fn modify_field(owner: egui::Id, opened: u64) -> egui::Id {
+    owner.with(("sketch_modify_field", opened))
+}
+
 /// The Modify box (the prototype's `.modify-box`, "Modify dimension"): the value's field, in
 /// [`field_frame`]'s Modify look, its unit, ✓ and ✕, and under it a hint, or what was said
 /// of the text, in red; at its dimension's text, the box and its hint whole inside the
@@ -266,7 +272,7 @@ pub fn modify_box(
                 })
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let id = egui::Id::new(("sketch_modify_field", view.opened));
+                        let id = modify_field(owner, view.opened);
                         let focused = ui.memory(|m| m.has_focus(id));
                         let mut text = view.text.clone();
                         let field =

@@ -3937,10 +3937,85 @@ fn the_modify_boxs_accept_waits_on_the_core_and_its_hint_says_so() {
     }
 }
 
+/// A harness drawing one Modify box, numbered as `box_of` says and of the sketch mode it
+/// names, or none while it says none: the box's field is what has the keyboard, if anything.
+fn boxes_harness(
+    box_of: std::rc::Rc<std::cell::Cell<Option<(egui::Id, u64)>>>,
+) -> egui_kittest::Harness<'static> {
+    egui_kittest::Harness::new_ui(move |ui| {
+        let Some((owner, opened)) = box_of.get() else {
+            return;
+        };
+        let view = dimension::ModifyView {
+            text: "40".to_owned(),
+            unit: "mm",
+            at: pos2(300.0, 200.0),
+            opened,
+            said: None,
+            waiting: false,
+            placing: false,
+        };
+        let viewport = egui::Rect::from_min_max(pos2(-1.0e4, -1.0e4), pos2(1.0e4, 1.0e4));
+        let palette = egui::Rect::from_min_size(pos2(9.0e3, 9.0e3), vec2(10.0, 10.0));
+        let _ = dimension::modify_box(ui.ctx(), owner, &view, viewport, palette);
+    })
+}
+
+/// What has the keyboard once `box_of`'s box is drawn, after a frame with no box (so what
+/// had it before has let it go).
+fn keyboard_after(
+    h: &mut egui_kittest::Harness<'static>,
+    cell: &std::cell::Cell<Option<(egui::Id, u64)>>,
+    next: (egui::Id, u64),
+) -> Option<egui::Id> {
+    cell.set(None);
+    h.run();
+    cell.set(Some(next));
+    h.run();
+    h.ctx.memory(|m| m.focused())
+}
+
+#[test]
+fn each_sketch_modes_box_has_a_field_of_its_own() {
+    // Two sketch modes' first boxes, one after the other: each takes the keyboard into a
+    // field of its own, so nothing one box's field kept (its cursor, its undo) is the
+    // other's (the review's Q1).
+    let cell = std::rc::Rc::new(std::cell::Cell::new(None));
+    let mut h = boxes_harness(std::rc::Rc::clone(&cell));
+    let a = keyboard_after(&mut h, &cell, (egui::Id::new("sketch mode A"), 1));
+    let b = keyboard_after(&mut h, &cell, (egui::Id::new("sketch mode B"), 1));
+    assert!(a.is_some() && b.is_some(), "{a:?} {b:?}");
+    assert_ne!(a, b);
+}
+
+#[test]
+fn two_tabs_sketch_modes_of_one_number_each_give_their_first_box_the_keyboard() {
+    // Two tabs' sessions, s1 and s2, each with its first sketch mode, serial 1, and its
+    // first box: the second takes the keyboard as the first did (the review's T1).
+    let owner = |session: &str| {
+        dimension::modify_owner(&silico_core::command::SessionId::parse(session).unwrap(), 1)
+    };
+    let cell = std::rc::Rc::new(std::cell::Cell::new(None));
+    let mut h = boxes_harness(std::rc::Rc::clone(&cell));
+    assert!(keyboard_after(&mut h, &cell, (owner("s1"), 1)).is_some());
+    assert!(keyboard_after(&mut h, &cell, (owner("s2"), 1)).is_some());
+}
+
+#[test]
+fn a_second_modify_box_of_one_sketch_mode_takes_the_keyboard_as_the_first_did() {
+    // One sketch mode's boxes 1 and 2, one after the other: each takes the keyboard as it
+    // opens (the review's T2).
+    let owner = egui::Id::new("a sketch mode");
+    let cell = std::rc::Rc::new(std::cell::Cell::new(None));
+    let mut h = boxes_harness(std::rc::Rc::clone(&cell));
+    assert!(keyboard_after(&mut h, &cell, (owner, 1)).is_some());
+    assert!(keyboard_after(&mut h, &cell, (owner, 2)).is_some());
+}
+
 #[test]
 fn leaving_the_modify_boxs_field_by_esc_accepts_nothing_and_enter_accepts() {
     use dimension::ModifyAction;
-    let field = egui::Id::new(("sketch_modify_field", 7u64));
+    let field = dimension::modify_field(egui::Id::new("a sketch mode"), 7);
     // Esc: the field let go, nothing asked.
     let (mut h, asked) = modify_harness(false);
     h.run();

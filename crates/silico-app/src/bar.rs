@@ -307,12 +307,7 @@ pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
     // the close button's.
     let named = Rect::from_min_max(rect.min, Pos2::new(close_rect.left(), rect.bottom()));
     ui.ctx().accesskit_node_builder(response.id, |node| {
-        node.set_bounds(egui::accesskit::Rect {
-            x0: named.min.x.into(),
-            y0: named.min.y.into(),
-            x1: named.max.x.into(),
-            y1: named.max.y.into(),
-        });
+        node.set_bounds(crate::panes::bounds(named));
     });
     let closing = format!("Close {}", tab.name);
     close.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &closing));
