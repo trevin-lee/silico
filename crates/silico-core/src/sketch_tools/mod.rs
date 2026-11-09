@@ -448,6 +448,8 @@ pub struct SketchTool {
     /// The gesture and its preview before the press in progress, for [`Event::Cancel`] to
     /// put back: none with no press in progress.
     before_press: Option<BeforePress>,
+    /// The classes of the newest view, built once for it ([`implied::ViewClasses`]).
+    classes: implied::ViewClasses,
 }
 
 /// A tool's gesture and preview as they were before a press.
@@ -496,6 +498,7 @@ impl SketchTool {
             adds: Adds::new(),
             woken: Vec::new(),
             before_press: None,
+            classes: implied::ViewClasses::default(),
         }
     }
 
@@ -605,6 +608,8 @@ impl SketchTool {
         }
         let pending = self.adds.members();
         let view = infer::View::of(context.sketch, &pending);
+        self.classes
+            .keep_for(context.sketch, &pending, context.states);
         let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
             context.tolerance
         } else {
@@ -647,6 +652,7 @@ impl SketchTool {
                 infer: context.automatic_relations && !keys.ctrl,
                 woken: &woken,
                 states: context.states,
+                classes: &self.classes,
             },
             shift: keys.shift,
             ids,

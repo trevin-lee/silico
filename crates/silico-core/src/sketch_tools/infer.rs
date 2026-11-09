@@ -33,7 +33,7 @@ use silico_protocol::{LENGTH_TOLERANCE, arc_from_points};
 use super::geometry::{
     add, angle_between, cross, distance, dot, left, scale, sub, to_segment, unit,
 };
-use super::implied::{Axis, Implied, Key, Rel};
+use super::implied::{Axis, Implied, Key, Rel, ViewClasses};
 use super::{Relation, Shown, Xy};
 use crate::document::sketch_edit::{Geo, Members, crossings, lies_along};
 use crate::document::{Direction, ElementId, Form, Reference, Sketch};
@@ -64,7 +64,8 @@ fn angle_tolerance() -> f64 {
 }
 
 /// How much work the views and the pointer did, counted in tests: each curve's shape built,
-/// and each pair of curves tried for a crossing.
+/// each pair of curves tried for a crossing, and each line or point on one the implied
+/// classes look at as they join.
 #[cfg(test)]
 pub(super) mod work {
     use std::cell::Cell;
@@ -72,6 +73,11 @@ pub(super) mod work {
     thread_local! {
         pub(in crate::sketch_tools) static SHAPES: Cell<usize> = const { Cell::new(0) };
         pub(in crate::sketch_tools) static PAIRS: Cell<usize> = const { Cell::new(0) };
+        pub(in crate::sketch_tools) static VISITS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(in crate::sketch_tools) fn visit() {
+        VISITS.with(|c| c.set(c.get() + 1));
     }
 
     pub(in crate::sketch_tools) fn shape() {
@@ -485,6 +491,8 @@ pub(super) struct Pointer<'v, 's> {
     /// The newest read's member states: which points are fully defined, so which of the
     /// relations it infers the sketch already implies ([`Implied`]).
     pub(super) states: &'v SketchStates,
+    /// The view's classes, built once for it ([`ViewClasses`]).
+    pub(super) classes: &'v ViewClasses,
 }
 
 /// Where two curves near the pointer cross: how far from it, the place, whether one of the
@@ -520,6 +528,11 @@ fn nearest<K: Ord, T>(items: impl Iterator<Item = (f64, K, T)>) -> Option<T> {
 }
 
 impl Pointer<'_, '_> {
+    /// The view's classes, built the first time a relation is judged on it.
+    pub(super) fn implied(&self) -> &Implied {
+        self.classes.of(&self.view.sketch, self.states)
+    }
+
     /// The point of the sketch nearest `at`, within the tolerance.
     fn point_near(&self, at: Xy) -> Option<(f64, ElementId)> {
         nearest(self.view.points.iter().filter_map(|(id, &p)| {
@@ -581,7 +594,7 @@ impl Pointer<'_, '_> {
         if ons.is_empty() {
             return ons;
         }
-        let mut implied = Implied::of(&self.view.sketch, self.states);
+        let mut implied = self.implied().clone();
         let point = Key::Fresh(0);
         implied.assert(&Rel::OnLine(point.clone(), line.clone()));
         let mut kept = Vec::new();

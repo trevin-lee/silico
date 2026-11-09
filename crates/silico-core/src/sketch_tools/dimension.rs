@@ -78,6 +78,7 @@
 use super::adds::Adds;
 use super::build::Builder;
 use super::geometry::{cross, distance, dot, length, scale, sub, unit};
+use super::implied::ViewClasses;
 use super::infer::{Pointer, View};
 use super::{AddToken, Context, Message, NewIds, Outcome, Xy, geometry};
 use crate::command::Revision;
@@ -200,6 +201,8 @@ pub struct SmartDimension {
     /// What the press in progress changed, as it was before it, for
     /// [`DimensionEvent::Cancel`] to put back: none with no press in progress.
     before_press: Option<BeforePress>,
+    /// The classes of the newest view, built once for it ([`ViewClasses`]).
+    classes: ViewClasses,
 }
 
 /// Smart Dimension before a press: whether a press was down, and where the pointer was.
@@ -442,6 +445,7 @@ impl SmartDimension {
             placed: None,
             preview: DimensionPreview::default(),
             before_press: None,
+            classes: ViewClasses::default(),
         }
     }
 
@@ -591,6 +595,10 @@ impl SmartDimension {
         }
         let pending = self.adds.members();
         let view = View::of(context.sketch, &pending);
+        self.classes.keep_for(context.sketch, &pending, states);
+        // Taken for the event, which `self`'s own calls below borrow through the pointer,
+        // and put back at its end.
+        let classes = std::mem::take(&mut self.classes);
         let closed = self.revalidate(&view);
         let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
             context.tolerance
@@ -603,6 +611,7 @@ impl SmartDimension {
             infer: true,
             woken: &[],
             states,
+            classes: &classes,
         };
         let event = match event {
             Some(DimensionEvent::Cancel) => {
@@ -645,6 +654,7 @@ impl SmartDimension {
         }
         let Some(event) = event else {
             self.preview = self.drawn(&view, &pointer);
+            self.classes = classes;
             return Outcome {
                 message: closed,
                 ..Outcome::default()
@@ -707,6 +717,7 @@ impl SmartDimension {
             outcome.message = closed;
         }
         self.preview = self.drawn(&view, &pointer);
+        self.classes = classes;
         outcome
     }
 

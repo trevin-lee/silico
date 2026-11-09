@@ -7,7 +7,7 @@
 
 use super::build::Builder;
 use super::geometry::distance;
-use super::implied::{Axis, Implied, Key, Rel};
+use super::implied::{Axis, Key, Rel};
 use super::infer::{Align, Along, Placed, Pointer, View, along, one_place, onto};
 use super::{
     Event, MeasureKind, Message, Outcome, Preview, PreviewMeasure, Shown, Step, Xy, within_reach,
@@ -315,7 +315,7 @@ fn not_implied(
     if along.is_empty() {
         return along;
     }
-    let mut implied = Implied::of(&pointer.view.sketch, pointer.states);
+    let mut implied = pointer.implied().clone();
     let a = match start {
         Start::Point(id, _) => Key::Point(id.clone()),
         Start::New(placed) => {

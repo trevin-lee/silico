@@ -464,7 +464,7 @@ fn ids_handed_out_in_reverse_order_leave_the_same_relations_out() {
     }
 }
 
-// ---- #431's review, round 1: what the classes read ----
+// ---- #431's review, round 1: what the classes read, and how much work they take ----
 
 /// `forms` as `s`'s constraints, numbered k0000001 on, in order.
 fn constrained(mut s: Sketch, forms: Vec<Form>) -> Sketch {
@@ -607,11 +607,7 @@ fn a_point_on_a_line_whose_end_is_on_a_level_line_is_level_with_it_once_that_lin
             },
         ],
     );
-    assert!(implied_by(
-        &s,
-        &fixing(&[]),
-        &level("q0000001", "f0000001")
-    ));
+    assert!(implied_by(&s, &fixing(&[]), &level("q0000001", "f0000001")));
 }
 
 /// A `distance_y` (`y` true) or `distance_x` of `nm` nanometres between q0000001 (10, 10)
@@ -620,7 +616,11 @@ fn distance(y: bool, nm: i64, driving: bool) -> Sketch {
     let mut s = empty();
     s.points.push(point("q0000001", 10.0, 10.0));
     s.points.push(point("q0000002", 40.0, 10.0));
-    let (a, b, value) = (el("q0000001"), el("q0000002"), crate::document::Length::from_nm(nm));
+    let (a, b, value) = (
+        el("q0000001"),
+        el("q0000002"),
+        crate::document::Length::from_nm(nm),
+    );
     let form = if y {
         Form::DistanceY {
             a,
@@ -649,7 +649,11 @@ fn a_driving_distance_of_zero_holds_two_points_level_and_no_other_does() {
     assert!(implied_by(&distance(true, 0, true), &states, &level(a, b)));
     assert!(!implied_by(&distance(true, 0, true), &states, &plumb(a, b)));
     assert!(!implied_by(&distance(true, 1, true), &states, &level(a, b)));
-    assert!(!implied_by(&distance(true, 0, false), &states, &level(a, b)));
+    assert!(!implied_by(
+        &distance(true, 0, false),
+        &states,
+        &level(a, b)
+    ));
 }
 
 #[test]
@@ -658,7 +662,74 @@ fn a_driving_x_distance_of_zero_holds_two_points_plumb_and_no_other_does() {
     let states = fixing(&[]);
     let (a, b) = ("q0000001", "q0000002");
     assert!(implied_by(&distance(false, 0, true), &states, &plumb(a, b)));
-    assert!(!implied_by(&distance(false, 0, true), &states, &level(a, b)));
-    assert!(!implied_by(&distance(false, 1, true), &states, &plumb(a, b)));
-    assert!(!implied_by(&distance(false, 0, false), &states, &plumb(a, b)));
+    assert!(!implied_by(
+        &distance(false, 0, true),
+        &states,
+        &level(a, b)
+    ));
+    assert!(!implied_by(
+        &distance(false, 1, true),
+        &states,
+        &plumb(a, b)
+    ));
+    assert!(!implied_by(
+        &distance(false, 0, false),
+        &states,
+        &plumb(a, b)
+    ));
+}
+
+/// A grid of 20 rows and 20 columns, each a line from end to end, rows `horizontal` and
+/// columns `vertical`, and 400 points, each `on` its row and its column: 480 points and 840
+/// constraints, the 40 directions first.
+fn grid() -> Sketch {
+    let mut s = empty();
+    let mut forms = Vec::new();
+    for k in 0..20u32 {
+        let at = 10.0 * f64::from(k + 1);
+        s = with_line(s, &format!("r{k:07}"), [0.0, at], [210.0, at]);
+        s = with_line(s, &format!("c{k:07}"), [at, 0.0], [at, 210.0]);
+        forms.push(Form::Horizontal {
+            line: el(&format!("r{k:07}")),
+        });
+        forms.push(Form::Vertical {
+            line: el(&format!("c{k:07}")),
+        });
+    }
+    for row in 0..20u32 {
+        for column in 0..20u32 {
+            let name = format!("g{:07}", row * 20 + column);
+            s.points.push(point(
+                &name,
+                10.0 * f64::from(column + 1),
+                10.0 * f64::from(row + 1),
+            ));
+            forms.push(on(&name, el(&format!("r{row:07}"))));
+            forms.push(on(&name, el(&format!("c{column:07}"))));
+        }
+    }
+    let s = constrained(s, forms);
+    assert_eq!((s.points.len(), s.constraints.len()), (480, 840));
+    s
+}
+
+#[test]
+fn a_line_previewed_over_a_constrained_grid_visits_each_point_on_a_line_a_few_times_a_move() {
+    // The Line tool started at (300, 300), clear of the grid, and moved to (340, 300.5),
+    // 0.7° off level: the preview shows `horizontal`, judged against the grid's classes,
+    // built for this view on this move. Building them visits each point on a line a few
+    // times at most, not once for each `on` before it: at most four times the grid's 840
+    // constraints. Moved again, to (345, 300.5), on the same view: they're kept, and only
+    // the gesture's own relation is joined into a copy, a few visits at most.
+    let mut d = Drive::new(ToolKind::Line, grid());
+    d.click(300.0, 300.0);
+    let visits = || infer::work::VISITS.with(|c| c.get());
+    infer::work::VISITS.with(|c| c.set(0));
+    d.to(340.0, 300.5);
+    let built = visits();
+    assert!(shows(&d, &Relation::Horizontal));
+    assert!(built > 0 && built <= 4 * 840, "{built} visits");
+    d.to(345.0, 300.5);
+    assert!(shows(&d, &Relation::Horizontal));
+    assert!(visits() - built <= 4, "{} visits", visits() - built);
 }

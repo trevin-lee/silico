@@ -5,15 +5,18 @@
 //! Two partitions over the sketch's points and the origin: **Y**, the points level with each
 //! other, and **X**, the points plumb with each other, each a union-find keyed by [`Key`]. A
 //! class is **fixed** when it holds the origin, or a point the read marks fully defined. They
-//! are seeded from the sketch's constraints (the read's and the pending adds', as the view
+//! are built from the sketch's constraints (the read's and the pending adds', as the view
 //! merges them), each read for the equation it asserts:
 //!
 //! - Y: `horizontal(L)` joins L's ends; `horizontal_points(a, b)` joins a and b;
 //!   `on(p, x_axis)` joins p and the origin; a driving `distance_y(a, b)` of exactly 0 joins
 //!   a and b. X likewise, with `vertical`, `vertical_points`, `on(p, y_axis)`, and a driving
 //!   `distance_x` of 0.
-//! - Propagated to a fixpoint: `on(p, L)` or `midpoint(p, L)`, L a line whose ends share a
-//!   class, puts p in that class.
+//! - Through the lines, to a fixpoint: `on(p, L)` or `midpoint(p, L)`, L a line whose ends
+//!   share a class, puts p in that class. Each line is taken up once in each partition, when
+//!   a join first puts its ends in one class, and each point on it then joined to it, so the
+//!   work is about linear in the constraints, never a pass over every point on a line for
+//!   each join.
 //!
 //! Nothing else is read: what the other forms imply is PlaneGCS's to judge, and the read
 //! reports it. Then a relation a tool infers is judged, in the order the gesture makes them,
@@ -31,8 +34,10 @@
 //! never judged. Classes are compared by membership, and IDs are keys only: the result is a
 //! function of the sketch, its read, and the gesture, never of the order IDs sort in.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::document::sketch_edit::Members;
 use crate::document::{ElementId, Form, Length, Reference, Sketch};
 use crate::sketch_states::{MemberState, SketchStates};
 
@@ -44,6 +49,39 @@ use crate::sketch_states::{MemberState, SketchStates};
 pub fn implied_by(sketch: &Sketch, states: &SketchStates, form: &Form) -> bool {
     let implied = Implied::of(sketch, states);
     implied.implies(&implied.rel(form))
+}
+
+/// The classes of a tool's newest view, built once for it, the first time a relation is
+/// judged on it, and kept while what they're built from stays the same: the read's sketch,
+/// the adds pending on it, and the read's states. Each judgement copies them, to merge a
+/// gesture's own relations into.
+#[derive(Debug, Default)]
+pub(super) struct ViewClasses {
+    of: Option<(Sketch, Members, SketchStates)>,
+    classes: OnceCell<Implied>,
+}
+
+impl ViewClasses {
+    /// Kept for a view of `sketch` with `pending` on it, whose read gives `states`: let go,
+    /// to be built again, if they were another view's.
+    pub(super) fn keep_for(&mut self, sketch: &Sketch, pending: &Members, states: &SketchStates) {
+        let same = self
+            .of
+            .as_ref()
+            .is_some_and(|(s, p, st)| s == sketch && p == pending && st == states);
+        if !same {
+            *self = ViewClasses {
+                of: Some((sketch.clone(), pending.clone(), states.clone())),
+                classes: OnceCell::new(),
+            };
+        }
+    }
+
+    /// The classes of `view` (the sketch [`keep_for`](Self::keep_for) was given, with its
+    /// pending adds), its points fixed as `states` marks them: built the first time asked.
+    pub(super) fn of(&self, view: &Sketch, states: &SketchStates) -> &Implied {
+        self.classes.get_or_init(|| Implied::of(view, states))
+    }
 }
 
 /// A point a relation reads: the origin, a point of the sketch, or one a gesture is placing
@@ -74,48 +112,115 @@ pub(super) enum Axis {
     Plumb,
 }
 
-/// One partition: each key's parent toward its class's root, and the roots of the classes
-/// that are fixed. A key never seen is a class of its own, fixed if [`Classes::fixed_keys`]
-/// says so.
-#[derive(Debug, Clone, Default)]
+impl Axis {
+    const BOTH: [Axis; 2] = [Axis::Level, Axis::Plumb];
+}
+
+/// One partition, a union-find by size: each key's slot, each slot's parent toward its
+/// class's root, and, for each root, its class's members and whether it's fixed. A key never
+/// seen is a class of its own, not fixed (the origin, and each point the read marks fully
+/// defined, are seen as the classes are made: [`Classes::fix`]).
+#[derive(Debug, Clone)]
 struct Classes {
-    parent: BTreeMap<Key, Key>,
-    fixed: BTreeSet<Key>,
+    slots: BTreeMap<Key, usize>,
+    keys: Vec<Key>,
+    parent: Vec<usize>,
+    members: Vec<Vec<usize>>,
+    fixed: Vec<bool>,
 }
 
 impl Classes {
-    fn root(&self, key: &Key) -> Key {
-        let mut at = key.clone();
-        while let Some(up) = self.parent.get(&at) {
-            if *up == at {
-                break;
-            }
-            at = up.clone();
+    /// The origin's class, fixed, and no other.
+    fn new() -> Classes {
+        let mut classes = Classes {
+            slots: BTreeMap::new(),
+            keys: Vec::new(),
+            parent: Vec::new(),
+            members: Vec::new(),
+            fixed: Vec::new(),
+        };
+        classes.fix(&Key::Origin);
+        classes
+    }
+
+    /// `key`'s slot, a class of its own if it had none.
+    fn slot(&mut self, key: &Key) -> usize {
+        if let Some(&slot) = self.slots.get(key) {
+            return slot;
         }
-        at
+        let slot = self.keys.len();
+        self.slots.insert(key.clone(), slot);
+        self.keys.push(key.clone());
+        self.parent.push(slot);
+        self.members.push(vec![slot]);
+        self.fixed.push(false);
+        slot
+    }
+
+    /// The root of `slot`'s class: at most a logarithm of the keys away, as each join hangs
+    /// the smaller class under the larger.
+    fn find(&self, mut slot: usize) -> usize {
+        while let Some(&up) = self.parent.get(slot)
+            && up != slot
+        {
+            slot = up;
+        }
+        slot
+    }
+
+    fn root(&self, key: &Key) -> Option<usize> {
+        self.slots.get(key).map(|&slot| self.find(slot))
     }
 
     fn same(&self, a: &Key, b: &Key) -> bool {
-        self.root(a) == self.root(b)
+        a == b || matches!((self.root(a), self.root(b)), (Some(x), Some(y)) if x == y)
     }
 
     fn is_fixed(&self, key: &Key) -> bool {
-        self.fixed.contains(&self.root(key))
+        self.root(key)
+            .is_some_and(|root| self.fixed.get(root).copied().unwrap_or(false))
     }
 
-    /// `a`'s class and `b`'s made one, its root the lesser (so the classes are the same
-    /// whatever order they're joined in), fixed if either was. Whether they were two.
-    fn join(&mut self, a: &Key, b: &Key) -> bool {
-        let (ra, rb) = (self.root(a), self.root(b));
+    /// `key`'s class fixed, at its root.
+    fn fix(&mut self, key: &Key) {
+        let slot = self.slot(key);
+        let root = self.find(slot);
+        if let Some(fixed) = self.fixed.get_mut(root) {
+            *fixed = true;
+        }
+    }
+
+    /// `a`'s class and `b`'s made one, the smaller hung under the larger, fixed if either
+    /// was: the keys that were the smaller's, if they were two (which root a class has
+    /// depends on the order of its joins, never who's in it).
+    fn join(&mut self, a: &Key, b: &Key) -> Option<Vec<Key>> {
+        let (sa, sb) = (self.slot(a), self.slot(b));
+        let (ra, rb) = (self.find(sa), self.find(sb));
         if ra == rb {
-            return false;
+            return None;
         }
-        let (low, high) = if ra < rb { (ra, rb) } else { (rb, ra) };
-        if self.fixed.remove(&high) {
-            self.fixed.insert(low.clone());
+        let size = |root: usize| self.members.get(root).map_or(0, Vec::len);
+        let (big, small) = if size(ra) >= size(rb) {
+            (ra, rb)
+        } else {
+            (rb, ra)
+        };
+        let moved = self.members.get_mut(small).map(std::mem::take)?;
+        let fixed = self.fixed.get(small).copied().unwrap_or(false);
+        if let Some(parent) = self.parent.get_mut(small) {
+            *parent = big;
         }
-        self.parent.insert(high, low);
-        true
+        if let Some(was) = self.fixed.get_mut(big) {
+            *was |= fixed;
+        }
+        let keys = moved
+            .iter()
+            .filter_map(|&slot| self.keys.get(slot).cloned())
+            .collect();
+        if let Some(members) = self.members.get_mut(big) {
+            members.extend(moved);
+        }
+        Some(keys)
     }
 }
 
@@ -133,8 +238,8 @@ pub(super) enum Rel {
     Other,
 }
 
-/// The two partitions of a sketch, and what propagates through its lines.
-#[derive(Debug, Clone, Default)]
+/// The two partitions of a sketch, and what joins through its lines.
+#[derive(Debug, Clone)]
 pub(super) struct Implied {
     y: Classes,
     x: Classes,
@@ -142,46 +247,80 @@ pub(super) struct Implied {
     lines: BTreeMap<ElementId, (Key, Key)>,
     /// Each circle's and arc's centre, by its ID.
     centres: BTreeMap<ElementId, Key>,
-    /// Each point on a line, or at its middle.
-    on_lines: Vec<(Key, ElementId)>,
+    /// The lines each point ends.
+    ends: BTreeMap<Key, Vec<ElementId>>,
+    /// The points on each line, or at its middle.
+    on: BTreeMap<ElementId, Vec<Key>>,
+    /// The lines each partition holds level (Y) or plumb (X): their ends in one class, and
+    /// each point on them joined to it.
+    flat_y: BTreeSet<ElementId>,
+    flat_x: BTreeSet<ElementId>,
 }
 
 impl Implied {
     /// The classes of `sketch` (the view's: the read's members and the pending adds'), its
     /// points fixed as `states` marks them.
     pub(super) fn of(sketch: &Sketch, states: &SketchStates) -> Implied {
-        let mut implied = Implied::default();
-        implied.y.fixed.insert(Key::Origin);
-        implied.x.fixed.insert(Key::Origin);
+        let mut implied = Implied {
+            y: Classes::new(),
+            x: Classes::new(),
+            lines: BTreeMap::new(),
+            centres: BTreeMap::new(),
+            ends: BTreeMap::new(),
+            on: BTreeMap::new(),
+            flat_y: BTreeSet::new(),
+            flat_x: BTreeSet::new(),
+        };
         for (id, state) in &states.points {
             if *state == MemberState::FullyDefined {
-                implied.y.fixed.insert(Key::Point(id.clone()));
-                implied.x.fixed.insert(Key::Point(id.clone()));
+                let key = Key::Point(id.clone());
+                implied.y.fix(&key);
+                implied.x.fix(&key);
             }
         }
         for line in &sketch.lines {
-            implied
-                .lines
-                .entry(line.id.clone())
-                .or_insert((Key::Point(line.from.clone()), Key::Point(line.to.clone())));
+            implied.line(
+                &line.id,
+                Key::Point(line.from.clone()),
+                Key::Point(line.to.clone()),
+            );
         }
-        for circle in &sketch.circles {
+        for (id, center) in sketch
+            .circles
+            .iter()
+            .map(|c| (&c.id, &c.center))
+            .chain(sketch.arcs.iter().map(|a| (&a.id, &a.center)))
+        {
             implied
                 .centres
-                .entry(circle.id.clone())
-                .or_insert(Key::Point(circle.center.clone()));
-        }
-        for arc in &sketch.arcs {
-            implied
-                .centres
-                .entry(arc.id.clone())
-                .or_insert(Key::Point(arc.center.clone()));
+                .entry(id.clone())
+                .or_insert(Key::Point(center.clone()));
         }
         for constraint in &sketch.constraints {
             let rel = implied.rel(&constraint.form);
             implied.assert(&rel);
         }
         implied
+    }
+
+    /// The line `id` from `a` to `b` (a gesture's own, not yet named, as well as the
+    /// sketch's), if there's none of that ID yet; level or plumb at once if its ends already
+    /// share a class.
+    pub(super) fn line(&mut self, id: &ElementId, a: Key, b: Key) {
+        if self.lines.contains_key(id) {
+            return;
+        }
+        for end in [&a, &b] {
+            self.ends.entry(end.clone()).or_default().push(id.clone());
+        }
+        self.lines.insert(id.clone(), (a.clone(), b.clone()));
+        for axis in Axis::BOTH {
+            if self.classes(axis).same(&a, &b) {
+                for (p, end) in self.flatten(axis, id) {
+                    self.join(axis, p, end);
+                }
+            }
+        }
     }
 
     /// What `form` asserts, as the classes read it, against the classes as they stand (an
@@ -278,10 +417,15 @@ impl Implied {
                 let classes = self.classes(*axis);
                 classes.same(a, b) || (classes.is_fixed(a) && classes.is_fixed(b))
             }
-            Rel::OnLine(p, line) => self
-                .level_or_plumb(line)
-                .into_iter()
-                .any(|(axis, end)| self.implies(&Rel::Same(axis, p.clone(), end))),
+            Rel::OnLine(p, line) => {
+                let Some((end, other)) = self.lines.get(line) else {
+                    return false;
+                };
+                Axis::BOTH.into_iter().any(|axis| {
+                    self.classes(axis).same(end, other)
+                        && self.implies(&Rel::Same(axis, p.clone(), end.clone()))
+                })
+            }
             Rel::Reads(keys) => {
                 !keys.is_empty()
                     && keys
@@ -292,48 +436,76 @@ impl Implied {
         }
     }
 
-    /// `rel` kept: merged into the classes, and what it lets through the lines propagated.
+    /// `rel` held: merged into the classes, and what it lets through the lines joined.
     pub(super) fn assert(&mut self, rel: &Rel) {
         match rel {
-            Rel::Same(axis, a, b) => {
-                if self.classes_mut(*axis).join(a, b) {
-                    self.propagate();
-                }
-            }
+            Rel::Same(axis, a, b) => self.join(*axis, a.clone(), b.clone()),
             Rel::OnLine(p, line) => {
-                self.on_lines.push((p.clone(), line.clone()));
-                self.propagate();
+                let Some((end, _)) = self.lines.get(line).cloned() else {
+                    return;
+                };
+                #[cfg(test)]
+                super::infer::work::visit();
+                self.on.entry(line.clone()).or_default().push(p.clone());
+                for axis in Axis::BOTH {
+                    if self.flat(axis).contains(line) {
+                        self.join(axis, p.clone(), end.clone());
+                    }
+                }
             }
             Rel::Reads(_) | Rel::Other => {}
         }
     }
 
-    /// The line `line`'s classes it's level or plumb in, each with one of its ends.
-    fn level_or_plumb(&self, line: &ElementId) -> Vec<(Axis, Key)> {
-        let Some((a, b)) = self.lines.get(line) else {
-            return Vec::new();
-        };
-        [Axis::Level, Axis::Plumb]
-            .into_iter()
-            .filter(|axis| self.classes(*axis).same(a, b))
-            .map(|axis| (axis, a.clone()))
-            .collect()
-    }
-
-    /// Each point on a line put in each class the line is level or plumb in, until nothing
-    /// more joins.
-    fn propagate(&mut self) {
-        loop {
-            let mut joined = false;
-            for (p, line) in self.on_lines.clone() {
-                for (axis, end) in self.level_or_plumb(&line) {
-                    joined |= self.classes_mut(axis).join(&p, &end);
+    /// `a`'s and `b`'s classes in `axis` made one, and each join that lets through the
+    /// lines: a line whose ends that puts in one class is taken up (each line once), and each
+    /// point on it joined to it, and so on, until nothing more joins. Only the lines ending at
+    /// a point of the smaller class are looked at, so each point's lines are looked at as
+    /// often as its class at least doubles.
+    fn join(&mut self, axis: Axis, a: Key, b: Key) {
+        let mut work = vec![(a, b)];
+        while let Some((a, b)) = work.pop() {
+            let Some(moved) = self.classes_mut(axis).join(&a, &b) else {
+                continue;
+            };
+            let mut taken = Vec::new();
+            for key in &moved {
+                for line in self.ends.get(key).into_iter().flatten() {
+                    #[cfg(test)]
+                    super::infer::work::visit();
+                    if let Some((e, f)) = self.lines.get(line)
+                        && !self.flat(axis).contains(line)
+                        && self.classes(axis).same(e, f)
+                    {
+                        taken.push(line.clone());
+                    }
                 }
             }
-            if !joined {
-                return;
+            for line in taken {
+                work.extend(self.flatten(axis, &line));
             }
         }
+    }
+
+    /// The line `line` held level (Y) or plumb (X) in `axis`, if it wasn't already: the
+    /// joins each point on it then needs, to its first end.
+    fn flatten(&mut self, axis: Axis, line: &ElementId) -> Vec<(Key, Key)> {
+        if !self.flat_mut(axis).insert(line.clone()) {
+            return Vec::new();
+        }
+        let Some((end, _)) = self.lines.get(line) else {
+            return Vec::new();
+        };
+        self.on
+            .get(line)
+            .into_iter()
+            .flatten()
+            .map(|p| {
+                #[cfg(test)]
+                super::infer::work::visit();
+                (p.clone(), end.clone())
+            })
+            .collect()
     }
 
     fn classes(&self, axis: Axis) -> &Classes {
@@ -347,6 +519,20 @@ impl Implied {
         match axis {
             Axis::Level => &mut self.y,
             Axis::Plumb => &mut self.x,
+        }
+    }
+
+    fn flat(&self, axis: Axis) -> &BTreeSet<ElementId> {
+        match axis {
+            Axis::Level => &self.flat_y,
+            Axis::Plumb => &self.flat_x,
+        }
+    }
+
+    fn flat_mut(&mut self, axis: Axis) -> &mut BTreeSet<ElementId> {
+        match axis {
+            Axis::Level => &mut self.flat_y,
+            Axis::Plumb => &mut self.flat_x,
         }
     }
 }

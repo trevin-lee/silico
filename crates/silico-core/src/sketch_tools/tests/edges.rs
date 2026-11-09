@@ -419,6 +419,75 @@ fn a_sketch_at_the_gates_limits_builds_each_shape_once_and_tries_few_crossings()
     );
 }
 
+#[test]
+fn a_constrained_sketch_at_the_gates_limits_propagates_its_classes_in_bounded_work() {
+    // 512 points (the gate's 1,024 unknowns), 256 lines, each from p(2i) to p(2i + 1) and
+    // `horizontal`, and `on`s up to the gate's 10,000 constraints: each point, in turn, on
+    // each line but its own, 9,744 in all, so every line's class joins one through the
+    // points on them. The Line tool started at (−1000, −1000), clear of them, and moved to
+    // (−960, −999.5), 0.7° off level: the preview shows `horizontal`, judged against those
+    // classes. Their propagation visits each `on`, and each line a merge touches, a few
+    // times at most: at most five times the 10,000 constraints, not once for each `on`
+    // before it (about 10⁸ visits).
+    let mut s = empty();
+    for j in 0..512u32 {
+        s.points.push(point(
+            &format!("p{j:07}"),
+            f64::from(j % 32),
+            f64::from(j / 32),
+        ));
+    }
+    let mut forms = Vec::new();
+    for i in 0..256u32 {
+        let name = format!("n{i:07}");
+        s.lines.push(line(
+            &name,
+            &format!("p{:07}", 2 * i),
+            &format!("p{:07}", 2 * i + 1),
+        ));
+        forms.push(Form::Horizontal {
+            line: Reference::Element(id(&name)),
+        });
+    }
+    'ons: for j in 0..512u32 {
+        for i in 0..256u32 {
+            if j / 2 == i {
+                continue;
+            }
+            if forms.len() == 10_000 {
+                break 'ons;
+            }
+            forms.push(Form::On {
+                point: Reference::Element(id(&format!("p{j:07}"))),
+                curve: Reference::Element(id(&format!("n{i:07}"))),
+            });
+        }
+    }
+    for (k, form) in forms.into_iter().enumerate() {
+        s.constraints.push(SketchConstraint {
+            id: id(&format!("k{k:07}")),
+            form,
+        });
+    }
+    assert_eq!(
+        (s.points.len(), s.lines.len(), s.constraints.len()),
+        (512, 256, 10_000)
+    );
+    let mut d = Drive::new(ToolKind::Line, s);
+    d.click(-1000.0, -1000.0);
+    infer::work::VISITS.with(|c| c.set(0));
+    d.to(-960.0, -999.5);
+    let visits = infer::work::VISITS.with(|c| c.get());
+    assert!(
+        d.tool
+            .preview()
+            .shown
+            .iter()
+            .any(|shown| shown.relation == Relation::Horizontal)
+    );
+    assert!(visits > 0 && visits <= 5 * 10_000, "{visits} visits");
+}
+
 // --- Review items 8, 9, 10: arcs ---------------------------------------------------------
 
 #[test]
