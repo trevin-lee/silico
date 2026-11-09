@@ -1435,3 +1435,81 @@ fn a_rectangles_corner_at_a_middle_is_judged_after_its_first_corners_relations()
         ])]
     );
 }
+
+#[test]
+fn a_centrepoint_arcs_end_at_a_middle_is_judged_after_its_centres_and_its_starts_relations() {
+    // #431 round 5, T20. Three lines, each held `horizontal`, so each one's ends are a Y class
+    // of its own (two drawn other than level: the classes are the constraints', not the
+    // drawing's): na000001 (45, 20)-(70, 20); nb000001 (50, 15)-(50, 40); and nc000001
+    // (40, 40)-(80, 0), the line y = 80 − x. A centrepoint arc:
+    // - centred at (50, 20), where na000001 and nb000001 cross (no middle within reach): its
+    //   `on`s of both, which join their classes;
+    // - its start at (50, 30), where nb000001 and nc000001 cross: its `on`s of both, which
+    //   join nc000001's class to the two;
+    // - swept clockwise to (60, 20), radius 10: nc000001's middle, through which na000001
+    //   runs. `midpoint` nc000001 puts it in the one class, so its `on` na000001 is
+    //   implied and goes. After the start's relations alone, na000001's class would still be
+    //   apart and it would stay; so would it on the view's classes alone.
+    // Four `on`s, the centre's two and the start's two.
+    let s = with_line(empty(), "na000001", [45.0, 20.0], [70.0, 20.0]);
+    let s = with_line(s, "nb000001", [50.0, 15.0], [50.0, 40.0]);
+    let s = with_line(s, "nc000001", [40.0, 40.0], [80.0, 0.0]);
+    let s = constrained(
+        s,
+        vec![
+            Form::Horizontal {
+                line: el("na000001"),
+            },
+            Form::Horizontal {
+                line: el("nb000001"),
+            },
+            Form::Horizontal {
+                line: el("nc000001"),
+            },
+        ],
+    );
+    let mut d = Drive::new(ToolKind::CenterpointArc, s);
+    d.click(50.0, 20.0)
+        .click(50.0, 30.0)
+        .to(57.0, 27.0)
+        .click(60.0, 20.0);
+    assert_eq!(d.made.len(), 1, "{:?}", d.adds());
+    assert_eq!(ons_added(&d), 4, "{:?}", d.adds());
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (50, 20)",
+            "point (50, 30)",
+            "point (60, 20)",
+            "arc (50, 20) (60, 20)->(50, 30)",
+            "on (50, 20) line #(45, 20)-#(70, 20)",
+            "on (50, 20) line #(50, 15)-#(50, 40)",
+            "on (50, 30) line #(50, 15)-#(50, 40)",
+            "on (50, 30) line #(40, 40)-#(80, 0)",
+            "midpoint (60, 20) line #(40, 40)-#(80, 0)",
+        ])]
+    );
+}
+
+#[test]
+fn an_arcs_second_point_hovered_shows_what_its_click_sets() {
+    // #431 round 5, T21. T16's sketch: an arc's first point clicked at (50, 20),
+    // n0000003's middle, on n0000001 and n0000002 (a centrepoint arc's centre, a
+    // three-point arc's start), which join the two lines' classes; then the pointer at
+    // (60, 20), n0000002's middle, through which n0000001 runs. Its `on` n0000001 is
+    // implied after the first point's relations, so the hover shows the `midpoint` alone, as
+    // the click would set it (on the view's classes alone, the `on` too).
+    for kind in [ToolKind::CenterpointArc, ToolKind::ThreePointArc] {
+        let mut d = Drive::new(kind, two_level_lines_and_a_cross());
+        d.click(50.0, 20.0).to(60.0, 20.0);
+        let there: Vec<Relation> = d
+            .tool
+            .preview()
+            .shown
+            .iter()
+            .filter(|s| s.at == [60.0, 20.0])
+            .map(|s| s.relation.clone())
+            .collect();
+        assert_eq!(there, [Relation::Midpoint(id("n0000002"))], "{kind:?}");
+    }
+}
