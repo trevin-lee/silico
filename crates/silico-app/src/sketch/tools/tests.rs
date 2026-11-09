@@ -1238,6 +1238,7 @@ fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel
         }
     });
     h.ctx.set_os(egui::os::OperatingSystem::Nix);
+    crate::theme::apply(&h.ctx);
     h.run();
     let mut buttons: Vec<(f32, String, Option<String>)> = h
         .query_all_by_role(egui::accesskit::Role::Button)
@@ -1290,9 +1291,10 @@ fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel
     assert!(widths[0] >= crate::menu::least_width() - 1e-3, "{widths:?}");
     // The widest item's own width where it's past the least (`crate::menu::item_width`'s
     // rule, the prototype's `.mi`), else the least.
-    // Measured on a context of its own, with egui's default fonts, as the harness's.
+    // Measured on a context of its own, in the app's theme (its fonts), as the harness's.
     let measuring = egui::Context::default();
     measuring.set_os(egui::os::OperatingSystem::Nix);
+    crate::theme::apply(&measuring);
     let mut ui_widths: Vec<f32> = Vec::new();
     let mut measured = measuring.run_ui(Default::default(), |ui| {
         ui_widths = menu_items(ui.ctx(), true)
@@ -1305,6 +1307,9 @@ fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel
         .iter()
         .copied()
         .fold(crate::menu::least_width(), f32::max);
+    // Its widest item, Finish Sketch with its caps, is past a menu's least: the width is that
+    // item's own, not the least.
+    assert!(widest > crate::menu::least_width(), "{ui_widths:?}");
     assert!(
         (widths[0] - widest).abs() < 1e-3,
         "{widths:?} {ui_widths:?}"

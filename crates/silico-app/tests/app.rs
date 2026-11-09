@@ -35989,15 +35989,9 @@ fn enter_on_the_context_menus_create_sketch_opens_its_planes() {
         select_other(&h).context().unwrap().items[lit].label,
         "Create Sketch"
     );
-    assert!(
-        h.query_by_role_and_label(Role::Menu, "Create Sketch")
-            .is_none()
-    );
+    assert!(!planes_open(&h));
     h.key_press(Key::Enter);
-    step_until(&mut h, "its planes", |h| {
-        h.query_by_role_and_label(Role::Menu, "Create Sketch")
-            .is_some()
-    });
+    step_until(&mut h, "its planes", planes_open);
     for _ in 0..4 {
         step(&mut h);
     }
@@ -36057,9 +36051,35 @@ fn enter_on_create_sketch_opens_its_planes_with_the_pointer_resting_on_fit() {
 }
 
 #[test]
+fn the_pointer_moved_onto_another_item_lets_the_planes_enter_opened_go() {
+    // #444's review: Enter on Create Sketch opens its planes; the pointer then moved onto Home
+    // view lets them go, as hovering another item closes a submenu in every menu.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(planes_open(&h));
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Home view")
+        .hover();
+    step_until(&mut h, "its planes let go", |h| !planes_open(h));
+    assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn esc_closes_the_menu_and_its_planes_and_a_menu_opened_again_has_none_open() {
     // The planes open from the pointer on Create Sketch; Esc closes both, and the menu
-    // opened again over nothing opens with none.
+    // opened again over nothing opens with none: egui resets the open item of a menu not
+    // shown for a frame.
     use eframe::egui::Key;
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
@@ -36085,8 +36105,9 @@ fn esc_closes_the_menu_and_its_planes_and_a_menu_opened_again_has_none_open() {
 #[test]
 fn a_menu_opened_again_by_a_right_click_has_none_of_the_last_menus_planes_open() {
     // #444's review: the planes opened by Enter, then a right click elsewhere over nothing:
-    // the new menu (another, keyed by its own serial) opens with no planes, whatever egui
-    // kept of the last one's.
+    // the new menu opens with no planes. Its layer and its submenu's are the last one's;
+    // what holds it is egui's own reset of a menu's open item once the menu wasn't shown for
+    // a frame (`MenuState::from_id`).
     use eframe::egui::{Key, Modifiers};
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
@@ -36134,10 +36155,7 @@ fn hovering_an_off_create_sketch_opens_no_planes() {
     for _ in 0..8 {
         step(&mut h);
     }
-    assert!(
-        h.query_by_role_and_label(Role::Menu, "Create Sketch")
-            .is_none()
-    );
+    assert!(!planes_open(&h));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -36216,17 +36234,11 @@ fn over_nothing_the_context_menus_create_sketch_opens_the_toolbars_planes_and_on
             context_said(&h).last(),
             Some(&("Create Sketch".to_owned(), None, true))
         );
-        assert!(
-            h.query_by_role_and_label(Role::Menu, "Create Sketch")
-                .is_none()
-        );
+        assert!(!planes_open(&h));
         h.get_by_role_and_label(Role::Menu, "Canvas")
             .get_by_label("Create Sketch")
             .hover();
-        step_until(&mut h, "its planes", |h| {
-            h.query_by_role_and_label(Role::Menu, "Create Sketch")
-                .is_some()
-        });
+        step_until(&mut h, "its planes", planes_open);
         // Beside it: egui lays a popup out in the frame it opens and places it in the next.
         step(&mut h);
         step(&mut h);
@@ -36241,10 +36253,7 @@ fn over_nothing_the_context_menus_create_sketch_opens_the_toolbars_planes_and_on
         planes.get_by_label("XZ plane").click();
         let sent = sketch_added(&f, &mut h);
         assert!(!select_other(&h).is_open());
-        assert!(
-            h.query_by_role_and_label(Role::Menu, "Create Sketch")
-                .is_none()
-        );
+        assert!(!planes_open(&h));
         assert_eq!(never_waits::waits(), 0);
         sent
     };
@@ -36254,10 +36263,7 @@ fn over_nothing_the_context_menus_create_sketch_opens_the_toolbars_planes_and_on
         h.get_by_role_and_label(Role::Toolbar, "CREATE")
             .get_by_label("Create Sketch")
             .click();
-        step_until(&mut h, "its planes", |h| {
-            h.query_by_role_and_label(Role::Menu, "Create Sketch")
-                .is_some()
-        });
+        step_until(&mut h, "its planes", planes_open);
         step(&mut h);
         step(&mut h);
         h.get_by_role_and_label(Role::Menu, "Create Sketch")
