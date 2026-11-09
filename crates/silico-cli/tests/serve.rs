@@ -57,6 +57,19 @@ fn serve_initializes_lists_its_tools_makes_a_document_and_ends_with_its_input() 
         r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}"#,
         "2",
     );
+    // What the binary serves is silico-mcp's committed contract, every tool's title and
+    // description with the rest. silico-mcp's own tests hold its `tools::list` to it too, but
+    // they run after most of the workspace's (nextest runs packages in name order), past the
+    // time a mutants run gives a mutant whose only catch is there; the CLI's run early.
+    let contract: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../silico-mcp/tests/contract/tools.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(tools["result"], contract);
     let tools = tools["result"]["tools"].as_array().unwrap();
     // M4.1's 26 commands, M5.1's move_feature, suppress_feature, and timeline, M5.3's
     // drag_begin, drag_move, and drag_end, M5.5's meshes, M5.10's sketch, sketch_add,
