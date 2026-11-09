@@ -1103,11 +1103,42 @@ fn a_relation_the_tools_leave_out_is_one_planegcs_finds_redundant_or_conflicting
     use silico_core::sketch_tools::implied_by;
     let mut draws = Draws(0x0051_11c0);
     let (mut left_out, mut kept_tried) = (0, 0);
+    let mut left_out_by_form = std::collections::BTreeMap::<&str, usize>::new();
     for sketch in 0..12 {
         let mut f = opened(ToolKind::Line);
         draw_chain(&mut f, &mut draws);
         draw_chain(&mut f, &mut draws);
         let mut read = f.read();
+        // What the tools added (every constraint, the sketch begun empty): none of the
+        // equalities the classes read is redundant or conflicting.
+        for c in &read.members.constraints {
+            let equality = matches!(
+                c.form,
+                Form::Horizontal { .. }
+                    | Form::Vertical { .. }
+                    | Form::HorizontalPoints { .. }
+                    | Form::VerticalPoints { .. }
+                    | Form::On {
+                        curve: Reference::XAxis | Reference::YAxis,
+                        ..
+                    }
+            );
+            let state = read.states.constraints.get(&c.id).copied();
+            assert!(
+                !equality
+                    || !matches!(
+                        state,
+                        Some(
+                            ConstraintState::Redundant
+                                | ConstraintState::PartiallyRedundant
+                                | ConstraintState::Conflicting
+                        )
+                    ),
+                "sketch {sketch}: the tools added {:?}, read {state:?}; the sketch: {:?}",
+                c.form,
+                read.members
+            );
+        }
         let equalities_only = read.members.constraints.iter().all(|c| {
             matches!(
                 c.form,
@@ -1170,6 +1201,7 @@ fn a_relation_the_tools_leave_out_is_one_planegcs_finds_redundant_or_conflicting
         for form in candidates(&read) {
             if implied_by(&read.members, &read.states, &form) {
                 left_out += 1;
+                *left_out_by_form.entry(form.type_name()).or_default() += 1;
                 let (dofs, state) = tried(&mut f, &form, &mut n);
                 assert!(
                     dofs == before
@@ -1204,6 +1236,12 @@ fn a_relation_the_tools_leave_out_is_one_planegcs_finds_redundant_or_conflicting
     // stopped drawing axes or levels would show here).
     assert!(left_out >= 20, "{left_out} left out");
     assert!(kept_tried >= 20, "{kept_tried} kept tried");
+    // Rule F's half too: a perpendicular or a parallel among those left out.
+    let directions = ["perpendicular", "parallel"]
+        .iter()
+        .filter_map(|form| left_out_by_form.get(form))
+        .sum::<usize>();
+    assert!(directions > 0, "left out by form: {left_out_by_form:?}");
 }
 
 #[test]

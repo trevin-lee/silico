@@ -36,18 +36,6 @@ fn toward(from: Xy, deg: f64, length: f64) -> Xy {
     ]
 }
 
-/// The forms of each constraint the tool's adds made, by type, sorted.
-fn types(d: &Drive) -> Vec<&'static str> {
-    let mut types: Vec<&'static str> = d
-        .made
-        .iter()
-        .flat_map(|m| &m.constraints)
-        .map(|c| c.form.type_name())
-        .collect();
-    types.sort();
-    types
-}
-
 // --- Review item 1: a line leaving an arc along an axis --------------------------------
 
 #[test]

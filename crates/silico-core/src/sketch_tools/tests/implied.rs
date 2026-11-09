@@ -10,18 +10,6 @@ use super::*;
 use crate::sketch_states::MemberState;
 use crate::sketch_tools::implied_by;
 
-/// The forms of each constraint the adds made, by type, sorted.
-fn types(d: &Drive) -> Vec<&'static str> {
-    let mut types: Vec<&'static str> = d
-        .made
-        .iter()
-        .flat_map(|m| &m.constraints)
-        .map(|c| c.form.type_name())
-        .collect();
-    types.sort();
-    types
-}
-
 /// `d`'s read marks the points `ids` fully defined.
 fn fixed(d: &mut Drive, ids: &[&str]) {
     for p in ids {
@@ -38,7 +26,7 @@ fn shows(d: &Drive, relation: &Relation) -> bool {
         .any(|s| &s.relation == relation)
 }
 
-/// The L the brief draws from the origin, by six clicks and a seventh back on its first
+/// The L drawn from the origin (docs/ports/sketch-tools.md), by six clicks and a seventh back on its first
 /// point: (0, 0), (40, 0), (40, 10), (10, 10), (10, 30), (0, 30), (0, 0).
 fn the_l(d: &mut Drive) {
     for (x, y) in [
@@ -233,9 +221,9 @@ fn a_point_on_a_level_line_is_level_with_it_through_the_line() {
 
 #[test]
 fn a_point_at_the_middle_of_a_line_on_the_axis_is_its_midpoint_alone() {
-    // The Point tool at (30, 0.1), the middle of (10, 0)-(50, 0), which lies along the x
-    // axis: `midpoint`, and no `on` of the axis (the line covers it there, and its middle is
-    // level with the origin through it). At the middle of (30, -10)-(30, 10), which the x
+    // `covers`' regression, not the classes': the Point tool at (30, 0.1), the middle of
+    // (10, 0)-(50, 0), which lies along the x axis: `midpoint`, and no `on` of the axis,
+    // which the line covers there, so the snap never offers it to be judged. At the middle of (30, -10)-(30, 10), which the x
     // axis crosses there, (30, 0): both, `midpoint` and `on` the axis, each joining classes.
     let mut d = Drive::new(
         ToolKind::Point,
@@ -804,4 +792,70 @@ fn a_line_previewed_over_a_constrained_grid_visits_each_point_on_a_line_a_few_ti
     d.to(345.0, 300.5);
     assert!(shows(&d, &Relation::Horizontal));
     assert!(visits() - built <= 4, "{} visits", visits() - built);
+}
+
+#[test]
+fn a_perpendicular_to_an_end_fixed_one_way_only_stays() {
+    // K from (10, 10) to (30, 20), both ends fully defined; from K's end (30, 20) a line to
+    // q0000001 at (20, 40), at right angles to K: `perpendicular` to K shows. q0000001 is
+    // fixed one way only, its x by `vertical_points` with q0000002 at (20, 5), fully
+    // defined, or its y by `horizontal_points` with q0000002 at (50, 40): not every point
+    // the relation reads is fixed both ways, so it stays (Rule F).
+    for (q, form) in [
+        ([20.0, 5.0], plumb("q0000001", "q0000002")),
+        ([50.0, 40.0], level("q0000001", "q0000002")),
+    ] {
+        let mut s = with_line(empty(), "n0000001", [10.0, 10.0], [30.0, 20.0]);
+        s.points.push(point("q0000001", 20.0, 40.0));
+        s.points.push(point("q0000002", q[0], q[1]));
+        let s = constrained(s, vec![form]);
+        let mut d = Drive::new(ToolKind::Line, s);
+        fixed(&mut d, &["f0000001", "t0000001", "q0000002"]);
+        d.drag([30.0, 20.0], [20.0, 40.0]);
+        assert_eq!(d.made.len(), 1, "{q:?}");
+        assert_eq!(types(&d), ["perpendicular"], "{q:?}");
+    }
+}
+
+#[test]
+fn a_line_to_an_over_defined_point_keeps_its_direction() {
+    // (10, 10), fully defined, and (40, 10.785), which the read marks over defined: 1.499°
+    // off level, so the pointer finds `horizontal`. An over defined point isn't fixed (its
+    // values are the solver's last try, not held), so its class isn't, and the `horizontal`
+    // stays, as the port note has it (`over_defined` doesn't count).
+    let mut s = empty();
+    s.points.push(point("q0000001", 10.0, 10.0));
+    s.points.push(point("q0000002", 40.0, 10.785));
+    let mut d = Drive::new(ToolKind::Line, s);
+    fixed(&mut d, &["q0000001"]);
+    d.states
+        .points
+        .insert(id("q0000002"), MemberState::OverDefined);
+    d.drag([10.0, 10.0], [40.0, 10.785]);
+    assert_eq!(types(&d), ["horizontal"]);
+}
+
+#[test]
+fn a_line_from_the_origin_to_a_fixed_point_off_level_keeps_its_starts_relations() {
+    // From the origin to q0000001 at (40, 1), fully defined: 1.43° off level, so the
+    // pointer finds `horizontal`. The start's Y class is the origin's, fixed, and so is the
+    // end's: the `horizontal` goes (added, it would conflict). FreeCAD's solver filter drops
+    // every auto-constraint of a conflicting group, the start's two with it; Silico keeps
+    // them, each sound on its own (docs/ports/sketch-tools.md, *Only the direction goes in
+    // a conflict*).
+    let mut s = empty();
+    s.points.push(point("q0000001", 40.0, 1.0));
+    let mut d = Drive::new(ToolKind::Line, s);
+    fixed(&mut d, &["q0000001"]);
+    d.click(0.0, 0.0);
+    d.click(40.0, 1.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (0, 0)",
+            "line (0, 0)-#(40, 1)",
+            "horizontal_points (0, 0) origin",
+            "vertical_points (0, 0) origin",
+        ])]
+    );
 }

@@ -573,6 +573,18 @@ fn described(sketch: &Sketch, members: &Members) -> Vec<String> {
     lines
 }
 
+/// The forms of each constraint the tool's adds made, by type, sorted.
+fn types(d: &Drive) -> Vec<&'static str> {
+    let mut types: Vec<&'static str> = d
+        .made
+        .iter()
+        .flat_map(|m| &m.constraints)
+        .map(|c| c.form.type_name())
+        .collect();
+    types.sort();
+    types
+}
+
 fn sorted(lines: &[&str]) -> Vec<String> {
     let mut lines: Vec<String> = lines.iter().map(|s| (*s).to_owned()).collect();
     lines.sort();
