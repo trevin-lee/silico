@@ -35,8 +35,8 @@ use std::time::Duration;
 use re_renderer::mesh::{CpuMesh, GpuMesh, Material};
 use re_renderer::renderer::{GpuMeshInstance, MeshDrawData, PointCloudBatchFlags};
 use re_renderer::view_builder::{
-    OrthographicCameraMode, Projection as ViewProjection, TargetConfiguration, ViewBuilder,
-    ViewBuilderId, ViewPickingConfiguration,
+    BlendWithBackground, OrthographicCameraMode, Projection as ViewProjection, TargetConfiguration,
+    ViewBuilder, ViewBuilderId, ViewPickingConfiguration,
 };
 use re_renderer::{
     Color32, LineDrawableBuilder, OutlineConfig, OutlineMaskPreference, PickingLayerId,
@@ -280,9 +280,14 @@ pub struct Frame<'a> {
     /// own. Where it lands is [`project`]'s: in perspective, a vertex nearer the eye than
     /// [`MIN_EYE_DISTANCE`] has none, and isn't picked. Finite and above 0.
     pub vertices: Option<f32>,
-    /// The colour behind the bodies, sRGB and not premultiplied, as the app's theme gives
-    /// its viewport's (`VIEWPORT_BG`): opaque, its alpha 255, since the frame is composited
-    /// opaque. A render's is its own ([`BACKGROUND`]).
+    /// The colour behind the bodies, sRGB and not premultiplied: opaque, its alpha 255, the
+    /// frame composited over the pass as it is; or none, its alpha 0 (its colour unread),
+    /// the frame composited over what the pass already holds, so what the caller painted
+    /// under it shows wherever no body is (the app's canvas, a gradient, its theme's
+    /// `VIEWPORT_FRAME_BG`). Its edges' and its outlines' alpha is their coverage, blended as
+    /// re_renderer blends a view whose lines are drawn with alpha to coverage
+    /// (`BlendWithBackground::AlphaToCoverage`). Any other alpha is refused: a frame isn't
+    /// translucent. A render's is its own, opaque ([`BACKGROUND`]).
     pub background: [u8; 4],
 }
 
@@ -295,11 +300,12 @@ pub struct Outlines {
     pub hovered: [u8; 3],
 }
 
-/// The colours [`Renderer::build`] draws a view in: its outlines', and the one behind it.
+/// The colours [`Renderer::build`] draws a view in: its outlines', and the one behind it,
+/// or none, the view composited over what its pass holds.
 #[derive(Clone, Copy)]
 struct Colours {
     outlines: Outlines,
-    background: Rgba,
+    background: Option<Rgba>,
 }
 
 impl Outlines {
@@ -601,13 +607,14 @@ impl Renderer {
             .iter()
             .map(|&b| (b, lit.get(&b).unwrap_or(&plain)))
             .collect();
-        let [red, green, blue, _] = frame.background;
+        let [red, green, blue, alpha] = frame.background;
         let built = self.build(
             &view,
             frame.pixels_per_point,
             Colours {
                 outlines: frame.outlines,
-                background: srgb([red, green, blue]),
+                // Checked: 255 or 0.
+                background: (alpha == 255).then(|| srgb([red, green, blue])),
             },
             &drawn,
             picking.map(|(rect, id)| Picked {
@@ -820,11 +827,11 @@ impl Renderer {
             }
         }
         let [red, green, blue, alpha] = frame.background;
-        if alpha != 255 {
+        if alpha != 255 && alpha != 0 {
             return Err(InvalidParameter {
                 parameter: "background",
                 message: format!(
-                    "background [{red}, {green}, {blue}, {alpha}] must be opaque, its alpha 255: the frame is composited opaque"
+                    "background [{red}, {green}, {blue}, {alpha}] must be opaque, its alpha 255, or none, its alpha 0: a frame isn't translucent"
                 ),
             });
         }
@@ -968,7 +975,7 @@ impl Renderer {
             1.0,
             Colours {
                 outlines: Outlines::DEFAULT,
-                background: srgb(BACKGROUND),
+                background: Some(srgb(BACKGROUND)),
             },
             &drawn,
             scene.ids.then_some(Picked {
@@ -991,8 +998,8 @@ impl Renderer {
     /// drawn in each body's [`Lit::style`], and outlined in `colours`' outlines; the picking
     /// rectangle and its readback's identifier, with the vertices' discs it asks for
     /// ([`vertices`]), and the image's readback, if asked; behind it all, `colours`'
-    /// background. The command buffer that draws it into the view's target, and the view, to
-    /// composite.
+    /// background, or none, the view composited over what its pass holds. The command buffer
+    /// that draws it into the view's target, and the view, to composite.
     fn build(
         &mut self,
         view: &View,
@@ -1102,6 +1109,12 @@ impl Renderer {
                 readback_identifier: picked.id,
                 show_debug_view: false,
             }),
+            // With no background of its own, over what the pass holds: its edges' and
+            // vertices' alpha is their coverage (alpha to coverage), so blended as such.
+            blend_with_background: match background {
+                Some(_) => BlendWithBackground::No,
+                None => BlendWithBackground::AlphaToCoverage,
+            },
             ..Default::default()
         };
         let mut builder = ViewBuilder::new(ctx, config, ViewBuilderId::new(1))
@@ -1138,7 +1151,7 @@ impl Renderer {
                 .map_err(|e| format!("couldn't schedule the image's readback: {e}"))?;
         }
         let commands = builder
-            .draw(ctx, background)
+            .draw(ctx, background.unwrap_or(Rgba::TRANSPARENT))
             .map_err(|e| format!("couldn't draw: {e}"))?;
         Ok((commands, builder))
     }

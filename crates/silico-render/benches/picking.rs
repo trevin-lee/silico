@@ -181,8 +181,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                             edges: true,
                             // The selection's 7-point vertex discs (M5.7).
                             vertices: vertices.then_some(7.0),
-                            // The app's viewport colour (its theme's VIEWPORT_BG).
-                            background: [0x00, 0x00, 0x00, 0xff],
+                            // None, as the app's frames (its theme's VIEWPORT_FRAME_BG).
+                            background: [0x00, 0x00, 0x00, 0x00],
                         })
                         .map_err(|f| f.to_string())?;
                     queue.submit([commands]);

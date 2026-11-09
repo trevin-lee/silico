@@ -58,8 +58,13 @@ fn frame<'a>(
     }
 }
 
-/// The app's viewport's background, #000000 (its theme's `VIEWPORT_BG`).
+/// An opaque black behind the bodies, as the app's viewport's was before its gradient: the
+/// app's frames have none now ([`NO_BACKGROUND`]).
 const VIEWPORT_BG: [u8; 4] = [0, 0, 0, 255];
+
+/// No background: the app's frames' (its theme's `VIEWPORT_FRAME_BG`), composited over the
+/// gradient it paints under them.
+const NO_BACKGROUND: [u8; 4] = [0, 0, 0, 0];
 
 fn rect(min: [i32; 2], size: [u32; 2]) -> PixelRect {
     PixelRect { min, size }
@@ -418,6 +423,16 @@ fn frames_prepared_and_never_submitted_leave_the_next_one_whole() {
 /// A target of the renderer's format, `frame` composited into it after the frame's command
 /// buffer (if the frame was prepared): its pixels, RGBA, rows top to bottom.
 fn composited(r: &mut Renderer, commands: Option<wgpu::CommandBuffer>) -> Vec<[u8; 4]> {
+    composited_over(r, commands, wgpu::Color::TRANSPARENT)
+}
+
+/// [`composited`], into a pass cleared to `under` first, as egui's pass holds what it
+/// painted under the frame.
+fn composited_over(
+    r: &mut Renderer,
+    commands: Option<wgpu::CommandBuffer>,
+    under: wgpu::Color,
+) -> Vec<[u8; 4]> {
     let device = r.ctx.device.clone();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("composite target"),
@@ -450,7 +465,7 @@ fn composited(r: &mut Renderer, commands: Option<wgpu::CommandBuffer>) -> Vec<[u
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    load: wgpu::LoadOp::Clear(under),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -558,8 +573,33 @@ fn a_frames_background_is_the_colour_it_gives_and_a_renders_its_own() {
                 centres.push(at(32, 26));
             }
             assert!(centres.windows(2).all(|w| w[0] == w[1]), "{centres:?}");
-            // One not opaque is refused, naming it: the frame is composited opaque.
-            for alpha in [0, 128, 254] {
+            // None: composited over what the pass holds, each colour cleared there showing
+            // off the box exactly (the frame's alpha 0 there, so the pass's own bytes), the
+            // box's front face over it as opaque as with a background of its own.
+            for under in [[0x1e, 0x1f, 0x22], [0x3a, 0x3c, 0x41], [12, 200, 77]] {
+                let commands = r
+                    .prepare(&Frame {
+                        background: NO_BACKGROUND,
+                        ..frame(&camera, &[1], &[], None)
+                    })
+                    .unwrap();
+                let [red, green, blue] = under.map(|c| f64::from(c) / 255.0);
+                let clear = wgpu::Color {
+                    r: red,
+                    g: green,
+                    b: blue,
+                    a: 1.0,
+                };
+                let pixels = composited_over(r, Some(commands), clear);
+                let at = |x: u32, y: u32| pixels[usize::try_from(y * WIDTH + x).unwrap()];
+                let [red, green, blue] = under;
+                for (x, y) in [(1, 1), (62, 46), (32, 5)] {
+                    assert_eq!(at(x, y), [red, green, blue, 255], "{under:?} at ({x}, {y})");
+                }
+                assert_eq!(at(32, 26), centres[0], "{under:?}: the face");
+            }
+            // One translucent is refused, naming it: a frame has a background or none.
+            for alpha in [1, 128, 254] {
                 let translucent = Frame {
                     background: [12, 200, 77, alpha],
                     ..frame(&camera, &[1], &[], None)
