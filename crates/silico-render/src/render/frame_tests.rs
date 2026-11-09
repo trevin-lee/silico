@@ -3318,11 +3318,21 @@ const SQUARE: [u32; 2] = [800, 800];
 /// A frame of `bodies`, 800 by 800 at a pixel a point, picking the selection's square about
 /// the pixel `at` (6 points out: 13 by 13), its vertices not picked.
 fn square_frame<'a>(camera: &'a Camera, bodies: &'a [u32], at: [u32; 2]) -> Frame<'a> {
+    band_frame(camera, bodies, at, SQUARE)
+}
+
+/// [`square_frame`], `size` pixels.
+fn band_frame<'a>(
+    camera: &'a Camera,
+    bodies: &'a [u32],
+    at: [u32; 2],
+    size: [u32; 2],
+) -> Frame<'a> {
     let band = HIT_EDGE_POINTS as i32;
     let side = 2 * band.unsigned_abs() + 1;
     let at = at.map(|c| i32::try_from(c).unwrap());
     Frame {
-        size_px: SQUARE,
+        size_px: size,
         ..frame(
             camera,
             bodies,
@@ -3685,6 +3695,153 @@ fn an_edges_picking_strip_draws_nothing_of_the_image() {
             assert!(composited(r, Some(commands)) == picked, "the image changed");
             let centre = frame(&camera, &[1], &[], Some(rect([32, 24], [1, 1])));
             assert_eq!(hit(r, &centre), Some((1, Element::Edge(1), [32, 24])));
+        },
+    );
+}
+
+/// A frame wider than it's high, 1200 by 800: at the same view height, 0.125 mm a pixel either
+/// way about the centre (600, 400), so each scene's numbers are the square frame's 200 columns
+/// right; but a reach taken of its 1200 columns, not its 800 rows, would be 2/1200 of the
+/// view's height (0.167 mm at 100 mm high, against 2/800's 0.25), and shows.
+const WIDE: [u32; 2] = [1200, 800];
+
+#[test]
+fn an_edges_reach_is_of_the_views_rows_in_a_frame_wider_than_it_is_high() {
+    on_lavapipe(
+        "render::frame_tests::an_edges_reach_is_of_the_views_rows_in_a_frame_wider_than_it_is_high",
+        |r| {
+            use Element::{Edge, Face};
+            let mesh = Arc::new(l_mesh());
+            r.upload(1, &mesh).unwrap();
+            let pickable = Pickable::new(Arc::clone(&mesh));
+            let camera = l_camera();
+            assert_pixel(
+                project(&camera, WIDE, [5.0, 10.0, 5.0]),
+                [600.0, 400.0],
+                1e-4,
+            );
+            assert_pixel(
+                project(&camera, WIDE, [5.0, 20.0, 5.0]),
+                [600.0 + 80.0 / 2f64.sqrt(), 400.0 + 80.0 / 6f64.sqrt()],
+                1e-4,
+            );
+            // The L's concave corner, its pixels' signed distances from Edge1's image those of
+            // the square frame's (s = 0.866 (row − 400) − 0.5 (column − 600) at a centre). The
+            // renderer takes the edge within the band and the face past it. The cast lists the
+            // edge first while the face under the pointer is nearer the eye than its line by
+            // less than its reach, 0.25 mm: 0.153 mm a pixel off it, so 1.55 pixels off on the
+            // wall's side (0.237 mm) the edge (a reach of 0.167 would put the wall first), and
+            // 1.92 off on the floor's (0.294 mm) the floor.
+            for (at, s, gpu, first) in [
+                ([600, 400], 0.18, Edge(1), Some(Edge(1))),
+                ([600, 401], 1.05, Edge(1), Some(Edge(1))),
+                ([600, 399], -0.68, Edge(1), Some(Edge(1))),
+                ([600, 398], -1.55, Edge(1), Some(Edge(1))),
+                ([600, 402], 1.92, Edge(1), Some(Face(1))),
+                ([600, 412], 10.58, Face(1), None),
+                ([600, 388], -10.21, Face(2), None),
+            ] {
+                let centre = [f64::from(at[0]) + 0.5, f64::from(at[1]) + 0.5];
+                let off = 0.75f64.sqrt() * (centre[1] - 400.0) - 0.5 * (centre[0] - 600.0);
+                assert!((off - s).abs() < 0.01, "{at:?}: {off}");
+                let picking = pick(r, &band_frame(&camera, &[1], at, WIDE));
+                assert_eq!(taken(&picking, at), Some((1, gpu)), "{at:?}");
+                if let Some(first) = first {
+                    let cast = hits(&camera, WIDE, 1.0, &[(1, &pickable)], centre);
+                    let head = cast.first().map(|h| (h.body, h.element, h.hidden));
+                    assert_eq!(head, Some((1, first, false)), "{at:?}: {cast:?}");
+                }
+            }
+            // The edge's own pixel, its point the drawn line's, its reach of 0.25 mm undone,
+            // by hand as in the square frame: (5 + across, 10 + along, 5 − across). Undone by
+            // 0.167, it would be 0.083 mm along the view, toward the eye, from it.
+            let picking = pick(r, &band_frame(&camera, &[1], [600, 400], WIDE));
+            let hit = picking.hit.unwrap();
+            assert_eq!((hit.body, hit.hit, hit.pixel), (1, Edge(1), [600, 400]));
+            let half = 0.75f64.sqrt() / 2.0;
+            let along = (half + 0.25) / (8.0 * (2.0f64 / 3.0).sqrt());
+            let across = (half - 0.25) * 0.125 / 2f64.sqrt();
+            assert_point(&hit, [5.0 + across, 10.0 + along, 5.0 - across], [2e-3; 3]);
+            // The thin wall, its edge 0.2 and 0.3 mm behind the plate's top, along row 400 from
+            // column 520 to 680 orthographic. Orthographic, the reach is 0.25 mm: picked at 0.2
+            // behind, not at 0.3 (0.167 would pick neither). In perspective it's 2/800 of the
+            // depth along the line to the eye, moving the edge from 100.2 to 99.950 and from
+            // 100.3 to 100.049, against the top at 100 (2/1200 would move it to 100.033 and
+            // 100.133, both behind). The cast marks it hidden where it isn't picked. Where it's
+            // picked, its point is its own: z = 0.8, at the pixel's centre half a pixel along
+            // and across it (0.125 mm a pixel orthographic; in perspective 100.2/800 there).
+            // Its reach undone by 0.167 would leave z at 0.883 orthographic, and 0.884.
+            for perspective in [false, true] {
+                let camera = above_the_wall(perspective);
+                let pixel = if perspective { 100.2 / 800.0 } else { 0.125 };
+                assert_pixel(
+                    project(&camera, WIDE, [10.0, 20.0, 0.8]),
+                    [600.0 - 10.0 / pixel, 400.0],
+                    1e-4,
+                );
+                let at = [600, 400];
+                for (zb, want) in [(0.8, Edge(13)), (0.7, Face(6))] {
+                    let mesh = thin_wall(zb);
+                    r.upload(1, &mesh).unwrap();
+                    let what = format!("zb {zb}, perspective {perspective}");
+                    let picking = pick(r, &band_frame(&camera, &[1], at, WIDE));
+                    assert_eq!(taken(&picking, at), Some((1, want)), "{what}");
+                    let pickable = Pickable::new(Arc::clone(&mesh));
+                    let cast = hits(&camera, WIDE, 1.0, &[(1, &pickable)], [600.5, 400.5]);
+                    let edge = cast.iter().find(|h| h.element == Edge(13)).unwrap();
+                    assert_eq!(edge.hidden, want == Face(6), "{what}: {cast:?}");
+                    let head = cast.first().map(|h| (h.element, h.hidden));
+                    assert_eq!(head, Some((want, false)), "{what}: {cast:?}");
+                    if want == Edge(13) {
+                        let hit = picking.hit.unwrap();
+                        assert_eq!((hit.hit, hit.pixel), (Edge(13), at), "{what}");
+                        let want = [20.0 + pixel / 2.0, 20.0 - pixel / 2.0, 0.8];
+                        assert_point(&hit, want, [1e-3; 3]);
+                    }
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn a_renders_id_buffer_has_no_edge_picks_so_a_concave_edges_faces_have_its_pixels() {
+    on_lavapipe(
+        "render::frame_tests::a_renders_id_buffer_has_no_edge_picks_so_a_concave_edges_faces_have_its_pixels",
+        |r| {
+            use Element::Edge;
+            // The worker's render of the L at the study's 800 by 800, its ID buffer M4.6's: no
+            // edge drawn again toward the eye, so at the concave edge its faces hide its drawn
+            // stroke, as they did before N5. The pixel (400, 400), its centre 0.18 pixels off
+            // Edge1 on the floor's side, is the floor's, Face1; (400, 399), 0.68 off on the
+            // wall's side, the wall's, Face2. Each is within the edge's stroke, a pixel either
+            // side of its line at a pixel a point, so a frame picking each pixel alone takes
+            // Edge1 there, its picking strip drawn over both faces.
+            let scene = silico_protocol::RenderScene {
+                bodies: vec![silico_protocol::RenderBody {
+                    body: 1,
+                    mesh: l_mesh(),
+                    highlight_faces: vec![],
+                    highlight_edges: vec![],
+                }],
+                camera: l_camera(),
+                width: SQUARE[0],
+                height: SQUARE[1],
+                ids: true,
+            };
+            scene.check().unwrap();
+            let ids = r.render(&scene).unwrap().ids.unwrap();
+            let id = |[x, y]: [u32; 2]| ids[usize::try_from(y * SQUARE[0] + x).unwrap()];
+            r.upload(1, &Arc::new(l_mesh())).unwrap();
+            let camera = l_camera();
+            for (at, face) in [([400, 400], 1), ([400, 399], 2)] {
+                assert_eq!(id(at), [1, face], "{at:?}");
+                let asking = Frame {
+                    picking: Some(rect(at.map(|c| i32::try_from(c).unwrap()), [1, 1])),
+                    ..square_frame(&camera, &[1], at)
+                };
+                assert_eq!(hit(r, &asking), Some((1, Edge(1), at)), "{at:?}");
+            }
         },
     );
 }
