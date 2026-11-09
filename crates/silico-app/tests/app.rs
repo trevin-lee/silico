@@ -6305,8 +6305,11 @@ fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() 
         h.state().tabs()[0].edits.idle() && !h.state().tabs()[0].unsettled()
     });
     // Answered with the rebuild still held (the next preview's read waits for it, and a
-    // read of the text would wait behind that).
-    assert!(f.kernel.wait_running(1, WAIT));
+    // read of the text would wait behind that): the transaction's rebuild starts with that
+    // read, so frames are stepped until it runs.
+    step_until(&mut h, "the edit's rebuild held at its prism", |_| {
+        f.kernel.wait_running(1, Duration::ZERO)
+    });
     hold.release();
     let text = text_of(&f, &h);
     let pad = fields_of(&text, "Pad").unwrap();
@@ -17893,7 +17896,11 @@ fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview
     let hold = f.kernel.hold(is_prism);
     open_pad_on_triangle(&mut h);
     added(&mut h);
-    assert!(f.kernel.wait_running(1, WAIT));
+    // The transaction's rebuild starts with the dialog's next read, so frames are stepped
+    // until it runs, held at the prism.
+    step_until(&mut h, "the preview held at its prism", |_| {
+        f.kernel.wait_running(1, Duration::ZERO)
+    });
     spin(gap);
     hold.release();
     step_until(&mut h, "the preview up to date", |h| {
@@ -36764,8 +36771,11 @@ fn a_second_reload_asked_while_the_first_is_out_reads_the_file_as_the_persons_to
     settled(&mut h);
     let hold = f.kernel.hold(is_box);
     command_r(&mut h);
-    step(&mut h);
-    assert!(f.kernel.wait_running(1, WAIT));
+    // Reload's rebuild is sent on the frame that takes its read of the file, so frames are
+    // stepped until it runs, held at its box.
+    step_until(&mut h, "the first's rebuild held at its box", |_| {
+        f.kernel.wait_running(1, Duration::ZERO)
+    });
     std::fs::write(&path, example_theirs()).unwrap();
     command_r(&mut h);
     step_until(
