@@ -131,6 +131,14 @@ impl Said {
             .map_or(&[], |source| source.said().candidates)
     }
 
+    /// Why each of its [`candidates`](Self::candidates) is where it is, as the core ranked
+    /// them: one for each, or none where they follow another rule.
+    pub fn ranking(&self) -> &[silico_core::Rank] {
+        self.source
+            .as_ref()
+            .map_or(&[], |source| source.said().ranking)
+    }
+
     /// The core's error or warning as the command API writes it, byte for byte: the error
     /// contract's shape (`tests/contract/error-full.json`), on one line, as an agent gets it
     /// over MCP. None for a refusal said in words alone, or one too long to write.

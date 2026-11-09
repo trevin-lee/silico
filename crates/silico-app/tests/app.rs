@@ -30697,6 +30697,32 @@ fn a_broken_edges_card_lists_the_cores_candidates_closest_first_and_use_writes_o
     // The core's own candidates, as it says them: the same, in the same order.
     let said = h.state().tabs()[0].said.get("f0000001").unwrap().clone();
     assert_eq!(said.candidates(), [EDGE4, EDGE6]);
+    // And why, as the core ranks them (#417), by hand: neither shares anything with the
+    // broken Edge5, each numbered 1 from it, the block's own; under each name, in words.
+    let by_number = |element: &str| silico_core::Rank {
+        shared: Vec::new(),
+        unshared: vec!["k7f2qx3m.box.Edge5".to_owned()],
+        same_feature: true,
+        nearest: Some(silico_core::Nearest {
+            element: element.to_owned(),
+            gap: 1,
+        }),
+    };
+    assert_eq!(said.ranking(), [by_number(EDGE4), by_number(EDGE6)]);
+    let described = |label: &str| {
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .get_by_label(label)
+            .accesskit_node()
+            .description()
+    };
+    assert_eq!(
+        described(&format!("Closest · {EDGE4}")).as_deref(),
+        Some("Closest · Numbered nearest k7f2qx3m.box.Edge5, 1 away")
+    );
+    assert_eq!(
+        described(EDGE6).as_deref(),
+        Some("Numbered nearest k7f2qx3m.box.Edge5, 1 away")
+    );
     assert_eq!(said.parameter(), Some("edges.1"));
     let before = text_of(&f, &h);
     assert_eq!(before.matches(r#""k7f2qx3m.box.Edge5""#).count(), 1);
@@ -30936,6 +30962,39 @@ fn in_the_fillets_dialog_remove_the_edge_empties_its_box_and_ok_waits_for_an_edg
             .is_some_and(|button| !button.accesskit_node().is_disabled())
     });
     let sent = h.state().tabs()[0].sent.clone();
+    // Under the candidates and their whys, the button runs under the dialog's footer: the
+    // body scrolled down by the wheel, as a person would, until it's clear of the footer,
+    // so the click is the button's, not Cancel's over it.
+    let remove = |h: &AppHarness| {
+        dialog(h)
+            .get_by_role_and_label(Role::Button, "Remove the edge")
+            .rect()
+    };
+    let footer = dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .rect()
+        .top();
+    let body = dialog(&h)
+        .get_by_role_and_label(Role::Button, &format!("Use {EDGE4}"))
+        .rect()
+        .center();
+    for _ in 0..20 {
+        if remove(&h).bottom() <= footer {
+            break;
+        }
+        wheel(&mut h, body, eframe::egui::MouseWheelUnit::Point, -40.0);
+    }
+    assert!(
+        remove(&h).bottom() <= footer,
+        "{:?} under the footer",
+        remove(&h)
+    );
+    // The scroll's animation over (egui takes no click while it runs): the button still.
+    let last = std::cell::Cell::new(remove(&h));
+    step_until(&mut h, "the body still", |h| {
+        let now = remove(h);
+        now == last.replace(now)
+    });
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Remove the edge")
         .click();

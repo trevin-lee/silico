@@ -3774,10 +3774,141 @@ mod property_panel_drawn {
 
     /// [`part`] with Hole selected, its card [`broken`]'s.
     fn broken_hole() -> Tab {
+        hole_said(&broken())
+    }
+
+    /// [`part`] with Hole selected, its card `error`'s.
+    fn hole_said(error: &silico_core::Error) -> Tab {
         let mut tab = part();
-        tab.said.insert("c0000001".to_owned(), Said::of(&broken()));
+        tab.said.insert("c0000001".to_owned(), Said::of(error));
         tab.selection_mut().select_feature(fid("c0000001"));
         tab
+    }
+
+    /// [`broken`], its candidates ranked as the core ranks them (#417), by hand: Edge2 made
+    /// from the same Face1 the broken name is, but not its Face4; Edge4 numbered nearest the
+    /// broken Edge5, 1 away.
+    fn ranked() -> silico_core::Error {
+        let names = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
+        broken().with_ranked([
+            (
+                "Edge2",
+                silico_core::Rank {
+                    shared: names(&["Face1"]),
+                    unshared: names(&["Face4"]),
+                    same_feature: true,
+                    nearest: None,
+                },
+            ),
+            (
+                "Edge4",
+                silico_core::Rank {
+                    shared: Vec::new(),
+                    unshared: names(&["Edge5"]),
+                    same_feature: true,
+                    nearest: Some(silico_core::Nearest {
+                        element: "Edge4".to_owned(),
+                        gap: 1,
+                    }),
+                },
+            ),
+        ])
+    }
+
+    #[test]
+    fn each_candidate_says_why_the_core_ranked_it_under_its_name() {
+        // `.cand .why`: under each name, on the body's 16 px line, 10.5 in the accent, the
+        // core's ranking in words, the first's after "Closest · "; each row's description in
+        // the accessibility tree the same words, its label as before.
+        let h = drawn(hole_said(&ranked()));
+        let first = "Closest · Made from the same Face1, but not Face4";
+        let second = "Numbered nearest Edge5, 1 away";
+        let mut lines = Vec::new();
+        for (name, words) in [("Edge2", first), ("Edge4", second)] {
+            let shown = text(&h, name);
+            let why = text(&h, words);
+            at(
+                why.pos,
+                Pos2::new(shown.pos.x, shown.pos.y + css::LH),
+                words,
+            );
+            assert_eq!(
+                why.galley.job.sections[0].format.font_id,
+                body(css::CANDS_FS)
+            );
+            assert_eq!(colour(&why, 0), css::CARD_ACCENT);
+            lines.push(why.galley.rows.len());
+        }
+        assert_eq!(
+            h.get_by_label("Closest · Edge2")
+                .accesskit_node()
+                .description()
+                .as_deref(),
+            Some(first)
+        );
+        assert_eq!(
+            h.get_by_label("Edge4")
+                .accesskit_node()
+                .description()
+                .as_deref(),
+            Some(second)
+        );
+        // Each row as high as its name and its why's lines: the buttons under them lower,
+        // by the lines the whys add, than under [`broken`]'s, whose Edge2's why is
+        // "Closest · " alone, one line, and whose Edge4 has none.
+        let unranked = drawn(broken_hole());
+        let edit = |h: &Harness<'static, Shown>| {
+            h.get_by_role_and_label(Role::Button, "Edit Hole")
+                .rect()
+                .top()
+        };
+        let added = (lines[0] - 1 + lines[1]) as f32 * css::LH;
+        assert!(
+            near(edit(&h) - edit(&unranked), added),
+            "{} lower, not {added}",
+            edit(&h) - edit(&unranked)
+        );
+    }
+
+    #[test]
+    fn a_why_too_long_for_its_row_wraps_whole_and_the_row_grows() {
+        // A pane 220 wide: the first's why, past a line of its row, wraps, every name whole
+        // (never cut, as the candidate's own name is), inside the pane; the row as high as
+        // its name and every line of its why.
+        let h = drawn_at(hole_said(&ranked()), 220.0);
+        let words = "Closest · Made from the same Face1, but not Face4";
+        let why = text(&h, words);
+        let lines = why.galley.rows.len();
+        assert!(lines >= 2, "{lines} lines");
+        assert!(why.pos.x + why.galley.size().x <= PANE.x + 220.0);
+        let shown = text(&h, "Edge2");
+        let next = text(&h, "Edge4");
+        let row_bottom = shown.pos.y + (1 + lines) as f32 * css::LH + css::CAND_PADDING_Y;
+        assert!(
+            near(
+                next.pos.y,
+                row_bottom + css::CAND_MARGIN + css::CAND_PADDING_Y
+            ),
+            "Edge4 at {}, not under Edge2's {lines} lines of why",
+            next.pos.y
+        );
+    }
+
+    #[test]
+    fn candidates_the_core_gives_no_ranking_say_only_that_the_first_is_closest() {
+        // [`broken`]'s candidates follow no ranking (`with_candidates`): the first's
+        // "Closest · " alone (the drawn test above places it), the second's no why, and
+        // neither row described.
+        let h = drawn(broken_hole());
+        let closest = text(&h, "Closest · ");
+        assert_eq!(closest.galley.job.text, "Closest · ");
+        assert_eq!(
+            h.get_by_label("Closest · Edge2")
+                .accesskit_node()
+                .description(),
+            None
+        );
+        assert_eq!(h.get_by_label("Edge4").accesskit_node().description(), None);
     }
 
     /// The text the frame just stepped copied, if it copied any.

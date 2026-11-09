@@ -552,10 +552,8 @@ impl CardLook {
 /// words alone is its message and suggestion. What a button asked, if one was.
 ///
 /// A broken reference's card, given `repair`, offers each candidate's Use and Remove the
-/// edge (flow 6b), and says which candidate's row the pointer is over.
-///
-/// SEAM: each candidate's why (`.cand .why`), which the core doesn't give: the first's
-/// row says only "Closest · ".
+/// edge (flow 6b), and says which candidate's row the pointer is over. Each candidate's
+/// why is the core's ranking of it, in words ([`why`]).
 pub(crate) fn card(ui: &mut Ui, said: &Said, name: Option<&str>, offer: Offer) -> Option<CardAct> {
     repair_card(ui, said, name, offer, None).asked
 }
@@ -764,7 +762,7 @@ fn card_body(
         });
         ui.add_space(theme::ERROR_CARD_FIX_MARGIN);
     }
-    let mut out = candidates(ui, said.candidates(), repair);
+    let mut out = candidates(ui, said.candidates(), said.ranking(), repair);
     out.asked = card_buttons(ui, said, name, offer, repair).or(out.asked);
     out
 }
@@ -998,13 +996,21 @@ fn element_chips(
 
 /// The names a broken reference's error offers in its place, closest first (`errCard`'s
 /// candidates): a heading in capitals, then each name in a row of its own (`.cand`), its
-/// name in the monospace font, cut short with an ellipsis where it doesn't fit, the first's
-/// "Closest · " under it (`.why`); and, given `repair`, each row's Use (`.btn-secondary`)
-/// at its right, the row lit as `.cand:hover` lights it while the pointer is over it, or
-/// while the canvas's pointer is over its edge (`repair`'s `marked`, the row selected in
-/// the accessibility tree). What a Use asked, and the candidate whose row the pointer is
-/// over, given `repair`.
-fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut {
+/// name in the monospace font, cut short with an ellipsis where it doesn't fit, and under
+/// it its why (`.why`), worded from the core's `ranking` ([`why`]), wrapped, the first's
+/// after "Closest · " (the line the row's description in the accessibility tree; where the
+/// core gives no ranking, the first's "Closest · " alone, undescribed); and, given `repair`,
+/// each row's
+/// Use (`.btn-secondary`) at its right, the row lit as `.cand:hover` lights it while the
+/// pointer is over it, or while the canvas's pointer is over its edge (`repair`'s
+/// `marked`, the row selected in the accessibility tree). What a Use asked, and the
+/// candidate whose row the pointer is over, given `repair`.
+fn candidates(
+    ui: &mut Ui,
+    names: &[String],
+    ranking: &[silico_core::Rank],
+    repair: Option<&Repair>,
+) -> CardOut {
     let mut out = CardOut::default();
     if names.is_empty() {
         return out;
@@ -1044,12 +1050,25 @@ fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut
                 )
             },
         );
-        job.wrap = TextWrapping::truncate_at_width((width - pad.sum().x - room).max(1.0));
+        let text_width = (width - pad.sum().x - room).max(1.0);
+        job.wrap = TextWrapping::truncate_at_width(text_width);
         let named = ui.painter().layout_job(job);
-        // SEAM: the core gives no why; the first says only that it's the closest.
-        let why = (at == 0).then(|| {
-            ui.painter().layout_job(LayoutJob::single_section(
-                CLOSEST.to_owned(),
+        // Its why, as the core ranked it, if the core says (its ranking one for each
+        // candidate or none, by construction: `Error::with_ranked`); the first's after
+        // "Closest · ".
+        let said_why = ranking
+            .get(at)
+            .map(|rank| why(name, rank))
+            .unwrap_or_default();
+        let described = !said_why.is_empty();
+        let line = match (at, said_why.is_empty()) {
+            (0, _) => format!("{CLOSEST}{said_why}"),
+            (_, false) => said_why,
+            (_, true) => String::new(),
+        };
+        let why = (!line.is_empty()).then(|| {
+            let mut job = LayoutJob::single_section(
+                line.clone(),
                 TextFormat {
                     line_height: Some(theme::BODY_LINE_HEIGHT),
                     ..format(
@@ -1058,7 +1077,10 @@ fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut
                         false,
                     )
                 },
-            ))
+            );
+            // Names whole, as the core writes them: wrapped, never cut.
+            job.wrap = TextWrapping::wrap_at_width(text_width);
+            ui.painter().layout_job(job)
         });
         let words = named.size().y + why.as_ref().map_or(0.0, |why| why.size().y);
         let inner = words.max(button.as_ref().map_or(0.0, |_| theme::BUTTON_HEIGHT));
@@ -1088,8 +1110,12 @@ fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut
             name.clone()
         };
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
-        ui.ctx()
-            .accesskit_node_builder(response.id, |node| node.set_selected(marked));
+        ui.ctx().accesskit_node_builder(response.id, |node| {
+            node.set_selected(marked);
+            if described {
+                node.set_description(line.as_str());
+            }
+        });
         let response = response.on_hover_text(name.as_str());
         if let (Some(repair), Some(button)) = (repair, button) {
             let place = Rect::from_min_size(
@@ -1122,6 +1148,51 @@ fn candidates(ui: &mut Ui, names: &[String], repair: Option<&Repair>) -> CardOut
 
 /// What the closest candidate's row says under its name (`errCard`'s `'Closest · '`).
 pub(crate) const CLOSEST: &str = "Closest · ";
+
+/// Why the core ranked the candidate `name` where it is (`.cand .why`), worded from its
+/// `rank`, every name whole as the core writes it (Fable's decision for #417: the app words
+/// it, from `shared` and `unshared`):
+/// - made from what the broken name is made from: "Made from the same A and B", then, if
+///   the broken name is made from more, ", but not C";
+/// - none shared, a name by number: "Numbered nearest C, 1 away", or, if what's numbered
+///   nearest is an element the candidate is made from, "Its D is numbered nearest C, 1
+///   away";
+/// - neither (never, as the core ranks): its own feature's, if it is, or nothing.
+pub(crate) fn why(name: &str, rank: &silico_core::Rank) -> String {
+    let broken = || match rank.unshared.as_slice() {
+        [] => "the broken name".to_owned(),
+        unshared => in_words(unshared),
+    };
+    match (rank.shared.as_slice(), &rank.nearest) {
+        ([], Some(nearest)) => {
+            let subject = if nearest.element == name {
+                "Numbered".to_owned()
+            } else {
+                format!("Its {} is numbered", nearest.element)
+            };
+            format!("{subject} nearest {}, {} away", broken(), nearest.gap)
+        }
+        ([], None) if rank.same_feature => "Of the broken name's own feature".to_owned(),
+        ([], None) => String::new(),
+        (shared, _) => match rank.unshared.as_slice() {
+            [] => format!("Made from the same {}", in_words(shared)),
+            unshared => format!(
+                "Made from the same {}, but not {}",
+                in_words(shared),
+                in_words(unshared)
+            ),
+        },
+    }
+}
+
+/// `names` as a list in words: "A", "A and B", "A, B and C".
+fn in_words(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
 
 /// The words of a broken reference's card's Remove the edge (`errCard`'s `removeRef`).
 pub(crate) const REMOVE_THE_EDGE: &str = "Remove the edge";
@@ -1757,6 +1828,101 @@ mod tests {
     const KBD_H: f32 = 16.0;
     const KBD_OPACITY: f32 = 0.55;
     const G750: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcf);
+
+    /// A rank as the core writes one (#417's `Rank`), its names as given.
+    fn rank(shared: &[&str], unshared: &[&str], nearest: Option<(&str, u64)>) -> silico_core::Rank {
+        silico_core::Rank {
+            shared: shared.iter().map(|name| (*name).to_owned()).collect(),
+            unshared: unshared.iter().map(|name| (*name).to_owned()).collect(),
+            same_feature: true,
+            nearest: nearest.map(|(element, gap)| silico_core::Nearest {
+                element: element.to_owned(),
+                gap,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_candidates_why_says_what_it_shares_with_the_broken_name_and_what_it_doesnt() {
+        // m4.1's worked example (#417): the broken edge between the box's Face6 and the
+        // cylinder's Face1, the candidate between its Face5 and the same Face1.
+        let candidate = "m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face5, G a91cw0de.cylinder.Face1)";
+        assert_eq!(
+            why(
+                candidate,
+                &rank(&["a91cw0de.cylinder.Face1"], &["k7f2qx3m.box.Face6"], None)
+            ),
+            "Made from the same a91cw0de.cylinder.Face1, but not k7f2qx3m.box.Face6"
+        );
+        // Everything the broken name is made from: nothing it isn't.
+        assert_eq!(
+            why(
+                "c0000001.cut.Face(I b0000001.box.Face2)",
+                &rank(&["b0000001.box.Face2"], &[], None)
+            ),
+            "Made from the same b0000001.box.Face2"
+        );
+        // Lists in words, in the core's order.
+        assert_eq!(
+            why("x", &rank(&["A", "B"], &["C", "D", "E"], None)),
+            "Made from the same A and B, but not C, D and E"
+        );
+        assert_eq!(
+            why("x", &rank(&["A", "B", "C"], &[], None)),
+            "Made from the same A, B and C"
+        );
+    }
+
+    #[test]
+    fn a_candidate_by_number_says_the_number_its_nearest_and_how_far() {
+        // The block's Edge5 gone: its Edge4 and Edge6, each 1 away (references.rs's
+        // `Index::nearest`); a box's Face9, 3 past its last, Face6.
+        let edge5 = ["k7f2qx3m.box.Edge5"];
+        assert_eq!(
+            why(
+                "k7f2qx3m.box.Edge4",
+                &rank(&[], &edge5, Some(("k7f2qx3m.box.Edge4", 1)))
+            ),
+            "Numbered nearest k7f2qx3m.box.Edge5, 1 away"
+        );
+        assert_eq!(
+            why(
+                "k7f2qx3m.box.Face6",
+                &rank(
+                    &[],
+                    &["k7f2qx3m.box.Face9"],
+                    Some(("k7f2qx3m.box.Face6", 3))
+                )
+            ),
+            "Numbered nearest k7f2qx3m.box.Face9, 3 away"
+        );
+        // What's numbered nearest is an element the candidate is made from, not itself.
+        assert_eq!(
+            why(
+                "f0000001.fillet.Face(G k7f2qx3m.box.Edge4)",
+                &rank(&[], &edge5, Some(("k7f2qx3m.box.Edge4", 1)))
+            ),
+            "Its k7f2qx3m.box.Edge4 is numbered nearest k7f2qx3m.box.Edge5, 1 away"
+        );
+        // A rank with no broken element named (never, as the core ranks): said so.
+        assert_eq!(
+            why("x", &rank(&[], &[], Some(("x", 2)))),
+            "Numbered nearest the broken name, 2 away"
+        );
+    }
+
+    #[test]
+    fn a_rank_with_nothing_shared_and_no_number_says_only_its_feature() {
+        // Never, as the core ranks (one shares something, or none does and it's by number),
+        // but said as it is: its own feature's, or nothing.
+        assert_eq!(
+            why("x", &rank(&[], &["A"], None)),
+            "Of the broken name's own feature"
+        );
+        let mut other = rank(&[], &["A"], None);
+        other.same_feature = false;
+        assert_eq!(why("x", &other), "");
+    }
 
     #[test]
     fn a_footer_buttons_key_cap_is_8_after_its_words_and_bordered_2_at_its_bottom() {
