@@ -21188,6 +21188,20 @@ fn double_clicked_at(at: eframe::egui::Pos2) -> Vec<silico_app::sketch::PointerE
         .collect()
 }
 
+/// `keys` pressed in one frame, as they reach what has the keyboard.
+fn pressed(h: &mut AppHarness, keys: &[eframe::egui::Key]) {
+    for key in keys {
+        h.input_mut().events.push(eframe::egui::Event::Key {
+            key: *key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: eframe::egui::Modifiers::NONE,
+        });
+    }
+    step(h);
+}
+
 /// The Modify box's field, if a box is open.
 fn modify_field(h: &AppHarness) -> Option<egui_kittest::Node<'_>> {
     h.query_by_role_and_label(Role::Dialog, "Modify dimension")?
@@ -21223,22 +21237,9 @@ fn every_sketchs_modify_box_takes_the_keyboard_as_it_opens_not_only_the_first_sk
             modify_field(&h).unwrap().is_focused(),
             "{sketch} sketch's box holds the keyboard as it opens"
         );
-        for key in [
-            eframe::egui::Key::Home,
-            eframe::egui::Key::Delete,
-            eframe::egui::Key::Delete,
-        ] {
-            h.input_mut().events.push(eframe::egui::Event::Key {
-                key,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: eframe::egui::Modifiers::NONE,
-            });
-        }
-        h.input_mut()
-            .events
-            .push(eframe::egui::Event::Text(typed.to_owned()));
+        use eframe::egui::Key;
+        pressed(&mut h, &[Key::Home, Key::Delete, Key::Delete]);
+        modify_field(&h).unwrap().type_text(typed);
         step(&mut h);
         step(&mut h);
         assert_eq!(
@@ -21265,64 +21266,97 @@ fn every_sketchs_modify_box_takes_the_keyboard_as_it_opens_not_only_the_first_sk
 }
 
 #[test]
-fn the_sketch_bar_and_the_palette_are_bounded_around_their_controls_in_the_tree() {
-    // Each panel's group in the accessibility tree has bounds of its own (a ui's node, which
-    // egui bounds no other way), finite and not empty, holding every button and checkbox in
-    // it: so a test, or a screen reader, can tell where it is. In a window tall enough that
-    // the palette's sections all show, unscrolled.
+fn a_later_sketchs_modify_box_opens_with_its_cursor_after_its_value_not_where_an_earlier_box_left_it()
+ {
+    // The first sketch's box: Home (its cursor to the start of "20"), then Enter, its 20
+    // placed. The second sketch's box opens on "20" with its cursor after it, its own: two
+    // Backspaces and "30" give "30", not "3020" (the first box's cursor carried over; the
+    // review's R1).
+    use eframe::egui::Key;
     let f = fixture();
-    let path = f.file("example.silico", EXAMPLE);
-    let app = App::new(Arc::clone(&f.sessions));
-    let mut h = {
-        let _marked = never_waits::marked();
-        Harness::builder()
-            .with_size((1280.0, 1400.0))
-            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
-    };
-    silico_app::theme::apply(&h.ctx);
-    h.state_mut().open(path.to_str().unwrap(), false);
-    step_until(&mut h, "the timeline read", |h| {
-        h.state()
-            .tabs()
-            .first()
-            .is_some_and(|tab| tab.timeline.is_some())
-    });
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create_sketch(&mut h, "XY plane");
-    sketch_read(&mut h);
-    for _ in 0..3 {
+    for first in [true, false] {
+        create_sketch(&mut h, "XY plane");
+        sketch_read(&mut h);
+        h.key_press(Key::R);
         step(&mut h);
-    }
-    for (role, label, least) in [
-        (Role::Toolbar, "Sketch bar", 2),
-        (Role::Group, "Sketch Palette", 6),
-    ] {
-        let group = h.get_by_role_and_label(role, label);
-        let b = group
-            .accesskit_node()
-            .bounding_box()
-            .unwrap_or_else(|| panic!("{label} has no bounds"));
-        assert!(
-            [b.x0, b.y0, b.x1, b.y1].iter().all(|v| v.is_finite()) && b.x1 > b.x0 && b.y1 > b.y0,
-            "{label}: {b:?}"
-        );
-        let controls: Vec<_> = group
-            .query_all_by_role(Role::Button)
-            .chain(group.query_all_by_role(Role::CheckBox))
-            .map(|node| {
-                let label = node.accesskit_node().label();
-                (label, node.accesskit_node().bounding_box().unwrap())
-            })
-            .collect();
-        assert!(controls.len() >= least, "{label}: {controls:?}");
-        for (control, c) in controls {
-            assert!(
-                c.x0 >= b.x0 && c.y0 >= b.y0 && c.x1 <= b.x1 && c.y1 <= b.y1,
-                "{label}'s {control:?} at {c:?}, outside {b:?}"
+        sketch_events(&f, &mut h, &dragged([0.0, 0.0], [40.0, 20.0]));
+        settled(&mut h);
+        read_with_lines(&mut h, 4);
+        h.key_press(Key::D);
+        step(&mut h);
+        dimension_at(&f, &mut h, [40.0, 10.0], [55.0, 10.0], "20");
+        step_until(&mut h, "the box drawn", |h| modify_field(h).is_some());
+        step(&mut h);
+        assert!(modify_field(&h).unwrap().is_focused());
+        if first {
+            pressed(&mut h, &[Key::Home]);
+        } else {
+            pressed(&mut h, &[Key::Backspace, Key::Backspace]);
+            modify_field(&h).unwrap().type_text("30");
+            step(&mut h);
+            step(&mut h);
+            assert_eq!(
+                modify_field(&h).and_then(|field| field.value()).as_deref(),
+                Some("30")
             );
         }
+        h.key_press(Key::Enter);
+        step(&mut h);
+        settled(&mut h);
+        read_with_constraints(&mut h, 7);
+        leave_sketch(&mut h, true);
     }
     assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_sketch_bar_and_the_palette_are_bounded_around_their_controls_in_the_tree() {
+    // Each panel's group in the accessibility tree has bounds of its own (a ui's node, which
+    // egui bounds no other way): its area's rectangle, within half a point, at one pixel a
+    // point and at two, holding every button and checkbox in it. In a window tall enough
+    // that the palette's sections all show, unscrolled.
+    for ppp in [1.0, 2.0] {
+        let f = fixture();
+        let mut h = opened_scaled(&f, "example.silico", EXAMPLE, (1280.0, 1400.0), ppp);
+        step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+        create_sketch(&mut h, "XY plane");
+        sketch_read(&mut h);
+        for _ in 0..3 {
+            step(&mut h);
+        }
+        let tab = h.state().tabs()[0].id.to_string();
+        for (role, label, area, least) in [
+            (Role::Toolbar, "Sketch bar", "sketch_bar", 2),
+            (Role::Group, "Sketch Palette", "sketch_palette", 6),
+        ] {
+            let group = h.get_by_role_and_label(role, label);
+            let bounds = group.rect();
+            let rect =
+                eframe::egui::AreaState::load(&h.ctx, eframe::egui::Id::new((area, tab.clone())))
+                    .unwrap()
+                    .rect();
+            assert!(
+                (bounds.min - rect.min).length() <= 0.5 && (bounds.max - rect.max).length() <= 0.5,
+                "{label} at {ppp}x: {bounds:?}, its area {rect:?}"
+            );
+            let controls: Vec<_> = group
+                .query_all_by_role(Role::Button)
+                .chain(group.query_all_by_role(Role::CheckBox))
+                .map(|node| (node.accesskit_node().label(), node.rect()))
+                .collect();
+            assert!(controls.len() >= least, "{label}: {controls:?}");
+            for (control, c) in controls {
+                assert!(
+                    bounds.expand(0.5).contains_rect(c),
+                    "{label}'s {control:?} at {c:?}, outside {bounds:?} at {ppp}x"
+                );
+            }
+        }
+        assert_eq!(never_waits::waits(), 0);
+    }
 }
 
 #[test]
@@ -23616,12 +23650,24 @@ fn the_over_define_prompts_rows_share_their_edges_its_keys_are_16_high_at_their_
 
 /// The app at `size` points, in the app's look, with `text` open from `name`, its timeline read.
 fn opened_sized(f: &Fixture, name: &str, text: &str, size: (f32, f32)) -> AppHarness {
+    opened_scaled(f, name, text, size, 1.0)
+}
+
+/// [`opened_sized`], at `pixels_per_point`.
+fn opened_scaled(
+    f: &Fixture,
+    name: &str,
+    text: &str,
+    size: (f32, f32),
+    pixels_per_point: f32,
+) -> AppHarness {
     let path = f.file(name, text);
     let app = App::new(Arc::clone(&f.sessions));
     let mut h = {
         let _marked = never_waits::marked();
         Harness::builder()
             .with_size(size)
+            .with_pixels_per_point(pixels_per_point)
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
     // The app's look, as main.rs gives it and `Fixture::app` does.
