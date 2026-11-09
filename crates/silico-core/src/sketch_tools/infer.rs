@@ -496,15 +496,6 @@ struct Crossing {
     pair: (Reference, Reference),
 }
 
-/// Where two curves near the pointer cross: how far from it, the place, whether one of the
-/// two is an axis, and the pair, in [`Reference`]'s order.
-struct Crossing {
-    d: f64,
-    at: Xy,
-    axis: bool,
-    pair: (Reference, Reference),
-}
-
 /// A curve near the pointer: the reference, its shape, where the pointer's nearest to it, and
 /// how far that is.
 struct Near {
