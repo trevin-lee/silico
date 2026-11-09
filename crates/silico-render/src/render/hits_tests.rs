@@ -1275,3 +1275,565 @@ fn resolved_side() -> impl proptest::strategy::Strategy<Value = f64> {
     use proptest::prelude::*;
     prop_oneof![Just(1e-3), 1e-2..1e3f64, Just(1e5)]
 }
+
+// ---- Each of the cast's rules at its edge, each by hand ----
+
+/// Orthographic from (0, 0, 100) onto the origin, +y up, 32 mm high, [`EXACT`] pixels: 16
+/// pixels a millimetre, (x, y) landing at column 256 + 16 x and row 256 − 16 y, a point's
+/// depth 100 − z. Every step of the projection is exact in binary here (the matrix's 2 / 32 is
+/// a power of two), so a tie made by hand is a tie in f64.
+fn exactly_above() -> Camera {
+    Camera {
+        projection: Projection::Orthographic { view_height: 32.0 },
+        eye: [0.0, 0.0, 100.0],
+        target: [0.0; 3],
+        up: [0.0, 1.0, 0.0],
+    }
+}
+
+/// [`exactly_above`]'s image, 512 by 512 pixels, its centre (256, 256) over the origin.
+const EXACT: [u32; 2] = [512, 512];
+
+/// A mesh of one edge, a polyline through `points`, and nothing else.
+fn edge_through(points: Vec<[f64; 3]>) -> Mesh {
+    Mesh {
+        positions: vec![],
+        normals: vec![],
+        triangles: vec![],
+        face_triangles: vec![],
+        valid: None,
+        edge_point_counts: vec![u32::try_from(points.len()).unwrap()],
+        edge_points: points,
+        vertex_points: vec![],
+    }
+}
+
+#[test]
+fn a_pointer_on_the_images_last_pixel_casts_and_one_past_a_side_casts_nothing() {
+    use Element::Face;
+    // A face under the whole view, z = 0 over x and y from −1000 to 1000, seen from above: a
+    // pointer anywhere in the image (from 0 up to, not at, 400 on each side) meets it; one
+    // past a side, or on its far side, meets nothing, though the face is there: nothing is
+    // drawn there.
+    let body = Pickable::new(Arc::new(mesh_of(&[square_at(0.0, -1000.0, 1000.0)])));
+    let bodies = [(1, &body)];
+    let under = hits(&from_above(), SIZE, 1.0, &bodies, [0.0, 0.0]);
+    assert_eq!(listed(&under), [(Face(1), false)]);
+    assert_at(&under[0], [-10.0, 30.0, 0.0], 100.0);
+    let under = hits(&from_above(), SIZE, 1.0, &bodies, [399.5, 399.5]);
+    assert_eq!(listed(&under), [(Face(1), false)]);
+    assert_at(&under[0], [29.95, -9.95, 0.0], 100.0);
+    for pointer in [
+        [-0.5, 200.0],
+        [200.0, -0.5],
+        [400.0, 200.0],
+        [200.0, 400.0],
+        [-1e-9, 0.0],
+    ] {
+        assert!(
+            hits(&from_above(), SIZE, 1.0, &bodies, pointer).is_empty(),
+            "{pointer:?}"
+        );
+    }
+}
+
+#[test]
+fn of_an_edges_segments_the_nearest_in_the_image_is_taken_and_of_those_as_near_the_nearest_the_eye()
+{
+    use Element::Edge;
+    // Seen `exactly_above`, the pointer at the image's centre over the origin; each segment's
+    // point nearest it worked by hand, exact in binary (each a segment's middle, or an end).
+    let cast = |points: Vec<[f64; 3]>| -> Vec<Hit> {
+        let body = Pickable::new(Arc::new(edge_through(points)));
+        hits(&exactly_above(), EXACT, 1.0, &[(1, &body)], [256.0, 256.0])
+    };
+    let y = 3.0 / 16.0;
+    // 5 pixels above the pointer at z = 20 (depth 80), down the column at x = 1 (16.28 pixels
+    // off at its nearest, its end), then back along the row 3 pixels above at z = 0: the
+    // nearest in the image, 3 pixels off at (0, y, 0), though deeper.
+    let under = cast(vec![
+        [-1.0, 5.0 / 16.0, 20.0],
+        [1.0, 5.0 / 16.0, 20.0],
+        [1.0, y, 0.0],
+        [-1.0, y, 0.0],
+    ]);
+    assert_eq!(listed(&under), [(Edge(1), false)]);
+    assert_at(&under[0], [0.0, y, 0.0], 100.0);
+    // Along the row 3 pixels above, from x = −1 to 1 at z = 0 (3 pixels off at (0, y, 0),
+    // depth 100), on to (2, y, z) (16.28 pixels off at its start), and back along the row to
+    // (−2, y, z) (3 pixels off at (0, y, z), depth 100 − z): two segments exactly as near the
+    // pointer in the image. The nearer the eye is taken: the last at z = 20, the first at
+    // z = −20.
+    let row = |z: f64| vec![[-1.0, y, 0.0], [1.0, y, 0.0], [2.0, y, z], [-2.0, y, z]];
+    let under = cast(row(20.0));
+    assert_eq!(listed(&under), [(Edge(1), false)]);
+    assert_at(&under[0], [0.0, y, 20.0], 80.0);
+    let under = cast(row(-20.0));
+    assert_eq!(listed(&under), [(Edge(1), false)]);
+    assert_at(&under[0], [0.0, y, 0.0], 100.0);
+    // As near the pointer and as near the eye, 3 pixels above it and 3 below, by way of the
+    // column at x = 1 (16 pixels off): the first.
+    let under = cast(vec![
+        [-1.0, y, 0.0],
+        [1.0, y, 0.0],
+        [1.0, -y, 0.0],
+        [-1.0, -y, 0.0],
+    ]);
+    assert_eq!(listed(&under), [(Edge(1), false)]);
+    assert_at(&under[0], [0.0, y, 0.0], 100.0);
+}
+
+#[test]
+fn a_segment_seen_end_on_with_its_ends_as_near_the_eye_is_taken_at_its_first() {
+    use Element::Edge;
+    // From 2^-70 to 2^-69 along x: both ends land on the image's centre (2^-74 of the view's
+    // half-width is lost in its 1), and both are 100 from the eye. Seen end on, its end
+    // nearest the eye is taken; of two as near, its first, bit for bit.
+    let tiny = libm::ldexp(1.0, -70);
+    let body = Pickable::new(Arc::new(edge_through(vec![
+        [tiny, 0.0, 0.0],
+        [2.0 * tiny, 0.0, 0.0],
+    ])));
+    let under = hits(&exactly_above(), EXACT, 1.0, &[(1, &body)], [256.0, 256.0]);
+    assert_eq!(listed(&under), [(Edge(1), false)]);
+    assert_eq!(under[0].point, [tiny, 0.0, 0.0]);
+    assert_eq!(under[0].depth, 100.0);
+}
+
+#[test]
+fn a_face_met_twice_on_the_line_is_listed_at_its_nearer_meeting_whichever_is_walked_first() {
+    // Face1 of two triangles over the lower left half of (0, 0)–(10, 10), one at z = 0 and one
+    // at z = 20, one chunk walked in their order: seen from above over (2, 2), the line meets
+    // them at depths 100 and 80. The face at 80, whichever comes first.
+    for (first, second) in [(0.0, 20.0), (20.0, 0.0)] {
+        let at = |z: f64| [[0.0, 0.0, z], [10.0, 0.0, z], [0.0, 10.0, z]];
+        let positions: Vec<[f64; 3]> = at(first).into_iter().chain(at(second)).collect();
+        let mesh = Mesh {
+            normals: vec![[0.0, 0.0, 1.0]; positions.len()],
+            positions,
+            triangles: vec![[0, 1, 2], [3, 4, 5]],
+            face_triangles: vec![2],
+            valid: None,
+            edge_points: vec![],
+            edge_point_counts: vec![],
+            vertex_points: vec![],
+        };
+        let body = Pickable::new(Arc::new(mesh));
+        let under = hits(&from_above(), SIZE, 1.0, &[(1, &body)], above_px(2.0, 2.0));
+        assert_eq!(listed(&under), [(Element::Face(1), false)], "{first}");
+        assert_at(&under[0], [2.0, 2.0, 20.0], 80.0);
+    }
+}
+
+#[test]
+fn an_orthographic_vertexs_reach_is_half_its_own_way_to_the_near_plane() {
+    use Element::{Face, Vertex};
+    // As zoomed out above (48 mm of reach; the near plane 24.4521 mm in front of the target,
+    // the bodies' box reaching √(15² + 15² + 10²) from it), but the top lower, at z = 12
+    // (depth 88), the box's reach the same. Vertex1 at (10, 10, 0), 10 mm behind the target,
+    // is 34.4521 mm from the near plane and reaches half that toward the eye, 17.2260: its key
+    // 82.7740, before the top at 88, which on its own ray doesn't hide it. Measured from 10 mm
+    // in front of the target (14.4521 to the near plane, a reach of 7.2260, a key of 92.7740),
+    // it would come after the top and be hidden by it.
+    let mut mesh = mesh_of(&[square_at(12.0, -5.0, 25.0), square_at(0.0, -5.0, 25.0)]);
+    mesh.vertex_points = vec![[10.0, 10.0, 0.0]];
+    let body = Pickable::new(Arc::new(mesh));
+    let camera = Camera {
+        projection: Projection::Orthographic {
+            view_height: 4000.0,
+        },
+        ..from_above()
+    };
+    let under = hits(&camera, SIZE, 1.0, &[(1, &body)], [200.0, 200.0]);
+    assert_eq!(
+        listed(&under),
+        [(Vertex(1), false), (Face(1), false), (Face(2), true)]
+    );
+    assert_at(&under[0], [10.0, 10.0, 0.0], 100.0);
+    assert_at(&under[1], [10.0, 10.0, 12.0], 88.0);
+}
+
+#[test]
+fn a_wide_views_edge_is_found_through_its_box_grown_by_the_pixels_width_at_its_depth() {
+    use Element::Edge;
+    // 170 degrees over 10 by 10 pixels: a pixel is 2 tan 85° / 10 = 2.2860 mm for each mm of
+    // depth, more than a millimetre. Edge1, along y at depth 10 and x = 0.8 tan 85° · 10 =
+    // 91.44, lands down column 9, 4 pixels from the pointer at the image's centre: taken, at
+    // (91.44, 0, −10). Its box is 91.44 mm off the pointer's line, within 6 pixels' width at
+    // its depth (137.2 mm), but not within 6 / 2.2860 · 10 (26.2) or 6 (2.2860 + 10) (73.7).
+    let tan = libm::tan(85f64.to_radians());
+    let x = 0.8 * tan * 10.0;
+    let body = Pickable::new(Arc::new(edge_through(vec![
+        [x, -10.0, -10.0],
+        [x, 10.0, -10.0],
+    ])));
+    let under = hits(
+        &from_the_origin_at(170.0),
+        [10, 10],
+        1.0,
+        &[(1, &body)],
+        [5.0, 5.0],
+    );
+    assert_eq!(listed(&under), [(Edge(1), false)]);
+    // Off the axis f32's rounding of the angle: a part in 10^7 of 10 mm.
+    for k in 0..3 {
+        assert!(
+            (under[0].point[k] - [x, 0.0, -10.0][k]).abs() < 1e-5,
+            "{under:?}"
+        );
+    }
+    assert_eq!(under[0].depth, 10.0);
+}
+
+#[test]
+fn an_edge_cut_at_the_eye_is_taken_at_its_point_nearest_the_pointer_between_the_cut_and_its_end() {
+    use Element::Edge;
+    // From the origin at 90 degrees, 100 by 100: Edge1 from (3, 0, 10), behind the eye, to
+    // (1, 0, −10), drawn from its cut a nanometre in front of the eye (just past half way,
+    // landing 10^8 to the right along row 50) to its end at column 55. The pointer at (60, 52),
+    // 2 pixels below column 60, where x / depth is 0.2: (3 − 2u) / (20u − 10) = 0.2 at u = 5/6,
+    // the point (4/3, 0, −20/3), depth 20/3. (The image's fraction there, of the drawn part, is
+    // 2/3 of the way from the cut through the division by depth; as a fraction of more than
+    // the drawn part it would be past the end, and the end taken.)
+    let body = Pickable::new(Arc::new(edge_through(vec![
+        [3.0, 0.0, 10.0],
+        [1.0, 0.0, -10.0],
+    ])));
+    let under = hits(
+        &from_the_origin(),
+        [100, 100],
+        1.0,
+        &[(1, &body)],
+        [60.0, 52.0],
+    );
+    assert_eq!(listed(&under), [(Edge(1), false)]);
+    for k in 0..3 {
+        assert!(
+            (under[0].point[k] - [4.0 / 3.0, 0.0, -20.0 / 3.0][k]).abs() < 1e-6,
+            "{under:?}"
+        );
+    }
+    assert!((under[0].depth - 20.0 / 3.0).abs() < 1e-6, "{under:?}");
+}
+
+#[test]
+fn an_edges_end_on_the_eyes_plane_is_cut_and_one_kept_lands_from_its_own_point() {
+    use Element::Edge;
+    let camera = from_the_origin();
+    let cast = |points: Vec<[f64; 3]>, pointer: [f64; 2]| -> Vec<Hit> {
+        let body = Pickable::new(Arc::new(edge_through(points)));
+        hits(&camera, [100, 100], 1.0, &[(1, &body)], pointer)
+    };
+    // From (0.02, 0, 0), on the eye's plane, to (0.02, 0, −10): drawn from its cut, a nanometre
+    // in front (landing 10^6 to the right), to its end at column 50.1, 0.1 pixels from the
+    // pointer: taken at its end. Its end on the plane taken as it is would land at infinity,
+    // and nothing of it would be.
+    let under = cast(vec![[0.02, 0.0, 0.0], [0.02, 0.0, -10.0]], [50.0, 50.0]);
+    assert_eq!(listed(&under), [(Edge(1), false)]);
+    assert_at(&under[0], [0.02, 0.0, -10.0], 10.0);
+    // Both ends in front, from 4e15 out (x / depth 1, column 100) to (0.13, 0, −1), column
+    // 56.5: 6.5 pixels from the pointer at the centre at its nearest, its end, so not taken;
+    // 5 from one at (51.5, 50), taken there. Its kept end lands from its own point: taken as
+    // the cut's fraction of the whole, through 4e15's rounding (a half), its 0.13 would be
+    // lost, and it would land on the pointer.
+    let far = vec![[4e15, 0.0, -4e15], [0.13, 0.0, -1.0]];
+    assert!(cast(far.clone(), [50.0, 50.0]).is_empty());
+    let under = cast(far, [51.5, 50.0]);
+    assert_eq!(listed(&under), [(Edge(1), false)]);
+    assert_eq!(under[0].depth, 1.0);
+}
+
+#[test]
+fn an_edges_point_nearest_the_pointer_past_f64_isnt_taken() {
+    use Element::Edge;
+    // From (−0.6, 0, −0.6) to (0.6, 0, −0.6) times f64's largest, across the view at 45
+    // degrees each side: it lands along row 50 from column 0 to 100, a pixel from the pointer
+    // at (51, 50) at its nearest, 0.51 of the way, at depth 0.6 of the largest. But that point
+    // is past f64 (its ends are 1.2 of the largest apart): not taken. Half of it, to the
+    // view's axis (column 50), is: at its end there, (0, 0, −0.6 of the largest).
+    let m = 0.6 * f64::MAX;
+    let cast = |b: [f64; 3]| -> Vec<Hit> {
+        let body = Pickable::new(Arc::new(edge_through(vec![[-m, 0.0, -m], b])));
+        hits(
+            &from_the_origin(),
+            [100, 100],
+            1.0,
+            &[(1, &body)],
+            [51.0, 50.0],
+        )
+    };
+    assert!(cast([m, 0.0, -m]).is_empty());
+    let under = cast([0.0, 0.0, -m]);
+    assert_eq!(listed(&under), [(Edge(1), false)]);
+    assert_eq!(under[0].point, [0.0, 0.0, -m]);
+    assert_eq!(under[0].depth, m);
+}
+
+#[test]
+fn a_face_hides_a_vertex_only_strictly_nearer_than_its_reach_on_its_own_ray() {
+    use Element::{Face, Vertex};
+    // At 170 degrees a perspective reach is at most a quarter of the depth: Vertex1 on the
+    // view's axis at depth 41 reaches to 30.75. Face1 there exactly, across the axis at
+    // z = −30.75: met on the vertex's ray at its key, not nearer, so it doesn't hide it, and
+    // the vertex comes first (a vertex before a face at one depth).
+    let mut mesh = mesh_of(&[square_at(-30.75, -1.0, 1.0)]);
+    mesh.vertex_points = vec![[0.0, 0.0, -41.0]];
+    let body = Pickable::new(Arc::new(mesh));
+    let under = hits(
+        &from_the_origin_at(170.0),
+        [100, 100],
+        1.0,
+        &[(1, &body)],
+        [50.0, 50.0],
+    );
+    assert_eq!(listed(&under), [(Vertex(1), false), (Face(1), false)]);
+    assert_eq!(under[0].depth, 41.0);
+    assert_eq!(under[1].depth, 30.75);
+    // At 90 degrees, Vertex1 on the axis at depth 4 (its key 4 less 0.024 of 4) behind Face1
+    // at depth 2: hidden, the ray through it along the axis, (0, 0, −1).
+    let mut mesh = mesh_of(&[square_at(-2.0, -1.0, 1.0)]);
+    mesh.vertex_points = vec![[0.0, 0.0, -4.0]];
+    let body = Pickable::new(Arc::new(mesh));
+    let under = hits(
+        &from_the_origin(),
+        [100, 100],
+        1.0,
+        &[(1, &body)],
+        [50.0, 50.0],
+    );
+    assert_eq!(listed(&under), [(Face(1), false), (Vertex(1), true)]);
+}
+
+#[test]
+fn a_nodes_chunks_spread_as_far_along_two_axes_are_split_along_the_first() {
+    // Eight faces of one triangle each (a chunk each, more than a leaf's 4), each the lower
+    // left half of a 1 mm square about its centre, the centres spread 10 mm along x and 10
+    // along y: the root's chunks split at their median along x, the first of the two, its 4
+    // lowest in x to the left. Split along y, the left would hold the 4 lowest in y, a box
+    // from x = −0.5 to 9.5 and y = −0.5 to 3.5.
+    let centres = [
+        (0.0, 0.0),
+        (1.0, 9.0),
+        (2.0, 2.0),
+        (3.0, 7.0),
+        (7.0, 3.0),
+        (8.0, 8.0),
+        (9.0, 1.0),
+        (10.0, 10.0),
+    ];
+    let faces = centres
+        .iter()
+        .map(|&(x, y)| {
+            (
+                vec![
+                    [x - 0.5, y - 0.5, 0.0],
+                    [x + 0.5, y - 0.5, 0.0],
+                    [x - 0.5, y + 0.5, 0.0],
+                ],
+                vec![[0, 1, 2]],
+            )
+        })
+        .collect();
+    let body = Pickable::new(Arc::new(faces_and_vertices(faces, vec![])));
+    let nodes = &body.triangles.nodes;
+    assert_eq!(nodes.len(), 3);
+    assert_eq!(nodes[0].bounds, ([-0.5, -0.5, 0.0], [10.5, 10.5, 0.0]));
+    assert_eq!(nodes[1].bounds, ([-0.5, -0.5, 0.0], [3.5, 9.5, 0.0]));
+    assert_eq!(nodes[2].bounds, ([6.5, 0.5, 0.0], [10.5, 10.5, 0.0]));
+}
+
+#[test]
+fn a_line_meets_a_triangles_edges_and_corners_and_a_ray_nothing_behind_it_nor_past_f64() {
+    let triangle = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    let down = |origin: [f64; 3], whole: bool| super::Line {
+        origin,
+        direction: [0.0, 0.0, -1.0],
+        whole,
+    };
+    // On its edge from its first corner to its third (x = 0), and on its second corner (1, 0):
+    // 1 down the line from z = 1.
+    assert_eq!(down([0.0, 0.5, 1.0], false).meets(triangle), Some(1.0));
+    assert_eq!(down([1.0, 0.0, 1.0], false).meets(triangle), Some(1.0));
+    // Past its edge x = 0 by 2^-42 of it, under WATERTIGHT's 2^-40: still; by 2^-39, not.
+    let off = |by: f64| down([-by, 0.5, 1.0], false).meets(triangle);
+    assert_eq!(off(libm::ldexp(1.0, -42)), Some(1.0));
+    assert_eq!(off(libm::ldexp(1.0, -39)), None);
+    // From 1 below it, looking down: a ray doesn't meet it; its line does, 1 back.
+    assert_eq!(down([0.25, 0.25, -1.0], false).meets(triangle), None);
+    assert_eq!(down([0.25, 0.25, -1.0], true).meets(triangle), Some(-1.0));
+    // A triangle 1e155 on its sides, which the line from (0.001, 0.001, 0.001) meets 0.001 down
+    // it: what the meeting is divided by is 1e310, past f64, so none.
+    let huge = [[0.0; 3], [1e155, 0.0, 0.0], [0.0, 1e155, 0.0]];
+    assert_eq!(down([0.001; 3], false).meets(huge), None);
+}
+
+#[test]
+fn a_boxs_least_depth_is_its_nearest_corners_less_a_part_in_2_38_of_its_largest_coordinate() {
+    // Seen from above, (10, 10, 100) down z, the box (0, 0, 0)–(20, 20, 20)'s nearest corner
+    // is at z = 20, depth 80; the largest coordinate of the box's, the eye's, and the line's
+    // is the eye's 100, of which a part in 2^38 is 3.64e-10.
+    let cube = Pickable::new(Arc::new(freecad_box(20.0, 20.0, 20.0)));
+    let caster = super::Caster::new(&from_above(), SIZE, 1.0, &[(1, &cube)]).unwrap();
+    let line = super::Line {
+        origin: [15.0, 15.0, 10.0],
+        direction: [0.0, 0.0, -1.0],
+        whole: true,
+    };
+    let least = caster.nearest_depth(([0.0; 3], [20.0; 3]), &line);
+    assert!(least < 80.0 - 1e-10 && least > 80.0 - 1e-9, "{least}");
+}
+
+#[test]
+fn a_line_a_hair_past_a_triangles_edge_meets_it_through_its_box_grown_for_rounding() {
+    // One triangle, (0, 0, 0), (1, 0, 0), (0, 1, 0), its box (0, 0, 0)–(1, 1, 0). A line down
+    // z at x = −2^-42, past its edge x = 0 by under WATERTIGHT (2^-40 of it), meets it, at
+    // depth 100 seen from above: so its box, grown for rounding by 2^-40 of its largest
+    // coordinate (here a millimetre's), takes the line. Not grown (or by 2^-64), the box would
+    // leave out what the triangle takes.
+    let x = -(libm::ldexp(1.0, -42));
+    let mesh = Mesh {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        triangles: vec![[0, 1, 2]],
+        face_triangles: vec![1],
+        valid: None,
+        edge_points: vec![],
+        edge_point_counts: vec![],
+        vertex_points: vec![],
+    };
+    let body = Pickable::new(Arc::new(mesh));
+    let caster = super::Caster::new(&from_above(), SIZE, 1.0, &[(1, &body)]).unwrap();
+    let line = super::Line {
+        origin: [x, 0.5, 50.0],
+        direction: [0.0, 0.0, -1.0],
+        whole: true,
+    };
+    let mut met = Vec::new();
+    let stopped = body.triangles.walk(
+        &caster,
+        body.mesh(),
+        &line,
+        |_| true,
+        |face, point, depth| {
+            met.push((face, point, depth));
+            false
+        },
+    );
+    assert!(!stopped);
+    assert_eq!(met, [(1, [x, 0.5, 0.0], 100.0)]);
+}
+
+#[test]
+fn the_near_cut_keeps_what_is_a_nanometre_or_more_in_front_and_nothing_of_a_depth_not_finite() {
+    use glam::DVec4;
+    // A point about the eye at `depth` along the view (z toward the eye).
+    let at = |depth: f64| DVec4::new(0.0, 0.0, -depth, 1.0);
+    let cut = super::Projector::near_cut;
+    assert_eq!(MIN_EYE_DISTANCE, 1e-6);
+    // Both ends in front: all of it.
+    assert_eq!(cut(at(10.0), at(5.0)), Some((0.0, 1.0)));
+    // From 2 nanometres in front to the eye's plane, and back: cut half way, at 1 (exact in
+    // binary: 2e-6 is twice 1e-6).
+    assert_eq!(cut(at(2e-6), at(0.0)), Some((0.0, 0.5)));
+    assert_eq!(cut(at(0.0), at(2e-6)), Some((0.5, 1.0)));
+    // From 10 in front to 10 behind: kept to depth 1e-6, (10 − 1e-6) / 20 of the way.
+    let (enter, leave) = cut(at(10.0), at(-10.0)).unwrap();
+    assert_eq!(enter, 0.0);
+    assert!((leave - (10.0 - 1e-6) / 20.0).abs() < 1e-15, "{leave}");
+    // Wholly behind, or nearer than a nanometre: nothing.
+    assert_eq!(cut(at(-1.0), at(-2.0)), None);
+    assert_eq!(cut(at(0.5e-6), at(0.0)), None);
+    // An end's depth not finite: nothing, whatever the other's.
+    for bad in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+        assert_eq!(cut(at(5.0), at(bad)), None, "{bad}");
+        assert_eq!(cut(at(bad), at(5.0)), None, "{bad}");
+    }
+}
+
+/// `got` within `within` pixels of `want` on each side.
+#[track_caller]
+fn lands_at(got: Option<[f64; 2]>, want: [f64; 2], within: f64) {
+    let got = got.unwrap_or_else(|| panic!("nothing, against {want:?}"));
+    for k in 0..2 {
+        assert!(
+            (got[k] - want[k]).abs() <= within,
+            "{got:?} against {want:?}"
+        );
+    }
+}
+
+#[test]
+fn a_segment_projects_whole_in_front_cut_a_nanometre_from_the_eye_and_not_at_all_behind_it() {
+    use super::project_segment;
+    // From the origin at 90 degrees, 100 by 100: (x, y, z) lands at (50 + 50 x / d, 50 − 50 y /
+    // d), d = −z its depth, to f32's rounding of the angle (a part in 10^7 of the offset).
+    let camera = from_the_origin();
+    let size = [100, 100];
+    let segment = |a: [f64; 3], b: [f64; 3]| project_segment(&camera, size, a, b);
+    // Wholly in front: each end where `project` lands it.
+    let [a, b] = segment([1.0, 2.0, -10.0], [-3.0, 0.5, -5.0]).unwrap();
+    lands_at(a, [55.0, 40.0], 1e-4);
+    lands_at(b, [20.0, 45.0], 1e-4);
+    assert_eq!(a, project(&camera, size, [1.0, 2.0, -10.0]));
+    // Wholly behind the eye: nothing.
+    assert_eq!(segment([1.0, 0.0, 5.0], [-1.0, 0.0, 10.0]), None);
+    // From 10 behind to 10 in front: cut where it's a nanometre in front, (10 + 1e-6) / 20 of
+    // the way, at (0.50000005, 0.250000025, −1e-6), which lands 2.5e7 to the right and 1.25e7
+    // above (to a part in 10^6, the cut's depth a difference of tens); its far end as `project`
+    // lands it.
+    let crossing = segment([0.0, 0.0, 10.0], [1.0, 0.5, -10.0]).unwrap();
+    lands_at(crossing[0], [25_000_052.5, -12_499_951.25], 25.0);
+    lands_at(crossing[1], [55.0, 47.5], 1e-4);
+    // An end on the eye's plane is cut too, a nanometre in front (taken as it is, it would land
+    // at infinity).
+    let [a, b] = segment([0.5, 0.0, 0.0], [0.5, 0.0, -10.0]).unwrap();
+    lands_at(a, [25_000_050.0, 50.0], 25.0);
+    lands_at(b, [52.5, 50.0], 1e-4);
+    // Cut about the eye, wherever it is: the crossing with the eye a billion millimetres out
+    // lands bit for bit as with the eye at the origin.
+    let far = 1e9;
+    let moved = Camera {
+        eye: [far, -far, far],
+        target: [far, -far, far - 10.0],
+        ..camera.clone()
+    };
+    assert_eq!(
+        project_segment(
+            &moved,
+            size,
+            [far, -far, far + 10.0],
+            [far + 1.0, -far + 0.5, far - 10.0]
+        ),
+        Some(crossing)
+    );
+    // A kept end lands from its own point: from 4e15 out (x / depth 1, column 100) to (0.13,
+    // 0, −1), column 56.5. Taken as the cut's fraction of the whole, through 4e15's rounding
+    // (a half), its 0.13 would be lost, and it would land at column 50.
+    let [a, b] = segment([4e15, 0.0, -4e15], [0.13, 0.0, -1.0]).unwrap();
+    lands_at(a, [100.0, 50.0], 1e-4);
+    lands_at(b, [56.5, 50.0], 1e-4);
+    // Orthographic, from above: drawn whole, an end behind the eye (z = 500) too, each where
+    // `project` lands it; and a kept end from its own point there as well (10.13 at column
+    // 201.3, not 200).
+    let ortho = |a: [f64; 3], b: [f64; 3]| project_segment(&from_above(), SIZE, a, b);
+    let [a, b] = ortho([0.0, 10.0, 500.0], [20.0, 5.0, -50.0]).unwrap();
+    lands_at(a, above_px(0.0, 10.0), 1e-4);
+    lands_at(b, above_px(20.0, 5.0), 1e-4);
+    let [_, b] = ortho([4e15, 10.0, 10.0], [10.13, 10.0, 10.0]).unwrap();
+    lands_at(b, above_px(10.13, 10.0), 1e-4);
+    // Nothing for an end that isn't finite, a size of 0, or a camera the checks refuse.
+    assert_eq!(segment([f64::NAN, 0.0, -1.0], [0.0, 0.0, -1.0]), None);
+    assert_eq!(segment([0.0, 0.0, -1.0], [0.0, f64::INFINITY, -1.0]), None);
+    assert_eq!(
+        project_segment(&camera, [0, 100], [0.0, 0.0, -1.0], [1.0, 0.0, -1.0]),
+        None
+    );
+    let refused = Camera {
+        eye: camera.target,
+        ..camera.clone()
+    };
+    assert_eq!(
+        project_segment(&refused, size, [0.0, 0.0, -1.0], [1.0, 0.0, -1.0]),
+        None
+    );
+}
