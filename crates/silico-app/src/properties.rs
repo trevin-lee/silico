@@ -324,13 +324,15 @@ pub(crate) fn copy_row(ui: &mut Ui, key: &str, value: &str) {
             pos2(whole.right() - side / 2.0, whole.center().y),
             Vec2::splat(side),
         );
-        let mut job = LayoutJob::single_section(
+        let job = LayoutJob::single_section(
             value.to_owned(),
             format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
         );
+        // A label lays its words out in the width its ui has left, whatever its job's wrap
+        // says: the ui is left the room before the icon and its gap, and no more.
         let room = whole.width() - side - theme::PROPERTY_COPY_GAP;
-        job.wrap = TextWrapping::truncate_at_width(room.max(0.0));
-        ui.add(Label::new(job).selectable(false))
+        ui.set_max_width(room.max(0.0));
+        ui.add(Label::new(job).selectable(false).truncate())
             .on_hover_text(value);
         let response = ui.interact(button, ui.id().with("copy"), Sense::click());
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Copy"));
@@ -3070,5 +3072,58 @@ mod tests {
         let wide = "é".repeat(35);
         assert_eq!(chip_text(&wide), format!("{}…", "é".repeat(32)));
         assert_eq!(chip_text(&"é".repeat(34)), "é".repeat(34));
+    }
+
+    /// `.prop .v`: `display: flex; gap: 6px`; `.prop .v .copy { margin-left: auto }`.
+    const V_GAP: f32 = 6.0;
+
+    #[test]
+    fn a_copy_rows_value_too_long_is_cut_short_6_before_its_copy_icon_at_the_rows_right() {
+        // `.prop` in a 295 wide panel, `--pad` in each side: the copy icon (`--icon`) at the
+        // value's right, centred on the row; the value from 12 + 96 + 8 in, a name too long
+        // for its column cut short with an ellipsis, ending within a glyph of `.mono`'s 11 px
+        // (under 8) of 6 before the icon (`gap: 6px`), never past that.
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(295.0, 60.0));
+        let name = "k7f2qx3m.fillet.Edge111111111111111111111111111111111111111111";
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 120.0))
+            .build_ui(move |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                    copy_row(ui, "Stable name", name);
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let copy = widget(&h, Role::Button, "Copy");
+        sized(
+            copy,
+            Rect::from_min_size(
+                Pos2::new(
+                    place.right() - PAD - ICON,
+                    place.top() + (ROW_H - ICON) / 2.0,
+                ),
+                Vec2::splat(ICON),
+            ),
+            "the copy button",
+        );
+        let shown = text_shape(&h, name);
+        let left = place.left() + PAD + KEY_W + ROW_GAP;
+        assert!(near(shown.pos.x, left), "the value at {:?}", shown.pos);
+        let whole = h.ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(name.to_owned(), FontId::monospace(11.0), Color32::WHITE)
+                .size()
+                .x
+        });
+        assert!(
+            left + whole > copy.right(),
+            "{name} fits the row: the case is gone"
+        );
+        let right = shown.pos.x + shown.galley.size().x;
+        let end = copy.left() - V_GAP;
+        assert!(
+            right <= end + egui::emath::GUI_ROUNDING && right > end - 8.0,
+            "the value ends at {right}, the copy icon at {copy:?}"
+        );
     }
 }
