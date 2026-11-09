@@ -2330,12 +2330,17 @@ fn status_in<P: Clients + 'static>(
     let held = found.held.read();
     let gated = matches!(*held.gated, Gated::Checked(_));
     let rebuild = {
-        let state = lock(&found.rebuilds).reported(held.revision, gated);
+        // The state and its count read under the rebuilds' lock, as a rebuild's start
+        // records them (rebuilds, then the newest, then its count), so no rebuild of the
+        // revision can start between the two: never one state beside another's count.
+        let rebuilds = lock(&found.rebuilds);
+        let state = rebuilds.reported(held.revision, gated);
         let mut progress = if gated || state.state == RebuildState::Running {
             found.newest.of(held.revision)
         } else {
             None
         };
+        drop(rebuilds);
         // A rebuild not running has no feature running, though its recompute, stopped, may
         // not have ended yet.
         if state.state != RebuildState::Running

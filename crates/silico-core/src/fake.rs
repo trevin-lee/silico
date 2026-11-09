@@ -121,8 +121,10 @@ pub struct FakeClient {
 }
 
 /// Holds requests a predicate picks, from when they start until it's released or dropped,
-/// or they're superseded, by a newer generation of their client's or its retirement (which
-/// stops them, as the pool stops a superseded request).
+/// or, for a [`hold`](FakeKernel::hold), until they're superseded, by a newer generation of
+/// their client's or its retirement (which stops them, as the pool stops a superseded
+/// request); a [`hold_past_supersede`](FakeKernel::hold_past_supersede) holds on through
+/// the supersede.
 #[must_use = "dropping a hold releases it"]
 pub struct Hold {
     shared: Arc<Shared>,
@@ -158,6 +160,9 @@ struct State {
 struct HoldRule {
     picks: Arc<Picks>,
     released: bool,
+    /// Whether a request it holds is held on past its supersede, until it's released
+    /// ([`FakeKernel::hold_past_supersede`]).
+    past_supersede: bool,
 }
 
 impl FakeKernel {
@@ -226,8 +231,10 @@ impl FakeKernel {
         self.wait_until(|running| running >= count, timeout)
     }
 
-    /// Waits up to `timeout` until no request is running: whether none was. A held request
-    /// stops running once it's superseded, its hold still in place.
+    /// Waits up to `timeout` until no request is running: whether none was. A request a
+    /// [`hold`](Self::hold) holds stops running once it's superseded, its hold still in
+    /// place; one a [`hold_past_supersede`](Self::hold_past_supersede) holds, only once it's
+    /// released.
     pub fn wait_idle(&self, timeout: Duration) -> bool {
         self.wait_until(|running| running == 0, timeout)
     }
@@ -261,12 +268,35 @@ impl FakeKernel {
     }
 
     /// Holds every request `picks` (called once for each request as it starts, with the
-    /// kernel's state locked, so it mustn't call the kernel) until the hold is released.
+    /// kernel's state locked, so it mustn't call the kernel) until the hold is released, or
+    /// until the request is superseded.
     pub fn hold(&self, picks: impl Fn(&Op) -> bool + Send + Sync + 'static) -> Hold {
+        self.holding(picks, false)
+    }
+
+    /// Holds as [`hold`](Self::hold) does, but a request it holds is held on past its
+    /// supersede, until the hold is released (or dropped, or the kernel stops); then, if it
+    /// was superseded meanwhile, it comes to [`Outcome::Superseded`], and otherwise it runs.
+    /// It models a superseded request still inside the pool's grace (counted from its start,
+    /// at most `pool::STOP_AFTER`), with no limit of its own, so its caller is still waiting
+    /// on it after the supersede. Release or drop it before sessions waiting on what it
+    /// holds are dropped (their drop joins their rebuilds' watchers, which wait for the
+    /// runs, which wait for it); an engine dropped first leaves its run's thread waiting on
+    /// it until it's released.
+    pub fn hold_past_supersede(&self, picks: impl Fn(&Op) -> bool + Send + Sync + 'static) -> Hold {
+        self.holding(picks, true)
+    }
+
+    fn holding(
+        &self,
+        picks: impl Fn(&Op) -> bool + Send + Sync + 'static,
+        past_supersede: bool,
+    ) -> Hold {
         let mut state = lock(&self.shared.state);
         state.holds.push(HoldRule {
             picks: Arc::new(picks),
             released: false,
+            past_supersede,
         });
         Hold {
             shared: Arc::clone(&self.shared),
@@ -643,12 +673,23 @@ fn serve(shared: &Shared) {
                 None => broken = Some(rule_panicked("hold", task.op())),
             }
         }
+        // Held while a rule holding it isn't released: one that holds past a supersede,
+        // whatever its generation; the others, until it's superseded.
+        let held_by = |state: &State, rule_holds: &dyn Fn(&HoldRule) -> bool| {
+            holding.iter().any(|&index| {
+                state
+                    .holds
+                    .get(index)
+                    .is_some_and(|rule| !rule.released && rule_holds(rule))
+            })
+        };
+        let held_through_supersede = |state: &State| held_by(state, &|rule| rule.past_supersede);
+        let held_until_supersede = |state: &State| held_by(state, &|_| true);
         while broken.is_none()
             && !state.stopping
-            && !state.clients.superseded(task.client(), task.generation())
-            && holding
-                .iter()
-                .any(|&index| state.holds.get(index).is_some_and(|rule| !rule.released))
+            && (held_through_supersede(&state)
+                || (!state.clients.superseded(task.client(), task.generation())
+                    && held_until_supersede(&state)))
         {
             state = shared
                 .changed
