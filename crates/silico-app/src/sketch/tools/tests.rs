@@ -1160,8 +1160,10 @@ fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel
     // js/interact.js's `onContext` in a sketch: End chain ['Esc'], Smart Dimension
     // ('dimension' icon, ['D']), a separator, Finish Sketch ('check' icon, ['Mod', 'Enter']),
     // and Cancel sketch, in that order; Mod is Ctrl off macOS and ⌘ on it, and Enter ↵ (the
-    // prototype's KEYNAME, app.js:8, as the registry names them). Each button named by its words alone, its keys its shortcut
-    // for a screen reader; Smart Dimension asks for its tool.
+    // prototype's KEYNAME, app.js:8, as the registry names them). Each button named by its
+    // words alone, its keys its shortcut for a screen reader, and drawn as every menu's item
+    // is (`crate::menu`): its caps painted at its right, a separator line before Finish
+    // Sketch, every item as wide as the widest. Smart Dimension asks for its tool.
     use crate::icons::Icon;
     use crate::sketch::bar::{MenuAction, canvas_menu, menu_items};
     use eframe::egui;
@@ -1264,6 +1266,28 @@ fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel
             keyed("Cancel sketch", None),
         ]
     );
+    // Its caps painted (#444's review, T4), each a cap's words: Esc, D, Ctrl and ↵.
+    let painted: Vec<String> = crate::modal::tests::painted(&h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect();
+    for cap in ["Esc", "D", "Ctrl", "↵"] {
+        assert!(painted.iter().any(|text| text == cap), "{cap}: {painted:?}");
+    }
+    // Every item as wide as the widest, a menu's least at least (`crate::menu::width`).
+    let widths: Vec<f32> = h
+        .query_all_by_role(egui::accesskit::Role::Button)
+        .map(|node| node.rect().width())
+        .collect();
+    assert_eq!(widths.len(), 4);
+    assert!(
+        widths.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-3),
+        "{widths:?}"
+    );
+    assert!(widths[0] >= crate::menu::least_width() - 1e-3, "{widths:?}");
     h.get_by_label("Smart Dimension").click();
     h.run();
     assert_eq!(asked.get(), MenuAction::Dimension);
