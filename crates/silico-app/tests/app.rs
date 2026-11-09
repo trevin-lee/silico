@@ -26864,6 +26864,90 @@ fn sketch_on_this_face_creates_a_sketch_on_the_picked_face() {
 }
 
 #[test]
+fn a_sketch_on_a_face_leaves_its_body_the_tip_so_a_pocket_or_pad_from_it_takes_that_body() {
+    // The block's top, Face6, sketched on by Sketch on this face, a rectangle drawn inside it
+    // (the face's frame has its origin at (0, 0, 10) and its x +x, so the face spans 0 to 40
+    // by 0 to 20), and the sketch finished. The sketch names the block as the feature its
+    // face is on, but the gate counts a feature's base and tool alone as consuming a solid,
+    // and a sketch has neither: the block is still the body a sweep builds on. So Pocket is
+    // on in CREATE, and a Pocket's, or a Pad's, add takes the block as its base.
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    for (kind, extent) in [
+        (
+            "Pocket",
+            r#"{"type": "one_side", "length": 5, "reversed": false}"#,
+        ),
+        (
+            "Pad",
+            r#"{"type": "one_side", "length": 10, "reversed": false}"#,
+        ),
+    ] {
+        let f = fixture();
+        let mut h = a_measured_box(&f);
+        select_in_box(&mut h, &["Face6"]);
+        row_until(&mut h, "Area", "800.00 mm²");
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .get_by_role_and_label(Role::Button, "Sketch on this face")
+            .click();
+        step_until(&mut h, "its sketch added", |h| {
+            sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+        });
+        sketch_read(&mut h);
+        let sketch = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+        // R, the corner rectangle, then its two corners clicked.
+        h.key_press(eframe::egui::Key::R);
+        step(&mut h);
+        assert_eq!(
+            sketch_mode(&h).unwrap().tools.choice(),
+            Some(Choice::Draw(ToolKind::CornerRectangle))
+        );
+        sketch_events(&f, &mut h, &clicked(10.0, 5.0));
+        sketch_events(&f, &mut h, &clicked(30.0, 15.0));
+        settled(&mut h);
+        read_with_lines(&mut h, 4);
+        assert_rectangle_in(
+            &sketch_of_text(&f, &h, sketch.as_str()),
+            [10.0, 5.0],
+            [30.0, 15.0],
+        );
+        leave_sketch(&mut h, true);
+        step_until(&mut h, "its sketch listed", |h| {
+            shows(h, "Browser", "Sketch1")
+        });
+        // The sketch chosen in the browser, for the sweep to take.
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label("Sketch1")
+            .click();
+        step(&mut h);
+        assert!(
+            !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+                .get_by_label(kind)
+                .accesskit_node()
+                .is_disabled(),
+            "{kind} is on"
+        );
+        create(&mut h, kind);
+        step_until(&mut h, "its add answered", |h| {
+            h.state().tabs()[0]
+                .dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.feature.is_some())
+        });
+        settled(&mut h);
+        assert_eq!(
+            fields_of(&text_of(&f, &h), kind),
+            Some(expected(&format!(
+                r#"{{"type": "{}", "name": "{kind}", "base": "k7f2qx3m", "sketch": "{sketch}", "extent": {extent}}}"#,
+                kind.to_lowercase()
+            ))),
+            "{kind}"
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
 fn sketch_on_this_face_is_off_for_a_face_no_store_can_name_and_on_for_a_stable_one() {
     // FUSED, its faces planes: the fuse's Face1, named only by its number, is unstable, so
     // no store takes it (its Stability card says why) and Sketch on this face is off; the
@@ -31505,6 +31589,31 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
     assert_eq!(
         menu_items(&h, "BLOCK")[3],
         ("Find in browser".to_owned(), None)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_failed_block_with_a_sketch_on_its_face_built_no_body_and_isnt_inside_one() {
+    // ON_A_FACE's block refused by the kernel, its sketch on the block's top: the sketch
+    // names the block as its face's feature, but consumes nothing (the gate counts a
+    // feature's base and tool alone), so the block isn't inside a body: it built none.
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
+            .then(|| Error::new(ErrorCode::KernelFailed, "the block came apart"))
+    });
+    let (mut h, _) = f.opened("face.silico", ON_A_FACE);
+    step_until(&mut h, "the block's mark", |h| {
+        item_said(h, "Block").as_deref() == Some("Box · Error")
+    });
+    menu_on(&mut h, "Timeline", "Block");
+    assert_eq!(
+        menu_items(&h, "BLOCK")[3],
+        (
+            "Find in browser".to_owned(),
+            Some("It built no body, so the browser has no row for it".to_owned())
+        )
     );
     assert_eq!(never_waits::waits(), 0);
 }
