@@ -1550,11 +1550,14 @@ impl Selection {
         Some((pick.body, pick.hit, Arc::clone(&named.name), named.stable))
     }
 
-    /// The highlights and the hover set on `view`: the highlights worked out again only
-    /// when the selection or the bodies table changed (which model the bodies are of
-    /// changes only with the table).
+    /// The highlights and the hover set on `view`, and what its picks take ([`Self::picks`]:
+    /// its vertex discs, and its edges' picking strips, only for kinds picked): the
+    /// highlights worked out again only when the selection or the bodies table changed
+    /// (which model the bodies are of changes only with the table).
     fn draw(&mut self, view: &mut View) {
-        view.vertices = self.picks().vertices.then_some(VERTEX_PICK_POINTS);
+        let picks = self.picks();
+        view.vertices = picks.vertices.then_some(VERTEX_PICK_POINTS);
+        view.edges = picks.edges;
         let key = (self.version, view.table());
         if self.drawn != Some(key) {
             view.highlights = highlights(&self.items, view.bodies(), view.bodies_of());
@@ -3292,6 +3295,32 @@ pub(crate) mod tests {
         );
         selection.draw(&mut view);
         assert_eq!(view.vertices, Some(VERTEX_PICK_POINTS));
+    }
+
+    #[test]
+    fn the_edge_filter_sets_whether_the_frames_edges_are_picked() {
+        // On, as the filter starts: the frame draws each edge near its square again toward
+        // the eye (N5). Off (E), not, so a concave edge's faces are picked to its line; and
+        // while a box takes faces alone (a dialog's), not either, whatever the filter.
+        let mut selection = Selection::default();
+        let mut view = View::default();
+        assert!(view.edges);
+        selection.filter.edges = false;
+        selection.draw(&mut view);
+        assert!(!view.edges);
+        selection.filter.edges = true;
+        selection.draw(&mut view);
+        assert!(view.edges);
+        selection.take_into(Some(Filter {
+            faces: true,
+            edges: false,
+            vertices: false,
+        }));
+        selection.draw(&mut view);
+        assert!(!view.edges);
+        selection.take_into(None);
+        selection.draw(&mut view);
+        assert!(view.edges);
     }
 
     #[test]
