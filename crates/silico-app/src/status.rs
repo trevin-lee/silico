@@ -13,9 +13,10 @@
 //! model published): the app's own clock would time its polls, not the rebuild. Only a
 //! rebuild done whole, of the revision shown ([`Tab::rebuilt_ms`]). A save's or a
 //! rollback's revision, whose model no rebuild of its own made, says no time: `status`
-//! gives none for it, by decision (Fable's, 2026-11-09: the null says nothing was rebuilt,
-//! and another rebuild's time would misreport it), where the prototype's bar always shows
-//! one, its save and Cancel always rebuilding.
+//! gives none for it, by decision (Fable's, 2026-11-09, docs/design/m5.0-app.md, *The
+//! rebuild's time*: the null says nothing was rebuilt, and another rebuild's time would
+//! misreport it), where the prototype's bar keeps its last rebuild's time (its save makes
+//! no revision; its Cancel rebuilds).
 //!
 //! Left out, each for a reason, each a seam:
 //! - the edits' count (`Unsaved · 2 edits`): the core's undo stack counts edits, but the

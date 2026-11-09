@@ -16723,10 +16723,11 @@ fn a_dialogs_preview_line_says_its_rebuild_running_stopped_and_with_errors() {
 
 #[test]
 fn a_full_rebuild_stopped_in_its_sketches_solve_leaves_the_models_own_time() {
-    // A full rebuild (Ctrl+Shift+B) solves the sketches it sweeps before its plan. Stopped
-    // there it's at 0 of 0, every feature queued: not whole, though `done` equals `steps`.
-    // The revision keeps its model (`status`'s `done`), and the bar its own rebuild's time,
-    // 30 ms on by the test's clock, while the stopped one's solve is still held.
+    // A full rebuild (Ctrl+Shift+B) solves the sketches it sweeps before its plan. Held in
+    // that solve past the model's own rebuild's time and 20 ms more, then stopped (its solve
+    // with it: it ends, its time fixed, at least that long): at 0 of 0, every feature
+    // queued, it isn't whole, though `done` equals `steps`. The revision keeps its model
+    // (`status`'s `done`), and the bar its own rebuild's time, never the stopped one's.
     let f = fixture();
     let pad = r#"    {"id": "r0000002", "type": "pad", "v": 1, "name": "Raised", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 3, "reversed": false}}"#;
     let text = SKETCHED.replace("\n  ]\n}", &format!(",\n{pad}\n  ]\n}}"));
@@ -16743,14 +16744,15 @@ fn a_full_rebuild_stopped_in_its_sketches_solve_leaves_the_models_own_time() {
     step_until(&mut h, "rebuilding", |h| {
         status_said(h, "Rebuilding").is_some()
     });
+    let from = Instant::now();
+    let gap = Duration::from_millis(whole.unwrap() + 20);
+    while from.elapsed() < gap {
+        std::thread::yield_now();
+    }
     h.key_press(Key::Escape);
     step_until(&mut h, "the full rebuild stopped", |h| {
         !h.state().tabs()[0].checking() && rebuilt_at(h, 1)
     });
-    let from = Instant::now();
-    while from.elapsed() < Duration::from_millis(30) {
-        std::thread::yield_now();
-    }
     for _ in 0..3 {
         step(&mut h);
     }
