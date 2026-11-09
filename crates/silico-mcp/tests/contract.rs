@@ -8,7 +8,9 @@
 //!
 //! **Recording.** Run these tests with `SILICO_CONTRACT_RECORD=1` set, and `tools.json` is
 //! written first from what the server sends: only for a change the maintainer has
-//! approved, since `tests/contract/` is protected.
+//! approved, since `tests/contract/` is protected. Record with `-p silico-mcp`, then run the
+//! workspace: silico-cli's serve test holds `silico serve`'s tool list to the same file, and
+//! in a whole workspace's run it comes first.
 
 use std::path::PathBuf;
 
