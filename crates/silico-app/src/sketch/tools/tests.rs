@@ -1266,7 +1266,7 @@ fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel
             keyed("Cancel sketch", None),
         ]
     );
-    // Its caps painted (#444's review, T4), each a cap's words: Esc, D, Ctrl and ↵.
+    // Its caps painted (#444's review), each a cap's words: Esc, D, Ctrl and ↵.
     let painted: Vec<String> = crate::modal::tests::painted(&h)
         .into_iter()
         .filter_map(|shape| match shape {
@@ -1288,6 +1288,36 @@ fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel
         "{widths:?}"
     );
     assert!(widths[0] >= crate::menu::least_width() - 1e-3, "{widths:?}");
+    // The widest item's own width where it's past the least (`crate::menu::item_width`'s
+    // rule, the prototype's `.mi`), else the least.
+    // Measured on a context of its own, with egui's default fonts, as the harness's.
+    let measuring = egui::Context::default();
+    measuring.set_os(egui::os::OperatingSystem::Nix);
+    let mut ui_widths: Vec<f32> = Vec::new();
+    let mut measured = measuring.run_ui(Default::default(), |ui| {
+        ui_widths = menu_items(ui.ctx(), true)
+            .iter()
+            .map(|item| crate::menu::item_width(ui, &item.line()))
+            .collect();
+    });
+    measured.textures_delta.clear();
+    let widest = ui_widths
+        .iter()
+        .copied()
+        .fold(crate::menu::least_width(), f32::max);
+    assert!(
+        (widths[0] - widest).abs() < 1e-3,
+        "{widths:?} {ui_widths:?}"
+    );
+    // Drawn top to bottom, each 24 high, the separator (1 high, 4 above and below,
+    // `.menu .msep`) between Smart Dimension and Finish Sketch alone.
+    let mut tops: Vec<f32> = h
+        .query_all_by_role(egui::accesskit::Role::Button)
+        .map(|node| node.rect().top())
+        .collect();
+    tops.sort_by(f32::total_cmp);
+    let gaps: Vec<f32> = tops.windows(2).map(|w| w[1] - w[0]).collect();
+    assert_eq!(gaps, [24.0, 24.0 + 1.0 + 2.0 * 4.0, 24.0]);
     h.get_by_label("Smart Dimension").click();
     h.run();
     assert_eq!(asked.get(), MenuAction::Dimension);

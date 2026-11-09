@@ -669,7 +669,7 @@ mod tests {
             .map(|label| widget(&h, Role::Button, label))
             .collect();
             // Each named by its words and dim words, its keys its keyboard shortcut for a
-            // screen reader (#444's review, Q1: one form for every menu).
+            // screen reader (#444's review: one form for every menu).
             for (label, keys) in [
                 ("Edit feature double-click", None),
                 ("Rename", Some("F2")),

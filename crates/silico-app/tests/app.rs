@@ -6520,7 +6520,7 @@ fn edit_feature_from_the_context_menu_opens_the_same_dialog() {
     step(&mut h);
     assert_eq!(
         menu_items(&h, "HOLE")[0],
-        ("Edit feature double-click".to_owned(), None)
+        ("Edit feature double-click".to_owned(), None, None)
     );
     menu_click(&mut h, "HOLE", "Edit feature");
     step_until(&mut h, "its dialog", |h| {
@@ -19660,7 +19660,7 @@ fn edit_sketch_from_the_browser_opens_it_at_the_revision_its_asked_at_and_reads_
     menu_on(&mut h, "Browser", "Triangle");
     assert_eq!(
         menu_items(&h, "TRIANGLE")[0],
-        ("Edit Sketch double-click".to_owned(), None)
+        ("Edit Sketch double-click".to_owned(), None, None)
     );
     menu_click(&mut h, "TRIANGLE", "Edit Sketch");
     step_until(&mut h, "sketch mode again", |h| sketch_mode(h).is_some());
@@ -20157,8 +20157,14 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
     let f = fixture();
     let mut h = triangle_in_sketch_mode(&f);
     let why = "Finish or cancel the sketch first";
-    let on = |label: &str| (label.to_owned(), None);
-    let off = |label: &str| (label.to_owned(), Some(why.to_owned()));
+    let on = |label: &str| (label.to_owned(), feature_menu_keys(label), None);
+    let off = |label: &str| {
+        (
+            label.to_owned(),
+            feature_menu_keys(label),
+            Some(why.to_owned()),
+        )
+    };
     // The open sketch's item: no double-click to edit it.
     let tip = timeline_tip(&mut h, "Triangle", "Sketch");
     assert!(!tip.contains("Double-click to edit"), "{tip}");
@@ -24039,7 +24045,7 @@ fn sketch_modes_menu_offers_end_chain_smart_dimension_finish_and_cancel_with_the
 
 #[test]
 fn sketch_modes_menu_is_never_open_with_smart_dimension_on() {
-    // #444's review, T5, asked that the menu's Smart Dimension with Smart Dimension on turn
+    // #444's review asked that the menu's Smart Dimension with Smart Dimension on turn
     // it off, as the prototype's toggles (js/sketch.js:224). The menu's item toggles
     // (`Tab::sketch_toggle`), but the app never has the menu open with the tool on: D with
     // the menu open turns the tool on and closes the menu, and with the tool on a right
@@ -32867,8 +32873,9 @@ fn menu_head<'a>(h: &'a AppHarness, head: &'a str) -> egui_kittest::Node<'a> {
 }
 
 /// The open menu headed `head` (the name it's of, in capitals): each item's label (its
-/// words, then its keys), and why it's off, if it is, in order.
-fn menu_items(h: &AppHarness, head: &str) -> Vec<(String, Option<String>)> {
+/// words, then its dim words), its keys as a screen reader has them (its keyboard
+/// shortcut), and why it's off, if it is, in order.
+fn menu_items(h: &AppHarness, head: &str) -> Vec<(String, Option<String>, Option<String>)> {
     let heading = menu_head(h, head);
     let menu = heading.parent().unwrap();
     menu.query_all_by_role(Role::Button)
@@ -32877,12 +32884,24 @@ fn menu_items(h: &AppHarness, head: &str) -> Vec<(String, Option<String>)> {
             let off = node
                 .is_disabled()
                 .then(|| node.description().unwrap_or_default());
-            (node.label().unwrap_or_default(), off)
+            let keys = node.data().keyboard_shortcut().map(str::to_owned);
+            (node.label().unwrap_or_default(), keys, off)
         })
         .collect()
 }
 
-/// The item of the open menu headed `head` whose words are `label` (its keys after them)
+/// The keys a feature menu's item has, by its label, as the registry gives them (the
+/// prototype's: Rename F2, Delete Del), joined as a screen reader has them; none for the
+/// others.
+fn feature_menu_keys(label: &str) -> Option<String> {
+    match label {
+        "Rename" => Some("F2".to_owned()),
+        "Delete" => Some("Del".to_owned()),
+        _ => None,
+    }
+}
+
+/// The item of the open menu headed `head` whose words are `label` (its dim words after them)
 /// clicked.
 fn menu_click(h: &mut AppHarness, head: &str, label: &str) {
     let heading = menu_head(h, head);
@@ -32994,8 +33013,14 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its body", |h| shows(h, "Browser", "Hole"));
-    let on = |label: &str| (label.to_owned(), None);
-    let off = |label: &str, why: &str| (label.to_owned(), Some(why.to_owned()));
+    let on = |label: &str| (label.to_owned(), feature_menu_keys(label), None);
+    let off = |label: &str, why: &str| {
+        (
+            label.to_owned(),
+            feature_menu_keys(label),
+            Some(why.to_owned()),
+        )
+    };
     // The timeline's, on the block (js/interact.js's `contextmenu`: Edit feature with
     // "double-click", Rename with F2, Suppress, Find in browser, then Delete with Del).
     // The block is inside the hole's body, which the browser lists by the hole: it has no
@@ -33134,14 +33159,15 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
     assert_eq!(
         menu_items(&h, "HOLE"),
         [
-            ("Edit feature double-click".to_owned(), None),
-            ("Rename".to_owned(), None),
-            ("Suppress".to_owned(), None),
+            ("Edit feature double-click".to_owned(), None, None),
+            ("Rename".to_owned(), Some("F2".to_owned()), None),
+            ("Suppress".to_owned(), None, None),
             (
                 "Find in browser".to_owned(),
+                None,
                 Some("It built no body, so the browser has no row for it".to_owned())
             ),
-            ("Delete".to_owned(), None),
+            ("Delete".to_owned(), Some("Del".to_owned()), None),
         ]
     );
     // Its block, whose consumer failed, is a body of its own now: found.
@@ -33150,7 +33176,7 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
     menu_on(&mut h, "Timeline", "Block");
     assert_eq!(
         menu_items(&h, "BLOCK")[3],
-        ("Find in browser".to_owned(), None)
+        ("Find in browser".to_owned(), None, None)
     );
     assert_eq!(never_waits::waits(), 0);
 }
@@ -33174,6 +33200,7 @@ fn a_failed_block_with_a_sketch_on_its_face_built_no_body_and_isnt_inside_one() 
         menu_items(&h, "BLOCK")[3],
         (
             "Find in browser".to_owned(),
+            None,
             Some("It built no body, so the browser has no row for it".to_owned())
         )
     );
@@ -33206,7 +33233,10 @@ fn suppress_then_unsuppress_writes_and_drops_suppressed_and_undo_restores_each_t
     });
     // The hole unsuppressed: its tool, which it needs, comes back with it.
     menu_on(&mut h, "Timeline", "Hole");
-    assert_eq!(menu_items(&h, "HOLE")[2], ("Unsuppress".to_owned(), None));
+    assert_eq!(
+        menu_items(&h, "HOLE")[2],
+        ("Unsuppress".to_owned(), None, None)
+    );
     menu_click(&mut h, "HOLE", "Unsuppress");
     step_until(&mut h, "unsuppressed", |h| {
         said_done(h, "Unsuppressed").as_deref()
@@ -33548,7 +33578,7 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
         assert_eq!(
             menu_items(&h, "BLOCK")
                 .into_iter()
-                .map(|(label, _)| label)
+                .map(|(label, _, _)| label)
                 .collect::<Vec<_>>(),
             [
                 "Edit feature double-click",
@@ -33830,7 +33860,14 @@ fn on_a_document_the_gate_refused_f2_del_and_the_menus_items_say_why_and_do_noth
     menu_on(&mut h, "Timeline", "Pin");
     let items = menu_items(&h, "PIN");
     for (at, label) in [(1, "Rename"), (2, "Suppress"), (4, "Delete")] {
-        assert_eq!(items[at], (label.to_owned(), Some(why.to_owned())));
+        assert_eq!(
+            items[at],
+            (
+                label.to_owned(),
+                feature_menu_keys(label),
+                Some(why.to_owned())
+            )
+        );
     }
     h.key_press(Key::Escape);
     step(&mut h);
@@ -33890,7 +33927,14 @@ fn the_menus_items_say_the_document_is_closing_while_it_closes() {
     let closing = "The document is closing";
     let items = menu_items(&h, "HOLE");
     for (at, label) in [(1, "Rename"), (2, "Suppress"), (4, "Delete")] {
-        assert_eq!(items[at], (label.to_owned(), Some(closing.to_owned())));
+        assert_eq!(
+            items[at],
+            (
+                label.to_owned(),
+                feature_menu_keys(label),
+                Some(closing.to_owned())
+            )
+        );
     }
     hold.release();
     let _ = check.wait();
@@ -35584,25 +35628,19 @@ fn in_the_fillet_dialog_a_row_chosen_toggles_into_its_box_as_a_click_does_and_a_
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// The context menu, open: its items' words, in order, and whether each is on.
-fn context_said(h: &AppHarness) -> Vec<(String, bool)> {
+/// The context menu, open: each item's words, its keys as its keyboard shortcut, and whether
+/// it's on, in order.
+fn context_said(h: &AppHarness) -> Vec<(String, Option<String>, bool)> {
     select_other(h)
         .context()
         .expect("the context menu")
         .items
         .iter()
         .map(|shown| {
-            // Its name, then its keys as a screen reader's shortcut has them.
-            let said = if shown.caps.is_empty() {
-                shown.said()
-            } else {
-                format!(
-                    "{} {}",
-                    shown.said(),
-                    silico_app::shortcuts::joined(&h.ctx, &shown.caps)
-                )
-            };
-            (said, shown.off.is_none())
+            // Its name, its keys as a screen reader's shortcut has them, and whether it's on.
+            let keys = (!shown.caps.is_empty())
+                .then(|| silico_app::shortcuts::joined(&h.ctx, &shown.caps));
+            (shown.said(), keys, shown.off.is_none())
         })
         .collect()
 }
@@ -35640,13 +35678,13 @@ fn over_an_element_the_context_menu_is_headed_by_it_and_hides_its_body_with_no_k
     assert_eq!(
         context_said(&h),
         [
-            ("Select Other… 2 under the pointer".to_owned(), true),
-            ("Edit Block".to_owned(), true),
-            ("Hide Block".to_owned(), true),
+            ("Select Other… 2 under the pointer".to_owned(), None, true),
+            ("Edit Block".to_owned(), None, true),
+            ("Hide Block".to_owned(), None, true),
         ]
     );
     let menu = || h.get_by_role_and_label(Role::Menu, "Canvas");
-    for (label, _) in context_said(&h) {
+    for (label, _, _) in context_said(&h) {
         assert!(menu().query_by_label(&label).is_some(), "{label}");
     }
     // Hide Block (the menu's, not the browser's eye of the same words): the body hidden, as
@@ -35714,7 +35752,7 @@ fn context_over_the_top(h: &mut AppHarness, record: &Record) {
 fn offers_sketch_on_face(h: &AppHarness) -> bool {
     let listed = context_said(h)
         .iter()
-        .any(|(said, _)| said == "Sketch on this face");
+        .any(|(said, _, _)| said == "Sketch on this face");
     let drawn = h
         .get_by_role_and_label(Role::Menu, "Canvas")
         .query_by_label("Sketch on this face")
@@ -35762,10 +35800,10 @@ fn over_a_planar_face_the_context_menus_sketch_on_this_face_sends_what_the_selec
         assert_eq!(
             context_said(&h),
             [
-                ("Select Other… 2 under the pointer".to_owned(), true),
-                ("Edit Block".to_owned(), true),
-                ("Sketch on this face".to_owned(), true),
-                ("Hide Block".to_owned(), true),
+                ("Select Other… 2 under the pointer".to_owned(), None, true),
+                ("Edit Block".to_owned(), None, true),
+                ("Sketch on this face".to_owned(), None, true),
+                ("Hide Block".to_owned(), None, true),
             ]
         );
         assert!(offers_sketch_on_face(&h));
@@ -35893,13 +35931,7 @@ fn the_context_menus_sketch_items_are_off_while_sketch_mode_cant_open_saying_why
     // Over nothing.
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
-    let off = above_at(&h, 20.0, 25.0, [0.0, 0.0]);
-    answering(&record, None, None);
-    h.hover_at(off);
-    for _ in 0..4 {
-        step(&mut h);
-    }
-    context_at(&mut h, off);
+    context_over_nothing(&mut h, &record);
     let create = select_other(&h).context().unwrap().items[4].clone();
     assert_eq!(
         (create.label.as_str(), create.off.as_deref()),
@@ -35921,8 +35953,10 @@ fn the_context_menus_sketch_items_are_off_while_sketch_mode_cant_open_saying_why
 }
 
 /// The context menu opened over nothing, by the box seen from above: Fit, Home view,
-/// Select Other…, Clear selection, and Create Sketch.
-fn context_over_nothing(h: &mut AppHarness, record: &Record) {
+/// Select Other…, Clear selection, and Create Sketch. Where it was opened.
+fn context_over_nothing(h: &mut AppHarness, record: &Record) -> eframe::egui::Pos2 {
+    // Off the box, 5 mm past its far edge (y = 20), at the canvas's top middle, clear of the
+    // ViewCube: no hover, nothing under the pointer.
     let off = above_at(h, 20.0, 25.0, [0.0, 0.0]);
     answering(record, None, None);
     h.hover_at(off);
@@ -35930,11 +35964,12 @@ fn context_over_nothing(h: &mut AppHarness, record: &Record) {
         step(h);
     }
     context_at(h, off);
+    off
 }
 
 #[test]
 fn enter_on_the_context_menus_create_sketch_opens_its_planes() {
-    // #444's review, R3 and T2: Shift+Tab from nothing lit lights the last item on, Create
+    // #444's review: Shift+Tab from nothing lit lights the last item on, Create
     // Sketch, and Enter on it opens its planes beside it, the toolbar's, as the pointer
     // does; one chosen there starts a sketch. SEAM: the planes are the pointer's, the keys
     // stepping the menu's own items (the module doc's).
@@ -35972,9 +36007,108 @@ fn enter_on_the_context_menus_create_sketch_opens_its_planes() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// Whether Create Sketch's planes are open.
+fn planes_open(h: &AppHarness) -> bool {
+    h.query_by_role_and_label(Role::Menu, "Create Sketch")
+        .is_some()
+}
+
+#[test]
+fn enter_on_create_sketch_opens_its_planes_with_the_pointer_resting_on_fit() {
+    // #444's review: the pointer moved onto Fit and resting there, the keys light Create
+    // Sketch (Shift+Tab back from Fit, round to the last), and Enter opens its planes: they
+    // stay open, frame after frame, the pointer still on Fit, until the keys light another
+    // item, which lets them go.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fit")
+        .hover();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(select_other(&h).lit(), Some(0));
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    let lit = select_other(&h).lit().unwrap();
+    assert_eq!(
+        select_other(&h).context().unwrap().items[lit].label,
+        "Create Sketch"
+    );
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(
+            planes_open(&h),
+            "the planes closed under the resting pointer"
+        );
+    }
+    h.key_press(Key::Tab);
+    step_until(&mut h, "its planes let go", |h| !planes_open(h));
+    assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_closes_the_menu_and_its_planes_and_a_menu_opened_again_has_none_open() {
+    // The planes open from the pointer on Create Sketch; Esc closes both, and the menu
+    // opened again over nothing opens with none.
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Create Sketch")
+        .hover();
+    step_until(&mut h, "its planes", planes_open);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "both closed", |h| {
+        !select_other(h).is_open() && !planes_open(h)
+    });
+    context_over_nothing(&mut h, &record);
+    h.hover_at(above_at(&h, -15.0, 0.0, [0.0, 0.0]));
+    for _ in 0..6 {
+        step(&mut h);
+        assert!(!planes_open(&h));
+    }
+    assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_menu_opened_again_by_a_right_click_has_none_of_the_last_menus_planes_open() {
+    // #444's review: the planes opened by Enter, then a right click elsewhere over nothing:
+    // the new menu (another, keyed by its own serial) opens with no planes, whatever egui
+    // kept of the last one's.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    let elsewhere = above_at(&h, 30.0, 26.0, [0.0, 0.0]);
+    answering(&record, None, None);
+    context_at(&mut h, elsewhere);
+    // The pointer then off the menu, on no item of it (an item under it would close a
+    // submenu egui held open).
+    h.hover_at(above_at(&h, -15.0, 0.0, [0.0, 0.0]));
+    for _ in 0..6 {
+        step(&mut h);
+        assert!(!planes_open(&h));
+    }
+    assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn hovering_an_off_create_sketch_opens_no_planes() {
-    // #444's review, T5: with a dialog open, sketch mode can't open, and Create Sketch over
+    // #444's review: with a dialog open, sketch mode can't open, and Create Sketch over
     // nothing is off; the pointer resting on it opens nothing.
     let f = fixture();
     describes_a_real_box(&f);
@@ -36005,7 +36139,7 @@ fn hovering_an_off_create_sketch_opens_no_planes() {
 
 #[test]
 fn over_an_unstable_planar_face_sketch_on_this_face_is_off_with_the_stores_refusal() {
-    // #444's review, T3. FUSED's fuse (its result the base's, a box, every face a plane), its
+    // #444's review. FUSED's fuse (its result the base's, a box, every face a plane), its
     // Face1 named only by its number, unstable: no store takes it, so the menu's Sketch on
     // this face is there (the face is a plane) but off, saying the store's own words, as the
     // selection view's button is off for it.
@@ -36073,16 +36207,10 @@ fn over_nothing_the_context_menus_create_sketch_opens_the_toolbars_planes_and_on
     let through_menu = {
         let f = fixture();
         let (mut h, record) = box_from_above(&f);
-        let off = above_at(&h, 20.0, 25.0, [0.0, 0.0]);
-        answering(&record, None, None);
-        h.hover_at(off);
-        for _ in 0..4 {
-            step(&mut h);
-        }
-        context_at(&mut h, off);
+        context_over_nothing(&mut h, &record);
         assert_eq!(
             context_said(&h).last(),
-            Some(&("Create Sketch".to_owned(), true))
+            Some(&("Create Sketch".to_owned(), None, true))
         );
         assert!(
             h.query_by_role_and_label(Role::Menu, "Create Sketch")
@@ -36146,24 +36274,20 @@ fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
     use silico_app::renderer::Element::Face;
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
-    // Off the box, 5 mm past its far edge (y = 20), at the canvas's top middle, clear of the
-    // ViewCube: no hover, nothing under the pointer.
-    let off = above_at(&h, 20.0, 25.0, [0.0, 0.0]);
-    answering(&record, None, None);
-    h.hover_at(off);
-    for _ in 0..4 {
-        step(&mut h);
-    }
-    context_at(&mut h, off);
+    let off = context_over_nothing(&mut h, &record);
     assert_eq!(select_other(&h).context().unwrap().head, None);
     assert_eq!(
         context_said(&h),
         [
-            ("Fit F6".to_owned(), true),
-            ("Home view Home".to_owned(), true),
-            ("Select Other… nothing under the pointer".to_owned(), false),
-            ("Clear selection Esc".to_owned(), false),
-            ("Create Sketch".to_owned(), true),
+            ("Fit".to_owned(), Some("F6".to_owned()), true),
+            ("Home view".to_owned(), Some("Home".to_owned()), true),
+            (
+                "Select Other… nothing under the pointer".to_owned(),
+                None,
+                false
+            ),
+            ("Clear selection".to_owned(), Some("Esc".to_owned()), false),
+            ("Create Sketch".to_owned(), None, true),
         ]
     );
     // Fit: the camera F6 gives, from the same camera.
@@ -36215,7 +36339,7 @@ fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
     context_at(&mut h, off);
     assert_eq!(
         context_said(&h)[3],
-        ("Clear selection Esc".to_owned(), true)
+        ("Clear selection".to_owned(), Some("Esc".to_owned()), true)
     );
     h.get_by_role_and_label(Role::Menu, "Canvas")
         .get_by_label("Clear selection")
@@ -36230,13 +36354,7 @@ fn the_context_menus_keys_step_its_items_that_are_on_and_enter_chooses_the_one_l
     use eframe::egui::Key;
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
-    let off = above_at(&h, 20.0, 25.0, [0.0, 0.0]);
-    answering(&record, None, None);
-    h.hover_at(off);
-    for _ in 0..4 {
-        step(&mut h);
-    }
-    context_at(&mut h, off);
+    context_over_nothing(&mut h, &record);
     assert_eq!(select_other(&h).lit(), None);
     // Down lights Fit, then Home view; Select Other… and Clear selection, off, are passed
     // over, so on from Home view is Create Sketch (G7), the last, then Fit again, and back
