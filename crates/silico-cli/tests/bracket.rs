@@ -10,9 +10,10 @@
 //! `instructions` (the session uses only relative paths, so nothing else quotes it). Each
 //! reply also holds to its tool's `outputSchema` in silico-mcp's committed `tools.json`.
 //!
-//! **Checked by hand,** never read from the recording: the expected values below are the
-//! spec's dimensions worked out on paper (prisms, cylinders, the fillet's spandrel), each
-//! derivation beside its assert. The 3MF is read here from its bytes and checked as M4.8
+//! **Checked by hand,** never read from the recording: the expected values are the spec's
+//! dimensions worked out on paper (prisms, cylinders, the fillet's spandrel) in
+//! `common/hand.rs`, which the app's scripted slice shares, each derivation beside its
+//! function there or its assert here. The 3MF is read here from its bytes and checked as M4.8
 //! promises a printable mesh (closed, manifold, consistently oriented, no triangle with two
 //! corners at one place, enclosing a positive volume), its genus that of a part with four
 //! through holes, its chords counted by hand from OCCT's rule (126 points a rim and 33 an
@@ -42,6 +43,8 @@
 //! builds them).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/hand.rs"]
+mod hand;
 #[path = "common/run.rs"]
 mod run;
 #[path = "common/serve.rs"]
@@ -63,15 +66,12 @@ use serde::Deserialize;
 use serde_json::Value;
 use serde_json::value::RawValue;
 
+use hand::{
+    FILLET_R, HOLE, HOLE_R, PI, assert_bracket_mesh_as_by_hand, bracket, centred, chords, drilled,
+    legs, measured, solids,
+};
 use serve::{ask_line, exited, lines, serve_working};
-use threemf::{model, printable};
-
-/// π, as `std::f64::consts::PI`.
-const PI: f64 = std::f64::consts::PI;
-
-/// The spec's hole radius (an M5 clearance hole, 5.5 mm across) and fillet radius.
-const HOLE_R: f64 = 2.75;
-const FILLET_R: f64 = 5.0;
+use threemf::model;
 
 /// The export's tolerance, the session's (FreeCAD's default).
 const TOLERANCE: f64 = 0.1;
@@ -534,139 +534,12 @@ fn record() -> Vec<String> {
     r.lines
 }
 
-// --- Hand calculations ---------------------------------------------------------------------
-
-/// A body's mass properties, summed from parts: a box, a cylinder, or the fillet's
-/// spandrel, each of its volume (negative for a hole) and its centroid.
-#[derive(Default)]
-struct Sum {
-    volume: f64,
-    moment: [f64; 3],
-}
-
-impl Sum {
-    fn add(&mut self, volume: f64, centroid: [f64; 3]) {
-        self.volume += volume;
-        for (m, c) in self.moment.iter_mut().zip(centroid) {
-            *m += volume * c;
-        }
-    }
-
-    /// An axis-aligned box from `min` to `max`.
-    fn cuboid(&mut self, min: [f64; 3], max: [f64; 3]) {
-        let volume = (max[0] - min[0]) * (max[1] - min[1]) * (max[2] - min[2]);
-        self.add(volume, [0, 1, 2].map(|i| (min[i] + max[i]) / 2.0));
-    }
-
-    fn centre(&self) -> [f64; 3] {
-        self.moment.map(|m| m / self.volume)
-    }
-}
-
-/// The legs, `width` along y: the base [0, 60] × [0, w] × [0, 5] and the upright
-/// [0, 5] × [0, w] × [5, 50] on it.
-fn legs(width: f64) -> Sum {
-    let mut sum = Sum::default();
-    sum.cuboid([0.0, 0.0, 0.0], [60.0, width, 5.0]);
-    sum.cuboid([0.0, 0.0, 5.0], [5.0, width, 50.0]);
-    sum
-}
-
-/// One hole: a cylinder of radius 2.75 through a 5 mm leg, π · 2.75² · 5 = 37.8125π.
-const HOLE: f64 = PI * HOLE_R * HOLE_R * 5.0;
-
-/// The legs less the four holes: the base's at x = 40, y = 12 and 28, z from 0 to 5; the
-/// upright's at z = 35, y = 12 and 28, x from 0 to 5.
-fn drilled() -> Sum {
-    let mut sum = legs(40.0);
-    for y in [12.0, 28.0] {
-        sum.add(-HOLE, [40.0, y, 2.5]);
-        sum.add(-HOLE, [2.5, y, 35.0]);
-    }
-    sum
-}
-
-/// The bracket: the drilled legs and the fillet's spandrel in the inside corner, the
-/// square [5, 10] × [5, 10] (x, z) less the quarter disc of radius 5 about (10, 10), 40
-/// along y. Its section is r²(1 − π/4); its centroid is d from the corner on each axis,
-/// d = (r²·r/2 − (πr²/4)(r − 4r/(3π))) / (r²(1 − π/4)) = r(10 − 3π)/(12 − 3π) (the square's
-/// moment less the quarter disc's, whose centroid is 4r/(3π) from its centre).
-fn bracket() -> Sum {
-    let mut sum = drilled();
-    let r = FILLET_R;
-    let d = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
-    sum.add(r * r * (1.0 - PI / 4.0) * 40.0, [5.0 + d, 20.0, 5.0 + d]);
-    sum
-}
-
-/// The measure's bound on a volume or area by hand: OCCT's integration to a relative 1e-9
-/// (docs/ports/measure.md, `MEASURE_PRECISION`), then one rounding to 6 decimals.
-fn measured(what: &str, got: &Value, hand: f64) {
-    let got = got.as_f64().unwrap_or_else(|| panic!("{what}: {got}"));
-    let bound = 1e-9 * hand.abs() + 5e-7;
-    assert!(
-        (got - hand).abs() <= bound,
-        "{what}: measured {got}, by hand {hand} (bound {bound})"
-    );
-}
-
-/// A centre of mass against the hand's, to the measure's bound (the moments and the volume
-/// each to a relative 1e-9, the centre their quotient) and the nanometre it's rounded to.
-fn centred(what: &str, got: &Value, hand: [f64; 3]) {
-    for (i, h) in hand.into_iter().enumerate() {
-        let g = got[i].as_f64().unwrap();
-        let bound = 2e-9 * h.abs() + 5e-7;
-        assert!(
-            (g - h).abs() <= bound,
-            "{what}[{i}]: measured {g}, by hand {h} (bound {bound})"
-        );
-    }
-}
+// --- The answers, and FreeCAD's read of the export (the hand's: `hand`) -------------------
 
 fn mass(answer: &Value) -> &Value {
     let bodies = answer["result"]["bodies"].as_array().unwrap();
     assert_eq!(bodies.len(), 1, "{answer}");
     &bodies[0]
-}
-
-// --- The export's mesh, by hand -------------------------------------------------------------
-
-/// How many chords OCCT cuts an arc of `angle` radians and radius `r` into, meshing at the
-/// tolerance `t` with FreeCAD's angular deflection `a` = min(0.1, 5t + 0.005) (FreeCAD's
-/// `defaultAngularDeflection`, docs/ports/mesh-export.md, *Same as FreeCAD*): an edge is
-/// meshed at half the face's deflections (`BRepMesh_CurveTessellator::init`, 0.5 × the
-/// angular and the linear), and a circle in equal steps of at most min(2 acos(1 − (t/2)/r),
-/// a/2) (`GCPnts_TangentialDeflection::PerformCircular` and `ArcAngularStep`), so in
-/// ⌈angle / step⌉. Here the angle is the smaller, which the assert holds: so it's the
-/// angle's rule alone, whatever the worker takes off the tolerance for rounding.
-fn chords(angle: f64, r: f64, t: f64) -> usize {
-    let a = (5.0 * t + 0.005).min(0.1);
-    let linear = 2.0 * libm::acos(1.0 - t / 2.0 / r);
-    assert!(linear > a / 2.0, "the linear rule binds at r {r}, t {t}");
-    (angle / (a / 2.0)).ceil() as usize
-}
-
-/// How many of `vertices` lie on the circle of radius `r` about `centre` in the plane
-/// `axis` = `at` (0, 1, 2 for x, y, z), and within `within` of it (a box about the arc).
-fn on_circle(
-    vertices: &[[f64; 3]],
-    axis: usize,
-    at: f64,
-    centre: [f64; 3],
-    r: f64,
-    within: impl Fn(&[f64; 3]) -> bool,
-) -> usize {
-    vertices
-        .iter()
-        .filter(|v| v[axis] == at && within(v))
-        .filter(|v| {
-            let d: f64 = (0..3)
-                .filter(|&i| i != axis)
-                .map(|i| (v[i] - centre[i]) * (v[i] - centre[i]))
-                .sum();
-            (d.sqrt() - r).abs() < 1e-5
-        })
-        .count()
 }
 
 /// What FreeCAD 1.1.3 reads from the 3MF at `path`: the mesh's own checks, and the shape
@@ -748,18 +621,24 @@ fn the_bracket_session_replays_measures_as_by_hand_and_its_3mf_reads_back_in_the
 
     // The legs, 40 wide: 12,000 + 9,000 = 21,000 mm³, 2 · 525 + 220 · 40 = 9,850 mm², the
     // centre (9,562.5 / 525, 20, 6,937.5 / 525).
+    let by_hand = solids();
     let right = mass(masses[1]);
-    let full = legs(40.0);
-    assert_eq!(full.volume, 21000.0);
-    measured("the legs' volume", &right["volume"], full.volume);
-    measured("the legs' area", &right["area"], 9850.0);
-    centred("the legs' centre", &right["center_of_mass"], full.centre());
+    let full = &by_hand[0];
+    assert_eq!((full.sum.volume, full.area), (21000.0, 9850.0));
+    measured("the legs' volume", &right["volume"], full.sum.volume);
+    measured("the legs' area", &right["area"], full.area);
+    centred(
+        "the legs' centre",
+        &right["center_of_mass"],
+        full.sum.centre(),
+    );
 
     // The four holes: 4 · 37.8125π = 151.25π mm³ less; each takes two discs of π · 2.75²
     // from its leg's faces and adds a wall of 2π · 2.75 · 5, so 4 · (27.5π − 15.125π) =
     // 49.5π mm² more.
     let holed = mass(masses[2]);
-    let drilled = drilled();
+    let drilled = &by_hand[2];
+    assert_eq!(drilled.area, 9850.0 + 49.5 * PI);
     measured(
         "the drilled legs' volume",
         &holed["volume"],
@@ -768,13 +647,13 @@ fn the_bracket_session_replays_measures_as_by_hand_and_its_3mf_reads_back_in_the
     measured(
         "the drilled legs' volume (sum)",
         &holed["volume"],
-        drilled.volume,
+        drilled.sum.volume,
     );
-    measured("the drilled legs' area", &holed["area"], 9850.0 + 49.5 * PI);
+    measured("the drilled legs' area", &holed["area"], drilled.area);
     centred(
         "the drilled legs' centre",
         &holed["center_of_mass"],
-        drilled.centre(),
+        drilled.sum.centre(),
     );
 
     // The corner the agent filleted: of the six edges 40 long (one along y at each of the
@@ -818,15 +697,20 @@ fn the_bracket_session_replays_measures_as_by_hand_and_its_3mf_reads_back_in_the
     // 9,500 + 137π ≈ 9,930.3982 mm². Centre: the parts' moments over the volume
     // ([`bracket`]): about (18.0196, 20, 13.0140).
     let done = mass(masses[3]);
-    let hand = bracket();
+    let hand = &by_hand[3];
     let volume = 22000.0 - 401.25 * PI;
-    assert!((hand.volume - volume).abs() < 1e-9, "{}", hand.volume);
+    assert!(
+        (hand.sum.volume - volume).abs() < 1e-9,
+        "{}",
+        hand.sum.volume
+    );
+    assert_eq!(hand.area, 9500.0 + 137.0 * PI);
     measured("the bracket's volume", &done["volume"], volume);
-    measured("the bracket's area", &done["area"], 9500.0 + 137.0 * PI);
+    measured("the bracket's area", &done["area"], hand.area);
     centred(
         "the bracket's centre",
         &done["center_of_mass"],
-        hand.centre(),
+        hand.sum.centre(),
     );
 
     // The saved document's last fingerprint: the box [0, 0, 0]–[60, 40, 50]; 13 faces (the
@@ -840,9 +724,10 @@ fn the_bracket_session_replays_measures_as_by_hand_and_its_3mf_reads_back_in_the
     let features = saved["features"].as_array().unwrap();
     let last = &features.last().unwrap()["fingerprint"];
     assert_eq!(last["bbox"], serde_json::json!([0, 0, 0, 60, 40, 50]));
-    assert_eq!(last["faces"], 13);
-    assert_eq!(last["edges"], 33);
-    assert_eq!(last["vertices"], 22);
+    assert_eq!(hand.counts, [13, 33, 22]);
+    assert_eq!(last["faces"], hand.counts[0]);
+    assert_eq!(last["edges"], hand.counts[1]);
+    assert_eq!(last["vertices"], hand.counts[2]);
     measured("the saved volume", &last["volume"], volume);
 
     // The base's end face, x = 60: 40 × 5 = 200 mm², facing +X, centred (60, 20, 2.5); the
@@ -920,76 +805,17 @@ fn the_bracket_session_replays_measures_as_by_hand_and_its_3mf_reads_back_in_the
     assert_eq!(objects[0]["feature"], "f0000001");
     assert_eq!(objects[0]["triangles"], mesh.triangles.len());
     assert_eq!(objects[0]["vertices"], mesh.vertices.len());
-    let mesh_volume = printable(mesh);
-    measured("the export's volume", &objects[0]["volume"], mesh_volume);
-    // Meshed at the tolerance asked, by hand from OCCT's rule ([`chords`]): at 0.1 mm each
-    // rim a circle of 126 chords (2π over 0.05 rad), so 126 points, and each of the
-    // fillet's two quarter arcs 32 chords (π/2 over 0.05), 33 points. (At 0.01 mm they'd
-    // be 229 and 58.)
+    // Meshed at the tolerance asked, against the hand ([`assert_bracket_mesh_as_by_hand`],
+    // its derivation there): at 0.1 mm, 126 chords a rim and 32 an arc of the fillet, so
+    // 1,084 vertices and 2,180 triangles, and the volume the part's and its chords'
+    // segments' within the 32-bit rounding.
     let rim = chords(2.0 * PI, HOLE_R, TOLERANCE);
     let arc = chords(PI / 2.0, FILLET_R, TOLERANCE);
     assert_eq!((rim, arc), (126, 32));
-    let any = |_: &[f64; 3]| true;
-    for y in [12.0, 28.0] {
-        for at in [0.0, 5.0] {
-            let v = &mesh.vertices;
-            assert_eq!(
-                on_circle(v, 2, at, [40.0, y, at], HOLE_R, any),
-                rim,
-                "base, y {y}"
-            );
-            assert_eq!(
-                on_circle(v, 0, at, [at, y, 35.0], HOLE_R, any),
-                rim,
-                "upright, y {y}"
-            );
-        }
-    }
-    let corner = |v: &[f64; 3]| v[0] <= 10.0 && v[2] <= 10.0;
-    for y in [0.0, 40.0] {
-        let points = on_circle(&mesh.vertices, 1, y, [10.0, y, 10.0], FILLET_R, corner);
-        assert_eq!(points, arc + 1, "the fillet's arc at y {y}");
-    }
-    // Nothing else is a vertex but the profile's five corners left at each end: the
-    // walls and the fillet are meshed with no nodes inside them (a cylinder's splitter
-    // places none, docs/ports/mesh-export.md), so 8 · 126 + 2 · 33 + 2 · 5 = 1,084; and,
-    // closed and of genus 4 (four through holes), V − E + F = 2 − 2 · 4 with E = 3F/2, so
-    // F = 2V + 12 = 2,180.
-    let vertices = 8 * rim + 2 * (arc + 1) + 2 * 5;
-    assert_eq!(mesh.vertices.len(), vertices);
-    assert_eq!(mesh.triangles.len(), 2 * vertices + 12);
-    // The mesh's box is the part's, [0, 0, 0]–[60, 40, 50], exactly: its corners are the
-    // B-rep's vertices, whole numbers in 32 bits too.
-    let mut low = [f64::INFINITY; 3];
-    let mut high = [f64::NEG_INFINITY; 3];
-    for p in &mesh.vertices {
-        for i in 0..3 {
-            low[i] = low[i].min(p[i]);
-            high[i] = high[i].max(p[i]);
-        }
-    }
-    assert_eq!((low, high), ([0.0; 3], [60.0, 40.0, 50.0]));
-    // The mesh's volume, by hand. Every vertex is on the B-rep, on the rims and arcs
-    // counted above, so each hole's wall is the prism on its rim's 126 chords and the
-    // fillet's the prism on its arc's 32: each curved face concave to the material, the
-    // mesh holds the part's material and, past each arc, the segments between it and its
-    // chords. A hole's prism is short of its cylinder by h(πr² − (n/2)r² sin(2π/n)); a
-    // chord across θ cuts off (r²/2)(θ − sin θ), under r²θ³/12. So the mesh encloses
-    // V + 4 · 5 · (π · 2.75² − 63 · 2.75² sin(2π/126)) + 40 · 32 · (25/2)(θ − sin θ) at
-    // θ = π/64, about V + 0.197 + 0.315 = V + 0.512 mm³, to what rounding each coordinate
-    // to 32 bits moves it: a vertex by at most √3 · 60 · 2⁻²⁴, the volume by at most that
-    // times the surface (under 10,000 mm²), ε ≈ 0.062 mm³ either way.
-    let n = rim as f64;
-    let hole_short = HOLE_R * HOLE_R * (PI - n / 2.0 * libm::sin(2.0 * PI / n));
-    let theta = PI / 2.0 / arc as f64;
-    let spandrel = arc as f64 * FILLET_R * FILLET_R / 2.0 * (theta - libm::sin(theta));
-    assert!(spandrel <= arc as f64 * FILLET_R * FILLET_R * theta * theta * theta / 12.0);
-    let enclosed = volume + 4.0 * 5.0 * hole_short + 40.0 * spandrel;
-    let rounding = 10_000.0 * 3f64.sqrt() * 60.0 / 16_777_216.0;
-    assert!(
-        (mesh_volume - enclosed).abs() <= rounding,
-        "the mesh encloses {mesh_volume} mm³; by hand {enclosed} (the part's {volume}), to {rounding}"
-    );
+    let mesh_volume = assert_bracket_mesh_as_by_hand(mesh, TOLERANCE);
+    assert_eq!(mesh.vertices.len(), 1084);
+    assert_eq!(mesh.triangles.len(), 2180);
+    measured("the export's volume", &objects[0]["volume"], mesh_volume);
 
     // FreeCAD reads it back as a solid: the mesh closed, manifold, and oriented by its own
     // checks, with the file's points and facets; the shape made of it a valid, closed solid
@@ -1051,14 +877,7 @@ fn the_bracket_s_timeline_edits_through_serve_measure_as_by_hand() {
     // and it added back before s0000003; each result the design's, each volume by hand.
     use features::*;
     let mut serve = Serve::start();
-    let text = format!(
-        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
-        [
-            S0000001, P0000001, S0000002, H0000001, S0000003, H0000002, F0000001
-        ]
-        .join(", ")
-    );
-    std::fs::write(serve.work.join("bracket.silico"), text).unwrap();
+    std::fs::write(serve.work.join("bracket.silico"), whole()).unwrap();
     serve.send(INITIALIZE).unwrap();
     assert!(serve.send(INITIALIZED).is_none());
     let mut id = 0;
@@ -1186,14 +1005,7 @@ fn the_bracket_s_suppressions_through_serve_measure_as_by_hand() {
     // volume by hand: the legs (21,000), a hole (π · 2.75² · 5), the fillet's spandrel.
     use features::*;
     let mut serve = Serve::start();
-    let text = format!(
-        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
-        [
-            S0000001, P0000001, S0000002, H0000001, S0000003, H0000002, F0000001
-        ]
-        .join(", ")
-    );
-    std::fs::write(serve.work.join("bracket.silico"), text).unwrap();
+    std::fs::write(serve.work.join("bracket.silico"), whole()).unwrap();
     serve.send(INITIALIZE).unwrap();
     assert!(serve.send(INITIALIZED).is_none());
     let mut id = 0;

@@ -40,6 +40,10 @@ egui_kittest = { workspace = true, features = ["wgpu"] }
 silico-render = { workspace = true, features = ["bench"] }
 silico-core = { workspace = true, features = ["fake"] }
 tempfile.workspace = true
+# The scripted slice (tests/slice.rs): FreeCAD reading its STEP back, and the documents and
+# answers it checks read as JSON.
+silico-oracle.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
