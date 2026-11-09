@@ -57,6 +57,7 @@ mod threemf;
 #[path = "common/ui.rs"]
 mod ui;
 
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -380,8 +381,17 @@ fn fully_defined(h: &mut H) {
     );
 }
 
+/// A sketch's points, each as (x, y), and its circles' centres and radii, each sorted.
+type Geometry = (Vec<[f64; 2]>, Vec<([f64; 2], f64)>);
+
+/// What the run says of itself, for the record (the drawing's relations, what the solve
+/// flags, how the view was moved), on stderr.
+fn record(text: &str) {
+    let _ = writeln!(std::io::stderr(), "{text}");
+}
+
 /// The newest read's points, each as (x, y), and its circles' centres and radii, sorted.
-fn geometry(sketch: &silico_core::document::Sketch) -> (Vec<[f64; 2]>, Vec<([f64; 2], f64)>) {
+fn geometry(sketch: &silico_core::document::Sketch) -> Geometry {
     let at = |id: &silico_core::document::ElementId| {
         let p = sketch.points.iter().find(|p| &p.id == id).unwrap();
         [p.x.mm(), p.y.mm()]
@@ -524,7 +534,7 @@ fn of_kinds<'a>(document: &'a Value, kinds: &[&str]) -> Vec<&'a Value> {
 }
 
 /// A stored sketch's points and its circles' centres and radii, sorted.
-fn stored(sketch: &Value) -> (Vec<[f64; 2]>, Vec<([f64; 2], f64)>) {
+fn stored(sketch: &Value) -> Geometry {
     let points = sketch["points"].as_array().unwrap();
     let at = |id: &Value| {
         let p = points.iter().find(|p| p["id"] == *id).unwrap();
@@ -629,7 +639,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         let mut places: Vec<[f64; 2]> = corners.to_vec();
         places.extend(lengths.iter().flat_map(|(pick, place, _)| [*pick, *place]));
         let notches = clear_view(h, &places);
-        eprintln!("sketch 1: the wheel out {notches} notches");
+        record(&format!("sketch 1: the wheel out {notches} notches"));
         // L, the Line tool: a click at each corner, then at the first again, which shares
         // it and ends the chain.
         h.key_press(Key::L);
@@ -646,7 +656,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
             .members
             .constraints
             .len();
-        eprintln!(
+        record(&format!(
             "sketch 1, drawn: {inferred} relations inferred: {:?}; flagged: {:?}",
             sketch_mode(h)
                 .unwrap()
@@ -658,7 +668,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
                 .map(|c| c.form.type_name())
                 .collect::<Vec<_>>(),
             flagged(h)
-        );
+        ));
         // D, Smart Dimension: each line picked, its length placed beside it, typed.
         h.key_press(Key::D);
         step(h);
@@ -681,11 +691,11 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         // G5 (its own PR, FreeCAD's *Avoid redundant*): once it lands, the L's inferred
         // relations hold nothing twice, and this sketch has no `constraints_redundant`
         // warning. Until then, recorded.
-        eprintln!(
+        record(&format!(
             "sketch 1, dimensioned: flagged {:?}; Modify boxes clicked into: {}",
             flagged(h),
             UNFOCUSED.with(std::cell::Cell::get)
-        );
+        ));
         leave_sketch(h, true);
         healthy(h, 1);
         rename(h, "Sketch1", "Bracket profile");
@@ -718,10 +728,10 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
                 between: ([50.0, 20.0], "16"),
             },
         );
-        eprintln!(
+        record(&format!(
             "sketch 2, dimensioned: flagged {base_holes:?}; Modify boxes clicked into: {}",
             UNFOCUSED.with(std::cell::Cell::get)
-        );
+        ));
         leave_sketch(h, true);
         healthy(h, 3);
         rename(h, "Sketch2", "Base holes");
@@ -753,10 +763,10 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
                 between: ([20.0, 46.0], "16"),
             },
         );
-        eprintln!(
+        record(&format!(
             "sketch 3, dimensioned: flagged {upright_holes:?}; Modify boxes clicked into: {}",
             UNFOCUSED.with(std::cell::Cell::get)
-        );
+        ));
         leave_sketch(h, true);
         healthy(h, 5);
         rename(h, "Sketch3", "Upright holes");
@@ -1046,10 +1056,10 @@ print("SILICO_ORACLE " + json.dumps({{
         assert_eq!(stp, std::fs::read(&step).unwrap());
 
         assert_eq!(never_waits::waits(), 0);
-        eprintln!(
+        record(&format!(
             "the slice: built and exported in {built:?}, checked in {:?}",
             started.elapsed()
-        );
+        ));
     });
 }
 
@@ -1081,7 +1091,7 @@ fn sketch_holes(
     places.extend(holes.from_origin.iter().map(|(p, _)| *p));
     places.push(holes.between.0);
     let notches = clear_view(h, &places);
-    eprintln!("the wheel out {notches} notches");
+    record(&format!("the wheel out {notches} notches"));
     h.key_press(Key::C);
     step(h);
     for (k, (centre, rim)) in centres.iter().zip(&rims).enumerate() {
@@ -1097,7 +1107,7 @@ fn sketch_holes(
         .members
         .constraints
         .len();
-    eprintln!(
+    record(&format!(
         "drawn: {:?}",
         sketch_mode(h)
             .unwrap()
@@ -1108,7 +1118,7 @@ fn sketch_holes(
             .iter()
             .map(|c| c.form.type_name())
             .collect::<Vec<_>>()
-    );
+    ));
     h.key_press(Key::D);
     step(h);
     let mut count = inferred;

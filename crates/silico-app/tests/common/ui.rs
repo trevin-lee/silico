@@ -533,7 +533,7 @@ pub fn on_lavapipe(name: &str, test: impl FnOnce()) {
         );
         assert!(said.contains("1 passed"), "{name} didn't run: {said}");
         // What the run said of itself, passed on.
-        eprint!("{}", String::from_utf8_lossy(&out.stderr));
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), &out.stderr);
         return;
     }
     test();
