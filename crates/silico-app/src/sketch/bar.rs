@@ -52,11 +52,12 @@ pub struct BarView {
 /// state, Cancel, and Finish Sketch with its key.
 pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
     let mut action = BarAction::None;
+    let mut group = None;
     dark(ui);
     let (fill, accent, strong, weak) = (FLOATING_BG, SELECTION_BG, TEXT_STRONG, TEXT_SUBDUED);
     // One row, whatever room the canvas leaves: its words are never wrapped away.
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-    egui::Frame::new()
+    let shown = egui::Frame::new()
         .fill(fill)
         .stroke(Stroke::new(1.0, accent))
         .corner_radius(CornerRadius::same(6))
@@ -71,6 +72,7 @@ pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
                 node.set_role(egui::accesskit::Role::Toolbar);
                 node.set_label("Sketch bar");
             });
+            group = Some(ui.unique_id());
             ui.horizontal(|ui| {
                 egui::Frame::new()
                     .fill(accent)
@@ -106,8 +108,27 @@ pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
                     action = BarAction::Finish;
                 }
             });
-        });
+        })
+        .response
+        .rect;
+    bounded(ui, group, shown);
     action
+}
+
+/// The group `group`'s node (a ui's, which egui gives no bounds of its own) bounded by
+/// `rect`, its frame's, in points as egui bounds its widgets: so the accessibility tree says
+/// where the group is, around what it holds.
+fn bounded(ui: &Ui, group: Option<egui::Id>, rect: egui::Rect) {
+    if let Some(id) = group {
+        ui.ctx().accesskit_node_builder(id, |node| {
+            node.set_bounds(egui::accesskit::Rect {
+                x0: rect.min.x.into(),
+                y0: rect.min.y.into(),
+                x1: rect.max.x.into(),
+                y1: rect.max.y.into(),
+            });
+        });
+    }
 }
 
 /// The dark look the bar and the palette are drawn in, whatever theme the window shows:
@@ -254,7 +275,8 @@ fn usage(choice: Choice, trim: TrimMode) -> &'static str {
 /// don't fit.
 pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings, max_height: f32) {
     dark(ui);
-    egui::Frame::new()
+    let mut group = None;
+    let shown = egui::Frame::new()
         .fill(FLOATING_BG)
         .stroke(Stroke::new(BORDER, PANEL_BORDER))
         .corner_radius(CornerRadius::same(6))
@@ -272,6 +294,7 @@ pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings, max_hei
                 node.set_role(egui::accesskit::Role::Group);
                 node.set_label("Sketch Palette");
             });
+            group = Some(ui.unique_id());
             ui.spacing_mut().item_spacing.y = 2.0;
             let (title, _) = ui.allocate_exact_size(Vec2::new(width, TITLE_HEIGHT), Sense::hover());
             ui.put(
@@ -308,7 +331,10 @@ pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings, max_hei
                     });
                     section(ui, "Colours", legend);
                 });
-        });
+        })
+        .response
+        .rect;
+    bounded(ui, group, shown);
 }
 
 /// The palette's Tool: the tool on, how it's used, and what it last said, or the keys that

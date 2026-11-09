@@ -21192,6 +21192,143 @@ fn double_clicked_at(at: eframe::egui::Pos2) -> Vec<silico_app::sketch::PointerE
         .collect()
 }
 
+/// The Modify box's field, if a box is open.
+fn modify_field(h: &AppHarness) -> Option<egui_kittest::Node<'_>> {
+    h.query_by_role_and_label(Role::Dialog, "Modify dimension")?
+        .query_by_label("Value in millimetres")
+}
+
+#[test]
+fn every_sketchs_modify_box_takes_the_keyboard_as_it_opens_not_only_the_first_sketchs() {
+    // Two sketches one after the other in one run, each a 40 by 20 rectangle from the origin,
+    // its right side (40, 0) to (40, 20) dimensioned with its box placed at (55, 10): each
+    // box holds the keyboard as it opens, so its value is typed (Home, its two characters
+    // deleted, the digits) and Enter sets it, nothing clicked. The second sketch mode numbers
+    // its boxes from the start again, as the first did.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    for (sketch, typed) in [("the first", "25"), ("the second", "30")] {
+        create_sketch(&mut h, "XY plane");
+        sketch_read(&mut h);
+        let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+        h.key_press(eframe::egui::Key::R);
+        step(&mut h);
+        sketch_events(&f, &mut h, &dragged([0.0, 0.0], [40.0, 20.0]));
+        settled(&mut h);
+        read_with_lines(&mut h, 4);
+        h.key_press(eframe::egui::Key::D);
+        step(&mut h);
+        dimension_at(&f, &mut h, [40.0, 10.0], [55.0, 10.0], "20");
+        step_until(&mut h, "the box drawn", |h| modify_field(h).is_some());
+        step(&mut h);
+        assert!(
+            modify_field(&h).unwrap().is_focused(),
+            "{sketch} sketch's box holds the keyboard as it opens"
+        );
+        for key in [
+            eframe::egui::Key::Home,
+            eframe::egui::Key::Delete,
+            eframe::egui::Key::Delete,
+        ] {
+            h.input_mut().events.push(eframe::egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: eframe::egui::Modifiers::NONE,
+            });
+        }
+        h.input_mut()
+            .events
+            .push(eframe::egui::Event::Text(typed.to_owned()));
+        step(&mut h);
+        step(&mut h);
+        assert_eq!(
+            modify_field(&h).and_then(|field| field.value()).as_deref(),
+            Some(typed),
+            "{sketch} sketch's box"
+        );
+        h.key_press(eframe::egui::Key::Enter);
+        step(&mut h);
+        settled(&mut h);
+        // The rectangle's six (two level, two plumb, its corner at the origin's two), and
+        // the length.
+        read_with_constraints(&mut h, 7);
+        let lengths = lengths(&sketch_of_text(&f, &h, id.as_str()));
+        assert_eq!(lengths.len(), 1, "{sketch} sketch's {lengths:?}");
+        assert_eq!(
+            (lengths[0].2.as_str(), lengths[0].3),
+            (typed, true),
+            "{sketch} sketch's length"
+        );
+        leave_sketch(&mut h, true);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_sketch_bar_and_the_palette_are_bounded_around_their_controls_in_the_tree() {
+    // Each panel's group in the accessibility tree has bounds of its own (a ui's node, which
+    // egui bounds no other way), finite and not empty, holding every button and checkbox in
+    // it: so a test, or a screen reader, can tell where it is. In a window tall enough that
+    // the palette's sections all show, unscrolled.
+    let f = fixture();
+    let path = f.file("example.silico", EXAMPLE);
+    let app = App::new(Arc::clone(&f.sessions));
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0, 1400.0))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    silico_app::theme::apply(&h.ctx);
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(&mut h, "the timeline read", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.timeline.is_some())
+    });
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    for (role, label, least) in [
+        (Role::Toolbar, "Sketch bar", 2),
+        (Role::Group, "Sketch Palette", 6),
+    ] {
+        let group = h.get_by_role_and_label(role, label);
+        let b = group
+            .accesskit_node()
+            .bounding_box()
+            .unwrap_or_else(|| panic!("{label} has no bounds"));
+        assert!(
+            [b.x0, b.y0, b.x1, b.y1].iter().all(|v| v.is_finite()) && b.x1 > b.x0 && b.y1 > b.y0,
+            "{label}: {b:?}"
+        );
+        let controls: Vec<_> = group
+            .query_all_by_role(Role::Button)
+            .chain(group.query_all_by_role(Role::CheckBox))
+            .map(|node| {
+                let label = node.accesskit_node().label();
+                (label, node.accesskit_node().bounding_box().unwrap())
+            })
+            .collect();
+        assert!(controls.len() >= least, "{label}: {controls:?}");
+        for (control, c) in controls {
+            assert!(
+                c.x0 >= b.x0 && c.y0 >= b.y0 && c.x1 <= b.x1 && c.y1 <= b.y1,
+                "{label}'s {control:?} at {c:?}, outside {b:?}"
+            );
+        }
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn a_placed_dimension_double_clicked_is_set_as_typed_and_an_over_defining_edit_offers_the_three() {
     use silico_app::sketch::dimension::ModifyAction;
@@ -23120,7 +23257,11 @@ fn a_dimension_whose_text_is_under_the_palette_opens_its_modify_box_whole_in_the
         step(&mut h);
     }
     let dialog = h.get_by_role_and_label(Role::Dialog, "Modify dimension");
-    let area = eframe::egui::Id::new(("sketch_modify", shown.opened));
+    let owner = silico_app::sketch::dimension::modify_owner(
+        &h.state().tabs()[0].id,
+        sketch_mode(&h).unwrap().serial,
+    );
+    let area = silico_app::sketch::dimension::modify_area(owner, shown.opened);
     let parts = [
         (
             "the box",

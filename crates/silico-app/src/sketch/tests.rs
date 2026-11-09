@@ -3897,7 +3897,8 @@ fn modify_harness(
         // A viewport far wider than the box, and the palette far from it: neither moves it.
         let viewport = egui::Rect::from_min_max(pos2(-1.0e4, -1.0e4), pos2(1.0e4, 1.0e4));
         let palette = egui::Rect::from_min_size(pos2(9.0e3, 9.0e3), vec2(10.0, 10.0));
-        if let Some(action) = dimension::modify_box(ui.ctx(), &view, viewport, palette) {
+        let owner = egui::Id::new("a sketch mode");
+        if let Some(action) = dimension::modify_box(ui.ctx(), owner, &view, viewport, palette) {
             seen.borrow_mut().push(action);
         }
     });
@@ -3911,7 +3912,7 @@ fn the_modify_box_stands_left_and_up_of_its_text_as_the_prototype_puts_it() {
     // The prototype's `.modify-box`: its corner 74 points left and 15 up of the text.
     let rect = h
         .ctx
-        .memory(|m| m.area_rect(egui::Id::new(("sketch_modify", 7u64))))
+        .memory(|m| m.area_rect(dimension::modify_area(egui::Id::new("a sketch mode"), 7)))
         .unwrap();
     assert_eq!(rect.min, pos2(226.0, 185.0));
 }
