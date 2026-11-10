@@ -29804,8 +29804,8 @@ fn pocket_from_loose(f: &Fixture) -> AppHarness {
 fn a_sketch_picked_back_after_a_refused_one_lifts_the_refusal_and_ok_commits_it() {
     // #443's review (round 6, M9): a Pocket from Loose, added; Sketch2 picked, its body
     // refused (the Block, held by Joined), so OK off and the reason shown; Loose picked back,
-    // the sketch the document has: the refusal goes, OK is on, the Pocket is as it was, and
-    // OK closes the dialog with it.
+    // the sketch the document has: the refusal goes, OK is on, the Pocket is as it was (no
+    // edit sent for it: the box holds what was last sent), and OK closes the dialog with it.
     let f = fixture();
     let mut h = pocket_from_loose(&f);
     h.get_by_role_and_label(Role::Pane, "Browser")
@@ -29816,6 +29816,7 @@ fn a_sketch_picked_back_after_a_refused_one_lifts_the_refusal_and_ok_commits_it(
     });
     settled(&mut h);
     assert!(!ok_enabled(&h));
+    let sent = h.state().tabs()[0].edits.sent;
     h.get_by_role_and_label(Role::Pane, "Browser")
         .get_by_label("Loose")
         .click();
@@ -29824,6 +29825,11 @@ fn a_sketch_picked_back_after_a_refused_one_lifts_the_refusal_and_ok_commits_it(
     });
     settled(&mut h);
     assert!(ok_enabled(&h));
+    assert_eq!(
+        h.state().tabs()[0].edits.sent,
+        sent,
+        "an edit sent for Loose"
+    );
     assert_eq!(
         fields_of(&text_of(&f, &h), "Pocket"),
         Some(sweep_fields("Pocket", "j0000001", "s0000009"))
@@ -29880,14 +29886,18 @@ fn ok_clicked_in_the_frame_a_refused_sketch_is_picked_leaves_the_dialog_open() {
 
 #[test]
 fn a_new_features_add_refused_as_stale_is_sent_again_and_lands() {
-    // #443's review (round 6, L19): another client's box held in the session's queue, then a
-    // Box's dialog opened: its add queues behind, made against the revision before. Let go:
-    // theirs lands first, so the core refuses ours as made against a revision the session
-    // has moved on from; the dialog lets the add go and sends it again at the revision now:
-    // the Box is added, the dialog has its feature, and OK is on.
+    // #443's review (round 6, L19): a Pad's dialog, its sketch not chosen yet; another
+    // client's box held in the session's queue; then Triangle chosen: the Pad's body is read
+    // (of the model published, beside the queue) and its add sent, queuing behind the box,
+    // made against the revision before. Let go: the box lands first, so the core refuses the
+    // Pad's add as made against a revision the session has moved on from; the dialog lets the
+    // add go and sends it again at the revision now: the Pad is added, the dialog has its
+    // feature, and OK is on.
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
-    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    create(&mut h, "Pad");
+    settled(&mut h);
     let id = h.state().tabs()[0].id;
     let (hold, check) = hold_queue(&f, &h, 0);
     let theirs = f.sessions.add_feature(
@@ -29899,16 +29909,22 @@ fn a_new_features_add_refused_as_stale_is_sent_again_and_lands() {
         )
         .unwrap(),
     );
-    create(&mut h, "Box");
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
     step_until(&mut h, "its add sent", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.adding)
+        let tab = &h.state().tabs()[0];
+        tab.dialog.as_ref().is_some_and(|dialog| dialog.adding) && !tab.reading_body()
     });
     for _ in 0..5 {
         step(&mut h);
     }
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_none())
+    );
     hold.release();
     check.wait();
     theirs.wait().result.unwrap();
@@ -29916,7 +29932,7 @@ fn a_new_features_add_refused_as_stale_is_sent_again_and_lands() {
     settled(&mut h);
     let text = text_of(&f, &h);
     assert!(fields_of(&text, "Theirs").is_some(), "{text}");
-    assert!(fields_of(&text, "Box").is_some(), "{text}");
+    assert!(fields_of(&text, "Pad").is_some(), "{text}");
     assert!(ok_enabled(&h));
     assert_eq!(never_waits::waits(), 0);
 }

@@ -7304,36 +7304,36 @@ mod tests {
 
     #[test]
     fn a_new_features_add_refused_leaves_ok_off_and_a_stale_one_is_sent_again() {
-        // #443's review (round 5, L16): a Pocket's add refused by the core. Not stale: OK off
-        // (no feature to OK), nothing sent again till an input changes. Stale (made against a
-        // revision the session moved on from): OK off too, and its add sent on the next pass.
+        // #443's review (round 5, L16; L20): a Pocket's add refused by the core. Not stale (an
+        // invalid input, or a conflict over something else than the revision, such as the
+        // file's path): OK off (no feature to OK), nothing sent again till an input changes.
+        // Stale (a conflict on the revision: made against one the session moved on from): OK
+        // off too, and its add sent on the next pass.
+        use silico_core::ErrorCode::{Conflict, InvalidInput};
         let fid = |text: &str| FeatureId::new(text).unwrap();
-        let refusal = |stale: bool| {
-            let error = silico_core::Error::new(
-                if stale {
-                    silico_core::ErrorCode::Conflict
-                } else {
-                    silico_core::ErrorCode::InvalidInput
-                },
-                "refused",
-            );
-            Problems::from(if stale {
-                error.with_parameter("revision")
-            } else {
-                error
-            })
-        };
-        for stale in [false, true] {
+        for (code, parameter, stale) in [
+            (InvalidInput, None, false),
+            (Conflict, Some("path"), false),
+            (Conflict, None, false),
+            (InvalidInput, Some("revision"), false),
+            (Conflict, Some("revision"), true),
+        ] {
+            let error = silico_core::Error::new(code, "refused");
+            let refusal = Problems::from(match parameter {
+                Some(parameter) => error.with_parameter(parameter),
+                None => error,
+            });
             let mut tab = tab();
             let mut dialog = Dialog::new(Kind::Pocket, Some(fid("s0000009")), 4);
             dialog.add().unwrap();
             tab.dialog = Some(dialog);
             assert!(!tab.can_ok(), "adding");
-            tab.add_refused(4, &refusal(stale));
-            assert!(!tab.can_ok(), "stale: {stale}");
+            tab.add_refused(4, &refusal);
+            let case = format!("{code:?} on {parameter:?}");
+            assert!(!tab.can_ok(), "{case}");
             let dialog = tab.dialog.as_mut().unwrap();
-            assert!(!dialog.adding);
-            assert_eq!(dialog.add().is_some(), stale, "stale: {stale}");
+            assert!(!dialog.adding, "{case}");
+            assert_eq!(dialog.add().is_some(), stale, "{case}");
             assert_eq!(
                 tab.message.as_deref().map(|said| said.contains("refused")),
                 Some(true)
