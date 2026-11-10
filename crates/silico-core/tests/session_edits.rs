@@ -453,6 +453,42 @@ fn a_refused_commit_s_ended_rebuild_is_no_progress_of_the_session_s_revision() {
 }
 
 #[test]
+fn a_refused_commit_s_candidate_is_no_progress_of_the_revision_the_reload_gives() {
+    // #423's review: as above, but the file is changed to another valid document, so the
+    // next command reloads it, as revision 2: the revision the refused save would have
+    // given. Nothing of the refused candidate's count is revision 2's: `text` needs no
+    // model, so no rebuild of revision 2 has started, and `done` and `steps` are null.
+    let f = opened(BLOCK);
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let running = f.sessions.set_field(
+        &f.id,
+        Revision::OPENED,
+        id("k7f2qx3m"),
+        "length".to_owned(),
+        value("41"),
+    );
+    assert!(f.kernel.wait_running(1, crate::sessions::HANG));
+    std::fs::write(&f.path, BLOCK.replace("\"length\": 40", "\"length\": 50")).unwrap();
+    hold.release();
+    let error = the_error(&answer(running));
+    assert_eq!(error.code(), ErrorCode::Conflict);
+    let text = answer(f.sessions.text(&f.id, None));
+    let session = text.session.unwrap();
+    assert!(session.reloaded);
+    assert_eq!(session.revision, Revision::from_number(2).unwrap());
+    assert_eq!(
+        f.sessions.status(&f.id).result.unwrap().rebuild,
+        Rebuild {
+            revision: Revision::from_number(2).unwrap(),
+            state: RebuildState::Idle,
+            progress: None,
+        }
+    );
+}
+
+#[test]
 fn a_field_is_read_exactly_as_the_document_reader_reads_it() {
     let f = opened(BLOCK);
     f.begin();

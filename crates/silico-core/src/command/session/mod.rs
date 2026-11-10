@@ -2336,7 +2336,7 @@ fn status_in<P: Clients + 'static>(
         let rebuilds = lock(&found.rebuilds);
         let state = rebuilds.reported(held.revision, gated);
         let mut progress = if gated || state.state == RebuildState::Running {
-            found.newest.of(held.revision)
+            found.newest.of(held.revision, rebuilds.running.as_ref())
         } else {
             None
         };
