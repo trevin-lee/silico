@@ -58,6 +58,7 @@ impl FrameData {
             vertices: self.vertices,
             // None: the canvas's gradient, painted under the frame, shows where no body is.
             background: crate::theme::VIEWPORT_FRAME_BG,
+            lines: &[],
         }
     }
 }

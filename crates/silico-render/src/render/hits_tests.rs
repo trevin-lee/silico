@@ -8,7 +8,7 @@ use silico_protocol::{Camera, MAX_RENDER_COORDINATE, Mesh, Projection};
 
 use super::{
     Element, HIT_EDGE_POINTS, HIT_VERTEX_POINTS, Hit, MAX_HITS, MIN_EYE_DISTANCE, Pickable,
-    VERTEX_REACH, hits, project, ray,
+    VERTEX_REACH, face_hit, hits, project, ray,
 };
 use crate::bench::box_mesh;
 
@@ -602,7 +602,7 @@ fn a_node_left_unfilled_is_walked_as_nothing_never_round_for_ever() {
     let cube = Pickable::new(Arc::new(freecad_box(20.0, 20.0, 20.0)));
     let camera = from_above();
     let bodies = [(1, &cube)];
-    let caster = super::Caster::new(&camera, SIZE, 1.0, &bodies).unwrap();
+    let caster = super::Caster::new(&camera, SIZE, 1.0, &bodies, &[]).unwrap();
     let (origin, direction) = ray(&camera, SIZE, above_px(15.0, 15.0)).unwrap();
     let line = super::Line {
         origin,
@@ -960,6 +960,140 @@ fn a_crowd_under_one_pixel_lists_its_nearest_few_hundred_by_number() {
     let want: Vec<(Element, bool)> = (1..=256).map(|n| (Vertex(n), false)).collect();
     assert_eq!(listed(&under), want);
     assert!(!under.iter().any(|h| h.element == Face(6)));
+    // The face under the pointer is still found: the top, at (15, 15, 20), depth 80.
+    let face = face_hit(
+        &from_above(),
+        SIZE,
+        1.0,
+        &[(1, &crowd)],
+        above_px(15.0, 15.0),
+    )
+    .unwrap();
+    assert_eq!((face.body, face.element, face.hidden), (1, Face(6), false));
+    assert_at(&face, [15.0, 15.0, 20.0], 80.0);
+}
+
+#[test]
+fn the_face_under_the_pointer_is_the_nearest_the_ray_meets_worked_by_hand() {
+    use Element::Face;
+    let cube = Pickable::new(Arc::new(freecad_box(20.0, 20.0, 20.0)));
+    let camera = from_above();
+    let bodies = [(1, &cube)];
+    let face = |bodies: &[(u32, &Pickable)], x: f64, y: f64| {
+        face_hit(&camera, SIZE, 1.0, bodies, above_px(x, y))
+    };
+    // Over (19.8, 15), where `hits` lists Edge6 first (2 pixels off, taken toward the eye by
+    // its reach): the face is the top, Face6, at (19.8, 15, 20), depth 80 (the eye at z 100);
+    // the bottom, Face5, behind it at 100, is passed over.
+    let top = face(&bodies, 19.8, 15.0).unwrap();
+    assert_eq!((top.body, top.element, top.hidden), (1, Face(6), false));
+    assert_at(&top, [19.8, 15.0, 20.0], 80.0);
+    // Over the corner (19.8, 19.8), under a vertex and three edges: the top again.
+    let corner = face(&bodies, 19.8, 19.8).unwrap();
+    assert_eq!(corner.element, Face(6));
+    assert_at(&corner, [19.8, 19.8, 20.0], 80.0);
+    // Off the box, (25, 15) (column 350, inside the image): no face, though Edge6 and the
+    // corners are drawn 50 pixels off.
+    assert_eq!(face(&bodies, 25.0, 15.0), None);
+    // Two copies in one place, given body 7 first: one depth, body 2's.
+    let both = face(&[(7, &cube), (2, &cube)], 15.0, 15.0).unwrap();
+    assert_eq!((both.body, both.element), (2, Face(6)));
+    // Two faces of one body at one depth (the same 4 by 4 grid twice at z = 20): the lower
+    // number, Face1. Raise the second to z = 25, 5 mm nearer the eye: Face2, though numbered
+    // after, at depth 75.
+    let twice = Pickable::new(Arc::new(faces_and_vertices(
+        vec![grid(4, 4, 20.0), grid(4, 4, 20.0)],
+        vec![],
+    )));
+    let at = ON_A_CHUNK;
+    assert_eq!(
+        face(&[(1, &twice)], at[0], at[1]).map(|h| h.element),
+        Some(Face(1))
+    );
+    let raised = Pickable::new(Arc::new(faces_and_vertices(
+        vec![grid(4, 4, 20.0), grid(4, 4, 25.0)],
+        vec![],
+    )));
+    let nearer = face(&[(1, &raised)], at[0], at[1]).unwrap();
+    assert_eq!(nearer.element, Face(2));
+    assert_at(&nearer, [at[0], at[1], 25.0], 75.0);
+}
+
+#[test]
+fn in_perspective_the_face_under_the_pointer_is_one_the_drawing_draws() {
+    use Element::Face;
+    let camera = from_the_origin();
+    // Face1 half a nanometre from the eye isn't drawn, so the face under the pointer is
+    // Face2, at (0, 0, −2), depth 2; two nanometres off it's drawn, and it's Face1.
+    let cut = Pickable::new(Arc::new(two_faces(MIN_EYE_DISTANCE / 2.0)));
+    let far = face_hit(&camera, [100, 100], 1.0, &[(1, &cut)], [50.0, 50.0]).unwrap();
+    assert_eq!(far.element, Face(2));
+    assert_at(&far, [0.0, 0.0, -2.0], 2.0);
+    let drawn = Pickable::new(Arc::new(two_faces(2.0 * MIN_EYE_DISTANCE)));
+    let near = face_hit(&camera, [100, 100], 1.0, &[(1, &drawn)], [50.0, 50.0]).unwrap();
+    assert_eq!(near.element, Face(1));
+}
+
+#[test]
+fn the_face_under_the_pointer_is_refused_as_a_cast_is_and_found_in_a_broken_mesh() {
+    let cube = Pickable::new(Arc::new(freecad_box(20.0, 20.0, 20.0)));
+    let camera = from_above();
+    let bodies = [(1, &cube)];
+    let centre = above_px(15.0, 15.0);
+    assert!(face_hit(&camera, SIZE, 1.0, &bodies, centre).is_some());
+    for pointer in [
+        [-0.5, 200.0],
+        [200.0, -0.5],
+        [400.0, 200.0],
+        [200.0, 400.0],
+        [f64::NAN, 200.0],
+        [200.0, f64::INFINITY],
+        [f64::MAX, f64::MIN],
+    ] {
+        assert_eq!(
+            face_hit(&camera, SIZE, 1.0, &bodies, pointer),
+            None,
+            "{pointer:?}"
+        );
+    }
+    for ppp in [0.0, -1.0, f32::NAN, f32::INFINITY, 32.5] {
+        assert_eq!(face_hit(&camera, SIZE, ppp, &bodies, centre), None, "{ppp}");
+    }
+    assert_eq!(face_hit(&camera, [0, 400], 1.0, &bodies, centre), None);
+    for camera in [
+        Camera {
+            eye: camera.target,
+            ..camera.clone()
+        },
+        Camera {
+            up: [0.0, 0.0, 1.0],
+            ..camera.clone()
+        },
+        Camera {
+            projection: Projection::Orthographic { view_height: 0.0 },
+            ..camera.clone()
+        },
+        Camera {
+            eye: [f64::INFINITY, 0.0, 0.0],
+            ..camera.clone()
+        },
+    ] {
+        assert_eq!(
+            face_hit(&camera, SIZE, 1.0, &bodies, centre),
+            None,
+            "{camera:?}"
+        );
+    }
+    assert_eq!(face_hit(&camera, SIZE, 1.0, &[], centre), None);
+    // A triangle past its positions passed over, as `hits` passes it: on the top's diagonal
+    // its other triangle meets the ray, and over (15, 5), clear of the diagonal, the bottom.
+    let mut broken = freecad_box(20.0, 20.0, 20.0);
+    broken.triangles[10] = [0, 1, u32::MAX];
+    broken.face_triangles.push(u32::MAX);
+    let broken = Pickable::new(Arc::new(broken));
+    let on = |pointer| face_hit(&camera, SIZE, 1.0, &[(1, &broken)], pointer).map(|h| h.element);
+    assert_eq!(on(centre), Some(Element::Face(6)));
+    assert_eq!(on(above_px(15.0, 5.0)), Some(Element::Face(5)));
 }
 
 #[test]
@@ -1045,6 +1179,11 @@ proptest::proptest! {
         let size_px = [64, 48];
         let under = hits(&camera, size_px, ppp, &[(1, &body)], pointer);
         proptest::prop_assert_eq!(&under, &hits(&camera, size_px, ppp, &[(1, &body)], pointer));
+        // The face under the pointer: the first face listed (a box's 26 elements never fill
+        // MAX_HITS), refused alike, the same each time.
+        let face = face_hit(&camera, size_px, ppp, &[(1, &body)], pointer);
+        proptest::prop_assert_eq!(face, under.iter().find(|h| matches!(h.element, Element::Face(_))).copied());
+        proptest::prop_assert_eq!(face, face_hit(&camera, size_px, ppp, &[(1, &body)], pointer));
         let mut seen = std::collections::BTreeSet::new();
         for hit in &under {
             proptest::prop_assert!(seen.insert(hit.element), "{:?} twice", hit.element);
@@ -1157,6 +1296,8 @@ proptest::proptest! {
         ];
         let under = hits(&camera, size_px, ppp, &[(1, &body)], pointer);
         proptest::prop_assert_eq!(&under, &hits(&camera, size_px, ppp, &[(1, &body)], pointer));
+        let face = face_hit(&camera, size_px, ppp, &[(1, &body)], pointer)
+            .map(|hit| (hit.element, hit.hidden));
         let ppp = f64::from(ppp);
         let off = |at: [f64; 2]| {
             let (dx, dy) = (at[0] - pointer[0], at[1] - pointer[1]);
@@ -1262,6 +1403,7 @@ proptest::proptest! {
         };
         if misses || leave < enter - tolerance {
             proptest::prop_assert!(faces.is_empty(), "the line misses the box: {:?}", under);
+            proptest::prop_assert_eq!(face, None, "the line misses the box");
         } else if leave > enter + tolerance {
             proptest::prop_assert_eq!(
                 &faces,
@@ -1269,6 +1411,8 @@ proptest::proptest! {
                 "entering through Face{} at {}, leaving through Face{} at {}: {:?}",
                 entry, enter, exit, leave, under
             );
+            // The face under the pointer is the one the line enters by.
+            proptest::prop_assert_eq!(face, Some((Element::Face(entry), false)), "entering through Face{}", entry);
         }
     }
 }
@@ -1682,7 +1826,7 @@ fn a_boxs_least_depth_is_its_nearest_corners_less_a_part_in_2_38_of_its_largest_
     // is at z = 20, depth 80; the largest coordinate of the box's, the eye's, and the line's
     // is the eye's 100, of which a part in 2^38 is 3.64e-10.
     let cube = Pickable::new(Arc::new(freecad_box(20.0, 20.0, 20.0)));
-    let caster = super::Caster::new(&from_above(), SIZE, 1.0, &[(1, &cube)]).unwrap();
+    let caster = super::Caster::new(&from_above(), SIZE, 1.0, &[(1, &cube)], &[]).unwrap();
     let line = super::Line {
         origin: [15.0, 15.0, 10.0],
         direction: [0.0, 0.0, -1.0],
@@ -1711,7 +1855,7 @@ fn a_line_a_hair_past_a_triangles_edge_meets_it_through_its_box_grown_for_roundi
         vertex_points: vec![],
     };
     let body = Pickable::new(Arc::new(mesh));
-    let caster = super::Caster::new(&from_above(), SIZE, 1.0, &[(1, &body)]).unwrap();
+    let caster = super::Caster::new(&from_above(), SIZE, 1.0, &[(1, &body)], &[]).unwrap();
     let line = super::Line {
         origin: [x, 0.5, 50.0],
         direction: [0.0, 0.0, -1.0],

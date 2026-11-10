@@ -46,9 +46,10 @@ use re_renderer::{
 use silico_protocol::vec3::{cross, dot, sub};
 use silico_protocol::{
     Camera, Class, EDGE_BIT, F32_ROUNDING, Frame as CameraFrame, InView, InViewBody,
-    InvalidParameter, MIN_EYE_DISTANCE, Mesh, PRECISION_OF_PIXEL, PixelId, Projection, RenderBody,
-    RenderScene, ViewRegion, box_corners, box_of, check_bodies_in_view, check_render_mesh,
-    corner_sec2, pyramid_slope, reach_of_points,
+    InvalidParameter, MAX_RENDER_COORDINATE, MIN_EYE_DISTANCE, Mesh, PRECISION_OF_PIXEL, PixelId,
+    Projection, RenderBody, RenderScene, ViewRegion, box_corners, box_of, check_bodies_in_view,
+    check_render_mesh, corner_sec2, least_view_height, pyramid_slope, reach_of_box,
+    reach_of_points,
 };
 
 /// A render's background: a flat light grey, sRGB. A frame's is the caller's
@@ -302,6 +303,141 @@ pub struct Frame<'a> {
     /// (`BlendWithBackground::Premultiplied`). A frame isn't translucent: a colour has no
     /// alpha to give. A render's is its own ([`BACKGROUND`]).
     pub background: Option<[u8; 3]>,
+    /// Lines drawn among the bodies and picked by nothing (the app's shown sketches): each a
+    /// set of strips in the document's coordinates, in its colour and width. Placed in the
+    /// view in f64 each frame as edges are, moved toward the eye as a drawn edge is by the
+    /// reach their width takes, and drawn after every body's edges at the edges' depth
+    /// offset, so they're depth-tested among the bodies as an edge is (a line on a face shows
+    /// on it whole, from any side, one behind a body is hidden by it) and drawn over an edge
+    /// they coincide with. At most [`MAX_FRAME_LINE_POINTS`] points over all of them. They go into the picking layer as the background (object 0), which a pick passes
+    /// over: a face under a line's stroke is found from the pixels beside it. An orthographic
+    /// view's reach, which its near and far planes are set from, takes their boxes as it
+    /// takes a body's, so lines with no body are drawn too.
+    pub lines: &'a [Lines<'a>],
+}
+
+/// The widest a frame's [`Lines`] may be, in points: well past an edge's widest, 4.
+pub const MAX_LINE_WIDTH: f32 = 64.0;
+
+/// The most points a frame's [`Lines`] may have over all their sets, as a render's meshes
+/// may have at most `MAX_RENDER_TRIANGLES`: each is placed in f64 and uploaded every frame,
+/// on the caller's thread, and past `re_renderer`'s data texture its vertices would be
+/// dropped with only a log line, the edges' picking strips after them first.
+pub const MAX_FRAME_LINE_POINTS: usize = 2_000_000;
+
+/// One set of a frame's lines ([`Frame::lines`]): its strips, its colour (sRGB, opaque: its
+/// alpha 255), and its width in points (above 0, at most [`MAX_LINE_WIDTH`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Lines<'a> {
+    pub strips: &'a Strips,
+    pub colour: [u8; 4],
+    pub width: f32,
+}
+
+/// Polylines in the document's coordinates, checked once when they're made
+/// ([`Strips::new`]): each of two points or more, every coordinate finite and within
+/// [`MAX_RENDER_COORDINATE`] of the origin. Each strip's box and the whole box are kept, so a
+/// frame tests a box before it places what's in it.
+#[derive(Clone, PartialEq, Default)]
+pub struct Strips {
+    points: Vec<[f64; 3]>,
+    /// Where each strip ends in `points`, ascending: the `k`th is from the one before's end
+    /// (0 for the first) to its own.
+    ends: Vec<usize>,
+    boxes: Vec<Bounds>,
+    bounds: Option<Bounds>,
+}
+
+impl Strips {
+    /// `polylines` as strips, in their order; refused, naming `lines` and which strip and
+    /// point, if one has fewer than two points or a coordinate that isn't finite or is
+    /// farther than [`MAX_RENDER_COORDINATE`] from the origin. None makes an empty set,
+    /// which draws nothing.
+    pub fn new(
+        polylines: impl IntoIterator<Item = Vec<[f64; 3]>>,
+    ) -> Result<Strips, InvalidParameter> {
+        let mut strips = Strips::default();
+        for (k, polyline) in polylines.into_iter().enumerate() {
+            if polyline.len() < 2 {
+                return Err(InvalidParameter {
+                    parameter: "lines",
+                    message: format!(
+                        "strip {k} has {} point(s): a strip needs two or more",
+                        polyline.len()
+                    ),
+                });
+            }
+            let within = |p: &[f64; 3]| p.iter().all(|c| c.abs() <= MAX_RENDER_COORDINATE);
+            if let Some((i, p)) = polyline.iter().enumerate().find(|(_, p)| !within(p)) {
+                return Err(InvalidParameter {
+                    parameter: "lines",
+                    message: format!(
+                        "strip {k}'s point {i}, {p:?}, must be finite and within {MAX_RENDER_COORDINATE} mm of the origin"
+                    ),
+                });
+            }
+            // Two points or more: a box.
+            let Some(bounds) = box_of(polyline.iter()) else {
+                continue;
+            };
+            strips.bounds = Some(strips.bounds.map_or(bounds, |all| joined(all, bounds)));
+            strips.points.extend(polyline);
+            strips.ends.push(strips.points.len());
+            strips.boxes.push(bounds);
+        }
+        Ok(strips)
+    }
+
+    /// The box of every point, its lowest and highest corners; none for no strips.
+    pub fn bounds(&self) -> Option<([f64; 3], [f64; 3])> {
+        self.bounds
+    }
+
+    /// How many strips there are.
+    pub fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.ends.is_empty()
+    }
+
+    /// How many points there are, over every strip.
+    pub fn points(&self) -> usize {
+        self.points.len()
+    }
+
+    /// The `k`th strip's points, in order; none past the last.
+    pub fn strip(&self, k: usize) -> Option<&[[f64; 3]]> {
+        let end = *self.ends.get(k)?;
+        let start = k
+            .checked_sub(1)
+            .and_then(|k| self.ends.get(k))
+            .copied()
+            .unwrap_or(0);
+        self.points.get(start..end)
+    }
+
+    /// Each strip's points, in order, and its box.
+    fn strips(&self) -> impl Iterator<Item = (&[[f64; 3]], Bounds)> {
+        let starts = std::iter::once(0).chain(self.ends.iter().copied());
+        starts
+            .zip(&self.ends)
+            .zip(&self.boxes)
+            .map(|((start, &end), &bounds)| (self.points.get(start..end).unwrap_or(&[]), bounds))
+    }
+}
+
+impl std::fmt::Debug for Strips {
+    /// Its counts and its box, not its points: a frame's refusal prints the frame.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Strips")
+            .field("strips", &self.len())
+            .field("points", &self.points())
+            .field("bounds", &self.bounds)
+            .finish()
+    }
 }
 
 /// The colours a frame's outlines are drawn in, sRGB: its highlights' (a selection's) and
@@ -495,9 +631,9 @@ impl Renderer {
         self.uploads
     }
 
-    /// How long the last render or frame took to place its faces and edges for its view on
-    /// the CPU (each face's anchor and transform, its instance, and the edges' strips),
-    /// uploads included: for the bench, never a result.
+    /// How long the last render or frame took to place its faces, edges, and lines for its
+    /// view on the CPU (each face's anchor and transform, its instance, and the edges' and
+    /// lines' strips), uploads included: for the bench, never a result.
     pub fn placed(&self) -> Duration {
         self.placed
     }
@@ -635,7 +771,10 @@ impl Renderer {
                 outlines: frame.outlines,
                 background: frame.background.map(srgb),
             },
-            &drawn,
+            Drawn {
+                bodies: &drawn,
+                lines: frame.lines,
+            },
             picking.map(|(rect, id)| Picked {
                 rect,
                 id,
@@ -866,8 +1005,37 @@ impl Renderer {
                 ),
             });
         }
-        // The camera at this size, and the bodies in its view, by the rules a scene's check
-        // takes (`RenderScene::check`).
+        let points: usize = frame.lines.iter().map(|set| set.strips.points()).sum();
+        if points > MAX_FRAME_LINE_POINTS {
+            return Err(InvalidParameter {
+                parameter: "lines",
+                message: format!(
+                    "lines have {points} points over their sets, more than a frame's {MAX_FRAME_LINE_POINTS}"
+                ),
+            });
+        }
+        for (i, set) in frame.lines.iter().enumerate() {
+            let width = set.width;
+            if !(width.is_finite() && width > 0.0 && width <= MAX_LINE_WIDTH) {
+                return Err(InvalidParameter {
+                    parameter: "lines",
+                    message: format!(
+                        "lines[{i}]'s width {width:?}, in points, must be above 0 and at most {MAX_LINE_WIDTH}"
+                    ),
+                });
+            }
+            if set.colour[3] != 255 {
+                return Err(InvalidParameter {
+                    parameter: "lines",
+                    message: format!(
+                        "lines[{i}]'s colour {:?} must be opaque, its alpha 255",
+                        set.colour
+                    ),
+                });
+            }
+        }
+        // The camera at this size, and the bodies and lines in its view, by the rules a
+        // scene's check takes (`RenderScene::check`).
         let [_, height] = frame.size_px;
         let camera_frame = frame.camera.check(frame.size_px[0], height)?;
         let held = &self.bodies;
@@ -881,6 +1049,12 @@ impl Renderer {
         let target = frame.camera.target;
         let mut exact = |_: u32, mesh: &Mesh| reach_of_points(mesh, target);
         let in_view = check_bodies_in_view(frame.camera, height, drawn, &mut exact)?;
+        let in_view = with_lines(
+            frame.camera,
+            height,
+            in_view,
+            frame.lines.iter().map(|set| set.strips),
+        )?;
         let view = View::new(frame.camera, camera_frame, frame.size_px, in_view);
         Ok((view, lit))
     }
@@ -988,7 +1162,10 @@ impl Renderer {
                 outlines: Outlines::DEFAULT,
                 background: Some(srgb(BACKGROUND)),
             },
-            &drawn,
+            Drawn {
+                bodies: &drawn,
+                lines: &[],
+            },
             scene.ids.then_some(Picked {
                 rect: whole,
                 id: picking,
@@ -1003,9 +1180,11 @@ impl Renderer {
         read_back(&mut self.ctx, scene, picking, screenshot)
     }
 
-    /// The view `view` of the bodies `drawn` (each uploaded, with its highlights), in a
+    /// The view `view` of what's `drawn`, its bodies (each uploaded, with its highlights) and
+    /// its lines, in a
     /// frame `re_renderer`'s already begun: each face an instance moved into the view, its
-    /// mesh uploaded where it has none; each edge a strip placed in the view; highlights
+    /// mesh uploaded where it has none; each edge a strip placed in the view; then each
+    /// line's strip placed in it ([`lines_batch`]); highlights
     /// drawn in each body's [`Lit::style`], and outlined in `colours`' outlines; the picking
     /// rectangle and its readback's identifier, with the vertices' discs it asks for
     /// ([`vertices`]), and the image's readback, if asked; behind it all, `colours`'
@@ -1016,7 +1195,7 @@ impl Renderer {
         view: &View,
         pixels_per_point: f32,
         colours: Colours,
-        drawn: &[(u32, &Lit)],
+        drawn: Drawn<'_>,
         picking: Option<Picked>,
         screenshot: Option<u64>,
     ) -> Result<(wgpu::CommandBuffer, ViewBuilder), String> {
@@ -1024,6 +1203,10 @@ impl Renderer {
             outlines,
             background,
         } = colours;
+        let Drawn {
+            bodies: drawn,
+            lines: sets,
+        } = drawn;
         let Renderer {
             ctx,
             bodies,
@@ -1061,6 +1244,15 @@ impl Renderer {
             uploaded.settle(view, lit);
             uploaded.faces(ctx, number, lit, view, &mut instances, uploads)?;
             edges(&mut lines, number, uploaded, lit, view, (&strokes, reach));
+        }
+        // The frame's lines after every body's edges, so a line coinciding with an edge is
+        // drawn over it.
+        let mut strips = 0usize;
+        for (i, set) in sets.iter().enumerate() {
+            strips += lines_batch(&mut lines, i, set, view, pixels_per_point);
+        }
+        if !sets.is_empty() {
+            tracing::debug!(sets = sets.len(), strips, "lines");
         }
         // The edges near a frame's picking again, toward the eye, after every edge drawn (so
         // none drawn is ever left out for them, should the strips reach re_renderer's most),
@@ -1175,6 +1367,60 @@ impl Renderer {
     }
 }
 
+/// `in_view`, a view as its bodies' check found it ([`check_bodies_in_view`]), with `sets`,
+/// a frame's lines, in it too: an orthographic view's reach takes each set's box by its
+/// farthest corner ([`reach_of_box`]), and where the rule refuses the corner, its points, as a
+/// body's is taken; a set whose points the rule refuses is refused, naming `lines`, since the
+/// bodies alone passed. A perspective view takes any: what it draws is cut to its pyramid. So
+/// the near and far planes an orthographic view is drawn between hold the lines, and a sketch
+/// with no body is drawn.
+fn with_lines<'a>(
+    camera: &Camera,
+    height: u32,
+    in_view: InView,
+    sets: impl IntoIterator<Item = &'a Strips>,
+) -> Result<InView, InvalidParameter> {
+    let InView::Orthographic {
+        view_height,
+        mut reach,
+    } = in_view
+    else {
+        return Ok(in_view);
+    };
+    let target = camera.target;
+    let takes = |reach: f64| view_height >= least_view_height(height, reach);
+    for (i, set) in sets.into_iter().enumerate() {
+        let Some(bounds) = set.bounds else {
+            continue;
+        };
+        let corner = reach_of_box(bounds, target);
+        let this = if takes(corner) {
+            corner
+        } else {
+            let points = set
+                .points
+                .iter()
+                .map(|p| {
+                    let d = sub(*p, target);
+                    dot(d, d).sqrt()
+                })
+                .fold(0.0, f64::max);
+            if !takes(points) {
+                return Err(InvalidParameter {
+                    parameter: "lines",
+                    message: format!(
+                        "lines[{i}] reach {points:?} mm from camera.target, too far for camera.view_height {view_height:?} in an image {height} pixels high: it must be at least {:?} mm, where f32 draws them to an eighth of a pixel (the image's height times the reach over 2^19), or camera.target nearer them",
+                        least_view_height(height, points)
+                    ),
+                });
+            }
+            points
+        };
+        reach = reach.max(this);
+    }
+    Ok(InView::Orthographic { view_height, reach })
+}
+
 /// What the GPU's error scopes found, or what drawing returned: out of memory first, then
 /// anything invalid, then drawing's own error.
 fn scoped<T>(
@@ -1227,6 +1473,14 @@ fn outlined_as(highlighted: bool, hovered: bool) -> OutlineMaskPreference {
     } else {
         OutlineMaskPreference::NONE
     }
+}
+
+/// What a view draws: its bodies, each by number with its highlights, and its lines
+/// ([`Frame::lines`]; a render's, none).
+#[derive(Clone, Copy)]
+struct Drawn<'a> {
+    bodies: &'a [(u32, &'a Lit)],
+    lines: &'a [Lines<'a>],
 }
 
 /// What a view's picking asks: its rectangle, its readback's identifier, the radius in
@@ -2377,28 +2631,26 @@ pub fn hits(
     bodies: &[(u32, &Pickable)],
     pointer: [f64; 2],
 ) -> Vec<Hit> {
-    let _span = tracing::debug_span!("hits", bodies = bodies.len()).entered();
-    let ppp = pixels_per_point;
-    if !(ppp.is_finite() && ppp > 0.0 && ppp <= MAX_PIXELS_PER_POINT) {
+    hits_among(camera, size_px, pixels_per_point, bodies, &[], pointer)
+}
+
+/// [`hits`] in a frame that draws `lines` too ([`Frame::lines`]'s strips): they're never hit,
+/// but an orthographic frame's reach takes them, which sets its near plane and so how far an
+/// edge or a vertex is taken toward the eye ([`vertex_reach`]'s cap), so the cast takes them
+/// as the frame does. None, too, for lines the frame's view refuses (`lines`).
+pub fn hits_among(
+    camera: &Camera,
+    size_px: [u32; 2],
+    pixels_per_point: f32,
+    bodies: &[(u32, &Pickable)],
+    lines: &[&Strips],
+    pointer: [f64; 2],
+) -> Vec<Hit> {
+    let _span = tracing::debug_span!("hits", bodies = bodies.len(), lines = lines.len()).entered();
+    let Some((caster, line)) =
+        cast_through(camera, size_px, pixels_per_point, bodies, lines, pointer)
+    else {
         return Vec::new();
-    }
-    let inside = pointer
-        .iter()
-        .zip(size_px)
-        .all(|(c, side)| c.is_finite() && *c >= 0.0 && *c < f64::from(side));
-    if !inside {
-        return Vec::new();
-    }
-    let Some(caster) = Caster::new(camera, size_px, f64::from(ppp), bodies) else {
-        return Vec::new();
-    };
-    let Some((origin, direction)) = ray(camera, size_px, pointer) else {
-        return Vec::new();
-    };
-    let line = Line {
-        origin,
-        direction,
-        whole: !caster.projector.perspective,
     };
     let mut found: Vec<Found> = Vec::new();
     for &(body, pickable) in bodies {
@@ -2434,6 +2686,68 @@ pub fn hits(
     }
     tracing::debug!(hits = found.len(), under, "cast");
     found.into_iter().map(|f| f.hit).collect()
+}
+
+/// The face under `pointer` nearest the eye: of the faces [`hits`] lists for the same frame,
+/// bodies, and pointer, the first (by depth, then body, then number), refused as `hits`
+/// refuses them (none). It's the face a frame's picking holds at that pixel where nothing is
+/// drawn over it: the selection's where an edge's stroke covers the pointer and the filter
+/// takes faces but not edges, as SolidWorks' face filter selects only faces
+/// (docs/ux/solidworks.md §1, *Selection filters*). Only faces are cast on: no edge or vertex is
+/// sought, so none can crowd it out of `hits`' [`MAX_HITS`]. Its `hidden` is false: no face
+/// is met nearer.
+pub fn face_hit(
+    camera: &Camera,
+    size_px: [u32; 2],
+    pixels_per_point: f32,
+    bodies: &[(u32, &Pickable)],
+    pointer: [f64; 2],
+) -> Option<Hit> {
+    let _span = tracing::debug_span!("face_hit", bodies = bodies.len()).entered();
+    let (caster, line) = cast_through(camera, size_px, pixels_per_point, bodies, &[], pointer)?;
+    let mut found: Vec<Found> = Vec::new();
+    for &(body, pickable) in bodies {
+        caster.faces_met(body, pickable, &line, &mut found);
+    }
+    found.into_iter().map(|f| f.hit).min_by(|a, b| {
+        a.depth
+            .total_cmp(&b.depth)
+            .then_with(|| a.body.cmp(&b.body))
+            .then_with(|| a.element.cmp(&b.element))
+    })
+}
+
+/// [`hits_among`]' and [`face_hit`]'s view of `bodies` (in a frame drawing `lines` too) and
+/// the line through `pointer` they cast along: none for what `hits_among` refuses (a
+/// `pixels_per_point` that isn't above 0 and at most [`MAX_PIXELS_PER_POINT`], a pointer that
+/// isn't finite and inside the image, a camera, bodies, or lines the view refuses).
+fn cast_through(
+    camera: &Camera,
+    size_px: [u32; 2],
+    pixels_per_point: f32,
+    bodies: &[(u32, &Pickable)],
+    lines: &[&Strips],
+    pointer: [f64; 2],
+) -> Option<(Caster, Line)> {
+    let ppp = pixels_per_point;
+    if !(ppp.is_finite() && ppp > 0.0 && ppp <= MAX_PIXELS_PER_POINT) {
+        return None;
+    }
+    let inside = pointer
+        .iter()
+        .zip(size_px)
+        .all(|(c, side)| c.is_finite() && *c >= 0.0 && *c < f64::from(side));
+    if !inside {
+        return None;
+    }
+    let caster = Caster::new(camera, size_px, f64::from(ppp), bodies, lines)?;
+    let (origin, direction) = ray(camera, size_px, pointer)?;
+    let line = Line {
+        origin,
+        direction,
+        whole: !caster.projector.perspective,
+    };
+    Some((caster, line))
 }
 
 /// A hit as [`hits`] orders it: its depth, less its reach for an edge or a vertex.
@@ -2532,14 +2846,16 @@ struct Caster {
 }
 
 impl Caster {
-    /// The view, of `bodies` as the renderer's view takes them (the bodies a frame draws, by
-    /// [`check_bodies_in_view`], the rule [`Renderer::prepare`] takes: an orthographic camera
-    /// set past them all); none for a camera the checks refuse, or bodies its view does.
+    /// The view, of `bodies` and `lines` as the renderer's view takes them (the bodies and
+    /// lines a frame draws, by [`check_bodies_in_view`] and [`with_lines`], the rules
+    /// [`Renderer::prepare`] takes: an orthographic camera set past them all); none for a
+    /// camera the checks refuse, or bodies or lines its view does.
     fn new(
         camera: &Camera,
         size_px: [u32; 2],
         pixels_per_point: f64,
         bodies: &[(u32, &Pickable)],
+        lines: &[&Strips],
     ) -> Option<Caster> {
         let projector = Projector::new(camera, size_px)?;
         let drawn = bodies.iter().map(|&(body, pickable)| InViewBody {
@@ -2550,6 +2866,7 @@ impl Caster {
         let target = camera.target;
         let mut exact = |_: u32, mesh: &Mesh| reach_of_points(mesh, target);
         let in_view = check_bodies_in_view(camera, size_px[1], drawn, &mut exact).ok()?;
+        let in_view = with_lines(camera, size_px[1], in_view, lines.iter().copied()).ok()?;
         let (span, near) = match in_view {
             InView::Orthographic { view_height, reach } => {
                 (view_height, Some(orthographic_depth(reach)))
@@ -3021,7 +3338,14 @@ fn edge_fraction(rows: u32) -> f64 {
 /// edge doesn't hide it (0.239 mm in a view 100 mm high on 800 rows), and an edge going
 /// behind a face shows a stub where it's within `R` of it.
 fn drawn_edge_fraction(rows: u32, pixels_per_point: f32) -> f64 {
-    let half = f64::from(EDGE_WIDTH) / 2.0 * f64::from(pixels_per_point);
+    drawn_stroke_fraction(rows, EDGE_WIDTH, pixels_per_point)
+}
+
+/// [`drawn_edge_fraction`]'s rule for a stroke `width` points wide: a frame's line, drawn
+/// over a face it lies on or along an edge as an edge is, moved toward the eye by the reach
+/// that draws its stroke whole there, held to an edge's picking reach as an edge's is.
+fn drawn_stroke_fraction(rows: u32, width: f32, pixels_per_point: f32) -> f64 {
+    let half = f64::from(width) / 2.0 * f64::from(pixels_per_point);
     let pixels = DRAWN_EDGE_SLOPE * half + MESH_SAGITTA_PIXELS;
     (pixels / f64::from(rows)).min(edge_fraction(rows))
 }
@@ -3548,6 +3872,53 @@ fn edges(
         let put = |v: [f64; 3]| view.strip_from_camera(v, reach);
         add_edge_strips(&mut batch, view, stroke, (points, bounds), put, style);
     }
+}
+
+/// A frame's `i`th set of lines as a batch of its strips, placed in the view as edges are
+/// ([`add_edge_strips`]: each point about the camera in f64, [`View::about_camera`]; each
+/// strip whose box the frustum its stroke reaches the image from leaves out not placed, and
+/// one crossing a perspective view's pyramid cut to it), in the set's colour and width, at
+/// [`EDGE_DEPTH_OFFSET`]. Each point is moved toward the eye as a drawn edge's is, by the
+/// reach its own width takes ([`drawn_stroke_fraction`], [`View::strip_from_camera`]): a
+/// stroke is drawn square to the view at its line's depth, so on a face not square to the
+/// view (a sketch on a face, seen from aside) or along a concave edge, a face rising toward
+/// the eye across it would hide half of it. Held to an edge's picking reach, as a drawn
+/// edge's is, and drawn before the edges' picking strips, so those win where they tie. Its
+/// picking ID is the background's, object 0 and instance 0: `re_renderer` draws every line
+/// into the picking layer, and a pick passes over that ID ([`PendingPick::nearest`]), so a
+/// line is picked by nothing. How many strips it drew.
+fn lines_batch(
+    lines: &mut LineDrawableBuilder<'_>,
+    i: usize,
+    set: &Lines<'_>,
+    view: &View,
+    pixels_per_point: f32,
+) -> usize {
+    let Some(bounds) = set.strips.bounds else {
+        return 0;
+    };
+    let stroke = view.stroke_frustum(set.width, pixels_per_point);
+    if stroke.class_of_box(bounds) == Class::Out {
+        return 0;
+    }
+    let mut batch = lines
+        .batch(format!("Lines{i}"))
+        .world_from_obj(glam::Affine3A::IDENTITY)
+        .picking_object_id(PickingLayerObjectId(0))
+        .depth_offset(EDGE_DEPTH_OFFSET);
+    let [red, green, blue, _] = set.colour;
+    let style = |strip: re_renderer::LineStripBuilder<'_, '_>| {
+        strip
+            .radius(Size::new_ui_points(set.width / 2.0))
+            .color(Color32::from_rgb(red, green, blue))
+            .picking_instance_id(PickingLayerInstanceId(0));
+    };
+    let reach = drawn_stroke_fraction(view.height, set.width, pixels_per_point);
+    let put = |v: [f64; 3]| view.strip_from_camera(v, reach);
+    set.strips
+        .strips()
+        .map(|strip| add_edge_strips(&mut batch, view, &stroke, strip, put, style))
+        .sum()
 }
 
 /// Body `body`'s edges of two points or more whose box lands `near` a frame's picking

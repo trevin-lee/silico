@@ -34,8 +34,10 @@ use silico_core::{Error, ErrorCode};
 
 use crate::selection::{Selection, State};
 
-/// What a set of measures is of: the selection's version, and the published model its names
-/// were read against (the tab's count of the models published, and its revision).
+/// What a set of measures is of: which ask it answers (the selection's version, for the
+/// selection view's; the context menus opened, for the canvas menu's face read,
+/// `crate::select_other`), and the published model its names were read against (the tab's
+/// count of the models published, and its revision).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Of {
     pub version: u64,
