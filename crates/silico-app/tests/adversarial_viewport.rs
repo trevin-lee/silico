@@ -1826,6 +1826,95 @@ fn huge_sketch(circles: usize) -> String {
     )
 }
 
+/// A document of `sketches` sketches on XY, each of `circles` circles of radius 100 m about
+/// the origin, nothing built from them.
+fn huge_sketches(sketches: usize, circles: usize) -> String {
+    let sketch = |k: usize| {
+        let members: Vec<String> = (0..circles)
+            .map(|c| {
+                format!(
+                    r#"{{"id": "c{c:07}", "center": "pa000001", "radius": 100000, "construction": false}}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"    {{"id": "s{k:07}", "type": "sketch", "v": 1, "name": "Huge{k}", "plane": "xy", "points": [{{"id": "pa000001", "x": 0, "y": 0, "construction": false}}], "lines": [], "circles": [{}], "arcs": [], "constraints": []}}"#,
+            members.join(", ")
+        )
+    };
+    let features: Vec<String> = (1..=sketches).map(sketch).collect();
+    format!(
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n{}\n  ]\n}}\n",
+        features.join(",\n")
+    )
+}
+
+#[test]
+fn lines_left_to_build_ask_for_the_next_frame_at_once_and_none_once_built() {
+    // Eight sketches of 195 circles of 100 m about the origin, seen from above 400 mm high,
+    // then 200: each circle at its most segments, 1,024 (1,025 points), so each sketch
+    // 199,875 points, two built a frame (500,000). At the new bucket the frames build two
+    // each, the rest left with their old lines drawn: each frame that leaves some asks for
+    // the next at once (past the first, which the view's move asks for itself); once all
+    // are built, the frames are idle again.
+    let f = fixture();
+    let (mut h, record) = f.drawn("huge.silico", &huge_sketches(8, 195), (1280.0, 800.0));
+    let ids: Vec<FeatureId> = (1..=8)
+        .map(|k| FeatureId::new(&format!("s{k:07}")).unwrap())
+        .collect();
+    step_until(&mut h, "the eight read", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| ids.iter().all(|id| tab.sketch_reads.held(id).is_some()))
+    });
+    let top = |view_height: f64| Camera {
+        projection: Projection::Orthographic { view_height },
+        eye: [0.0, 0.0, 1000.0],
+        target: [0.0; 3],
+        up: [0.0, 1.0, 0.0],
+    };
+    let pending = |h: &AppHarness| h.state().tabs()[0].sketch_lines.pending();
+    view_mut(&mut h).set_camera(top(400.0));
+    step_until(&mut h, "the eight drawn", |h| {
+        !pending(h)
+            && record
+                .lock()
+                .unwrap()
+                .frames
+                .last()
+                .is_some_and(|frame| frame.lines.len() == 8)
+    });
+    let idle = |delay: Option<Duration>| {
+        delay.is_some_and(|delay| {
+            delay > Duration::from_millis(100) && delay <= silico_app::app::IDLE_FRAME
+        })
+    };
+    // Settled: egui repaints once more after a frame asked at once, so a few frames.
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(idle(repaint_delay(&h)), "{:?}", repaint_delay(&h));
+    view_mut(&mut h).set_camera(top(200.0));
+    step(&mut h);
+    assert!(pending(&h));
+    let mut frames = 1;
+    while pending(&h) {
+        step(&mut h);
+        frames += 1;
+        if pending(&h) {
+            assert_eq!(repaint_delay(&h), Some(Duration::ZERO), "frame {frames}");
+        }
+        assert!(frames <= 4, "pending after {frames} frames");
+    }
+    assert_eq!(frames, 4);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(idle(repaint_delay(&h)), "{:?}", repaint_delay(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn a_shown_sketch_past_its_lines_cap_draws_none_and_the_frames_go_on() {
     // 200 circles of 100 m, each at its most segments at the view the document opens in
