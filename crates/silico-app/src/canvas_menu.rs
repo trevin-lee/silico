@@ -187,7 +187,9 @@ pub struct CanvasMenu {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Drawn {
     pub pointed: Option<usize>,
-    /// The item the pointer is on, whether it's on or off (`pointed` is the one on).
+    /// The item the pointer is on, whether it's on or off (`pointed` is the one on): taken
+    /// from the item's rect holding the pointer, since egui never calls a disabled widget
+    /// hovered.
     pub hovered: Option<usize>,
     pub clicked: Option<usize>,
     pub plane: Option<OriginPlane>,
@@ -344,11 +346,11 @@ impl CanvasMenu {
                 menu::separator(ui, width);
             }
             let response: Response = menu::item(ui, &shown.line(lit == Some(at)), width);
-            if response.hovered() {
+            if response.contains_pointer() {
                 drawn.hovered = Some(at);
-                if shown.off.is_none() {
-                    drawn.pointed = Some(at);
-                }
+            }
+            if shown.off.is_none() && response.hovered() {
+                drawn.pointed = Some(at);
             }
             if response.clicked() {
                 drawn.clicked = Some(at);
