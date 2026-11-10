@@ -5152,9 +5152,11 @@ fn ok_clicked_in_the_frame_an_input_turns_invalid_leaves_the_dialog_open() {
 fn ok_clicked_in_the_frame_a_new_features_inputs_turn_valid_waits_for_its_add() {
     // #443's review (round 5, L13): a Pad's dialog, its Length emptied and its sketch then
     // chosen, so nothing to add yet; then "5" typed and OK clicked, both given to one frame,
-    // OK by its accessibility action. That frame's inputs send the add, and the click, taken
-    // only if OK still holds once they're sent (a new feature's OK waits for its add), does
-    // nothing: the dialog stays open, and the add answers into it.
+    // OK by its accessibility action. That frame's inputs send the add; OK is off till a new
+    // feature's add answers with its feature (L16, which is what this pins; the click's gate
+    // after the frame's edits is pinned by
+    // `ok_clicked_in_the_frame_a_refused_sketch_is_picked_leaves_the_dialog_open`),
+    // so the click does nothing: the dialog stays open, and the add answers into it.
     use eframe::egui::{Event, Key, accesskit};
     let f = fixture();
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
@@ -27601,8 +27603,8 @@ fn a_refusal_from_the_adds_own_read_is_said_and_stands_while_the_tabs_timeline_i
     // after frame: the read's refusal while the tab's timeline is older than the read, the
     // check's own once it isn't. Loose picked instead lets it go, and is added on the tip.
     // Then (round 5, L17) Sketch2 picked again, its body refused, so not sent; another
-    // client unsuppressing Joined lifts the refusal, and Sketch2 picked once more is sent:
-    // the pocket's sketch is Sketch2.
+    // client unsuppressing Joined lifts the refusal, and the box's Sketch2, offered again
+    // each frame, is sent once the tab's timeline has it: the pocket's sketch is Sketch2.
     let f = fixture();
     describes_a_real_box(&f);
     measures_the_box(&f);
@@ -27703,11 +27705,152 @@ fn a_refusal_from_the_adds_own_read_is_said_and_stands_while_the_tabs_timeline_i
     step_until(&mut h, "the refusal lifted", |h| {
         dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_none()
     });
-    pick_sketch2(&mut h);
     step_until(&mut h, "Sketch2 sent", |h| {
         sketch_of(h).contains("s0000002")
     });
     settled(&mut h);
+    assert!(ok_enabled(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`JOINED_SUPPRESSED`] opened, the model published, its sketches listed, and a Pocket's
+/// dialog from Loose, its add answered: the Pocket built on Joined, the tip.
+fn pocket_from_loose(f: &Fixture) -> AppHarness {
+    describes_a_real_box(f);
+    measures_the_box(f);
+    let (mut h, _) = f.opened("joined.silico", JOINED_SUPPRESSED);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "its sketches listed", |h| {
+        shows(h, "Browser", "Sketch2") && shows(h, "Browser", "Loose")
+    });
+    a_sweep_from(&mut h, "Loose", "Pocket");
+    assert_eq!(
+        fields_of(&text_of(f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert!(ok_enabled(&h));
+    h
+}
+
+#[test]
+fn a_sketch_picked_back_after_a_refused_one_lifts_the_refusal_and_ok_commits_it() {
+    // #443's review (round 6, M9): a Pocket from Loose, added; Sketch2 picked, its body
+    // refused (the Block, held by Joined), so OK off and the reason shown; Loose picked back,
+    // the sketch the document has: the refusal goes, OK is on, the Pocket is as it was, and
+    // OK closes the dialog with it.
+    let f = fixture();
+    let mut h = pocket_from_loose(&f);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    settled(&mut h);
+    assert!(!ok_enabled(&h));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Loose")
+        .click();
+    step_until(&mut h, "the reason gone", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_none()
+    });
+    settled(&mut h);
+    assert!(ok_enabled(&h));
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ok_clicked_in_the_frame_a_refused_sketch_is_picked_leaves_the_dialog_open() {
+    // #443's review (round 6, M10): a Pocket from Loose, added; then Sketch2's row in the
+    // browser and OK both clicked in one frame, each by its accessibility action. The
+    // browser is drawn before the dialog, so the dialog's inputs hold Sketch2 when OK is
+    // asked of them; but Sketch2's body is refused only as the frame's edits are sent after,
+    // so the click, taken only if OK still holds then, does nothing: the dialog stays open,
+    // the reason shown, and the Pocket Loose's on Joined still.
+    use eframe::egui::{Event, accesskit};
+    let f = fixture();
+    let mut h = pocket_from_loose(&f);
+    fn click(node: egui_kittest::Node<'_>) -> Event {
+        let (target_node, target_tree) = node.accesskit_node().locate();
+        Event::AccessKitActionRequest(accesskit::ActionRequest {
+            target_node,
+            target_tree,
+            action: accesskit::Action::Click,
+            data: None,
+        })
+    }
+    let row = click(
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label("Sketch2"),
+    );
+    let ok = click(dialog(&h).get_by_role_and_label(Role::Button, "OK"));
+    h.input_mut().events.extend([row, ok]);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    settled(&mut h);
+    assert!(dialog_open(&h));
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_new_features_add_refused_as_stale_is_sent_again_and_lands() {
+    // #443's review (round 6, L19): another client's box held in the session's queue, then a
+    // Box's dialog opened: its add queues behind, made against the revision before. Let go:
+    // theirs lands first, so the core refuses ours as made against a revision the session
+    // has moved on from; the dialog lets the add go and sends it again at the revision now:
+    // the Box is added, the dialog has its feature, and OK is on.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let id = h.state().tabs()[0].id;
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let theirs = f.sessions.add_feature(
+        &id,
+        h.state().tabs()[0].revision,
+        None,
+        json::read(
+            br#"{"type": "box", "name": "Theirs", "position": [90, 0, 0], "length": 2, "width": 2, "height": 2}"#,
+        )
+        .unwrap(),
+    );
+    create(&mut h, "Box");
+    step_until(&mut h, "its add sent", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.adding)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    hold.release();
+    check.wait();
+    theirs.wait().result.unwrap();
+    added(&mut h);
+    settled(&mut h);
+    let text = text_of(&f, &h);
+    assert!(fields_of(&text, "Theirs").is_some(), "{text}");
+    assert!(fields_of(&text, "Box").is_some(), "{text}");
     assert!(ok_enabled(&h));
     assert_eq!(never_waits::waits(), 0);
 }
