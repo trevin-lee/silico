@@ -2807,7 +2807,15 @@ fn a_wait_on_the_marked_thread_is_counted() {
 #[test]
 fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_interval() {
     let f = fixture();
-    let hold = f.kernel.hold(is_box);
+    // The block and the pin both held: neither depends on the other, so the rebuild runs
+    // them at once, and a pin let run would end, and wake the app, at any time while the
+    // block is held (2 of 480 runs under load, 2026-11-10).
+    let hold = f.kernel.hold(|op| {
+        matches!(
+            op,
+            Op::MakePrimitive(Primitive::Box { .. } | Primitive::Cylinder { .. })
+        )
+    });
     let path = f.file("example.silico", EXAMPLE);
     // Time barely moves from frame to frame, so the frame asked for reads as it was asked.
     let mut h = {
@@ -2823,11 +2831,29 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
     silico_app::theme::apply(&h.ctx);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the tab", |h| !h.state().tabs().is_empty());
-    assert!(f.kernel.wait_running(1, WAIT));
-    for _ in 0..5 {
-        step(&mut h);
-    }
-    // Nothing answers while it's held: no wake, and the frame asked for is the idle one,
+    assert!(f.kernel.wait_running(2, WAIT));
+    // Both features running, as the core counts them: its count changes no more until the
+    // hold lets go. Each change before woke the app from the rebuild's watcher, which can
+    // lag on a loaded machine: those wakes settled first.
+    let id = h.state().tabs()[0].id;
+    until("the block and the pin running", || {
+        f.sessions
+            .status(&id)
+            .result
+            .unwrap()
+            .rebuild
+            .progress
+            .is_some_and(|progress| {
+                ["k7f2qx3m", "a91cw0de"].iter().all(|feature| {
+                    progress
+                        .features
+                        .get(&silico_core::document::FeatureId::new(feature).unwrap())
+                        == Some(silico_core::command::StepState::Running)
+                })
+            })
+    });
+    quiet_wakes(&mut h);
+    // Nothing answers while they're held: no wake, and the frame asked for is the idle one,
     // never one at the display's rate.
     let held = h.state().wakes();
     for _ in 0..20 {
