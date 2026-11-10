@@ -37459,9 +37459,7 @@ fn with_edges_filtered_out_a_stroke_takes_a_face_of_a_body_drawn_never_of_one_hi
     click_canvas(&mut h, inside, false);
     selected_until(&mut h, &[format!("{low_id}.box.Face6").as_str()]);
     // The lower-numbered hidden in the browser: the top of the body drawn, not the hidden one's.
-    h.state_mut().tabs_mut()[0]
-        .hidden
-        .insert(silico_app::tab::Hideable::Feature(low_id.clone()));
+    h.state_mut().tabs_mut()[0].toggle_shown(silico_app::tab::Hideable::Feature(low_id.clone()));
     for _ in 0..3 {
         step(&mut h);
     }
