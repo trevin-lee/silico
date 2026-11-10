@@ -283,6 +283,16 @@ impl Newest {
         lock(&self.0).as_ref().map(|(_, progress)| progress.clone())
     }
 
+    /// The newest rebuild's count of changes so far, and the last of them its watcher has
+    /// told the client of: equal once every change so far has woken it. None with no
+    /// rebuild.
+    #[cfg(any(test, feature = "fake"))]
+    pub(super) fn told(&self) -> Option<(u64, u64)> {
+        let newest = lock(&self.0);
+        let (label, progress) = newest.as_ref()?;
+        Some((progress.changes(), label.told.load(Ordering::SeqCst)))
+    }
+
     /// The progress of the newest rebuild, while it runs.
     pub(super) fn running(&self) -> Option<Progress> {
         let count = lock(&self.0).as_ref()?.1.now();
@@ -319,6 +329,10 @@ pub(super) struct Label {
     /// is never replaced by what this one comes to. 0 for a label not started (as a test
     /// makes one by hand): every rebuild that starts is numbered as it does.
     number: u64,
+    /// The number of the last change of its count ([`StepCounter::changes`]) its watcher
+    /// has looked at, and told the client of if one is set ([`watch`]): so a test can wait
+    /// until every change so far is told ([`Newest::told`]), by an event, not by time.
+    told: Arc<AtomicU64>,
 }
 
 impl Label {
@@ -331,6 +345,7 @@ impl Label {
             cancelled: Arc::new(AtomicBool::new(false)),
             reads: Reads::Kept,
             number: 0,
+            told: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1052,6 +1067,8 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
         {
             waker.wake();
         }
+        // Told: every change up to this one has woken the client, if one is set.
+        label.told.store(changes, Ordering::SeqCst);
         if count.ended {
             break;
         }

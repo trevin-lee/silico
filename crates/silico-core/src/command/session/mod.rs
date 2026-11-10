@@ -684,6 +684,16 @@ impl<P: Clients + 'static> Sessions<P> {
         self.registry.waker.set(Arc::new(waker));
     }
 
+    /// Session `session`'s newest rebuild's count of changes so far, and the last of them
+    /// its watcher has told the client's waker of ([`on_change`](Self::on_change)): equal
+    /// once every change of its count so far has woken the client. A test waits for that
+    /// before it counts the wakes that come after, rather than waiting a while. None with no
+    /// rebuild, or no such session.
+    #[cfg(any(test, feature = "fake"))]
+    pub fn rebuild_told(&self, session: &SessionId) -> Option<(u64, u64)> {
+        find_in(&self.registry, session)?.newest.told()
+    }
+
     /// The same sessions, each comparing its file on disk at most once each `interval`,
     /// reading it with `read` and taking the time from `now` (a test's stand-ins, to hold a
     /// comparison and to say when the next is due without waiting for it), as they're made:

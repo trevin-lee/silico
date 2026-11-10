@@ -1358,6 +1358,12 @@ impl StepCounter {
         (counted.read(), counted.changes)
     }
 
+    /// The number of the change the count is at now (0: none since the recompute's start), as
+    /// [`changed_since`](Self::changed_since) numbers them, without waiting.
+    pub fn changes(&self) -> u64 {
+        lock(&self.0.0).changes
+    }
+
     /// The count changed as `change` changes it: counted, and told to whoever waits.
     fn change(&self, change: impl FnOnce(&mut Counted)) {
         {
