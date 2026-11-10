@@ -367,6 +367,8 @@ mod tests {
             name: name.to_owned(),
             health: silico_core::timeline::Health::Healthy,
             marked_by: None,
+            consumers: Default::default(),
+            suppressed: false,
         }
     }
 

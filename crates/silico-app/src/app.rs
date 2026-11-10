@@ -2758,9 +2758,9 @@ impl<P: Clients + 'static> App<P> {
                     said: said.as_deref(),
                     browse: self.browser.as_ref().map(|_| self.browsing.is_none()),
                 };
-                let action = match form.ui(ui, &tab.browser.bodies, &shown) {
+                let action = match form.ui(ui, tab.browser.bodies(), &shown) {
                     export::Action::None if escape => export::Action::Cancel,
-                    export::Action::None if enter => form.enter(&tab.browser.bodies, &shown),
+                    export::Action::None if enter => form.enter(tab.browser.bodies(), &shown),
                     action => action,
                 };
                 match action {

@@ -237,7 +237,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             // A body picked in the canvas, or a row found from the timeline or renamed:
             // its row shown, its group opened (section 9, *Browser and canvas*: the browser
             // expands and scrolls to it).
-            let group = if tab.browser.sketches.iter().any(|row| row.id == shown) {
+            let group = if tab.browser.sketches().iter().any(|row| row.id == shown) {
                 "Sketches"
             } else {
                 "Bodies"
@@ -1063,7 +1063,7 @@ const NDEG_HALF_TURN: i64 = 180_000_000_000;
 /// lists it.
 fn body_name(tab: &Tab, id: &FeatureId) -> String {
     tab.browser
-        .bodies
+        .bodies()
         .iter()
         .find(|row| &row.id == id)
         .map(|row| row.name.clone())
@@ -1299,6 +1299,7 @@ fn tree(
             depth: 0,
             caret: Some(root.open),
             eye: None,
+            not_drawn: None,
             icon: Icon::Doc,
             prefix: None,
             name: root_name,
@@ -1328,6 +1329,7 @@ fn tree(
                         depth: 2,
                         caret: None,
                         eye: Some(shown),
+                        not_drawn: None,
                         icon,
                         prefix: None,
                         name,
@@ -1365,10 +1367,10 @@ fn tree(
         _ => "None yet. A pad makes one.".to_owned(),
     };
     let groups = [
-        ("Bodies", &tab.browser.bodies, Icon::Body, no_body),
+        ("Bodies", tab.browser.bodies(), Icon::Body, no_body),
         (
             "Sketches",
-            &tab.browser.sketches,
+            tab.browser.sketches(),
             Icon::Sketch,
             "None yet. Create Sketch starts one.".to_owned(),
         ),
@@ -1391,6 +1393,7 @@ fn tree(
                     .map(|said| said.message.as_str());
                 let what = Hideable::Feature(each.id.clone());
                 let marked = matches!(each.health, Health::Error | Health::Warning);
+                let not_drawn = if sketches { tab.not_drawn(each) } else { None };
                 let answer = row(
                     ui,
                     &Line {
@@ -1398,6 +1401,7 @@ fn tree(
                         depth: 2,
                         caret: None,
                         eye: Some(tab.shown(&what)),
+                        not_drawn: not_drawn.as_deref(),
                         icon,
                         prefix: if sketches {
                             sketch_prefix(tab, &each.id)
@@ -1513,6 +1517,7 @@ fn header(ui: &mut Ui, name: &str, meta: Option<&str>) -> bool {
             depth: 1,
             caret: Some(openness.open),
             eye: None,
+            not_drawn: None,
             icon: Icon::Folder,
             prefix: None,
             name,
@@ -1577,6 +1582,9 @@ struct Line<'a> {
     caret: Option<bool>,
     /// Its eye, if it has one: whether it shows.
     eye: Option<bool>,
+    /// Why what its eye shows is drawn nowhere, if it is (a sketch suppressed, or on no
+    /// plane): its eye's tooltip says it under its word.
+    not_drawn: Option<&'a str>,
     icon: Icon,
     /// A sketch's definition prefix, before its name.
     prefix: Option<&'static str>,
@@ -1756,7 +1764,7 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
                 eye,
                 word,
                 crate::shortcuts::Command::Hide.shown(ui.ctx()),
-                None,
+                line.not_drawn,
             ),
             shown,
         )
@@ -1974,9 +1982,9 @@ mod tests {
             entry("a91cw0de", "cylinder", &[], Health::Healthy),
             entry("m3tq8v0z", "cut", &["k7f2qx3m", "a91cw0de"], Health::Error),
         ];
-        let failed = crate::tab::browser(&timeline(&entries, &["k7f2qx3m", "a91cw0de"]));
+        let failed = crate::tab::browser(&timeline(&entries, &["k7f2qx3m", "a91cw0de"]), &[]);
         assert_eq!(
-            rows(&failed.bodies),
+            rows(failed.bodies()),
             [
                 ("k7f2qx3m".to_owned(), Health::Healthy, None),
                 ("a91cw0de".to_owned(), Health::Healthy, None)
@@ -1987,7 +1995,7 @@ mod tests {
         let mut built = entries.clone();
         built[2].health = Health::Healthy;
         let body = |entries: &[Entry]| {
-            rows(&crate::tab::browser(&timeline(entries, &["m3tq8v0z"])).bodies)
+            rows(crate::tab::browser(&timeline(entries, &["m3tq8v0z"]), &[]).bodies())
         };
         assert_eq!(
             body(&built),
@@ -2200,6 +2208,8 @@ mod tests {
             name: name.to_owned(),
             health,
             marked_by: matches!(health, Health::Error | Health::Warning).then(|| fid(id)),
+            consumers: Default::default(),
+            suppressed: false,
         }
     }
 
@@ -2219,7 +2229,7 @@ mod tests {
         let mut answer = timeline(features, &[]);
         answer.problems = problems;
         tab.timeline = Some(answer);
-        tab.browser = Browser { bodies, sketches };
+        tab.browser = Browser::new(bodies, sketches);
         tab
     }
 
@@ -2757,7 +2767,9 @@ mod tests {
         let mut tab = modelled();
         // Named long enough to be cut short by the dot.
         let long = "Block with a name long enough to run past the browser's edge";
-        tab.browser.bodies[0].name = long.to_owned();
+        let mut bodies = tab.browser.bodies().to_vec();
+        bodies[0].name = long.to_owned();
+        tab.browser = crate::tab::Browser::new(bodies, tab.browser.sketches().to_vec());
         for id in ["b0000001", "c0000001"] {
             tab.outside.insert(fid(id), "height 10 → 11".to_owned());
         }
@@ -2883,6 +2895,7 @@ mod tests {
                             depth: 2,
                             caret: None,
                             eye: Some(true),
+                            not_drawn: None,
                             icon: Icon::Sketch,
                             prefix: Some("(–)"),
                             name: "Profile",
@@ -2953,6 +2966,7 @@ mod tests {
                                     depth: 2,
                                     caret: None,
                                     eye: Some(true),
+                                    not_drawn: None,
                                     icon,
                                     prefix,
                                     name,
@@ -3032,8 +3046,13 @@ mod tests {
     #[test]
     fn a_hidden_rows_name_and_icon_are_dimmed_as_hidden_obj_from_the_frame_its_eye_is_clicked() {
         let mut tab = modelled();
-        tab.hidden
-            .insert(crate::tab::Hideable::Feature(fid("b0000001")));
+        tab.overrides.insert(
+            crate::tab::Hideable::Feature(fid("b0000001")),
+            crate::tab::Override {
+                shown: false,
+                under: Default::default(),
+            },
+        );
         let mut h = drawn(tab);
         h.remove_cursor();
         h.run_steps(2);
@@ -4938,12 +4957,17 @@ mod property_panel_drawn {
             features: Some(vec![entry("aaaaaaaa", "box", "Block", Health::Healthy)]),
             bodies: vec![fid("aaaaaaaa")],
         });
-        tab.browser.bodies = vec![crate::tab::Row {
-            id: fid("aaaaaaaa"),
-            name: "Block".to_owned(),
-            health: Health::Healthy,
-            marked_by: None,
-        }];
+        tab.browser = crate::tab::Browser::new(
+            vec![crate::tab::Row {
+                id: fid("aaaaaaaa"),
+                name: "Block".to_owned(),
+                health: Health::Healthy,
+                marked_by: None,
+                consumers: Default::default(),
+                suppressed: false,
+            }],
+            tab.browser.sketches().to_vec(),
+        );
         let model = crate::selection::tests::box_model();
         tab.selection_mut()
             .published(Some((model, Revision::OPENED)), 1);
@@ -5367,16 +5391,20 @@ mod property_panel_drawn {
         // Block in the timeline): its head names its own body's row, Body1, never the
         // other's, Plate, nor its feature's name.
         let mut tab = selecting(&["Face5"], Answers::default());
-        tab.browser.bodies[0].name = "Body1".to_owned();
-        tab.browser.bodies.insert(
+        let mut bodies = tab.browser.bodies().to_vec();
+        bodies[0].name = "Body1".to_owned();
+        bodies.insert(
             0,
             crate::tab::Row {
                 id: fid("b0000002"),
                 name: "Plate".to_owned(),
                 health: Health::Healthy,
                 marked_by: None,
+                consumers: Default::default(),
+                suppressed: false,
             },
         );
+        tab.browser = crate::tab::Browser::new(bodies, tab.browser.sketches().to_vec());
         let h = drawn(tab);
         title_and_head(&h, "Face5", "Face · Body1", body(css::FS_SMALL));
         assert!(h.query_by_label_contains("Plate").is_none());
