@@ -350,11 +350,12 @@ impl SelectOther {
         (!face.typed).then(|| (face.of, face.measured.clone()))
     }
 
-    /// The open context menu's face read as a plane, or not (`plane`), for the read `of`: if
-    /// it's a plane, Sketch on this face is among its items from now on, as the selection
-    /// view's button is once `elements` says so; the item lit stays lit. An answer of
-    /// another menu's read is dropped.
-    pub(crate) fn face_typed(&mut self, of: Of, plane: bool, ctx: &egui::Context) {
+    /// The open context menu's face read, for the read `of`: a plane, with its outward unit
+    /// normal (`normal`, which `elements` gives a planar face alone), or not (none). If it's a
+    /// plane, Sketch on this face and Look At are among its items from now on, as the
+    /// selection view's button is once `elements` says so; the item lit stays lit. An answer
+    /// of another menu's read is dropped.
+    pub(crate) fn face_typed(&mut self, of: Of, normal: Option<[f64; 3]>, ctx: &egui::Context) {
         let Some(menu) = self.menu.as_mut() else {
             return;
         };
@@ -366,15 +367,15 @@ impl SelectOther {
             return;
         };
         face.typed = true;
-        tracing::debug!(plane, "canvas_menu_face_typed");
-        if !plane {
+        tracing::debug!(plane = normal.is_some(), "canvas_menu_face_typed");
+        let Some(normal) = normal else {
             return;
-        }
+        };
         let stored = face.stored.clone();
         let Some(under) = menu.under.as_mut() else {
             return;
         };
-        under.plane = Some(Planar { stored });
+        under.plane = Some(Planar { stored, normal });
         menu.remake(ctx);
         ctx.request_repaint();
     }
@@ -1550,7 +1551,7 @@ mod tests {
     fn a_face_read_as_a_plane_keeps_what_was_lit_in_the_menu_and_in_the_list() {
         // #444's review. Over the top: Select Other…, Edit Block, and Hide Block,
         // Hide lit by the keys. Another menu's answer is dropped; its own puts Sketch on this
-        // face before Hide, and Hide stays lit, now fourth.
+        // face and Look At before Hide, and Hide stays lit, now fifth.
         let ctx = egui::Context::default();
         let of = Of {
             version: 7,
@@ -1562,7 +1563,7 @@ mod tests {
         };
         so.menu.as_mut().unwrap().lit = Some(2);
         let before = ["Select Other…", "Edit Block", "Hide Block"];
-        so.face_typed(Of { version: 6, ..of }, true, &ctx);
+        so.face_typed(Of { version: 6, ..of }, Some([0.0, 0.0, 1.0]), &ctx);
         assert_eq!(labels(&so), before);
         assert_eq!((so.lit(), so.face_read()), (Some(2), Some(false)));
         so.face_typed(
@@ -1570,21 +1571,22 @@ mod tests {
                 model: (2, of.model.1),
                 ..of
             },
-            true,
+            Some([0.0, 0.0, 1.0]),
             &ctx,
         );
         assert_eq!(labels(&so), before);
-        so.face_typed(of, true, &ctx);
+        so.face_typed(of, Some([0.0, 0.0, 1.0]), &ctx);
         assert_eq!(
             labels(&so),
             [
                 "Select Other…",
                 "Edit Block",
                 "Sketch on this face",
+                "Look At",
                 "Hide Block"
             ]
         );
-        assert_eq!((so.lit(), so.face_read()), (Some(3), Some(true)));
+        assert_eq!((so.lit(), so.face_read()), (Some(4), Some(true)));
         // Edit lit instead, the pointer resting on it: Edit stays lit, second.
         let mut so = SelectOther {
             menu: Some(Menu {
@@ -1594,7 +1596,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        so.face_typed(of, true, &ctx);
+        so.face_typed(of, Some([0.0, 0.0, 1.0]), &ctx);
         assert_eq!(so.lit(), Some(1));
         // In the list, row 2 lit and the pointer on it: a row's place, which the read
         // answering leaves alone.
@@ -1606,7 +1608,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        list.face_typed(of, true, &ctx);
+        list.face_typed(of, Some([0.0, 0.0, 1.0]), &ctx);
         let menu = list.menu.as_ref().unwrap();
         assert_eq!(
             (menu.lit, menu.pointed, menu.phase),
@@ -2232,7 +2234,7 @@ mod tests {
         assert_eq!(lit(&mut so, 3, Some(hide)), Some(2));
         so.menu.as_mut().unwrap().step(-1);
         assert_eq!(lit(&mut so, 4, None), Some(1));
-        so.face_typed(of, true, &ctx);
+        so.face_typed(of, Some([0.0, 0.0, 1.0]), &ctx);
         for time in 5..9 {
             assert_eq!(lit(&mut so, time, None), Some(1), "{time}");
         }

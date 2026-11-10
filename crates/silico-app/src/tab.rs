@@ -1312,6 +1312,10 @@ impl Tab {
             CanvasAct::SketchOnFace(face) => {
                 self.create_sketch_on_face(sessions, &face.to_string());
             }
+            CanvasAct::LookAt(toward) => self.view.ask(ViewAsk::LookAt {
+                toward,
+                up: crate::navigate::up_across(toward),
+            }),
             CanvasAct::Hide(id) => self.toggle_shown(Hideable::Feature(id)),
             CanvasAct::Fit => self.view.ask(ViewAsk::Fit),
             CanvasAct::Home => self.view.ask(ViewAsk::Named(crate::navigate::HOME)),
@@ -1497,15 +1501,14 @@ impl Tab {
 
     /// The face the canvas's context menu is over read for its type, as the selection
     /// view's face is (`elements`, through `crate::measures`): asked as the menu opens over
-    /// it, polled, and its answer given the menu, whose Sketch on this face is there only
-    /// for a plane; the read let go once its answer is taken, or the menu closes or isn't
+    /// it, polled, and its answer given the menu, whose Sketch on this face and Look At are
+    /// there only for a plane; the read let go once its answer is taken, or the menu closes or isn't
     /// over a face. Never waited on.
     fn menu_face_read<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
         ctx: &eframe::egui::Context,
     ) {
-        use silico_core::command::elements::ElementType;
         let wanted = self.select_other.face_wanted();
         match &wanted {
             Some((of, measured)) => {
@@ -1520,17 +1523,15 @@ impl Tab {
         let Some((of, _)) = wanted else {
             return;
         };
+        // A planar face's normal, which `elements` gives a planar face alone; none for
+        // another face, or a read refused.
         let typed = self
             .menu_face
             .answers(of)
             .and_then(|answers| answers.element.as_ref())
-            .map(|element| {
-                element
-                    .as_ref()
-                    .is_ok_and(|entry| entry.r#type == ElementType::Plane)
-            });
-        if let Some(plane) = typed {
-            self.select_other.face_typed(of, plane, ctx);
+            .map(|element| element.as_ref().ok().and_then(|entry| entry.normal));
+        if let Some(normal) = typed {
+            self.select_other.face_typed(of, normal, ctx);
         }
     }
 
