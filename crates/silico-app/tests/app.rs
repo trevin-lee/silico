@@ -20433,6 +20433,12 @@ fn create_sketch(h: &mut AppHarness, plane: &str) {
 /// the sketch is read and the bar laid out with its state (it's centred, so it moves as
 /// that appears).
 fn leave_sketch(h: &mut AppHarness, finish: bool) {
+    leave_sketch_unsettled(h, finish);
+    settled(h);
+}
+
+/// [`leave_sketch`] but for what's left to answer after sketch mode closes.
+fn leave_sketch_unsettled(h: &mut AppHarness, finish: bool) {
     let word = if finish { "Finish Sketch" } else { "Cancel" };
     step_until(h, "the sketch read", |h| {
         sketch_mode(h).is_some_and(|mode| mode.drawable().is_some())
@@ -20452,7 +20458,6 @@ fn leave_sketch(h: &mut AppHarness, finish: bool) {
         .get_by_label(word)
         .click();
     step_until(h, "sketch mode closed", |h| sketch_mode(h).is_none());
-    settled(h);
 }
 
 /// Stepped until sketch mode's newest read holds a sketch.
@@ -21814,9 +21819,52 @@ fn after_an_edit_each_sketch_is_read_once_more_and_a_changed_state_shows_its_pre
         step(&mut h);
     }
     assert_eq!(h.state().tabs()[0].sketch_reads.reads, 7);
-    // Cancelled: the transaction rolled back, at a new revision, Loose's point back. Loose,
-    // no longer open, is read again, and its prefix is its read's, sketch mode's no longer.
-    leave_sketch(&mut h, false);
+    // Loose hidden, so of the four read again the shown three come first. Cancelled while
+    // every published read the session runs is held: the transaction rolled back, at a new
+    // revision, Loose's point back, but each sketch's read of it refused before it reaches
+    // the model. Till Loose is read again its prefix is sketch mode's still (none: fully
+    // defined), whatever frames pass, and whichever other sketch's read lands. Released,
+    // Loose is read again, last, and its prefix is its read's, sketch mode's no longer.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Hide Loose")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    let id = h.state().tabs()[0].id;
+    let before = h.state().tabs()[0].published;
+    let held = hold_published_reads(&f, id);
+    leave_sketch_unsettled(&mut h, false);
+    step_until(&mut h, "the rollback published", |h| {
+        h.state().tabs()[0].published > before
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert_eq!(prefixes(&h), [None, Some("(+)"), Some("(?)"), None]);
+    }
+    release_published_reads(held);
+    let ids = ["s0000001", "s0000002", "s0000003", "s0000004"].map(sketch_id);
+    let others_first = std::cell::Cell::new(false);
+    step_until(&mut h, "Loose read again", |h| {
+        let tab = &h.state().tabs()[0];
+        let read_again = |id: &silico_core::document::FeatureId| {
+            tab.sketch_reads
+                .held(id)
+                .is_some_and(|held| Some(held.revision) == tab.published)
+        };
+        if read_again(&ids[0]) {
+            return true;
+        }
+        if ids[1..].iter().any(read_again) {
+            others_first.set(true);
+        }
+        assert_eq!(
+            tab.sketch_reads.prefix(&ids[0]),
+            None,
+            "before Loose's own read"
+        );
+        false
+    });
+    assert!(others_first.get(), "another sketch read again before Loose");
     step_until(&mut h, "Loose's prefix its read's again", |h| {
         let tab = &h.state().tabs()[0];
         tab.sketch_reads
@@ -22036,8 +22084,6 @@ fn a_read_refused_before_it_reaches_a_model_keeps_the_held_one_and_is_sent_again
     // before it reaches it (too many reads), naming no model. Every frame meanwhile keeps
     // each sketch's read of the revision before, and asks again. Released, each is read of
     // the new revision.
-    use silico_core::command::{MAX_PUBLISHED_READS, ReadCommand};
-    use std::sync::mpsc;
     let f = fixture();
     let mut h = four_read(&f);
     let ids = ["s0000001", "s0000002", "s0000003", "s0000004"].map(sketch_id);
@@ -22045,6 +22091,60 @@ fn a_read_refused_before_it_reaches_a_model_keeps_the_held_one_and_is_sent_again
         .clone()
         .map(|id| h.state().tabs()[0].sketch_reads.held(&id).unwrap().clone());
     let id = h.state().tabs()[0].id;
+    let held = hold_published_reads(&f, id);
+    let theirs = f.sessions.set_field(
+        &id,
+        h.state().tabs()[0].revision,
+        ids[1].clone(),
+        "constraints.ka000001.value".to_owned(),
+        json::read(b"6").unwrap(),
+    );
+    theirs.wait().result.unwrap();
+    step_until(&mut h, "the edit's model published", |h| {
+        h.state().tabs()[0].published > Some(first[0].revision)
+    });
+    let sent = h.state().tabs()[0].sketch_reads.reads;
+    for _ in 0..10 {
+        step(&mut h);
+        let reads = &h.state().tabs()[0].sketch_reads;
+        for (id, first) in ids.iter().zip(&first) {
+            let held = reads.held(id).unwrap();
+            assert!(Arc::ptr_eq(&held.read, &first.read), "{id} not kept");
+            assert_eq!(held.revision, first.revision, "{id}");
+        }
+    }
+    // Asked again, frame by frame, though refused each time.
+    assert!(h.state().tabs()[0].sketch_reads.reads >= sent + 5);
+    release_published_reads(held);
+    step_until(&mut h, "each read of the edit's model", |h| {
+        let tab = &h.state().tabs()[0];
+        ids.iter().all(|id| {
+            tab.sketch_reads
+                .held(id)
+                .is_some_and(|held| Some(held.revision) == tab.published)
+        })
+    });
+    let reads = &h.state().tabs()[0].sketch_reads;
+    let tight = &reads.held(&ids[1]).unwrap().read;
+    let distance = tight
+        .members
+        .constraints
+        .iter()
+        .find(|constraint| constraint.id.as_str() == "ka000001")
+        .unwrap();
+    assert_eq!(distance.form.value_text().as_deref(), Some("6"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// As many published reads of session `id` as it runs at once, each held till
+/// [`release_published_reads`]: a published read past them is refused before it reaches a
+/// model. Each slot taken as it frees, should a read of the app's own still run.
+fn hold_published_reads(
+    f: &Fixture,
+    id: silico_core::command::SessionId,
+) -> (std::sync::mpsc::Sender<()>, Vec<Running<()>>) {
+    use silico_core::command::{MAX_PUBLISHED_READS, ReadCommand};
+    use std::sync::mpsc;
     let (release, released) = mpsc::channel::<()>();
     let released = Arc::new(Mutex::new(released));
     let (started, starts) = mpsc::channel::<()>();
@@ -22076,51 +22176,15 @@ fn a_read_refused_before_it_reaches_a_model_keeps_the_held_one_and_is_sent_again
             }
         }
     }
-    let theirs = f.sessions.set_field(
-        &id,
-        h.state().tabs()[0].revision,
-        ids[1].clone(),
-        "constraints.ka000001.value".to_owned(),
-        json::read(b"6").unwrap(),
-    );
-    theirs.wait().result.unwrap();
-    step_until(&mut h, "the edit's model published", |h| {
-        h.state().tabs()[0].published > Some(first[0].revision)
-    });
-    let sent = h.state().tabs()[0].sketch_reads.reads;
-    for _ in 0..10 {
-        step(&mut h);
-        let reads = &h.state().tabs()[0].sketch_reads;
-        for (id, first) in ids.iter().zip(&first) {
-            let held = reads.held(id).unwrap();
-            assert!(Arc::ptr_eq(&held.read, &first.read), "{id} not kept");
-            assert_eq!(held.revision, first.revision, "{id}");
-        }
-    }
-    // Asked again, frame by frame, though refused each time.
-    assert!(h.state().tabs()[0].sketch_reads.reads >= sent + 5);
+    (release, held)
+}
+
+/// The reads [`hold_published_reads`] held, let go and answered.
+fn release_published_reads((release, held): (std::sync::mpsc::Sender<()>, Vec<Running<()>>)) {
     drop(release);
     for read in held {
         read.wait().result.unwrap();
     }
-    step_until(&mut h, "each read of the edit's model", |h| {
-        let tab = &h.state().tabs()[0];
-        ids.iter().all(|id| {
-            tab.sketch_reads
-                .held(id)
-                .is_some_and(|held| Some(held.revision) == tab.published)
-        })
-    });
-    let reads = &h.state().tabs()[0].sketch_reads;
-    let tight = &reads.held(&ids[1]).unwrap().read;
-    let distance = tight
-        .members
-        .constraints
-        .iter()
-        .find(|constraint| constraint.id.as_str() == "ka000001")
-        .unwrap();
-    assert_eq!(distance.form.value_text().as_deref(), Some("6"));
-    assert_eq!(never_waits::waits(), 0);
 }
 
 /// Ctrl (⌘) and `key` pressed, a frame after the last answer so the status read is of the
