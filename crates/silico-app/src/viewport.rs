@@ -336,13 +336,13 @@ impl Pressed {
     }
 }
 
-/// The left button's clicks anywhere in the window, counted as egui counts clicks, but the
-/// left button's alone: its press under way, and its last two clicks, when and where.
+/// The canvas's own left clicks, counted as egui counts the pointer's (`crate::clicks`, #452):
+/// its press under way, and its clicks' count. A click off the canvas isn't counted, so a
+/// double-click on it just after one isn't taken as a triple.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 struct LeftClicks {
     pressed: Option<Pressed>,
-    last: Option<(f64, Pos2)>,
-    last_last: Option<f64>,
+    count: crate::clicks::Count,
 }
 
 impl LeftClicks {
@@ -355,15 +355,7 @@ impl LeftClicks {
         if !pressed.clicked(at, time, options) {
             return false;
         }
-        let near = self.last.is_none_or(|(_, last)| {
-            last.distance_sq(at) < options.max_click_dist * options.max_click_dist
-        });
-        let delay = options.max_double_click_delay;
-        let double = near && self.last.is_some_and(|(last, _)| time - last < delay);
-        let triple = near && self.last_last.is_some_and(|last| time - last < delay * 2.0);
-        self.last_last = self.last.map(|(last, _)| last);
-        self.last = Some((time, at));
-        double && !triple
+        self.count.click(at, time, options)
     }
 }
 
@@ -1242,8 +1234,8 @@ impl View {
             if taken && let Some(was) = held.take() {
                 left.push(event(0, LeftKind::Cancel, was.at_px, input.modifiers));
             }
-            // Every left click is counted, the tool's and those off the canvas too, as egui
-            // counts them; only a stream's are handed on.
+            // The canvas's own left clicks are counted, those whose press it takes, as egui
+            // counts clicks but for none off it (`crate::clicks`); a stream's are handed on.
             for (place, each) in (1..).zip(&input.events) {
                 match *each {
                     egui::Event::PointerButton {
@@ -1252,8 +1244,8 @@ impl View {
                         pressed: true,
                         modifiers,
                     } => {
-                        clicks.pressed = Some(Pressed::new(pos, time));
                         if pressable && rect.contains(pos) {
+                            clicks.pressed = Some(Pressed::new(pos, time));
                             // A press whose release never came ends before this one begins.
                             if let Some(was) = held.take() {
                                 left.push(event(place, LeftKind::Cancel, was.at_px, modifiers));
@@ -1468,15 +1460,14 @@ impl View {
                 );
             }
         }
+        // The canvas's own middle double-click (`crate::clicks`), whatever was clicked just
+        // before; its clicks counted every frame, a view asked for or not.
+        let middle_double = crate::clicks::double_clicked_by(response, PointerButton::Middle);
         match self.asked.take() {
             Some(ViewAsk::Named(named)) => self.look_from(named, size_px),
             Some(ViewAsk::Fit) => self.fit(size_px),
             Some(ViewAsk::LookAt { toward, up }) => self.look_at(toward, up, size_px),
-            // The canvas's own middle double-click (`crate::clicks`), whatever was clicked
-            // just before.
-            None if crate::clicks::double_clicked_by(response, PointerButton::Middle) => {
-                self.fit(size_px)
-            }
+            None if middle_double => self.fit(size_px),
             None => {}
         }
     }

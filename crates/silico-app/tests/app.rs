@@ -39355,11 +39355,47 @@ fn a_double_click_on_a_timeline_item_just_after_a_click_on_another_opens_its_dia
 }
 
 #[test]
+fn a_left_double_click_on_the_canvas_just_after_a_click_off_it_is_handed_on_as_a_double_click() {
+    // The canvas's left stream (sketch mode's double-click on a dimension): a click on a
+    // timeline item, then a left double-click on the canvas a few frames later (at 1/60 s,
+    // well inside egui's 0.6 s for a triple click). egui counts the item's click with the
+    // canvas's two; the canvas counts its own clicks, so its second is a DoubleClick.
+    use eframe::egui::{Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{DoubleClick, Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    for _ in 0..60 {
+        step(&mut h);
+    }
+    let p = the_viewport(&h).center() - vec2(100.0, 0.0);
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label("Block")
+        .click();
+    step(&mut h);
+    left_taken(&seen);
+    h.hover_at(p);
+    for _ in 0..2 {
+        button_event(&h, p, PointerButton::Primary, true, Modifiers::NONE);
+        button_event(&h, p, PointerButton::Primary, false, Modifiers::NONE);
+    }
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let kinds: Vec<_> = left_taken(&seen)
+        .iter()
+        .map(|seen| seen.event.kind)
+        .collect();
+    assert_eq!(kinds, [Press, Release, Press, Release, DoubleClick]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_middle_double_click_just_after_a_left_click_on_a_timeline_item_fits() {
-    // The canvas's middle double-click (`a_middle_double_click_fits`) two frames after a left
-    // click on a timeline item, inside egui's 0.6 s for a triple click: egui counts the item's
-    // click with the canvas's two; the canvas's own two middle clicks are a double-click, and
-    // the view fits.
+    // The canvas's middle double-click (`a_middle_double_click_fits`) a few frames after a
+    // left click on a timeline item (at 1/60 s, well inside egui's 0.6 s for a triple click):
+    // egui counts the item's click with the canvas's two; the canvas's own two middle clicks
+    // are a double-click, and the view fits.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
