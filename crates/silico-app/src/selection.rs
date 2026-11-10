@@ -616,19 +616,26 @@ impl Selection {
     }
 
     /// The element `name` finds in the published model's bodies (the core's `resolve`, as a
+    /// pick reads it): its body, its number there, and the name a store writes for it. None
+    /// if it finds none, or no model is published.
+    pub(crate) fn resolve_one(&self, name: &str) -> Option<Selected> {
+        let model = self.model.as_ref()?;
+        rules::resolve(model, &[name], PARAMETER)
+            .ok()?
+            .kept
+            .into_iter()
+            .next()
+    }
+
+    /// The element `name` finds in the published model's bodies (the core's `resolve`, as a
     /// pick reads it), as `view` draws it: its body's number and its face or edge; none if
     /// it finds none, if the view's bodies aren't of that model, or if no body drawn is the
     /// one it's in. What a broken reference's candidate lights (flow 6b).
     pub fn lit(&self, name: &str, view: &View) -> Option<(u32, Element)> {
-        let model = self.model.as_ref()?;
         if view.bodies_of() != self.of {
             return None;
         }
-        let found = rules::resolve(model, &[name], PARAMETER)
-            .ok()?
-            .kept
-            .into_iter()
-            .next()?;
+        let found = self.resolve_one(name)?;
         let number = view
             .bodies()
             .iter()
@@ -1530,11 +1537,7 @@ impl Selection {
         {
             return;
         }
-        let found = self.model.as_ref().and_then(|model| {
-            rules::resolve(model, &[name.to_string()], PARAMETER)
-                .ok()
-                .and_then(|answer| answer.kept.into_iter().next())
-        });
+        let found = self.resolve_one(&name.to_string());
         self.hovered = Some(Hovered {
             body,
             element,
