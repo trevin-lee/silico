@@ -41181,7 +41181,9 @@ fn a_far_shown_sketch_raises_the_least_view_its_frames_are_drawn_at() {
     let (mut h, record) = f.drawn("far.silico", &far);
     step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
     click_eye(&mut h, "Hide", "Loose");
-    step_until(&mut h, "Loose's lines gone", |_| last_lines(&record).is_empty());
+    step_until(&mut h, "Loose's lines gone", |_| {
+        last_lines(&record).is_empty()
+    });
     view_mut(&mut h).set_camera(silico_protocol::Camera {
         projection: silico_protocol::Projection::Orthographic { view_height: 1e-5 },
         eye: [20.0, -100.0, 5.0],
@@ -41189,7 +41191,9 @@ fn a_far_shown_sketch_raises_the_least_view_its_frames_are_drawn_at() {
         up: [0.0, 0.0, 1.0],
     });
     click_eye(&mut h, "Show", "Loose");
-    step_until(&mut h, "Loose's lines back", |_| last_lines(&record).len() == 1);
+    step_until(&mut h, "Loose's lines back", |_| {
+        last_lines(&record).len() == 1
+    });
     for _ in 0..3 {
         step(&mut h);
     }
@@ -41200,7 +41204,10 @@ fn a_far_shown_sketch_raises_the_least_view_its_frames_are_drawn_at() {
     let silico_protocol::Projection::Orthographic { view_height } = frame.camera.projection else {
         panic!("orthographic")
     };
-    assert!(view_height >= least * (1.0 - 1e-12), "{view_height} under {least}");
+    assert!(
+        view_height >= least * (1.0 - 1e-12),
+        "{view_height} under {least}"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 

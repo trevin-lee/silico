@@ -746,10 +746,7 @@ mod tests {
     /// How many warnings `f` logs.
     fn warned(f: impl FnOnce()) -> usize {
         let warnings = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        tracing::subscriber::with_default(
-            super::super::tests::Warnings(Arc::clone(&warnings)),
-            f,
-        );
+        tracing::subscriber::with_default(super::super::tests::Warnings(Arc::clone(&warnings)), f);
         warnings.load(std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -775,13 +772,15 @@ mod tests {
         };
         let mut lines = ShownLines::default();
         let out = warned(|| {
-            for _ in 0..3 {
+            for frame in 0..3 {
                 let drawn = lines.frame_within(shown, &at_120(), 800.0, within(20));
                 assert_eq!(points(&drawn), [8, 2]);
                 assert_eq!(lines.capped, BTreeSet::from([circle.clone()]));
                 assert!(lines.made[&circle].strips.is_none(), "none kept for it");
-                // The rectangle and the side, and the circle's build stopped at the 12 left.
-                assert_eq!(lines.built, 8 + 12 + 2);
+                // The circle's build stopped at the 12 left, each frame; the rectangle and
+                // the side built the first, and kept.
+                let built = if frame == 0 { 8 + 12 + 2 } else { 12 };
+                assert_eq!(lines.built, built, "frame {frame}");
             }
         });
         assert_eq!(out, 1);
@@ -830,9 +829,18 @@ mod tests {
         assert!(lines.built <= 10, "{}", lines.built);
         assert!(lines.pending());
         assert_eq!(third.len(), 3);
-        assert!(!Arc::ptr_eq(&third[0].strips, &second[0].strips), "made again");
-        assert!(Arc::ptr_eq(&third[1].strips, &second[1].strips), "the old drawn");
-        assert!(Arc::ptr_eq(&third[2].strips, &second[2].strips), "the old drawn");
+        assert!(
+            !Arc::ptr_eq(&third[0].strips, &second[0].strips),
+            "made again"
+        );
+        assert!(
+            Arc::ptr_eq(&third[1].strips, &second[1].strips),
+            "the old drawn"
+        );
+        assert!(
+            Arc::ptr_eq(&third[2].strips, &second[2].strips),
+            "the old drawn"
+        );
         let mut frames = 0;
         while lines.pending() {
             lines.frame_within(shown, &closer, 800.0, within(100));
@@ -889,7 +897,11 @@ mod tests {
         let mut lines = ShownLines::default();
         let warnings = warned(|| {
             for _ in 0..3 {
-                assert!(lines.frame([(&sid, &first)], &tiny(0.000_8), 800.0).is_empty());
+                assert!(
+                    lines
+                        .frame([(&sid, &first)], &tiny(0.000_8), 800.0)
+                        .is_empty()
+                );
             }
         });
         assert_eq!(warnings, 1);
