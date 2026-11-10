@@ -1,8 +1,10 @@
 //! A menu's lines as the approved prototype draws them (docs/design/m5-ui: styles.css's
 //! `.menu`, `.menu .mi`, `.menu .mh`, `.menu .msep`; app.js's `renderFloating`, which every
 //! menu of the prototype goes through): one way to draw them, which every menu the app draws
-//! over the window takes, a feature's (`crate::feature_menu`) and the canvas's
-//! (`crate::canvas_menu`, `crate::select_other`), so their widths and their look can't part.
+//! over the window takes, a feature's (`crate::feature_menu`), the canvas's
+//! (`crate::canvas_menu`, `crate::select_other`), and sketch mode's on the canvas
+//! (`crate::sketch::bar::canvas_menu`), so their widths and their look can't part. Each item
+//! is named for a screen reader by its words and dim words, its keys its keyboard shortcut.
 //!
 //! An item (`.mi`, 24 high, `padding: 0 8px`, `gap: 8px`): its icon, or a spacer as wide
 //! (`<span style="width:14px">`); its words; its dim words after them (the `subdued` span,
@@ -34,20 +36,32 @@ pub struct Item<'a> {
 }
 
 impl Item<'_> {
-    /// What a screen reader (and a test) is told it is: its words, then its dim words, then
-    /// its keys, as the platform joins them.
-    pub fn said(&self, ctx: &egui::Context) -> String {
+    /// What a screen reader (and a test) is told it is, its name: its words, then its dim
+    /// words. Its keys aren't in it: [`item`] gives them as its keyboard shortcut
+    /// ([`Item::shortcut`]), which a screen reader announces as one, apart from the name, as
+    /// every menu of the app does (sketch mode's too), so an item is found by its words.
+    pub fn said(&self) -> String {
         let mut said = self.label.to_owned();
         if let Some(sub) = self.sub {
             said.push(' ');
             said.push_str(sub);
         }
-        if !self.caps.is_empty() {
-            said.push(' ');
-            said.push_str(&crate::shortcuts::joined(ctx, self.caps));
-        }
         said
     }
+
+    /// Its keys, as the platform joins them, for a screen reader's keyboard shortcut; none
+    /// for an item with no keys.
+    pub fn shortcut(&self, ctx: &egui::Context) -> Option<String> {
+        (!self.caps.is_empty()).then(|| crate::shortcuts::joined(ctx, self.caps))
+    }
+}
+
+/// A menu's frame (`.menu`): egui's, as the theme sets it for every menu (the feature
+/// menus', the toolbar's drop-downs, the canvas's in selection and in sketch mode): Gray.200
+/// inside a Gray.250 border, `--r`'s corners, the popups' shadow, padded
+/// [`theme::MENU_PADDING`].
+pub fn frame(ui: &Ui) -> egui::Frame {
+    egui::Frame::menu(ui.style())
 }
 
 /// The least a menu's lines are wide: `.menu`'s `min-width: 200px`, less its border and its
@@ -152,9 +166,11 @@ pub fn separator(ui: &mut Ui, width: f32) {
 /// dim words after them, and its caps at its right. Hovered, focused, or lit by the keys
 /// (`.kfocus`) it's filled blue, its words, icon, and caps the blue's text; off, its words
 /// are Gray.400, and its reason is its hover text and its description for a screen reader;
-/// `.danger`'s words are red, off too. Its response, labelled as [`Item::said`] says.
+/// `.danger`'s words are red, off too. Its response, labelled as [`Item::said`] says, its
+/// keys its keyboard shortcut ([`Item::shortcut`]).
 pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
-    let said = item.said(ui.ctx());
+    let said = item.said();
+    let shortcut = item.shortcut(ui.ctx());
     // Painted at the menu's opacity, not faded further when off: `.menu .mi:disabled` is
     // Gray.400 itself.
     let opacity = ui.opacity();
@@ -249,6 +265,11 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
         }
         response
     });
+    if let Some(shortcut) = shortcut {
+        ui.ctx().accesskit_node_builder(response.id, |node| {
+            node.set_keyboard_shortcut(shortcut);
+        });
+    }
     match item.off {
         Some(off) => {
             ui.ctx().accesskit_node_builder(response.id, |node| {

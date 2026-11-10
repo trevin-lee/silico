@@ -6521,7 +6521,7 @@ fn edit_feature_from_the_context_menu_opens_the_same_dialog() {
     step(&mut h);
     assert_eq!(
         menu_items(&h, "HOLE")[0],
-        ("Edit feature double-click".to_owned(), None)
+        ("Edit feature double-click".to_owned(), None, None)
     );
     menu_click(&mut h, "HOLE", "Edit feature");
     step_until(&mut h, "its dialog", |h| {
@@ -20470,7 +20470,7 @@ fn edit_sketch_from_the_browser_opens_it_at_the_revision_its_asked_at_and_reads_
     menu_on(&mut h, "Browser", "Triangle");
     assert_eq!(
         menu_items(&h, "TRIANGLE")[0],
-        ("Edit Sketch double-click".to_owned(), None)
+        ("Edit Sketch double-click".to_owned(), None, None)
     );
     menu_click(&mut h, "TRIANGLE", "Edit Sketch");
     step_until(&mut h, "sketch mode again", |h| sketch_mode(h).is_some());
@@ -20967,8 +20967,14 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
     let f = fixture();
     let mut h = triangle_in_sketch_mode(&f);
     let why = "Finish or cancel the sketch first";
-    let on = |label: &str| (label.to_owned(), None);
-    let off = |label: &str| (label.to_owned(), Some(why.to_owned()));
+    let on = |label: &str| (label.to_owned(), feature_menu_keys(label), None);
+    let off = |label: &str| {
+        (
+            label.to_owned(),
+            feature_menu_keys(label),
+            Some(why.to_owned()),
+        )
+    };
     // The open sketch's item: no double-click to edit it.
     let tip = timeline_tip(&mut h, "Triangle", "Sketch");
     assert!(!tip.contains("Double-click to edit"), "{tip}");
@@ -20994,10 +21000,10 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
         menu_items(&h, "PLATE"),
         [
             off("Edit feature double-click"),
-            off("Rename F2"),
+            off("Rename"),
             off("Suppress"),
             on("Find in browser"),
-            off("Delete Del"),
+            off("Delete"),
         ]
     );
     // Esc closes the menu alone (#398's): the sketch's selection kept.
@@ -21015,10 +21021,10 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
         menu_items(&h, "TRIANGLE"),
         [
             off("Edit Sketch double-click"),
-            off("Rename F2"),
+            off("Rename"),
             off("Suppress"),
             on("Find in browser"),
-            off("Delete Del"),
+            off("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -21080,10 +21086,10 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
         menu_items(&h, "PLATE"),
         [
             on("Edit feature double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             on("Find in browser"),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -21094,10 +21100,10 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
         menu_items(&h, "TRIANGLE"),
         [
             on("Edit Sketch double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             on("Find in browser"),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     menu_click(&mut h, "TRIANGLE", "Edit Sketch");
@@ -25062,6 +25068,113 @@ fn a_right_click_in_sketch_mode_opens_its_menu_whose_cancel_sketch_leaves_it() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn sketch_modes_menu_offers_end_chain_smart_dimension_finish_and_cancel_with_their_keys() {
+    // js/interact.js's `onContext` in a sketch (G7): End chain ['Esc'], Smart Dimension
+    // ['D'], a separator, Finish Sketch ['Mod', 'Enter'], and Cancel sketch, top to bottom,
+    // each key the registry's, as the prototype's KEYNAME names it (Ctrl off macOS, Enter
+    // ↵), given a screen reader as the button's shortcut. End chain is off with no gesture
+    // under way; Smart Dimension chooses its tool as D does, and closes the menu.
+    use silico_app::sketch::tools::Choice;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed_sketch(&f);
+    h.ctx.set_os(eframe::egui::os::OperatingSystem::Nix);
+    assert_eq!(sketch_mode(&h).unwrap().tools.choice(), None);
+    open_menu(&f, &mut h, 20.0, 20.0);
+    let menu = sketch_menu(&h).unwrap();
+    let mut items: Vec<(f32, String, Option<String>, bool)> = menu
+        .query_all_by_role(Role::Button)
+        .map(|node| {
+            let rect = node.rect();
+            let node = node.accesskit_node();
+            (
+                rect.top(),
+                node.label().unwrap_or_default(),
+                node.data().keyboard_shortcut().map(str::to_owned),
+                node.is_disabled(),
+            )
+        })
+        .collect();
+    items.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let items: Vec<(String, Option<String>, bool)> = items
+        .into_iter()
+        .map(|(_, label, keys, off)| (label, keys, off))
+        .collect();
+    let item = |label: &str, keys: Option<&str>, off: bool| {
+        (label.to_owned(), keys.map(str::to_owned), off)
+    };
+    assert_eq!(
+        items,
+        [
+            item("End chain", Some("Esc"), true),
+            item("Smart Dimension", Some("D"), false),
+            item("Finish Sketch", Some("Ctrl+↵"), false),
+            item("Cancel sketch", None, false),
+        ]
+    );
+    sketch_menu(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Smart Dimension")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Dimension)
+    );
+    assert!(sketch_menu(&h).is_none());
+    // D, from Smart Dimension, leaves it, as its button does; the menu's chooses it again.
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    assert_eq!(sketch_mode(&h).unwrap().tools.choice(), None);
+    open_menu(&f, &mut h, 20.0, 20.0);
+    sketch_menu(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Smart Dimension")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Dimension)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_modes_menu_is_never_open_with_smart_dimension_on() {
+    // #444's review asked that the menu's Smart Dimension with Smart Dimension on turn
+    // it off, as the prototype's toggles (js/sketch.js:224). The menu's item toggles
+    // (`Tab::sketch_toggle`), but the app never has the menu open with the tool on: D with
+    // the menu open turns the tool on and closes the menu, and with the tool on a right
+    // click is its lock (SolidWorks' right-click-to-lock), not the menu's.
+    use silico_app::sketch::tools::Choice;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed_sketch(&f);
+    open_menu(&f, &mut h, 20.0, 20.0);
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Dimension)
+    );
+    assert!(sketch_menu(&h).is_none());
+    let event = pointer(silico_app::sketch::PointerAction::RightClick, 20.0, 20.0);
+    sketch_events(&f, &mut h, &[event]);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(sketch_menu(&h).is_none());
+    assert!(sketch_mode(&h).unwrap().menu_at.is_none());
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Dimension)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
 // ---- The lean review of 453ccfd8 and f89d73c7 ----
 
 /// As [`counting`], but a length of 97 mm or 98 mm disagrees with the others (in conflict,
@@ -28757,10 +28870,8 @@ fn a_picked_faces_row_is_scrolled_to_once_so_its_group_closed_after_stays_closed
 /// origin up z, Edge9 from it along x, Edge12 along x at y = 20, z = 10); its vertices
 /// (0, 0, 0), (0, 0, 10), (0, 20, 0), (0, 20, 10), then the same at x = 40. The fake's own
 /// description makes every face of type other and every edge 1 long.
-fn describes_a_real_box(f: &Fixture) {
-    use silico_core::kernel::{
-        Description, EdgeCurve, EdgeDescription, FaceDescription, Op, Surface,
-    };
+fn real_box_description() -> silico_core::kernel::Description {
+    use silico_core::kernel::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
     let face = |normal: [f64; 3], area: f64, centroid: [f64; 3]| FaceDescription {
         surface: Surface::Plane {
             normal,
@@ -28776,7 +28887,7 @@ fn describes_a_real_box(f: &Fixture) {
         end,
         middle: [0, 1, 2].map(|k| (start[k] + end[k]) / 2.0),
     };
-    let description = Description {
+    Description {
         faces: vec![
             face([-1.0, 0.0, 0.0], 200.0, [0.0, 10.0, 5.0]),
             face([1.0, 0.0, 0.0], 200.0, [40.0, 10.0, 5.0]),
@@ -28809,7 +28920,17 @@ fn describes_a_real_box(f: &Fixture) {
             [40.0, 20.0, 0.0],
             [40.0, 20.0, 10.0],
         ],
-    };
+    }
+}
+
+/// [`real_box_description`] given for A_BOX's block from now on, as OCCT would describe it.
+fn describes_a_real_box(f: &Fixture) {
+    describes_the_box_as(f, real_box_description());
+}
+
+/// `description` given for A_BOX's block from now on, for every `describe` of it.
+fn describes_the_box_as(f: &Fixture, description: silico_core::kernel::Description) {
+    use silico_core::kernel::Op;
     f.kernel.answer_instead(move |op| match op {
         Op::DescribeAll { shape } if FakeKernel::describe(shape)?.starts_with("box(") => {
             Some(silico_protocol::Reply::DescribedAll(description.clone()))
@@ -33851,8 +33972,9 @@ fn menu_head<'a>(h: &'a AppHarness, head: &'a str) -> egui_kittest::Node<'a> {
 }
 
 /// The open menu headed `head` (the name it's of, in capitals): each item's label (its
-/// words, then its keys), and why it's off, if it is, in order.
-fn menu_items(h: &AppHarness, head: &str) -> Vec<(String, Option<String>)> {
+/// words, then its dim words), its keys as a screen reader has them (its keyboard
+/// shortcut), and why it's off, if it is, in order.
+fn menu_items(h: &AppHarness, head: &str) -> Vec<(String, Option<String>, Option<String>)> {
     let heading = menu_head(h, head);
     let menu = heading.parent().unwrap();
     menu.query_all_by_role(Role::Button)
@@ -33861,12 +33983,24 @@ fn menu_items(h: &AppHarness, head: &str) -> Vec<(String, Option<String>)> {
             let off = node
                 .is_disabled()
                 .then(|| node.description().unwrap_or_default());
-            (node.label().unwrap_or_default(), off)
+            let keys = node.data().keyboard_shortcut().map(str::to_owned);
+            (node.label().unwrap_or_default(), keys, off)
         })
         .collect()
 }
 
-/// The item of the open menu headed `head` whose words are `label` (its keys after them)
+/// The keys a feature menu's item has, by its label, as the registry gives them (the
+/// prototype's: Rename F2, Delete Del), joined as a screen reader has them; none for the
+/// others.
+fn feature_menu_keys(label: &str) -> Option<String> {
+    match label {
+        "Rename" => Some("F2".to_owned()),
+        "Delete" => Some("Del".to_owned()),
+        _ => None,
+    }
+}
+
+/// The item of the open menu headed `head` whose words are `label` (its dim words after them)
 /// clicked.
 fn menu_click(h: &mut AppHarness, head: &str, label: &str) {
     let heading = menu_head(h, head);
@@ -33978,8 +34112,14 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its body", |h| shows(h, "Browser", "Hole"));
-    let on = |label: &str| (label.to_owned(), None);
-    let off = |label: &str, why: &str| (label.to_owned(), Some(why.to_owned()));
+    let on = |label: &str| (label.to_owned(), feature_menu_keys(label), None);
+    let off = |label: &str, why: &str| {
+        (
+            label.to_owned(),
+            feature_menu_keys(label),
+            Some(why.to_owned()),
+        )
+    };
     // The timeline's, on the block (js/interact.js's `contextmenu`: Edit feature with
     // "double-click", Rename with F2, Suppress, Find in browser, then Delete with Del).
     // The block is inside the hole's body, which the browser lists by the hole: it has no
@@ -33989,13 +34129,13 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "BLOCK"),
         [
             on("Edit feature double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             off(
                 "Find in browser",
                 "It's inside a body: the browser lists bodies and sketches"
             ),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     // The prototype's right-click selects the feature it's on.
@@ -34028,10 +34168,10 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "HOLE"),
         [
             on("Edit feature double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             on("Find in browser"),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -34042,10 +34182,10 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "HOLE"),
         [
             on("Edit feature double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             on("Find in timeline"),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -34057,10 +34197,10 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "XY"),
         [
             off("Edit feature double-click", origin),
-            off("Rename F2", origin),
+            off("Rename", origin),
             off("Suppress", origin),
             off("Find in timeline", origin),
-            off("Delete Del", origin),
+            off("Delete", origin),
         ]
     );
     h.key_press(Key::Escape);
@@ -34075,13 +34215,13 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "BLOCK"),
         [
             off("Edit feature double-click", dialog),
-            off("Rename F2", dialog),
+            off("Rename", dialog),
             off("Suppress", dialog),
             off(
                 "Find in browser",
                 "It's inside a body: the browser lists bodies and sketches"
             ),
-            off("Delete Del", dialog),
+            off("Delete", dialog),
         ]
     );
     // Clicked, the off items do nothing: nothing sent, nothing said.
@@ -34118,14 +34258,15 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
     assert_eq!(
         menu_items(&h, "HOLE"),
         [
-            ("Edit feature double-click".to_owned(), None),
-            ("Rename F2".to_owned(), None),
-            ("Suppress".to_owned(), None),
+            ("Edit feature double-click".to_owned(), None, None),
+            ("Rename".to_owned(), Some("F2".to_owned()), None),
+            ("Suppress".to_owned(), None, None),
             (
                 "Find in browser".to_owned(),
+                None,
                 Some("It built no body, so the browser has no row for it".to_owned())
             ),
-            ("Delete Del".to_owned(), None),
+            ("Delete".to_owned(), Some("Del".to_owned()), None),
         ]
     );
     // Its block, whose consumer failed, is a body of its own now: found.
@@ -34134,7 +34275,7 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
     menu_on(&mut h, "Timeline", "Block");
     assert_eq!(
         menu_items(&h, "BLOCK")[3],
-        ("Find in browser".to_owned(), None)
+        ("Find in browser".to_owned(), None, None)
     );
     assert_eq!(never_waits::waits(), 0);
 }
@@ -34158,6 +34299,7 @@ fn a_failed_block_with_a_sketch_on_its_face_built_no_body_and_isnt_inside_one() 
         menu_items(&h, "BLOCK")[3],
         (
             "Find in browser".to_owned(),
+            None,
             Some("It built no body, so the browser has no row for it".to_owned())
         )
     );
@@ -34190,7 +34332,10 @@ fn suppress_then_unsuppress_writes_and_drops_suppressed_and_undo_restores_each_t
     });
     // The hole unsuppressed: its tool, which it needs, comes back with it.
     menu_on(&mut h, "Timeline", "Hole");
-    assert_eq!(menu_items(&h, "HOLE")[2], ("Unsuppress".to_owned(), None));
+    assert_eq!(
+        menu_items(&h, "HOLE")[2],
+        ("Unsuppress".to_owned(), None, None)
+    );
     menu_click(&mut h, "HOLE", "Unsuppress");
     step_until(&mut h, "unsuppressed", |h| {
         said_done(h, "Unsuppressed").as_deref()
@@ -34532,14 +34677,14 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
         assert_eq!(
             menu_items(&h, "BLOCK")
                 .into_iter()
-                .map(|(label, _)| label)
+                .map(|(label, _, _)| label)
                 .collect::<Vec<_>>(),
             [
                 "Edit feature double-click",
-                "Rename F2",
+                "Rename",
                 "Suppress",
                 "Find in browser",
-                "Delete Del"
+                "Delete"
             ]
         );
         if let Some(shot) = std::env::var_os("SILICO_APP_FEATURE_MENU_SHOT") {
@@ -34813,8 +34958,15 @@ fn on_a_document_the_gate_refused_f2_del_and_the_menus_items_say_why_and_do_noth
     let why = "The document has problems of its own: no feature changes until they're mended";
     menu_on(&mut h, "Timeline", "Pin");
     let items = menu_items(&h, "PIN");
-    for (at, label) in [(1, "Rename F2"), (2, "Suppress"), (4, "Delete Del")] {
-        assert_eq!(items[at], (label.to_owned(), Some(why.to_owned())));
+    for (at, label) in [(1, "Rename"), (2, "Suppress"), (4, "Delete")] {
+        assert_eq!(
+            items[at],
+            (
+                label.to_owned(),
+                feature_menu_keys(label),
+                Some(why.to_owned())
+            )
+        );
     }
     h.key_press(Key::Escape);
     step(&mut h);
@@ -34873,8 +35025,15 @@ fn the_menus_items_say_the_document_is_closing_while_it_closes() {
     menu_on(&mut h, "Timeline", "Hole");
     let closing = "The document is closing";
     let items = menu_items(&h, "HOLE");
-    for (at, label) in [(1, "Rename F2"), (2, "Suppress"), (4, "Delete Del")] {
-        assert_eq!(items[at], (label.to_owned(), Some(closing.to_owned())));
+    for (at, label) in [(1, "Rename"), (2, "Suppress"), (4, "Delete")] {
+        assert_eq!(
+            items[at],
+            (
+                label.to_owned(),
+                feature_menu_keys(label),
+                Some(closing.to_owned())
+            )
+        );
     }
     hold.release();
     let _ = check.wait();
@@ -36028,8 +36187,19 @@ fn box_from_above_made(
     f: &Fixture,
     boxing: Option<silico_app::boxes::Build>,
 ) -> (AppHarness, Record) {
+    from_above_made(f, "box.silico", A_BOX, boxing)
+}
+
+/// [`box_from_above_made`] of `text` opened as `name`: its one body meshed as the box is
+/// (every tessellation the 40 by 20 by 10 box's, [`meshes_a_real_box`]), seen as the box is.
+fn from_above_made(
+    f: &Fixture,
+    name: &str,
+    text: &str,
+    boxing: Option<silico_app::boxes::Build>,
+) -> (AppHarness, Record) {
     meshes_a_real_box(f);
-    let (mut h, record) = f.drawn_with("box.silico", A_BOX, None, boxing);
+    let (mut h, record) = f.drawn_with(name, text, None, boxing);
     meshes_settled(&mut h);
     view_mut(&mut h).set_camera(silico_protocol::Camera {
         projection: silico_protocol::Projection::Orthographic { view_height: 40.0 },
@@ -36561,14 +36731,20 @@ fn in_the_fillet_dialog_a_row_chosen_toggles_into_its_box_as_a_click_does_and_a_
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// The context menu, open: its items' words, in order, and whether each is on.
-fn context_said(h: &AppHarness) -> Vec<(String, bool)> {
+/// The context menu, open: each item's words, its keys as its keyboard shortcut, and whether
+/// it's on, in order.
+fn context_said(h: &AppHarness) -> Vec<(String, Option<String>, bool)> {
     select_other(h)
         .context()
         .expect("the context menu")
         .items
         .iter()
-        .map(|shown| (shown.said(&h.ctx), shown.off.is_none()))
+        .map(|shown| {
+            // Its name, its keys as a screen reader's shortcut has them, and whether it's on.
+            let keys = (!shown.caps.is_empty())
+                .then(|| silico_app::shortcuts::joined(&h.ctx, &shown.caps));
+            (shown.said(), keys, shown.off.is_none())
+        })
         .collect()
 }
 
@@ -36605,13 +36781,13 @@ fn over_an_element_the_context_menu_is_headed_by_it_and_hides_its_body_with_no_k
     assert_eq!(
         context_said(&h),
         [
-            ("Select Other… 2 under the pointer".to_owned(), true),
-            ("Edit Block".to_owned(), true),
-            ("Hide Block".to_owned(), true),
+            ("Select Other… 2 under the pointer".to_owned(), None, true),
+            ("Edit Block".to_owned(), None, true),
+            ("Hide Block".to_owned(), None, true),
         ]
     );
     let menu = || h.get_by_role_and_label(Role::Menu, "Canvas");
-    for (label, _) in context_said(&h) {
+    for (label, _, _) in context_said(&h) {
         assert!(menu().query_by_label(&label).is_some(), "{label}");
     }
     // Hide Block (the menu's, not the browser's eye of the same words): the body hidden, as
@@ -36655,34 +36831,661 @@ fn over_an_element_the_context_menus_edit_opens_its_makers_dialog() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The block's top, Face6, under the pointer seen from above ([`box_from_above`]), hovered,
+/// and the context menu opened over it, its face read for its type (`elements`).
+fn context_over_the_top(h: &mut AppHarness, record: &Record) {
+    use silico_app::renderer::Element::Face;
+    let at = above_at(h, 30.0, 10.0, [0.0, 0.0]);
+    answering(record, Some((1, Face(6), pixel_at(h, at))), None);
+    h.hover_at(at);
+    step_until(h, "the top hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    context_at(h, at);
+    step_until(h, "its face read", |h| {
+        select_other(h).face_read() == Some(true)
+    });
+    step(h);
+}
+
+/// Whether the open context menu offers Sketch on this face, as its items say and as the
+/// accessibility tree has it.
+fn offers_sketch_on_face(h: &AppHarness) -> bool {
+    let listed = context_said(h)
+        .iter()
+        .any(|(said, _, _)| said == "Sketch on this face");
+    let drawn = h
+        .get_by_role_and_label(Role::Menu, "Canvas")
+        .query_by_label("Sketch on this face")
+        .is_some();
+    assert_eq!(listed, drawn);
+    listed
+}
+
+/// What a sketch's creation sent: the tab's call record, and the document's features then,
+/// each by its fields but its ID (which the core makes anew each time) and `v`.
+type Created = (
+    Vec<silico_app::tab::Sent>,
+    Vec<Option<Vec<(String, Plain)>>>,
+);
+
+/// Frames stepped until sketch mode is open with its sketch added, and everything answered:
+/// what the creation sent.
+fn sketch_added(f: &Fixture, h: &mut AppHarness) -> Created {
+    step_until(h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    settled(h);
+    let text = text_of(f, h);
+    let features = ["Block", "Sketch1"]
+        .into_iter()
+        .map(|name| fields_of(&text, name))
+        .collect();
+    (h.state().tabs()[0].sent.clone(), features)
+}
+
+#[test]
+fn over_a_planar_face_the_context_menus_sketch_on_this_face_sends_what_the_selection_views_button_does()
+ {
+    // js/interact.js's `onContext` over a face whose `ref.kind` is 'plane' (G7): Sketch on
+    // this face, after Edit and before the separator and Hide. The block's top is a plane as
+    // `elements` reads it (described as OCCT describes the box), so the item comes once the
+    // menu's read of it answers. Chosen, it closes the menu and sends what the selection
+    // view's button sends for the top, call for call, to the same document: an empty
+    // sketch on the top's stored name, its x +x (the core's default for a normal along z).
+    let through_menu = {
+        let f = fixture();
+        describes_a_real_box(&f);
+        let (mut h, record) = box_from_above(&f);
+        context_over_the_top(&mut h, &record);
+        assert_eq!(
+            context_said(&h),
+            [
+                ("Select Other… 2 under the pointer".to_owned(), None, true),
+                ("Edit Block".to_owned(), None, true),
+                ("Sketch on this face".to_owned(), None, true),
+                ("Hide Block".to_owned(), None, true),
+            ]
+        );
+        assert!(offers_sketch_on_face(&h));
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Sketch on this face")
+            .click();
+        let sent = sketch_added(&f, &mut h);
+        assert!(!select_other(&h).is_open());
+        assert_eq!(never_waits::waits(), 0);
+        sent
+    };
+    let through_button = {
+        let f = fixture();
+        describes_a_real_box(&f);
+        let (mut h, _record) = box_from_above(&f);
+        select_in_box(&mut h, &["Face6"]);
+        row_until(&mut h, "Area", "800.00 mm²");
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .get_by_role_and_label(Role::Button, "Sketch on this face")
+            .click();
+        let sent = sketch_added(&f, &mut h);
+        assert_eq!(never_waits::waits(), 0);
+        sent
+    };
+    assert!(!through_menu.0.is_empty());
+    assert_eq!(through_menu, through_button);
+    assert_eq!(
+        through_menu.1[1],
+        Some(empty_sketch(
+            "Sketch1",
+            r#"{"face": "k7f2qx3m.box.Face6", "x": "+x", "reversed": false}"#
+        ))
+    );
+}
+
+#[test]
+fn the_context_menu_offers_no_sketch_on_this_face_over_a_cylindrical_face_an_edge_or_a_vertex() {
+    // The prototype's item is only for a face whose `ref.kind` is 'plane'. The block's top
+    // described as a cylinder's side instead (by hand: about an axis along y through
+    // (20, 0, -10), radius 20, which meets the top's corners' heights only loosely, as a
+    // test's description may), its read answers, and there's no item; over an edge or a
+    // vertex there's no face to read, and none either.
+    use eframe::egui::Key;
+    use silico_app::renderer::Element::{Edge, Vertex};
+    let f = fixture();
+    let mut description = real_box_description();
+    description.faces[5].surface = silico_core::kernel::Surface::Cylinder {
+        axis: silico_core::kernel::Axis {
+            origin: [20.0, 0.0, -10.0],
+            direction: [0.0, 1.0, 0.0],
+        },
+        radius: 20.0,
+    };
+    describes_the_box_as(&f, description);
+    let (mut h, record) = box_from_above(&f);
+    context_over_the_top(&mut h, &record);
+    assert_eq!(
+        select_other(&h).context().unwrap().head.as_deref(),
+        Some("Face6 · Face")
+    );
+    assert!(!offers_sketch_on_face(&h));
+    for (element, pick, head) in [
+        (Edge(11), false, "Edge11 · Edge"),
+        (Vertex(7), true, "Vertex7 · Vertex"),
+    ] {
+        h.key_press(Key::Escape);
+        step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+        let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+        let hit = Some((1, element, pixel_at(&h, at)));
+        if pick {
+            answering(&record, hit, None);
+        } else {
+            answering(&record, None, hit);
+        }
+        h.hover_at(at);
+        let name = format!("k7f2qx3m.box.{}", &head[..head.find(' ').unwrap()]);
+        step_until(&mut h, &format!("{name} hovered"), |h| {
+            hover_name(h).as_deref() == Some(name.as_str())
+        });
+        context_at(&mut h, at);
+        assert_eq!(
+            select_other(&h).context().unwrap().head.as_deref(),
+            Some(head)
+        );
+        assert_eq!(select_other(&h).face_read(), None, "{head}");
+        for _ in 0..4 {
+            step(&mut h);
+        }
+        assert!(!offers_sketch_on_face(&h), "{head}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_sketch_items_are_off_while_sketch_mode_cant_open_saying_why() {
+    // With a dialog open sketch mode can't open (`Tab::can_sketch`), as the toolbar's Create
+    // Sketch says by being off: over the planar top, Sketch on this face is there but off,
+    // saying why as Edit Sketch does ("Close the open dialog first"); over nothing, Create
+    // Sketch is too, with the same words.
+    let f = fixture();
+    describes_a_real_box(&f);
+    let (mut h, record) = box_from_above(&f);
+    context_over_the_top(&mut h, &record);
+    h.get_by_label("Edit Block").click();
+    step_until(&mut h, "the box's dialog", |h| {
+        h.state().tabs()[0].in_dialog()
+    });
+    assert!(!h.state().tabs()[0].can_sketch());
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    context_over_the_top(&mut h, &record);
+    let why = "Close the open dialog first";
+    let shown = select_other(&h).context().unwrap().items[2].clone();
+    assert_eq!(
+        (shown.label.as_str(), shown.off.as_deref()),
+        ("Sketch on this face", Some(why))
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Sketch on this face")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // Over nothing.
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    context_over_nothing(&mut h, &record);
+    let create = select_other(&h).context().unwrap().items[4].clone();
+    assert_eq!(
+        (create.label.as_str(), create.off.as_deref()),
+        ("Create Sketch", Some(why))
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The context menu opened over nothing, by the box seen from above: Fit, Home view,
+/// Select Other…, Clear selection, and Create Sketch. Where it was opened.
+fn context_over_nothing(h: &mut AppHarness, record: &Record) -> eframe::egui::Pos2 {
+    // Off the box, 5 mm past its far edge (y = 20), at the canvas's top middle, clear of the
+    // ViewCube: no hover, nothing under the pointer.
+    let off = above_at(h, 20.0, 25.0, [0.0, 0.0]);
+    answering(record, None, None);
+    h.hover_at(off);
+    for _ in 0..4 {
+        step(h);
+    }
+    context_at(h, off);
+    off
+}
+
+#[test]
+fn enter_on_the_context_menus_create_sketch_opens_its_planes() {
+    // #444's review: Shift+Tab from nothing lit lights the last item on, Create
+    // Sketch, and Enter on it opens its planes beside it, the toolbar's, as the pointer
+    // does; one chosen there starts a sketch. SEAM: the planes are the pointer's, the keys
+    // stepping the menu's own items (the module doc's).
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    let lit = select_other(&h).lit().unwrap();
+    assert_eq!(
+        select_other(&h).context().unwrap().items[lit].label,
+        "Create Sketch"
+    );
+    assert!(!planes_open(&h));
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(select_other(&h).is_open());
+    let planes = h.get_by_role_and_label(Role::Menu, "Create Sketch");
+    assert_eq!(buttons_of(&planes), ["XY plane", "XZ plane", "YZ plane"]);
+    planes.get_by_label("XZ plane").click();
+    let (_, features) = sketch_added(&f, &mut h);
+    assert!(!select_other(&h).is_open());
+    assert!(features[1].is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether Create Sketch's planes are open.
+fn planes_open(h: &AppHarness) -> bool {
+    h.query_by_role_and_label(Role::Menu, "Create Sketch")
+        .is_some()
+}
+
+#[test]
+fn enter_on_create_sketch_opens_its_planes_with_the_pointer_resting_on_fit() {
+    // #444's review: the pointer moved onto Fit and resting there, the keys light Create
+    // Sketch (Shift+Tab back from Fit, round to the last), and Enter opens its planes: they
+    // stay open, frame after frame, the pointer still on Fit, until the keys light another
+    // item, which lets them go.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fit")
+        .hover();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(select_other(&h).lit(), Some(0));
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    let lit = select_other(&h).lit().unwrap();
+    assert_eq!(
+        select_other(&h).context().unwrap().items[lit].label,
+        "Create Sketch"
+    );
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(
+            planes_open(&h),
+            "the planes closed under the resting pointer"
+        );
+    }
+    // The pointer moved again where it rests, on Fit (a move of none, as a window may send):
+    // no move onto another item, so the planes stay, and Create Sketch lit.
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fit")
+        .hover();
+    for _ in 0..4 {
+        step(&mut h);
+        assert!(
+            planes_open(&h),
+            "the planes closed under a move onto nothing new"
+        );
+    }
+    assert_eq!(select_other(&h).lit(), Some(lit));
+    h.key_press(Key::Tab);
+    step_until(&mut h, "its planes let go", |h| !planes_open(h));
+    assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_pointer_moved_onto_another_item_lets_the_planes_enter_opened_go() {
+    // #444's review: Enter on Create Sketch opens its planes; the pointer then moved onto Home
+    // view lets them go, as hovering another item closes a submenu in every menu.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(planes_open(&h));
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Home view")
+        .hover();
+    step_until(&mut h, "its planes let go", |h| !planes_open(h));
+    assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_closes_the_menu_and_its_planes_and_a_menu_opened_again_has_none_open() {
+    // The planes open from the pointer on Create Sketch; Esc closes both, and the menu
+    // opened again over nothing opens with none: egui resets the open item of a menu not
+    // shown for a frame.
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Create Sketch")
+        .hover();
+    step_until(&mut h, "its planes", planes_open);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "both closed", |h| {
+        !select_other(h).is_open() && !planes_open(h)
+    });
+    context_over_nothing(&mut h, &record);
+    h.hover_at(above_at(&h, -15.0, 0.0, [0.0, 0.0]));
+    for _ in 0..6 {
+        step(&mut h);
+        assert!(!planes_open(&h));
+    }
+    assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_menu_opened_again_by_a_right_click_has_none_of_the_last_menus_planes_open() {
+    // #444's review: the planes opened by Enter, then a right click elsewhere over nothing:
+    // the new menu opens with no planes, from its first frame. Its layer and its submenu's
+    // are the last one's, and egui's own reset of a menu's open item (`MenuState::from_id`)
+    // doesn't fire, the last menu shown the frame before: the new one lets go of the open
+    // item the last one left, on its first frame (`CanvasMenu::draw`'s `fresh`).
+    use eframe::egui::{Event, Key, Modifiers, PointerButton};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    let elsewhere = above_at(&h, 30.0, 26.0, [0.0, 0.0]);
+    answering(&record, None, None);
+    // The right click by hand, the pointer moved there and the button pressed and let go
+    // all given to one frame (the harness gives each event it queues a frame of its own),
+    // which opens the new menu and draws it: no planes in it.
+    let button = |pressed| Event::PointerButton {
+        pos: elsewhere,
+        button: PointerButton::Secondary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    h.input_mut()
+        .events
+        .extend([Event::PointerMoved(elsewhere), button(true), button(false)]);
+    step(&mut h);
+    assert_eq!(
+        select_other(&h).phase(),
+        Some(silico_app::select_other::Phase::Context)
+    );
+    assert!(
+        !planes_open(&h),
+        "the last menu's planes on the new one's first frame"
+    );
+    // The pointer then off the menu, on no item of it (an item under it would close a
+    // submenu egui held open).
+    h.hover_at(above_at(&h, -15.0, 0.0, [0.0, 0.0]));
+    for _ in 0..6 {
+        step(&mut h);
+        assert!(!planes_open(&h));
+    }
+    assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_face_read_answered_is_let_go() {
+    // #444's mutants: the menu opened over the box's top reads the face for its type (Sketch
+    // on this face): the tab's read is of that face in the frames from its asking to its
+    // answer's taking (a frame at least: it's let go in the frame after). Once answered,
+    // it's let go, the menu keeping what it said. SEAM: the read can't be held across the
+    // menu's close here (the fake answers at once, the rebuild having described the face),
+    // so after Esc none is left by either way.
+    use eframe::egui::{Key, Modifiers, PointerButton};
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(6), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the top hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    // The right click by hand, a frame at a time, the tab's read looked at after each.
+    let mut asked = false;
+    let right = PointerButton::Secondary;
+    button_event(&h, at, right, true, Modifiers::NONE);
+    step(&mut h);
+    asked |= h.state().tabs()[0].menu_face().of().is_some();
+    button_event(&h, at, right, false, Modifiers::NONE);
+    step(&mut h);
+    asked |= h.state().tabs()[0].menu_face().of().is_some();
+    for _ in 0..120 {
+        if select_other(&h).face_read() == Some(true) {
+            break;
+        }
+        step(&mut h);
+        asked |= h.state().tabs()[0].menu_face().of().is_some();
+    }
+    assert_eq!(
+        select_other(&h).face_read(),
+        Some(true),
+        "its face read answered"
+    );
+    assert!(asked, "the tab's read of the menu's face");
+    step(&mut h);
+    assert!(h.state().tabs()[0].menu_face().of().is_none());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    step(&mut h);
+    assert!(h.state().tabs()[0].menu_face().of().is_none());
+    assert!(!h.state().tabs()[0].menu_face().reading());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn hovering_an_off_create_sketch_opens_no_planes() {
+    // #444's review: with a dialog open, sketch mode can't open, and Create Sketch over
+    // nothing is off; the pointer resting on it opens nothing.
+    let f = fixture();
+    describes_a_real_box(&f);
+    let (mut h, record) = box_from_above(&f);
+    context_over_the_top(&mut h, &record);
+    h.get_by_label("Edit Block").click();
+    step_until(&mut h, "the box's dialog", |h| {
+        h.state().tabs()[0].in_dialog()
+    });
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    context_over_nothing(&mut h, &record);
+    let create = h
+        .get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Create Sketch");
+    assert!(create.accesskit_node().is_disabled());
+    create.hover();
+    for _ in 0..8 {
+        step(&mut h);
+    }
+    assert!(!planes_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn over_an_unstable_planar_face_sketch_on_this_face_is_off_with_the_stores_refusal() {
+    // #444's review. FUSED's fuse (its result the base's, a box, every face a plane), its
+    // Face1 named only by its number, unstable: no store takes it, so the menu's Sketch on
+    // this face is there (the face is a plane) but off, saying the store's own words, as the
+    // selection view's button is off for it.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    planar_boxes(&f.kernel);
+    f.kernel.answer_instead(|op| match op {
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                shape: FakeKernel::resized(base, 1.0)?,
+                history: numbering_fuse(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, record) = from_above_made(&f, "fused.silico", FUSED, None);
+    boxes_made(&mut h);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "Face1 hovered", |h| {
+        hover_name(h).as_deref() == Some("rrrrrrrr.fuse.Face1")
+    });
+    context_at(&mut h, at);
+    step_until(&mut h, "its face read", |h| {
+        select_other(h).face_read() == Some(true)
+    });
+    step(&mut h);
+    let shown = select_other(&h)
+        .context()
+        .unwrap()
+        .items
+        .iter()
+        .find(|shown| shown.label == "Sketch on this face")
+        .cloned()
+        .expect("Sketch on this face, over a plane");
+    let why = shown.off.expect("off for an unstable face");
+    assert!(
+        why.contains(
+            "\"rrrrrrrr.fuse.Face1\", names a face, whose name is unstable (it came about as \
+             another element did, or is its number): an edit could make it another element"
+        ),
+        "{why}"
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Sketch on this face")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn over_nothing_the_context_menus_create_sketch_opens_the_toolbars_planes_and_one_starts_a_sketch()
+{
+    // js/interact.js's `onContext` over nothing (G7): Create Sketch, last, whose planes are
+    // the toolbar's, the same menu of them (`toolbar::planes`): XY, XZ, and YZ. XZ chosen
+    // there closes both menus and sends what the toolbar's XZ plane sends, call for call,
+    // to the same document.
+    let through_menu = {
+        let f = fixture();
+        let (mut h, record) = box_from_above(&f);
+        context_over_nothing(&mut h, &record);
+        assert_eq!(
+            context_said(&h).last(),
+            Some(&("Create Sketch".to_owned(), None, true))
+        );
+        assert!(!planes_open(&h));
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Create Sketch")
+            .hover();
+        step_until(&mut h, "its planes", planes_open);
+        // Beside it: egui lays a popup out in the frame it opens and places it in the next.
+        step(&mut h);
+        step(&mut h);
+        let item = h
+            .get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Create Sketch")
+            .rect();
+        let planes = h.get_by_role_and_label(Role::Menu, "Create Sketch");
+        let first = planes.get_by_label("XY plane").rect();
+        assert!(first.left() >= item.right(), "{first:?} {item:?}");
+        assert_eq!(buttons_of(&planes), ["XY plane", "XZ plane", "YZ plane"]);
+        planes.get_by_label("XZ plane").click();
+        let sent = sketch_added(&f, &mut h);
+        assert!(!select_other(&h).is_open());
+        assert!(!planes_open(&h));
+        assert_eq!(never_waits::waits(), 0);
+        sent
+    };
+    let through_toolbar = {
+        let f = fixture();
+        let (mut h, _record) = box_from_above(&f);
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .click();
+        step_until(&mut h, "its planes", planes_open);
+        step(&mut h);
+        step(&mut h);
+        h.get_by_role_and_label(Role::Menu, "Create Sketch")
+            .get_by_label("XZ plane")
+            .click();
+        let sent = sketch_added(&f, &mut h);
+        assert_eq!(never_waits::waits(), 0);
+        sent
+    };
+    assert!(!through_menu.0.is_empty());
+    assert_eq!(through_menu, through_toolbar);
+    assert_eq!(through_menu.1[1], Some(empty_sketch("Sketch1", r#""xz""#)));
+}
+
 #[test]
 fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
     use eframe::egui::Key;
     use silico_app::renderer::Element::Face;
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
-    // Off the box, 5 mm past its far edge (y = 20), at the canvas's top middle, clear of the
-    // ViewCube: no hover, nothing under the pointer.
-    let off = above_at(&h, 20.0, 25.0, [0.0, 0.0]);
-    answering(&record, None, None);
-    h.hover_at(off);
-    for _ in 0..4 {
-        step(&mut h);
-    }
-    context_at(&mut h, off);
+    let off = context_over_nothing(&mut h, &record);
     assert_eq!(select_other(&h).context().unwrap().head, None);
     assert_eq!(
         context_said(&h),
         [
-            ("Fit F6".to_owned(), true),
-            ("Home view Home".to_owned(), true),
-            ("Select Other… nothing under the pointer".to_owned(), false),
-            ("Clear selection Esc".to_owned(), false),
+            ("Fit".to_owned(), Some("F6".to_owned()), true),
+            ("Home view".to_owned(), Some("Home".to_owned()), true),
+            (
+                "Select Other… nothing under the pointer".to_owned(),
+                None,
+                false
+            ),
+            ("Clear selection".to_owned(), Some("Esc".to_owned()), false),
+            ("Create Sketch".to_owned(), None, true),
         ]
     );
     // Fit: the camera F6 gives, from the same camera.
     let start = view(&h).camera().clone();
-    h.get_by_label("Fit F6").click();
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fit")
+        .click();
     step_until(&mut h, "fitted", |h| view(h).camera() != &start);
     let by_menu = view(&h).camera().clone();
     view_mut(&mut h).set_camera(start.clone());
@@ -36698,7 +37501,9 @@ fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
         step(&mut h);
     }
     context_at(&mut h, off);
-    h.get_by_label("Home view Home").click();
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Home view")
+        .click();
     step_until(&mut h, "home", |h| view(h).camera() != &start);
     let by_menu = view(&h).camera().clone();
     view_mut(&mut h).set_camera(start.clone());
@@ -36725,9 +37530,11 @@ fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
     context_at(&mut h, off);
     assert_eq!(
         context_said(&h)[3],
-        ("Clear selection Esc".to_owned(), true)
+        ("Clear selection".to_owned(), Some("Esc".to_owned()), true)
     );
-    h.get_by_label("Clear selection Esc").click();
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Clear selection")
+        .click();
     selected_until(&mut h, &[]);
     assert!(!select_other(&h).is_open());
     assert_eq!(never_waits::waits(), 0);
@@ -36738,16 +37545,11 @@ fn the_context_menus_keys_step_its_items_that_are_on_and_enter_chooses_the_one_l
     use eframe::egui::Key;
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
-    let off = above_at(&h, 20.0, 25.0, [0.0, 0.0]);
-    answering(&record, None, None);
-    h.hover_at(off);
-    for _ in 0..4 {
-        step(&mut h);
-    }
-    context_at(&mut h, off);
+    context_over_nothing(&mut h, &record);
     assert_eq!(select_other(&h).lit(), None);
     // Down lights Fit, then Home view; Select Other… and Clear selection, off, are passed
-    // over, so on from Home view is Fit again, and back from Fit Home view.
+    // over, so on from Home view is Create Sketch (G7), the last, then Fit again, and back
+    // from Fit Create Sketch, then Home view.
     let lit = |h: &mut AppHarness| {
         step(h);
         step(h);
@@ -36758,7 +37560,11 @@ fn the_context_menus_keys_step_its_items_that_are_on_and_enter_chooses_the_one_l
     h.key_press(Key::Tab);
     assert_eq!(lit(&mut h), Some(1));
     h.key_press(Key::Tab);
+    assert_eq!(lit(&mut h), Some(4));
+    h.key_press(Key::Tab);
     assert_eq!(lit(&mut h), Some(0));
+    h.key_press(Key::ArrowUp);
+    assert_eq!(lit(&mut h), Some(4));
     h.key_press(Key::ArrowUp);
     assert_eq!(lit(&mut h), Some(1));
     // Enter: Home view done, the menu closed.
