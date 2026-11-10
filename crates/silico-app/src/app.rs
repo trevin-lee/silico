@@ -2121,7 +2121,7 @@ impl<P: Clients + 'static> App<P> {
                         active,
                         first: at == 0,
                         errors: tab.errors() > 0,
-                        changed: tab.changed_on_disk(),
+                        changed: !tab.outside.is_empty(),
                     },
                 );
                 // Scrolled to until it's in view; then left where the person scrolls.

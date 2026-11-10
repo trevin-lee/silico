@@ -230,8 +230,11 @@ pub(crate) struct DocTab<'a> {
     pub first: bool,
     /// Whether its timeline counts errors: the red mark, and "Has errors." in its tooltip.
     pub errors: bool,
-    /// Whether its file changed on disk since it was read or written: the changed-outside
-    /// mark, unless it has errors, and "Changed on disk since you opened it." either way.
+    /// Whether another program changed features of it, in a reload the session made itself,
+    /// that the person hasn't marked seen ([`crate::tab::Tab::outside`], the prototype's
+    /// `d.outside`, DESIGN.md 6c): the changed-outside mark, unless it has errors, and
+    /// "Changed on disk since you opened it." either way. Not while edits are held over a
+    /// change on disk (6d), which its banner and chip say.
     pub changed: bool,
 }
 
@@ -243,7 +246,7 @@ impl DocTab<'_> {
 }
 
 /// A document tab's mark (`.doc-tab .mark`): a dot before its name, for errors (red), or,
-/// with none, for its file changed on disk since it was opened (`.mark.outside`).
+/// with none, for features another program changed, not yet marked seen (`.mark.outside`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TabMark {
     Errors,

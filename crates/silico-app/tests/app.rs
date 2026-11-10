@@ -1088,10 +1088,9 @@ fn tab_described(h: &AppHarness, label: &str) -> Option<String> {
 }
 
 #[test]
-fn a_documents_tab_is_marked_for_its_errors_and_for_its_file_changed_on_disk() {
+fn a_documents_tab_is_marked_for_its_errors_and_for_features_changed_outside_until_seen() {
     // `renderAppbar`'s mark, from what the core says of the session: the cut refused, its
-    // timeline counts an error, and its tab says "has errors"; built, nothing. Edits held
-    // and the file changed on disk: "changed outside".
+    // timeline counts an error, and its tab says "has errors".
     let f = fixture();
     f.kernel.refuse(|op| {
         matches!(op, Op::Boolean { .. })
@@ -1104,27 +1103,50 @@ fn a_documents_tab_is_marked_for_its_errors_and_for_its_file_changed_on_disk() {
     step_until(&mut h, "its tab marked", |h| {
         tab_described(h, "broken.silico").as_deref() == Some("has errors")
     });
+    // Another program renames both blocks while nothing is held: the session reloads, and
+    // the tab is marked changed outside (`d.outside`, 6c) until each is marked seen.
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
+    assert_eq!(tab_described(&h, "blocks.silico"), None);
+    std::fs::write(&path, blocks_renamed()).unwrap();
+    step_until(&mut h, "the marks", |h| {
+        shows(h, "Timeline", BASE_MARK) && shows(h, "Timeline", LID_MARK)
+    });
+    step_until(&mut h, "its tab marked", |h| {
+        tab_described(h, "blocks.silico").as_deref() == Some("changed outside")
+    });
+    for (feature, mark) in [("Base", BASE_MARK), ("Lid", LID_MARK)] {
+        assert_eq!(
+            tab_described(&h, "blocks.silico").as_deref(),
+            Some("changed outside"),
+            "before {feature} was seen"
+        );
+        select(&mut h, feature);
+        h.get_by_role_and_label(Role::Button, "Mark as seen")
+            .click();
+        step_until(&mut h, "its mark gone", |h| !shows(h, "Timeline", mark));
+    }
+    step_until(&mut h, "its tab unmarked", |h| {
+        tab_described(h, "blocks.silico").is_none()
+    });
+    // Edits held over a change on disk (6d) is the banner's and the chip's to say: no mark.
     let f = fixture();
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "the timeline", |h| shows(h, "Timeline", "Hole"));
-    for _ in 0..10 {
-        step(&mut h);
-    }
-    assert_eq!(tab_described(&h, "example.silico"), None);
     select(&mut h, "Pin");
     type_name(&mut h, "s");
     step_until(&mut h, "the edit held", |h| {
         anywhere(h, "example.silico *") && shows(h, "Timeline", "Pins")
     });
-    assert_eq!(tab_described(&h, "example.silico *"), None);
     std::fs::write(
         &path,
         EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#),
     )
     .unwrap();
-    step_until(&mut h, "its tab marked changed", |h| {
-        tab_described(h, "example.silico *").as_deref() == Some("changed outside")
-    });
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, changed));
+    assert_eq!(tab_described(&h, "example.silico *"), None);
     assert_eq!(never_waits::waits(), 0);
 }
 

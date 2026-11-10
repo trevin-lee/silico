@@ -1600,14 +1600,6 @@ impl Tab {
             .map(|(_, ms)| ms)
     }
 
-    /// Whether its file changed on disk, or went, since the session last read or wrote it,
-    /// as `status` last said (its tab's mark, and the status bar's chip).
-    pub fn changed_on_disk(&self) -> bool {
-        self.status
-            .as_ref()
-            .is_some_and(|status| matches!(status.disk, Some(Disk::Changed | Disk::Gone)))
-    }
-
     /// The errors its timeline counts: the gate's, and each feature's problems (the
     /// timeline's summary and the status bar's).
     pub fn errors(&self) -> u64 {
@@ -3774,7 +3766,11 @@ impl Tab {
         self.hush();
         // The session reloads the file changed on disk once the edits are gone: at the
         // person's asking.
-        if self.changed_on_disk() {
+        if self
+            .status
+            .as_ref()
+            .is_some_and(|status| matches!(status.disk, Some(Disk::Changed | Disk::Gone)))
+        {
             self.reload_asked = true;
         }
         // The document goes back to the file's: a dialog or a sketch open on it has nothing
