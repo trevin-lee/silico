@@ -372,6 +372,10 @@ pub const LOOK_AT_NO_FACE: &str = "Look At: select a flat face first.";
 /// (`Tab::measure`).
 pub const LOOK_AT_UNMEASURED: &str = "Look At: the face selected isn't measured yet.";
 
+/// What Look At says of the one face selected when the core's measures of it failed: the
+/// selection view says why.
+pub const LOOK_AT_UNMEASURABLE: &str = "Look At: the face selected couldn't be measured.";
+
 /// What Look At says in sketch mode before the sketch's first read has come. Once it has, a
 /// sketch the rebuild couldn't place (on a face not found) says the read's own error.
 pub const LOOK_AT_UNREAD: &str = "Look At: the sketch isn't read yet.";
@@ -1357,9 +1361,9 @@ impl Tab {
     }
 
     /// The outward normal of the one element selected, if it's a face the core's answer for
-    /// the selection as it is now says is planar; else what Look At says instead.
+    /// the selection as it is now says is planar (only a planar face's entry has a normal);
+    /// else what Look At says instead.
     fn selected_plane_normal(&self) -> Result<[f64; 3], &'static str> {
-        use silico_core::command::elements::ElementType;
         let mut elements = self.selection.elements();
         let (Some(one), None) = (elements.next(), elements.next()) else {
             return Err(LOOK_AT_NO_FACE);
@@ -1373,11 +1377,9 @@ impl Tab {
             .and_then(|of| self.measures.answers(of))
             .and_then(|answers| answers.element.as_ref());
         match answered {
-            Some(Ok(entry)) if entry.r#type == ElementType::Plane => {
-                entry.normal.ok_or(LOOK_AT_NO_FACE)
-            }
-            Some(Ok(_)) => Err(LOOK_AT_NO_FACE),
-            Some(Err(_)) | None => Err(LOOK_AT_UNMEASURED),
+            Some(Ok(entry)) => entry.normal.ok_or(LOOK_AT_NO_FACE),
+            Some(Err(_)) => Err(LOOK_AT_UNMEASURABLE),
+            None => Err(LOOK_AT_UNMEASURED),
         }
     }
 

@@ -38996,6 +38996,19 @@ fn in_the_room(h: &AppHarness, places: &[[f64; 2]], middle: [f64; 2]) {
         about(drawn, room),
         "{middle:?} at {drawn:?}, the room's middle at {room:?}"
     );
+    // The bands are measured from the panels as drawn: sketch mode keeps them, each the
+    // same rectangle as the tree's, about the same middle (the tree's is inside the panel's
+    // border and margins, as far each way).
+    let kept = sketch_mode(h)
+        .unwrap()
+        .panels
+        .expect("the panels kept as drawn");
+    for (which, kept, shown) in [("bar", kept.bar, bar), ("palette", kept.palette, palette)] {
+        assert!(
+            kept.contains_rect(shown) && about(kept.center(), shown.center()),
+            "the {which} kept as {kept:?}, drawn as {shown:?}"
+        );
+    }
 }
 
 /// The 40 × 20 rectangle's corners.
@@ -39268,5 +39281,34 @@ fn in_perspective_front_in_a_first_sketch_still_keeps_its_top_clear_of_the_bar()
         silico_protocol::Projection::Perspective { .. }
     ));
     in_the_room(&h, &[[-50.0, 50.0], [0.0, 50.0], [50.0, 50.0]], [0.0, 0.0]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_on_a_face_the_core_couldnt_measure_says_so_and_the_view_stays() {
+    // The fake refuses to describe the block, so the face's `elements` read fails: Look At
+    // says the face couldn't be measured, not that it isn't yet, and the view stays.
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, silico_core::kernel::Op::DescribeAll { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "the block isn't described"))
+    });
+    let (mut h, _) = f.opened("box.silico", A_BOX);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    select_in_box(&mut h, &["Face6"]);
+    step_until(&mut h, "its measures refused", |h| {
+        let tab = &h.state().tabs()[0];
+        silico_app::measures::Of::now(tab.selection())
+            .and_then(|of| tab.measures().answers(of))
+            .is_some_and(|answers| matches!(answers.element, Some(Err(_))))
+    });
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_UNMEASURABLE)
+    });
+    assert_eq!(view(&h).camera(), &before);
     assert_eq!(never_waits::waits(), 0);
 }

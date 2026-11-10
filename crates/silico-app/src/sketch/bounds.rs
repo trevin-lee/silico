@@ -235,6 +235,20 @@ mod tests {
     }
 
     #[test]
+    fn an_arc_past_the_bottom_axis_point_but_short_of_a_turn_reaches_no_axis_point() {
+        // About the origin from (1, −7), at about 278°, round to (7, −1), at about 352°: past
+        // 270° (3π/2) and short of 360°, so it reaches no axis point. With its centre, the
+        // box is (0, −7) to (7, 0); (0, −√50), the bottom axis point, is outside its sweep.
+        let mut r = read(vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 1.0, -7.0),
+            point("pa000003", 7.0, -1.0),
+        ]);
+        r.members.arcs = vec![arc("pa000001", "pa000002", "pa000003")];
+        assert_eq!(plane_box(&r), Some([[0.0, -7.0], [7.0, 0.0]]));
+    }
+
+    #[test]
     fn an_arc_whose_ends_meet_sweeps_nothing_and_reaches_its_end_and_centre_alone() {
         // From (3, 4) to (3, 4): no sweep, as sketch mode draws it, so nothing past its end
         // and its centre.

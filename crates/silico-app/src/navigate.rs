@@ -742,7 +742,20 @@ mod tests {
             left: 600,
             ..Inset::default()
         };
-        assert_eq!(named_in(NamedView::Front, L, 1000, 800, past), Some(whole));
+        assert_eq!(
+            named_in(NamedView::Front, L, 1000, 800, past),
+            Some(whole.clone())
+        );
+        // Bands that meet: 500 from each side of 1000 leave no column, as none.
+        let meeting = Inset {
+            right: 500,
+            left: 500,
+            ..Inset::default()
+        };
+        assert_eq!(
+            named_in(NamedView::Front, L, 1000, 800, meeting),
+            Some(whole)
+        );
     }
 
     #[test]
@@ -794,6 +807,9 @@ mod tests {
         near(up_across(corner), [-1.0 / s, -1.0 / s, 2.0 / s], 1e-15);
         // Within a millionth of z, still z's; a face a hundredth off it turns z with it.
         assert_eq!(up_across([0.0, 1e-7, 1.0]), [0.0, 1.0, 0.0]);
+        // At exactly a millionth (from (0, 1e-6, 1), +z's part across is (0, −1e-6, 0), its
+        // length 1e-6 to the bit, as √(x²) is x), it steers by that part: −y, not +y.
+        assert_eq!(up_across([0.0, 1e-6, 1.0]), [0.0, -1.0, 0.0]);
         let tipped = [0.0, -0.01, (1.0f64 - 1e-4).sqrt()];
         let up = up_across(tipped);
         assert!(up[1] > 0.99 && up[2] > 0.0, "{up:?}");
