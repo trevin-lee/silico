@@ -38352,9 +38352,7 @@ fn loose_before_legs() -> String {
         .unwrap();
     let (head, legs) = head.split_once(",\n    {\"id\": \"p0000001\"").unwrap();
     let (loose, tail) = loose.split_once('\n').unwrap();
-    format!(
-        "{head},\n    {{\"id\": \"s0000002\"{loose},\n    {{\"id\": \"p0000001\"{legs}\n{tail}"
-    )
+    format!("{head},\n    {{\"id\": \"s0000002\"{loose},\n    {{\"id\": \"p0000001\"{legs}\n{tail}")
 }
 
 /// [`ABSORBED_AND_LOOSE`] with Cut, a pocket of Legs from Profile: Profile's second
