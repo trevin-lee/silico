@@ -64,7 +64,7 @@ use silico_core::command::meshes::MeshElement;
 use silico_core::document::FeatureId;
 use silico_core::naming::Name;
 use silico_protocol::Mesh;
-use silico_render::render::{Hit, MAX_HITS, Pickable, hits};
+use silico_render::render::{Hit, MAX_HITS, Pickable, face_hit, hits};
 
 use crate::boxes::{Boxes, Build};
 use crate::canvas_menu::{
@@ -74,7 +74,7 @@ use crate::icons::Icon;
 use crate::measures::{Measured, Of};
 use crate::menu;
 use crate::renderer::Element;
-use crate::selection::{How, Selection, centre_of, square};
+use crate::selection::{Cast, How, Selection, centre_of, square};
 use crate::theme;
 use crate::viewport::{LeftEvent, LeftKind, SecondaryClick, View, ViewFrame};
 
@@ -328,6 +328,38 @@ impl SelectOther {
     /// view's, never one it has let go.
     pub fn kept_meshes(&self) -> Vec<&Arc<Mesh>> {
         self.boxes.meshes().collect()
+    }
+
+    /// The face under `pixel`'s centre in `frame`: of the bodies it drew (`view`'s meshes of
+    /// them), the one the ray meets first ([`face_hit`]), cast on their boxes. The
+    /// selection's where an edge's stroke covers its pick and the filter takes faces but not
+    /// edges ([`Selection::overlay`]). [`Cast::Empty`] where no face is there, or where no box
+    /// can be made; [`Cast::Waiting`] while a body the frame drew has its boxes still to come
+    /// (asked for as the view takes its mesh, and a frame asked for as they're made): it
+    /// never casts without a body that's drawn.
+    pub(crate) fn face_under(&self, view: &View, frame: &ViewFrame, pixel: [u32; 2]) -> Cast {
+        let mut bodies: Vec<(u32, &Pickable)> = Vec::new();
+        for n in &frame.drawn {
+            let Some(body) = view.bodies().get(n) else {
+                continue;
+            };
+            match self.boxes.made_of(*n, &body.mesh) {
+                Some(pickable) => bodies.push((*n, pickable)),
+                None if self.boxes.failed() => return Cast::Empty,
+                None => return Cast::Waiting,
+            }
+        }
+        let pointer = pixel.map(|c| f64::from(c) + 0.5);
+        match face_hit(
+            &frame.camera,
+            frame.size_px,
+            frame.pixels_per_point,
+            &bodies,
+            pointer,
+        ) {
+            Some(hit) => Cast::Face(hit.body, hit.element),
+            None => Cast::Empty,
+        }
     }
 
     /// Its boxes made by `build` from now on (a test's, to see where and when it runs):
@@ -1449,6 +1481,100 @@ fn paint_foot(ui: &mut Ui, width: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whats_under_a_stroke_waits_while_any_body_drawn_has_its_boxes_to_come() {
+        use std::collections::BTreeMap;
+        const WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+        // Body 1, a 2 by 1 by 1 box from the origin, over body 2, a unit box from
+        // (0.5, 0, −1); seen from above, 4 mm high on 100 by 100 pixels, (x, y) lands at
+        // (50 + 25 (x − 1), 50 − 25 (y − 0.5)): pixel (43, 50)'s centre is (0.74, 0.48), where
+        // the ray meets body 1's top (z 1) first, then body 2's (z 0).
+        let near = Arc::new(silico_render::bench::box_mesh([0.0; 3], [2.0, 1.0, 1.0]));
+        let far = Arc::new(silico_render::bench::box_mesh([0.5, 0.0, -1.0], [1.0; 3]));
+        let held = Arc::as_ptr(&near) as usize;
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = std::sync::Mutex::new(released);
+        let build: Build = Arc::new(move |mesh: Arc<Mesh>| {
+            if Arc::as_ptr(&mesh) as usize == held {
+                released.lock().unwrap().recv_timeout(WAIT).unwrap();
+            }
+            Pickable::new(mesh)
+        });
+        let mut other = SelectOther::default();
+        other.building(build);
+        let ctx = egui::Context::default();
+        let made = |other: &mut SelectOther, meshes: &[(u32, &Arc<Mesh>)], body: u32| {
+            let deadline = std::time::Instant::now() + WAIT;
+            loop {
+                other.boxes.hold(meshes.iter().copied(), &ctx);
+                let mesh = meshes
+                    .iter()
+                    .find(|(n, _)| *n == body)
+                    .map(|(_, mesh)| *mesh);
+                if mesh.is_some_and(|mesh| other.boxes.made_of(body, mesh).is_some()) {
+                    return;
+                }
+                assert!(std::time::Instant::now() < deadline, "never made");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        };
+        // Body 2's boxes made, then body 1's asked for and held: one drawn body has its
+        // boxes, the other not yet.
+        made(&mut other, &[(2, &far)], 2);
+        other.boxes.hold([(1, &near), (2, &far)].into_iter(), &ctx);
+        assert!(other.boxes.made_of(1, &near).is_none());
+        let body = |mesh: &Arc<Mesh>| crate::viewport::ViewBody {
+            feature: FeatureId::new("k7f2qx3m").unwrap(),
+            key: silico_core::recompute::Key::parse(&"01".repeat(32)).unwrap(),
+            level: 0.1,
+            deflection: 0.1,
+            bounds: None,
+            serves: [0.1, 0.2],
+            held: false,
+            mesh: Arc::clone(mesh),
+            faces: Vec::new(),
+            edges: Vec::new(),
+            vertices: Vec::new(),
+        };
+        let view = View::holding(BTreeMap::from([(1, body(&near)), (2, body(&far))]));
+        let frame = ViewFrame {
+            session: silico_core::command::SessionId::parse("s1").unwrap(),
+            rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(100.0)),
+            camera: silico_protocol::Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 4.0 },
+                eye: [1.0, 0.5, 10.0],
+                target: [1.0, 0.5, 0.0],
+                up: [0.0, 1.0, 0.0],
+            },
+            size_px: [100, 100],
+            pixels_per_point: 1.0,
+            pointer_px: None,
+            left: Vec::new(),
+            secondary: Vec::new(),
+            drawn: vec![1, 2],
+            now: std::time::Instant::now(),
+        };
+        // Not known yet, though body 2's top is under it: a cast on body 2 alone would take
+        // it, seen through body 1.
+        assert_eq!(other.face_under(&view, &frame, [43, 50]), Cast::Waiting);
+        // Body 1's made: its top.
+        release.send(()).unwrap();
+        made(&mut other, &[(1, &near), (2, &far)], 1);
+        assert_eq!(
+            other.face_under(&view, &frame, [43, 50]),
+            Cast::Face(1, Element::Face(6))
+        );
+        // Body 1 not drawn (hidden): body 2's top.
+        let hidden = ViewFrame {
+            drawn: vec![2],
+            ..frame
+        };
+        assert_eq!(
+            other.face_under(&view, &hidden, [43, 50]),
+            Cast::Face(2, Element::Face(6))
+        );
+    }
 
     fn menu(rows: usize, phase: Phase) -> Menu {
         let row = |n: u32| Row {

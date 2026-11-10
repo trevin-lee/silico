@@ -2647,27 +2647,10 @@ pub fn hits_among(
     pointer: [f64; 2],
 ) -> Vec<Hit> {
     let _span = tracing::debug_span!("hits", bodies = bodies.len(), lines = lines.len()).entered();
-    let ppp = pixels_per_point;
-    if !(ppp.is_finite() && ppp > 0.0 && ppp <= MAX_PIXELS_PER_POINT) {
+    let Some((caster, line)) =
+        cast_through(camera, size_px, pixels_per_point, bodies, lines, pointer)
+    else {
         return Vec::new();
-    }
-    let inside = pointer
-        .iter()
-        .zip(size_px)
-        .all(|(c, side)| c.is_finite() && *c >= 0.0 && *c < f64::from(side));
-    if !inside {
-        return Vec::new();
-    }
-    let Some(caster) = Caster::new(camera, size_px, f64::from(ppp), bodies, lines) else {
-        return Vec::new();
-    };
-    let Some((origin, direction)) = ray(camera, size_px, pointer) else {
-        return Vec::new();
-    };
-    let line = Line {
-        origin,
-        direction,
-        whole: !caster.projector.perspective,
     };
     let mut found: Vec<Found> = Vec::new();
     for &(body, pickable) in bodies {
@@ -2703,6 +2686,68 @@ pub fn hits_among(
     }
     tracing::debug!(hits = found.len(), under, "cast");
     found.into_iter().map(|f| f.hit).collect()
+}
+
+/// The face under `pointer` nearest the eye: of the faces [`hits`] lists for the same frame,
+/// bodies, and pointer, the first (by depth, then body, then number), refused as `hits`
+/// refuses them (none). It's the face a frame's picking holds at that pixel where nothing is
+/// drawn over it: the selection's where an edge's stroke covers the pointer and the filter
+/// takes faces but not edges, as SolidWorks' face filter selects only faces
+/// (docs/ux/solidworks.md §1, *Selection filters*). Only faces are cast on: no edge or vertex is
+/// sought, so none can crowd it out of `hits`' [`MAX_HITS`]. Its `hidden` is false: no face
+/// is met nearer.
+pub fn face_hit(
+    camera: &Camera,
+    size_px: [u32; 2],
+    pixels_per_point: f32,
+    bodies: &[(u32, &Pickable)],
+    pointer: [f64; 2],
+) -> Option<Hit> {
+    let _span = tracing::debug_span!("face_hit", bodies = bodies.len()).entered();
+    let (caster, line) = cast_through(camera, size_px, pixels_per_point, bodies, &[], pointer)?;
+    let mut found: Vec<Found> = Vec::new();
+    for &(body, pickable) in bodies {
+        caster.faces_met(body, pickable, &line, &mut found);
+    }
+    found.into_iter().map(|f| f.hit).min_by(|a, b| {
+        a.depth
+            .total_cmp(&b.depth)
+            .then_with(|| a.body.cmp(&b.body))
+            .then_with(|| a.element.cmp(&b.element))
+    })
+}
+
+/// [`hits_among`]' and [`face_hit`]'s view of `bodies` (in a frame drawing `lines` too) and
+/// the line through `pointer` they cast along: none for what `hits_among` refuses (a
+/// `pixels_per_point` that isn't above 0 and at most [`MAX_PIXELS_PER_POINT`], a pointer that
+/// isn't finite and inside the image, a camera, bodies, or lines the view refuses).
+fn cast_through(
+    camera: &Camera,
+    size_px: [u32; 2],
+    pixels_per_point: f32,
+    bodies: &[(u32, &Pickable)],
+    lines: &[&Strips],
+    pointer: [f64; 2],
+) -> Option<(Caster, Line)> {
+    let ppp = pixels_per_point;
+    if !(ppp.is_finite() && ppp > 0.0 && ppp <= MAX_PIXELS_PER_POINT) {
+        return None;
+    }
+    let inside = pointer
+        .iter()
+        .zip(size_px)
+        .all(|(c, side)| c.is_finite() && *c >= 0.0 && *c < f64::from(side));
+    if !inside {
+        return None;
+    }
+    let caster = Caster::new(camera, size_px, f64::from(ppp), bodies, lines)?;
+    let (origin, direction) = ray(camera, size_px, pointer)?;
+    let line = Line {
+        origin,
+        direction,
+        whole: !caster.projector.perspective,
+    };
+    Some((caster, line))
 }
 
 /// A hit as [`hits`] orders it: its depth, less its reach for an edge or a vertex.

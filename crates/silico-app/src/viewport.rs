@@ -497,8 +497,8 @@ pub struct View {
     /// Whether a pick takes edges, set from outside (the selection's filter, M5.7): the
     /// renderer's [`crate::renderer::Frame::edges`], which draws each edge near a pick's
     /// square again toward the eye only then, so with edges off an edge is picked where it's
-    /// drawn alone, a concave edge's stroke as a convex one's. On, as the selection's filter
-    /// starts.
+    /// drawn alone, a concave edge's stroke as a convex one's (and the selection takes the
+    /// face cast under it). On, as the selection's filter starts.
     pub edges: bool,
     /// The broken reference's candidate whose card row the pointer is over (flow 6b), set
     /// from outside: drawn with the hover, in [`theme::VIEWPORT_CANDIDATE`] for that frame.
@@ -824,6 +824,29 @@ impl View {
         self.model = Some(of.1);
         self.last_asked = Some(picking.frame);
         self.picked = Some(picking);
+    }
+
+    /// As if another table of bodies had been read, of the same model: a selection's unit
+    /// tests' view.
+    #[cfg(test)]
+    pub(crate) fn tabled_again(&mut self) {
+        self.generation += 1;
+    }
+
+    /// A view holding `bodies`, read from no model: a unit test's.
+    #[cfg(test)]
+    pub(crate) fn holding(bodies: BTreeMap<u32, ViewBody>) -> View {
+        View {
+            bodies,
+            ..View::default()
+        }
+    }
+
+    /// The pick asked of the renderer and not yet given it, taken (as a frame takes it): a
+    /// unit test's, to see whether another is asked after.
+    #[cfg(test)]
+    pub(crate) fn take_asked(&mut self) -> Option<PixelRect> {
+        self.picking.take()
     }
 
     /// The read in flight polled: its answer taken if it has come.
@@ -3294,7 +3317,7 @@ mod tests {
             now: now(),
         };
         let ctx = egui::Context::default();
-        selection.overlay(&mut view, &frame, &ctx);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
         let lit = |body: u32| BTreeSet::from([(body, Element::Face(1)), (body, Element::Face(2))]);
         assert_eq!(view.highlights, lit(1));
         let mesh = Arc::clone(&view.bodies[&1].mesh);
@@ -3302,7 +3325,7 @@ mod tests {
             faces,
             ..meshed(2, 1, 0.03125, Some(mesh))
         }]);
-        selection.overlay(&mut view, &frame, &ctx);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
         assert_eq!(view.highlights, lit(2));
     }
 
