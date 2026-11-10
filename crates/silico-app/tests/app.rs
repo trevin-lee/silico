@@ -20702,22 +20702,22 @@ fn each_sketch_is_read_for_its_browser_prefix_by_its_state_as_solidworks_prefixe
     // What the browser's rows are prefixed by (drawn by the browser's port).
     let prefixes = |h: &AppHarness| {
         ["s0000001", "s0000002", "s0000003", "s0000004"]
-            .map(|id| h.state().tabs()[0].prefixes.prefix(&sketch_id(id)))
+            .map(|id| h.state().tabs()[0].sketch_reads.prefix(&sketch_id(id)))
     };
     step_until(&mut h, "the prefixes", |h| {
         h.state().tabs()[0]
-            .prefixes
+            .sketch_reads
             .state(&sketch_id("s0000004"))
             .is_some()
             && prefixes(h) == [Some("(–)"), Some("(+)"), Some("(?)"), None]
     });
     // Each sketch read once for the model, however many frames pass.
-    let reads = h.state().tabs()[0].prefixes.reads;
+    let reads = h.state().tabs()[0].sketch_reads.reads;
     assert_eq!(reads, 4);
     for _ in 0..20 {
         step(&mut h);
     }
-    assert_eq!(h.state().tabs()[0].prefixes.reads, reads);
+    assert_eq!(h.state().tabs()[0].sketch_reads.reads, reads);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21175,15 +21175,15 @@ fn a_lone_sketchs_prefix_is_read_once_kept_and_drawn_before_its_name_in_the_brow
     let (mut h, _) = f.opened("one.silico", ONE_SKETCH);
     let loose = sketch_id("s0000001");
     step_until(&mut h, "its prefix", |h| {
-        h.state().tabs()[0].prefixes.prefix(&loose) == Some("(–)")
+        h.state().tabs()[0].sketch_reads.prefix(&loose) == Some("(–)")
     });
     // Read once for the model, and kept, however many frames pass.
     for _ in 0..20 {
         step(&mut h);
     }
     let tab = &h.state().tabs()[0];
-    assert_eq!(tab.prefixes.reads, 1);
-    assert_eq!(tab.prefixes.prefix(&loose), Some("(–)"));
+    assert_eq!(tab.sketch_reads.reads, 1);
+    assert_eq!(tab.sketch_reads.prefix(&loose), Some("(–)"));
     // Its browser row draws it (`.row .prefix.under`, `--sk-under` #7a95ff) before its name.
     let row = h
         .get_by_role_and_label(Role::Pane, "Browser")
@@ -21621,12 +21621,12 @@ fn after_an_edit_each_sketch_is_read_once_more_and_a_changed_state_shows_its_pre
     let (mut h, _) = f.opened("four.silico", FOUR_SKETCHES);
     let prefixes = |h: &AppHarness| {
         ["s0000001", "s0000002", "s0000003", "s0000004"]
-            .map(|id| h.state().tabs()[0].prefixes.prefix(&sketch_id(id)))
+            .map(|id| h.state().tabs()[0].sketch_reads.prefix(&sketch_id(id)))
     };
     step_until(&mut h, "the prefixes", |h| {
         prefixes(h) == [Some("(–)"), Some("(+)"), Some("(?)"), None]
     });
-    assert_eq!(h.state().tabs()[0].prefixes.reads, 4);
+    assert_eq!(h.state().tabs()[0].sketch_reads.reads, 4);
     // Loose's one point deleted, in sketch mode: empty, it's fully defined. Its prefix
     // comes from sketch mode's own read; the other three are read once more, of the model
     // the edit published.
@@ -21641,13 +21641,23 @@ fn after_an_edit_each_sketch_is_read_once_more_and_a_changed_state_shows_its_pre
     step(&mut h);
     settled(&mut h);
     step_until(&mut h, "the prefixes again", |h| {
-        h.state().tabs()[0].prefixes.reads == 7
+        h.state().tabs()[0].sketch_reads.reads == 7
             && prefixes(h) == [None, Some("(+)"), Some("(?)"), None]
     });
     for _ in 0..20 {
         step(&mut h);
     }
-    assert_eq!(h.state().tabs()[0].prefixes.reads, 7);
+    assert_eq!(h.state().tabs()[0].sketch_reads.reads, 7);
+    // Cancelled: the transaction rolled back, at a new revision, Loose's point back. Loose,
+    // no longer open, is read again, and its prefix is its read's, sketch mode's no longer.
+    leave_sketch(&mut h, false);
+    step_until(&mut h, "Loose's prefix its read's again", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.sketch_reads
+            .held(&sketch_id("s0000001"))
+            .is_some_and(|held| Some(held.revision) == tab.published)
+            && prefixes(h) == [Some("(–)"), Some("(+)"), Some("(?)"), None]
+    });
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21658,9 +21668,9 @@ fn four_read(f: &Fixture) -> AppHarness {
     step_until(&mut h, "every sketch read", |h| {
         ["s0000001", "s0000002", "s0000003", "s0000004"]
             .iter()
-            .all(|id| h.state().tabs()[0].prefixes.held(&sketch_id(id)).is_some())
+            .all(|id| h.state().tabs()[0].sketch_reads.held(&sketch_id(id)).is_some())
     });
-    assert_eq!(h.state().tabs()[0].prefixes.reads, 4);
+    assert_eq!(h.state().tabs()[0].sketch_reads.reads, 4);
     h
 }
 
@@ -21672,7 +21682,7 @@ fn showing_or_hiding_a_sketch_reads_nothing_and_its_read_is_kept_whole() {
     let f = fixture();
     let mut h = four_read(&f);
     let tab = &h.state().tabs()[0];
-    let tight = tab.prefixes.held(&sketch_id("s0000002")).unwrap();
+    let tight = tab.sketch_reads.held(&sketch_id("s0000002")).unwrap();
     assert_eq!(tight.read.sketch, sketch_id("s0000002"));
     assert_eq!(tight.read.members.points.len(), 2);
     assert!(tight.read.plane.is_ok());
@@ -21684,7 +21694,7 @@ fn showing_or_hiding_a_sketch_reads_nothing_and_its_read_is_kept_whole() {
             step(&mut h);
         }
     }
-    assert_eq!(h.state().tabs()[0].prefixes.reads, 4);
+    assert_eq!(h.state().tabs()[0].sketch_reads.reads, 4);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21702,6 +21712,13 @@ fn after_an_edit_the_shown_sketches_are_read_first() {
             .click();
         step(&mut h);
     }
+    // Three frames on, so Loose's double-click isn't taken for a triple click: egui's time
+    // moves by its step (a quarter second a frame), not the wall clock's, and egui takes a
+    // second click within twice its double-click time (2 × 0.3 s) of the click before last,
+    // here the last eye's, for a third.
+    for _ in 0..3 {
+        step(&mut h);
+    }
     double_click(&mut h, "Browser", "Loose");
     sketch_read(&mut h);
     select_member(
@@ -21712,7 +21729,7 @@ fn after_an_edit_the_shown_sketches_are_read_first() {
     h.key_press(eframe::egui::Key::Delete);
     let order = std::cell::RefCell::new(Vec::new());
     step_until(&mut h, "the three read again", |h| {
-        let reads = &h.state().tabs()[0].prefixes;
+        let reads = &h.state().tabs()[0].sketch_reads;
         let mut order = order.borrow_mut();
         if let Some(id) = reads.reading()
             && reads.reads > 4
@@ -21738,20 +21755,27 @@ fn a_sketchs_read_is_held_till_the_next_revisions_answers_and_never_lapses_betwe
     // The study's test 12: Tight's distance set from 5 to 6 by another client, the solves
     // held, so the model it publishes waits: every frame meanwhile holds each sketch's read
     // of the revision before. Released, each is read again, one at a time, of the new
-    // revision: in no frame between is a sketch's read gone.
+    // revision: in no frame between is a sketch's read gone. Tight's, changed, is replaced;
+    // the other three's, equal, keep their `Arc`s.
     let f = fixture();
     let mut h = four_read(&f);
     let ids = ["s0000001", "s0000002", "s0000003", "s0000004"].map(sketch_id);
     let revisions = |h: &AppHarness| {
         ids.clone().map(|id| {
             h.state().tabs()[0]
-                .prefixes
+                .sketch_reads
                 .held(&id)
                 .map(|held| held.revision)
         })
     };
+    let reads_held = |h: &AppHarness| {
+        ids.clone().map(|id| {
+            Arc::clone(&h.state().tabs()[0].sketch_reads.held(&id).unwrap().read)
+        })
+    };
     let before = revisions(&h);
     assert!(before.iter().all(Option::is_some));
+    let first = reads_held(&h);
     let id = h.state().tabs()[0].id;
     f.sketches.hold();
     let theirs = f.sessions.set_field(
@@ -21762,18 +21786,153 @@ fn a_sketchs_read_is_held_till_the_next_revisions_answers_and_never_lapses_betwe
         json::read(b"6").unwrap(),
     );
     assert!(f.sketches.wait_held(WAIT));
+    // The edit's rebuild held (its sketches' solves), so nothing new is published: each
+    // frame meanwhile holds every read of the revision before, and sends none.
     for _ in 0..20 {
         step(&mut h);
         assert_eq!(revisions(&h), before);
+        let reads = &h.state().tabs()[0].sketch_reads;
+        assert!(reads.reads == 4 && reads.reading().is_none(), "{}", reads.reads);
     }
     f.sketches.release();
     step_until(&mut h, "each read again", |h| {
         let now = revisions(h);
         assert!(now.iter().all(Option::is_some), "a read gone: {now:?}");
-        now.iter().zip(&before).all(|(now, before)| now > before)
+        let tab = &h.state().tabs()[0];
+        tab.published > before[0] && now.iter().all(|now| *now == tab.published)
     });
-    assert_eq!(h.state().tabs()[0].prefixes.reads, 8);
+    assert_eq!(h.state().tabs()[0].sketch_reads.reads, 8);
+    let again = reads_held(&h);
+    assert!(!Arc::ptr_eq(&again[1], &first[1]), "Tight's first read held");
+    let distance = again[1]
+        .members
+        .constraints
+        .iter()
+        .find(|constraint| constraint.id.as_str() == "ka000001")
+        .unwrap();
+    assert_eq!(distance.form.value_text().as_deref(), Some("6"));
+    for k in [0, 2, 3] {
+        assert!(Arc::ptr_eq(&again[k], &first[k]), "{} read anew", ids[k]);
+    }
     theirs.wait().result.unwrap();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_suppressed_by_another_client_drops_its_read_and_the_rest_keep_theirs() {
+    // Tight suppressed by another client: the timeline still lists it, so each of the four
+    // is read again of the model that publishes, and Tight's, refused, is dropped (no
+    // prefix, nothing to draw). The other three's answers equal theirs: the same `Arc`s.
+    let f = fixture();
+    let mut h = four_read(&f);
+    let ids = ["s0000001", "s0000002", "s0000003", "s0000004"].map(sketch_id);
+    let first = ids.clone().map(|id| {
+        Arc::clone(&h.state().tabs()[0].sketch_reads.held(&id).unwrap().read)
+    });
+    let id = h.state().tabs()[0].id;
+    let theirs = f.sessions.suppress_feature(
+        &id,
+        h.state().tabs()[0].revision,
+        ids[1].clone(),
+        true,
+    );
+    theirs.wait().result.unwrap();
+    step_until(&mut h, "each read again", |h| {
+        let reads = &h.state().tabs()[0].sketch_reads;
+        reads.reads == 8 && reads.reading().is_none()
+    });
+    let tab = &h.state().tabs()[0];
+    assert!(tab.browser.sketches.iter().any(|row| row.id == ids[1]));
+    let reads = &tab.sketch_reads;
+    assert!(reads.held(&ids[1]).is_none());
+    assert_eq!(reads.state(&ids[1]), None);
+    assert_eq!(reads.prefix(&ids[1]), None);
+    for k in [0, 2, 3] {
+        let held = reads.held(&ids[k]).unwrap();
+        assert!(Arc::ptr_eq(&held.read, &first[k]), "{} read anew", ids[k]);
+        assert_eq!(Some(held.revision), tab.published);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_read_refused_before_it_reaches_a_model_keeps_the_held_one_and_is_sent_again() {
+    // As many published reads as the session runs at once, held, then Tight's distance set
+    // to 6 by another client: each sketch's read of the model that publishes is refused
+    // before it reaches it (too many reads), naming no model. Every frame meanwhile keeps
+    // each sketch's read of the revision before, and asks again. Released, each is read of
+    // the new revision.
+    use silico_core::command::{MAX_PUBLISHED_READS, ReadCommand};
+    use std::sync::mpsc;
+    let f = fixture();
+    let mut h = four_read(&f);
+    let ids = ["s0000001", "s0000002", "s0000003", "s0000004"].map(sketch_id);
+    let first = ids
+        .clone()
+        .map(|id| h.state().tabs()[0].sketch_reads.held(&id).unwrap().clone());
+    let id = h.state().tabs()[0].id;
+    let (release, released) = mpsc::channel::<()>();
+    let released = Arc::new(Mutex::new(released));
+    let (started, starts) = mpsc::channel::<()>();
+    let held: Vec<_> = (0..MAX_PUBLISHED_READS)
+        .map(|_| {
+            let released = Arc::clone(&released);
+            let started = started.clone();
+            f.sessions
+                .read_model(&id, ReadCommand::Check, ModelChoice::Published, move |_| {
+                    started.send(()).unwrap();
+                    let _ = released.lock().unwrap().recv();
+                    Ok(())
+                })
+        })
+        .collect();
+    for _ in 0..MAX_PUBLISHED_READS {
+        starts.recv_timeout(WAIT).unwrap();
+    }
+    let theirs = f.sessions.set_field(
+        &id,
+        h.state().tabs()[0].revision,
+        ids[1].clone(),
+        "constraints.ka000001.value".to_owned(),
+        json::read(b"6").unwrap(),
+    );
+    theirs.wait().result.unwrap();
+    step_until(&mut h, "the edit's model published", |h| {
+        h.state().tabs()[0].published > Some(first[0].revision)
+    });
+    let sent = h.state().tabs()[0].sketch_reads.reads;
+    for _ in 0..10 {
+        step(&mut h);
+        let reads = &h.state().tabs()[0].sketch_reads;
+        for (id, first) in ids.iter().zip(&first) {
+            let held = reads.held(id).unwrap();
+            assert!(Arc::ptr_eq(&held.read, &first.read), "{id} not kept");
+            assert_eq!(held.revision, first.revision, "{id}");
+        }
+    }
+    // Asked again, frame by frame, though refused each time.
+    assert!(h.state().tabs()[0].sketch_reads.reads >= sent + 5);
+    drop(release);
+    for read in held {
+        read.wait().result.unwrap();
+    }
+    step_until(&mut h, "each read of the edit's model", |h| {
+        let tab = &h.state().tabs()[0];
+        ids.iter().all(|id| {
+            tab.sketch_reads
+                .held(id)
+                .is_some_and(|held| Some(held.revision) == tab.published)
+        })
+    });
+    let reads = &h.state().tabs()[0].sketch_reads;
+    let tight = &reads.held(&ids[1]).unwrap().read;
+    let distance = tight
+        .members
+        .constraints
+        .iter()
+        .find(|constraint| constraint.id.as_str() == "ka000001")
+        .unwrap();
+    assert_eq!(distance.form.value_text().as_deref(), Some("6"));
     assert_eq!(never_waits::waits(), 0);
 }
 

@@ -1232,9 +1232,11 @@ const ORIGIN: [(&str, Icon); 7] = [
 ];
 
 /// A sketch row's prefix, `(–)`, `(+)`, or `(?)` (DESIGN.md, *Errors*: SolidWorks'
-/// definition prefixes), from sketch mode's read of each sketch's state.
+/// definition prefixes), from each sketch's state as its read gives it
+/// ([`SketchReads::state`](crate::sketch::SketchReads::state): sketch mode's, for the sketch
+/// open there).
 fn sketch_prefix(tab: &Tab, id: &FeatureId) -> Option<&'static str> {
-    tab.prefixes.prefix(id)
+    tab.sketch_reads.prefix(id)
 }
 
 /// Whether a sketch's row asks for Edit Sketch by a double-click (its context menu's is the
