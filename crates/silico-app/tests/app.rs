@@ -39695,6 +39695,18 @@ fn eyes_clicked_and_h_write_nothing_to_the_file() {
 
 // ---- Shown sketches drawn in the viewport (the prototype's `syncSketchLines`) ----
 
+/// Every sketch solved as the real solver solves one with no constraints: under defined,
+/// each of its unknowns free (the fake's own answer is fully defined).
+fn under_defined_sketches(f: &Fixture) {
+    f.sketches.answer(|system| {
+        Ok(silico_protocol::Solved {
+            dofs: 2,
+            free: system.unknowns.clone(),
+            ..FakeSketches::as_sent(system)
+        })
+    });
+}
+
 /// The newest recorded frame's lines.
 fn last_lines(record: &Record) -> Vec<silico_app::sketch::lines::FrameLines> {
     record
@@ -39715,6 +39727,7 @@ fn the_frame_holds_each_shown_sketchs_strips_in_its_colour_and_none_while_one_is
     // drawing it. Loose suppressed: none of its, though its eye is open.
     use silico_app::tab::Hideable;
     let f = fixture();
+    under_defined_sketches(&f);
     let (mut h, record) = f.drawn("absorbed.silico", ABSORBED_AND_LOOSE);
     step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
     let lines = last_lines(&record);
@@ -39791,6 +39804,7 @@ fn on_lavapipe_a_shown_sketchs_line_is_drawn_on_its_face_in_eguis_image_and_its_
         || {
             let f = fixture();
             meshes_a_real_box(&f);
+            under_defined_sketches(&f);
             let state = lavapipe_render_state();
             let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
             let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));

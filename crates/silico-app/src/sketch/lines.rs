@@ -650,7 +650,11 @@ mod tests {
         let fid = |text: &str| FeatureId::new(text).unwrap();
         let (first, circle, second) = (fid("s0000001"), fid("s0000002"), fid("s0000003"));
         let reads = [Arc::new(loose()), Arc::new(under(round)), Arc::new(loose())];
-        let shown = [(&first, &reads[0]), (&circle, &reads[1]), (&second, &reads[2])];
+        let shown = [
+            (&first, &reads[0]),
+            (&circle, &reads[1]),
+            (&second, &reads[2]),
+        ];
         let mut lines = ShownLines::default();
         let drawn = lines.frame_within(shown, &camera, 800.0, 20);
         let points: Vec<usize> = drawn.iter().map(|line| line.strips.points()).collect();

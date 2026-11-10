@@ -6274,11 +6274,7 @@ fn a_line_just_behind_a_face_is_drawn_within_its_strokes_reach_and_hidden_past_i
             let size = [512, 384];
             let mm = 44.0 / 384.0;
             let z = 7.0 - 20.5 * mm;
-            assert_pixel(
-                project(&camera, size, [21.0, 0.0, z]),
-                [256.0, 212.5],
-                1e-6,
-            );
+            assert_pixel(project(&camera, size, [21.0, 0.0, z]), [256.0, 212.5], 1e-6);
             let strips = line_at(1.8 * mm, z);
             let image = drawn_image(
                 r,
