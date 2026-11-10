@@ -319,13 +319,24 @@ fn a_cancelled_commits_candidate_still_counting_shows_no_progress_beside_the_rev
         let hold = f.kernel.hold_past_supersede(is_longer_box);
         let edit = longer_by_field(&f, Revision::OPENED);
         assert!(f.kernel.wait_running(1, WAIT));
-        let running = status(&f);
+        // While it runs: revision 1's rebuild running, the candidate's count its progress (one
+        // box, one step, held: none done, the box's running).
         assert_eq!(
-            (running.rebuild.revision, running.rebuild.state),
-            (Revision::OPENED, RebuildState::Running),
+            clockless_rebuild(status(&f).rebuild),
+            Rebuild {
+                revision: Revision::OPENED,
+                state: RebuildState::Running,
+                progress: Some(Progress {
+                    done: 0,
+                    steps: 1,
+                    running: Some("k7f2qx3m box".to_owned()),
+                    features: states(&[("k7f2qx3m", StepState::Running)]),
+                    elapsed: Duration::ZERO,
+                }),
+            },
             "{named:?}"
         );
-        assert!(running.rebuild.progress.is_some(), "{named:?}");
+        let counter = f.session().newest.counter().unwrap();
         assert!(
             f.sessions.cancel(&f.id, named).result.unwrap().stopped,
             "{named:?}"
@@ -335,9 +346,10 @@ fn a_cancelled_commits_candidate_still_counting_shows_no_progress_beside_the_rev
             [cancelled("set_field")],
             "{named:?}"
         );
-        // The candidate's count still runs: its box is held past the stop.
-        let counter = f.session().newest.counter().unwrap();
+        // The candidate's count still runs: its box is held past the stop. (Forgotten by the
+        // session as its commit was refused: read from what was taken while it ran.)
         assert!(!counter.now().ended, "{named:?}");
+        assert!(f.session().newest.counter().is_none(), "{named:?}");
         let stopped = status(&f);
         assert_eq!(
             (
@@ -361,6 +373,25 @@ fn a_cancelled_commits_candidate_still_counting_shows_no_progress_beside_the_rev
             "{named:?}"
         );
         assert_eq!(f.file(), BOX);
+        // An edit in a transaction gives revision 2, the revision the cancelled save would
+        // have given, and starts no rebuild (a transaction's waits for a read): nothing of
+        // the candidate is revision 2's.
+        f.begin();
+        let edited = longer_by_field(&f, Revision::OPENED).wait();
+        assert_eq!(
+            edited.session.unwrap().revision,
+            Revision::from_number(2).unwrap()
+        );
+        let next = status(&f);
+        assert_eq!(
+            (
+                next.rebuild.revision,
+                next.rebuild.state,
+                next.rebuild.progress
+            ),
+            (Revision::from_number(2).unwrap(), RebuildState::Idle, None),
+            "{named:?}"
+        );
     }
 }
 
