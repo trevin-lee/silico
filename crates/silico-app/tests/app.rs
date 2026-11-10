@@ -302,27 +302,31 @@ fn every_pane_has_its_label() {
 /// The prototype's `#main` (styles.css): `grid-template-columns: var(--browser-w) 1fr
 /// var(--right-w)`, `--browser-w: 248px`, `--right-w: 296px`, every box `border-box`, with
 /// `#browser`'s `border-right: 1px` and `#right`'s `border-left: 1px` inside them; `#main`
-/// fills the window's width between the toolbar and the timeline, with no padding.
+/// fills the window's width between the toolbar and the timeline, with no padding. A window
+/// too narrow for them and the canvas's least, 340, takes from the side panes first, down to
+/// their leasts, the browser's column 200 and the property panel's 232 (pane_widths.rs).
 #[test]
 fn the_panes_are_the_prototypes_columns_the_browser_248_the_properties_296_and_the_canvas_the_rest()
 {
-    // The harness draws the app inside a margin of 8 (egui_kittest's `run_ui`:
-    // `Frame::central_panel(..).outer_margin(8.0)`), so a harness 16 more each way gives the
-    // app the window it's named for, its top left at (8, 8).
-    const MARGIN: f32 = 8.0;
-    // (window width and height, the canvas's x and width, the right panel's x), from the
-    // window's left, by hand: the browser 0 to 248 (its border 247 to 248), the right
-    // panel's border the 1 before its panel, the canvas between. At 1280: 1280 − 248 − 296 =
-    // 736, the border at 248 + 736 = 984, the panel from 985 (1280 − 295). At 1600: 1600 −
-    // 544 = 1056, the panel from 1305. At 500, under the side columns' 544: `1fr` is nothing
-    // (`#canvas-wrap`'s `min-width: 0`), the panel's border at 248, the panel from 249 to
-    // 544, past the window's right edge. At the window's least size, 884 by 336 (main.rs):
-    // 884 − 544 = 340, the panel from 589 (884 − 295).
-    for (window, window_h, canvas_w, right_x) in [
-        (1280.0, 800.0, 736.0, 985.0),
-        (1600.0, 800.0, 1056.0, 1305.0),
-        (500.0, 800.0, 0.0, 249.0),
-        (884.0, 336.0, 340.0, 589.0),
+    // (window width and height, the browser's width, the canvas's x and width, the right
+    // panel's x and width), from the window's left, by hand: the browser from 0 (its border
+    // the last point of its column), the right panel's border the 1 before its panel, the
+    // canvas between. At 1280: 1280 − 248 − 296 = 736, the border at 248 + 736 = 984, the
+    // panel from 985 (1280 − 295). At 1600: 1600 − 544 = 1056, the panel from 1305. At 884:
+    // 884 − 544 = 340, the canvas's least, the panel from 589 (884 − 295). At 772 by 336,
+    // the panes' leasts and the canvas's (under the window's least, which the toolbar sets,
+    // main.rs): the side panes at their leasts, 772 − 200 − 232 = 340, the panel from 541
+    // (200 + 340 + 1). At 500, under that: the panes at their
+    // leasts and the canvas the rest, 500 − 432 = 68, the panel from 269. At 400, under the
+    // panes' leasts, 432: the canvas nothing (`#canvas-wrap`'s `min-width: 0`), the panel's
+    // border at 200, the panel from 201 to 432, past the window's right edge.
+    for (window, window_h, browser_w, canvas_w, right_x, right_w) in [
+        (1280.0, 800.0, 247.0, 736.0, 985.0, 295.0),
+        (1600.0, 800.0, 247.0, 1056.0, 1305.0, 295.0),
+        (884.0, 800.0, 247.0, 340.0, 589.0, 295.0),
+        (772.0, 336.0, 199.0, 340.0, 541.0, 231.0),
+        (500.0, 800.0, 199.0, 68.0, 269.0, 231.0),
+        (400.0, 800.0, 199.0, 0.0, 201.0, 231.0),
     ] {
         // Sessions of its own for each window: one holds the file it opened.
         let f = fixture();
@@ -346,9 +350,13 @@ fn the_panes_are_the_prototypes_columns_the_browser_248_the_properties_296_and_t
         };
         let (browser, canvas, right) = (pane("Browser"), pane("Viewport"), pane("Properties"));
         let at = format!("at {window} by {window_h}");
-        assert_eq!((browser.left(), browser.width()), (0.0, 247.0), "{at}");
-        assert_eq!((canvas.left(), canvas.width()), (248.0, canvas_w), "{at}");
-        assert_eq!((right.left(), right.width()), (right_x, 295.0), "{at}");
+        assert_eq!((browser.left(), browser.width()), (0.0, browser_w), "{at}");
+        assert_eq!(
+            (canvas.left(), canvas.width()),
+            (browser_w + 1.0, canvas_w),
+            "{at}"
+        );
+        assert_eq!((right.left(), right.width()), (right_x, right_w), "{at}");
         // Their top the toolbar's bottom: `--top-bar-h` 30, then the toolbar's
         // `--toolbar-tabs-h` 24, `--toolbar-h` 52, and its `border-bottom` 1.
         assert_eq!(browser.top(), 30.0 + 24.0 + 52.0 + 1.0, "{at}");
@@ -378,64 +386,624 @@ fn the_panes_are_the_prototypes_columns_the_browser_248_the_properties_296_and_t
     }
 }
 
-/// The prototype's columns are fixed (`#main`'s `grid-template-columns`, no splitter): either
-/// border, the browser's (247 to 248) or the properties' (984 to 985 at 1280), hovered shows
-/// no resize cursor (`#browser` and `#right` set none), and a drag along it moves neither,
-/// by hand the same 247, 736, and 295 wide after as before.
+// ---- The side panes' borders, dragged (Trevin, 2026-11-09) ----
+//
+// Expected values by hand from the prototype's columns (`--browser-w` 248, `--right-w` 296,
+// each with its 1-point border inside it), the canvas's least (`theme::CANVAS_MIN_WIDTH`,
+// 340: a banner's least 320 and 10 at each side), and the panes' leasts (the browser's
+// column 200, the property panel's 232; crate::pane_widths says how they were chosen). A
+// pane's own rect is its column less its border.
+
+/// The harness's margin round the app (egui_kittest's `run_ui`: `Frame::central_panel(..)
+/// .outer_margin(8.0)`): a harness 16 more each way gives the app the window it's named
+/// for, its top left at (8, 8).
+const MARGIN: f32 = 8.0;
+
+/// The app `make` makes, in the app's look, in a window `window` points wide and 800 high,
+/// the M2.1 example open from `name` and its panes shown.
+fn in_window(
+    f: &Fixture,
+    name: &str,
+    window: f32,
+    make: impl FnOnce(App<Fake>) -> App<Fake>,
+) -> AppHarness {
+    let path = f.file(name, EXAMPLE);
+    let app = make(App::new(Arc::clone(&f.sessions)));
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((window + 2.0 * MARGIN, 800.0 + 2.0 * MARGIN))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    silico_app::theme::apply(&h.ctx);
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(&mut h, "the panes", |h| {
+        h.query_by_role_and_label(Role::Pane, "Viewport").is_some()
+    });
+    step(&mut h);
+    h
+}
+
+/// The window made `window` points wide (800 high), and laid out again.
+fn resized(h: &mut AppHarness, window: f32) {
+    h.set_size(eframe::egui::vec2(
+        window + 2.0 * MARGIN,
+        800.0 + 2.0 * MARGIN,
+    ));
+    step(h);
+    step(h);
+}
+
+/// The browser's, the viewport's, and the property panel's panes, each its left (from the
+/// window's) and its width.
+fn columns(h: &AppHarness) -> [(f32, f32); 3] {
+    ["Browser", "Viewport", "Properties"].map(|label| {
+        let rect = h.get_by_role_and_label(Role::Pane, label).rect();
+        (rect.left() - MARGIN, rect.width())
+    })
+}
+
+/// The point `x` from the window's left, 200 below the toolbar's bottom (`--top-bar-h` 30,
+/// `--toolbar-tabs-h` 24, `--toolbar-h` 52, and its border, 107), on the panes.
+fn on_panes(x: f32) -> eframe::egui::Pos2 {
+    eframe::egui::pos2(MARGIN + x, MARGIN + 107.0 + 200.0)
+}
+
+/// Whether the last frame asked for the horizontal resize cursor.
+fn resize_cursor(h: &AppHarness) -> bool {
+    h.output().platform_output.cursor_icon == eframe::egui::CursorIcon::ResizeHorizontal
+}
+
+/// The primary button pressed at `x` from the window's left, on the panes, a frame after
+/// the pointer comes there.
+fn press_at(h: &mut AppHarness, x: f32) {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    h.hover_at(on_panes(x));
+    step(h);
+    h.event(Event::PointerButton {
+        pos: on_panes(x),
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    step(h);
+}
+
+/// The pointer, held, moved to `to` from the window's left in 8 even steps from `from`, a
+/// frame each, the resize cursor asked for at each.
+#[track_caller]
+fn pointer_moved(h: &mut AppHarness, from: f32, to: f32) {
+    for i in 1..=8u8 {
+        h.hover_at(on_panes(from + (to - from) * f32::from(i) / 8.0));
+        step(h);
+        assert!(
+            resize_cursor(h),
+            "no resize cursor {i}/8 of the way to {to}"
+        );
+    }
+}
+
+/// The primary button released at `x`, and the frame after it laid out.
+fn released_at(h: &mut AppHarness, x: f32) {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    h.event(Event::PointerButton {
+        pos: on_panes(x),
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(h);
+    step(h);
+}
+
+/// A border at `from` dragged to `to` and let go.
+#[track_caller]
+fn border_dragged(h: &mut AppHarness, from: f32, to: f32) {
+    press_at(h, from);
+    pointer_moved(h, from, to);
+    released_at(h, to);
+}
+
+/// The resize cursor is asked for over either side pane's inner border, the browser's (247
+/// to 248) and the property panel's (984 to 985 at 1280), and not away from them; a drag on
+/// one moves its column by the drag's distance, the canvas taking up the difference, the
+/// other column where it was: the browser's 80 right, 248 to 328, the canvas 736 to 656;
+/// then the property panel's 60 left, 296 to 356, the canvas 656 to 596.
 #[test]
-fn a_drag_on_a_panes_border_resizes_no_column() {
-    use eframe::egui::{Event, Modifiers, PointerButton, pos2, vec2};
-    const MARGIN: f32 = 8.0;
+fn a_drag_on_a_side_panes_border_moves_its_column_by_the_drag_and_the_canvas_takes_the_rest() {
+    let f = fixture();
+    let mut h = in_window(&f, "example.silico", 1280.0, |app| app);
+    assert_eq!(columns(&h), [(0.0, 247.0), (248.0, 736.0), (985.0, 295.0)]);
+    for (x, over) in [
+        (247.5, true),
+        (984.5, true),
+        // Inside egui's grab radius, 3 at each side of the border: the handle 244 to 251,
+        // and 981 to 988; a point past either end, over a row or the canvas, not. (Over the
+        // property panel's rows, which take no click, egui reaches the nearest widget within
+        // its interact radius, 5, so there the handle answers to 993; 994 is past it.)
+        (245.0, true),
+        (250.0, true),
+        (982.0, true),
+        (987.0, true),
+        (244.5, true),
+        (250.5, true),
+        (981.5, true),
+        (987.5, true),
+        (243.0, false),
+        (252.0, false),
+        (980.0, false),
+        (994.0, false),
+        // Well away: the browser, the canvas, the property panel.
+        (200.0, false),
+        (300.0, false),
+        (900.0, false),
+        (1100.0, false),
+    ] {
+        h.hover_at(on_panes(x));
+        step(&mut h);
+        assert_eq!(resize_cursor(&h), over, "at {x}");
+    }
+    border_dragged(&mut h, 247.5, 327.5);
+    assert_eq!(columns(&h), [(0.0, 327.0), (328.0, 656.0), (985.0, 295.0)]);
+    border_dragged(&mut h, 984.5, 924.5);
+    assert_eq!(columns(&h), [(0.0, 327.0), (328.0, 596.0), (925.0, 355.0)]);
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (328.0, 356.0));
+    // A press and a release on the border with no move between: a click, which nothing
+    // under the border takes, and no column moved.
+    press_at(&mut h, 327.5);
+    released_at(&mut h, 327.5);
+    assert_eq!(columns(&h), [(0.0, 327.0), (328.0, 596.0), (925.0, 355.0)]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A drag past a bound stops there: the browser's border 100 left of 248 stops at its
+/// least, 200, and comes back as the pointer does, 20 left of where it was pressed, 228;
+/// 1000 right, where the canvas is at its least beside 296, 1280 − 296 − 340 = 644. Then
+/// the property panel's 200 right stops at its least, 232, the canvas 1280 − 644 − 232 =
+/// 404; and 1000 left at the canvas's least beside 644, 1280 − 644 − 340 = 296.
+#[test]
+fn a_drag_past_a_panes_least_or_the_canvases_stops_at_it() {
+    let f = fixture();
+    let mut h = in_window(&f, "example.silico", 1280.0, |app| app);
+    press_at(&mut h, 247.5);
+    pointer_moved(&mut h, 247.5, 147.5);
+    step(&mut h);
+    assert_eq!(columns(&h), [(0.0, 199.0), (200.0, 784.0), (985.0, 295.0)]);
+    // The width chosen stops there too, not only the width laid out.
+    assert_eq!(h.state().pane_widths().browser, 200.0);
+    pointer_moved(&mut h, 147.5, 227.5);
+    released_at(&mut h, 227.5);
+    assert_eq!(columns(&h), [(0.0, 227.0), (228.0, 756.0), (985.0, 295.0)]);
+    border_dragged(&mut h, 227.5, 1227.5);
+    assert_eq!(columns(&h), [(0.0, 643.0), (644.0, 340.0), (985.0, 295.0)]);
+    border_dragged(&mut h, 984.5, 1184.5);
+    assert_eq!(columns(&h), [(0.0, 643.0), (644.0, 404.0), (1049.0, 231.0)]);
+    border_dragged(&mut h, 1048.5, 48.5);
+    assert_eq!(columns(&h), [(0.0, 643.0), (644.0, 340.0), (985.0, 295.0)]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A narrower window takes from the side panes before the canvas goes below its least, 340,
+/// each pane giving in proportion to how far it is above its least (the browser 248 − 200 =
+/// 48, the property panel 296 − 232 = 64, 112 in all), to whole points: at 800, 84 over
+/// (248 + 296 + 340 − 800), the browser gives 84 · 48 / 112 = 36, the property panel 48:
+/// 212 and 248. At 772, 112 over, both at their leasts; at 700, the canvas below its own,
+/// 700 − 200 − 232 = 268. Wide again, the panes are as they were chosen. From a browser
+/// dragged to 600, at 1000: 236 over, the rooms 400 and 64, 464; the browser gives
+/// 236 · 400 / 464 = 203.4, 203, the property panel 33: 397 and 263.
+#[test]
+fn a_narrower_window_takes_from_the_side_panes_before_the_canvas_goes_below_its_least() {
+    let f = fixture();
+    let mut h = in_window(&f, "example.silico", 1280.0, |app| app);
+    for (window, want) in [
+        (884.0, [(0.0, 247.0), (248.0, 340.0), (589.0, 295.0)]),
+        (800.0, [(0.0, 211.0), (212.0, 340.0), (553.0, 247.0)]),
+        (772.0, [(0.0, 199.0), (200.0, 340.0), (541.0, 231.0)]),
+        (700.0, [(0.0, 199.0), (200.0, 268.0), (469.0, 231.0)]),
+        (1280.0, [(0.0, 247.0), (248.0, 736.0), (985.0, 295.0)]),
+    ] {
+        resized(&mut h, window);
+        assert_eq!(columns(&h), want, "at {window}");
+    }
+    border_dragged(&mut h, 247.5, 599.5);
+    assert_eq!(columns(&h), [(0.0, 599.0), (600.0, 384.0), (985.0, 295.0)]);
+    resized(&mut h, 1000.0);
+    assert_eq!(columns(&h), [(0.0, 396.0), (397.0, 340.0), (738.0, 262.0)]);
+    // The widths chosen are kept as they were: the window's to lay out, not the person's.
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (600.0, 296.0));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Where these tests keep the panes' widths: in a folder not yet made, never the
+/// platform's own.
+fn widths_file(f: &Fixture) -> PathBuf {
+    f.dir.path().join("app-data").join("pane-widths")
+}
+
+/// The app keeping its panes' widths in `file`, in a window 1280 wide, the example open
+/// from `name`, the file read.
+fn keeping_widths(f: &Fixture, name: &str, file: &Path) -> AppHarness {
+    use silico_app::pane_widths::KeptWidths;
+    let file = file.to_owned();
+    let mut h = in_window(f, name, 1280.0, |app| {
+        app.keeping_widths(KeptWidths::at(file))
+    });
+    step_until(&mut h, "the widths read", |h| {
+        h.state().kept_widths().is_read()
+    });
+    step(&mut h);
+    h
+}
+
+/// The text of `file` once it's `want`, within [`WAIT`].
+#[track_caller]
+fn file_reads(file: &Path, want: &str) {
+    let deadline = Instant::now() + WAIT;
+    while std::fs::read_to_string(file).ok().as_deref() != Some(want) {
+        assert!(
+            Instant::now() < deadline,
+            "{} never read {want:?}",
+            file.display()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// A restart lays the panes out as they were left: the widths a drag leaves written to the
+/// file once the drag ends (none while it's held), and a new app on the same file reads
+/// them back, the browser 300 and the property panel 336, the canvas 1280 − 636 = 644.
+#[test]
+fn a_restart_lays_the_panes_out_at_the_widths_last_dragged_to() {
+    let f = fixture();
+    let file = widths_file(&f);
+    let mut h = keeping_widths(&f, "first.silico", &file);
+    assert_eq!(columns(&h), [(0.0, 247.0), (248.0, 736.0), (985.0, 295.0)]);
+    // Held: laid out as it goes, but nothing written till it's let go.
+    press_at(&mut h, 247.5);
+    pointer_moved(&mut h, 247.5, 299.5);
+    step(&mut h);
+    assert_eq!(columns(&h)[0], (0.0, 299.0));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!file.exists(), "written while the drag is held");
+    released_at(&mut h, 299.5);
+    file_reads(&file, "silico pane-widths 1\nbrowser 300\nproperties 296\n");
+    border_dragged(&mut h, 984.5, 944.5);
+    file_reads(&file, "silico pane-widths 1\nbrowser 300\nproperties 336\n");
+    drop(h);
+    let again = keeping_widths(&f, "again.silico", &file);
+    assert_eq!(
+        columns(&again),
+        [(0.0, 299.0), (300.0, 644.0), (945.0, 335.0)]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A widths file that isn't one is the prototype's widths, and widths out of range are
+/// clamped, then laid out: the browser's 100 to its least, 200; the property panel's 9000
+/// to the widest, 8192, which at 1280 gives back 200 + 8192 + 340 − 1280 = 7452, all its
+/// own (the browser has no room), 740. The file is left as it was.
+#[test]
+fn a_widths_file_that_doesnt_parse_is_the_defaults_and_one_out_of_range_is_clamped() {
+    let f = fixture();
+    let file = widths_file(&f);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    for (n, junk) in [
+        "",
+        "silico pane-widths 1\nbrowser 300\n",
+        "silico pane-widths 2\nbrowser 300\nproperties 320\n",
+        "silico pane-widths 1\nbrowser 300.5\nproperties 320\n",
+        "silico pane-widths 1\nbrowser -300\nproperties 320\n",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        std::fs::write(&file, junk).unwrap();
+        let h = keeping_widths(&f, &format!("junk-{n}.silico"), &file);
+        assert_eq!(
+            columns(&h),
+            [(0.0, 247.0), (248.0, 736.0), (985.0, 295.0)],
+            "{junk:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), junk);
+    }
+    let out = "silico pane-widths 1\nbrowser 100\nproperties 9000\n";
+    std::fs::write(&file, out).unwrap();
+    let h = keeping_widths(&f, "out.silico", &file);
+    assert_eq!(columns(&h), [(0.0, 199.0), (200.0, 340.0), (541.0, 739.0)]);
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (200.0, 8192.0));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), out);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// In a window narrow enough that the panes give width back, a drag moves only its own
+/// column, by its distance, the other held at the width it's shown at: at 800, from 248
+/// and 296, the columns are 212, 340, 248 (84 over; the browser gives 84 · 48 / 112 = 36,
+/// the property panel 48). The browser's border 10 left: 202, the property panel held at
+/// 248, the canvas 800 − 202 − 248 = 350. Let go, the browser's choice is 202 and the
+/// property panel's still 296: 38 over, the rooms 2 and 64, the browser gives 38 · 2 / 66 =
+/// 1.15, 1, the property panel 37, so 201, 340, 259. At 1280 again, the property panel is
+/// back at its 296 and the browser at the 202 it was dragged to: the canvas 782.
+#[test]
+fn a_drag_in_a_narrowed_window_moves_its_column_alone_and_keeps_the_others_choice() {
+    let f = fixture();
+    let mut h = in_window(&f, "example.silico", 1280.0, |app| app);
+    resized(&mut h, 800.0);
+    assert_eq!(columns(&h), [(0.0, 211.0), (212.0, 340.0), (553.0, 247.0)]);
+    press_at(&mut h, 211.5);
+    // One move of 10, past egui's 6 before a press is a drag.
+    h.hover_at(on_panes(201.5));
+    step(&mut h);
+    step(&mut h);
+    assert!(resize_cursor(&h));
+    assert_eq!(columns(&h), [(0.0, 201.0), (202.0, 350.0), (553.0, 247.0)]);
+    released_at(&mut h, 201.5);
+    assert_eq!(columns(&h), [(0.0, 200.0), (201.0, 340.0), (542.0, 258.0)]);
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (202.0, 296.0));
+    resized(&mut h, 1280.0);
+    assert_eq!(columns(&h), [(0.0, 201.0), (202.0, 782.0), (985.0, 295.0)]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The widths file read only once a drag is under way (its read held till then): the
+/// person's drag wins. Dragged to 300 with the property panel at 296, the file's 400 and
+/// 260 then read: the columns stay 300 and 296, during the drag and after, and the file is
+/// written with them as the drag ends.
+#[test]
+fn a_widths_file_read_while_a_border_is_dragged_never_moves_the_panes() {
+    use silico_app::pane_widths::KeptWidths;
+    let f = fixture();
+    let file = widths_file(&f);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "silico pane-widths 1\nbrowser 400\nproperties 260\n").unwrap();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let read: silico_app::pane_widths::Read = Box::new(move |file| {
+        released.recv().ok()?;
+        std::fs::read(file).ok()
+    });
+    let kept = file.clone();
+    let mut h = in_window(&f, "example.silico", 1280.0, move |app| {
+        app.keeping_widths(KeptWidths::reading(kept, read))
+    });
+    assert!(!h.state().kept_widths().is_read());
+    press_at(&mut h, 247.5);
+    pointer_moved(&mut h, 247.5, 299.5);
+    step(&mut h);
+    assert_eq!(columns(&h), [(0.0, 299.0), (300.0, 684.0), (985.0, 295.0)]);
+    release.send(()).unwrap();
+    step_until(&mut h, "the widths read", |h| {
+        h.state().kept_widths().is_read()
+    });
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(columns(&h), [(0.0, 299.0), (300.0, 684.0), (985.0, 295.0)]);
+    released_at(&mut h, 299.5);
+    assert_eq!(columns(&h), [(0.0, 299.0), (300.0, 684.0), (985.0, 295.0)]);
+    file_reads(&file, "silico pane-widths 1\nbrowser 300\nproperties 296\n");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A drag whose release the panes never see, their tab closed under it (Ctrl+W mid-drag,
+/// the start page shown), ends once the button is up, and its widths are kept: the
+/// browser dragged 52 right, 300, beside the property panel's 296.
+#[test]
+fn a_drag_let_go_after_its_tab_closed_is_kept() {
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let file = widths_file(&f);
+    let mut h = keeping_widths(&f, "closed.silico", &file);
+    press_at(&mut h, 247.5);
+    pointer_moved(&mut h, 247.5, 299.5);
+    step(&mut h);
+    assert_eq!(columns(&h)[0], (0.0, 299.0));
+    h.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    assert!(h.state().start_shown());
+    released_at(&mut h, 299.5);
+    file_reads(&file, "silico pane-widths 1\nbrowser 300\nproperties 296\n");
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (300.0, 296.0));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A drag ends as the window loses the focus, where egui keeps the button down and the
+/// release may never come: the browser dragged 52 right, 300, the focus lost, then the
+/// pointer 50 further with the button still down by egui's count: the column stays at
+/// 300, the resize cursor isn't asked for, and 300 and 296 are kept at once.
+#[test]
+fn a_drag_ends_as_the_window_loses_the_focus_and_is_kept() {
+    use eframe::egui::Event;
+    let f = fixture();
+    let file = widths_file(&f);
+    let mut h = keeping_widths(&f, "focus.silico", &file);
+    press_at(&mut h, 247.5);
+    pointer_moved(&mut h, 247.5, 299.5);
+    step(&mut h);
+    assert_eq!(columns(&h)[0], (0.0, 299.0));
+    h.event(Event::WindowFocused(false));
+    step(&mut h);
+    file_reads(&file, "silico pane-widths 1\nbrowser 300\nproperties 296\n");
+    for x in [324.5, 349.5] {
+        h.hover_at(on_panes(x));
+        step(&mut h);
+    }
+    step(&mut h);
+    assert_eq!(columns(&h), [(0.0, 299.0), (300.0, 684.0), (985.0, 295.0)]);
+    assert!(!resize_cursor(&h));
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (300.0, 296.0));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Only the primary button drags a border: a middle-button drag from the browser's border
+/// 80 right moves no column, and the widths chosen are the prototype's still.
+#[test]
+fn a_middle_button_drag_on_a_border_resizes_nothing() {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let f = fixture();
+    let mut h = in_window(&f, "example.silico", 1280.0, |app| app);
+    let button = |h: &AppHarness, x: f32, pressed: bool| {
+        h.event(Event::PointerButton {
+            pos: on_panes(x),
+            button: PointerButton::Middle,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    };
+    h.hover_at(on_panes(247.5));
+    step(&mut h);
+    button(&h, 247.5, true);
+    step(&mut h);
+    for i in 1..=8u8 {
+        h.hover_at(on_panes(247.5 + 10.0 * f32::from(i)));
+        step(&mut h);
+    }
+    button(&h, 327.5, false);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(columns(&h), [(0.0, 247.0), (248.0, 736.0), (985.0, 295.0)]);
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (248.0, 296.0));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The thread keeping the panes' widths asks the window for a frame as it tells what it
+/// read, so a window drawing nothing else lays them out: with no document open (no rebuild
+/// to wake it), the read held, then let go, a frame is asked for with none stepped.
+#[test]
+fn the_widths_read_ask_the_window_for_a_frame() {
+    use silico_app::pane_widths::KeptWidths;
+    use std::sync::atomic::AtomicU64;
+    let f = fixture();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let read: silico_app::pane_widths::Read = Box::new(move |_| {
+        released.recv().ok()?;
+        Some(b"silico pane-widths 1\nbrowser 300\nproperties 260\n".to_vec())
+    });
+    let file = widths_file(&f);
+    let mut h = f.app_made(|app| app.keeping_widths(KeptWidths::reading(file, read)));
+    let asked = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&asked);
+    h.ctx.set_request_repaint_callback(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+    });
+    step(&mut h);
+    step(&mut h);
+    assert!(!h.state().kept_widths().is_read());
+    let before = asked.load(Ordering::SeqCst);
+    release.send(()).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while asked.load(Ordering::SeqCst) == before {
+        assert!(Instant::now() < deadline, "no frame asked for");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    step(&mut h);
+    assert!(h.state().kept_widths().is_read());
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (300.0, 260.0));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// At the window's least size, 888 by 336 (main.rs: the toolbar's least, wider than the
+/// panes' leasts and the canvas's, 772), the app bar, the toolbar, and the status bar lay
+/// out: every button and tab in them inside the window and none over another, with a part
+/// open and in sketch mode, whose panels and Finish Sketch make the toolbar's widest row,
+/// Finish Sketch at least 15 right of the last panel's label (that panel's padding 6 and
+/// border 1, then `.tb-finish`'s 8).
+#[test]
+fn at_the_windows_least_width_the_app_bar_toolbar_and_status_bar_fit() {
+    let least = (
+        silico_app::theme::WINDOW_MIN_WIDTH,
+        silico_app::theme::WINDOW_MIN_HEIGHT,
+    );
     let f = fixture();
     let path = f.file("example.silico", EXAMPLE);
     let app = App::new(Arc::clone(&f.sessions));
     let mut h = {
         let _marked = never_waits::marked();
         Harness::builder()
-            .with_size((1280.0 + 2.0 * MARGIN, 800.0 + 2.0 * MARGIN))
+            .with_size((least.0 + 2.0 * MARGIN, least.1 + 2.0 * MARGIN))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
+    silico_app::theme::apply(&h.ctx);
     h.state_mut().open(path.to_str().unwrap(), false);
-    step_until(&mut h, "the panes", |h| {
-        h.query_by_role_and_label(Role::Pane, "Viewport").is_some()
+    step_until(&mut h, "the timeline read", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.timeline.is_some())
     });
     step(&mut h);
-    let widths = |h: &Harness<'_, App<Fake>>| {
-        ["Browser", "Viewport", "Properties"]
-            .map(|label| h.get_by_role_and_label(Role::Pane, label).rect().width())
+    // Each button and tab wholly in a bar: the app bar and the toolbar above the panes (30
+    // and 77), and the status bar (24) at the window's bottom; what the panes scroll under
+    // the status bar isn't in it.
+    let in_bars = |h: &AppHarness| -> Vec<(String, eframe::egui::Rect)> {
+        let top = MARGIN..=MARGIN + 107.0;
+        let bottom = MARGIN + least.1 - 24.0..=MARGIN + least.1;
+        h.root()
+            .query_all(egui_kittest::kittest::by().recursive(true))
+            .filter(|node| matches!(node.accesskit_node().role(), Role::Button | Role::Tab))
+            .filter_map(|node| {
+                let node = node.accesskit_node();
+                let rect = node.bounding_box()?;
+                let rect = eframe::egui::Rect::from_min_max(
+                    eframe::egui::pos2(rect.x0 as f32, rect.y0 as f32),
+                    eframe::egui::pos2(rect.x1 as f32, rect.y1 as f32),
+                );
+                let within = |band: &std::ops::RangeInclusive<f32>| {
+                    band.contains(&rect.top()) && band.contains(&rect.bottom())
+                };
+                (within(&top) || within(&bottom)).then(|| (node.label().unwrap_or_default(), rect))
+            })
+            .collect()
     };
-    assert_eq!(widths(&h), [247.0, 736.0, 295.0]);
-    let middle = MARGIN + 30.0 + 24.0 + 52.0 + 1.0 + 200.0;
-    for border in [247.5, 984.5] {
-        let from = pos2(MARGIN + border, middle);
-        h.hover_at(from);
-        step(&mut h);
-        assert_ne!(
-            h.output().platform_output.cursor_icon,
-            eframe::egui::CursorIcon::ResizeHorizontal,
-            "the border at {border}"
-        );
-        h.event(Event::PointerButton {
-            pos: from,
-            button: PointerButton::Primary,
-            pressed: true,
-            modifiers: Modifiers::NONE,
-        });
-        step(&mut h);
-        for i in 1..=8u8 {
-            h.hover_at(from + vec2(10.0 * f32::from(i), 0.0));
-            step(&mut h);
+    let fits = |h: &AppHarness, what: &str| {
+        let placed = in_bars(h);
+        assert!(placed.len() > 10, "{what}: {placed:?}");
+        for (label, rect) in &placed {
+            assert!(
+                rect.left() >= MARGIN - 0.5 && rect.right() <= MARGIN + least.0 + 0.5,
+                "{what}: {label} at {rect:?}, past the window"
+            );
         }
-        h.event(Event::PointerButton {
-            pos: from + vec2(80.0, 0.0),
-            button: PointerButton::Primary,
-            pressed: false,
-            modifiers: Modifiers::NONE,
-        });
-        step(&mut h);
-        step(&mut h);
-        assert_eq!(widths(&h), [247.0, 736.0, 295.0], "the border at {border}");
-    }
+        for (at, (label, rect)) in placed.iter().enumerate() {
+            for (other, place) in &placed[at + 1..] {
+                let both = rect.intersect(*place);
+                let nested = rect.contains_rect(*place) || place.contains_rect(*rect);
+                assert!(
+                    nested || both.width() <= 0.5 || both.height() <= 0.5,
+                    "{what}: {label} at {rect:?} over {other} at {place:?}"
+                );
+            }
+        }
+    };
+    fits(&h, "a part open");
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    step(&mut h);
+    fits(&h, "in sketch mode");
+    let placed = in_bars(&h);
+    let finish = placed
+        .iter()
+        .find(|(label, _)| label == "Finish Sketch")
+        .map(|(_, rect)| *rect)
+        .unwrap();
+    let last = placed
+        .iter()
+        .filter(|(label, rect)| {
+            // The toolbar's row: under the app bar, over the panes.
+            let toolbar = rect.top() > MARGIN + 30.0 && rect.bottom() <= MARGIN + 107.0;
+            toolbar && label != "Finish Sketch"
+        })
+        .map(|(_, rect)| rect.right())
+        .fold(f32::MIN, f32::max);
+    assert!(
+        finish.left() - last >= 15.0,
+        "Finish Sketch at {finish:?}, the panels to {last}"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -556,7 +1124,9 @@ fn a_document_the_gate_refuses_opens_with_its_problems_shown() {
         assert!(features.contains(&name.to_owned()), "{name}: {features:?}");
     }
     // No feature can be made in it: only `replace_text` mends it.
-    assert!(create_off(&mut h, "Box"));
+    for kind in ["Pad", "Pocket", "Revolve", "Groove"] {
+        assert!(create_off(&mut h, kind), "{kind}");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -744,7 +1314,7 @@ fn an_agents_commit_reloads_with_no_edits_held_and_is_announced_with_edits_held(
 }
 
 #[test]
-fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtaken() {
+fn a_reload_with_nothing_held_is_announced_in_the_info_tone_until_dismissed_or_overtaken() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
@@ -773,7 +1343,7 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
     h.get_by_role_and_label(Role::Button, "Dismiss").click();
     step_until(&mut h, "dismissed", |h| !anywhere(h, reloaded));
     // Reloaded again, then changed on disk with an edit held: the amber banner takes its
-    // place, and once the edits are kept the purple one doesn't come back.
+    // place, and once the edits are kept the info one doesn't come back.
     std::fs::write(
         &path,
         EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#),
@@ -801,7 +1371,7 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
     for _ in 0..10 {
         step(&mut h);
         assert!(!anywhere(&h, changed), "the amber banner came back");
-        assert!(!anywhere(&h, reloaded), "the purple banner came back");
+        assert!(!anywhere(&h, reloaded), "the info banner came back");
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -830,15 +1400,15 @@ fn row_feature(h: &AppHarness, text: &str) -> String {
         .unwrap_or_else(|| panic!("no row reads {text}"))
 }
 
-/// The purple banner's title for the example's reload.
+/// The info banner's title for the example's reload.
 const RELOADED: &str = "Reloaded example.silico: another program changed it on disk";
 
-/// Frames stepped, the purple banner absent after each.
+/// Frames stepped, the info banner absent after each.
 #[track_caller]
 fn never_reloaded(h: &mut AppHarness, after: &str) {
     for _ in 0..10 {
         step(h);
-        assert!(!anywhere(h, RELOADED), "the purple banner after {after}");
+        assert!(!anywhere(h, RELOADED), "the info banner after {after}");
     }
 }
 
@@ -854,7 +1424,7 @@ fn written_outside(h: &mut AppHarness, path: &Path, name: &str) {
 }
 
 #[test]
-fn the_purple_banner_comes_only_from_the_sessions_own_reload() {
+fn the_info_banner_comes_only_from_the_sessions_own_reload() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
@@ -884,7 +1454,7 @@ fn the_purple_banner_comes_only_from_the_sessions_own_reload() {
 }
 
 #[test]
-fn a_reload_the_person_asked_for_shows_no_purple_banner() {
+fn a_reload_the_person_asked_for_shows_no_info_banner() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
@@ -935,7 +1505,7 @@ fn a_reload_the_person_asked_for_shows_no_purple_banner() {
 }
 
 #[test]
-fn esc_dismisses_the_purple_banner_before_it_clears_the_selection() {
+fn esc_dismisses_the_info_banner_before_it_clears_the_selection() {
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
@@ -1050,7 +1620,8 @@ fn outside_marks(h: &AppHarness, pane: &str) -> usize {
 }
 
 #[test]
-fn the_changed_features_are_marked_in_purple_until_marked_seen_and_esc_dismisses_the_banner() {
+fn the_changed_features_are_marked_in_the_info_tone_until_marked_seen_and_esc_dismisses_the_banner()
+{
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
@@ -1688,7 +2259,7 @@ fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
     assert_eq!(outside_marks(&h, "Timeline"), 1);
     for _ in 0..10 {
         step(&mut h);
-        assert!(!anywhere(&h, reloaded), "the purple banner after Reload");
+        assert!(!anywhere(&h, reloaded), "the info banner after Reload");
     }
     // Again, the reload landing before the tab takes the rollback's answer: no frame
     // stepped from the click's until the session has rolled back and reloaded.
@@ -1716,7 +2287,7 @@ fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
         step(&mut h);
         assert!(
             !anywhere(&h, reloaded),
-            "the purple banner after the second Reload"
+            "the info banner after the second Reload"
         );
     }
     assert_eq!(never_waits::waits(), 0);
@@ -3343,7 +3914,7 @@ fn the_name_field_is_off_while_its_tab_closes() {
     assert!(h.state().tabs()[0].closing(), "not closing");
     assert!(name_field(&h).accesskit_node().is_disabled());
     // Nor can a dialog open: what it sent would come after the close.
-    assert!(create_off(&mut h, "Box"));
+    assert!(create_off(&mut h, "Pad"));
     let before = name_field(&h).value();
     name_field(&h).type_text("z");
     step(&mut h);
@@ -4760,6 +5331,24 @@ const SKETCHED: &str = r#"{
 }
 "#;
 
+/// The M2.1 example with a triangle sketched on XY, not yet swept: a part to make a feature
+/// in sketch-first, as SolidWorks makes solids (Trevin's decision of 2026-11-09: the app
+/// makes no primitive). The triangle, (30, 0), (50, 0), (30, 10), lies half on the block's
+/// floor and half past its end (x = 40), so its pad, 10 up from z = 0, is one solid with the
+/// hole's body and changes it. The hole, the tip, is a Pad's base.
+const SKETCHED_EXAMPLE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 30, "y": 0, "construction": false}, {"id": "pb000000", "x": 50, "y": 0, "construction": false}, {"id": "pc000000", "x": 30, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
 /// The open dialog.
 fn dialog(h: &AppHarness) -> egui_kittest::Node<'_> {
     h.get_by_role(Role::Dialog)
@@ -4770,26 +5359,73 @@ fn dialog_open(h: &AppHarness) -> bool {
     h.query_by_role(Role::Dialog).is_some()
 }
 
-/// The primitives, which the toolbar keeps in CREATE's drop-down alone (app.js:394,
-/// interact.js:170).
+/// The primitives, which a file may hold and the app edits, but never makes (Trevin's
+/// decision of 2026-11-09: solids are made sketch-first, as SolidWorks makes them).
 const PRIMITIVES: [&str; 5] = ["Box", "Cylinder", "Sphere", "Cone", "Torus"];
 
-/// The dialog of `kind` opened from the toolbar's CREATE: a sweep from its row, a
-/// primitive from its drop-down.
+/// The dialog of `kind` opened from the toolbar's CREATE row.
 fn create(h: &mut AppHarness, kind: &str) {
-    if PRIMITIVES.contains(&kind) {
-        open_create_menu(h);
-        h.get_by_role_and_label(Role::Menu, "CREATE")
-            .get_by_label(kind)
-            .click();
-    } else {
-        h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label(kind)
-            .click();
-    }
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label(kind)
+        .click();
     step_until(h, "the dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, kind).is_some()
     });
+}
+
+/// The dialog of `kind`, a sweep, opened from CREATE on the sketch Triangle, chosen in the
+/// browser first: a feature made sketch-first. Its add follows the read of its body, the
+/// document's tip ([`sweep_until_add_sent`] waits for it).
+fn open_sweep_on_triangle(h: &mut AppHarness, kind: &str) {
+    step_until(h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(h);
+    create(h, kind);
+}
+
+/// [`open_sweep_on_triangle`]'s Pad: the dialog that adds a feature, as a primitive's did.
+fn open_pad_on_triangle(h: &mut AppHarness) {
+    open_sweep_on_triangle(h, "Pad");
+}
+
+/// The adds the first tab has sent.
+fn feature_adds(h: &AppHarness) -> usize {
+    h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter(|sent| **sent == Sent::Add)
+        .count()
+}
+
+/// [`open_sweep_on_triangle`], stepped until its add is sent, its body read (not until it's
+/// answered): where a primitive's add was sent from its dialog's first frame.
+fn sweep_until_add_sent(h: &mut AppHarness, kind: &str) {
+    let before = feature_adds(h);
+    open_sweep_on_triangle(h, kind);
+    step_until(h, "its add sent", |h| feature_adds(h) > before);
+}
+
+/// [`sweep_until_add_sent`]'s Pad: the add sent, not yet answered.
+fn pad_until_add_sent(h: &mut AppHarness) {
+    sweep_until_add_sent(h, "Pad");
+}
+
+/// Whether `op` is a prism: a pad's or a pocket's sweep, which nothing in
+/// [`SKETCHED_EXAMPLE`] is before one's made.
+fn is_prism(op: &Op) -> bool {
+    matches!(op, Op::Prism { .. })
+}
+
+/// The extent a one-sided pad of `length` writes, as JSON reads it.
+fn one_side(length: &str) -> Plain {
+    Plain::of(
+        &json::read(
+            format!(r#"{{"type": "one_side", "length": {length}, "reversed": false}}"#).as_bytes(),
+        )
+        .unwrap(),
+    )
 }
 
 /// CREATE's drop-down opened by a click on its label (`.tb-label`), laid out (egui lays a
@@ -4804,29 +5440,12 @@ fn open_create_menu(h: &mut AppHarness) {
     step(h);
 }
 
-/// Whether CREATE's `kind` is off: a sweep in its row; a primitive in its drop-down, which
-/// this opens and closes again by a second click on its label.
+/// Whether CREATE's `kind`, in its row, is off.
 fn create_off(h: &mut AppHarness, kind: &str) -> bool {
-    if !PRIMITIVES.contains(&kind) {
-        return h
-            .get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label(kind)
-            .accesskit_node()
-            .is_disabled();
-    }
-    open_create_menu(h);
-    let off = h
-        .get_by_role_and_label(Role::Menu, "CREATE")
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
         .get_by_label(kind)
         .accesskit_node()
-        .is_disabled();
-    h.get_by_role_and_label(Role::Toolbar, "CREATE")
-        .get_by_role_and_label(Role::Button, "CREATE")
-        .click();
-    step_until(h, "CREATE's drop-down closed", |h| {
-        h.query_by_role_and_label(Role::Menu, "CREATE").is_none()
-    });
-    off
+        .is_disabled()
 }
 
 /// The dialog's input labelled `label`.
@@ -4967,30 +5586,12 @@ fn answered_while_held(h: &mut AppHarness) {
 
 #[test]
 fn each_kinds_dialog_adds_its_feature_with_its_defaults_on_ok() {
-    // The defaults are the dialog's (the M5.8 brief: a 10 mm cube, a cylinder of radius 5
-    // and height 10, ...), each written here; a sweep takes the sketch selected and the
-    // body last on the timeline as its base.
-    let cases: [(&str, &str); 9] = [
-        (
-            "Box",
-            r#"{"type": "box", "name": "Box", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#,
-        ),
-        (
-            "Cylinder",
-            r#"{"type": "cylinder", "name": "Cylinder", "position": [0, 0, 0], "radius": 5, "height": 10}"#,
-        ),
-        (
-            "Sphere",
-            r#"{"type": "sphere", "name": "Sphere", "position": [0, 0, 0], "radius": 5}"#,
-        ),
-        (
-            "Cone",
-            r#"{"type": "cone", "name": "Cone", "position": [0, 0, 0], "radius1": 5, "radius2": 0, "height": 10}"#,
-        ),
-        (
-            "Torus",
-            r#"{"type": "torus", "name": "Torus", "position": [0, 0, 0], "radius1": 10, "radius2": 2}"#,
-        ),
+    // The defaults are the dialog's (the M5.8 brief: a pad 10 long, a pocket 5 deep, a
+    // whole turn), each written here; a sweep takes the sketch selected and the body last on
+    // the timeline as its base. CREATE makes no primitive (Trevin's decision of 2026-11-09):
+    // their dialogs edit what a file holds (each_primitive_of_the_m2_1_example_edits_from_
+    // its_dialog_and_ok_writes_the_value, and its sphere's, cone's, and torus's beside it).
+    let cases: [(&str, &str); 4] = [
         (
             "Pad",
             r#"{"type": "pad", "name": "Pad", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}"#,
@@ -5268,9 +5869,9 @@ fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
 #[test]
 fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -5280,7 +5881,8 @@ fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
     settled(&mut h);
     let sent = h.state().tabs()[0].edits.sent;
     // The session's queue held: the first keystroke's edit waits in it, and the next two
-    // wait in the tab, the last replacing the one before.
+    // wait in the tab, the last replacing the one before. The pad's length is its extent's:
+    // `set_field` sets the extent whole.
     let (hold, check) = hold_queue(&f, &h, 0);
     type_into(&mut h, "Length", "123");
     hold.release();
@@ -5290,17 +5892,17 @@ fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
     assert_eq!(
         h.state().tabs()[0].sent[h.state().tabs()[0].sent.len() - 2..],
         [
-            Sent::Edit("length".to_owned()),
-            Sent::Edit("length".to_owned())
+            Sent::Edit("extent".to_owned()),
+            Sent::Edit("extent".to_owned())
         ]
     );
     // The field's text, the 10 and the three digits after it, is the document's.
     let typed = input(&h, "Length").value().unwrap();
     assert_eq!(typed, "10123");
     let text = text_of(&f, &h);
-    let fields = fields_of(&text, "Box").unwrap();
+    let fields = fields_of(&text, "Pad").unwrap();
     assert!(
-        fields.contains(&("length".to_owned(), Plain::Number(typed.clone()))),
+        fields.contains(&("extent".to_owned(), one_side("10123"))),
         "{typed}: {fields:?}"
     );
     assert_eq!(never_waits::waits(), 0);
@@ -5309,9 +5911,9 @@ fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
 #[test]
 fn an_unparseable_value_is_red_sends_nothing_and_keeps_ok_off() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Sphere");
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -5320,11 +5922,11 @@ fn an_unparseable_value_is_red_sends_nothing_and_keeps_ok_off() {
     });
     settled(&mut h);
     let sent = h.state().tabs()[0].edits.sent;
-    type_into(&mut h, "Radius", "x");
+    type_into(&mut h, "Length", "x");
     for _ in 0..10 {
         step(&mut h);
     }
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("5x"));
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("10x"));
     assert!(!ok_enabled(&h));
     assert_eq!(h.state().tabs()[0].edits.sent, sent);
     // Enter is OK only when OK is on.
@@ -5337,9 +5939,9 @@ fn an_unparseable_value_is_red_sends_nothing_and_keeps_ok_off() {
 #[test]
 fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Sphere");
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -5347,26 +5949,34 @@ fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
             .is_some_and(|dialog| dialog.feature.is_some())
     });
     settled(&mut h);
-    // "-5": a number, sent, and refused by the gate (a radius is above 0).
+    // "-10": a number, sent, and refused by the gate (a sweep's length is above 0).
     // The minus at the field's start, where a person puts it: Home, then "-".
-    input(&h, "Radius").focus();
+    input(&h, "Length").focus();
     step(&mut h);
     h.key_press(eframe::egui::Key::Home);
     step(&mut h);
-    input(&h, "Radius").type_text("-");
+    input(&h, "Length").type_text("-");
     step(&mut h);
     settled(&mut h);
-    // Said in the dialog, as the core words it.
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("-10"));
+    // Said in the dialog, as the core words it: the pad's length, refused for what it is,
+    // the gate's words for a sweep's length out of its range (validate.rs's), and the
+    // suggestion after them, written here by hand.
     let said = h.state().tabs()[0].message.clone().unwrap();
+    assert_eq!(
+        said,
+        "pad extent.length must be a length above 0 mm and at most 1000000 mm (a kilometre), \
+         got -10 (give the pad a valid extent.length)"
+    );
     assert!(dialog(&h).query_by_label(&said).is_some(), "{said}");
     assert!(!ok_enabled(&h));
-    // "5" again: taken, OK on.
+    // "10" again: taken, OK on.
     h.key_press(eframe::egui::Key::Home);
     step(&mut h);
     h.key_press(eframe::egui::Key::Delete);
     step(&mut h);
     settled(&mut h);
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("5"));
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("10"));
     assert!(ok_enabled(&h));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -5374,7 +5984,7 @@ fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
 #[test]
 fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     // An edit before the dialog, in the transaction.
     select(&mut h, "Pin");
@@ -5383,16 +5993,22 @@ fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits(
     let before = text_of(&f, &h);
     assert!(before.contains(r#""name": "PinK""#));
     let opened_at = h.state().tabs()[0].revision;
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
             .as_ref()
             .is_some_and(|dialog| dialog.feature.is_some())
     });
-    type_into(&mut h, "Height", "2");
+    type_into(&mut h, "Length", "2");
     settled(&mut h);
-    assert!(text_of(&f, &h).contains(r#""height": 102"#));
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pad")
+            .unwrap()
+            .into_iter()
+            .find(|(key, _)| key == "extent"),
+        Some(("extent".to_owned(), one_side("102")))
+    );
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Cancel")
         .click();
@@ -5410,15 +6026,14 @@ fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits(
 fn a_failed_preview_shows_the_cores_error_in_the_dialog_and_ok_keeps_the_feature() {
     let f = fixture();
     f.kernel.refuse(|op| {
-        matches!(op, Op::MakePrimitive(Primitive::Cone { .. }))
-            .then(|| Error::new(ErrorCode::KernelFailed, "the cone came apart"))
+        is_prism(op).then(|| Error::new(ErrorCode::KernelFailed, "the pad came apart"))
     });
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Cone");
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the error in the dialog", |h| {
         dialog(h)
-            .query_all_by_label_contains("the cone came apart")
+            .query_all_by_label_contains("the pad came apart")
             .next()
             .is_some()
     });
@@ -5427,10 +6042,11 @@ fn a_failed_preview_shows_the_cores_error_in_the_dialog_and_ok_keeps_the_feature
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     let text = text_of(&f, &h);
+    // On the tip, the hole; the triangle; the defaults' 10 up.
     assert_eq!(
-        fields_of(&text, "Cone"),
+        fields_of(&text, "Pad"),
         Some(expected(
-            r#"{"type": "cone", "name": "Cone", "position": [0, 0, 0], "radius1": 5, "radius2": 0, "height": 10}"#
+            r#"{"type": "pad", "name": "Pad", "base": "m3tq8v0z", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}"#
         ))
     );
     assert!(
@@ -5445,12 +6061,12 @@ fn a_failed_preview_shows_the_cores_error_in_the_dialog_and_ok_keeps_the_feature
 #[test]
 fn esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_dialog_second() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
-    // The new box's build held: its preview's rebuild runs until released.
-    let hold = f.kernel.hold(is_box);
-    create(&mut h, "Box");
+    // The new pad's prism held: its preview's rebuild runs until released.
+    let hold = f.kernel.hold(is_prism);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -5490,33 +6106,28 @@ fn until(what: &str, done: impl Fn() -> bool) {
     }
 }
 
-/// The box a dialog's defaults make, 10 mm wide: narrower than the example's block.
-fn is_new_box(op: &Op) -> bool {
-    matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx < 20.0)
-}
-
 #[test]
 fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queue() {
     // The preview's `timeline` read queued behind another command that waits on the same
     // rebuild (a check of the current model), so it isn't the rebuild's waiter yet when Esc
     // stops it. The next command that needs the model starts a stopped rebuild again
     // (decision 34): run after the stop, the read would, undoing it. The stop holds: the
-    // read answers `cancelled`, the tab reads the published model, and the new box is asked
-    // of the kernel once.
+    // read answers `cancelled`, the tab reads the published model, and the new pad's prism is
+    // asked of the kernel once.
     use silico_core::command::{RebuildState, RunningCommand, SessionCommand};
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
     let id = h.state().tabs()[0].id;
-    let box_hold = f.kernel.hold(is_new_box);
+    let prism_hold = f.kernel.hold(is_prism);
     // The queue held behind a fresh check whose pin the fake holds: the dialog's begin and
     // add are queued behind it.
     let pin_hold = f
         .kernel
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })));
     let fresh = f.sessions.check(&id, CheckModel::Current { fresh: true });
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add sent", |h| {
         h.state().tabs()[0].sent.contains(&Sent::Add)
     });
@@ -5525,7 +6136,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queu
     pin_hold.release();
     assert!(fresh.wait_timeout(WAIT).ok().unwrap().result.is_ok());
     // Queued behind the add: it needs the new revision's model, whose rebuild it starts and
-    // the fake holds at the new box.
+    // the fake holds at the new pad's prism.
     let waiting = f.sessions.check(&id, CheckModel::Current { fresh: false });
     assert!(f.kernel.wait_running(1, WAIT));
     step_until(&mut h, "the preview rebuilding", |h| {
@@ -5546,23 +6157,23 @@ fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queu
         answered.result.unwrap_err().errors()[0].code(),
         ErrorCode::Cancelled
     );
-    let new_boxes = || {
+    let new_prisms = || {
         f.kernel
             .asked()
             .iter()
-            .filter(|call| is_new_box(&call.op))
+            .filter(|call| is_prism(&call.op))
             .count()
     };
-    // Then the read, run (it starts the rebuild again, asking for the new box) or answered
+    // Then the read, run (it starts the rebuild again, asking for the prism) or answered
     // `cancelled` (the tab then reads the published model, of the add's revision).
     step_until(&mut h, "the preview's read run or answered", |h| {
-        new_boxes() > 1
+        new_prisms() > 1
             || h.state().tabs()[0]
                 .timeline
                 .as_ref()
                 .is_some_and(|timeline| timeline.revision == added)
     });
-    assert_eq!(new_boxes(), 1, "the stopped rebuild started again");
+    assert_eq!(new_prisms(), 1, "the stopped rebuild started again");
     let tab = &h.state().tabs()[0];
     assert!(tab.status.as_ref().is_some_and(|status| {
         status.rebuild.revision == added && status.rebuild.state == RebuildState::Stopped
@@ -5575,8 +6186,8 @@ fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queu
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(text_of(&f, &h), before);
-    assert_eq!(new_boxes(), 1);
-    box_hold.release();
+    assert_eq!(new_prisms(), 1);
+    prism_hold.release();
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -5586,15 +6197,15 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
     // feature selected) queued behind the preview's read, the rebuild's waiter. Run after
     // the stop, it would start the rebuild again (decision 34). The stop holds: the check
     // answers `cancelled`, none of the current model is asked again while the rebuild is
-    // stopped, and the new box is asked of the kernel once.
+    // stopped, and the new pad's prism is asked of the kernel once.
     use silico_core::command::{RebuildState, RunningCommand, SessionCommand};
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
     let id = h.state().tabs()[0].id;
-    let hold = f.kernel.hold(is_new_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -5621,7 +6232,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
         tab.selection_mut().select_feature(marked.unwrap());
     }
     step_until(&mut h, "the check sent", |h| h.state().tabs()[0].checking());
-    // Queued: the read still waits on the rebuild, which the fake holds at the new box. The
+    // Queued: the read still waits on the rebuild, which the fake holds at the prism. The
     // stop cancels the check, sent later, before the read: the read, cancelled, stops the
     // rebuild and answers, and its session runs the check next, which, cancelled second,
     // could start the rebuild again first (the tab's unit test
@@ -5634,25 +6245,25 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
     h.state_mut().tabs_mut()[0].message = Some("an earlier refusal".to_owned());
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
-    let new_boxes = || {
+    let new_prisms = || {
         f.kernel
             .asked()
             .iter()
-            .filter(|call| is_new_box(&call.op))
+            .filter(|call| is_prism(&call.op))
             .count()
     };
-    // Then the check, run (it starts the rebuild again, asking for the new box) or answered
+    // Then the check, run (it starts the rebuild again, asking for the prism) or answered
     // `cancelled`, and the tab's timeline read again, of the published model.
     step_until(&mut h, "the check run or answered", |h| {
         let tab = &h.state().tabs()[0];
-        new_boxes() > 1
+        new_prisms() > 1
             || (!tab.checking()
                 && tab
                     .timeline
                     .as_ref()
                     .is_some_and(|timeline| timeline.revision == added))
     });
-    assert_eq!(new_boxes(), 1, "the stopped rebuild started again");
+    assert_eq!(new_prisms(), 1, "the stopped rebuild started again");
     let tab = &h.state().tabs()[0];
     assert!(tab.status.as_ref().is_some_and(|status| {
         status.rebuild.revision == added && status.rebuild.state == RebuildState::Stopped
@@ -5664,7 +6275,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(text_of(&f, &h), before);
-    assert_eq!(new_boxes(), 1);
+    assert_eq!(new_prisms(), 1);
     hold.release();
     assert_eq!(never_waits::waits(), 0);
 }
@@ -5682,12 +6293,12 @@ fn an_edit_and_an_esc_in_one_frame_supersede_the_preview_then_cancel_the_dialog(
     use silico_app::dialog::Value;
     use silico_core::command::{RunningCommand, SessionCommand};
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
     let id = h.state().tabs()[0].id;
-    let hold = f.kernel.hold(is_new_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -5698,19 +6309,19 @@ fn an_edit_and_an_esc_in_one_frame_supersede_the_preview_then_cancel_the_dialog(
     });
     let tab = &mut h.state_mut().tabs_mut()[0];
     tab.message = Some("an earlier refusal".to_owned());
-    // "3" typed before the width's 10.
+    // "3" typed before the length's 10 (the pad's extent, which `set_field` sets whole).
     let dialog = tab.dialog.as_mut().unwrap();
-    let width = dialog
+    let length = dialog
         .inputs
         .iter_mut()
-        .find(|input| input.label == "Width")
+        .find(|input| input.label == "Length")
         .unwrap();
-    width.value = Value::Length("310".to_owned());
+    length.value = Value::Length("310".to_owned());
     assert!(tab.dialog_changed(&f.sessions));
     assert!(
         tab.sent
             .iter()
-            .any(|sent| matches!(sent, Sent::Edit(field) if field == "width")),
+            .any(|sent| matches!(sent, Sent::Edit(field) if field == "extent")),
         "{:?}",
         tab.sent
     );
@@ -5736,11 +6347,11 @@ fn esc_in_a_dialog_whose_preview_was_built_since_status_said_it_rebuilt_is_its_c
     // Cancel, never eaten, and nothing is said.
     use silico_core::command::RebuildState;
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let id = h.state().tabs()[0].id;
-    let hold = f.kernel.hold(is_new_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -5768,11 +6379,11 @@ fn esc_whose_previews_read_stopped_the_rebuild_first_stops_it_leaving_the_dialog
     // let go.
     use silico_core::command::{Cancellable, RebuildState, RunningCommand, SessionCommand};
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let id = h.state().tabs()[0].id;
-    let hold = f.kernel.hold(is_new_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -5805,34 +6416,42 @@ fn esc_whose_previews_read_stopped_the_rebuild_first_stops_it_leaving_the_dialog
 #[test]
 fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let hold = f.kernel.hold(is_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
     // The rebuild still held: the edit lands all the same, the old preview's read stopped.
-    type_into(&mut h, "Width", "3");
-    step_until(&mut h, "the width applied", |h| {
+    type_into(&mut h, "Length", "3");
+    step_until(&mut h, "the length applied", |h| {
         h.state().tabs()[0].edits.idle() && !h.state().tabs()[0].unsettled()
     });
     // Answered with the rebuild still held (the next preview's read waits for it, and a
-    // read of the text would wait behind that).
-    assert!(f.kernel.wait_running(1, WAIT));
+    // read of the text would wait behind that): the transaction's rebuild starts with that
+    // read, so frames are stepped until it runs, held at its prism, the second (the first,
+    // the opened preview's, superseded).
+    step_until(&mut h, "the edit's rebuild held at its prism", |_| {
+        prisms_asked(&f) == 2 && f.kernel.wait_running(1, Duration::ZERO)
+    });
     hold.release();
     let text = text_of(&f, &h);
-    assert!(text.contains(r#""width": 103"#), "{text}");
+    let pad = fields_of(&text, "Pad").unwrap();
+    assert!(
+        pad.contains(&("extent".to_owned(), one_side("103"))),
+        "{text}"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
 fn enter_is_ok_and_esc_is_cancel() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
-    create(&mut h, "Torus");
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -5841,7 +6460,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     });
     settled(&mut h);
     // One dialog at a time: CREATE's tools off.
-    assert!(create_off(&mut h, "Box"));
+    assert!(create_off(&mut h, "Pad"));
     // Undo and redo are the dialog's Cancel's while it's open: off.
     let sent = h.state().tabs()[0].sent.clone();
     assert!(
@@ -5867,7 +6486,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(text_of(&f, &h), before);
-    create(&mut h, "Torus");
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -5877,38 +6496,54 @@ fn enter_is_ok_and_esc_is_cancel() {
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert!(fields_of(&text_of(&f, &h), "Torus").is_some());
+    assert!(fields_of(&text_of(&f, &h), "Pad").is_some());
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
 fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
     let before = text_of(&f, &h);
     let opened_at = h.state().tabs()[0].revision;
-    create(&mut h, "Cylinder");
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
             .as_ref()
             .is_some_and(|dialog| dialog.feature.is_some())
     });
-    // Two edits, each its own step on the stack: the add, the radius, the height.
-    type_into(&mut h, "Radius", "1");
+    // Two edits, each its own step on the stack: the add, the length, the direction.
+    type_into(&mut h, "Length", "1");
     settled(&mut h);
-    type_into(&mut h, "Height", "2");
+    let edits = h.state().tabs()[0].edits.sent;
+    dialog(&h)
+        .get_by_role_and_label(Role::CheckBox, "Reversed")
+        .click();
+    step(&mut h);
     settled(&mut h);
+    assert_eq!(h.state().tabs()[0].edits.sent, edits + 1);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     let after = text_of(&f, &h);
     let ok_at = h.state().tabs()[0].revision;
-    assert!(after.contains(r#""radius": 51"#) && after.contains(r#""height": 102"#));
+    assert_eq!(
+        fields_of(&after, "Pad")
+            .unwrap()
+            .into_iter()
+            .find(|(key, _)| key == "extent"),
+        Some((
+            "extent".to_owned(),
+            Plain::of(
+                &json::read(br#"{"type": "one_side", "length": 101, "reversed": true}"#).unwrap()
+            )
+        ))
+    );
     step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
     step(&mut h);
@@ -6009,7 +6644,7 @@ fn edit_feature_from_the_context_menu_opens_the_same_dialog() {
     step(&mut h);
     assert_eq!(
         menu_items(&h, "HOLE")[0],
-        ("Edit feature double-click".to_owned(), None)
+        ("Edit feature double-click".to_owned(), None, None)
     );
     menu_click(&mut h, "HOLE", "Edit feature");
     step_until(&mut h, "its dialog", |h| {
@@ -6027,6 +6662,207 @@ fn edit_feature_from_the_context_menu_opens_the_same_dialog() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// A sphere, a cone, and a torus, each a body of its own, written by hand: the primitives
+/// the M2.1 example doesn't hold, which a file may (an agent's, through `silico serve`).
+const ROUND_PRIMITIVES: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "e0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5},
+    {"id": "e0000002", "type": "cone", "v": 1, "name": "Spike", "position": [30, 0, 0], "radius1": 5, "radius2": 1, "height": 10},
+    {"id": "e0000003", "type": "torus", "v": 1, "name": "Ring", "position": [80, 0, 0], "radius1": 10, "radius2": 2}
+  ]
+}
+"#;
+
+/// The feature `name` edited in its dialog, `kind`'s, opened by a double-click on its
+/// timeline item: each of its inputs as `loaded` gives it, nothing sent by the loading;
+/// `typed` typed at the end of `field`, and OK'd. Its fields as the document then writes
+/// them.
+fn edited(
+    f: &Fixture,
+    h: &mut AppHarness,
+    name: &str,
+    kind: &str,
+    loaded: &[(&str, &str)],
+    field: &str,
+    typed: &str,
+) -> Option<Vec<(String, Plain)>> {
+    let sent = h.state().tabs()[0].sent.len();
+    double_click(h, "Timeline", name);
+    step_until(h, "its dialog, loaded", |h| {
+        h.query_by_role_and_label(Role::Dialog, kind).is_some()
+            && input(h, loaded[0].0).value().as_deref() == Some(loaded[0].1)
+    });
+    for (label, value) in loaded {
+        assert_eq!(
+            input(h, label).value().as_deref(),
+            Some(*value),
+            "{name}'s {label}"
+        );
+    }
+    for _ in 0..5 {
+        step(h);
+    }
+    assert_eq!(
+        h.state().tabs()[0].sent.len(),
+        sent,
+        "{name}'s loading sent"
+    );
+    type_into(h, field, typed);
+    settled(h);
+    dialog(h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(h, "the dialog closed", |h| !dialog_open(h));
+    settled(h);
+    fields_of(&text_of(f, h), name)
+}
+
+#[test]
+fn each_primitive_of_the_m2_1_example_edits_from_its_dialog_and_ok_writes_the_value() {
+    // The app makes no primitive (Trevin's decision of 2026-11-09: solids are made
+    // sketch-first, as SolidWorks makes them), but edits those a file holds: the M2.1
+    // example's block and pin, each from its own dialog (Box's, Cylinder's) opened by a
+    // double-click, its values EXAMPLE's, one typed into, OK'd. Expected: EXAMPLE's fields
+    // and the value typed, written by hand; the hole, edited by neither, as it was.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // The block: its width 20, a 5 typed after it.
+    assert_eq!(
+        edited(
+            &f,
+            &mut h,
+            "Block",
+            "Box",
+            &[
+                ("X", "0"),
+                ("Y", "0"),
+                ("Z", "0"),
+                ("Length", "40"),
+                ("Width", "20"),
+                ("Height", "10"),
+            ],
+            "Width",
+            "5",
+        ),
+        Some(expected(
+            r#"{"type": "box", "name": "Block", "position": [0, 0, 0], "length": 40, "width": 205, "height": 10}"#
+        ))
+    );
+    // The pin: its radius 2.5, a 5 typed after it.
+    assert_eq!(
+        edited(
+            &f,
+            &mut h,
+            "Pin",
+            "Cylinder",
+            &[
+                ("X", "20"),
+                ("Y", "10"),
+                ("Z", "-1"),
+                ("Radius", "2.5"),
+                ("Height", "12"),
+            ],
+            "Radius",
+            "5",
+        ),
+        Some(expected(
+            r#"{"type": "cylinder", "name": "Pin", "position": [20, 10, -1], "radius": 2.55, "height": 12}"#
+        ))
+    );
+    let text = text_of(&f, &h);
+    assert_eq!(fields_of(&text, "Hole"), fields_of(EXAMPLE, "Hole"));
+    // One transaction, an edit of each, and no add.
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [
+            Sent::Begin,
+            Sent::Edit("width".to_owned()),
+            Sent::Edit("radius".to_owned())
+        ]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sphere_a_cone_and_a_torus_each_edit_from_their_dialogs_and_ok_writes_the_value() {
+    // The primitives the M2.1 example doesn't hold, as a file may: each from its own dialog
+    // opened by a double-click, its values ROUND_PRIMITIVES', one typed into, OK'd.
+    // Expected: ROUND_PRIMITIVES' fields and the value typed, written by hand.
+    let f = fixture();
+    let (mut h, _) = f.opened("round.silico", ROUND_PRIMITIVES);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Ring"));
+    // The ball: its radius 5, ".5" typed after it.
+    assert_eq!(
+        edited(
+            &f,
+            &mut h,
+            "Ball",
+            "Sphere",
+            &[("X", "0"), ("Y", "0"), ("Z", "0"), ("Radius", "5")],
+            "Radius",
+            ".5",
+        ),
+        Some(expected(
+            r#"{"type": "sphere", "name": "Ball", "position": [0, 0, 0], "radius": 5.5}"#
+        ))
+    );
+    // The spike: its top radius 1, ".5" typed after it.
+    assert_eq!(
+        edited(
+            &f,
+            &mut h,
+            "Spike",
+            "Cone",
+            &[
+                ("X", "30"),
+                ("Y", "0"),
+                ("Z", "0"),
+                ("Bottom radius", "5"),
+                ("Top radius", "1"),
+                ("Height", "10"),
+            ],
+            "Top radius",
+            ".5",
+        ),
+        Some(expected(
+            r#"{"type": "cone", "name": "Spike", "position": [30, 0, 0], "radius1": 5, "radius2": 1.5, "height": 10}"#
+        ))
+    );
+    // The ring: its minor radius 2, ".5" typed after it.
+    assert_eq!(
+        edited(
+            &f,
+            &mut h,
+            "Ring",
+            "Torus",
+            &[
+                ("X", "80"),
+                ("Y", "0"),
+                ("Z", "0"),
+                ("Major radius", "10"),
+                ("Minor radius", "2"),
+            ],
+            "Minor radius",
+            ".5",
+        ),
+        Some(expected(
+            r#"{"type": "torus", "name": "Ring", "position": [80, 0, 0], "radius1": 10, "radius2": 2.5}"#
+        ))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [
+            Sent::Begin,
+            Sent::Edit("radius".to_owned()),
+            Sent::Edit("radius2".to_owned()),
+            Sent::Edit("radius2".to_owned())
+        ]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn the_cutting_sweeps_are_off_with_no_body_to_cut() {
     let f = fixture();
@@ -6040,9 +6876,7 @@ fn the_cutting_sweeps_are_off_with_no_body_to_cut() {
     for kind in ["Pocket", "Groove"] {
         assert!(create_off(&mut h, kind), "{kind}");
     }
-    for kind in [
-        "Box", "Cylinder", "Sphere", "Cone", "Torus", "Pad", "Revolve",
-    ] {
+    for kind in ["Pad", "Revolve"] {
         assert!(!create_off(&mut h, kind), "{kind}");
     }
     assert_eq!(never_waits::waits(), 0);
@@ -6102,16 +6936,16 @@ fn a_refused_values_mark_goes_with_its_dialog() {
 #[test]
 fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waiting_for_it() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let hold = f.kernel.hold(is_box);
+    let hold = f.kernel.hold(is_prism);
     let rebuilding = |h: &mut AppHarness| {
         step_until(h, "the preview rebuilding", |h| {
             h.state().tabs()[0].preview_rebuilding()
         });
     };
     // Cancel: its rollback lands with the rebuild held.
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     rebuilding(&mut h);
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Cancel")
@@ -6120,7 +6954,7 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
     // OK'd with its preview still rebuilding, then Ctrl+Z: its undo lands too.
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     rebuilding(&mut h);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -6133,18 +6967,18 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
         Some(Sent::Undo(Some(_)))
     ));
     // OK'd with its preview still rebuilding, then another dialog: its add lands.
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     rebuilding(&mut h);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
-    create(&mut h, "Sphere");
+    open_sweep_on_triangle(&mut h, "Pocket");
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
             .as_ref()
             .is_some_and(|dialog| dialog.feature.is_some())
     });
-    // And File > Revert with the sphere's preview rebuilding: its rollback lands too.
+    // And File > Revert with the pocket's preview rebuilding: its rollback lands too.
     rebuilding(&mut h);
     h.get_by_label("File").click();
     step(&mut h);
@@ -6155,7 +6989,7 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
     });
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
     hold.release();
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -6170,7 +7004,7 @@ fn esc_while_edit_feature_reads_the_feature_opens_no_dialog() {
     // Reading it, one dialog at a time: CREATE's tools off (drawn before the timeline
     // took the double-click, so from the next frame).
     step(&mut h);
-    assert!(create_off(&mut h, "Box"));
+    assert!(create_off(&mut h, "Pad"));
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     hold.release();
@@ -6187,9 +7021,9 @@ fn esc_while_edit_feature_reads_the_feature_opens_no_dialog() {
 #[test]
 fn a_dialog_and_create_are_off_while_the_tab_closes() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -6222,7 +7056,7 @@ fn a_dialog_and_create_are_off_while_the_tab_closes() {
     step(&mut h);
     assert!(dialog_open(&h));
     assert_eq!(h.state().tabs()[0].sent, sent);
-    assert!(input(&h, "Height").accesskit_node().is_disabled());
+    assert!(input(&h, "Length").accesskit_node().is_disabled());
     hold.release();
     check.wait();
     assert_eq!(never_waits::waits(), 0);
@@ -6309,9 +7143,9 @@ fn redo_is_off_while_a_dialog_is_open() {
 #[test]
 fn revert_closes_an_open_dialog_with_the_edits_it_drops() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -6325,7 +7159,7 @@ fn revert_closes_an_open_dialog_with_the_edits_it_drops() {
     h.get_by_label("Revert").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
     assert!(h.state().tabs()[0].dialog.is_none());
     assert_eq!(never_waits::waits(), 0);
 }
@@ -6333,12 +7167,14 @@ fn revert_closes_an_open_dialog_with_the_edits_it_drops() {
 #[test]
 fn a_cancel_before_the_add_answers_waits_for_it_and_rolls_it_back() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
-    // The add waits in the session's queue: the Cancel waits behind it in the tab's.
+    // The add, sent once its body is read beside the queue, waits in the session's queue:
+    // the Cancel waits behind it in the tab's.
     let (hold, check) = hold_queue(&f, &h, 0);
-    create(&mut h, "Box");
+    pad_until_add_sent(&mut h);
+    assert!(h.state().tabs()[0].dialog.as_ref().unwrap().adding);
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     hold.release();
@@ -6433,10 +7269,10 @@ fn added(h: &mut AppHarness) {
 #[test]
 fn esc_after_typing_coalesced_behind_a_held_preview_stays_stopped() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let hold = f.kernel.hold(is_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     // Two keystrokes, one a frame: the preview's read asked while an edit is in flight
     // runs at the revision that edit comes to.
@@ -6538,20 +7374,20 @@ fn a_sweeps_body_is_the_documents_tip_even_where_the_model_has_none_there() {
 #[test]
 fn typing_while_the_add_is_unanswered_makes_one_feature_and_edits_it() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let (hold, check) = hold_queue(&f, &h, 0);
-    create(&mut h, "Box");
+    pad_until_add_sent(&mut h);
     type_into(&mut h, "Length", "12");
     let typed = input(&h, "Length").value().unwrap();
     hold.release();
     check.wait();
     settled(&mut h);
     let text = text_of(&f, &h);
-    assert_eq!(text.matches(r#""type": "box""#).count(), 2, "{text}");
-    let fields = fields_of(&text, "Box").unwrap();
+    assert_eq!(text.matches(r#""type": "pad""#).count(), 1, "{text}");
+    let fields = fields_of(&text, "Pad").unwrap();
     assert!(
-        fields.contains(&("length".to_owned(), Plain::Number(typed.clone()))),
+        fields.contains(&("extent".to_owned(), one_side(&typed))),
         "{typed}: {fields:?}"
     );
     assert_eq!(
@@ -6657,12 +7493,12 @@ fn a_suppressed_feature_is_never_a_sweeps_body() {
 #[test]
 fn two_dialogs_okd_are_undone_and_redone_each_whole() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     let before = text_of(&f, &h);
     let mut texts = vec![before.clone()];
-    for (kind, label) in [("Box", "Length"), ("Sphere", "Radius")] {
-        create(&mut h, kind);
+    for (kind, label) in [("Pad", "Length"), ("Pocket", "Length")] {
+        open_sweep_on_triangle(&mut h, kind);
         added(&mut h);
         type_into(&mut h, label, "1");
         settled(&mut h);
@@ -6703,9 +7539,9 @@ fn two_dialogs_okd_are_undone_and_redone_each_whole() {
 #[test]
 fn save_is_off_while_a_dialog_is_open() {
     let f = fixture();
-    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    let (mut h, path) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     assert!(h.state().tabs()[0].unsaved());
@@ -6719,7 +7555,7 @@ fn save_is_off_while_a_dialog_is_open() {
         step(&mut h);
     }
     assert_eq!(h.state().tabs()[0].saves, 0);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), SKETCHED_EXAMPLE);
     // OK'd: Save on.
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -6763,9 +7599,9 @@ fn edit_features_read_comes_after_the_edits_asked_before_it() {
 #[test]
 fn cancel_of_a_dialog_that_began_the_transaction_leaves_none_open_so_outside_writes_reload() {
     let f = fixture_reading(Some(Arc::new(real)));
-    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    let (mut h, path) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     assert!(h.state().tabs()[0].transaction);
@@ -6775,7 +7611,7 @@ fn cancel_of_a_dialog_that_began_the_transaction_leaves_none_open_so_outside_wri
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert!(!h.state().tabs()[0].transaction);
-    let theirs = EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#);
+    let theirs = SKETCHED_EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#);
     std::fs::write(&path, &theirs).unwrap();
     step_until(&mut h, "the reload", |h| shows(h, "Timeline", "Theirs"));
     assert_eq!(text_of(&f, &h), theirs);
@@ -6789,10 +7625,16 @@ fn an_add_answered_after_its_dialog_was_cancelled_never_becomes_the_next_dialogs
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
     let before = text_of(&f, &h);
     let (hold, check) = hold_queue(&f, &h, 0);
-    create(&mut h, "Box");
+    // A Pad of the triangle, its add sent and held, then cancelled.
+    pad_until_add_sent(&mut h);
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
-    // A Pad's, with no sketch chosen: nothing of its own to add.
+    // A Pad's, with no sketch chosen (a body selected, the plate): nothing of its own to
+    // add.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Plate")
+        .click();
+    step(&mut h);
     create(&mut h, "Pad");
     hold.release();
     check.wait();
@@ -6808,12 +7650,12 @@ fn an_add_answered_after_its_dialog_was_cancelled_never_becomes_the_next_dialogs
 #[test]
 fn a_digit_typed_in_the_frame_enter_is_pressed_is_in_what_ok_keeps() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
-    input(&h, "Height").focus();
+    input(&h, "Length").focus();
     step(&mut h);
     {
         use eframe::egui::{Event, Key, Modifiers};
@@ -6830,9 +7672,9 @@ fn a_digit_typed_in_the_frame_enter_is_pressed_is_in_what_ok_keeps() {
     step(&mut h);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    let fields = fields_of(&text_of(&f, &h), "Box").unwrap();
+    let fields = fields_of(&text_of(&f, &h), "Pad").unwrap();
     assert!(
-        fields.contains(&("height".to_owned(), Plain::Number("107".to_owned()))),
+        fields.contains(&("extent".to_owned(), one_side("107"))),
         "{fields:?}"
     );
     assert_eq!(never_waits::waits(), 0);
@@ -6902,9 +7744,9 @@ fn step_key(h: &mut AppHarness, undo: bool) {
     settled(h);
 }
 
-/// A `kind` dialog: added, `label` typed into, and OK'd.
+/// A `kind` dialog, a sweep of the triangle: added, `label` typed into, and OK'd.
 fn made(h: &mut AppHarness, kind: &str, label: &str) {
-    create(h, kind);
+    open_sweep_on_triangle(h, kind);
     added(h);
     type_into(h, label, "1");
     settled(h);
@@ -6916,19 +7758,20 @@ fn made(h: &mut AppHarness, kind: &str, label: &str) {
 #[test]
 fn a_dialog_undone_then_another_made_lets_the_other_be_redone_whole() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     let before = text_of(&f, &h);
-    made(&mut h, "Box", "Length");
+    made(&mut h, "Pad", "Length");
     step_key(&mut h, true);
     assert_eq!(text_of(&f, &h), before);
-    // The box's edits are the redo branch the sphere's add drops.
-    made(&mut h, "Sphere", "Radius");
-    let sphere = text_of(&f, &h);
+    // The pad's edits are the redo branch the pocket's add drops.
+    made(&mut h, "Pocket", "Length");
+    let pocket = text_of(&f, &h);
+    assert!(fields_of(&pocket, "Pocket").is_some() && fields_of(&pocket, "Pad").is_none());
     step_key(&mut h, true);
     assert_eq!(text_of(&f, &h), before);
     step_key(&mut h, false);
-    assert_eq!(text_of(&f, &h), sphere);
+    assert_eq!(text_of(&f, &h), pocket);
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -6936,13 +7779,13 @@ fn a_dialog_undone_then_another_made_lets_the_other_be_redone_whole() {
 #[test]
 fn a_dialog_undone_then_a_name_typed_lets_the_name_be_redone() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     let before = text_of(&f, &h);
-    made(&mut h, "Box", "Length");
+    made(&mut h, "Pad", "Length");
     step_key(&mut h, true);
     assert_eq!(text_of(&f, &h), before);
-    // A name typed in the property panel drops the box's edits.
+    // A name typed in the property panel drops the pad's edits.
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
@@ -6960,10 +7803,10 @@ fn a_dialog_undone_then_a_name_typed_lets_the_name_be_redone() {
 #[test]
 fn ok_and_enter_wait_for_the_add_so_what_was_typed_meanwhile_is_kept() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let (hold, check) = hold_queue(&f, &h, 0);
-    create(&mut h, "Box");
+    pad_until_add_sent(&mut h);
     type_into(&mut h, "Length", "12");
     let typed = input(&h, "Length").value().unwrap();
     // The add unanswered: OK off, and Enter does nothing.
@@ -6981,9 +7824,9 @@ fn ok_and_enter_wait_for_the_add_so_what_was_typed_meanwhile_is_kept() {
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    let fields = fields_of(&text_of(&f, &h), "Box").unwrap();
+    let fields = fields_of(&text_of(&f, &h), "Pad").unwrap();
     assert!(
-        fields.contains(&("length".to_owned(), Plain::Number(typed.clone()))),
+        fields.contains(&("extent".to_owned(), one_side(&typed))),
         "{typed}: {fields:?}"
     );
     assert_eq!(never_waits::waits(), 0);
@@ -7032,9 +7875,9 @@ fn edit_feature_opens_at_the_revision_its_read_found_when_the_session_moved_unde
 #[test]
 fn save_as_is_off_while_a_dialog_is_open() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     // File > Save As… off, and Ctrl+Shift+S asks nothing.
@@ -7078,14 +7921,14 @@ fn save_as_is_off_while_a_dialog_is_open() {
 #[test]
 fn a_refused_edit_after_an_undone_dialog_leaves_its_redo_whole() {
     let f = fixture();
-    let one_letter = EXAMPLE.replace(r#""name": "Pin""#, r#""name": "P""#);
+    let one_letter = SKETCHED_EXAMPLE.replace(r#""name": "Pin""#, r#""name": "P""#);
     let (mut h, _) = f.opened("example.silico", &one_letter);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "P"));
-    made(&mut h, "Box", "Length");
-    let boxed = text_of(&f, &h);
+    made(&mut h, "Pad", "Length");
+    let padded = text_of(&f, &h);
     step_key(&mut h, true);
     assert_eq!(text_of(&f, &h), one_letter);
-    // The one-letter name emptied: refused, so the box's edits stay the redo branch.
+    // The one-letter name emptied: refused, so the pad's edits stay the redo branch.
     select(&mut h, "P");
     name_field(&h).focus();
     step(&mut h);
@@ -7097,7 +7940,7 @@ fn a_refused_edit_after_an_undone_dialog_leaves_its_redo_whole() {
     });
     settled(&mut h);
     step_key(&mut h, false);
-    assert_eq!(text_of(&f, &h), boxed);
+    assert_eq!(text_of(&f, &h), padded);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -7155,12 +7998,12 @@ fn a_sweeps_body_read_before_the_session_moved_is_read_again() {
 #[test]
 fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    made(&mut h, "Box", "Length");
-    let boxed = text_of(&f, &h);
+    made(&mut h, "Pad", "Length");
+    let padded = text_of(&f, &h);
     step_key(&mut h, true);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
     // The Pin's radius made "-2.5" (refused), then "2.5" again: a set_field of the value
     // the document holds, which changes nothing.
     double_click(&mut h, "Timeline", "Pin");
@@ -7187,22 +8030,22 @@ fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
     step_key(&mut h, false);
-    assert_eq!(text_of(&f, &h), boxed);
+    assert_eq!(text_of(&f, &h), padded);
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
 fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_redo() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
-    made(&mut h, "Box", "Length");
-    let boxed = text_of(&f, &h);
+    made(&mut h, "Pad", "Length");
+    let padded = text_of(&f, &h);
     step_key(&mut h, true);
     select(&mut h, "PinK");
     // The queue held: another client's undo (of PinK), then a name typed here against the
@@ -7219,11 +8062,11 @@ fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_re
         h.state().tabs()[0].message.is_some() && !h.state().tabs()[0].unsettled()
     });
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
-    // Redo: PinK, then the box's edits whole.
+    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
+    // Redo: PinK, then the pad's edits whole.
     step_key(&mut h, false);
     step_key(&mut h, false);
-    assert_eq!(text_of(&f, &h), boxed);
+    assert_eq!(text_of(&f, &h), padded);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -7409,9 +8252,9 @@ fn an_open_dialog_with_nothing_to_send_asks_for_no_frame_at_once() {
     // A frame with input in it is asked for again by egui itself; one with none, while a
     // dialog sits open with nothing changed, asks for no frame at once (only the idle one).
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     quiet_wakes(&mut h);
@@ -7543,6 +8386,15 @@ fn boxes_asked(f: &Fixture) -> usize {
         .calls()
         .iter()
         .filter(|call| is_box(&call.op))
+        .count()
+}
+
+/// How many prisms the fake has started (a held one among them).
+fn prisms_asked(f: &Fixture) -> usize {
+    f.kernel
+        .calls()
+        .iter()
+        .filter(|call| is_prism(&call.op))
         .count()
 }
 
@@ -8189,7 +9041,7 @@ fn a_refusal_and_a_question_are_let_go_when_the_dialog_opens_again_and_a_quit_ca
 #[test]
 fn export_is_off_while_a_feature_dialog_is_open_or_the_tab_closes() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     let export_off = |h: &mut AppHarness| {
         h.get_by_label("File").click();
@@ -8209,8 +9061,18 @@ fn export_is_off_while_a_feature_dialog_is_open_or_the_tab_closes() {
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     assert!(export_off(&mut h));
+    // Its preview built, as `status` says: with it still rebuilding, Esc would stop it,
+    // leaving the dialog open.
+    added(&mut h);
+    step_until(&mut h, "the preview built", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.status.as_ref().is_some_and(|status| {
+            status.rebuild.revision == tab.revision
+                && status.rebuild.state == silico_core::command::RebuildState::Done
+        })
+    });
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
@@ -8754,10 +9616,10 @@ fn enter_right_after_a_menu_item_opened_the_dialog_by_enter_is_its_ok() {
 #[test]
 fn enter_on_a_feature_dialogs_focused_cancel_cancels() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f, &h);
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     dialog(&h)
@@ -9750,18 +10612,67 @@ fn cube_buttons(h: &AppHarness) -> std::collections::BTreeMap<String, eframe::eg
         .collect()
 }
 
-/// The ViewCube's faces as drawn last frame: each polygon's corners and fill, in order.
-fn cube_faces(h: &AppHarness) -> Vec<(Vec<eframe::egui::Pos2>, eframe::egui::Color32)> {
+/// What the ViewCube drew last frame: every shape clipped to its rectangle, in order.
+fn cube_shapes(h: &AppHarness) -> Vec<eframe::egui::Shape> {
     let cube = silico_app::viewport::view_cube_rect(the_viewport(h));
     h.output()
         .shapes
         .iter()
         .filter(|clipped| clipped.clip_rect == cube)
-        .filter_map(|clipped| match &clipped.shape {
-            eframe::egui::Shape::Path(path) => Some((path.points.clone(), path.fill)),
+        .map(|clipped| clipped.shape.clone())
+        .collect()
+}
+
+/// The ViewCube's polygons as drawn last frame: each one's corners and fill, in order, and
+/// that none is stroked (its edges are drawn once, as lines).
+fn cube_faces(h: &AppHarness) -> Vec<(Vec<eframe::egui::Pos2>, eframe::egui::Color32)> {
+    cube_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Path(path) => {
+                assert_eq!(path.stroke.width, 0.0, "a face stroked: {path:?}");
+                Some((path.points.clone(), path.fill))
+            }
             _ => None,
         })
         .collect()
+}
+
+/// The ViewCube's lines as drawn last frame: each one's ends and stroke, in order.
+fn cube_lines(h: &AppHarness) -> Vec<([eframe::egui::Pos2; 2], eframe::egui::Stroke)> {
+    cube_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::LineSegment { points, stroke } => Some((points, stroke)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The prototype's faces' fills (viewport.js's `buildCube`), its border's (`label`'s
+/// `strokeStyle`), and its edges' (`#827f7f`).
+const CUBE_FRONT: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x30, 0x30, 0x30);
+const CUBE_BACK: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x26, 0x26, 0x26);
+const CUBE_SIDE: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x2c, 0x2b, 0x2b);
+const CUBE_TOP: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x36, 0x35, 0x35);
+const CUBE_BOTTOM: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x21, 0x21, 0x21);
+const CUBE_BORDER: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x52, 0x51, 0x51);
+const CUBE_EDGE: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x82, 0x7f, 0x7f);
+/// The axis stubs' colours (viewport.js's `buildCube`, `ax`: `#ff6981`, `#00b266`, `#7a95ff`).
+const CUBE_AXIS_X: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0xff, 0x69, 0x81);
+const CUBE_AXIS_Y: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x00, 0xb2, 0x66);
+const CUBE_AXIS_Z: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x7a, 0x95, 0xff);
+
+/// `got` holds the points `corners`, in any order, each within 1e-3.
+#[track_caller]
+fn same_corners(got: &[eframe::egui::Pos2], corners: &[eframe::egui::Pos2], what: &str) {
+    assert_eq!(got.len(), corners.len(), "{what}: {got:?}");
+    for corner in corners {
+        assert!(
+            got.iter().any(|p| (*p - *corner).length() < 1e-3),
+            "{what}: no {corner:?} in {got:?}"
+        );
+    }
 }
 
 #[track_caller]
@@ -9777,17 +10688,27 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     // From (1, −1, 1) onto the cut's box's centre, z up: the view's right is (1, 1, 0)/√2
     // and its up (−1, 1, 2)/√6, so the cube's point (x, y, z), its faces at ±1, is drawn
     // at ((x + y)/√2, −(−x + y + 2z)/√6) · s from the cube's centre, y down, s half its
-    // edge, 0.28 of its 92-point side (the prototype's `CUBE`): 0.28 · 92 = 25.76, so
-    // s/√2 = 18.215, s/√6 = 10.516, s·√2 = 36.430, 2s/√6 = 21.033, and 4s/√6 = 42.066
-    // (the front's label at (−18.215, 10.516) from the centre, the right's at (18.215,
-    // 10.516), the top's at (0, −21.033); the top front left corner at (−36.430, −21.033),
-    // the top back right at (36.430, −21.033), the bottom front right at (0, 42.066), the
-    // top back left at (0, −42.066), and the bottom front left and back right at
-    // (∓36.430, 21.033)). The front, right, and top face the view, each at
-    // 1/√3 (over a quarter, so each is labelled where its centre is drawn), shaded 0.6 of
-    // the fill edge-on rising to all of it square-on: 0.6 + 0.4/√3. The corners facing it
-    // more than a tenth, 1 or 1/3, are clickable at theirs: the top front right (at the
-    // cube's centre), the top front left, the top back right, and the bottom front right.
+    // edge, 1/3.5 of its 92-point side (the prototype's `CUBE`, its cube camera 3.5 of the
+    // cube's units across, the cube 2): 92/3.5 = 26.286, so s/√2 = 18.587, s/√6 = 10.731,
+    // s·√2 = 37.174, 2s/√6 = 21.462, and 4s/√6 = 42.924 (the front's label at (−18.587,
+    // 10.731) from the centre, the right's at (18.587, 10.731), the top's at (0, −21.462);
+    // the top front left corner at (−37.174, −21.462), the top back right at (37.174,
+    // −21.462), the bottom front right at (0, 42.924), the top back left at (0, −42.924),
+    // and the bottom front left and back right at (∓37.174, 21.462)). The front, right,
+    // and top face the view, each at
+    // 1/√3 (over a quarter, so each is labelled and clickable where its centre is drawn),
+    // each drawn as the prototype's texture paints it: the border's #525151 over the whole
+    // face, then its own fill over all but the rim, 3/128 of its side, so its corners at
+    // ±(1 − 6/128) = ±61/64 of a half side from its centre. The corners facing it more than
+    // a tenth, 1 or 1/3, are clickable at theirs: the top front right (at the cube's
+    // centre), the top front left, the top back right, and the bottom front right; none is
+    // drawn as a dot. The cube's edges are drawn once each, over the faces, in #827f7f, 1
+    // wide: the nine of a face drawn (the three between the back, left, and bottom, none
+    // drawn, aren't). Over them, the axis stubs, 1 wide in the axes' colours, from
+    // (−1.02, −1.02, −1.02), 1.02 times the bottom front left corner's place, 1.4 along
+    // each axis, but where the cube is in front: the x stub to (0.38, −1.02, −1.02) and the
+    // z stub to (−1.02, −1.02, 0.38), each whole (toward the eye each runs to y < −1), and
+    // the y stub only to (−1.02, −0.98, −1.02), behind the cube past it.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
@@ -9800,7 +10721,7 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     step(&mut h);
     step(&mut h);
     let cube = silico_app::viewport::view_cube_rect(the_viewport(&h));
-    let s = 0.28 * 92.0;
+    let s = 92.0 / 3.5;
     let (r2, r6) = (2f32.sqrt(), 6f32.sqrt());
     let at = |x: f32, y: f32| cube.center() + eframe::egui::vec2(x, y) * s;
     // The cube's corners as drawn: (1, −1, 1) at the centre; (−1, −1, 1), (1, 1, 1),
@@ -9839,13 +10760,11 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     }
     at_point(buttons["Home"].min, home.min, "Home's corner");
     at_point(buttons["Home"].max, home.max, "Home's far corner");
-    let fill = h.ctx.global_style().visuals.widgets.inactive.bg_fill;
-    let shade = fill.gamma_multiply(0.6 + 0.4 * (1.0 / 3f64.sqrt()) as f32);
-    assert_ne!(shade, fill);
     let faces = cube_faces(&h);
     let expected = [
         (
             "front",
+            CUBE_FRONT,
             [
                 top_front_right,
                 top_front_left,
@@ -9855,6 +10774,7 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
         ),
         (
             "right",
+            CUBE_SIDE,
             [
                 top_back_right,
                 bottom_back_right,
@@ -9864,6 +10784,7 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
         ),
         (
             "top",
+            CUBE_TOP,
             [
                 top_back_right,
                 top_front_right,
@@ -9872,52 +10793,758 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
             ],
         ),
     ];
-    assert_eq!(faces.len(), expected.len(), "{faces:?}");
-    for ((points, colour), (face, corners)) in faces.iter().zip(expected) {
-        assert_eq!(points.len(), 4, "{face}");
-        for (got, corner) in points.iter().zip(corners) {
-            at_point(*got, corner, face);
+    assert_eq!(faces.len(), 2 * expected.len(), "{faces:?}");
+    let inside = 61.0 / 64.0;
+    for (drawn, (face, fill, corners)) in faces.chunks(2).zip(expected) {
+        let centre = corners
+            .iter()
+            .fold(eframe::egui::Vec2::ZERO, |sum, c| sum + c.to_vec2())
+            / 4.0;
+        let inset: Vec<_> = corners
+            .iter()
+            .map(|c| (centre + (c.to_vec2() - centre) * inside).to_pos2())
+            .collect();
+        same_corners(&drawn[0].0, &corners, face);
+        assert_eq!(drawn[0].1, CUBE_BORDER, "{face}'s border");
+        same_corners(&drawn[1].0, &inset, face);
+        assert_eq!(drawn[1].1, fill, "{face}'s fill");
+    }
+    // The nine edges, each once.
+    let edges = [
+        (top_front_right, top_front_left),
+        (top_front_left, bottom_front_left),
+        (bottom_front_left, bottom_front_right),
+        (bottom_front_right, top_front_right),
+        (top_front_right, top_back_right),
+        (top_back_right, bottom_back_right),
+        (bottom_back_right, bottom_front_right),
+        (top_back_right, top_back_left),
+        (top_back_left, top_front_left),
+    ];
+    let all = cube_lines(&h);
+    let (lines, stubs): (Vec<_>, Vec<_>) = all
+        .iter()
+        .partition(|(_, stroke)| stroke.color == CUBE_EDGE);
+    assert_eq!(lines.len(), edges.len(), "{lines:?}");
+    for (a, b) in edges {
+        let drawn = lines
+            .iter()
+            .filter(|([p, q], _)| {
+                ((*p - a).length() < 1e-3 && (*q - b).length() < 1e-3)
+                    || ((*p - b).length() < 1e-3 && (*q - a).length() < 1e-3)
+            })
+            .count();
+        assert_eq!(drawn, 1, "the edge {a:?} to {b:?}: {lines:?}");
+    }
+    for (_, stroke) in &lines {
+        assert_eq!(*stroke, eframe::egui::Stroke::new(1.0, CUBE_EDGE));
+    }
+    // The stubs, each after every edge, x then y then z: the point (x, y, z) drawn at
+    // ((x + y)/√2, −(−x + y + 2z)/√6) · s from the cube's centre.
+    let place = |[x, y, z]: [f32; 3]| at((x + y) / r2, -(-x + y + 2.0 * z) / r6);
+    let from = [-1.02, -1.02, -1.02];
+    let expected_stubs = [
+        (CUBE_AXIS_X, place(from), place([0.38, -1.02, -1.02])),
+        (CUBE_AXIS_Y, place(from), place([-1.02, -0.98, -1.02])),
+        (CUBE_AXIS_Z, place(from), place([-1.02, -1.02, 0.38])),
+    ];
+    assert_eq!(stubs.len(), expected_stubs.len(), "{stubs:?}");
+    for (([p, q], stroke), (colour, a, b)) in stubs.iter().zip(expected_stubs) {
+        assert_eq!(*stroke, eframe::egui::Stroke::new(1.0, colour));
+        at_point(*p, a, "a stub's start");
+        at_point(*q, b, "a stub's end");
+    }
+    let last_edge = all
+        .iter()
+        .rposition(|(_, stroke)| stroke.color == CUBE_EDGE);
+    let first_stub = all.iter().position(|(_, stroke)| stroke.color != CUBE_EDGE);
+    assert!(last_edge < first_stub, "{all:?}");
+    // No dot at any corner.
+    assert!(
+        !cube_shapes(&h)
+            .iter()
+            .any(|shape| matches!(shape, eframe::egui::Shape::Circle(_))),
+        "a dot drawn"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_face_turned_a_quarter_toward_the_view_is_drawn_and_left_unlabelled_and_one_just_over_labelled()
+{
+    // From (0, −√15, 1) onto the origin: the view's back is (0, −√15, 1)/4, so the top
+    // faces it at exactly a quarter (as f64 rounds it, checked), drawn but too oblique to
+    // label or click; the front at √15/4, labelled. The left and right are edge-on and the
+    // back and bottom face away, none drawn. The four front corners face it more than a
+    // tenth, (√15 ± 1)/(4√3); the back ones face away. The front and the top are drawn, each
+    // its border and its fill, the front's label after them; the top has none. From
+    // (0, −a, 1), the top faces the view at 1/√(a² + 1): a = 3.86 just over a quarter,
+    // 0.25079, labelled and clicked; a = 3.88 just under, 0.24958, not. The same corners
+    // face it more than a tenth, (a ± 1)/(√(a² + 1)·√3), 0.70 and 0.41 or so.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let corners = [
+        "Bottom front left",
+        "Bottom front right",
+        "Top front left",
+        "Top front right",
+    ];
+    for (eye, top, labelled) in [
+        ([0.0, -15f64.sqrt(), 1.0], 0.25, false),
+        ([0.0, -3.86, 1.0], 0.250_79, true),
+        ([0.0, -3.88, 1.0], 0.249_58, false),
+    ] {
+        let camera = silico_protocol::Camera {
+            projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+            eye,
+            target: [0.0; 3],
+            up: [0.0, 0.0, 1.0],
+        };
+        let faced = camera.frame().unwrap().back[2];
+        if top == 0.25 {
+            assert_eq!(faced, 0.25);
+        } else {
+            assert!((faced - top).abs() < 1e-5, "{eye:?}: {faced}");
         }
-        assert_eq!(*colour, shade, "{face}");
+        view_mut(&mut h).set_camera(camera);
+        step(&mut h);
+        step(&mut h);
+        let mut buttons: Vec<&str> = corners.to_vec();
+        buttons.extend(["Front", "Home"]);
+        if labelled {
+            buttons.push("Top");
+        }
+        buttons.sort_unstable();
+        assert_eq!(
+            cube_buttons(&h)
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            buttons,
+            "{eye:?}"
+        );
+        let mut drawn = vec!["border", "front", "label", "border", "top"];
+        if labelled {
+            drawn.push("label");
+        }
+        assert_eq!(cube_drawn(&h), drawn, "{eye:?}");
     }
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
-fn a_face_turned_a_quarter_toward_the_view_is_drawn_and_left_unlabelled() {
-    // From (0, −√15, 1) onto the origin: the view's back is (0, −√15, 1)/4, so the top
-    // faces it at exactly a quarter (as f64 rounds it, checked), drawn but too oblique to
-    // label or click; the front at √15/4, labelled. The left and right are edge-on and the
-    // back and bottom face away, none drawn. The four front corners face it more than a
-    // tenth, (√15 ± 1)/(4√3); the back ones face away.
+fn a_face_facing_the_view_by_the_edge_on_limit_is_drawn_with_none_of_its_own_edges() {
+    // From (0, −1, 10⁻⁹) onto the origin: the eye's offset is 1 long as f64 rounds it, so the
+    // view's back is (0, −1, 10⁻⁹) exactly (checked) and the top faces it at 10⁻⁹, the most a
+    // face may and still be edge-on, not drawn. The front, square on, is drawn with its four
+    // edges and its label; the left and right are edge-on, the back and bottom face away. No
+    // edge of the top's is drawn but the one it shares with the front.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     let camera = silico_protocol::Camera {
         projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
-        eye: [0.0, -15f64.sqrt(), 1.0],
+        eye: [0.0, -1.0, 1e-9],
         target: [0.0; 3],
         up: [0.0, 0.0, 1.0],
     };
-    assert_eq!(camera.frame().unwrap().back[2], 0.25);
+    assert_eq!(camera.frame().unwrap().back, [0.0, -1.0, 1e-9]);
     view_mut(&mut h).set_camera(camera);
     step(&mut h);
     step(&mut h);
-    assert_eq!(
-        cube_buttons(&h)
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        [
-            "Bottom front left",
-            "Bottom front right",
-            "Front",
-            "Home",
-            "Top front left",
-            "Top front right"
-        ]
+    assert_eq!(cube_drawn(&h), ["border", "front", "label"]);
+    let edges: Vec<_> = cube_lines(&h)
+        .into_iter()
+        .filter(|(_, stroke)| stroke.color == CUBE_EDGE)
+        .collect();
+    assert_eq!(edges.len(), 4, "{edges:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// What the ViewCube drew last frame before its edges, in order: each polygon by its fill
+/// (a border, or a face's), and each label (a mesh).
+fn cube_drawn(h: &AppHarness) -> Vec<&'static str> {
+    cube_shapes(h)
+        .iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Path(p) => Some(match p.fill {
+                CUBE_BORDER => "border",
+                CUBE_FRONT => "front",
+                CUBE_BACK => "back",
+                CUBE_SIDE => "side",
+                CUBE_TOP => "top",
+                CUBE_BOTTOM => "bottom",
+                _ => "another fill",
+            }),
+            eframe::egui::Shape::Mesh(_) => Some("label"),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A face of the ViewCube as the prototype's texture lies on it (viewport.js's
+/// `buildCube`: three.js's `BoxGeometry`, its +x face RIGHT, −x LEFT, +y TOP, −y BOTTOM,
+/// +z FRONT, −z BACK, each texture's left to right along `BoxGeometry`'s u and its top to
+/// bottom along −v, the box turned a quarter about x, so its y is z and its z is −y): its
+/// word, its fill, its outward normal, and its words' right and up across it. The bottom's
+/// are turned a half turn from the prototype's, whose bottom view looks with −y up: the
+/// app's (`NamedView::up`) looks with +y up, and each face reads upright from its own view.
+struct LabelledFace {
+    word: &'static str,
+    fill: eframe::egui::Color32,
+    normal: [f64; 3],
+    right: [f64; 3],
+    up: [f64; 3],
+}
+
+const LABELLED_FACES: [LabelledFace; 6] = [
+    LabelledFace {
+        word: "FRONT",
+        fill: CUBE_FRONT,
+        normal: [0.0, -1.0, 0.0],
+        right: [1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    LabelledFace {
+        word: "BACK",
+        fill: CUBE_BACK,
+        normal: [0.0, 1.0, 0.0],
+        right: [-1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    LabelledFace {
+        word: "LEFT",
+        fill: CUBE_SIDE,
+        normal: [-1.0, 0.0, 0.0],
+        right: [0.0, -1.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    LabelledFace {
+        word: "RIGHT",
+        fill: CUBE_SIDE,
+        normal: [1.0, 0.0, 0.0],
+        right: [0.0, 1.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    LabelledFace {
+        word: "TOP",
+        fill: CUBE_TOP,
+        normal: [0.0, 0.0, 1.0],
+        right: [1.0, 0.0, 0.0],
+        up: [0.0, 1.0, 0.0],
+    },
+    LabelledFace {
+        word: "BOTTOM",
+        fill: CUBE_BOTTOM,
+        normal: [0.0, 0.0, -1.0],
+        right: [-1.0, 0.0, 0.0],
+        up: [0.0, 1.0, 0.0],
+    },
+];
+
+/// The ViewCube's labels as drawn last frame, each with the fill of the face drawn before it.
+fn cube_labels(h: &AppHarness) -> Vec<(eframe::egui::Color32, Arc<eframe::egui::Mesh>)> {
+    let mut fill = None;
+    let mut labels = Vec::new();
+    for shape in cube_shapes(h) {
+        match shape {
+            eframe::egui::Shape::Path(path) if path.fill != CUBE_BORDER => fill = Some(path.fill),
+            eframe::egui::Shape::Mesh(mesh) => labels.push((fill.expect("a label first"), mesh)),
+            _ => {}
+        }
+    }
+    labels
+}
+
+/// A view of the cube for the labels' test: from `way` onto the origin with `up` its up, its
+/// right and up on screen by hand, the faces it labels, in the cube's order, and how many of
+/// the cube's edges it draws (each of a face drawn, once).
+struct CubeView {
+    name: &'static str,
+    way: [f64; 3],
+    up: [f64; 3],
+    right: [f64; 3],
+    screen_up: [f64; 3],
+    labelled: &'static [&'static str],
+    edges: usize,
+}
+
+/// The size the ViewCube's labels are laid out at: Inter Medium 21/128 of a face's side
+/// (viewport.js's `label`: `21px` on its 128), the side two half sides of 92/3.5 points
+/// (the cube camera's 3.5 units across the 92-point `CUBE`), so 21/64 · 92/3.5 = 8.625
+/// points, computed in the app's order (in f64 to a half side, then f32).
+fn cube_label_size() -> f32 {
+    let per_unit = (92.0f64 * (1.0 / 3.5)) as f32;
+    21.0f32 / 128.0 * 2.0 * per_unit
+}
+
+/// The ViewCube's label `word` as egui lays it out at the labels' size
+/// ([`cube_label_size`]).
+fn cube_label_galley(h: &AppHarness, word: &str) -> Arc<eframe::egui::Galley> {
+    h.ctx.fonts_mut(|fonts| {
+        fonts.layout_no_wrap(
+            word.to_owned(),
+            eframe::egui::FontId::proportional(cube_label_size()),
+            eframe::egui::Color32::WHITE,
+        )
+    })
+}
+
+/// `mesh`, the ViewCube's label `word`, samples its glyphs where the font atlas holds them:
+/// laid out at the labels' size ([`cube_label_size`]), each glyph's quad, in turn, has its
+/// four corners' texture coordinates, times the atlas's size now, at its texels' corners
+/// (`uv_rect`'s `min` and `max`), to a thousandth of a texel.
+#[track_caller]
+fn samples_its_glyphs(h: &AppHarness, word: &str, mesh: &eframe::egui::Mesh, what: &str) {
+    let galley = cube_label_galley(h, word);
+    let [width, height] = h
+        .ctx
+        .fonts(|fonts| fonts.font_image_size())
+        .map(|n| n as f32);
+    let glyphs: Vec<_> = galley
+        .rows
+        .iter()
+        .flat_map(|row| &row.glyphs)
+        .filter(|glyph| !glyph.uv_rect.is_nothing())
+        .collect();
+    assert_eq!(glyphs.len(), word.len(), "{what}: {word}");
+    assert_eq!(mesh.vertices.len(), 4 * glyphs.len(), "{what}: {word}");
+    for (quad, glyph) in mesh.vertices.chunks(4).zip(glyphs) {
+        let [x0, y0] = glyph.uv_rect.min.map(f32::from);
+        let [x1, y1] = glyph.uv_rect.max.map(f32::from);
+        let texels: Vec<_> = quad
+            .iter()
+            .map(|vertex| eframe::egui::pos2(vertex.uv.x * width, vertex.uv.y * height))
+            .collect();
+        same_corners(
+            &texels,
+            &[
+                eframe::egui::pos2(x0, y0),
+                eframe::egui::pos2(x1, y0),
+                eframe::egui::pos2(x0, y1),
+                eframe::egui::pos2(x1, y1),
+            ],
+            &format!("{what}: {word}'s {:?}", glyph.chr),
+        );
+    }
+}
+
+#[test]
+fn each_view_cube_label_lies_on_its_face_inside_it_at_home_near_edge_on_and_square_on() {
+    // Each view from `way` onto the origin, `up` its up, its right and up worked by hand
+    // (right = up × back, then up = back × right); the cube's point p drawn at
+    // (p · right, −p · up) · s from the cube's centre, y down, s = 92/3.5. A face's point
+    // (u, v), each in half sides, u along its words' right and v down them, is drawn at
+    // c + u·a + v·b: c its centre's place, a its right's, b its down's (its up's negated);
+    // it's inside the face for |u|, |v| < 1. Faced more than a quarter, a face is labelled
+    // and clicked. Each edge of a face drawn is drawn once, after every face and label: 4
+    // square on, 7 with the front and the top, 9 at home.
+    let r2 = 2f64.sqrt();
+    let r6 = 6f64.sqrt();
+    let n = 15.44f64.sqrt();
+    let views = [
+        CubeView {
+            name: "home",
+            way: [1.0, -1.0, 1.0],
+            up: [0.0, 0.0, 1.0],
+            right: [1.0 / r2, 1.0 / r2, 0.0],
+            screen_up: [-1.0 / r6, 1.0 / r6, 2.0 / r6],
+            labelled: &["FRONT", "RIGHT", "TOP"],
+            edges: 9,
+        },
+        // The top faced 1/√15.44 = 0.2545, just over a quarter; the front 3.8/√15.44.
+        CubeView {
+            name: "near edge-on",
+            way: [0.0, -3.8, 1.0],
+            up: [0.0, 0.0, 1.0],
+            right: [1.0, 0.0, 0.0],
+            screen_up: [0.0, 1.0 / n, 3.8 / n],
+            labelled: &["FRONT", "TOP"],
+            edges: 7,
+        },
+        CubeView {
+            name: "front",
+            way: [0.0, -1.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            right: [1.0, 0.0, 0.0],
+            screen_up: [0.0, 0.0, 1.0],
+            labelled: &["FRONT"],
+            edges: 4,
+        },
+        CubeView {
+            name: "back",
+            way: [0.0, 1.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            right: [-1.0, 0.0, 0.0],
+            screen_up: [0.0, 0.0, 1.0],
+            labelled: &["BACK"],
+            edges: 4,
+        },
+        CubeView {
+            name: "left",
+            way: [-1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            right: [0.0, -1.0, 0.0],
+            screen_up: [0.0, 0.0, 1.0],
+            labelled: &["LEFT"],
+            edges: 4,
+        },
+        CubeView {
+            name: "right",
+            way: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            right: [0.0, 1.0, 0.0],
+            screen_up: [0.0, 0.0, 1.0],
+            labelled: &["RIGHT"],
+            edges: 4,
+        },
+        CubeView {
+            name: "top",
+            way: [0.0, 0.0, 1.0],
+            up: [0.0, 1.0, 0.0],
+            right: [1.0, 0.0, 0.0],
+            screen_up: [0.0, 1.0, 0.0],
+            labelled: &["TOP"],
+            edges: 4,
+        },
+        CubeView {
+            name: "bottom",
+            way: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            right: [-1.0, 0.0, 0.0],
+            screen_up: [0.0, 1.0, 0.0],
+            labelled: &["BOTTOM"],
+            edges: 4,
+        },
+    ];
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let s = 92.0 / 3.5;
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    // Each word's extent in its face's units, the same at every view.
+    let mut extents: std::collections::BTreeMap<&str, [f64; 4]> = Default::default();
+    assert!(1.0 / n > 0.25 && 1.0 / n < 0.26, "{}", 1.0 / n);
+    for CubeView {
+        name,
+        way,
+        up,
+        right,
+        screen_up,
+        labelled,
+        edges,
+    } in views
+    {
+        view_mut(&mut h).set_camera(silico_protocol::Camera {
+            projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+            eye: way.map(|c| 100.0 * c),
+            target: [0.0; 3],
+            up,
+        });
+        step(&mut h);
+        step(&mut h);
+        // A picture of the cube to look at, if one is asked for.
+        if let Some(shot) = std::env::var_os("SILICO_APP_CUBE_SHOT").filter(|_| name == "home") {
+            h.render().unwrap().save(shot).unwrap();
+        }
+        let cube = silico_app::viewport::view_cube_rect(the_viewport(&h));
+        let centre = [f64::from(cube.center().x), f64::from(cube.center().y)];
+        let place = |p: [f64; 3]| [dot(p, right) * s, -dot(p, screen_up) * s];
+        // The edges, once each, each after every face and label (so drawn over them).
+        let shapes = cube_shapes(&h);
+        let edge = |shape: &eframe::egui::Shape| matches!(shape, eframe::egui::Shape::LineSegment { stroke, .. } if stroke.color == CUBE_EDGE);
+        assert_eq!(
+            shapes.iter().filter(|shape| edge(shape)).count(),
+            edges,
+            "{name}: {shapes:?}"
+        );
+        let last_face = shapes.iter().rposition(|shape| {
+            matches!(
+                shape,
+                eframe::egui::Shape::Path(_) | eframe::egui::Shape::Mesh(_)
+            )
+        });
+        let first_line = shapes
+            .iter()
+            .position(|shape| matches!(shape, eframe::egui::Shape::LineSegment { .. }));
+        assert!(
+            last_face.is_some() && last_face < first_line,
+            "{name}: a line under a face: {shapes:?}"
+        );
+        // Each face labelled is clicked, and only those.
+        let buttons = cube_buttons(&h);
+        for face in &LABELLED_FACES {
+            let button = format!("{}{}", &face.word[..1], face.word[1..].to_lowercase());
+            assert_eq!(
+                buttons.contains_key(&button),
+                labelled.contains(&face.word),
+                "{name}: {button} in {:?}",
+                buttons.keys()
+            );
+        }
+        let labels = cube_labels(&h);
+        let words: Vec<&str> = labelled.to_vec();
+        assert_eq!(labels.len(), words.len(), "{name}: {labels:?}");
+        for ((fill, mesh), word) in labels.iter().zip(words) {
+            let face = LABELLED_FACES.iter().find(|f| f.word == word).unwrap();
+            assert_eq!(*fill, face.fill, "{name}: {word}'s face");
+            assert_eq!(
+                mesh.texture_id,
+                eframe::egui::TextureId::default(),
+                "{name}"
+            );
+            samples_its_glyphs(&h, word, mesh, name);
+            let c = place(face.normal);
+            let a = place(face.right);
+            let b = place(face.up.map(|x| -x));
+            let det = a[0] * b[1] - a[1] * b[0];
+            let mut extent = [f64::MAX, f64::MIN, f64::MAX, f64::MIN];
+            let mut on_face = Vec::new();
+            for vertex in &mesh.vertices {
+                let d = [
+                    f64::from(vertex.pos.x) - centre[0] - c[0],
+                    f64::from(vertex.pos.y) - centre[1] - c[1],
+                ];
+                let u = (d[0] * b[1] - d[1] * b[0]) / det;
+                let v = (a[0] * d[1] - a[1] * d[0]) / det;
+                assert!(
+                    u.abs() < 1.0 && v.abs() < 1.0,
+                    "{name}: {word}'s vertex {:?} at ({u}, {v}) on its face",
+                    vertex.pos
+                );
+                extent = [
+                    extent[0].min(u),
+                    extent[1].max(u),
+                    extent[2].min(v),
+                    extent[3].max(v),
+                ];
+                on_face.push((vertex, u, v));
+            }
+            // A word, not a speck: across a fifth of the face at least, its capitals a
+            // twelfth of it high at least (21/128 of its side is the type's size).
+            let (wide, high) = (extent[1] - extent[0], extent[3] - extent[2]);
+            assert!(wide > 0.4 && wide < 1.9, "{name}: {word} {extent:?}");
+            assert!(high > 0.15 && high < 0.6, "{name}: {word} {extent:?}");
+            // Where the prototype puts it: its words' middle (their line's, as egui lays
+            // them out) at the face's centre across it, and 2/128 of its side below it,
+            // v = 2 · 2/128 = 1/32 half sides; so its glyphs' extent is theirs about that
+            // middle, in half sides of 92/3.5 points, to a thousandth. Their boxes are on
+            // whole pixels, a pixel 0.038 of a half side, so their own middle can be a
+            // hundredth or two from the line's: it's their extent that's checked, which a
+            // label with no drop misses by 1/32.
+            let galley = cube_label_galley(&h, word);
+            let line = galley.rect.center();
+            let per_unit = f64::from((92.0f64 * (1.0 / 3.5)) as f32);
+            let mut laid_out = [f64::MAX, f64::MIN, f64::MAX, f64::MIN];
+            for row in &galley.rows {
+                for vertex in &row.visuals.mesh.vertices {
+                    let at = row.pos + vertex.pos.to_vec2();
+                    let u = f64::from(at.x - line.x) / per_unit;
+                    let v = 1.0 / 32.0 + f64::from(at.y - line.y) / per_unit;
+                    laid_out = [
+                        laid_out[0].min(u),
+                        laid_out[1].max(u),
+                        laid_out[2].min(v),
+                        laid_out[3].max(v),
+                    ];
+                }
+            }
+            for k in 0..4 {
+                assert!(
+                    (laid_out[k] - extent[k]).abs() < 1e-3,
+                    "{name}: {word} {extent:?}, laid out at {laid_out:?}"
+                );
+            }
+            // The same in the face's units from every view: it lies on the face.
+            let seen = extents.entry(word).or_insert(extent);
+            for k in 0..4 {
+                assert!(
+                    (seen[k] - extent[k]).abs() < 1e-3,
+                    "{name}: {word} {extent:?} against {seen:?}"
+                );
+            }
+            // Square on, it reads upright and unmirrored: each glyph's atlas corner nearest
+            // its top left is drawn left of and above the one nearest its bottom right.
+            if labelled.len() == 1 {
+                let key = |p: &(&eframe::egui::epaint::Vertex, f64, f64)| p.0.uv.x + p.0.uv.y;
+                for quad in on_face.chunks(4) {
+                    let first = quad
+                        .iter()
+                        .min_by(|p, q| key(p).total_cmp(&key(q)))
+                        .unwrap();
+                    let last = quad
+                        .iter()
+                        .max_by(|p, q| key(p).total_cmp(&key(q)))
+                        .unwrap();
+                    assert!(
+                        first.0.pos.x < last.0.pos.x && first.0.pos.y < last.0.pos.y,
+                        "{name}: {word} turned or mirrored: {quad:?}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(extents.len(), 6, "{extents:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_view_cube_label_samples_its_glyphs_where_the_atlas_holds_them_as_its_pass_ends() {
+    // The font atlas grows while a pass lays out text it hasn't yet (its height doubled),
+    // and a mesh's texture coordinates are a part of its size: so a label's are taken as the
+    // pass ends, once everything's laid out. Here, at each pass's end, before the labels'
+    // meshes are made (egui's own callbacks run before the plugins added after them, the
+    // labels' among them), text is laid out at sizes not yet used until the atlas grows, as
+    // a pane drawn after the cube might: each label at home, FRONT, RIGHT, and TOP, still
+    // samples its glyphs where the grown atlas holds them. Made where its face is drawn, a
+    // label's coordinates would be parts of the atlas before it grew, its glyphs' rows at
+    // twice their place or more.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+        eye: [100.0, -100.0, 100.0],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 1.0],
+    });
+    step(&mut h);
+    step(&mut h);
+    let before = h.ctx.fonts(|fonts| fonts.font_image_size());
+    let next_size = Arc::new(Mutex::new(100.0f32));
+    let grown = Arc::new(Mutex::new(0usize));
+    {
+        let (next_size, grown) = (Arc::clone(&next_size), Arc::clone(&grown));
+        h.ctx.on_end_pass(
+            "the atlas grown after the cube",
+            Arc::new(move |ui: &mut eframe::egui::Ui| {
+                let height = |ui: &eframe::egui::Ui| ui.ctx().fonts(|f| f.font_image_size()[1]);
+                let start = height(ui);
+                for _ in 0..256 {
+                    let size = {
+                        let mut next = next_size.lock().unwrap();
+                        *next += 1.0;
+                        *next
+                    };
+                    let _ = ui.painter().layout_no_wrap(
+                        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".to_owned(),
+                        eframe::egui::FontId::proportional(size),
+                        eframe::egui::Color32::WHITE,
+                    );
+                    if height(ui) > start {
+                        *grown.lock().unwrap() += 1;
+                        return;
+                    }
+                }
+            }),
+        );
+    }
+    step(&mut h);
+    let after = h.ctx.fonts(|fonts| fonts.font_image_size());
+    assert!(*grown.lock().unwrap() > 0, "the atlas never grew");
+    assert!(after[1] > before[1], "{before:?} to {after:?}");
+    let labels = cube_labels(&h);
+    assert_eq!(labels.len(), 3, "{labels:?}");
+    for ((_, mesh), word) in labels.iter().zip(["FRONT", "RIGHT", "TOP"]) {
+        samples_its_glyphs(&h, word, mesh, "the atlas grown");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_view_cube_and_the_navigation_bar_have_their_bounds_where_theyre_drawn() {
+    // The ViewCube's group: the cube (92 square, 16 from the canvas's top and right below
+    // Home's 20-point row) and Home (44 by 18 at its top left, in that row). The navigation
+    // bar's toolbar: finite, holding each of its tools, inside its 220 by 32 place 12 above
+    // the canvas's bottom centre. Neither sensed alone gets egui's own: the cube senses
+    // nothing as a group, and the bar's scope is given bounds only as it begins, none.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let canvas = the_viewport(&h);
+    let cube = eframe::egui::Rect::from_min_size(
+        eframe::egui::pos2(canvas.right() - 16.0 - 92.0, canvas.top() + 16.0 + 20.0),
+        eframe::egui::vec2(92.0, 92.0),
     );
-    assert_eq!(cube_faces(&h).len(), 2);
+    let home = eframe::egui::Rect::from_min_size(
+        cube.left_top() - eframe::egui::vec2(0.0, 20.0),
+        eframe::egui::vec2(44.0, 18.0),
+    );
+    let group = h.get_by_role_and_label(Role::Group, "ViewCube").rect();
+    let whole = cube.union(home);
+    at_point(group.min, whole.min, "the ViewCube's corner");
+    at_point(group.max, whole.max, "the ViewCube's far corner");
+    let place = eframe::egui::Rect::from_center_size(
+        eframe::egui::pos2(canvas.center().x, canvas.bottom() - 28.0),
+        eframe::egui::vec2(220.0, 32.0),
+    );
+    let bar = h
+        .get_by_role_and_label(Role::Toolbar, "Navigation bar")
+        .rect();
+    for k in [bar.min.x, bar.min.y, bar.max.x, bar.max.y] {
+        assert!(k.is_finite(), "{bar:?}");
+    }
+    assert!(bar.width() > 0.0 && bar.height() > 0.0, "{bar:?}");
+    assert!(
+        place.expand(0.5).contains_rect(bar),
+        "{bar:?} outside {place:?}"
+    );
+    for word in ["Orbit", "Pan", "Zoom", "Fit"] {
+        let tool = h
+            .get_by_role_and_label(Role::Toolbar, "Navigation bar")
+            .get_by_label(word)
+            .rect();
+        assert!(bar.contains_rect(tool), "{word}: {tool:?} outside {bar:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_canvas_is_a_gradient_from_charcoal_at_its_top_to_grey_at_its_bottom_under_the_bodies() {
+    // Trevin's (2026-11-09, darkened the same day), styles.css's `--canvas-top` and
+    // `--canvas-bottom`: a mesh over the whole canvas, #141517 along its top and #2a2c30
+    // along its bottom, painted before the bodies' frame (a test's renderer marks where
+    // that's presented).
+    let f = fixture();
+    let (mut h, _seen) = f.overlaid(EXAMPLE);
+    step(&mut h);
+    let canvas = the_viewport(&h);
+    let shapes = painted(&h);
+    let top = eframe::egui::Color32::from_rgb(0x14, 0x15, 0x17);
+    let bottom = eframe::egui::Color32::from_rgb(0x2a, 0x2c, 0x30);
+    let gradient = shapes
+        .iter()
+        .position(|shape| match shape {
+            eframe::egui::Shape::Mesh(mesh) => {
+                mesh.vertices.len() == 4
+                    && [canvas.left_top(), canvas.right_top()]
+                        .iter()
+                        .all(|corner| {
+                            mesh.vertices
+                                .iter()
+                                .any(|v| v.pos == *corner && v.color == top)
+                        })
+                    && [canvas.left_bottom(), canvas.right_bottom()]
+                        .iter()
+                        .all(|corner| {
+                            mesh.vertices
+                                .iter()
+                                .any(|v| v.pos == *corner && v.color == bottom)
+                        })
+            }
+            _ => false,
+        })
+        .expect("no gradient over the canvas");
+    let eframe::egui::Shape::Mesh(mesh) = &shapes[gradient] else {
+        unreachable!()
+    };
+    assert_eq!(mesh.indices.len(), 6, "{mesh:?}");
+    let bodies = shapes
+        .iter()
+        .position(|shape| matches!(shape, eframe::egui::Shape::Rect(r) if r.fill == BODIES_MARK))
+        .expect("no bodies' mark");
+    assert!(gradient < bodies, "{gradient} {bodies}");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -10398,9 +12025,15 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
             );
             // Composited into egui's own image: 20 mm over the pane's height, the face
             // z = 0..10 about its centre's z = 5, so 2.5 mm above the pane's centre is on the
-            // face and 7.5 mm above it is past its top edge, the renderer's background; and
-            // the centre isn't the pane's own colour, which shows where nothing composites.
+            // face and 7.5 mm above it is past its top edge, where the renderer draws nothing
+            // over the canvas: its gradient shows there, as along the canvas's top and bottom
+            // rows (a quarter of the way across, clear of the cube and the bar), and not on
+            // the face.
             let image = h.render().unwrap();
+            // A picture of the canvas to look at, if one is asked for.
+            if let Some(shot) = std::env::var_os("SILICO_APP_CANVAS_SHOT") {
+                image.save(shot).unwrap();
+            }
             let rect = the_viewport(&h);
             let ppp = h.ctx.pixels_per_point();
             let mm = rect.height() / 20.0;
@@ -10414,9 +12047,35 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
             let on_face = pixel(centre.x, centre.y - 2.5 * mm);
             let past_it = pixel(centre.x, centre.y - 7.5 * mm);
             assert!(differs(on_face, past_it), "{on_face:?} against {past_it:?}");
-            let pane = h.ctx.global_style().visuals.extreme_bg_color.to_array();
-            let middle = pixel(centre.x, centre.y);
-            assert!(differs(middle, pane), "{middle:?}: the pane's own colour");
+            // Trevin's (2026-11-09, darkened the same day): #141517 along the canvas's top
+            // to #2a2c30 along its bottom, blended in sRGB as egui blends a mesh's colours
+            // (and CSS a `linear-gradient`'s), so at a pixel row's middle a part t of the
+            // way down, top + t · (bottom − top), to 2 of 255 for egui's dithering.
+            let (top, bottom) = ([20.0f32, 21.0, 23.0], [42.0f32, 44.0, 48.0]);
+            let (top_px, height_px) = (rect.top() * ppp, rect.height() * ppp);
+            let column = ((rect.left() + rect.width() * 0.25) * ppp) as u32;
+            let first = top_px.ceil() as u32;
+            let last = (rect.bottom() * ppp).floor() as u32 - 1;
+            let above = ((centre.y - 7.5 * mm) * ppp) as u32;
+            let on = ((centre.y - 2.5 * mm) * ppp) as u32;
+            let shade = |row: u32| {
+                let t = (row as f32 + 0.5 - top_px) / height_px;
+                [0, 1, 2].map(|k| top[k] + t * (bottom[k] - top[k]))
+            };
+            for row in [first, above, last] {
+                let got = image.get_pixel(column, row).0;
+                let want = shade(row);
+                assert!(
+                    (0..3).all(|k| (f32::from(got[k]) - want[k]).abs() <= 2.0) && got[3] == 255,
+                    "row {row}: {got:?} against {want:?}"
+                );
+            }
+            let face = image.get_pixel(column, on).0;
+            let canvas = shade(on).map(|c| c.round() as u8);
+            assert!(
+                differs(face, [canvas[0], canvas[1], canvas[2], 255]),
+                "{face:?}: the canvas"
+            );
             // The pane's renderer trait reaches silico-render's own: a frame drawing body 1
             // is prepared while body 1 is held, and once the trait has forgotten it, refused,
             // as silico-render refuses a frame drawing a body it doesn't hold.
@@ -10611,9 +12270,13 @@ fn the_overlay_sees_the_frame_and_paints_over_the_bodies_and_under_the_view_cube
         "overlay",
         &|shape| matches!(shape, eframe::egui::Shape::Circle(c) if c.fill == OVERLAY_MARK),
     );
-    // The ViewCube's Front face's label, and the navigation bar's Fit.
+    // The ViewCube's front face (its fill, viewport.js's `#303030`), and the navigation
+    // bar's Fit.
     let text = |word: &'static str| move |shape: &eframe::egui::Shape| matches!(shape, eframe::egui::Shape::Text(t) if t.galley.text() == word);
-    let cube = place("ViewCube's Front", &text("Front"));
+    let cube = place(
+        "ViewCube's Front",
+        &|shape| matches!(shape, eframe::egui::Shape::Path(p) if p.fill == CUBE_FRONT),
+    );
     let bar = place("bar's Fit", &text("Fit"));
     assert!(bodies < overlay, "{bodies} {overlay}");
     assert!(overlay < cube && overlay < bar, "{overlay} {cube} {bar}");
@@ -13005,7 +14668,9 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
             h.key_press(eframe::egui::Key::Escape);
             step_until(&mut h, "it gone", |h| !anywhere(h, "Open document"));
 
-            // A panel's field: the Sphere's dialog's Radius, docked at the right.
+            // A panel's field: the Block's dialog's Length, docked at the right, opened by a
+            // double-click to edit it (the app makes no primitive, but edits those a file
+            // holds). Its row's above, Z, a field too, as a Sphere's Radius had.
             let path = f.file("example.silico", EXAMPLE);
             h.state_mut().open(path.to_str().unwrap(), false);
             step_until(&mut h, "the timeline read", |h| {
@@ -13014,12 +14679,15 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
                     .first()
                     .is_some_and(|tab| tab.timeline.is_some())
             });
-            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-            create(&mut h, "Sphere");
-            added(&mut h);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+            double_click(&mut h, "Timeline", "Block");
+            step_until(&mut h, "its dialog, loaded", |h| {
+                h.query_by_role_and_label(Role::Dialog, "Box").is_some()
+                    && input(h, "Length").value().as_deref() == Some("40")
+            });
             settled(&mut h);
             // The pointer off it, on the dialog's title.
-            dialog(&h).get_by_label("SPHERE").hover();
+            dialog(&h).get_by_label("BOX").hover();
             for _ in 0..5 {
                 step(&mut h);
             }
@@ -13027,7 +14695,7 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
             let pixel = |at: eframe::egui::Pos2| {
                 image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
             };
-            let field = input(&h, "Radius").rect();
+            let field = input(&h, "Length").rect();
             assert!(field.width() > 30.0 && field.height() > 10.0, "{field:?}");
             // Inside it, clear of its text (at its left) and its border.
             let inside = field.right_center() + eframe::egui::vec2(-4.0, 0.0);
@@ -13041,7 +14709,7 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
                 "{field:?}"
             );
             // Hovered: Gray.250 (`.field:hover`).
-            input(&h, "Radius").hover();
+            input(&h, "Length").hover();
             for _ in 0..5 {
                 step(&mut h);
             }
@@ -13051,13 +14719,13 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
             };
             assert_eq!(pixel(inside), [0x27, 0x26, 0x26, 0xff], "{field:?}");
             // A value that doesn't parse: the red border (`.field.bad`), focused or not.
-            type_into(&mut h, "Radius", "x");
+            type_into(&mut h, "Length", "x");
             for _ in 0..5 {
                 step(&mut h);
             }
-            // Its 5 and the x, in either order (where the caret was), parse as no number.
-            let typed = input(&h, "Radius").value().unwrap_or_default();
-            assert!(["x5", "5x"].contains(&typed.as_str()), "{typed}");
+            // Its 40 and the x, in either order (where the caret was), parse as no number.
+            let typed = input(&h, "Length").value().unwrap_or_default();
+            assert!(["x40", "40x"].contains(&typed.as_str()), "{typed}");
             let image = h.render().unwrap();
             let pixel = |at: eframe::egui::Pos2| {
                 image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
@@ -14705,7 +16373,7 @@ fn label_texts<'a>(nodes: impl Iterator<Item = egui_kittest::Node<'a>>) -> Vec<S
         .collect()
 }
 
-/// CREATE's row, as app.js:394 lays it out: Create Sketch and the sweeps.
+/// CREATE's row, as app.js's `renderToolbar` lays it out: Create Sketch and the sweeps.
 const CREATE_ROW: [&str; 5] = ["Create Sketch", "Pad", "Pocket", "Revolve", "Groove"];
 
 #[test]
@@ -14870,7 +16538,9 @@ fn each_toolbar_button_names_its_command_and_says_what_it_does_or_that_it_isnt_b
 #[test]
 fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
     let f = fixture();
-    let mut h = f.themed_with(&["example.silico"]);
+    // The M2.1 example with a triangle sketched, for CREATE's Pad to sweep.
+    let mut h = opened_themed(&f, "example.silico", SKETCHED_EXAMPLE);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
     let open = |h: &mut AppHarness, label: &str| {
         pointer_away(h);
         h.get_by_role_and_label(Role::Toolbar, label)
@@ -14879,8 +16549,8 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         step(h);
         step(h);
     };
-    // interact.js:172: the filters under a heading, all of them, each with its key, and
-    // Clear selection (Esc), which the app has: off with nothing selected.
+    // interact.js's `selectMenu`: the filters under a heading, all of them, each with its
+    // key, and Clear selection (Esc), which the app has: off with nothing selected.
     open(&mut h, "SELECT");
     let menu = h.get_by_role_and_label(Role::Menu, "SELECT");
     let entries = buttons_of(&menu);
@@ -14894,34 +16564,40 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
     assert_eq!(on_of(&menu), entries[..4]);
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
-    // interact.js:170: Create Sketch, the sweeps, and the primitives under a heading.
+    // The triangle chosen in the browser, for the Pad opened from the drop-down to sweep.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    // interact.js's `createMenu`: Create Sketch and the sweeps, and no primitive (Trevin's
+    // decision of 2026-11-09: solids are made sketch-first).
     open(&mut h, "CREATE");
     let menu = h.get_by_role_and_label(Role::Menu, "CREATE");
     let entries = buttons_of(&menu);
-    assert_eq!(entries.len(), 10, "{entries:?}");
+    assert_eq!(entries.len(), 5, "{entries:?}");
     assert!(entries[0].starts_with("Create Sketch"), "{entries:?}");
-    assert_eq!(entries[1..5], CREATE_ROW[1..]);
-    assert_eq!(entries[5..], PRIMITIVES);
-    assert!(menu.query_by_label("PRIMITIVES").is_some());
-    // Create Sketch too, now that sketch mode can open.
-    let mut on: Vec<&str> = CREATE_ROW.iter().chain(&PRIMITIVES).copied().collect();
+    assert_eq!(entries[1..], CREATE_ROW[1..]);
+    assert!(menu.query_by_label("PRIMITIVES").is_none());
+    // Each on, Create Sketch too, now that sketch mode can open.
+    let mut on: Vec<&str> = CREATE_ROW.to_vec();
     on.sort_unstable();
     let mut menu_on = on_of(&menu);
     menu_on.sort_unstable();
     assert_eq!(menu_on, on);
-    // An entry opens its dialog, as the row's button does, and the menu closes.
-    menu.get_by_label("Cylinder").click();
+    // An entry opens its dialog, as the row's button does, and the menu closes: Pad's, of
+    // the triangle chosen.
+    menu.get_by_label("Pad").click();
     step_until(&mut h, "the dialog", |h| {
-        h.query_by_role_and_label(Role::Dialog, "Cylinder")
-            .is_some()
+        h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
     });
     // The dialog shows in the click's own frame, docked in Properties; egui closes a popup
     // at its frame's end, so the menu is gone the frame after.
     step(&mut h);
     assert!(h.query_by_role_and_label(Role::Menu, "CREATE").is_none());
-    // Its preview built, as `status` says: with it still rebuilding, Esc would stop it,
-    // leaving the dialog open (esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_
-    // dialog_second).
+    // Its pad added, and its preview built, as `status` says: with it still rebuilding, Esc
+    // would stop it, leaving the dialog open (esc_stops_a_dialogs_preview_rebuild_first_and_
+    // cancels_the_dialog_second).
+    added(&mut h);
     step_until(&mut h, "the preview built", |h| {
         let tab = &h.state().tabs()[0];
         tab.status.as_ref().is_some_and(|status| {
@@ -14929,12 +16605,14 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
                 && status.rebuild.state == silico_core::command::RebuildState::Done
         })
     });
+    assert!(fields_of(&text_of(&f, &h), "Pad").is_some());
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| {
         h.query_by_role(Role::Dialog).is_none()
     });
     settled(&mut h);
-    // interact.js:171: the edge tools, and the booleans under a heading, the edge tools
+    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
+    // interact.js's `modifyMenu`: the edge tools, and the booleans under a heading, the edge tools
     // built.
     open(&mut h, "MODIFY");
     let menu = h.get_by_role_and_label(Role::Menu, "MODIFY");
@@ -14979,9 +16657,9 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
     assert!(h.state().tabs()[0].selection().is_empty());
     assert!(h.query_by_role_and_label(Role::Menu, "SELECT").is_none());
     // With a feature selected and a dialog open, Clear selection is off: the dialog's
-    // Cancel (Esc) comes first.
+    // Cancel (Esc) comes first. (Pad's, the pin no sketch it takes.)
     select(&mut h, "Pin");
-    create(&mut h, "Box");
+    create(&mut h, "Pad");
     settled(&mut h);
     assert!(h.state().tabs()[0].selection().feature().is_some());
     open(&mut h, "SELECT");
@@ -14995,6 +16673,148 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         })
         .unwrap();
     assert!(clear.accesskit_node().is_disabled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn creates_row_and_drop_down_hold_no_primitive_as_the_prototypes_create_menu() {
+    // Trevin's decision of 2026-11-09: solids are made sketch-first, as SolidWorks makes
+    // them. interact.js's `createMenu` is ['createSketch', 'sep', 'pad', 'pocket',
+    // 'revolve', 'groove'], each labelled as app.js's `CMD` labels it; the row (`renderToolbar`)
+    // the same but the separator. No primitive in either, nor the heading they were under.
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    let create = || h.get_by_role_and_label(Role::Toolbar, "CREATE");
+    assert_eq!(
+        buttons_of(&create()),
+        [
+            "Create Sketch",
+            "Pad",
+            "Pocket",
+            "Revolve",
+            "Groove",
+            "CREATE"
+        ]
+    );
+    for primitive in PRIMITIVES {
+        assert!(create().query_by_label(primitive).is_none(), "{primitive}");
+    }
+    pointer_away(&mut h);
+    open_create_menu(&mut h);
+    let menu = h.get_by_role_and_label(Role::Menu, "CREATE");
+    let entries = buttons_of(&menu);
+    assert_eq!(entries.len(), 5, "{entries:?}");
+    assert!(entries[0].starts_with("Create Sketch"), "{entries:?}");
+    assert_eq!(entries[1..], ["Pad", "Pocket", "Revolve", "Groove"]);
+    for primitive in PRIMITIVES {
+        assert!(menu.query_by_label(primitive).is_none(), "{primitive}");
+    }
+    assert!(menu.query_by_label("PRIMITIVES").is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether `label` names a primitive: any of its words, in any case, one's name ("Box",
+/// "New box", "Add Cylinder ⌘K"), or the heading CREATE's drop-down once held them under.
+fn names_a_primitive(label: &str) -> bool {
+    label
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .any(|word| {
+            word == "primitives"
+                || PRIMITIVES
+                    .iter()
+                    .any(|primitive| word == primitive.to_lowercase())
+        })
+}
+
+#[test]
+fn no_registry_entry_or_menu_makes_a_primitive() {
+    // Trevin's decision of 2026-11-09: nothing the app offers makes a box, a cylinder, a
+    // sphere, a cone, or a torus. The registry (the keys, the shortcut sheet, the
+    // tooltips) names none; and no button in the window names one while each of its menus is
+    // open: File, SOLID's four drop-downs, a feature's in the timeline (the block's, a box
+    // itself) and in the browser. Each menu is seen open before it's read, so a menu that
+    // never opened can't pass. (The canvas's menu and the sketch menu are held to their exact
+    // items by their own tests.)
+    for entry in REGISTRY {
+        assert!(!names_a_primitive(entry.label), "{}", entry.label);
+    }
+    for named in [
+        "Box",
+        "New box",
+        "Add Cylinder ⌘K",
+        "SPHERE",
+        "cone",
+        "Torus…",
+        "PRIMITIVES",
+    ] {
+        assert!(names_a_primitive(named), "{named}");
+    }
+    for unnamed in ["Boxes", "Block", "Icone", "Pad", "Select Other…"] {
+        assert!(!names_a_primitive(unnamed), "{unnamed}");
+    }
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let none_named = |h: &AppHarness, menu: &str| {
+        let buttons: Vec<String> = h
+            .query_all_by_role(Role::Button)
+            .filter_map(|node| node.accesskit_node().label())
+            .collect();
+        assert!(
+            !buttons.iter().any(|label| names_a_primitive(label)),
+            "{menu}: {buttons:?}"
+        );
+        assert!(!anywhere(h, "PRIMITIVES"), "{menu}");
+    };
+    // File.
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(anywhere(&h, "Save As…"), "File never opened");
+    none_named(&h, "File");
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    // SOLID's drop-downs.
+    for panel in ["CREATE", "MODIFY", "INSPECT", "SELECT"] {
+        pointer_away(&mut h);
+        h.get_by_role_and_label(Role::Toolbar, panel)
+            .get_by_role_and_label(Role::Button, panel)
+            .click();
+        step_until(&mut h, panel, |h| {
+            h.query_by_role_and_label(Role::Menu, panel).is_some()
+        });
+        step(&mut h);
+        none_named(&h, panel);
+        h.key_press(Key::Escape);
+        step(&mut h);
+        step(&mut h);
+    }
+    // A feature's, in the timeline and in the browser.
+    for (pane, name, head) in [("Timeline", "Block", "BLOCK"), ("Browser", "Hole", "HOLE")] {
+        menu_on(&mut h, pane, name);
+        assert!(!menu_items(&h, head).is_empty(), "{pane}'s {name}");
+        none_named(&h, head);
+        h.key_press(Key::Escape);
+        step(&mut h);
+        step(&mut h);
+    }
+    // The shortcut sheet, the registry drawn: none of its words a primitive's.
+    h.get_by_role_and_label(Role::Button, "Shortcuts").click();
+    step_until(&mut h, "the sheet", sheet_open);
+    let words: Vec<String> = the_sheet(&h)
+        .query_all(egui_kittest::kittest::by().recursive(true))
+        .filter_map(|node| {
+            let node = node.accesskit_node();
+            node.label().or_else(|| node.value())
+        })
+        .collect();
+    assert!(words.iter().any(|said| said == "Undo"), "{words:?}");
+    assert!(
+        !words.iter().any(|said| names_a_primitive(said)),
+        "{words:?}"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -15100,8 +16920,8 @@ fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
     );
     assert!(h.query_by_label("Finish Sketch").is_none());
     // A sketch open (#351's `tab.in_sketch()`): SKETCH after SOLID, and shown; its panels
-    // (app.js:384), sketch mode's tools and Construction on, the rest not built yet;
-    // Finish Sketch, on.
+    // (app.js's `renderToolbar`, in a sketch), sketch mode's tools and Construction on, the
+    // rest not built yet; Finish Sketch, on.
     h.state_mut().in_sketch = true;
     h.step();
     h.step();
@@ -15364,13 +17184,13 @@ fn a_dialog_that_cant_open_is_off_in_creates_row_and_drop_down_and_one_that_can_
     let menu = h.get_by_role_and_label(Role::Menu, "CREATE");
     let menu_off = |label: &str| menu.get_by_label(label).accesskit_node().is_disabled();
     assert!(menu_off("Pocket") && menu_off("Groove"));
-    assert!(!menu_off("Pad") && !menu_off("Box") && !menu_off("Torus"));
-    menu.get_by_label("Torus").click();
+    assert!(!menu_off("Pad") && !menu_off("Revolve"));
+    menu.get_by_label("Revolve").click();
     h.step();
     h.step();
     assert_eq!(
         h.state().acts,
-        [Act::Dialog(Kind::Pad), Act::Dialog(Kind::Torus)]
+        [Act::Dialog(Kind::Pad), Act::Dialog(Kind::Revolve)]
     );
 }
 
@@ -15535,7 +17355,7 @@ fn the_browser_lists_the_document_then_origin_bodies_and_sketches_each_row_with_
     let f = fixture();
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
-    // app.js:427–455: the document's row (its file's name, `.silico` left off), Origin
+    // app.js's `renderBrowser`: the document's row (its file's name, `.silico` left off), Origin
     // (its point, its axes, its planes), Bodies, and Sketches, each a header with a caret;
     // the bodies and the sketch in the document's order.
     assert_eq!(
@@ -15606,7 +17426,7 @@ fn a_headers_caret_folds_its_rows_away_and_back_and_the_documents_folds_them_all
 
 #[test]
 fn an_empty_group_says_what_makes_its_first_row() {
-    // The M2.1 example has a body and no sketch (app.js:446: `.tree-empty`).
+    // The M2.1 example has a body and no sketch (app.js's `renderBrowser`: `.tree-empty`).
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its body", |h| shows(h, "Browser", "Hole"));
@@ -16671,10 +18491,14 @@ fn an_open_dialog_takes_the_property_panels_place_and_cancel_gives_it_back() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    // Pad's, nothing selected: the document's properties showed before it.
+    step_until(&mut h, "the document's properties", |h| {
+        property(h, "Revision").is_some()
+    });
+    create(&mut h, "Pad");
     // The dialog is in the panel (one right panel), the document's properties gone.
     let panel = h.get_by_role_and_label(Role::Pane, "Properties");
-    assert!(panel.query_by_role_and_label(Role::Dialog, "Box").is_some());
+    assert!(panel.query_by_role_and_label(Role::Dialog, "Pad").is_some());
     assert!(panel.query_by_label("INPUTS").is_some());
     assert_eq!(property(&h, "Revision"), None);
     dialog(&h)
@@ -16759,7 +18583,7 @@ fn the_status_bar_says_a_rebuild_with_errors_and_an_edit_unsaved() {
         matches!(op, Op::Boolean { .. })
             .then(|| Error::new(ErrorCode::KernelFailed, "the cut came apart"))
     });
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     // The cut failed: one error, the document's one problem.
     step_until(&mut h, "rebuilt with its error", |h| {
         status_said(h, "Rebuilt").as_deref() == Some("Rebuilt with 1 error")
@@ -16771,7 +18595,7 @@ fn the_status_bar_says_a_rebuild_with_errors_and_an_edit_unsaved() {
     });
     assert!(status_said(&h, "Saved").is_none());
     // A dialog open: its edits are its own until OK.
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the dialog said", |h| {
         status_said(h, "Unsaved").as_deref() == Some("Unsaved · dialog open")
     });
@@ -16810,19 +18634,19 @@ fn the_changed_on_disk_chip_offers_again_the_choice_the_edits_were_kept_over() {
 #[test]
 fn the_dialogs_close_button_cancels_it() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
-    assert!(shows(&h, "Timeline", "Box"));
+    assert!(shows(&h, "Timeline", "Pad"));
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Close the dialog")
         .click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
-    // Cancel's: the box it added is taken away again.
-    step_until(&mut h, "the box gone", |h| {
-        shows(h, "Timeline", "Hole") && !shows(h, "Timeline", "Box")
+    // Cancel's: the pad it added is taken away again.
+    step_until(&mut h, "the pad gone", |h| {
+        shows(h, "Timeline", "Hole") && !shows(h, "Timeline", "Pad")
     });
     assert_eq!(never_waits::waits(), 0);
 }
@@ -16830,10 +18654,10 @@ fn the_dialogs_close_button_cancels_it() {
 #[test]
 fn a_dialogs_preview_line_says_its_rebuild_running_stopped_and_with_errors() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let hold = f.kernel.hold(is_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     // Running: what stops it said beside it.
     step_until(&mut h, "the preview rebuilding", |h| {
@@ -16854,10 +18678,11 @@ fn a_dialogs_preview_line_says_its_rebuild_running_stopped_and_with_errors() {
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    // A box the kernel refuses: the preview's error, and that OK keeps the feature with it.
-    f.kernel
-        .refuse(|op| is_box(op).then(|| Error::new(ErrorCode::KernelFailed, "the box came apart")));
-    create(&mut h, "Box");
+    // A pad the kernel refuses: the preview's error, and that OK keeps the feature with it.
+    f.kernel.refuse(|op| {
+        is_prism(op).then(|| Error::new(ErrorCode::KernelFailed, "the pad came apart"))
+    });
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     step_until(&mut h, "the preview's errors", |h| {
         dialog(h)
@@ -16919,7 +18744,7 @@ fn a_saves_model_and_a_rollbacks_say_no_time_never_another_models() {
     // it kept published at the rollback's. "Rebuilt · revision N" exactly, never the last
     // rebuild's time.
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     type_name(&mut h, "s");
@@ -16940,9 +18765,9 @@ fn a_saves_model_and_a_rollbacks_say_no_time_never_another_models() {
     settled(&mut h);
     assert!(h.state().tabs()[0].revision.number() > edited);
     step_until(&mut h, "the save's revision, with no time", exactly);
-    // A Box dialog, its preview rebuilt whole, then cancelled: the transaction it began
+    // A Pad dialog, its preview rebuilt whole, then cancelled: the transaction it began
     // rolled back, the model it kept published at a new revision.
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     step_until(&mut h, "the preview up to date", |h| {
         dialog(h)
@@ -16962,7 +18787,7 @@ fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview
     // The core's `elapsed_ms` (#416), never the app's own clock: the bar's "Rebuilt ·
     // revision N · T ms" (`renderStatus`) and an up-to-date preview's "Preview up to date ·
     // revision N · T ms" (`renderDialog`) say the whole milliseconds `status` gives for
-    // that rebuild. Each held by the fake at its box past a gap of its own, let pass by the
+    // that rebuild. Each held by the fake (the block, the pad's prism) past a gap of its own, let pass by the
     // test's clock (a full rebuild's 40 ms, the preview's 20 past the first's time, so
     // never the same, however loaded the machine): each at least its gap, each the core's.
     let spin = |gap| {
@@ -16972,7 +18797,7 @@ fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview
         }
     };
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
     settled(&mut h);
     let hold = f.kernel.hold(is_box);
@@ -17000,13 +18825,17 @@ fn a_rebuild_done_says_the_cores_time_in_the_status_bar_and_in_a_dialogs_preview
         Some(opened),
         "{said}"
     );
-    // A box's dialog: its preview held at the new box 20 ms past the first's time, then up
-    // to date, at the transaction's revision, with the core's time for that rebuild.
+    // A pad's dialog: its preview held at the new pad's prism 20 ms past the first's time,
+    // then up to date, at the transaction's revision, with the core's time for that rebuild.
     let gap = opened + 20;
-    let hold = f.kernel.hold(is_box);
-    create(&mut h, "Box");
+    let hold = f.kernel.hold(is_prism);
+    open_pad_on_triangle(&mut h);
     added(&mut h);
-    assert!(f.kernel.wait_running(1, WAIT));
+    // The transaction's rebuild starts with the dialog's next read, so frames are stepped
+    // until it runs, held at the prism: the first, the document having none.
+    step_until(&mut h, "the preview held at its prism", |_| {
+        prisms_asked(&f) == 1 && f.kernel.wait_running(1, Duration::ZERO)
+    });
     spin(gap);
     hold.release();
     step_until(&mut h, "the preview up to date", |h| {
@@ -17495,19 +19324,21 @@ fn ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it() {
 #[test]
 fn ctrl_shift_b_does_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // What a rebuild builds: everything's boxes (a full one's), and the pad's prism (the
+    // stopped preview's, resumed).
     let boxes = |f: &Fixture| {
         f.kernel
             .calls()
             .iter()
-            .filter(|call| is_box(&call.op))
+            .filter(|call| is_box(&call.op) || is_prism(&call.op))
             .count()
     };
-    // A rebuild stopped, so a Ctrl+B would rebuild: a Box dialog's preview, held at its
-    // new box, stopped by Esc, the dialog left open.
-    let hold = f.kernel.hold(is_box);
-    create(&mut h, "Box");
+    // A rebuild stopped, so a Ctrl+B would rebuild: a Pad dialog's preview, held at its
+    // prism, stopped by Esc, the dialog left open.
+    let hold = f.kernel.hold(is_prism);
+    open_pad_on_triangle(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -18084,14 +19915,14 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
             }
             Command::Ok | Command::Cancel => {
                 let f = fixture();
-                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
                 step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
                 let ok = command == Command::Ok;
-                let boxes = |h: &AppHarness| text_of(&f, h).matches("\"box\"").count();
-                let mut kept = boxes(&h);
+                let pads = |h: &AppHarness| text_of(&f, h).matches("\"pad\"").count();
+                let mut kept = pads(&h);
                 for chord in keys_of(command) {
                     for by_keys in [true, false] {
-                        create(&mut h, "Box");
+                        open_pad_on_triangle(&mut h);
                         added(&mut h);
                         settled(&mut h);
                         // Its preview built: Esc would stop one still rebuilding first.
@@ -18113,7 +19944,7 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                         step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
                         settled(&mut h);
                         kept += usize::from(ok);
-                        assert_eq!(boxes(&h), kept, "{command:?}, by its keys: {by_keys}");
+                        assert_eq!(pads(&h), kept, "{command:?}, by its keys: {by_keys}");
                     }
                 }
             }
@@ -18494,9 +20325,9 @@ fn enter_alone_in_a_dialog_asks_for_the_next_frame_at_once() {
     // The dialog's OK, which its pane asks the next frame for too, so this alone never
     // tells `keys`' own `enter` from none (Ctrl+W's and Ctrl+B's tests do, beside it).
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Enter));
@@ -18754,7 +20585,7 @@ fn edit_sketch_from_the_browser_opens_it_at_the_revision_its_asked_at_and_reads_
     menu_on(&mut h, "Browser", "Triangle");
     assert_eq!(
         menu_items(&h, "TRIANGLE")[0],
-        ("Edit Sketch double-click".to_owned(), None)
+        ("Edit Sketch double-click".to_owned(), None, None)
     );
     menu_click(&mut h, "TRIANGLE", "Edit Sketch");
     step_until(&mut h, "sketch mode again", |h| sketch_mode(h).is_some());
@@ -19251,8 +21082,14 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
     let f = fixture();
     let mut h = triangle_in_sketch_mode(&f);
     let why = "Finish or cancel the sketch first";
-    let on = |label: &str| (label.to_owned(), None);
-    let off = |label: &str| (label.to_owned(), Some(why.to_owned()));
+    let on = |label: &str| (label.to_owned(), feature_menu_keys(label), None);
+    let off = |label: &str| {
+        (
+            label.to_owned(),
+            feature_menu_keys(label),
+            Some(why.to_owned()),
+        )
+    };
     // The open sketch's item: no double-click to edit it.
     let tip = timeline_tip(&mut h, "Triangle", "Sketch");
     assert!(!tip.contains("Double-click to edit"), "{tip}");
@@ -19278,10 +21115,10 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
         menu_items(&h, "PLATE"),
         [
             off("Edit feature double-click"),
-            off("Rename F2"),
+            off("Rename"),
             off("Suppress"),
             on("Find in browser"),
-            off("Delete Del"),
+            off("Delete"),
         ]
     );
     // Esc closes the menu alone (#398's): the sketch's selection kept.
@@ -19299,10 +21136,10 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
         menu_items(&h, "TRIANGLE"),
         [
             off("Edit Sketch double-click"),
-            off("Rename F2"),
+            off("Rename"),
             off("Suppress"),
             on("Find in browser"),
-            off("Delete Del"),
+            off("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -19364,10 +21201,10 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
         menu_items(&h, "PLATE"),
         [
             on("Edit feature double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             on("Find in browser"),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -19378,10 +21215,10 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
         menu_items(&h, "TRIANGLE"),
         [
             on("Edit Sketch double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             on("Find in browser"),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     menu_click(&mut h, "TRIANGLE", "Edit Sketch");
@@ -20197,12 +22034,22 @@ fn dragged(from: [f64; 2], to: [f64; 2]) -> Vec<silico_app::sketch::PointerEvent
 /// [`to_screen`], on a thread marked so a wait there counts, the pointer at the last; then
 /// one frame of the app's, whose pane draws through the same projection ([`hand_camera`]).
 fn sketch_events(f: &Fixture, h: &mut AppHarness, events: &[silico_app::sketch::PointerEvent]) {
-    hand_camera(h);
+    sketch_events_at(f, h, 0, events);
+}
+
+/// [`sketch_events`], given to the sketch mode of the tab at `at`.
+fn sketch_events_at(
+    f: &Fixture,
+    h: &mut AppHarness,
+    at: usize,
+    events: &[silico_app::sketch::PointerEvent],
+) {
+    hand_camera_at(h, at);
     {
         let _marked = never_waits::marked();
         let ctx = eframe::egui::Context::default();
         let sessions = Arc::clone(&f.sessions);
-        let tab = &mut h.state_mut().tabs_mut()[0];
+        let tab = &mut h.state_mut().tabs_mut()[at];
         let pointer = events.last().map(|event| event.at);
         let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
             let painter = ui.painter().clone();
@@ -20224,7 +22071,12 @@ fn sketch_events(f: &Fixture, h: &mut AppHarness, events: &[silico_app::sketch::
 /// down, a tenth of a millimetre a point, the image's centre over the sketch's place
 /// `to_sketch` gives it. Nothing until the pane has drawn a frame.
 fn hand_camera(h: &mut AppHarness) {
-    let Some(frame) = view(h).frame() else {
+    hand_camera_at(h, 0);
+}
+
+/// [`hand_camera`], of the tab at `at`.
+fn hand_camera_at(h: &mut AppHarness, at: usize) {
+    let Some(frame) = h.state().tabs()[at].view.frame() else {
         return;
     };
     let ppp = f64::from(frame.pixels_per_point);
@@ -20235,14 +22087,16 @@ fn hand_camera(h: &mut AppHarness) {
         f64::from(frame.rect.top()) + height / 2.0 / ppp,
     ];
     let [x, y] = [(centre[0] - 100.0) / 10.0, (500.0 - centre[1]) / 10.0];
-    view_mut(h).set_camera(silico_protocol::Camera {
-        projection: silico_protocol::Projection::Orthographic {
-            view_height: height / ppp / 10.0,
-        },
-        eye: [x, y, 1000.0],
-        target: [x, y, 0.0],
-        up: [0.0, 1.0, 0.0],
-    });
+    h.state_mut().tabs_mut()[at]
+        .view
+        .set_camera(silico_protocol::Camera {
+            projection: silico_protocol::Projection::Orthographic {
+                view_height: height / ppp / 10.0,
+            },
+            eye: [x, y, 1000.0],
+            target: [x, y, 0.0],
+            up: [0.0, 1.0, 0.0],
+        });
 }
 
 /// The sketch `id` as the session's document holds it.
@@ -20397,6 +22251,10 @@ fn a_line_chain_ends_by_enter_esc_leaves_the_tool_then_the_selection_and_its_let
     use silico_app::sketch::tools::Choice;
     use silico_core::sketch_tools::ToolKind;
     let f = fixture();
+    // The triangle's values free, as PlaneGCS finds an unconstrained sketch's (the fake's own
+    // answer reads every point fully defined, which the tools now read: a direction between
+    // fixed points is left out, #278's G as amended).
+    counting(&f);
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
     double_click(&mut h, "Browser", "Triangle");
@@ -23040,6 +24898,113 @@ fn a_right_click_in_sketch_mode_opens_its_menu_whose_cancel_sketch_leaves_it() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn sketch_modes_menu_offers_end_chain_smart_dimension_finish_and_cancel_with_their_keys() {
+    // js/interact.js's `onContext` in a sketch (G7): End chain ['Esc'], Smart Dimension
+    // ['D'], a separator, Finish Sketch ['Mod', 'Enter'], and Cancel sketch, top to bottom,
+    // each key the registry's, as the prototype's KEYNAME names it (Ctrl off macOS, Enter
+    // ↵), given a screen reader as the button's shortcut. End chain is off with no gesture
+    // under way; Smart Dimension chooses its tool as D does, and closes the menu.
+    use silico_app::sketch::tools::Choice;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed_sketch(&f);
+    h.ctx.set_os(eframe::egui::os::OperatingSystem::Nix);
+    assert_eq!(sketch_mode(&h).unwrap().tools.choice(), None);
+    open_menu(&f, &mut h, 20.0, 20.0);
+    let menu = sketch_menu(&h).unwrap();
+    let mut items: Vec<(f32, String, Option<String>, bool)> = menu
+        .query_all_by_role(Role::Button)
+        .map(|node| {
+            let rect = node.rect();
+            let node = node.accesskit_node();
+            (
+                rect.top(),
+                node.label().unwrap_or_default(),
+                node.data().keyboard_shortcut().map(str::to_owned),
+                node.is_disabled(),
+            )
+        })
+        .collect();
+    items.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let items: Vec<(String, Option<String>, bool)> = items
+        .into_iter()
+        .map(|(_, label, keys, off)| (label, keys, off))
+        .collect();
+    let item = |label: &str, keys: Option<&str>, off: bool| {
+        (label.to_owned(), keys.map(str::to_owned), off)
+    };
+    assert_eq!(
+        items,
+        [
+            item("End chain", Some("Esc"), true),
+            item("Smart Dimension", Some("D"), false),
+            item("Finish Sketch", Some("Ctrl+↵"), false),
+            item("Cancel sketch", None, false),
+        ]
+    );
+    sketch_menu(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Smart Dimension")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Dimension)
+    );
+    assert!(sketch_menu(&h).is_none());
+    // D, from Smart Dimension, leaves it, as its button does; the menu's chooses it again.
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    assert_eq!(sketch_mode(&h).unwrap().tools.choice(), None);
+    open_menu(&f, &mut h, 20.0, 20.0);
+    sketch_menu(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Smart Dimension")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Dimension)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_modes_menu_is_never_open_with_smart_dimension_on() {
+    // #444's review asked that the menu's Smart Dimension with Smart Dimension on turn
+    // it off, as the prototype's toggles (js/sketch.js:224). The menu's item toggles
+    // (`Tab::sketch_toggle`), but the app never has the menu open with the tool on: D with
+    // the menu open turns the tool on and closes the menu, and with the tool on a right
+    // click is its lock (SolidWorks' right-click-to-lock), not the menu's.
+    use silico_app::sketch::tools::Choice;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed_sketch(&f);
+    open_menu(&f, &mut h, 20.0, 20.0);
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Dimension)
+    );
+    assert!(sketch_menu(&h).is_none());
+    let event = pointer(silico_app::sketch::PointerAction::RightClick, 20.0, 20.0);
+    sketch_events(&f, &mut h, &[event]);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(sketch_menu(&h).is_none());
+    assert!(sketch_mode(&h).unwrap().menu_at.is_none());
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Dimension)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
 // ---- The lean review of 453ccfd8 and f89d73c7 ----
 
 /// As [`counting`], but a length of 97 mm or 98 mm disagrees with the others (in conflict,
@@ -24993,21 +26958,101 @@ fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a silico_app::tab::Tab {
         .unwrap_or_else(|| panic!("no tab {name}"))
 }
 
-/// A box added to the part shown, named `name`, through CREATE's Box dialog and its OK:
-/// the part then holds unsaved edits, its tab marked.
-fn add_box(h: &mut AppHarness, name: &str) {
-    create(h, "Box");
+/// The part `part`, shown, in sketch mode on a new sketch, as a part is begun sketch-first
+/// (the app makes no primitive: Trevin's decision of 2026-11-09): CREATE's Create Sketch,
+/// once the part's timeline is read, on the XY plane, its sketch added and read.
+fn begin_sketch_on_xy(h: &mut AppHarness, part: &str) {
+    step_until(h, "Create Sketch on", |h| {
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    });
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, "XY plane")
+            .is_some()
+    });
+    step(h);
+    h.get_by_role_and_label(Role::Button, "XY plane").click();
+    step_until(h, "its sketch added and read", |h| {
+        tab_named(h, part)
+            .sketch
+            .as_ref()
+            .is_some_and(|mode| mode.sketch.is_some() && mode.drawable().is_some())
+    });
+}
+
+/// Finish Sketch (⌘↵) in the part `part`, shown, which keeps its sketch: sketch mode
+/// closed, and the part's edits held, unsaved, its tab marked.
+fn finish_sketch_unsaved(h: &mut AppHarness, part: &str) {
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Enter);
+    let marked = format!("{part} *");
+    step_until(h, "sketch mode closed, unsaved", |h| {
+        let tab = tab_named(h, part);
+        tab.sketch.is_none() && tab.edits.idle() && tab.unsaved() && anywhere(h, &marked)
+    });
+}
+
+/// A sketch added to the part `part`, shown: [`begin_sketch_on_xy`], then Finish Sketch,
+/// which keeps it, empty, as "Sketch1".
+fn add_sketch(h: &mut AppHarness, part: &str) {
+    begin_sketch_on_xy(h, part);
+    finish_sketch_unsaved(h, part);
+}
+
+/// The part `part`, shown, given a sketch with a profile: [`begin_sketch_on_xy`], a corner
+/// rectangle from the origin to (40, 20) drawn with R (its events given to the tab's sketch
+/// mode as [`sketch_events`] gives them), and Finish Sketch, which keeps it as "Sketch1".
+fn add_rectangle(f: &Fixture, h: &mut AppHarness, part: &str) {
+    let at = h
+        .state()
+        .tabs()
+        .iter()
+        .position(|tab| tab.name() == part)
+        .unwrap();
+    begin_sketch_on_xy(h, part);
+    h.key_press(eframe::egui::Key::R);
+    step(h);
+    sketch_events_at(f, h, at, &dragged([0.0, 0.0], [40.0, 20.0]));
+    step_until(h, "its four lines read", |h| {
+        let tab = tab_named(h, part);
+        tab.edits.idle()
+            && tab
+                .sketch
+                .as_ref()
+                .and_then(|mode| mode.drawable())
+                .is_some_and(|read| read.members.lines.len() == 4)
+    });
+    finish_sketch_unsaved(h, part);
+}
+
+/// A solid made sketch-first in the part `part`, shown: [`add_rectangle`], then CREATE's
+/// Pad of its sketch, chosen in the browser, its add answered and OK'd. The part then holds
+/// "Sketch1" and "Pad", unsaved, its tab marked, and the kernel has built the pad's prism.
+fn add_pad(f: &Fixture, h: &mut AppHarness, part: &str) {
+    add_rectangle(f, h, part);
+    step_until(h, "its sketch", |h| shows(h, "Browser", "Sketch1"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch1")
+        .click();
+    step(h);
+    create(h, "Pad");
     step_until(h, "its add answered", |h| {
-        tab_named(h, name)
+        tab_named(h, part)
             .dialog
             .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
+            .is_some_and(|dialog| dialog.feature.is_some() && !dialog.adding)
     });
+    step_until(h, "OK on", ok_enabled);
     dialog(h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(h, "the dialog closed", |h| !dialog_open(h));
-    let marked = format!("{name} *");
+    let marked = format!("{part} *");
     step_until(h, "unsaved", |h| {
-        tab_named(h, name).edits.idle() && tab_named(h, name).unsaved() && anywhere(h, &marked)
+        let tab = tab_named(h, part);
+        tab.edits.idle() && tab.unsaved() && anywhere(h, &marked)
     });
 }
 
@@ -25065,7 +27110,7 @@ fn an_untitled_parts_edit_is_marked_and_command_s_saves_it_through_the_save_pane
     let mut h = f.app_browsing(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     assert!(anywhere(&h, "Untitled *"));
     // Command+S: the Save panel, named by the part; nothing written until it answers.
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
@@ -25101,24 +27146,24 @@ fn an_untitled_parts_edit_is_marked_and_command_s_saves_it_through_the_save_pane
     assert!(!tab.unsaved());
     assert_eq!(tab.message, None);
     assert!(!anywhere(&h, "Untitled"));
-    // The file holds the document as the session holds it: the box.
+    // The file holds the document as the session holds it: the sketch.
     let id = tab.id;
     let held = f.sessions.text(&id, None).wait().result.unwrap().text;
     assert_eq!(std::fs::read_to_string(&part).unwrap(), held);
-    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(names_in(&part), ["Sketch1"]);
     assert_eq!(
         f.sessions.status(&id).session.unwrap().path.as_deref(),
         part.to_str()
     );
     // From now on a file's: Command+S commits to it, asking nothing.
-    select(&mut h, "Box");
+    select(&mut h, "Sketch1");
     type_name(&mut h, "x");
     step_until(&mut h, "unsaved", |h| {
         h.state().tabs()[0].edits.idle() && anywhere(h, "part.silico *")
     });
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step_until(&mut h, "saved", |h| !anywhere(h, "part.silico *"));
-    assert_eq!(names_in(&part), ["Boxx"]);
+    assert_eq!(names_in(&part), ["Sketch1x"]);
     assert_eq!(browser.asked().len(), 1);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -25131,7 +27176,7 @@ fn closing_an_edited_untitled_part_asks_and_dont_save_leaves_nothing_and_a_cance
     step(&mut h);
     let before = listing(f.dir.path());
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     let question = "Save changes to Untitled before closing?";
     // Close: asked. Save: the Save panel, cancelled: the part stays, its edits held, and
     // nothing is said or sent.
@@ -25163,7 +27208,7 @@ fn closing_an_edited_untitled_part_asks_and_dont_save_leaves_nothing_and_a_cance
     // A quit's Save all, its panel cancelled: the quit stops, the part kept, the window
     // open, and that said.
     new_part(&mut h);
-    add_box(&mut h, "Untitled 2");
+    add_sketch(&mut h, "Untitled 2");
     close_window(&mut h);
     assert!(told(&h, false), "a close with edits held wasn't cancelled");
     step_until(&mut h, "the quit question", |h| {
@@ -25196,9 +27241,9 @@ fn quitting_with_two_edited_untitled_parts_saves_each_through_its_panel_in_turn(
     let mut h = f.app_browsing(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     new_part(&mut h);
-    add_box(&mut h, "Untitled 2");
+    add_sketch(&mut h, "Untitled 2");
     close_window(&mut h);
     assert!(told(&h, false), "a close with edits held wasn't cancelled");
     step_until(&mut h, "the quit question", |h| {
@@ -25227,7 +27272,7 @@ fn quitting_with_two_edited_untitled_parts_saves_each_through_its_panel_in_turn(
     step_until(&mut h, "the window closing", |h| told(h, true));
     assert!(h.state().tabs().is_empty());
     for path in [&one, &two] {
-        assert_eq!(names_in(path), ["Box"], "{}", path.display());
+        assert_eq!(names_in(path), ["Sketch1"], "{}", path.display());
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -25240,7 +27285,7 @@ fn quitting_with_three_untitled_parts_stops_at_the_one_whose_panel_is_cancelled(
     step(&mut h);
     for name in ["Untitled", "Untitled 2", "Untitled 3"] {
         new_part(&mut h);
-        add_box(&mut h, name);
+        add_sketch(&mut h, name);
     }
     close_window(&mut h);
     step_until(&mut h, "the quit question", |h| {
@@ -25267,7 +27312,7 @@ fn quitting_with_three_untitled_parts_stops_at_the_one_whose_panel_is_cancelled(
     let names: Vec<&str> = h.state().tabs().iter().map(|tab| tab.name()).collect();
     assert_eq!(names, ["Untitled 2", "Untitled 3"]);
     assert!(h.state().tabs().iter().all(|tab| tab.unsaved()));
-    assert_eq!(names_in(&one), ["Box"]);
+    assert_eq!(names_in(&one), ["Sketch1"]);
     // A second quit asks again, and its Save all asks the second's panel first.
     close_window(&mut h);
     step_until(&mut h, "asked again", |h| {
@@ -25289,7 +27334,7 @@ fn an_untitled_parts_export_refuses_a_path_that_isnt_full_and_takes_one_that_is(
     let mut h = f.app_made(|app| app.documents_folder(Some(documents.clone())));
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_pad(&f, &mut h, "Untitled");
     h.get_by_label("File").click();
     step(&mut h);
     step(&mut h);
@@ -25359,7 +27404,7 @@ fn with_no_native_dialog_an_untitled_parts_save_asks_for_a_typed_full_path() {
         };
         step(&mut h);
         new_part(&mut h);
-        add_box(&mut h, "Untitled");
+        add_sketch(&mut h, "Untitled");
         h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
         step_until(&mut h, "the typed Save As", |h| {
             anywhere(h, "Save Untitled as")
@@ -25397,7 +27442,7 @@ fn with_no_native_dialog_an_untitled_parts_save_asks_for_a_typed_full_path() {
             h.state().tabs()[0].path.as_deref() == made.to_str() && !anywhere(h, "Save Untitled as")
         });
         step_until(&mut h, "clean", |h| !h.state().tabs()[0].unsaved());
-        assert_eq!(names_in(&made), ["Box"]);
+        assert_eq!(names_in(&made), ["Sketch1"]);
         assert_eq!(never_waits::waits(), 0);
     }
 }
@@ -25413,7 +27458,7 @@ fn an_untitled_part_is_listed_in_recent_only_once_its_first_save_gives_it_a_file
     });
     recents_read(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     // Home, a while: nothing listed.
     home_button(&h).click();
     step_until(&mut h, "Home", start_shown);
@@ -25500,7 +27545,7 @@ fn quits_save_all_with_a_parts_own_save_panel_open_saves_it_once_through_that_pa
     step(&mut h);
     let before = listing(f.dir.path());
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     // Command+S: its panel open (the portal's leaves the window usable), then a quit.
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     save_panel_asked(&mut h, &browser, 1);
@@ -25520,7 +27565,7 @@ fn quits_save_all_with_a_parts_own_save_panel_open_saves_it_once_through_that_pa
     step_until(&mut h, "the window closing", |h| told(h, true));
     assert!(h.state().tabs().is_empty());
     assert_eq!(browser.asked().len(), 1);
-    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(names_in(&part), ["Sketch1"]);
     // One document written: the part's, and no other.
     let documents = |listed: Vec<String>| -> Vec<String> {
         listed
@@ -25540,7 +27585,8 @@ fn quits_save_all_while_a_parts_save_as_runs_waits_for_it_and_asks_no_panel() {
     let mut h = f.app_browsing(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    // Its pad, which the held check builds again.
+    add_pad(&f, &mut h, "Untitled");
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     save_panel_asked(&mut h, &browser, 1);
     // Picked, its Save As held behind the session's queue.
@@ -25566,7 +27612,7 @@ fn quits_save_all_while_a_parts_save_as_runs_waits_for_it_and_asks_no_panel() {
     step_until(&mut h, "the window closing", |h| told(h, true));
     assert!(h.state().tabs().is_empty());
     assert_eq!(browser.asked().len(), 1);
-    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(names_in(&part), ["Sketch1", "Pad"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -25586,7 +27632,7 @@ fn a_stopped_quit_leaves_a_save_panel_it_marked_to_save_without_closing() {
     type_name(&mut h, "Q");
     step_until(&mut h, "unsaved", |h| anywhere(h, "a.silico *"));
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     save_panel_asked(&mut h, &browser, 1);
     let theirs = EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#);
@@ -25615,7 +27661,7 @@ fn a_stopped_quit_leaves_a_save_panel_it_marked_to_save_without_closing() {
     }
     assert_eq!(h.state().tabs().len(), 2);
     assert!(h.state().tabs().iter().all(|tab| !tab.closing()));
-    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(names_in(&part), ["Sketch1"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -25625,9 +27671,9 @@ fn with_no_native_dialogs_close_and_quit_save_an_untitled_part_through_the_typed
     let mut h = f.app();
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     new_part(&mut h);
-    add_box(&mut h, "Untitled 2");
+    add_sketch(&mut h, "Untitled 2");
     // Close's Save: the typed Save As, a full path, saved and closed.
     h.get_by_label("Untitled *").click();
     step(&mut h);
@@ -25645,7 +27691,7 @@ fn with_no_native_dialogs_close_and_quit_save_an_untitled_part_through_the_typed
     step_until(&mut h, "saved and closed", |h| {
         h.state().tabs().len() == 1 && h.state().tabs()[0].name() == "Untitled 2"
     });
-    assert_eq!(names_in(&one), ["Box"]);
+    assert_eq!(names_in(&one), ["Sketch1"]);
     // Quit's Save all, its typed Save As cancelled: the quit stops, the part kept.
     close_window(&mut h);
     step_until(&mut h, "the quit question", |h| {
@@ -25684,7 +27730,7 @@ fn with_no_native_dialogs_close_and_quit_save_an_untitled_part_through_the_typed
     answer_question(&mut h, "Replace");
     step_until(&mut h, "the window closing", |h| told(h, true));
     assert!(h.state().tabs().is_empty());
-    assert_eq!(names_in(&there), ["Box"]);
+    assert_eq!(names_in(&there), ["Sketch1"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -25769,7 +27815,7 @@ fn an_untitled_parts_export_browse_starts_in_its_paths_folder_or_the_platforms()
     });
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     h.get_by_label("File").click();
     step(&mut h);
     step(&mut h);
@@ -25801,7 +27847,8 @@ fn a_save_as_that_closes_its_part_counts_as_closing_while_it_runs() {
     let mut h = f.app_browsing(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    // Its pad, which the held check builds again.
+    add_pad(&f, &mut h, "Untitled");
     h.get_by_label("Close Untitled").click();
     step_until(&mut h, "the close question", |h| {
         anywhere(h, "Save changes to Untitled before closing?")
@@ -25829,7 +27876,7 @@ fn a_save_as_that_closes_its_part_counts_as_closing_while_it_runs() {
     hold.release();
     let _ = check.wait();
     step_until(&mut h, "closed", |h| h.state().tabs().is_empty());
-    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(names_in(&part), ["Sketch1", "Pad"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -25864,9 +27911,9 @@ fn a_second_untitled_parts_save_while_the_firsts_panel_is_open_asks_its_own_type
     let mut h = f.app_browsing(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     new_part(&mut h);
-    add_box(&mut h, "Untitled 2");
+    add_sketch(&mut h, "Untitled 2");
     // Untitled shown, and Command+S: its panel.
     h.get_by_label("Untitled *").click();
     step(&mut h);
@@ -25905,7 +27952,7 @@ fn a_second_untitled_parts_save_while_the_firsts_panel_is_open_asks_its_own_type
     assert_eq!(names, ["one.silico", "two.silico"]);
     assert!(h.state().tabs().iter().all(|tab| !tab.unsaved()));
     for path in [&one, &two] {
-        assert_eq!(names_in(path), ["Box"], "{}", path.display());
+        assert_eq!(names_in(path), ["Sketch1"], "{}", path.display());
     }
     assert_eq!(browser.asked().len(), 1);
     assert_eq!(never_waits::waits(), 0);
@@ -25918,7 +27965,7 @@ fn a_quits_save_all_with_a_parts_panel_open_then_cancelled_stops_the_quit_asking
     let mut h = f.app_browsing(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     save_panel_asked(&mut h, &browser, 1);
     close_window(&mut h);
@@ -25964,9 +28011,10 @@ fn a_quit_passes_over_an_untitled_part_closed_without_saving_while_anothers_pane
     step(&mut h);
     let before = listing(f.dir.path());
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     new_part(&mut h);
-    add_box(&mut h, "Untitled 2");
+    // Its pad, which the check holding its queue builds again.
+    add_pad(&f, &mut h, "Untitled 2");
     close_window(&mut h);
     step_until(&mut h, "the quit question", |h| {
         anywhere(h, "Save changes before quitting?")
@@ -26003,7 +28051,7 @@ fn a_quit_passes_over_an_untitled_part_closed_without_saving_while_anothers_pane
     step_until(&mut h, "the window closing", |h| told(h, true));
     assert!(h.state().tabs().is_empty());
     assert_eq!(browser.asked().len(), 1);
-    assert_eq!(names_in(&one), ["Box"]);
+    assert_eq!(names_in(&one), ["Sketch1"]);
     // No other document written: Untitled 2's edits dropped, as Don't save says.
     let documents = |listed: Vec<String>| -> Vec<String> {
         listed
@@ -26026,8 +28074,15 @@ fn an_untitled_parts_save_is_off_and_command_s_asks_nothing_in_a_dialog_or_while
     new_part(&mut h);
     step(&mut h);
     assert!(!bar_save(&h).accesskit_node().is_disabled());
-    // A dialog open: Save off, and Command+S asks no panel.
-    create(&mut h, "Box");
+    // Begun sketch-first: its sketch, a rectangle, then a dialog open, the sketch's Pad, its
+    // add answered: Save off, and Command+S asks no panel.
+    add_rectangle(&f, &mut h, "Untitled");
+    assert!(!bar_save(&h).accesskit_node().is_disabled());
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch1")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pad");
     step_until(&mut h, "its add answered", |h| {
         tab_named(h, "Untitled")
             .dialog
@@ -26072,7 +28127,7 @@ fn an_untitled_parts_save_is_off_and_command_s_asks_nothing_in_a_dialog_or_while
     step_until(&mut h, "saved", |h| {
         h.state().tabs()[0].path.as_deref() == part.to_str() && !h.state().tabs()[0].unsaved()
     });
-    assert_eq!(names_in(&part), ["Box"]);
+    assert_eq!(names_in(&part), ["Sketch1", "Pad"]);
     assert_eq!(browser.asked().len(), 1);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -26089,7 +28144,7 @@ fn an_export_form_opened_while_untitled_takes_a_relative_path_in_the_folder_of_i
     });
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_pad(&f, &mut h, "Untitled");
     // Its Save panel open (the portal's leaves the window usable), and Export… opened.
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     save_panel_asked(&mut h, &browser, 1);
@@ -26645,10 +28700,8 @@ fn a_picked_faces_row_is_scrolled_to_once_so_its_group_closed_after_stays_closed
 /// origin up z, Edge9 from it along x, Edge12 along x at y = 20, z = 10); its vertices
 /// (0, 0, 0), (0, 0, 10), (0, 20, 0), (0, 20, 10), then the same at x = 40. The fake's own
 /// description makes every face of type other and every edge 1 long.
-fn describes_a_real_box(f: &Fixture) {
-    use silico_core::kernel::{
-        Description, EdgeCurve, EdgeDescription, FaceDescription, Op, Surface,
-    };
+fn real_box_description() -> silico_core::kernel::Description {
+    use silico_core::kernel::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
     let face = |normal: [f64; 3], area: f64, centroid: [f64; 3]| FaceDescription {
         surface: Surface::Plane {
             normal,
@@ -26664,7 +28717,7 @@ fn describes_a_real_box(f: &Fixture) {
         end,
         middle: [0, 1, 2].map(|k| (start[k] + end[k]) / 2.0),
     };
-    let description = Description {
+    Description {
         faces: vec![
             face([-1.0, 0.0, 0.0], 200.0, [0.0, 10.0, 5.0]),
             face([1.0, 0.0, 0.0], 200.0, [40.0, 10.0, 5.0]),
@@ -26697,7 +28750,17 @@ fn describes_a_real_box(f: &Fixture) {
             [40.0, 20.0, 0.0],
             [40.0, 20.0, 10.0],
         ],
-    };
+    }
+}
+
+/// [`real_box_description`] given for A_BOX's block from now on, as OCCT would describe it.
+fn describes_a_real_box(f: &Fixture) {
+    describes_the_box_as(f, real_box_description());
+}
+
+/// `description` given for A_BOX's block from now on, for every `describe` of it.
+fn describes_the_box_as(f: &Fixture, description: silico_core::kernel::Description) {
+    use silico_core::kernel::Op;
     f.kernel.answer_instead(move |op| match op {
         Op::DescribeAll { shape } if FakeKernel::describe(shape)?.starts_with("box(") => {
             Some(silico_protocol::Reply::DescribedAll(description.clone()))
@@ -27021,8 +29084,11 @@ fn made_by_selects_its_feature_edit_opens_its_dialog_and_fillet_starts_with_the_
     let f = fixture();
     let mut h = a_measured_box(&f);
     let block = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
-    // Made by: Block, a link that selects it.
+    // Made by: Block, a link that selects it. Each click waits for its card's measures: the
+    // face's read, landing, adds a row (Normal) and a button (Sketch on this face) and
+    // moves what's below them, so a click aimed before it lands can miss.
     select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
     row_until(&mut h, "Made by", "Block");
     h.get_by_role_and_label(Role::Pane, "Properties")
         .get_by_role_and_label(Role::Link, "Block")
@@ -27032,7 +29098,7 @@ fn made_by_selects_its_feature_edit_opens_its_dialog_and_fillet_starts_with_the_
     });
     // Edit Block: the box's dialog, as Edit Feature opens it.
     select_in_box(&mut h, &["Face6"]);
-    step(&mut h);
+    row_until(&mut h, "Area", "800.00 mm²");
     h.get_by_role_and_label(Role::Pane, "Properties")
         .get_by_role_and_label(Role::Button, "Edit Block")
         .click();
@@ -27048,7 +29114,7 @@ fn made_by_selects_its_feature_edit_opens_its_dialog_and_fillet_starts_with_the_
     // Fillet, with Edge12 selected: the fillet's dialog, its edges box holding Edge12, as the
     // toolbar's Fillet takes the selection.
     select_in_box(&mut h, &["Edge12"]);
-    step(&mut h);
+    row_until(&mut h, "Length", "40.00 mm");
     h.get_by_role_and_label(Role::Pane, "Properties")
         .get_by_role_and_label(Role::Button, "Fillet")
         .click();
@@ -28567,7 +30633,7 @@ fn a_model_published_before_its_meshes_are_read_names_no_pick_and_draws_no_eleme
     // another face.
     assert_eq!(highlighted(&record), []);
     // Let go, and a click on the face numbered 2 of the old meshes: named from neither
-    // model, it waits. The edit above is another client's, announced in the purple banner,
+    // model, it waits. The edit above is another client's, announced in the info banner,
     // so the first Esc dismisses it, the face staying (the prototype's `escChain`), and the
     // second lets the face go.
     assert!(h.state().tabs()[0].reloaded.is_some());
@@ -32382,8 +34448,9 @@ fn menu_head<'a>(h: &'a AppHarness, head: &'a str) -> egui_kittest::Node<'a> {
 }
 
 /// The open menu headed `head` (the name it's of, in capitals): each item's label (its
-/// words, then its keys), and why it's off, if it is, in order.
-fn menu_items(h: &AppHarness, head: &str) -> Vec<(String, Option<String>)> {
+/// words, then its dim words), its keys as a screen reader has them (its keyboard
+/// shortcut), and why it's off, if it is, in order.
+fn menu_items(h: &AppHarness, head: &str) -> Vec<(String, Option<String>, Option<String>)> {
     let heading = menu_head(h, head);
     let menu = heading.parent().unwrap();
     menu.query_all_by_role(Role::Button)
@@ -32392,12 +34459,24 @@ fn menu_items(h: &AppHarness, head: &str) -> Vec<(String, Option<String>)> {
             let off = node
                 .is_disabled()
                 .then(|| node.description().unwrap_or_default());
-            (node.label().unwrap_or_default(), off)
+            let keys = node.data().keyboard_shortcut().map(str::to_owned);
+            (node.label().unwrap_or_default(), keys, off)
         })
         .collect()
 }
 
-/// The item of the open menu headed `head` whose words are `label` (its keys after them)
+/// The keys a feature menu's item has, by its label, as the registry gives them (the
+/// prototype's: Rename F2, Delete Del), joined as a screen reader has them; none for the
+/// others.
+fn feature_menu_keys(label: &str) -> Option<String> {
+    match label {
+        "Rename" => Some("F2".to_owned()),
+        "Delete" => Some("Del".to_owned()),
+        _ => None,
+    }
+}
+
+/// The item of the open menu headed `head` whose words are `label` (its dim words after them)
 /// clicked.
 fn menu_click(h: &mut AppHarness, head: &str, label: &str) {
     let heading = menu_head(h, head);
@@ -32507,10 +34586,16 @@ const CHAIN_WITHOUT_HOLE: &str = r#"{
 #[test]
 fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its body", |h| shows(h, "Browser", "Hole"));
-    let on = |label: &str| (label.to_owned(), None);
-    let off = |label: &str, why: &str| (label.to_owned(), Some(why.to_owned()));
+    let on = |label: &str| (label.to_owned(), feature_menu_keys(label), None);
+    let off = |label: &str, why: &str| {
+        (
+            label.to_owned(),
+            feature_menu_keys(label),
+            Some(why.to_owned()),
+        )
+    };
     // The timeline's, on the block (js/interact.js's `contextmenu`: Edit feature with
     // "double-click", Rename with F2, Suppress, Find in browser, then Delete with Del).
     // The block is inside the hole's body, which the browser lists by the hole: it has no
@@ -32520,13 +34605,13 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "BLOCK"),
         [
             on("Edit feature double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             off(
                 "Find in browser",
                 "It's inside a body: the browser lists bodies and sketches"
             ),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     // The prototype's right-click selects the feature it's on.
@@ -32559,10 +34644,10 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "HOLE"),
         [
             on("Edit feature double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             on("Find in browser"),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -32573,10 +34658,10 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "HOLE"),
         [
             on("Edit feature double-click"),
-            on("Rename F2"),
+            on("Rename"),
             on("Suppress"),
             on("Find in timeline"),
-            on("Delete Del"),
+            on("Delete"),
         ]
     );
     h.key_press(Key::Escape);
@@ -32588,17 +34673,17 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "XY"),
         [
             off("Edit feature double-click", origin),
-            off("Rename F2", origin),
+            off("Rename", origin),
             off("Suppress", origin),
             off("Find in timeline", origin),
-            off("Delete Del", origin),
+            off("Delete", origin),
         ]
     );
     h.key_press(Key::Escape);
     step(&mut h);
     // A dialog open: nothing changes a feature under it (its Cancel undoes to where it
     // opened), so only Find is on.
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     menu_on(&mut h, "Timeline", "Block");
     let dialog = "Close the open dialog first";
@@ -32606,13 +34691,13 @@ fn each_menus_items_are_the_prototypes_in_its_order_each_off_with_its_reason() {
         menu_items(&h, "BLOCK"),
         [
             off("Edit feature double-click", dialog),
-            off("Rename F2", dialog),
+            off("Rename", dialog),
             off("Suppress", dialog),
             off(
                 "Find in browser",
                 "It's inside a body: the browser lists bodies and sketches"
             ),
-            off("Delete Del", dialog),
+            off("Delete", dialog),
         ]
     );
     // Clicked, the off items do nothing: nothing sent, nothing said.
@@ -32649,14 +34734,15 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
     assert_eq!(
         menu_items(&h, "HOLE"),
         [
-            ("Edit feature double-click".to_owned(), None),
-            ("Rename F2".to_owned(), None),
-            ("Suppress".to_owned(), None),
+            ("Edit feature double-click".to_owned(), None, None),
+            ("Rename".to_owned(), Some("F2".to_owned()), None),
+            ("Suppress".to_owned(), None, None),
             (
                 "Find in browser".to_owned(),
+                None,
                 Some("It built no body, so the browser has no row for it".to_owned())
             ),
-            ("Delete Del".to_owned(), None),
+            ("Delete".to_owned(), Some("Del".to_owned()), None),
         ]
     );
     // Its block, whose consumer failed, is a body of its own now: found.
@@ -32665,7 +34751,7 @@ fn a_failing_features_find_in_browser_is_off_for_it_built_no_body() {
     menu_on(&mut h, "Timeline", "Block");
     assert_eq!(
         menu_items(&h, "BLOCK")[3],
-        ("Find in browser".to_owned(), None)
+        ("Find in browser".to_owned(), None, None)
     );
     assert_eq!(never_waits::waits(), 0);
 }
@@ -32689,6 +34775,7 @@ fn a_failed_block_with_a_sketch_on_its_face_built_no_body_and_isnt_inside_one() 
         menu_items(&h, "BLOCK")[3],
         (
             "Find in browser".to_owned(),
+            None,
             Some("It built no body, so the browser has no row for it".to_owned())
         )
     );
@@ -32711,15 +34798,20 @@ fn suppress_then_unsuppress_writes_and_drops_suppressed_and_undo_restores_each_t
     });
     settled(&mut h);
     assert_eq!(text_of(&f, &h), EXAMPLE_PIN_SUPPRESSED);
-    step_until(&mut h, "both shown suppressed", |h| {
+    // The block stands, as it was (warned of only for the fingerprint EXAMPLE doesn't store),
+    // once the rebuild the timeline's read starts in the transaction reaches it: until then
+    // it's queued.
+    step_until(&mut h, "both shown suppressed, the block as it was", |h| {
         item_said(h, "Pin").as_deref() == Some("Cylinder · Suppressed")
             && item_said(h, "Hole").as_deref() == Some("Subtract · Suppressed")
+            && item_said(h, "Block").as_deref() == Some("Box · Warning")
     });
-    // The block stands, as it was (warned of only for the fingerprint EXAMPLE doesn't store).
-    assert_eq!(item_said(&h, "Block").as_deref(), Some("Box · Warning"));
     // The hole unsuppressed: its tool, which it needs, comes back with it.
     menu_on(&mut h, "Timeline", "Hole");
-    assert_eq!(menu_items(&h, "HOLE")[2], ("Unsuppress".to_owned(), None));
+    assert_eq!(
+        menu_items(&h, "HOLE")[2],
+        ("Unsuppress".to_owned(), None, None)
+    );
     menu_click(&mut h, "HOLE", "Unsuppress");
     step_until(&mut h, "unsuppressed", |h| {
         said_done(h, "Unsuppressed").as_deref()
@@ -33061,14 +35153,14 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
         assert_eq!(
             menu_items(&h, "BLOCK")
                 .into_iter()
-                .map(|(label, _)| label)
+                .map(|(label, _, _)| label)
                 .collect::<Vec<_>>(),
             [
                 "Edit feature double-click",
-                "Rename F2",
+                "Rename",
                 "Suppress",
                 "Find in browser",
-                "Delete Del"
+                "Delete"
             ]
         );
         if let Some(shot) = std::env::var_os("SILICO_APP_FEATURE_MENU_SHOT") {
@@ -33293,9 +35385,9 @@ fn a_blank_name_is_dropped_as_esc_drops_it_and_a_name_is_sent_trimmed() {
 #[test]
 fn f2_and_del_with_a_dialog_open_say_why_and_do_nothing() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    create(&mut h, "Box");
+    open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
     let pin = silico_core::document::FeatureId::new("a91cw0de").unwrap();
@@ -33342,8 +35434,15 @@ fn on_a_document_the_gate_refused_f2_del_and_the_menus_items_say_why_and_do_noth
     let why = "The document has problems of its own: no feature changes until they're mended";
     menu_on(&mut h, "Timeline", "Pin");
     let items = menu_items(&h, "PIN");
-    for (at, label) in [(1, "Rename F2"), (2, "Suppress"), (4, "Delete Del")] {
-        assert_eq!(items[at], (label.to_owned(), Some(why.to_owned())));
+    for (at, label) in [(1, "Rename"), (2, "Suppress"), (4, "Delete")] {
+        assert_eq!(
+            items[at],
+            (
+                label.to_owned(),
+                feature_menu_keys(label),
+                Some(why.to_owned())
+            )
+        );
     }
     h.key_press(Key::Escape);
     step(&mut h);
@@ -33402,8 +35501,15 @@ fn the_menus_items_say_the_document_is_closing_while_it_closes() {
     menu_on(&mut h, "Timeline", "Hole");
     let closing = "The document is closing";
     let items = menu_items(&h, "HOLE");
-    for (at, label) in [(1, "Rename F2"), (2, "Suppress"), (4, "Delete Del")] {
-        assert_eq!(items[at], (label.to_owned(), Some(closing.to_owned())));
+    for (at, label) in [(1, "Rename"), (2, "Suppress"), (4, "Delete")] {
+        assert_eq!(
+            items[at],
+            (
+                label.to_owned(),
+                feature_menu_keys(label),
+                Some(closing.to_owned())
+            )
+        );
     }
     hold.release();
     let _ = check.wait();
@@ -34557,8 +36663,19 @@ fn box_from_above_made(
     f: &Fixture,
     boxing: Option<silico_app::boxes::Build>,
 ) -> (AppHarness, Record) {
+    from_above_made(f, "box.silico", A_BOX, boxing)
+}
+
+/// [`box_from_above_made`] of `text` opened as `name`: its one body meshed as the box is
+/// (every tessellation the 40 by 20 by 10 box's, [`meshes_a_real_box`]), seen as the box is.
+fn from_above_made(
+    f: &Fixture,
+    name: &str,
+    text: &str,
+    boxing: Option<silico_app::boxes::Build>,
+) -> (AppHarness, Record) {
     meshes_a_real_box(f);
-    let (mut h, record) = f.drawn_with("box.silico", A_BOX, None, boxing);
+    let (mut h, record) = f.drawn_with(name, text, None, boxing);
     meshes_settled(&mut h);
     view_mut(&mut h).set_camera(silico_protocol::Camera {
         projection: silico_protocol::Projection::Orthographic { view_height: 40.0 },
@@ -35086,14 +37203,20 @@ fn in_the_fillet_dialog_a_row_chosen_toggles_into_its_box_as_a_click_does_and_a_
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// The context menu, open: its items' words, in order, and whether each is on.
-fn context_said(h: &AppHarness) -> Vec<(String, bool)> {
+/// The context menu, open: each item's words, its keys as its keyboard shortcut, and whether
+/// it's on, in order.
+fn context_said(h: &AppHarness) -> Vec<(String, Option<String>, bool)> {
     select_other(h)
         .context()
         .expect("the context menu")
         .items
         .iter()
-        .map(|shown| (shown.said(&h.ctx), shown.off.is_none()))
+        .map(|shown| {
+            // Its name, its keys as a screen reader's shortcut has them, and whether it's on.
+            let keys = (!shown.caps.is_empty())
+                .then(|| silico_app::shortcuts::joined(&h.ctx, &shown.caps));
+            (shown.said(), keys, shown.off.is_none())
+        })
         .collect()
 }
 
@@ -35130,13 +37253,13 @@ fn over_an_element_the_context_menu_is_headed_by_it_and_hides_its_body_with_no_k
     assert_eq!(
         context_said(&h),
         [
-            ("Select Other… 2 under the pointer".to_owned(), true),
-            ("Edit Block".to_owned(), true),
-            ("Hide Block".to_owned(), true),
+            ("Select Other… 2 under the pointer".to_owned(), None, true),
+            ("Edit Block".to_owned(), None, true),
+            ("Hide Block".to_owned(), None, true),
         ]
     );
     let menu = || h.get_by_role_and_label(Role::Menu, "Canvas");
-    for (label, _) in context_said(&h) {
+    for (label, _, _) in context_said(&h) {
         assert!(menu().query_by_label(&label).is_some(), "{label}");
     }
     // Hide Block (the menu's, not the browser's eye of the same words): the body hidden, as
@@ -35182,34 +37305,661 @@ fn over_an_element_the_context_menus_edit_opens_its_makers_dialog() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The block's top, Face6, under the pointer seen from above ([`box_from_above`]), hovered,
+/// and the context menu opened over it, its face read for its type (`elements`).
+fn context_over_the_top(h: &mut AppHarness, record: &Record) {
+    use silico_app::renderer::Element::Face;
+    let at = above_at(h, 30.0, 10.0, [0.0, 0.0]);
+    answering(record, Some((1, Face(6), pixel_at(h, at))), None);
+    h.hover_at(at);
+    step_until(h, "the top hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    context_at(h, at);
+    step_until(h, "its face read", |h| {
+        select_other(h).face_read() == Some(true)
+    });
+    step(h);
+}
+
+/// Whether the open context menu offers Sketch on this face, as its items say and as the
+/// accessibility tree has it.
+fn offers_sketch_on_face(h: &AppHarness) -> bool {
+    let listed = context_said(h)
+        .iter()
+        .any(|(said, _, _)| said == "Sketch on this face");
+    let drawn = h
+        .get_by_role_and_label(Role::Menu, "Canvas")
+        .query_by_label("Sketch on this face")
+        .is_some();
+    assert_eq!(listed, drawn);
+    listed
+}
+
+/// What a sketch's creation sent: the tab's call record, and the document's features then,
+/// each by its fields but its ID (which the core makes anew each time) and `v`.
+type Created = (
+    Vec<silico_app::tab::Sent>,
+    Vec<Option<Vec<(String, Plain)>>>,
+);
+
+/// Frames stepped until sketch mode is open with its sketch added, and everything answered:
+/// what the creation sent.
+fn sketch_added(f: &Fixture, h: &mut AppHarness) -> Created {
+    step_until(h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    settled(h);
+    let text = text_of(f, h);
+    let features = ["Block", "Sketch1"]
+        .into_iter()
+        .map(|name| fields_of(&text, name))
+        .collect();
+    (h.state().tabs()[0].sent.clone(), features)
+}
+
+#[test]
+fn over_a_planar_face_the_context_menus_sketch_on_this_face_sends_what_the_selection_views_button_does()
+ {
+    // js/interact.js's `onContext` over a face whose `ref.kind` is 'plane' (G7): Sketch on
+    // this face, after Edit and before the separator and Hide. The block's top is a plane as
+    // `elements` reads it (described as OCCT describes the box), so the item comes once the
+    // menu's read of it answers. Chosen, it closes the menu and sends what the selection
+    // view's button sends for the top, call for call, to the same document: an empty
+    // sketch on the top's stored name, its x +x (the core's default for a normal along z).
+    let through_menu = {
+        let f = fixture();
+        describes_a_real_box(&f);
+        let (mut h, record) = box_from_above(&f);
+        context_over_the_top(&mut h, &record);
+        assert_eq!(
+            context_said(&h),
+            [
+                ("Select Other… 2 under the pointer".to_owned(), None, true),
+                ("Edit Block".to_owned(), None, true),
+                ("Sketch on this face".to_owned(), None, true),
+                ("Hide Block".to_owned(), None, true),
+            ]
+        );
+        assert!(offers_sketch_on_face(&h));
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Sketch on this face")
+            .click();
+        let sent = sketch_added(&f, &mut h);
+        assert!(!select_other(&h).is_open());
+        assert_eq!(never_waits::waits(), 0);
+        sent
+    };
+    let through_button = {
+        let f = fixture();
+        describes_a_real_box(&f);
+        let (mut h, _record) = box_from_above(&f);
+        select_in_box(&mut h, &["Face6"]);
+        row_until(&mut h, "Area", "800.00 mm²");
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .get_by_role_and_label(Role::Button, "Sketch on this face")
+            .click();
+        let sent = sketch_added(&f, &mut h);
+        assert_eq!(never_waits::waits(), 0);
+        sent
+    };
+    assert!(!through_menu.0.is_empty());
+    assert_eq!(through_menu, through_button);
+    assert_eq!(
+        through_menu.1[1],
+        Some(empty_sketch(
+            "Sketch1",
+            r#"{"face": "k7f2qx3m.box.Face6", "x": "+x", "reversed": false}"#
+        ))
+    );
+}
+
+#[test]
+fn the_context_menu_offers_no_sketch_on_this_face_over_a_cylindrical_face_an_edge_or_a_vertex() {
+    // The prototype's item is only for a face whose `ref.kind` is 'plane'. The block's top
+    // described as a cylinder's side instead (by hand: about an axis along y through
+    // (20, 0, -10), radius 20, which meets the top's corners' heights only loosely, as a
+    // test's description may), its read answers, and there's no item; over an edge or a
+    // vertex there's no face to read, and none either.
+    use eframe::egui::Key;
+    use silico_app::renderer::Element::{Edge, Vertex};
+    let f = fixture();
+    let mut description = real_box_description();
+    description.faces[5].surface = silico_core::kernel::Surface::Cylinder {
+        axis: silico_core::kernel::Axis {
+            origin: [20.0, 0.0, -10.0],
+            direction: [0.0, 1.0, 0.0],
+        },
+        radius: 20.0,
+    };
+    describes_the_box_as(&f, description);
+    let (mut h, record) = box_from_above(&f);
+    context_over_the_top(&mut h, &record);
+    assert_eq!(
+        select_other(&h).context().unwrap().head.as_deref(),
+        Some("Face6 · Face")
+    );
+    assert!(!offers_sketch_on_face(&h));
+    for (element, pick, head) in [
+        (Edge(11), false, "Edge11 · Edge"),
+        (Vertex(7), true, "Vertex7 · Vertex"),
+    ] {
+        h.key_press(Key::Escape);
+        step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+        let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+        let hit = Some((1, element, pixel_at(&h, at)));
+        if pick {
+            answering(&record, hit, None);
+        } else {
+            answering(&record, None, hit);
+        }
+        h.hover_at(at);
+        let name = format!("k7f2qx3m.box.{}", &head[..head.find(' ').unwrap()]);
+        step_until(&mut h, &format!("{name} hovered"), |h| {
+            hover_name(h).as_deref() == Some(name.as_str())
+        });
+        context_at(&mut h, at);
+        assert_eq!(
+            select_other(&h).context().unwrap().head.as_deref(),
+            Some(head)
+        );
+        assert_eq!(select_other(&h).face_read(), None, "{head}");
+        for _ in 0..4 {
+            step(&mut h);
+        }
+        assert!(!offers_sketch_on_face(&h), "{head}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_sketch_items_are_off_while_sketch_mode_cant_open_saying_why() {
+    // With a dialog open sketch mode can't open (`Tab::can_sketch`), as the toolbar's Create
+    // Sketch says by being off: over the planar top, Sketch on this face is there but off,
+    // saying why as Edit Sketch does ("Close the open dialog first"); over nothing, Create
+    // Sketch is too, with the same words.
+    let f = fixture();
+    describes_a_real_box(&f);
+    let (mut h, record) = box_from_above(&f);
+    context_over_the_top(&mut h, &record);
+    h.get_by_label("Edit Block").click();
+    step_until(&mut h, "the box's dialog", |h| {
+        h.state().tabs()[0].in_dialog()
+    });
+    assert!(!h.state().tabs()[0].can_sketch());
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    context_over_the_top(&mut h, &record);
+    let why = "Close the open dialog first";
+    let shown = select_other(&h).context().unwrap().items[2].clone();
+    assert_eq!(
+        (shown.label.as_str(), shown.off.as_deref()),
+        ("Sketch on this face", Some(why))
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Sketch on this face")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // Over nothing.
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    context_over_nothing(&mut h, &record);
+    let create = select_other(&h).context().unwrap().items[4].clone();
+    assert_eq!(
+        (create.label.as_str(), create.off.as_deref()),
+        ("Create Sketch", Some(why))
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The context menu opened over nothing, by the box seen from above: Fit, Home view,
+/// Select Other…, Clear selection, and Create Sketch. Where it was opened.
+fn context_over_nothing(h: &mut AppHarness, record: &Record) -> eframe::egui::Pos2 {
+    // Off the box, 5 mm past its far edge (y = 20), at the canvas's top middle, clear of the
+    // ViewCube: no hover, nothing under the pointer.
+    let off = above_at(h, 20.0, 25.0, [0.0, 0.0]);
+    answering(record, None, None);
+    h.hover_at(off);
+    for _ in 0..4 {
+        step(h);
+    }
+    context_at(h, off);
+    off
+}
+
+#[test]
+fn enter_on_the_context_menus_create_sketch_opens_its_planes() {
+    // #444's review: Shift+Tab from nothing lit lights the last item on, Create
+    // Sketch, and Enter on it opens its planes beside it, the toolbar's, as the pointer
+    // does; one chosen there starts a sketch. SEAM: the planes are the pointer's, the keys
+    // stepping the menu's own items (the module doc's).
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    let lit = select_other(&h).lit().unwrap();
+    assert_eq!(
+        select_other(&h).context().unwrap().items[lit].label,
+        "Create Sketch"
+    );
+    assert!(!planes_open(&h));
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(select_other(&h).is_open());
+    let planes = h.get_by_role_and_label(Role::Menu, "Create Sketch");
+    assert_eq!(buttons_of(&planes), ["XY plane", "XZ plane", "YZ plane"]);
+    planes.get_by_label("XZ plane").click();
+    let (_, features) = sketch_added(&f, &mut h);
+    assert!(!select_other(&h).is_open());
+    assert!(features[1].is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether Create Sketch's planes are open.
+fn planes_open(h: &AppHarness) -> bool {
+    h.query_by_role_and_label(Role::Menu, "Create Sketch")
+        .is_some()
+}
+
+#[test]
+fn enter_on_create_sketch_opens_its_planes_with_the_pointer_resting_on_fit() {
+    // #444's review: the pointer moved onto Fit and resting there, the keys light Create
+    // Sketch (Shift+Tab back from Fit, round to the last), and Enter opens its planes: they
+    // stay open, frame after frame, the pointer still on Fit, until the keys light another
+    // item, which lets them go.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fit")
+        .hover();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(select_other(&h).lit(), Some(0));
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    let lit = select_other(&h).lit().unwrap();
+    assert_eq!(
+        select_other(&h).context().unwrap().items[lit].label,
+        "Create Sketch"
+    );
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(
+            planes_open(&h),
+            "the planes closed under the resting pointer"
+        );
+    }
+    // The pointer moved again where it rests, on Fit (a move of none, as a window may send):
+    // no move onto another item, so the planes stay, and Create Sketch lit.
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fit")
+        .hover();
+    for _ in 0..4 {
+        step(&mut h);
+        assert!(
+            planes_open(&h),
+            "the planes closed under a move onto nothing new"
+        );
+    }
+    assert_eq!(select_other(&h).lit(), Some(lit));
+    h.key_press(Key::Tab);
+    step_until(&mut h, "its planes let go", |h| !planes_open(h));
+    assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_pointer_moved_onto_another_item_lets_the_planes_enter_opened_go() {
+    // #444's review: Enter on Create Sketch opens its planes; the pointer then moved onto Home
+    // view lets them go, as hovering another item closes a submenu in every menu.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(planes_open(&h));
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Home view")
+        .hover();
+    step_until(&mut h, "its planes let go", |h| !planes_open(h));
+    assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_closes_the_menu_and_its_planes_and_a_menu_opened_again_has_none_open() {
+    // The planes open from the pointer on Create Sketch; Esc closes both, and the menu
+    // opened again over nothing opens with none: egui resets the open item of a menu not
+    // shown for a frame.
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Create Sketch")
+        .hover();
+    step_until(&mut h, "its planes", planes_open);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "both closed", |h| {
+        !select_other(h).is_open() && !planes_open(h)
+    });
+    context_over_nothing(&mut h, &record);
+    h.hover_at(above_at(&h, -15.0, 0.0, [0.0, 0.0]));
+    for _ in 0..6 {
+        step(&mut h);
+        assert!(!planes_open(&h));
+    }
+    assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_menu_opened_again_by_a_right_click_has_none_of_the_last_menus_planes_open() {
+    // #444's review: the planes opened by Enter, then a right click elsewhere over nothing:
+    // the new menu opens with no planes, from its first frame. Its layer and its submenu's
+    // are the last one's, and egui's own reset of a menu's open item (`MenuState::from_id`)
+    // doesn't fire, the last menu shown the frame before: the new one lets go of the open
+    // item the last one left, on its first frame (`CanvasMenu::draw`'s `fresh`).
+    use eframe::egui::{Event, Key, Modifiers, PointerButton};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    let elsewhere = above_at(&h, 30.0, 26.0, [0.0, 0.0]);
+    answering(&record, None, None);
+    // The right click by hand, the pointer moved there and the button pressed and let go
+    // all given to one frame (the harness gives each event it queues a frame of its own),
+    // which opens the new menu and draws it: no planes in it.
+    let button = |pressed| Event::PointerButton {
+        pos: elsewhere,
+        button: PointerButton::Secondary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    h.input_mut()
+        .events
+        .extend([Event::PointerMoved(elsewhere), button(true), button(false)]);
+    step(&mut h);
+    assert_eq!(
+        select_other(&h).phase(),
+        Some(silico_app::select_other::Phase::Context)
+    );
+    assert!(
+        !planes_open(&h),
+        "the last menu's planes on the new one's first frame"
+    );
+    // The pointer then off the menu, on no item of it (an item under it would close a
+    // submenu egui held open).
+    h.hover_at(above_at(&h, -15.0, 0.0, [0.0, 0.0]));
+    for _ in 0..6 {
+        step(&mut h);
+        assert!(!planes_open(&h));
+    }
+    assert!(select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_face_read_answered_is_let_go() {
+    // #444's mutants: the menu opened over the box's top reads the face for its type (Sketch
+    // on this face): the tab's read is of that face in the frames from its asking to its
+    // answer's taking (a frame at least: it's let go in the frame after). Once answered,
+    // it's let go, the menu keeping what it said. SEAM: the read can't be held across the
+    // menu's close here (the fake answers at once, the rebuild having described the face),
+    // so after Esc none is left by either way.
+    use eframe::egui::{Key, Modifiers, PointerButton};
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(6), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the top hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    // The right click by hand, a frame at a time, the tab's read looked at after each.
+    let mut asked = false;
+    let right = PointerButton::Secondary;
+    button_event(&h, at, right, true, Modifiers::NONE);
+    step(&mut h);
+    asked |= h.state().tabs()[0].menu_face().of().is_some();
+    button_event(&h, at, right, false, Modifiers::NONE);
+    step(&mut h);
+    asked |= h.state().tabs()[0].menu_face().of().is_some();
+    for _ in 0..120 {
+        if select_other(&h).face_read() == Some(true) {
+            break;
+        }
+        step(&mut h);
+        asked |= h.state().tabs()[0].menu_face().of().is_some();
+    }
+    assert_eq!(
+        select_other(&h).face_read(),
+        Some(true),
+        "its face read answered"
+    );
+    assert!(asked, "the tab's read of the menu's face");
+    step(&mut h);
+    assert!(h.state().tabs()[0].menu_face().of().is_none());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    step(&mut h);
+    assert!(h.state().tabs()[0].menu_face().of().is_none());
+    assert!(!h.state().tabs()[0].menu_face().reading());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn hovering_an_off_create_sketch_opens_no_planes() {
+    // #444's review: with a dialog open, sketch mode can't open, and Create Sketch over
+    // nothing is off; the pointer resting on it opens nothing.
+    let f = fixture();
+    describes_a_real_box(&f);
+    let (mut h, record) = box_from_above(&f);
+    context_over_the_top(&mut h, &record);
+    h.get_by_label("Edit Block").click();
+    step_until(&mut h, "the box's dialog", |h| {
+        h.state().tabs()[0].in_dialog()
+    });
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    context_over_nothing(&mut h, &record);
+    let create = h
+        .get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Create Sketch");
+    assert!(create.accesskit_node().is_disabled());
+    create.hover();
+    for _ in 0..8 {
+        step(&mut h);
+    }
+    assert!(!planes_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn over_an_unstable_planar_face_sketch_on_this_face_is_off_with_the_stores_refusal() {
+    // #444's review. FUSED's fuse (its result the base's, a box, every face a plane), its
+    // Face1 named only by its number, unstable: no store takes it, so the menu's Sketch on
+    // this face is there (the face is a plane) but off, saying the store's own words, as the
+    // selection view's button is off for it.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    planar_boxes(&f.kernel);
+    f.kernel.answer_instead(|op| match op {
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                shape: FakeKernel::resized(base, 1.0)?,
+                history: numbering_fuse(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, record) = from_above_made(&f, "fused.silico", FUSED, None);
+    boxes_made(&mut h);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "Face1 hovered", |h| {
+        hover_name(h).as_deref() == Some("rrrrrrrr.fuse.Face1")
+    });
+    context_at(&mut h, at);
+    step_until(&mut h, "its face read", |h| {
+        select_other(h).face_read() == Some(true)
+    });
+    step(&mut h);
+    let shown = select_other(&h)
+        .context()
+        .unwrap()
+        .items
+        .iter()
+        .find(|shown| shown.label == "Sketch on this face")
+        .cloned()
+        .expect("Sketch on this face, over a plane");
+    let why = shown.off.expect("off for an unstable face");
+    assert!(
+        why.contains(
+            "\"rrrrrrrr.fuse.Face1\", names a face, whose name is unstable (it came about as \
+             another element did, or is its number): an edit could make it another element"
+        ),
+        "{why}"
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Sketch on this face")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn over_nothing_the_context_menus_create_sketch_opens_the_toolbars_planes_and_one_starts_a_sketch()
+{
+    // js/interact.js's `onContext` over nothing (G7): Create Sketch, last, whose planes are
+    // the toolbar's, the same menu of them (`toolbar::planes`): XY, XZ, and YZ. XZ chosen
+    // there closes both menus and sends what the toolbar's XZ plane sends, call for call,
+    // to the same document.
+    let through_menu = {
+        let f = fixture();
+        let (mut h, record) = box_from_above(&f);
+        context_over_nothing(&mut h, &record);
+        assert_eq!(
+            context_said(&h).last(),
+            Some(&("Create Sketch".to_owned(), None, true))
+        );
+        assert!(!planes_open(&h));
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Create Sketch")
+            .hover();
+        step_until(&mut h, "its planes", planes_open);
+        // Beside it: egui lays a popup out in the frame it opens and places it in the next.
+        step(&mut h);
+        step(&mut h);
+        let item = h
+            .get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Create Sketch")
+            .rect();
+        let planes = h.get_by_role_and_label(Role::Menu, "Create Sketch");
+        let first = planes.get_by_label("XY plane").rect();
+        assert!(first.left() >= item.right(), "{first:?} {item:?}");
+        assert_eq!(buttons_of(&planes), ["XY plane", "XZ plane", "YZ plane"]);
+        planes.get_by_label("XZ plane").click();
+        let sent = sketch_added(&f, &mut h);
+        assert!(!select_other(&h).is_open());
+        assert!(!planes_open(&h));
+        assert_eq!(never_waits::waits(), 0);
+        sent
+    };
+    let through_toolbar = {
+        let f = fixture();
+        let (mut h, _record) = box_from_above(&f);
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .click();
+        step_until(&mut h, "its planes", planes_open);
+        step(&mut h);
+        step(&mut h);
+        h.get_by_role_and_label(Role::Menu, "Create Sketch")
+            .get_by_label("XZ plane")
+            .click();
+        let sent = sketch_added(&f, &mut h);
+        assert_eq!(never_waits::waits(), 0);
+        sent
+    };
+    assert!(!through_menu.0.is_empty());
+    assert_eq!(through_menu, through_toolbar);
+    assert_eq!(through_menu.1[1], Some(empty_sketch("Sketch1", r#""xz""#)));
+}
+
 #[test]
 fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
     use eframe::egui::Key;
     use silico_app::renderer::Element::Face;
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
-    // Off the box, 5 mm past its far edge (y = 20), at the canvas's top middle, clear of the
-    // ViewCube: no hover, nothing under the pointer.
-    let off = above_at(&h, 20.0, 25.0, [0.0, 0.0]);
-    answering(&record, None, None);
-    h.hover_at(off);
-    for _ in 0..4 {
-        step(&mut h);
-    }
-    context_at(&mut h, off);
+    let off = context_over_nothing(&mut h, &record);
     assert_eq!(select_other(&h).context().unwrap().head, None);
     assert_eq!(
         context_said(&h),
         [
-            ("Fit F6".to_owned(), true),
-            ("Home view Home".to_owned(), true),
-            ("Select Other… nothing under the pointer".to_owned(), false),
-            ("Clear selection Esc".to_owned(), false),
+            ("Fit".to_owned(), Some("F6".to_owned()), true),
+            ("Home view".to_owned(), Some("Home".to_owned()), true),
+            (
+                "Select Other… nothing under the pointer".to_owned(),
+                None,
+                false
+            ),
+            ("Clear selection".to_owned(), Some("Esc".to_owned()), false),
+            ("Create Sketch".to_owned(), None, true),
         ]
     );
     // Fit: the camera F6 gives, from the same camera.
     let start = view(&h).camera().clone();
-    h.get_by_label("Fit F6").click();
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fit")
+        .click();
     step_until(&mut h, "fitted", |h| view(h).camera() != &start);
     let by_menu = view(&h).camera().clone();
     view_mut(&mut h).set_camera(start.clone());
@@ -35225,7 +37975,9 @@ fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
         step(&mut h);
     }
     context_at(&mut h, off);
-    h.get_by_label("Home view Home").click();
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Home view")
+        .click();
     step_until(&mut h, "home", |h| view(h).camera() != &start);
     let by_menu = view(&h).camera().clone();
     view_mut(&mut h).set_camera(start.clone());
@@ -35252,9 +38004,11 @@ fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
     context_at(&mut h, off);
     assert_eq!(
         context_said(&h)[3],
-        ("Clear selection Esc".to_owned(), true)
+        ("Clear selection".to_owned(), Some("Esc".to_owned()), true)
     );
-    h.get_by_label("Clear selection Esc").click();
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Clear selection")
+        .click();
     selected_until(&mut h, &[]);
     assert!(!select_other(&h).is_open());
     assert_eq!(never_waits::waits(), 0);
@@ -35265,16 +38019,11 @@ fn the_context_menus_keys_step_its_items_that_are_on_and_enter_chooses_the_one_l
     use eframe::egui::Key;
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
-    let off = above_at(&h, 20.0, 25.0, [0.0, 0.0]);
-    answering(&record, None, None);
-    h.hover_at(off);
-    for _ in 0..4 {
-        step(&mut h);
-    }
-    context_at(&mut h, off);
+    context_over_nothing(&mut h, &record);
     assert_eq!(select_other(&h).lit(), None);
     // Down lights Fit, then Home view; Select Other… and Clear selection, off, are passed
-    // over, so on from Home view is Fit again, and back from Fit Home view.
+    // over, so on from Home view is Create Sketch (G7), the last, then Fit again, and back
+    // from Fit Create Sketch, then Home view.
     let lit = |h: &mut AppHarness| {
         step(h);
         step(h);
@@ -35285,7 +38034,11 @@ fn the_context_menus_keys_step_its_items_that_are_on_and_enter_chooses_the_one_l
     h.key_press(Key::Tab);
     assert_eq!(lit(&mut h), Some(1));
     h.key_press(Key::Tab);
+    assert_eq!(lit(&mut h), Some(4));
+    h.key_press(Key::Tab);
     assert_eq!(lit(&mut h), Some(0));
+    h.key_press(Key::ArrowUp);
+    assert_eq!(lit(&mut h), Some(4));
     h.key_press(Key::ArrowUp);
     assert_eq!(lit(&mut h), Some(1));
     // Enter: Home view done, the menu closed.
@@ -36409,8 +39162,12 @@ fn a_second_reload_asked_while_the_first_is_out_reads_the_file_as_the_persons_to
     settled(&mut h);
     let hold = f.kernel.hold(is_box);
     command_r(&mut h);
-    step(&mut h);
-    assert!(f.kernel.wait_running(1, WAIT));
+    // Reload's rebuild is sent on the frame after the one that takes its read of the file,
+    // so frames are stepped until it runs, held at its box: the second box, the open's
+    // being the first.
+    step_until(&mut h, "the first's rebuild held at its box", |_| {
+        boxes_asked(&f) == 2 && f.kernel.wait_running(1, Duration::ZERO)
+    });
     std::fs::write(&path, example_theirs()).unwrap();
     command_r(&mut h);
     step_until(
@@ -36432,9 +39189,14 @@ fn a_second_reload_asked_while_the_first_is_out_reads_the_file_as_the_persons_to
 #[test]
 fn command_r_with_a_dialog_open_says_to_finish_it_first_and_sends_nothing() {
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    create(&mut h, "Box");
+    // The pad added, so the dialog holds its feature in the transaction, unsaved: a Reload
+    // let through would ask its question, then drop the pad.
+    open_pad_on_triangle(&mut h);
+    added(&mut h);
+    settled(&mut h);
+    let sent = h.state().tabs()[0].sent.clone();
     command_r(&mut h);
     step_until(&mut h, "said", |h| {
         h.state()
@@ -36444,10 +39206,12 @@ fn command_r_with_a_dialog_open_says_to_finish_it_first_and_sends_nothing() {
     for _ in 0..5 {
         step(&mut h);
     }
+    assert!(!anywhere(&h, "Reload example.silico from disk?"));
     let tab = &h.state().tabs()[0];
     assert!(tab.in_dialog());
     assert_eq!(tab.rebuilds_all, 0);
-    assert!(h.query_by_role_and_label(Role::Dialog, "Box").is_some());
+    assert_eq!(tab.sent, sent);
+    assert!(h.query_by_role_and_label(Role::Dialog, "Pad").is_some());
     // File > Reload is off with it open, as Rebuild everything is.
     h.get_by_label("File").click();
     step(&mut h);
@@ -36468,20 +39232,21 @@ fn command_r_on_an_untitled_part_with_edits_asks_nothing_and_only_rebuilds_keepi
     let mut h = f.app();
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
-    step_until(&mut h, "the box's edit held", |h| {
+    add_pad(&f, &mut h, "Untitled");
+    step_until(&mut h, "the pad's edits held", |h| {
         let tab = &h.state().tabs()[0];
         tab.unsaved() && tab.edits.idle() && !tab.in_dialog()
     });
     let mine = text_of(&f, &h);
-    let boxes = boxes_asked(&f);
+    let built = prisms_asked(&f);
+    assert!(built > 0, "the pad never built");
     command_r(&mut h);
     step_until(&mut h, "rebuilt everything", |h| {
         let tab = &h.state().tabs()[0];
         tab.rebuilds_all == 1 && !tab.checking()
     });
     assert!(!anywhere(&h, "Reload Untitled from disk?"));
-    assert!(boxes_asked(&f) > boxes, "the box built anew");
+    assert!(prisms_asked(&f) > built, "the pad built anew");
     let tab = &h.state().tabs()[0];
     assert!(tab.unsaved());
     assert_eq!(text_of(&f, &h), mine);
@@ -36731,5 +39496,45 @@ fn command_r_with_a_transaction_open_and_nothing_changed_ends_it_to_read_the_fil
         let tab = &h.state().tabs()[0];
         !tab.transaction && shows(h, "Timeline", "Drill")
     });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Two points of one sketch, (10, 10) and (40, 10.5), 0.95° off level from each other, and
+/// nothing else.
+const TWO_POINTS: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Pair", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 40, "y": 10.5, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn the_tools_read_the_sketchs_states_and_leave_out_a_direction_between_fixed_points() {
+    // The fake solver's read marks every point fully defined (its default solve has no
+    // freedoms). A line dragged from (10, 10) to (40, 10.5), each end a point of the sketch:
+    // 0.95° off level, so the pointer finds `horizontal`; but both ends' Y classes are fixed
+    // by the read's states, so the tool leaves it out (#278's G as amended, Rule E), and the
+    // line is added with no relation at all.
+    let f = fixture();
+    let (mut h, _) = f.opened("pair.silico", TWO_POINTS);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Pair"));
+    double_click(&mut h, "Browser", "Pair");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    sketch_events(&f, &mut h, &dragged([10.0, 10.0], [40.0, 10.5]));
+    settled(&mut h);
+    read_with_lines(&mut h, 1);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let line = &sketch.lines[0];
+    assert_eq!(
+        (line.from.as_str(), line.to.as_str()),
+        ("pa000001", "pa000002")
+    );
+    assert_eq!(sketch.constraints, Vec::new());
     assert_eq!(never_waits::waits(), 0);
 }

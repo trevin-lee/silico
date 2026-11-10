@@ -24,6 +24,7 @@ use crate::changes::{self, Changes};
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::modal::{self, Button, Kind};
+use crate::pane_widths::{KeptWidths, Widths};
 use crate::panes::{self, Pane, Panes};
 use crate::properties;
 use crate::recent::Recents;
@@ -345,6 +346,8 @@ pub struct App<P: Clients + 'static> {
     tab_in_view: Option<SessionId>,
     /// The documents opened lately, if the app keeps a list.
     recents: Option<Recents>,
+    /// The side panes' widths, as dragged, and where they're kept, if anywhere.
+    columns: crate::columns::Columns,
     /// The warm start's state, if the app warms its workers.
     warm: Option<Warm>,
     /// The `silico` an MCP client is told to run (Copy MCP config).
@@ -363,7 +366,7 @@ pub struct App<P: Clients + 'static> {
 }
 
 /// A row of Show changes' "Their change (on disk)": the changed feature's name in the key
-/// column, purple (`.k`, `var(--purple)`), and the field and its values beside it.
+/// column, in the info tone (`.k`, `var(--outside)`), and the field and its values beside it.
 fn theirs_row(row: &changes::Row) -> (String, egui::Color32, String) {
     (
         row.feature.clone(),
@@ -453,6 +456,7 @@ impl<P: Clients + 'static> App<P> {
             home: false,
             tab_in_view: None,
             recents: None,
+            columns: crate::columns::Columns::new(),
             warm: None,
             silico: "silico".to_owned(),
             documents: directories::UserDirs::new()
@@ -483,6 +487,26 @@ impl<P: Clients + 'static> App<P> {
     pub fn remembering(mut self, recents: Recents) -> Self {
         self.recents = Some(recents);
         self
+    }
+
+    /// The app, laying its side panes out at the widths `widths` keeps once it has read them,
+    /// and keeping there those each drag of a border leaves.
+    #[must_use]
+    pub fn keeping_widths(mut self, widths: KeptWidths) -> Self {
+        self.columns.keeping(widths);
+        self
+    }
+
+    /// The side panes' widths, as dragged (or read, or the prototype's), each its border
+    /// included: what [`keeping_widths`](Self::keeping_widths)' file keeps.
+    pub fn pane_widths(&self) -> Widths {
+        self.columns.chosen()
+    }
+
+    /// Where the side panes' widths are kept: nowhere (read at once, the prototype's) unless
+    /// [`keeping_widths`](Self::keeping_widths) gave a file.
+    pub fn kept_widths(&self) -> &KeptWidths {
+        self.columns.kept()
     }
 
     /// The app, its status bar saying how `warm`, its workers' warm start, stands while no
@@ -650,10 +674,12 @@ impl<P: Clients + 'static> App<P> {
                 wakes.fetch_add(1, Ordering::SeqCst);
                 ctx.request_repaint();
             });
-            // And the threads that keep the recent documents and warm the workers.
+            // And the threads that keep the recent documents and the panes' widths, and warm
+            // the workers.
             if let Some(recents) = &self.recents {
                 recents.waking(ui.ctx());
             }
+            self.columns.waking(ui.ctx());
             if let Some(warm) = &self.warm {
                 warm.waking(ui.ctx());
             }
@@ -732,6 +758,7 @@ impl<P: Clients + 'static> App<P> {
                 name,
                 drawing,
                 remembered,
+                columns,
                 ..
             } = self;
             let mut panes = Panes {
@@ -743,8 +770,12 @@ impl<P: Clients + 'static> App<P> {
                 dialog_key,
                 remembered,
             };
-            panes::fit(tree, ui.available_width());
+            let area = ui.available_rect_before_wrap();
+            let laid = columns.laid(area.width());
+            panes::fit(tree, &laid);
             tree.ui(&mut panes, ui);
+            // Over the panes' borders, after them, so a press there drags the border.
+            columns.handles(ui, area, laid);
             // Over the canvas, drawn after it, so it takes the pointer over its place.
             let canvas = tree
                 .tiles
@@ -844,6 +875,8 @@ impl<P: Clients + 'static> App<P> {
     /// a quit has closed every tab, or kept open while one holds edits; and the next frame
     /// asked for.
     fn after_drawing(&mut self, ui: &mut Ui, mut started: bool) {
+        // A border's drag whose release the panes didn't see (they're gone) ended.
+        self.columns.settle(ui.ctx());
         // The dialog OK'd this frame, if one was (one tab's panes draw a frame), remembered.
         for tab in &mut self.tabs {
             if let Some(oked) = tab.take_oked() {
@@ -912,6 +945,7 @@ impl<P: Clients + 'static> App<P> {
     /// The opens under way and every tab polled; tabs whose sessions closed dropped; and
     /// what the recent documents' thread has told, a document it dropped said.
     fn poll(&mut self) {
+        self.columns.poll();
         let gone = self.recents.as_mut().map(Recents::poll).unwrap_or_default();
         for recent in gone {
             self.message = Some(format!(
@@ -2066,8 +2100,9 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The toolbar (section 8; `toolbar`): the Design workspace's SOLID tab and its panels,
-    /// CREATE's tools each opening its feature's dialog (M5.8): the primitives, and the
-    /// features that sweep a sketch's profile (those that cut, only with a body to cut); and
+    /// CREATE's tools each opening its feature's dialog (M5.8): the features that sweep a
+    /// sketch's profile (those that cut, only with a body to cut), solids being made
+    /// sketch-first (Trevin's decision of 2026-11-09), never as primitives; and
     /// SELECT's Clear selection. In a sketch, SKETCH's: a tool chosen, or left if it's on,
     /// Construction turned on or off, as their keys do, and Finish Sketch.
     fn toolbar(&mut self, ui: &mut Ui, started: &mut bool) {
@@ -2250,18 +2285,22 @@ impl<P: Clients + 'static> App<P> {
                 .fixed_pos(sketch::bar::menu_corner(at, ppp))
                 .order(egui::Order::Foreground)
                 .show(ui.ctx(), |ui| {
-                    *ui.visuals_mut() = sketch::bar::panel_visuals();
                     ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                         node.set_role(egui::accesskit::Role::Menu);
                         node.set_label("Sketch menu");
                     });
-                    egui::Frame::menu(ui.style()).show(ui, |ui| {
+                    // Framed as every menu is (`.menu`, the theme's), as the canvas's.
+                    crate::menu::frame(ui).show(ui, |ui| {
                         asked = sketch::bar::canvas_menu(ui, busy);
                     });
                 });
             match asked {
                 sketch::bar::MenuAction::None => {}
                 sketch::bar::MenuAction::EndChain => tab.sketch_end_chain(sessions),
+                // As the bar's button and D choose it.
+                sketch::bar::MenuAction::Dimension => {
+                    tab.sketch_toggle(sketch::tools::Choice::Dimension);
+                }
                 sketch::bar::MenuAction::Finish => tab.finish_sketch(sessions, true),
                 sketch::bar::MenuAction::Cancel => tab.finish_sketch(sessions, false),
             }
@@ -2286,7 +2325,7 @@ impl<P: Clients + 'static> App<P> {
     /// The banner over the canvas (section 4; DESIGN.md's 6c and 6d): a file changed on
     /// disk while edits are held, amber (gone, red), offering Reload (`rollback`, after which
     /// the session reloads it) or to keep the edits (a commit is then a conflict); or else,
-    /// once the session has reloaded its file with nothing held, purple, saying so until
+    /// once the session has reloaded its file with nothing held, in the info tone, saying so until
     /// it's dismissed.
     fn disk_banner(&mut self, ui: &mut Ui, canvas: egui::Rect, started: &mut bool) {
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
@@ -2600,7 +2639,7 @@ impl<P: Clients + 'static> App<P> {
                     done = true;
                     return;
                 };
-                modal::head(ui, Some(Icon::Diff), "What changed on disk");
+                modal::head(ui, Some(Icon::Rebuild), "What changed on disk");
                 let held = tab.held_changes.as_ref();
                 modal::body(ui, |ui| {
                     // The prototype's rows (`.prop`, unpadded), each list from its own diff.
@@ -3361,14 +3400,15 @@ mod tests {
     }
 
     #[test]
-    fn show_changes_lists_their_features_purple_and_your_edits_as_edits() {
+    fn show_changes_lists_their_features_in_the_info_tone_and_your_edits_as_edits() {
         // The prototype's 6d rows: under "Their change (on disk)", the feature's name in
-        // the key column in purple (`.k`, `var(--purple)`, #b780ff), the field and its
+        // the key column in the info tone (`.k`, `var(--outside)`, `--info` #adbbff; Trevin's
+        // change of 2026-11-09, from purple), the field and its
         // values beside it; under "Your unsaved edits", "Edit" in the key's grey.
         let theirs = held_list_painted("theirs", one_row("Pin", "radius", "5 → 3"), theirs_row);
         assert_eq!(
             painted_in(&theirs, "Pin"),
-            eframe::egui::Color32::from_rgb(0xb7, 0x80, 0xff)
+            eframe::egui::Color32::from_rgb(0xad, 0xbb, 0xff)
         );
         assert_eq!(painted_in(&theirs, "radius · 5 → 3"), theme::PROPERTY_VALUE);
         let mine = held_list_painted("mine", one_row("Block", "height", "10 → 12"), mine_row);

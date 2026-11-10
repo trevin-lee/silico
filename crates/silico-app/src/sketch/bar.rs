@@ -1,9 +1,10 @@
 //! Sketch mode's own panels in the canvas, as the approved prototype lays them out
 //! (docs/design/m5-ui/, `js/sketch.js`'s `renderCanvasUI` and `statusText`): the sketch bar at
 //! the canvas's top (the sketch, its plane, its state, Cancel, and Finish Sketch), the
-//! Sketch Palette at its right, and what the status bar says of the sketch. Each is laid
-//! out by a small function of its own, given what it shows and giving back what was asked,
-//! apart from sketch mode's state and actions.
+//! Sketch Palette at its right, what the status bar says of the sketch, and the canvas's
+//! right-click menu (drawn as every menu is, `crate::menu`). Each is laid out by a small
+//! function of its own, given what it shows and giving back what was asked, apart from
+//! sketch mode's state and actions.
 
 use eframe::egui::{
     self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2,
@@ -386,27 +387,105 @@ fn tool_section(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
 pub enum MenuAction {
     None,
     EndChain,
+    /// Smart Dimension: its tool chosen, as the bar's button and D choose it.
+    Dimension,
     Finish,
     Cancel,
 }
 
-/// The canvas's right-click menu in sketch mode, as the prototype has it: *End chain*, on
-/// only while a tool's gesture is under way (`busy`), then Finish Sketch and Cancel sketch.
-/// The pane opens it; what was asked is given back.
+/// Why End chain is off: no tool's gesture is under way.
+pub const NOTHING_BEING_DRAWN: &str = "Nothing is being drawn";
+
+/// An item of the canvas's right-click menu in sketch mode: what it asks, its icon, its
+/// words, its keys' caps (the registry's, as the platform names them), why it's off if it
+/// is, and whether a separator comes before it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuItem {
+    pub action: MenuAction,
+    pub icon: Option<crate::icons::Icon>,
+    pub label: &'static str,
+    pub caps: Vec<String>,
+    pub off: Option<&'static str>,
+    pub separated: bool,
+}
+
+impl MenuItem {
+    /// It as every menu draws an item (`crate::menu`), lit by nothing but the pointer.
+    pub fn line(&self) -> crate::menu::Item<'_> {
+        crate::menu::Item {
+            icon: self.icon,
+            label: self.label,
+            sub: None,
+            caps: &self.caps,
+            off: self.off,
+            danger: false,
+            lit: false,
+        }
+    }
+}
+
+/// The canvas's right-click menu in sketch mode, as the prototype's `onContext` has it
+/// (js/interact.js), in its order: *End chain* (Esc), off but while a tool's gesture is
+/// under way (`busy`); Smart Dimension (D), with its icon; a separator; Finish Sketch (its
+/// Ctrl+↵, ⌘↵ on macOS), with its icon; and Cancel sketch. Each cap is the registry's
+/// (`crate::shortcuts`): Smart Dimension's and Finish Sketch's their own commands', and End
+/// chain's Esc, which the app takes as the registry's Stop and gives sketch mode, where it
+/// ends the gesture (`Tab::escape`).
+pub fn menu_items(ctx: &egui::Context, busy: bool) -> Vec<MenuItem> {
+    use crate::icons::Icon;
+    vec![
+        MenuItem {
+            action: MenuAction::EndChain,
+            icon: None,
+            label: "End chain",
+            caps: Command::Stop.caps(ctx),
+            off: (!busy).then_some(NOTHING_BEING_DRAWN),
+            separated: false,
+        },
+        MenuItem {
+            action: MenuAction::Dimension,
+            icon: Some(Icon::Dimension),
+            label: Command::Dimension.label(),
+            caps: Command::Dimension.caps(ctx),
+            off: None,
+            separated: false,
+        },
+        MenuItem {
+            action: MenuAction::Finish,
+            icon: Some(Icon::Check),
+            label: Command::FinishSketch.label(),
+            caps: Command::FinishSketch.caps(ctx),
+            off: None,
+            separated: true,
+        },
+        MenuItem {
+            action: MenuAction::Cancel,
+            icon: None,
+            label: "Cancel sketch",
+            caps: Vec::new(),
+            off: None,
+            separated: false,
+        },
+    ]
+}
+
+/// The canvas's right-click menu in sketch mode ([`menu_items`]), drawn as every menu over
+/// the window is (`crate::menu`, as the prototype's one `menu(...)` draws both of its
+/// canvas's menus): each item as wide as the widest, a separator before Finish Sketch. The
+/// pane opens it; what was asked is given back.
 pub fn canvas_menu(ui: &mut Ui, busy: bool) -> MenuAction {
+    let items = menu_items(ui.ctx(), busy);
+    let lines: Vec<crate::menu::Item<'_>> = items.iter().map(MenuItem::line).collect();
+    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+    let width = crate::menu::width(ui, None, &lines, 0.0);
     let mut action = MenuAction::None;
-    if ui
-        .add_enabled(busy, egui::Button::new("End chain"))
-        .clicked()
-    {
-        action = MenuAction::EndChain;
-    }
-    ui.separator();
-    if ui.button("Finish Sketch").clicked() {
-        action = MenuAction::Finish;
-    }
-    if ui.button("Cancel sketch").clicked() {
-        action = MenuAction::Cancel;
+    for (item, line) in items.iter().zip(&lines) {
+        if item.separated {
+            crate::menu::separator(ui, width);
+        }
+        if crate::menu::item(ui, line, width).clicked() {
+            action = item.action;
+        }
     }
     if action != MenuAction::None {
         ui.close();

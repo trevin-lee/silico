@@ -66,7 +66,7 @@
       case 'whatsWrong': if (d) { S.modal = { type: 'whatswrong' }; A.syncHighlight(); A.render(); } return;
       case 'createSketch': if (!d) { runCmd('newDoc'); return; } if (S.sketch) return; startPickPlane(); return;
       case 'pad': if (d) A.openDialog('pad', null); return;
-      case 'pocket': case 'revolve': case 'groove': case 'box': case 'cylinder': case 'sphere': case 'cone': case 'torus': case 'chamfer': case 'union': case 'subtract': case 'intersect':
+      case 'pocket': case 'revolve': case 'groove': case 'chamfer': case 'union': case 'subtract': case 'intersect':
         A.toast(A.CMD[id].label + ' opens its dialog here, docked at the right, like Pad.'); return;
       case 'fillet': if (d && d.kind === 'bracket') A.openDialog('fillet', 'f0000001'); return;
       case 'measure': A.toast('Measure: select two faces. The Properties panel shows their distance or angle.'); return;
@@ -181,7 +181,9 @@
         { label: 'Close', keys: ['Mod', 'W'], disabled: !d, run: () => runCmd('close') },
       ]);
     },
-    createMenu(el) { const r = el.getBoundingClientRect(); menu(r.left, r.bottom + 2, ['createSketch', 'sep', 'pad', 'pocket', 'revolve', 'groove', 'sep', { head: 'Primitives' }, 'box', 'cylinder', 'sphere', 'cone', 'torus'].map(cmdItem)); },
+    // Trevin's decision of 2026-11-09: solids are made sketch-first, as SolidWorks makes them, so
+    // CREATE holds no primitives; a primitive a file holds is edited (editFeature), never made here.
+    createMenu(el) { const r = el.getBoundingClientRect(); menu(r.left, r.bottom + 2, ['createSketch', 'sep', 'pad', 'pocket', 'revolve', 'groove'].map(cmdItem)); },
     modifyMenu(el) { const r = el.getBoundingClientRect(); menu(r.left, r.bottom + 2, ['fillet', 'chamfer', 'sep', { head: 'Combine' }, 'union', 'subtract', 'intersect'].map(cmdItem)); },
     selectMenu(el) {
       const r = el.getBoundingClientRect();
@@ -602,6 +604,30 @@
       if (nr !== d.rollback) { d.rollback = nr; A.evaluate(d); d.built = d.next; d.health = d.next.health; d.problems = d.next.problems; A.publish(d); A.render(); }
     };
     const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); const d = doc(); if (d.rollback != null) A.toast('Rolled back: the features after the bar are not built. Drag it to the end to see them again.'); };
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+  });
+
+  // ───────── The side panes' borders, dragged to resize them (Trevin, 2026-11-09) ─────────
+  // The column moves by the drag's distance from the press, the canvas taking up the
+  // difference, between the pane's least width and what leaves the canvas its own.
+  const MIN = { browser: 200, right: 232, canvas: 340 };
+  document.addEventListener('mousedown', (e) => {
+    const sash = e.target.closest('[data-sash]'); if (!sash || e.button !== 0) return;
+    e.preventDefault();
+    const side = sash.dataset.sash; const other = side === 'browser' ? 'right' : 'browser';
+    const root = document.documentElement;
+    const width = (name) => $(name === 'browser' ? '#browser' : '#right').getBoundingClientRect().width;
+    const start = width(side); const held = width(other); const x0 = e.clientX;
+    // The other held as shown, but a collapsed browser's strip, which keeps its width for later.
+    if (!(other === 'browser' && $('#main').classList.contains('browser-collapsed'))) root.style.setProperty('--' + other + '-w', held + 'px');
+    document.body.classList.add('sashing');
+    const move = (ev) => {
+      const travel = side === 'browser' ? ev.clientX - x0 : x0 - ev.clientX;
+      const most = Math.floor($('#main').getBoundingClientRect().width - held - MIN.canvas);
+      const w = Math.max(MIN[side], Math.min(most, Math.round(start + travel)));
+      root.style.setProperty('--' + side + '-w', w + 'px');
+    };
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); document.body.classList.remove('sashing'); };
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
   });
 

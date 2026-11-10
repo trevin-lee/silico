@@ -164,6 +164,7 @@ impl Fixture {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
+            states: &read.states,
         };
         let outcome = self.tool.handle(&context, &mut self.ids, event, self.keys);
         assert_eq!(outcome.message, None, "{event:?}");
@@ -334,13 +335,39 @@ fn a_closed_chain_solves_as_its_horizontals_and_verticals_hold_it() {
 }
 
 #[test]
-fn a_redundant_horizontal_the_pointer_showed_is_kept_and_read_redundant() {
-    // #278's G: a line with both ends on the x axis, and horizontal. Four unknowns, two
-    // independent equations (each end's y): two freedoms, and one of the three relations
-    // repeats the others, read as redundant; the sketch's state by its freedoms, under
-    // defined (M5.0's item 32, Addendum 2).
+fn a_horizontal_both_ends_on_the_axis_fix_is_left_out_by_the_tool_and_read_redundant_written_by_hand()
+ {
+    // #278's G as amended (Fable, 2026-11-08, g5-redundant-autoconstraints-fable.md): a line
+    // with both ends on the x axis, the line between them level by the two `on`s. The tool
+    // leaves its `horizontal` out: two constraints, none redundant, two freedoms (four
+    // unknowns, each end's y fixed).
     let mut f = opened(ToolKind::Line);
     f.drag([10.0, 0.1], [40.0, -0.1]);
+    let read = f.read();
+    assert_eq!(read.states.dofs, 2);
+    assert_eq!(read.states.state, SketchState::UnderDefined);
+    assert_eq!(read.members.constraints.len(), 2);
+    assert!(
+        read.states
+            .constraints
+            .values()
+            .all(|s| *s == ConstraintState::Satisfied),
+        "{:?}",
+        read.states.constraints
+    );
+    // The same sketch with the `horizontal` written by hand, as an agent or a person may: one
+    // of the three relations repeats the others, read redundant, the freedoms the same two,
+    // the sketch's state by them, under defined (M5.0's item 32, Addendum 2).
+    let line = read.members.lines[0].id.clone();
+    f.sketch_add(&Members {
+        constraints: vec![silico_core::document::SketchConstraint {
+            id: ElementId::new("k0000001").unwrap(),
+            form: Form::Horizontal {
+                line: Reference::Element(line),
+            },
+        }],
+        ..Members::default()
+    });
     let read = f.read();
     assert_eq!(read.states.dofs, 2);
     assert_eq!(read.states.state, SketchState::UnderDefined);
@@ -555,13 +582,14 @@ impl Fixture {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
+            states: &read.states,
         };
         let ids: &mut dyn NewIds = if self.sort_first {
             &mut self.first
         } else {
             &mut self.ids
         };
-        let outcome = tool.handle(&context, &read.states, ids, event.clone());
+        let outcome = tool.handle(&context, ids, event.clone());
         assert_eq!(outcome.message, None, "{event:?}");
         if let (Some(members), Some(token)) = (outcome.add, outcome.token) {
             let made = self.sketch_add(&members);
@@ -833,8 +861,9 @@ fn each_equal_horizontal_distance_after_the_first_is_offered() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
+            states: &read.states,
         };
-        tool.settle(&context, &read.states);
+        tool.settle(&context);
         assert_eq!(tool.busy(), n > 0, "{n}");
         assert_eq!(tool.open_offer().is_some(), n > 0, "{n}");
         tool.dismiss_offer();
@@ -933,6 +962,316 @@ fn point_at(read: &SketchRead, want: (i64, i64)) -> ElementId {
         .unwrap()
         .id
         .clone()
+}
+
+// --- #278's G as amended: what a tool leaves out, against PlaneGCS ----------------------------
+
+/// A small generator of its own (an LCG, Knuth's constants), so each run draws the same
+/// sketches.
+struct Draws(u64);
+
+impl Draws {
+    /// The next number in [0, 1).
+    fn next(&mut self) -> f64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// A whole number in [lo, hi].
+    fn between(&mut self, lo: i32, hi: i32) -> f64 {
+        f64::from(lo) + (self.next() * f64::from(hi - lo + 1)).floor()
+    }
+}
+
+/// A chain the Line tool draws from a random start, then Enter: each click at the origin
+/// now and then, on or near an axis, near level or plumb with the last (within a degree),
+/// or anywhere, a few millimetres apart at least.
+fn draw_chain(f: &mut Fixture, draws: &mut Draws) {
+    let mut last = [draws.between(-40, 40), draws.between(-40, 40)];
+    if draws.next() < 0.2 {
+        last = [0.0, 0.0];
+    }
+    f.click(last[0], last[1]);
+    for _ in 0..(3 + (draws.next() * 3.0) as usize) {
+        let roll = draws.next();
+        let step = draws.between(8, 30) * if draws.next() < 0.5 { -1.0 } else { 1.0 };
+        let next = if roll < 0.25 {
+            [last[0] + step, 0.1]
+        } else if roll < 0.4 {
+            [0.1, last[1] + step]
+        } else if roll < 0.6 {
+            [last[0] + step, last[1] + step * 0.01]
+        } else if roll < 0.8 {
+            [last[0] + step * 0.01, last[1] + step]
+        } else {
+            [last[0] + step, last[1] + draws.between(-30, 30)]
+        };
+        f.click(next[0], next[1]);
+        last = next;
+    }
+    f.send(Event::Enter);
+}
+
+/// Each relation a tool can infer between `read`'s members, as an agent would write it:
+/// each line `horizontal` and `vertical`; each pair of points level and plumb; each point
+/// on each axis; each pair of lines sharing an end at right angles and parallel.
+fn candidates(read: &SketchRead) -> Vec<Form> {
+    let r = |id: &ElementId| Reference::Element(id.clone());
+    let sketch = &read.members;
+    let mut forms = Vec::new();
+    for line in &sketch.lines {
+        forms.push(Form::Horizontal { line: r(&line.id) });
+        forms.push(Form::Vertical { line: r(&line.id) });
+    }
+    for (k, a) in sketch.points.iter().enumerate() {
+        for curve in [Reference::XAxis, Reference::YAxis] {
+            forms.push(Form::On {
+                point: r(&a.id),
+                curve,
+            });
+        }
+        for b in &sketch.points[k + 1..] {
+            forms.push(Form::HorizontalPoints {
+                a: r(&a.id),
+                b: r(&b.id),
+            });
+            forms.push(Form::VerticalPoints {
+                a: r(&a.id),
+                b: r(&b.id),
+            });
+        }
+    }
+    for (k, a) in sketch.lines.iter().enumerate() {
+        for b in &sketch.lines[k + 1..] {
+            let ends = [&a.from, &a.to];
+            if ends.contains(&&b.from) || ends.contains(&&b.to) {
+                forms.push(Form::Perpendicular {
+                    a: r(&a.id),
+                    b: r(&b.id),
+                });
+                forms.push(Form::Parallel {
+                    a: r(&a.id),
+                    b: r(&b.id),
+                });
+            }
+        }
+    }
+    forms
+}
+
+/// Whether `form` is one of the equalities the implied classes read: a `horizontal`,
+/// `vertical`, `horizontal_points`, `vertical_points`, or `on` of an axis.
+fn is_read_equality(form: &Form) -> bool {
+    matches!(
+        form,
+        Form::Horizontal { .. }
+            | Form::Vertical { .. }
+            | Form::HorizontalPoints { .. }
+            | Form::VerticalPoints { .. }
+            | Form::On {
+                curve: Reference::XAxis | Reference::YAxis,
+                ..
+            }
+    )
+}
+
+/// Whether a constraint read `state` is flagged as the rule expects of one it leaves out:
+/// redundant, partially redundant, or conflicting.
+fn flagged(state: Option<ConstraintState>) -> bool {
+    matches!(
+        state,
+        Some(
+            ConstraintState::Redundant
+                | ConstraintState::PartiallyRedundant
+                | ConstraintState::Conflicting
+        )
+    )
+}
+
+/// `form` added to the session inside a transaction, its read, then rolled back: the
+/// freedoms it leaves, and its own state.
+fn tried(f: &mut Fixture, form: &Form, n: &mut u32) -> (i32, Option<ConstraintState>) {
+    f.sessions
+        .begin(&s1())
+        .wait_timeout(HANG)
+        .unwrap_or_else(|_| panic!("begin didn't answer in {HANG:?}"))
+        .result
+        .unwrap();
+    *n += 1;
+    let id = ElementId::new(&format!("{:08}", 90_000_000 + *n)).unwrap();
+    let members = Members {
+        constraints: vec![silico_core::document::SketchConstraint {
+            id: id.clone(),
+            form: form.clone(),
+        }],
+        ..Members::default()
+    };
+    f.sketch_add(&members);
+    let read = f.read();
+    f.sessions
+        .rollback(&s1())
+        .wait_timeout(HANG)
+        .unwrap_or_else(|_| panic!("rollback didn't answer in {HANG:?}"))
+        .result
+        .unwrap();
+    (read.states.dofs, read.states.constraints.get(&id).copied())
+}
+
+#[test]
+fn a_relation_the_tools_leave_out_is_one_planegcs_finds_redundant_or_conflicting() {
+    // Twelve sketches the Line tool draws at random (two chains each), some points then
+    // fixed by driving distances from the origin as drawn. Of every relation a tool could
+    // infer between their members, each the rule leaves out (`implied_by`), added back and
+    // solved on PlaneGCS, is read redundant, partially redundant, or conflicting, or leaves
+    // the freedoms as they were: the rule never leaves out what the solver would keep. And on
+    // a sketch holding only the forms the classes read (no dimensions, no `on` of a line,
+    // no direction between lines), each `horizontal`, `vertical`, `horizontal_points`,
+    // `vertical_points`, or `on` of an axis the rule keeps lowers the freedoms by one.
+    use silico_core::sketch_tools::implied_by;
+    let mut draws = Draws(0x0051_11c0);
+    let (mut left_out, mut kept_tried) = (0, 0);
+    let mut left_out_by_form = std::collections::BTreeMap::<&str, usize>::new();
+    for sketch in 0..12 {
+        let mut f = opened(ToolKind::Line);
+        draw_chain(&mut f, &mut draws);
+        draw_chain(&mut f, &mut draws);
+        let mut read = f.read();
+        // What the tools added (every constraint, the sketch begun empty): none of the
+        // equalities the classes read is redundant or conflicting.
+        for c in &read.members.constraints {
+            let state = read.states.constraints.get(&c.id).copied();
+            assert!(
+                !is_read_equality(&c.form) || !flagged(state),
+                "sketch {sketch}: the tools added {:?}, read {state:?}; the sketch: {:?}",
+                c.form,
+                read.members
+            );
+        }
+        let equalities_only = read
+            .members
+            .constraints
+            .iter()
+            .all(|c| is_read_equality(&c.form));
+        if sketch % 2 == 1 {
+            // Some points fixed where they are: a driving distance x and y from the origin.
+            let mut constraints = Vec::new();
+            for (k, p) in read
+                .members
+                .points
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| k % 2 == 0)
+            {
+                for (axis, value) in [("x", p.x.mm()), ("y", p.y.mm())] {
+                    let value = Length::rounded(value).unwrap();
+                    let (a, b) = (Reference::Origin, Reference::Element(p.id.clone()));
+                    let form = if axis == "x" {
+                        Form::DistanceX {
+                            a,
+                            b,
+                            value,
+                            driving: true,
+                        }
+                    } else {
+                        Form::DistanceY {
+                            a,
+                            b,
+                            value,
+                            driving: true,
+                        }
+                    };
+                    constraints.push(silico_core::document::SketchConstraint {
+                        id: ElementId::new(&format!(
+                            "{:08}",
+                            80_000_000 + 2 * k + usize::from(axis == "y")
+                        ))
+                        .unwrap(),
+                        form,
+                    });
+                }
+            }
+            f.sketch_add(&Members {
+                constraints,
+                ..Members::default()
+            });
+            read = f.read();
+        }
+        let before = read.states.dofs;
+        let mut n = 0;
+        for form in candidates(&read) {
+            if implied_by(&read.members, &read.states, &form) {
+                left_out += 1;
+                *left_out_by_form.entry(form.type_name()).or_default() += 1;
+                let (dofs, state) = tried(&mut f, &form, &mut n);
+                assert!(
+                    dofs == before || flagged(state),
+                    "sketch {sketch}: {form:?} left out, but added it leaves {dofs} freedoms of \
+                     {before}, read {state:?}; the sketch: {:?}",
+                    read.members
+                );
+            } else if sketch % 2 == 0
+                && equalities_only
+                && !matches!(form, Form::Perpendicular { .. } | Form::Parallel { .. })
+            {
+                kept_tried += 1;
+                let (dofs, state) = tried(&mut f, &form, &mut n);
+                assert_eq!(
+                    dofs,
+                    before - 1,
+                    "sketch {sketch}: {form:?} kept, read {state:?}; the sketch: {:?}",
+                    read.members
+                );
+            }
+        }
+    }
+    // The draws reach both halves (each count worked by the run, so a generator that
+    // stopped drawing axes or levels would show here).
+    assert!(left_out >= 20, "{left_out} left out");
+    assert!(kept_tried >= 20, "{kept_tried} kept tried");
+    // Rule F's half too: a perpendicular or a parallel among those left out.
+    let directions = ["perpendicular", "parallel"]
+        .iter()
+        .filter_map(|form| left_out_by_form.get(form))
+        .sum::<usize>();
+    assert!(directions > 0, "left out by form: {left_out_by_form:?}");
+}
+
+#[test]
+fn a_line_between_two_fixed_points_off_level_solves_without_the_horizontal_the_tool_leaves_out() {
+    // (10, 10) and (40, 10.785), each fixed by its distances from the origin: 1.499° apart,
+    // within 2°. The tool's line between them sends no `horizontal`, and the sketch solves,
+    // fully defined. The same line with `horizontal` added by hand conflicts: over defined.
+    let points = r#"[{"id": "q0000001", "x": 10, "y": 10, "construction": false}, {"id": "q0000002", "x": 40, "y": 10.785, "construction": false}]"#;
+    let dims = r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "q0000001", "value": 10, "driving": true}, {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "q0000001", "value": 10, "driving": true}, {"id": "k0000003", "type": "distance_x", "a": "origin", "b": "q0000002", "value": 40, "driving": true}, {"id": "k0000004", "type": "distance_y", "a": "origin", "b": "q0000002", "value": 10.785, "driving": true}"#;
+    let text = |lines: &str, more: &str| {
+        format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": {points}, "lines": [{lines}], "circles": [], "arcs": [], "constraints": [{dims}{more}]}}]}}"#
+        )
+    };
+    let mut f = opened_with(ToolKind::Line, &text("", ""));
+    assert_eq!(f.read().states.state, SketchState::FullyDefined);
+    f.drag([10.0, 10.0], [40.0, 10.785]);
+    let read = f.read();
+    assert_eq!(read.members.lines.len(), 1);
+    assert_eq!(read.members.constraints.len(), 4, "no horizontal");
+    assert_eq!(read.states.state, SketchState::FullyDefined);
+    let by_hand = opened_with(
+        ToolKind::Line,
+        &text(
+            r#"{"id": "n0000001", "from": "q0000001", "to": "q0000002", "construction": false}"#,
+            r#", {"id": "k0000005", "type": "horizontal", "line": "n0000001"}"#,
+        ),
+    );
+    let read = by_hand.read();
+    assert_eq!(
+        read.states.state,
+        SketchState::OverDefined,
+        "{:?}",
+        read.states
+    );
 }
 
 // --- SD7's offer on the real solve, by the dimension's own row -----------------------------

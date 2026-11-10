@@ -1,6 +1,10 @@
 //! Feature dialogs (M5.8; docs/design/m5.0-app.md, sections 8 and 9, *Feature dialogs*):
 //! Fusion's docked dialog, a vertical stack of labelled inputs with OK and Cancel at its
-//! bottom, of the primitives and of the features that sweep a sketch's profile. A dialog
+//! bottom, of the features that sweep a sketch's profile, of the dressings and booleans, and
+//! of the primitives. Every kind's dialog shares one logic, a new feature's add among it,
+//! but the app opens a primitive's only to edit one a file holds, never to add one (solids
+//! are made sketch-first, as SolidWorks makes them: Trevin's decision of 2026-11-09); this
+//! module's tests of a new primitive's dialog exercise that shared logic. A dialog
 //! holds what its inputs say; the tab turns each change into an edit of the document
 //! inside its transaction ([`crate::tab::Tab`]), so the preview is the model rebuilt.
 //!
@@ -555,7 +559,8 @@ impl Dialog {
             value: Value::Selection(sketch),
         };
         // SEAM: the prototype draws Pad's direction as a segmented Direction, Normal (−Y) and
-        // Reversed (+Y) (app.js:618, `.seg`, `dlgRev`); a Reversed toggle until it's ported.
+        // Reversed (+Y) (app.js's `renderDialog`, `.seg`, `dlgRev`); a Reversed toggle until
+        // it's ported.
         let reversed = Input {
             label: "Reversed",
             part: Part::Reversed,
@@ -1885,8 +1890,10 @@ fn highlighted(active: Option<usize>, at: usize) -> bool {
 }
 
 /// A new feature of `kind` as `add_feature` takes it: the `members` its dialog's
-/// [`Dialog::add`] gave, and, for a sweep, `base`, the body it builds on, if it has one (a
-/// primitive takes none). None if they don't read as a feature's JSON, which they always do.
+/// [`Dialog::add`] gave, and, for a sweep, `base`, the body it builds on, if it has one
+/// (another kind takes none: the app adds no primitive, but this logic, shared by every
+/// kind, would add one with none). None if they don't read as a feature's JSON, which they
+/// always do.
 pub fn feature_node(kind: Kind, members: &[String], base: Option<&FeatureId>) -> Option<Node> {
     let mut members = members.to_vec();
     if let Some(base) = base.filter(|_| kind.sweeps()) {

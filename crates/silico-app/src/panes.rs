@@ -79,8 +79,8 @@ impl Pane {
 }
 
 /// Fusion's layout: the browser, the canvas, and the property panel side by side (the
-/// timeline, a panel of its own, is under them: `crate::timeline`), sized for each frame's
-/// width by [`fit`].
+/// timeline, a panel of its own, is under them: `crate::timeline`), sized each frame by
+/// [`fit`].
 pub fn layout() -> Tree<Pane> {
     let mut tiles = Tiles::default();
     let browser = tiles.insert_pane(Pane::Browser);
@@ -90,34 +90,19 @@ pub fn layout() -> Tree<Pane> {
     Tree::new("silico-window", root, tiles)
 }
 
-/// The side panes' widths, as the prototype's `#main` lays them out (styles.css: `grid-
-/// template-columns: var(--browser-w) 1fr var(--right-w)`, `--browser-w: 248px`, `--right-
-/// w: 296px`), each with its 1px border inside it (`#browser`'s `border-right`, `#right`'s
-/// `border-left`, `box-sizing: border-box`): the border is the tiles' gap, 1 wide
-/// (`Behavior::gap_width`), so each pane's own rect is the column less that 1.
-pub(crate) const BROWSER_W: f32 = 248.0;
-pub(crate) const RIGHT_W: f32 = 296.0;
-
-/// A side pane's border (`#browser`'s `border-right`, `#right`'s `border-left`): the tiles'
-/// gap ([`Panes`]' `gap_width`), taken from its column's width in [`fit`].
-const BORDER: f32 = 1.0;
-
-/// The tree's panes sized for a width of `width`: the browser `--browser-w` wide and the
-/// property panel `--right-w`, each with its border, and the canvas (`1fr`) the rest. A
-/// window narrower than the two side panes does as the prototype's grid does: the canvas
-/// shrinks to nothing (`#canvas-wrap`'s `min-width: 0`), and the panes keep their widths,
-/// the property panel running past the window's right edge, where it's cut off.
+/// The tree's panes sized as `laid` lays out the columns (`crate::columns::fit`: the side
+/// panes as dragged, the canvas the rest), each side pane's border, the tiles' 1-point gap
+/// (`Behavior::gap_width`), inside its column, so its pane's own rect is the column less
+/// that point. Columns wider than the window (its panes at their leasts) run past its right
+/// edge, where the property panel is cut off.
 ///
 /// `egui_tiles` shares its width out in proportion to each child's share, so each share
 /// is the pane's width itself: shares that sum to the width shared give each its own.
-/// The panes aren't resizable ([`Panes`]' `is_container_resizable`), as the prototype's
-/// aren't.
 // SEAM: the browser collapsed to a 28px strip (`#main.browser-collapsed`, interact.js's
 // `toggleBrowser`; design section 8), once its strip and chevron are built.
-pub fn fit(tree: &mut Tree<Pane>, width: f32) {
-    let sides = BROWSER_W + RIGHT_W;
-    let width = width.max(sides);
-    tree.set_width(width);
+pub(crate) fn fit(tree: &mut Tree<Pane>, laid: &crate::columns::Laid) {
+    use crate::columns::BORDER;
+    tree.set_width(laid.browser + laid.canvas + laid.properties);
     let pane = |tree: &Tree<Pane>, pane| tree.tiles.find_pane(&pane);
     let (Some(root), Some(browser), Some(viewport), Some(properties)) = (
         tree.root(),
@@ -129,9 +114,11 @@ pub fn fit(tree: &mut Tree<Pane>, width: f32) {
     };
     if let Some(Tile::Container(egui_tiles::Container::Linear(linear))) = tree.tiles.get_mut(root) {
         // The two gaps are the side panes' borders.
-        linear.shares.set_share(browser, BROWSER_W - BORDER);
-        linear.shares.set_share(viewport, width - sides);
-        linear.shares.set_share(properties, RIGHT_W - BORDER);
+        linear.shares.set_share(browser, laid.browser - BORDER);
+        linear.shares.set_share(viewport, laid.canvas);
+        linear
+            .shares
+            .set_share(properties, laid.properties - BORDER);
     }
 }
 
@@ -182,11 +169,12 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
     }
 
     fn gap_width(&self, _style: &egui::Style) -> f32 {
-        BORDER
+        crate::columns::BORDER
     }
 
     fn is_container_resizable(&self, _tiles: &Tiles<Pane>, _tile_id: TileId) -> bool {
-        // The prototype's columns are fixed (`fit`): no splitter between them.
+        // The side panes' borders are dragged by `crate::columns`' handles, not by the
+        // tiles' splitters (its module says why): the tiles draw each border, no more.
         false
     }
 
@@ -551,7 +539,7 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
 /// its type and ID), the document's problems and its own (its error card, with Edit, as
 /// `featureProps` offers it, `noShow`), its name, editable, which is an edit of the
 /// document, and its health and ID, with the ID's copy button (`prop('ID', …, { copy })`);
-/// and, if another program changed it, what changed (the purple Changed on disk card, with
+/// and, if another program changed it, what changed (the info Changed on disk card, with
 /// Mark as seen). What an error card's button asked, if one was.
 ///
 /// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
@@ -702,7 +690,7 @@ const NOT_MEASURED: &str = "Not measured yet";
 const NOT_BUILT: &str = "Not measured: its feature didn't build";
 
 /// The planar face's button that creates a sketch on it (`selectionProps`' `sketchOnFace`).
-const SKETCH_ON_FACE: &str = "Sketch on this face";
+pub(crate) const SKETCH_ON_FACE: &str = "Sketch on this face";
 
 /// One element selected (`selectionProps`' first view): its head (its kind's icon, its
 /// number in its body's solid, and what it is, on which body); MEASURES, from its entry
@@ -1372,7 +1360,7 @@ fn tree(
     let no_body = match tab.document_problems.first() {
         Some(said) if any_features => format!("No body: {}", said.message),
         None if any_features => "No body: nothing builds one yet".to_owned(),
-        _ => "None yet. A pad or a primitive makes one.".to_owned(),
+        _ => "None yet. A pad makes one.".to_owned(),
     };
     let groups = [
         ("Bodies", &tab.browser.bodies, Icon::Body, no_body),
@@ -1421,7 +1409,7 @@ fn tree(
                         // A sketch's own failure reddens its name (`.row.err`); a body's
                         // mark is its chain's.
                         failed: sketches && each.health == Health::Error,
-                        // Changed by another program (`d.outside`), its purple dot where it
+                        // Changed by another program (`d.outside`), its info-blue dot where it
                         // has no health mark.
                         outside: tab.outside.get(&each.id).map(String::as_str),
                         clicks: false,
@@ -1599,7 +1587,7 @@ struct Line<'a> {
     mark: Option<(Health, Option<&'a str>)>,
     /// Whether its name is the error's red (`.row.err`).
     failed: bool,
-    /// What another program changed in it, if it did (`d.outside`): a purple dot at its
+    /// What another program changed in it, if it did (`d.outside`): an info-blue dot at its
     /// right where it has no mark (`.state-dot`).
     outside: Option<&'a str>,
     /// Whether it takes a click though it isn't selectable (the document's row, whose click
@@ -1849,7 +1837,7 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
 }
 
 /// The mark of a feature another program changed (`d.outside`), the browser's and the
-/// timeline's alike: a purple dot filling `rect` (`.state-dot`, or the timeline's
+/// timeline's alike: an info-blue dot filling `rect` (`.state-dot`, or the timeline's
 /// `.badge.outside`, in a ring of `ring`'s colour 1.5 outside it), labelled with what
 /// changed (`changed on disk: radius 5 → 3`) for the accessibility tree, and with the
 /// prototype's words as its hover text.
@@ -2757,11 +2745,12 @@ mod tests {
     type Expected<'a> = (&'a str, f32, Color32, Option<(Color32, &'a str)>);
 
     #[test]
-    fn a_row_another_program_changed_has_its_purple_dot_where_it_has_no_health_mark() {
+    fn a_row_another_program_changed_has_its_info_dot_where_it_has_no_health_mark() {
         // The prototype's row (`o.mark === 'outside'`): a `.state-dot` (8 square, round) in
-        // `--purple` (#b780ff) at the row's right, the name cut 4 (`.row`'s gap) before it;
-        // a row with a health mark shows that mark alone.
-        const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+        // `--outside` (the info tone, #adbbff; Trevin's change of 2026-11-09, from purple) at
+        // the row's right, the name cut 4 (`.row`'s gap) before it; a row with a health mark
+        // shows that mark alone.
+        const OUTSIDE: Color32 = Color32::from_rgb(0xad, 0xbb, 0xff);
         const DOT: f32 = 8.0;
         let mut tab = modelled();
         // Named long enough to be cut short by the dot.
@@ -2787,7 +2776,7 @@ mod tests {
             })
             .collect();
         assert!(
-            matches!(circles[..], [(centre, radius, PURPLE)]
+            matches!(circles[..], [(centre, radius, OUTSIDE)]
                 if near_pos(centre, dot.center()) && near(radius, DOT / 2.0)),
             "the block's dot: {circles:?}, not {DOT} across at {:?}",
             dot.center()
@@ -2931,6 +2920,71 @@ mod tests {
         );
     }
 
+    /// At the browser's least column, 200 (pane_widths.rs), less its border, 199: a sketch's
+    /// row two levels in, with its prefix and a health mark, shows a default name with two
+    /// digits, `Sketch12`, whole (by hand from the parts' widths: 100 before the prefix, the
+    /// prefix's 19.8 and 4, then the name, and 4, the mark's 14, and 6 after it, which leave
+    /// the name 51.2, and egui fits it by its last glyph's ink, 51.0, not its advance, 52.2);
+    /// and a body's, with its mark, the longest default name, `Intersect`. A pane a point
+    /// narrower cuts the sketch's name short, so the test can tell.
+    #[test]
+    fn at_the_least_browser_a_deep_rows_parts_and_a_default_name_fit() {
+        let drawn_at = |width: f32| {
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(PANE.x + width + 40.0, PANE.y + 100.0))
+                .build_ui(move |ui| {
+                    let rows = [
+                        (Icon::Sketch, Some("(–)"), "Sketch12", Health::Error),
+                        (Icon::Body, None, "Intersect", Health::Warning),
+                    ];
+                    for (at, (icon, prefix, name, health)) in rows.into_iter().enumerate() {
+                        let top = PANE.y + at as f32 * css::ROW_H;
+                        let pane = Rect::from_min_size(
+                            Pos2::new(PANE.x, top),
+                            Vec2::new(width, css::ROW_H),
+                        );
+                        ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
+                            row(
+                                ui,
+                                &Line {
+                                    id: egui::Id::new(("least", at)),
+                                    depth: 2,
+                                    caret: None,
+                                    eye: Some(true),
+                                    icon,
+                                    prefix,
+                                    name,
+                                    selected: Some(false),
+                                    meta: None,
+                                    mark: Some((health, None)),
+                                    failed: false,
+                                    outside: None,
+                                    clicks: false,
+                                },
+                            );
+                        });
+                    }
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(4);
+            h
+        };
+        let elided = |h: &Harness<'_>, name: &str| {
+            let shown: Vec<bool> = texts(h)
+                .iter()
+                .filter(|shown| shown.galley.text() == name)
+                .map(|shown| shown.galley.elided)
+                .collect();
+            assert_eq!(shown.len(), 1, "{name} painted {} times", shown.len());
+            shown[0]
+        };
+        let h = drawn_at(crate::pane_widths::BROWSER_MIN_W - css::BORDER);
+        assert!(!elided(&h, "Sketch12"), "Sketch12 cut short");
+        assert!(!elided(&h, "Intersect"), "Intersect cut short");
+        let h = drawn_at(198.0);
+        assert!(elided(&h, "Sketch12"), "Sketch12 whole at 198");
+    }
+
     #[test]
     fn a_row_hovered_or_selected_is_filled_as_row_hover_and_row_selected_and_an_eye_as_eye_hover() {
         let mut h = drawn(modelled());
@@ -3017,7 +3071,7 @@ mod tests {
             ..Said::default()
         };
         let down = |n: f32| css::TITLE_H + n * css::ROW_H;
-        let none_yet = "None yet. A pad or a primitive makes one.";
+        let none_yet = "None yet. A pad makes one.";
         for (features, problem, bodies) in [
             (&[][..], None, none_yet),
             (&[][..], Some(problem()), none_yet),
@@ -4962,9 +5016,9 @@ mod property_panel_drawn {
         y = row_at(&h, "Made by", "Block", y, body(css::FS), css::INFO);
         assert!(h.query_by_role_and_label(Role::Link, "Block").is_some());
         y = row_at(&h, "Stability", "Stable", y, body(css::FS), css::GREEN);
-        // A planar face's buttons, 10 under the rows (app.js:582): Sketch on this face
-        // (`.btn-secondary`, Gray.300) first, then Edit Block (`.btn-ghost`, no fill), 6
-        // after it.
+        // A planar face's buttons, 10 under the rows (app.js's `selectionProps`): Sketch on
+        // this face (`.btn-secondary`, Gray.300) first, then Edit Block (`.btn-ghost`, no
+        // fill), 6 after it.
         let sketch = h
             .get_by_role_and_label(Role::Button, "Sketch on this face")
             .rect();
@@ -5192,11 +5246,11 @@ mod property_panel_drawn {
     #[test]
     fn every_element_type_has_its_words_for_each_kind_of_element_it_can_be() {
         use silico_core::command::elements::ElementType as T;
-        // By hand: the prototype's words where it has them (app.js:567-573: "Planar face",
-        // "Cylindrical face", "Line edge", "Arc edge", "Vertex"); for each other type the
-        // core gives (`ElementType`, its geometry as OCCT names it), a face its adjective
-        // before "face", an edge its curve's noun before "edge", as those are; the kind alone
-        // for a type of no name (`Other`). The words past the prototype's are #414's
+        // By hand: the prototype's words where it has them (app.js's `selectionProps`:
+        // "Planar face", "Cylindrical face", "Line edge", "Arc edge", "Vertex"); for each
+        // other type the core gives (`ElementType`, its geometry as OCCT names it), a face its
+        // adjective before "face", an edge its curve's noun before "edge", as those are; the
+        // kind alone for a type of no name (`Other`). The words past the prototype's are #414's
         // approved ones, pinned.
         let (face, edge, vertex) = (ElementKind::Face, ElementKind::Edge, ElementKind::Vertex);
         let table = [
@@ -5253,7 +5307,7 @@ mod property_panel_drawn {
 
     #[test]
     fn a_vertex_not_measured_yet_says_its_position_isnt_and_offers_edit_alone() {
-        // `selectionProps`' vertex (app.js:573): "Vertex" on its body, and its one measure,
+        // `selectionProps`' vertex (app.js): "Vertex" on its body, and its one measure,
         // Position, which says it isn't measured till `elements` answers, in `.subdued`,
         // never a dash; no Sketch on this face, no Fillet: Edit Block alone, 10 under the rows.
         let h = drawn(selecting(&["Vertex1"], Answers::default()));
