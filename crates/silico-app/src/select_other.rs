@@ -2550,10 +2550,56 @@ mod tests {
         held(&mut so, 1, None);
         held(&mut so, 2, None);
         assert_eq!(held(&mut so, 3, Some(clear)), (Some(4), false));
+        // On the off item itself, not between items (#444's review, round 6, T18).
+        assert_eq!(so.menu.as_ref().unwrap().target, Target::Item(3));
         so.menu.as_mut().unwrap().planes_open = true;
         assert_eq!(held(&mut so, 4, None), (Some(4), true));
         assert_eq!(held(&mut so, 5, Some(clear)), (Some(4), true));
         assert_eq!(held(&mut so, 6, Some(clear)), (Some(4), true));
+    }
+
+    #[test]
+    fn a_move_from_an_off_item_onto_another_or_from_the_separator_onto_one_lets_the_planes_go() {
+        // #444's review (round 6, T18): egui calls no disabled widget hovered, but an off item
+        // is still what the pointer is on. Nothing under the pointer, so Select Other… is off
+        // (354 to 378), as Clear selection is (387 to 411): the pointer resting on Select
+        // Other… as Enter holds Create Sketch's planes open, a move of none keeps them, and one
+        // onto Clear selection lets them go. Resting on the separator (378 to 387) instead, a
+        // move onto Clear selection lets them go too.
+        let clear = Pos2::new(330.0, 399.0);
+        for (from, what) in [
+            (Pos2::new(330.0, 366.0), "Select Other…, off"),
+            (Pos2::new(330.0, 382.5), "the separator"),
+        ] {
+            // A context of its own for each case: its passes' times start again at 1.
+            let ctx = themed();
+            let mut menu = opened(0, Phase::Context);
+            menu.context_facts.sketch_off = None;
+            menu.context = CanvasMenu::new(None, &menu.context_facts, &ctx);
+            menu.lit = Some(4);
+            let held = |so: &mut SelectOther, time: u32, at: Option<Pos2>| {
+                let events = at.map(egui::Event::PointerMoved).into_iter().collect();
+                pass(&ctx, time, events, |ui| {
+                    so.show(ui.ctx());
+                });
+                so.menu.as_ref().unwrap().planes_open
+            };
+            let mut so = SelectOther {
+                menu: Some(menu),
+                ..Default::default()
+            };
+            assert!(so.menu.as_ref().unwrap().context.items[2].off.is_some());
+            held(&mut so, 1, None);
+            held(&mut so, 2, None);
+            assert!(!held(&mut so, 3, Some(from)));
+            so.menu.as_mut().unwrap().planes_open = true;
+            assert!(held(&mut so, 4, None), "{what}");
+            assert!(held(&mut so, 5, Some(from)), "{what}: a move of none");
+            assert!(
+                !held(&mut so, 6, Some(clear)),
+                "{what}: onto Clear selection"
+            );
+        }
     }
 
     #[test]
