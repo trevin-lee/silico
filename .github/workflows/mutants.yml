@@ -21,7 +21,7 @@
 # exploration and filler oracle sweep but one overdue, whose once-a-day minimum is owed: that
 # one only if the shards would wait for a runner of their lane otherwise, so on a busy VM it
 # still gets its day (.github/cancel-filler.sh). A cancelled or cut-off filler run keeps what
-# its shards finished: each uploads its harvest, and the summary gathers it.
+# its shards finished: each keeps its harvest, and the summary gathers it.
 name: mutants
 # The ref, base, packages, files, and regex, so concurrent runs can be told apart
 # (review-tests finds its run by this title). A filler run's starts "filler a" or "filler
@@ -47,7 +47,7 @@ on:
         description: "Only mutants whose names match this regex, cargo-mutants' --re, searched in each name (path:line:col: what was replaced, often ending ' in fn'); match a survivor by its description rather than its line, which moves; escape regex characters; no single quotes (write . for one) or newlines (empty: every mutant)"
         default: ""
       tests:
-        description: "Only these packages' tests for each mutant, space-separated, each a --test-package; workspace for every workspace test. Empty: the plan's choice (.github/mutants-tests.py), the mutated packages and every package that depends on them, the only tests that can see a mutant through Cargo; or every workspace test when a mutant is in code linked into the worker binaries, which other packages' tests run from disk. Naming packages is sound only where the mutated code is in them or the libraries they build: a worker binary another package builds isn't rebuilt for their tests, so its mutants would read as missed"
+        description: "Only these packages' tests for each mutant, space-separated, each a --test-package; workspace for every workspace test. Empty: every workspace test for a filler run; for any other, the plan's choice (.github/mutants-tests.py), the mutated packages and every package that depends on them, the only tests that can see a mutant through Cargo; or every workspace test when a mutant is in code linked into the worker binaries, which other packages' tests run from disk. Naming packages is sound only where the mutated code is in them or the libraries they build: a worker binary another package builds isn't rebuilt for their tests, so its mutants would read as missed"
         default: ""
       shards:
         description: "The fewest shards to share the work (1 to 16; up to nine run at once, one a runner: seven for a long run). The plan adds shards, up to 16, so none holds more than 80 mutants, about 12 hours on a loaded VM; a filler run has exactly these"
@@ -259,15 +259,8 @@ jobs:
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - name: Toolchains
-        run: bash .github/tools.sh
-      - name: Test scratch
-        run: bash .github/scratch.sh start
-      # Where this shard leaves its outcomes on the VM for the summary, started again on a
-      # re-run of the shard.
+      # Where this shard leaves its outcomes on the VM for the summary, emptied first, so a
+      # re-run of the shard that stops before it keeps any leaves none of the last attempt's.
       - name: The shard's results on the VM
         env:
           SHARD: ${{ matrix.shard }}
@@ -276,6 +269,13 @@ jobs:
           rm -rf "$results"
           mkdir -p "$results"
           echo "SILICO_MUTANTS_RESULTS=$results" >>"$GITHUB_ENV"
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Toolchains
+        run: bash .github/tools.sh
+      - name: Test scratch
+        run: bash .github/scratch.sh start
       - name: Mutants
         env:
           REF: ${{ inputs.ref }}
@@ -415,9 +415,9 @@ jobs:
       - name: Keep the shard's outcomes on the VM
         if: ${{ always() }}
         run: bash .github/mutants-keep.sh "$RUNNER_TEMP/out/mutants.out" "$SILICO_MUTANTS_RESULTS"
-      # Every per-mutant log, for a look in GitHub's UI; nothing reads it. An upload that
-      # fails (the account's artifact storage full, as on 2026-11-09) fails nothing. Kept two
-      # days, a filler run's one: at GitHub's default of 90 days, the shards filled the
+      # Every per-mutant log, for a look in GitHub's UI, and the summary's fallback for a shard
+      # whose outcomes weren't kept on the VM. An upload that fails (the account's artifact
+      # storage full, as on 2026-11-09) fails nothing. Kept two days, a filler run's one: at GitHub's default of 90 days, the shards filled the
       # account's artifact storage (3.25 GB on 2026-11-08) and every upload failed.
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
@@ -447,10 +447,12 @@ jobs:
         with:
           sparse-checkout: .github/mutants-triaged.txt
           sparse-checkout-cone-mode: false
-      # Only where a shard's outcomes aren't on the VM (they always are, but for a shard whose
-      # runner was lost before it kept them): a download that fails fails nothing.
+      # Only for a shard whose outcomes weren't kept whole on the VM (its keep step failed, or
+      # its runner was lost after uploading): a download that fails, or takes past its few
+      # minutes, fails nothing and leaves the summary its time.
       - uses: actions/download-artifact@v4
         continue-on-error: true
+        timeout-minutes: 3
         with:
           pattern: mutants-shard-*
           path: artifacts
@@ -467,16 +469,20 @@ jobs:
           TESTS_WHY: ${{ needs.plan.outputs.tests_why }}
           FILLER: ${{ inputs.filler }}
         run: |
-          # Each shard's outcomes, from the VM (~/.cache/silico/mutants-results/<run>/), or else
-          # from its artifact. Runs' results there older than a week are let go.
+          # Each shard's outcomes: from the VM (~/.cache/silico/mutants-results/<run>/) when
+          # its keep step finished (its `kept` marker), else from its artifact, else whatever
+          # the VM has of it. Other runs' results there older than a week are let go.
           results=$HOME/.cache/silico/mutants-results
-          find "$results" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+          find "$results" -mindepth 1 -maxdepth 1 -type d ! -name "$GITHUB_RUN_ID" -mtime +7 -exec rm -rf {} + 2>/dev/null || true
           mkdir -p shards
           for ((n = 0; n < SHARDS; n++)); do
-            if [ -d "$results/$GITHUB_RUN_ID/mutants-shard-$n" ]; then
-              cp -R "$results/$GITHUB_RUN_ID/mutants-shard-$n" shards/
+            kept=$results/$GITHUB_RUN_ID/mutants-shard-$n
+            if [ -f "$kept/kept" ]; then
+              cp -R "$kept" shards/
             elif [ -d "artifacts/mutants-shard-$n" ]; then
               cp -R "artifacts/mutants-shard-$n" shards/
+            elif [ -n "$(ls -A "$kept" 2>/dev/null)" ]; then
+              cp -R "$kept" shards/
             fi
           done
           mkdir -p all
@@ -491,7 +497,8 @@ jobs:
           # Each shard's outcomes against the mutants it planned (cargo-mutants' mutants.json):
           # a shard whose baseline failed tests none of them and reports no miss, so a run
           # with no misses is complete only if every shard tested all it planned. The
-          # incomplete ones are listed in all/incomplete.txt, which a merge's watcher reads.
+          # incomplete ones are listed in all/incomplete.txt (kept on the VM, and in the
+          # `mutants` artifact if it uploads).
           planned_of() {
             jq length "$1" 2>/dev/null ||
               python3 -I -c 'import json, sys; print(len(json.load(open(sys.argv[1]))))' "$1" 2>/dev/null
@@ -503,7 +510,7 @@ jobs:
           for ((n = 0; n < SHARDS; n++)); do
             dir=shards/mutants-shard-$n
             if [ ! -d "$dir" ]; then
-              echo "shard $n reported nothing (never started, or its runner was lost)" >>all/incomplete.txt
+              echo "shard $n reported nothing (never started, its runner was lost, or its outcomes were let go: a run's are kept on the VM a week, so dispatch a new run)" >>all/incomplete.txt
               continue
             fi
             # cargo-mutants writes its list (an empty one for no mutants) before it tests.
@@ -612,6 +619,7 @@ jobs:
               echo "::notice::a filler run, cut off or cancelled: the results are partial"
             fi
             if [ -s all/new.txt ]; then
+              head -n 20 all/new.txt | while read -r line; do echo "::error::new miss: $line"; done
               echo "::error::$(count new) new misses: mutants missed or timed out that .github/mutants-triaged.txt doesn't hold"
               exit 1
             fi
@@ -634,6 +642,9 @@ jobs:
             exit 1
           fi
           if [ -s all/missed.txt ]; then
+            # Each miss as an annotation too, so `gh run view` lists them (up to 20; the
+            # summary's log has them all).
+            head -n 20 all/missed.txt | while read -r line; do echo "::error::missed: $line"; done
             echo "::error::$(count missed) mutants missed"
             exit 1
           fi

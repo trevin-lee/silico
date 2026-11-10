@@ -3,7 +3,7 @@
 # is empty, against a made-up workspace shaped as Silico's is: a protocol every package uses,
 # silico-worker and the worker packages built on it (kernel, render), silico-core, which runs
 # the workers from disk without depending on them, and mcp, cli and app above it, the kernel
-# taking core as a dev-dependency. Each case says which tests it expects, worked by hand from
+# and the render worker taking core as a dev-dependency. Each case says which tests it expects, worked by hand from
 # that graph. Needs bash and python3; no network. `pixi run test` runs it.
 #
 #   pixi run test-ci-decisions   (or bash tests/mutants-tests-test.sh)
@@ -19,15 +19,17 @@ fail() {
 }
 
 # The workspace: each package, its directory, and its dependencies (name:kind, kind normal,
-# dev, or build).
+# dev, or build). base is what protocol is built from; buildgen, the kernel's build script's.
 python3 -I - "$tmp/metadata.json" <<'PYEOF'
 import json, sys
 root = "/w"
 graph = {
-    "silico-protocol": [],
+    "silico-base": [],
+    "silico-protocol": ["silico-base:normal"],
+    "silico-buildgen": [],
     "silico-worker": ["silico-protocol:normal"],
-    "silico-kernel": ["silico-protocol:normal", "silico-worker:normal", "silico-core:dev"],
-    "silico-render": ["silico-protocol:normal", "silico-worker:normal"],
+    "silico-kernel": ["silico-protocol:normal", "silico-worker:normal", "silico-core:dev", "silico-buildgen:build"],
+    "silico-render": ["silico-protocol:normal", "silico-worker:normal", "silico-core:dev"],
     "silico-core": ["silico-protocol:normal", "silico-core:dev"],
     "silico-mcp": ["silico-core:normal"],
     "silico-cli": ["silico-core:normal", "silico-mcp:normal"],
@@ -85,9 +87,9 @@ expect app "silico-app" "(silico-app)" "$(m silico-app)"
 expect font "silico-app silico-font" "(silico-font)" "$(m silico-font)"
 # Two packages: the union of their dependents.
 expect union "silico-app silico-cli silico-mcp" "(silico-app silico-mcp)" "$(m silico-mcp)" "$(m silico-app)"
-# silico-core: its dependents, the kernel's dev-dependency on it among them. The render worker
-# doesn't depend on core, and core is linked into no worker.
-expect core "silico-app silico-cli silico-core silico-kernel silico-mcp" "(silico-core)" "$(m silico-core)"
+# silico-core: its dependents, the kernel's and the render worker's dev-dependencies on it
+# among them; a dev-dependency isn't linked into a worker, so core is in none.
+expect core "silico-app silico-cli silico-core silico-kernel silico-mcp silico-render" "(silico-core)" "$(m silico-core)"
 # A build-dependency counts: the dependent's build script runs the mutated code; and so does
 # what depends on the dependent, at any depth.
 expect build "silico-gen silico-top silico-uses-gen" "(silico-gen)" "$(m silico-gen)"
@@ -95,6 +97,10 @@ expect build "silico-gen silico-top silico-uses-gen" "(silico-gen)" "$(m silico-
 expect kernel "" "silico-kernel is linked into the worker binaries" "$(m silico-kernel)"
 expect worker "" "silico-worker is linked into the worker binaries" "$(m silico-worker)"
 expect protocol "" "silico-protocol is linked into the worker binaries" "$(m silico-protocol)"
+# What a worker is built from at any depth (base, through protocol), and what a worker's
+# build script runs (the kernel's build-dependency): every workspace test too.
+expect base "" "silico-base is linked into the worker binaries" "$(m silico-base)"
+expect buildgen "" "silico-buildgen is linked into the worker binaries" "$(m silico-buildgen)"
 # One mutant linked into a worker among others: every workspace test, naming it.
 expect mixed "" "silico-render is linked" "$(m silico-app)" "$(m silico-render)"
 # A file in a crate's tests or benches is still its package's.

@@ -84,11 +84,14 @@ pixi run mutants -- --in-diff /tmp/change.diff --output /tmp
                    # mutants, paths absolute (git diff main...HEAD > /tmp/change.diff first; -p to
                    # narrow it). CI shards it over the runners (.github/workflows/mutants.yml):
 gh workflow run mutants.yml --ref main -f ref=SHA -f base=main
-                   # the same on CI; -f packages="silico-core", -f files="PATHS" (from the repository's root,
-                   # globs allowed), -f shards=N (the fewest: the plan adds shards, up to 16, so none runs past
-                   # about 12 hours), -f long=true for a milestone's or a whole crate's run, which takes runners
-                   # of its own so a PR's run never waits behind it; a full SHA as the ref, so a push mid-run
-                   # can't mix commits
+                   # the same on CI, but each mutant runs the tests of the packages that can see it (the
+                   # mutated ones and their dependents, or every workspace test for code in the worker
+                   # binaries: .github/mutants-tests.py; -f tests=workspace for all); -f packages="silico-core",
+                   # -f files="PATHS" (from the repository's root, globs allowed), -f shards=N (the fewest: the
+                   # plan adds shards, up to 16, so none runs past about 12 hours), -f long=true for a
+                   # milestone's or a whole crate's run, which takes runners of its own so a PR's run never
+                   # waits behind it; a full SHA as the ref, so a push mid-run can't mix commits. Its outcomes
+                   # are kept on the CI VM, so a full artifact storage fails nothing
 ```
 
 Run C++ builds through pixi so the pinned clang is used. `pixi run gate` runs every check on the committed tree and must pass before a merge. `silico check FILE` checks a document, `silico fmt FILE` writes it in canonical form with its fingerprints and its sketches as solved, `silico export FILE OUT.3mf` (or `OUT.step`) exports its bodies, and `silico serve [--workspace DIR]` runs the MCP server over stdio for an agent (docs/cli.md, docs/mcp.md).

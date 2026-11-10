@@ -138,7 +138,7 @@ trap 'rm -f "$nextest_config"' EXIT
 } >"$nextest_config"
 # Each mutant's tests, and the baseline's, given 30 minutes: no multiple of the baseline,
 # which runs only the mutated packages' tests. The workspace's take about 15.5 minutes in a
-# gate at about 7 threads at full priority (#430's, run 42658028231, 2026-11-07), longer at a
+# gate at about 7 threads at full priority (#430's, run 42658028231, 2026-11-09), longer at a
 # shard's 2 to 4 at the idle weight, and Cargo can wait before them on the package cache's
 # lock, which every runner on the VM shares: a mutant only the last packages' tests catch
 # took 26 to 30 minutes (#445), so CI's plan narrows each run's tests to the packages that

@@ -63,11 +63,12 @@ def main(metadata_path, mutants_path):
     }
 
     def linked(start):
-        """start and every package it needs to build, by normal dependencies."""
+        """start and every package it needs to build: its normal dependencies, linked in,
+        and its build-dependencies, whose build scripts can change what it builds."""
         seen, stack = {start}, [start]
         while stack:
             for dep, kind in deps[stack.pop()]:
-                if kind is None and dep not in seen:
+                if kind in (None, "build") and dep not in seen:
                     seen.add(dep)
                     stack.append(dep)
         return seen

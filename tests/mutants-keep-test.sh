@@ -86,29 +86,39 @@ esac
 grep -q "1 caught, 1 missed, 1 timed out, 1 unviable" "$tmp/summary.md" || fail "the counts weren't added to the job's summary"
 pass
 
-# Kept again for a re-run: what was there is replaced, not added to.
+# Whole, it's marked `kept`, the run's attempt in it.
+[ "$(cat "$results/kept")" = 1 ] || fail "no kept marker, or not attempt 1"
+pass
+
+# Kept again for a re-run, into the same directory: what was there is replaced, not added
+# to, a log no longer missed is gone, and the marker is the new attempt's.
 printf 'a.rs:1:1: caught one\na.rs:2:1: missed one\n' >"$out/caught.txt"
 : >"$out/missed.txt"
-rm -rf "$results"
-bash "$keep" "$out" "$results" >/dev/null
+cp "$out/outcomes.json" "$tmp/outcomes.json"
+sed 's/"MissedMutant", "log_path": "log\/missed.log"/"CaughtMutant", "log_path": "log\/missed.log"/' "$tmp/outcomes.json" >"$out/outcomes.json"
+GITHUB_RUN_ATTEMPT=2 bash "$keep" "$out" "$results" >/dev/null
 [ "$(grep -c . "$results/caught.txt")" -eq 2 ] && [ ! -s "$results/missed.txt" ] || fail "a re-run's lists weren't kept as they are"
+[ ! -e "$results/log/missed.log" ] || fail "a re-run kept the log of a mutant it caught"
+[ "$(cat "$results/kept")" = 2 ] || fail "a re-run's marker isn't attempt 2"
 pass
 
-# A shard that stopped before cargo-mutants wrote anything: its results directory is made,
-# empty, and nothing fails.
-rm -rf "$tmp/results/early"
+# A shard that stopped before cargo-mutants wrote anything: its results directory holds its
+# marker alone, and nothing fails.
 bash "$keep" "$tmp/out/none" "$tmp/results/early" >/dev/null || fail "a missing mutants.out failed it"
-[ -d "$tmp/results/early" ] && [ -z "$(ls -A "$tmp/results/early")" ] || fail "a missing mutants.out left something, or no directory"
+[ "$(ls -A "$tmp/results/early")" = kept ] || fail "a missing mutants.out: not the marker alone"
 pass
 
-# A mutants.out with no outcomes.json yet (stopped mid-baseline): its lists kept, no logs,
-# and nothing fails.
+# A mutants.out with no outcomes.json yet (stopped mid-baseline: cargo-mutants writes it only
+# once the baseline ends): its lists kept, and the baseline's log so far, and nothing fails.
 partial=$tmp/partial/mutants.out
 mkdir -p "$partial/log"
 echo '[]' >"$partial/mutants.json"
 echo "the baseline so far" >"$partial/log/baseline.log"
+echo "a mutant's log" >"$partial/log/other.log"
 bash "$keep" "$partial" "$tmp/results/partial" >/dev/null || fail "a missing outcomes.json failed it"
-[ -f "$tmp/results/partial/mutants.json" ] && [ ! -e "$tmp/results/partial/log" ] || fail "a missing outcomes.json: not just the lists kept"
+[ -f "$tmp/results/partial/mutants.json" ] || fail "a missing outcomes.json: the lists weren't kept"
+cmp -s "$partial/log/baseline.log" "$tmp/results/partial/log/baseline.log" || fail "a missing outcomes.json: the baseline's log wasn't kept"
+[ ! -e "$tmp/results/partial/log/other.log" ] || fail "a missing outcomes.json: another log was kept"
 pass
 
 # An outcomes.json that isn't JSON: the lists kept, it says so, and nothing fails.
@@ -116,6 +126,12 @@ echo "not json" >"$partial/outcomes.json"
 said=$(bash "$keep" "$partial" "$tmp/results/bad") || fail "an unreadable outcomes.json failed it"
 case $said in *"couldn't be read"*) ;; *) fail "an unreadable outcomes.json: it said \"$said\"" ;; esac
 [ -f "$tmp/results/bad/mutants.json" ] || fail "an unreadable outcomes.json: the lists weren't kept"
+pass
+
+# No directory given: refused, nothing removed. (The root is refused the same way, but never
+# tried here: were the guard ever lost, the test itself would remove it.)
+if bash "$keep" "$out" "" >/dev/null 2>&1; then fail "an empty results directory was taken"; fi
+[ -f "$out/caught.txt" ] || fail "an empty results directory: mutants.out was touched"
 pass
 
 echo "mutants-keep: $passed cases passed"
