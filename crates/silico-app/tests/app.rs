@@ -2832,26 +2832,34 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the tab", |h| !h.state().tabs().is_empty());
     assert!(f.kernel.wait_running(2, WAIT));
-    // Both features running, as the core counts them: its count changes no more until the
-    // hold lets go. Each change before woke the app from the rebuild's watcher, which can
-    // lag on a loaded machine: those wakes settled first.
+    // Before the window, by events, not by time:
+    // - both features running, as the core counts them: its count changes no more until the
+    //   hold lets go;
+    // - every change of that count told: the rebuild's watcher, which can lag on a loaded
+    //   machine, has woken the app for each (`Sessions::rebuild_told`);
+    // - the file compared on disk: its first finding wakes the app once.
     let id = h.state().tabs()[0].id;
-    until("the block and the pin running", || {
-        f.sessions
-            .status(&id)
-            .result
-            .unwrap()
-            .rebuild
-            .progress
-            .is_some_and(|progress| {
+    until(
+        "both running, every change told, and the file compared",
+        || {
+            let status = f.sessions.status(&id).result.unwrap();
+            let running = status.rebuild.progress.is_some_and(|progress| {
                 ["k7f2qx3m", "a91cw0de"].iter().all(|feature| {
                     progress
                         .features
                         .get(&silico_core::document::FeatureId::new(feature).unwrap())
                         == Some(silico_core::command::StepState::Running)
                 })
-            })
-    });
+            });
+            let told = f
+                .sessions
+                .rebuild_told(&id)
+                .is_some_and(|(changes, told)| changes == told);
+            running && told && status.disk == Some(silico_core::disk::Disk::Unchanged)
+        },
+    );
+    // The finding's wake comes just after it's kept, on the comparison's thread: stepped
+    // until the wakes settle, for those few instructions.
     quiet_wakes(&mut h);
     // Nothing answers while they're held: no wake, and the frame asked for is the idle one,
     // never one at the display's rate.
