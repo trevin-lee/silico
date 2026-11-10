@@ -211,14 +211,14 @@ type   = … | "linear_pattern" | "polar_pattern" | "mirror"
 ```
 
 The rules:
-1. **An offset is steps from the seed along a direction, from 0.** Instance k of a linear or polar pattern is k steps along the direction as the document gives it. `reversed` is part of the direction, not of the index. The seed is offset 0 in every direction. The index is the multiplier in the position arithmetic (§7), and main's `SuppressedIndices` counts the same way (0 the original).
+1. **An offset is steps from the seed along a direction, from 0.** Instance k of a linear or polar pattern is k steps along the direction as the document gives it. `reversed` is part of the direction, not of the index. The seed is offset 0 in every direction. The index is the multiplier in the position arithmetic (§7), and main's `SuppressedIndices` counts the same way (0 the original). An index counts steps along `directions` by place, as written. A direction's fields, `along` included, and the directions' order are the pattern's values: an edit to them moves instances and renames none (Fable, 2026-11-10).
 2. **The seed is unmarked.** Its elements are the base's and keep their names exactly (N2, N7): it is in the base, and the pattern's booleans bite the base. A fillet on the original's edge is untouched by adding a pattern after it. No `C0`, `C0,0`, or `C1,0` is ever written, and the parser refuses them (and `C`, `C02`, `C2,`): one spelling per instance.
 3. **A copy's element is the tool's element, wrapped once:** `t0000001.linear_pattern.Face(C2 p0000001.pad.Face(G s0000001.sketch.Edge.6t7v8w9x))`. Copy k's elements are numbered as the tool's, so the core names them from the tool's map without asking the kernel. It never depends on OCCT's lists. In the structured type it is one new variant, `Name::Copy { feature, operation, kind, index: Vec<u32>, of: Arc<Name> }`, whose `parts()` is its inner name: a copy of an unstable name is unstable, and the depth bound counts a level per copy.
-4. **A mirror's copy is `C1`.** A mirror is a pattern of two instances, with no separate mark. If a mirror ever takes a second plane (SolidWorks has one), its copies are `C1`, `C0,1`, and `C1,1` by the same rule.
+4. **A mirror's copy is index 1: `C1` of a tool, `S1` of the solid.** A mirror is a pattern of two instances, with no separate mark. If a mirror ever takes a second plane (SolidWorks has one), its copies are `C1`, `C0,1`, and `C1,1` by the same rule.
 5. **A grid writes direction 1's offset first:** `C2`, `C0,1`, `C2,1`. Never a flat index: FreeCAD's `i·n₂ + j` renames every copy past the first row when `Occurrences2` changes, and main's `testSuppressionKeepsGridPosition` has to remap it.
-6. **Nested patterns nest the form, outermost last.** A whole-solid mirror of a solid holding a pattern names the pattern's copy 2 `t0000002.mirror.Face(C1 t0000001.linear_pattern.Face(C2 p0000001.pad.Face(G …)))`, and the seed `t0000002.mirror.Face(C1 p0000001.pad.Face(G …))`. A pattern of a pattern as a feature (later, decision 2) nests the same way. No composite index is ever invented.
-7. **Whole-solid copies wrap the base's names:** `t0000003.mirror.Face(C1 k7f2qx3m.box.Face6)`. The base's own elements keep their names.
-8. **A copy's elements pass through the pattern's boolean as a sweep's pass through its own.** The pattern's steps bite every input, base and copies (`OpCode::side` is `Outside` for every input at every stage). So a copy's element kept whole, or modified one from one, keeps its `C` name. One the base or another copy splits is `t.linear_pattern.Face(M1/2 t.linear_pattern.Face(C2 …))`. A section with the base is `t.linear_pattern.Edge(G k7f2qx3m.box.Face6, G t.linear_pattern.Face(C2 …))`. No `I` ever appears: the type word inside the `C` fixes the side (a pad's or `solid`'s copy is always fused, a pocket's or groove's always cut), which is M3.6's reason a sweep's cut writes no `I`.
+6. **Nested patterns nest the form, outermost last.** A whole-solid mirror of a solid holding a pattern names the pattern's copy 2 `t0000002.mirror.Face(S1 t0000001.linear_pattern.Face(C2 p0000001.pad.Face(G …)))`, and the seed `t0000002.mirror.Face(S1 p0000001.pad.Face(G …))`. A pattern of a pattern as a feature (later, decision 2) nests the same way. No composite index is ever invented.
+7. **Whole-solid copies wrap the base's names, marked `S`:** `t0000003.mirror.Face(S1 k7f2qx3m.box.Face6)`. `C<instance> <name>` is a copy of an element of a feature's tool, and `S<instance> <name>` a copy of an element of the base solid, under the same instance grammar and refusals (Fable, 2026-11-10). The base's own elements keep their names.
+8. **A copy's elements pass through the pattern's boolean as a sweep's pass through its own.** The pattern's steps bite every input, base and copies (`OpCode::side` is `Outside` for every input at every stage). So a copy's element kept whole, or modified one from one, keeps its `C` or `S` name. One the base or another copy splits is `t.linear_pattern.Face(M1/2 t.linear_pattern.Face(C2 …))`. A section with the base is `t.linear_pattern.Edge(G k7f2qx3m.box.Face6, G t.linear_pattern.Face(C2 …))`. No `I` ever appears: the letter fixes the side. An `S` copy is always fused; a `C` copy's side is its inner type word's (a pad's or a revolve's fused, a pocket's or a groove's cut), which is M3.6's reason a sweep's cut writes no `I`.
 9. **`skip` holds the same indices as the names,** by the same rule, one array per instance, so an error's `elements` paste into it: "add 3 and 2,1 to skip" is `"skip": [[3], [2, 1]]`. Sorted numerically, never the seed, each in range, no repeats.
 10. **Mirror changes no name otherwise.** A reflection reverses orientation, and the history is still one element to one.
 
@@ -231,10 +231,10 @@ The rules:
 | `skip` an instance, or un-skip it | nothing else renamed; the skipped name is absent, and comes back as it was |
 | `length`, `spacing`, `angle`, `reversed`, the plane, the axis | unchanged: the instance moves, as FreeCAD's and SolidWorks's do |
 | a second direction added, or removed while direction 1 stays | unchanged: instance (2) and instance (2, 0) are one instance (rule 1 with trailing zeros off), so a fillet on copy 2 survives the user adding direction 2 in the same dialog |
-| the two directions swapped, or direction 1 removed with direction 2 kept | renamed (`C2,1` becomes `C1,2`; `C0,1` becomes `C1`): `reference_broken`, the renamed element its candidate |
+| the two directions swapped, or direction 1 removed with direction 2 kept | kept by index: `C2,1` is two steps along the new direction 1 and one along the new direction 2; with direction 2 the one direction left, `C1` is one step along it, and `C0,1`, two offsets in a pattern of one direction, finds nothing: `reference_broken`, with candidates |
 | `copies.features` reordered | nothing: the originals are applied in timeline order, whatever the list says |
 | an original removed from `copies.features` | its copies' names gone, loudly; the others unchanged |
-| `copies` switched between `features` and `solid` | everything renamed, loudly: a different thing was copied |
+| `copies` switched between `features` and `solid` | every copy's name breaks, loudly (`C` to `S` or back), with candidates |
 | a seed feature's ID or type changed | as for every name today |
 
 **Why 0-based with the seed unmarked.** The index is the multiplier in the position arithmetic, as main's `SuppressedIndices` counts, and it makes "trailing zeros off" natural: the default is no steps, not one. SolidWorks shows instance coordinates in its Instances to Skip box, but its pages don't say the convention, and nothing in Silico's names needs to match SolidWorks's display.
@@ -380,11 +380,11 @@ Three feature types, each consuming its `base` (D2) and making one solid. Every 
 {"id": "t0000001", "type": "linear_pattern", "v": 1, "name": "holes", "base": "q0000001",
  "copies": {"type": "features", "features": ["q0000001"]},
  "directions": [
-   {"along": "x_axis", "reversed": false, "spacing": {"type": "extent", "length": 40}, "count": 3, "skip": []}
+   {"along": "x", "reversed": false, "spacing": {"type": "extent", "length": 40}, "count": 3, "skip": []}
  ]}
 {"id": "t0000002", "type": "polar_pattern", "v": 1, "name": "bolt circle", "base": "t0000001",
  "copies": {"type": "features", "features": ["q0000002"]},
- "axis": "z_axis", "reversed": false, "spacing": {"type": "extent", "angle": 360}, "count": 6, "skip": []}
+ "axis": "z", "reversed": false, "spacing": {"type": "extent", "angle": 360}, "count": 6, "skip": []}
 {"id": "t0000003", "type": "mirror", "v": 1, "name": "other half", "base": "t0000002",
  "copies": {"type": "solid"}, "plane": "yz"}
 ```
@@ -392,7 +392,7 @@ Three feature types, each consuming its `base` (D2) and making one solid. Every 
 - **`base`**: the solid patterned on, the last feature's as for any feature.
 - **`copies`**: either `features`, a set of earlier features whose tools are copied, or `solid`, the whole of `base`'s solid. A feature in `features` must be in `base`'s chain: `base` itself or a feature its base chain reaches. Otherwise the original isn't in the solid, and the first instance wouldn't be it. Copying a feature reads its tool and consumes nothing, so D2 holds.
 - **`directions`**: one or two. Each has:
-  - `along`: `x_axis`, `y_axis`, `z_axis`, or an element name (a straight edge or a planar face) of `base`'s solid, resolved in its element map as a fillet's edges are (M2.8), or a broken reference with candidates. A face points along its outward normal (decision 3);
+  - `along`: `x`, `y`, `z`, or an element name (a straight edge or a planar face) of `base`'s solid, resolved in its element map as a fillet's edges are (M2.8), or a broken reference with candidates. A face points along its outward normal (decision 3);
   - `reversed`;
   - `spacing`: `{"type": "extent", "length"}`, first to last, or `{"type": "spacing", "spacing"}`, between neighbours;
   - `count`, the original included;
