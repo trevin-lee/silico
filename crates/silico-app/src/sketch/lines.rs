@@ -21,11 +21,14 @@
 //!   yellow; the port of the sketch colours decides.
 //! - **None** is drawn for a read whose plane is an error (a face gone, not planar, found by
 //!   an unstable name, or its feature unbuilt: nothing guesses a placement), and none for a
-//!   sketch past [`MAX_LINE_POINTS`], which a warning names.
+//!   sketch past [`MAX_LINE_POINTS`], which a warning names. Nor for a sketch whose lines
+//!   would take a frame's past the renderer's most (`MAX_FRAME_LINE_POINTS`, over every
+//!   shown sketch, in the order they're given), which a warning names once: the rest are
+//!   drawn, so a frame is never refused for its lines' count.
 //! - SEAM: Fit and Home fit the bodies alone (the core's named views, a core change); the
 //!   camera's clamp takes the lines' boxes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use silico_core::command::sketch::SketchRead;
@@ -33,7 +36,7 @@ use silico_core::document::{ElementId, FeatureId};
 use silico_core::sketch_states::SketchState;
 use silico_protocol::vec3::{dot, norm, sub};
 use silico_protocol::{Camera, Projection};
-use silico_render::render::Strips;
+use silico_render::render::{MAX_FRAME_LINE_POINTS, Strips};
 
 use super::draw::{Curve, Geometry, Scale, fill_scale, polyline};
 use super::style::SKETCH_CHORD_TOLERANCE;
@@ -42,6 +45,9 @@ use crate::theme;
 /// The most points one sketch's lines may have over its strips: past it the sketch isn't
 /// drawn, and a warning says which, as a region's fill past `MAX_FILL_VERTICES` is left out.
 pub const MAX_LINE_POINTS: usize = 200_000;
+
+// A sketch within its own cap always fits a frame's lines alone.
+const _: () = assert!(MAX_LINE_POINTS <= MAX_FRAME_LINE_POINTS);
 
 /// The colour a sketch in `state` is drawn in, sRGB and opaque, as the prototype draws it
 /// (app.js:978): under defined `#7a95ff`, any other state `#eeeeed` (the module's SEAM).
@@ -177,6 +183,9 @@ struct Made {
 #[derive(Default)]
 pub struct ShownLines {
     made: BTreeMap<FeatureId, Made>,
+    /// The sketches the last frame left out for its lines' most points, so each is warned
+    /// of once while it's left out, not each frame.
+    capped: BTreeSet<FeatureId>,
 }
 
 /// A read's box in the document's coordinates, worked out from its members alone (each
@@ -223,15 +232,30 @@ impl ShownLines {
     /// The lines of `shown` (each shown sketch's read, by its ID), at the view's scale for
     /// `camera` over a pane `height` points high, each made again only when its read was
     /// replaced or its bucket moved; a sketch no longer shown let go. Its boxes too, for the
-    /// camera's clamp.
+    /// camera's clamp. At most [`MAX_FRAME_LINE_POINTS`] in all ([`Self::frame_within`]).
     pub fn frame<'a>(
         &mut self,
         shown: impl IntoIterator<Item = (&'a FeatureId, &'a Arc<SketchRead>)>,
         camera: &Camera,
         height: f32,
     ) -> Vec<FrameLines> {
+        self.frame_within(shown, camera, height, MAX_FRAME_LINE_POINTS)
+    }
+
+    /// [`Self::frame`], its lines `most` points in all: each sketch, in `shown`'s order,
+    /// drawn if its points fit in what the ones before it left, and left out otherwise, a
+    /// warning naming it the first frame it is.
+    fn frame_within<'a>(
+        &mut self,
+        shown: impl IntoIterator<Item = (&'a FeatureId, &'a Arc<SketchRead>)>,
+        camera: &Camera,
+        height: f32,
+        most: usize,
+    ) -> Vec<FrameLines> {
         let mut kept = BTreeMap::new();
         let mut lines = Vec::new();
+        let mut left = most;
+        let mut capped = BTreeSet::new();
         for (id, read) in shown {
             // The box worked out once a read; the strips once a read and a bucket.
             let mut made = match self.made.remove(id) {
@@ -262,14 +286,28 @@ impl ShownLines {
             if let Some((_, Ok(strips))) = &made.strips
                 && !strips.is_empty()
             {
-                lines.push(FrameLines {
-                    strips: Arc::clone(strips),
-                    colour: colour(read.states.state),
-                });
+                if strips.points() <= left {
+                    left -= strips.points();
+                    lines.push(FrameLines {
+                        strips: Arc::clone(strips),
+                        colour: colour(read.states.state),
+                    });
+                } else {
+                    if !self.capped.contains(id) {
+                        tracing::warn!(
+                            sketch = %id,
+                            points = strips.points(),
+                            left,
+                            "a shown sketch's lines aren't drawn: past the frame's most points"
+                        );
+                    }
+                    capped.insert(id.clone());
+                }
             }
             kept.insert(id.clone(), made);
         }
         self.made = kept;
+        self.capped = capped;
         lines
     }
 }
@@ -585,6 +623,46 @@ mod tests {
         assert!(!Arc::ptr_eq(&finer[0].strips, &new[0].strips), "a new read");
         assert!(shown.frame([], &camera(60.0), 800.0).is_empty());
         assert!(shown.made.is_empty());
+    }
+
+    #[test]
+    fn a_sketch_that_would_pass_the_frames_most_points_is_left_out_and_the_rest_drawn() {
+        // At 120 mm over 800 points (bucket 0.125): Loose's rectangle, 4 strips of 2 points
+        // (8); a circle of radius 2.75, 22 points (the small circle's test); Loose again under
+        // another ID, 8. Within 20 points: the first, then not the circle (8 + 22 = 30), then
+        // the second rectangle (16). The circle is left out while it doesn't fit, and drawn
+        // once it does.
+        let camera = Camera {
+            projection: Projection::Orthographic { view_height: 120.0 },
+            eye: [0.0, -100.0, 0.0],
+            target: [0.0; 3],
+            up: [0.0, 0.0, 1.0],
+        };
+        let mut round = rectangle(Vec::new());
+        round.lines.clear();
+        round.points = vec![point("pa000006", 40.0, 12.0)];
+        round.circles.push(SketchCircle {
+            id: id("ca000001"),
+            center: id("pa000006"),
+            radius: Coordinate::new(2.75).unwrap(),
+            construction: false,
+        });
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let (first, circle, second) = (fid("s0000001"), fid("s0000002"), fid("s0000003"));
+        let reads = [Arc::new(loose()), Arc::new(under(round)), Arc::new(loose())];
+        let shown = [(&first, &reads[0]), (&circle, &reads[1]), (&second, &reads[2])];
+        let mut lines = ShownLines::default();
+        let drawn = lines.frame_within(shown, &camera, 800.0, 20);
+        let points: Vec<usize> = drawn.iter().map(|line| line.strips.points()).collect();
+        assert_eq!(points, [8, 8]);
+        assert_eq!(lines.capped, BTreeSet::from([circle.clone()]));
+        assert_eq!(lines.made.len(), 3);
+        let drawn = lines.frame_within(shown, &camera, 800.0, 38);
+        let points: Vec<usize> = drawn.iter().map(|line| line.strips.points()).collect();
+        assert_eq!(points, [8, 22, 8]);
+        assert!(lines.capped.is_empty());
+        // At the renderer's most, all three.
+        assert_eq!(lines.frame(shown, &camera, 800.0).len(), 3);
     }
 
     #[test]
