@@ -40,12 +40,18 @@ pub(crate) fn inset(ui: &mut Ui) {
 /// bar's items, so they take the pointer first. Never focused: the keyboard's first stop is
 /// Home.
 pub(crate) fn move_window(ui: &Ui, rect: Rect) {
-    if !TITLE_BAR_IS_APP_BAR {
-        return;
+    if TITLE_BAR_IS_APP_BAR {
+        title_bar(ui, rect);
     }
+}
+
+/// [`move_window`]'s, on any platform (so its tests run on each): the empty space at `rect`
+/// dragged moves the window, and double-clicked zooms it.
+fn title_bar(ui: &Ui, rect: Rect) {
     // `Sense::CLICK`, not `Sense::click()`, which is focusable too.
     let background = ui.interact(rect, ui.id().with("move_window"), Sense::CLICK);
-    if background.double_clicked() {
+    // Its own double-click (`crate::clicks`), whatever was clicked just before.
+    if crate::clicks::double_clicked(&background) {
         let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
         ui.ctx()
             .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
@@ -1361,26 +1367,45 @@ mod tests {
         assert_eq!(colour(&description), css::G550);
     }
 
+    /// The bar's empty space, (100, 0) to (300, 30).
+    fn space() -> Rect {
+        Rect::from_min_size(Pos2::new(100.0, 0.0), Vec2::new(200.0, 30.0))
+    }
+
+    /// The left button down (`pressed`) or up at `at`.
+    fn left(at: Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
     /// The viewport commands `move_window` sends over the bar's empty space as the pointer
     /// goes down on it and comes up, twice, the window `maximized` or not: those of each
     /// frame.
     fn moved(maximized: bool) -> Vec<Vec<ViewportCommand>> {
-        let ctx = egui::Context::default();
-        let space = Rect::from_min_size(Pos2::new(100.0, 0.0), Vec2::new(200.0, 30.0));
-        let on = space.center();
-        let button = |pressed| egui::Event::PointerButton {
-            pos: on,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        };
-        let frames = [
+        let on = space().center();
+        let frames = vec![
             vec![egui::Event::PointerMoved(on)],
-            vec![button(true)],
-            vec![button(false)],
-            vec![button(true)],
-            vec![button(false)],
+            vec![left(on, true)],
+            vec![left(on, false)],
+            vec![left(on, true)],
+            vec![left(on, false)],
         ];
+        sent(frames, maximized, move_window)
+    }
+
+    /// The viewport commands `draw` sends over the bar's empty space for each of `frames`,
+    /// 0.05 s apart, the window `maximized` or not.
+    fn sent(
+        frames: Vec<Vec<egui::Event>>,
+        maximized: bool,
+        draw: fn(&Ui, Rect),
+    ) -> Vec<Vec<ViewportCommand>> {
+        let ctx = egui::Context::default();
+        let space = space();
         frames
             .into_iter()
             .enumerate()
@@ -1397,7 +1422,7 @@ mod tests {
                         ..Default::default()
                     },
                 );
-                let mut drawn = ctx.run_ui(input, |ui| move_window(ui, space));
+                let mut drawn = ctx.run_ui(input, |ui| draw(ui, space));
                 drawn.textures_delta.clear();
                 // The window's own: not the theme the first frame sets.
                 drawn
@@ -1440,6 +1465,30 @@ mod tests {
                 assert!(sent.iter().all(Vec::is_empty), "{sent:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_double_click_on_the_bars_empty_space_just_after_a_click_elsewhere_zooms_the_window() {
+        // #452 on the title bar, on any platform: a click off the bar at 0.05, then a
+        // double-click on its empty space by 0.35, inside egui's 0.6 s for a triple. egui's
+        // count of the pointer's clicks makes the second a triple; the space's own two
+        // clicks are a double-click, and the window zooms.
+        let (off, on) = (Pos2::new(50.0, 200.0), space().center());
+        let frames = vec![
+            vec![egui::Event::PointerMoved(off), left(off, true)],
+            vec![left(off, false)],
+            vec![egui::Event::PointerMoved(on)],
+            vec![left(on, true)],
+            vec![left(on, false)],
+            vec![left(on, true)],
+            vec![left(on, false)],
+        ];
+        let sent = sent(frames, false, title_bar);
+        assert_eq!(
+            sent.last(),
+            Some(&vec![ViewportCommand::Maximized(true)]),
+            "{sent:?}"
+        );
     }
 
     /// The room [`inset`] leaves, in a window full screen or not.
