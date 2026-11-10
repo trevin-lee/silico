@@ -5698,6 +5698,129 @@ fn a_sweeps_ok_waits_for_a_sketch_chosen_in_the_browser_and_adds_nothing_before(
 }
 
 #[test]
+fn ok_clicked_in_the_frame_an_input_turns_invalid_leaves_the_dialog_open() {
+    // #443's review: OK is asked of the inputs as drawn in the frame. A Pocket's Length,
+    // valid, its field focused; then a letter typed after it (5x, no length) and OK clicked,
+    // both given to one frame (the harness gives each event it queues a frame of its own),
+    // the click by OK's accessibility action: the button was off by the time it was
+    // clicked, so the dialog stays open, the pocket's length 5 as it was, and Enter after is
+    // off too.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pocket");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    assert!(ok_enabled(&h));
+    input(&h, "Length").focus();
+    step(&mut h);
+    let (target_node, target_tree) = dialog(&h)
+        .get_by_role_and_label(Role::Button, "OK")
+        .accesskit_node()
+        .locate();
+    h.input_mut().events.extend([
+        eframe::egui::Event::Text("x".to_owned()),
+        eframe::egui::Event::AccessKitActionRequest(eframe::egui::accesskit::ActionRequest {
+            target_node,
+            target_tree,
+            action: eframe::egui::accesskit::Action::Click,
+            data: None,
+        }),
+    ]);
+    step(&mut h);
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("5x"));
+    step(&mut h);
+    assert!(dialog_open(&h));
+    assert!(!ok_enabled(&h));
+    settled(&mut h);
+    let fields = fields_of(&text_of(&f, &h), "Pocket").unwrap();
+    assert!(
+        fields
+            .iter()
+            .any(|(key, value)| key == "extent" && format!("{value:?}").contains("Number(\"5\")")),
+        "{fields:?}"
+    );
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ok_clicked_in_the_frame_a_new_features_inputs_turn_valid_waits_for_its_add() {
+    // #443's review (round 5, L13): a Pad's dialog, its Length emptied and its sketch then
+    // chosen, so nothing to add yet; then "5" typed and OK clicked, both given to one frame,
+    // OK by its accessibility action. That frame's inputs send the add; OK is off till a new
+    // feature's add answers with its feature (L16, which is what this pins; the click's gate
+    // after the frame's edits is pinned by
+    // `ok_clicked_in_the_frame_a_refused_sketch_is_picked_leaves_the_dialog_open`),
+    // so the click does nothing: the dialog stays open, and the add answers into it.
+    use eframe::egui::{Event, Key, accesskit};
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    create(&mut h, "Pad");
+    settled(&mut h);
+    input(&h, "Length").focus();
+    step(&mut h);
+    for _ in 0..4 {
+        h.key_press(Key::Backspace);
+        step(&mut h);
+    }
+    assert_eq!(input(&h, "Length").value().as_deref(), Some(""));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    settled(&mut h);
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.sketch().is_some()
+                && dialog.feature.is_none()
+                && !dialog.adding)
+    );
+    input(&h, "Length").focus();
+    step(&mut h);
+    let (target_node, target_tree) = dialog(&h)
+        .get_by_role_and_label(Role::Button, "OK")
+        .accesskit_node()
+        .locate();
+    h.input_mut().events.extend([
+        Event::Text("5".to_owned()),
+        Event::AccessKitActionRequest(accesskit::ActionRequest {
+            target_node,
+            target_tree,
+            action: accesskit::Action::Click,
+            data: None,
+        }),
+    ]);
+    step(&mut h);
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("5"));
+    assert!(dialog_open(&h));
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    assert!(dialog_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
     let f = fixture();
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
@@ -29278,88 +29401,750 @@ fn sketch_on_this_face_creates_a_sketch_on_the_picked_face() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-#[test]
-fn a_sketch_on_a_face_leaves_its_body_the_tip_so_a_pocket_or_pad_from_it_takes_that_body() {
-    // The block's top, Face6, sketched on by Sketch on this face, a rectangle drawn inside it
-    // (the face's frame has its origin at (0, 0, 10) and its x +x, so the face spans 0 to 40
-    // by 0 to 20), and the sketch finished. The sketch names the block as the feature its
-    // face is on, but the gate counts a feature's base and tool alone as consuming a solid,
-    // and a sketch has neither: the block is still the body a sweep builds on. So Pocket is
-    // on in CREATE, and a Pocket's, or a Pad's, add takes the block as its base.
+/// `document` opened as `file`, its Block (k7f2qx3m) described and measured as a real box;
+/// the Block's top, Face6, sketched on by Sketch on this face, a rectangle drawn inside it
+/// (the face's frame has its origin at (0, 0, 10) and its x +x, so the face spans 0 to 40
+/// by 0 to 20), and the sketch finished and listed in the browser as `name`. The harness,
+/// and the sketch's ID.
+fn a_rectangle_on_the_blocks_top(
+    f: &Fixture,
+    file: &str,
+    document: &str,
+    name: &str,
+) -> (AppHarness, silico_core::document::FeatureId) {
     use silico_app::sketch::tools::Choice;
     use silico_core::sketch_tools::ToolKind;
-    for (kind, extent) in [
-        (
-            "Pocket",
-            r#"{"type": "one_side", "length": 5, "reversed": false}"#,
-        ),
-        (
-            "Pad",
-            r#"{"type": "one_side", "length": 10, "reversed": false}"#,
-        ),
-    ] {
+    describes_a_real_box(f);
+    measures_the_box(f);
+    let (mut h, _) = f.opened(file, document);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step(&mut h);
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Sketch on this face")
+        .click();
+    step_until(&mut h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    sketch_read(&mut h);
+    let sketch = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    // R, the corner rectangle, then its two corners clicked.
+    h.key_press(eframe::egui::Key::R);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Draw(ToolKind::CornerRectangle))
+    );
+    sketch_events(f, &mut h, &clicked(10.0, 5.0));
+    sketch_events(f, &mut h, &clicked(30.0, 15.0));
+    settled(&mut h);
+    read_with_lines(&mut h, 4);
+    assert_rectangle_in(
+        &sketch_of_text(f, &h, sketch.as_str()),
+        [10.0, 5.0],
+        [30.0, 15.0],
+    );
+    leave_sketch(&mut h, true);
+    step_until(&mut h, "its sketch listed", |h| shows(h, "Browser", name));
+    (h, sketch)
+}
+
+/// The sketch `name` chosen in the browser, and a `kind` (a sweep) made from it: CREATE's
+/// button on, its dialog open, and its add answered and settled.
+fn a_sweep_from(h: &mut AppHarness, name: &str, kind: &str) {
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label(name)
+        .click();
+    step(h);
+    assert!(
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label(kind)
+            .accesskit_node()
+            .is_disabled(),
+        "{kind} is on"
+    );
+    create(h, kind);
+    step_until(h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(h);
+}
+
+/// A Pocket's or a Pad's fields, as `fields_of` gives them: on `base`, from `sketch`, with
+/// its dialog's default extent.
+fn sweep_fields(kind: &str, base: &str, sketch: &str) -> Vec<(String, Plain)> {
+    let length = if kind == "Pocket" { 5 } else { 10 };
+    expected(&format!(
+        r#"{{"type": "{}", "name": "{kind}", "base": "{base}", "sketch": "{sketch}", "extent": {{"type": "one_side", "length": {length}, "reversed": false}}}}"#,
+        kind.to_lowercase()
+    ))
+}
+
+#[test]
+fn a_sketch_on_a_face_consumes_nothing_so_a_pocket_or_pad_from_it_takes_that_body() {
+    // The block's top, Face6, sketched on. The sketch names the block as the feature its face
+    // is on, but the gate counts a feature's base and tool alone as consuming a solid, and a
+    // sketch has neither: the block is still a body a sweep can build on. So Pocket is on in
+    // CREATE, and a Pocket's, or a Pad's, add takes the block, its face's body, as its base.
+    for kind in ["Pocket", "Pad"] {
         let f = fixture();
-        let mut h = a_measured_box(&f);
-        select_in_box(&mut h, &["Face6"]);
-        row_until(&mut h, "Area", "800.00 mm²");
-        h.get_by_role_and_label(Role::Pane, "Properties")
-            .get_by_role_and_label(Role::Button, "Sketch on this face")
-            .click();
-        step_until(&mut h, "its sketch added", |h| {
-            sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
-        });
-        sketch_read(&mut h);
-        let sketch = sketch_mode(&h).unwrap().sketch.clone().unwrap();
-        // R, the corner rectangle, then its two corners clicked.
-        h.key_press(eframe::egui::Key::R);
-        step(&mut h);
-        assert_eq!(
-            sketch_mode(&h).unwrap().tools.choice(),
-            Some(Choice::Draw(ToolKind::CornerRectangle))
-        );
-        sketch_events(&f, &mut h, &clicked(10.0, 5.0));
-        sketch_events(&f, &mut h, &clicked(30.0, 15.0));
-        settled(&mut h);
-        read_with_lines(&mut h, 4);
-        assert_rectangle_in(
-            &sketch_of_text(&f, &h, sketch.as_str()),
-            [10.0, 5.0],
-            [30.0, 15.0],
-        );
-        leave_sketch(&mut h, true);
-        step_until(&mut h, "its sketch listed", |h| {
-            shows(h, "Browser", "Sketch1")
-        });
-        // The sketch chosen in the browser, for the sweep to take.
-        h.get_by_role_and_label(Role::Pane, "Browser")
-            .get_by_label("Sketch1")
-            .click();
-        step(&mut h);
-        assert!(
-            !h.get_by_role_and_label(Role::Toolbar, "CREATE")
-                .get_by_label(kind)
-                .accesskit_node()
-                .is_disabled(),
-            "{kind} is on"
-        );
-        create(&mut h, kind);
-        step_until(&mut h, "its add answered", |h| {
-            h.state().tabs()[0]
-                .dialog
-                .as_ref()
-                .is_some_and(|dialog| dialog.feature.is_some())
-        });
-        settled(&mut h);
+        let (mut h, sketch) = a_rectangle_on_the_blocks_top(&f, "box.silico", A_BOX, "Sketch1");
+        a_sweep_from(&mut h, "Sketch1", kind);
         assert_eq!(
             fields_of(&text_of(&f, &h), kind),
-            Some(expected(&format!(
-                r#"{{"type": "{}", "name": "{kind}", "base": "k7f2qx3m", "sketch": "{sketch}", "extent": {extent}}}"#,
-                kind.to_lowercase()
-            ))),
+            Some(sweep_fields(kind, "k7f2qx3m", sketch.as_str())),
             "{kind}"
         );
         assert_eq!(never_waits::waits(), 0);
     }
+}
+
+/// The M2.1 example's Block and Pin ([`EXAMPLE`]) before its Hole: two bodies, standing
+/// apart, the Pin built last.
+const BLOCK_AND_PIN: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12}
+  ]
+}
+"#;
+
+#[test]
+fn a_pocket_or_pad_from_a_sketch_on_the_first_bodys_face_builds_on_that_body_not_the_last() {
+    // #438's review, L1: a Block, then a separate Pin, the tip (the last body built, nothing
+    // consuming it). The Block's top sketched on. A sweep from a sketch on a face builds on
+    // that face's body, as SolidWorks merges it and FreeCAD's PartDesign builds in the
+    // sketch's own Body: a Pocket's add, or a Pad's, names the Block as its base, never the
+    // Pin.
+    for kind in ["Pocket", "Pad"] {
+        let f = fixture();
+        let (mut h, sketch) =
+            a_rectangle_on_the_blocks_top(&f, "block-and-pin.silico", BLOCK_AND_PIN, "Sketch1");
+        a_sweep_from(&mut h, "Sketch1", kind);
+        assert_eq!(
+            fields_of(&text_of(&f, &h), kind),
+            Some(sweep_fields(kind, "k7f2qx3m", sketch.as_str())),
+            "{kind}"
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+/// [`BLOCK_AND_PIN`], and Loose, a closed square on xy from (18, 8) to (22, 12) about the
+/// Pin's axis, nothing built from it.
+const BLOCK_PIN_AND_LOOSE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "s0000009", "type": "sketch", "v": 1, "name": "Loose", "plane": "xy", "points": [{"id": "pa000000", "x": 18, "y": 8, "construction": false}, {"id": "pb000000", "x": 22, "y": 8, "construction": false}, {"id": "pc000000", "x": 22, "y": 12, "construction": false}, {"id": "pd000000", "x": 18, "y": 12, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pd000000", "construction": false}, {"id": "nd000000", "from": "pd000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+/// Over [`BLOCK_PIN_AND_LOOSE`], with Sketch2 drawn on the Block's top: a Pocket's dialog
+/// opened on `first`, its add answered with `first_base`; then each of `then` picked into its
+/// box in turn, a sketch and the base it should take, the pocket's fields checked once each
+/// edit is answered; and again once OK keeps the last.
+fn sketches_picked_after_the_add(first: &str, first_base: &str, then: &[(&str, &str)]) {
+    let f = fixture();
+    let (mut h, drawn) =
+        a_rectangle_on_the_blocks_top(&f, "loose.silico", BLOCK_PIN_AND_LOOSE, "Sketch2");
+    let id = |name: &str| {
+        if name == "Loose" {
+            "s0000009".to_owned()
+        } else {
+            drawn.as_str().to_owned()
+        }
+    };
+    a_sweep_from(&mut h, first, "Pocket");
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", first_base, &id(first)))
+    );
+    let mut want = None;
+    for (sketch, base) in then {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label(sketch)
+            .click();
+        let picked = id(sketch);
+        step_until(&mut h, "the sketch picked sent", |h| {
+            fields_of(&text_of(&f, h), "Pocket").is_some_and(|fields| {
+                fields
+                    .iter()
+                    .any(|(key, value)| key == "sketch" && *value == Plain::String(picked.clone()))
+            })
+        });
+        settled(&mut h);
+        want = Some(sweep_fields("Pocket", base, &picked));
+        assert_eq!(fields_of(&text_of(&f, &h), "Pocket"), want, "{sketch}");
+    }
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(fields_of(&text_of(&f, &h), "Pocket"), want);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`sketches_picked_after_the_add`] of one sketch picked after the add.
+fn a_sketch_picked_after_the_add(first: &str, first_base: &str, then: &str, then_base: &str) {
+    sketches_picked_after_the_add(first, first_base, &[(then, then_base)]);
+}
+
+#[test]
+fn a_sketch_picked_back_after_another_takes_the_sweep_back_to_its_body() {
+    // #443's review, M3: Loose, then Sketch2 (the Block), then Loose again: the base goes back
+    // to the tip, the Pin, as the dialog's base last sent says it moved to the Block.
+    sketches_picked_after_the_add(
+        "Loose",
+        "a91cw0de",
+        &[("Sketch2", "k7f2qx3m"), ("Loose", "a91cw0de")],
+    );
+}
+
+/// [`BLOCK_PIN_AND_LOOSE`] with Sketch2, a rectangle on the Block's top, and Cut, a pocket
+/// of the Pin from Loose, then Later, a box built after it: Cut mid-timeline.
+const POCKETED_MID: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "s0000009", "type": "sketch", "v": 1, "name": "Loose", "plane": "xy", "points": [{"id": "pa000000", "x": 18, "y": 8, "construction": false}, {"id": "pb000000", "x": 22, "y": 8, "construction": false}, {"id": "pc000000", "x": 22, "y": 12, "construction": false}, {"id": "pd000000", "x": 18, "y": 12, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pd000000", "construction": false}, {"id": "nd000000", "from": "pd000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "s0000002", "type": "sketch", "v": 1, "name": "Sketch2", "plane": {"face": "k7f2qx3m.box.Face6", "x": "+x", "reversed": false}, "points": [{"id": "pa000000", "x": 10, "y": 5, "construction": false}, {"id": "pb000000", "x": 30, "y": 5, "construction": false}, {"id": "pc000000", "x": 30, "y": 15, "construction": false}, {"id": "pd000000", "x": 10, "y": 15, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pd000000", "construction": false}, {"id": "nd000000", "from": "pd000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "p0000001", "type": "pocket", "v": 1, "name": "Cut", "base": "a91cw0de", "sketch": "s0000009", "extent": {"type": "one_side", "length": 5, "reversed": false}},
+    {"id": "b0000002", "type": "box", "v": 1, "name": "Later", "position": [60, 0, 0], "length": 5, "width": 5, "height": 5}
+  ]
+}
+"#;
+
+#[test]
+fn edit_feature_on_a_sweep_keeps_its_base_when_another_bodys_face_sketch_is_picked() {
+    // #443's review, L6: Cut's own dialog (Edit Feature), Sketch2, on the Block's top,
+    // picked into it: its sketch moves, its base stays the Pin, as Edit Feature edits what's
+    // there; only a new sweep's base follows its sketch.
+    let f = fixture();
+    describes_a_real_box(&f);
+    measures_the_box(&f);
+    let (mut h, _) = f.opened("pocketed.silico", POCKETED_MID);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "Cut listed", |h| shows(h, "Timeline", "Cut"));
+    edit_from_the_timeline(&mut h, "Cut");
+    step_until(&mut h, "Cut's dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Pocket").is_some()
+    });
+    settled(&mut h);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step_until(&mut h, "the sketch picked sent", |h| {
+        fields_of(&text_of(&f, h), "Cut").is_some_and(|fields| {
+            fields.iter().any(|(key, value)| {
+                key == "sketch" && *value == Plain::String("s0000002".to_owned())
+            })
+        })
+    });
+    settled(&mut h);
+    let want = Some(expected(
+        r#"{"type": "pocket", "name": "Cut", "base": "a91cw0de", "sketch": "s0000002", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#,
+    ));
+    assert_eq!(fields_of(&text_of(&f, &h), "Cut"), want);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(fields_of(&text_of(&f, &h), "Cut"), want);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`BLOCK_PIN_AND_LOOSE`] with Sketch2, a rectangle on the Block's top, and Joined, a fuse
+/// of the Pin and the Block (its tool), suppressed: the gate counts Joined as consuming the
+/// Block, so no feature may take the Block as its base.
+const JOINED_SUPPRESSED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "s0000009", "type": "sketch", "v": 1, "name": "Loose", "plane": "xy", "points": [{"id": "pa000000", "x": 18, "y": 8, "construction": false}, {"id": "pb000000", "x": 22, "y": 8, "construction": false}, {"id": "pc000000", "x": 22, "y": 12, "construction": false}, {"id": "pd000000", "x": 18, "y": 12, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pd000000", "construction": false}, {"id": "nd000000", "from": "pd000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "s0000002", "type": "sketch", "v": 1, "name": "Sketch2", "plane": {"face": "k7f2qx3m.box.Face6", "x": "+x", "reversed": false}, "points": [{"id": "pa000000", "x": 10, "y": 5, "construction": false}, {"id": "pb000000", "x": 30, "y": 5, "construction": false}, {"id": "pc000000", "x": 30, "y": 15, "construction": false}, {"id": "pd000000", "x": 10, "y": 15, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pd000000", "construction": false}, {"id": "nd000000", "from": "pd000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "j0000001", "type": "fuse", "v": 1, "name": "Joined", "suppressed": true, "base": "a91cw0de", "tool": "k7f2qx3m"}
+  ]
+}
+"#;
+
+/// Why a sweep can't be built on the Block in [`JOINED_SUPPRESSED`], as its dialog says.
+const BLOCK_HELD_BY_JOINED: &str = "Block is the tool of Joined, which consumes it while suppressed: unsuppress or remove Joined to build on it";
+
+/// [`JOINED_SUPPRESSED`] with Joined not suppressed: the Block, its tool, is Joined's, and a
+/// sweep from Sketch2 builds on Joined.
+fn joined_unsuppressed() -> String {
+    JOINED_SUPPRESSED.replace(
+        r#""name": "Joined", "suppressed": true,"#,
+        r#""name": "Joined","#,
+    )
+}
+
+#[test]
+fn a_refusal_from_the_adds_own_read_is_said_and_stands_while_the_tabs_timeline_is_older() {
+    // #443's review. A Pocket's dialog open, its sketch box empty, over the document with
+    // Joined unsuppressed (the Block's chain ends at Joined). Another client suppresses
+    // Joined, and in the very next frame Sketch2 is chosen: the dialog's check before the
+    // add, against the tab's timeline still of the revision before, passes, and the add is
+    // queued; its own read of the session's document refuses the Block (`Under::Base`).
+    // Nothing is added (no add is sent at all), OK is off, and the dialog says why, frame
+    // after frame: the read's refusal while the tab's timeline is older than the read, the
+    // check's own once it isn't. Loose picked instead lets it go, and is added on the tip.
+    // Then (round 5, L17) Sketch2 picked again, its body refused, so not sent; another
+    // client unsuppressing Joined lifts the refusal, and the box's Sketch2, offered again
+    // each frame, is sent once the tab's timeline has it: the pocket's sketch is Sketch2.
+    let f = fixture();
+    describes_a_real_box(&f);
+    measures_the_box(&f);
+    let (mut h, _) = f.opened("joined.silico", &joined_unsuppressed());
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "its sketches listed", |h| {
+        shows(h, "Browser", "Sketch2") && shows(h, "Browser", "Loose")
+    });
+    create(&mut h, "Pocket");
+    settled(&mut h);
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.sketch().is_none())
+    );
+    let id = h.state().tabs()[0].id;
+    let joined = silico_core::document::FeatureId::new("j0000001").unwrap();
+    f.sessions
+        .set_field(
+            &id,
+            h.state().tabs()[0].revision,
+            joined,
+            "suppressed".to_owned(),
+            json::read(b"true").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    for _ in 0..20 {
+        step(&mut h);
+        assert!(dialog(&h).query_by_label(BLOCK_HELD_BY_JOINED).is_some());
+        assert!(!ok_enabled(&h));
+    }
+    let tab = &h.state().tabs()[0];
+    assert!(tab.dialog.as_ref().unwrap().feature.is_none());
+    assert!(
+        !tab.sent.iter().any(|sent| matches!(sent, Sent::Add)),
+        "{:?}",
+        tab.sent
+    );
+    assert_eq!(fields_of(&text_of(&f, &h), "Pocket"), None);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Loose")
+        .click();
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    assert!(dialog(&h).query_by_label(BLOCK_HELD_BY_JOINED).is_none());
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert!(ok_enabled(&h));
+    let sketch_of = |h: &AppHarness| {
+        fields_of(&text_of(&f, h), "Pocket")
+            .unwrap()
+            .into_iter()
+            .find(|(key, _)| key == "sketch")
+            .map(|(_, value)| format!("{value:?}"))
+            .unwrap()
+    };
+    let pick_sketch2 = |h: &mut AppHarness| {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label("Sketch2")
+            .click();
+        step(h);
+    };
+    pick_sketch2(&mut h);
+    step_until(&mut h, "the reason shown again", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    settled(&mut h);
+    assert!(sketch_of(&h).contains("s0000009"), "{}", sketch_of(&h));
+    f.sessions
+        .set_field(
+            &id,
+            h.state().tabs()[0].revision,
+            silico_core::document::FeatureId::new("j0000001").unwrap(),
+            "suppressed".to_owned(),
+            json::read(b"false").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the refusal lifted", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_none()
+    });
+    step_until(&mut h, "Sketch2 sent", |h| {
+        sketch_of(h).contains("s0000002")
+    });
+    settled(&mut h);
+    assert!(ok_enabled(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`JOINED_SUPPRESSED`] opened, the model published, its sketches listed, and a Pocket's
+/// dialog from Loose, its add answered: the Pocket built on Joined, the tip.
+fn pocket_from_loose(f: &Fixture) -> AppHarness {
+    describes_a_real_box(f);
+    measures_the_box(f);
+    let (mut h, _) = f.opened("joined.silico", JOINED_SUPPRESSED);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "its sketches listed", |h| {
+        shows(h, "Browser", "Sketch2") && shows(h, "Browser", "Loose")
+    });
+    a_sweep_from(&mut h, "Loose", "Pocket");
+    assert_eq!(
+        fields_of(&text_of(f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert!(ok_enabled(&h));
+    h
+}
+
+#[test]
+fn a_sketch_picked_back_after_a_refused_one_lifts_the_refusal_and_ok_commits_it() {
+    // #443's review (round 6, M9): a Pocket from Loose, added; Sketch2 picked, its body
+    // refused (the Block, held by Joined), so OK off and the reason shown; Loose picked back,
+    // the sketch the document has: the refusal goes, OK is on, the Pocket is as it was (no
+    // edit sent for it: the box holds what was last sent), and OK closes the dialog with it.
+    let f = fixture();
+    let mut h = pocket_from_loose(&f);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    settled(&mut h);
+    assert!(!ok_enabled(&h));
+    let sent = h.state().tabs()[0].edits.sent;
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Loose")
+        .click();
+    step_until(&mut h, "the reason gone", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_none()
+    });
+    settled(&mut h);
+    assert!(ok_enabled(&h));
+    assert_eq!(
+        h.state().tabs()[0].edits.sent,
+        sent,
+        "an edit sent for Loose"
+    );
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ok_clicked_in_the_frame_a_refused_sketch_is_picked_leaves_the_dialog_open() {
+    // #443's review (round 6, M10): a Pocket from Loose, added; then Sketch2's row in the
+    // browser and OK both clicked in one frame, each by its accessibility action. The
+    // browser is drawn before the dialog, so the dialog's inputs hold Sketch2 when OK is
+    // asked of them; but Sketch2's body is refused only as the frame's edits are sent after,
+    // so the click, taken only if OK still holds then, does nothing: the dialog stays open,
+    // the reason shown, and the Pocket Loose's on Joined still.
+    use eframe::egui::{Event, accesskit};
+    let f = fixture();
+    let mut h = pocket_from_loose(&f);
+    fn click(node: egui_kittest::Node<'_>) -> Event {
+        let (target_node, target_tree) = node.accesskit_node().locate();
+        Event::AccessKitActionRequest(accesskit::ActionRequest {
+            target_node,
+            target_tree,
+            action: accesskit::Action::Click,
+            data: None,
+        })
+    }
+    let row = click(
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label("Sketch2"),
+    );
+    let ok = click(dialog(&h).get_by_role_and_label(Role::Button, "OK"));
+    h.input_mut().events.extend([row, ok]);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    settled(&mut h);
+    assert!(dialog_open(&h));
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_new_features_add_refused_as_stale_is_sent_again_and_lands() {
+    // #443's review (round 6, L19): a Pad's dialog, its sketch not chosen yet; another
+    // client's box held in the session's queue; then Triangle chosen: the Pad's body is read
+    // (of the model published, beside the queue) and its add sent, queuing behind the box,
+    // made against the revision before. Let go: the box lands first, so the core refuses the
+    // Pad's add as made against a revision the session has moved on from; the dialog lets the
+    // add go and sends it again at the revision now: the Pad is added, the dialog has its
+    // feature, and OK is on.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    create(&mut h, "Pad");
+    settled(&mut h);
+    let id = h.state().tabs()[0].id;
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let theirs = f.sessions.add_feature(
+        &id,
+        h.state().tabs()[0].revision,
+        None,
+        json::read(
+            br#"{"type": "box", "name": "Theirs", "position": [90, 0, 0], "length": 2, "width": 2, "height": 2}"#,
+        )
+        .unwrap(),
+    );
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step_until(&mut h, "its add sent", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.dialog.as_ref().is_some_and(|dialog| dialog.adding) && !tab.reading_body()
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_none())
+    );
+    hold.release();
+    check.wait();
+    theirs.wait().result.unwrap();
+    added(&mut h);
+    settled(&mut h);
+    let text = text_of(&f, &h);
+    assert!(fields_of(&text, "Theirs").is_some(), "{text}");
+    assert!(fields_of(&text, "Pad").is_some(), "{text}");
+    assert!(ok_enabled(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`JOINED_SUPPRESSED`] without Joined, and Spare, a box apart, to suppress.
+fn with_spare() -> String {
+    JOINED_SUPPRESSED.replace(
+        r#"{"id": "j0000001", "type": "fuse", "v": 1, "name": "Joined", "suppressed": true, "base": "a91cw0de", "tool": "k7f2qx3m"}"#,
+        r#"{"id": "b0000009", "type": "box", "v": 1, "name": "Spare", "position": [60, 0, 0], "length": 5, "width": 5, "height": 5}"#,
+    )
+}
+
+#[test]
+fn an_old_dialogs_add_sent_while_a_new_dialog_is_open_leaves_the_new_ones_base_alone() {
+    // #443's review (the mutants of `dialog.serial == serial && kind.sweeps()` where a sweep's
+    // add is sent): a suppress held in the session's queue, so a Pocket's add from Sketch2
+    // (on the Block) waits in the tab's queue; that dialog cancelled and a Pocket's from
+    // Loose opened; then the queue let go. The first dialog's add is sent while the second is
+    // open: in every frame the second's base is none (its own add not sent) or the tip, the
+    // Pin, its own; never the first's, the Block.
+    let f = fixture();
+    describes_a_real_box(&f);
+    measures_the_box(&f);
+    let (mut h, _) = f.opened("spare.silico", &with_spare());
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "its features listed", |h| {
+        shows(h, "Browser", "Sketch2")
+            && shows(h, "Browser", "Loose")
+            && shows(h, "Timeline", "Spare")
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    menu_on(&mut h, "Timeline", "Spare");
+    menu_click(&mut h, "SPARE", "Suppress");
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pocket");
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_none() && dialog.base.is_none())
+    );
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the first dialog closed", |h| !dialog_open(h));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Loose")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pocket");
+    let second = h.state().tabs()[0].dialog.as_ref().unwrap().serial;
+    hold.release();
+    let _ = check.wait();
+    let pin = silico_core::document::FeatureId::new("a91cw0de").unwrap();
+    step_until(&mut h, "the second dialog's add answered", |h| {
+        let dialog = h.state().tabs()[0].dialog.as_ref().unwrap();
+        assert_eq!(dialog.serial, second);
+        assert!(
+            dialog.base.is_none() || dialog.base.as_ref() == Some(&pin),
+            "{:?}",
+            dialog.base
+        );
+        dialog.feature.is_some()
+    });
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "a91cw0de", "s0000009"))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_pocket_whose_new_body_is_refused_cant_be_okd_with_its_new_sketch() {
+    // #443's review, M2 and L5. The walk from Sketch2's face ends at the Block, the tool of
+    // Joined, suppressed: the gate counts Joined as its consumer, so a base there is refused.
+    // Up front, Sketch2 chosen before the Pocket: no add is sent (nothing builds on another
+    // body), OK is off, and the dialog says why. Then from Loose (on the tip, Joined, which
+    // stands for the Pin): added; Sketch2 picked after: OK off, the reason shown, and Cancel
+    // leaves the document as it was.
+    let f = fixture();
+    describes_a_real_box(&f);
+    measures_the_box(&f);
+    let (mut h, _) = f.opened("joined.silico", JOINED_SUPPRESSED);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "its sketches listed", |h| {
+        shows(h, "Browser", "Sketch2") && shows(h, "Browser", "Loose")
+    });
+    let before = text_of(&f, &h);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pocket");
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!ok_enabled(&h));
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .unwrap()
+            .feature
+            .is_none()
+    );
+    assert_eq!(text_of(&f, &h), before);
+    // Enter, OK's key, is off too: the dialog stays.
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // From Loose: added on Joined, the tip.
+    a_sweep_from(&mut h, "Loose", "Pocket");
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert!(ok_enabled(&h));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    settled(&mut h);
+    assert!(!ok_enabled(&h));
+    // Nothing sent for Sketch2: the pocket is Loose's on Joined still; and Enter is off.
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_on_the_first_bodys_face_picked_after_the_add_takes_the_sweep_to_that_body() {
+    // #443's review, H1: a Pocket from Loose, on xy, takes the tip, the Pin, at its add. Then
+    // Sketch2, on the Block's top, picked into its open dialog: the pocket's base follows the
+    // sketch to the Block, as Sketch2's add would have it, and isn't left cutting the Pin.
+    a_sketch_picked_after_the_add("Loose", "a91cw0de", "Sketch2", "k7f2qx3m");
+}
+
+#[test]
+fn a_sketch_on_an_origin_plane_picked_after_the_add_takes_the_sweep_to_the_tip() {
+    // The reverse: a Pocket from Sketch2 takes the Block, its face's body; Loose, picked into
+    // its open dialog, takes it to the tip, the Pin, as Loose's add would have it. The tip is
+    // worked out without the pocket itself, which consumes the Block and stands last.
+    a_sketch_picked_after_the_add("Sketch2", "k7f2qx3m", "Loose", "a91cw0de");
 }
 
 #[test]
