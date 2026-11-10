@@ -479,6 +479,9 @@ pub struct View {
     drag: Option<Drag>,
     /// The navigation bar's tool, if one is chosen.
     pub tool: Option<Navigation>,
+    /// Whether the ground grid is shown ([`crate::grid`]): the navigation bar's Grid, on at
+    /// first, as the prototype's is. A sketch open hides it whatever this says.
+    pub grid: bool,
     /// The elements drawn highlighted, set from outside (M5.7's selection): passed through,
     /// but for one of a body the frame doesn't draw, or that its mesh hasn't.
     pub highlights: BTreeSet<(u32, Element)>,
@@ -577,6 +580,7 @@ impl Default for View {
             last: None,
             drag: None,
             tool: None,
+            grid: true,
             highlights: BTreeSet::new(),
             hovered: BTreeSet::new(),
             vertices: None,
@@ -1764,6 +1768,9 @@ pub fn show<P: Clients + 'static>(
 ) {
     let rect = ui.available_rect_before_wrap();
     ui.painter().add(canvas_background(rect));
+    // The ground grid's place, over the canvas and under everything else the pane paints,
+    // the renderer's frame among it: filled once this frame's camera is known.
+    let grid = ui.painter().add(egui::Shape::Noop);
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     if let Some(why) = &drawing.unavailable {
         // Said where the model would be: nothing else in the window would say it.
@@ -1789,6 +1796,7 @@ pub fn show<P: Clients + 'static>(
         .filter(|row| !tab.shown(&crate::tab::Hideable::Feature(row.id.clone())))
         .map(|row| row.id.clone())
         .collect();
+    let sketching = tab.in_sketch();
     // The shown sketches' lines, each from its read as the tab holds it, and none while a
     // sketch is open: sketch mode draws that one, and no other is drawn (the prototype's
     // `if (S.sketch) setSketchLines([])`, app.js:979), the lines made kept for after it. A
@@ -1978,6 +1986,10 @@ pub fn show<P: Clients + 'static>(
         vertices: view.vertices,
         lines,
     };
+    if view.grid && !sketching {
+        let shapes = crate::grid::shapes(&view.camera, size_px, ppp, rect);
+        ui.painter().set(grid, egui::Shape::Vec(shapes));
+    }
     drawing.present(ui.painter(), rect, changes, Some(frame));
     paint_vertex_dots(
         &ui.painter_at(rect),
@@ -2634,6 +2646,11 @@ fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2
                         }
                         if ui.button("Fit").clicked() {
                             view.fit(size_px);
+                        }
+                        // The canvas was painted before the bar: the next frame, which egui
+                        // draws after any frame with input, shows the change.
+                        if ui.selectable_label(view.grid, "Grid").clicked() {
+                            view.grid = !view.grid;
                         }
                     });
                 });

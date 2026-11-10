@@ -10,7 +10,7 @@
 use super::*;
 use crate::disk::{Clock, DISK_CHECK_INTERVAL, Found, Reader};
 use crate::document::json::MAX_INPUT_LEN;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 /// A clock a test moves by hand.
@@ -862,6 +862,58 @@ fn each_step_of_a_held_rebuild_wakes_once_as_it_settles_then_its_end_and_its_ans
     // The first look's, the lug's step, the rebuild's end (its model published), and the
     // check's answer; then `settled`'s own.
     assert_eq!(settled(&f, &count), base + 5);
+}
+
+#[test]
+fn rebuild_told_counts_a_change_told_only_once_its_wake_has_returned() {
+    // `Sessions::rebuild_told`, for a test to wait on by an event: the watcher's count of
+    // the changes it told is behind the count's while the client's waker is still being
+    // woken for them, and equal once it has returned; then, the box held, it stays equal.
+    let f = opened(BOX);
+    let count = counting(&f.sessions);
+    settled(&f, &count);
+    // From here, the first wake (the rebuild's watcher's, for the check's rebuild's first
+    // changes) is held until the test lets it go.
+    let (entered, waiting) = std::sync::mpsc::channel();
+    let (go, held) = std::sync::mpsc::channel::<()>();
+    let held = Mutex::new(held);
+    let first = AtomicBool::new(true);
+    f.sessions.on_change(move || {
+        if first.swap(false, Ordering::SeqCst) {
+            let _ = entered.send(());
+            let _ = lock(&held).recv();
+        }
+    });
+    let hold = f.kernel.hold(is_box);
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false });
+    waiting.recv_timeout(WAIT).unwrap();
+    let (changes, told) = f.sessions.rebuild_told(&f.id).unwrap();
+    assert!(
+        changes > 0 && told < changes,
+        "({changes}, {told}) while its wake is held"
+    );
+    go.send(()).unwrap();
+    assert!(f.kernel.wait_running(1, WAIT));
+    let deadline = Instant::now() + WAIT;
+    while f
+        .sessions
+        .rebuild_told(&f.id)
+        .is_none_or(|(changes, told)| changes != told)
+    {
+        assert!(Instant::now() < deadline, "never all told");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let all = f.sessions.rebuild_told(&f.id);
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(
+        f.sessions.rebuild_told(&f.id),
+        all,
+        "a change while the box is held"
+    );
+    hold.release();
+    check.wait().result.unwrap();
 }
 
 #[test]

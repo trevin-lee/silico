@@ -1079,6 +1079,77 @@ fn a_failing_feature_is_marked_on_its_timeline_entry_and_opened_says_its_errors_
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The accessibility description of the document tab named `label` ("example.silico", or
+/// "example.silico *" with edits held): its mark's words, if it has one.
+fn tab_described(h: &AppHarness, label: &str) -> Option<String> {
+    h.get_by_role_and_label(Role::Button, label)
+        .accesskit_node()
+        .description()
+}
+
+#[test]
+fn a_documents_tab_is_marked_for_its_errors_and_for_features_changed_outside_until_seen() {
+    // `renderAppbar`'s mark, from what the core says of the session: the cut refused, its
+    // timeline counts an error, and its tab says "has errors".
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, Op::Boolean { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "the cut came apart"))
+    });
+    let (mut h, _) = f.opened("broken.silico", EXAMPLE);
+    step_until(&mut h, "the cut's mark", |h| {
+        showing(h, "Timeline", "error").is_some_and(|text| text == "error")
+    });
+    step_until(&mut h, "its tab marked", |h| {
+        tab_described(h, "broken.silico").as_deref() == Some("has errors")
+    });
+    // Another program renames both blocks while nothing is held: the session reloads, and
+    // the tab is marked changed outside (`d.outside`, 6c) until each is marked seen.
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
+    assert_eq!(tab_described(&h, "blocks.silico"), None);
+    std::fs::write(&path, blocks_renamed()).unwrap();
+    step_until(&mut h, "the marks", |h| {
+        shows(h, "Timeline", BASE_MARK) && shows(h, "Timeline", LID_MARK)
+    });
+    step_until(&mut h, "its tab marked", |h| {
+        tab_described(h, "blocks.silico").as_deref() == Some("changed outside")
+    });
+    for (feature, mark) in [("Base", BASE_MARK), ("Lid", LID_MARK)] {
+        assert_eq!(
+            tab_described(&h, "blocks.silico").as_deref(),
+            Some("changed outside"),
+            "before {feature} was seen"
+        );
+        select(&mut h, feature);
+        h.get_by_role_and_label(Role::Button, "Mark as seen")
+            .click();
+        step_until(&mut h, "its mark gone", |h| !shows(h, "Timeline", mark));
+    }
+    step_until(&mut h, "its tab unmarked", |h| {
+        tab_described(h, "blocks.silico").is_none()
+    });
+    // Edits held over a change on disk (6d) is the banner's and the chip's to say: no mark.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "the timeline", |h| shows(h, "Timeline", "Hole"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "Pins")
+    });
+    std::fs::write(
+        &path,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#),
+    )
+    .unwrap();
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, changed));
+    assert_eq!(tab_described(&h, "example.silico *"), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// What the core's own check says of `feature` of `text`, opened in a session of its own.
 fn core_says(f: &Fixture, text: &str, feature: &str) -> String {
     let name = format!("copy-{feature}.silico");
@@ -2807,7 +2878,15 @@ fn a_wait_on_the_marked_thread_is_counted() {
 #[test]
 fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_interval() {
     let f = fixture();
-    let hold = f.kernel.hold(is_box);
+    // The block and the pin both held: neither depends on the other, so the rebuild runs
+    // them at once, and a pin let run would end, and wake the app, at any time while the
+    // block is held (2 of 480 runs under load, 2026-11-10).
+    let hold = f.kernel.hold(|op| {
+        matches!(
+            op,
+            Op::MakePrimitive(Primitive::Box { .. } | Primitive::Cylinder { .. })
+        )
+    });
     let path = f.file("example.silico", EXAMPLE);
     // Time barely moves from frame to frame, so the frame asked for reads as it was asked.
     let mut h = {
@@ -2823,11 +2902,37 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
     silico_app::theme::apply(&h.ctx);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the tab", |h| !h.state().tabs().is_empty());
-    assert!(f.kernel.wait_running(1, WAIT));
-    for _ in 0..5 {
-        step(&mut h);
-    }
-    // Nothing answers while it's held: no wake, and the frame asked for is the idle one,
+    assert!(f.kernel.wait_running(2, WAIT));
+    // Before the window, by events, not by time:
+    // - both features running, as the core counts them: its count changes no more until the
+    //   hold lets go;
+    // - every change of that count told: the rebuild's watcher, which can lag on a loaded
+    //   machine, has woken the app for each (`Sessions::rebuild_told`);
+    // - the file compared on disk: its first finding wakes the app once.
+    let id = h.state().tabs()[0].id;
+    until(
+        "both running, every change told, and the file compared",
+        || {
+            let status = f.sessions.status(&id).result.unwrap();
+            let running = status.rebuild.progress.is_some_and(|progress| {
+                ["k7f2qx3m", "a91cw0de"].iter().all(|feature| {
+                    progress
+                        .features
+                        .get(&silico_core::document::FeatureId::new(feature).unwrap())
+                        == Some(silico_core::command::StepState::Running)
+                })
+            });
+            let told = f
+                .sessions
+                .rebuild_told(&id)
+                .is_some_and(|(changes, told)| changes == told);
+            running && told && status.disk == Some(silico_core::disk::Disk::Unchanged)
+        },
+    );
+    // The finding's wake comes just after it's kept, on the comparison's thread: stepped
+    // until the wakes settle, for those few instructions.
+    quiet_wakes(&mut h);
+    // Nothing answers while they're held: no wake, and the frame asked for is the idle one,
     // never one at the display's rate.
     let held = h.state().wakes();
     for _ in 0..20 {
@@ -12307,6 +12412,138 @@ fn the_overlay_sees_the_frame_and_paints_over_the_bodies_and_under_the_view_cube
     let bar = place("bar's Fit", &text("Fit"));
     assert!(bodies < overlay, "{bodies} {overlay}");
     assert!(overlay < cube && overlay < bar, "{overlay} {cube} {bar}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The ground grid (the prototype's `buildGrid`) ----
+
+/// Where each of the ground grid's paths was painted last frame, among [`painted`]'s shapes:
+/// the paths stroked by a colour that runs along them, which the grid alone paints.
+fn grid_places(shapes: &[eframe::egui::Shape]) -> Vec<usize> {
+    use eframe::egui::Shape;
+    use eframe::egui::epaint::ColorMode;
+    shapes
+        .iter()
+        .enumerate()
+        .filter(|(_, shape)| matches!(shape, Shape::Path(p) if matches!(p.stroke.color, ColorMode::UV(_))))
+        .map(|(k, _)| k)
+        .collect()
+}
+
+#[test]
+fn the_ground_grid_is_painted_over_the_canvas_and_under_the_bodies_frame() {
+    use eframe::egui::Shape;
+    let f = fixture();
+    let (mut h, _seen) = f.overlaid(EXAMPLE);
+    step(&mut h);
+    let shapes = painted(&h);
+    let top = silico_app::theme::color32(silico_app::theme::VIEWPORT_BG_TOP);
+    let canvas = shapes
+        .iter()
+        .position(
+            |s| matches!(s, Shape::Mesh(m) if m.vertices.first().is_some_and(|v| v.color == top)),
+        )
+        .expect("no canvas painted");
+    let bodies = shapes
+        .iter()
+        .position(|s| matches!(s, Shape::Rect(r) if r.fill == BODIES_MARK))
+        .expect("no bodies' mark painted");
+    // The strokes `grid::shapes` makes for this frame's view, in its order, each where it
+    // says, all of them together next after the canvas and before the bodies' frame: under
+    // it, so never over a body nor in its picking.
+    let frame = view(&h).frame().unwrap().clone();
+    let want = silico_app::grid::shapes(
+        &frame.camera,
+        frame.size_px,
+        frame.pixels_per_point,
+        frame.rect,
+    );
+    assert!(!want.is_empty());
+    let grid = grid_places(&shapes);
+    assert_eq!(grid, (canvas + 1..=canvas + want.len()).collect::<Vec<_>>());
+    assert!(
+        canvas + want.len() < bodies,
+        "{canvas} {} {bodies}",
+        want.len()
+    );
+    for (k, wanted) in grid.iter().zip(&want) {
+        let (Shape::Path(got), Shape::Path(wanted)) = (&shapes[*k], wanted) else {
+            panic!("{wanted:?}");
+        };
+        assert_eq!(got.points, wanted.points);
+        assert_eq!(got.stroke.width, wanted.stroke.width);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_bars_grid_shows_and_hides_the_ground_grid_and_the_renderer_is_given_none_of_it() {
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    step(&mut h);
+    let grid = |h: &AppHarness| grid_places(&painted(h)).len();
+    // On at first, as the prototype's.
+    assert!(view(&h).grid);
+    assert!(grid(&h) > 0);
+    // The frame the renderer is given is the same with it off: it draws none of it, and
+    // picks none.
+    let given = |record: &Record| {
+        let told = record.lock().unwrap();
+        let frame = told.frames.last().unwrap();
+        (
+            frame.camera.clone(),
+            frame.size_px,
+            frame.bodies.clone(),
+            frame.highlights.clone(),
+            frame.hovered.clone(),
+            frame.picking,
+            frame.edges,
+            frame.vertices,
+        )
+    };
+    let on = given(&record);
+    view_mut(&mut h).grid = false;
+    step(&mut h);
+    assert_eq!(grid(&h), 0);
+    assert_eq!(given(&record), on);
+    // The navigation bar's Grid shows it, and hides it again: the bar is laid out after the
+    // canvas, so the frame that takes the click has painted the canvas already, and the next
+    // (egui draws one after any frame with input) shows the change.
+    let toggle = |h: &mut AppHarness| {
+        h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+            .get_by_label("Grid")
+            .click();
+        step(h);
+        step(h);
+    };
+    toggle(&mut h);
+    assert!(view(&h).grid);
+    assert!(grid(&h) > 0);
+    toggle(&mut h);
+    assert!(!view(&h).grid);
+    assert_eq!(grid(&h), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_open_hides_the_ground_grid_and_leaving_it_shows_it_again() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    step(&mut h);
+    let grid = |h: &AppHarness| grid_places(&painted(h)).len();
+    assert!(grid(&h) > 0);
+    // A sketch open: none, as the prototype hides it (sketch.js), the toggle left on.
+    create_sketch(&mut h, "XY plane");
+    step(&mut h);
+    assert!(h.state().tabs()[0].in_sketch());
+    assert_eq!(grid(&h), 0);
+    assert!(view(&h).grid);
+    // Finished: shown again.
+    leave_sketch(&mut h, true);
+    step(&mut h);
+    assert!(grid(&h) > 0);
     assert_eq!(never_waits::waits(), 0);
 }
 

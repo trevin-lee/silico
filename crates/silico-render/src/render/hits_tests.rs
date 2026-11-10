@@ -1990,3 +1990,48 @@ fn a_segment_projects_whole_in_front_cut_a_nanometre_from_the_eye_and_not_at_all
         None
     );
 }
+
+#[test]
+fn a_segments_drawn_part_is_said_by_the_fractions_along_it_its_ends_land_at() {
+    use super::{SegmentProjection, project_segment};
+    let camera = from_the_origin();
+    let size = [100, 100];
+    let view = SegmentProjection::new(&camera, size).unwrap();
+    // Wholly in front: the whole of it, its pixels `project_segment`'s.
+    let (a, b) = ([1.0, 2.0, -10.0], [-3.0, 0.5, -5.0]);
+    let whole = view.segment(a, b).unwrap();
+    assert_eq!(whole.along, [0.0, 1.0]);
+    assert_eq!(Some(whole.pixels), project_segment(&camera, size, a, b));
+    // From 10 behind the eye to 10 in front: drawn from (10 + 1e-6) / 20 of the way, where
+    // it's a nanometre in front; taken the other way, to 1 less that.
+    let from = (10.0 + MIN_EYE_DISTANCE) / 20.0;
+    let (behind, ahead) = ([0.0, 0.0, 10.0], [1.0, 0.5, -10.0]);
+    let cut = view.segment(behind, ahead).unwrap();
+    assert!((cut.along[0] - from).abs() < 1e-12, "{cut:?}");
+    assert_eq!(cut.along[1], 1.0);
+    assert_eq!(
+        Some(cut.pixels),
+        project_segment(&camera, size, behind, ahead)
+    );
+    let back = view.segment(ahead, behind).unwrap();
+    assert_eq!(back.along[0], 0.0);
+    assert!((back.along[1] - (1.0 - from)).abs() < 1e-12, "{back:?}");
+    // Wholly behind: nothing. Orthographic: whole, an end behind the eye (z = 500) too.
+    assert_eq!(view.segment([1.0, 0.0, 5.0], [-1.0, 0.0, 10.0]), None);
+    let ortho = SegmentProjection::new(&from_above(), SIZE).unwrap();
+    assert_eq!(
+        ortho
+            .segment([0.0, 10.0, 500.0], [20.0, 5.0, -50.0])
+            .map(|drawn| drawn.along),
+        Some([0.0, 1.0])
+    );
+    // Nothing for an end that isn't finite; no projection for a size of 0 or a camera the
+    // checks refuse.
+    assert_eq!(view.segment([f64::NAN, 0.0, -1.0], [0.0, 0.0, -1.0]), None);
+    assert!(SegmentProjection::new(&camera, [0, 100]).is_none());
+    let refused = Camera {
+        eye: camera.target,
+        ..camera.clone()
+    };
+    assert!(SegmentProjection::new(&refused, size).is_none());
+}

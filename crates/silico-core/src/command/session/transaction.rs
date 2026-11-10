@@ -1053,6 +1053,9 @@ impl<C: Kernel + 'static> Session<C> {
         let committed = self.save_state(stop, state, Through::Candidate, read, claim, None);
         if committed.is_err() {
             *read = None;
+            // Its candidate's count is no revision's now, cancelled or refused (#423).
+            let _rebuilds = lock(&self.rebuilds);
+            self.newest.forget_candidate();
         }
         committed
     }

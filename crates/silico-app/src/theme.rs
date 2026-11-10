@@ -558,11 +558,15 @@ pub const VIEWPORT_GRID_MINOR_MM: f32 = 10.0;
 /// The major lines' spacing, in millimetres.
 pub const VIEWPORT_GRID_MAJOR_MM: f32 = 50.0;
 /// How far from the origin the grid has faded out, in millimetres: linearly, from full at
-/// the origin.
+/// the origin. The ground grid reaches as far ([`crate::grid`]).
 pub const VIEWPORT_GRID_FADE_MM: f32 = 200.0;
-/// The grid's axis lines' width, each in its axis's colour ([`AXIS_X`], [`AXIS_Y`]).
+/// The grid's minor and major lines' width, in points: a WebGL line's pixel at the
+/// prototype's scale, as the sketch's grid draws them (`crate::sketch::draw`).
+pub const VIEWPORT_GRID_WIDTH: f32 = 1.0;
+/// The grid's axis lines' width, each in its axis's colour ([`AXIS_X`], [`AXIS_Y`], and
+/// the ground grid's Z, [`AXIS_Z`]).
 pub const VIEWPORT_GRID_AXIS_WIDTH: f32 = 1.5;
-/// Their alpha, out of 255: 90% (viewport.js:198).
+/// Their alpha, out of 255: 90% (viewport.js's `buildGrid`, its `axis`).
 pub const VIEWPORT_GRID_AXIS_ALPHA: u8 = 230;
 /// A box select's fill, window or crossing: [`SELECTION_BG`]'s Blue.500 at 14%.
 pub const BOX_SELECT_FILL: Rgba8 = rgba8_of(SELECTION_BG, 36);
@@ -857,6 +861,11 @@ pub const DOC_TAB_DIRTY: Color32 = TEXT_STRONG;
 /// A tab's close button (`.doc-tab .x`), shown while the tab is hovered or shown: its side,
 /// its corners, its icon (Gray.550), and its fill and icon hovered (Gray.350, white).
 pub const DOC_TAB_CLOSE_SIZE: f32 = 16.0;
+/// A tab's mark (`.doc-tab .mark`): a dot this wide, before its name, `DOC_TAB_GAP` from
+/// it; red for errors, the changed-outside tone for a file changed on disk (`.outside`).
+pub const DOC_TAB_MARK_SIZE: f32 = 6.0;
+pub const DOC_TAB_MARK_ERRORS: Color32 = ERROR_TEXT;
+pub const DOC_TAB_MARK_OUTSIDE: Color32 = CHANGED_OUTSIDE;
 pub const DOC_TAB_CLOSE_CORNER_RADIUS: u8 = 3;
 pub const DOC_TAB_CLOSE: Color32 = TEXT_SUBDUED;
 pub const DOC_TAB_CLOSE_HOVER_BG: Color32 = GRAY_350;
@@ -2167,7 +2176,7 @@ mod tests {
         ] {
             assert_eq!(color, [r, g, b, of_255(alpha)], "{name}");
         }
-        // viewport.js:198, the grid's axes at 0.9.
+        // viewport.js's `buildGrid`, its `axis`: the grid's axes at 0.9.
         assert_eq!(VIEWPORT_GRID_AXIS_ALPHA, of_255(0.9));
     }
 
@@ -2316,6 +2325,7 @@ mod tests {
         assert_eq!(DOC_TAB_MAX_WIDTH, 220.0);
         assert_eq!(DOC_TAB_CLOSE_SIZE, 16.0);
         assert_eq!(DOC_TAB_CLOSE_CORNER_RADIUS, 3);
+        assert_eq!(DOC_TAB_MARK_SIZE, 6.0);
         // `.tooltip .tt-title`'s `gap: 8px`, `.tt-desc`'s `margin-top: 2px`.
         assert_eq!(TOOLTIP_TITLE_GAP, 8.0);
         assert_eq!(TOOLTIP_DESCRIPTION_GAP, 2.0);
@@ -2337,6 +2347,8 @@ mod tests {
             ("DOC_TAB_DIRTY", DOC_TAB_DIRTY, 0xffffff),
             // `.doc-tab .x`, `--g550`; `.x:hover`, `--g1000` on `--g350`.
             ("DOC_TAB_CLOSE", DOC_TAB_CLOSE, 0x939090),
+            ("DOC_TAB_MARK_ERRORS", DOC_TAB_MARK_ERRORS, 0xff3865),
+            ("DOC_TAB_MARK_OUTSIDE", DOC_TAB_MARK_OUTSIDE, 0xadbbff),
             ("DOC_TAB_CLOSE_HOVER", DOC_TAB_CLOSE_HOVER, 0xffffff),
             ("DOC_TAB_CLOSE_HOVER_BG", DOC_TAB_CLOSE_HOVER_BG, 0x525151),
         ] {

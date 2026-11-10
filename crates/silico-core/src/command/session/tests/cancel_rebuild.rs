@@ -299,6 +299,103 @@ fn an_edit_outside_a_transaction_waiting_on_its_candidate_cancel_names_answers_c
 }
 
 #[test]
+fn a_cancelled_commits_candidate_still_counting_shows_no_progress_beside_the_revisions_state() {
+    // #423: an edit outside a transaction, its candidate held at the longer box past its
+    // supersede (as the pool lets a running request go on for its grace), so its count runs
+    // on after the stop. Stopped either way (`cancel` naming the rebuild, or the edit), the
+    // candidate is no longer revision 1's rebuild: `status` gives revision 1's own `done`
+    // with no progress beside it, while the candidate's count still runs and once it ends.
+    // While the candidate runs, its progress is the revision's, as before.
+    for named in [
+        Cancellable::Rebuild,
+        Cancellable::from(SessionCommand::SetField),
+    ] {
+        let f = opened(BOX);
+        f.sessions
+            .check(&f.id, CheckModel::Current { fresh: false })
+            .wait()
+            .result
+            .unwrap();
+        let hold = f.kernel.hold_past_supersede(is_longer_box);
+        let edit = longer_by_field(&f, Revision::OPENED);
+        assert!(f.kernel.wait_running(1, WAIT));
+        // While it runs: revision 1's rebuild running, the candidate's count its progress (one
+        // box, one step, held: none done, the box's running).
+        assert_eq!(
+            clockless_rebuild(status(&f).rebuild),
+            Rebuild {
+                revision: Revision::OPENED,
+                state: RebuildState::Running,
+                progress: Some(Progress {
+                    done: 0,
+                    steps: 1,
+                    running: Some("k7f2qx3m box".to_owned()),
+                    features: states(&[("k7f2qx3m", StepState::Running)]),
+                    elapsed: Duration::ZERO,
+                }),
+            },
+            "{named:?}"
+        );
+        let counter = f.session().newest.counter().unwrap();
+        assert!(
+            f.sessions.cancel(&f.id, named).result.unwrap().stopped,
+            "{named:?}"
+        );
+        assert_eq!(
+            edit.wait().result.unwrap_err().errors(),
+            [cancelled("set_field")],
+            "{named:?}"
+        );
+        // The candidate's count still runs: its box is held past the stop. (Forgotten by the
+        // session as its commit was refused: read from what was taken while it ran.)
+        assert!(!counter.now().ended, "{named:?}");
+        assert!(f.session().newest.counter().is_none(), "{named:?}");
+        let stopped = status(&f);
+        assert_eq!(
+            (
+                stopped.rebuild.revision,
+                stopped.rebuild.state,
+                stopped.rebuild.progress
+            ),
+            (Revision::OPENED, RebuildState::Done, None),
+            "{named:?}"
+        );
+        hold.release();
+        until_ended(&counter);
+        let ended = status(&f);
+        assert_eq!(
+            (
+                ended.rebuild.revision,
+                ended.rebuild.state,
+                ended.rebuild.progress
+            ),
+            (Revision::OPENED, RebuildState::Done, None),
+            "{named:?}"
+        );
+        assert_eq!(f.file(), BOX);
+        // An edit in a transaction gives revision 2, the revision the cancelled save would
+        // have given, and starts no rebuild (a transaction's waits for a read): nothing of
+        // the candidate is revision 2's.
+        f.begin();
+        let edited = longer_by_field(&f, Revision::OPENED).wait();
+        assert_eq!(
+            edited.session.unwrap().revision,
+            Revision::from_number(2).unwrap()
+        );
+        let next = status(&f);
+        assert_eq!(
+            (
+                next.rebuild.revision,
+                next.rebuild.state,
+                next.rebuild.progress
+            ),
+            (Revision::from_number(2).unwrap(), RebuildState::Idle, None),
+            "{named:?}"
+        );
+    }
+}
+
+#[test]
 fn a_cancel_of_a_rebuild_none_running_or_of_a_command_with_only_the_rebuild_is_refused() {
     let f = opened(BOX);
     // Nothing running at all.
