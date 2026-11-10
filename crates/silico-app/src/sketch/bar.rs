@@ -260,12 +260,13 @@ fn usage(choice: Choice, trim: TrimMode) -> &'static str {
     }
 }
 
-/// The Sketch Palette (the prototype's `.palette`): its title, then Status, Tool, Show,
-/// and the colours' legend, each a section; Look At off until the viewport's camera. At
-/// most `max_height` tall: its title stays, and its sections scroll beneath it when they
-/// don't fit.
-pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings, max_height: f32) {
+/// The Sketch Palette (the prototype's `.palette`): its title, then Status, Tool, Show
+/// with Look At, and the colours' legend, each a section. At most `max_height` tall: its
+/// title stays, and its sections scroll beneath it when they don't fit. Whether Look At
+/// was clicked, which the registry's Look At does (`Tab::look_at`).
+pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings, max_height: f32) -> bool {
     dark(ui);
+    let mut look_at = false;
     let shown = egui::Frame::new()
         .fill(FLOATING_BG)
         .stroke(Stroke::new(BORDER, PANEL_BORDER))
@@ -313,16 +314,21 @@ pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings, max_hei
                         ui.checkbox(&mut settings.show_points, "Points");
                         ui.checkbox(&mut settings.show_dimensions, "Dimensions");
                         ui.checkbox(&mut settings.show_constraints, "Constraints");
-                        ui.add_enabled(
-                            false,
-                            egui::Button::new("Look At").fill(Color32::TRANSPARENT),
-                        );
+                        look_at = ui
+                            .add(egui::Button::new("Look At").fill(Color32::TRANSPARENT))
+                            .on_hover_text(format!(
+                                "{} ({})",
+                                Command::LookAt.label(),
+                                Command::LookAt.keys_text(ui.ctx())
+                            ))
+                            .clicked();
                     });
                     section(ui, "Colours", legend);
                 });
             ui.unique_id()
         });
     bounded(ui, shown.inner, shown.response.rect);
+    look_at
 }
 
 /// The palette's Tool: the tool on, how it's used, and what it last said, or the keys that

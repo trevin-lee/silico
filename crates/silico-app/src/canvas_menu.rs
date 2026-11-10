@@ -28,9 +28,10 @@
 //!   SEAM: a plane is chosen by the pointer: the keys step this menu's items alone (Tab,
 //!   the arrows, Enter), and Esc closes the menu and its planes with it.
 //!
-//! Left out of the prototype's items, none a command the app has yet:
-//! - SEAM: Look At (Ctrl+8), once the view can turn square to a face (`crate::shortcuts`'
-//!   seam);
+//! Left out of the prototype's items:
+//! - SEAM: Look At (Ctrl+8) over a flat face, as the prototype has it. The menu reads a
+//!   face's entry as it opens, for Sketch on this face, so it could offer Look At the same
+//!   way; until it does, Ctrl+8 reaches it for the face selected (`Tab::look_at`);
 //! - SEAM: Fillet, an edge's, whose dialog opens from MODIFY (`crate::toolbar`, through the
 //!   app's remembered inputs), not from a command of the registry;
 //! - SEAM: Copy name ("as agents write it"), no command of the registry copies a name.

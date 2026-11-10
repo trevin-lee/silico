@@ -15,6 +15,7 @@
 //! ([`dimension`]).
 
 pub mod bar;
+pub mod bounds;
 pub mod dimension;
 pub mod drag;
 pub mod draw;
@@ -121,6 +122,13 @@ pub fn edit_asked(row: Option<&egui::Response>, can: bool) -> bool {
 pub struct Read {
     pub model: Option<Revision>,
     pub result: Result<SketchRead, Problems>,
+}
+
+/// Sketch mode's panels over the canvas, each's rectangle on the screen as a frame drew it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Panels {
+    pub bar: egui::Rect,
+    pub palette: egui::Rect,
 }
 
 /// What a left button did in the viewport, as the pane hands it over each frame.
@@ -306,6 +314,10 @@ pub struct SketchMode {
     /// on the screen, if it is: opened by a right-click with no tool on, or a tool other
     /// than Smart Dimension, whose right-click locks its kind instead.
     pub menu_at: Option<Pos2>,
+    /// The sketch bar's and the palette's rectangles on the screen, as the last frame drew
+    /// them: what the bands a fit keeps its box out of are measured from
+    /// (`app::sketch_inset`).
+    pub panels: Option<Panels>,
     /// Where the Modify box open stands on the screen, as the last frame projected it.
     modify_screen: Option<Pos2>,
     /// The pick tolerance, in millimetres, at the last frame's view's middle: what Smart
@@ -345,6 +357,7 @@ impl SketchMode {
             modify_screen: None,
             tolerance: 0.0,
             menu_at: None,
+            panels: None,
         }
     }
 
@@ -1143,6 +1156,13 @@ impl SketchMode {
                 .map(|[x, y]| format!("{u} {x:.3} · {v} {y:.3} mm")),
             state: self.drawable().map(state_shown),
         }
+    }
+
+    /// The newest read's geometry as a box in model space, on its plane
+    /// ([`bounds::model_box`]): what a fit takes in with the bodies in sketch mode. None
+    /// before a read has placed it, or for a sketch with nothing in it.
+    pub fn model_box(&self) -> Option<[[f64; 3]; 2]> {
+        bounds::model_box(self.drawable()?)
     }
 
     /// What the sketch bar shows of the sketch, named `name`.

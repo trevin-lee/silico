@@ -103,10 +103,17 @@ impl Fixture {
 
     /// The app on these sessions, in a harness, with nothing open.
     fn app(&self) -> AppHarness {
+        self.app_at(1.0)
+    }
+
+    /// [`Fixture::app`] on a screen of `pixels_per_point` (a Retina display's 2), its window
+    /// still 1280 by 800 points.
+    fn app_at(&self, pixels_per_point: f32) -> AppHarness {
         let app = App::new(Arc::clone(&self.sessions));
         let _marked = never_waits::marked();
         let h = Harness::builder()
             .with_size((1280.0, 800.0))
+            .with_pixels_per_point(pixels_per_point)
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
         // The app's look, as main.rs gives it: its fonts above all, without which every
         // text lays out empty and a field's cursor never leaves its start.
@@ -19654,6 +19661,30 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                 h.get_by_role_and_label(Role::Group, "ViewCube")
                     .get_by_label("Top front right")
             }),
+            Command::LookAt => {
+                // In sketch mode, by its keys and by the Sketch Palette's Look At, each from
+                // a view moved off: the same camera (Look At's own tests check which).
+                let f = fixture();
+                let mut h = triangle_opened(&f);
+                for chord in keys_of(command) {
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    panned(&mut h);
+                    let moved = view(&h).camera().clone();
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    let keyed = view(&h).camera().clone();
+                    assert_ne!(keyed, moved, "Look At moved nothing");
+                    view_mut(&mut h).set_camera(moved);
+                    step(&mut h);
+                    h.get_by_role_and_label(Role::Button, entry.label).click();
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(view(&h).camera(), &keyed, "the palette's Look At");
+                }
+            }
             // The pointer's: the viewport takes them, no key (their own tests: the middle
             // button's pan and orbit, the wheel's zoom).
             Command::WhatsWrong => {
@@ -26839,6 +26870,11 @@ fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a silico_app::tab::Tab {
 /// (the app makes no primitive: Trevin's decision of 2026-11-09): CREATE's Create Sketch,
 /// once the part's timeline is read, on the XY plane, its sketch added and read.
 fn begin_sketch_on_xy(h: &mut AppHarness, part: &str) {
+    begin_sketch_on(h, part, "XY plane");
+}
+
+/// [`begin_sketch_on_xy`] on the origin plane labelled `plane` ("XZ plane").
+fn begin_sketch_on(h: &mut AppHarness, part: &str, plane: &str) {
     step_until(h, "Create Sketch on", |h| {
         !h.get_by_role_and_label(Role::Toolbar, "CREATE")
             .get_by_label("Create Sketch")
@@ -26849,11 +26885,10 @@ fn begin_sketch_on_xy(h: &mut AppHarness, part: &str) {
         .get_by_label("Create Sketch")
         .click();
     step_until(h, "its planes", |h| {
-        h.query_by_role_and_label(Role::Button, "XY plane")
-            .is_some()
+        h.query_by_role_and_label(Role::Button, plane).is_some()
     });
     step(h);
-    h.get_by_role_and_label(Role::Button, "XY plane").click();
+    h.get_by_role_and_label(Role::Button, plane).click();
     step_until(h, "its sketch added and read", |h| {
         tab_named(h, part)
             .sketch
@@ -28815,17 +28850,13 @@ const A_PIN: &str = r#"{
 }
 "#;
 
-#[test]
-fn a_selected_rim_is_a_circle_edge_with_its_length_and_radius_and_its_wall_a_cylinder() {
-    // The pin described as OCCT describes a cylinder, in the fake's numbering of it (its
-    // Edge1 the seam, from Vertex1 to Vertex2; Edge2 the circle Face2 is bounded by, at
-    // Vertex1; Edge3 Face3's, at Vertex2): its wall 2π · 2.5 · 12 = 60π mm², its top and
-    // bottom π · 2.5² each, its rims 2π · 2.5 = 5π long, each closed at its vertex.
+/// The fake describing A_PIN's cylinder as the kernel would: its wall a cylinder about z,
+/// radius 2.5 and 12 high, and its two caps planes facing +z and −z.
+fn describes_a_pin(f: &Fixture) {
     use silico_core::kernel::{
         Axis, Description, EdgeCurve, EdgeDescription, FaceDescription, Op, Surface,
     };
     use std::f64::consts::PI;
-    let f = fixture();
     let axis = |z: f64| Axis {
         origin: [0.0, 0.0, z],
         direction: [0.0, 0.0, 1.0],
@@ -28878,6 +28909,16 @@ fn a_selected_rim_is_a_circle_edge_with_its_length_and_radius_and_its_wall_a_cyl
         Op::DescribeAll { .. } => Some(silico_protocol::Reply::DescribedAll(description.clone())),
         _ => None,
     });
+}
+
+#[test]
+fn a_selected_rim_is_a_circle_edge_with_its_length_and_radius_and_its_wall_a_cylinder() {
+    // The pin described as OCCT describes a cylinder, in the fake's numbering of it (its
+    // Edge1 the seam, from Vertex1 to Vertex2; Edge2 the circle Face2 is bounded by, at
+    // Vertex1; Edge3 Face3's, at Vertex2): its wall 2π · 2.5 · 12 = 60π mm², its top and
+    // bottom π · 2.5² each, its rims 2π · 2.5 = 5π long, each closed at its vertex.
+    let f = fixture();
+    describes_a_pin(&f);
     let (mut h, _) = f.opened("pin.silico", A_PIN);
     step_until(&mut h, "the model published", |h| {
         h.state().tabs()[0].published.is_some()
@@ -38767,5 +38808,507 @@ fn the_tools_read_the_sketchs_states_and_leave_out_a_direction_between_fixed_poi
         ("pa000001", "pa000002")
     );
     assert_eq!(sketch.constraints, Vec::new());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Look At, and fits in sketch mode (the M5.12 slice's finding) -------------------------
+
+/// Whether the view looks from `toward` (the unit vector from its target to its eye) with
+/// `up` up the image, each to 1e-9.
+fn looks(h: &AppHarness, toward: [f64; 3], up: [f64; 3]) -> bool {
+    let camera = view(h).camera();
+    let d: [f64; 3] = std::array::from_fn(|k| camera.eye[k] - camera.target[k]);
+    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    (0..3).all(|k| (d[k] / n - toward[k]).abs() < 1e-9 && (camera.up[k] - up[k]).abs() < 1e-9)
+}
+
+/// Where the open sketch's place `at` is drawn, as sketch mode draws it (its `Screen`).
+fn drawn_at(h: &AppHarness, at: [f64; 2]) -> eframe::egui::Pos2 {
+    let read = sketch_mode(h).unwrap().drawable().unwrap();
+    let frame = view(h).frame().unwrap();
+    silico_app::sketch::screen::Screen::of(read, frame)
+        .unwrap()
+        .project(at)
+        .unwrap()
+}
+
+/// The sketch bar's and the Sketch Palette's rectangles.
+fn sketch_panels(h: &AppHarness) -> (eframe::egui::Rect, eframe::egui::Rect) {
+    (
+        h.get_by_role_and_label(Role::Toolbar, "Sketch bar").rect(),
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .rect(),
+    )
+}
+
+/// The middle of the room sketch mode's bands leave the canvas `canvas`: below the bar by
+/// as much as the bar stands below the canvas's top, and left of the palette by as much as
+/// it stands in from the canvas's right (`app::sketch_inset`). A fit in sketch mode centres
+/// its box there.
+fn room_middle(
+    canvas: eframe::egui::Rect,
+    bar: eframe::egui::Rect,
+    palette: eframe::egui::Rect,
+) -> eframe::egui::Pos2 {
+    let top = bar.bottom() + (bar.top() - canvas.top());
+    let right = palette.left() - (canvas.right() - palette.right());
+    eframe::egui::Pos2::new((canvas.left() + right) / 2.0, (top + canvas.bottom()) / 2.0)
+}
+
+/// Whether `a` and `b` are within 2 points each way: the bar's rect in the tree is inside
+/// its 1-point border, and a band is whole pixels.
+fn about(a: eframe::egui::Pos2, b: eframe::egui::Pos2) -> bool {
+    (a.x - b.x).abs() <= 2.0 && (a.y - b.y).abs() <= 2.0
+}
+
+/// The newest toast's words and time, if one shows.
+fn toast_said(h: &AppHarness) -> Option<(String, f64)> {
+    h.state().toast().map(|(text, at)| (text.to_owned(), at))
+}
+
+#[test]
+fn look_at_in_sketch_mode_turns_square_to_its_plane_its_x_across_and_its_y_up() {
+    // A sketch on XZ: its x along +X, its y along +Z, its normal x × y = −Y. Square to it
+    // from that side: the eye out along −Y, +Z up, as Front looks. A new part opens at Home,
+    // a corner's view, so the view turns.
+    let (front, z) = ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    begin_sketch_on(&mut h, "Untitled", "XZ plane");
+    assert!(!looks(&h, front, z));
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "square to the sketch", |h| looks(h, front, z));
+    let keyed = view(&h).camera().clone();
+    // Home again, then the palette's Look At: the same view.
+    h.key_press(Key::Home);
+    step_until(&mut h, "home", |h| !looks(h, front, z));
+    h.get_by_role_and_label(Role::Button, "Look At").click();
+    step_until(&mut h, "square again", |h| view(h).camera() == &keyed);
+    assert!(toast_said(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_turns_square_to_the_flat_face_selected_and_says_what_it_needs_with_none() {
+    // The 40 × 20 × 10 block's faces as the fake describes them, each by its outward normal.
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    // Nothing selected: said in the prototype's words, and the view stays.
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_NO_FACE)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    // The top, facing +z: from above, +y up, as Top looks.
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "from above", |h| {
+        looks(h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    });
+    // Fitted to the block, outside sketch mode with no bands: centred on its middle, (20,
+    // 10, 5), as high as the core's fit makes it, 1.1 times the larger of its 20 up the
+    // image (y) and its 40 across (x) at the pane's rows over its columns.
+    let frame = view(&h).frame().unwrap().clone();
+    let camera = view(&h).camera();
+    for k in 0..3 {
+        assert!(
+            (camera.target[k] - [20.0, 10.0, 5.0][k]).abs() < 1e-9,
+            "{camera:?}"
+        );
+    }
+    let [columns, rows] = frame.size_px.map(f64::from);
+    let want = 1.1 * f64::max(20.0, 40.0 * rows / columns);
+    assert!(
+        matches!(camera.projection, silico_protocol::Projection::Orthographic { view_height } if (view_height - want).abs() < 1e-9),
+        "{camera:?}, not {want} high"
+    );
+    // The right side, facing +x: from +x, +z up, as Right looks.
+    select_in_box(&mut h, &["Face2"]);
+    row_until(&mut h, "Area", "200.00 mm²");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "from the right", |h| {
+        looks(h, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+    });
+    // Two faces: none to turn to, said again (a newer toast), and the view stays.
+    let (_, first) = toast_said(&h).unwrap_or_default();
+    select_in_box(&mut h, &["Face6", "Face2"]);
+    step(&mut h);
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said for two", |h| {
+        toast_said(h)
+            .is_some_and(|(text, at)| text == silico_app::tab::LOOK_AT_NO_FACE && at > first)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    // An edge isn't a face: said again, and the view stays.
+    let (_, first) = toast_said(&h).unwrap_or_default();
+    select_in_box(&mut h, &["Edge12"]);
+    row_until(&mut h, "Length", "40.00 mm");
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said again", |h| {
+        toast_said(h)
+            .is_some_and(|(text, at)| text == silico_app::tab::LOOK_AT_NO_FACE && at > first)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A new part in sketch mode on XY at `pixels_per_point`, a 40 × 20 corner rectangle drawn
+/// from the origin and read.
+fn rectangle_in_a_new_part(f: &Fixture, pixels_per_point: f32) -> AppHarness {
+    let mut h = f.app_at(pixels_per_point);
+    step(&mut h);
+    new_part(&mut h);
+    begin_sketch_on_xy(&mut h, "Untitled");
+    h.key_press(Key::R);
+    step(&mut h);
+    sketch_events_at(f, &mut h, 0, &dragged([0.0, 0.0], [40.0, 20.0]));
+    step_until(&mut h, "its four lines read", |h| {
+        h.state().tabs()[0].edits.idle()
+            && sketch_mode(h)
+                .and_then(|mode| mode.drawable())
+                .is_some_and(|read| read.members.lines.len() == 4)
+    });
+    h
+}
+
+/// The sketch's places `places` each drawn on the canvas below the sketch bar and left of
+/// the palette, and its place `middle` drawn at the middle of the room the bands leave.
+#[track_caller]
+fn in_the_room(h: &AppHarness, places: &[[f64; 2]], middle: [f64; 2]) {
+    let (bar, palette) = sketch_panels(h);
+    let canvas = view(h).frame().unwrap().rect;
+    for at in places {
+        let place = drawn_at(h, *at);
+        assert!(
+            canvas.contains(place) && place.y > bar.bottom() && place.x < palette.left(),
+            "{at:?} at {place:?}: bar {bar:?}, palette {palette:?}, canvas {canvas:?}"
+        );
+    }
+    let drawn = drawn_at(h, middle);
+    let room = room_middle(canvas, bar, palette);
+    assert!(
+        about(drawn, room),
+        "{middle:?} at {drawn:?}, the room's middle at {room:?}"
+    );
+    // The bands are measured from the panels as drawn: sketch mode keeps them, each the
+    // same rectangle as the tree's, about the same middle (the tree's is inside the panel's
+    // border and margins, as far each way).
+    let kept = sketch_mode(h)
+        .unwrap()
+        .panels
+        .expect("the panels kept as drawn");
+    for (which, kept, shown) in [("bar", kept.bar, bar), ("palette", kept.palette, palette)] {
+        assert!(
+            kept.contains_rect(shown) && about(kept.center(), shown.center()),
+            "the {which} kept as {kept:?}, drawn as {shown:?}"
+        );
+    }
+}
+
+/// The 40 × 20 rectangle's corners.
+const RECTANGLE: [[f64; 2]; 4] = [[0.0, 0.0], [40.0, 0.0], [0.0, 20.0], [40.0, 20.0]];
+
+#[test]
+fn fit_in_sketch_mode_takes_the_sketch_in_clear_of_the_bar_and_the_palette() {
+    // A new part has no body, so Fit had nothing to fit: in sketch mode it takes the sketch's
+    // geometry, the 40 × 20 rectangle from the origin, and keeps it out from under the sketch
+    // bar (above) and the palette (right), centred in the room they leave. Fitted to it, the
+    // rectangle spans the room, less the fit's tenth over (1 / 1.1 = 0.909) and the bands'
+    // own margins: at least 0.85 of it across or down. At one, one and a half, and two
+    // pixels a point, so the bands are the panels' in pixels whatever the screen.
+    for pixels_per_point in [1.0, 1.5, 2.0] {
+        let f = fixture();
+        let mut h = rectangle_in_a_new_part(&f, pixels_per_point);
+        let before = view(&h).camera().clone();
+        h.key_press(Key::F6);
+        step_until(&mut h, "fitted", |h| view(h).camera() != &before);
+        step(&mut h);
+        in_the_room(&h, &RECTANGLE, [20.0, 10.0]);
+        let (bar, palette) = sketch_panels(&h);
+        let canvas = view(&h).frame().unwrap().rect;
+        let corners = RECTANGLE.map(|at| drawn_at(&h, at));
+        let span = |k: usize| {
+            let along = corners.map(|p| p[k]);
+            along.iter().copied().fold(f32::MIN, f32::max)
+                - along.iter().copied().fold(f32::MAX, f32::min)
+        };
+        let (room_across, room_down) = (
+            palette.left() - canvas.left(),
+            canvas.bottom() - bar.bottom(),
+        );
+        let filled = (span(0) / room_across).max(span(1) / room_down);
+        assert!(
+            filled >= 0.85,
+            "{pixels_per_point}: {filled}: {} by {} in {room_across} by {room_down}",
+            span(0),
+            span(1)
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn look_at_in_sketch_mode_fits_the_sketch_into_the_room_the_bands_leave() {
+    // The rectangle on XY, from Home: Look At turns square to XY (its normal +z, the eye
+    // above, +y up), fitted to the sketch, centred in the room clear of the bar and palette.
+    let f = fixture();
+    let mut h = rectangle_in_a_new_part(&f, 1.0);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "square to the sketch", |h| {
+        looks(h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    });
+    step(&mut h);
+    in_the_room(&h, &RECTANGLE, [20.0, 10.0]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_a_new_parts_first_sketch_front_keeps_the_sketch_bar_off_its_top() {
+    // A new part's first sketch, on XZ, seen from the front (⌘1), as the slice draws its L:
+    // with no body, Front fits a 100 mm cube about the origin, so the sketch's y = 50 (z =
+    // 50) is the fitted box's top. The whole of it, corners and top middle, is drawn below
+    // the sketch bar and left of the palette, the origin at the middle of the room they
+    // leave. Fitted to the whole canvas, the top was drawn about 0.05 of the canvas down,
+    // under the bar. At one, one and a half, and two pixels a point.
+    for pixels_per_point in [1.0, 1.5, 2.0] {
+        let f = fixture();
+        let mut h = f.app_at(pixels_per_point);
+        step(&mut h);
+        new_part(&mut h);
+        begin_sketch_on(&mut h, "Untitled", "XZ plane");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+        step_until(&mut h, "from the front", |h| {
+            looks(h, [0.0, -1.0, 0.0], [0.0, 0.0, 1.0])
+        });
+        step(&mut h);
+        in_the_room(
+            &h,
+            &[
+                [-50.0, 50.0],
+                [0.0, 50.0],
+                [50.0, 50.0],
+                [-50.0, -50.0],
+                [50.0, -50.0],
+            ],
+            [0.0, 0.0],
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+/// A_BOX with an empty sketch on the block's top, Face6, its x along +y: the core makes its
+/// frame's y the face's normal × x, z × y = −x.
+const ON_TOP_ALONG_Y: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Top", "plane": {"face": "k7f2qx3m.box.Face6", "x": "+y", "reversed": false}, "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn look_at_a_sketch_on_a_face_puts_its_own_y_up_not_the_faces_rule() {
+    // Square to the block's top from above, as the face rule would turn too, but with the
+    // sketch's y, −x, up: the face rule would put +y up.
+    let f = fixture();
+    describes_a_real_box(&f);
+    let (mut h, _) = f.opened("top.silico", ON_TOP_ALONG_Y);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Top"));
+    double_click(&mut h, "Browser", "Top");
+    sketch_read(&mut h);
+    let read = sketch_mode(&h).unwrap().drawable().unwrap().clone();
+    let plane = read.plane.clone().unwrap();
+    assert_eq!(plane.y_axis(), [-1.0, 0.0, 0.0], "{plane:?}");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "square to the sketch, its y up", |h| {
+        looks(h, [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0])
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_a_sketch_whose_face_broke_says_its_planes_problem_and_the_view_stays() {
+    // ON_A_FACE's face isn't one the fake describes as a plane: the read places the sketch
+    // nowhere, its plane the core's error, which Look At says.
+    let f = fixture();
+    let (mut h, _) = f.opened("face.silico", ON_A_FACE);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Top"));
+    let id = h.state().tabs()[0].id;
+    let problem = f
+        .sessions
+        .sketch(&id, ModelChoice::Current, sketch_id("s0000001"))
+        .wait()
+        .result
+        .unwrap()
+        .plane
+        .unwrap_err();
+    double_click(&mut h, "Browser", "Top");
+    sketch_read(&mut h);
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    let want = format!("Look At: {}", problem.message());
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == want)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_on_a_face_not_yet_measured_says_so_and_the_view_stays() {
+    // Face2 picked in place of the measured Face6, and Look At asked before a frame has asked
+    // the new selection's measures: there are none for the selection as it is now.
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    let before = view(&h).camera().clone();
+    {
+        use silico_app::selection::How;
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.selection_mut().pick("k7f2qx3m.box.Face2", How::Replace);
+        tab.look_at();
+    }
+    step(&mut h);
+    assert_eq!(
+        toast_said(&h).map(|(text, _)| text).as_deref(),
+        Some(silico_app::tab::LOOK_AT_UNMEASURED)
+    );
+    assert_eq!(view(&h).camera(), &before);
+    // Once measured, Look At turns square to it: from +x, +z up.
+    row_until(&mut h, "Area", "200.00 mm²");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "from the right", |h| {
+        looks(h, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_before_the_sketchs_first_read_says_so_and_the_view_stays() {
+    // Create Sketch with every solve held: its add answers and sketch mode opens, but its
+    // read waits on the held solve, so nothing has placed the sketch yet.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    step_until(&mut h, "Create Sketch on", |h| {
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    });
+    f.sketches.hold();
+    create_sketch(&mut h, "XY plane");
+    assert!(f.sketches.wait_held(WAIT), "the sketch's solve never held");
+    assert!(sketch_mode(&h).unwrap().drawable().is_none());
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_UNREAD)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    f.sketches.release();
+    sketch_read(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_on_a_curved_face_says_to_select_a_flat_one_and_turns_to_its_flat_cap() {
+    // The pin's wall is a cylinder: not flat, so Look At says so and the view stays. Its top
+    // cap, flat and facing +z, it turns square to from above, +y up.
+    let f = fixture();
+    describes_a_pin(&f);
+    let (mut h, _) = f.opened("pin.silico", A_PIN);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    use silico_app::selection::How;
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .pick("a91cw0de.cylinder.Face1", How::Replace);
+    // 60π = 188.4955… mm².
+    row_until(&mut h, "Area", "188.50 mm²");
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_NO_FACE)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .pick("a91cw0de.cylinder.Face2", How::Replace);
+    // π · 2.5² = 19.6349… mm².
+    row_until(&mut h, "Area", "19.63 mm²");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "from above", |h| {
+        looks(h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_perspective_front_in_a_first_sketch_still_keeps_its_top_clear_of_the_bar() {
+    // As the orthographic test, with the view switched to perspective (the ViewCube's menu):
+    // the sketch's plane holds the target, so its places there are drawn at the target's
+    // scale, the origin at the room's middle and the box's top below the bar.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    begin_sketch_on(&mut h, "Untitled", "XZ plane");
+    h.get_by_label("Orbit the view").click_secondary();
+    step(&mut h);
+    h.get_by_label("Perspective").click_accesskit();
+    step(&mut h);
+    assert!(view(&h).perspective());
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step_until(&mut h, "from the front", |h| {
+        looks(h, [0.0, -1.0, 0.0], [0.0, 0.0, 1.0])
+    });
+    step(&mut h);
+    assert!(matches!(
+        view(&h).camera().projection,
+        silico_protocol::Projection::Perspective { .. }
+    ));
+    in_the_room(&h, &[[-50.0, 50.0], [0.0, 50.0], [50.0, 50.0]], [0.0, 0.0]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_on_a_face_the_core_couldnt_measure_says_so_and_the_view_stays() {
+    // The fake refuses to describe the block, so the face's `elements` read fails: Look At
+    // says the face couldn't be measured, not that it isn't yet, and the view stays.
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, silico_core::kernel::Op::DescribeAll { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "the block isn't described"))
+    });
+    let (mut h, _) = f.opened("box.silico", A_BOX);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    select_in_box(&mut h, &["Face6"]);
+    step_until(&mut h, "its measures refused", |h| {
+        let tab = &h.state().tabs()[0];
+        silico_app::measures::Of::now(tab.selection())
+            .and_then(|of| tab.measures().answers(of))
+            .is_some_and(|answers| matches!(answers.element, Some(Err(_))))
+    });
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_UNMEASURABLE)
+    });
+    assert_eq!(view(&h).camera(), &before);
     assert_eq!(never_waits::waits(), 0);
 }

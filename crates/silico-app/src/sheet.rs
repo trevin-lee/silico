@@ -653,13 +653,14 @@ mod tests {
         // Each group's height: its title's 16 line, 4, its 1 underline, 4, and 22 a row.
         let height =
             |rows: f32| css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN + rows * css::ROW_H;
-        // By hand: File 5 rows (135), Edit 4 (113: Undo, Redo, Rename, Delete), Rebuild 3
-        // (91), View 12 (289), Selection 5 (135), Dialogs 2 (69), Sketch 9 (223), Help 1
-        // (47). The least height that takes three columns, filled in order, is 438: below it
-        // View can't take Selection (289 + 14 + 135 = 438), and Selection to Help (135 + 14 +
-        // 69 + 14 + 223 + 14 + 47 = 516) take two more. At 438, File, Edit, and Rebuild (135 +
-        // 14 + 113 + 14 + 91 = 367); View and Selection (438); Dialogs, Sketch, and Help (69 +
-        // 14 + 223 + 14 + 47 = 367).
+        // By hand: File 5 rows (135), Edit 4 (113: Undo, Redo, Rename, Delete), Rebuild 4
+        // (113: Rebuild, Rebuild everything, Reload, Stop), View 13 (311, Look At its last
+        // key's), Selection 5 (135), Dialogs 2 (69), Sketch 9 (223), Help 1 (47). The least
+        // height that takes three columns, filled in order, is 460: below it View can't take
+        // Selection (311 + 14 + 135 = 460), and Selection to Help (135 + 14 + 69 + 14 + 223 +
+        // 14 + 47 = 516) take two more. At 460, File, Edit, and Rebuild (135 + 14 + 113 + 14 +
+        // 113 = 389); View and Selection (460); Dialogs, Sketch, and Help (69 + 14 + 223 + 14
+        // + 47 = 367).
         let placed = [
             ("FILE", 0, 0.0),
             ("EDIT", 0, height(5.0) + css::GROUP_GAP),
@@ -669,7 +670,7 @@ mod tests {
                 height(5.0) + height(4.0) + 2.0 * css::GROUP_GAP,
             ),
             ("VIEW", 1, 0.0),
-            ("SELECTION", 1, height(12.0) + css::GROUP_GAP),
+            ("SELECTION", 1, height(13.0) + css::GROUP_GAP),
             ("DIALOGS", 2, 0.0),
             ("SKETCH", 2, height(2.0) + css::GROUP_GAP),
             ("HELP", 2, height(2.0) + height(9.0) + 2.0 * css::GROUP_GAP),
@@ -820,11 +821,11 @@ mod tests {
         let h = sheet("");
         let inside = frame_of(&h).shrink(css::BORDER);
         let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
-        // The tallest column: View's and Selection's, their 17 rows and a gap (438, by hand;
-        // File's, Edit's, and Rebuild's are 367, as are Dialogs', Sketch's, and Help's).
+        // The tallest column: View's and Selection's, their 18 rows and a gap (460, by hand;
+        // File's, Edit's, and Rebuild's are 389, and Dialogs', Sketch's, and Help's 367).
         let title = css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN;
-        let tallest = top + 2.0 * title + 17.0 * css::ROW_H + css::GROUP_GAP;
-        assert!(near(tallest - top, 438.0));
+        let tallest = top + 2.0 * title + 18.0 * css::ROW_H + css::GROUP_GAP;
+        assert!(near(tallest - top, 460.0));
         let rule = tallest + css::NOTE_TOP;
         let ruled = painted(&h).into_iter().any(|shape| match shape {
             egui::Shape::LineSegment { points, stroke } => {
@@ -978,7 +979,7 @@ mod tests {
             ("FILE", 5.0),
             ("EDIT", 4.0),
             ("REBUILD", 4.0),
-            ("VIEW", 12.0),
+            ("VIEW", 13.0),
             ("SELECTION", 5.0),
             ("DIALOGS", 2.0),
             ("SKETCH", 9.0),
@@ -1060,9 +1061,9 @@ mod tests {
         }
         // 230 to 250 wide: the sheet 190 to 210, its one column 156 to 176 between the
         // body's sides. A name too long for what its caps leave is cut short, never nearer
-        // them than the row's gap.
+        // them than the row's gap. 1500 high, so the one column shows every row.
         for width in [230.0, 240.0, 250.0] {
-            let h = sheet_in("", Vec2::new(width, 1400.0));
+            let h = sheet_in("", Vec2::new(width, 1500.0));
             let shown = row_names(&h);
             assert_eq!(shown.len(), every, "{width} wide");
             assert!(
@@ -1121,7 +1122,7 @@ mod tests {
             (
                 "outside sketches",
                 body.left() + 2.0 * column + css::COLUMN_GAP,
-                height(12.0) + css::GROUP_GAP,
+                height(13.0) + css::GROUP_GAP,
             ),
             (
                 "while a sketch is open",
