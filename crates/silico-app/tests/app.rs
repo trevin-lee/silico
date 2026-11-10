@@ -3422,6 +3422,12 @@ fn a_sketchs_warning_is_marked_in_the_sketches_group_and_its_eye_hides_it() {
             .query_by_label(&want)
             .is_some()
     });
+    // Padded, it opens hidden (absorbed, sketch-visibility R3): its eye shows it, and
+    // clicked again hides it.
+    h.get_by_label("Show Profile").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(anywhere(&h, "Hide Profile"));
     h.get_by_label("Hide Profile").click();
     step(&mut h);
     step(&mut h);
@@ -17365,8 +17371,6 @@ fn an_eye_hides_its_own_body_of_two_of_one_name_and_shows_closed() {
             ),
             false
         )]
-        .into_iter()
-        .collect()
     );
     // The view draws the first body (the table's first) and not the second.
     assert_eq!(record.lock().unwrap().frames.last().unwrap().bodies, [1]);
@@ -20273,6 +20277,12 @@ fn create_sketch(h: &mut AppHarness, plane: &str) {
 /// the sketch is read and the bar laid out with its state (it's centred, so it moves as
 /// that appears).
 fn leave_sketch(h: &mut AppHarness, finish: bool) {
+    leave_sketch_unsettled(h, finish);
+    settled(h);
+}
+
+/// [`leave_sketch`] but for what's left to answer after sketch mode closes.
+fn leave_sketch_unsettled(h: &mut AppHarness, finish: bool) {
     let word = if finish { "Finish Sketch" } else { "Cancel" };
     step_until(h, "the sketch read", |h| {
         sketch_mode(h).is_some_and(|mode| mode.drawable().is_some())
@@ -20292,7 +20302,6 @@ fn leave_sketch(h: &mut AppHarness, finish: bool) {
         .get_by_label(word)
         .click();
     step_until(h, "sketch mode closed", |h| sketch_mode(h).is_none());
-    settled(h);
 }
 
 /// Stepped until sketch mode's newest read holds a sketch.
@@ -21648,9 +21657,23 @@ fn after_an_edit_each_sketch_is_read_once_more_and_a_changed_state_shows_its_pre
         step(&mut h);
     }
     assert_eq!(h.state().tabs()[0].sketch_reads.reads, 7);
-    // Cancelled: the transaction rolled back, at a new revision, Loose's point back. Loose,
-    // no longer open, is read again, and its prefix is its read's, sketch mode's no longer.
-    leave_sketch(&mut h, false);
+    // Cancelled while every published read the session runs is held: the transaction rolled
+    // back, at a new revision, Loose's point back, but each sketch's read of it refused
+    // before it reaches the model. Till Loose is read again its prefix is sketch mode's
+    // still (none: fully defined), whatever frames pass. Released, Loose is read again, and
+    // its prefix is its read's, sketch mode's no longer.
+    let id = h.state().tabs()[0].id;
+    let before = h.state().tabs()[0].published;
+    let held = hold_published_reads(&f, id);
+    leave_sketch_unsettled(&mut h, false);
+    step_until(&mut h, "the rollback published", |h| {
+        h.state().tabs()[0].published > before
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert_eq!(prefixes(&h), [None, Some("(+)"), Some("(?)"), None]);
+    }
+    release_published_reads(held);
     step_until(&mut h, "Loose's prefix its read's again", |h| {
         let tab = &h.state().tabs()[0];
         tab.sketch_reads
@@ -21870,8 +21893,6 @@ fn a_read_refused_before_it_reaches_a_model_keeps_the_held_one_and_is_sent_again
     // before it reaches it (too many reads), naming no model. Every frame meanwhile keeps
     // each sketch's read of the revision before, and asks again. Released, each is read of
     // the new revision.
-    use silico_core::command::{MAX_PUBLISHED_READS, ReadCommand};
-    use std::sync::mpsc;
     let f = fixture();
     let mut h = four_read(&f);
     let ids = ["s0000001", "s0000002", "s0000003", "s0000004"].map(sketch_id);
@@ -21879,6 +21900,60 @@ fn a_read_refused_before_it_reaches_a_model_keeps_the_held_one_and_is_sent_again
         .clone()
         .map(|id| h.state().tabs()[0].sketch_reads.held(&id).unwrap().clone());
     let id = h.state().tabs()[0].id;
+    let held = hold_published_reads(&f, id);
+    let theirs = f.sessions.set_field(
+        &id,
+        h.state().tabs()[0].revision,
+        ids[1].clone(),
+        "constraints.ka000001.value".to_owned(),
+        json::read(b"6").unwrap(),
+    );
+    theirs.wait().result.unwrap();
+    step_until(&mut h, "the edit's model published", |h| {
+        h.state().tabs()[0].published > Some(first[0].revision)
+    });
+    let sent = h.state().tabs()[0].sketch_reads.reads;
+    for _ in 0..10 {
+        step(&mut h);
+        let reads = &h.state().tabs()[0].sketch_reads;
+        for (id, first) in ids.iter().zip(&first) {
+            let held = reads.held(id).unwrap();
+            assert!(Arc::ptr_eq(&held.read, &first.read), "{id} not kept");
+            assert_eq!(held.revision, first.revision, "{id}");
+        }
+    }
+    // Asked again, frame by frame, though refused each time.
+    assert!(h.state().tabs()[0].sketch_reads.reads >= sent + 5);
+    release_published_reads(held);
+    step_until(&mut h, "each read of the edit's model", |h| {
+        let tab = &h.state().tabs()[0];
+        ids.iter().all(|id| {
+            tab.sketch_reads
+                .held(id)
+                .is_some_and(|held| Some(held.revision) == tab.published)
+        })
+    });
+    let reads = &h.state().tabs()[0].sketch_reads;
+    let tight = &reads.held(&ids[1]).unwrap().read;
+    let distance = tight
+        .members
+        .constraints
+        .iter()
+        .find(|constraint| constraint.id.as_str() == "ka000001")
+        .unwrap();
+    assert_eq!(distance.form.value_text().as_deref(), Some("6"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// As many published reads of session `id` as it runs at once, each held till
+/// [`release_published_reads`]: a published read past them is refused before it reaches a
+/// model. Each slot taken as it frees, should a read of the app's own still run.
+fn hold_published_reads(
+    f: &Fixture,
+    id: silico_core::command::SessionId,
+) -> (std::sync::mpsc::Sender<()>, Vec<Running<()>>) {
+    use silico_core::command::{MAX_PUBLISHED_READS, ReadCommand};
+    use std::sync::mpsc;
     let (release, released) = mpsc::channel::<()>();
     let released = Arc::new(Mutex::new(released));
     let (started, starts) = mpsc::channel::<()>();
@@ -21910,51 +21985,15 @@ fn a_read_refused_before_it_reaches_a_model_keeps_the_held_one_and_is_sent_again
             }
         }
     }
-    let theirs = f.sessions.set_field(
-        &id,
-        h.state().tabs()[0].revision,
-        ids[1].clone(),
-        "constraints.ka000001.value".to_owned(),
-        json::read(b"6").unwrap(),
-    );
-    theirs.wait().result.unwrap();
-    step_until(&mut h, "the edit's model published", |h| {
-        h.state().tabs()[0].published > Some(first[0].revision)
-    });
-    let sent = h.state().tabs()[0].sketch_reads.reads;
-    for _ in 0..10 {
-        step(&mut h);
-        let reads = &h.state().tabs()[0].sketch_reads;
-        for (id, first) in ids.iter().zip(&first) {
-            let held = reads.held(id).unwrap();
-            assert!(Arc::ptr_eq(&held.read, &first.read), "{id} not kept");
-            assert_eq!(held.revision, first.revision, "{id}");
-        }
-    }
-    // Asked again, frame by frame, though refused each time.
-    assert!(h.state().tabs()[0].sketch_reads.reads >= sent + 5);
+    (release, held)
+}
+
+/// The reads [`hold_published_reads`] held, let go and answered.
+fn release_published_reads((release, held): (std::sync::mpsc::Sender<()>, Vec<Running<()>>)) {
     drop(release);
     for read in held {
         read.wait().result.unwrap();
     }
-    step_until(&mut h, "each read of the edit's model", |h| {
-        let tab = &h.state().tabs()[0];
-        ids.iter().all(|id| {
-            tab.sketch_reads
-                .held(id)
-                .is_some_and(|held| Some(held.revision) == tab.published)
-        })
-    });
-    let reads = &h.state().tabs()[0].sketch_reads;
-    let tight = &reads.held(&ids[1]).unwrap().read;
-    let distance = tight
-        .members
-        .constraints
-        .iter()
-        .find(|constraint| constraint.id.as_str() == "ka000001")
-        .unwrap();
-    assert_eq!(distance.form.value_text().as_deref(), Some("6"));
-    assert_eq!(never_waits::waits(), 0);
 }
 
 /// Ctrl (⌘) and `key` pressed, a frame after the last answer so the status read is of the
@@ -38306,6 +38345,18 @@ const ABSORBED_AND_LOOSE: &str = r#"{
 }
 "#;
 
+/// [`ABSORBED_AND_LOOSE`] with Loose moved before Legs.
+fn loose_before_legs() -> String {
+    let (head, loose) = ABSORBED_AND_LOOSE
+        .split_once(",\n    {\"id\": \"s0000002\"")
+        .unwrap();
+    let (head, legs) = head.split_once(",\n    {\"id\": \"p0000001\"").unwrap();
+    let (loose, tail) = loose.split_once('\n').unwrap();
+    format!(
+        "{head},\n    {{\"id\": \"s0000002\"{loose},\n    {{\"id\": \"p0000001\"{legs}\n{tail}"
+    )
+}
+
 /// [`ABSORBED_AND_LOOSE`] with Cut, a pocket of Legs from Profile: Profile's second
 /// consumer.
 fn absorbed_twice() -> String {
@@ -38638,9 +38689,12 @@ fn a_sketch_is_absorbed_at_ok_not_while_its_dialog_makes_the_feature() {
 fn edit_feature_changes_no_eye_till_its_sketch_moves_and_ok_keeps_the_move() {
     // Fable's tests 9 and 10 (R2, R6): Edit Feature on Legs: Profile hidden throughout, and
     // after Cancel. Its sketch moved to Loose in the dialog: at once Profile shown and
-    // Loose hidden; Cancel: back. Moved again and OK'd: Profile shown, Loose hidden.
+    // Loose hidden; Cancel: back. Moved again and OK'd: Profile shown, Loose hidden. Loose
+    // comes before Legs here, so Legs may take it (a feature uses only features before it).
     let f = fixture();
-    let (mut h, _) = absorbed(&f, ABSORBED_AND_LOOSE);
+    let text = loose_before_legs();
+    assert_ne!(text, ABSORBED_AND_LOOSE);
+    let (mut h, _) = absorbed(&f, &text);
     let open = |h: &mut AppHarness| {
         double_click(h, "Timeline", "Legs");
         step_until(h, "its dialog", |h| {
@@ -38703,11 +38757,11 @@ fn sketch_mode_drops_nothing_and_an_absorbed_sketch_edited_stays_hidden() {
     // A new sketch cancelled was never listed: no new row, the eyes as they were. One
     // finished is listed with nothing built from it: shown.
     let rows = h.state().tabs()[0].browser.sketches.len();
-    create_sketch(&mut h, "XY");
+    create_sketch(&mut h, "XY plane");
     leave_sketch(&mut h, false);
     assert_eq!(h.state().tabs()[0].browser.sketches.len(), rows);
     assert!(eye_says(&h, "Show", "Profile") && eye_says(&h, "Hide", "Loose"));
-    create_sketch(&mut h, "XY");
+    create_sketch(&mut h, "XY plane");
     leave_sketch(&mut h, true);
     step_until(&mut h, "the new sketch listed", |h| {
         h.state().tabs()[0].browser.sketches.len() == rows + 1
