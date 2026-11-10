@@ -64,7 +64,7 @@ said=$(prune_stale_lanes "$tree" target-mutants 7 2>&1)
 [ -e "$tree/target-mutants/debug/deps/libsilico_core-0123.rlib" ] || fail "its own lane: target-mutants/debug was deleted"
 [ -z "$(find "$tree/target-mutants/.silico-lane-stamp" -mtime +0)" ] || fail "its own lane: its stamp wasn't renewed"
 case $said in
-*"target/debug not built here for more than 7 days"*) ;;
+*"$tree/target/debug not built for more than 7 days"*) ;;
 *) fail "8 days: it said \"$said\", not why target/debug went" ;;
 esac
 pass
@@ -73,11 +73,73 @@ pass
 # unbuilt goes and the mutants' doesn't, nor the gate's, whose stamp it renews.
 tree=$(checkout gate)
 prune_stale_lanes "$tree" target 7 2>/dev/null
+[ -e "$tree/target-mutants/.silico-lane-stamp" ] || fail "the gate's run: target-mutants wasn't stamped"
 age 8 "$tree/target-filler/.silico-lane-stamp" "$tree/target/.silico-lane-stamp"
 prune_stale_lanes "$tree" target 7 2>/dev/null
 [ ! -e "$tree/target-filler/debug" ] || fail "the gate's run: target-filler/debug wasn't deleted"
 [ -d "$tree/target-mutants/debug" ] || fail "the gate's run: target-mutants/debug was deleted"
 [ -d "$tree/target/debug" ] || fail "the gate's run: its own target/debug was deleted"
+pass
+
+# A gate runner's mutants cache, left by labels it no longer has: eight days unbuilt, it goes on
+# the gate's run, target/occt kept.
+tree=$(checkout relabelled)
+prune_stale_lanes "$tree" target 7 2>/dev/null
+age 8 "$tree/target-mutants/.silico-lane-stamp"
+prune_stale_lanes "$tree" target 7 2>/dev/null
+[ ! -e "$tree/target-mutants/debug" ] || fail "relabelled: target-mutants/debug wasn't deleted"
+[ -d "$tree/target/occt/install" ] && [ -d "$tree/target/debug" ] || fail "relabelled: the gate's own cache went"
+pass
+
+# The bound is exact: seven days and an hour unbuilt goes, six days and 23 hours stays (find's
+# -mtime would round both down to whole days).
+tree=$(checkout exact)
+prune_stale_lanes "$tree" target 7 2>/dev/null
+age 7.0417 "$tree/target-mutants/.silico-lane-stamp"
+age 6.9583 "$tree/target-filler/.silico-lane-stamp"
+prune_stale_lanes "$tree" target 7 2>/dev/null
+[ ! -e "$tree/target-mutants/debug" ] || fail "7 days and an hour: target-mutants/debug wasn't deleted"
+[ -d "$tree/target-filler/debug" ] || fail "6 days and 23 hours: target-filler/debug was deleted"
+pass
+
+# What committed-tree.sh calls: prune_for_run takes the run's lane from SILICO_TARGET, so a
+# mutants run renews its own cache, however old, and lets the gate's eight days unbuilt go.
+tree=$(checkout run)
+SILICO_TARGET=target-mutants prune_for_run "$tree" 2>/dev/null
+age 30 "$tree/target-mutants/.silico-lane-stamp"
+age 8 "$tree/target/.silico-lane-stamp"
+SILICO_TARGET=target-mutants prune_for_run "$tree" 2>/dev/null
+[ -d "$tree/target-mutants/debug" ] || fail "prune_for_run: the run's own target-mutants/debug went"
+[ ! -e "$tree/target/debug" ] || fail "prune_for_run: target/debug eight days unbuilt stayed"
+[ "$(SILICO_TARGET= lane_of_run)" = target ] && [ "$(lane_of_run)" = target ] || fail "lane_of_run: not target/ by default"
+pass
+
+# Sibling checkouts beside the run's, each with its lock file as committed-tree.sh makes them:
+# an idle one's caches eight days unbuilt go; one whose lock a run holds is left as it is, and
+# so is a directory with no lock file (not a checkout committed-tree.sh made).
+mkdir -p "$tmp/gate"
+run_tree=$(cd "$(checkout gate/mine)" && pwd)
+idle=$(checkout gate/idle) busy=$(checkout gate/busy) other=$(checkout gate/other)
+: >"$idle.lock"
+: >"$busy.lock"
+for sibling in "$idle" "$busy" "$other"; do
+  prune_idle_checkout "$sibling" 7 2>/dev/null
+  age 8 "$sibling"/target*/.silico-lane-stamp
+done
+perl -MFcntl=:flock -e 'open(my $fh, ">>", shift) or die; flock($fh, LOCK_EX) or die; $| = 1; print "held\n"; sleep 60' "$busy.lock" >"$tmp/held" &
+holder=$!
+for _ in $(seq 100); do grep -q held "$tmp/held" 2>/dev/null && break; sleep 0.1; done
+grep -q held "$tmp/held" || fail "siblings: the busy checkout's lock was never held"
+prune_for_run "$run_tree" 2>/dev/null
+kill "$holder" 2>/dev/null || true
+wait "$holder" 2>/dev/null || true
+for lane in target target-mutants target-filler; do
+  [ ! -e "$idle/$lane/debug" ] || fail "siblings: the idle checkout's $lane/debug stayed"
+  [ -d "$busy/$lane/debug" ] || fail "siblings: the busy checkout's $lane/debug went"
+  [ -d "$other/$lane/debug" ] || fail "siblings: the unlocked directory's $lane/debug went"
+done
+[ -d "$idle/target/occt/install" ] || fail "siblings: the idle checkout's target/occt went"
+[ -d "$run_tree/target/debug" ] || fail "siblings: the run's own checkout lost its cache"
 pass
 
 # A lane with no debug/ (never built here, or already let go): nothing done to it, no stamp
