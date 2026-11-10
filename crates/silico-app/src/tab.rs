@@ -678,16 +678,17 @@ pub struct Row {
     pub name: String,
     pub health: Health,
     pub marked_by: Option<FeatureId>,
-    /// A sketch's consumers (sketch-visibility R1): each feature of the timeline that lists
-    /// it among its `inputs`, built or not, suppressed or not, as [`tip_of`] counts a
-    /// consumed feature, less the one the open dialog is making, which counts from its OK.
-    /// None for a body.
+    /// A sketch's consumers (docs/design/m5.0-app.md, decision 29: "a feature of the
+    /// timeline that lists it among its `inputs`, built or not, suppressed or not"), as
+    /// [`tip_of`] counts a consumed feature, less the one the open dialog is making, which
+    /// counts from its OK. None for a body.
     pub consumers: std::collections::BTreeSet<FeatureId>,
     /// Whether its feature is suppressed (a sketch's: then nothing of it is drawn).
     pub suppressed: bool,
 }
 
-/// An eye clicked away from its row's default (sketch-visibility R4, R5): shown or hidden,
+/// An eye clicked away from its row's default (docs/design/m5.0-app.md, decision 29: "kept
+/// until the tab closes or a feature is newly built from the sketch"): shown or hidden,
 /// and, a sketch's, the consumers it had when it was set or last confirmed, so a feature
 /// newly built from it drops it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -710,6 +711,24 @@ pub enum Hideable {
 pub struct Browser {
     pub bodies: Vec<Row>,
     pub sketches: Vec<Row>,
+    /// Each sketch row's ID, and whether a feature is built from it: what a sketch's
+    /// default is looked up in ([`shown_by_default`]), worked out with the rows.
+    consumed: BTreeMap<FeatureId, bool>,
+}
+
+impl Browser {
+    /// The browser of `bodies` and `sketches`, each sketch's consumers looked up from them.
+    pub fn new(bodies: Vec<Row>, sketches: Vec<Row>) -> Browser {
+        let consumed = sketches
+            .iter()
+            .map(|row| (row.id.clone(), !row.consumers.is_empty()))
+            .collect();
+        Browser {
+            bodies,
+            sketches,
+            consumed,
+        }
+    }
 }
 
 /// One of a tab's reads of the model that the stop cancels ([`Tab::halt`]).
@@ -868,14 +887,22 @@ pub struct Tab {
     /// Show changes' two diffs, the file's and the edits', each until it answers.
     theirs_diff: Option<Running<DiffAnswer>>,
     mine_diff: Option<Running<DiffAnswer>>,
-    /// Each browser eye clicked away from its default (item 29, sketch-visibility R4): the
-    /// tab's state, never saved, dropped when the tab closes, and a sketch's when a feature
-    /// is newly built from it (R5). A sketch shows by default while nothing is built from
-    /// it; a body and an origin row always do.
+    /// Each browser eye clicked away from its default (docs/design/m5.0-app.md, decision
+    /// 29): the tab's state, never saved, dropped when the tab closes, and a sketch's when a
+    /// feature is newly built from it. A sketch shows by default while nothing is built
+    /// from it; a body and an origin row always do.
     pub overrides: BTreeMap<Hideable, Override>,
-    /// The feature of a new feature's dialog cancelled, rolled back: no sketch's consumer
-    /// till a timeline read no longer lists it, so a cancel gains no sketch a consumer (R6).
-    unmade: Option<FeatureId>,
+    /// Each new feature's dialog cancelled, its feature undone or rolled back, with the
+    /// revision that undo or rollback comes to (none till its Cancel is sent): no sketch's
+    /// consumer in a timeline answer older than that, so a read answered before the undo
+    /// gains no sketch a consumer ("a feature the open dialog is making counts from its
+    /// OK", decision 29). Dropped at the first answer at or past it, which lists the
+    /// feature only if something since (a redo) made it again.
+    unmade: Vec<(FeatureId, Option<Revision>)>,
+    /// An Edit Feature dialog cancelled, with the revision its undo comes to (none till its
+    /// Cancel is sent): no override changes for a timeline answer older than that, as none
+    /// does while the dialog is open ("Edit Feature … drop nothing", decision 29).
+    edit_undone: Option<Option<Revision>>,
     /// The last refusal a command of the tab's answered, as said to the person, until
     /// their next action (an edit, a save, a revert, a step).
     pub message: Option<String>,
@@ -1089,7 +1116,8 @@ impl Tab {
             theirs_diff: None,
             mine_diff: None,
             overrides: BTreeMap::new(),
-            unmade: None,
+            unmade: Vec::new(),
+            edit_undone: None,
             message: None,
             told: None,
             renaming: None,
@@ -1972,10 +2000,18 @@ impl Tab {
                     // rebuild stops again.
                     self.rebuild_out = false;
                     self.timeline_superseded = false;
+                    let reached = response.model.is_some();
                     match response.result {
                         Ok(timeline) => {
                             self.timeline_after = self.timeline_read_after;
                             self.took_timeline(timeline);
+                        }
+                        // Refused before it reached a model though one is published (too
+                        // many published reads running at once, the session closing, no
+                        // thread to be had): nothing of it was read, so a later frame asks
+                        // again, as the sketch reads do.
+                        Err(_) if !reached && self.published.is_some() => {
+                            self.timeline_asked = None;
                         }
                         Err(problems) => self.took_refusal(&problems),
                     }
@@ -3208,15 +3244,26 @@ impl Tab {
                     let undone = self.revision.next().unwrap_or(self.revision);
                     let Some(base) = self.dialog_base.take() else {
                         self.read_restored_from(ok, self.revision);
+                        self.cancel_lands(self.revision);
                         continue;
                     };
                     if !self.transaction {
                         // Nothing of the dialog's changed the document.
                         self.read_restored_from(ok, self.revision);
+                        self.cancel_lands(self.revision);
                         continue;
                     }
                     let unchanged = self.state_of(base) == self.state_of(self.revision);
                     let rolls_back = (!ok || unchanged) && self.dialog_began;
+                    // A Cancel's undo or rollback comes to the next revision; one that sends
+                    // neither leaves the session's.
+                    if !ok {
+                        self.cancel_lands(if rolls_back || !unchanged {
+                            undone
+                        } else {
+                            self.revision
+                        });
+                    }
                     if sketch && self.sketch_edited && !rolls_back {
                         // What sketch mode undid, or its Cancel discards, stays so: Redo is
                         // off at the state it leaves (Finish's end, or the state Cancel
@@ -3263,12 +3310,14 @@ impl Tab {
                     }
                 }
                 Queued::Revert { then_close } if !self.transaction && !self.beginning => {
+                    self.cancel_lands(self.revision);
                     if then_close {
                         self.under.push(Under::Close(sessions.close(&self.id)));
                         self.edits.queue.clear();
                     }
                 }
                 Queued::Revert { then_close } => {
+                    self.cancel_lands(self.revision.next().unwrap_or(self.revision));
                     self.supersede_preview();
                     self.record(Sent::Rollback);
                     self.under.push(Under::Rollback {
@@ -4349,14 +4398,15 @@ impl Tab {
     }
 
     /// Whether `what`'s row shows (its eye open): its override if it has one, else its
-    /// default (sketch-visibility R3, R4; [`shown_in`]).
+    /// default ([`shown_in`]).
     pub fn shown(&self, what: &Hideable) -> bool {
         shown_in(&self.overrides, &self.browser, what)
     }
 
-    /// `what` hidden if it shows, shown if it's hidden: its eye clicked, or H
-    /// (sketch-visibility R4). Back to its default, its override is dropped, so two clicks
-    /// leave none; away from it, the override is set, with a sketch's consumers now.
+    /// `what` hidden if it shows, shown if it's hidden: its eye clicked, or H ("the eye and
+    /// H set an override", decision 29). Back to its default, its override is dropped, so
+    /// two clicks leave none; away from it, the override is set, with a sketch's consumers
+    /// now.
     pub fn toggle_shown(&mut self, what: Hideable) {
         let shown = !self.shown(&what);
         if shown == shown_by_default(&self.browser, &what) {
@@ -4369,8 +4419,8 @@ impl Tab {
         }
     }
 
-    /// Why the sketch of `row` is drawn nowhere, whatever its eye, for the eye's tooltip
-    /// (sketch-visibility R9): suppressed, or its read placing it on no plane (a face gone,
+    /// Why the sketch of `row` is drawn nowhere, whatever its eye, for the eye's tooltip:
+    /// suppressed, or its read placing it on no plane (a face gone,
     /// found by an unstable name, not planar, or its feature unbuilt: `plane_problem`'s
     /// message), since nothing guesses a placement. None for one placed, or not read yet.
     pub fn not_drawn(&self, row: &Row) -> Option<String> {
@@ -4385,37 +4435,63 @@ impl Tab {
             .map(|problem| format!("Not drawn: {}", problem.message()))
     }
 
-    /// The feature no sketch counts among its consumers yet (sketch-visibility R6): the one
-    /// the open dialog is making, till its OK; or a cancelled one's, rolled back, till a
-    /// timeline read no longer lists it.
-    fn making(&self) -> Option<&FeatureId> {
+    /// The features no sketch counts among its consumers yet ("a feature the open dialog
+    /// is making counts from its OK", decision 29): the one the open dialog is making, till
+    /// its OK; and each cancelled one's kept in `unmade`.
+    fn making(&self) -> Vec<&FeatureId> {
         self.dialog
             .as_ref()
             .filter(|dialog| dialog.made)
             .and_then(|dialog| dialog.feature.as_ref())
-            .or(self.unmade.as_ref())
+            .into_iter()
+            .chain(self.unmade.iter().map(|(feature, _)| feature))
+            .collect()
     }
 
-    /// The browser's rows worked out again from the tab's timeline, the feature the open
-    /// dialog is making left out of each sketch's consumers, and each sketch's override
-    /// dropped if a feature newly counts among them, or else its consumers taken as its own
-    /// (sketch-visibility R5). A sketch the timeline doesn't list keeps its override, as it
-    /// was left.
+    /// Where a dialog's Cancel lands, `at` (the revision its undo or rollback comes to, or
+    /// the session's now if it sends none): each feature it unmade, and an Edit Feature's
+    /// cancel, kept from answers older than it.
+    fn cancel_lands(&mut self, at: Revision) {
+        for (_, landed) in &mut self.unmade {
+            if landed.is_none() {
+                *landed = Some(at);
+            }
+        }
+        if let Some(landed @ None) = &mut self.edit_undone {
+            *landed = Some(at);
+        }
+    }
+
+    /// The browser's rows worked out again from the tab's timeline, the features no sketch
+    /// counts yet ([`making`](Self::making)) left out of each sketch's consumers, and each
+    /// sketch's override dropped if a feature newly counts among them, or else its
+    /// consumers taken as its own ("kept until the tab closes or a feature is newly built
+    /// from the sketch", decision 29). A sketch the timeline doesn't list keeps its
+    /// override, as it was left. While an Edit Feature dialog is open, and for an answer
+    /// older than the undo of one cancelled, no override changes: "Edit Feature … drop
+    /// nothing", a move cancelled included; one OK'd counts at its OK, its new sketch's
+    /// override dropped and its old one's kept.
     fn rebrowse(&mut self) {
         let Some(timeline) = self.timeline.as_ref() else {
             return;
         };
-        let unlisted = self.unmade.as_ref().is_some_and(|unmade| {
-            !timeline
-                .features
-                .iter()
-                .flatten()
-                .any(|entry| &entry.id == unmade)
-        });
-        if unlisted {
-            self.unmade = None;
+        let at = timeline.revision;
+        self.unmade
+            .retain(|(_, landed)| landed.is_none_or(|landed| at < landed));
+        let edit_undone = match self.edit_undone {
+            Some(Some(landed)) if at >= landed => {
+                self.edit_undone = None;
+                false
+            }
+            Some(_) => true,
+            None => false,
+        };
+        let editing = self.dialog.as_ref().is_some_and(|dialog| !dialog.made);
+        let rows = browser(timeline, &self.making());
+        self.browser = rows;
+        if editing || edit_undone {
+            return;
         }
-        self.browser = browser(timeline, self.making());
         for row in &self.browser.sketches {
             let what = Hideable::Feature(row.id.clone());
             let gained = self
@@ -5074,10 +5150,14 @@ impl Tab {
         let before = self.before_dialog.take();
         if ok {
             self.oked = closed;
-            // Its feature, made, counts from now (sketch-visibility R6): its sketch gains it.
+            // Its feature, made, counts from now: its sketch gains it. An edit counts now
+            // too, its new sketch's override dropped.
             self.rebrowse();
         } else {
             self.unmake(closed.as_ref());
+            if closed.as_ref().is_some_and(|closed| !closed.made) {
+                self.edit_undone = Some(None);
+            }
             if let Some(items) = before {
                 self.selection.restore(items);
             }
@@ -5088,15 +5168,17 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// `dialog`, closed without OK, its feature (if it made one) rolled back: counted as no
-    /// sketch's consumer till a timeline read no longer lists it (sketch-visibility R6), so
-    /// a read answered before the rollback gains its sketch nothing.
+    /// `dialog`, closed without OK, its feature (if it made one) undone or rolled back:
+    /// counted as no sketch's consumer in an answer older than where its Cancel lands
+    /// ([`cancel_lands`](Self::cancel_lands)), so a read answered before the undo gains its
+    /// sketch nothing.
     fn unmake(&mut self, dialog: Option<&Dialog>) {
         if let Some(feature) = dialog
             .filter(|dialog| dialog.made)
             .and_then(|dialog| dialog.feature.clone())
+            && !self.unmade.iter().any(|(unmade, _)| *unmade == feature)
         {
-            self.unmade = Some(feature);
+            self.unmade.push((feature, None));
         }
     }
 
@@ -5895,10 +5977,11 @@ fn marked(timeline: &TimelineAnswer) -> bool {
 /// whose last feature failed built no body there, and the core's timeline doesn't report
 /// one, so none is listed for it), each marked by the worst of its chain's features (the
 /// first in error, else the first with a warning); and its sketches, each marked by its own,
-/// with its consumers (sketch-visibility R1): each feature that lists it among its `inputs`,
-/// but `making`, the feature the open dialog is making, which counts from its OK. Each
-/// feature found by its ID once, through a map.
-pub fn browser(timeline: &TimelineAnswer, making: Option<&FeatureId>) -> Browser {
+/// with its consumers (decision 29): each feature that lists it among its `inputs`, but those
+/// of `making`, the feature the open dialog is making, which counts from its OK, and any
+/// cancelled one not yet undone in what's read. Each feature found by its ID once, through a
+/// map.
+pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId]) -> Browser {
     let entries = timeline.features.as_deref().unwrap_or_default();
     let place: BTreeMap<&FeatureId, usize> = entries
         .iter()
@@ -5907,7 +5990,7 @@ pub fn browser(timeline: &TimelineAnswer, making: Option<&FeatureId>) -> Browser
         .collect();
     let mut consumers: BTreeMap<&FeatureId, std::collections::BTreeSet<FeatureId>> =
         BTreeMap::new();
-    for entry in entries.iter().filter(|entry| Some(&entry.id) != making) {
+    for entry in entries.iter().filter(|entry| !making.contains(&&entry.id)) {
         for input in &entry.inputs {
             consumers.entry(input).or_default().insert(entry.id.clone());
         }
@@ -5951,7 +6034,7 @@ pub fn browser(timeline: &TimelineAnswer, making: Option<&FeatureId>) -> Browser
             }
         })
         .collect();
-    Browser { bodies, sketches }
+    Browser::new(bodies, sketches)
 }
 
 /// `what`'s sketch row in `browser`, if it's a sketch's and the browser lists it.
@@ -5962,10 +6045,14 @@ fn sketch_row<'a>(browser: &'a Browser, what: &Hideable) -> Option<&'a Row> {
     }
 }
 
-/// Whether `what`'s row shows before any click (sketch-visibility R3): a body and an origin
-/// row, yes; a sketch, while nothing is built from it.
+/// Whether `what`'s row shows before any click (decision 29: "everything but the sketches
+/// a feature is built from"): a body and an origin row, yes; a sketch, while nothing is
+/// built from it.
 fn shown_by_default(browser: &Browser, what: &Hideable) -> bool {
-    sketch_row(browser, what).is_none_or(|row| row.consumers.is_empty())
+    match what {
+        Hideable::Feature(id) => browser.consumed.get(id).is_none_or(|built| !built),
+        Hideable::Origin(_) => true,
+    }
 }
 
 /// Whether `what`'s row shows: its override in `overrides` if it has one, else its default
@@ -6588,7 +6675,7 @@ mod tests {
 
     #[test]
     fn each_sketch_row_lists_the_features_built_from_it_less_the_one_a_dialog_is_making() {
-        // Fable's test 15 (sketch-visibility R1): s1; p1, a pad of s1, suppressed; c1, a
+        // Decision 29's consumers: s1; p1, a pad of s1, suppressed; c1, a
         // pocket of p1 from s1, failed; s2, a sketch on p1's face; s3, built from by nothing.
         // s1's consumers are p1 and c1, suppressed or failed alike; s2 naming p1 makes p1 no
         // sketch's consumer, and s2 built from by nothing; s3 none. The open dialog making
@@ -6624,7 +6711,7 @@ mod tests {
             let of = of.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
             (sketch.to_owned(), of)
         };
-        let all = browser(&read, None);
+        let all = browser(&read, &[]);
         assert_eq!(
             consumers(&all),
             [
@@ -6636,7 +6723,7 @@ mod tests {
         assert_eq!(all.bodies.len(), 1);
         assert!(all.bodies[0].consumers.is_empty());
         assert_eq!(
-            consumers(&browser(&read, Some(&id("c0000001")))),
+            consumers(&browser(&read, &[&id("c0000001")])),
             [
                 row("s0000001", &["p0000001"]),
                 row("s0000002", &[]),
@@ -6647,7 +6734,7 @@ mod tests {
 
     #[test]
     fn a_sketchs_override_falls_to_a_feature_newly_built_from_it_and_outlasts_a_loss() {
-        // sketch-visibility R4 to R6: Profile (s1), padded by p1, hidden by default; shown by
+        // Decision 29's overrides: Profile (s1), padded by p1, hidden by default; shown by
         // its eye, an override with p1 its consumer. p1 suppressed: kept. c1 newly built from
         // s1: dropped, hidden. Shown again; c1 gone: kept (a loss), its consumers p1 alone;
         // c1 back: dropped (newly built from it again). Unlisted, its override kept as left.
@@ -6702,20 +6789,53 @@ mod tests {
         tab.dialog = None;
         tab.rebrowse();
         assert!(!tab.shown(&s1), "OK: a gain");
-        // Cancelled instead: a read still listing c1 gains nothing; once one doesn't, a c1
-        // newly built counts.
+        // Cancelled instead, its undo landing at revision 3: a read listing c1 gains nothing
+        // till then, while its Cancel is unsent too; the first at or past it drops the
+        // exclusion, whatever it lists, so c1 made again by a redo (listed at 4) is a gain.
+        let at = |n: u64| (1..n).fold(Revision::OPENED, |r, _| r.next().unwrap());
+        let take_at = |tab: &mut Tab, revision: Revision, features: Vec<Entry>| {
+            tab.timeline = Some(TimelineAnswer {
+                revision,
+                bodies: vec![id("p0000001")],
+                ..timeline(0, None, features)
+            });
+            tab.rebrowse();
+        };
         tab.toggle_shown(s1.clone());
-        take(&mut tab, vec![sketch(), pad(false)]);
+        take_at(&mut tab, at(1), vec![sketch(), pad(false)]);
         tab.dialog = Some(making.clone());
-        take(&mut tab, vec![sketch(), pad(false), cut()]);
+        take_at(&mut tab, at(2), vec![sketch(), pad(false), cut()]);
         tab.dialog = None;
         tab.unmake(Some(&making));
-        take(&mut tab, vec![sketch(), pad(false), cut()]);
-        assert!(tab.shown(&s1), "a cancelled feature's stale read");
-        take(&mut tab, vec![sketch(), pad(false)]);
+        take_at(&mut tab, at(2), vec![sketch(), pad(false), cut()]);
+        assert!(tab.shown(&s1), "its Cancel unsent: a stale read");
+        tab.cancel_lands(at(3));
+        take_at(&mut tab, at(2), vec![sketch(), pad(false), cut()]);
+        assert!(tab.shown(&s1), "older than its undo: a stale read");
+        assert_eq!(tab.unmade.len(), 1);
+        take_at(&mut tab, at(4), vec![sketch(), pad(false), cut()]);
+        assert!(!tab.shown(&s1), "redone past its undo: a gain");
+        assert!(tab.unmade.is_empty());
+        // Two cancelled, c1 then c2, neither undo read yet: a stale read listing either
+        // gains nothing; each counts again from where its own undo lands.
+        let c2 = || feature("c0000002", "pocket", false, &["p0000001", "s0000001"]);
+        let mut second = Dialog::new(Kind::Pocket, Some(id("s0000001")), 1);
+        second.feature = Some(id("c0000002"));
+        let mut tab = self::tab();
+        take_at(&mut tab, at(1), vec![sketch(), pad(false)]);
+        tab.toggle_shown(s1.clone());
+        tab.unmake(Some(&making));
+        tab.cancel_lands(at(3));
+        tab.unmake(Some(&second));
+        tab.cancel_lands(at(5));
+        take_at(&mut tab, at(2), vec![sketch(), pad(false), cut()]);
+        assert!(tab.shown(&s1), "c1's stale read");
+        take_at(&mut tab, at(4), vec![sketch(), pad(false), c2()]);
+        assert!(tab.shown(&s1), "c2's stale read, past c1's undo");
+        assert_eq!(tab.unmade.len(), 1);
+        take_at(&mut tab, at(5), vec![sketch(), pad(false)]);
+        assert!(tab.unmade.is_empty());
         assert!(tab.shown(&s1));
-        take(&mut tab, vec![sketch(), pad(false), cut()]);
-        assert!(!tab.shown(&s1), "built again, after the cancel: a gain");
         // A body's override: never dropped.
         let body = Hideable::Feature(id("p0000001"));
         tab.toggle_shown(body.clone());
@@ -8220,8 +8340,8 @@ mod tests {
                 Some(Revision::OPENED),
                 vec![entry("a0000001", 0, 0), entry("b0000001", 0, 0)],
             ));
-            tab.browser = Browser {
-                bodies: vec![Row {
+            tab.browser = Browser::new(
+                vec![Row {
                     id: cut.clone(),
                     name: "b0000001".to_owned(),
                     health: Health::Healthy,
@@ -8229,8 +8349,8 @@ mod tests {
                     consumers: Default::default(),
                     suppressed: false,
                 }],
-                sketches: Vec::new(),
-            };
+                Vec::new(),
+            );
             tab
         };
         // Nothing to rename under an open dialog (its Cancel undoes to where it opened) or in

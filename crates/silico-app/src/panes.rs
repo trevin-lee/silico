@@ -1967,7 +1967,7 @@ mod tests {
             entry("a91cw0de", "cylinder", &[], Health::Healthy),
             entry("m3tq8v0z", "cut", &["k7f2qx3m", "a91cw0de"], Health::Error),
         ];
-        let failed = crate::tab::browser(&timeline(&entries, &["k7f2qx3m", "a91cw0de"]), None);
+        let failed = crate::tab::browser(&timeline(&entries, &["k7f2qx3m", "a91cw0de"]), &[]);
         assert_eq!(
             rows(&failed.bodies),
             [
@@ -1980,7 +1980,7 @@ mod tests {
         let mut built = entries.clone();
         built[2].health = Health::Healthy;
         let body = |entries: &[Entry]| {
-            rows(&crate::tab::browser(&timeline(entries, &["m3tq8v0z"]), None).bodies)
+            rows(&crate::tab::browser(&timeline(entries, &["m3tq8v0z"]), &[]).bodies)
         };
         assert_eq!(
             body(&built),
@@ -2214,7 +2214,7 @@ mod tests {
         let mut answer = timeline(features, &[]);
         answer.problems = problems;
         tab.timeline = Some(answer);
-        tab.browser = Browser { bodies, sketches };
+        tab.browser = Browser::new(bodies, sketches);
         tab
     }
 

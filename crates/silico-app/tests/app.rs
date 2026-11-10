@@ -3422,7 +3422,7 @@ fn a_sketchs_warning_is_marked_in_the_sketches_group_and_its_eye_hides_it() {
             .query_by_label(&want)
             .is_some()
     });
-    // Padded, it opens hidden (absorbed, sketch-visibility R3): its eye shows it, and
+    // Padded, it opens hidden (absorbed, decision 29): its eye shows it, and
     // clicked again hides it.
     h.get_by_label("Show Profile").click();
     step(&mut h);
@@ -39135,9 +39135,9 @@ fn the_tools_read_the_sketchs_states_and_leave_out_a_direction_between_fixed_poi
     assert_eq!(never_waits::waits(), 0);
 }
 
-// ---- Which sketches a document shows (sketch-visibility, Fable's decision, option C) ----
+// ---- Which sketches a document shows (docs/design/m5.0-app.md, decision 29) ----
 
-/// Fable's fixture (sketch-visibility §4): Profile, a closed 30 by 20 rectangle on XY;
+/// Decision 29's fixture: Profile, a closed 30 by 20 rectangle on XY;
 /// Legs, a pad of it, 10 up; and Loose, a 40 by 20 rectangle on XZ that nothing is built
 /// from.
 const ABSORBED_AND_LOOSE: &str = r#"{
@@ -39198,7 +39198,7 @@ fn absorbed(f: &Fixture, text: &str) -> (AppHarness, PathBuf) {
 
 #[test]
 fn a_sketch_a_feature_is_built_from_opens_hidden_and_one_nothing_is_built_from_shown() {
-    // Fable's test 1 (sketch-visibility R1-R3, R10): Profile, Legs's sketch, opens hidden;
+    // Decision 29: Profile, Legs's sketch, opens hidden;
     // Loose, built from by nothing, shown; Legs, a body, shown. The tab closed and the file
     // opened again, a click made before it: the same, the click gone with the tab.
     let f = fixture();
@@ -39229,7 +39229,7 @@ fn a_sketch_a_feature_is_built_from_opens_hidden_and_one_nothing_is_built_from_s
 
 #[test]
 fn an_eye_clicked_twice_leaves_no_override() {
-    // Fable's test 2 (R4): Profile's eye, "Show Profile", clicked: shown; clicked again:
+    // Decision 29: Profile's eye, "Show Profile", clicked: shown; clicked again:
     // hidden, its default, and no override left for it.
     let f = fixture();
     let (mut h, _) = absorbed(&f, ABSORBED_AND_LOOSE);
@@ -39252,7 +39252,7 @@ fn an_eye_clicked_twice_leaves_no_override() {
 
 #[test]
 fn h_toggles_the_selected_sketch_or_body_and_nothing_with_nothing_selected() {
-    // Fable's test 3 (R7): Loose selected, H hides it and H again shows it; Legs, a body,
+    // Decision 29: Loose selected, H hides it and H again shows it; Legs, a body,
     // selected, H hides it, Loose as it was; nothing selected, H changes nothing.
     use eframe::egui::Key;
     let f = fixture();
@@ -39307,7 +39307,7 @@ fn timeline_act(h: &mut AppHarness, name: &str, item: &str, suppressed: Option<b
 
 #[test]
 fn a_suppressed_consumer_still_hides_its_sketch_and_drops_no_override() {
-    // Fable's test 4 (R2, R5): Legs suppressed and unsuppressed: Profile hidden throughout.
+    // Decision 29: Legs suppressed and unsuppressed: Profile hidden throughout.
     // Shown by a click first: shown throughout, nothing dropped.
     let f = fixture();
     let (mut h, _) = absorbed(&f, ABSORBED_AND_LOOSE);
@@ -39339,7 +39339,7 @@ fn absorbed_failing() -> String {
 
 #[test]
 fn a_failed_consumer_still_hides_its_sketch() {
-    // Fable's test 5 (R2): Legs failing (Profile's profile open): Profile hidden.
+    // Decision 29: Legs failing (Profile's profile open): Profile hidden.
     let f = fixture();
     let text = absorbed_failing();
     assert_ne!(text, ABSORBED_AND_LOOSE);
@@ -39362,7 +39362,7 @@ fn a_failed_consumer_still_hides_its_sketch() {
 
 #[test]
 fn a_removed_consumer_frees_its_sketch_and_undo_and_redo_follow_the_document() {
-    // Fable's test 6 (R2, R5): Legs deleted: Profile shown (nothing is built from it);
+    // Decision 29: Legs deleted: Profile shown (nothing is built from it);
     // undone: hidden (Legs counts again); redone: shown.
     let f = fixture();
     let (mut h, _) = absorbed(&f, ABSORBED_AND_LOOSE);
@@ -39382,7 +39382,7 @@ fn a_removed_consumer_frees_its_sketch_and_undo_and_redo_follow_the_document() {
 
 #[test]
 fn an_override_survives_a_lost_consumer_and_falls_to_a_gained_one() {
-    // Fable's test 7 (R5): Profile with two consumers, Legs and Cut. Shown by a click; Cut
+    // Decision 29: Profile with two consumers, Legs and Cut. Shown by a click; Cut
     // deleted: still shown (a loss drops nothing, Legs remains); undone, Cut back: hidden
     // (a gain drops it). Shown by a click again; Cut and Legs deleted: shown (loose now,
     // the override agreeing).
@@ -39423,7 +39423,7 @@ fn pad_on_loose(h: &mut AppHarness) {
 
 #[test]
 fn a_sketch_is_absorbed_at_ok_not_while_its_dialog_makes_the_feature() {
-    // Fable's test 8 (R6), on Loose (shown, nothing built from it): its Pad's dialog adds
+    // Decision 29, on Loose (shown, nothing built from it): its Pad's dialog adds
     // the pad at once, yet Loose stays shown till OK, and hides then; undone, shown again.
     // Cancel instead: shown. Its eye clicked in the dialog, then Cancel: kept hidden (no
     // gain). Clicked, then OK: hidden by default, the override dropped at the gain, so one
@@ -39492,7 +39492,7 @@ fn a_sketch_is_absorbed_at_ok_not_while_its_dialog_makes_the_feature() {
 
 #[test]
 fn edit_feature_changes_no_eye_till_its_sketch_moves_and_ok_keeps_the_move() {
-    // Fable's tests 9 and 10 (R2, R6): Edit Feature on Legs: Profile hidden throughout, and
+    // Decision 29: Edit Feature on Legs: Profile hidden throughout, and
     // after Cancel. Its sketch moved to Loose in the dialog: at once Profile shown and
     // Loose hidden; Cancel: back. Moved again and OK'd: Profile shown, Loose hidden. Loose
     // comes before Legs here, so Legs may take it (a feature uses only features before it).
@@ -39540,12 +39540,128 @@ fn edit_feature_changes_no_eye_till_its_sketch_moves_and_ok_keeps_the_move() {
             assert!(eye_says(&h, "Show", "Profile") && eye_says(&h, "Hide", "Loose"));
         }
     }
+    // Legs now on Loose: both eyes clicked away from their defaults (Profile hidden, Loose
+    // shown). Edit Feature opened and cancelled, nothing moved: neither override dropped.
+    click_eye(&mut h, "Hide", "Profile");
+    click_eye(&mut h, "Show", "Loose");
+    let keys: Vec<_> = h.state().tabs()[0].overrides.keys().cloned().collect();
+    assert_eq!(keys.len(), 2);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    open(&mut h);
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert!(eye_says(&h, "Show", "Profile") && eye_says(&h, "Hide", "Loose"));
+    assert_eq!(
+        h.state().tabs()[0]
+            .overrides
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        keys
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_edit_features_move_cancelled_drops_no_override() {
+    // "Edit Feature … drop nothing" (decision 29), a move cancelled included: Profile shown
+    // by its eye though Legs is built from it; Edit Feature moves Legs onto Loose (Loose then
+    // hidden by default), and Cancel: Profile's override kept, so it shows still, and Loose
+    // shows again.
+    let f = fixture();
+    let (mut h, _) = absorbed(&f, &loose_before_legs());
+    click_eye(&mut h, "Show", "Profile");
+    let kept = h.state().tabs()[0].overrides.clone();
+    assert_eq!(kept.len(), 1);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    double_click(&mut h, "Timeline", "Legs");
+    step_until(&mut h, "its dialog", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    browser(&h).get_by_label("Loose").click();
+    step(&mut h);
+    step_until(&mut h, "Legs from Loose", |h| eye_says(h, "Show", "Loose"));
+    assert!(eye_says(&h, "Hide", "Profile"));
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    for _ in 0..4 {
+        step(&mut h);
+        assert!(eye_says(&h, "Hide", "Profile") && eye_says(&h, "Hide", "Loose"));
+    }
+    assert_eq!(h.state().tabs()[0].overrides, kept);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_new_feature_cancelled_then_redone_counts_again_though_no_read_came_between() {
+    // A pad on Loose OK'd and undone, the transaction left open. A second pad's dialog,
+    // cancelled while every published read is held, so no timeline read answers between
+    // its undo and Redo (Ctrl+Y), which makes the pad again. Released: Loose is built from
+    // the redone pad, so it's hidden; the cancelled pad's exclusion ended at its undo's
+    // revision, whatever was read in between.
+    let f = fixture();
+    let (mut h, _) = absorbed(&f, ABSORBED_AND_LOOSE);
+    pad_on_loose(&mut h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    step_key(&mut h, true);
+    step_until(&mut h, "the pad undone", |h| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_ref())
+            .is_some_and(|features| features.len() == 3)
+    });
+    settled(&mut h);
+    assert!(eye_says(&h, "Hide", "Loose"));
+    pad_on_loose(&mut h);
+    let id = h.state().tabs()[0].id;
+    let held = hold_published_reads(&f, id);
+    let before = h.state().tabs()[0].revision;
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed and undone", |h| {
+        !dialog_open(h) && h.state().tabs()[0].revision > before
+    });
+    let undone = h.state().tabs()[0].revision;
+    step_until(&mut h, "redoable", |h| h.state().tabs()[0].redoable());
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
+    step_until(&mut h, "redone", |h| h.state().tabs()[0].revision > undone);
+    release_published_reads(held);
+    settled(&mut h);
+    step_until(&mut h, "the redone pad read", |h| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_ref())
+            .is_some_and(|features| features.len() == 4)
+    });
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(eye_says(&h, "Show", "Loose"));
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
 fn sketch_mode_drops_nothing_and_an_absorbed_sketch_edited_stays_hidden() {
-    // Fable's test 11 (R8), its eyes: Edit Sketch on Loose and Finish: shown; on Profile
+    // Decision 29, its eyes: Edit Sketch on Loose and Finish: shown; on Profile
     // (absorbed) and Finish: hidden still.
     let f = fixture();
     let (mut h, _) = absorbed(&f, ABSORBED_AND_LOOSE);
@@ -39559,13 +39675,40 @@ fn sketch_mode_drops_nothing_and_an_absorbed_sketch_edited_stays_hidden() {
         assert!(eye_says(&h, word, name), "{name}");
     }
     assert!(h.state().tabs()[0].overrides.is_empty());
+    // Both eyes clicked away from their defaults (Profile shown, Loose hidden): Edit Sketch
+    // finished or cancelled, and a new sketch cancelled, drop neither override ("Edit
+    // Sketch … drop nothing", decision 29).
+    click_eye(&mut h, "Show", "Profile");
+    click_eye(&mut h, "Hide", "Loose");
+    let keys: Vec<_> = h.state().tabs()[0].overrides.keys().cloned().collect();
+    assert_eq!(keys.len(), 2);
+    let kept = |h: &AppHarness| {
+        eye_says(h, "Hide", "Profile")
+            && eye_says(h, "Show", "Loose")
+            && h.state().tabs()[0]
+                .overrides
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                == keys
+    };
+    // Three frames on, so a double-click isn't taken with the eyes' clicks for a triple.
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    for (name, finish) in [("Loose", true), ("Profile", true), ("Loose", false)] {
+        double_click(&mut h, "Browser", name);
+        step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+        leave_sketch(&mut h, finish);
+        assert!(kept(&h), "{name}, finished: {finish}");
+    }
     // A new sketch cancelled was never listed: no new row, the eyes as they were. One
     // finished is listed with nothing built from it: shown.
     let rows = h.state().tabs()[0].browser.sketches.len();
     create_sketch(&mut h, "XY plane");
     leave_sketch(&mut h, false);
     assert_eq!(h.state().tabs()[0].browser.sketches.len(), rows);
-    assert!(eye_says(&h, "Show", "Profile") && eye_says(&h, "Hide", "Loose"));
+    assert!(kept(&h), "a new sketch cancelled");
     create_sketch(&mut h, "XY plane");
     leave_sketch(&mut h, true);
     step_until(&mut h, "the new sketch listed", |h| {
@@ -39574,7 +39717,7 @@ fn sketch_mode_drops_nothing_and_an_absorbed_sketch_edited_stays_hidden() {
     let new = h.state().tabs()[0].browser.sketches.last().unwrap().clone();
     assert!(new.consumers.is_empty());
     assert!(eye_says(&h, "Hide", &new.name), "{}", new.name);
-    assert!(h.state().tabs()[0].overrides.is_empty());
+    assert!(kept(&h), "a new sketch finished");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -39588,7 +39731,7 @@ fn eye_tip(h: &mut AppHarness, eye: &str, said: &str) {
 
 #[test]
 fn a_sketch_on_a_face_gone_is_shown_by_default_and_its_eye_says_why_it_isnt_drawn() {
-    // Fable's test 12 (R9): Top, on a face the model doesn't have as a plane: shown by
+    // Decision 29: Top, on a face the model doesn't have as a plane: shown by
     // default (nothing is built from it), its eye's tooltip "Not drawn: " and the core's
     // own read's words for its plane. Padded (OK'd): hidden, `inputs` alone deciding.
     let f = fixture();
@@ -39630,19 +39773,43 @@ fn a_sketch_on_a_face_gone_is_shown_by_default_and_its_eye_says_why_it_isnt_draw
 
 #[test]
 fn a_suppressed_sketch_keeps_its_eye_and_says_it_isnt_drawn() {
-    // Fable's test 13 (R9), its eye: Loose suppressed: still shown, its eye's tooltip "Not
+    // Decision 29, its eye: Loose suppressed: still shown, its eye's tooltip "Not
     // drawn: suppressed".
+    // Placed and unsuppressed, before and after: no "Not drawn" line.
     let f = fixture();
     let (mut h, _) = absorbed(&f, ABSORBED_AND_LOOSE);
+    no_eye_tip(&mut h, "Hide Loose");
     timeline_act(&mut h, "Loose", "Suppress", Some(true));
     assert!(eye_says(&h, "Hide", "Loose"));
     eye_tip(&mut h, "Hide Loose", "Not drawn: suppressed");
+    timeline_act(&mut h, "Loose", "Unsuppress", Some(false));
+    no_eye_tip(&mut h, "Hide Loose");
     assert_eq!(never_waits::waits(), 0);
+}
+
+/// The pointer moved off the browser, then `eye` hovered for three seconds of egui's time:
+/// no line of the window says "Not drawn".
+fn no_eye_tip(h: &mut AppHarness, eye: &str) {
+    h.input_mut()
+        .events
+        .push(eframe::egui::Event::PointerMoved(eframe::egui::pos2(
+            640.0, 400.0,
+        )));
+    step(h);
+    browser(h).get_by_label(eye).hover();
+    for _ in 0..12 {
+        step(h);
+        assert_eq!(
+            h.query_all_by_label_contains("Not drawn").count(),
+            0,
+            "{eye}"
+        );
+    }
 }
 
 #[test]
 fn a_reload_that_builds_from_a_shown_sketch_hides_it_and_drops_its_override() {
-    // Fable's test 14 (R10, R5): Loose shown; the file written outside the app with a pad
+    // Decision 29: Loose shown; the file written outside the app with a pad
     // of Loose, and the reload taken: hidden. Again from the start with Loose hidden by a
     // click first: hidden too, its override dropped at the gain, so one click shows it.
     let padded = ABSORBED_AND_LOOSE.replace(
@@ -39669,7 +39836,7 @@ fn a_reload_that_builds_from_a_shown_sketch_hides_it_and_drops_its_override() {
 
 #[test]
 fn eyes_clicked_and_h_write_nothing_to_the_file() {
-    // Fable's test 16 (R10): eyes clicked and H pressed, then Save: the file's bytes as they
+    // Decision 29: eyes clicked and H pressed, then Save: the file's bytes as they
     // were, and the tab never unsaved.
     use eframe::egui::Key;
     let f = fixture();
