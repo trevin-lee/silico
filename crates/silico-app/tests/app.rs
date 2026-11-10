@@ -21695,6 +21695,11 @@ fn after_an_edit_the_shown_sketches_are_read_first() {
             .click();
         step(&mut h);
     }
+    // Half a second on, so Loose's double-click isn't taken with the eyes' clicks as one
+    // run of clicks (egui counts clicks within its double-click time together).
+    for _ in 0..30 {
+        step(&mut h);
+    }
     double_click(&mut h, "Browser", "Loose");
     sketch_read(&mut h);
     select_member(
