@@ -21641,6 +21641,16 @@ fn after_an_edit_each_sketch_is_read_once_more_and_a_changed_state_shows_its_pre
         step(&mut h);
     }
     assert_eq!(h.state().tabs()[0].sketch_reads.reads, 7);
+    // Cancelled: the transaction rolled back, at a new revision, Loose's point back. Loose,
+    // no longer open, is read again, and its prefix is its read's, sketch mode's no longer.
+    leave_sketch(&mut h, false);
+    step_until(&mut h, "Loose's prefix its read's again", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.sketch_reads
+            .held(&sketch_id("s0000001"))
+            .is_some_and(|held| Some(held.revision) == tab.published)
+            && prefixes(h) == [Some("(–)"), Some("(+)"), Some("(?)"), None]
+    });
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21695,9 +21705,11 @@ fn after_an_edit_the_shown_sketches_are_read_first() {
             .click();
         step(&mut h);
     }
-    // Half a second on, so Loose's double-click isn't taken with the eyes' clicks as one
-    // run of clicks (egui counts clicks within its double-click time together).
-    for _ in 0..30 {
+    // Three frames on, so Loose's double-click isn't taken for a triple click: egui's time
+    // moves by its step (a quarter second a frame), not the wall clock's, and egui takes a
+    // second click within twice its double-click time (2 × 0.3 s) of the click before last,
+    // here the last eye's, for a third.
+    for _ in 0..3 {
         step(&mut h);
     }
     double_click(&mut h, "Browser", "Loose");
@@ -21736,7 +21748,8 @@ fn a_sketchs_read_is_held_till_the_next_revisions_answers_and_never_lapses_betwe
     // The study's test 12: Tight's distance set from 5 to 6 by another client, the solves
     // held, so the model it publishes waits: every frame meanwhile holds each sketch's read
     // of the revision before. Released, each is read again, one at a time, of the new
-    // revision: in no frame between is a sketch's read gone.
+    // revision: in no frame between is a sketch's read gone. Tight's, changed, is replaced;
+    // the other three's, equal, keep their `Arc`s.
     let f = fixture();
     let mut h = four_read(&f);
     let ids = ["s0000001", "s0000002", "s0000003", "s0000004"].map(sketch_id);
@@ -21748,8 +21761,14 @@ fn a_sketchs_read_is_held_till_the_next_revisions_answers_and_never_lapses_betwe
                 .map(|held| held.revision)
         })
     };
+    let reads_held = |h: &AppHarness| {
+        ids.clone().map(|id| {
+            Arc::clone(&h.state().tabs()[0].sketch_reads.held(&id).unwrap().read)
+        })
+    };
     let before = revisions(&h);
     assert!(before.iter().all(Option::is_some));
+    let first = reads_held(&h);
     let id = h.state().tabs()[0].id;
     f.sketches.hold();
     let theirs = f.sessions.set_field(
@@ -21760,18 +21779,153 @@ fn a_sketchs_read_is_held_till_the_next_revisions_answers_and_never_lapses_betwe
         json::read(b"6").unwrap(),
     );
     assert!(f.sketches.wait_held(WAIT));
+    // The edit's rebuild held (its sketches' solves), so nothing new is published: each
+    // frame meanwhile holds every read of the revision before, and sends none.
     for _ in 0..20 {
         step(&mut h);
         assert_eq!(revisions(&h), before);
+        let reads = &h.state().tabs()[0].sketch_reads;
+        assert!(reads.reads == 4 && reads.reading().is_none(), "{}", reads.reads);
     }
     f.sketches.release();
     step_until(&mut h, "each read again", |h| {
         let now = revisions(h);
         assert!(now.iter().all(Option::is_some), "a read gone: {now:?}");
-        now.iter().zip(&before).all(|(now, before)| now > before)
+        let tab = &h.state().tabs()[0];
+        tab.published > before[0] && now.iter().all(|now| *now == tab.published)
     });
     assert_eq!(h.state().tabs()[0].sketch_reads.reads, 8);
+    let again = reads_held(&h);
+    assert!(!Arc::ptr_eq(&again[1], &first[1]), "Tight's first read held");
+    let distance = again[1]
+        .members
+        .constraints
+        .iter()
+        .find(|constraint| constraint.id.as_str() == "ka000001")
+        .unwrap();
+    assert_eq!(distance.form.value_text().as_deref(), Some("6"));
+    for k in [0, 2, 3] {
+        assert!(Arc::ptr_eq(&again[k], &first[k]), "{} read anew", ids[k]);
+    }
     theirs.wait().result.unwrap();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_suppressed_by_another_client_drops_its_read_and_the_rest_keep_theirs() {
+    // Tight suppressed by another client: the timeline still lists it, so each of the four
+    // is read again of the model that publishes, and Tight's, refused, is dropped (no
+    // prefix, nothing to draw). The other three's answers equal theirs: the same `Arc`s.
+    let f = fixture();
+    let mut h = four_read(&f);
+    let ids = ["s0000001", "s0000002", "s0000003", "s0000004"].map(sketch_id);
+    let first = ids.clone().map(|id| {
+        Arc::clone(&h.state().tabs()[0].sketch_reads.held(&id).unwrap().read)
+    });
+    let id = h.state().tabs()[0].id;
+    let theirs = f.sessions.suppress_feature(
+        &id,
+        h.state().tabs()[0].revision,
+        ids[1].clone(),
+        true,
+    );
+    theirs.wait().result.unwrap();
+    step_until(&mut h, "each read again", |h| {
+        let reads = &h.state().tabs()[0].sketch_reads;
+        reads.reads == 8 && reads.reading().is_none()
+    });
+    let tab = &h.state().tabs()[0];
+    assert!(tab.browser.sketches.iter().any(|row| row.id == ids[1]));
+    let reads = &tab.sketch_reads;
+    assert!(reads.held(&ids[1]).is_none());
+    assert_eq!(reads.state(&ids[1]), None);
+    assert_eq!(reads.prefix(&ids[1]), None);
+    for k in [0, 2, 3] {
+        let held = reads.held(&ids[k]).unwrap();
+        assert!(Arc::ptr_eq(&held.read, &first[k]), "{} read anew", ids[k]);
+        assert_eq!(Some(held.revision), tab.published);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_read_refused_before_it_reaches_a_model_keeps_the_held_one_and_is_sent_again() {
+    // As many published reads as the session runs at once, held, then Tight's distance set
+    // to 6 by another client: each sketch's read of the model that publishes is refused
+    // before it reaches it (too many reads), naming no model. Every frame meanwhile keeps
+    // each sketch's read of the revision before, and asks again. Released, each is read of
+    // the new revision.
+    use silico_core::command::{MAX_PUBLISHED_READS, ReadCommand};
+    use std::sync::mpsc;
+    let f = fixture();
+    let mut h = four_read(&f);
+    let ids = ["s0000001", "s0000002", "s0000003", "s0000004"].map(sketch_id);
+    let first = ids
+        .clone()
+        .map(|id| h.state().tabs()[0].sketch_reads.held(&id).unwrap().clone());
+    let id = h.state().tabs()[0].id;
+    let (release, released) = mpsc::channel::<()>();
+    let released = Arc::new(Mutex::new(released));
+    let (started, starts) = mpsc::channel::<()>();
+    let held: Vec<_> = (0..MAX_PUBLISHED_READS)
+        .map(|_| {
+            let released = Arc::clone(&released);
+            let started = started.clone();
+            f.sessions
+                .read_model(&id, ReadCommand::Check, ModelChoice::Published, move |_| {
+                    started.send(()).unwrap();
+                    let _ = released.lock().unwrap().recv();
+                    Ok(())
+                })
+        })
+        .collect();
+    for _ in 0..MAX_PUBLISHED_READS {
+        starts.recv_timeout(WAIT).unwrap();
+    }
+    let theirs = f.sessions.set_field(
+        &id,
+        h.state().tabs()[0].revision,
+        ids[1].clone(),
+        "constraints.ka000001.value".to_owned(),
+        json::read(b"6").unwrap(),
+    );
+    theirs.wait().result.unwrap();
+    step_until(&mut h, "the edit's model published", |h| {
+        h.state().tabs()[0].published > Some(first[0].revision)
+    });
+    let sent = h.state().tabs()[0].sketch_reads.reads;
+    for _ in 0..10 {
+        step(&mut h);
+        let reads = &h.state().tabs()[0].sketch_reads;
+        for (id, first) in ids.iter().zip(&first) {
+            let held = reads.held(id).unwrap();
+            assert!(Arc::ptr_eq(&held.read, &first.read), "{id} not kept");
+            assert_eq!(held.revision, first.revision, "{id}");
+        }
+    }
+    // Asked again, frame by frame, though refused each time.
+    assert!(h.state().tabs()[0].sketch_reads.reads >= sent + 5);
+    drop(release);
+    for read in held {
+        read.wait().result.unwrap();
+    }
+    step_until(&mut h, "each read of the edit's model", |h| {
+        let tab = &h.state().tabs()[0];
+        ids.iter().all(|id| {
+            tab.sketch_reads
+                .held(id)
+                .is_some_and(|held| Some(held.revision) == tab.published)
+        })
+    });
+    let reads = &h.state().tabs()[0].sketch_reads;
+    let tight = &reads.held(&ids[1]).unwrap().read;
+    let distance = tight
+        .members
+        .constraints
+        .iter()
+        .find(|constraint| constraint.id.as_str() == "ka000001")
+        .unwrap();
+    assert_eq!(distance.form.value_text().as_deref(), Some("6"));
     assert_eq!(never_waits::waits(), 0);
 }
 
