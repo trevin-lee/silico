@@ -1217,6 +1217,12 @@ fn grid(view: &View<'_>, axes: [Color32; 2]) -> Vec<Drawn> {
     drawn
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many polylines this thread has made ([`polyline`]): what a test counts.
+    pub(crate) static POLYLINES_MADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// `curve`'s polyline in the sketch's millimetres, at `scale` and `tolerance`: a line its
 /// two ends; a circle or an arc its points from its start round its sweep, as many segments
 /// as [`curve_segments`] says keep every chord within `tolerance` points at `scale`, the
@@ -1224,6 +1230,8 @@ fn grid(view: &View<'_>, axes: [Color32; 2]) -> Vec<Drawn> {
 /// a curve: region fills ([`walk`]) and the 3D view's lines ([`super::lines`]) meet outlines
 /// vertex for vertex.
 pub(crate) fn polyline(curve: Curve, scale: Scale, tolerance: f32) -> Vec<[f64; 2]> {
+    #[cfg(test)]
+    POLYLINES_MADE.with(|made| made.set(made.get() + 1));
     match curve {
         Curve::Line { from, to } => vec![from, to],
         Curve::Round {

@@ -166,29 +166,39 @@ fn construction_of(read: &SketchRead) -> BTreeMap<&ElementId, bool> {
         .collect()
 }
 
-/// How many points [`strips_of`] makes of `read` at `scale`, counted without making them:
-/// a line's 2, a circle's or an arc's its segments and 1 ([`curve_segments`], as
-/// [`polyline`] takes them), a construction curve's its dashes' (cut from its polyline). Past
-/// [`MAX_LINE_POINTS`] it stops, at the first count over it. None for a read its plane
-/// doesn't place.
+/// How many points [`strips_of`] makes of `read` at `scale`, counted without making any
+/// polyline: a line's 2, a circle's or an arc's its segments and 1 ([`curve_segments`], as
+/// [`polyline`] takes them). A construction curve's, at most: its vertices, each in one
+/// dash at most, and each dash's two ends, the dashes no more than its length (a line's, or
+/// an arc's r·|sweep|, never less than its polyline's) over a dash and a gap, rounded up, nor
+/// than [`MAX_CURVE_DASHES`] and 1. So it's never below what's made, and the caps hold; a
+/// sketch of construction curves can be counted past what's left, or its own cap, though
+/// what it would make fits. Past [`MAX_LINE_POINTS`] it stops, at the first count over it.
+/// None for a read its plane doesn't place.
 fn count_points(read: &SketchRead, scale: Scale) -> Option<usize> {
     read.plane.as_ref().ok()?;
     let construction = construction_of(read);
     let [dash, gap] = theme::SKETCH_CONSTRUCTION_DASH.map(|points| scale.mm(points));
+    let most_dashes = MAX_CURVE_DASHES + 1;
     let mut points = 0usize;
     for (id, curve, _) in Geometry::of(read).curves() {
+        let (vertices, length) = match curve {
+            Curve::Line { from, to } => (2, libm::hypot(to[0] - from[0], to[1] - from[1])),
+            Curve::Round { radius, sweep, .. } => (
+                curve_segments(radius, sweep, scale, SKETCH_CHORD_TOLERANCE) + 1,
+                radius * sweep.abs(),
+            ),
+        };
         points += if construction.get(id).copied().unwrap_or(false) {
-            dashes(&polyline(curve, scale, SKETCH_CHORD_TOLERANCE), dash, gap)
-                .iter()
-                .map(Vec::len)
-                .sum()
+            let dashes = (length / (dash + gap)).ceil();
+            let dashes = if dashes >= 0.0 && dashes < most_dashes as f64 {
+                dashes as usize
+            } else {
+                most_dashes
+            };
+            vertices + 2 * dashes
         } else {
-            match curve {
-                Curve::Line { .. } => 2,
-                Curve::Round { radius, sweep, .. } => {
-                    curve_segments(radius, sweep, scale, SKETCH_CHORD_TOLERANCE) + 1
-                }
-            }
+            vertices
         };
         if points > MAX_LINE_POINTS {
             break;
@@ -382,13 +392,13 @@ impl ShownLines {
                         Some(count) if count > build_left && build_left < budget.build => {
                             self.pending = true;
                         }
-                        Some(_) => {
+                        // Charged its count whatever the build comes to, refused or not.
+                        Some(count) => {
                             let built = strips_of(read, at)
                                 .unwrap_or(Err(NotDrawn::TooMany))
                                 .map(Arc::new);
-                            let points = built.as_ref().map_or(0, |strips| strips.points());
-                            build_left -= points.min(build_left);
-                            self.built += points;
+                            build_left -= count.min(build_left);
+                            self.built += count;
                             if let Err(why) = &built {
                                 tracing::warn!(sketch = %id, ?why, "a shown sketch's lines aren't drawn");
                             }
@@ -1065,6 +1075,131 @@ mod tests {
             assert_eq!(lines.built, 0);
             assert!(!lines.pending());
         }
+    }
+
+    #[test]
+    fn a_build_the_renderer_refuses_is_charged_its_count() {
+        // Two sketches, each one side from the origin to x = 2·10¹² mm, past the renderer's
+        // 10¹² reach: 2 points each, refused when built. Building 2 a frame: the first frame
+        // builds one, charged its 2, and leaves the other for the next. Neither is drawn.
+        let far = || {
+            let mut sketch = rectangle(Vec::new());
+            sketch.lines.truncate(1);
+            sketch.points[1] = point("pa000002", 2e12, 0.0);
+            Arc::new(under(sketch))
+        };
+        let ids: Vec<FeatureId> = (1..=2)
+            .map(|k| FeatureId::new(&format!("s{k:07}")).unwrap())
+            .collect();
+        let reads = [far(), far()];
+        let budget = Budget {
+            draw: MAX_FRAME_LINE_POINTS,
+            build: 2,
+        };
+        let mut lines = ShownLines::default();
+        let drawn = lines.frame_within(ids.iter().zip(&reads), &at_120(), 800.0, budget);
+        assert!(drawn.is_empty());
+        assert_eq!(lines.built, 2);
+        assert!(lines.pending());
+        assert!(matches!(
+            lines.made[&ids[0]].strips,
+            Some((_, Err(NotDrawn::Refused(_))))
+        ));
+        let drawn = lines.frame_within(ids.iter().zip(&reads), &at_120(), 800.0, budget);
+        assert!(drawn.is_empty());
+        assert_eq!(lines.built, 2);
+        assert!(!lines.pending());
+    }
+
+    #[test]
+    fn a_construction_curves_count_is_never_below_what_is_made() {
+        // A construction line of 40 mm, at 0.125 mm a point dashes of 0.625 mm and gaps of
+        // 0.375 (a period of 1 mm): counted as its 2 vertices and 2 ends for each of 40
+        // dashes, 82; made, 40 dashes of 2 points, 80. And a construction circle of radius
+        // 1 m, an arc of radius 10 about the origin from (10, 0) to (0, 10), and the line, at
+        // scales from a millionth of a millimetre a point (every curve at its most segments)
+        // to 4: the count never below what's made.
+        let mut line = rectangle(Vec::new());
+        line.lines.truncate(1);
+        line.lines[0].construction = true;
+        let line = under(line);
+        assert_eq!(count_points(&line, Scale(0.125)), Some(82));
+        assert_eq!(
+            strips_of(&line, Scale(0.125)).unwrap().unwrap().points(),
+            80
+        );
+        let mut sketch = rectangle(Vec::new());
+        sketch.lines.truncate(1);
+        sketch.lines[0].construction = true;
+        sketch.points.extend([
+            point("pa000010", 0.0, 0.0),
+            point("pa000011", 10.0, 0.0),
+            point("pa000012", 0.0, 10.0),
+        ]);
+        sketch.circles.push(SketchCircle {
+            id: id("ca000001"),
+            center: id("pa000010"),
+            radius: Coordinate::new(1000.0).unwrap(),
+            construction: true,
+        });
+        sketch.arcs.push(silico_core::document::SketchArc {
+            id: id("aa000001"),
+            center: id("pa000010"),
+            start: id("pa000011"),
+            end: id("pa000012"),
+            construction: true,
+        });
+        let read = under(sketch);
+        for scale in [1e-6, 1e-3, 0.0625, 0.125, 1.0, 4.0] {
+            let count = count_points(&read, Scale(scale)).unwrap();
+            let made = strips_of(&read, Scale(scale)).unwrap().unwrap().points();
+            assert!(count >= made, "at {scale}: {count} < {made}");
+        }
+    }
+
+    #[test]
+    fn sketches_of_construction_curves_left_out_make_no_polyline() {
+        // Three sketches of 50 construction circles of 1 m, at a millionth of a millimetre a
+        // point each counted far past the 20 points a frame may draw: left out, counted
+        // without a polyline made or a point built.
+        let sketch = || {
+            let mut sketch = rectangle(Vec::new());
+            sketch.lines.clear();
+            sketch.points = vec![point("pa000006", 0.0, 0.0)];
+            sketch.circles = (0..50)
+                .map(|k| SketchCircle {
+                    id: id(&format!("c{k:07}")),
+                    center: id("pa000006"),
+                    radius: Coordinate::new(1000.0).unwrap(),
+                    construction: true,
+                })
+                .collect();
+            Arc::new(under(sketch))
+        };
+        let ids: Vec<FeatureId> = (1..=3)
+            .map(|k| FeatureId::new(&format!("s{k:07}")).unwrap())
+            .collect();
+        let reads = [sketch(), sketch(), sketch()];
+        let camera = Camera {
+            projection: Projection::Orthographic {
+                view_height: 0.000_8,
+            },
+            ..at_120()
+        };
+        let budget = Budget {
+            draw: 20,
+            build: 20,
+        };
+        let mut lines = ShownLines::default();
+        super::super::draw::POLYLINES_MADE.with(|made| made.set(0));
+        let drawn = lines.frame_within(ids.iter().zip(&reads), &camera, 800.0, budget);
+        assert!(drawn.is_empty());
+        assert_eq!(
+            super::super::draw::POLYLINES_MADE.with(std::cell::Cell::get),
+            0
+        );
+        assert_eq!(lines.built, 0);
+        assert_eq!(lines.capped.len(), 3);
     }
 
     #[test]
