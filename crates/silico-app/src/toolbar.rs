@@ -193,8 +193,12 @@ const fn keyed(command: Command, key: shortcuts::Command) -> Command {
 /// What a command's tooltip says when it isn't built yet.
 const NOT_BUILT: &str = "Not built yet";
 
+/// Create Sketch's words: its button's, and its item's in the canvas's context menu
+/// (`crate::canvas_menu`), which opens the same planes ([`planes`]).
+pub(crate) const CREATE_SKETCH_WORDS: &str = "Create Sketch";
+
 const CREATE_SKETCH: Command = command(
-    "Create Sketch",
+    CREATE_SKETCH_WORDS,
     Icon::Sketch,
     // The prototype's "Pick an origin plane or a flat face, then sketch on it", once faces
     // are picked (M5.7).
@@ -802,7 +806,9 @@ fn row_button(ui: &mut Ui, command: &Command, shown: &Shown<'_>, act: &mut Optio
     let response = bar::tooltip(response, command.label, keys, said.as_deref());
     if command.does == Does::CreateSketch {
         bar::menu(&response, |ui| {
-            menu_node(ui, command.label, |ui| planes(ui, act));
+            if let Some(plane) = planes(ui) {
+                *act = Some(Act::CreateSketch(plane));
+            }
         });
     } else if response.clicked()
         && let Some(asked) = command.act()
@@ -991,8 +997,11 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                 Does::CreateSketch => {
                     let (button, _) = ui
                         .add_enabled_ui(enabled, |ui| {
-                            egui::containers::menu::SubMenuButton::from_button(item)
-                                .ui(ui, |ui| menu_node(ui, command.label, |ui| planes(ui, act)))
+                            egui::containers::menu::SubMenuButton::from_button(item).ui(ui, |ui| {
+                                if let Some(plane) = planes(ui) {
+                                    *act = Some(Act::CreateSketch(plane));
+                                }
+                            })
                         })
                         .inner;
                     if let (false, Some(said)) = (command.built(shown), command.said(shown)) {
@@ -1039,14 +1048,21 @@ fn filter_command(kind: FilterKind) -> crate::shortcuts::Command {
     }
 }
 
-/// Create Sketch's planes: a click on one starts a sketch on it.
-fn planes(ui: &mut Ui, act: &mut Option<Act>) {
-    for (plane, word) in PLANES {
-        if ui.button(word).clicked() {
-            *act = Some(Act::CreateSketch(plane));
-            ui.close();
+/// Create Sketch's planes, a menu of their own for a screen reader, labelled Create Sketch:
+/// a click on one closes the menu, and is the plane a sketch is started on. The one menu of
+/// them, which Create Sketch's button opens, and its item in CREATE's drop-down, and the
+/// canvas's context menu over nothing (`crate::canvas_menu`).
+pub(crate) fn planes(ui: &mut Ui) -> Option<OriginPlane> {
+    let mut chosen = None;
+    menu_node(ui, CREATE_SKETCH.label, |ui| {
+        for (plane, word) in PLANES {
+            if ui.button(word).clicked() {
+                chosen = Some(plane);
+                ui.close();
+            }
         }
-    }
+    });
+    chosen
 }
 
 // ---- Finish Sketch (`.tb-finish`) ----

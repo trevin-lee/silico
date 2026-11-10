@@ -55,6 +55,7 @@ fn frame<'a>(
         edges: true,
         vertices: None,
         background: VIEWPORT_BG,
+        lines: &[],
     }
 }
 
@@ -4332,6 +4333,506 @@ fn a_body_behind_a_perspective_eye_has_no_edge_drawn_again_for_picking_though_it
     );
 }
 
+// Lines among the bodies (Frame::lines: a shown sketch's curves, the approved prototype's
+// `syncSketchLines`). Each expected pixel is placed by the module's rule, by hand, and
+// checked against `project`; the colour is magenta, which neither the body's grey shading
+// nor its dark edges can be, 1.5 points wide (the prototype's), so a line through a pixel's
+// centre covers it whole (re_renderer's coverage is 1 within its half width less half a
+// pixel) and the rows a pixel off only partly.
+
+const MAGENTA: [u8; 4] = [255, 0, 255, 255];
+
+/// [`VIEWPORT_BG`] as a pixel of the frame: opaque black.
+const BLACK: [u8; 4] = [0, 0, 0, 255];
+
+/// z of row 26.5, a pixel's centre on the front face: 7 − 2.5 × 11/12.
+const ROW_26_Z: f64 = 7.0 - 2.5 * 11.0 / 12.0;
+
+/// A line along x from 2 to 38 at `y` and `z`: columns 32 + (2 − 21) × 12/11 = 11.27 to
+/// 32 + 17 × 12/11 = 50.55, inside the front face's 9.09 to 52.73, so a line behind the box
+/// is behind it at every pixel it could reach.
+fn line_at(y: f64, z: f64) -> super::Strips {
+    super::Strips::new([vec![[2.0, y, z], [38.0, y, z]]]).unwrap()
+}
+
+fn magenta(strips: &super::Strips) -> super::Lines<'_> {
+    super::Lines {
+        strips,
+        colour: MAGENTA,
+        width: 1.5,
+    }
+}
+
+/// `frame` drawn and composited: its pixels, rows top to bottom.
+fn image(r: &mut Renderer, frame: &Frame<'_>) -> Vec<[u8; 4]> {
+    let commands = r.prepare(frame).unwrap();
+    composited(r, Some(commands))
+}
+
+fn pixel(image: &[[u8; 4]], x: u32, y: u32) -> [u8; 4] {
+    image[usize::try_from(y * WIDTH + x).unwrap()]
+}
+
+/// Whether `got` is within `levels` of `want` in every channel.
+fn within(got: [u8; 4], want: [u8; 4], levels: u8) -> bool {
+    got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= levels)
+}
+
+/// Row `row`'s pixels from column `from` to `to`, each within 8 levels of magenta.
+fn assert_magenta_row(image: &[[u8; 4]], row: u32, from: u32, to: u32) {
+    for x in from..=to {
+        let got = pixel(image, x, row);
+        assert!(within(got, MAGENTA, 8), "({x}, {row}): {got:?}");
+    }
+}
+
+#[test]
+fn a_line_on_the_front_face_is_drawn_where_project_puts_it_and_nowhere_else() {
+    on_lavapipe(
+        "render::frame_tests::a_line_on_the_front_face_is_drawn_where_project_puts_it_and_nowhere_else",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            // By the module's rule, (21, 0, 4.708333) lands at (32, 26.5): row 24 + 2.5 (to
+            // the f32 rounding of the matrix `project` takes as the GPU does).
+            assert_pixel(
+                project(&camera, [WIDTH, HEIGHT], [21.0, 0.0, ROW_26_Z]),
+                [32.0, 26.5],
+                1e-6,
+            );
+            let line = line_at(0.0, ROW_26_Z);
+            let without = image(r, &frame(&camera, &[1], &[], None));
+            let with = image(
+                r,
+                &Frame {
+                    lines: &[magenta(&line)],
+                    ..frame(&camera, &[1], &[], None)
+                },
+            );
+            // Without it, the face's shade is there, not magenta.
+            assert!(!within(pixel(&without, 32, 26), MAGENTA, 8));
+            assert_magenta_row(&with, 26, 12, 49);
+            // Rows 25 and 27 are a pixel's centre 1 from the line, inside its smoothing;
+            // every other pixel is the frame without it, byte for byte.
+            for y in (0..HEIGHT).filter(|y| !(25..=27).contains(y)) {
+                for x in 0..WIDTH {
+                    assert_eq!(pixel(&with, x, y), pixel(&without, x, y), "({x}, {y})");
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn a_line_behind_the_box_is_hidden_and_one_in_front_of_it_drawn() {
+    on_lavapipe(
+        "render::frame_tests::a_line_behind_the_box_is_hidden_and_one_in_front_of_it_drawn",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let without = image(r, &frame(&camera, &[1], &[], None));
+            // Half a millimetre behind the back face (y = 20): every pixel the frame's own.
+            let behind = line_at(20.5, ROW_26_Z);
+            let hidden = image(
+                r,
+                &Frame {
+                    lines: &[magenta(&behind)],
+                    ..frame(&camera, &[1], &[], None)
+                },
+            );
+            assert!(hidden == without, "a line behind the box shows");
+            // Half a millimetre in front of the front face: drawn as on it.
+            let ahead = line_at(-0.5, ROW_26_Z);
+            let drawn = image(
+                r,
+                &Frame {
+                    lines: &[magenta(&ahead)],
+                    ..frame(&camera, &[1], &[], None)
+                },
+            );
+            assert_magenta_row(&drawn, 26, 12, 49);
+        },
+    );
+}
+
+#[test]
+fn a_line_over_the_background_and_one_on_an_edge_are_drawn_over_them() {
+    on_lavapipe(
+        "render::frame_tests::a_line_over_the_background_and_one_on_an_edge_are_drawn_over_them",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            // Above the box: z = 7 + 8.5 × 11/12 lands on row 24 − 8.5 = 15.5.
+            let z = 7.0 + 8.5 * 11.0 / 12.0;
+            assert_pixel(
+                project(&camera, [WIDTH, HEIGHT], [21.0, 0.0, z]),
+                [32.0, 15.5],
+                1e-6,
+            );
+            let above = line_at(0.0, z);
+            let over = image(
+                r,
+                &Frame {
+                    lines: &[magenta(&above)],
+                    ..frame(&camera, &[1], &[], None)
+                },
+            );
+            assert_eq!(
+                pixel(&image(r, &frame(&camera, &[1], &[], None)), 32, 15),
+                BLACK
+            );
+            assert_magenta_row(&over, 15, 12, 49);
+            // With no background, as the app's frames: composited over what the pass holds
+            // (green here), the line as opaque as over a background of its own, and the pass's
+            // own colour beside it, above the box (row 5) and between it and the box (row 18).
+            let commands = r
+                .prepare(&Frame {
+                    lines: &[magenta(&above)],
+                    background: NO_BACKGROUND,
+                    ..frame(&camera, &[1], &[], None)
+                })
+                .unwrap();
+            let green = wgpu::Color {
+                r: 0.0,
+                g: 1.0,
+                b: 0.0,
+                a: 1.0,
+            };
+            let bare = composited_over(r, Some(commands), green);
+            assert_magenta_row(&bare, 15, 12, 49);
+            for y in [5, 18] {
+                assert_eq!(pixel(&bare, 32, y), [0, 255, 0, 255], "(32, {y})");
+            }
+            // Along the front face's top edge (Edge3, z = 10, row 20.73): the edge's dark
+            // without it, the line drawn after the edges over it (the prototype's
+            // `renderOrder` 4 against the edges' 2 and 3). Row 20's centre is 0.23 from the
+            // line, inside its half width less half a pixel.
+            let on_edge = line_at(0.0, 10.0);
+            let edge = pixel(&image(r, &frame(&camera, &[1], &[], None)), 32, 20);
+            assert!(!within(edge, MAGENTA, 8), "{edge:?}");
+            let drawn = image(
+                r,
+                &Frame {
+                    lines: &[magenta(&on_edge)],
+                    ..frame(&camera, &[1], &[], None)
+                },
+            );
+            assert_magenta_row(&drawn, 20, 12, 49);
+            // And the edge is still picked under it.
+            let edge_pick = pick(
+                r,
+                &Frame {
+                    lines: &[magenta(&on_edge)],
+                    ..frame(&camera, &[1], &[], Some(ON_THE_TOP_EDGE))
+                },
+            );
+            let found = edge_pick.hit.unwrap();
+            assert_eq!(
+                (found.body, found.hit, found.pixel),
+                (1, Element::Edge(3), [32, 20])
+            );
+        },
+    );
+}
+
+#[test]
+fn a_line_is_picked_by_nothing_and_the_face_under_it_is_found_beside_it() {
+    on_lavapipe(
+        "render::frame_tests::a_line_is_picked_by_nothing_and_the_face_under_it_is_found_beside_it",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            assert_eq!(
+                hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE))),
+                Some((1, Element::Face(3), [32, 26]))
+            );
+            // Row 26 is the line's: of the square's other pixels, (32, 25) and (32, 27) are
+            // both 1.0 from its centre (32.5, 26.5), and the first in rows is taken.
+            let line = line_at(0.0, ROW_26_Z);
+            let picking = pick(
+                r,
+                &Frame {
+                    lines: &[magenta(&line)],
+                    ..frame(&camera, &[1], &[], Some(ON_THE_FACE))
+                },
+            );
+            let found = picking.hit.unwrap();
+            assert_eq!(
+                (found.body, found.hit, found.pixel),
+                (1, Element::Face(3), [32, 25])
+            );
+            // The face's point at (32.5, 25.5): (21 + 0.5 × 11/12, 0, 7 − 1.5 × 11/12).
+            assert_point(
+                &found,
+                [21.0 + 5.5 / 12.0, 0.0, 7.0 - 16.5 / 12.0],
+                [1e-3, 1e-3, 1e-3],
+            );
+            assert_eq!(picking.edge, None);
+            // Over the background, the line alone: nothing.
+            let above = line_at(0.0, 7.0 + 8.5 * 11.0 / 12.0);
+            let picking = pick(
+                r,
+                &Frame {
+                    lines: &[magenta(&above)],
+                    ..frame(&camera, &[1], &[], Some(rect([30, 13], [5, 5])))
+                },
+            );
+            assert_eq!((picking.hit, picking.edge), (None, None));
+        },
+    );
+}
+
+#[test]
+fn an_orthographic_views_reach_takes_its_lines_so_a_line_with_no_body_is_drawn() {
+    on_lavapipe(
+        "render::frame_tests::an_orthographic_views_reach_takes_its_lines_so_a_line_with_no_body_is_drawn",
+        |r| {
+            let camera = front();
+            // No body: a reach of 0 would set the camera 1 mm in front of the target (y = 9),
+            // and the line at y = 0 would be behind it. Its box's corner reaches √(19² + 10² +
+            // 2.2917²) = 21.593 mm from (21, 10, 7), the camera 1 mm past that.
+            let line = line_at(0.0, ROW_26_Z);
+            let lines = [magenta(&line)];
+            let alone = Frame {
+                lines: &lines,
+                ..frame(&camera, &[], &[], None)
+            };
+            let below = 7.0 - ROW_26_Z;
+            let reach = (19.0f64 * 19.0 + 100.0 + below * below).sqrt();
+            assert!((reach - 21.593).abs() < 1e-3);
+            let (view, _) = r.check_frame(&alone).unwrap();
+            assert!((view.depth - (reach + 1.0)).abs() < 1e-12, "{}", view.depth);
+            assert_magenta_row(&image(r, &alone), 26, 12, 49);
+            // With the box, the box's reach, √(21² + 10² + 7²) = 24.290, is the farther.
+            r.upload(1, &the_box()).unwrap();
+            let boxed = Frame {
+                lines: &lines,
+                ..frame(&camera, &[1], &[], None)
+            };
+            let (view, _) = r.check_frame(&boxed).unwrap();
+            let box_reach = (21.0f64 * 21.0 + 100.0 + 49.0).sqrt();
+            assert!(
+                (view.depth - (box_reach + 1.0)).abs() < 1e-12,
+                "{}",
+                view.depth
+            );
+            // A line 140 mm off, its corner √(119² + 10² + 2.2917²) = 119.441 mm away, sets it,
+            // with a clearance of 1% of it; and Select Other's cast sets its near plane alike.
+            let far =
+                super::Strips::new([vec![[2.0, 0.0, ROW_26_Z], [140.0, 0.0, ROW_26_Z]]]).unwrap();
+            let far_reach = (119.0f64 * 119.0 + 100.0 + below * below).sqrt();
+            let (view, _) = r
+                .check_frame(&Frame {
+                    lines: &[magenta(&far)],
+                    ..frame(&camera, &[1], &[], None)
+                })
+                .unwrap();
+            let depth = far_reach * 1.01;
+            assert!((view.depth - depth).abs() < 1e-9, "{}", view.depth);
+            let body = Pickable::new(the_box());
+            let cast =
+                super::Caster::new(&camera, [WIDTH, HEIGHT], 1.0, &[(1, &body)], &[&far]).unwrap();
+            assert!((cast.near.unwrap() - depth).abs() < 1e-9);
+            let bare =
+                super::Caster::new(&camera, [WIDTH, HEIGHT], 1.0, &[(1, &body)], &[]).unwrap();
+            assert!((bare.near.unwrap() - (box_reach + 1.0)).abs() < 1e-12);
+            // A line the view is too small for (44 mm over 48 rows takes a reach of at most
+            // 44 × 2^19 / 48 = 480,597 mm) is refused, naming the lines, and the cast finds
+            // nothing, as the frame draws nothing.
+            let too_far = super::Strips::new([vec![[1e6, 10.0, 7.0], [1e6, 10.0, 8.0]]]).unwrap();
+            assert_eq!(
+                refused(
+                    r,
+                    &Frame {
+                        lines: &[magenta(&too_far)],
+                        ..frame(&camera, &[1], &[], None)
+                    }
+                ),
+                "lines"
+            );
+            let centre = [32.5, 26.5];
+            let size = [WIDTH, HEIGHT];
+            assert!(!hits(&camera, size, 1.0, &[(1, &body)], centre).is_empty());
+            assert!(
+                super::hits_among(&camera, size, 1.0, &[(1, &body)], &[&too_far], centre)
+                    .is_empty()
+            );
+        },
+    );
+}
+
+#[test]
+fn a_line_ten_kilometres_out_is_drawn_on_its_pixel_not_where_f32_would_put_it() {
+    on_lavapipe(
+        "render::frame_tests::a_line_ten_kilometres_out_is_drawn_on_its_pixel_not_where_f32_would_put_it",
+        |r| {
+            // From −y about (10^7, 10, 0.7), 4.4 mm over 48 rows (11/120 mm a pixel): x at
+            // column 32 + (x − 10^7) × 120/11. A line along z at x = 10^7 + 1.2375 lands on
+            // column 32 + 13.5 = 45.5, a pixel's centre. f32's step at 10^7 is 1 mm: in f32
+            // world coordinates it would be 10^7 + 1, column 32 + 120/11 = 42.9.
+            let camera = Camera {
+                projection: Projection::Orthographic { view_height: 4.4 },
+                eye: [1e7, -50.0, 0.7],
+                target: [1e7, 10.0, 0.7],
+                up: [0.0, 0.0, 1.0],
+            };
+            let x = 1e7 + 1.2375;
+            assert_eq!(1e7_f32 + 1.2375, 1e7_f32 + 1.0);
+            assert_pixel(
+                project(&camera, [WIDTH, HEIGHT], [x, 10.0, 0.7]),
+                [45.5, 24.0],
+                1e-6,
+            );
+            let line = super::Strips::new([vec![[x, 10.0, -1.0], [x, 10.0, 2.4]]]).unwrap();
+            let drawn = image(
+                r,
+                &Frame {
+                    lines: &[magenta(&line)],
+                    ..frame(&camera, &[], &[], None)
+                },
+            );
+            // z from −1 to 2.4: rows 24 + 1.7 × 120/11 = 42.55 to 24 − 1.7 × 120/11 = 5.45.
+            for y in 8..=40 {
+                let got = pixel(&drawn, 45, y);
+                assert!(within(got, MAGENTA, 8), "(45, {y}): {got:?}");
+                for x in [42, 43] {
+                    assert_eq!(pixel(&drawn, x, y), BLACK, "({x}, {y})");
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn hostile_lines_are_refused_naming_lines_and_leave_the_renderer_drawing() {
+    on_lavapipe(
+        "render::frame_tests::hostile_lines_are_refused_naming_lines_and_leave_the_renderer_drawing",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let refusal = |polylines: Vec<Vec<[f64; 3]>>| {
+                let invalid = super::Strips::new(polylines).unwrap_err();
+                (invalid.parameter, invalid.message)
+            };
+            let good = [0.0, 0.0, 0.0];
+            for bad in [
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                1.000_000_1e12,
+                -1.000_000_1e12,
+            ] {
+                for k in 0..3 {
+                    let mut point = good;
+                    point[k] = bad;
+                    let (parameter, message) =
+                        refusal(vec![vec![good, [1.0; 3]], vec![[1.0; 3], [2.0; 3], point]]);
+                    assert_eq!(parameter, "lines");
+                    assert!(message.starts_with("strip 1's point 2, "), "{message}");
+                }
+            }
+            for short in [vec![], vec![good]] {
+                let count = short.len();
+                let (parameter, message) = refusal(vec![vec![good, [1.0; 3]], short]);
+                assert_eq!(parameter, "lines");
+                assert!(
+                    message.starts_with(&format!("strip 1 has {count} point(s)")),
+                    "{message}"
+                );
+            }
+            // At the bound itself, made; none at all, made and empty.
+            let edge = super::Strips::new([vec![[1e12, -1e12, 0.0], [0.0; 3]]]).unwrap();
+            assert_eq!(
+                (edge.len(), edge.points(), edge.bounds()),
+                (1, 2, Some(([0.0, -1e12, 0.0], [1e12, 0.0, 0.0])))
+            );
+            let empty = super::Strips::new([]).unwrap();
+            assert!(empty.is_empty() && empty.bounds().is_none());
+            let line = line_at(0.0, ROW_26_Z);
+            let good = frame(&camera, &[1], &[], None);
+            for width in [0.0, -1.5, f32::NAN, f32::INFINITY, 64.5, -0.0] {
+                let lines = [super::Lines {
+                    width,
+                    ..magenta(&line)
+                }];
+                assert_eq!(
+                    refused(
+                        r,
+                        &Frame {
+                            lines: &lines,
+                            ..good
+                        }
+                    ),
+                    "lines",
+                    "{width}"
+                );
+            }
+            for alpha in [0, 128, 254] {
+                let lines = [super::Lines {
+                    colour: [255, 0, 255, alpha],
+                    ..magenta(&line)
+                }];
+                assert_eq!(
+                    refused(
+                        r,
+                        &Frame {
+                            lines: &lines,
+                            ..good
+                        }
+                    ),
+                    "lines",
+                    "{alpha}"
+                );
+            }
+            // A second set refused names its place.
+            let lines = [
+                magenta(&line),
+                super::Lines {
+                    width: 0.0,
+                    ..magenta(&line)
+                },
+            ];
+            let Err(RenderFailure::Invalid(invalid)) = r.prepare(&Frame {
+                lines: &lines,
+                ..good
+            }) else {
+                panic!("a width of 0 drawn");
+            };
+            assert!(
+                invalid.message.starts_with("lines[1]'s width"),
+                "{}",
+                invalid.message
+            );
+            // The widest and a subnormal width are drawn, and an empty set draws nothing.
+            for width in [64.0, f32::MIN_POSITIVE / 2.0] {
+                r.prepare(&Frame {
+                    lines: &[super::Lines {
+                        width,
+                        ..magenta(&line)
+                    }],
+                    ..good
+                })
+                .unwrap();
+            }
+            let without = image(r, &good);
+            assert!(
+                image(
+                    r,
+                    &Frame {
+                        lines: &[magenta(&empty)],
+                        ..good
+                    }
+                ) == without
+            );
+            // After every refusal the renderer still draws, and picks.
+            assert_eq!(
+                hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE))),
+                Some((1, Element::Face(3), [32, 26]))
+            );
+        },
+    );
+}
+
 // ---- Concave edges drawn (N5's image) ----
 
 /// A frame drawn and read back: its pixels row by row, `size` pixels.
@@ -5374,6 +5875,540 @@ fn with_edges_not_picked_an_edge_picks_point_takes_its_reach_of_the_views_rows_i
                 (1, Element::Edge(13), [600, 400])
             );
             assert_point(&hit, [20.0625, 19.9375, 1.0], [1e-3; 3]);
+        },
+    );
+}
+
+// ---- Lines seen from aside, along a concave edge, in perspective, and at 2 pixels a point
+// (#449's review) ----
+
+/// Whether a pixel is the lines' magenta, to 3 of 255 a channel.
+fn magenta_coloured(pixel: [u8; 4], _: [u8; 4]) -> bool {
+    (0..3).all(|k| pixel[k].abs_diff(MAGENTA[k]) <= 3)
+}
+
+/// `strips` in magenta, `width` points wide.
+fn magenta_wide(strips: &super::Strips, width: f32) -> super::Lines<'_> {
+    super::Lines {
+        strips,
+        colour: MAGENTA,
+        width,
+    }
+}
+
+#[test]
+fn a_line_on_a_face_seen_from_aside_is_drawn_whole_across_its_stroke() {
+    on_lavapipe(
+        "render::frame_tests::a_line_on_a_face_seen_from_aside_is_drawn_whole_across_its_stroke",
+        |r| {
+            // A line on the box's top face, (5, 10, 10) to (35, 10, 10), 2 points wide (an
+            // edge's), seen from `oblique`'s corner, 40 mm over 800 rows: the face isn't square
+            // to the view, so across the line it rises toward the eye on one side. Drawn
+            // square to the view at its line's depth, half its stroke would be behind the
+            // face; moved toward the eye as an edge is, every pixel whose centre is within
+            // half a pixel of the line is magenta on both sides, along its middle.
+            r.upload(1, &the_box()).unwrap();
+            let camera = oblique();
+            let size = [800, 800];
+            let (a, b) = ([5.0, 10.0, 10.0], [35.0, 10.0, 10.0]);
+            let strips = super::Strips::new([vec![a, b]]).unwrap();
+            let lines = [magenta_wide(&strips, 2.0)];
+            let image = drawn_image(
+                r,
+                &Frame {
+                    lines: &lines,
+                    ..plain_frame(&camera, size, 1.0)
+                },
+            );
+            let line = ImageLine::new(
+                project(&camera, size, a).unwrap(),
+                project(&camera, size, b).unwrap(),
+            );
+            let whole = line.tally(&image, 8.0, (0.0, 0.5), 3.5, magenta_coloured);
+            assert!(all_of(whole, 100), "whole {whole:?} of {SIDES:?}");
+        },
+    );
+}
+
+#[test]
+fn a_line_along_a_concave_edge_is_drawn_whole_over_the_faces_beside_it() {
+    on_lavapipe(
+        "render::frame_tests::a_line_along_a_concave_edge_is_drawn_whole_over_the_faces_beside_it",
+        |r| {
+            // The L's concave Edge1, (5, y, 5) for y from 0 to 20, under `l_camera`: both its
+            // faces rise toward the eye away from it (the concave edges' test's hand values),
+            // so a line along it, 2 points wide, drawn at its line's depth would be hidden on
+            // both sides; moved toward the eye as an edge is, it's drawn whole, magenta within
+            // half a pixel of the line on both sides, over the L's own edge there too.
+            r.upload(1, &Arc::new(l_mesh())).unwrap();
+            let camera = l_camera();
+            let (a, b) = ([5.0, 0.0, 5.0], [5.0, 20.0, 5.0]);
+            let strips = super::Strips::new([vec![a, b]]).unwrap();
+            let lines = [magenta_wide(&strips, 2.0)];
+            let image = drawn_image(
+                r,
+                &Frame {
+                    lines: &lines,
+                    ..plain_frame(&camera, SQUARE, 1.0)
+                },
+            );
+            let line = ImageLine::new(l_view(a, 8.0, 400.0), l_view(b, 8.0, 400.0));
+            let whole = line.tally(&image, 8.0, (0.0, 0.5), 3.5, magenta_coloured);
+            assert!(all_of(whole, 50), "whole {whole:?} of {SIDES:?}");
+        },
+    );
+}
+
+#[test]
+fn a_set_of_two_strips_draws_each_and_nothing_between_and_a_first_strip_off_view_leaves_the_second()
+{
+    on_lavapipe(
+        "render::frame_tests::a_set_of_two_strips_draws_each_and_nothing_between_and_a_first_strip_off_view_leaves_the_second",
+        |r| {
+            // One set, two strips on row 26 (z = ROW_26_Z, y = 0): x 2 to 12, columns 32 + (x −
+            // 21) × 12/11 = 11.27 to 22.18, and x 28 to 38, 39.64 to 50.55. Each is drawn;
+            // the columns between, 24 to 37, are the frame without lines. Then a set whose
+            // first strip is far off the view, x −300 to −290, and its second x 28 to 38: the
+            // second drawn.
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let at = |x: f64| [x, 0.0, ROW_26_Z];
+            let two =
+                super::Strips::new([vec![at(2.0), at(12.0)], vec![at(28.0), at(38.0)]]).unwrap();
+            let without = image(r, &frame(&camera, &[1], &[], None));
+            let with = image(
+                r,
+                &Frame {
+                    lines: &[magenta(&two)],
+                    ..frame(&camera, &[1], &[], None)
+                },
+            );
+            assert_magenta_row(&with, 26, 13, 20);
+            assert_magenta_row(&with, 26, 41, 49);
+            for x in 24..=37 {
+                for y in 24..=28 {
+                    assert_eq!(pixel(&with, x, y), pixel(&without, x, y), "({x}, {y})");
+                }
+            }
+            let off_first =
+                super::Strips::new([vec![at(-300.0), at(-290.0)], vec![at(28.0), at(38.0)]])
+                    .unwrap();
+            let drawn = image(
+                r,
+                &Frame {
+                    lines: &[magenta(&off_first)],
+                    ..frame(&camera, &[1], &[], None)
+                },
+            );
+            assert_magenta_row(&drawn, 26, 41, 49);
+            for x in 0..=37 {
+                assert_eq!(pixel(&drawn, x, 26), pixel(&without, x, 26), "({x}, 26)");
+            }
+        },
+    );
+}
+
+#[test]
+fn in_perspective_a_line_is_drawn_where_project_puts_it_and_only_its_part_in_front_of_the_eye() {
+    on_lavapipe(
+        "render::frame_tests::in_perspective_a_line_is_drawn_where_project_puts_it_and_only_its_part_in_front_of_the_eye",
+        |r| {
+            // From (21, −50, 7) toward +y, 40° high: on the front face, 50 mm from the eye,
+            // the view is 2 × 50 tan 20° = 36.397 mm over 48 rows. A line there at z = 7 +
+            // 2.5 × 36.397/48 lands on row 21.5, from x 11 to 31: columns 32 ∓ 10 × 48/36.397,
+            // 18.81 to 45.19.
+            r.upload(1, &the_box()).unwrap();
+            let camera = front_in_perspective();
+            let size = [WIDTH, HEIGHT];
+            let span = 2.0 * 50.0 * libm::tan(20f64.to_radians());
+            let z = 7.0 + 2.5 * span / 48.0;
+            assert_pixel(project(&camera, size, [21.0, 0.0, z]), [32.0, 21.5], 1e-6);
+            let on_face = super::Strips::new([vec![[11.0, 0.0, z], [31.0, 0.0, z]]]).unwrap();
+            let drawn = image(
+                r,
+                &Frame {
+                    lines: &[magenta(&on_face)],
+                    ..frame(&camera, &[1], &[], None)
+                },
+            );
+            assert_magenta_row(&drawn, 21, 20, 44);
+            // A line at the eye's height, x = 26, from the face (y = 0) to 50 mm behind the
+            // eye (y = −100), 3 points wide: in front of the eye it runs from column 32 +
+            // 5 × 48/(2 d tan 20°) = 32 + 329.7/d at depth d, 38.59 at the face, toward the
+            // right edge (column 63 at d = 10.6), on rows 23 and 24 (z = 7 is row 24, the
+            // eye's height at every depth), 3 pixels wide at every depth: 22.5 to 25.5. It's
+            // cut to the view's pyramid before it's drawn (`View::cut_strip`). The GPU would
+            // clip an uncut strip in clip space all the same, but re_renderer sizes a stroke at
+            // each of its points by the point's distance from the camera, clamped to 0, so an
+            // uncut strip tapers behind the eye and widens toward it: every pixel off rows 22
+            // to 25 from column 37 on is the frame without lines. (The floor the cut keeps,
+            // MIN_EYE_DISTANCE, is pinned by the edges' tests, through the same `cut_strip`.)
+            assert_pixel(
+                project(&camera, size, [26.0, 0.0, 7.0]),
+                [32.0 + 5.0 * 48.0 / span, 24.0],
+                1e-6,
+            );
+            let through =
+                super::Strips::new([vec![[26.0, 0.0, 7.0], [26.0, -100.0, 7.0]]]).unwrap();
+            let without = image(r, &frame(&camera, &[1], &[], None));
+            let crossing = image(
+                r,
+                &Frame {
+                    lines: &[magenta_wide(&through, 3.0)],
+                    ..frame(&camera, &[1], &[], None)
+                },
+            );
+            for y in [23, 24] {
+                for x in 40..=62 {
+                    let got = pixel(&crossing, x, y);
+                    assert!(within(got, MAGENTA, 8), "({x}, {y}): {got:?}");
+                }
+            }
+            for y in 0..HEIGHT {
+                for x in 0..WIDTH {
+                    if !((22..=25).contains(&y) && x >= 37) {
+                        assert_eq!(pixel(&crossing, x, y), pixel(&without, x, y), "({x}, {y})");
+                    }
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn at_two_pixels_a_point_a_line_is_three_pixels_wide_on_its_rows_and_nowhere_else() {
+    on_lavapipe(
+        "render::frame_tests::at_two_pixels_a_point_a_line_is_three_pixels_wide_on_its_rows_and_nowhere_else",
+        |r| {
+            // `front`, 128 by 96 pixels at 2 a point: 44 mm over 96 rows. The line at z =
+            // ROW_26_Z lands on row 48 + 2.5 × 11/12 × 96/44 = 53.0, 1.5 points (3 pixels) wide:
+            // rows 52 and 53, whose centres are half a pixel off it, whole; rows 51 and 54 in
+            // part; every other row the frame without lines. Columns 64 + (x − 21) × 96/44 for x
+            // 2 to 38: 22.55 to 101.09.
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let size = [2 * WIDTH, 2 * HEIGHT];
+            assert_pixel(
+                project(&camera, size, [21.0, 0.0, ROW_26_Z]),
+                [64.0, 53.0],
+                1e-6,
+            );
+            let line = line_at(0.0, ROW_26_Z);
+            let plain = Frame {
+                size_px: size,
+                pixels_per_point: 2.0,
+                ..frame(&camera, &[1], &[], None)
+            };
+            let commands = r.prepare(&plain).unwrap();
+            let without = composited_sized(r, Some(commands), wgpu::Color::TRANSPARENT, size);
+            let lines = [magenta(&line)];
+            let commands = r
+                .prepare(&Frame {
+                    lines: &lines,
+                    ..plain
+                })
+                .unwrap();
+            let with = composited_sized(r, Some(commands), wgpu::Color::TRANSPARENT, size);
+            let at = |image: &[[u8; 4]], x: u32, y: u32| {
+                image[usize::try_from(y * size[0] + x).unwrap()]
+            };
+            for y in [52, 53] {
+                for x in 25..=99 {
+                    let got = at(&with, x, y);
+                    assert!(within(got, MAGENTA, 8), "({x}, {y}): {got:?}");
+                }
+            }
+            for y in (0..size[1]).filter(|y| !(51..=54).contains(y)) {
+                for x in 0..size[0] {
+                    assert_eq!(at(&with, x, y), at(&without, x, y), "({x}, {y})");
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn a_set_whose_corner_reaches_too_far_is_taken_by_its_points() {
+    on_lavapipe(
+        "render::frame_tests::a_set_whose_corner_reaches_too_far_is_taken_by_its_points",
+        |r| {
+            // `front` takes a reach of at most 44 × 2^19 / 48 = 480,597 mm. A set of (21 + 4e5,
+            // 10, 7) and (21, 10 + 4e5, 7): its box's far corner (4e5, 4e5, 0) off the target,
+            // 565,685 mm, is refused; its points, each 4e5 mm off the target, aren't. So the
+            // frame is taken, its depth the points' reach with 1% of it clear, and Select
+            // Other's cast's near plane the same.
+            let camera = front();
+            let set = super::Strips::new([vec![[21.0 + 4e5, 10.0, 7.0], [21.0, 10.0 + 4e5, 7.0]]])
+                .unwrap();
+            let (view, _) = r
+                .check_frame(&Frame {
+                    lines: &[magenta(&set)],
+                    ..frame(&camera, &[], &[], None)
+                })
+                .unwrap();
+            assert!((view.depth - 4e5 * 1.01).abs() < 1e-6, "{}", view.depth);
+            let cast = super::Caster::new(&camera, [WIDTH, HEIGHT], 1.0, &[], &[&set]).unwrap();
+            assert!(
+                (cast.near.unwrap() - 4e5 * 1.01).abs() < 1e-6,
+                "{:?}",
+                cast.near
+            );
+        },
+    );
+}
+
+#[test]
+fn a_frames_lines_at_their_most_points_are_drawn_with_its_edge_still_picked_and_one_more_refused() {
+    on_lavapipe(
+        "render::frame_tests::a_frames_lines_at_their_most_points_are_drawn_with_its_edge_still_picked_and_one_more_refused",
+        |r| {
+            // A million strips of two points, each half a millimetre along x on the front face
+            // between z 1 and 4 (rows 27.3 to 30.5, clear of the top edge at row 20.73): the
+            // frame's most points, MAX_FRAME_LINE_POINTS. Prepared, drawn, and picked, the top
+            // edge picked where it is: a frame at the most works. (Not that an edge's pick
+            // can't be crowded out: the picks are put in after the lines.) A set of one more
+            // strip beside them: past the most, refused, naming the lines.
+            assert_eq!(super::MAX_FRAME_LINE_POINTS, 2_000_000);
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let many = super::Strips::new((0..1_000_000u32).map(|k| {
+                let x = 2.0 + f64::from(k % 70) * 0.5;
+                let z = 1.0 + f64::from(k / 70 % 4);
+                vec![[x, 0.0, z], [x + 0.5, 0.0, z]]
+            }))
+            .unwrap();
+            assert_eq!(many.points(), super::MAX_FRAME_LINE_POINTS);
+            let at_most = [magenta(&many)];
+            let found = pick(
+                r,
+                &Frame {
+                    lines: &at_most,
+                    ..frame(&camera, &[1], &[], Some(ON_THE_TOP_EDGE))
+                },
+            )
+            .hit
+            .unwrap();
+            assert_eq!(
+                (found.body, found.hit, found.pixel),
+                (1, Element::Edge(3), [32, 20])
+            );
+            let one = line_at(0.0, ROW_26_Z);
+            let past = [magenta(&many), magenta(&one)];
+            assert_eq!(
+                refused(
+                    r,
+                    &Frame {
+                        lines: &past,
+                        ..frame(&camera, &[1], &[], None)
+                    }
+                ),
+                "lines"
+            );
+        },
+    );
+}
+
+// ---- How far a line is moved toward the eye, and its tie with an edge's pick (#449's
+// second review) ----
+
+/// The box from the front at 256 by 192 pixels: [`front`]'s camera, 44 mm over 192 rows,
+/// 11/48 mm a pixel about (128, 96). From 167 rows an edge's picking reach is its 2 pixels
+/// of depth; below, it's `VERTEX_REACH` of the view's height (0.576 pixels at 48 rows),
+/// and so is every line's, whatever its width.
+const ROWS_192: [u32; 2] = [256, 192];
+
+#[test]
+fn a_line_just_behind_a_face_is_drawn_within_its_strokes_reach_and_hidden_past_it() {
+    on_lavapipe(
+        "render::frame_tests::a_line_just_behind_a_face_is_drawn_within_its_strokes_reach_and_hidden_past_it",
+        |r| {
+            // At ROWS_192, 1.5 points wide at a pixel a point, a line is moved toward the eye by
+            // √2 × 0.75 + 1/2 = 1.561 pixels of depth (drawn_stroke_fraction), under an edge's
+            // pick's 2; 4 points wide, by √2 × 2 + 1/2 = 3.33, held to the 2. A line along x
+            // inside the box, d pixels behind its front face (y = d × 11/48 mm), at z = 7 −
+            // 10.5 × 11/48 (row 106.5, row 106's centre), over columns 128 + (x − 21) × 48/11
+            // for x 2 to 38, 45.1 to 202.2: at d = 1.35, 1.5 points wide, it's moved 0.21
+            // pixels in front of the face, and drawn; at d = 1.8 it stays 0.24 behind it, and
+            // the frame is the frame without lines, byte for byte; 4 points wide at d = 1.8,
+            // it's moved 0.2 in front, and drawn. An edge's reach whatever the width (1.914)
+            // would draw the second; a reach of 1.2 pixels would hide the first and the third.
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let mm = 44.0 / 192.0;
+            let z = 7.0 - 10.5 * mm;
+            assert_pixel(
+                project(&camera, ROWS_192, [21.0, 0.0, z]),
+                [128.0, 106.5],
+                1e-6,
+            );
+            let without = drawn_image(r, &plain_frame(&camera, ROWS_192, 1.0));
+            let drawn = |r: &mut Renderer, d: f64, width: f32| {
+                let strips = line_at(d * mm, z);
+                drawn_image(
+                    r,
+                    &Frame {
+                        lines: &[magenta_wide(&strips, width)],
+                        ..plain_frame(&camera, ROWS_192, 1.0)
+                    },
+                )
+            };
+            for (d, width) in [(1.35, 1.5), (1.8, 4.0)] {
+                let image = drawn(r, d, width);
+                for x in 60..=190 {
+                    let got = image.at([x, 106]);
+                    assert!(
+                        within(got, MAGENTA, 8),
+                        "{d} behind, {width} wide, ({x}, 106): {got:?}"
+                    );
+                }
+            }
+            assert!(
+                drawn(r, 1.8, 1.5).pixels == without.pixels,
+                "1.8 behind, 1.5 wide: drawn"
+            );
+        },
+    );
+}
+
+#[test]
+fn a_line_along_an_edge_as_near_the_eye_as_its_pick_leaves_the_edge_picked() {
+    on_lavapipe(
+        "render::frame_tests::a_line_along_an_edge_as_near_the_eye_as_its_pick_leaves_the_edge_picked",
+        |r| {
+            // At ROWS_192, the front face's top edge (Edge3, z = 10) lies on row 96 − 3 × 48/11 =
+            // 82.91: row 82's centre, 0.41 from it, is inside its picking strip's half width
+            // (1 pixel) and above the face. A line along it 4 points wide is moved toward the
+            // eye by 2 pixels of depth, an edge's picking reach, as the edge's picking strip
+            // is, along x as the edge is: the same depth. The edge's picks are put in after
+            // the lines, so of the two the edge's is picked there.
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            assert_pixel(
+                project(&camera, ROWS_192, [21.0, 0.0, 10.0]),
+                [128.0, 96.0 - 3.0 * 48.0 / 11.0],
+                1e-6,
+            );
+            let on_edge = line_at(0.0, 10.0);
+            let lines = [magenta_wide(&on_edge, 4.0)];
+            let found = pick(
+                r,
+                &Frame {
+                    lines: &lines,
+                    picking: Some(PixelRect {
+                        min: [128, 82],
+                        size: [1, 1],
+                    }),
+                    ..plain_frame(&camera, ROWS_192, 1.0)
+                },
+            )
+            .hit
+            .unwrap();
+            assert_eq!(
+                (found.body, found.hit, found.pixel),
+                (1, Element::Edge(3), [128, 82])
+            );
+        },
+    );
+}
+
+// ---- Strips' own reads, and the frame's log of its lines (#449's mutants) ----
+
+#[test]
+fn strips_say_whether_they_hold_none_and_print_their_counts_and_box_not_their_points() {
+    let none = super::Strips::new(Vec::<Vec<[f64; 3]>>::new()).unwrap();
+    assert!(none.is_empty());
+    assert_eq!(
+        format!("{none:?}"),
+        "Strips { strips: 0, points: 0, bounds: None }"
+    );
+    // Five points over two strips, their box (0, 0, 0) to (4, 2, 1); the middle point's 1.25
+    // and 0.5, no corner of it, aren't printed.
+    let two = super::Strips::new([
+        vec![[0.0, 0.0, 0.0], [1.25, 2.0, 0.5], [4.0, 0.0, 1.0]],
+        vec![[0.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+    ])
+    .unwrap();
+    assert!(!two.is_empty());
+    assert_eq!(
+        format!("{two:?}"),
+        "Strips { strips: 2, points: 5, bounds: Some(([0.0, 0.0, 0.0], [4.0, 2.0, 1.0])) }"
+    );
+}
+
+/// The `sets` and `strips` of each `lines` event `f` logs, in order.
+fn lines_events(f: impl FnOnce()) -> Vec<(u64, u64)> {
+    use std::sync::Mutex;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+
+    #[derive(Default)]
+    struct Fields {
+        message: String,
+        sets: Option<u64>,
+        strips: Option<u64>,
+    }
+    impl tracing::field::Visit for Fields {
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            match field.name() {
+                "sets" => self.sets = Some(value),
+                "strips" => self.strips = Some(value),
+                _ => {}
+            }
+        }
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = format!("{value:?}");
+            }
+        }
+    }
+    struct Events(Arc<Mutex<Vec<(u64, u64)>>>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Events {
+        fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            if fields.message == "lines" {
+                self.0.lock().unwrap().push((
+                    fields.sets.unwrap_or(u64::MAX),
+                    fields.strips.unwrap_or(u64::MAX),
+                ));
+            }
+        }
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::registry().with(Events(Arc::clone(&seen)));
+    tracing::subscriber::with_default(subscriber, f);
+    seen.lock().unwrap().clone()
+}
+
+#[test]
+fn a_frames_lines_are_logged_by_their_sets_and_the_strips_drawn_of_them() {
+    on_lavapipe(
+        "render::frame_tests::a_frames_lines_are_logged_by_their_sets_and_the_strips_drawn_of_them",
+        |r| {
+            // Two sets: the first a strip on the front face and one from x = 300 to 310, off
+            // the view (58.67 mm wide about x = 21, so x −8.33 to 50.33), which isn't drawn;
+            // the second a strip on the face. Logged once: 2 sets, 2 strips drawn. A frame of
+            // no lines logs none.
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let first = super::Strips::new([
+                vec![[2.0, 0.0, ROW_26_Z], [38.0, 0.0, ROW_26_Z]],
+                vec![[300.0, 0.0, ROW_26_Z], [310.0, 0.0, ROW_26_Z]],
+            ])
+            .unwrap();
+            let second = line_at(0.0, 2.0);
+            let lines = [magenta(&first), magenta(&second)];
+            let logged = lines_events(|| {
+                draw(
+                    r,
+                    &Frame {
+                        lines: &lines,
+                        ..frame(&camera, &[1], &[], None)
+                    },
+                );
+            });
+            assert_eq!(logged, [(2, 2)]);
+            let none = lines_events(|| draw(r, &frame(&camera, &[1], &[], None)));
+            assert!(none.is_empty(), "{none:?}");
         },
     );
 }
