@@ -40359,6 +40359,19 @@ fn absorbed_twice() -> String {
     )
 }
 
+/// [`settled`], and the timeline's model the one of its revision, so the browser lists the
+/// bodies that revision builds: what a row or an eye clicked after an edit that adds or
+/// removes a body waits for, the rows under that body's moving when it comes.
+fn settled_with_model(h: &mut AppHarness) {
+    settled(h);
+    step_until(h, "the timeline of its revision's model", |h| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.model == Some(timeline.revision))
+    });
+}
+
 /// Whether the browser shows `name`'s eye as `word` ("Hide" while it shows, "Show" while
 /// it's hidden), and not the other.
 fn eye_says(h: &AppHarness, word: &str, name: &str) -> bool {
@@ -40568,6 +40581,47 @@ fn a_removed_consumer_frees_its_sketch_and_undo_and_redo_follow_the_document() {
 }
 
 #[test]
+fn a_cancel_that_rolls_back_ends_the_edit_features_freeze() {
+    // Freshly opened, an Edit Feature dialog's first edit begins the transaction, so its
+    // Cancel rolls it back, and the freeze on overrides ("Edit Feature … drop nothing",
+    // decision 29) ends where that rollback answers. Profile shown by its eye; Legs's
+    // length changed in its dialog, then Cancel. Legs deleted: Profile still shown (a loss
+    // drops nothing). Undone: Legs back, a feature newly built from Profile, so its
+    // override is dropped and Profile hides.
+    let f = fixture();
+    let (mut h, _) = absorbed(&f, ABSORBED_AND_LOOSE);
+    click_eye(&mut h, "Show", "Profile");
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    double_click(&mut h, "Timeline", "Legs");
+    step_until(&mut h, "its dialog", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    type_into(&mut h, "Length", "12");
+    settled(&mut h);
+    assert!(h.state().tabs()[0].transaction);
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert!(h.state().tabs()[0].sent.contains(&Sent::Rollback));
+    timeline_act(&mut h, "Legs", "Delete", None);
+    assert!(eye_says(&h, "Hide", "Profile"));
+    step_key(&mut h, true);
+    step_until(&mut h, "Legs back", |h| shows(h, "Timeline", "Legs"));
+    settled(&mut h);
+    assert!(eye_says(&h, "Show", "Profile"));
+    assert!(h.state().tabs()[0].overrides.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn an_override_survives_a_lost_consumer_and_falls_to_a_gained_one() {
     // Decision 29: Profile with two consumers, Legs and Cut. Shown by a click; Cut
     // deleted: still shown (a loss drops nothing, Legs remains); undone, Cut back: hidden
@@ -40595,6 +40649,8 @@ fn an_override_survives_a_lost_consumer_and_falls_to_a_gained_one() {
 /// A Pad's dialog opened on Loose (selected in the browser first), its add answered: its
 /// feature in the document.
 fn pad_on_loose(h: &mut AppHarness) {
+    // After an edit that adds or removes a body, its row moves the rows under it.
+    settled_with_model(h);
     browser(h).get_by_label("Loose").click();
     step(h);
     step(h);
@@ -41020,6 +41076,9 @@ fn a_reload_that_builds_from_a_shown_sketch_hides_it_and_drops_its_override() {
         settled(&mut h);
         assert!(eye_says(&h, "Show", "Loose"), "clicked first: {clicked}");
         assert!(h.state().tabs()[0].overrides.is_empty());
+        // Wall's body row listed before the click, so the rows under it are where they'll
+        // be drawn.
+        settled_with_model(&mut h);
         click_eye(&mut h, "Show", "Loose");
         assert!(eye_says(&h, "Hide", "Loose"));
         assert_eq!(never_waits::waits(), 0);
