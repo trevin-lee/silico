@@ -2895,7 +2895,7 @@ fn a_loop_whose_first_curve_runs_against_it_fills_whole() {
 }
 
 /// Counts the warnings logged while it's the subscriber.
-struct Warnings(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+pub(crate) struct Warnings(pub(crate) std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
 impl tracing::Subscriber for Warnings {
     fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {

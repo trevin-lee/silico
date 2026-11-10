@@ -957,6 +957,17 @@ impl View {
         self.camera = navigate::clamped(self.camera.clone(), self.rows, self.drawn_boxes());
     }
 
+    /// The shown sketches' lines' boxes, as the frame draws them: if they changed, the view
+    /// raised to the least they allow with the bodies, if it's under it, as the renderer
+    /// takes their reach too (an orthographic view under it would have every frame
+    /// refused).
+    fn take_sketch_boxes(&mut self, boxes: Vec<[[f64; 3]; 2]>) {
+        if boxes != self.sketch_boxes {
+            self.sketch_boxes = boxes;
+            self.camera = navigate::clamped(self.camera.clone(), self.rows, self.drawn_boxes());
+        }
+    }
+
     /// Every body's box.
     fn boxes(&self) -> impl Iterator<Item = [[f64; 3]; 2]> + '_ {
         self.bodies.values().filter_map(|body| body.bounds)
@@ -1720,37 +1731,39 @@ pub fn show<P: Clients + 'static>(
         .collect();
     // The shown sketches' lines, each from its read as the tab holds it, and none while a
     // sketch is open: sketch mode draws that one, and no other is drawn (the prototype's
-    // `if (S.sketch) setSketchLines([])`, app.js:979). A suppressed sketch has no read.
-    let shown_sketches: Vec<(FeatureId, Arc<silico_core::command::sketch::SketchRead>)> =
-        if tab.sketch.is_some() {
-            Vec::new()
-        } else {
-            tab.browser
-                .sketches()
-                .iter()
-                .filter(|row| tab.shown(&crate::tab::Hideable::Feature(row.id.clone())))
-                .filter_map(|row| {
-                    let held = tab.sketch_reads.held(&row.id)?;
-                    Some((row.id.clone(), Arc::clone(&held.read)))
-                })
-                .collect()
-        };
-    let lines = tab.sketch_lines.frame(
-        shown_sketches.iter().map(|(id, read)| (id, read)),
-        &tab.view.camera,
-        rect.height(),
-    );
+    // `if (S.sketch) setSketchLines([])`, app.js:979), the lines made kept for after it. A
+    // suppressed sketch has no read. Lines left to make for a frame's build budget are made
+    // in the frames after, each asked for.
+    let lines = if tab.sketch.is_some() {
+        Vec::new()
+    } else {
+        let shown_sketches: Vec<(FeatureId, Arc<silico_core::command::sketch::SketchRead>)> = tab
+            .browser
+            .sketches()
+            .iter()
+            .filter(|row| tab.shown(&crate::tab::Hideable::Feature(row.id.clone())))
+            .filter_map(|row| {
+                let held = tab.sketch_reads.held(&row.id)?;
+                Some((row.id.clone(), Arc::clone(&held.read)))
+            })
+            .collect();
+        let lines = tab.sketch_lines.frame(
+            shown_sketches.iter().map(|(id, read)| (id, read)),
+            &tab.view.camera,
+            rect.height(),
+        );
+        if tab.sketch_lines.pending() {
+            ui.ctx().request_repaint();
+        }
+        lines
+    };
     let sketch_boxes: Vec<[[f64; 3]; 2]> = lines
         .iter()
         .filter_map(|line| line.strips.bounds())
         .map(|(low, high)| [low, high])
         .collect();
     let view = &mut tab.view;
-    if sketch_boxes != view.sketch_boxes {
-        view.sketch_boxes = sketch_boxes;
-        // Lines reaching farther than the bodies raise the view's least allowed.
-        view.camera = navigate::clamped(view.camera.clone(), view.rows, view.drawn_boxes());
-    }
+    view.take_sketch_boxes(sketch_boxes);
     if now_hidden != view.hidden {
         view.hidden = now_hidden;
         // A body shown again may reach farther than the view's least allowed.
@@ -3208,6 +3221,38 @@ mod tests {
         let request = asked(&view, 5);
         view.took(request, false, refusal(ErrorCode::Internal, None), at);
         assert!(matches!(view.notice.take(), Some(Notice::Refused(_))));
+    }
+
+    #[test]
+    fn a_shown_sketchs_far_lines_raise_the_least_view_and_zoom_stops_there() {
+        // No body, 1,600 rows, onto (20, 10, 5): a shown sketch's lines at (320, 10, 5),
+        // 300 mm from the target, make the least 1,600 · 300 / 2^19 · 1.01 = 0.924683 mm. A
+        // view at 0.01 is raised to it when the lines' boxes come, and a zoom in from there
+        // stays; their boxes gone, a zoom in goes on.
+        let mut view = View {
+            rows: 1600,
+            ..View::default()
+        };
+        view.set_camera(front(0.01));
+        view.take_sketch_boxes(vec![[[320.0, 10.0, 5.0], [320.0, 10.0, 5.0]]]);
+        let least = 1600.0 * 300.0 / 524_288.0 * 1.01;
+        let Projection::Orthographic { view_height } = view.camera.projection else {
+            panic!("orthographic")
+        };
+        assert!((view_height - least).abs() < 1e-12, "{view_height}");
+        view.zoom(200.0, [0.0, 0.0], 800.0);
+        assert_eq!(
+            view.camera.projection,
+            Projection::Orthographic { view_height }
+        );
+        view.take_sketch_boxes(Vec::new());
+        view.zoom(200.0, [0.0, 0.0], 800.0);
+        assert_eq!(
+            view.camera.projection,
+            Projection::Orthographic {
+                view_height: view_height / 2.0
+            }
+        );
     }
 
     #[test]

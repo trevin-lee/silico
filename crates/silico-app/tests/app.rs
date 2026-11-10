@@ -39917,9 +39917,13 @@ fn the_frame_holds_each_shown_sketchs_strips_in_its_colour_and_none_while_one_is
         ]
     );
     assert_eq!(silico_app::theme::VIEWPORT_SKETCH_WIDTH, 1.5);
+    // Made once: the same strips frame after frame.
+    let made = Arc::clone(&lines[0].strips);
     for _ in 0..20 {
         step(&mut h);
-        assert_eq!(last_lines(&record).len(), 1, "Profile hidden");
+        let lines = last_lines(&record);
+        assert_eq!(lines.len(), 1, "Profile hidden");
+        assert!(Arc::ptr_eq(&lines[0].strips, &made), "made again");
     }
     click_eye(&mut h, "Show", "Profile");
     step_until(&mut h, "Profile's lines too", |_| {
@@ -39952,12 +39956,64 @@ fn the_frame_holds_each_shown_sketchs_strips_in_its_colour_and_none_while_one_is
     step_until(&mut h, "Loose's lines back", |_| {
         last_lines(&record).len() == 1
     });
+    // Kept through sketch mode, not made again after it.
+    assert!(Arc::ptr_eq(&last_lines(&record)[0].strips, &made));
     // Loose suppressed: none of its, though its eye is open.
     timeline_act(&mut h, "Loose", "Suppress", Some(true));
     step_until(&mut h, "Loose's lines gone", |_| {
         last_lines(&record).is_empty()
     });
     assert!(h.state().tabs()[0].shown(&Hideable::Feature(sketch_id("s0000002"))));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_the_solver_finds_fully_defined_is_drawn_in_eeeeed() {
+    // The fake solver's own answer, fully defined: Loose's lines in #eeeeed.
+    let f = fixture();
+    let (mut h, record) = f.drawn("absorbed.silico", ABSORBED_AND_LOOSE);
+    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    assert_eq!(last_lines(&record)[0].colour, [0xee, 0xee, 0xed, 0xff]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_far_shown_sketch_raises_the_least_view_its_frames_are_drawn_at() {
+    // Loose moved 300 mm along x (x 300 to 340, z 0 to 20, on XZ) and hidden; the view from
+    // −y onto (20, 10, 5) set to 10⁻⁵ mm, under every least. Shown again: its lines' box
+    // reaches √(320² + 10² + 15²) = 320.507 mm from the target, past the bodies', so its
+    // frames are drawn at a view no lower than rows · 320.507 / 2^19 · 1.01, the rows the
+    // frame's own.
+    let far = ABSORBED_AND_LOOSE
+        .replace("\"pb000001\", \"x\": 0,", "\"pb000001\", \"x\": 300,")
+        .replace("\"pb000002\", \"x\": 40,", "\"pb000002\", \"x\": 340,")
+        .replace("\"pb000003\", \"x\": 40,", "\"pb000003\", \"x\": 340,")
+        .replace("\"pb000004\", \"x\": 0,", "\"pb000004\", \"x\": 300,");
+    assert_eq!(far.matches(": 340,").count(), 2);
+    let f = fixture();
+    let (mut h, record) = f.drawn("far.silico", &far);
+    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    click_eye(&mut h, "Hide", "Loose");
+    step_until(&mut h, "Loose's lines gone", |_| last_lines(&record).is_empty());
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 1e-5 },
+        eye: [20.0, -100.0, 5.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    });
+    click_eye(&mut h, "Show", "Loose");
+    step_until(&mut h, "Loose's lines back", |_| last_lines(&record).len() == 1);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let reach = (320f64 * 320.0 + 100.0 + 225.0).sqrt();
+    let record = record.lock().unwrap();
+    let frame = record.frames.last().unwrap();
+    let least = f64::from(frame.size_px[1]) * reach / 524_288.0 * 1.01;
+    let silico_protocol::Projection::Orthographic { view_height } = frame.camera.projection else {
+        panic!("orthographic")
+    };
+    assert!(view_height >= least * (1.0 - 1e-12), "{view_height} under {least}");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -40039,6 +40095,14 @@ fn on_lavapipe_a_shown_sketchs_line_is_drawn_on_its_face_in_eguis_image_and_its_
             let image = h.render().unwrap();
             let drawn = image.get_pixel(lx, ly).0;
             assert!(near(drawn, [0x7a, 0x95, 0xff]), "{drawn:?}");
+            // 2 points (4 pixels) below the line's centre, past its 1.5-point stroke: the
+            // face's own shade, as 2.5 mm below the centre is.
+            let (ox, oy) = spot(at(7.5 - 4.0 * 20.0 / f64::from(size_px[1])));
+            assert_eq!(
+                image.get_pixel(ox, oy).0,
+                image.get_pixel(fx, fy).0,
+                "2 points off"
+            );
             browser(&h).get_by_label("Hide Front").click();
             for _ in 0..4 {
                 step(&mut h);
