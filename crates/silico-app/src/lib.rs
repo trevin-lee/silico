@@ -15,6 +15,7 @@ pub mod boxes;
 pub mod browse;
 pub mod canvas_menu;
 pub mod changes;
+pub mod clicks;
 mod columns;
 pub mod dialog;
 pub mod export;
