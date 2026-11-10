@@ -103,10 +103,17 @@ impl Fixture {
 
     /// The app on these sessions, in a harness, with nothing open.
     fn app(&self) -> AppHarness {
+        self.app_at(1.0)
+    }
+
+    /// [`Fixture::app`] on a screen of `pixels_per_point` (a Retina display's 2), its window
+    /// still 1280 by 800 points.
+    fn app_at(&self, pixels_per_point: f32) -> AppHarness {
         let app = App::new(Arc::clone(&self.sessions));
         let _marked = never_waits::marked();
         let h = Harness::builder()
             .with_size((1280.0, 800.0))
+            .with_pixels_per_point(pixels_per_point)
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
         // The app's look, as main.rs gives it: its fonts above all, without which every
         // text lays out empty and a field's cursor never leaves its start.
@@ -5697,6 +5704,129 @@ fn a_sweeps_ok_waits_for_a_sketch_chosen_in_the_browser_and_adds_nothing_before(
 }
 
 #[test]
+fn ok_clicked_in_the_frame_an_input_turns_invalid_leaves_the_dialog_open() {
+    // #443's review: OK is asked of the inputs as drawn in the frame. A Pocket's Length,
+    // valid, its field focused; then a letter typed after it (5x, no length) and OK clicked,
+    // both given to one frame (the harness gives each event it queues a frame of its own),
+    // the click by OK's accessibility action: the button was off by the time it was
+    // clicked, so the dialog stays open, the pocket's length 5 as it was, and Enter after is
+    // off too.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pocket");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    assert!(ok_enabled(&h));
+    input(&h, "Length").focus();
+    step(&mut h);
+    let (target_node, target_tree) = dialog(&h)
+        .get_by_role_and_label(Role::Button, "OK")
+        .accesskit_node()
+        .locate();
+    h.input_mut().events.extend([
+        eframe::egui::Event::Text("x".to_owned()),
+        eframe::egui::Event::AccessKitActionRequest(eframe::egui::accesskit::ActionRequest {
+            target_node,
+            target_tree,
+            action: eframe::egui::accesskit::Action::Click,
+            data: None,
+        }),
+    ]);
+    step(&mut h);
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("5x"));
+    step(&mut h);
+    assert!(dialog_open(&h));
+    assert!(!ok_enabled(&h));
+    settled(&mut h);
+    let fields = fields_of(&text_of(&f, &h), "Pocket").unwrap();
+    assert!(
+        fields
+            .iter()
+            .any(|(key, value)| key == "extent" && format!("{value:?}").contains("Number(\"5\")")),
+        "{fields:?}"
+    );
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ok_clicked_in_the_frame_a_new_features_inputs_turn_valid_waits_for_its_add() {
+    // #443's review (round 5, L13): a Pad's dialog, its Length emptied and its sketch then
+    // chosen, so nothing to add yet; then "5" typed and OK clicked, both given to one frame,
+    // OK by its accessibility action. That frame's inputs send the add; OK is off till a new
+    // feature's add answers with its feature (L16, which is what this pins; the click's gate
+    // after the frame's edits is pinned by
+    // `ok_clicked_in_the_frame_a_refused_sketch_is_picked_leaves_the_dialog_open`),
+    // so the click does nothing: the dialog stays open, and the add answers into it.
+    use eframe::egui::{Event, Key, accesskit};
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    create(&mut h, "Pad");
+    settled(&mut h);
+    input(&h, "Length").focus();
+    step(&mut h);
+    for _ in 0..4 {
+        h.key_press(Key::Backspace);
+        step(&mut h);
+    }
+    assert_eq!(input(&h, "Length").value().as_deref(), Some(""));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    settled(&mut h);
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.sketch().is_some()
+                && dialog.feature.is_none()
+                && !dialog.adding)
+    );
+    input(&h, "Length").focus();
+    step(&mut h);
+    let (target_node, target_tree) = dialog(&h)
+        .get_by_role_and_label(Role::Button, "OK")
+        .accesskit_node()
+        .locate();
+    h.input_mut().events.extend([
+        Event::Text("5".to_owned()),
+        Event::AccessKitActionRequest(accesskit::ActionRequest {
+            target_node,
+            target_tree,
+            action: accesskit::Action::Click,
+            data: None,
+        }),
+    ]);
+    step(&mut h);
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("5"));
+    assert!(dialog_open(&h));
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    assert!(dialog_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
     let f = fixture();
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
@@ -9685,6 +9815,18 @@ impl Fixture {
         clock: Option<Clock>,
         boxing: Option<silico_app::boxes::Build>,
     ) -> (AppHarness, Record) {
+        self.drawn_scaled(name, text, clock, boxing, 1.0)
+    }
+
+    /// [`Fixture::drawn_with`], its window 1280 by 800 points at `pixels_per_point`.
+    fn drawn_scaled(
+        &self,
+        name: &str,
+        text: &str,
+        clock: Option<Clock>,
+        boxing: Option<silico_app::boxes::Build>,
+        pixels_per_point: f32,
+    ) -> (AppHarness, Record) {
         let path = self.file(name, text);
         let record = Record::default();
         let recorder = Box::new(Recorder(FakeRenderer(Arc::clone(&record))));
@@ -9703,6 +9845,7 @@ impl Fixture {
             let _marked = never_waits::marked();
             Harness::builder()
                 .with_size((1280.0, 800.0))
+                .with_pixels_per_point(pixels_per_point)
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
@@ -19666,6 +19809,30 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                 h.get_by_role_and_label(Role::Group, "ViewCube")
                     .get_by_label("Top front right")
             }),
+            Command::LookAt => {
+                // In sketch mode, by its keys and by the Sketch Palette's Look At, each from
+                // a view moved off: the same camera (Look At's own tests check which).
+                let f = fixture();
+                let mut h = triangle_opened(&f);
+                for chord in keys_of(command) {
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    panned(&mut h);
+                    let moved = view(&h).camera().clone();
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    let keyed = view(&h).camera().clone();
+                    assert_ne!(keyed, moved, "Look At moved nothing");
+                    view_mut(&mut h).set_camera(moved);
+                    step(&mut h);
+                    h.get_by_role_and_label(Role::Button, entry.label).click();
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(view(&h).camera(), &keyed, "the palette's Look At");
+                }
+            }
             // The pointer's: the viewport takes them, no key (their own tests: the middle
             // button's pan and orbit, the wheel's zoom).
             Command::WhatsWrong => {
@@ -21664,11 +21831,17 @@ fn after_an_edit_each_sketch_is_read_once_more_and_a_changed_state_shows_its_pre
         step(&mut h);
     }
     assert_eq!(h.state().tabs()[0].sketch_reads.reads, 7);
-    // Cancelled while every published read the session runs is held: the transaction rolled
-    // back, at a new revision, Loose's point back, but each sketch's read of it refused
-    // before it reaches the model. Till Loose is read again its prefix is sketch mode's
-    // still (none: fully defined), whatever frames pass. Released, Loose is read again, and
-    // its prefix is its read's, sketch mode's no longer.
+    // Loose hidden, so of the four read again the shown three come first. Cancelled while
+    // every published read the session runs is held: the transaction rolled back, at a new
+    // revision, Loose's point back, but each sketch's read of it refused before it reaches
+    // the model. Till Loose is read again its prefix is sketch mode's still (none: fully
+    // defined), whatever frames pass, and whichever other sketch's read lands. Released,
+    // Loose is read again, last, and its prefix is its read's, sketch mode's no longer.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Hide Loose")
+        .click();
+    step(&mut h);
+    step(&mut h);
     let id = h.state().tabs()[0].id;
     let before = h.state().tabs()[0].published;
     let held = hold_published_reads(&f, id);
@@ -21681,6 +21854,29 @@ fn after_an_edit_each_sketch_is_read_once_more_and_a_changed_state_shows_its_pre
         assert_eq!(prefixes(&h), [None, Some("(+)"), Some("(?)"), None]);
     }
     release_published_reads(held);
+    let ids = ["s0000001", "s0000002", "s0000003", "s0000004"].map(sketch_id);
+    let others_first = std::cell::Cell::new(false);
+    step_until(&mut h, "Loose read again", |h| {
+        let tab = &h.state().tabs()[0];
+        let read_again = |id: &silico_core::document::FeatureId| {
+            tab.sketch_reads
+                .held(id)
+                .is_some_and(|held| Some(held.revision) == tab.published)
+        };
+        if read_again(&ids[0]) {
+            return true;
+        }
+        if ids[1..].iter().any(read_again) {
+            others_first.set(true);
+        }
+        assert_eq!(
+            tab.sketch_reads.prefix(&ids[0]),
+            None,
+            "before Loose's own read"
+        );
+        false
+    });
+    assert!(others_first.get(), "another sketch read again before Loose");
     step_until(&mut h, "Loose's prefix its read's again", |h| {
         let tab = &h.state().tabs()[0];
         tab.sketch_reads
@@ -27192,6 +27388,11 @@ fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a silico_app::tab::Tab {
 /// (the app makes no primitive: Trevin's decision of 2026-11-09): CREATE's Create Sketch,
 /// once the part's timeline is read, on the XY plane, its sketch added and read.
 fn begin_sketch_on_xy(h: &mut AppHarness, part: &str) {
+    begin_sketch_on(h, part, "XY plane");
+}
+
+/// [`begin_sketch_on_xy`] on the origin plane labelled `plane` ("XZ plane").
+fn begin_sketch_on(h: &mut AppHarness, part: &str, plane: &str) {
     step_until(h, "Create Sketch on", |h| {
         !h.get_by_role_and_label(Role::Toolbar, "CREATE")
             .get_by_label("Create Sketch")
@@ -27202,11 +27403,10 @@ fn begin_sketch_on_xy(h: &mut AppHarness, part: &str) {
         .get_by_label("Create Sketch")
         .click();
     step_until(h, "its planes", |h| {
-        h.query_by_role_and_label(Role::Button, "XY plane")
-            .is_some()
+        h.query_by_role_and_label(Role::Button, plane).is_some()
     });
     step(h);
-    h.get_by_role_and_label(Role::Button, "XY plane").click();
+    h.get_by_role_and_label(Role::Button, plane).click();
     step_until(h, "its sketch added and read", |h| {
         tab_named(h, part)
             .sketch
@@ -29168,17 +29368,13 @@ const A_PIN: &str = r#"{
 }
 "#;
 
-#[test]
-fn a_selected_rim_is_a_circle_edge_with_its_length_and_radius_and_its_wall_a_cylinder() {
-    // The pin described as OCCT describes a cylinder, in the fake's numbering of it (its
-    // Edge1 the seam, from Vertex1 to Vertex2; Edge2 the circle Face2 is bounded by, at
-    // Vertex1; Edge3 Face3's, at Vertex2): its wall 2π · 2.5 · 12 = 60π mm², its top and
-    // bottom π · 2.5² each, its rims 2π · 2.5 = 5π long, each closed at its vertex.
+/// The fake describing A_PIN's cylinder as the kernel would: its wall a cylinder about z,
+/// radius 2.5 and 12 high, and its two caps planes facing +z and −z.
+fn describes_a_pin(f: &Fixture) {
     use silico_core::kernel::{
         Axis, Description, EdgeCurve, EdgeDescription, FaceDescription, Op, Surface,
     };
     use std::f64::consts::PI;
-    let f = fixture();
     let axis = |z: f64| Axis {
         origin: [0.0, 0.0, z],
         direction: [0.0, 0.0, 1.0],
@@ -29231,6 +29427,16 @@ fn a_selected_rim_is_a_circle_edge_with_its_length_and_radius_and_its_wall_a_cyl
         Op::DescribeAll { .. } => Some(silico_protocol::Reply::DescribedAll(description.clone())),
         _ => None,
     });
+}
+
+#[test]
+fn a_selected_rim_is_a_circle_edge_with_its_length_and_radius_and_its_wall_a_cylinder() {
+    // The pin described as OCCT describes a cylinder, in the fake's numbering of it (its
+    // Edge1 the seam, from Vertex1 to Vertex2; Edge2 the circle Face2 is bounded by, at
+    // Vertex1; Edge3 Face3's, at Vertex2): its wall 2π · 2.5 · 12 = 60π mm², its top and
+    // bottom π · 2.5² each, its rims 2π · 2.5 = 5π long, each closed at its vertex.
+    let f = fixture();
+    describes_a_pin(&f);
     let (mut h, _) = f.opened("pin.silico", A_PIN);
     step_until(&mut h, "the model published", |h| {
         h.state().tabs()[0].published.is_some()
@@ -29590,88 +29796,750 @@ fn sketch_on_this_face_creates_a_sketch_on_the_picked_face() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-#[test]
-fn a_sketch_on_a_face_leaves_its_body_the_tip_so_a_pocket_or_pad_from_it_takes_that_body() {
-    // The block's top, Face6, sketched on by Sketch on this face, a rectangle drawn inside it
-    // (the face's frame has its origin at (0, 0, 10) and its x +x, so the face spans 0 to 40
-    // by 0 to 20), and the sketch finished. The sketch names the block as the feature its
-    // face is on, but the gate counts a feature's base and tool alone as consuming a solid,
-    // and a sketch has neither: the block is still the body a sweep builds on. So Pocket is
-    // on in CREATE, and a Pocket's, or a Pad's, add takes the block as its base.
+/// `document` opened as `file`, its Block (k7f2qx3m) described and measured as a real box;
+/// the Block's top, Face6, sketched on by Sketch on this face, a rectangle drawn inside it
+/// (the face's frame has its origin at (0, 0, 10) and its x +x, so the face spans 0 to 40
+/// by 0 to 20), and the sketch finished and listed in the browser as `name`. The harness,
+/// and the sketch's ID.
+fn a_rectangle_on_the_blocks_top(
+    f: &Fixture,
+    file: &str,
+    document: &str,
+    name: &str,
+) -> (AppHarness, silico_core::document::FeatureId) {
     use silico_app::sketch::tools::Choice;
     use silico_core::sketch_tools::ToolKind;
-    for (kind, extent) in [
-        (
-            "Pocket",
-            r#"{"type": "one_side", "length": 5, "reversed": false}"#,
-        ),
-        (
-            "Pad",
-            r#"{"type": "one_side", "length": 10, "reversed": false}"#,
-        ),
-    ] {
+    describes_a_real_box(f);
+    measures_the_box(f);
+    let (mut h, _) = f.opened(file, document);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step(&mut h);
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Button, "Sketch on this face")
+        .click();
+    step_until(&mut h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    sketch_read(&mut h);
+    let sketch = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    // R, the corner rectangle, then its two corners clicked.
+    h.key_press(eframe::egui::Key::R);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Draw(ToolKind::CornerRectangle))
+    );
+    sketch_events(f, &mut h, &clicked(10.0, 5.0));
+    sketch_events(f, &mut h, &clicked(30.0, 15.0));
+    settled(&mut h);
+    read_with_lines(&mut h, 4);
+    assert_rectangle_in(
+        &sketch_of_text(f, &h, sketch.as_str()),
+        [10.0, 5.0],
+        [30.0, 15.0],
+    );
+    leave_sketch(&mut h, true);
+    step_until(&mut h, "its sketch listed", |h| shows(h, "Browser", name));
+    (h, sketch)
+}
+
+/// The sketch `name` chosen in the browser, and a `kind` (a sweep) made from it: CREATE's
+/// button on, its dialog open, and its add answered and settled.
+fn a_sweep_from(h: &mut AppHarness, name: &str, kind: &str) {
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label(name)
+        .click();
+    step(h);
+    assert!(
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label(kind)
+            .accesskit_node()
+            .is_disabled(),
+        "{kind} is on"
+    );
+    create(h, kind);
+    step_until(h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(h);
+}
+
+/// A Pocket's or a Pad's fields, as `fields_of` gives them: on `base`, from `sketch`, with
+/// its dialog's default extent.
+fn sweep_fields(kind: &str, base: &str, sketch: &str) -> Vec<(String, Plain)> {
+    let length = if kind == "Pocket" { 5 } else { 10 };
+    expected(&format!(
+        r#"{{"type": "{}", "name": "{kind}", "base": "{base}", "sketch": "{sketch}", "extent": {{"type": "one_side", "length": {length}, "reversed": false}}}}"#,
+        kind.to_lowercase()
+    ))
+}
+
+#[test]
+fn a_sketch_on_a_face_consumes_nothing_so_a_pocket_or_pad_from_it_takes_that_body() {
+    // The block's top, Face6, sketched on. The sketch names the block as the feature its face
+    // is on, but the gate counts a feature's base and tool alone as consuming a solid, and a
+    // sketch has neither: the block is still a body a sweep can build on. So Pocket is on in
+    // CREATE, and a Pocket's, or a Pad's, add takes the block, its face's body, as its base.
+    for kind in ["Pocket", "Pad"] {
         let f = fixture();
-        let mut h = a_measured_box(&f);
-        select_in_box(&mut h, &["Face6"]);
-        row_until(&mut h, "Area", "800.00 mm²");
-        h.get_by_role_and_label(Role::Pane, "Properties")
-            .get_by_role_and_label(Role::Button, "Sketch on this face")
-            .click();
-        step_until(&mut h, "its sketch added", |h| {
-            sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
-        });
-        sketch_read(&mut h);
-        let sketch = sketch_mode(&h).unwrap().sketch.clone().unwrap();
-        // R, the corner rectangle, then its two corners clicked.
-        h.key_press(eframe::egui::Key::R);
-        step(&mut h);
-        assert_eq!(
-            sketch_mode(&h).unwrap().tools.choice(),
-            Some(Choice::Draw(ToolKind::CornerRectangle))
-        );
-        sketch_events(&f, &mut h, &clicked(10.0, 5.0));
-        sketch_events(&f, &mut h, &clicked(30.0, 15.0));
-        settled(&mut h);
-        read_with_lines(&mut h, 4);
-        assert_rectangle_in(
-            &sketch_of_text(&f, &h, sketch.as_str()),
-            [10.0, 5.0],
-            [30.0, 15.0],
-        );
-        leave_sketch(&mut h, true);
-        step_until(&mut h, "its sketch listed", |h| {
-            shows(h, "Browser", "Sketch1")
-        });
-        // The sketch chosen in the browser, for the sweep to take.
-        h.get_by_role_and_label(Role::Pane, "Browser")
-            .get_by_label("Sketch1")
-            .click();
-        step(&mut h);
-        assert!(
-            !h.get_by_role_and_label(Role::Toolbar, "CREATE")
-                .get_by_label(kind)
-                .accesskit_node()
-                .is_disabled(),
-            "{kind} is on"
-        );
-        create(&mut h, kind);
-        step_until(&mut h, "its add answered", |h| {
-            h.state().tabs()[0]
-                .dialog
-                .as_ref()
-                .is_some_and(|dialog| dialog.feature.is_some())
-        });
-        settled(&mut h);
+        let (mut h, sketch) = a_rectangle_on_the_blocks_top(&f, "box.silico", A_BOX, "Sketch1");
+        a_sweep_from(&mut h, "Sketch1", kind);
         assert_eq!(
             fields_of(&text_of(&f, &h), kind),
-            Some(expected(&format!(
-                r#"{{"type": "{}", "name": "{kind}", "base": "k7f2qx3m", "sketch": "{sketch}", "extent": {extent}}}"#,
-                kind.to_lowercase()
-            ))),
+            Some(sweep_fields(kind, "k7f2qx3m", sketch.as_str())),
             "{kind}"
         );
         assert_eq!(never_waits::waits(), 0);
     }
+}
+
+/// The M2.1 example's Block and Pin ([`EXAMPLE`]) before its Hole: two bodies, standing
+/// apart, the Pin built last.
+const BLOCK_AND_PIN: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12}
+  ]
+}
+"#;
+
+#[test]
+fn a_pocket_or_pad_from_a_sketch_on_the_first_bodys_face_builds_on_that_body_not_the_last() {
+    // #438's review, L1: a Block, then a separate Pin, the tip (the last body built, nothing
+    // consuming it). The Block's top sketched on. A sweep from a sketch on a face builds on
+    // that face's body, as SolidWorks merges it and FreeCAD's PartDesign builds in the
+    // sketch's own Body: a Pocket's add, or a Pad's, names the Block as its base, never the
+    // Pin.
+    for kind in ["Pocket", "Pad"] {
+        let f = fixture();
+        let (mut h, sketch) =
+            a_rectangle_on_the_blocks_top(&f, "block-and-pin.silico", BLOCK_AND_PIN, "Sketch1");
+        a_sweep_from(&mut h, "Sketch1", kind);
+        assert_eq!(
+            fields_of(&text_of(&f, &h), kind),
+            Some(sweep_fields(kind, "k7f2qx3m", sketch.as_str())),
+            "{kind}"
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+/// [`BLOCK_AND_PIN`], and Loose, a closed square on xy from (18, 8) to (22, 12) about the
+/// Pin's axis, nothing built from it.
+const BLOCK_PIN_AND_LOOSE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "s0000009", "type": "sketch", "v": 1, "name": "Loose", "plane": "xy", "points": [{"id": "pa000000", "x": 18, "y": 8, "construction": false}, {"id": "pb000000", "x": 22, "y": 8, "construction": false}, {"id": "pc000000", "x": 22, "y": 12, "construction": false}, {"id": "pd000000", "x": 18, "y": 12, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pd000000", "construction": false}, {"id": "nd000000", "from": "pd000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+/// Over [`BLOCK_PIN_AND_LOOSE`], with Sketch2 drawn on the Block's top: a Pocket's dialog
+/// opened on `first`, its add answered with `first_base`; then each of `then` picked into its
+/// box in turn, a sketch and the base it should take, the pocket's fields checked once each
+/// edit is answered; and again once OK keeps the last.
+fn sketches_picked_after_the_add(first: &str, first_base: &str, then: &[(&str, &str)]) {
+    let f = fixture();
+    let (mut h, drawn) =
+        a_rectangle_on_the_blocks_top(&f, "loose.silico", BLOCK_PIN_AND_LOOSE, "Sketch2");
+    let id = |name: &str| {
+        if name == "Loose" {
+            "s0000009".to_owned()
+        } else {
+            drawn.as_str().to_owned()
+        }
+    };
+    a_sweep_from(&mut h, first, "Pocket");
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", first_base, &id(first)))
+    );
+    let mut want = None;
+    for (sketch, base) in then {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label(sketch)
+            .click();
+        let picked = id(sketch);
+        step_until(&mut h, "the sketch picked sent", |h| {
+            fields_of(&text_of(&f, h), "Pocket").is_some_and(|fields| {
+                fields
+                    .iter()
+                    .any(|(key, value)| key == "sketch" && *value == Plain::String(picked.clone()))
+            })
+        });
+        settled(&mut h);
+        want = Some(sweep_fields("Pocket", base, &picked));
+        assert_eq!(fields_of(&text_of(&f, &h), "Pocket"), want, "{sketch}");
+    }
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(fields_of(&text_of(&f, &h), "Pocket"), want);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`sketches_picked_after_the_add`] of one sketch picked after the add.
+fn a_sketch_picked_after_the_add(first: &str, first_base: &str, then: &str, then_base: &str) {
+    sketches_picked_after_the_add(first, first_base, &[(then, then_base)]);
+}
+
+#[test]
+fn a_sketch_picked_back_after_another_takes_the_sweep_back_to_its_body() {
+    // #443's review, M3: Loose, then Sketch2 (the Block), then Loose again: the base goes back
+    // to the tip, the Pin, as the dialog's base last sent says it moved to the Block.
+    sketches_picked_after_the_add(
+        "Loose",
+        "a91cw0de",
+        &[("Sketch2", "k7f2qx3m"), ("Loose", "a91cw0de")],
+    );
+}
+
+/// [`BLOCK_PIN_AND_LOOSE`] with Sketch2, a rectangle on the Block's top, and Cut, a pocket
+/// of the Pin from Loose, then Later, a box built after it: Cut mid-timeline.
+const POCKETED_MID: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "s0000009", "type": "sketch", "v": 1, "name": "Loose", "plane": "xy", "points": [{"id": "pa000000", "x": 18, "y": 8, "construction": false}, {"id": "pb000000", "x": 22, "y": 8, "construction": false}, {"id": "pc000000", "x": 22, "y": 12, "construction": false}, {"id": "pd000000", "x": 18, "y": 12, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pd000000", "construction": false}, {"id": "nd000000", "from": "pd000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "s0000002", "type": "sketch", "v": 1, "name": "Sketch2", "plane": {"face": "k7f2qx3m.box.Face6", "x": "+x", "reversed": false}, "points": [{"id": "pa000000", "x": 10, "y": 5, "construction": false}, {"id": "pb000000", "x": 30, "y": 5, "construction": false}, {"id": "pc000000", "x": 30, "y": 15, "construction": false}, {"id": "pd000000", "x": 10, "y": 15, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pd000000", "construction": false}, {"id": "nd000000", "from": "pd000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "p0000001", "type": "pocket", "v": 1, "name": "Cut", "base": "a91cw0de", "sketch": "s0000009", "extent": {"type": "one_side", "length": 5, "reversed": false}},
+    {"id": "b0000002", "type": "box", "v": 1, "name": "Later", "position": [60, 0, 0], "length": 5, "width": 5, "height": 5}
+  ]
+}
+"#;
+
+#[test]
+fn edit_feature_on_a_sweep_keeps_its_base_when_another_bodys_face_sketch_is_picked() {
+    // #443's review, L6: Cut's own dialog (Edit Feature), Sketch2, on the Block's top,
+    // picked into it: its sketch moves, its base stays the Pin, as Edit Feature edits what's
+    // there; only a new sweep's base follows its sketch.
+    let f = fixture();
+    describes_a_real_box(&f);
+    measures_the_box(&f);
+    let (mut h, _) = f.opened("pocketed.silico", POCKETED_MID);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "Cut listed", |h| shows(h, "Timeline", "Cut"));
+    edit_from_the_timeline(&mut h, "Cut");
+    step_until(&mut h, "Cut's dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Pocket").is_some()
+    });
+    settled(&mut h);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step_until(&mut h, "the sketch picked sent", |h| {
+        fields_of(&text_of(&f, h), "Cut").is_some_and(|fields| {
+            fields.iter().any(|(key, value)| {
+                key == "sketch" && *value == Plain::String("s0000002".to_owned())
+            })
+        })
+    });
+    settled(&mut h);
+    let want = Some(expected(
+        r#"{"type": "pocket", "name": "Cut", "base": "a91cw0de", "sketch": "s0000002", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#,
+    ));
+    assert_eq!(fields_of(&text_of(&f, &h), "Cut"), want);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(fields_of(&text_of(&f, &h), "Cut"), want);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`BLOCK_PIN_AND_LOOSE`] with Sketch2, a rectangle on the Block's top, and Joined, a fuse
+/// of the Pin and the Block (its tool), suppressed: the gate counts Joined as consuming the
+/// Block, so no feature may take the Block as its base.
+const JOINED_SUPPRESSED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "s0000009", "type": "sketch", "v": 1, "name": "Loose", "plane": "xy", "points": [{"id": "pa000000", "x": 18, "y": 8, "construction": false}, {"id": "pb000000", "x": 22, "y": 8, "construction": false}, {"id": "pc000000", "x": 22, "y": 12, "construction": false}, {"id": "pd000000", "x": 18, "y": 12, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pd000000", "construction": false}, {"id": "nd000000", "from": "pd000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "s0000002", "type": "sketch", "v": 1, "name": "Sketch2", "plane": {"face": "k7f2qx3m.box.Face6", "x": "+x", "reversed": false}, "points": [{"id": "pa000000", "x": 10, "y": 5, "construction": false}, {"id": "pb000000", "x": 30, "y": 5, "construction": false}, {"id": "pc000000", "x": 30, "y": 15, "construction": false}, {"id": "pd000000", "x": 10, "y": 15, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pd000000", "construction": false}, {"id": "nd000000", "from": "pd000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "j0000001", "type": "fuse", "v": 1, "name": "Joined", "suppressed": true, "base": "a91cw0de", "tool": "k7f2qx3m"}
+  ]
+}
+"#;
+
+/// Why a sweep can't be built on the Block in [`JOINED_SUPPRESSED`], as its dialog says.
+const BLOCK_HELD_BY_JOINED: &str = "Block is the tool of Joined, which consumes it while suppressed: unsuppress or remove Joined to build on it";
+
+/// [`JOINED_SUPPRESSED`] with Joined not suppressed: the Block, its tool, is Joined's, and a
+/// sweep from Sketch2 builds on Joined.
+fn joined_unsuppressed() -> String {
+    JOINED_SUPPRESSED.replace(
+        r#""name": "Joined", "suppressed": true,"#,
+        r#""name": "Joined","#,
+    )
+}
+
+#[test]
+fn a_refusal_from_the_adds_own_read_is_said_and_stands_while_the_tabs_timeline_is_older() {
+    // #443's review. A Pocket's dialog open, its sketch box empty, over the document with
+    // Joined unsuppressed (the Block's chain ends at Joined). Another client suppresses
+    // Joined, and in the very next frame Sketch2 is chosen: the dialog's check before the
+    // add, against the tab's timeline still of the revision before, passes, and the add is
+    // queued; its own read of the session's document refuses the Block (`Under::Base`).
+    // Nothing is added (no add is sent at all), OK is off, and the dialog says why, frame
+    // after frame: the read's refusal while the tab's timeline is older than the read, the
+    // check's own once it isn't. Loose picked instead lets it go, and is added on the tip.
+    // Then (round 5, L17) Sketch2 picked again, its body refused, so not sent; another
+    // client unsuppressing Joined lifts the refusal, and the box's Sketch2, offered again
+    // each frame, is sent once the tab's timeline has it: the pocket's sketch is Sketch2.
+    let f = fixture();
+    describes_a_real_box(&f);
+    measures_the_box(&f);
+    let (mut h, _) = f.opened("joined.silico", &joined_unsuppressed());
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "its sketches listed", |h| {
+        shows(h, "Browser", "Sketch2") && shows(h, "Browser", "Loose")
+    });
+    create(&mut h, "Pocket");
+    settled(&mut h);
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.sketch().is_none())
+    );
+    let id = h.state().tabs()[0].id;
+    let joined = silico_core::document::FeatureId::new("j0000001").unwrap();
+    f.sessions
+        .set_field(
+            &id,
+            h.state().tabs()[0].revision,
+            joined,
+            "suppressed".to_owned(),
+            json::read(b"true").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    for _ in 0..20 {
+        step(&mut h);
+        assert!(dialog(&h).query_by_label(BLOCK_HELD_BY_JOINED).is_some());
+        assert!(!ok_enabled(&h));
+    }
+    let tab = &h.state().tabs()[0];
+    assert!(tab.dialog.as_ref().unwrap().feature.is_none());
+    assert!(
+        !tab.sent.iter().any(|sent| matches!(sent, Sent::Add)),
+        "{:?}",
+        tab.sent
+    );
+    assert_eq!(fields_of(&text_of(&f, &h), "Pocket"), None);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Loose")
+        .click();
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    assert!(dialog(&h).query_by_label(BLOCK_HELD_BY_JOINED).is_none());
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert!(ok_enabled(&h));
+    let sketch_of = |h: &AppHarness| {
+        fields_of(&text_of(&f, h), "Pocket")
+            .unwrap()
+            .into_iter()
+            .find(|(key, _)| key == "sketch")
+            .map(|(_, value)| format!("{value:?}"))
+            .unwrap()
+    };
+    let pick_sketch2 = |h: &mut AppHarness| {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label("Sketch2")
+            .click();
+        step(h);
+    };
+    pick_sketch2(&mut h);
+    step_until(&mut h, "the reason shown again", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    settled(&mut h);
+    assert!(sketch_of(&h).contains("s0000009"), "{}", sketch_of(&h));
+    f.sessions
+        .set_field(
+            &id,
+            h.state().tabs()[0].revision,
+            silico_core::document::FeatureId::new("j0000001").unwrap(),
+            "suppressed".to_owned(),
+            json::read(b"false").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the refusal lifted", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_none()
+    });
+    step_until(&mut h, "Sketch2 sent", |h| {
+        sketch_of(h).contains("s0000002")
+    });
+    settled(&mut h);
+    assert!(ok_enabled(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`JOINED_SUPPRESSED`] opened, the model published, its sketches listed, and a Pocket's
+/// dialog from Loose, its add answered: the Pocket built on Joined, the tip.
+fn pocket_from_loose(f: &Fixture) -> AppHarness {
+    describes_a_real_box(f);
+    measures_the_box(f);
+    let (mut h, _) = f.opened("joined.silico", JOINED_SUPPRESSED);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "its sketches listed", |h| {
+        shows(h, "Browser", "Sketch2") && shows(h, "Browser", "Loose")
+    });
+    a_sweep_from(&mut h, "Loose", "Pocket");
+    assert_eq!(
+        fields_of(&text_of(f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert!(ok_enabled(&h));
+    h
+}
+
+#[test]
+fn a_sketch_picked_back_after_a_refused_one_lifts_the_refusal_and_ok_commits_it() {
+    // #443's review (round 6, M9): a Pocket from Loose, added; Sketch2 picked, its body
+    // refused (the Block, held by Joined), so OK off and the reason shown; Loose picked back,
+    // the sketch the document has: the refusal goes, OK is on, the Pocket is as it was (no
+    // edit sent for it: the box holds what was last sent), and OK closes the dialog with it.
+    let f = fixture();
+    let mut h = pocket_from_loose(&f);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    settled(&mut h);
+    assert!(!ok_enabled(&h));
+    let sent = h.state().tabs()[0].edits.sent;
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Loose")
+        .click();
+    step_until(&mut h, "the reason gone", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_none()
+    });
+    settled(&mut h);
+    assert!(ok_enabled(&h));
+    assert_eq!(
+        h.state().tabs()[0].edits.sent,
+        sent,
+        "an edit sent for Loose"
+    );
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ok_clicked_in_the_frame_a_refused_sketch_is_picked_leaves_the_dialog_open() {
+    // #443's review (round 6, M10): a Pocket from Loose, added; then Sketch2's row in the
+    // browser and OK both clicked in one frame, each by its accessibility action. The
+    // browser is drawn before the dialog, so the dialog's inputs hold Sketch2 when OK is
+    // asked of them; but Sketch2's body is refused only as the frame's edits are sent after,
+    // so the click, taken only if OK still holds then, does nothing: the dialog stays open,
+    // the reason shown, and the Pocket Loose's on Joined still.
+    use eframe::egui::{Event, accesskit};
+    let f = fixture();
+    let mut h = pocket_from_loose(&f);
+    fn click(node: egui_kittest::Node<'_>) -> Event {
+        let (target_node, target_tree) = node.accesskit_node().locate();
+        Event::AccessKitActionRequest(accesskit::ActionRequest {
+            target_node,
+            target_tree,
+            action: accesskit::Action::Click,
+            data: None,
+        })
+    }
+    let row = click(
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label("Sketch2"),
+    );
+    let ok = click(dialog(&h).get_by_role_and_label(Role::Button, "OK"));
+    h.input_mut().events.extend([row, ok]);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    settled(&mut h);
+    assert!(dialog_open(&h));
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_new_features_add_refused_as_stale_is_sent_again_and_lands() {
+    // #443's review (round 6, L19): a Pad's dialog, its sketch not chosen yet; another
+    // client's box held in the session's queue; then Triangle chosen: the Pad's body is read
+    // (of the model published, beside the queue) and its add sent, queuing behind the box,
+    // made against the revision before. Let go: the box lands first, so the core refuses the
+    // Pad's add as made against a revision the session has moved on from; the dialog lets the
+    // add go and sends it again at the revision now: the Pad is added, the dialog has its
+    // feature, and OK is on.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    create(&mut h, "Pad");
+    settled(&mut h);
+    let id = h.state().tabs()[0].id;
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let theirs = f.sessions.add_feature(
+        &id,
+        h.state().tabs()[0].revision,
+        None,
+        json::read(
+            br#"{"type": "box", "name": "Theirs", "position": [90, 0, 0], "length": 2, "width": 2, "height": 2}"#,
+        )
+        .unwrap(),
+    );
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step_until(&mut h, "its add sent", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.dialog.as_ref().is_some_and(|dialog| dialog.adding) && !tab.reading_body()
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_none())
+    );
+    hold.release();
+    check.wait();
+    theirs.wait().result.unwrap();
+    added(&mut h);
+    settled(&mut h);
+    let text = text_of(&f, &h);
+    assert!(fields_of(&text, "Theirs").is_some(), "{text}");
+    assert!(fields_of(&text, "Pad").is_some(), "{text}");
+    assert!(ok_enabled(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`JOINED_SUPPRESSED`] without Joined, and Spare, a box apart, to suppress.
+fn with_spare() -> String {
+    JOINED_SUPPRESSED.replace(
+        r#"{"id": "j0000001", "type": "fuse", "v": 1, "name": "Joined", "suppressed": true, "base": "a91cw0de", "tool": "k7f2qx3m"}"#,
+        r#"{"id": "b0000009", "type": "box", "v": 1, "name": "Spare", "position": [60, 0, 0], "length": 5, "width": 5, "height": 5}"#,
+    )
+}
+
+#[test]
+fn an_old_dialogs_add_sent_while_a_new_dialog_is_open_leaves_the_new_ones_base_alone() {
+    // #443's review (the mutants of `dialog.serial == serial && kind.sweeps()` where a sweep's
+    // add is sent): a suppress held in the session's queue, so a Pocket's add from Sketch2
+    // (on the Block) waits in the tab's queue; that dialog cancelled and a Pocket's from
+    // Loose opened; then the queue let go. The first dialog's add is sent while the second is
+    // open: in every frame the second's base is none (its own add not sent) or the tip, the
+    // Pin, its own; never the first's, the Block.
+    let f = fixture();
+    describes_a_real_box(&f);
+    measures_the_box(&f);
+    let (mut h, _) = f.opened("spare.silico", &with_spare());
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "its features listed", |h| {
+        shows(h, "Browser", "Sketch2")
+            && shows(h, "Browser", "Loose")
+            && shows(h, "Timeline", "Spare")
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    menu_on(&mut h, "Timeline", "Spare");
+    menu_click(&mut h, "SPARE", "Suppress");
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pocket");
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_none() && dialog.base.is_none())
+    );
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the first dialog closed", |h| !dialog_open(h));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Loose")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pocket");
+    let second = h.state().tabs()[0].dialog.as_ref().unwrap().serial;
+    hold.release();
+    let _ = check.wait();
+    let pin = silico_core::document::FeatureId::new("a91cw0de").unwrap();
+    step_until(&mut h, "the second dialog's add answered", |h| {
+        let dialog = h.state().tabs()[0].dialog.as_ref().unwrap();
+        assert_eq!(dialog.serial, second);
+        assert!(
+            dialog.base.is_none() || dialog.base.as_ref() == Some(&pin),
+            "{:?}",
+            dialog.base
+        );
+        dialog.feature.is_some()
+    });
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "a91cw0de", "s0000009"))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_pocket_whose_new_body_is_refused_cant_be_okd_with_its_new_sketch() {
+    // #443's review, M2 and L5. The walk from Sketch2's face ends at the Block, the tool of
+    // Joined, suppressed: the gate counts Joined as its consumer, so a base there is refused.
+    // Up front, Sketch2 chosen before the Pocket: no add is sent (nothing builds on another
+    // body), OK is off, and the dialog says why. Then from Loose (on the tip, Joined, which
+    // stands for the Pin): added; Sketch2 picked after: OK off, the reason shown, and Cancel
+    // leaves the document as it was.
+    let f = fixture();
+    describes_a_real_box(&f);
+    measures_the_box(&f);
+    let (mut h, _) = f.opened("joined.silico", JOINED_SUPPRESSED);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    step_until(&mut h, "its sketches listed", |h| {
+        shows(h, "Browser", "Sketch2") && shows(h, "Browser", "Loose")
+    });
+    let before = text_of(&f, &h);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pocket");
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!ok_enabled(&h));
+    assert!(
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .unwrap()
+            .feature
+            .is_none()
+    );
+    assert_eq!(text_of(&f, &h), before);
+    // Enter, OK's key, is off too: the dialog stays.
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // From Loose: added on Joined, the tip.
+    a_sweep_from(&mut h, "Loose", "Pocket");
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    assert!(ok_enabled(&h));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Sketch2")
+        .click();
+    step_until(&mut h, "the reason shown", |h| {
+        dialog(h).query_by_label(BLOCK_HELD_BY_JOINED).is_some()
+    });
+    settled(&mut h);
+    assert!(!ok_enabled(&h));
+    // Nothing sent for Sketch2: the pocket is Loose's on Joined still; and Enter is off.
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pocket"),
+        Some(sweep_fields("Pocket", "j0000001", "s0000009"))
+    );
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_on_the_first_bodys_face_picked_after_the_add_takes_the_sweep_to_that_body() {
+    // #443's review, H1: a Pocket from Loose, on xy, takes the tip, the Pin, at its add. Then
+    // Sketch2, on the Block's top, picked into its open dialog: the pocket's base follows the
+    // sketch to the Block, as Sketch2's add would have it, and isn't left cutting the Pin.
+    a_sketch_picked_after_the_add("Loose", "a91cw0de", "Sketch2", "k7f2qx3m");
+}
+
+#[test]
+fn a_sketch_on_an_origin_plane_picked_after_the_add_takes_the_sweep_to_the_tip() {
+    // The reverse: a Pocket from Sketch2 takes the Block, its face's body; Loose, picked into
+    // its open dialog, takes it to the tip, the Pin, as Loose's add would have it. The tip is
+    // worked out without the pocket itself, which consumes the Block and stands last.
+    a_sketch_picked_after_the_add("Sketch2", "k7f2qx3m", "Loose", "a91cw0de");
 }
 
 #[test]
@@ -36250,16 +37118,27 @@ fn box_from_above_made(
     from_above_made(f, "box.silico", A_BOX, boxing)
 }
 
-/// [`box_from_above_made`] of `text` opened as `name`: its one body meshed as the box is
-/// (every tessellation the 40 by 20 by 10 box's, [`meshes_a_real_box`]), seen as the box is.
+/// [`box_from_above_made`] of `text` opened as `name`: each body meshed as the box is (every
+/// tessellation the 40 by 20 by 10 box's, [`meshes_a_real_box`]), seen as the box is.
 fn from_above_made(
     f: &Fixture,
     name: &str,
     text: &str,
     boxing: Option<silico_app::boxes::Build>,
 ) -> (AppHarness, Record) {
+    from_above_scaled(f, name, text, boxing, 1.0)
+}
+
+/// [`from_above_made`] at `pixels_per_point`, its window 1280 by 800 points.
+fn from_above_scaled(
+    f: &Fixture,
+    name: &str,
+    text: &str,
+    boxing: Option<silico_app::boxes::Build>,
+    pixels_per_point: f32,
+) -> (AppHarness, Record) {
     meshes_a_real_box(f);
-    let (mut h, record) = f.drawn_with(name, text, None, boxing);
+    let (mut h, record) = f.drawn_scaled(name, text, None, boxing, pixels_per_point);
     meshes_settled(&mut h);
     view_mut(&mut h).set_camera(silico_protocol::Camera {
         projection: silico_protocol::Projection::Orthographic { view_height: 40.0 },
@@ -36431,6 +37310,243 @@ const BY_THE_RIGHT_EDGE: [&str; 4] = [
     "Edge10 Edge · Block · hidden",
     "Face5 Face · Block · hidden",
 ];
+
+#[test]
+fn with_edges_filtered_out_a_click_or_hover_on_an_edges_stroke_takes_the_face_cast_under_it() {
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    // 2 pixels in from the top's right edge (x = 40), and 2 pixels out past it; the renderer
+    // finding Edge11's stroke (the top's edge there) at the centre of each, as it's drawn 2
+    // points wide over the face. By hand: the ray inside meets the top, Face6 (z = 10) first;
+    // the one outside meets no face of the box.
+    let inside = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    let outside = above_at(&h, 40.0, 10.0, [2.0, 0.0]);
+    let stroke = |h: &AppHarness, at| Some((1, Edge(11), pixel_at(h, at)));
+    answering(&record, stroke(&h, inside), stroke(&h, inside));
+    // Edges picked, as the filter starts: the edge.
+    click_canvas(&mut h, inside, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge11"]);
+    // Edges filtered out: the face under the stroke.
+    h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
+    step(&mut h);
+    click_canvas(&mut h, inside, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
+    // The hover takes it alike.
+    h.hover_at(inside + eframe::egui::vec2(0.0, 30.0));
+    step(&mut h);
+    h.hover_at(inside);
+    step_until(&mut h, "the face hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    // Past the box, no face under the stroke: a click there selects nothing, so clears.
+    answering(&record, stroke(&h, outside), stroke(&h, outside));
+    click_canvas(&mut h, outside, false);
+    selected_until(&mut h, &[]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The box from above, as [`box_from_above`] sees it but 80 mm high (so the box spans half
+/// the canvas's height, well inside it), the camera moved along x and y so the box's right
+/// edge (x = 40) lands `into` of a pixel into a column and its far edge (y = 20) `into` of a
+/// pixel into a row: (x, y) lands at (w / 2 + (x − the target's x) mm, h / 2 − (y − the
+/// target's y) mm) pixels from the canvas's corner, a millimetre being its height in pixels
+/// over 80. The column `n` x = 40 lands in, and the row `m` y = 20 lands in (the box is left
+/// of that line and below this one on the screen), and the column and row of the box's
+/// middle, (20, 10).
+fn edges_into_pixels(h: &mut AppHarness, into: f64) -> [u32; 4] {
+    let frame = view(h).frame().unwrap();
+    let [w, height] = frame.size_px.map(f64::from);
+    let mm = height / 80.0;
+    let n = (w / 2.0 + 20.0 * mm).floor();
+    let m = (height / 2.0 - 10.0 * mm).floor();
+    let x = 40.0 - (n + into - w / 2.0) / mm;
+    let y = 20.0 - (height / 2.0 - m - into) / mm;
+    view_mut(h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+        eye: [x, y, 100.0],
+        target: [x, y, 5.0],
+        up: [0.0, 1.0, 0.0],
+    });
+    for _ in 0..3 {
+        step(h);
+    }
+    step_until(h, "the meshes read", |h| {
+        !view(h).reading() && meshes_current(h)
+    });
+    boxes_made(h);
+    let middle = [w / 2.0 + (20.0 - x) * mm, height / 2.0 - (10.0 - y) * mm];
+    [n, m, middle[0].floor(), middle[1].floor()].map(|c| c as u32)
+}
+
+/// The canvas's point at the centre of pixel (column, row).
+fn at_pixel(h: &AppHarness, [column, row]: [u32; 2]) -> eframe::egui::Pos2 {
+    let frame = view(h).frame().unwrap();
+    let ppp = frame.pixels_per_point;
+    frame.rect.min + eframe::egui::vec2((column as f32 + 0.5) / ppp, (row as f32 + 0.5) / ppp)
+}
+
+#[test]
+fn with_edges_filtered_out_a_stroke_pixel_takes_whats_under_its_centre_either_side_of_a_silhouette()
+{
+    use silico_app::renderer::Element::Edge;
+    for ppp in [1.0, 2.0] {
+        let f = fixture();
+        let (mut h, record) = from_above_scaled(&f, "box.silico", A_BOX, None, ppp);
+        boxes_made(&mut h);
+        h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
+        // The renderer finding an edge's stroke at each pixel (Edge11's: which edge it is
+        // changes nothing for the cast), the ray through the pixel's centre decides. By hand,
+        // the edges a quarter of a pixel in: column n − 1, three quarters inside x = 40, the
+        // top; column n, a quarter past it, nothing (the plain click clears); row m, a quarter
+        // inside y = 20, the top; row m − 1, three quarters past it, nothing. Then three
+        // quarters in: column n, a quarter inside, the top; column n + 1, three quarters past,
+        // nothing; row m + 1, three quarters inside, the top; row m, a quarter past, nothing (each
+        // click changing the selection, so each is seen decided). Together they hold the cast to between a quarter and three quarters of a pixel in
+        // from the pixel's corner (half a point at two pixels a point is a pixel: past it).
+        let (top, none): (&[&str], &[&str]) = (&["k7f2qx3m.box.Face6"], &[]);
+        for into in [0.25, 0.75] {
+            let [n, m, column, row] = edges_into_pixels(&mut h, into);
+            assert_eq!(view(&h).frame().unwrap().pixels_per_point, ppp);
+            let pixels = if into == 0.25 {
+                [
+                    ([n - 1, row], top),
+                    ([n, row], none),
+                    ([column, m], top),
+                    ([column, m - 1], none),
+                ]
+            } else {
+                [
+                    ([n, row], top),
+                    ([n + 1, row], none),
+                    ([column, m + 1], top),
+                    ([column, m], none),
+                ]
+            };
+            for (pixel, want) in pixels {
+                let stroke = Some((1, Edge(11), pixel));
+                answering(&record, stroke, stroke);
+                let at = at_pixel(&h, pixel);
+                assert_eq!(pixel_at(&h, at), pixel);
+                click_canvas(&mut h, at, false);
+                selected_until(&mut h, want);
+            }
+        }
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn with_edges_filtered_out_a_stroke_takes_a_face_of_a_body_drawn_never_of_one_hidden() {
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    // Two bodies, each meshed as the box, so one lies in the other: at one depth, the cast
+    // takes the lower-numbered body's face.
+    let (mut h, record) = from_above_made(&f, "box.silico", TWO_BLOCKS, None);
+    boxes_made(&mut h);
+    let bodies: Vec<(u32, silico_core::document::FeatureId)> = view(&h)
+        .bodies()
+        .iter()
+        .map(|(n, body)| (*n, body.feature.clone()))
+        .collect();
+    let [(low, low_id), (high, high_id)] = bodies.as_slice() else {
+        panic!("{bodies:?}");
+    };
+    h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
+    let inside = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    let stroke = Some((*high, Edge(11), pixel_at(&h, inside)));
+    answering(&record, stroke, stroke);
+    // Both drawn: the lower-numbered body's top.
+    click_canvas(&mut h, inside, false);
+    selected_until(&mut h, &[format!("{low_id}.box.Face6").as_str()]);
+    // The lower-numbered hidden in the browser: the top of the body drawn, not the hidden one's.
+    h.state_mut().tabs_mut()[0].toggle_shown(silico_app::tab::Hideable::Feature(low_id.clone()));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).frame().unwrap().drawn, [*high]);
+    click_canvas(&mut h, inside, false);
+    selected_until(&mut h, &[format!("{high_id}.box.Face6").as_str()]);
+    assert_ne!(low, high);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_edges_filtered_out_a_click_on_a_stroke_waits_for_its_boxes_clearing_nothing_meanwhile() {
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    // The boxes held from the start: the view's body has none made.
+    let making = Arc::new(Making::default());
+    making.hold();
+    let (mut h, record) = box_from_above_made(&f, Some(making.build()));
+    let inside = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    let stroke = Some((1, Edge(11), pixel_at(&h, inside)));
+    answering(&record, stroke, stroke);
+    // Edges picked: the edge, nothing cast.
+    click_canvas(&mut h, inside, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge11"]);
+    // Edges filtered out: the click waits for the boxes, past a click's frames, the selection
+    // as it was every frame.
+    h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
+    step(&mut h);
+    click_canvas(&mut h, inside, false);
+    for _ in 0..silico_app::selection::CLICK_FRAMES + 10 {
+        step(&mut h);
+        assert_eq!(selected_names(&h), ["k7f2qx3m.box.Edge11"]);
+    }
+    // The boxes made: the top under the stroke, from the click that waited.
+    making.release();
+    selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
+    assert_eq!(making.made_of(&view(&h).bodies()[&1].mesh), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_edges_filtered_out_a_hover_on_a_stroke_waits_for_its_boxes_then_takes_the_face_unmoved() {
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    let making = Arc::new(Making::default());
+    making.hold();
+    let (mut h, record) = box_from_above_made(&f, Some(making.build()));
+    h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
+    let inside = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    let stroke = Some((1, Edge(11), pixel_at(&h, inside)));
+    answering(&record, stroke, stroke);
+    // The pointer on the stroke, the boxes held: nothing hovered.
+    h.hover_at(inside);
+    for _ in 0..10 {
+        step(&mut h);
+        assert_eq!(hover_name(&h), None);
+    }
+    // The boxes made, the pointer never moved: the top hovered.
+    making.release();
+    step_until(&mut h, "the top hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_edges_filtered_out_a_stroke_takes_nothing_where_no_box_can_be_made() {
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    // A build that can't make boxes: their thread ends, and none is ever made.
+    let failing: silico_app::boxes::Build = Arc::new(|_| panic!("no boxes, as for a test"));
+    let (mut h, record) = box_from_above_made(&f, Some(failing));
+    let inside = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    let stroke = Some((1, Edge(11), pixel_at(&h, inside)));
+    answering(&record, stroke, stroke);
+    // Edges picked: the edge.
+    click_canvas(&mut h, inside, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge11"]);
+    // Edges filtered out: no face can be cast for, so the stroke takes nothing and the plain
+    // click clears: it waits only while the thread might make them, not once it's ended.
+    h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
+    step(&mut h);
+    click_canvas(&mut h, inside, false);
+    selected_until(&mut h, &[]);
+    assert_eq!(never_waits::waits(), 0);
+}
 
 #[test]
 fn select_other_lists_whats_under_a_right_click_and_its_rows_light_the_hover_as_stepped() {
@@ -36964,6 +38080,11 @@ fn over_a_planar_face_the_context_menus_sketch_on_this_face_sends_what_the_selec
                 ("Select Other… 2 under the pointer".to_owned(), None, true),
                 ("Edit Block".to_owned(), None, true),
                 ("Sketch on this face".to_owned(), None, true),
+                (
+                    "Look At".to_owned(),
+                    Some(silico_app::shortcuts::Command::LookAt.keys_text(&h.ctx)),
+                    true
+                ),
                 ("Hide Block".to_owned(), None, true),
             ]
         );
@@ -37001,6 +38122,61 @@ fn over_a_planar_face_the_context_menus_sketch_on_this_face_sends_what_the_selec
 }
 
 #[test]
+fn over_a_planar_face_the_context_menus_look_at_turns_the_view_square_to_it_as_command_8_does() {
+    // js/interact.js's `onContext` over a planar face: Look At, after Sketch on this face. The
+    // block's top described tilted, facing (0.6, 0, 0.8), so the turn is the face's, not a fit
+    // or the Top view of the view from above it starts from. Chosen, Look At closes the menu,
+    // selects nothing, and turns the view to look along that normal, its up (z − 0.8 n) / 0.6
+    // = (−0.8, 0, 0.6), worked by hand: the same camera as Ctrl+8 with the top selected.
+    let tilted = || {
+        let mut description = real_box_description();
+        description.faces[5].surface = silico_core::kernel::Surface::Plane {
+            normal: [0.6, 0.0, 0.8],
+            location: [20.0, 10.0, 10.0],
+        };
+        description
+    };
+    let through_menu = {
+        let f = fixture();
+        describes_the_box_as(&f, tilted());
+        let (mut h, record) = box_from_above(&f);
+        let before = view(&h).camera().clone();
+        context_over_the_top(&mut h, &record);
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Look At")
+            .click();
+        step_until(&mut h, "turned", |h| view(h).camera() != &before);
+        let camera = view(&h).camera().clone();
+        let back: [f64; 3] = std::array::from_fn(|k| camera.eye[k] - camera.target[k]);
+        let length = (back[0] * back[0] + back[1] * back[1] + back[2] * back[2]).sqrt();
+        for (k, want) in [0.6, 0.0, 0.8].into_iter().enumerate() {
+            assert!((back[k] / length - want).abs() < 1e-12, "{camera:?}");
+            assert!(
+                (camera.up[k] - [-0.8, 0.0, 0.6][k]).abs() < 1e-12,
+                "{camera:?}"
+            );
+        }
+        assert!(!select_other(&h).is_open());
+        assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+        assert_eq!(never_waits::waits(), 0);
+        camera
+    };
+    let through_keys = {
+        let f = fixture();
+        describes_the_box_as(&f, tilted());
+        let (mut h, _record) = box_from_above(&f);
+        select_in_box(&mut h, &["Face6"]);
+        row_until(&mut h, "Area", "800.00 mm²");
+        let before = view(&h).camera().clone();
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Num8);
+        step_until(&mut h, "turned", |h| view(h).camera() != &before);
+        assert_eq!(never_waits::waits(), 0);
+        view(&h).camera().clone()
+    };
+    assert_eq!(through_menu, through_keys);
+}
+
+#[test]
 fn the_context_menu_offers_no_sketch_on_this_face_over_a_cylindrical_face_an_edge_or_a_vertex() {
     // The prototype's item is only for a face whose `ref.kind` is 'plane'. The block's top
     // described as a cylinder's side instead (by hand: about an axis along y through
@@ -37026,6 +38202,11 @@ fn the_context_menu_offers_no_sketch_on_this_face_over_a_cylindrical_face_an_edg
         Some("Face6 · Face")
     );
     assert!(!offers_sketch_on_face(&h));
+    assert!(
+        !context_said(&h)
+            .iter()
+            .any(|(said, _, _)| said == "Look At")
+    );
     for (element, pick, head) in [
         (Edge(11), false, "Edge11 · Edge"),
         (Vertex(7), true, "Vertex7 · Vertex"),
@@ -37054,6 +38235,12 @@ fn the_context_menu_offers_no_sketch_on_this_face_over_a_cylindrical_face_an_edg
             step(&mut h);
         }
         assert!(!offers_sketch_on_face(&h), "{head}");
+        assert!(
+            !context_said(&h)
+                .iter()
+                .any(|(said, _, _)| said == "Look At"),
+            "{head}"
+        );
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -40137,5 +41324,507 @@ fn a_shown_sketch_its_plane_doesnt_place_draws_no_lines() {
         assert!(last_lines(&record).is_empty());
     }
     assert!(!record.lock().unwrap().frames.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Look At, and fits in sketch mode (the M5.12 slice's finding) -------------------------
+
+/// Whether the view looks from `toward` (the unit vector from its target to its eye) with
+/// `up` up the image, each to 1e-9.
+fn looks(h: &AppHarness, toward: [f64; 3], up: [f64; 3]) -> bool {
+    let camera = view(h).camera();
+    let d: [f64; 3] = std::array::from_fn(|k| camera.eye[k] - camera.target[k]);
+    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    (0..3).all(|k| (d[k] / n - toward[k]).abs() < 1e-9 && (camera.up[k] - up[k]).abs() < 1e-9)
+}
+
+/// Where the open sketch's place `at` is drawn, as sketch mode draws it (its `Screen`).
+fn drawn_at(h: &AppHarness, at: [f64; 2]) -> eframe::egui::Pos2 {
+    let read = sketch_mode(h).unwrap().drawable().unwrap();
+    let frame = view(h).frame().unwrap();
+    silico_app::sketch::screen::Screen::of(read, frame)
+        .unwrap()
+        .project(at)
+        .unwrap()
+}
+
+/// The sketch bar's and the Sketch Palette's rectangles.
+fn sketch_panels(h: &AppHarness) -> (eframe::egui::Rect, eframe::egui::Rect) {
+    (
+        h.get_by_role_and_label(Role::Toolbar, "Sketch bar").rect(),
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .rect(),
+    )
+}
+
+/// The middle of the room sketch mode's bands leave the canvas `canvas`: below the bar by
+/// as much as the bar stands below the canvas's top, and left of the palette by as much as
+/// it stands in from the canvas's right (`app::sketch_inset`). A fit in sketch mode centres
+/// its box there.
+fn room_middle(
+    canvas: eframe::egui::Rect,
+    bar: eframe::egui::Rect,
+    palette: eframe::egui::Rect,
+) -> eframe::egui::Pos2 {
+    let top = bar.bottom() + (bar.top() - canvas.top());
+    let right = palette.left() - (canvas.right() - palette.right());
+    eframe::egui::Pos2::new((canvas.left() + right) / 2.0, (top + canvas.bottom()) / 2.0)
+}
+
+/// Whether `a` and `b` are within 2 points each way: the bar's rect in the tree is inside
+/// its 1-point border, and a band is whole pixels.
+fn about(a: eframe::egui::Pos2, b: eframe::egui::Pos2) -> bool {
+    (a.x - b.x).abs() <= 2.0 && (a.y - b.y).abs() <= 2.0
+}
+
+/// The newest toast's words and time, if one shows.
+fn toast_said(h: &AppHarness) -> Option<(String, f64)> {
+    h.state().toast().map(|(text, at)| (text.to_owned(), at))
+}
+
+#[test]
+fn look_at_in_sketch_mode_turns_square_to_its_plane_its_x_across_and_its_y_up() {
+    // A sketch on XZ: its x along +X, its y along +Z, its normal x × y = −Y. Square to it
+    // from that side: the eye out along −Y, +Z up, as Front looks. A new part opens at Home,
+    // a corner's view, so the view turns.
+    let (front, z) = ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    begin_sketch_on(&mut h, "Untitled", "XZ plane");
+    assert!(!looks(&h, front, z));
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "square to the sketch", |h| looks(h, front, z));
+    let keyed = view(&h).camera().clone();
+    // Home again, then the palette's Look At: the same view.
+    h.key_press(Key::Home);
+    step_until(&mut h, "home", |h| !looks(h, front, z));
+    h.get_by_role_and_label(Role::Button, "Look At").click();
+    step_until(&mut h, "square again", |h| view(h).camera() == &keyed);
+    assert!(toast_said(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_turns_square_to_the_flat_face_selected_and_says_what_it_needs_with_none() {
+    // The 40 × 20 × 10 block's faces as the fake describes them, each by its outward normal.
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    // Nothing selected: said in the prototype's words, and the view stays.
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_NO_FACE)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    // The top, facing +z: from above, +y up, as Top looks.
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "from above", |h| {
+        looks(h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    });
+    // Fitted to the block, outside sketch mode with no bands: centred on its middle, (20,
+    // 10, 5), as high as the core's fit makes it, 1.1 times the larger of its 20 up the
+    // image (y) and its 40 across (x) at the pane's rows over its columns.
+    let frame = view(&h).frame().unwrap().clone();
+    let camera = view(&h).camera();
+    for k in 0..3 {
+        assert!(
+            (camera.target[k] - [20.0, 10.0, 5.0][k]).abs() < 1e-9,
+            "{camera:?}"
+        );
+    }
+    let [columns, rows] = frame.size_px.map(f64::from);
+    let want = 1.1 * f64::max(20.0, 40.0 * rows / columns);
+    assert!(
+        matches!(camera.projection, silico_protocol::Projection::Orthographic { view_height } if (view_height - want).abs() < 1e-9),
+        "{camera:?}, not {want} high"
+    );
+    // The right side, facing +x: from +x, +z up, as Right looks.
+    select_in_box(&mut h, &["Face2"]);
+    row_until(&mut h, "Area", "200.00 mm²");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "from the right", |h| {
+        looks(h, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+    });
+    // Two faces: none to turn to, said again (a newer toast), and the view stays.
+    let (_, first) = toast_said(&h).unwrap_or_default();
+    select_in_box(&mut h, &["Face6", "Face2"]);
+    step(&mut h);
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said for two", |h| {
+        toast_said(h)
+            .is_some_and(|(text, at)| text == silico_app::tab::LOOK_AT_NO_FACE && at > first)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    // An edge isn't a face: said again, and the view stays.
+    let (_, first) = toast_said(&h).unwrap_or_default();
+    select_in_box(&mut h, &["Edge12"]);
+    row_until(&mut h, "Length", "40.00 mm");
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said again", |h| {
+        toast_said(h)
+            .is_some_and(|(text, at)| text == silico_app::tab::LOOK_AT_NO_FACE && at > first)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A new part in sketch mode on XY at `pixels_per_point`, a 40 × 20 corner rectangle drawn
+/// from the origin and read.
+fn rectangle_in_a_new_part(f: &Fixture, pixels_per_point: f32) -> AppHarness {
+    let mut h = f.app_at(pixels_per_point);
+    step(&mut h);
+    new_part(&mut h);
+    begin_sketch_on_xy(&mut h, "Untitled");
+    h.key_press(Key::R);
+    step(&mut h);
+    sketch_events_at(f, &mut h, 0, &dragged([0.0, 0.0], [40.0, 20.0]));
+    step_until(&mut h, "its four lines read", |h| {
+        h.state().tabs()[0].edits.idle()
+            && sketch_mode(h)
+                .and_then(|mode| mode.drawable())
+                .is_some_and(|read| read.members.lines.len() == 4)
+    });
+    h
+}
+
+/// The sketch's places `places` each drawn on the canvas below the sketch bar and left of
+/// the palette, and its place `middle` drawn at the middle of the room the bands leave.
+#[track_caller]
+fn in_the_room(h: &AppHarness, places: &[[f64; 2]], middle: [f64; 2]) {
+    let (bar, palette) = sketch_panels(h);
+    let canvas = view(h).frame().unwrap().rect;
+    for at in places {
+        let place = drawn_at(h, *at);
+        assert!(
+            canvas.contains(place) && place.y > bar.bottom() && place.x < palette.left(),
+            "{at:?} at {place:?}: bar {bar:?}, palette {palette:?}, canvas {canvas:?}"
+        );
+    }
+    let drawn = drawn_at(h, middle);
+    let room = room_middle(canvas, bar, palette);
+    assert!(
+        about(drawn, room),
+        "{middle:?} at {drawn:?}, the room's middle at {room:?}"
+    );
+    // The bands are measured from the panels as drawn: sketch mode keeps them, each the
+    // same rectangle as the tree's, about the same middle (the tree's is inside the panel's
+    // border and margins, as far each way).
+    let kept = sketch_mode(h)
+        .unwrap()
+        .panels
+        .expect("the panels kept as drawn");
+    for (which, kept, shown) in [("bar", kept.bar, bar), ("palette", kept.palette, palette)] {
+        assert!(
+            kept.contains_rect(shown) && about(kept.center(), shown.center()),
+            "the {which} kept as {kept:?}, drawn as {shown:?}"
+        );
+    }
+}
+
+/// The 40 × 20 rectangle's corners.
+const RECTANGLE: [[f64; 2]; 4] = [[0.0, 0.0], [40.0, 0.0], [0.0, 20.0], [40.0, 20.0]];
+
+#[test]
+fn fit_in_sketch_mode_takes_the_sketch_in_clear_of_the_bar_and_the_palette() {
+    // A new part has no body, so Fit had nothing to fit: in sketch mode it takes the sketch's
+    // geometry, the 40 × 20 rectangle from the origin, and keeps it out from under the sketch
+    // bar (above) and the palette (right), centred in the room they leave. Fitted to it, the
+    // rectangle spans the room, less the fit's tenth over (1 / 1.1 = 0.909) and the bands'
+    // own margins: at least 0.85 of it across or down. At one, one and a half, and two
+    // pixels a point, so the bands are the panels' in pixels whatever the screen.
+    for pixels_per_point in [1.0, 1.5, 2.0] {
+        let f = fixture();
+        let mut h = rectangle_in_a_new_part(&f, pixels_per_point);
+        let before = view(&h).camera().clone();
+        h.key_press(Key::F6);
+        step_until(&mut h, "fitted", |h| view(h).camera() != &before);
+        step(&mut h);
+        in_the_room(&h, &RECTANGLE, [20.0, 10.0]);
+        let (bar, palette) = sketch_panels(&h);
+        let canvas = view(&h).frame().unwrap().rect;
+        let corners = RECTANGLE.map(|at| drawn_at(&h, at));
+        let span = |k: usize| {
+            let along = corners.map(|p| p[k]);
+            along.iter().copied().fold(f32::MIN, f32::max)
+                - along.iter().copied().fold(f32::MAX, f32::min)
+        };
+        let (room_across, room_down) = (
+            palette.left() - canvas.left(),
+            canvas.bottom() - bar.bottom(),
+        );
+        let filled = (span(0) / room_across).max(span(1) / room_down);
+        assert!(
+            filled >= 0.85,
+            "{pixels_per_point}: {filled}: {} by {} in {room_across} by {room_down}",
+            span(0),
+            span(1)
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn look_at_in_sketch_mode_fits_the_sketch_into_the_room_the_bands_leave() {
+    // The rectangle on XY, from Home: Look At turns square to XY (its normal +z, the eye
+    // above, +y up), fitted to the sketch, centred in the room clear of the bar and palette.
+    let f = fixture();
+    let mut h = rectangle_in_a_new_part(&f, 1.0);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "square to the sketch", |h| {
+        looks(h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    });
+    step(&mut h);
+    in_the_room(&h, &RECTANGLE, [20.0, 10.0]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_a_new_parts_first_sketch_front_keeps_the_sketch_bar_off_its_top() {
+    // A new part's first sketch, on XZ, seen from the front (⌘1), as the slice draws its L:
+    // with no body, Front fits a 100 mm cube about the origin, so the sketch's y = 50 (z =
+    // 50) is the fitted box's top. The whole of it, corners and top middle, is drawn below
+    // the sketch bar and left of the palette, the origin at the middle of the room they
+    // leave. Fitted to the whole canvas, the top was drawn about 0.05 of the canvas down,
+    // under the bar. At one, one and a half, and two pixels a point.
+    for pixels_per_point in [1.0, 1.5, 2.0] {
+        let f = fixture();
+        let mut h = f.app_at(pixels_per_point);
+        step(&mut h);
+        new_part(&mut h);
+        begin_sketch_on(&mut h, "Untitled", "XZ plane");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+        step_until(&mut h, "from the front", |h| {
+            looks(h, [0.0, -1.0, 0.0], [0.0, 0.0, 1.0])
+        });
+        step(&mut h);
+        in_the_room(
+            &h,
+            &[
+                [-50.0, 50.0],
+                [0.0, 50.0],
+                [50.0, 50.0],
+                [-50.0, -50.0],
+                [50.0, -50.0],
+            ],
+            [0.0, 0.0],
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+/// A_BOX with an empty sketch on the block's top, Face6, its x along +y: the core makes its
+/// frame's y the face's normal × x, z × y = −x.
+const ON_TOP_ALONG_Y: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Top", "plane": {"face": "k7f2qx3m.box.Face6", "x": "+y", "reversed": false}, "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn look_at_a_sketch_on_a_face_puts_its_own_y_up_not_the_faces_rule() {
+    // Square to the block's top from above, as the face rule would turn too, but with the
+    // sketch's y, −x, up: the face rule would put +y up.
+    let f = fixture();
+    describes_a_real_box(&f);
+    let (mut h, _) = f.opened("top.silico", ON_TOP_ALONG_Y);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Top"));
+    double_click(&mut h, "Browser", "Top");
+    sketch_read(&mut h);
+    let read = sketch_mode(&h).unwrap().drawable().unwrap().clone();
+    let plane = read.plane.clone().unwrap();
+    assert_eq!(plane.y_axis(), [-1.0, 0.0, 0.0], "{plane:?}");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "square to the sketch, its y up", |h| {
+        looks(h, [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0])
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_a_sketch_whose_face_broke_says_its_planes_problem_and_the_view_stays() {
+    // ON_A_FACE's face isn't one the fake describes as a plane: the read places the sketch
+    // nowhere, its plane the core's error, which Look At says.
+    let f = fixture();
+    let (mut h, _) = f.opened("face.silico", ON_A_FACE);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Top"));
+    let id = h.state().tabs()[0].id;
+    let problem = f
+        .sessions
+        .sketch(&id, ModelChoice::Current, sketch_id("s0000001"))
+        .wait()
+        .result
+        .unwrap()
+        .plane
+        .unwrap_err();
+    double_click(&mut h, "Browser", "Top");
+    sketch_read(&mut h);
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    let want = format!("Look At: {}", problem.message());
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == want)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_on_a_face_not_yet_measured_says_so_and_the_view_stays() {
+    // Face2 picked in place of the measured Face6, and Look At asked before a frame has asked
+    // the new selection's measures: there are none for the selection as it is now.
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    let before = view(&h).camera().clone();
+    {
+        use silico_app::selection::How;
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.selection_mut().pick("k7f2qx3m.box.Face2", How::Replace);
+        tab.look_at();
+    }
+    step(&mut h);
+    assert_eq!(
+        toast_said(&h).map(|(text, _)| text).as_deref(),
+        Some(silico_app::tab::LOOK_AT_UNMEASURED)
+    );
+    assert_eq!(view(&h).camera(), &before);
+    // Once measured, Look At turns square to it: from +x, +z up.
+    row_until(&mut h, "Area", "200.00 mm²");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "from the right", |h| {
+        looks(h, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0])
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_before_the_sketchs_first_read_says_so_and_the_view_stays() {
+    // Create Sketch with every solve held: its add answers and sketch mode opens, but its
+    // read waits on the held solve, so nothing has placed the sketch yet.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    step_until(&mut h, "Create Sketch on", |h| {
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    });
+    f.sketches.hold();
+    create_sketch(&mut h, "XY plane");
+    assert!(f.sketches.wait_held(WAIT), "the sketch's solve never held");
+    assert!(sketch_mode(&h).unwrap().drawable().is_none());
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_UNREAD)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    f.sketches.release();
+    sketch_read(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_on_a_curved_face_says_to_select_a_flat_one_and_turns_to_its_flat_cap() {
+    // The pin's wall is a cylinder: not flat, so Look At says so and the view stays. Its top
+    // cap, flat and facing +z, it turns square to from above, +y up.
+    let f = fixture();
+    describes_a_pin(&f);
+    let (mut h, _) = f.opened("pin.silico", A_PIN);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    use silico_app::selection::How;
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .pick("a91cw0de.cylinder.Face1", How::Replace);
+    // 60π = 188.4955… mm².
+    row_until(&mut h, "Area", "188.50 mm²");
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_NO_FACE)
+    });
+    assert_eq!(view(&h).camera(), &before);
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .pick("a91cw0de.cylinder.Face2", How::Replace);
+    // π · 2.5² = 19.6349… mm².
+    row_until(&mut h, "Area", "19.63 mm²");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "from above", |h| {
+        looks(h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_perspective_front_in_a_first_sketch_still_keeps_its_top_clear_of_the_bar() {
+    // As the orthographic test, with the view switched to perspective (the ViewCube's menu):
+    // the sketch's plane holds the target, so its places there are drawn at the target's
+    // scale, the origin at the room's middle and the box's top below the bar.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    begin_sketch_on(&mut h, "Untitled", "XZ plane");
+    h.get_by_label("Orbit the view").click_secondary();
+    step(&mut h);
+    h.get_by_label("Perspective").click_accesskit();
+    step(&mut h);
+    assert!(view(&h).perspective());
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step_until(&mut h, "from the front", |h| {
+        looks(h, [0.0, -1.0, 0.0], [0.0, 0.0, 1.0])
+    });
+    step(&mut h);
+    assert!(matches!(
+        view(&h).camera().projection,
+        silico_protocol::Projection::Perspective { .. }
+    ));
+    in_the_room(&h, &[[-50.0, 50.0], [0.0, 50.0], [50.0, 50.0]], [0.0, 0.0]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_on_a_face_the_core_couldnt_measure_says_so_and_the_view_stays() {
+    // The fake refuses to describe the block, so the face's `elements` read fails: Look At
+    // says the face couldn't be measured, not that it isn't yet, and the view stays.
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, silico_core::kernel::Op::DescribeAll { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "the block isn't described"))
+    });
+    let (mut h, _) = f.opened("box.silico", A_BOX);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    select_in_box(&mut h, &["Face6"]);
+    step_until(&mut h, "its measures refused", |h| {
+        let tab = &h.state().tabs()[0];
+        silico_app::measures::Of::now(tab.selection())
+            .and_then(|of| tab.measures().answers(of))
+            .is_some_and(|answers| matches!(answers.element, Some(Err(_))))
+    });
+    let before = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_UNMEASURABLE)
+    });
+    assert_eq!(view(&h).camera(), &before);
     assert_eq!(never_waits::waits(), 0);
 }

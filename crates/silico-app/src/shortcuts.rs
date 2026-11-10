@@ -19,7 +19,6 @@
 //! Only what the app does today is here. Left out, each a seam:
 //! - SEAM: hold Ctrl for no relations (the prototype's *Sketch without relations*), a held
 //!   modifier the sketch tools read from the pointer's events, no key's press.
-//! - SEAM: Ctrl+8 Look At, once the app can turn the view square to a face or a sketch.
 //! - SEAM(M5.7): Select Other (right-click), picking's part 3.
 //! - F5, SolidWorks' key for its filter toolbar, which the app hasn't: the app takes it
 //!   itself and says where the filters are (`App::keys`), as the prototype's F5 is no
@@ -61,6 +60,7 @@ pub enum Command {
     Top,
     Bottom,
     Isometric,
+    LookAt,
     Orbit,
     Pan,
     Zoom,
@@ -406,6 +406,15 @@ const ISOMETRIC: Entry = entry(
     &[command(Key::Num7)],
     None,
 );
+/// Look At (the prototype's `lookAt`; SolidWorks' Normal To is Ctrl+8): the view square to
+/// the selected face, or in sketch mode to the sketch (`Tab::look_at`).
+const LOOK_AT: Entry = entry(
+    Command::LookAt,
+    "Look At",
+    Group::View,
+    &[command(Key::Num8)],
+    Some("Turns the view square to the selected face or the sketch"),
+);
 const ORBIT: Entry = entry(
     Command::Orbit,
     "Orbit",
@@ -543,7 +552,7 @@ const SHORTCUTS: Entry = entry(
 );
 
 /// Every command, in the order the sheet lists each group's.
-pub const REGISTRY: [Entry; 46] = [
+pub const REGISTRY: [Entry; 47] = [
     NEW,
     OPEN,
     SAVE,
@@ -570,6 +579,7 @@ pub const REGISTRY: [Entry; 46] = [
     TOP,
     BOTTOM,
     ISOMETRIC,
+    LOOK_AT,
     ORBIT,
     PAN,
     ZOOM,
@@ -622,6 +632,7 @@ impl Command {
             Command::Top => &TOP,
             Command::Bottom => &BOTTOM,
             Command::Isometric => &ISOMETRIC,
+            Command::LookAt => &LOOK_AT,
             Command::Orbit => &ORBIT,
             Command::Pan => &PAN,
             Command::Zoom => &ZOOM,

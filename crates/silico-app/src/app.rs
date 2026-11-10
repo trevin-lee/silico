@@ -164,6 +164,38 @@ const PALETTE_MARGIN: f32 = 12.0;
 const PALETTE_FROM_CORNER: egui::Vec2 =
     egui::Vec2::new(-PALETTE_MARGIN - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
 
+/// The bands sketch mode's panels cover, in pixels at `pixels_per_point`: from the canvas's
+/// top to as far below the sketch bar as it stands below the top, and from the canvas's
+/// right to as far left of the palette as it stands in from the right. A fit in sketch mode
+/// keeps its box out of them (`navigate::Inset`). Measured from the bar and the palette as
+/// the last frame drew them over `canvas`, so a band is what's on the screen; before they've
+/// been drawn, from where they're placed and their sizes.
+fn sketch_inset(
+    pixels_per_point: f32,
+    canvas: Option<egui::Rect>,
+    panels: Option<sketch::Panels>,
+) -> crate::navigate::Inset {
+    let (top, right) = match (canvas, panels) {
+        (Some(canvas), Some(sketch::Panels { bar, palette })) => (
+            (bar.bottom() - canvas.top()) + (bar.top() - canvas.top()),
+            (canvas.right() - palette.left()) + (canvas.right() - palette.right()),
+        ),
+        _ => (
+            2.0 * SKETCH_BAR_FROM_TOP + sketch::style::SKETCH_BAR_HEIGHT,
+            2.0 * PALETTE_MARGIN + sketch::style::SKETCH_PALETTE_WIDTH,
+        ),
+    };
+    // Up to a whole pixel, so a band covers its panel; a few hundred at most, and the cast
+    // saturates past u32 anyway.
+    let pixels = |points: f32| (points * pixels_per_point).ceil().max(0.0) as u32;
+    crate::navigate::Inset {
+        top: pixels(top),
+        right: pixels(right),
+        bottom: 0,
+        left: 0,
+    }
+}
+
 /// What the app is asking the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Asking {
@@ -729,6 +761,13 @@ impl<P: Clients + 'static> App<P> {
         }
         self.toolbar(ui, &mut started);
         self.status_bar(ui, &mut started);
+        // What sketch mode adds to each view's fits: its geometry, and the bands its bar and
+        // palette cover, set before the viewport takes the frame's asked view.
+        let ppp = ui.ctx().pixels_per_point();
+        for tab in &mut self.tabs {
+            let panels = tab.sketch.as_ref().and_then(|mode| mode.panels);
+            tab.frame_view(sketch_inset(ppp, self.canvas, panels));
+        }
         // Over the status bar, across the window's width, under a docked dialog too; drawn
         // before the viewport, which highlights the faces of the feature hovered in it.
         let active = self.active_place();
@@ -1346,6 +1385,8 @@ impl<P: Clients + 'static> App<P> {
                 }
             })
         };
+        // Look At (⌘8), never a field's: its view depends on the selection or the sketch.
+        let look_at = !typing && shortcuts::take(ui, Command::LookAt);
         let in_sketch = self
             .active_place()
             .and_then(|at| self.tabs.get(at))
@@ -1434,6 +1475,9 @@ impl<P: Clients + 'static> App<P> {
         };
         if let Some(ask) = view {
             tab.view.ask(ask);
+        }
+        if look_at {
+            tab.look_at();
         }
         let sessions = &self.sessions;
         if let Some(choice) = letter {
@@ -2243,26 +2287,35 @@ impl<P: Clients + 'static> App<P> {
         let offer = mode.offer_view(&name);
         let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
-        egui::Area::new(sketch::dimension::bar_area(&id))
+        let bar_drawn = egui::Area::new(sketch::dimension::bar_area(&id))
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
             .pivot(egui::Align2::CENTER_TOP)
-            .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar));
+            .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar))
+            .response
+            .rect;
         // Pinned at the canvas's top right, under the ViewCube, as the prototype's is, and
         // kept above the canvas's bottom by the prototype's margin: its body scrolls if it
         // doesn't fit.
         let palette_at = canvas.right_top() + PALETTE_FROM_CORNER;
         let palette_height = canvas.bottom() - PALETTE_MARGIN - palette_at.y;
-        let palette = egui::Area::new(sketch::dimension::palette_area(&id))
+        let shown = egui::Area::new(sketch::dimension::palette_area(&id))
             .fixed_pos(palette_at)
             .show(ui.ctx(), |ui| {
                 sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
-            })
-            .response
-            .rect;
+            });
+        let (look_at, palette) = (shown.inner, shown.response.rect);
+        mode.panels = Some(sketch::Panels {
+            bar: bar_drawn,
+            palette,
+        });
         match action {
             BarAction::None => {}
             BarAction::Finish => tab.finish_sketch(sessions, true),
             BarAction::Cancel => tab.finish_sketch(sessions, false),
+        }
+        // The palette's Look At, as ⌘8 is.
+        if look_at {
+            tab.look_at();
         }
         *started |= action != BarAction::None;
         // Whole in the canvas, and clear of the palette.
@@ -2927,10 +2980,59 @@ mod tests {
     use silico_core::sketch::SketchSolver;
     use tempfile::TempDir;
 
-    use super::{Answered, App, Opening, Part, held_list, mine_row, split_answered, theirs_row};
+    use super::{
+        Answered, App, Opening, Part, held_list, mine_row, sketch_inset, split_answered, theirs_row,
+    };
     use crate::changes::{Changes, Listed, Row};
     use crate::tab::said;
     use crate::theme;
+
+    #[test]
+    fn sketch_modes_bands_are_the_drawn_panels_and_as_far_again_in_pixels_rounded_up() {
+        use crate::navigate::Inset;
+        use crate::sketch::Panels;
+        use eframe::egui::{Rect, pos2};
+        // A canvas from (200, 100) to (1000, 700) points; the bar 10 below its top and 32
+        // tall, the palette 12 in from its right and 212 wide.
+        let canvas = Rect::from_min_max(pos2(200.0, 100.0), pos2(1000.0, 700.0));
+        let panels = Panels {
+            bar: Rect::from_min_max(pos2(400.0, 110.0), pos2(800.0, 142.0)),
+            palette: Rect::from_min_max(pos2(776.0, 218.0), pos2(988.0, 600.0)),
+        };
+        // Top: 42 to the bar's bottom and 10 more, 52; right: 224 to the palette's left and
+        // 12 more, 236. At two pixels a point, 104 and 472.
+        let both = |top, right| Inset {
+            top,
+            right,
+            bottom: 0,
+            left: 0,
+        };
+        assert_eq!(
+            sketch_inset(2.0, Some(canvas), Some(panels)),
+            both(104, 472)
+        );
+        // A bar drawn 40 tall, not the 32 its constant says: the band follows what's drawn,
+        // 50 + 10 = 60, so 120.
+        let taller = Panels {
+            bar: Rect::from_min_max(pos2(400.0, 110.0), pos2(800.0, 150.0)),
+            ..panels
+        };
+        assert_eq!(
+            sketch_inset(2.0, Some(canvas), Some(taller)),
+            both(120, 472)
+        );
+        // Before they're drawn, where they're placed and their sizes: the same 52 and 236.
+        assert_eq!(sketch_inset(2.0, Some(canvas), None), both(104, 472));
+        assert_eq!(sketch_inset(2.0, None, Some(panels)), both(104, 472));
+        // At one and a half, 78 and 354; a bar half a point lower, 52.5 × 1.5 = 78.75, up
+        // to 79, so the band covers it.
+        assert_eq!(sketch_inset(1.5, Some(canvas), Some(panels)), both(78, 354));
+        let lower = Panels {
+            bar: Rect::from_min_max(pos2(400.0, 110.0), pos2(800.0, 142.5)),
+            ..panels
+        };
+        assert_eq!(sketch_inset(1.5, Some(canvas), Some(lower)), both(79, 354));
+    }
 
     /// A block: any document the gate takes.
     const BLOCK: &str = r#"{
