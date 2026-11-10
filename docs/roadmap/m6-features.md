@@ -150,7 +150,7 @@ Each row is one feature. It's split into its PRs (kernel request, feature, dialo
 
 ## Open decisions
 
-Each has a recommendation, for the maintainer, or for Fable under his standing brief.
+Each has a recommendation, for the maintainer, or for Fable under his standing brief. Decisions 3 to 7 are taken as recommended for M6.0, which writes them into docs/design/m6.0-patterns.md. Decisions 1 and 2 are the maintainer's, and change nothing in the first family.
 
 1. **Where M6 ends.**
    - Options:
@@ -173,30 +173,30 @@ Each has a recommendation, for the maintainer, or for Fable under his standing b
        - originals are pads, pockets, revolves, and grooves, or the whole base (`solid`), and each later feature that makes a tool (hole, sweep, loft, helix) joins as it lands; fillets, chamfers, booleans, and patterns are refused, naming them;
        - extent and spacing, each positive, the sense in `reversed`, with no per-gap spacings.
      - (b) FreeCAD's set: dress-ups patterned as what they added and removed, at two more booleans for each original.
-   - **Recommended: (a).** A fillet naming each copy's edges does what a patterned fillet does. SolidWorks' geometry pattern refuses faces merged with the part. A pattern of a pattern is, for now, a whole-solid pattern or mirror of the result.
+   - **Recommended: (a).** A fillet naming each copy's edges does what a patterned fillet does. SolidWorks' geometry pattern refuses faces merged with the part. A pattern of a pattern is, for now, a whole-solid pattern or mirror of the result. *Taken as recommended (M6.0).*
 4. **A base split under the fuzzy value** (patterns.md, *Open questions, for PR B*). A copy far from the base grows the boolean's box, and so its fuzzy value, for the whole step. In the note's case, a pin r 2 on a 20 × 20 plate, copied 1e-3 along x and a kilometre away, the seed's pin parts from its plate: three solids where the union is two. FreeCAD 1.1.3 does the same.
    - Options:
      - (a) Name instances as off the base only while the base's faces all lie in one solid. When they don't, refuse the step as a base in pieces, naming no instance, with the fuzzy value and the pattern's span in the message.
      - (b) Name the instances against the solid that holds most of the base's faces.
      - (c) Never name instances: refuse every result of more than one solid alike.
-   - **Recommended: (a).** It names an instance only where the rule is exact (a fuse never splits its base unless the fuzzy value does), and refuses loudly where it isn't. Loosening it later breaks no document.
+   - **Recommended: (a).** It names an instance only where the rule is exact (a fuse never splits its base unless the fuzzy value does), and refuses loudly where it isn't. Loosening it later breaks no document. *Taken as recommended (M6.0).*
 5. **Where an instance's place is read** (M6.5, M6.7). The app's skip boxes, and its marks for refused and idle instances, need each instance's place. So does an agent choosing `C2,1`.
    - Options:
      - (a) No read: the app computes places from the document and `elements`' description of the reference.
      - (b) A `pattern` read, as `sketch` is for a sketch: the resolved direction, axis, or plane in 3D, and each instance's index, placement, anchor, and state, from the model's kept data, asking no worker.
      - (c) The same, in `timeline`'s entry.
-   - **Recommended: (b).** (a) puts the core's arithmetic in a client, where it can drift from what the rebuild placed. (c) puts up to a thousand entries in every timeline read. It's a new command and tool, so its snapshot and `tools.json` are the maintainer's.
+   - **Recommended: (b).** (a) puts the core's arithmetic in a client, where it can drift from what the rebuild placed. (c) puts up to a thousand entries in every timeline read. It's a new command and tool, so its snapshot and `tools.json` are the maintainer's. *Taken as recommended (M6.0).*
 6. **Symmetric patterns.** Fusion's *Direction* offers Symmetric, and so does its circular *Distribution*. SolidWorks has Direction 2's *Symmetric* and bidirectional circular patterns. Instances on the far side need negative offsets in their names, which scheme 6 doesn't have.
    - Options:
      - (a) Not in M6: added later as a superset, scheme 7 reading 6 as 6 reads 5.
      - (b) Negative offsets in scheme 6 now, before it ships, with the feature later.
-   - **Recommended: (a).** Reading as is makes a superset bump cheap (patterns.md decision 10), and a grammar that accepts names no feature makes is surface no test can reach.
+   - **Recommended: (a).** Reading as is makes a superset bump cheap (patterns.md decision 10), and a grammar that accepts names no feature makes is surface no test can reach. *Taken as recommended (M6.0).*
 7. **The dialogs' *Type*** (M6.6). Fusion opens each pattern command with its Type set, and lets a person "Select a different pattern Type on the fly" while the dialog is open. In Silico a type is the feature's, and `set_field` can't change it: switching replaces the feature and renames every copy.
    - Options:
      - (a) Fusion's three commands and its *Type* row, live while a new pattern is being made, where no name exists yet to break, and fixed in Edit Feature.
      - (b) Three dialogs with no *Type* row.
      - (c) The row live in Edit Feature too, the replacement listing the names it breaks.
-   - **Recommended: (a).** It keeps Fusion's layout and SolidWorks' behavior: the count includes the original, and a skip goes by instance. Neither has a *Compute Type*, since Silico only copies the tool, or a mirror's *Operation*: Join only, until bodies.
+   - **Recommended: (a).** It keeps Fusion's layout and SolidWorks' behavior: the count includes the original, and a skip goes by instance. Neither has a *Compute Type*, since Silico only copies the tool, or a mirror's *Operation*: Join only, until bodies. *Taken as recommended (M6.0).*
 8. **Shell, and OCCT patch 0001** (M6.8; the patch policy; the stress reference is protected). Patch 0001 (PR #1600) iterates arc-join offsets in the order they were created, for determinism. It brought a regression: shelling away a blind hole's floor is invalid in every run, where FreeCAD 1.1.3's OCCT, without the patch, fails about one run in ten, by memory address. A fix was posted on the PR (2026-10-14).
    - Options:
      - (a) Fold the fix into patch 0001, probed first, re-recording the stress entries it moves with the maintainer's OK.

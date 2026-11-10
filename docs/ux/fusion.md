@@ -78,6 +78,24 @@ Read on 2026-11-08 from [combine] and [combref].
 
 Silico's app follows its words: the box labels Target Body and Tool Body, the second singular since each of Silico's booleans takes one tool (docs/ux/solidworks.md, *Combine*). Its commands are the prototype's Union, Subtract, and Intersect, one button each, in place of an Operation choice. It has no Keep Tools, since Silico's booleans always consume both bodies, and no New Component.
 
+## Patterns and mirror
+
+Read on 2026-11-09 from [rectpat], [patref], [mirref], [mirror], and [patterns], for M6.0 (docs/roadmap/m6-features.md, *Notes for docs/ux*).
+
+- **Opening the command:** "Click Design > Solid > Create > Pattern > Rectangular Pattern". The dialog opens with its *Type* set, and a tip offers to "Select a different pattern Type on the fly to switch from a Rectangular Pattern to a Circular Pattern or Pattern On Path". Another tip: "To create a Rectangular Pattern in only one direction, set the Quantity value for Axis 2 to 1". Once directions are chosen, "two perpendicular quantity manipulators display in the canvas" [rectpat].
+- **The dialog's inputs,** in order [patref]:
+  - *Object Type* (Faces, Bodies, Features, Components, Construction Geometry);
+  - *Objects*;
+  - *Axes*, "one or more linear objects" (circular: *Axis*, "a linear or circular object");
+  - *Distribution*: Extent or Spacing (circular: Full, Partial, or Symmetric);
+  - *Quantity*, *Distance*, and *Direction* (One Direction, or Symmetric);
+  - *Compute Type*, for Features only: Optimized, Identical, or Adjust;
+  - *Suppression*: "Check to display a suppression checkbox over each pattern instance in the canvas. Uncheck instances to remove them from the pattern."
+
+  The page doesn't say whether *Quantity* includes the original. Silico takes SolidWorks' count.
+- **Mirror:** *Object Type*, *Objects*, *Mirror Plane* ("Select a plane or planar face to mirror objects across"), *Compute Option* (Features only), and *Operation* ("Select whether to create a new body or join the mirrored body with the original body") [mirref]. It's opened from *Create > Mirror* on the Solid tab [mirror] [patterns].
+- **What Silico takes:** the labels and layout are Fusion's. The behavior is SolidWorks': the count includes the original, a skip goes by instance, and every pattern is a geometry pattern (docs/ux/solidworks.md, §5, *Patterns and mirror*). There's no *Compute Type* and no *Operation* (docs/roadmap/m6-features.md, open decision 7), and no Faces, Components, or Pattern on Path. The quantity manipulators wait until Silico's dialogs have manipulators.
+
 ## ViewCube and Navigation Bar
 
 - ViewCube: a cube in a corner of the canvas [cube], the top right *(diagram)* [pzo].
@@ -203,6 +221,11 @@ Read from Rerun's source at tag `0.38.1` (`crates/viewer_support/re_ui`: `src/de
 [fillet]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-FILLET-SOLID.htm
 [combine]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-COMBINE.htm
 [combref]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-REF-COMBINE.htm
+[rectpat]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/GUID-9622573F-06FA-462F-AFA7-97CD0C7AA0C9.htm
+[patref]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-REF-PATTERN.htm
+[mirref]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-REF-MIRROR-DIALOG.htm
+[mirror]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/GUID-77CE43FF-47C6-429A-B872-BA80B348CCC3.htm
+[patterns]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-PATTERNS.htm
 [sel]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-SELECTION.htm
 [selobj]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-SELECT-OBJECTS.htm
 [selmodes]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-SELECTION-MODES.htm
