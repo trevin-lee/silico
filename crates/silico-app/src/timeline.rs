@@ -672,7 +672,8 @@ fn items(
                 asked.selected = Some(entry.id.clone());
             }
         }
-        if response.double_clicked() {
+        // The item's own double-click (`crate::clicks`), whatever was clicked just before.
+        if crate::clicks::double_clicked(&response) {
             asked.edit = Some(entry.id.clone());
         }
         response.context_menu(|ui| {
