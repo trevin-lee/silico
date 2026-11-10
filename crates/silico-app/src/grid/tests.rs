@@ -330,4 +330,13 @@ fn a_view_the_renderer_refuses_paints_no_grid() {
         ..from_above()
     };
     assert!(shapes(&refused, SIZE, 1.0, rect()).is_empty());
+    // At 0 pixels a point, a view whose grid crosses pixel 0 too: the X axis would run from
+    // −inf to +inf there, a path's ends apart, if it weren't refused.
+    let off = Camera {
+        eye: [150.0, 0.0, 100.0],
+        target: [150.0, 0.0, 0.0],
+        ..from_above()
+    };
+    assert!(!shapes(&off, SIZE, 1.0, rect()).is_empty());
+    assert!(shapes(&off, SIZE, 0.0, rect()).is_empty());
 }

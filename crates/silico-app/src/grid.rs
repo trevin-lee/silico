@@ -107,8 +107,8 @@ pub fn strokes() -> Vec<GridStroke> {
 /// grazes the plane a stroke cut near the eye shows nearer its far end's alpha (a few parts
 /// in a hundred of the line's 0.75 or 0.9). Accepted: egui blends a path's colours between
 /// its points.
-/// None of a stroke drawn wholly transparent (its alpha under a half at both ends: past
-/// 200 mm), of one seen end on (its ends at one point: the Z axis from above), nor of one an
+/// None of a stroke drawn wholly transparent (its alpha 0 at both ends as drawn,
+/// [`alpha_u8`]: past 200 mm), of one seen end on (its ends at one point: the Z axis from above), nor of one an
 /// end of which lands nowhere finite; none at all for a view the renderer refuses, or a
 /// `pixels_per_point` that isn't above 0.
 pub fn shapes(camera: &Camera, size_px: [u32; 2], pixels_per_point: f32, rect: Rect) -> Vec<Shape> {
@@ -127,7 +127,7 @@ pub fn shapes(camera: &Camera, size_px: [u32; 2], pixels_per_point: f32, rect: R
             };
             let [a, b] = stroke.alpha;
             let alpha = drawn.along.map(|t| a + (b - a) * t);
-            if alpha.iter().all(|end| *end < 0.5) {
+            if alpha.map(alpha_u8) == [0, 0] {
                 return None;
             }
             let ends = [point(first), point(last)];
@@ -143,20 +143,22 @@ pub fn shapes(camera: &Camera, size_px: [u32; 2], pixels_per_point: f32, rect: R
 
 /// The colour at a point of a path from `ends[0]` to `ends[1]`, `rgb` at the alpha that runs
 /// from `alpha[0]` to `alpha[1]` along it: of the point nearest along the path (one past an
-/// end, as the stroke's cap and its smoothing are, that end's).
+/// end, as the stroke's cap and its smoothing are, that end's). Its ends are never one point
+/// ([`shapes`] paints no such path); ends too near for f32 to square their distance give no
+/// colour (a NaN alpha, drawn as 0).
 fn along(ends: [Pos2; 2], rgb: [u8; 3], alpha: [f64; 2]) -> impl Fn(Pos2) -> Color32 {
     move |at| {
         let d = ends[1] - ends[0];
-        let length = d.length_sq();
-        let t = if length > 0.0 {
-            ((at - ends[0]).dot(d) / length).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        let t = ((at - ends[0]).dot(d) / d.length_sq()).clamp(0.0, 1.0);
         let alpha = alpha[0] + (alpha[1] - alpha[0]) * f64::from(t);
         let [r, g, b] = rgb;
-        Color32::from_rgba_unmultiplied(r, g, b, alpha.round().clamp(0.0, 255.0) as u8)
+        Color32::from_rgba_unmultiplied(r, g, b, alpha_u8(alpha))
     }
+}
+
+/// An alpha out of 255, as drawn: rounded to the nearest, and 0 for a NaN.
+fn alpha_u8(alpha: f64) -> u8 {
+    alpha.round().clamp(0.0, 255.0) as u8
 }
 
 #[cfg(test)]
