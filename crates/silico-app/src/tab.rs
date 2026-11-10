@@ -29,7 +29,7 @@ use crate::sketch::dimension::{Ask, ModifyAction};
 use crate::sketch::drag::{Drag, News};
 use crate::sketch::screen::Screen;
 use crate::sketch::tools::{Choice, Request};
-use crate::sketch::{self, Deletion, FrameInput, Prefixes, SketchMode};
+use crate::sketch::{self, Deletion, FrameInput, SketchMode, SketchReads};
 
 /// What's said when an over-defining dimension's choice is refused as a `conflict`: the
 /// session moved on before it was sent, so it was overtaken, and isn't sent again (SD7: its
@@ -914,10 +914,10 @@ pub struct Tab {
     /// and whether no transaction was open then (its own edits begin it).
     dialog_base: Option<Revision>,
     dialog_began: bool,
-    /// Sketch mode (section 9, *Sketching*), while a sketch is open; and each sketch's
-    /// state, for the browser's prefixes.
+    /// Sketch mode (section 9, *Sketching*), while a sketch is open; and each sketch's read,
+    /// whole, for the browser's prefixes and the viewport's lines.
     pub sketch: Option<SketchMode>,
-    pub prefixes: Prefixes,
+    pub sketch_reads: SketchReads,
     /// The selection as it was before the open dialog's box of names took it, put back if
     /// the dialog is cancelled, as SolidWorks returns to the selection its command started
     /// with.
@@ -1106,7 +1106,7 @@ impl Tab {
             dialog_base: None,
             dialog_began: false,
             sketch: None,
-            prefixes: Prefixes::default(),
+            sketch_reads: SketchReads::default(),
             before_dialog: None,
             oked: None,
             groups: Vec::new(),
@@ -1944,8 +1944,9 @@ impl Tab {
     }
 
     /// The sketch reads polled and started, without waiting: sketch mode's, of its sketch,
-    /// and the browser's prefixes', one sketch at a time; each of the newest published
-    /// model, read again once that moves.
+    /// and each sketch's whole ([`SketchReads`], the browser's prefixes' and the viewport's
+    /// lines'), one sketch at a time, the shown first; each of the newest published model,
+    /// read again once that moves.
     fn read_sketches<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if let Some(mode) = self.sketch.as_mut() {
             mode.poll(sessions, &self.id, self.published);
@@ -1954,12 +1955,14 @@ impl Tab {
                 drag.read(mode.read.as_ref().and_then(|read| read.model));
             }
         }
-        self.prefixes.poll(
+        let hidden = &self.hidden;
+        self.sketch_reads.poll(
             sessions,
             &self.id,
             &self.browser.sketches,
             self.published,
             self.sketch.as_ref(),
+            &|id| shown_in(hidden, &Hideable::Feature(id.clone())),
         );
     }
 
@@ -4409,9 +4412,9 @@ impl Tab {
         self.browser.sketches.iter().any(|row| &row.id == id)
     }
 
-    /// Whether `what`'s row shows (its eye open).
+    /// Whether `what`'s row shows (its eye open): [`shown_in`] its hidden rows.
     pub fn shown(&self, what: &Hideable) -> bool {
-        !self.hidden.contains(what)
+        shown_in(&self.hidden, what)
     }
 
     /// `what` hidden if it shows, shown if it's hidden: its eye clicked.
@@ -5947,6 +5950,12 @@ fn standing(entries: &[Entry], body: &FeatureId, own: Option<&FeatureId>) -> Sta
         (Some(body), Some(own)) if body > own => Standing::After,
         _ => Standing::Before,
     }
+}
+
+/// Whether `what`'s row shows (its eye open), of a tab whose rows `hidden` are hidden: the
+/// one rule [`Tab::shown`] and the sketch reads' order ([`SketchReads::poll`]) both use.
+fn shown_in(hidden: &std::collections::BTreeSet<Hideable>, what: &Hideable) -> bool {
+    !hidden.contains(what)
 }
 
 /// What a document's features, as `timeline` lists them, consume, each by the feature that
