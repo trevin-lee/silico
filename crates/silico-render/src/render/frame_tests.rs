@@ -6036,10 +6036,13 @@ fn in_perspective_a_line_is_drawn_where_project_puts_it_and_only_its_part_in_fro
             // eye (y = −100), 3 points wide: in front of the eye it runs from column 32 +
             // 5 × 48/(2 d tan 20°) = 32 + 329.7/d at depth d, 38.59 at the face, toward the
             // right edge (column 63 at d = 10.6), on rows 23 and 24 (z = 7 is row 24, the
-            // eye's height at every depth), 3 pixels wide at every depth: 22.5 to 25.5. Its
-            // part behind the eye, which a projection would throw to the left of column 32,
-            // draws nothing, and nor does a stroke grown wider toward the eye: every pixel off
-            // rows 22 to 25 from column 37 on is the frame without lines.
+            // eye's height at every depth), 3 pixels wide at every depth: 22.5 to 25.5. It's
+            // cut to the view's pyramid before it's drawn (`View::cut_strip`). The GPU would
+            // clip an uncut strip in clip space all the same, but re_renderer sizes a stroke at
+            // each of its points by the point's distance from the camera, clamped to 0, so an
+            // uncut strip tapers behind the eye and widens toward it: every pixel off rows 22
+            // to 25 from column 37 on is the frame without lines. (The floor the cut keeps,
+            // MIN_EYE_DISTANCE, is pinned by the edges' tests, through the same `cut_strip`.)
             assert_pixel(
                 project(&camera, size, [26.0, 0.0, 7.0]),
                 [32.0 + 5.0 * 48.0 / span, 24.0],
@@ -6161,9 +6164,10 @@ fn a_frames_lines_at_their_most_points_are_drawn_with_its_edge_still_picked_and_
         |r| {
             // A million strips of two points, each half a millimetre along x on the front face
             // between z 1 and 4 (rows 27.3 to 30.5, clear of the top edge at row 20.73): the
-            // frame's most points, MAX_FRAME_LINE_POINTS. Prepared and drawn, and the top edge
-            // still picked where it is (none of its picking strips dropped behind them). A set
-            // of one more strip beside them: past the most, refused, naming the lines.
+            // frame's most points, MAX_FRAME_LINE_POINTS. Prepared, drawn, and picked, the top
+            // edge picked where it is: a frame at the most works. (Not that an edge's pick
+            // can't be crowded out: the picks are put in after the lines.) A set of one more
+            // strip beside them: past the most, refused, naming the lines.
             assert_eq!(super::MAX_FRAME_LINE_POINTS, 2_000_000);
             r.upload(1, &the_box()).unwrap();
             let camera = front();
@@ -6199,6 +6203,109 @@ fn a_frames_lines_at_their_most_points_are_drawn_with_its_edge_still_picked_and_
                     }
                 ),
                 "lines"
+            );
+        },
+    );
+}
+
+// ---- How far a line is moved toward the eye, and its tie with an edge's pick (#449's
+// second review) ----
+
+/// The box from the front at 256 by 192 pixels: [`front`]'s camera, 44 mm over 192 rows,
+/// 11/48 mm a pixel about (128, 96). From 167 rows an edge's picking reach is its 2 pixels
+/// of depth; below, it's `VERTEX_REACH` of the view's height (0.576 pixels at 48 rows),
+/// and so is every line's, whatever its width.
+const ROWS_192: [u32; 2] = [256, 192];
+
+#[test]
+fn a_line_just_behind_a_face_is_drawn_within_its_strokes_reach_and_hidden_past_it() {
+    on_lavapipe(
+        "render::frame_tests::a_line_just_behind_a_face_is_drawn_within_its_strokes_reach_and_hidden_past_it",
+        |r| {
+            // At ROWS_192, 1.5 points wide at a pixel a point, a line is moved toward the eye by
+            // √2 × 0.75 + 1/2 = 1.561 pixels of depth (drawn_stroke_fraction), under an edge's
+            // pick's 2; 4 points wide, by √2 × 2 + 1/2 = 3.33, held to the 2. A line along x
+            // inside the box, d pixels behind its front face (y = d × 11/48 mm), at z = 7 −
+            // 10.5 × 11/48 (row 106.5, row 106's centre), over columns 128 + (x − 21) × 48/11
+            // for x 2 to 38, 45.1 to 202.2: at d = 1.35, 1.5 points wide, it's moved 0.21
+            // pixels in front of the face, and drawn; at d = 1.8 it stays 0.24 behind it, and
+            // the frame is the frame without lines, byte for byte; 4 points wide at d = 1.8,
+            // it's moved 0.2 in front, and drawn. An edge's reach whatever the width (1.914)
+            // would draw the second; a reach of 1.2 pixels would hide the first and the third.
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let mm = 44.0 / 192.0;
+            let z = 7.0 - 10.5 * mm;
+            assert_pixel(
+                project(&camera, ROWS_192, [21.0, 0.0, z]),
+                [128.0, 106.5],
+                1e-6,
+            );
+            let without = drawn_image(r, &plain_frame(&camera, ROWS_192, 1.0));
+            let drawn = |r: &mut Renderer, d: f64, width: f32| {
+                let strips = line_at(d * mm, z);
+                drawn_image(
+                    r,
+                    &Frame {
+                        lines: &[magenta_wide(&strips, width)],
+                        ..plain_frame(&camera, ROWS_192, 1.0)
+                    },
+                )
+            };
+            for (d, width) in [(1.35, 1.5), (1.8, 4.0)] {
+                let image = drawn(r, d, width);
+                for x in 60..=190 {
+                    let got = image.at([x, 106]);
+                    assert!(
+                        within(got, MAGENTA, 8),
+                        "{d} behind, {width} wide, ({x}, 106): {got:?}"
+                    );
+                }
+            }
+            assert!(
+                drawn(r, 1.8, 1.5).pixels == without.pixels,
+                "1.8 behind, 1.5 wide: drawn"
+            );
+        },
+    );
+}
+
+#[test]
+fn a_line_along_an_edge_as_near_the_eye_as_its_pick_leaves_the_edge_picked() {
+    on_lavapipe(
+        "render::frame_tests::a_line_along_an_edge_as_near_the_eye_as_its_pick_leaves_the_edge_picked",
+        |r| {
+            // At ROWS_192, the front face's top edge (Edge3, z = 10) lies on row 96 − 3 × 48/11 =
+            // 82.91: row 82's centre, 0.41 from it, is inside its picking strip's half width
+            // (1 pixel) and above the face. A line along it 4 points wide is moved toward the
+            // eye by 2 pixels of depth, an edge's picking reach, as the edge's picking strip
+            // is, along x as the edge is: the same depth. The edge's picks are put in after
+            // the lines, so of the two the edge's is picked there.
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            assert_pixel(
+                project(&camera, ROWS_192, [21.0, 0.0, 10.0]),
+                [128.0, 96.0 - 3.0 * 48.0 / 11.0],
+                1e-6,
+            );
+            let on_edge = line_at(0.0, 10.0);
+            let lines = [magenta_wide(&on_edge, 4.0)];
+            let found = pick(
+                r,
+                &Frame {
+                    lines: &lines,
+                    picking: Some(PixelRect {
+                        min: [128, 82],
+                        size: [1, 1],
+                    }),
+                    ..plain_frame(&camera, ROWS_192, 1.0)
+                },
+            )
+            .hit
+            .unwrap();
+            assert_eq!(
+                (found.body, found.hit, found.pixel),
+                (1, Element::Edge(3), [128, 82])
             );
         },
     );
