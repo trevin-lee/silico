@@ -4860,6 +4860,15 @@ impl Tab {
         let Some(feature) = dialog.feature.clone() else {
             return false;
         };
+        // A refusal of a sketch the box no longer holds (the one the document has picked
+        // back) goes: else, the box's sketch being no change, nothing would clear it.
+        if dialog
+            .base_refused
+            .as_ref()
+            .is_some_and(|refused| Some(&refused.sketch) != dialog.sketch())
+        {
+            dialog.base_refused = None;
+        }
         let sketch_field = crate::dialog::Part::Sketch.field();
         let sketch_sent = dialog.sent(sketch_field).cloned();
         let changes = dialog.changes(waiting);
@@ -4888,8 +4897,9 @@ impl Tab {
                     why,
                     read: None,
                 });
-                // Held back: taken as unsent, so picked again once the body may be taken
-                // (another client's edit lifting the refusal), it's sent.
+                // Held back: taken as unsent, so it's offered again each frame, and sent
+                // once the tab's timeline lets the body be taken (another client's edit
+                // lifting the refusal).
                 changes.retain(|(field, _)| *field != sketch_field);
                 dialog.unsend(sketch_field, sketch_sent);
                 None
@@ -5523,9 +5533,10 @@ impl Tab {
         self.message = Some(said(problems));
     }
 
-    /// Whether the dialog's inputs let it be OK'd: valid, no edit of one refused, and its
-    /// add not unanswered (what's typed meanwhile is sent after it). While the tab closes,
-    /// [`close_dialog`](Self::close_dialog) takes neither OK nor Cancel.
+    /// Whether the dialog's inputs let it be OK'd ([`ok_for`](Self::ok_for)): valid, no edit
+    /// of one refused, a new feature's add answered with its feature (what's typed meanwhile
+    /// is sent after it). While the tab closes, [`close_dialog`](Self::close_dialog) takes
+    /// neither OK nor Cancel.
     pub fn can_ok(&self) -> bool {
         self.dialog
             .as_ref()
@@ -5544,8 +5555,9 @@ impl Tab {
                 .as_ref()
                 .is_some_and(|feature| self.refused.contains(&(feature.clone(), field.to_owned())))
         };
-        // A new feature's dialog whose add the core refused has none to OK.
-        (!dialog.made || dialog.feature.is_some())
+        // A dialog with no feature has none to OK: a new one's add unanswered or refused
+        // (Edit Feature's has its feature from the first).
+        dialog.feature.is_some()
             && !dialog.adding
             && !dialog.holding()
             && dialog.valid()
