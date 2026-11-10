@@ -252,14 +252,16 @@ impl Newest {
     }
 
     /// The progress of `revision`'s rebuild, if the newest is that one: the revision it's of
-    /// (as a rollback gave it on), or an edit's candidate still running, which counts as the
-    /// session's revision until its save. Its count when it ended, once it has.
-    pub(super) fn of(&self, revision: Revision) -> Option<Progress> {
+    /// (as a rollback gave it on), or an edit's candidate while it's still `running` (the
+    /// rebuilds', read under their lock), which counts as the session's revision until its
+    /// save. Its count when it ended, once it has. A candidate stopped (its commit cancelled)
+    /// is no longer the revision's, though its count may run on until its recompute ends
+    /// (#423): its `done` and `steps` are another document's.
+    pub(super) fn of(&self, revision: Revision, running: Option<&Label>) -> Option<Progress> {
         let newest = lock(&self.0);
         let (label, progress) = newest.as_ref()?;
-        let count = progress.now();
-        (label.revision() == revision || (label.candidate && !count.ended))
-            .then(|| Progress::from(&count))
+        let candidate = label.candidate && running.is_some_and(|running| running.is(label));
+        (label.revision() == revision || candidate).then(|| Progress::from(&progress.now()))
     }
 
     /// The newest rebuild's count, as it goes on, in this crate's tests only.
