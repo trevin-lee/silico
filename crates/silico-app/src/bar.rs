@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, FontId, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
+    self, Color32, FontId, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
     ViewportCommand, WidgetInfo, WidgetType, text::LayoutJob, text::TextWrapping,
 };
 
@@ -228,6 +228,55 @@ pub(crate) struct DocTab<'a> {
     pub active: bool,
     /// Whether it's the first tab, which has a border at its left too.
     pub first: bool,
+    /// Whether its timeline counts errors: the red mark, and "Has errors." in its tooltip.
+    pub errors: bool,
+    /// Whether its file changed on disk since it was read or written: the changed-outside
+    /// mark, unless it has errors, and "Changed on disk since you opened it." either way.
+    pub changed: bool,
+}
+
+impl DocTab<'_> {
+    /// Its mark, if it has one ([`TabMark::of`]).
+    fn mark(&self) -> Option<TabMark> {
+        TabMark::of(self.errors, self.changed)
+    }
+}
+
+/// A document tab's mark (`.doc-tab .mark`): a dot before its name, for errors (red), or,
+/// with none, for its file changed on disk since it was opened (`.mark.outside`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TabMark {
+    Errors,
+    ChangedOutside,
+}
+
+impl TabMark {
+    /// The mark for a document with `errors` and its file changed on disk or not: errors
+    /// first, as the prototype's `renderAppbar` chooses.
+    pub(crate) fn of(errors: bool, changed: bool) -> Option<TabMark> {
+        if errors {
+            Some(TabMark::Errors)
+        } else if changed {
+            Some(TabMark::ChangedOutside)
+        } else {
+            None
+        }
+    }
+
+    fn colour(self) -> Color32 {
+        match self {
+            TabMark::Errors => theme::DOC_TAB_MARK_ERRORS,
+            TabMark::ChangedOutside => theme::DOC_TAB_MARK_OUTSIDE,
+        }
+    }
+
+    /// What it says to a screen reader (the prototype's `aria-label`).
+    fn said(self) -> &'static str {
+        match self {
+            TabMark::Errors => "has errors",
+            TabMark::ChangedOutside => "changed outside",
+        }
+    }
 }
 
 /// What a tab answered: a click on it (show the document), and on its close button; and
@@ -254,13 +303,14 @@ impl DocTabResponse {
 }
 
 /// A document's tab (`.doc-tab`), the bar's height less its border, which the shown one's
-/// fill covers: its name, ending in an ellipsis past [`theme::DOC_TAB_MAX_WIDTH`]; an
-/// asterisk if it holds edits; and its close button, at its right, drawn while the tab is
-/// hovered or shown (`.x`'s `opacity`), or either has the keyboard's focus, though there,
-/// and clickable, always, as the prototype's is. A click anywhere else on the tab shows
-/// the document. Labelled
-/// with its name, and the asterisk, and selected while shown; its close button labelled
-/// "Close" and its name.
+/// fill covers: its mark, if it has one ([`TabMark`]), a dot before its name; its name,
+/// ending in an ellipsis past [`theme::DOC_TAB_MAX_WIDTH`]; an asterisk if it holds edits;
+/// and its close button, at its right, drawn while the tab is hovered or shown (`.x`'s
+/// `opacity`), or either has the keyboard's focus, though there, and clickable, always, as
+/// the prototype's is. A click anywhere else on the tab shows the document. Labelled with
+/// its name, and the asterisk, and selected while shown, its mark's words its description;
+/// its close button labelled "Close" and its name. Its tooltip, its path, says what the
+/// mark and the asterisk say (the prototype's `data-tipd`).
 pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
     let font = FontId::proportional(theme::BODY_SIZE);
     let dirty = tab.unsaved.then(|| {
@@ -268,8 +318,14 @@ pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
             .layout_no_wrap(" *".to_owned(), font.clone(), theme::DOC_TAB_DIRTY)
     });
     let borders = theme::BORDER_WIDTH * if tab.first { 2.0 } else { 1.0 };
+    let marked = if tab.mark().is_some() {
+        theme::DOC_TAB_MARK_SIZE + theme::DOC_TAB_GAP
+    } else {
+        0.0
+    };
     let fixed = borders
         + theme::DOC_TAB_PADDING_LEFT
+        + marked
         + dirty.as_ref().map_or(0.0, |dirty| dirty.size().x)
         + theme::DOC_TAB_GAP
         + theme::DOC_TAB_CLOSE_SIZE
@@ -308,22 +364,46 @@ pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
     let named = Rect::from_min_max(rect.min, Pos2::new(close_rect.left(), rect.bottom()));
     ui.ctx().accesskit_node_builder(response.id, |node| {
         node.set_bounds(crate::panes::bounds(named));
+        if let Some(mark) = tab.mark() {
+            node.set_description(mark.said());
+        }
     });
     let closing = format!("Close {}", tab.name);
     close.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &closing));
     if ui.is_rect_visible(rect) {
         paint_tab(ui, tab, &area, &response, &close, name, dirty);
     }
-    let description = match (tab.unsaved, tab.path) {
-        (true, _) => Some("Unsaved edits"),
-        (false, None) => Some(NOT_SAVED_YET),
-        (false, Some(_)) => None,
-    };
-    let response = tooltip(response, tab.path.unwrap_or(tab.name), None, description);
+    let description = tab_description(tab);
+    let response = tooltip(
+        response,
+        tab.path.unwrap_or(tab.name),
+        None,
+        description.as_deref(),
+    );
     DocTabResponse {
         tab: response,
         close,
         rect,
+    }
+}
+
+/// What a tab's tooltip says under its path, as the prototype's `data-tipd` does: "Has
+/// errors.", "Unsaved edits.", and "Changed on disk since you opened it.", each that's so,
+/// in that order; for an untitled part with none, that it has no file yet. None for a saved
+/// document with nothing to say.
+fn tab_description(tab: &DocTab<'_>) -> Option<String> {
+    let said: Vec<&str> = [
+        (tab.errors, "Has errors."),
+        (tab.unsaved, "Unsaved edits."),
+        (tab.changed, "Changed on disk since you opened it."),
+    ]
+    .into_iter()
+    .filter_map(|(so, words)| so.then_some(words))
+    .collect();
+    if said.is_empty() {
+        tab.path.is_none().then(|| NOT_SAVED_YET.to_owned())
+    } else {
+        Some(said.join(" "))
     }
 }
 
@@ -373,10 +453,17 @@ fn paint_tab(
         0,
         StrokeKind::Inside,
     );
-    let at = Pos2::new(
-        left + theme::DOC_TAB_PADDING_LEFT,
-        rect.center().y - name.size().y / 2.0,
-    );
+    let mut start = left + theme::DOC_TAB_PADDING_LEFT;
+    if let Some(mark) = tab.mark() {
+        let radius = theme::DOC_TAB_MARK_SIZE / 2.0;
+        painter.circle_filled(
+            Pos2::new(start + radius, rect.center().y),
+            radius,
+            mark.colour(),
+        );
+        start += theme::DOC_TAB_MARK_SIZE + theme::DOC_TAB_GAP;
+    }
+    let at = Pos2::new(start, rect.center().y - name.size().y / 2.0);
     let after = at.x + name.size().x;
     painter.galley_with_override_text_color(at, name, text);
     if let Some(dirty) = dirty {
@@ -496,6 +583,11 @@ mod tests {
         pub const KBD_HEIGHT: f32 = 16.0;
         pub const KBD_RADIUS: u8 = 3;
         pub const KEYS_GAP: f32 = 2.0;
+        /// `.doc-tab .mark`: 6 square, round, `--red`; `.mark.outside`, `--outside`
+        /// (`--info`).
+        pub const MARK: f32 = 6.0;
+        pub const RED: Color32 = Color32::from_rgb(0xff, 0x38, 0x65);
+        pub const OUTSIDE: Color32 = Color32::from_rgb(0xad, 0xbb, 0xff);
     }
 
     /// `app` drawn in the app's theme, its icons loaded.
@@ -839,6 +931,8 @@ mod tests {
                             unsaved: true,
                             active: true,
                             first: true,
+                            errors: false,
+                            changed: false,
                         },
                         DocTab {
                             name: "vise-jaw.silico",
@@ -846,6 +940,8 @@ mod tests {
                             unsaved: false,
                             active: false,
                             first: false,
+                            errors: false,
+                            changed: false,
                         },
                     ] {
                         doc_tab(ui, &tab);
@@ -1016,6 +1112,163 @@ mod tests {
         assert_eq!(
             icon_at(&h, icon_rect(close(second).center())),
             Some(css::G550)
+        );
+    }
+
+    #[test]
+    fn a_tabs_mark_is_a_dot_before_its_name_red_for_errors_else_the_outside_tone() {
+        // `renderAppbar`'s mark: errors (and changed too) red, changed alone `--outside`,
+        // neither none. Each tab, the first's two borders and the rest's one, 10 of padding,
+        // then the 6 point dot on the tab's middle, 6 before the name; told to a screen
+        // reader as its description.
+        let top = Rc::new(Cell::new(Pos2::ZERO));
+        let seen = Rc::clone(&top);
+        let h = drawn(move |ui| {
+            let row = Rect::from_min_size(
+                ui.max_rect().min,
+                Vec2::new(700.0, css::TOP_BAR_H - css::BORDER),
+            );
+            seen.set(row.min);
+            let layout = egui::Layout::left_to_right(egui::Align::Center);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(layout), |ui| {
+                ui.set_clip_rect(row);
+                tab_strip(ui, |ui| {
+                    for (at, (name, errors, changed)) in [
+                        ("broken.silico", true, true),
+                        ("moved.silico", false, true),
+                        ("plain.silico", false, false),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        doc_tab(
+                            ui,
+                            &DocTab {
+                                name,
+                                path: Some(name),
+                                unsaved: false,
+                                active: false,
+                                first: at == 0,
+                                errors,
+                                changed,
+                            },
+                        );
+                    }
+                });
+            });
+        });
+        let middle = top.get().y + (css::TOP_BAR_H - css::BORDER) / 2.0;
+        let dots: Vec<(Pos2, f32, Color32)> = clipped(&h)
+            .into_iter()
+            .filter_map(|shown| match shown.shape {
+                Shape::Circle(circle) => Some((circle.center, circle.radius, circle.fill)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dots.len(), 2, "{dots:?}");
+        let broken = text(&h, "broken.silico");
+        let moved = text(&h, "moved.silico");
+        let plain = text(&h, "plain.silico");
+        for ((center, radius, fill), name, colour) in [
+            (dots[0], &broken, css::RED),
+            (dots[1], &moved, css::OUTSIDE),
+        ] {
+            assert_eq!(fill, colour);
+            assert!(near(radius, css::MARK / 2.0), "{radius}");
+            assert!(near(center.y, middle), "{center:?}");
+            // The name 6 past the dot's right.
+            assert!(
+                near(name.pos.x, center.x + css::MARK / 2.0 + css::TAB_GAP),
+                "{:?} after the dot at {center:?}",
+                name.pos
+            );
+        }
+        // Each dot at its tab's padding, past the borders before it, each tab's left worked
+        // from the row's: the first tab's left border; the second's left is the first's right
+        // border, after the first's close button and its padding.
+        let row = top.get().x;
+        assert!(
+            near(
+                dots[0].0.x,
+                row + css::BORDER + css::TAB_PADDING_LEFT + css::MARK / 2.0
+            ),
+            "{dots:?}"
+        );
+        let second =
+            broken.pos.x + broken.galley.size().x + css::TAB_GAP + css::X + css::TAB_PADDING_RIGHT;
+        assert!(
+            near(
+                dots[1].0.x,
+                second + css::BORDER + css::TAB_PADDING_LEFT + css::MARK / 2.0
+            ),
+            "{dots:?} after {second}"
+        );
+        // The unmarked tab's name at its padding, nothing before it.
+        let plain_tab_left =
+            moved.pos.x + moved.galley.size().x + css::TAB_GAP + css::X + css::TAB_PADDING_RIGHT;
+        assert!(
+            near(
+                plain.pos.x,
+                plain_tab_left + css::BORDER + css::TAB_PADDING_LEFT
+            ),
+            "{:?} after {plain_tab_left}",
+            plain.pos
+        );
+        let described = |name: &str| {
+            use egui_kittest::kittest::NodeT;
+            h.get_by_role_and_label(egui::accesskit::Role::Button, name)
+                .accesskit_node()
+                .description()
+        };
+        assert_eq!(described("broken.silico").as_deref(), Some("has errors"));
+        assert_eq!(
+            described("moved.silico").as_deref(),
+            Some("changed outside")
+        );
+        assert_eq!(described("plain.silico"), None);
+    }
+
+    #[test]
+    fn a_tabs_tooltip_says_its_errors_its_edits_and_a_change_on_disk_as_data_tipd() {
+        // `renderAppbar`'s `data-tipd`: each that's so, in that order, each a sentence; an
+        // untitled part with none of them, that it has no file yet; a saved one, nothing.
+        let said = |path, errors, unsaved, changed| {
+            tab_description(&DocTab {
+                name: "bracket.silico",
+                path,
+                unsaved,
+                active: true,
+                first: true,
+                errors,
+                changed,
+            })
+        };
+        let saved = Some("/parts/bracket.silico");
+        assert_eq!(said(saved, false, false, false), None);
+        assert_eq!(
+            said(None, false, false, false).as_deref(),
+            Some(NOT_SAVED_YET)
+        );
+        assert_eq!(
+            said(None, false, true, false).as_deref(),
+            Some("Unsaved edits.")
+        );
+        assert_eq!(
+            said(saved, true, false, false).as_deref(),
+            Some("Has errors.")
+        );
+        assert_eq!(
+            said(saved, false, false, true).as_deref(),
+            Some("Changed on disk since you opened it.")
+        );
+        assert_eq!(
+            said(saved, true, true, true).as_deref(),
+            Some("Has errors. Unsaved edits. Changed on disk since you opened it.")
+        );
+        assert_eq!(
+            said(None, true, false, false).as_deref(),
+            Some("Has errors."),
+            "an untitled part with errors says so, not that it has no file"
         );
     }
 

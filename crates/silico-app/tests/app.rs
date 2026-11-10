@@ -1079,6 +1079,55 @@ fn a_failing_feature_is_marked_on_its_timeline_entry_and_opened_says_its_errors_
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The accessibility description of the document tab named `label` ("example.silico", or
+/// "example.silico *" with edits held): its mark's words, if it has one.
+fn tab_described(h: &AppHarness, label: &str) -> Option<String> {
+    h.get_by_role_and_label(Role::Button, label)
+        .accesskit_node()
+        .description()
+}
+
+#[test]
+fn a_documents_tab_is_marked_for_its_errors_and_for_its_file_changed_on_disk() {
+    // `renderAppbar`'s mark, from what the core says of the session: the cut refused, its
+    // timeline counts an error, and its tab says "has errors"; built, nothing. Edits held
+    // and the file changed on disk: "changed outside".
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, Op::Boolean { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "the cut came apart"))
+    });
+    let (mut h, _) = f.opened("broken.silico", EXAMPLE);
+    step_until(&mut h, "the cut's mark", |h| {
+        showing(h, "Timeline", "error").is_some_and(|text| text == "error")
+    });
+    step_until(&mut h, "its tab marked", |h| {
+        tab_described(h, "broken.silico").as_deref() == Some("has errors")
+    });
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "the timeline", |h| shows(h, "Timeline", "Hole"));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(tab_described(&h, "example.silico"), None);
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "Pins")
+    });
+    assert_eq!(tab_described(&h, "example.silico *"), None);
+    std::fs::write(
+        &path,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#),
+    )
+    .unwrap();
+    step_until(&mut h, "its tab marked changed", |h| {
+        tab_described(h, "example.silico *").as_deref() == Some("changed outside")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// What the core's own check says of `feature` of `text`, opened in a session of its own.
 fn core_says(f: &Fixture, text: &str, feature: &str) -> String {
     let name = format!("copy-{feature}.silico");

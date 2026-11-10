@@ -854,6 +854,11 @@ pub const DOC_TAB_DIRTY: Color32 = TEXT_STRONG;
 /// A tab's close button (`.doc-tab .x`), shown while the tab is hovered or shown: its side,
 /// its corners, its icon (Gray.550), and its fill and icon hovered (Gray.350, white).
 pub const DOC_TAB_CLOSE_SIZE: f32 = 16.0;
+/// A tab's mark (`.doc-tab .mark`): a dot this wide, before its name, `DOC_TAB_GAP` from
+/// it; red for errors, the changed-outside tone for a file changed on disk (`.outside`).
+pub const DOC_TAB_MARK_SIZE: f32 = 6.0;
+pub const DOC_TAB_MARK_ERRORS: Color32 = ERROR_TEXT;
+pub const DOC_TAB_MARK_OUTSIDE: Color32 = CHANGED_OUTSIDE;
 pub const DOC_TAB_CLOSE_CORNER_RADIUS: u8 = 3;
 pub const DOC_TAB_CLOSE: Color32 = TEXT_SUBDUED;
 pub const DOC_TAB_CLOSE_HOVER_BG: Color32 = GRAY_350;
@@ -2313,6 +2318,7 @@ mod tests {
         assert_eq!(DOC_TAB_MAX_WIDTH, 220.0);
         assert_eq!(DOC_TAB_CLOSE_SIZE, 16.0);
         assert_eq!(DOC_TAB_CLOSE_CORNER_RADIUS, 3);
+        assert_eq!(DOC_TAB_MARK_SIZE, 6.0);
         // `.tooltip .tt-title`'s `gap: 8px`, `.tt-desc`'s `margin-top: 2px`.
         assert_eq!(TOOLTIP_TITLE_GAP, 8.0);
         assert_eq!(TOOLTIP_DESCRIPTION_GAP, 2.0);
@@ -2334,6 +2340,8 @@ mod tests {
             ("DOC_TAB_DIRTY", DOC_TAB_DIRTY, 0xffffff),
             // `.doc-tab .x`, `--g550`; `.x:hover`, `--g1000` on `--g350`.
             ("DOC_TAB_CLOSE", DOC_TAB_CLOSE, 0x939090),
+            ("DOC_TAB_MARK_ERRORS", DOC_TAB_MARK_ERRORS, 0xff3865),
+            ("DOC_TAB_MARK_OUTSIDE", DOC_TAB_MARK_OUTSIDE, 0xadbbff),
             ("DOC_TAB_CLOSE_HOVER", DOC_TAB_CLOSE_HOVER, 0xffffff),
             ("DOC_TAB_CLOSE_HOVER_BG", DOC_TAB_CLOSE_HOVER_BG, 0x525151),
         ] {
