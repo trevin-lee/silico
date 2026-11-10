@@ -1472,7 +1472,11 @@ impl View {
             Some(ViewAsk::Named(named)) => self.look_from(named, size_px),
             Some(ViewAsk::Fit) => self.fit(size_px),
             Some(ViewAsk::LookAt { toward, up }) => self.look_at(toward, up, size_px),
-            None if response.double_clicked_by(PointerButton::Middle) => self.fit(size_px),
+            // The canvas's own middle double-click (`crate::clicks`), whatever was clicked
+            // just before.
+            None if crate::clicks::double_clicked_by(response, PointerButton::Middle) => {
+                self.fit(size_px)
+            }
             None => {}
         }
     }

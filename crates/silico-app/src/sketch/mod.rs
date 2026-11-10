@@ -110,10 +110,12 @@ pub fn prefix(state: SketchState) -> Option<&'static str> {
 }
 
 /// Whether a sketch's browser row, `row` (its name's response), asks for Edit Sketch by a
-/// double-click, on only while `can` (fusion.md, *Sketch mode*, [esk]). Its context menu's
-/// Edit Sketch is the feature's menu's (`crate::feature_menu`), as every feature row's is.
+/// double-click, on only while `can` (fusion.md, *Sketch mode*, [esk]). The double-click is
+/// the row's own (`crate::clicks`), so a click on an eye just before it doesn't turn it into
+/// a triple click (#452). Its context menu's Edit Sketch is the feature's menu's
+/// (`crate::feature_menu`), as every feature row's is.
 pub fn edit_asked(row: Option<&egui::Response>, can: bool) -> bool {
-    can && row.is_some_and(egui::Response::double_clicked)
+    can && row.is_some_and(crate::clicks::double_clicked)
 }
 
 /// A `sketch` read, answered: the revision of the model it read (none if it named none),

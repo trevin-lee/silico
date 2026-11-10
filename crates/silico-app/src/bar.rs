@@ -45,7 +45,8 @@ pub(crate) fn move_window(ui: &Ui, rect: Rect) {
     }
     // `Sense::CLICK`, not `Sense::click()`, which is focusable too.
     let background = ui.interact(rect, ui.id().with("move_window"), Sense::CLICK);
-    if background.double_clicked() {
+    // Its own double-click (`crate::clicks`), whatever was clicked just before.
+    if crate::clicks::double_clicked(&background) {
         let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
         ui.ctx()
             .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
