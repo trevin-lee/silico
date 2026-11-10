@@ -36693,13 +36693,22 @@ fn over_a_planar_face_the_context_menus_sketch_on_this_face_sends_what_the_selec
 
 #[test]
 fn over_a_planar_face_the_context_menus_look_at_turns_the_view_square_to_it_as_command_8_does() {
-    // js/interact.js's `onContext` over a planar face: Look At, after Sketch on this face.
-    // Chosen over the block's top, it closes the menu and turns the view square to the top,
-    // from +z with +y up, fitted to the block: the same camera as Ctrl+8 with the top
-    // selected (both from the top's normal, as `elements` gives it).
+    // js/interact.js's `onContext` over a planar face: Look At, after Sketch on this face. The
+    // block's top described tilted, facing (0.6, 0, 0.8), so the turn is the face's, not a fit
+    // or the Top view of the view from above it starts from. Chosen, Look At closes the menu,
+    // selects nothing, and turns the view to look along that normal, its up (z − 0.8 n) / 0.6
+    // = (−0.8, 0, 0.6), worked by hand: the same camera as Ctrl+8 with the top selected.
+    let tilted = || {
+        let mut description = real_box_description();
+        description.faces[5].surface = silico_core::kernel::Surface::Plane {
+            normal: [0.6, 0.0, 0.8],
+            location: [20.0, 10.0, 10.0],
+        };
+        description
+    };
     let through_menu = {
         let f = fixture();
-        describes_a_real_box(&f);
+        describes_the_box_as(&f, tilted());
         let (mut h, record) = box_from_above(&f);
         let before = view(&h).camera().clone();
         context_over_the_top(&mut h, &record);
@@ -36709,18 +36718,22 @@ fn over_a_planar_face_the_context_menus_look_at_turns_the_view_square_to_it_as_c
         step_until(&mut h, "turned", |h| view(h).camera() != &before);
         let camera = view(&h).camera().clone();
         let back: [f64; 3] = std::array::from_fn(|k| camera.eye[k] - camera.target[k]);
-        assert!(
-            back[0] == 0.0 && back[1] == 0.0 && back[2] > 0.0,
-            "{camera:?}"
-        );
-        assert_eq!(camera.up, [0.0, 1.0, 0.0]);
+        let length = (back[0] * back[0] + back[1] * back[1] + back[2] * back[2]).sqrt();
+        for (k, want) in [0.6, 0.0, 0.8].into_iter().enumerate() {
+            assert!((back[k] / length - want).abs() < 1e-12, "{camera:?}");
+            assert!(
+                (camera.up[k] - [-0.8, 0.0, 0.6][k]).abs() < 1e-12,
+                "{camera:?}"
+            );
+        }
         assert!(!select_other(&h).is_open());
+        assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
         assert_eq!(never_waits::waits(), 0);
         camera
     };
     let through_keys = {
         let f = fixture();
-        describes_a_real_box(&f);
+        describes_the_box_as(&f, tilted());
         let (mut h, _record) = box_from_above(&f);
         select_in_box(&mut h, &["Face6"]);
         row_until(&mut h, "Area", "800.00 mm²");

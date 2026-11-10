@@ -20,9 +20,11 @@
 //!   another type, an edge, or a vertex, as the prototype filters it. It's off, as the
 //!   button is, while sketch mode can't open (`crate::feature_menu::sketch_off`, its
 //!   reason) or while none of the face's names is stable (the store's refusal, its reason);
-//! - Look At, for the same planar face, is the registry's (Ctrl+8, `Tab::look_at`): the view
-//!   square to that face, from the outward normal its entry gives, without selecting it (the
-//!   prototype selects it first, to look at the selection; the menu already has the face);
+//! - Look At, for the same planar face, is the registry's (Ctrl+8): the view square to that
+//!   face, from the outward normal its entry gives, as Ctrl+8's `Tab::look_at` turns to the
+//!   face selected (`Tab::look_at_face`, the one rule), without selecting it (the prototype
+//!   selects it first, to look at the selection; the menu already has the face). It's never
+//!   off;
 //! - Hide is as a body's eye in the browser hides it (with no key's cap: H, the registry's
 //!   Hide, hides the feature selected, not the body under the pointer);
 //! - Create Sketch is the toolbar's: its planes, the one menu of them
@@ -639,6 +641,9 @@ mod tests {
         // normal.
         let ctx = egui::Context::default();
         ctx.set_os(egui::os::OperatingSystem::Nix);
+        // A unit normal with three distinct parts (0.48² + 0.6² + 0.64² = 1), so the act
+        // carries the face's own, in order.
+        const TILTED: [f64; 3] = [0.48, 0.6, 0.64];
         let top = || {
             Arc::new(Name::Element {
                 feature: fid("k7f2qx3m"),
@@ -655,7 +660,7 @@ mod tests {
         let face = |refused: Option<&str>| Under {
             plane: Some(Planar {
                 stored: refused.map_or_else(|| Ok(top()), |why| Err(why.to_owned())),
-                normal: [0.0, 0.0, 1.0],
+                normal: TILTED,
             }),
             ..under()
         };
@@ -675,16 +680,32 @@ mod tests {
         assert!(over.items[2].caps.is_empty());
         assert_eq!(
             over.items[3].item,
-            CanvasItem::Act(CanvasAct::LookAt([0.0, 0.0, 1.0]))
+            CanvasItem::Act(CanvasAct::LookAt(TILTED))
         );
         assert_eq!(over.items[3].icon, Some(Icon::LookAt));
         assert!(!over.separated(2) && !over.separated(3) && over.separated(4));
-        // Look At on while Sketch on this face is off, for either reason.
+        // Look At on while Sketch on this face is off, for either reason, the rest as they
+        // were.
         for (under, context) in [
             (face(None), unsketchable(context(true, false))),
             (face(Some("unstable")), context(true, false)),
         ] {
-            assert!(CanvasMenu::new(Some(&under), &context, &ctx).on(3));
+            let menu = CanvasMenu::new(Some(&under), &context, &ctx);
+            assert_eq!(
+                said(&menu, &ctx),
+                [
+                    item("Select Other… 4 under the pointer", None, true),
+                    item("Edit Block", None, true),
+                    item("Sketch on this face", None, false),
+                    item("Look At", Some("Ctrl+8"), true),
+                    item("Hide Plate", None, true),
+                ]
+            );
+            assert!(menu.on(3));
+            assert_eq!(
+                menu.items[3].item,
+                CanvasItem::Act(CanvasAct::LookAt(TILTED))
+            );
         }
         let off = |under: &Under, context: &Context| {
             CanvasMenu::new(Some(under), context, &ctx).items[2]

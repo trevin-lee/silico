@@ -1538,6 +1538,9 @@ mod tests {
         }
     }
 
+    /// A planar face's unit normal with three distinct parts (0.48² + 0.6² + 0.64² = 1).
+    const TILTED: [f64; 3] = [0.48, 0.6, 0.64];
+
     fn labels(so: &SelectOther) -> Vec<String> {
         so.context()
             .unwrap()
@@ -1563,7 +1566,7 @@ mod tests {
         };
         so.menu.as_mut().unwrap().lit = Some(2);
         let before = ["Select Other…", "Edit Block", "Hide Block"];
-        so.face_typed(Of { version: 6, ..of }, Some([0.0, 0.0, 1.0]), &ctx);
+        so.face_typed(Of { version: 6, ..of }, Some(TILTED), &ctx);
         assert_eq!(labels(&so), before);
         assert_eq!((so.lit(), so.face_read()), (Some(2), Some(false)));
         so.face_typed(
@@ -1571,11 +1574,11 @@ mod tests {
                 model: (2, of.model.1),
                 ..of
             },
-            Some([0.0, 0.0, 1.0]),
+            Some(TILTED),
             &ctx,
         );
         assert_eq!(labels(&so), before);
-        so.face_typed(of, Some([0.0, 0.0, 1.0]), &ctx);
+        so.face_typed(of, Some(TILTED), &ctx);
         assert_eq!(
             labels(&so),
             [
@@ -1587,6 +1590,10 @@ mod tests {
             ]
         );
         assert_eq!((so.lit(), so.face_read()), (Some(4), Some(true)));
+        assert_eq!(
+            so.context().unwrap().items[3].item,
+            CanvasItem::Act(CanvasAct::LookAt(TILTED))
+        );
         // Edit lit instead, the pointer resting on it: Edit stays lit, second.
         let mut so = SelectOther {
             menu: Some(Menu {
@@ -1596,7 +1603,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        so.face_typed(of, Some([0.0, 0.0, 1.0]), &ctx);
+        so.face_typed(of, Some(TILTED), &ctx);
         assert_eq!(so.lit(), Some(1));
         // In the list, row 2 lit and the pointer on it: a row's place, which the read
         // answering leaves alone.
@@ -1608,7 +1615,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        list.face_typed(of, Some([0.0, 0.0, 1.0]), &ctx);
+        list.face_typed(of, Some(TILTED), &ctx);
         let menu = list.menu.as_ref().unwrap();
         assert_eq!(
             (menu.lit, menu.pointed, menu.phase),
@@ -2234,7 +2241,7 @@ mod tests {
         assert_eq!(lit(&mut so, 3, Some(hide)), Some(2));
         so.menu.as_mut().unwrap().step(-1);
         assert_eq!(lit(&mut so, 4, None), Some(1));
-        so.face_typed(of, Some([0.0, 0.0, 1.0]), &ctx);
+        so.face_typed(of, Some(TILTED), &ctx);
         for time in 5..9 {
             assert_eq!(lit(&mut so, time, None), Some(1), "{time}");
         }

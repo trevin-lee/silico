@@ -1295,6 +1295,7 @@ impl Tab {
     /// What the canvas's context menu asked, done as its command is elsewhere: Edit as the
     /// feature menus' Edit feature (`crate::feature_menu::act`), Sketch on this face as the
     /// selection view's button ([`create_sketch_on_face`](Self::create_sketch_on_face)),
+    /// Look At as Ctrl+8 turns to the face selected ([`look_at_face`](Self::look_at_face)),
     /// Hide as H hides a body, Fit and Home view as F6 and Home, Clear selection as Esc
     /// clears it, and a plane of Create Sketch's as the toolbar's
     /// ([`create_sketch`](Self::create_sketch)).
@@ -1312,10 +1313,7 @@ impl Tab {
             CanvasAct::SketchOnFace(face) => {
                 self.create_sketch_on_face(sessions, &face.to_string());
             }
-            CanvasAct::LookAt(toward) => self.view.ask(ViewAsk::LookAt {
-                toward,
-                up: crate::navigate::up_across(toward),
-            }),
+            CanvasAct::LookAt(toward) => self.look_at_face(toward),
             CanvasAct::Hide(id) => self.toggle_shown(Hideable::Feature(id)),
             CanvasAct::Fit => self.view.ask(ViewAsk::Fit),
             CanvasAct::Home => self.view.ask(ViewAsk::Named(crate::navigate::HOME)),
@@ -1353,15 +1351,25 @@ impl Tab {
                 Some(Err(error)) => Err(format!("Look At: {}", error.message())),
                 None => Err(LOOK_AT_UNREAD.to_owned()),
             },
-            None => self
-                .selected_plane_normal()
-                .map(|toward| (toward, crate::navigate::up_across(toward)))
-                .map_err(str::to_owned),
+            None => match self.selected_plane_normal() {
+                Ok(toward) => return self.look_at_face(toward),
+                Err(said) => Err(said.to_owned()),
+            },
         };
         match asked {
             Ok((toward, up)) => self.view.ask(ViewAsk::LookAt { toward, up }),
             Err(said) => self.toast = Some(said),
         }
+    }
+
+    /// The view square to a planar face from `toward`, its outward unit normal, up as the
+    /// named views have it ([`crate::navigate::up_across`]): Look At's turn to a face, from
+    /// the face selected (Ctrl+8) or the one under the canvas menu.
+    pub fn look_at_face(&mut self, toward: [f64; 3]) {
+        self.view.ask(crate::viewport::ViewAsk::LookAt {
+            toward,
+            up: crate::navigate::up_across(toward),
+        });
     }
 
     /// The outward normal of the one element selected, if it's a face the core's answer for
