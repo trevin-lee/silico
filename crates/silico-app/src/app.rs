@@ -2120,6 +2120,8 @@ impl<P: Clients + 'static> App<P> {
                         unsaved: tab.unsaved(),
                         active,
                         first: at == 0,
+                        errors: tab.errors() > 0,
+                        changed: !tab.outside.is_empty(),
                     },
                 );
                 // Scrolled to until it's in view; then left where the person scrolls.
