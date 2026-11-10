@@ -37435,6 +37435,11 @@ fn over_a_planar_face_the_context_menus_sketch_on_this_face_sends_what_the_selec
                 ("Select Other… 2 under the pointer".to_owned(), None, true),
                 ("Edit Block".to_owned(), None, true),
                 ("Sketch on this face".to_owned(), None, true),
+                (
+                    "Look At".to_owned(),
+                    Some(silico_app::shortcuts::Command::LookAt.keys_text(&h.ctx)),
+                    true
+                ),
                 ("Hide Block".to_owned(), None, true),
             ]
         );
@@ -37472,6 +37477,61 @@ fn over_a_planar_face_the_context_menus_sketch_on_this_face_sends_what_the_selec
 }
 
 #[test]
+fn over_a_planar_face_the_context_menus_look_at_turns_the_view_square_to_it_as_command_8_does() {
+    // js/interact.js's `onContext` over a planar face: Look At, after Sketch on this face. The
+    // block's top described tilted, facing (0.6, 0, 0.8), so the turn is the face's, not a fit
+    // or the Top view of the view from above it starts from. Chosen, Look At closes the menu,
+    // selects nothing, and turns the view to look along that normal, its up (z − 0.8 n) / 0.6
+    // = (−0.8, 0, 0.6), worked by hand: the same camera as Ctrl+8 with the top selected.
+    let tilted = || {
+        let mut description = real_box_description();
+        description.faces[5].surface = silico_core::kernel::Surface::Plane {
+            normal: [0.6, 0.0, 0.8],
+            location: [20.0, 10.0, 10.0],
+        };
+        description
+    };
+    let through_menu = {
+        let f = fixture();
+        describes_the_box_as(&f, tilted());
+        let (mut h, record) = box_from_above(&f);
+        let before = view(&h).camera().clone();
+        context_over_the_top(&mut h, &record);
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Look At")
+            .click();
+        step_until(&mut h, "turned", |h| view(h).camera() != &before);
+        let camera = view(&h).camera().clone();
+        let back: [f64; 3] = std::array::from_fn(|k| camera.eye[k] - camera.target[k]);
+        let length = (back[0] * back[0] + back[1] * back[1] + back[2] * back[2]).sqrt();
+        for (k, want) in [0.6, 0.0, 0.8].into_iter().enumerate() {
+            assert!((back[k] / length - want).abs() < 1e-12, "{camera:?}");
+            assert!(
+                (camera.up[k] - [-0.8, 0.0, 0.6][k]).abs() < 1e-12,
+                "{camera:?}"
+            );
+        }
+        assert!(!select_other(&h).is_open());
+        assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+        assert_eq!(never_waits::waits(), 0);
+        camera
+    };
+    let through_keys = {
+        let f = fixture();
+        describes_the_box_as(&f, tilted());
+        let (mut h, _record) = box_from_above(&f);
+        select_in_box(&mut h, &["Face6"]);
+        row_until(&mut h, "Area", "800.00 mm²");
+        let before = view(&h).camera().clone();
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Num8);
+        step_until(&mut h, "turned", |h| view(h).camera() != &before);
+        assert_eq!(never_waits::waits(), 0);
+        view(&h).camera().clone()
+    };
+    assert_eq!(through_menu, through_keys);
+}
+
+#[test]
 fn the_context_menu_offers_no_sketch_on_this_face_over_a_cylindrical_face_an_edge_or_a_vertex() {
     // The prototype's item is only for a face whose `ref.kind` is 'plane'. The block's top
     // described as a cylinder's side instead (by hand: about an axis along y through
@@ -37497,6 +37557,11 @@ fn the_context_menu_offers_no_sketch_on_this_face_over_a_cylindrical_face_an_edg
         Some("Face6 · Face")
     );
     assert!(!offers_sketch_on_face(&h));
+    assert!(
+        !context_said(&h)
+            .iter()
+            .any(|(said, _, _)| said == "Look At")
+    );
     for (element, pick, head) in [
         (Edge(11), false, "Edge11 · Edge"),
         (Vertex(7), true, "Vertex7 · Vertex"),
@@ -37525,6 +37590,12 @@ fn the_context_menu_offers_no_sketch_on_this_face_over_a_cylindrical_face_an_edg
             step(&mut h);
         }
         assert!(!offers_sketch_on_face(&h), "{head}");
+        assert!(
+            !context_said(&h)
+                .iter()
+                .any(|(said, _, _)| said == "Look At"),
+            "{head}"
+        );
     }
     assert_eq!(never_waits::waits(), 0);
 }

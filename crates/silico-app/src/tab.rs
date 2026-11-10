@@ -1305,6 +1305,7 @@ impl Tab {
     /// What the canvas's context menu asked, done as its command is elsewhere: Edit as the
     /// feature menus' Edit feature (`crate::feature_menu::act`), Sketch on this face as the
     /// selection view's button ([`create_sketch_on_face`](Self::create_sketch_on_face)),
+    /// Look At as Ctrl+8 turns to the face selected ([`look_at_face`](Self::look_at_face)),
     /// Hide as H hides a body, Fit and Home view as F6 and Home, Clear selection as Esc
     /// clears it, and a plane of Create Sketch's as the toolbar's
     /// ([`create_sketch`](Self::create_sketch)).
@@ -1322,6 +1323,7 @@ impl Tab {
             CanvasAct::SketchOnFace(face) => {
                 self.create_sketch_on_face(sessions, &face.to_string());
             }
+            CanvasAct::LookAt(toward) => self.look_at_face(toward),
             CanvasAct::Hide(id) => self.toggle_shown(Hideable::Feature(id)),
             CanvasAct::Fit => self.view.ask(ViewAsk::Fit),
             CanvasAct::Home => self.view.ask(ViewAsk::Named(crate::navigate::HOME)),
@@ -1359,15 +1361,25 @@ impl Tab {
                 Some(Err(error)) => Err(format!("Look At: {}", error.message())),
                 None => Err(LOOK_AT_UNREAD.to_owned()),
             },
-            None => self
-                .selected_plane_normal()
-                .map(|toward| (toward, crate::navigate::up_across(toward)))
-                .map_err(str::to_owned),
+            None => match self.selected_plane_normal() {
+                Ok(toward) => return self.look_at_face(toward),
+                Err(said) => Err(said.to_owned()),
+            },
         };
         match asked {
             Ok((toward, up)) => self.view.ask(ViewAsk::LookAt { toward, up }),
             Err(said) => self.toast = Some(said),
         }
+    }
+
+    /// The view square to a planar face from `toward`, its outward unit normal, up as the
+    /// named views have it ([`crate::navigate::up_across`]): Look At's turn to a face, from
+    /// the face selected (Ctrl+8) or the one under the canvas menu.
+    pub fn look_at_face(&mut self, toward: [f64; 3]) {
+        self.view.ask(crate::viewport::ViewAsk::LookAt {
+            toward,
+            up: crate::navigate::up_across(toward),
+        });
     }
 
     /// The outward normal of the one element selected, if it's a face the core's answer for
@@ -1507,15 +1519,14 @@ impl Tab {
 
     /// The face the canvas's context menu is over read for its type, as the selection
     /// view's face is (`elements`, through `crate::measures`): asked as the menu opens over
-    /// it, polled, and its answer given the menu, whose Sketch on this face is there only
-    /// for a plane; the read let go once its answer is taken, or the menu closes or isn't
+    /// it, polled, and its answer given the menu, whose Sketch on this face and Look At are
+    /// there only for a plane; the read let go once its answer is taken, or the menu closes or isn't
     /// over a face. Never waited on.
     fn menu_face_read<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
         ctx: &eframe::egui::Context,
     ) {
-        use silico_core::command::elements::ElementType;
         let wanted = self.select_other.face_wanted();
         match &wanted {
             Some((of, measured)) => {
@@ -1530,17 +1541,15 @@ impl Tab {
         let Some((of, _)) = wanted else {
             return;
         };
+        // A planar face's normal, which `elements` gives a planar face alone; none for
+        // another face, or a read refused.
         let typed = self
             .menu_face
             .answers(of)
             .and_then(|answers| answers.element.as_ref())
-            .map(|element| {
-                element
-                    .as_ref()
-                    .is_ok_and(|entry| entry.r#type == ElementType::Plane)
-            });
-        if let Some(plane) = typed {
-            self.select_other.face_typed(of, plane, ctx);
+            .map(|element| element.as_ref().ok().and_then(|entry| entry.normal));
+        if let Some(normal) = typed {
+            self.select_other.face_typed(of, normal, ctx);
         }
     }
 

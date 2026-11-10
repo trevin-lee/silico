@@ -3,7 +3,8 @@
 //! (js/interact.js) builds it, drawn as every menu is (`crate::menu`). Over an element, what a
 //! click there would select (the selection's hover): headed by it and its kind ("Face6 ·
 //! Face"), then *Select Other…* with how many are under the pointer, Edit and the feature
-//! that made it, Sketch on this face for a planar face, a separator, and Hide and its body.
+//! that made it, Sketch on this face and Look At for a planar face, a separator, and Hide and
+//! its body.
 //! Over nothing: Fit (F6), Home view (Home), *Select Other…*, a separator, Clear selection
 //! (Esc), and Create Sketch. Where each item's action goes:
 //! - *Select Other…* opens the list of what's under the pointer (`crate::select_other`,
@@ -19,6 +20,11 @@
 //!   another type, an edge, or a vertex, as the prototype filters it. It's off, as the
 //!   button is, while sketch mode can't open (`crate::feature_menu::sketch_off`, its
 //!   reason) or while none of the face's names is stable (the store's refusal, its reason);
+//! - Look At, for the same planar face, is the registry's (Ctrl+8): the view square to that
+//!   face, from the outward normal its entry gives, as Ctrl+8's `Tab::look_at` turns to the
+//!   face selected (`Tab::look_at_face`, the one rule), without selecting it (the prototype
+//!   selects it first, to look at the selection; the menu already has the face). It's never
+//!   off;
 //! - Hide is as a body's eye in the browser hides it (with no key's cap: H, the registry's
 //!   Hide, hides the feature selected, not the body under the pointer);
 //! - Create Sketch is the toolbar's: its planes, the one menu of them
@@ -28,10 +34,7 @@
 //!   SEAM: a plane is chosen by the pointer: the keys step this menu's items alone (Tab,
 //!   the arrows, Enter), and Esc closes the menu and its planes with it.
 //!
-//! Left out of the prototype's items:
-//! - SEAM: Look At (Ctrl+8) over a flat face, as the prototype has it. The menu reads a
-//!   face's entry as it opens, for Sketch on this face, so it could offer Look At the same
-//!   way; until it does, Ctrl+8 reaches it for the face selected (`Tab::look_at`);
+//! Left out of the prototype's items, none a command the app has yet:
 //! - SEAM: Fillet, an edge's, whose dialog opens from MODIFY (`crate::toolbar`, through the
 //!   app's remembered inputs), not from a command of the registry;
 //! - SEAM: Copy name ("as agents write it"), no command of the registry copies a name.
@@ -61,7 +64,7 @@ pub const UNCAST: &str = "what's under the pointer can't be found";
 /// face, with the name a store writes for its face, if one can be written (none: the item
 /// is off, with the store's refusal); Create Sketch, whose planes it opens; or one the tab
 /// does once it's chosen.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CanvasItem {
     SelectOther,
     SketchOnFace(Option<Arc<Name>>),
@@ -70,13 +73,16 @@ pub enum CanvasItem {
 }
 
 /// What a chosen item asks the tab to do, the menu closed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CanvasAct {
     /// Edit feature, of the feature that made the element under the pointer.
     Edit(FeatureId),
     /// Sketch on this face: a sketch created on the face under the pointer, by the name a
     /// store writes for it.
     SketchOnFace(Arc<Name>),
+    /// Look At: the view square to the planar face under the pointer, from its outward unit
+    /// normal (its `elements` entry's).
+    LookAt([f64; 3]),
     /// Hide, of the body under the pointer (by the feature that ends its chain).
     Hide(FeatureId),
     Fit,
@@ -141,8 +147,9 @@ impl Shown {
 /// What's under the pointer at the right click, as the menu says it: the element a click
 /// there would select, by its words ("Face6") and its kind ("Face"); the feature that made
 /// it, by its ID and its name; its body, by the feature that ends its chain and its name;
-/// and, for a face `elements` has said is a plane, what Sketch on this face needs of it
-/// (none for another face, an edge, a vertex, or a face not read yet). None over nothing.
+/// and, for a face `elements` has said is a plane, what Sketch on this face and Look At need
+/// of it (none for another face, an edge, a vertex, or a face not read yet). None over
+/// nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Under {
     pub label: String,
@@ -156,10 +163,11 @@ pub struct Under {
 
 /// A planar face under the pointer: the name a store writes for it (`Selected::stored`), or,
 /// if none of its names is stable, why none can be written (the store's refusal, as its
-/// Stability card says it).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Stability card says it); and its outward unit normal, as its `elements` entry gives it.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Planar {
     pub stored: Result<Arc<Name>, String>,
+    pub normal: [f64; 3],
 }
 
 /// What the menu says of the rest: how many are under the pointer (*Select Other…*'s dim
@@ -228,6 +236,15 @@ impl CanvasMenu {
                         .or_else(|| plane.stored.clone().err());
                     sketch
                 });
+                // Never off: it needs nothing but the face's normal.
+                let look = under.plane.as_ref().map(|plane| {
+                    Shown::of(
+                        CanvasItem::Act(CanvasAct::LookAt(plane.normal)),
+                        Some(Icon::LookAt),
+                        Command::LookAt.label(),
+                    )
+                    .keys(Command::LookAt, ctx)
+                });
                 // No key's cap: H hides the feature selected, not the body under the
                 // pointer this hides.
                 let hide = Shown::of(
@@ -237,7 +254,7 @@ impl CanvasMenu {
                 );
                 CanvasMenu {
                     head: Some(format!("{} · {}", under.label, under.kind)),
-                    items: [Some(select_other), Some(edit), sketch, Some(hide)]
+                    items: [Some(select_other), Some(edit), sketch, look, Some(hide)]
                         .into_iter()
                         .flatten()
                         .collect(),
@@ -616,13 +633,17 @@ mod tests {
     fn over_a_planar_face_sketch_on_this_face_follows_edit_and_is_off_as_the_selection_views_button_is()
      {
         // js/interact.js's `onContext` over a face `ref.kind === 'plane'`: Sketch on this
-        // face, with the sketch icon, after Edit and before the separator and Hide (Look At,
-        // between them, a seam). On, by the name a store writes for the face, as the
-        // selection view's button (panes.rs) is; off while sketch mode can't open, saying
-        // why, or while no store can name the face, saying the store's refusal; sketch
-        // mode's reason first.
+        // face, with the sketch icon, after Edit, then Look At, with its icon and Ctrl+8, then
+        // the separator and Hide. Sketch on this face is on, by the name a store writes for
+        // the face, as the selection view's button (panes.rs) is; off while sketch mode can't
+        // open, saying why, or while no store can name the face, saying the store's refusal;
+        // sketch mode's reason first. Look At is on all the same, turning to the face's
+        // normal.
         let ctx = egui::Context::default();
         ctx.set_os(egui::os::OperatingSystem::Nix);
+        // A unit normal with three distinct parts (0.48² + 0.6² + 0.64² = 1), so the act
+        // carries the face's own, in order.
+        const TILTED: [f64; 3] = [0.48, 0.6, 0.64];
         let top = || {
             Arc::new(Name::Element {
                 feature: fid("k7f2qx3m"),
@@ -639,6 +660,7 @@ mod tests {
         let face = |refused: Option<&str>| Under {
             plane: Some(Planar {
                 stored: refused.map_or_else(|| Ok(top()), |why| Err(why.to_owned())),
+                normal: TILTED,
             }),
             ..under()
         };
@@ -649,13 +671,42 @@ mod tests {
                 item("Select Other… 4 under the pointer", None, true),
                 item("Edit Block", None, true),
                 item("Sketch on this face", None, true),
+                item("Look At", Some("Ctrl+8"), true),
                 item("Hide Plate", None, true),
             ]
         );
         assert_eq!(over.items[2].item, CanvasItem::SketchOnFace(Some(top())));
         assert_eq!(over.items[2].icon, Some(Icon::Sketch));
         assert!(over.items[2].caps.is_empty());
-        assert!(!over.separated(2) && over.separated(3));
+        assert_eq!(
+            over.items[3].item,
+            CanvasItem::Act(CanvasAct::LookAt(TILTED))
+        );
+        assert_eq!(over.items[3].icon, Some(Icon::LookAt));
+        assert!(!over.separated(2) && !over.separated(3) && over.separated(4));
+        // Look At on while Sketch on this face is off, for either reason, the rest as they
+        // were.
+        for (under, context) in [
+            (face(None), unsketchable(context(true, false))),
+            (face(Some("unstable")), context(true, false)),
+        ] {
+            let menu = CanvasMenu::new(Some(&under), &context, &ctx);
+            assert_eq!(
+                said(&menu, &ctx),
+                [
+                    item("Select Other… 4 under the pointer", None, true),
+                    item("Edit Block", None, true),
+                    item("Sketch on this face", None, false),
+                    item("Look At", Some("Ctrl+8"), true),
+                    item("Hide Plate", None, true),
+                ]
+            );
+            assert!(menu.on(3));
+            assert_eq!(
+                menu.items[3].item,
+                CanvasItem::Act(CanvasAct::LookAt(TILTED))
+            );
+        }
         let off = |under: &Under, context: &Context| {
             CanvasMenu::new(Some(under), context, &ctx).items[2]
                 .off
@@ -678,12 +729,10 @@ mod tests {
         // A face not known to be a plane (another type, or not read yet), an edge, or a
         // vertex: no item.
         let plain = CanvasMenu::new(Some(&under()), &context(true, false), &ctx);
-        assert!(
-            plain
-                .items
-                .iter()
-                .all(|shown| !matches!(shown.item, CanvasItem::SketchOnFace(_)))
-        );
+        assert!(plain.items.iter().all(|shown| !matches!(
+            shown.item,
+            CanvasItem::SketchOnFace(_) | CanvasItem::Act(CanvasAct::LookAt(_))
+        )));
     }
 
     #[test]
