@@ -2601,10 +2601,10 @@ fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2
                         if ui.button("Fit").clicked() {
                             view.fit(size_px);
                         }
+                        // The canvas was painted before the bar: the next frame, which egui
+                        // draws after any frame with input, shows the change.
                         if ui.selectable_label(view.grid, "Grid").clicked() {
                             view.grid = !view.grid;
-                            // The canvas was painted before the bar: the next frame shows it.
-                            ui.ctx().request_repaint();
                         }
                     });
                 });

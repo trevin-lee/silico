@@ -284,13 +284,39 @@ fn in_perspective_a_stroke_under_the_eye_is_cut_at_it_its_alpha_its_own_there() 
     assert!(cut.points[0].x > 1e8, "{cut:?}");
     assert_eq!(colour_at(cut, cut.points[0]), minor(161));
     assert_eq!(colour_at(cut, cut.points[1]), minor(170));
-    // A stroke wholly behind the eye isn't painted: x = 10 from (10, −60) to (10, −40)
-    // would end at (10, −40), d −10; nothing lands at or beyond the eye from it.
+    // A stroke wholly behind the eye isn't painted: x = 10 from (10, −60) to (10, −40), at
+    // depths −30 and −10, would land, taken through the projection uncut, mirrored across the
+    // centre at (33.33, 41.67) and (0, 25), places no point of the grid (z = 0, below the
+    // eye's 5) lands in front of it. No path ends there, and every point is finite.
+    for mirrored in [pos2(100.0 / 3.0, 125.0 / 3.0), pos2(0.0, 25.0)] {
+        assert!(
+            !paths
+                .iter()
+                .any(|p| p.points.iter().any(|q| (*q - mirrored).length() < 1e-2)),
+            "a path ends at {mirrored:?}"
+        );
+    }
     assert!(
         paths
             .iter()
             .all(|p| p.points.iter().all(|q| q.x.is_finite() && q.y.is_finite()))
     );
+}
+
+#[test]
+fn at_two_pixels_a_point_each_stroke_lands_where_it_does_at_one() {
+    // 400 mm on 800 by 800 pixels at 2 pixels a point, over the same 400-point rect: (x, y)
+    // lands at pixel (400 + 2x, 400 − 2y), point (210 + x, 220 − y), as at one pixel a point.
+    let drawn = shapes(&from_above(), [800, 800], 2.0, rect());
+    let paths = paths(&drawn);
+    let at_100 = path_from(&paths, above(60.0, 80.0), above(60.0, 100.0));
+    assert_eq!(colour_at(at_100, at_100.points[0]), minor(96));
+    assert_eq!(colour_at(at_100, at_100.points[1]), minor(80));
+    assert_eq!(at_100.stroke.width, 1.0);
+    let [.., x, _] = paths.as_slice() else {
+        panic!("{} paths", paths.len());
+    };
+    assert!(near(x.points[0], above(-200.0, 0.0)) && near(x.points[1], above(200.0, 0.0)));
 }
 
 #[test]

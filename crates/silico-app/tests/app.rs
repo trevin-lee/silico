@@ -12396,14 +12396,13 @@ fn the_bars_grid_shows_and_hides_the_ground_grid_and_the_renderer_is_given_none_
     assert_eq!(grid(&h), 0);
     assert_eq!(given(&record), on);
     // The navigation bar's Grid shows it, and hides it again: the bar is laid out after the
-    // canvas, so the frame that takes the click has painted the canvas already, and the next,
-    // which the click asks for, shows the change.
+    // canvas, so the frame that takes the click has painted the canvas already, and the next
+    // (egui draws one after any frame with input) shows the change.
     let toggle = |h: &mut AppHarness| {
         h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
             .get_by_label("Grid")
             .click();
         step(h);
-        assert!(h.ctx.has_requested_repaint());
         step(h);
     };
     toggle(&mut h);

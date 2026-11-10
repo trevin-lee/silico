@@ -102,6 +102,11 @@ pub fn strokes() -> Vec<GridStroke> {
 /// between its drawn part's ends ([`SegmentProjection::segment`]: in perspective, cut where
 /// it's a nanometre in front of the eye), its colour running from one end's alpha to the
 /// other's along the path on the screen, a cut end's alpha the stroke's own where it's cut.
+/// On the screen, not along the line as the prototype's WebGL interpolates it: in
+/// perspective the two part where a stroke's depth changes much along it, so in a view that
+/// grazes the plane a stroke cut near the eye shows nearer its far end's alpha (a few parts
+/// in a hundred of the line's 0.75 or 0.9). Accepted: egui blends a path's colours between
+/// its points.
 /// None of a stroke drawn wholly transparent (its alpha under a half at both ends: past
 /// 200 mm), of one seen end on (its ends at one point: the Z axis from above), nor of one an
 /// end of which lands nowhere finite; none at all for a view the renderer refuses, or a
