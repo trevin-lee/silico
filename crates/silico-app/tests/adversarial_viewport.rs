@@ -1836,7 +1836,7 @@ fn a_shown_sketch_past_its_lines_cap_draws_none_and_the_frames_go_on() {
     let (mut h, record) = f.drawn("huge.silico", &huge_sketch(200), (1280.0, 800.0));
     step_until(&mut h, "Huge read", |h| {
         h.state().tabs().first().is_some_and(|tab| {
-            tab.prefixes
+            tab.sketch_reads
                 .held(&FeatureId::new("s0000001").unwrap())
                 .is_some()
         })

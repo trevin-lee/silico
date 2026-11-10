@@ -1237,14 +1237,24 @@ pub fn scale_at(to_plane: &dyn Fn(Pos2) -> Option<[f64; 2]>, at: Pos2) -> Option
 /// so a burst of revisions refreshes what's drawn before what isn't. Each answer is kept as
 /// the newest: while the next revision's read is in flight, the last is held, so nothing
 /// drawn of it ever lapses between them, as every answer is drawn as of its own revision
-/// (docs/design/m5.0-app.md, decision 33). An answer equal to the one held keeps the held
-/// one (the same `Arc`), so what's made of it needn't be made again. A refused read (a
-/// suppressed sketch, a worker's failure) holds none. The sketch open in sketch mode isn't
-/// read here: its state is its read's.
+/// (docs/design/m4.1-command-api.md, decision 33; docs/design/m5.0-app.md, section 3). An
+/// answer equal to the one held keeps the held one (the same `Arc`), so what's made of it
+/// needn't be made again. A read refused once it ran (a suppressed sketch, one no longer
+/// there, a worker's failure) holds none. One refused before it reached a model (too many
+/// published reads running at once, the session closing, no thread to be had), which names
+/// none, keeps what's held, and is sent again by a later frame.
+///
+/// The sketch open in sketch mode isn't read here. A sketch's state is kept once, in its
+/// held read, but for the open sketch's: sketch mode's read of it is newer, so its state
+/// stands in for the held one's while it's open, and after Finish until it's read again
+/// ([`state`](Self::state), the browser's prefix). What's drawn of a sketch in the viewport
+/// is its held read's, its state with its geometry, both of one revision.
 #[derive(Default)]
 pub struct SketchReads {
-    states: BTreeMap<FeatureId, SketchState>,
     held: BTreeMap<FeatureId, Held>,
+    /// The sketch open in sketch mode, or last open, until it's read again here: its state
+    /// as sketch mode's read gives it.
+    open_state: Option<(FeatureId, SketchState)>,
     asked: BTreeMap<FeatureId, Revision>,
     reading: Option<(FeatureId, Revision, Running<SketchRead>)>,
     /// How many reads it has sent: what a test counts.
@@ -1274,7 +1284,7 @@ impl SketchReads {
     ) {
         let open_id = open.and_then(|mode| mode.sketch.as_ref());
         if let (Some(id), Some(read)) = (open_id, open.and_then(SketchMode::drawable)) {
-            self.states.insert(id.clone(), read.states.state);
+            self.open_state = Some((id.clone(), read.states.state));
         }
         if let Some((id, asked, running)) = self.reading.take() {
             match running.try_take() {
@@ -1284,9 +1294,17 @@ impl SketchReads {
                         .model
                         .as_ref()
                         .map_or(asked, |model| model.revision);
+                    let ran = response.model.is_some();
+                    // Read again here: sketch mode's state no longer stands in for it,
+                    // unless it's open.
+                    if ran
+                        && open_id != Some(&id)
+                        && self.open_state.as_ref().is_some_and(|(last, _)| *last == id)
+                    {
+                        self.open_state = None;
+                    }
                     match response.result {
                         Ok(read) => {
-                            self.states.insert(id.clone(), read.states.state);
                             let kept = self
                                 .held
                                 .get(&id)
@@ -1296,10 +1314,15 @@ impl SketchReads {
                             let read = kept.unwrap_or_else(|| Arc::new(read));
                             self.held.insert(id, Held { read, revision });
                         }
-                        // A suppressed sketch, or one a worker's failure left unread: no
-                        // prefix, and nothing to draw.
+                        // Refused before it reached a model (too many published reads
+                        // running at once, the session closing, no thread to be had): what's
+                        // held stays, and it's asked again.
+                        Err(_) if !ran => {
+                            self.asked.remove(&id);
+                        }
+                        // A suppressed sketch, one no longer there, or one a worker's failure
+                        // left unread: no prefix, and nothing to draw.
                         Err(_) => {
-                            self.states.remove(&id);
                             self.held.remove(&id);
                         }
                     }
@@ -1311,7 +1334,9 @@ impl SketchReads {
             }
         }
         let listed = |id: &FeatureId| rows.iter().any(|row| &row.id == id);
-        self.states.retain(|id, _| listed(id));
+        if self.open_state.as_ref().is_some_and(|(id, _)| !listed(id)) {
+            self.open_state = None;
+        }
         self.held.retain(|id, _| listed(id));
         self.asked.retain(|id, _| listed(id));
         let Some(published) = published else {
@@ -1334,12 +1359,16 @@ impl SketchReads {
 
     /// The sketch `id`'s prefix, if its state is read and has one.
     pub fn prefix(&self, id: &FeatureId) -> Option<&'static str> {
-        self.states.get(id).copied().and_then(prefix)
+        self.state(id).and_then(prefix)
     }
 
-    /// The sketch `id`'s state, if it's read.
+    /// The sketch `id`'s state, if it's read: sketch mode's, for the sketch open there or
+    /// last open until it's read again here; otherwise its held read's.
     pub fn state(&self, id: &FeatureId) -> Option<SketchState> {
-        self.states.get(id).copied()
+        match &self.open_state {
+            Some((open, state)) if open == id => Some(*state),
+            _ => self.held.get(id).map(|held| held.read.states.state),
+        }
     }
 
     /// The sketch `id`'s newest read held, if one is: its read whole, and the revision it's

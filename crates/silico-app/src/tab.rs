@@ -908,7 +908,7 @@ pub struct Tab {
     /// Sketch mode (section 9, *Sketching*), while a sketch is open; and each sketch's read,
     /// whole, for the browser's prefixes and the viewport's lines.
     pub sketch: Option<SketchMode>,
-    pub prefixes: SketchReads,
+    pub sketch_reads: SketchReads,
     /// The shown sketches' lines the viewport draws, each made again only when its read is
     /// replaced or the view's scale at it leaves its bucket (`crate::sketch::lines`).
     pub sketch_lines: crate::sketch::lines::ShownLines,
@@ -1100,7 +1100,7 @@ impl Tab {
             dialog_base: None,
             dialog_began: false,
             sketch: None,
-            prefixes: SketchReads::default(),
+            sketch_reads: SketchReads::default(),
             sketch_lines: Default::default(),
             before_dialog: None,
             oked: None,
@@ -1818,7 +1818,7 @@ impl Tab {
             }
         }
         let (overrides, browser) = (&self.overrides, &self.browser);
-        self.prefixes.poll(
+        self.sketch_reads.poll(
             sessions,
             &self.id,
             &self.browser.sketches,
@@ -4290,7 +4290,7 @@ impl Tab {
     }
 
     /// Whether `what`'s row shows (its eye open): its override if it has one, else its
-    /// default (sketch-visibility R3, R4).
+    /// default (sketch-visibility R3, R4; [`shown_in`]).
     pub fn shown(&self, what: &Hideable) -> bool {
         shown_in(&self.overrides, &self.browser, what)
     }
@@ -4318,7 +4318,7 @@ impl Tab {
         if row.suppressed {
             return Some("Not drawn: suppressed".to_owned());
         }
-        let held = self.prefixes.held(&row.id)?;
+        let held = self.sketch_reads.held(&row.id)?;
         held.read
             .plane
             .as_ref()
@@ -5910,7 +5910,8 @@ fn shown_by_default(browser: &Browser, what: &Hideable) -> bool {
 }
 
 /// Whether `what`'s row shows: its override in `overrides` if it has one, else its default
-/// by `browser` ([`Tab::shown`]).
+/// by `browser`. The one rule [`Tab::shown`] and the sketch reads' order
+/// ([`SketchReads::poll`]) both use.
 fn shown_in(overrides: &BTreeMap<Hideable, Override>, browser: &Browser, what: &Hideable) -> bool {
     overrides
         .get(what)

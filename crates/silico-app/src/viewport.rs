@@ -1730,7 +1730,7 @@ pub fn show<P: Clients + 'static>(
                 .iter()
                 .filter(|row| tab.shown(&crate::tab::Hideable::Feature(row.id.clone())))
                 .filter_map(|row| {
-                    let held = tab.prefixes.held(&row.id)?;
+                    let held = tab.sketch_reads.held(&row.id)?;
                     Some((row.id.clone(), Arc::clone(&held.read)))
                 })
                 .collect()
