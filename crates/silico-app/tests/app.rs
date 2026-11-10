@@ -39759,6 +39759,12 @@ fn the_frame_holds_each_shown_sketchs_strips_in_its_colour_and_none_while_one_is
     assert!(profile.is_some(), "Profile's 30 by 20 on XY");
     click_eye(&mut h, "Hide", "Profile");
     step_until(&mut h, "Profile's gone", |_| last_lines(&record).len() == 1);
+    // Two thirds of a second on (forty frames: this harness's time moves a sixtieth of a
+    // second a frame), past twice egui's double-click time, so Loose's double-click isn't
+    // taken for a triple click with the eye's clicks before it.
+    for _ in 0..40 {
+        step(&mut h);
+    }
     // Sketch mode on Loose: no lines at all, while it's open.
     double_click(&mut h, "Browser", "Loose");
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
