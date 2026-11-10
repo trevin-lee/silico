@@ -833,6 +833,22 @@ impl View {
         self.generation += 1;
     }
 
+    /// A view holding `bodies`, read from no model: a unit test's.
+    #[cfg(test)]
+    pub(crate) fn holding(bodies: BTreeMap<u32, ViewBody>) -> View {
+        View {
+            bodies,
+            ..View::default()
+        }
+    }
+
+    /// The pick asked of the renderer and not yet given it, taken (as a frame takes it): a
+    /// unit test's, to see whether another is asked after.
+    #[cfg(test)]
+    pub(crate) fn take_asked(&mut self) -> Option<PixelRect> {
+        self.picking.take()
+    }
+
     /// The read in flight polled: its answer taken if it has come.
     fn poll(&mut self, now: Instant) {
         let Some(reading) = self.reading.take() else {

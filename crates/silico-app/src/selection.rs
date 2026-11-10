@@ -32,8 +32,9 @@
 //! selects only faces (docs/ux/solidworks.md §1, *Selection filters*); none where no face is
 //! under the stroke (past a silhouette). While a body drawn has its boxes still to come (made
 //! off the UI thread as the view takes its mesh), a click on a stroke waits for them, as Select
-//! Other's right click does, clearing nothing meanwhile, and is decided the frame they're made;
-//! a hover there takes nothing, and is asked again each frame till then.
+//! Other's right click waits for its boxes, clearing nothing meanwhile, and is decided the frame
+//! they're made, cast with that frame's view (the camera moving first lets it go); a hover there
+//! takes nothing, and is asked again each frame till then.
 //!
 //! A pick is named, and the selection's elements drawn, only on bodies read from the model
 //! the selection is read against ([`View::bodies_of`]): a model published, its meshes not
@@ -124,7 +125,7 @@ type Found = (u32, Element, Arc<Name>, bool);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NotYet;
 
-/// A [`FaceUnder`] that finds nothing: a test's, where no body has boxes to cast on.
+/// A [`FaceUnder`] that finds no face anywhere ([`Cast::Empty`]): a test's.
 #[cfg(test)]
 pub(crate) fn no_face(_: &View, _: &ViewFrame, _: [u32; 2]) -> Cast {
     Cast::Empty
@@ -3183,9 +3184,11 @@ pub(crate) mod tests {
         assert_eq!(selection.names(), ["aaaaaaaa.box.Edge1"]);
         // Past CLICK_FRAMES frames: cast again each, nothing asked of the renderer and no
         // frame counted (a click counting them would be let go), nothing cleared.
+        view.take_asked();
         for _ in 0..CLICK_FRAMES + 5 {
             selection.overlay(&mut view, &still(&home), &ctx, &waiting);
         }
+        assert_eq!(view.asking(), None);
         assert_eq!(selection.click.map(|c| c.frames), Some(0));
         assert_eq!(casts.get(), 1 + CLICK_FRAMES + 5);
         assert_eq!(selection.names(), ["aaaaaaaa.box.Edge1"]);
@@ -3217,6 +3220,24 @@ pub(crate) mod tests {
         assert_eq!(
             (asked.answered, asked.frames, asked.after),
             (None, 1, Some(8))
+        );
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Edge1"]);
+        // Answered again, waiting; another model published meanwhile: its click isn't decided
+        // on the bodies of the model before, though a face is cast under it there.
+        view.answered_as(of, stroke(9));
+        selection.overlay(&mut view, &still(&moved), &ctx, &waiting);
+        assert!(
+            selection
+                .click
+                .is_some_and(|c| c.answered == Some(stroke(9)))
+        );
+        selection.published(Some((box_model(), Revision::from_number(2).unwrap())), 2);
+        let face = |_: &View, _: &ViewFrame, _: [u32; 2]| Cast::Face(1, Element::Face(3));
+        selection.overlay(&mut view, &still(&moved), &ctx, &face);
+        assert!(
+            selection
+                .click
+                .is_some_and(|c| c.answered == Some(stroke(9)))
         );
         assert_eq!(selection.names(), ["aaaaaaaa.box.Edge1"]);
     }

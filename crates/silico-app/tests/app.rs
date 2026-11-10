@@ -36966,20 +36966,20 @@ fn with_edges_filtered_out_a_click_or_hover_on_an_edges_stroke_takes_the_face_ca
 
 /// The box from above, as [`box_from_above`] sees it but 80 mm high (so the box spans half
 /// the canvas's height, well inside it), the camera moved along x and y so the box's right
-/// edge (x = 40) lands a quarter pixel into a column and its far edge (y = 20) a quarter pixel
-/// into a row: (x, y) lands at (w / 2 + (x − the target's x) mm, h / 2 − (y − the target's y)
-/// mm) pixels from the canvas's corner, a millimetre being its height in pixels over 80. So the column `n` x = 40 lands in has its centre a quarter pixel past the box, the
-/// one before three quarters inside; the row `m` y = 20 lands in has its centre a quarter pixel
-/// inside (below it on the screen), the one before three quarters past. `n`, `m`, and the
-/// column and row of the box's middle, (20, 10).
-fn edges_a_quarter_into_pixels(h: &mut AppHarness) -> [u32; 4] {
+/// edge (x = 40) lands `into` of a pixel into a column and its far edge (y = 20) `into` of a
+/// pixel into a row: (x, y) lands at (w / 2 + (x − the target's x) mm, h / 2 − (y − the
+/// target's y) mm) pixels from the canvas's corner, a millimetre being its height in pixels
+/// over 80. The column `n` x = 40 lands in, and the row `m` y = 20 lands in (the box is left
+/// of that line and below this one on the screen), and the column and row of the box's
+/// middle, (20, 10).
+fn edges_into_pixels(h: &mut AppHarness, into: f64) -> [u32; 4] {
     let frame = view(h).frame().unwrap();
     let [w, height] = frame.size_px.map(f64::from);
     let mm = height / 80.0;
     let n = (w / 2.0 + 20.0 * mm).floor();
     let m = (height / 2.0 - 10.0 * mm).floor();
-    let x = 40.0 - (n + 0.25 - w / 2.0) / mm;
-    let y = 20.0 - (height / 2.0 - m - 0.25) / mm;
+    let x = 40.0 - (n + into - w / 2.0) / mm;
+    let y = 20.0 - (height / 2.0 - m - into) / mm;
     view_mut(h).set_camera(silico_protocol::Camera {
         projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
         eye: [x, y, 100.0],
@@ -37012,29 +37012,43 @@ fn with_edges_filtered_out_a_stroke_pixel_takes_whats_under_its_centre_either_si
         let f = fixture();
         let (mut h, record) = from_above_scaled(&f, "box.silico", A_BOX, None, ppp);
         boxes_made(&mut h);
-        let [n, m, column, row] = edges_a_quarter_into_pixels(&mut h);
-        assert_eq!(view(&h).frame().unwrap().pixels_per_point, ppp);
         h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
-        step(&mut h);
         // The renderer finding an edge's stroke at each pixel (Edge11's: which edge it is
-        // changes nothing for the cast), the ray through the pixel's centre decides. By hand:
-        // column n − 1, three quarters inside x = 40, the top; column n, a quarter past it,
-        // nothing (the plain click clears); row m, a quarter inside y = 20, the top; row
-        // m − 1, three quarters past it, nothing.
+        // changes nothing for the cast), the ray through the pixel's centre decides. By hand,
+        // the edges a quarter of a pixel in: column n − 1, three quarters inside x = 40, the
+        // top; column n, a quarter past it, nothing (the plain click clears); row m, a quarter
+        // inside y = 20, the top; row m − 1, three quarters past it, nothing. Then three
+        // quarters in: column n, a quarter inside, the top; column n + 1, three quarters past,
+        // nothing; row m + 1, three quarters inside, the top; row m, a quarter past, nothing (each
+        // click changing the selection, so each is seen decided). Together they hold the cast to between a quarter and three quarters of a pixel in
+        // from the pixel's corner (half a point at two pixels a point is a pixel: past it).
         let (top, none): (&[&str], &[&str]) = (&["k7f2qx3m.box.Face6"], &[]);
-        let pixels = [
-            ([n - 1, row], top),
-            ([n, row], none),
-            ([column, m], top),
-            ([column, m - 1], none),
-        ];
-        for (pixel, want) in pixels {
-            let stroke = Some((1, Edge(11), pixel));
-            answering(&record, stroke, stroke);
-            let at = at_pixel(&h, pixel);
-            assert_eq!(pixel_at(&h, at), pixel);
-            click_canvas(&mut h, at, false);
-            selected_until(&mut h, want);
+        for into in [0.25, 0.75] {
+            let [n, m, column, row] = edges_into_pixels(&mut h, into);
+            assert_eq!(view(&h).frame().unwrap().pixels_per_point, ppp);
+            let pixels = if into == 0.25 {
+                [
+                    ([n - 1, row], top),
+                    ([n, row], none),
+                    ([column, m], top),
+                    ([column, m - 1], none),
+                ]
+            } else {
+                [
+                    ([n, row], top),
+                    ([n + 1, row], none),
+                    ([column, m + 1], top),
+                    ([column, m], none),
+                ]
+            };
+            for (pixel, want) in pixels {
+                let stroke = Some((1, Edge(11), pixel));
+                answering(&record, stroke, stroke);
+                let at = at_pixel(&h, pixel);
+                assert_eq!(pixel_at(&h, at), pixel);
+                click_canvas(&mut h, at, false);
+                selected_until(&mut h, want);
+            }
         }
         assert_eq!(never_waits::waits(), 0);
     }
@@ -37104,6 +37118,53 @@ fn with_edges_filtered_out_a_click_on_a_stroke_waits_for_its_boxes_clearing_noth
     making.release();
     selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
     assert_eq!(making.made_of(&view(&h).bodies()[&1].mesh), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_edges_filtered_out_a_hover_on_a_stroke_waits_for_its_boxes_then_takes_the_face_unmoved() {
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    let making = Arc::new(Making::default());
+    making.hold();
+    let (mut h, record) = box_from_above_made(&f, Some(making.build()));
+    h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
+    let inside = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    let stroke = Some((1, Edge(11), pixel_at(&h, inside)));
+    answering(&record, stroke, stroke);
+    // The pointer on the stroke, the boxes held: nothing hovered.
+    h.hover_at(inside);
+    for _ in 0..10 {
+        step(&mut h);
+        assert_eq!(hover_name(&h), None);
+    }
+    // The boxes made, the pointer never moved: the top hovered.
+    making.release();
+    step_until(&mut h, "the top hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_edges_filtered_out_a_stroke_takes_nothing_where_no_box_can_be_made() {
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    // A build that can't make boxes: their thread ends, and none is ever made.
+    let failing: silico_app::boxes::Build = Arc::new(|_| panic!("no boxes, as for a test"));
+    let (mut h, record) = box_from_above_made(&f, Some(failing));
+    let inside = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    let stroke = Some((1, Edge(11), pixel_at(&h, inside)));
+    answering(&record, stroke, stroke);
+    // Edges picked: the edge.
+    click_canvas(&mut h, inside, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge11"]);
+    // Edges filtered out: no face can be cast for, so the stroke takes nothing and the plain
+    // click clears: it waits only while the thread might make them, not once it's ended.
+    h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
+    step(&mut h);
+    click_canvas(&mut h, inside, false);
+    selected_until(&mut h, &[]);
     assert_eq!(never_waits::waits(), 0);
 }
 
