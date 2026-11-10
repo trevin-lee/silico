@@ -77,7 +77,7 @@ const NEAREST_SCALE_DEPTH: f64 = 1.0 / 1024.0;
 /// eye, which a perspective view doesn't draw.
 pub fn scale_at(camera: &Camera, height: f32, bounds: ([f64; 3], [f64; 3])) -> Option<Scale> {
     let height = f64::from(height);
-    if !(height > 0.0) {
+    if height.is_nan() || height <= 0.0 {
         return None;
     }
     let scale = match camera.projection {
@@ -85,7 +85,7 @@ pub fn scale_at(camera: &Camera, height: f32, bounds: ([f64; 3], [f64; 3])) -> O
         Projection::Perspective { field_of_view } => {
             let towards = sub(camera.target, camera.eye);
             let focus = norm(towards);
-            if !(focus > 0.0) {
+            if focus.is_nan() || focus <= 0.0 {
                 return None;
             }
             let view = towards.map(|c| c / focus);
@@ -104,7 +104,7 @@ pub fn scale_at(camera: &Camera, height: f32, bounds: ([f64; 3], [f64; 3])) -> O
                 .fold((f64::INFINITY, f64::NEG_INFINITY), |(near, far), depth| {
                     (near.min(depth), far.max(depth))
                 });
-            if !(farthest > 0.0) {
+            if farthest.is_nan() || farthest <= 0.0 {
                 return None;
             }
             let depth = nearest.max(focus * NEAREST_SCALE_DEPTH);
@@ -362,7 +362,7 @@ pub fn dashes(polyline: &[[f64; 2]], on: f64, off: f64) -> Vec<Vec<[f64; 2]>> {
     while n < most + 1.0 {
         let start = n * period;
         n += 1.0;
-        if !(start < total) {
+        if start.is_nan() || total.is_nan() || start >= total {
             break;
         }
         let end = (start + on).min(total);

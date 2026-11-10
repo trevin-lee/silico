@@ -39887,11 +39887,13 @@ fn a_shown_sketch_its_plane_doesnt_place_draws_no_lines() {
     // frame (nothing guesses a placement).
     let f = fixture();
     let (mut h, record) = f.drawn("face.silico", ON_A_FACE);
+    // The tab opens a frame or more after the file is asked for.
     step_until(&mut h, "Top read", |h| {
-        h.state().tabs()[0]
-            .sketch_reads
-            .held(&sketch_id("s0000001"))
-            .is_some_and(|held| held.read.plane.is_err())
+        h.state().tabs().first().is_some_and(|tab| {
+            tab.sketch_reads
+                .held(&sketch_id("s0000001"))
+                .is_some_and(|held| held.read.plane.is_err())
+        })
     });
     assert!(shows(&h, "Browser", "Hide Top"));
     for _ in 0..20 {
