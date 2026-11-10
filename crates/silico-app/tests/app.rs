@@ -21675,7 +21675,12 @@ fn four_read(f: &Fixture) -> AppHarness {
     step_until(&mut h, "every sketch read", |h| {
         ["s0000001", "s0000002", "s0000003", "s0000004"]
             .iter()
-            .all(|id| h.state().tabs()[0].sketch_reads.held(&sketch_id(id)).is_some())
+            .all(|id| {
+                h.state().tabs()[0]
+                    .sketch_reads
+                    .held(&sketch_id(id))
+                    .is_some()
+            })
     });
     assert_eq!(h.state().tabs()[0].sketch_reads.reads, 4);
     h
@@ -21776,9 +21781,8 @@ fn a_sketchs_read_is_held_till_the_next_revisions_answers_and_never_lapses_betwe
         })
     };
     let reads_held = |h: &AppHarness| {
-        ids.clone().map(|id| {
-            Arc::clone(&h.state().tabs()[0].sketch_reads.held(&id).unwrap().read)
-        })
+        ids.clone()
+            .map(|id| Arc::clone(&h.state().tabs()[0].sketch_reads.held(&id).unwrap().read))
     };
     let before = revisions(&h);
     assert!(before.iter().all(Option::is_some));
@@ -21799,7 +21803,11 @@ fn a_sketchs_read_is_held_till_the_next_revisions_answers_and_never_lapses_betwe
         step(&mut h);
         assert_eq!(revisions(&h), before);
         let reads = &h.state().tabs()[0].sketch_reads;
-        assert!(reads.reads == 4 && reads.reading().is_none(), "{}", reads.reads);
+        assert!(
+            reads.reads == 4 && reads.reading().is_none(),
+            "{}",
+            reads.reads
+        );
     }
     f.sketches.release();
     step_until(&mut h, "each read again", |h| {
@@ -21810,7 +21818,10 @@ fn a_sketchs_read_is_held_till_the_next_revisions_answers_and_never_lapses_betwe
     });
     assert_eq!(h.state().tabs()[0].sketch_reads.reads, 8);
     let again = reads_held(&h);
-    assert!(!Arc::ptr_eq(&again[1], &first[1]), "Tight's first read held");
+    assert!(
+        !Arc::ptr_eq(&again[1], &first[1]),
+        "Tight's first read held"
+    );
     let distance = again[1]
         .members
         .constraints
@@ -21833,16 +21844,13 @@ fn a_sketch_suppressed_by_another_client_drops_its_read_and_the_rest_keep_theirs
     let f = fixture();
     let mut h = four_read(&f);
     let ids = ["s0000001", "s0000002", "s0000003", "s0000004"].map(sketch_id);
-    let first = ids.clone().map(|id| {
-        Arc::clone(&h.state().tabs()[0].sketch_reads.held(&id).unwrap().read)
-    });
+    let first = ids
+        .clone()
+        .map(|id| Arc::clone(&h.state().tabs()[0].sketch_reads.held(&id).unwrap().read));
     let id = h.state().tabs()[0].id;
-    let theirs = f.sessions.suppress_feature(
-        &id,
-        h.state().tabs()[0].revision,
-        ids[1].clone(),
-        true,
-    );
+    let theirs =
+        f.sessions
+            .suppress_feature(&id, h.state().tabs()[0].revision, ids[1].clone(), true);
     theirs.wait().result.unwrap();
     step_until(&mut h, "each read again", |h| {
         let reads = &h.state().tabs()[0].sketch_reads;
@@ -21881,20 +21889,33 @@ fn a_read_refused_before_it_reaches_a_model_keeps_the_held_one_and_is_sent_again
     let (release, released) = mpsc::channel::<()>();
     let released = Arc::new(Mutex::new(released));
     let (started, starts) = mpsc::channel::<()>();
-    let held: Vec<_> = (0..MAX_PUBLISHED_READS)
-        .map(|_| {
-            let released = Arc::clone(&released);
-            let started = started.clone();
+    let mut held = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    while held.len() < MAX_PUBLISHED_READS {
+        let released = Arc::clone(&released);
+        let started = started.clone();
+        let read =
             f.sessions
                 .read_model(&id, ReadCommand::Check, ModelChoice::Published, move |_| {
                     started.send(()).unwrap();
                     let _ = released.lock().unwrap().recv();
                     Ok(())
-                })
-        })
-        .collect();
-    for _ in 0..MAX_PUBLISHED_READS {
-        starts.recv_timeout(WAIT).unwrap();
+                });
+        match read.try_take() {
+            // Refused at once, while a read of the app's own still runs: tried again.
+            Ok(refused) => {
+                assert!(refused.result.is_err());
+                assert!(
+                    Instant::now() < deadline,
+                    "the session's reads never all held"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(running) => {
+                starts.recv_timeout(WAIT).unwrap();
+                held.push(running);
+            }
+        }
     }
     let theirs = f.sessions.set_field(
         &id,

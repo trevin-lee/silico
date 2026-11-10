@@ -1299,7 +1299,10 @@ impl SketchReads {
                     // unless it's open.
                     if ran
                         && open_id != Some(&id)
-                        && self.open_state.as_ref().is_some_and(|(last, _)| *last == id)
+                        && self
+                            .open_state
+                            .as_ref()
+                            .is_some_and(|(last, _)| *last == id)
                     {
                         self.open_state = None;
                     }
