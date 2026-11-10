@@ -675,7 +675,7 @@ const NOT_MEASURED: &str = "Not measured yet";
 const NOT_BUILT: &str = "Not measured: its feature didn't build";
 
 /// The planar face's button that creates a sketch on it (`selectionProps`' `sketchOnFace`).
-const SKETCH_ON_FACE: &str = "Sketch on this face";
+pub(crate) const SKETCH_ON_FACE: &str = "Sketch on this face";
 
 /// One element selected (`selectionProps`' first view): its head (its kind's icon, its
 /// number in its body's solid, and what it is, on which body); MEASURES, from its entry
