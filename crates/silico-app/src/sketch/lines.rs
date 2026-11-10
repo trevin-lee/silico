@@ -38,7 +38,7 @@ use silico_protocol::vec3::{dot, norm, sub};
 use silico_protocol::{Camera, Projection};
 use silico_render::render::{MAX_FRAME_LINE_POINTS, Strips};
 
-use super::draw::{Curve, Geometry, Scale, fill_scale, polyline};
+use super::draw::{Curve, Geometry, Scale, curve_segments, fill_scale, polyline};
 use super::style::SKETCH_CHORD_TOLERANCE;
 use crate::theme;
 
@@ -127,33 +127,8 @@ pub enum NotDrawn {
 /// [`fill_scale`]'s): each curve sketch mode's polyline, construction dashed, each point
 /// placed by the read's plane. None for a read its plane doesn't place.
 pub fn strips_of(read: &SketchRead, scale: Scale) -> Option<Result<Strips, NotDrawn>> {
-    strips_within(read, scale, MAX_LINE_POINTS).map(|within| match within {
-        Within::Built(built) => built,
-        Within::Past => Err(NotDrawn::TooMany),
-    })
-}
-
-/// What a build of a read's strips within a number of points came to.
-enum Within {
-    /// The strips, or why there are none: past [`MAX_LINE_POINTS`] itself, or refused.
-    Built(Result<Strips, NotDrawn>),
-    /// Past the points it was given, fewer than [`MAX_LINE_POINTS`]: nothing kept, and
-    /// whether the sketch is past its own cap untold.
-    Past,
-}
-
-/// [`strips_of`], stopped once it passes `most` points (at most [`MAX_LINE_POINTS`]), so a
-/// build costs no more than it was given.
-fn strips_within(read: &SketchRead, scale: Scale, most: usize) -> Option<Within> {
     let plane = *read.plane.as_ref().ok()?;
-    let members = &read.members;
-    let construction: BTreeMap<&ElementId, bool> = members
-        .lines
-        .iter()
-        .map(|l| (&l.id, l.construction))
-        .chain(members.circles.iter().map(|c| (&c.id, c.construction)))
-        .chain(members.arcs.iter().map(|a| (&a.id, a.construction)))
-        .collect();
+    let construction = construction_of(read);
     let [dash, gap] = theme::SKETCH_CONSTRUCTION_DASH.map(|points| scale.mm(points));
     let mut polylines: Vec<Vec<[f64; 2]>> = Vec::new();
     let mut points = 0usize;
@@ -167,10 +142,7 @@ fn strips_within(read: &SketchRead, scale: Scale, most: usize) -> Option<Within>
         for piece in pieces {
             points += piece.len();
             if points > MAX_LINE_POINTS {
-                return Some(Within::Built(Err(NotDrawn::TooMany)));
-            }
-            if points > most {
-                return Some(Within::Past);
+                return Some(Err(NotDrawn::TooMany));
             }
             polylines.push(piece);
         }
@@ -179,14 +151,62 @@ fn strips_within(read: &SketchRead, scale: Scale, most: usize) -> Option<Within>
         .into_iter()
         .filter(|piece| piece.len() >= 2)
         .map(|piece| piece.into_iter().map(|at| plane.place(at)).collect());
-    Some(Within::Built(
-        Strips::new(placed).map_err(|refused| NotDrawn::Refused(refused.message)),
-    ))
+    Some(Strips::new(placed).map_err(|refused| NotDrawn::Refused(refused.message)))
 }
+
+/// Whether each of `read`'s curves is construction, by its ID.
+fn construction_of(read: &SketchRead) -> BTreeMap<&ElementId, bool> {
+    let members = &read.members;
+    members
+        .lines
+        .iter()
+        .map(|l| (&l.id, l.construction))
+        .chain(members.circles.iter().map(|c| (&c.id, c.construction)))
+        .chain(members.arcs.iter().map(|a| (&a.id, a.construction)))
+        .collect()
+}
+
+/// How many points [`strips_of`] makes of `read` at `scale`, counted without making them:
+/// a line's 2, a circle's or an arc's its segments and 1 ([`curve_segments`], as
+/// [`polyline`] takes them), a construction curve's its dashes' (cut from its polyline). Past
+/// [`MAX_LINE_POINTS`] it stops, at the first count over it. None for a read its plane
+/// doesn't place.
+fn count_points(read: &SketchRead, scale: Scale) -> Option<usize> {
+    read.plane.as_ref().ok()?;
+    let construction = construction_of(read);
+    let [dash, gap] = theme::SKETCH_CONSTRUCTION_DASH.map(|points| scale.mm(points));
+    let mut points = 0usize;
+    for (id, curve, _) in Geometry::of(read).curves() {
+        points += if construction.get(id).copied().unwrap_or(false) {
+            dashes(&polyline(curve, scale, SKETCH_CHORD_TOLERANCE), dash, gap)
+                .iter()
+                .map(Vec::len)
+                .sum()
+        } else {
+            match curve {
+                Curve::Line { .. } => 2,
+                Curve::Round { radius, sweep, .. } => {
+                    curve_segments(radius, sweep, scale, SKETCH_CHORD_TOLERANCE) + 1
+                }
+            }
+        };
+        if points > MAX_LINE_POINTS {
+            break;
+        }
+    }
+    Some(points)
+}
+
+/// The most points of the shown sketches' lines a frame builds: a quarter of what it may
+/// draw, so lines made again after a zoom are spread over a few frames.
+pub const MAX_FRAME_LINE_BUILD: usize = MAX_FRAME_LINE_POINTS / 4;
+
+// A sketch within its own cap is always built in a frame of its own.
+const _: () = assert!(MAX_LINE_POINTS <= MAX_FRAME_LINE_BUILD);
 
 /// The points a frame may draw of the shown sketches' lines, and may build of them (any
 /// made again after a read or a bucket changed): what [`ShownLines::frame`] gives each
-/// frame, the renderer's most for both.
+/// frame, the renderer's most ([`MAX_FRAME_LINE_POINTS`]) and [`MAX_FRAME_LINE_BUILD`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Budget {
     draw: usize,
@@ -202,11 +222,13 @@ pub struct FrameLines {
 }
 
 /// What was made of a sketch's read: the read (so a replaced one is seen by its `Arc`), its
-/// box ([`box_of`], none for one its plane doesn't place), and, at the bucket they were made
-/// at, the strips or why there are none.
+/// box ([`box_of`], none for one its plane doesn't place), how many points it takes at a
+/// bucket ([`count_points`]), and, at the bucket they were made at, the strips or why there
+/// are none.
 struct Made {
     read: Arc<SketchRead>,
     bounds: Option<([f64; 3], [f64; 3])>,
+    count: Option<(i32, Option<usize>)>,
     strips: Option<(i32, Result<Arc<Strips>, NotDrawn>)>,
 }
 
@@ -280,7 +302,7 @@ impl ShownLines {
     ) -> Vec<FrameLines> {
         let budget = Budget {
             draw: MAX_FRAME_LINE_POINTS,
-            build: MAX_FRAME_LINE_POINTS,
+            build: MAX_FRAME_LINE_BUILD,
         };
         self.frame_within(shown, camera, height, budget)
     }
@@ -318,6 +340,7 @@ impl ShownLines {
                 _ => Made {
                     read: Arc::clone(read),
                     bounds: box_of(read),
+                    count: None,
                     strips: None,
                 },
             };
@@ -333,33 +356,43 @@ impl ShownLines {
                     .as_ref()
                     .is_none_or(|(made_at, _)| *made_at != bucket)
                 {
-                    let most = MAX_LINE_POINTS.min(left).min(build_left);
-                    let within = if most == 0 {
-                        Some(Within::Past)
-                    } else {
-                        strips_within(read, at, most)
+                    // Counted once a read and a bucket, before anything is built.
+                    let count = match made.count {
+                        Some((counted_at, count)) if counted_at == bucket => count,
+                        _ => {
+                            let count = count_points(read, at);
+                            made.count = Some((bucket, count));
+                            count
+                        }
                     };
-                    match within {
+                    match count {
                         None => made.strips = None,
-                        Some(Within::Built(built)) => {
-                            let points = built.as_ref().map_or(most, Strips::points);
+                        Some(count) if count > MAX_LINE_POINTS => {
+                            let why = NotDrawn::TooMany;
+                            tracing::warn!(sketch = %id, ?why, "a shown sketch's lines aren't drawn");
+                            made.strips = Some((bucket, Err(why)));
+                        }
+                        // Past what's left to draw: left out, nothing built or spent.
+                        Some(count) if count > left => {
+                            out = true;
+                            made.strips = None;
+                        }
+                        // Past what's left to build, a frame's build begun: made in a frame
+                        // to come, its old lines drawn meanwhile, if they fit.
+                        Some(count) if count > build_left && build_left < budget.build => {
+                            self.pending = true;
+                        }
+                        Some(_) => {
+                            let built = strips_of(read, at)
+                                .unwrap_or(Err(NotDrawn::TooMany))
+                                .map(Arc::new);
+                            let points = built.as_ref().map_or(0, |strips| strips.points());
                             build_left -= points.min(build_left);
                             self.built += points;
                             if let Err(why) = &built {
                                 tracing::warn!(sketch = %id, ?why, "a shown sketch's lines aren't drawn");
                             }
-                            made.strips = Some((bucket, built.map(Arc::new)));
-                        }
-                        Some(Within::Past) => {
-                            self.built += most;
-                            if left <= build_left {
-                                out = true;
-                                made.strips = None;
-                            } else {
-                                // Its old lines drawn meanwhile, if they fit.
-                                self.pending = true;
-                            }
-                            build_left -= most;
+                            made.strips = Some((bucket, built));
                         }
                     }
                 }
@@ -759,9 +792,9 @@ mod tests {
         // Shown in this order, their IDs not: s0000003, Loose's rectangle (8 points);
         // s0000001, the circle (22); s0000002, one side (2). Within 20 points to draw: the
         // rectangle, not the circle (8 + 22 = 30), the side: [8, 2]. In ID order or reversed
-        // it would be [2, 8]. The circle, left out, keeps no strips, never built past what
-        // was left (12), and is warned of once while it stays out: three frames, one
-        // warning; drawn at 40, then out again at 20, a second.
+        // it would be [2, 8]. The circle, left out, keeps no strips, is never built, and is
+        // warned of once while it stays out: three frames, one warning; drawn at 40, then out
+        // again at 20, a second.
         let fid = |text: &str| FeatureId::new(text).unwrap();
         let (rect, circle, one) = (fid("s0000003"), fid("s0000001"), fid("s0000002"));
         let reads = [Arc::new(loose()), Arc::new(round()), Arc::new(side())];
@@ -777,9 +810,9 @@ mod tests {
                 assert_eq!(points(&drawn), [8, 2]);
                 assert_eq!(lines.capped, BTreeSet::from([circle.clone()]));
                 assert!(lines.made[&circle].strips.is_none(), "none kept for it");
-                // The circle's build stopped at the 12 left, each frame; the rectangle and
-                // the side built the first, and kept.
-                let built = if frame == 0 { 8 + 12 + 2 } else { 12 };
+                // The circle, counted past the 12 left, never built; the rectangle and the
+                // side built the first frame, and kept.
+                let built = if frame == 0 { 8 + 2 } else { 0 };
                 assert_eq!(lines.built, built, "frame {frame}");
             }
         });
@@ -923,8 +956,11 @@ mod tests {
     #[test]
     fn a_frame_draws_and_builds_no_more_than_the_renderers_most() {
         // Eleven sketches of 195 circles of 1 m at 2⁻²⁰ mm a point, each 195 · 1,025 =
-        // 199,875 points: ten fit 2,000,000 (1,998,750); the eleventh, with 1,250 left, is
-        // left out, nothing of it kept.
+        // 199,875 points. At most 500,000 built a frame (MAX_FRAME_LINE_BUILD): two a frame,
+        // the rest left to the frames after, the view asked again meanwhile. Settled: ten
+        // drawn, fitting 2,000,000 (1,998,750); the eleventh, with 1,250 left, out, nothing of
+        // it built or kept.
+        assert_eq!(MAX_FRAME_LINE_BUILD, 500_000);
         let sketch = || {
             let mut sketch = rectangle(Vec::new());
             sketch.lines.clear();
@@ -950,12 +986,85 @@ mod tests {
             ..at_120()
         };
         let mut lines = ShownLines::default();
-        let drawn = lines.frame(ids.iter().zip(&reads), &camera, 800.0);
+        let mut drawn = lines.frame(ids.iter().zip(&reads), &camera, 800.0);
+        assert_eq!(lines.built, 2 * 199_875);
+        let mut frames = 1;
+        while lines.pending() {
+            drawn = lines.frame(ids.iter().zip(&reads), &camera, 800.0);
+            assert!(lines.built <= MAX_FRAME_LINE_BUILD, "{}", lines.built);
+            frames += 1;
+            assert!(frames <= 6, "settled in {frames} frames");
+        }
         assert_eq!(drawn.len(), 10);
         assert!(drawn.iter().all(|line| line.strips.points() == 199_875));
         assert_eq!(lines.capped, BTreeSet::from([ids[10].clone()]));
         assert!(lines.made[&ids[10]].strips.is_none());
-        assert!(lines.built <= MAX_FRAME_LINE_POINTS, "{}", lines.built);
+        lines.frame(ids.iter().zip(&reads), &camera, 800.0);
+        assert_eq!(lines.built, 0);
+    }
+
+    #[test]
+    fn sketches_left_out_dont_starve_one_that_fits() {
+        // 20 points to draw and 20 to build a frame: the rectangle (8), the circle (22), left
+        // out, never built or spent on, and the side (2), which fits what's left of both.
+        // Every frame of ten: [8, 2] drawn, nothing pending, and from the second nothing
+        // built.
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let (rect, circle, one) = (fid("s0000001"), fid("s0000002"), fid("s0000003"));
+        let reads = [Arc::new(loose()), Arc::new(round()), Arc::new(side())];
+        let shown = [(&rect, &reads[0]), (&circle, &reads[1]), (&one, &reads[2])];
+        let budget = Budget {
+            draw: 20,
+            build: 20,
+        };
+        let mut lines = ShownLines::default();
+        for frame in 0..10 {
+            let drawn = lines.frame_within(shown, &at_120(), 800.0, budget);
+            assert_eq!(points(&drawn), [8, 2], "frame {frame}");
+            assert!(!lines.pending(), "frame {frame}");
+            let built = if frame == 0 { 10 } else { 0 };
+            assert_eq!(lines.built, built, "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn a_set_too_big_to_draw_whole_settles_in_a_few_frames_and_then_builds_nothing() {
+        // 100 to draw and 50 to build a frame: the rectangle (8), six circles (22 each), the
+        // side (2). Building two circles' worth a frame, it settles by the third frame: the
+        // rectangle, four circles and the side drawn (98); the last two circles out, never
+        // built. Then frame after frame nothing is built and nothing pending.
+        let ids: Vec<FeatureId> = (1..=8)
+            .map(|k| FeatureId::new(&format!("s{k:07}")).unwrap())
+            .collect();
+        let reads: Vec<Arc<SketchRead>> = std::iter::once(Arc::new(loose()))
+            .chain((0..6).map(|_| Arc::new(round())))
+            .chain(std::iter::once(Arc::new(side())))
+            .collect();
+        let budget = Budget {
+            draw: 100,
+            build: 50,
+        };
+        let mut lines = ShownLines::default();
+        let mut frames = 0;
+        let mut drawn;
+        loop {
+            drawn = lines.frame_within(ids.iter().zip(&reads), &at_120(), 800.0, budget);
+            frames += 1;
+            if !lines.pending() {
+                break;
+            }
+            assert!(frames < 3, "pending after {frames} frames");
+        }
+        assert_eq!(points(&drawn), [8, 22, 22, 22, 22, 2]);
+        assert_eq!(
+            lines.capped,
+            BTreeSet::from([ids[5].clone(), ids[6].clone()])
+        );
+        for _ in 0..3 {
+            lines.frame_within(ids.iter().zip(&reads), &at_120(), 800.0, budget);
+            assert_eq!(lines.built, 0);
+            assert!(!lines.pending());
+        }
     }
 
     #[test]
