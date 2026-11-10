@@ -314,10 +314,12 @@ enum Queued {
     /// if its own edits began the transaction, rolled back, there being nothing before it to
     /// keep).
     /// Sketch mode's Finish or Cancel (`sketch`) does the same, and a Finish fences Redo off
-    /// at the state it ended at, so what sketch mode undid isn't redone past its edits.
+    /// at the state it ended at, so what sketch mode undid isn't redone past its edits. A
+    /// dialog's carries its serial (`dialog`), so its Cancel lands what it unmade.
     Closed {
         ok: bool,
         sketch: bool,
+        dialog: Option<u64>,
     },
     /// Restore (Fable's decision of 2026-11-04, section 2): the text of `revision`, the one
     /// a reload replaced, read (`text` with `revision`), then put back as an edit.
@@ -486,17 +488,21 @@ enum Under {
         running: Running<Committed>,
         then_close: bool,
     },
+    /// A rollback, and what Cancel or revert it lands ([`Tab::land`]) where it answers.
     Rollback {
         running: Running<RolledBack>,
         then_close: bool,
+        lands: Lands,
     },
     /// An undo or a redo, the sketch mode it was asked in, if it was, and whether it's an
-    /// over-defining dimension's Cancel (SD7), whose `conflict` is said as overtaken.
+    /// over-defining dimension's Cancel (SD7), whose `conflict` is said as overtaken; and
+    /// what dialog's Cancel it lands where it answers, if it's one's undo.
     Step {
         running: Running<Stepped>,
         undo: bool,
         sketch: Option<u64>,
         offered: bool,
+        lands: Lands,
     },
     /// A move along the timeline, as it was sent.
     Move {
@@ -697,6 +703,43 @@ pub struct Override {
     pub under: std::collections::BTreeSet<FeatureId>,
 }
 
+/// Where a dialog's Cancel, or a revert, lands: not yet sent, or at the revision its undo
+/// or rollback answered at (the session's then, if it sent none).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Landing {
+    Unsent,
+    At(Revision),
+}
+
+impl Landing {
+    /// Whether a timeline answer at `revision` is from before it lands: every answer is,
+    /// till it's sent.
+    fn after(self, revision: Revision) -> bool {
+        match self {
+            Landing::Unsent => true,
+            Landing::At(at) => revision < at,
+        }
+    }
+}
+
+/// A new feature whose dialog closed without OK, or was dropped: the feature, the dialog's
+/// serial, and where its undo or rollback lands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Unmade {
+    feature: FeatureId,
+    serial: u64,
+    landing: Landing,
+}
+
+/// What an undo or a rollback lands where it answers ([`Tab::land`]): nothing; the Cancel
+/// of the dialog numbered so; or, a revert's, every Cancel and dropped dialog not landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lands {
+    Nothing,
+    Dialog(u64),
+    Everything,
+}
+
 /// What a browser row's eye hides: one of the origin's rows, by its name, or a body or a
 /// sketch, by its feature's ID (so a rename keeps it hidden, and two features of one name
 /// are hidden apart).
@@ -709,14 +752,24 @@ pub enum Hideable {
 /// The browser's rows, worked out once for each timeline read, never each frame.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Browser {
-    pub bodies: Vec<Row>,
-    pub sketches: Vec<Row>,
+    bodies: Vec<Row>,
+    sketches: Vec<Row>,
     /// Each sketch row's ID, and whether a feature is built from it: what a sketch's
     /// default is looked up in ([`shown_by_default`]), worked out with the rows.
     consumed: BTreeMap<FeatureId, bool>,
 }
 
 impl Browser {
+    /// Its bodies' rows, in the timeline's order.
+    pub fn bodies(&self) -> &[Row] {
+        &self.bodies
+    }
+
+    /// Its sketches' rows, in the timeline's order.
+    pub fn sketches(&self) -> &[Row] {
+        &self.sketches
+    }
+
     /// The browser of `bodies` and `sketches`, each sketch's consumers looked up from them.
     pub fn new(bodies: Vec<Row>, sketches: Vec<Row>) -> Browser {
         let consumed = sketches
@@ -898,11 +951,11 @@ pub struct Tab {
     /// gains no sketch a consumer ("a feature the open dialog is making counts from its
     /// OK", decision 29). Dropped at the first answer at or past it, which lists the
     /// feature only if something since (a redo) made it again.
-    unmade: Vec<(FeatureId, Option<Revision>)>,
-    /// An Edit Feature dialog cancelled, with the revision its undo comes to (none till its
-    /// Cancel is sent): no override changes for a timeline answer older than that, as none
-    /// does while the dialog is open ("Edit Feature … drop nothing", decision 29).
-    edit_undone: Option<Option<Revision>>,
+    unmade: Vec<Unmade>,
+    /// An Edit Feature dialog closed without OK (its serial), and where its undo lands: no
+    /// override changes for a timeline answer older than that, as none does while the
+    /// dialog is open ("Edit Feature … drop nothing", decision 29).
+    edit_undone: Option<(u64, Landing)>,
     /// The last refusal a command of the tab's answered, as said to the person, until
     /// their next action (an edit, a save, a revert, a step).
     pub message: Option<String>,
@@ -1296,7 +1349,7 @@ impl Tab {
             .browser
             .bodies
             .iter()
-            .chain(&self.browser.sketches)
+            .chain(self.browser.sketches())
             .filter(|row| !self.shown(&Hideable::Feature(row.id.clone())))
             .map(|row| row.id.clone())
             .collect();
@@ -1675,7 +1728,7 @@ impl Tab {
         self.sketch
             .as_ref()
             .and_then(|mode| mode.sketch.as_ref())
-            .and_then(|id| self.browser.sketches.iter().find(|row| &row.id == id))
+            .and_then(|id| self.browser.sketches().iter().find(|row| &row.id == id))
             .map_or_else(|| "Sketch".to_owned(), |row| row.name.clone())
     }
 
@@ -1908,7 +1961,7 @@ impl Tab {
         self.sketch_reads.poll(
             sessions,
             &self.id,
-            &self.browser.sketches,
+            self.browser.sketches(),
             self.published,
             self.sketch.as_ref(),
             &|id| shown_in(overrides, browser, &Hideable::Feature(id.clone())),
@@ -2044,6 +2097,7 @@ impl Tab {
             self.under.push(Under::Rollback {
                 running: sessions.rollback(&self.id),
                 then_close: false,
+                lands: Lands::Nothing,
             });
         }
         self.advance(sessions);
@@ -2321,8 +2375,10 @@ impl Tab {
             Under::Rollback {
                 running,
                 then_close,
+                lands,
             } => match running.try_take() {
                 Ok(response) => {
+                    self.landed(lands, response.session.as_ref());
                     // Past its revision already: the session's own reload, once the
                     // transaction ended, seen by `status` before this answer was taken
                     // (nothing of the tab's runs while a rollback does, so nothing else
@@ -2344,6 +2400,7 @@ impl Tab {
                 Err(running) => Some(Under::Rollback {
                     running,
                     then_close,
+                    lands,
                 }),
             },
             Under::Step {
@@ -2351,8 +2408,10 @@ impl Tab {
                 undo,
                 sketch,
                 offered,
+                lands,
             } => match running.try_take() {
                 Ok(response) => {
+                    self.landed(lands, response.session.as_ref());
                     self.took_session(&response);
                     // Sketch mode's own step, counted once it's taken: what its Redo may
                     // give back.
@@ -2391,6 +2450,7 @@ impl Tab {
                     undo,
                     sketch,
                     offered,
+                    lands,
                 }),
             },
             Under::Add {
@@ -2401,25 +2461,14 @@ impl Tab {
                 Ok(response) => {
                     self.took_session(&response);
                     self.applied(sending, &response);
-                    let dialog = self
-                        .dialog
-                        .as_mut()
-                        .filter(|dialog| dialog.serial == serial);
                     match response.result {
-                        Ok(added) => {
-                            if let Some(dialog) = dialog {
-                                dialog.added(added.feature.id.clone());
-                                // Selected, so its mark's text is read and the property
-                                // panel shows it; but not over the elements a box of
-                                // names takes from the selection (its mark's text is read
-                                // for the dialog's feature, `read_check`).
-                                if dialog.takes().is_none() {
-                                    self.selection.select_feature(added.feature.id);
-                                }
-                            }
-                        }
+                        Ok(added) => self.add_answered(serial, added.feature.id),
                         Err(problems) => {
-                            if let Some(dialog) = dialog {
+                            if let Some(dialog) = self
+                                .dialog
+                                .as_mut()
+                                .filter(|dialog| dialog.serial == serial)
+                            {
                                 dialog.adding = false;
                             }
                             self.message = Some(said(&problems));
@@ -2552,6 +2601,7 @@ impl Tab {
                                 self.edits.queue.push_front(Queued::Closed {
                                     ok: false,
                                     sketch: true,
+                                    dialog: None,
                                 });
                             }
                         }
@@ -3195,6 +3245,7 @@ impl Tab {
                                 undo: true,
                                 sketch: Some(serial),
                                 offered: true,
+                                lands: Lands::Nothing,
                             });
                         }
                     }
@@ -3236,34 +3287,31 @@ impl Tab {
                         running: sessions.replace_text(&self.id, self.revision, text),
                     });
                 }
-                Queued::Closed { ok, sketch } => {
+                Queued::Closed { ok, sketch, dialog } => {
                     // Every edit sent before it has answered: what a Cancel put back of the
                     // selection is read from the revision its undo or rollback comes to,
                     // past this one, or, if nothing of the dialog's changed the document,
                     // from this one.
                     let undone = self.revision.next().unwrap_or(self.revision);
+                    // What a dialog's Cancel lands (its unmade feature, an Edit Feature's
+                    // freeze): where its undo or rollback answers, or here if it sends none.
+                    let lands = match dialog {
+                        Some(serial) if !ok => Lands::Dialog(serial),
+                        _ => Lands::Nothing,
+                    };
                     let Some(base) = self.dialog_base.take() else {
                         self.read_restored_from(ok, self.revision);
-                        self.cancel_lands(self.revision);
+                        self.land(lands, self.revision);
                         continue;
                     };
                     if !self.transaction {
                         // Nothing of the dialog's changed the document.
                         self.read_restored_from(ok, self.revision);
-                        self.cancel_lands(self.revision);
+                        self.land(lands, self.revision);
                         continue;
                     }
                     let unchanged = self.state_of(base) == self.state_of(self.revision);
                     let rolls_back = (!ok || unchanged) && self.dialog_began;
-                    // A Cancel's undo or rollback comes to the next revision; one that sends
-                    // neither leaves the session's.
-                    if !ok {
-                        self.cancel_lands(if rolls_back || !unchanged {
-                            undone
-                        } else {
-                            self.revision
-                        });
-                    }
                     if sketch && self.sketch_edited && !rolls_back {
                         // What sketch mode undid, or its Cancel discards, stays so: Redo is
                         // off at the state it leaves (Finish's end, or the state Cancel
@@ -3282,10 +3330,12 @@ impl Tab {
                         self.under.push(Under::Rollback {
                             running: sessions.rollback(&self.id),
                             then_close: false,
+                            lands,
                         });
                     } else if unchanged {
                         // Nothing of the dialog's changed the document.
                         self.read_restored_from(ok, self.revision);
+                        self.land(lands, self.revision);
                     } else if ok {
                         self.groups.push(Group {
                             start: self.state_of(base),
@@ -3300,6 +3350,7 @@ impl Tab {
                             sketch: None,
                             undo: true,
                             offered: false,
+                            lands,
                         });
                     }
                 }
@@ -3310,19 +3361,19 @@ impl Tab {
                     }
                 }
                 Queued::Revert { then_close } if !self.transaction && !self.beginning => {
-                    self.cancel_lands(self.revision);
+                    self.land(Lands::Everything, self.revision);
                     if then_close {
                         self.under.push(Under::Close(sessions.close(&self.id)));
                         self.edits.queue.clear();
                     }
                 }
                 Queued::Revert { then_close } => {
-                    self.cancel_lands(self.revision.next().unwrap_or(self.revision));
                     self.supersede_preview();
                     self.record(Sent::Rollback);
                     self.under.push(Under::Rollback {
                         running: sessions.rollback(&self.id),
                         then_close,
+                        lands: Lands::Everything,
                     });
                 }
                 Queued::SaveAs {
@@ -3387,6 +3438,7 @@ impl Tab {
                         undo,
                         sketch,
                         offered: false,
+                        lands: Lands::Nothing,
                     });
                 }
             }
@@ -3713,7 +3765,7 @@ impl Tab {
         self.browser
             .bodies
             .iter()
-            .chain(&self.browser.sketches)
+            .chain(self.browser.sketches())
             .any(|row| &row.id == id)
     }
 
@@ -3763,7 +3815,7 @@ impl Tab {
         // The document goes back to the file's: a dialog or a sketch open on it has nothing
         // to edit.
         let dropped = self.dialog.take();
-        self.unmake(dropped.as_ref());
+        self.dropped(dropped.as_ref());
         self.loading = None;
         self.leave_drag();
         self.sketch = None;
@@ -4394,7 +4446,7 @@ impl Tab {
 
     /// Whether the timeline lists a sketch of ID `id`.
     fn is_sketch(&self, id: &FeatureId) -> bool {
-        self.browser.sketches.iter().any(|row| &row.id == id)
+        self.browser.sketches().iter().any(|row| &row.id == id)
     }
 
     /// Whether `what`'s row shows (its eye open): its override if it has one, else its
@@ -4444,21 +4496,37 @@ impl Tab {
             .filter(|dialog| dialog.made)
             .and_then(|dialog| dialog.feature.as_ref())
             .into_iter()
-            .chain(self.unmade.iter().map(|(feature, _)| feature))
+            .chain(self.unmade.iter().map(|unmade| &unmade.feature))
             .collect()
     }
 
-    /// Where a dialog's Cancel lands, `at` (the revision its undo or rollback comes to, or
-    /// the session's now if it sends none): each feature it unmade, and an Edit Feature's
-    /// cancel, kept from answers older than it.
-    fn cancel_lands(&mut self, at: Revision) {
-        for (_, landed) in &mut self.unmade {
-            if landed.is_none() {
-                *landed = Some(at);
+    /// What `lands` names landed where an undo's or rollback's answer, of `session`, says the
+    /// session came to: its revision then, never one guessed ahead (another client's edit
+    /// may come between), or the tab's own for an answer naming no session.
+    fn landed(&mut self, lands: Lands, session: Option<&SessionInfo>) {
+        let at = session.map_or(self.revision, |session| session.revision);
+        self.land(lands, at);
+    }
+
+    /// What `lands` names landed at `at`, the revision its undo or rollback answered at (or
+    /// the session's, if it sent none): a dialog's Cancel, its unmade features and its Edit
+    /// Feature's freeze; a revert, every one not landed yet (it undoes them all). Each is
+    /// then kept from answers older than `at` only.
+    fn land(&mut self, lands: Lands, at: Revision) {
+        let of = |serial: u64| match lands {
+            Lands::Nothing => false,
+            Lands::Dialog(landing) => serial == landing,
+            Lands::Everything => true,
+        };
+        for unmade in &mut self.unmade {
+            if unmade.landing == Landing::Unsent && of(unmade.serial) {
+                unmade.landing = Landing::At(at);
             }
         }
-        if let Some(landed @ None) = &mut self.edit_undone {
-            *landed = Some(at);
+        if let Some((serial, landing @ Landing::Unsent)) = &mut self.edit_undone
+            && of(*serial)
+        {
+            *landing = Landing::At(at);
         }
     }
 
@@ -4476,10 +4544,9 @@ impl Tab {
             return;
         };
         let at = timeline.revision;
-        self.unmade
-            .retain(|(_, landed)| landed.is_none_or(|landed| at < landed));
+        self.unmade.retain(|unmade| unmade.landing.after(at));
         let edit_undone = match self.edit_undone {
-            Some(Some(landed)) if at >= landed => {
+            Some((_, landing)) if !landing.after(at) => {
                 self.edit_undone = None;
                 false
             }
@@ -4492,7 +4559,7 @@ impl Tab {
         if editing || edit_undone {
             return;
         }
-        for row in &self.browser.sketches {
+        for row in self.browser.sketches() {
             let what = Hideable::Feature(row.id.clone());
             let gained = self
                 .overrides
@@ -4522,7 +4589,7 @@ impl Tab {
             .browser
             .bodies
             .iter()
-            .chain(&self.browser.sketches)
+            .chain(self.browser.sketches())
             .any(|row| row.id == id);
         if listed {
             self.toggle_shown(Hideable::Feature(id));
@@ -4549,7 +4616,7 @@ impl Tab {
     /// combine, as the browser lists them (the bodies it could pick). An existing boolean's
     /// Edit Feature needs none: it consumes the bodies it combines.
     pub fn can_create(&self, kind: Kind) -> bool {
-        self.can_open(kind) && (!kind.combines() || self.browser.bodies.len() >= 2)
+        self.can_open(kind) && (!kind.combines() || self.browser.bodies().len() >= 2)
     }
 
     /// Why a new feature's dialog of `kind` can't open, if it's for want of what the
@@ -4561,7 +4628,7 @@ impl Tab {
         if timeline.problems > 0 {
             return Some(UNMENDED);
         }
-        (kind.combines() && self.browser.bodies.len() < 2).then_some(NEEDS_TWO_BODIES)
+        (kind.combines() && self.browser.bodies().len() < 2).then_some(NEEDS_TWO_BODIES)
     }
 
     /// A new feature's dialog opened (section 9): its inputs at their defaults, or those its
@@ -4639,7 +4706,7 @@ impl Tab {
             if let crate::selection::Item::Feature(id) = item
                 && bodies.len() < 2
                 && !bodies.contains(id)
-                && self.browser.bodies.iter().any(|row| &row.id == id)
+                && self.browser.bodies().iter().any(|row| &row.id == id)
             {
                 bodies.push(id.clone());
             }
@@ -5147,6 +5214,7 @@ impl Tab {
         if closed.is_none() && self.loading.take().is_none() {
             return;
         }
+        let serial = closed.as_ref().map(|closed| closed.serial);
         let before = self.before_dialog.take();
         if ok {
             self.oked = closed;
@@ -5154,31 +5222,65 @@ impl Tab {
             // too, its new sketch's override dropped.
             self.rebrowse();
         } else {
-            self.unmake(closed.as_ref());
-            if closed.as_ref().is_some_and(|closed| !closed.made) {
-                self.edit_undone = Some(None);
-            }
+            self.dropped(closed.as_ref());
             if let Some(items) = before {
                 self.selection.restore(items);
             }
         }
-        self.edits
-            .queue
-            .push_back(Queued::Closed { ok, sketch: false });
+        self.edits.queue.push_back(Queued::Closed {
+            ok,
+            sketch: false,
+            dialog: serial,
+        });
         self.advance(sessions);
     }
 
-    /// `dialog`, closed without OK, its feature (if it made one) undone or rolled back:
-    /// counted as no sketch's consumer in an answer older than where its Cancel lands
-    /// ([`cancel_lands`](Self::cancel_lands)), so a read answered before the undo gains its
-    /// sketch nothing.
-    fn unmake(&mut self, dialog: Option<&Dialog>) {
-        if let Some(feature) = dialog
-            .filter(|dialog| dialog.made)
-            .and_then(|dialog| dialog.feature.clone())
-            && !self.unmade.iter().any(|(unmade, _)| *unmade == feature)
+    /// `dialog`, closed without OK or dropped by a revert, its edits undone or rolled back:
+    /// a new feature's, if its add has answered, counted as no sketch's consumer in an
+    /// answer older than where that lands ([`land`](Self::land)), so a read answered before
+    /// the undo gains its sketch nothing; an Edit Feature's, no override changed till then.
+    fn dropped(&mut self, dialog: Option<&Dialog>) {
+        let Some(dialog) = dialog else {
+            return;
+        };
+        if !dialog.made {
+            self.edit_undone = Some((dialog.serial, Landing::Unsent));
+        } else if let Some(feature) = dialog.feature.clone() {
+            self.add_outlived(dialog.serial, feature);
+        }
+    }
+
+    /// The add of the dialog numbered `serial` answered, making `feature`: the dialog's own,
+    /// if it's still open, and selected, so its mark's text is read and the property panel
+    /// shows it (but not over the elements a box of names takes from the selection, whose
+    /// mark's text is read for the dialog's feature, `read_check`); or, its dialog closed
+    /// before it answered, unmade ([`add_outlived`](Self::add_outlived)).
+    fn add_answered(&mut self, serial: u64, feature: FeatureId) {
+        match self
+            .dialog
+            .as_mut()
+            .filter(|dialog| dialog.serial == serial)
         {
-            self.unmade.push((feature, None));
+            Some(dialog) => {
+                dialog.added(feature.clone());
+                if dialog.takes().is_none() {
+                    self.selection.select_feature(feature);
+                }
+            }
+            None => self.add_outlived(serial, feature),
+        }
+    }
+
+    /// `feature`, added by the dialog numbered `serial`, which is closed without OK or
+    /// dropped (before or after its add answered): unmade, till where that dialog's Cancel,
+    /// or a revert, lands.
+    fn add_outlived(&mut self, serial: u64, feature: FeatureId) {
+        if !self.unmade.iter().any(|unmade| unmade.feature == feature) {
+            self.unmade.push(Unmade {
+                feature,
+                serial,
+                landing: Landing::Unsent,
+            });
         }
     }
 
@@ -5256,7 +5358,7 @@ impl Tab {
             return;
         }
         // SolidWorks' and Fusion's names: Sketch1, Sketch2, and on.
-        let name = format!("Sketch{}", self.browser.sketches.len() + 1);
+        let name = format!("Sketch{}", self.browser.sketches().len() + 1);
         let text = format!(
             r#"{{"type": "sketch", "name": {}, "plane": {plane}, "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}}"#,
             quoted(&name)
@@ -5315,9 +5417,11 @@ impl Tab {
         self.leave_drag();
         self.sketch = None;
         self.drive_drag(sessions);
-        self.edits
-            .queue
-            .push_back(Queued::Closed { ok, sketch: true });
+        self.edits.queue.push_back(Queued::Closed {
+            ok,
+            sketch: true,
+            dialog: None,
+        });
         self.advance(sessions);
     }
 
@@ -5625,7 +5729,7 @@ impl Tab {
         if !dialog.takes_bodies() {
             return false;
         }
-        let is_body = self.browser.bodies.iter().any(|row| &row.id == id);
+        let is_body = self.browser.bodies().iter().any(|row| &row.id == id);
         let entries = self
             .timeline
             .as_ref()
@@ -6040,7 +6144,7 @@ pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId]) -> Browser {
 /// `what`'s sketch row in `browser`, if it's a sketch's and the browser lists it.
 fn sketch_row<'a>(browser: &'a Browser, what: &Hideable) -> Option<&'a Row> {
     match what {
-        Hideable::Feature(id) => browser.sketches.iter().find(|row| &row.id == id),
+        Hideable::Feature(id) => browser.sketches().iter().find(|row| &row.id == id),
         Hideable::Origin(_) => None,
     }
 }
@@ -6806,28 +6910,33 @@ mod tests {
         tab.dialog = Some(making.clone());
         take_at(&mut tab, at(2), vec![sketch(), pad(false), cut()]);
         tab.dialog = None;
-        tab.unmake(Some(&making));
+        tab.dropped(Some(&making));
         take_at(&mut tab, at(2), vec![sketch(), pad(false), cut()]);
         assert!(tab.shown(&s1), "its Cancel unsent: a stale read");
-        tab.cancel_lands(at(3));
+        tab.land(Lands::Dialog(1), at(3));
         take_at(&mut tab, at(2), vec![sketch(), pad(false), cut()]);
         assert!(tab.shown(&s1), "older than its undo: a stale read");
         assert_eq!(tab.unmade.len(), 1);
         take_at(&mut tab, at(4), vec![sketch(), pad(false), cut()]);
         assert!(!tab.shown(&s1), "redone past its undo: a gain");
         assert!(tab.unmade.is_empty());
-        // Two cancelled, c1 then c2, neither undo read yet: a stale read listing either
-        // gains nothing; each counts again from where its own undo lands.
+        // Two cancelled, c1 (dialog 1) then c2 (dialog 2), neither undo read yet: a stale
+        // read listing either gains nothing; each lands only by its own dialog's Cancel, and
+        // counts again from where that lands.
         let c2 = || feature("c0000002", "pocket", false, &["p0000001", "s0000001"]);
-        let mut second = Dialog::new(Kind::Pocket, Some(id("s0000001")), 1);
+        let mut second = Dialog::new(Kind::Pocket, Some(id("s0000001")), 2);
         second.feature = Some(id("c0000002"));
         let mut tab = self::tab();
         take_at(&mut tab, at(1), vec![sketch(), pad(false)]);
         tab.toggle_shown(s1.clone());
-        tab.unmake(Some(&making));
-        tab.cancel_lands(at(3));
-        tab.unmake(Some(&second));
-        tab.cancel_lands(at(5));
+        tab.dropped(Some(&making));
+        tab.dropped(Some(&second));
+        tab.land(Lands::Dialog(1), at(3));
+        let landings = |tab: &Tab| -> Vec<Landing> {
+            tab.unmade.iter().map(|unmade| unmade.landing).collect()
+        };
+        assert_eq!(landings(&tab), [Landing::At(at(3)), Landing::Unsent]);
+        tab.land(Lands::Dialog(2), at(5));
         take_at(&mut tab, at(2), vec![sketch(), pad(false), cut()]);
         assert!(tab.shown(&s1), "c1's stale read");
         take_at(&mut tab, at(4), vec![sketch(), pad(false), c2()]);
@@ -6841,6 +6950,120 @@ mod tests {
         tab.toggle_shown(body.clone());
         take(&mut tab, vec![sketch(), pad(true), cut()]);
         assert!(!tab.shown(&body));
+    }
+
+    #[test]
+    fn an_edit_feature_dialog_and_its_cancel_till_its_undo_change_no_override() {
+        // Decision 29, "Edit Feature … drop nothing": s1 shown by its eye, p1 built from it.
+        // An Edit Feature dialog (made: false) moves p1 onto s2: s1's override, and its
+        // consumers p1, kept. Closed, its Cancel unsent, then landing at 3: a read at 2 of the
+        // moved state changes nothing still. At 3, p1 back on s1: kept, the freeze ended.
+        let id = |text: &str| FeatureId::new(text).unwrap();
+        let s1 = Hideable::Feature(id("s0000001"));
+        let at = |n: u64| (1..n).fold(Revision::OPENED, |r, _| r.next().unwrap());
+        let sketch = |name: &str| feature(name, "sketch", false, &[]);
+        let pad_of = |of: &str| feature("p0000001", "pad", false, &[of]);
+        let take_at = |tab: &mut Tab, revision: Revision, features: Vec<Entry>| {
+            tab.timeline = Some(TimelineAnswer {
+                revision,
+                bodies: vec![id("p0000001")],
+                ..timeline(0, None, features)
+            });
+            tab.rebrowse();
+        };
+        let kept = |tab: &Tab| {
+            tab.overrides
+                .get(&s1)
+                .map(|kept| (kept.shown, kept.under.clone()))
+                == Some((true, std::collections::BTreeSet::from([id("p0000001")])))
+        };
+        let moved = || vec![sketch("s0000001"), sketch("s0000002"), pad_of("s0000002")];
+        let mut tab = tab();
+        take_at(
+            &mut tab,
+            at(1),
+            vec![sketch("s0000001"), pad_of("s0000001")],
+        );
+        tab.toggle_shown(s1.clone());
+        assert!(kept(&tab));
+        let mut editing = Dialog::new(Kind::Pad, Some(id("s0000001")), 3);
+        editing.made = false;
+        editing.feature = Some(id("p0000001"));
+        tab.dialog = Some(editing.clone());
+        take_at(&mut tab, at(2), moved());
+        assert!(kept(&tab), "while the dialog is open");
+        tab.dialog = None;
+        tab.dropped(Some(&editing));
+        assert_eq!(tab.edit_undone, Some((3, Landing::Unsent)));
+        take_at(&mut tab, at(2), moved());
+        assert!(kept(&tab), "its Cancel unsent");
+        tab.land(Lands::Dialog(3), at(3));
+        take_at(&mut tab, at(2), moved());
+        assert!(kept(&tab), "older than its undo");
+        assert_eq!(tab.edit_undone, Some((3, Landing::At(at(3)))));
+        take_at(
+            &mut tab,
+            at(3),
+            vec![sketch("s0000001"), pad_of("s0000001")],
+        );
+        assert!(kept(&tab), "back where it was");
+        assert_eq!(tab.edit_undone, None);
+        assert!(tab.shown(&s1));
+    }
+
+    #[test]
+    fn a_cancel_lands_where_its_undo_answered_and_only_its_own_dialogs() {
+        // Dialog 4's add answered after it closed (Cancel before the add's answer): c1 unmade,
+        // unsent. Dialog 6 still open: its add's answer is its own. Dialog 4's undo answered
+        // with the session at 5, though the tab was at 2 (another client's edit at 3 came
+        // between): it lands at 5, not 3, and dialog 6's nothing. A revert lands every one
+        // left; an answer naming no session lands at the tab's revision.
+        let id = |text: &str| FeatureId::new(text).unwrap();
+        let at = |n: u64| (1..n).fold(Revision::OPENED, |r, _| r.next().unwrap());
+        let info = |revision: Revision| SessionInfo {
+            id: SessionId::parse("s1").unwrap(),
+            path: None,
+            revision,
+            transaction: true,
+            reloaded: false,
+        };
+        let mut tab = tab();
+        tab.revision = at(2);
+        tab.add_answered(4, id("c0000001"));
+        let open = Dialog::new(Kind::Pocket, Some(id("s0000001")), 6);
+        tab.dialog = Some(open);
+        tab.add_answered(6, id("c0000002"));
+        assert_eq!(
+            tab.dialog
+                .as_ref()
+                .and_then(|dialog| dialog.feature.clone()),
+            Some(id("c0000002"))
+        );
+        assert_eq!(
+            tab.unmade,
+            [Unmade {
+                feature: id("c0000001"),
+                serial: 4,
+                landing: Landing::Unsent,
+            }]
+        );
+        tab.add_answered(4, id("c0000001"));
+        assert_eq!(tab.unmade.len(), 1, "once");
+        tab.dialog = None;
+        tab.dropped(Some(&{
+            let mut made = Dialog::new(Kind::Pocket, Some(id("s0000001")), 6);
+            made.feature = Some(id("c0000002"));
+            made
+        }));
+        tab.landed(Lands::Dialog(4), Some(&info(at(5))));
+        let landings = |tab: &Tab| -> Vec<Landing> {
+            tab.unmade.iter().map(|unmade| unmade.landing).collect()
+        };
+        assert_eq!(landings(&tab), [Landing::At(at(5)), Landing::Unsent]);
+        tab.landed(Lands::Nothing, Some(&info(at(7))));
+        assert_eq!(landings(&tab), [Landing::At(at(5)), Landing::Unsent]);
+        tab.landed(Lands::Everything, None);
+        assert_eq!(landings(&tab), [Landing::At(at(5)), Landing::At(at(2))]);
     }
 
     #[test]
@@ -6990,10 +7213,10 @@ mod tests {
         });
         assert_eq!(tab.why_closed(Kind::Union), Some(NEEDS_TWO_BODIES));
         assert_eq!(tab.why_closed(Kind::Box), None);
-        tab.browser.bodies = vec![row("aaaaaaaa")];
+        tab.browser = Browser::new(vec![row("aaaaaaaa")], Vec::new());
         assert_eq!(tab.why_closed(Kind::Subtract), Some(NEEDS_TWO_BODIES));
         assert_eq!(tab.why_closed(Kind::Box), None);
-        tab.browser.bodies.push(row("bbbbbbbb"));
+        tab.browser = Browser::new(vec![row("aaaaaaaa"), row("bbbbbbbb")], Vec::new());
         assert_eq!(tab.why_closed(Kind::Union), None, "two bodies are enough");
         tab.timeline.as_mut().unwrap().problems = 1;
         assert_eq!(tab.why_closed(Kind::Union), Some(UNMENDED));
@@ -7063,6 +7286,7 @@ mod tests {
         tab.edits.queue.push_back(Queued::Closed {
             ok: false,
             sketch: false,
+            dialog: None,
         });
         tab.read_restored_from(false, three);
         tab.selection.published(unnamed(), 2);
@@ -8480,7 +8704,10 @@ mod tests {
             suppressed: false,
         };
         let mut tab = tab();
-        tab.browser.sketches = vec![row("s0000001", "Loose"), row("s0000002", "Tight")];
+        tab.browser = Browser::new(
+            Vec::new(),
+            vec![row("s0000001", "Loose"), row("s0000002", "Tight")],
+        );
         // Edit Sketch on the second: its own row's name, never the other's.
         tab.sketch = Some(SketchMode::new(
             1,

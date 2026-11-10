@@ -21880,7 +21880,7 @@ fn a_sketch_suppressed_by_another_client_drops_its_read_and_the_rest_keep_theirs
         reads.reads == 8 && reads.reading().is_none()
     });
     let tab = &h.state().tabs()[0];
-    assert!(tab.browser.sketches.iter().any(|row| row.id == ids[1]));
+    assert!(tab.browser.sketches().iter().any(|row| row.id == ids[1]));
     let reads = &tab.sketch_reads;
     assert!(reads.held(&ids[1]).is_none());
     assert_eq!(reads.state(&ids[1]), None);
@@ -32768,7 +32768,7 @@ fn a_union_takes_two_bodies_clicked_in_the_canvas_and_ok_writes_a_fuse_of_them()
     step_until(&mut h, "one body", |h| {
         h.state().tabs()[0]
             .browser
-            .bodies
+            .bodies()
             .iter()
             .map(|row| row.id.to_string())
             .collect::<Vec<_>>()
@@ -33601,7 +33601,7 @@ fn the_booleans_are_off_with_one_body_saying_why_and_on_with_two() {
         let (mut h, _) = f.drawn("part.silico", text);
         meshes_settled(&mut h);
         step_until(&mut h, "the browser's bodies", |h| {
-            !h.state().tabs()[0].browser.bodies.is_empty()
+            !h.state().tabs()[0].browser.bodies().is_empty()
         });
         for kind in ["Union", "Subtract", "Intersect"] {
             let off = h
@@ -39704,17 +39704,22 @@ fn sketch_mode_drops_nothing_and_an_absorbed_sketch_edited_stays_hidden() {
     }
     // A new sketch cancelled was never listed: no new row, the eyes as they were. One
     // finished is listed with nothing built from it: shown.
-    let rows = h.state().tabs()[0].browser.sketches.len();
+    let rows = h.state().tabs()[0].browser.sketches().len();
     create_sketch(&mut h, "XY plane");
     leave_sketch(&mut h, false);
-    assert_eq!(h.state().tabs()[0].browser.sketches.len(), rows);
+    assert_eq!(h.state().tabs()[0].browser.sketches().len(), rows);
     assert!(kept(&h), "a new sketch cancelled");
     create_sketch(&mut h, "XY plane");
     leave_sketch(&mut h, true);
     step_until(&mut h, "the new sketch listed", |h| {
-        h.state().tabs()[0].browser.sketches.len() == rows + 1
+        h.state().tabs()[0].browser.sketches().len() == rows + 1
     });
-    let new = h.state().tabs()[0].browser.sketches.last().unwrap().clone();
+    let new = h.state().tabs()[0]
+        .browser
+        .sketches()
+        .last()
+        .unwrap()
+        .clone();
     assert!(new.consumers.is_empty());
     assert!(eye_says(&h, "Hide", &new.name), "{}", new.name);
     assert!(kept(&h), "a new sketch finished");
