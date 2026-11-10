@@ -11,6 +11,9 @@
 # Re-runs the sourcing script ("$0", with its arguments) holding the lock, so source it
 # before anything with side effects.
 
+# shellcheck source=tests/lane-caches.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lane-caches.sh"
+
 root=$(git rev-parse --show-toplevel)
 commit=$(git -C "$root" rev-parse --verify "${SILICO_TREE_COMMIT:-HEAD}^{commit}")
 checkout_id=$(printf '%s' "$root" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)
@@ -70,6 +73,9 @@ fi
 # their own, in target-filler/, so no build evicts or invalidates another).
 # target/occt stays in target/: the build scripts find OCCT there.
 target=${SILICO_TARGET:-target}
+# Another lane's cache this checkout hasn't built in a week goes (tests/lane-caches.sh): its
+# runner's labels no longer take that lane.
+prune_stale_lanes "$tree" "$target" "${SILICO_STALE_LANE_DAYS:-7}"
 target_limit_gib=${SILICO_TARGET_LIMIT_GIB:-30}
 # $target/debug keeps a copy of each crate for each set of dependencies and features it was
 # built with (each branch's Cargo.lock, cargo-mutants' baselines of a few packages), and
