@@ -6310,3 +6310,105 @@ fn a_line_along_an_edge_as_near_the_eye_as_its_pick_leaves_the_edge_picked() {
         },
     );
 }
+
+// ---- Strips' own reads, and the frame's log of its lines (#449's mutants) ----
+
+#[test]
+fn strips_say_whether_they_hold_none_and_print_their_counts_and_box_not_their_points() {
+    let none = super::Strips::new(Vec::<Vec<[f64; 3]>>::new()).unwrap();
+    assert!(none.is_empty());
+    assert_eq!(
+        format!("{none:?}"),
+        "Strips { strips: 0, points: 0, bounds: None }"
+    );
+    // Five points over two strips, their box (0, 0, 0) to (4, 2, 1); the middle point's 1.25
+    // and 0.5, no corner of it, aren't printed.
+    let two = super::Strips::new([
+        vec![[0.0, 0.0, 0.0], [1.25, 2.0, 0.5], [4.0, 0.0, 1.0]],
+        vec![[0.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+    ])
+    .unwrap();
+    assert!(!two.is_empty());
+    assert_eq!(
+        format!("{two:?}"),
+        "Strips { strips: 2, points: 5, bounds: Some(([0.0, 0.0, 0.0], [4.0, 2.0, 1.0])) }"
+    );
+}
+
+/// The `sets` and `strips` of each `lines` event `f` logs, in order.
+fn lines_events(f: impl FnOnce()) -> Vec<(u64, u64)> {
+    use std::sync::Mutex;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+
+    #[derive(Default)]
+    struct Fields {
+        message: String,
+        sets: Option<u64>,
+        strips: Option<u64>,
+    }
+    impl tracing::field::Visit for Fields {
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            match field.name() {
+                "sets" => self.sets = Some(value),
+                "strips" => self.strips = Some(value),
+                _ => {}
+            }
+        }
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = format!("{value:?}");
+            }
+        }
+    }
+    struct Events(Arc<Mutex<Vec<(u64, u64)>>>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Events {
+        fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            if fields.message == "lines" {
+                self.0.lock().unwrap().push((
+                    fields.sets.unwrap_or(u64::MAX),
+                    fields.strips.unwrap_or(u64::MAX),
+                ));
+            }
+        }
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::registry().with(Events(Arc::clone(&seen)));
+    tracing::subscriber::with_default(subscriber, f);
+    seen.lock().unwrap().clone()
+}
+
+#[test]
+fn a_frames_lines_are_logged_by_their_sets_and_the_strips_drawn_of_them() {
+    on_lavapipe(
+        "render::frame_tests::a_frames_lines_are_logged_by_their_sets_and_the_strips_drawn_of_them",
+        |r| {
+            // Two sets: the first a strip on the front face and one from x = 300 to 310, off
+            // the view (58.67 mm wide about x = 21, so x −8.33 to 50.33), which isn't drawn;
+            // the second a strip on the face. Logged once: 2 sets, 2 strips drawn. A frame of
+            // no lines logs none.
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let first = super::Strips::new([
+                vec![[2.0, 0.0, ROW_26_Z], [38.0, 0.0, ROW_26_Z]],
+                vec![[300.0, 0.0, ROW_26_Z], [310.0, 0.0, ROW_26_Z]],
+            ])
+            .unwrap();
+            let second = line_at(0.0, 2.0);
+            let lines = [magenta(&first), magenta(&second)];
+            let logged = lines_events(|| {
+                draw(
+                    r,
+                    &Frame {
+                        lines: &lines,
+                        ..frame(&camera, &[1], &[], None)
+                    },
+                );
+            });
+            assert_eq!(logged, [(2, 2)]);
+            let none = lines_events(|| draw(r, &frame(&camera, &[1], &[], None)));
+            assert!(none.is_empty(), "{none:?}");
+        },
+    );
+}
