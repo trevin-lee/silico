@@ -305,10 +305,11 @@ pub struct Frame<'a> {
     pub background: Option<[u8; 3]>,
     /// Lines drawn among the bodies and picked by nothing (the app's shown sketches): each a
     /// set of strips in the document's coordinates, in its colour and width. Placed in the
-    /// view in f64 each frame as edges are, and drawn after every body's edges at the edges'
-    /// depth offset, so they're depth-tested among the bodies as an edge is (a line on a face
-    /// shows on it, one behind a body is hidden by it) and drawn over an edge they coincide
-    /// with. They go into the picking layer as the background (object 0), which a pick passes
+    /// view in f64 each frame as edges are, moved toward the eye as a drawn edge is by the
+    /// reach their width takes, and drawn after every body's edges at the edges' depth
+    /// offset, so they're depth-tested among the bodies as an edge is (a line on a face shows
+    /// on it whole, from any side, one behind a body is hidden by it) and drawn over an edge
+    /// they coincide with. At most [`MAX_FRAME_LINE_POINTS`] points over all of them. They go into the picking layer as the background (object 0), which a pick passes
     /// over: a face under a line's stroke is found from the pixels beside it. An orthographic
     /// view's reach, which its near and far planes are set from, takes their boxes as it
     /// takes a body's, so lines with no body are drawn too.
@@ -317,6 +318,12 @@ pub struct Frame<'a> {
 
 /// The widest a frame's [`Lines`] may be, in points: well past an edge's widest, 4.
 pub const MAX_LINE_WIDTH: f32 = 64.0;
+
+/// The most points a frame's [`Lines`] may have over all their sets, as a render's meshes
+/// may have at most `MAX_RENDER_TRIANGLES`: each is placed in f64 and uploaded every frame,
+/// on the caller's thread, and past `re_renderer`'s data texture its vertices would be
+/// dropped with only a log line, the edges' picking strips after them first.
+pub const MAX_FRAME_LINE_POINTS: usize = 2_000_000;
 
 /// One set of a frame's lines ([`Frame::lines`]): its strips, its colour (sRGB, opaque: its
 /// alpha 255), and its width in points (above 0, at most [`MAX_LINE_WIDTH`]).
@@ -995,6 +1002,15 @@ impl Renderer {
                 parameter: "picking",
                 message: format!(
                     "picking {rect:?} must be from 1 to {MAX_PICKING_SIDE} pixels on each side, its corner within {MAX_PICKING_OFFSET} of the frame's"
+                ),
+            });
+        }
+        let points: usize = frame.lines.iter().map(|set| set.strips.points()).sum();
+        if points > MAX_FRAME_LINE_POINTS {
+            return Err(InvalidParameter {
+                parameter: "lines",
+                message: format!(
+                    "lines have {points} points over their sets, more than a frame's {MAX_FRAME_LINE_POINTS}"
                 ),
             });
         }
@@ -3277,7 +3293,14 @@ fn edge_fraction(rows: u32) -> f64 {
 /// edge doesn't hide it (0.239 mm in a view 100 mm high on 800 rows), and an edge going
 /// behind a face shows a stub where it's within `R` of it.
 fn drawn_edge_fraction(rows: u32, pixels_per_point: f32) -> f64 {
-    let half = f64::from(EDGE_WIDTH) / 2.0 * f64::from(pixels_per_point);
+    drawn_stroke_fraction(rows, EDGE_WIDTH, pixels_per_point)
+}
+
+/// [`drawn_edge_fraction`]'s rule for a stroke `width` points wide: a frame's line, drawn
+/// over a face it lies on or along an edge as an edge is, moved toward the eye by the reach
+/// that draws its stroke whole there, held to an edge's picking reach as an edge's is.
+fn drawn_stroke_fraction(rows: u32, width: f32, pixels_per_point: f32) -> f64 {
+    let half = f64::from(width) / 2.0 * f64::from(pixels_per_point);
     let pixels = DRAWN_EDGE_SLOPE * half + MESH_SAGITTA_PIXELS;
     (pixels / f64::from(rows)).min(edge_fraction(rows))
 }
@@ -3810,9 +3833,15 @@ fn edges(
 /// ([`add_edge_strips`]: each point about the camera in f64, [`View::about_camera`]; each
 /// strip whose box the frustum its stroke reaches the image from leaves out not placed, and
 /// one crossing a perspective view's pyramid cut to it), in the set's colour and width, at
-/// [`EDGE_DEPTH_OFFSET`]. Its picking ID is the background's, object 0 and instance 0:
-/// `re_renderer` draws every line into the picking layer, and a pick passes over that ID
-/// ([`PendingPick::nearest`]), so a line is picked by nothing. How many strips it drew.
+/// [`EDGE_DEPTH_OFFSET`]. Each point is moved toward the eye as a drawn edge's is, by the
+/// reach its own width takes ([`drawn_stroke_fraction`], [`View::strip_from_camera`]): a
+/// stroke is drawn square to the view at its line's depth, so on a face not square to the
+/// view (a sketch on a face, seen from aside) or along a concave edge, a face rising toward
+/// the eye across it would hide half of it. Held to an edge's picking reach, as a drawn
+/// edge's is, and drawn before the edges' picking strips, so those win where they tie. Its
+/// picking ID is the background's, object 0 and instance 0: `re_renderer` draws every line
+/// into the picking layer, and a pick passes over that ID ([`PendingPick::nearest`]), so a
+/// line is picked by nothing. How many strips it drew.
 fn lines_batch(
     lines: &mut LineDrawableBuilder<'_>,
     i: usize,
@@ -3839,9 +3868,11 @@ fn lines_batch(
             .color(Color32::from_rgb(red, green, blue))
             .picking_instance_id(PickingLayerInstanceId(0));
     };
+    let reach = drawn_stroke_fraction(view.height, set.width, pixels_per_point);
+    let put = |v: [f64; 3]| view.strip_from_camera(v, reach);
     set.strips
         .strips()
-        .map(|strip| add_edge_strips(&mut batch, view, &stroke, strip, vec3, style))
+        .map(|strip| add_edge_strips(&mut batch, view, &stroke, strip, put, style))
         .sum()
 }
 
