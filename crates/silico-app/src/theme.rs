@@ -555,11 +555,15 @@ pub const VIEWPORT_GRID_MINOR_MM: f32 = 10.0;
 /// The major lines' spacing, in millimetres.
 pub const VIEWPORT_GRID_MAJOR_MM: f32 = 50.0;
 /// How far from the origin the grid has faded out, in millimetres: linearly, from full at
-/// the origin.
+/// the origin. The ground grid reaches as far ([`crate::grid`]).
 pub const VIEWPORT_GRID_FADE_MM: f32 = 200.0;
-/// The grid's axis lines' width, each in its axis's colour ([`AXIS_X`], [`AXIS_Y`]).
+/// The grid's minor and major lines' width, in points: a WebGL line's pixel at the
+/// prototype's scale, as the sketch's grid draws them (`crate::sketch::draw`).
+pub const VIEWPORT_GRID_WIDTH: f32 = 1.0;
+/// The grid's axis lines' width, each in its axis's colour ([`AXIS_X`], [`AXIS_Y`], and
+/// the ground grid's Z, [`AXIS_Z`]).
 pub const VIEWPORT_GRID_AXIS_WIDTH: f32 = 1.5;
-/// Their alpha, out of 255: 90% (viewport.js:198).
+/// Their alpha, out of 255: 90% (viewport.js's `buildGrid`, its `axis`).
 pub const VIEWPORT_GRID_AXIS_ALPHA: u8 = 230;
 /// A box select's fill, window or crossing: [`SELECTION_BG`]'s Blue.500 at 14%.
 pub const BOX_SELECT_FILL: Rgba8 = rgba8_of(SELECTION_BG, 36);
@@ -2164,7 +2168,7 @@ mod tests {
         ] {
             assert_eq!(color, [r, g, b, of_255(alpha)], "{name}");
         }
-        // viewport.js:198, the grid's axes at 0.9.
+        // viewport.js's `buildGrid`, its `axis`: the grid's axes at 0.9.
         assert_eq!(VIEWPORT_GRID_AXIS_ALPHA, of_255(0.9));
     }
 

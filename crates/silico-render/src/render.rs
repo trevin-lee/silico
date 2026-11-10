@@ -3251,23 +3251,60 @@ pub fn project_segment(
     a: [f64; 3],
     b: [f64; 3],
 ) -> Option<[Option<[f64; 2]>; 2]> {
-    if !a.iter().chain(&b).all(|c| c.is_finite()) {
-        return None;
+    SegmentProjection::new(camera, size_px)?
+        .segment(a, b)
+        .map(|drawn| drawn.pixels)
+}
+
+/// [`project_segment`]'s projection of one view, made once for many segments (the app's
+/// ground grid's, each frame).
+pub struct SegmentProjection {
+    projector: Projector,
+}
+
+/// What a view draws of a segment ([`SegmentProjection::segment`]): where along it, from its
+/// first end, its drawn part begins and ends (0 and 1 for the whole of it), and the pixels
+/// those two land on, each none where its pixel isn't finite.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawnSegment {
+    pub along: [f64; 2],
+    pub pixels: [Option<[f64; 2]>; 2],
+}
+
+impl SegmentProjection {
+    /// The projection of a view from `camera`, `size_px` in pixels; none for a camera
+    /// [`Camera::check`] refuses at this size, or a size of 0 on a side.
+    pub fn new(camera: &Camera, size_px: [u32; 2]) -> Option<SegmentProjection> {
+        Some(SegmentProjection {
+            projector: Projector::new(camera, size_px)?,
+        })
     }
-    let projector = Projector::new(camera, size_px)?;
-    let (va, vb) = (projector.view_of(a), projector.view_of(b));
-    let (enter, leave) = if projector.perspective {
-        Projector::near_cut(va, vb)?
-    } else {
-        (0.0, 1.0)
-    };
-    // An end the drawing keeps lands as `project` lands it; one it cuts, where it's cut.
-    let end = |v: glam::DVec4, kept: bool, at: f64| {
-        let v = if kept { v } else { va + (vb - va) * at };
-        projector.landing(v).map(|(pixel, _)| pixel)
-    };
-    let kept = |v: glam::DVec4| !projector.perspective || -v.z - MIN_EYE_DISTANCE >= 0.0;
-    Some([end(va, kept(va), enter), end(vb, kept(vb), leave)])
+
+    /// What it draws of the segment from `a` to `b`, as [`project_segment`] says: in
+    /// perspective cut at [`MIN_EYE_DISTANCE`] along the view from the eye, orthographic
+    /// whole; none where nothing of it is drawn, or an end isn't finite.
+    pub fn segment(&self, a: [f64; 3], b: [f64; 3]) -> Option<DrawnSegment> {
+        if !a.iter().chain(&b).all(|c| c.is_finite()) {
+            return None;
+        }
+        let projector = &self.projector;
+        let (va, vb) = (projector.view_of(a), projector.view_of(b));
+        let (enter, leave) = if projector.perspective {
+            Projector::near_cut(va, vb)?
+        } else {
+            (0.0, 1.0)
+        };
+        // An end the drawing keeps lands as `project` lands it; one it cuts, where it's cut.
+        let end = |v: glam::DVec4, kept: bool, at: f64| {
+            let v = if kept { v } else { va + (vb - va) * at };
+            projector.landing(v).map(|(pixel, _)| pixel)
+        };
+        let kept = |v: glam::DVec4| !projector.perspective || -v.z - MIN_EYE_DISTANCE >= 0.0;
+        Some(DrawnSegment {
+            along: [enter, leave],
+            pixels: [end(va, kept(va), enter), end(vb, kept(vb), leave)],
+        })
+    }
 }
 
 /// What of a segment lies on the inner side of a plane, by the plane's linear form at its
