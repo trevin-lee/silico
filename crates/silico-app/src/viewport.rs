@@ -1708,7 +1708,7 @@ pub fn show<P: Clients + 'static>(
     let now = drawing.now();
     let now_hidden: BTreeSet<FeatureId> = tab
         .browser
-        .bodies
+        .bodies()
         .iter()
         .filter(|row| !tab.shown(&crate::tab::Hideable::Feature(row.id.clone())))
         .map(|row| row.id.clone())
