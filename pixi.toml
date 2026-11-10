@@ -53,7 +53,7 @@ occt = { cmd = "bash third_party/occt/build.sh", description = "Fetch, verify, p
 stress = { cmd = "bash third_party/occt/scripts/stress.sh", depends-on = ["occt"], description = "Run the 605-case stress test 10 times; each run must match the reference byte for byte" }
 test-guards = { cmd = "bash third_party/occt/scripts/test-guards.sh", depends-on = ["occt"], description = "Prove every OCCT build guard rejects bad input" }
 test-cache = { cmd = "bash third_party/occt/scripts/test-cache.sh", description = "Prove the shared OCCT build cache keeps, replaces, and removes entries as documented" }
-test-ci-decisions = { cmd = "bash tests/filler-decisions.sh && bash tests/lane-caches-test.sh", description = "Prove the filler's decisions (filler.yml, proptest-room.sh) against made-up states of the CI, and the gate checkouts' stale lane caches let go (tests/lane-caches.sh)" }
+test-ci-decisions = { cmd = "bash tests/filler-decisions.sh && bash tests/lane-caches-test.sh && bash tests/mutants-tests-test.sh && bash tests/mutants-keep-test.sh", description = "Prove the filler's decisions (filler.yml, proptest-room.sh) against made-up states of the CI, the gate checkouts' stale lane caches let go (tests/lane-caches.sh), a mutants run's default tests (.github/mutants-tests.py), and a mutants shard's outcomes kept on the VM (.github/mutants-keep.sh)" }
 # The libm shim is outside the workspace (its own profile), so it gets its own Cargo
 # target dir, target/libm-shim, for tests and lint. The OCCT build compiles it in a
 # temporary directory inside the shared build cache.
