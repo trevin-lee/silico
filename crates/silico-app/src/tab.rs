@@ -886,7 +886,7 @@ pub struct Tab {
     /// Sketch mode (section 9, *Sketching*), while a sketch is open; and each sketch's read,
     /// whole, for the browser's prefixes and the viewport's lines.
     pub sketch: Option<SketchMode>,
-    pub prefixes: SketchReads,
+    pub sketch_reads: SketchReads,
     /// The selection as it was before the open dialog's box of names took it, put back if
     /// the dialog is cancelled, as SolidWorks returns to the selection its command started
     /// with.
@@ -1074,7 +1074,7 @@ impl Tab {
             dialog_base: None,
             dialog_began: false,
             sketch: None,
-            prefixes: SketchReads::default(),
+            sketch_reads: SketchReads::default(),
             before_dialog: None,
             oked: None,
             groups: Vec::new(),
@@ -1791,13 +1791,13 @@ impl Tab {
             }
         }
         let hidden = &self.hidden;
-        self.prefixes.poll(
+        self.sketch_reads.poll(
             sessions,
             &self.id,
             &self.browser.sketches,
             self.published,
             self.sketch.as_ref(),
-            &|id| !hidden.contains(&Hideable::Feature(id.clone())),
+            &|id| shown_in(hidden, &Hideable::Feature(id.clone())),
         );
     }
 
@@ -4261,9 +4261,9 @@ impl Tab {
         self.browser.sketches.iter().any(|row| &row.id == id)
     }
 
-    /// Whether `what`'s row shows (its eye open).
+    /// Whether `what`'s row shows (its eye open): [`shown_in`] its hidden rows.
     pub fn shown(&self, what: &Hideable) -> bool {
-        !self.hidden.contains(what)
+        shown_in(&self.hidden, what)
     }
 
     /// `what` hidden if it shows, shown if it's hidden: its eye clicked.
@@ -5591,6 +5591,12 @@ fn standing(entries: &[Entry], body: &FeatureId, own: Option<&FeatureId>) -> Sta
         (Some(body), Some(own)) if body > own => Standing::After,
         _ => Standing::Before,
     }
+}
+
+/// Whether `what`'s row shows (its eye open), of a tab whose rows `hidden` are hidden: the
+/// one rule [`Tab::shown`] and the sketch reads' order ([`SketchReads::poll`]) both use.
+fn shown_in(hidden: &std::collections::BTreeSet<Hideable>, what: &Hideable) -> bool {
+    !hidden.contains(what)
 }
 
 /// The body a new sweep builds on, as FreeCAD's PartDesign takes its body's tip, from a

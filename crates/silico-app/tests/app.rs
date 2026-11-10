@@ -20695,22 +20695,22 @@ fn each_sketch_is_read_for_its_browser_prefix_by_its_state_as_solidworks_prefixe
     // What the browser's rows are prefixed by (drawn by the browser's port).
     let prefixes = |h: &AppHarness| {
         ["s0000001", "s0000002", "s0000003", "s0000004"]
-            .map(|id| h.state().tabs()[0].prefixes.prefix(&sketch_id(id)))
+            .map(|id| h.state().tabs()[0].sketch_reads.prefix(&sketch_id(id)))
     };
     step_until(&mut h, "the prefixes", |h| {
         h.state().tabs()[0]
-            .prefixes
+            .sketch_reads
             .state(&sketch_id("s0000004"))
             .is_some()
             && prefixes(h) == [Some("(–)"), Some("(+)"), Some("(?)"), None]
     });
     // Each sketch read once for the model, however many frames pass.
-    let reads = h.state().tabs()[0].prefixes.reads;
+    let reads = h.state().tabs()[0].sketch_reads.reads;
     assert_eq!(reads, 4);
     for _ in 0..20 {
         step(&mut h);
     }
-    assert_eq!(h.state().tabs()[0].prefixes.reads, reads);
+    assert_eq!(h.state().tabs()[0].sketch_reads.reads, reads);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21168,15 +21168,15 @@ fn a_lone_sketchs_prefix_is_read_once_kept_and_drawn_before_its_name_in_the_brow
     let (mut h, _) = f.opened("one.silico", ONE_SKETCH);
     let loose = sketch_id("s0000001");
     step_until(&mut h, "its prefix", |h| {
-        h.state().tabs()[0].prefixes.prefix(&loose) == Some("(–)")
+        h.state().tabs()[0].sketch_reads.prefix(&loose) == Some("(–)")
     });
     // Read once for the model, and kept, however many frames pass.
     for _ in 0..20 {
         step(&mut h);
     }
     let tab = &h.state().tabs()[0];
-    assert_eq!(tab.prefixes.reads, 1);
-    assert_eq!(tab.prefixes.prefix(&loose), Some("(–)"));
+    assert_eq!(tab.sketch_reads.reads, 1);
+    assert_eq!(tab.sketch_reads.prefix(&loose), Some("(–)"));
     // Its browser row draws it (`.row .prefix.under`, `--sk-under` #7a95ff) before its name.
     let row = h
         .get_by_role_and_label(Role::Pane, "Browser")
@@ -21614,12 +21614,12 @@ fn after_an_edit_each_sketch_is_read_once_more_and_a_changed_state_shows_its_pre
     let (mut h, _) = f.opened("four.silico", FOUR_SKETCHES);
     let prefixes = |h: &AppHarness| {
         ["s0000001", "s0000002", "s0000003", "s0000004"]
-            .map(|id| h.state().tabs()[0].prefixes.prefix(&sketch_id(id)))
+            .map(|id| h.state().tabs()[0].sketch_reads.prefix(&sketch_id(id)))
     };
     step_until(&mut h, "the prefixes", |h| {
         prefixes(h) == [Some("(–)"), Some("(+)"), Some("(?)"), None]
     });
-    assert_eq!(h.state().tabs()[0].prefixes.reads, 4);
+    assert_eq!(h.state().tabs()[0].sketch_reads.reads, 4);
     // Loose's one point deleted, in sketch mode: empty, it's fully defined. Its prefix
     // comes from sketch mode's own read; the other three are read once more, of the model
     // the edit published.
@@ -21634,13 +21634,13 @@ fn after_an_edit_each_sketch_is_read_once_more_and_a_changed_state_shows_its_pre
     step(&mut h);
     settled(&mut h);
     step_until(&mut h, "the prefixes again", |h| {
-        h.state().tabs()[0].prefixes.reads == 7
+        h.state().tabs()[0].sketch_reads.reads == 7
             && prefixes(h) == [None, Some("(+)"), Some("(?)"), None]
     });
     for _ in 0..20 {
         step(&mut h);
     }
-    assert_eq!(h.state().tabs()[0].prefixes.reads, 7);
+    assert_eq!(h.state().tabs()[0].sketch_reads.reads, 7);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21651,9 +21651,9 @@ fn four_read(f: &Fixture) -> AppHarness {
     step_until(&mut h, "every sketch read", |h| {
         ["s0000001", "s0000002", "s0000003", "s0000004"]
             .iter()
-            .all(|id| h.state().tabs()[0].prefixes.held(&sketch_id(id)).is_some())
+            .all(|id| h.state().tabs()[0].sketch_reads.held(&sketch_id(id)).is_some())
     });
-    assert_eq!(h.state().tabs()[0].prefixes.reads, 4);
+    assert_eq!(h.state().tabs()[0].sketch_reads.reads, 4);
     h
 }
 
@@ -21665,7 +21665,7 @@ fn showing_or_hiding_a_sketch_reads_nothing_and_its_read_is_kept_whole() {
     let f = fixture();
     let mut h = four_read(&f);
     let tab = &h.state().tabs()[0];
-    let tight = tab.prefixes.held(&sketch_id("s0000002")).unwrap();
+    let tight = tab.sketch_reads.held(&sketch_id("s0000002")).unwrap();
     assert_eq!(tight.read.sketch, sketch_id("s0000002"));
     assert_eq!(tight.read.members.points.len(), 2);
     assert!(tight.read.plane.is_ok());
@@ -21677,7 +21677,7 @@ fn showing_or_hiding_a_sketch_reads_nothing_and_its_read_is_kept_whole() {
             step(&mut h);
         }
     }
-    assert_eq!(h.state().tabs()[0].prefixes.reads, 4);
+    assert_eq!(h.state().tabs()[0].sketch_reads.reads, 4);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21710,7 +21710,7 @@ fn after_an_edit_the_shown_sketches_are_read_first() {
     h.key_press(eframe::egui::Key::Delete);
     let order = std::cell::RefCell::new(Vec::new());
     step_until(&mut h, "the three read again", |h| {
-        let reads = &h.state().tabs()[0].prefixes;
+        let reads = &h.state().tabs()[0].sketch_reads;
         let mut order = order.borrow_mut();
         if let Some(id) = reads.reading()
             && reads.reads > 4
@@ -21743,7 +21743,7 @@ fn a_sketchs_read_is_held_till_the_next_revisions_answers_and_never_lapses_betwe
     let revisions = |h: &AppHarness| {
         ids.clone().map(|id| {
             h.state().tabs()[0]
-                .prefixes
+                .sketch_reads
                 .held(&id)
                 .map(|held| held.revision)
         })
@@ -21770,7 +21770,7 @@ fn a_sketchs_read_is_held_till_the_next_revisions_answers_and_never_lapses_betwe
         assert!(now.iter().all(Option::is_some), "a read gone: {now:?}");
         now.iter().zip(&before).all(|(now, before)| now > before)
     });
-    assert_eq!(h.state().tabs()[0].prefixes.reads, 8);
+    assert_eq!(h.state().tabs()[0].sketch_reads.reads, 8);
     theirs.wait().result.unwrap();
     assert_eq!(never_waits::waits(), 0);
 }
