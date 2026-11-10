@@ -1814,6 +1814,11 @@ fn hostile_strips_are_refused_naming_the_first_bad_strip_and_point_or_kept_with_
             match (Strips::new(polylines.clone()), first_bad) {
                 (Ok(strips), None) => {
                     prop_assert_eq!(strips.len(), polylines.len());
+                    // Each strip's points, by its place, as given.
+                    for (k, polyline) in polylines.iter().enumerate() {
+                        prop_assert_eq!(strips.strip(k), Some(&polyline[..]));
+                    }
+                    prop_assert_eq!(strips.strip(polylines.len()), None);
                     let points: usize = polylines.iter().map(Vec::len).sum();
                     prop_assert_eq!(strips.points(), points);
                     let all: Vec<[f64; 3]> = polylines.into_iter().flatten().collect();
