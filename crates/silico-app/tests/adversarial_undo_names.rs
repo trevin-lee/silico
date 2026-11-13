@@ -12,7 +12,7 @@
 #[path = "common/ui.rs"]
 mod ui;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,11 +24,14 @@ use silico_app::App;
 use silico_app::tab::Sent;
 use silico_core::cache::Cache;
 use silico_core::command::{CheckModel, Sessions};
-use silico_core::disk::{Clock, Found};
+use silico_core::disk::Clock;
 use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
 use silico_core::sketch::SketchSolver;
 use tempfile::TempDir;
-use ui::{in_status_bar, keyed, settled, step, step_until, tooltip, tooltip_title};
+use ui::{
+    in_status_bar, plain_read, redo_by_key, settled, step, step_until, tooltip, tooltip_title,
+    type_name, undo_by_key,
+};
 
 /// The M2.1 example: a block, a pin, and the hole the pin cuts in it.
 const EXAMPLE: &str = r#"{
@@ -78,20 +81,12 @@ fn fixture() -> Fixture {
         move |cache| Cache::with_secret(cache, &secret),
         move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
     )
-    .watching_disk(Duration::ZERO, Arc::new(read), now)
+    .watching_disk(Duration::ZERO, Arc::new(plain_read), now)
     .unwrap();
     Fixture {
         dir,
         kernel,
         sessions: Arc::new(sessions),
-    }
-}
-
-fn read(path: &Path) -> Found {
-    match std::fs::read(path) {
-        Ok(bytes) => Found::Bytes(bytes),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Found::Gone,
-        Err(_) => Found::Unreadable,
     }
 }
 
@@ -123,22 +118,11 @@ impl Fixture {
     }
 }
 
-/// The property panel's Name field.
-fn name_field(h: &AppHarness) -> egui_kittest::Node<'_> {
-    h.get_by_role_and_label(Role::Pane, "Properties")
-        .get_by_role(Role::TextInput)
-}
-
 /// The feature `name` selected on the timeline, and `text` typed after its name in the
 /// property panel's Name field, one keystroke a frame: one rename.
 fn renamed(h: &mut AppHarness, name: &str, text: &str) {
     ui::select(h, name);
-    name_field(h).focus();
-    step(h);
-    for c in text.chars() {
-        name_field(h).type_text(&c.to_string());
-        step(h);
-    }
+    type_name(h, text);
     settled(h);
 }
 
@@ -175,7 +159,7 @@ fn a_feature_named_past_the_screens_width_is_cut_short_in_the_tooltip_and_kept_o
     assert_eq!(title, format!("Undo: Rename {}…", "W".repeat(60)));
     assert!(rect.right() <= 1280.0 && rect.left() >= 0.0, "{rect:?}");
     // And Redo once it's undone, the same.
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     let (title, rect) = tooltip(&mut h, "Redo");
     assert_eq!(title, format!("Redo: Rename {}…", "W".repeat(60)));
     assert!(rect.right() <= 1280.0 && rect.left() >= 0.0, "{rect:?}");
@@ -385,7 +369,7 @@ fn revert_drops_every_step_and_the_next_edit_counts_alone() {
     });
     renamed(&mut h, "Pin", "p");
     renamed(&mut h, "Hole", "h");
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Rename Hole");
     h.get_by_label("File").click();
     step(&mut h);
@@ -437,7 +421,7 @@ fn a_cancelled_dialogs_edits_redone_one_by_one_are_named_by_the_dialog() {
     settled(&mut h);
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Pin");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Add Pad");
-    keyed(&mut h, Key::Y);
+    redo_by_key(&mut h);
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Pad");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Edit Pad");
     assert_eq!(saved_said(&h).as_deref(), Some("Unsaved · 2 edits"));

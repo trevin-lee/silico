@@ -1,61 +1,102 @@
-//! The app driven as a person drives it, for any kernel (`P: Clients`): each pane and control
-//! found by its role and label in the accessibility tree and clicked or typed into, keys
-//! pressed, and the canvas given the pointer's own events; and reads of what the window and
-//! the tab show, which act on nothing. Every frame is stepped on a thread marked so that a
-//! wait on a command there is counted.
+//! The app driven as a person drives it, on either kernel ([`AppKernel`]): each pane and
+//! control found by its role and label in the accessibility tree and clicked or typed into,
+//! keys pressed, and the canvas given the pointer's own events; and reads of what the window
+//! and the tab show, which act on nothing. Every frame is stepped on a thread marked so that
+//! a wait on a command there is counted. Last, the stand-ins more than one file uses: the
+//! native file dialog ([`FakeBrowser`]), the fake kernel's meshes counted, a file's bytes
+//! read plainly, and a clock moved by hand.
 //!
-//! These are tests/app.rs's pure-UI helpers, made generic. They move here, and app.rs takes
-//! them from here, by #441, once the PRs open on app.rs have landed: until then app.rs keeps
-//! its own. Where the two differ, the move keeps one behaviour:
-//! - `step_until`, and every helper that waits through it, waits up to [`SLICE_WAIT`] (120 s),
-//!   app.rs's `WAIT` 60 s;
-//! - `create` clicks the kind on the CREATE toolbar; app.rs's opens the CREATE menu for a
-//!   primitive;
-//! - `open_export` takes the dialog's title; app.rs's knows its own fixture's;
-//! - `on_lavapipe` passes the re-run test's stderr on when it passes (the slice's record);
-//! - `click_as_a_person` (a pause, then the press and the release over separate frames) where
-//!   app.rs has `click_at`; `type_over` (Home and a Delete for each character the field
-//!   holds) where it has `set_field` and `retype`; `tick` finds a checkbox by its own label.
+//! tests/app.rs, the hostile-input tests, and the slice take from here the helpers that more
+//! than one of them had a copy of, the ones those call, and the twins below. How long a wait
+//! may take follows the kernel the app runs on: [`FAKE_WAIT`] on the fake kernel,
+//! [`SLICE_WAIT`] on the real workers.
 //!
-//! The others do what app.rs's do, but for their paths and genericity. #441 moves app.rs's
-//! `tooltip_title` and `in_status_bar` too, and its `step_key` becomes `keyed` here, which
-//! takes the key.
+//! Three clicks and two ways of typing over a field do one job differently, and are kept
+//! apart because the events each sends are what its tests have checked the app against:
+//! - [`click_at`] gives the press and the release in one frame, as the harness's own clicks
+//!   do; [`click_canvas`] gives the press, held keys and all, in the pointer's first frame
+//!   there and the release in the next; [`click_as_a_person`] waits out egui's double-click
+//!   delay first, so that no click is read as another's second, and gives the move, the
+//!   press, and the release a frame each;
+//! - [`retype`] takes a field's characters away a Backspace a frame and reads `text` back at
+//!   once; [`type_over`] takes them in one frame (Home, and a Delete each) and waits for the
+//!   field to read `text`.
+//!
+//! What stays in each file is its own, not a copy:
+//! - each file's `fixture` and `Fixture`, since each sets its sessions up as its tests need
+//!   (app.rs's write STEP through the fake kernel, and compare the disk through a test's
+//!   reader when one is given; adversarial_undo_names.rs's compare it through
+//!   [`plain_read`] with no interval, and write no STEP; the untitled and viewport tests' are
+//!   the stand-ins alone) and has its own methods for opening the app;
+//! - app.rs's and adversarial_viewport.rs's renderer stand-ins (`Told`, `FakeRenderer`,
+//!   `Recorder`), which record different things and answer picks differently: app.rs's give
+//!   the pick a test sets, or hold, drop, or never give it; the viewport's give the
+//!   background's every time, and count frames drawn with no tab;
+//! - adversarial_untitled.rs's `add_sketch` finishes its sketch without waiting for the tab's
+//!   asterisk, where app.rs's (`finish_sketch_unsaved`) waits for it;
+//! - helpers that share a name but not a job: app.rs's `renamed` (the name typed and its edit
+//!   landed) and adversarial_undo_names.rs's (the feature selected, the name typed, and
+//!   everything settled); app.rs's and slice.rs's `fully_defined` and `seen`.
+//!
+//! The next layer is #470's: the fixtures' common base, the documents each file writes out
+//! again, steps written inline where a helper here does them, app.rs's `type_into`, and the
+//! click helpers' names.
 #![allow(dead_code)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui::accesskit::Role;
-use eframe::egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect};
+use eframe::egui::{
+    Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, ViewportCommand,
+};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
-use silico_core::fake::never_waits;
-use silico_core::kernel::Clients;
+use silico_app::browse::{Answer, Ask, Browse};
+use silico_core::disk::{Clock, Found};
+use silico_core::fake::{FakeKernel, never_waits};
+use silico_core::kernel::{Clients, Op};
+use silico_core::pool::KernelPool;
 
 /// The app in a harness.
 pub type AppUi<P> = Harness<'static, App<P>>;
 
+/// Long enough for anything the fake kernel does on a loaded machine.
+pub const FAKE_WAIT: Duration = Duration::from_secs(60);
+
 /// Long enough for anything a real worker does on a loaded machine, a first start included:
-/// longer than app.rs's `WAIT` (60 s, for its fake kernel's answers), since here every
-/// answer is a real kernel's, sketch worker's, or STEP worker's, and every frame is drawn on
-/// lavapipe.
+/// longer than [`FAKE_WAIT`], since in the slice every answer is a real kernel's, sketch
+/// worker's, or STEP worker's, and every frame is drawn on lavapipe.
 pub const SLICE_WAIT: Duration = Duration::from_secs(120);
 
+/// A kernel the app is driven on here, and how long [`step_until`] waits on it.
+pub trait AppKernel: Clients + 'static {
+    /// The longest a wait for the app's answers may take.
+    const WAIT: Duration;
+}
+
+/// The fake kernel, which app.rs and the hostile-input tests drive the app on.
+impl AppKernel for Arc<FakeKernel> {
+    const WAIT: Duration = FAKE_WAIT;
+}
+
+/// The real kernel's pool, which the slice drives the app on.
+impl AppKernel for KernelPool {
+    const WAIT: Duration = SLICE_WAIT;
+}
+
 /// One frame, on the marked thread.
-pub fn step<P: Clients + 'static>(h: &mut AppUi<P>) {
+pub fn step<P: AppKernel>(h: &mut AppUi<P>) {
     let _marked = never_waits::marked();
     h.step();
 }
 
-/// Frames stepped until `done` holds, within [`SLICE_WAIT`].
+/// Frames stepped until `done` holds, within the kernel's [`AppKernel::WAIT`].
 #[track_caller]
-pub fn step_until<P: Clients + 'static>(
-    h: &mut AppUi<P>,
-    what: &str,
-    done: impl Fn(&AppUi<P>) -> bool,
-) {
-    let deadline = Instant::now() + SLICE_WAIT;
+pub fn step_until<P: AppKernel>(h: &mut AppUi<P>, what: &str, done: impl Fn(&AppUi<P>) -> bool) {
+    let deadline = Instant::now() + P::WAIT;
     loop {
         step(h);
         if done(h) {
@@ -76,7 +117,7 @@ pub fn step_until<P: Clients + 'static>(
 }
 
 /// Every label and value the window holds, in the tree's order: what a failure says.
-pub fn everything<P: Clients + 'static>(h: &AppUi<P>) -> Vec<String> {
+pub fn everything<P: AppKernel>(h: &AppUi<P>) -> Vec<String> {
     h.root()
         .query_all(egui_kittest::kittest::by().recursive(true))
         .filter_map(|node| {
@@ -86,14 +127,24 @@ pub fn everything<P: Clients + 'static>(h: &AppUi<P>) -> Vec<String> {
         .collect()
 }
 
+/// Whether the last frame told the window `command` (to close, or to cancel a close): in any
+/// harness, the app's or another window's.
+pub fn window_told<S>(h: &Harness<'_, S>, command: ViewportCommand) -> bool {
+    h.output()
+        .viewport_output
+        .get(&eframe::egui::ViewportId::ROOT)
+        .is_some_and(|viewport| viewport.commands.contains(&command))
+}
+
 /// Whether the window holds a node labelled `label`, anywhere.
-pub fn anywhere<P: Clients + 'static>(h: &AppUi<P>, label: &str) -> bool {
+pub fn anywhere<P: AppKernel>(h: &AppUi<P>, label: &str) -> bool {
     h.query_by_label(label).is_some()
 }
 
 /// Stepped until nothing of the tab's is under way and its last answer's revision is read:
-/// its edits, its steps, a dialog's add, and the timeline read at that revision.
-pub fn settled<P: Clients + 'static>(h: &mut AppUi<P>) {
+/// its edits, its steps, a dialog's add, and the timeline read at that revision
+/// (`applying`), which answers a frame or more after them.
+pub fn settled<P: AppKernel>(h: &mut AppUi<P>) {
     step_until(h, "everything answered", |h| {
         let tab = &h.state().tabs()[0];
         tab.edits.idle() && !tab.applying() && tab.dialog.as_ref().is_none_or(|d| !d.adding)
@@ -102,11 +153,18 @@ pub fn settled<P: Clients + 'static>(h: &mut AppUi<P>) {
 
 // --- The app bar and the status bar --------------------------------------------------------
 
+/// The pointer away from the app bar, over the viewport, a frame drawn.
+pub fn pointer_away<P: AppKernel>(h: &mut AppUi<P>) {
+    h.hover_at(Pos2::new(640.0, 400.0));
+    step(h);
+    step(h);
+}
+
 /// The title the app bar's `button` ("Undo" or "Redo") shows in its tooltip, the pointer
 /// brought over it from over the canvas, where no tooltip shows, and where its label is: the
 /// word alone, or the word, a colon, and the step it would take (the prototype's `data-tip`,
 /// `'Undo' + (canUndo ? ': ' + label : '')`).
-pub fn tooltip<P: Clients + 'static>(h: &mut AppUi<P>, button: &str) -> (String, Rect) {
+pub fn tooltip<P: AppKernel>(h: &mut AppUi<P>, button: &str) -> (String, Rect) {
     let named = format!("{button}: ");
     let title = |h: &AppUi<P>| {
         h.query_all_by_role(Role::Label).find_map(|node| {
@@ -116,9 +174,7 @@ pub fn tooltip<P: Clients + 'static>(h: &mut AppUi<P>, button: &str) -> (String,
             (said == button || said.starts_with(&named)).then_some((said, rect))
         })
     };
-    h.hover_at(Pos2::new(640.0, 400.0));
-    step(h);
-    step(h);
+    pointer_away(h);
     assert_eq!(
         title(h).map(|(said, _)| said),
         None,
@@ -132,34 +188,63 @@ pub fn tooltip<P: Clients + 'static>(h: &mut AppUi<P>, button: &str) -> (String,
 }
 
 /// [`tooltip`]'s title alone.
-pub fn tooltip_title<P: Clients + 'static>(h: &mut AppUi<P>, button: &str) -> String {
+pub fn tooltip_title<P: AppKernel>(h: &mut AppUi<P>, button: &str) -> String {
     tooltip(h, button).0
 }
 
 /// Whether a label `words` is in the status bar: on the line of its Shortcuts button.
-pub fn in_status_bar<P: Clients + 'static>(h: &AppUi<P>, words: &str) -> bool {
+pub fn in_status_bar<P: AppKernel>(h: &AppUi<P>, words: &str) -> bool {
     let bar = h.get_by_role_and_label(Role::Button, "Shortcuts").rect();
     h.query_all_by_label(words)
         .any(|node| bar.y_range().contains(node.rect().center().y))
 }
 
-/// Command+`key` pressed (Z undoes, Y redoes) once Undo, or Redo, is on in the first tab, and
-/// its answer settled.
-pub fn keyed<P: Clients + 'static>(h: &mut AppUi<P>, key: Key) {
-    if key == Key::Z {
-        step_until(h, "undoable", |h| h.state().tabs()[0].undoable());
-    } else {
-        step_until(h, "redoable", |h| h.state().tabs()[0].redoable());
-    }
-    h.key_press_modifiers(Modifiers::COMMAND, key);
+/// Command+Z pressed once Undo is on in the first tab, and its answer settled.
+pub fn undo_by_key<P: AppKernel>(h: &mut AppUi<P>) {
+    step_until(h, "undoable", |h| h.state().tabs()[0].undoable());
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     step(h);
     settled(h);
+}
+
+/// Command+Y pressed once Redo is on in the first tab, and its answer settled.
+pub fn redo_by_key<P: AppKernel>(h: &mut AppUi<P>) {
+    step_until(h, "redoable", |h| h.state().tabs()[0].redoable());
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Y);
+    step(h);
+    settled(h);
+}
+
+/// The window asked to close, as its close button asks.
+pub fn close_window<P: AppKernel>(h: &mut AppUi<P>) {
+    let root = eframe::egui::ViewportId::ROOT;
+    h.input_mut()
+        .viewports
+        .get_mut(&root)
+        .unwrap()
+        .events
+        .push(eframe::egui::ViewportEvent::Close);
+    step(h);
+    h.input_mut()
+        .viewports
+        .get_mut(&root)
+        .unwrap()
+        .events
+        .clear();
+}
+
+/// The delay the last frame asked for the next one at.
+pub fn repaint_delay<P: AppKernel>(h: &AppUi<P>) -> Option<Duration> {
+    h.output()
+        .viewport_output
+        .get(&eframe::egui::ViewportId::ROOT)
+        .map(|viewport| viewport.repaint_delay)
 }
 
 // --- Files ---------------------------------------------------------------------------------
 
 /// Command+N pressed, and the new part's tab waited for.
-pub fn new_part<P: Clients + 'static>(h: &mut AppUi<P>) {
+pub fn new_part<P: AppKernel>(h: &mut AppUi<P>) {
     let before = h.state().tabs().len();
     h.key_press_modifiers(Modifiers::COMMAND, Key::N);
     step_until(h, "the untitled part's tab", |h| {
@@ -168,7 +253,7 @@ pub fn new_part<P: Clients + 'static>(h: &mut AppUi<P>) {
 }
 
 /// File > Save As… of the tab named `name`, `path` typed into its dialog, and Save.
-pub fn save_as_of<P: Clients + 'static>(h: &mut AppUi<P>, name: &str, path: &Path) {
+pub fn save_as_of<P: AppKernel>(h: &mut AppUi<P>, name: &str, path: &Path) {
     let title = format!("Save {name} as");
     h.get_by_label("File").click();
     step(h);
@@ -192,10 +277,28 @@ pub fn save_as_of<P: Clients + 'static>(h: &mut AppUi<P>, name: &str, path: &Pat
     });
 }
 
+/// The tab named `name`.
+pub fn tab_named<'a, P: AppKernel>(h: &'a AppUi<P>, name: &str) -> &'a silico_app::tab::Tab {
+    h.state()
+        .tabs()
+        .iter()
+        .find(|tab| tab.name() == name)
+        .unwrap_or_else(|| panic!("no tab {name}"))
+}
+
+/// The question's button `label`, the last of that label (after the app bar's Save).
+pub fn answer_question<P: AppKernel>(h: &mut AppUi<P>, label: &str) {
+    h.query_all_by_role_and_label(Role::Button, label)
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step(h);
+}
+
 // --- The export dialog ---------------------------------------------------------------------
 
 /// File > Export…, its dialog open, titled `title` ("Export bracket.silico").
-pub fn open_export<P: Clients + 'static>(h: &mut AppUi<P>, title: &str) {
+pub fn open_export<P: AppKernel>(h: &mut AppUi<P>, title: &str) {
     h.get_by_label("File").click();
     step(h);
     step(h);
@@ -213,7 +316,7 @@ pub enum In<'s> {
 }
 
 /// The text field labelled `label`, where `within` says.
-pub fn field<'a, P: Clients + 'static>(
+pub fn field<'a, P: AppKernel>(
     h: &'a AppUi<P>,
     within: In<'a>,
     label: &'a str,
@@ -230,7 +333,7 @@ pub fn field<'a, P: Clients + 'static>(
 /// The text field labelled `label` (where `within` says) typed over with `text`, as a person
 /// does it: focused if it isn't, then Home and a Delete for each character it holds, read
 /// from the field itself, in one frame, and `text` typed in; stepped until it reads `text`.
-pub fn type_over<P: Clients + 'static>(h: &mut AppUi<P>, within: In<'_>, label: &str, text: &str) {
+pub fn type_over<P: AppKernel>(h: &mut AppUi<P>, within: In<'_>, label: &str, text: &str) {
     if !field(h, within, label).is_focused() {
         field(h, within, label).focus();
         step(h);
@@ -259,10 +362,26 @@ pub fn type_over<P: Clients + 'static>(h: &mut AppUi<P>, within: In<'_>, label: 
     });
 }
 
+/// The text field labelled `label` (where `within` says) emptied a Backspace a frame (its
+/// cursor at its end once focused, a Backspace for each character it holds, read from the
+/// field itself), then `text` typed at once, and the field read as `text` the next frame.
+pub fn retype<P: AppKernel>(h: &mut AppUi<P>, within: In<'_>, label: &str, text: &str) {
+    field(h, within, label).focus();
+    step(h);
+    let held = field(h, within, label).value().unwrap().chars().count();
+    for _ in 0..held {
+        h.key_press(Key::Backspace);
+        step(h);
+    }
+    field(h, within, label).type_text(text);
+    step(h);
+    assert_eq!(field(h, within, label).value().as_deref(), Some(text));
+}
+
 /// The button `label` clicked, through the accessibility tree (a modal's layout moves as
 /// its content changes, so a click at its last place can miss); drawn again as what it did
 /// leaves it.
-pub fn press<P: Clients + 'static>(h: &mut AppUi<P>, label: &str) {
+pub fn press<P: AppKernel>(h: &mut AppUi<P>, label: &str) {
     h.get_by_role_and_label(Role::Button, label)
         .click_accesskit();
     step(h);
@@ -272,17 +391,17 @@ pub fn press<P: Clients + 'static>(h: &mut AppUi<P>, label: &str) {
 // --- Feature dialogs -----------------------------------------------------------------------
 
 /// The open dialog.
-pub fn dialog<P: Clients + 'static>(h: &AppUi<P>) -> egui_kittest::Node<'_> {
+pub fn dialog<P: AppKernel>(h: &AppUi<P>) -> egui_kittest::Node<'_> {
     h.get_by_role(Role::Dialog)
 }
 
 /// Whether a dialog is open.
-pub fn dialog_open<P: Clients + 'static>(h: &AppUi<P>) -> bool {
+pub fn dialog_open<P: AppKernel>(h: &AppUi<P>) -> bool {
     h.query_by_role(Role::Dialog).is_some()
 }
 
 /// The dialog of `kind` opened from the toolbar's CREATE row (a sweep: Pad, Pocket).
-pub fn create<P: Clients + 'static>(h: &mut AppUi<P>, kind: &str) {
+pub fn create<P: AppKernel>(h: &mut AppUi<P>, kind: &str) {
     h.get_by_role_and_label(Role::Toolbar, "CREATE")
         .get_by_label(kind)
         .click();
@@ -292,7 +411,7 @@ pub fn create<P: Clients + 'static>(h: &mut AppUi<P>, kind: &str) {
 }
 
 /// MODIFY's `kind` clicked in its row, and its dialog open.
-pub fn modify<P: Clients + 'static>(h: &mut AppUi<P>, kind: &str) {
+pub fn modify<P: AppKernel>(h: &mut AppUi<P>, kind: &str) {
     h.get_by_role_and_label(Role::Toolbar, "MODIFY")
         .get_by_label(kind)
         .click();
@@ -302,7 +421,7 @@ pub fn modify<P: Clients + 'static>(h: &mut AppUi<P>, kind: &str) {
 }
 
 /// Whether the dialog's choice `key`, a drop-down, shows `option` chosen.
-pub fn chosen<P: Clients + 'static>(h: &AppUi<P>, key: &str, option: &str) -> bool {
+pub fn chosen<P: AppKernel>(h: &AppUi<P>, key: &str, option: &str) -> bool {
     dialog(h)
         .get_by_role_and_label(Role::ComboBox, key)
         .accesskit_node()
@@ -312,7 +431,7 @@ pub fn chosen<P: Clients + 'static>(h: &AppUi<P>, key: &str, option: &str) -> bo
 }
 
 /// `option` chosen in the dialog's choice `key`, from its drop-down's menu.
-pub fn choose<P: Clients + 'static>(h: &mut AppUi<P>, key: &str, option: &str) {
+pub fn choose<P: AppKernel>(h: &mut AppUi<P>, key: &str, option: &str) {
     dialog(h).get_by_role_and_label(Role::ComboBox, key).click();
     step_until(h, "the drop-down's menu", |h| {
         h.query_all_by_role_and_label(Role::Button, option).count() == 1
@@ -327,7 +446,7 @@ pub fn choose<P: Clients + 'static>(h: &mut AppUi<P>, key: &str, option: &str) {
 
 /// The dialog's checkbox labelled `label` clicked (dialog.rs's `Value::Toggle`, named as its
 /// row's key).
-pub fn tick<P: Clients + 'static>(h: &mut AppUi<P>, label: &str) {
+pub fn tick<P: AppKernel>(h: &mut AppUi<P>, label: &str) {
     dialog(h)
         .get_by_role_and_label(Role::CheckBox, label)
         .click();
@@ -335,7 +454,7 @@ pub fn tick<P: Clients + 'static>(h: &mut AppUi<P>, label: &str) {
 }
 
 /// Whether the dialog's OK is on.
-pub fn ok_enabled<P: Clients + 'static>(h: &AppUi<P>) -> bool {
+pub fn ok_enabled<P: AppKernel>(h: &AppUi<P>) -> bool {
     !dialog(h)
         .get_by_role_and_label(Role::Button, "OK")
         .accesskit_node()
@@ -343,7 +462,7 @@ pub fn ok_enabled<P: Clients + 'static>(h: &AppUi<P>) -> bool {
 }
 
 /// The dialog's feature's add answered.
-pub fn added<P: Clients + 'static>(h: &mut AppUi<P>) {
+pub fn added<P: AppKernel>(h: &mut AppUi<P>) {
     step_until(h, "its add answered", |h| {
         h.state().tabs()[0]
             .dialog
@@ -353,7 +472,7 @@ pub fn added<P: Clients + 'static>(h: &mut AppUi<P>) {
 }
 
 /// The names the open dialog's box of names holds.
-pub fn boxed<P: Clients + 'static>(h: &AppUi<P>) -> Vec<String> {
+pub fn boxed<P: AppKernel>(h: &AppUi<P>) -> Vec<String> {
     h.state().tabs()[0]
         .dialog
         .as_ref()
@@ -365,7 +484,7 @@ pub fn boxed<P: Clients + 'static>(h: &AppUi<P>) -> Vec<String> {
 // --- The timeline and the browser ----------------------------------------------------------
 
 /// The feature `name` selected on the timeline, its properties shown.
-pub fn select<P: Clients + 'static>(h: &mut AppUi<P>, name: &str) {
+pub fn select<P: AppKernel>(h: &mut AppUi<P>, name: &str) {
     h.get_by_role_and_label(Role::Pane, "Timeline")
         .get_by_label(name)
         .click();
@@ -377,8 +496,25 @@ pub fn select<P: Clients + 'static>(h: &mut AppUi<P>, name: &str) {
     });
 }
 
+/// The property panel's Name field.
+pub fn name_field<P: AppKernel>(h: &AppUi<P>) -> egui_kittest::Node<'_> {
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role(Role::TextInput)
+}
+
+/// Typed into the property panel's Name field, one keystroke a frame: focused, the field's
+/// cursor is at its end, so what's typed comes after the name.
+pub fn type_name<P: AppKernel>(h: &mut AppUi<P>, text: &str) {
+    name_field(h).focus();
+    step(h);
+    for c in text.chars() {
+        name_field(h).type_text(&c.to_string());
+        step(h);
+    }
+}
+
 /// The rename field of the feature `name`, if it's open.
-pub fn rename_field<'a, P: Clients + 'static>(
+pub fn rename_field<'a, P: AppKernel>(
     h: &'a AppUi<P>,
     name: &str,
 ) -> Option<egui_kittest::Node<'a>> {
@@ -389,7 +525,7 @@ pub fn rename_field<'a, P: Clients + 'static>(
 
 /// The feature `name`'s rename field opened by F2, the feature selected on the timeline,
 /// and `typed` typed over its name.
-pub fn f2_typed<P: Clients + 'static>(h: &mut AppUi<P>, name: &str, typed: &str) {
+pub fn f2_typed<P: AppKernel>(h: &mut AppUi<P>, name: &str, typed: &str) {
     select(h, name);
     h.key_press(Key::F2);
     step_until(h, "the rename field", |h| {
@@ -408,13 +544,38 @@ pub fn f2_typed<P: Clients + 'static>(h: &mut AppUi<P>, name: &str, typed: &str)
 // --- Sketch mode ---------------------------------------------------------------------------
 
 /// Sketch mode's state, in the first tab.
-pub fn sketch_mode<P: Clients + 'static>(h: &AppUi<P>) -> Option<&silico_app::sketch::SketchMode> {
+pub fn sketch_mode<P: AppKernel>(h: &AppUi<P>) -> Option<&silico_app::sketch::SketchMode> {
     h.state().tabs()[0].sketch.as_ref()
+}
+
+/// Create Sketch on the plane labelled `plane` in the part `part`'s tab, once Create Sketch
+/// is on: sketch mode open, its sketch added and read.
+pub fn begin_sketch_on<P: AppKernel>(h: &mut AppUi<P>, part: &str, plane: &str) {
+    step_until(h, "Create Sketch on", |h| {
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    });
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, plane).is_some()
+    });
+    step(h);
+    h.get_by_role_and_label(Role::Button, plane).click();
+    step_until(h, "its sketch added and read", |h| {
+        tab_named(h, part)
+            .sketch
+            .as_ref()
+            .is_some_and(|mode| mode.sketch.is_some() && mode.drawable().is_some())
+    });
 }
 
 /// Create Sketch from CREATE's menu, on the plane labelled `plane` ("XY plane"): sketch
 /// mode open, and its sketch's add answered.
-pub fn create_sketch<P: Clients + 'static>(h: &mut AppUi<P>, plane: &str) {
+pub fn create_sketch<P: AppKernel>(h: &mut AppUi<P>, plane: &str) {
     h.get_by_role_and_label(Role::Toolbar, "CREATE")
         .get_by_label("Create Sketch")
         .click();
@@ -427,7 +588,7 @@ pub fn create_sketch<P: Clients + 'static>(h: &mut AppUi<P>, plane: &str) {
 }
 
 /// Stepped until sketch mode's newest read holds a sketch.
-pub fn sketch_read<P: Clients + 'static>(h: &mut AppUi<P>) {
+pub fn sketch_read<P: AppKernel>(h: &mut AppUi<P>) {
     step_until(h, "the sketch read", |h| {
         sketch_mode(h).is_some_and(|mode| mode.drawable().is_some())
     });
@@ -436,7 +597,13 @@ pub fn sketch_read<P: Clients + 'static>(h: &mut AppUi<P>) {
 /// The sketch bar's Finish Sketch (`true`) or Cancel clicked, and sketch mode closed: once
 /// the sketch is read and the bar laid out with its state (it's centred, so it moves as
 /// that appears).
-pub fn leave_sketch<P: Clients + 'static>(h: &mut AppUi<P>, finish: bool) {
+pub fn leave_sketch<P: AppKernel>(h: &mut AppUi<P>, finish: bool) {
+    leave_sketch_unsettled(h, finish);
+    settled(h);
+}
+
+/// [`leave_sketch`] but for what's left to answer after sketch mode closes.
+pub fn leave_sketch_unsettled<P: AppKernel>(h: &mut AppUi<P>, finish: bool) {
     let word = if finish { "Finish Sketch" } else { "Cancel" };
     sketch_read(h);
     let place = |h: &AppUi<P>| {
@@ -454,23 +621,43 @@ pub fn leave_sketch<P: Clients + 'static>(h: &mut AppUi<P>, finish: bool) {
         .get_by_label(word)
         .click();
     step_until(h, "sketch mode closed", |h| sketch_mode(h).is_none());
-    settled(h);
 }
 
 /// The over-define prompt, if it's shown.
-pub fn prompt<P: Clients + 'static>(h: &AppUi<P>) -> Option<egui_kittest::Node<'_>> {
+pub fn prompt<P: AppKernel>(h: &AppUi<P>) -> Option<egui_kittest::Node<'_>> {
     h.query_by_role_and_label(Role::Dialog, "Dimension over-defines the sketch")
+}
+
+/// The Modify box's field, if a box is open.
+pub fn modify_field<P: AppKernel>(h: &AppUi<P>) -> Option<egui_kittest::Node<'_>> {
+    h.query_by_role_and_label(Role::Dialog, "Modify dimension")?
+        .query_by_label("Value in millimetres")
 }
 
 // --- The canvas ----------------------------------------------------------------------------
 
+/// The first tab's view.
+pub fn view<P: AppKernel>(h: &AppUi<P>) -> &silico_app::viewport::View {
+    &h.state().tabs()[0].view
+}
+
+/// The first tab's view, to change.
+pub fn view_mut<P: AppKernel>(h: &mut AppUi<P>) -> &mut silico_app::viewport::View {
+    &mut h.state_mut().tabs_mut()[0].view
+}
+
+/// The viewport's place in the window, in points, as it was last frame.
+pub fn the_viewport<P: AppKernel>(h: &AppUi<P>) -> Rect {
+    view(h).frame().unwrap().rect
+}
+
 /// The viewport's frame, as it was last drawn.
-pub fn frame<P: Clients + 'static>(h: &AppUi<P>) -> Option<&silico_app::viewport::ViewFrame> {
+pub fn frame<P: AppKernel>(h: &AppUi<P>) -> Option<&silico_app::viewport::ViewFrame> {
     h.state().tabs()[0].view.frame()
 }
 
 /// A button's press or release at `at`, `modifiers` held.
-pub fn button_event<P: Clients + 'static>(
+pub fn button_event<P: AppKernel>(
     h: &AppUi<P>,
     at: Pos2,
     button: PointerButton,
@@ -486,14 +673,14 @@ pub fn button_event<P: Clients + 'static>(
 }
 
 /// The pointer moved to `at`; a frame.
-pub fn move_to<P: Clients + 'static>(h: &mut AppUi<P>, at: Pos2) {
+pub fn move_to<P: AppKernel>(h: &mut AppUi<P>, at: Pos2) {
     h.hover_at(at);
     step(h);
 }
 
 /// Frames stepped until a click would be one of its own, not a double-click's second: as
 /// long as a person leaves between two clicks, egui's double-click delay since the last.
-pub fn pause<P: Clients + 'static>(h: &mut AppUi<P>) {
+pub fn pause<P: AppKernel>(h: &mut AppUi<P>) {
     let delay = h.ctx.options(|o| o.input_options.max_double_click_delay);
     while f64::from(h.ctx.input(|i| i.pointer.time_since_last_click())) <= delay {
         step(h);
@@ -502,7 +689,7 @@ pub fn pause<P: Clients + 'static>(h: &mut AppUi<P>) {
 
 /// A left click at `at`, Ctrl (Cmd) held if `ctrl`, after a [`pause`]: the pointer moved
 /// there a frame, then its press one frame and its release the next.
-pub fn click_as_a_person<P: Clients + 'static>(h: &mut AppUi<P>, at: Pos2, ctrl: bool) {
+pub fn click_as_a_person<P: AppKernel>(h: &mut AppUi<P>, at: Pos2, ctrl: bool) {
     pause(h);
     let held = if ctrl {
         Modifiers::COMMAND
@@ -518,8 +705,36 @@ pub fn click_as_a_person<P: Clients + 'static>(h: &mut AppUi<P>, at: Pos2, ctrl:
     step(h);
 }
 
+/// A left click at `at` as the harness gives one: the pointer there, and the press and the
+/// release in one frame, then a frame more.
+pub fn click_at<P: AppKernel>(h: &mut AppUi<P>, at: Pos2) {
+    h.hover_at(at);
+    for pressed in [true, false] {
+        button_event(h, at, PointerButton::Primary, pressed, Modifiers::NONE);
+    }
+    step(h);
+    step(h);
+}
+
+/// A left click at `at`, Ctrl (Cmd) held if `ctrl`: the pointer there and the press in one
+/// frame, the release in the next.
+pub fn click_canvas<P: AppKernel>(h: &mut AppUi<P>, at: Pos2, ctrl: bool) {
+    let held = if ctrl {
+        Modifiers::COMMAND
+    } else {
+        Modifiers::NONE
+    };
+    h.event(Event::ModifiersChanged(held));
+    h.hover_at(at);
+    button_event(h, at, PointerButton::Primary, true, held);
+    step(h);
+    button_event(h, at, PointerButton::Primary, false, held);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    step(h);
+}
+
 /// A wheel of `delta` in `unit`s at `at`.
-pub fn wheel<P: Clients + 'static>(h: &mut AppUi<P>, at: Pos2, unit: MouseWheelUnit, delta: f32) {
+pub fn wheel<P: AppKernel>(h: &mut AppUi<P>, at: Pos2, unit: MouseWheelUnit, delta: f32) {
     h.hover_at(at);
     h.event(Event::MouseWheel {
         unit,
@@ -532,7 +747,7 @@ pub fn wheel<P: Clients + 'static>(h: &mut AppUi<P>, at: Pos2, unit: MouseWheelU
 
 /// `button` pressed at `from`, moved to `to` in `steps` even steps, a frame each, then let
 /// go there.
-pub fn drag<P: Clients + 'static>(
+pub fn drag<P: AppKernel>(
     h: &mut AppUi<P>,
     button: PointerButton,
     from: Pos2,
@@ -551,7 +766,7 @@ pub fn drag<P: Clients + 'static>(
 }
 
 /// The selection's names, in the tab.
-pub fn selected_names<P: Clients + 'static>(h: &AppUi<P>) -> Vec<String> {
+pub fn selected_names<P: AppKernel>(h: &AppUi<P>) -> Vec<String> {
     h.state().tabs()[0]
         .selection()
         .names()
@@ -560,11 +775,17 @@ pub fn selected_names<P: Clients + 'static>(h: &AppUi<P>) -> Vec<String> {
         .collect()
 }
 
-/// Frames stepped until the tab's read has answered and nothing more is read: its bodies
-/// held, of the published revision, no read out, and none wanted over three more frames.
-pub fn meshes_settled<P: Clients + 'static>(h: &mut AppUi<P>) {
+/// Frames stepped until the first tab's read has answered and nothing more is read: its
+/// bodies held, of the published revision, no read out, and none wanted over three more
+/// frames.
+pub fn meshes_settled<P: AppKernel>(h: &mut AppUi<P>) {
+    meshes_settled_in(h, 0);
+}
+
+/// [`meshes_settled`] for the tab at `tab`.
+pub fn meshes_settled_in<P: AppKernel>(h: &mut AppUi<P>, tab: usize) {
     step_until(h, "the meshes read", |h| {
-        h.state().tabs().first().is_some_and(|tab| {
+        h.state().tabs().get(tab).is_some_and(|tab| {
             !tab.view.reading() && tab.published.is_some() && tab.view.model() == tab.published
         })
     });
@@ -572,8 +793,130 @@ pub fn meshes_settled<P: Clients + 'static>(h: &mut AppUi<P>) {
         step(h);
     }
     step_until(h, "the meshes read", |h| {
-        !h.state().tabs()[0].view.reading()
+        !h.state().tabs()[tab].view.reading()
     });
+}
+
+// --- The stand-ins -------------------------------------------------------------------------
+
+/// [`FakeBrowser`]'s state: what each dialog was asked, the answer the test gave (`None`
+/// until it does), the waker of the last poll, how many polls there were, and whether a
+/// dialog asked for opens none.
+#[derive(Default)]
+pub struct Dialogs {
+    asked: Vec<Ask>,
+    answer: Option<Option<PathBuf>>,
+    waker: Option<std::task::Waker>,
+    polls: u64,
+    refusing: bool,
+}
+
+/// The platform's file dialog, stood in for through the same `Browse` trait (the platform's
+/// own needs a window server and a person): it records what each dialog was asked and
+/// answers when the test says, from a thread of its own, as the platform's completion does;
+/// or, told to, opens none, as when the platform's won't.
+#[derive(Clone, Default)]
+pub struct FakeBrowser(Arc<Mutex<Dialogs>>);
+
+impl Browse for FakeBrowser {
+    fn browse(&mut self, ask: &Ask) -> Option<Answer> {
+        let mut dialogs = self.0.lock().unwrap();
+        dialogs.asked.push(ask.clone());
+        if dialogs.refusing {
+            return None;
+        }
+        dialogs.answer = None;
+        Some(Box::pin(FakeAnswer(Arc::clone(&self.0))))
+    }
+}
+
+/// A dialog [`FakeBrowser`] opened, answered when the test says.
+pub struct FakeAnswer(Arc<Mutex<Dialogs>>);
+
+impl std::future::Future for FakeAnswer {
+    type Output = Option<PathBuf>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<PathBuf>> {
+        let mut dialogs = self.0.lock().unwrap();
+        dialogs.polls += 1;
+        match dialogs.answer.take() {
+            Some(answer) => std::task::Poll::Ready(answer),
+            None => {
+                dialogs.waker = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
+impl FakeBrowser {
+    /// The dialog open answers `answer` (`None`: cancelled), its waker woken on a thread of
+    /// its own.
+    pub fn answer(&self, answer: Option<&Path>) {
+        let waker = {
+            let mut dialogs = self.0.lock().unwrap();
+            dialogs.answer = Some(answer.map(Path::to_path_buf));
+            dialogs.waker.take()
+        };
+        std::thread::spawn(move || {
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// What each dialog was asked, in order.
+    pub fn asked(&self) -> Vec<Ask> {
+        self.0.lock().unwrap().asked.clone()
+    }
+
+    /// Each dialog asked for from now on opens none (`refusing`), or opens.
+    pub fn refusing(&self, refusing: bool) {
+        self.0.lock().unwrap().refusing = refusing;
+    }
+
+    /// How many times the dialogs opened have been polled.
+    pub fn polls(&self) -> u64 {
+        self.0.lock().unwrap().polls
+    }
+}
+
+/// How many meshes the fake kernel has made.
+pub fn tessellated(kernel: &FakeKernel) -> usize {
+    kernel
+        .calls()
+        .iter()
+        .filter(|call| matches!(call.op, Op::Tessellate { .. }))
+        .count()
+}
+
+/// The file at `path` read plainly, as a disk watch's reader for a test that compares with no
+/// interval: its bytes, gone if nothing is there, unreadable on any other error. None of the
+/// session's own checks (`silico_core::disk`'s reader: the workspace, a regular file, and
+/// `MAX_INPUT_LEN`, past which it's unreadable).
+pub fn plain_read(path: &Path) -> Found {
+    match std::fs::read(path) {
+        Ok(bytes) => Found::Bytes(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Found::Gone,
+        Err(_) => Found::Unreadable,
+    }
+}
+
+/// A clock that says what the test sets, from now: frozen until [`advance`]d.
+pub fn hand_clock() -> (Arc<Mutex<Instant>>, Clock) {
+    let time = Arc::new(Mutex::new(Instant::now()));
+    let read = Arc::clone(&time);
+    (time, Arc::new(move || *read.lock().unwrap()))
+}
+
+/// [`hand_clock`]'s time moved on `by`.
+pub fn advance(time: &Mutex<Instant>, by: Duration) {
+    *time.lock().unwrap() += by;
 }
 
 // --- Lavapipe ------------------------------------------------------------------------------

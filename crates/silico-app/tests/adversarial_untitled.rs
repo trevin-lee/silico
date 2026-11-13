@@ -7,23 +7,27 @@
 //! a wait on a command fails. Expected values by hand.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+#[path = "common/ui.rs"]
+mod ui;
 
-use eframe::egui::accesskit::Role;
-use eframe::egui::{Key, Modifiers};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use eframe::egui::{Key, Modifiers, ViewportCommand};
 use egui_kittest::Harness;
-use egui_kittest::kittest::{NodeT, Queryable};
+use egui_kittest::kittest::Queryable;
 use silico_app::App;
-use silico_app::browse::{Answer, Ask, Browse, Pick};
+use silico_app::browse::Pick;
 use silico_app::export::ExportForm;
-use silico_app::tab::Tab;
 use silico_core::cache::Cache;
 use silico_core::command::{SessionId, Sessions};
 use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
 use silico_core::sketch::SketchSolver;
 use tempfile::TempDir;
+use ui::{
+    FakeBrowser, answer_question, anywhere, begin_sketch_on, close_window, new_part, step,
+    step_until, tab_named, window_told,
+};
 
 const EXAMPLE: &str = r#"{
   "silico": 1,
@@ -34,8 +38,6 @@ const EXAMPLE: &str = r#"{
   ]
 }
 "#;
-
-const WAIT: Duration = Duration::from_secs(60);
 
 type Fake = Arc<FakeKernel>;
 type AppHarness = Harness<'static, App<Fake>>;
@@ -61,69 +63,6 @@ fn fixture() -> Fixture {
     }
 }
 
-/// The stand-in's state: what each dialog was asked, the answer the test gave (`None`
-/// until it does), and the waker of the last poll.
-#[derive(Default)]
-struct Dialogs {
-    asked: Vec<Ask>,
-    answer: Option<Option<PathBuf>>,
-    waker: Option<std::task::Waker>,
-}
-
-/// A native dialog that answers when the test says, from a thread of its own.
-#[derive(Clone, Default)]
-struct FakeBrowser(Arc<Mutex<Dialogs>>);
-
-impl Browse for FakeBrowser {
-    fn browse(&mut self, ask: &Ask) -> Option<Answer> {
-        let mut dialogs = self.0.lock().unwrap();
-        dialogs.asked.push(ask.clone());
-        dialogs.answer = None;
-        Some(Box::pin(FakeAnswer(Arc::clone(&self.0))))
-    }
-}
-
-struct FakeAnswer(Arc<Mutex<Dialogs>>);
-
-impl std::future::Future for FakeAnswer {
-    type Output = Option<PathBuf>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<PathBuf>> {
-        let mut dialogs = self.0.lock().unwrap();
-        match dialogs.answer.take() {
-            Some(answer) => std::task::Poll::Ready(answer),
-            None => {
-                dialogs.waker = Some(cx.waker().clone());
-                std::task::Poll::Pending
-            }
-        }
-    }
-}
-
-impl FakeBrowser {
-    fn answer(&self, answer: Option<&Path>) {
-        let waker = {
-            let mut dialogs = self.0.lock().unwrap();
-            dialogs.answer = Some(answer.map(Path::to_path_buf));
-            dialogs.waker.take()
-        };
-        std::thread::spawn(move || {
-            if let Some(waker) = waker {
-                waker.wake();
-            }
-        })
-        .join()
-        .unwrap();
-    }
-
-    fn asked(&self) -> Vec<Ask> {
-        self.0.lock().unwrap().asked.clone()
-    }
-}
-
 impl Fixture {
     fn app(&self, browser: &FakeBrowser) -> AppHarness {
         let app = App::new(Arc::clone(&self.sessions)).browsing(Box::new(browser.clone()));
@@ -137,53 +76,14 @@ impl Fixture {
     }
 }
 
-fn step(h: &mut AppHarness) {
-    let _marked = never_waits::marked();
-    h.step();
-}
-
-#[track_caller]
-fn step_until(h: &mut AppHarness, what: &str, done: impl Fn(&AppHarness) -> bool) {
-    let deadline = Instant::now() + WAIT;
-    loop {
-        step(h);
-        if done(h) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "never {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
 fn steps(h: &mut AppHarness, n: usize) {
     for _ in 0..n {
         step(h);
     }
 }
 
-fn anywhere(h: &AppHarness, label: &str) -> bool {
-    h.query_by_label(label).is_some()
-}
-
-fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a Tab {
-    h.state()
-        .tabs()
-        .iter()
-        .find(|tab| tab.name() == name)
-        .unwrap_or_else(|| panic!("no tab {name}"))
-}
-
 fn press_keys(h: &mut AppHarness, modifiers: Modifiers, key: Key) {
     h.key_press_modifiers(modifiers, key);
-}
-
-/// Command+N, and the part's tab waited for.
-fn new_part(h: &mut AppHarness) {
-    let before = h.state().tabs().len();
-    press_keys(h, Modifiers::COMMAND, Key::N);
-    step_until(h, "the part's tab", |h| {
-        h.state().tabs().len() == before + 1
-    });
 }
 
 /// A sketch added to the part `name`, shown, as a part is begun sketch-first (the app makes
@@ -192,41 +92,12 @@ fn new_part(h: &mut AppHarness) {
 /// is then unsaved.
 fn add_sketch(h: &mut AppHarness, name: &str) {
     // Create Sketch on once the part's timeline is read.
-    step_until(h, "Create Sketch on", |h| {
-        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Create Sketch")
-            .accesskit_node()
-            .is_disabled()
-    });
-    h.get_by_role_and_label(Role::Toolbar, "CREATE")
-        .get_by_label("Create Sketch")
-        .click();
-    step_until(h, "its planes", |h| {
-        h.query_by_role_and_label(Role::Button, "XY plane")
-            .is_some()
-    });
-    step(h);
-    h.get_by_role_and_label(Role::Button, "XY plane").click();
-    step_until(h, "its sketch added and read", |h| {
-        tab_named(h, name)
-            .sketch
-            .as_ref()
-            .is_some_and(|mode| mode.sketch.is_some() && mode.drawable().is_some())
-    });
+    begin_sketch_on(h, name, "XY plane");
     press_keys(h, Modifiers::COMMAND, Key::Enter);
     step_until(h, "unsaved", |h| {
         let tab = tab_named(h, name);
         tab.sketch.is_none() && tab.edits.idle() && tab.unsaved()
     });
-}
-
-/// The question's button `label`: the last of that label (after the app bar's).
-fn answer_question(h: &mut AppHarness, label: &str) {
-    h.query_all_by_role_and_label(Role::Button, label)
-        .last()
-        .unwrap()
-        .click_accesskit();
-    step(h);
 }
 
 /// Frames stepped until the native dialog has been asked `n` times in all.
@@ -235,35 +106,6 @@ fn asked_times(h: &mut AppHarness, browser: &FakeBrowser, n: usize) {
     step_until(h, "the panel asked", |_| browser.asked().len() >= n);
     assert_eq!(browser.asked().len(), n);
     assert_eq!(browser.asked()[n - 1].pick, Pick::Save);
-}
-
-/// The window asked to close, as its close button asks.
-fn close_window(h: &mut AppHarness) {
-    let root = eframe::egui::ViewportId::ROOT;
-    h.input_mut()
-        .viewports
-        .get_mut(&root)
-        .unwrap()
-        .events
-        .push(eframe::egui::ViewportEvent::Close);
-    step(h);
-    h.input_mut()
-        .viewports
-        .get_mut(&root)
-        .unwrap()
-        .events
-        .clear();
-}
-
-fn closing_told(h: &AppHarness) -> bool {
-    h.output()
-        .viewport_output
-        .get(&eframe::egui::ViewportId::ROOT)
-        .is_some_and(|viewport| {
-            viewport
-                .commands
-                .contains(&eframe::egui::ViewportCommand::Close)
-        })
 }
 
 #[test]
@@ -433,7 +275,7 @@ fn a_quits_save_to_a_file_another_session_holds_stops_the_quit() {
         h.state().message() == Some("Quit stopped: Untitled wasn't closed")
     });
     steps(&mut h, 20);
-    assert!(!closing_told(&h));
+    assert!(!window_told(&h, ViewportCommand::Close));
     assert!(tab_named(&h, "Untitled").unsaved());
     assert_eq!(std::fs::read_to_string(&held).unwrap(), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
@@ -512,7 +354,7 @@ fn a_quits_save_panel_answering_a_path_that_isnt_utf8_stops_the_quit() {
         h.state().message() == Some("Quit stopped: Untitled wasn't closed")
     });
     steps(&mut h, 20);
-    assert!(!closing_told(&h));
+    assert!(!window_told(&h, ViewportCommand::Close));
     assert!(tab_named(&h, "Untitled").unsaved());
     assert_eq!(never_waits::waits(), 0);
 }
