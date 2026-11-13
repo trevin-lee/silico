@@ -586,7 +586,12 @@ impl Edits {
 
 /// A command a tab has under way, besides its reads and its edits.
 enum Under {
-    Begin(Running<Begun>),
+    /// A `begin`, sent at the tab's revision `sent_at`: the session reads its file first,
+    /// and reloads it if it changed on disk.
+    Begin {
+        sent_at: Revision,
+        running: Running<Begun>,
+    },
     Commit {
         running: Running<Committed>,
         then_close: bool,
@@ -737,7 +742,7 @@ impl Under {
             | Under::SketchCut { sending, .. }
             | Under::DimensionValue { sending, .. }
             | Under::OfferField { sending, .. } => Some(sending.state),
-            Under::Begin(_)
+            Under::Begin { .. }
             | Under::Commit { .. }
             | Under::SaveAs { .. }
             | Under::Rollback { .. }
@@ -2219,7 +2224,7 @@ impl Tab {
             | Under::SketchCut { .. }
             | Under::DimensionValue { .. }
             | Under::OfferField { .. } => true,
-            Under::Begin(_)
+            Under::Begin { .. }
             | Under::Commit { .. }
             | Under::Rollback { .. }
             | Under::Step { .. }
@@ -2742,16 +2747,20 @@ impl Tab {
         close: &mut bool,
     ) -> Option<Under> {
         match under {
-            Under::Begin(running) => match running.try_take() {
+            Under::Begin { sent_at, running } => match running.try_take() {
                 Ok(response) => {
                     self.beginning = false;
+                    // The session's reload of its file, changed on disk, before the
+                    // transaction opened, which no answer said while it ran: seen as a poll
+                    // sees one.
+                    self.reload_in(sessions, sent_at, response.session.as_ref());
                     self.took_session(&response);
                     if let Err(problems) = response.result {
                         self.message = Some(said(&problems));
                     }
                     None
                 }
-                Err(running) => Some(Under::Begin(running)),
+                Err(running) => Some(Under::Begin { sent_at, running }),
             },
             Under::Commit {
                 running,
@@ -3281,9 +3290,8 @@ impl Tab {
                         }
                         Err(problems) => {
                             // At another revision than it was sent against: the session
-                            // reloaded first (its `begin`'s read of the file), which no
-                            // answer said while it ran.
-                            self.reload_in(sessions, sending.against, response.session.as_ref());
+                            // reloaded first, its `begin`'s read of the file, seen as that
+                            // answer was taken.
                             // Its own transaction, begun for it, ended: it held nothing,
                             // and, left open, the session would follow the file no more.
                             self.roll_back |= began;
@@ -3843,7 +3851,10 @@ impl Tab {
                     let began = !self.transaction && !self.beginning;
                     if began {
                         self.beginning = true;
-                        self.under.push(Under::Begin(sessions.begin(&self.id)));
+                        self.under.push(Under::Begin {
+                            sent_at: self.revision,
+                            running: sessions.begin(&self.id),
+                        });
                     }
                     self.saves += 1;
                     self.under.push(Under::SaveAs {
@@ -4860,7 +4871,10 @@ impl Tab {
         if !self.transaction && !self.beginning {
             self.beginning = true;
             self.record(Sent::Begin);
-            self.under.push(Under::Begin(sessions.begin(&self.id)));
+            self.under.push(Under::Begin {
+                sent_at: self.revision,
+                running: sessions.begin(&self.id),
+            });
         }
     }
 
@@ -11280,10 +11294,32 @@ mod tests {
         tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
         tab.suppress_feature(&sessions, pin, true);
         assert_eq!(undo_named(&mut tab, &sessions), None);
+        assert_eq!(banner(&tab), Some((Revision::OPENED, after_opened())));
         assert_eq!(
             named_once_listed(&mut tab, &sessions).as_deref(),
             Some("Suppress Bolt")
         );
+    }
+
+    /// The revision after the one a session opens at: the first change's.
+    fn after_opened() -> Revision {
+        Revision::OPENED.next().unwrap()
+    }
+
+    #[test]
+    fn a_save_as_whose_own_begin_reloaded_the_file_shows_the_reloads_banner() {
+        // BLOCK open and listed, no transaction; another program writes it with the pin named
+        // Bolt; a Save As, whose own `begin` reloads the file first, its answers taken: the
+        // reload's banner, from the opened revision to the next, the reload being the one
+        // change since, as a poll shows one it sees.
+        let (dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        assert_eq!(tab.revision, Revision::OPENED);
+        pin_named_bolt_at(&dir.path().join("part.silico"));
+        let copy = dir.path().join("copy.silico");
+        tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        assert_eq!(banner(&tab), Some((Revision::OPENED, after_opened())));
     }
 
     /// BLOCK open and listed (revision 1); then `change` asked of the tab and applied by the
