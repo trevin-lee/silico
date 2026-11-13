@@ -21,8 +21,10 @@
 //! Unsaved edits are counted as the person makes them, the tab's own steps
 //! ([`Tab::unsaved_edits`]: a dialog's or a sketch's edits one, as its Undo takes them),
 //! not the core's undo stack's edits, which counts each of a dialog's: `Unsaved · 2 edits`
-//! (`renderStatus`), or `Unsaved` alone while none is yet counted (the first one's answer to
-//! come).
+//! (`renderStatus`). While an answer of the tab's is still to come, the count it had
+//! before holds. `Unsaved` alone where it counts none: before the first edit's answer, or
+//! at a state none of the tab's own changes made (another client's of the same session),
+//! whose edits it can't count.
 //!
 //! Left out, for a reason, a seam: the hovered face's surface type and feature in the
 //! middle (`Face6 · Planar · Pad`): SEAM, an `elements` read of it.

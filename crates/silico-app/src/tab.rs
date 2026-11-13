@@ -187,7 +187,7 @@ pub struct Edit {
 /// an undo or a save never moves past an edit made after it.
 #[derive(Debug, Clone, PartialEq)]
 enum Queued {
-    /// An edit, and the words of the step it makes ([`Tab::step_words`]), fixed as it's
+    /// An edit, and the words of the step it makes ([`Tab::edit_words`]), fixed as it's
     /// asked: a rename's says the name it replaces.
     Edit(Edit, String),
     Save {
