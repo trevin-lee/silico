@@ -423,4 +423,68 @@ mod tests {
             assert_eq!(item.said(), "Orthographic", "{checked:?}");
         }
     }
+
+    /// The width [`lines`] lays `drawn` out at, in the app's fonts (set, then a pass run to
+    /// load them), with each head's and each item's own width there.
+    fn laid_out(drawn: &[Line<'_, ()>]) -> (f32, Vec<f32>, Vec<f32>) {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(theme::fonts());
+        let mut got = (0.0, Vec::new(), Vec::new());
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let width = ui
+                    .scope(|ui| lines(ui, "Test", drawn))
+                    .response
+                    .rect
+                    .width();
+                let heads = drawn
+                    .iter()
+                    .filter_map(|line| match line {
+                        Line::Head(text) => Some(head_width(ui, text)),
+                        _ => None,
+                    })
+                    .collect();
+                let items = drawn
+                    .iter()
+                    .filter_map(|line| match line {
+                        Line::Item(line_item, _) => Some(item_width(ui, line_item)),
+                        _ => None,
+                    })
+                    .collect();
+                got = (width, heads, items);
+            });
+            output.textures_delta.clear();
+        }
+        got
+    }
+
+    #[test]
+    fn a_menus_lines_are_its_heads_width_where_a_head_is_the_widest() {
+        // `.menu` is as wide as its widest line, and at least its `min-width: 200px` less
+        // its border and padding, 200 − 2·(4 + 1) = 190. A head of 40 W's is wider than that
+        // and than the one short item, Fit, so every line is the head's width.
+        assert_eq!(least_width(), 190.0);
+        let words = "W".repeat(40);
+        let drawn = [Line::Head(&words), Line::Item(marked("Fit", None), ())];
+        let (width, heads, items) = laid_out(&drawn);
+        assert!(
+            heads[0] > 190.0 && heads[0] > items[0],
+            "{heads:?} {items:?}"
+        );
+        assert!((width - heads[0]).abs() <= 1.0 / 16.0, "{width} {heads:?}");
+    }
+
+    #[test]
+    fn a_menus_lines_are_its_items_width_where_an_item_is_the_widest() {
+        // As above, the widest line an item of 30 W's, wider than the least 190 and than
+        // the short head: every line is the item's width.
+        let words = "W".repeat(30);
+        let drawn = [Line::Head("Short"), Line::Item(marked(&words, None), ())];
+        let (width, heads, items) = laid_out(&drawn);
+        assert!(
+            items[0] > 190.0 && items[0] > heads[0],
+            "{heads:?} {items:?}"
+        );
+        assert!((width - items[0]).abs() <= 1.0 / 16.0, "{width} {items:?}");
+    }
 }
