@@ -2456,6 +2456,24 @@ impl Tab {
         }
     }
 
+    /// The session's own reload, once a commit, a Save As, or a rollback ended the
+    /// transaction, seen by `status` before that command's answer, `session`, was taken: the
+    /// answer's revision behind the tab's (nothing of the tab's runs while one does, so
+    /// nothing else moves it). Seen as [`poll`](Self::poll) sees one, which it can't while
+    /// the command is under way.
+    fn reload_after_end<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        session: Option<&SessionInfo>,
+    ) {
+        if let Some(session) = session
+            && session.revision < self.revision
+        {
+            self.reload_seen(sessions, session.revision, self.revision);
+            self.reloaded_under_dialog(sessions);
+        }
+    }
+
     /// The session as `response` left it, if that's no older than what the tab knows.
     fn took_session<T>(&mut self, response: &Response<T>) {
         if let Some(session) = &response.session
@@ -2740,6 +2758,7 @@ impl Tab {
                 then_close,
             } => match running.try_take() {
                 Ok(response) => {
+                    self.reload_after_end(sessions, response.session.as_ref());
                     self.took_session(&response);
                     self.ended(response.result.map(|_| ()), then_close, close);
                     None
@@ -2756,6 +2775,7 @@ impl Tab {
                 then_close,
             } => match running.try_take() {
                 Ok(response) => {
+                    self.reload_after_end(sessions, response.session.as_ref());
                     self.took_session(&response);
                     match response.result {
                         // The session holds the new file from now on, by the path given: its
@@ -2799,16 +2819,7 @@ impl Tab {
             } => match running.try_take() {
                 Ok(response) => {
                     self.landed(lands, response.session.as_ref());
-                    // Past its revision already: the session's own reload, once the
-                    // transaction ended, seen by `status` before this answer was taken
-                    // (nothing of the tab's runs while a rollback does, so nothing else
-                    // moves it).
-                    if let Some(session) = &response.session
-                        && session.revision < self.revision
-                    {
-                        self.reload_seen(sessions, session.revision, self.revision);
-                        self.reloaded_under_dialog(sessions);
-                    }
+                    self.reload_after_end(sessions, response.session.as_ref());
                     self.took_session(&response);
                     // Typing queued after it is applied next: the field keeps it.
                     if response.result.is_ok() && self.edits.idle() {
@@ -11138,6 +11149,26 @@ mod tests {
         .unwrap();
     }
 
+    /// The session's revision as `status` says it now.
+    fn revision_now(tab: &Tab, sessions: &FakeSessions) -> Revision {
+        sessions.status(&tab.id).session.unwrap().revision
+    }
+
+    /// The session's own reload of its changed file, asked by a read of its text: the
+    /// revision it came to.
+    fn reloaded_now(tab: &Tab, sessions: &FakeSessions) -> Revision {
+        let session = sessions.text(&tab.id, None).wait().session.unwrap();
+        assert!(session.reloaded, "the file not reloaded");
+        session.revision
+    }
+
+    /// The reload banner's from and to, if one is shown.
+    fn banner(tab: &Tab) -> Option<(Revision, Revision)> {
+        tab.reloaded
+            .as_ref()
+            .map(|reloaded| (reloaded.from, reloaded.to))
+    }
+
     /// The session's status read, then its answers taken, as a poll takes them, but no
     /// timeline read started: what `status` says comes before the answers it may be ahead of.
     fn status_then_answers(tab: &mut Tab, sessions: &FakeSessions) {
@@ -11150,16 +11181,18 @@ mod tests {
         // Round 3's R3-1, to round 4's rule: PinA, listed; another program writes the file with
         // the pin named Bolt; a revert, applied, then the session's own reload of the changed
         // file (a read of its text, outside a transaction now), its revision read from
-        // `status` before the rollback's answer is taken. The pin suppressed then, from the
-        // reload's state: nothing named till a timeline lists it, then Bolt.
+        // `status` before the rollback's answer is taken: the reload's banner, from the
+        // rollback's revision to the reload's. The pin suppressed then, from the reload's
+        // state: nothing named till a timeline lists it, then Bolt.
         let (dir, sessions, mut tab, pin) = pin_renamed();
         pin_named_bolt_on_disk(&dir);
         tab.revert(&sessions, false);
         ended_off_poll(&tab, &sessions);
-        let reloaded = sessions.text(&tab.id, None).wait();
-        assert!(reloaded.session.unwrap().reloaded, "the file not reloaded");
+        let rolled_back = revision_now(&tab, &sessions);
+        let reload = reloaded_now(&tab, &sessions);
         status_then_answers(&mut tab, &sessions);
         assert!(!tab.transaction);
+        assert_eq!(banner(&tab), Some((rolled_back, reload)));
         tab.suppress_feature(&sessions, pin, true);
         assert_eq!(undo_named(&mut tab, &sessions), None);
         assert_eq!(
@@ -11192,18 +11225,20 @@ mod tests {
     fn a_saves_answer_taken_after_the_sessions_own_reload_lends_the_reload_no_names() {
         // Round 4's T4-2: PinA, listed; PinB answered; a save, applied; another program then
         // writes the file with the pin named Bolt, and the session reloads it, its revision
-        // read from `status` before the save's answer is taken. The pin
-        // suppressed then, from the reload's state: nothing named till a timeline lists it,
-        // then Bolt, never the PinB the save kept.
+        // read from `status` before the save's answer is taken: the reload's banner, from the
+        // save's revision to the reload's, as a rollback's. The pin suppressed then, from the
+        // reload's state: nothing named till a timeline lists it, then Bolt, never the PinB
+        // the save kept.
         let (dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         taken_until(&mut tab, &sessions, Tab::quiet);
         tab.save(&sessions, false);
         ended_off_poll(&tab, &sessions);
+        let saved = revision_now(&tab, &sessions);
         pin_named_bolt_on_disk(&dir);
-        let reloaded = sessions.text(&tab.id, None).wait();
-        assert!(reloaded.session.unwrap().reloaded, "the file not reloaded");
+        let reload = reloaded_now(&tab, &sessions);
         status_then_answers(&mut tab, &sessions);
+        assert_eq!(banner(&tab), Some((saved, reload)));
         tab.suppress_feature(&sessions, pin, true);
         assert_eq!(undo_named(&mut tab, &sessions), None);
         assert_eq!(
@@ -11215,21 +11250,23 @@ mod tests {
     #[test]
     fn a_save_as_answer_taken_after_the_sessions_own_reload_lends_the_reload_no_names() {
         // Round 4's T4-2, its Save As twin: the Save As writes another file, and the session,
-        // holding that file from then on, reloads it once another program writes it Bolt.
+        // holding that file from then on, reloads it once another program writes it Bolt: the
+        // reload's banner, from the Save As's revision to the reload's.
         let (dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         taken_until(&mut tab, &sessions, Tab::quiet);
         let copy = dir.path().join("copy.silico");
         tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
         ended_off_poll(&tab, &sessions);
+        let saved = revision_now(&tab, &sessions);
         std::fs::write(
             &copy,
             BLOCK.replace(r#""name": "Pin""#, r#""name": "Bolt""#),
         )
         .unwrap();
-        let reloaded = sessions.text(&tab.id, None).wait();
-        assert!(reloaded.session.unwrap().reloaded, "the file not reloaded");
+        let reload = reloaded_now(&tab, &sessions);
         status_then_answers(&mut tab, &sessions);
+        assert_eq!(banner(&tab), Some((saved, reload)));
         tab.suppress_feature(&sessions, pin, true);
         assert_eq!(undo_named(&mut tab, &sessions), None);
         assert_eq!(
