@@ -5044,6 +5044,70 @@ fn a_dialogs_cancel_waiting_counts_none_of_its_edits() {
 }
 
 #[test]
+fn a_long_named_features_deletion_is_cut_at_sixty_characters() {
+    // Round 3's T3-4: the hole named 400 W's and deleted: "Delete" and its name as the
+    // session held it, cut at 60 characters with an ellipsis (`changes::SHOWN_CHARS`).
+    let f = fixture();
+    let hole = "W".repeat(400);
+    let text = EXAMPLE.replace(r#""name": "Hole""#, &format!(r#""name": "{hole}""#));
+    let (mut h, _) = f.opened("long.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let id = silico_core::document::FeatureId::new("m3tq8v0z").unwrap();
+        h.state_mut().tabs_mut()[0].remove_feature(&sessions, id);
+    }
+    settled(&mut h);
+    assert!(!shows(&h, "Timeline", &hole));
+    assert_eq!(
+        tooltip_title(&mut h, "Undo"),
+        format!("Undo: Delete {}…", "W".repeat(60))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dialog_cancelled_before_its_opening_is_taken_leaves_the_count_the_last_ones_ok_left() {
+    // Round 3's T3-5: PinK; Edit Feature (A), its height edited; the session's queue held,
+    // A's height edited again (held) and A OK'd: A's OK waits, leaving two edits. Then a
+    // new pad's dialog (B) opened, its opening queued behind A's, and cancelled at once:
+    // nothing of B's is made, so the count A's OK left holds, two, not the one before A.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    double_click(&mut h, "Timeline", "PinK");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    type_into(&mut h, "Height", "3");
+    settled(&mut h);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_into(&mut h, "Height", "4");
+    let sessions = Arc::clone(&f.sessions);
+    h.state_mut().tabs_mut()[0].close_dialog(&sessions, true);
+    step(&mut h);
+    assert!(in_status_bar(&h, "Unsaved · 2 edits"), "A's OK");
+    open_pad_on_triangle(&mut h);
+    h.state_mut().tabs_mut()[0].close_dialog(&sessions, false);
+    step(&mut h);
+    assert!(h.state().tabs()[0].unsettled(), "nothing waited");
+    assert!(
+        in_status_bar(&h, "Unsaved · 2 edits"),
+        "{:?}",
+        everything(&h)
+    );
+    hold.release();
+    let _ = check.wait();
+    settled(&mut h);
+    assert!(in_status_bar(&h, "Unsaved · 2 edits"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_rename_typed_in_the_frame_the_last_ones_answer_lands_names_the_name_that_one_gave() {
     // Round 1's T1: PinA, then "B" typed and applied by the session while no frame runs;
     // then "C" typed in the frame that takes B's answer, before the timeline is read again.

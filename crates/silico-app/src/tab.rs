@@ -9313,6 +9313,45 @@ mod tests {
     }
 
     #[test]
+    fn a_steps_feature_is_named_in_the_state_it_was_made_from_else_in_the_one_it_made() {
+        // Round 3's T3-3, names by hand: at 1 the pin is Pin; at 2 it's Peg; at 3 it's Pin
+        // and the pad, made there, is Pad; 4 and 5 aren't known.
+        let mut tab = tab();
+        let pin = FeatureId::new("b0000001").unwrap();
+        let pad = FeatureId::new("p0000001").unwrap();
+        let names = |pairs: &[(&FeatureId, &str)]| Names {
+            listed: Arc::new(
+                pairs
+                    .iter()
+                    .map(|(feature, name)| ((*feature).clone(), (*name).to_owned()))
+                    .collect(),
+            ),
+            since: BTreeMap::new(),
+        };
+        tab.names.insert(rev(1), names(&[(&pin, "Pin")]));
+        tab.names.insert(rev(2), names(&[(&pin, "Peg")]));
+        tab.names
+            .insert(rev(3), names(&[(&pin, "Pin"), (&pad, "Pad")]));
+        let text = |words: Words, from: u64, made: u64| tab.step_text(&words, rev(from), rev(made));
+        // From 1 to 2: named as it was at 1, not as it is at 2.
+        assert_eq!(
+            text(Words::Of("Edit", pin.clone()), 1, 2).as_deref(),
+            Some("Edit Pin")
+        );
+        assert_eq!(
+            text(Words::Then(pin.clone(), "remove its edge"), 2, 3).as_deref(),
+            Some("Peg: remove its edge")
+        );
+        // From 1 to 3: the pad not there at 1, so as it is at 3, which made it.
+        assert_eq!(
+            text(Words::Of("Add", pad), 1, 3).as_deref(),
+            Some("Add Pad")
+        );
+        // From 4 to 5: known in neither, so nothing.
+        assert_eq!(text(Words::Of("Edit", pin), 4, 5), None);
+    }
+
+    #[test]
     fn a_change_refused_or_changing_nothing_names_no_state_and_keeps_the_redo_branch() {
         let mut tab = tab();
         let one = Revision::OPENED;
