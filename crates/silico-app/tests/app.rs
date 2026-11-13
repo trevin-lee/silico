@@ -25164,6 +25164,40 @@ fn a_drags_end_refused_after_another_clients_edit_is_let_go_at_once_not_at_a_rea
 }
 
 #[test]
+fn a_drags_edit_is_a_step_named_by_its_sketch_and_counted_once() {
+    // Round 1's T2: the sketch Box's corner dragged in sketch mode. Its end's edit is a step
+    // of sketch mode's own, named as Finish names them all ("Edit Box"), and counted once.
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed_sketch(&f);
+    step_until(&mut h, "the read of the session's revision", |h| {
+        let tab = &h.state().tabs()[0];
+        sketch_mode(h)
+            .and_then(|mode| mode.read.as_ref())
+            .and_then(|read| read.model)
+            == Some(tab.revision)
+    });
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    step_until(&mut h, "the frame", |h| {
+        the_drag(h).is_some_and(|d| d.frames >= 1)
+    });
+    sketch_events(&f, &mut h, &[pointer(Release, 52.0, 32.0)]);
+    settled(&mut h);
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Edit Box");
+    step_until(&mut h, "one counted", |h| {
+        in_status_bar(h, "Unsaved · 1 edit")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_drags_edit_after_an_undo_in_sketch_mode_leaves_redo_nothing_of_sketch_modes() {
     use eframe::egui::{Key, Modifiers};
     use silico_app::sketch::PointerAction::{Move, Press, Release};
