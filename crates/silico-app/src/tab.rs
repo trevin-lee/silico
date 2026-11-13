@@ -1118,6 +1118,9 @@ pub struct Tab {
     /// anything answers that may set names back (an undo, a redo, a rollback, a Restore, a
     /// reload).
     renamed: BTreeMap<FeatureId, (Revision, String)>,
+    /// The unsaved edits counted the last time a poll found nothing of the tab's under way
+    /// ([`unsaved_edits`](Self::unsaved_edits)).
+    counted: usize,
     /// The state sketch mode's Finish or Cancel ended at, or an over-defining dimension's
     /// Cancel undid to: Redo is off there till the next edit, so what it undid isn't redone
     /// past its Finish, nor the dimension Cancel refused.
@@ -1316,6 +1319,7 @@ impl Tab {
             groups: Vec::new(),
             steps: BTreeMap::new(),
             renamed: BTreeMap::new(),
+            counted: 0,
             redo_fence: None,
             sketch_edited: false,
             restored: BTreeMap::new(),
@@ -1960,10 +1964,22 @@ impl Tab {
 
     /// How many unsaved edits the status bar counts (the prototype's `d.undo.length`): the
     /// steps Undo takes back to where the transaction began, a dialog's OK'd edits one step
-    /// as Undo takes them, and the edits of a dialog or a sketch still open, or closing, one
-    /// step as its OK or Finish will make them. Counted from the steps the tab made, so those
-    /// the undo stack's bound put out of reach count still: they're unsaved all the same.
+    /// as Undo takes them, and the edits of sketch mode open one step as its Finish will make
+    /// them. Counted from the steps the tab made, so those the undo stack's bound put out of
+    /// reach count still: they're unsaved all the same. While anything of the tab's is under
+    /// way, the count of the last moment nothing was ([`counted`](Self::counted)): the
+    /// session's revision, read from `status`, can be past the steps the answers not yet
+    /// taken will name.
     pub fn unsaved_edits(&self) -> usize {
+        if self.quiet() {
+            self.edits_now()
+        } else {
+            self.counted
+        }
+    }
+
+    /// [`unsaved_edits`](Self::unsaved_edits) worked out now, nothing of the tab's under way.
+    fn edits_now(&self) -> usize {
         let at = self.state_of(self.revision);
         // At a state no change of the tab's made (where the transaction began, or one another
         // client of the session moved it to), it knows of none to count.
@@ -1980,28 +1996,17 @@ impl Tab {
         for group in self.groups.iter().filter(|group| group.end <= at) {
             count = count.saturating_sub(between(group.start, group.end).saturating_sub(1));
         }
-        if let Some(base) = self.open_base().map(|base| self.state_of(base))
+        // Sketch mode's own edits, from where it opened (its own opening's).
+        if let Some(base) = self
+            .sketch
+            .as_ref()
+            .and_then(|mode| mode.opened_at)
+            .map(|base| self.state_of(base))
             && base < at
         {
             count = count.saturating_sub(between(base, at).saturating_sub(1));
         }
         count
-    }
-
-    /// The state the edits not yet made one step began from, if any are: those of the
-    /// dialog or sketch whose OK, Finish, or Cancel waits first in the queue (`dialog_base`,
-    /// its own opening's once that's been taken: one still queued ahead of it has made
-    /// nothing yet), or else those of sketch mode open (where its own opening came to).
-    fn open_base(&self) -> Option<Revision> {
-        let queued = self.edits.queue.iter().find_map(|queued| match queued {
-            Queued::Closed { .. } => Some(self.dialog_base),
-            Queued::Opened { .. } => Some(None),
-            _ => None,
-        });
-        match queued {
-            Some(base) => base,
-            None => self.sketch.as_ref().and_then(|mode| mode.opened_at),
-        }
     }
 
     /// Whether sketch mode, if it's open, lets an undo step: it has opened (everything asked
@@ -2237,6 +2242,11 @@ impl Tab {
         self.drive_drag(sessions);
         self.read_sketches(sessions);
         self.measure(sessions);
+        // The unsaved edits, counted while every answer of the tab's is taken: what the bar
+        // holds while the next is under way.
+        if self.quiet() {
+            self.counted = self.edits_now();
+        }
     }
 
     /// The sketch reads polled and started, without waiting: sketch mode's, of its sketch,
@@ -9101,8 +9111,10 @@ mod tests {
         stood_at(&mut tab, rev(5), 4, 0);
         assert_eq!(tab.unsaved_edits(), 2);
         assert_eq!(tab.undo_step(), Some("Edit Triangle"));
-        // Finished: sketch mode gone, its close waiting first in the queue with where it
-        // opened (`dialog_base`): still two.
+        // As a poll keeps it, nothing of the tab's under way.
+        tab.counted = tab.edits_now();
+        // Finished: sketch mode gone, its close waiting in the queue, its group not yet made:
+        // the count held, two, not the four steps not yet one.
         tab.sketch = None;
         tab.dialog_base = Some(rev(2));
         tab.edits.queue.push_back(Queued::Closed {
@@ -9111,6 +9123,7 @@ mod tests {
             dialog: None,
             said: Some("Edit Triangle".to_owned()),
         });
+        assert_eq!(tab.edits_now(), 4);
         assert_eq!(tab.unsaved_edits(), 2);
         // Its close taken: one step, the group's.
         tab.edits.queue.clear();
@@ -9122,18 +9135,9 @@ mod tests {
         });
         assert_eq!(tab.unsaved_edits(), 2);
         assert_eq!(tab.undo_step(), Some("Edit Triangle"));
-        // Another opening queued ahead of a close (its own, not yet taken): what
-        // `dialog_base` holds is no one's of those, so nothing more is folded.
+        // An edit after it: three.
         apply(&mut tab, rev(5), rev(5), "Rename Block", rev(6));
         stood_at(&mut tab, rev(6), 5, 0);
-        tab.dialog_base = Some(rev(2));
-        tab.edits.queue.push_back(Queued::Opened { serial: 2 });
-        tab.edits.queue.push_back(Queued::Closed {
-            ok: true,
-            sketch: false,
-            dialog: Some(2),
-            said: None,
-        });
         assert_eq!(tab.unsaved_edits(), 3);
     }
 
@@ -10697,6 +10701,39 @@ mod tests {
             value: name_value("PinAB").unwrap(),
         };
         assert_eq!(tab.edit_words(&next), "Rename PinA");
+    }
+
+    #[test]
+    fn the_unsaved_count_holds_while_an_edits_answer_is_yet_to_be_taken() {
+        // Round 1's R1: one rename counted; a second sent, and `status` already of the
+        // revision it came to (poll reads it before it takes the answers) with its answer not
+        // yet taken: the bar holds the count it had, 1, not none for a frame.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        tab.rename(&sessions, pin.clone(), "PinA");
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.quiet() && tab.unsaved_edits() == 1
+        });
+        tab.rename(&sessions, pin, "PinAB");
+        assert!(tab.edits.in_flight.is_some(), "the second rename sent");
+        let before = tab.revision;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let moved = loop {
+            let at = sessions.status(&tab.id).session.unwrap().revision;
+            if at != before {
+                break at;
+            }
+            assert!(std::time::Instant::now() < deadline, "never applied");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        // As poll's `status` leaves it, the answer not yet taken.
+        tab.revision = moved;
+        tab.status_revision = moved;
+        assert_eq!(tab.unsaved_edits(), 1);
+        // Taken: two.
+        polled_until(&mut tab, &sessions, |tab| tab.quiet());
+        assert_eq!(tab.unsaved_edits(), 2);
     }
 
     #[test]
