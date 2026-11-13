@@ -10705,6 +10705,35 @@ mod tests {
     }
 
     #[test]
+    fn a_poll_that_reads_the_new_revision_before_its_answer_is_taken_keeps_the_count() {
+        // Round 2's C: one rename counted. The session then moves past it (another client's
+        // rename here, as an edit's own does once applied, before its answer is taken), with
+        // something of the tab's under way (a `begin`): a poll reads a revision none of the
+        // tab's steps made, and keeps the count it had.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.quiet() && tab.unsaved_edits() == 1
+        });
+        let moved = sessions
+            .set_field(
+                &tab.id,
+                tab.revision,
+                FeatureId::new("k7f2qx3m").unwrap(),
+                "name".to_owned(),
+                name_value("BlockB").unwrap(),
+            )
+            .wait();
+        assert!(moved.result.is_ok());
+        tab.beginning = true;
+        tab.poll(&sessions);
+        assert_eq!(tab.revision, moved.session.unwrap().revision);
+        assert!(!tab.quiet());
+        assert_eq!(tab.unsaved_edits(), 1);
+    }
+
+    #[test]
     fn a_rename_after_one_answered_but_not_yet_read_again_replaces_the_name_that_one_gave() {
         // Round 1's T1: the pin renamed PinA, its answer taken (the session at revision 2)
         // but the timeline not read again (still revision 1's, "Pin"): the next rename
