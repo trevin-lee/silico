@@ -27,7 +27,7 @@ use silico_core::disk::{Clock, Found};
 use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
 use silico_core::sketch::SketchSolver;
 use tempfile::TempDir;
-use ui::{settled, step, step_until};
+use ui::{in_status_bar, keyed, settled, step, step_until, tooltip, tooltip_title};
 
 /// The M2.1 example: a block, a pin, and the hole the pin cuts in it.
 const EXAMPLE: &str = r#"{
@@ -139,51 +139,6 @@ fn renamed(h: &mut AppHarness, name: &str, text: &str) {
         step(h);
     }
     settled(h);
-}
-
-/// The title the app bar's `button` shows in its tooltip, the pointer brought over it from
-/// away, and the tooltip's label's place: the word alone, or the word, a colon, and the
-/// step it would take.
-fn tooltip(h: &mut AppHarness, button: &str) -> (String, eframe::egui::Rect) {
-    let named = format!("{button}: ");
-    let title = |h: &AppHarness| {
-        h.query_all_by_role(Role::Label).find_map(|node| {
-            let rect = node.rect();
-            let node = node.accesskit_node();
-            let said = node.label().or_else(|| node.value())?;
-            (said == button || said.starts_with(&named)).then_some((said, rect))
-        })
-    };
-    h.hover_at(eframe::egui::pos2(640.0, 400.0));
-    step(h);
-    step(h);
-    h.get_by_role_and_label(Role::Button, button).hover();
-    step_until(h, "its tooltip", |h| title(h).is_some());
-    step(h);
-    title(h).unwrap()
-}
-
-fn tooltip_title(h: &mut AppHarness, button: &str) -> String {
-    tooltip(h, button).0
-}
-
-/// Ctrl+Z (`Key::Z`) or Ctrl+Y pressed once Undo or Redo is on, and its answer settled.
-fn keyed(h: &mut AppHarness, key: Key) {
-    if key == Key::Z {
-        step_until(h, "undoable", |h| h.state().tabs()[0].undoable());
-    } else {
-        step_until(h, "redoable", |h| h.state().tabs()[0].redoable());
-    }
-    h.key_press_modifiers(Modifiers::COMMAND, key);
-    step(h);
-    settled(h);
-}
-
-/// Whether a label `words` is in the status bar: on the line of its Shortcuts button.
-fn in_status_bar(h: &AppHarness, words: &str) -> bool {
-    let bar = h.get_by_role_and_label(Role::Button, "Shortcuts").rect();
-    h.query_all_by_label(words)
-        .any(|node| bar.y_range().contains(node.rect().center().y))
 }
 
 /// The status bar's words of whether the document is saved: "Saved", "Unsaved", or
