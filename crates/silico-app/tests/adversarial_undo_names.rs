@@ -21,6 +21,7 @@ use eframe::egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
+use silico_app::tab::Sent;
 use silico_core::cache::Cache;
 use silico_core::command::{CheckModel, Sessions};
 use silico_core::disk::{Clock, Found};
@@ -208,10 +209,11 @@ fn a_name_across_two_lines_is_named_on_one_as_the_prototypes_tooltip_shows_it() 
 }
 
 #[test]
-fn undo_and_redo_pressed_faster_than_they_answer_name_the_state_the_session_comes_to() {
+fn undo_and_redo_pressed_one_a_frame_leave_the_names_and_the_count_of_the_state_reached() {
     // Three renames (Pin, Hole, Block, in that order), then Ctrl+Z, Ctrl+Z, Ctrl+Y, Ctrl+Z,
-    // Ctrl+Z, Ctrl+Y, Ctrl+Y, Ctrl+Z, one a frame, none waited for. However many the tab
-    // took, once everything has answered the names and the count are those of the state
+    // Ctrl+Z, Ctrl+Y, Ctrl+Y, Ctrl+Z, one a frame, none waited for: the tab takes those
+    // that come while no step of its is under way (one at least, the first), and drops the
+    // rest. Once everything has answered, the names and the count are those of the state
     // the document is at: k renames standing, Undo names the k-th, Redo the next.
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
@@ -227,6 +229,12 @@ fn undo_and_redo_pressed_faster_than_they_answer_name_the_state_the_session_come
         step(&mut h);
     }
     settled(&mut h);
+    let taken = h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter(|sent| matches!(sent, Sent::Undo(_) | Sent::Redo(_)))
+        .count();
+    assert!((1..=8).contains(&taken), "{taken} steps taken of 8 pressed");
     step_until(&mut h, "the status of the state reached", |h| {
         let tab = &h.state().tabs()[0];
         !tab.unsettled() && tab.status.is_some()
