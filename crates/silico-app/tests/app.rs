@@ -25349,11 +25349,18 @@ fn esc_takes_a_held_drag_then_the_prompts_cancel(tool: Option<silico_app::viewpo
             &mut h,
             silico_app::sketch::dimension::ModifyAction::Typed("33".to_owned()),
         );
+        let typed = sketch_mode(&h)
+            .unwrap()
+            .edit_box
+            .as_ref()
+            .map(|edit| edit.text.clone());
+        assert_eq!(typed.as_deref(), Some("33"));
+        let sent = h.state().tabs()[0].sent.clone();
         h.key_press(Key::Escape);
         step(&mut h);
         settled(&mut h);
         assert!(sketch_mode(&h).unwrap().edit_box.is_none());
-        assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+        assert_eq!(h.state().tabs()[0].sent, sent);
         assert_eq!(text_of(&f, &h), text);
         assert_eq!(view(&h).tool, tool);
         // Then the bar's tool.

@@ -798,7 +798,7 @@ impl<P: Clients + 'static> App<P> {
                 tab: active.and_then(|at| tabs.get_mut(at)),
                 sessions,
                 name,
-                started: &mut next_frame,
+                next_frame: &mut next_frame,
                 drawing,
                 dialog_key,
                 remembered,
@@ -967,7 +967,8 @@ impl<P: Clients + 'static> App<P> {
             }
         }
         if next_frame {
-            // Polled next frame, even if it answered at once.
+            // A command started is polled next frame, even if it answered at once; a key
+            // taken has its change drawn there.
             ui.ctx().request_repaint();
         }
         // With nothing pending, a frame each interval, whose `status` compares the files on
@@ -3577,10 +3578,10 @@ mod tests {
     // ---- #351's mutants: what sketch mode's panels say of the frame ----
 
     #[test]
-    fn sketch_modes_panels_asked_nothing_leave_whether_a_command_was_started_as_it_was() {
-        // `next_frame` says whether the frame after is asked for at once (a command
-        // started): the sketch bar and the palette, Finish Sketch and Cancel unclicked, ask
-        // for none, and never take back an ask made before them.
+    fn sketch_modes_panels_asked_nothing_leave_the_next_frames_ask_as_it_was() {
+        // `next_frame` says whether the frame after is asked for at once (a command started,
+        // or a key taken): the sketch bar and the palette, Finish Sketch and Cancel
+        // unclicked, ask for none, and never take back an ask made before them.
         let (mut app, dir) = app();
         let open = answered(&app, &dir, 1, "one.silico", true);
         let id = session(&open);
