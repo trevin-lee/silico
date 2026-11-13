@@ -4809,6 +4809,60 @@ fn an_undo_refused_after_another_clients_step_names_no_step_it_doesnt_know() {
 }
 
 #[test]
+fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_characters() {
+    // Round 1's T4: the plate named 400 W's and the triangle 400 V's. Edit Feature's OK on
+    // the plate, and Edit Sketch's Finish on the triangle, are each one step named "Edit"
+    // and the name cut at 60 characters with an ellipsis (`changes::SHOWN_CHARS`).
+    let f = fixture();
+    let (plate, triangle) = ("W".repeat(400), "V".repeat(400));
+    let text = SKETCHED
+        .replace(r#""name": "Plate""#, &format!(r#""name": "{plate}""#))
+        .replace(r#""name": "Triangle""#, &format!(r#""name": "{triangle}""#));
+    let (mut h, _) = f.opened("long.silico", &text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", &triangle));
+    let edit = |h: &mut AppHarness, id: &str, sketch: bool| {
+        let sessions = Arc::clone(&f.sessions);
+        let id = silico_core::document::FeatureId::new(id).unwrap();
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        if sketch {
+            tab.edit_sketch(&sessions, &id);
+        } else {
+            tab.edit_feature(&sessions, &id);
+        }
+    };
+    edit(&mut h, "b0000001", false);
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Box").is_some()
+    });
+    type_into(&mut h, "Height", "1");
+    settled(&mut h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(
+        tooltip_title(&mut h, "Undo"),
+        format!("Undo: Edit {}…", "W".repeat(60))
+    );
+    edit(&mut h, "s0000001", true);
+    sketch_read(&mut h);
+    settled(&mut h);
+    delete_line(&mut h, "na000000");
+    // Finished through the tab: the sketch bar draws the whole name, its Finish past the
+    // window's edge.
+    {
+        let sessions = Arc::clone(&f.sessions);
+        h.state_mut().tabs_mut()[0].finish_sketch(&sessions, true);
+    }
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    assert_eq!(
+        tooltip_title(&mut h, "Undo"),
+        format!("Undo: Edit {}…", "V".repeat(60))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_rename_typed_in_the_frame_the_last_ones_answer_lands_names_the_name_that_one_gave() {
     // Round 1's T1: PinA, then "B" typed and applied by the session while no frame runs;
     // then "C" typed in the frame that takes B's answer, before the timeline is read again.
