@@ -11339,6 +11339,59 @@ mod tests {
     }
 
     #[test]
+    fn a_saves_state_listed_before_its_answer_is_taken_keeps_that_listing() {
+        // PinA listed; PinB answered; a save, applied, its revision read from `status`, and a
+        // timeline of that revision taken before the save's answer is: the answer keeps that
+        // listing, so the pin suppressed then is named at once, "Suppress PinB".
+        let (_dir, sessions, mut tab, pin) = pin_renamed();
+        tab.rename(&sessions, pin.clone(), "PinB");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        tab.save(&sessions, false);
+        ended_off_poll(&tab, &sessions);
+        status_now(&mut tab, &sessions);
+        let listed = sessions
+            .timeline(&tab.id, ModelChoice::Current)
+            .wait()
+            .result
+            .unwrap();
+        assert_eq!(listed.revision, tab.revision);
+        tab.took_timeline(listed);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(
+            undo_named(&mut tab, &sessions).as_deref(),
+            Some("Suppress PinB")
+        );
+    }
+
+    #[test]
+    fn a_new_features_dialog_open_through_a_save_answered_after_a_reload_opens_at_the_reload() {
+        // PinA listed; PinB answered; a new Pad's dialog opened, with nothing in it to add;
+        // a save, applied; another program writes the file, and the session reloads it, read
+        // from `status` before the save's answer is taken. The dialog, its feature not added,
+        // stays open, opening at the reload's revision, as at a reload a poll sees.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.rename(&sessions, pin, "PinB");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        tab.open_dialog(&sessions, Kind::Pad, &crate::dialog::Remembered::default());
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        assert!(
+            tab.dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.feature.is_none())
+        );
+        assert_eq!(tab.dialog_base, Some(tab.revision));
+        tab.save(&sessions, false);
+        ended_off_poll(&tab, &sessions);
+        let saved = revision_now(&tab, &sessions);
+        pin_named_bolt_at(&dir.path().join("part.silico"));
+        let reload = reloaded_past(&tab, &sessions, saved);
+        status_then_answers(&mut tab, &sessions);
+        assert!(tab.dialog.is_some(), "{:?}", tab.message);
+        assert_eq!(tab.dialog_base, Some(reload));
+    }
+
+    #[test]
     fn a_save_as_whose_own_begin_reloaded_the_file_lends_the_saved_state_no_old_names() {
         // Round 4's R4-1: BLOCK open and listed, no transaction; another program writes it with
         // the pin named Bolt; a Save As, whose own `begin` reloads the file first, and the pin
@@ -11466,6 +11519,26 @@ mod tests {
             );
         });
         assert_eq!(named.as_deref(), Some("Edit Pin"));
+    }
+
+    #[test]
+    fn a_timeline_taken_while_a_drags_end_waits_keeps_the_names_of_the_state_it_began_from() {
+        // Its twin for a drag's end, kept and applied as `drive_drag` keeps and applies it (a
+        // real drag needs sketch mode and a sketch worker): a drag of the Triangle sketch
+        // begun at 1, its end's edit kept as sent from there; the session at 2 once its end
+        // applied, read from `status`; 1's listing taken late; then the end's answer: "Edit
+        // Triangle", named from the state the drag began from.
+        let mut tab = tab();
+        let triangle = FeatureId::new("s0000001").unwrap();
+        tab.drag_sending = Some(tab.sending(Some(Words::Of("Edit", triangle))));
+        stood_at(&mut tab, rev(2), 1, 0);
+        tab.took_timeline(TimelineAnswer {
+            revision: Revision::OPENED,
+            ..named_timeline()
+        });
+        let sending = tab.drag_sending.take().unwrap();
+        tab.applied(&sending, &answered_at(rev(2), Ok(())));
+        assert_eq!(tab.undo_step().as_deref(), Some("Edit Triangle"));
     }
 
     #[test]
