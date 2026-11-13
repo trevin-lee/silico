@@ -2024,7 +2024,9 @@ impl Tab {
         }
     }
 
-    /// [`unsaved_edits`](Self::unsaved_edits) worked out now, nothing of the tab's under way.
+    /// [`unsaved_edits`](Self::unsaved_edits) worked out now, nothing of the tab's under way:
+    /// the edits of sketch mode or a dialog open one step, from where it opened (its own
+    /// opening's: `opened_at`, `dialog_base`).
     fn edits_now(&self) -> usize {
         let at = self.state_of(self.revision);
         // At a state no change of the tab's made (where the transaction began, or one another
@@ -2032,6 +2034,18 @@ impl Tab {
         if !self.steps.contains_key(&at) {
             return 0;
         }
+        let open = match &self.sketch {
+            Some(mode) => mode.opened_at,
+            None if self.in_dialog() => self.dialog_base,
+            None => None,
+        };
+        self.count_to(at, open.map(|base| self.state_of(base)))
+    }
+
+    /// The steps from where the transaction began to the state `at`, a dialog's OK'd edits
+    /// one step, and, from the state `open` (sketch mode's or a dialog's, open) to `at`, its
+    /// edits one step.
+    fn count_to(&self, at: Revision, open: Option<Revision>) -> usize {
         let between = |start: Revision, end: Revision| {
             self.steps
                 .range(start..=end)
@@ -2042,17 +2056,22 @@ impl Tab {
         for group in self.groups.iter().filter(|group| group.end <= at) {
             count = count.saturating_sub(between(group.start, group.end).saturating_sub(1));
         }
-        // Sketch mode's own edits, from where it opened (its own opening's).
-        if let Some(base) = self
-            .sketch
-            .as_ref()
-            .and_then(|mode| mode.opened_at)
-            .map(|base| self.state_of(base))
-            && base < at
-        {
+        if let Some(base) = open.filter(|base| *base < at) {
             count = count.saturating_sub(between(base, at).saturating_sub(1));
         }
         count
+    }
+
+    /// The count a dialog's or sketch mode's close leaves, asked now with what it opened at,
+    /// `base` (its own opening's), kept while the close and what it sends wait
+    /// ([`counted`](Self::counted)): the edits before it, and, for an OK or a Finish that
+    /// made anything (the session moved past `base`, or an edit of its is still to answer),
+    /// its one step; a Cancel's none of its edits, which it takes back.
+    fn count_closed(&mut self, ok: bool, base: Revision) {
+        let base = self.state_of(base);
+        let made =
+            ok && (self.state_of(self.revision) != base || !self.edits.idle() || self.changing());
+        self.counted = self.count_to(base, None) + usize::from(made);
     }
 
     /// Whether sketch mode, if it's open, lets an undo step: it has opened (everything asked
@@ -5903,6 +5922,18 @@ impl Tab {
             .filter(|_| ok)
             .map(|closed| self.dialog_step(closed));
         let before = self.before_dialog.take();
+        // What it leaves counted, once its opening has been taken (one still queued has made
+        // nothing).
+        let opened = serial.is_some_and(|serial| {
+            !self
+                .edits
+                .queue
+                .iter()
+                .any(|queued| matches!(queued, Queued::Opened { serial: s } if *s == serial))
+        });
+        if let Some(base) = self.dialog_base.filter(|_| opened) {
+            self.count_closed(ok, base);
+        }
         if ok {
             self.oked = closed;
             // Its feature, made, counts from now: its sketch gains it. An edit counts now
@@ -6115,6 +6146,9 @@ impl Tab {
                 "Edit"
             })
         });
+        if let Some(base) = self.sketch.as_ref().and_then(|mode| mode.opened_at) {
+            self.count_closed(ok, base);
+        }
         // Its close waits for a drag's end (the queue waits while one is under way).
         self.leave_drag();
         self.sketch = None;
@@ -9277,6 +9311,24 @@ mod tests {
         apply(&mut tab, rev(5), rev(5), "Rename Block", rev(6));
         stood_at(&mut tab, rev(6), 5, 0);
         assert_eq!(tab.unsaved_edits(), 3);
+        // Edit Feature open at 6, two edits of its own (7, 8): four, its edits one step, as
+        // its OK will make them.
+        let mut editing = Dialog::new(Kind::Cylinder, None, 2);
+        editing.made = false;
+        editing.feature = Some(FeatureId::new("b0000001").unwrap());
+        tab.dialog = Some(editing);
+        tab.dialog_base = Some(rev(6));
+        apply(&mut tab, rev(6), rev(6), "Edit Pin", rev(7));
+        apply(&mut tab, rev(7), rev(7), "Edit Pin", rev(8));
+        stood_at(&mut tab, rev(8), 7, 0);
+        assert_eq!(tab.unsaved_edits(), 4);
+        // Its close asked: an OK leaves four, held while it waits; a Cancel three, its edits
+        // taken back.
+        tab.dialog = None;
+        tab.count_closed(true, rev(6));
+        assert_eq!(tab.counted, 4);
+        tab.count_closed(false, rev(6));
+        assert_eq!(tab.counted, 3);
     }
 
     #[test]
