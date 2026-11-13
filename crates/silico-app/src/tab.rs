@@ -544,9 +544,9 @@ impl Edits {
                 .any(|queued| matches!(queued, Queued::Edit(..)))
     }
 
-    /// `edit` made, its step's words `step`: in place of one of the same field that waits
-    /// last, with only edits after it (keeping that one's words: the step is still the one
-    /// it was asked as, a rename of the name it replaced), or at the end.
+    /// `edit` made, saying `step`: in place of one of the same field that waits last, with
+    /// only edits after it (keeping what that one says: the two are one edit, asked where
+    /// the first was asked, in its dialog or sketch mode), or at the end.
     fn push(&mut self, edit: Edit, step: Option<Words>) {
         for queued in self.queue.iter_mut().rev() {
             match queued {
@@ -1158,8 +1158,10 @@ pub struct Tab {
     /// session's now.
     names: BTreeMap<Revision, Names>,
     /// The unsaved edits the bar holds while something of the tab's is under way
-    /// ([`unsaved_edits`](Self::unsaved_edits)): as the last poll that found nothing under
-    /// way counted them, or as a dialog's or sketch mode's close asked since leaves them.
+    /// ([`unsaved_edits`](Self::unsaved_edits)), set three ways: by the last poll that found
+    /// nothing under way, as it counted them; by a dialog's or sketch mode's close, as it's
+    /// asked, to what it leaves ([`count_closed`](Self::count_closed)); and to none as a save
+    /// or a revert ends the transaction ([`stack_gone`](Self::stack_gone)).
     held_count: usize,
     /// The state sketch mode's Finish or Cancel ended at, or an over-defining dimension's
     /// Cancel undid to: Redo is off there till the next edit, so what it undid isn't redone
@@ -2061,9 +2063,11 @@ impl Tab {
     /// as Undo takes them, and the edits of sketch mode open one step as its Finish will make
     /// them. Counted from the steps the tab made, so those the undo stack's bound put out of
     /// reach count still: they're unsaved all the same. While anything of the tab's is under
-    /// way, the count of the last moment nothing was ([`held_count`](Self::held_count)): the
-    /// session's revision, read from `status`, can be past the steps the answers not yet
-    /// taken will name.
+    /// way, the count held ([`held_count`](Self::held_count)), as the last poll that found
+    /// nothing under way counted it, or a dialog's or sketch mode's close asked since left it
+    /// ([`count_closed`](Self::count_closed)), or none once a save or a revert ended the
+    /// transaction ([`stack_gone`](Self::stack_gone)): the session's revision, read from
+    /// `status`, can be past the steps the answers not yet taken will name.
     pub fn unsaved_edits(&self) -> usize {
         if self.quiet() {
             self.edits_now()
@@ -3416,8 +3420,9 @@ impl Tab {
             let Some(queued) = self.edits.queue.pop_front() else {
                 return;
             };
-            // What it's named as a step, if it changes the document, by the timeline as it
-            // is now.
+            // What its step says, if it changes the document and says it as it's sent (its
+            // feature named from the state the step is made from, once it's made); none for
+            // what its answer names, or what changes nothing.
             let step = self.step_words(&queued);
             match queued {
                 Queued::Edit(edit, _) => {
@@ -5987,7 +5992,8 @@ impl Tab {
             return;
         }
         let serial = closed.as_ref().map(|closed| closed.serial);
-        // The one step its OK makes of its edits, named as they are now.
+        // What the one step its OK makes of its edits says: its feature, named from the state
+        // it opened at once the step is made ([`dialog_step`](Self::dialog_step)).
         let said = closed
             .as_ref()
             .filter(|_| ok)

@@ -22,7 +22,8 @@
 //! ([`Tab::unsaved_edits`]: a dialog's or a sketch's edits one, as its Undo takes them),
 //! not the core's undo stack's edits, which counts each of a dialog's: `Unsaved · 2 edits`
 //! (`renderStatus`). While an answer of the tab's is still to come, the count it had
-//! before holds. `Unsaved` alone where it counts none: before the first edit's answer, or
+//! before holds, or what a dialog's or sketch mode's close leaves, set as the close is
+//! asked. `Unsaved` alone where it counts none: before the first edit's answer, or
 //! at a state none of the tab's own changes made (another client's of the same session),
 //! whose edits it can't count.
 //!
