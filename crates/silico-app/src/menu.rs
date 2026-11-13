@@ -540,5 +540,41 @@ mod tests {
                 "{line}: {rect:?} in {menu:?}"
             );
         }
+        // The separator (`.menu .msep`: 1 high, Gray.250, 4 above and below): a fill 4 under
+        // Fit, 1 high, across the menu's whole width.
+        let fit = shown[2];
+        let rule = Rect::from_min_size(
+            Pos2::new(menu.left(), fit.bottom() + 4.0),
+            vec2(menu.width(), 1.0),
+        );
+        assert_eq!(
+            crate::modal::tests::fills_at(&h, rule),
+            [(crate::modal::tests::css::G250, egui::CornerRadius::ZERO)],
+            "the separator, {rule:?}"
+        );
+    }
+
+    #[test]
+    fn a_menus_widest_line_widens_it_wherever_it_comes() {
+        // The menu is as wide as its widest line wherever that line comes: first of two
+        // heads (40 W's, then Short, then Fit), or between items (Short, Fit, 30 W's, Home);
+        // each wider than the least 190.
+        let words = "W".repeat(40);
+        let (width, heads, _) = laid_out(&[
+            Line::Head(&words),
+            Line::Head("Short"),
+            Line::Item(marked("Fit", None), ()),
+        ]);
+        assert!(heads[0] > 190.0, "{heads:?}");
+        assert!((width - heads[0]).abs() <= 1.0 / 16.0, "{width} {heads:?}");
+        let words = "W".repeat(30);
+        let (width, _, items) = laid_out(&[
+            Line::Head("Short"),
+            Line::Item(marked("Fit", None), ()),
+            Line::Item(marked(&words, None), ()),
+            Line::Item(marked("Home", None), ()),
+        ]);
+        assert!(items[1] > 190.0, "{items:?}");
+        assert!((width - items[1]).abs() <= 1.0 / 16.0, "{width} {items:?}");
     }
 }
