@@ -54,18 +54,15 @@ pub fn removed_words(name: &str, made: Made) -> String {
     format!("{name} no longer names the broken edge. {}", made.back())
 }
 
-/// The words of the step a candidate's use makes of the feature `name`, as Undo and Redo
-/// name it: the prototype's `useCand` label (`'Inside corner: use the inside corner edge'`),
-/// the edge the one the person picked, as the status bar says it.
-pub fn used_step(name: &str) -> String {
-    format!("{name}: use the edge you picked")
-}
+/// What the step a candidate's use makes says of its feature, after its name, as Undo and
+/// Redo name it ("Inside corner: use the edge you picked"): the prototype's `useCand` label
+/// (`'Inside corner: use the inside corner edge'`), the edge the one the person picked, as
+/// the status bar says it.
+pub const USED_STEP: &str = "use the edge you picked";
 
-/// The words of the step the broken name's removal makes of the feature `name`: the
+/// What the step the broken name's removal makes says of its feature, after its name: the
 /// prototype's `removeRef` label (`'Inside corner: remove its edge'`).
-pub fn removed_step(name: &str) -> String {
-    format!("{name}: remove its edge")
-}
+pub const REMOVED_STEP: &str = "remove its edge";
 
 /// Why Remove the edge is off for the feature `name`'s last edge.
 pub fn last_edge_words(name: &str, chamfer: bool) -> String {

@@ -4863,6 +4863,31 @@ fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_cha
 }
 
 #[test]
+fn a_rename_behind_sketch_modes_cancel_replaces_the_name_the_cancel_puts_back() {
+    // Round 2's A(c): Plate renamed PlateK, then Triangle open in sketch mode. The session's
+    // queue held, a rename to PlateKA sent, sketch mode cancelled, and a rename to PlateKB
+    // asked behind it. Cancel undoes to where sketch mode opened, PlateKA with it, so
+    // PlateKB replaces PlateK.
+    let f = fixture();
+    let (mut h, _) = triangle_open(&f, true);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let plate = silico_core::document::FeatureId::new("b0000001").unwrap();
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.rename(&sessions, plate.clone(), "PlateKA");
+        tab.finish_sketch(&sessions, false);
+        tab.rename(&sessions, plate, "PlateKB");
+    }
+    hold.release();
+    let _ = check.wait();
+    settled(&mut h);
+    assert!(shows(&h, "Timeline", "PlateKB"));
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename PlateK");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_rename_typed_in_the_frame_the_last_ones_answer_lands_names_the_name_that_one_gave() {
     // Round 1's T1: PinA, then "B" typed and applied by the session while no frame runs;
     // then "C" typed in the frame that takes B's answer, before the timeline is read again.

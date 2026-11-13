@@ -2001,7 +2001,7 @@ impl<P: Clients + 'static> App<P> {
             tab.map_or((false, false), |tab| (tab.undoable(), tab.redoable()));
         // Each names the step it would take, as the prototype's `data-tip` does ("Undo: Edit
         // Pad"); off, or with no step it can name, its word alone.
-        let titled = |word: &str, step: Option<&str>| match step {
+        let titled = |word: &str, step: Option<String>| match step {
             Some(step) => format!("{word}: {step}"),
             None => word.to_owned(),
         };
