@@ -1154,11 +1154,11 @@ pub struct Tab {
     /// ends.
     steps: BTreeMap<Revision, Step>,
     /// The features' names in each state the tab knows them in, by the state's first
-    /// revision: from a timeline listing exactly that revision, or, for a state the tab's own
-    /// changes make inside a transaction, from the state each was made from and what it did
-    /// ([`Effect`]). Never carried across a save, a Save As, or a rollback: the state each
-    /// comes to has none till a timeline lists it (names lent across a reload would be
-    /// wrong; none is never wrong). An undo or a redo comes back to a state already here.
+    /// revision: from a timeline of that state, or, for a state the tab's own changes make
+    /// inside a transaction, from the state each was made from and what it did ([`Effect`]).
+    /// Never carried across a save, a Save As, or a rollback: the state each comes to has none
+    /// till a timeline lists it (names lent across a reload would be wrong; none is never
+    /// wrong). An undo or a redo comes back to a state already here.
     /// What a step says is worked out from it ([`step_text`](Self::step_text)). Kept for:
     /// - the states the steps were made from and made, and the groups' starts and ends;
     /// - the states a change in flight, a drag's end, or a change under way was sent from
