@@ -4961,6 +4961,63 @@ fn a_dialogs_ok_waiting_behind_its_last_edit_counts_its_edits_as_one() {
 }
 
 #[test]
+fn a_dialogs_ok_asked_while_its_only_edit_waits_counts_the_one_step_it_makes() {
+    // Round 3's T3-1: PinK, then Edit Feature with nothing of its own applied; the session's
+    // queue held, its height typed (its only edit, waiting), and OK: the edit waiting is
+    // what OK makes its one step, so two edits are unsaved, while it waits and after.
+    let f = fixture();
+    let mut h = pin_dialog_edited(&f, &[]);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_into(&mut h, "Height", "4");
+    {
+        let sessions = Arc::clone(&f.sessions);
+        h.state_mut().tabs_mut()[0].close_dialog(&sessions, true);
+    }
+    step(&mut h);
+    assert!(h.state().tabs()[0].unsettled(), "the OK didn't wait");
+    assert!(
+        in_status_bar(&h, "Unsaved · 2 edits"),
+        "{:?}",
+        everything(&h)
+    );
+    hold.release();
+    let _ = check.wait();
+    settled(&mut h);
+    assert!(in_status_bar(&h, "Unsaved · 2 edits"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_modes_cancel_waiting_counts_none_of_its_edits() {
+    // Round 3's T3-1: Plate renamed PlateK, then Triangle in sketch mode and a line of it
+    // deleted: two edits, the sketch's one. The session's queue held and sketch mode
+    // cancelled: its undo waits, and the delete it takes back counts for nothing, one edit.
+    let f = fixture();
+    let (mut h, _) = triangle_open(&f, true);
+    delete_line(&mut h, "na000000");
+    step_until(&mut h, "two counted", |h| {
+        in_status_bar(h, "Unsaved · 2 edits")
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        h.state_mut().tabs_mut()[0].finish_sketch(&sessions, false);
+    }
+    step(&mut h);
+    assert!(h.state().tabs()[0].unsettled(), "the Cancel didn't wait");
+    assert!(
+        in_status_bar(&h, "Unsaved · 1 edit"),
+        "{:?}",
+        everything(&h)
+    );
+    hold.release();
+    let _ = check.wait();
+    settled(&mut h);
+    assert!(in_status_bar(&h, "Unsaved · 1 edit"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_dialogs_cancel_waiting_counts_none_of_its_edits() {
     // Round 2's B: PinK, then Edit Feature, its height and radius edited and settled; the
     // session's queue held and Cancel clicked: its undo waits, and the dialog's edits it
@@ -25479,6 +25536,8 @@ fn finish_while_a_released_drags_end_is_held_keeps_its_edit_and_one_undo_takes_i
     assert!(sketch_mode(&h).is_none());
     assert!(the_drag(&h).is_some_and(|d| d.in_flight()));
     assert!(h.state().tabs()[0].unsettled());
+    // The Finish waiting behind the drag's end, which it makes its one step: one edit.
+    assert!(in_status_bar(&h, "Unsaved · 1 edit"));
     f.sketches.release();
     settled(&mut h);
     // The drag's edit stays: the corner at (52.05, 32.03), the fake's frame.
