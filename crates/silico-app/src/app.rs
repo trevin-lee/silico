@@ -1993,20 +1993,29 @@ impl<P: Clients + 'static> App<P> {
                 *started = true;
             }
         }
-        let (undoable, redoable) = self
+        let tab = self
             .active_place()
             .filter(|_| !start_shown)
-            .and_then(|at| self.tabs.get(at))
-            .map_or((false, false), |tab| (tab.undoable(), tab.redoable()));
+            .and_then(|at| self.tabs.get(at));
+        let (undoable, redoable) =
+            tab.map_or((false, false), |tab| (tab.undoable(), tab.redoable()));
+        // Each names the step it would take, as the prototype's `data-tip` does ("Undo: Edit
+        // Pad"); off, or with no step it can name, its word alone.
+        let titled = |word: &str, step: Option<String>| match step {
+            Some(step) => format!("{word}: {step}"),
+            None => word.to_owned(),
+        };
+        let undo_title = titled(Command::Undo.label(), tab.and_then(|tab| tab.undo_step()));
+        let redo_title = titled(Command::Redo.label(), tab.and_then(|tab| tab.redo_step()));
         // Redo's shortcut as the prototype names it: Shift+Command+Z on macOS, Ctrl+Y
         // elsewhere (each works on both): the registry's.
-        for (undo, icon, command, enabled) in [
-            (true, Icon::Undo, Command::Undo, undoable),
-            (false, Icon::Redo, Command::Redo, redoable),
+        for (undo, icon, command, enabled, title) in [
+            (true, Icon::Undo, Command::Undo, undoable, undo_title),
+            (false, Icon::Redo, Command::Redo, redoable, redo_title),
         ] {
             let word = command.label();
             let button = bar::button(ui, icon, None, word, enabled, None);
-            if bar::tooltip(button, word, command.shown(ui.ctx()), None).clicked()
+            if bar::tooltip(button, &title, command.shown(ui.ctx()), None).clicked()
                 && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at))
             {
                 tab.step(&self.sessions, undo);

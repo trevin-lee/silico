@@ -18,12 +18,17 @@
 //! misreport it), where the prototype's bar keeps its last rebuild's time (its save makes
 //! no revision; its Cancel rebuilds).
 //!
-//! Left out, each for a reason, each a seam:
-//! - the edits' count (`Unsaved · 2 edits`): the core's undo stack counts edits, but the
-//!   app's Undo steps over a dialog's edits as one, so neither count is the person's. SEAM:
-//!   the tab's count of its own undo steps.
-//! - the hovered face's surface type and feature in the middle (`Face6 · Planar · Pad`):
-//!   SEAM, an `elements` read of it.
+//! Unsaved edits are counted as the person makes them, the tab's own steps
+//! ([`Tab::unsaved_edits`]: a dialog's or a sketch's edits one, as its Undo takes them),
+//! not the core's undo stack's edits, which counts each of a dialog's: `Unsaved · 2 edits`
+//! (`renderStatus`). While an answer of the tab's is still to come, the count it had
+//! before holds, or what a dialog's or sketch mode's close leaves, set as the close is
+//! asked. `Unsaved` alone where it counts none: before the first edit's answer, or
+//! at a state none of the tab's own changes made (another client's of the same session),
+//! whose edits it can't count.
+//!
+//! Left out, for a reason, a seam: the hovered face's surface type and feature in the
+//! middle (`Face6 · Planar · Pad`): SEAM, an `elements` read of it.
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
@@ -112,7 +117,8 @@ impl Said {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Saved {
     Saved,
-    Unsaved,
+    /// Unsaved, with this many edits counted ([`Tab::unsaved_edits`]).
+    Unsaved(usize),
     /// Unsaved, with a dialog open, whose edits are its own until OK.
     DialogOpen,
 }
@@ -183,7 +189,7 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
     } else if tab.in_dialog() {
         Saved::DialogOpen
     } else {
-        Saved::Unsaved
+        Saved::Unsaved(tab.unsaved_edits())
     };
     Bar {
         said,
@@ -412,7 +418,20 @@ fn right_parts(ui: &mut Ui, bar: &Bar, asked: &mut Asked) {
     separator(ui, 0.0);
     let job = match saved {
         Saved::Saved => plain("Saved", theme::STATUS_TEXT),
-        Saved::Unsaved => plain("Unsaved", theme::TEXT_STRONG),
+        Saved::Unsaved(edits) => {
+            let mut job = plain("Unsaved", theme::TEXT_STRONG);
+            // `renderStatus`: `<span class="strong">Unsaved</span> · 2 edits`, the count in
+            // the item's own colour.
+            if edits > 0 {
+                let plural = if edits == 1 { "" } else { "s" };
+                job.append(
+                    &format!(" · {edits} edit{plural}"),
+                    0.0,
+                    format(theme::STATUS_TEXT),
+                );
+            }
+            job
+        }
         Saved::DialogOpen => {
             let mut job = plain("Unsaved", theme::TEXT_STRONG);
             job.append(" · dialog open", 0.0, format(theme::STATUS_TEXT));
@@ -1146,7 +1165,7 @@ mod tests {
                 ms: None,
             },
             (false, false),
-            Saved::Unsaved,
+            Saved::Unsaved(0),
             None,
         );
         shown.messages = vec!["The sketch couldn't be written".to_owned()];
@@ -1369,6 +1388,53 @@ mod tests {
     }
 
     #[test]
+    fn unsaved_counts_its_edits_in_the_items_own_colour_and_none_says_unsaved_alone() {
+        // `renderStatus`: `<span class="strong">Unsaved</span> · ${n} edit${n === 1 ? '' :
+        // 's'}`, the count in `.st-item`'s Gray.550, "Unsaved" Gray.1000; one item, its
+        // words whole.
+        for (edits, words) in [
+            (1, "Unsaved · 1 edit"),
+            (2, "Unsaved · 2 edits"),
+            (12, "Unsaved · 12 edits"),
+        ] {
+            let h = drawn(bar_of(
+                Said::Nothing,
+                (false, false),
+                Saved::Unsaved(edits),
+                None,
+            ));
+            let shown = text(&h, words);
+            let sections = &shown.galley.job.sections;
+            assert_eq!(sections.len(), 2, "{words}");
+            assert_eq!(sections[0].format.color, css::G1000, "{words}");
+            assert_eq!(sections[1].format.color, css::G550, "{words}");
+            let font = FontId::new(css::FS_SMALL, FontFamily::Proportional);
+            assert!(
+                sections
+                    .iter()
+                    .all(|section| section.format.font_id == font)
+            );
+            let split = sections[1].byte_range.start.0;
+            assert_eq!(&shown.galley.text()[..split], "Unsaved");
+            widget(&h, Role::Label, words);
+        }
+        // None counted yet (the first edit's answer to come): Unsaved alone, never "0 edits".
+        let h = drawn(bar_of(
+            Said::Nothing,
+            (false, false),
+            Saved::Unsaved(0),
+            None,
+        ));
+        let shown = text(&h, "Unsaved");
+        assert_eq!(colour(&shown), css::G1000);
+        assert!(
+            !painted(&h)
+                .iter()
+                .any(|shape| matches!(shape, Shape::Text(t) if t.galley.text().contains("edit")))
+        );
+    }
+
+    #[test]
     fn a_rebuild_running_stopped_or_failed_is_drawn_in_its_states_colours() {
         // Running: its words strong (`.st-item.strong`), the spinner's ring, the progress
         // bar 2 after the item, 3 of 7 of its 70 filled Gray.800 on Gray.300; Stop on in
@@ -1379,7 +1445,7 @@ mod tests {
                 progress: Some((3, 7)),
             },
             (true, false),
-            Saved::Unsaved,
+            Saved::Unsaved(0),
             None,
         ));
         let item = BAR.left() + css::PADDING_LEFT;

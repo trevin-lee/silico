@@ -78,7 +78,7 @@ impl Changes {
 }
 
 /// `text` cut short at [`SHOWN_CHARS`] characters, with an ellipsis.
-fn shown(text: &str) -> String {
+pub(crate) fn shown(text: &str) -> String {
     match text.char_indices().nth(SHOWN_CHARS) {
         Some((at, _)) => format!("{}…", &text[..at]),
         None => text.to_owned(),

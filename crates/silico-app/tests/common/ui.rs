@@ -17,14 +17,16 @@
 //!   app.rs has `click_at`; `type_over` (Home and a Delete for each character the field
 //!   holds) where it has `set_field` and `retype`; `tick` finds a checkbox by its own label.
 //!
-//! The others do what app.rs's do, but for their paths and genericity.
+//! The others do what app.rs's do, but for their paths and genericity. #441 moves app.rs's
+//! `tooltip_title` and `in_status_bar` too, and its `step_key` becomes `keyed` here, which
+//! takes the key.
 #![allow(dead_code)]
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use eframe::egui::accesskit::Role;
-use eframe::egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2};
+use eframe::egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
@@ -96,6 +98,62 @@ pub fn settled<P: Clients + 'static>(h: &mut AppUi<P>) {
         let tab = &h.state().tabs()[0];
         tab.edits.idle() && !tab.applying() && tab.dialog.as_ref().is_none_or(|d| !d.adding)
     });
+}
+
+// --- The app bar and the status bar --------------------------------------------------------
+
+/// The title the app bar's `button` ("Undo" or "Redo") shows in its tooltip, the pointer
+/// brought over it from over the canvas, where no tooltip shows, and where its label is: the
+/// word alone, or the word, a colon, and the step it would take (the prototype's `data-tip`,
+/// `'Undo' + (canUndo ? ': ' + label : '')`).
+pub fn tooltip<P: Clients + 'static>(h: &mut AppUi<P>, button: &str) -> (String, Rect) {
+    let named = format!("{button}: ");
+    let title = |h: &AppUi<P>| {
+        h.query_all_by_role(Role::Label).find_map(|node| {
+            let rect = node.rect();
+            let node = node.accesskit_node();
+            let said = node.label().or_else(|| node.value())?;
+            (said == button || said.starts_with(&named)).then_some((said, rect))
+        })
+    };
+    h.hover_at(Pos2::new(640.0, 400.0));
+    step(h);
+    step(h);
+    assert_eq!(
+        title(h).map(|(said, _)| said),
+        None,
+        "{button}'s tooltip shown with the pointer away"
+    );
+    h.get_by_role_and_label(Role::Button, button).hover();
+    step_until(h, "its tooltip", |h| title(h).is_some());
+    // Drawn from the frame after it's laid out (egui sizes a new popup unseen).
+    step(h);
+    title(h).unwrap()
+}
+
+/// [`tooltip`]'s title alone.
+pub fn tooltip_title<P: Clients + 'static>(h: &mut AppUi<P>, button: &str) -> String {
+    tooltip(h, button).0
+}
+
+/// Whether a label `words` is in the status bar: on the line of its Shortcuts button.
+pub fn in_status_bar<P: Clients + 'static>(h: &AppUi<P>, words: &str) -> bool {
+    let bar = h.get_by_role_and_label(Role::Button, "Shortcuts").rect();
+    h.query_all_by_label(words)
+        .any(|node| bar.y_range().contains(node.rect().center().y))
+}
+
+/// Command+`key` pressed (Z undoes, Y redoes) once Undo, or Redo, is on in the first tab, and
+/// its answer settled.
+pub fn keyed<P: Clients + 'static>(h: &mut AppUi<P>, key: Key) {
+    if key == Key::Z {
+        step_until(h, "undoable", |h| h.state().tabs()[0].undoable());
+    } else {
+        step_until(h, "redoable", |h| h.state().tabs()[0].redoable());
+    }
+    h.key_press_modifiers(Modifiers::COMMAND, key);
+    step(h);
+    settled(h);
 }
 
 // --- Files ---------------------------------------------------------------------------------
