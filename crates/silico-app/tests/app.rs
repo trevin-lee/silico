@@ -1877,9 +1877,11 @@ fn restore_puts_the_replaced_revision_back_as_an_edit_that_undo_takes_and_save_w
     assert!(changed(&f, &h));
     let sent = &h.state().tabs()[0].sent;
     assert_eq!(&sent[sent.len() - 2..], [Sent::Begin, Sent::Replace]);
+    // One edit, named as the banner's button named it (Fable's decision of 2026-11-04).
     step_until(&mut h, "unsaved shown", |h| {
-        status_said(h, "Unsaved").as_deref() == Some("Unsaved")
+        status_said(h, "Unsaved").as_deref() == Some("Unsaved · 1 edit")
     });
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Restore revision 1");
     assert!(!anywhere(
         &h,
         "Reloaded block.silico: another program changed it on disk"
@@ -1889,6 +1891,8 @@ fn restore_puts_the_replaced_revision_back_as_an_edit_that_undo_takes_and_save_w
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
     step_until(&mut h, "undone", |h| text_of(&f, h) == BLOCK_11);
     step_until(&mut h, "unchanged", |h| !changed(&f, h));
+    settled(&mut h);
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Restore revision 1");
     // Redone, then saved: the file is the restored bytes.
     step_until(&mut h, "Redo on", |h| {
         !h.get_by_role_and_label(Role::Button, "Redo")
@@ -4527,6 +4531,281 @@ fn undone_back(f: &Fixture) -> (AppHarness, std::path::PathBuf) {
         !anywhere(h, "example.silico *") && offered(h, "Redo")
     });
     (h, path)
+}
+
+/// The title the app bar's `button` ("Undo" or "Redo") shows in its tooltip, the pointer
+/// brought over it from away: the word alone, or the word, a colon, and the step it would
+/// take (the prototype's `data-tip`, `'Undo' + (canUndo ? ': ' + label : '')`).
+fn tooltip_title(h: &mut AppHarness, button: &str) -> String {
+    let named = format!("{button}: ");
+    let title = |h: &AppHarness| {
+        h.query_all_by_role(Role::Label).find_map(|node| {
+            let node = node.accesskit_node();
+            let said = node.label().or_else(|| node.value())?;
+            (said == button || said.starts_with(&named)).then_some(said)
+        })
+    };
+    pointer_away(h);
+    assert_eq!(
+        title(h),
+        None,
+        "{button}'s tooltip shown with the pointer away"
+    );
+    bar_button(h, button).hover();
+    step_until(h, "its tooltip", |h| title(h).is_some());
+    // Drawn from the frame after it's laid out (egui sizes a new popup unseen).
+    step(h);
+    title(h).unwrap()
+}
+
+#[test]
+fn undo_and_redo_name_no_step_on_a_document_just_opened_and_the_bar_says_saved() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
+    assert!(in_status_bar(&h, "Saved"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_name_the_renames_they_take_and_the_bar_counts_the_edits_unsaved() {
+    // The prototype's labels, `'Rename ' + f.name` (the name it replaced), after "Undo: " and
+    // "Redo: ", and `renderStatus`'s `Unsaved · N edits`, worked by hand at each step.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    settled(&mut h);
+    step_until(&mut h, "one counted", |h| {
+        in_status_bar(h, "Unsaved · 1 edit")
+    });
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Pin");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
+    select(&mut h, "Hole");
+    type_name(&mut h, "y");
+    settled(&mut h);
+    step_until(&mut h, "two counted", |h| {
+        in_status_bar(h, "Unsaved · 2 edits")
+    });
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Hole");
+    // Undone: Undo names the first rename, Redo the second.
+    step_key(&mut h, true);
+    step_until(&mut h, "one counted again", |h| {
+        in_status_bar(h, "Unsaved · 1 edit")
+    });
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Pin");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Rename Hole");
+    // Redone.
+    step_key(&mut h, false);
+    step_until(&mut h, "two counted again", |h| {
+        in_status_bar(h, "Unsaved · 2 edits")
+    });
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Hole");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
+    // Undone, then an edit: it drops what was undone, and counts in its place.
+    step_key(&mut h, true);
+    select(&mut h, "Block");
+    type_name(&mut h, "z");
+    settled(&mut h);
+    step_until(&mut h, "the new edit counted", |h| {
+        in_status_bar(h, "Unsaved · 2 edits") && !h.state().tabs()[0].redoable()
+    });
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Block");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
+    // Both undone, back to the file's document: nothing unsaved, nothing for Undo to name,
+    // and Redo the pin's rename.
+    step_key(&mut h, true);
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Rename Block");
+    step_key(&mut h, true);
+    step_until(&mut h, "saved", |h| in_status_bar(h, "Saved"));
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Rename Pin");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_suppression_a_move_and_a_deletion_are_each_named_by_what_they_did_to_which_feature() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    menu_on(&mut h, "Timeline", "Pin");
+    menu_click(&mut h, "PIN", "Suppress");
+    settled(&mut h);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Suppress Pin");
+    step_until(&mut h, "one counted", |h| {
+        in_status_bar(h, "Unsaved · 1 edit")
+    });
+    step_key(&mut h, true);
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Suppress Pin");
+    // The pin dragged before the block.
+    let block = timeline(&h).get_by_label("Block").rect();
+    drag_item(
+        &mut h,
+        "Pin",
+        block.left_center() + eframe::egui::vec2(3.0, 0.0),
+    );
+    step_until(&mut h, "the pin moved", |h| {
+        items(h) == ["Pin", "Block", "Hole"]
+    });
+    settled(&mut h);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Move Pin");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
+    // The hole deleted (Del, as the prototype's `del` asks nothing).
+    select(&mut h, "Hole");
+    h.key_press(eframe::egui::Key::Delete);
+    step_until(&mut h, "deleted", |h| !shows(h, "Timeline", "Hole"));
+    settled(&mut h);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Delete Hole");
+    step_until(&mut h, "two counted", |h| {
+        in_status_bar(h, "Unsaved · 2 edits")
+    });
+    step_key(&mut h, true);
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Delete Hole");
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Move Pin");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dialogs_edits_okd_are_one_step_the_dialogs_words_name_and_the_bar_counts_once() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    // A new pad: its add and its length, two edits on the core's stack, OK'd as one step,
+    // "Add Pad" (Create Sketch's `'Add ' + name`; its OK's).
+    made(&mut h, "Pad", "Length");
+    let core_undos = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .transaction()
+            .map(|transaction| transaction.undo)
+    };
+    step_until(&mut h, "the core counting three", |h| {
+        core_undos(h) == Some(3)
+    });
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Pad");
+    step_until(&mut h, "two counted", |h| {
+        in_status_bar(h, "Unsaved · 2 edits")
+    });
+    step_key(&mut h, true);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Pin");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Add Pad");
+    step_until(&mut h, "one counted", |h| {
+        in_status_bar(h, "Unsaved · 1 edit")
+    });
+    step_key(&mut h, false);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Pad");
+    // Edit Feature of the pin: its OK's one step, "Edit" and its name (`'Edit ' + D.name`).
+    double_click(&mut h, "Timeline", "PinK");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    type_into(&mut h, "Height", "3");
+    type_into(&mut h, "Radius", "1");
+    settled(&mut h);
+    // While it's open, its edits are its own: the bar says so, as before.
+    assert!(in_status_bar(&h, "Unsaved · dialog open"));
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Edit PinK");
+    step_until(&mut h, "three counted", |h| {
+        in_status_bar(h, "Unsaved · 3 edits")
+    });
+    step_key(&mut h, true);
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Edit PinK");
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Pad");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_modes_own_edits_are_named_by_the_sketch_and_its_finish_makes_them_one_step() {
+    let f = fixture();
+    let (mut h, _) = triangle_open(&f, true);
+    delete_line(&mut h, "na000000");
+    delete_line(&mut h, "nb000000");
+    // Inside: Undo takes back its own last edit, named by the sketch (Finish's words); the
+    // bar counts the sketch's edits as the one step its Finish makes, after the rename.
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Edit Triangle");
+    step_until(&mut h, "two counted", |h| {
+        in_status_bar(h, "Unsaved · 2 edits")
+    });
+    step_key(&mut h, true);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Edit Triangle");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Edit Triangle");
+    step_until(&mut h, "two counted still", |h| {
+        in_status_bar(h, "Unsaved · 2 edits")
+    });
+    // Finished: one step, the sketch's; Redo off at its end (what it undid stays undone).
+    leave_sketch(&mut h, true);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Edit Triangle");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
+    step_key(&mut h, true);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Plate");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Edit Triangle");
+    step_until(&mut h, "one counted", |h| {
+        in_status_bar(h, "Unsaved · 1 edit")
+    });
+    // Create Sketch, Finished: "Add" and the name its add gave it (`'Add ' + name`), the
+    // second sketch of the part.
+    create_sketch(&mut h, "XY plane");
+    settled(&mut h);
+    leave_sketch(&mut h, true);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Sketch2");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
+    step_until(&mut h, "two counted", |h| {
+        in_status_bar(h, "Unsaved · 2 edits")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_undo_refused_after_another_clients_step_names_no_step_it_doesnt_know() {
+    // The session's queue held: another client's undo (of Holey), then Ctrl+Z here against
+    // the revision before it, refused as stale. The session is then at a state the app
+    // never made: Undo names none and the bar counts none, rather than a wrong one.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    settled(&mut h);
+    select(&mut h, "Hole");
+    type_name(&mut h, "y");
+    settled(&mut h);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Hole");
+    let id = h.state().tabs()[0].id;
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let theirs = f.sessions.undo(&id, h.state().tabs()[0].revision, None);
+    step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    hold.release();
+    check.wait();
+    theirs.wait().result.unwrap();
+    step_until(&mut h, "the undo refused", |h| {
+        h.state().tabs()[0].message.is_some() && !h.state().tabs()[0].unsettled()
+    });
+    settled(&mut h);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo");
+    step_until(&mut h, "unsaved, none counted", |h| {
+        in_status_bar(h, "Unsaved")
+    });
+    // The next undo works, and lands where the app knows the state again: the file's
+    // document, nothing to undo, the pin's rename to redo (the session's redo states, Pinx
+    // then Holey).
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Rename Pin");
+    step_until(&mut h, "saved", |h| in_status_bar(h, "Saved"));
+    assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
@@ -18859,7 +19138,7 @@ fn the_status_bar_says_a_rebuild_with_errors_and_an_edit_unsaved() {
     select(&mut h, "Pin");
     type_name(&mut h, "s");
     step_until(&mut h, "unsaved", |h| {
-        status_said(h, "Unsaved").as_deref() == Some("Unsaved")
+        status_said(h, "Unsaved").as_deref() == Some("Unsaved · 1 edit")
     });
     assert!(status_said(&h, "Saved").is_none());
     // A dialog open: its edits are its own until OK.
@@ -36737,7 +37016,13 @@ fn a_broken_edges_card_lists_the_cores_candidates_closest_first_and_use_writes_o
         status_said(&h, "Inside corner now").as_deref(),
         Some("Inside corner now rounds the edge you picked. Undo puts the broken reference back.")
     );
-    // Undo puts the broken name back, byte for byte, and its error with it.
+    // Undo names it as the prototype's `useCand` does (`'Inside corner: use the ' + … +
+    // ' edge'`), the edge the one picked; and puts the broken name back, byte for byte, and
+    // its error with it.
+    assert_eq!(
+        tooltip_title(&mut h, "Undo"),
+        "Undo: Inside corner: use the edge you picked"
+    );
     step_key(&mut h, true);
     assert_eq!(text_of(&f, &h), before);
     step_until(&mut h, "broken again", |h| {
@@ -36779,6 +37064,11 @@ fn remove_the_edge_drops_the_broken_name_alone_and_undo_puts_it_back() {
     assert_eq!(
         status_said(&h, "Inside corner no").as_deref(),
         Some("Inside corner no longer names the broken edge. Undo puts the broken reference back.")
+    );
+    // Named as the prototype's `removeRef` names it.
+    assert_eq!(
+        tooltip_title(&mut h, "Undo"),
+        "Undo: Inside corner: remove its edge"
     );
     step_key(&mut h, true);
     assert_eq!(text_of(&f, &h), before);

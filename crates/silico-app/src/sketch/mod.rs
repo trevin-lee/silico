@@ -268,6 +268,10 @@ pub struct SketchMode {
     /// The sketch open: an existing one's, or, for Create Sketch, its ID once its add has
     /// answered.
     pub sketch: Option<FeatureId>,
+    /// For Create Sketch, the name its add gives the sketch: what its Finish's step adds
+    /// ("Add Sketch1"), and what its steps call it till the timeline lists it. None for Edit
+    /// Sketch.
+    pub created: Option<String>,
     /// The revision it opened at, once everything asked before it has answered (set by its
     /// own opening alone): its undo goes no further back, and is off till it's known.
     pub opened_at: Option<Revision>,
@@ -335,6 +339,7 @@ impl SketchMode {
         SketchMode {
             serial,
             sketch,
+            created: None,
             opened_at: None,
             read: None,
             reading: None,
