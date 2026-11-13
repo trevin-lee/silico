@@ -2764,9 +2764,10 @@ impl Tab {
                         self.reloaded_under_dialog(sessions);
                     }
                     self.took_session(&response);
-                    // The document `begin` saw, its names that state's.
-                    if let Ok(rolled) = &response.result {
-                        self.names_carried(rolled.restored, self.revision);
+                    // The document `begin` saw, its names that state's, at the revision the
+                    // rollback came to (not a reload's past it, seen first).
+                    if let (Ok(rolled), Some(session)) = (&response.result, &response.session) {
+                        self.names_carried(rolled.restored, session.revision);
                     }
                     // Typing queued after it is applied next: the field keeps it.
                     if response.result.is_ok() && self.edits.idle() {
@@ -11001,6 +11002,44 @@ mod tests {
         assert_eq!(
             undo_named(&mut tab, &sessions).as_deref(),
             Some("Suppress PinB")
+        );
+    }
+
+    /// Off any poll, until the session's transaction has closed (a commit's or a rollback's
+    /// applied, its answer not yet taken).
+    fn ended_off_poll(tab: &Tab, sessions: &FakeSessions) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while sessions.status(&tab.id).session.unwrap().transaction {
+            assert!(std::time::Instant::now() < deadline, "never ended");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_rollback_answered_after_the_sessions_own_reload_lends_the_reload_no_names() {
+        // Round 3's R3-1: PinA, listed; another program writes the file with the pin named
+        // Bolt; a revert, applied, then the session's own reload of the changed file (a read
+        // of its text, outside a transaction now) before the tab takes the rollback's answer,
+        // a poll reading the reload's revision first. The pin suppressed then, from the
+        // reload's state: named Bolt once a timeline lists it, or nothing; never the Pin the
+        // rollback restored.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        std::fs::write(
+            dir.path().join("part.silico"),
+            BLOCK.replace(r#""name": "Pin""#, r#""name": "Bolt""#),
+        )
+        .unwrap();
+        tab.revert(&sessions, false);
+        ended_off_poll(&tab, &sessions);
+        let reloaded = sessions.text(&tab.id, None).wait();
+        assert!(reloaded.session.unwrap().reloaded, "the file not reloaded");
+        tab.poll(&sessions);
+        assert!(!tab.transaction);
+        tab.suppress_feature(&sessions, pin, true);
+        let named = undo_named(&mut tab, &sessions);
+        assert!(
+            named.is_none() || named.as_deref() == Some("Suppress Bolt"),
+            "{named:?}"
         );
     }
 
