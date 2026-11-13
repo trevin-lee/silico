@@ -11162,15 +11162,20 @@ mod tests {
     #[test]
     fn a_rollback_answered_after_the_sessions_own_reload_lends_the_reload_no_names() {
         // PinA, listed; another program writes the file with the pin named Bolt; a revert, applied,
-        // then the session's own reload of the changed file (a read of its text, outside a
-        // transaction now), its revision read from `status` before the rollback's answer is taken:
-        // the reload's banner, from the rollback's revision to the reload's. The pin suppressed
-        // then, from the reload's state: nothing named till a timeline lists it, then Bolt.
+        // then the session's own reload of the changed file (by its disk watch, or a read of its
+        // text, outside a transaction now), its revision read from `status` before the rollback's
+        // answer is taken: the reload's banner, from the rollback's revision to the reload's. The
+        // pin suppressed then, from the reload's state: nothing named till a timeline lists it,
+        // then Bolt.
         let (dir, sessions, mut tab, pin) = pin_renamed();
         pin_named_bolt_at(&dir.path().join("part.silico"));
         tab.revert(&sessions, false);
         ended_off_poll(&tab, &sessions);
-        let rolled_back = revision_now(&tab, &sessions);
+        // The rollback's revision, counted, not read from `status`: the disk watch may have
+        // reloaded the file already. 1 at open; PinA's begin keeps it and its edit makes 2; the
+        // rollback, a new revision of begin's state, makes 3. The reload, whichever of the watch
+        // and the text read asks it, comes after.
+        let rolled_back = Revision::from_number(3).unwrap();
         let reload = reloaded_past(&tab, &sessions, rolled_back);
         status_then_answers(&mut tab, &sessions);
         assert!(!tab.transaction);
@@ -11246,6 +11251,24 @@ mod tests {
             named_once_listed(&mut tab, &sessions).as_deref(),
             Some("Suppress Bolt")
         );
+    }
+
+    #[test]
+    fn a_reverts_answer_with_no_reload_before_it_shows_no_banner() {
+        // The person's own revert, the file unchanged: whether `status` read the revision it
+        // came to before its answer was taken or nothing read it, no reload is announced.
+        for status_first in [true, false] {
+            let (_dir, sessions, mut tab, pin) = pin_renamed();
+            tab.rename(&sessions, pin, "PinB");
+            taken_until(&mut tab, &sessions, Tab::quiet);
+            tab.revert(&sessions, false);
+            if status_first {
+                ended_off_poll(&tab, &sessions);
+                status_now(&mut tab, &sessions);
+            }
+            taken_until(&mut tab, &sessions, Tab::quiet);
+            assert_eq!(banner(&tab), None, "status first: {status_first}");
+        }
     }
 
     #[test]
