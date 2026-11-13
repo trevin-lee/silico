@@ -6,6 +6,9 @@
 //! a thread marked so that a wait on a command fails. Expected values by hand.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/ui.rs"]
+mod ui;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -27,6 +30,7 @@ use silico_core::sketch::SketchSolver;
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 use tempfile::TempDir;
+use ui::{WAIT, meshes_settled_in, step, step_until};
 
 const EXAMPLE: &str = r#"{
   "silico": 1,
@@ -51,8 +55,6 @@ const TWO_BOXES: &str = r#"{
   ]
 }
 "#;
-
-const WAIT: Duration = Duration::from_secs(60);
 
 type Fake = Arc<FakeKernel>;
 type AppHarness = Harness<'static, App<Fake>>;
@@ -195,46 +197,12 @@ impl Fixture {
     }
 }
 
-fn step(h: &mut AppHarness) {
-    let _marked = never_waits::marked();
-    h.step();
-}
-
-#[track_caller]
-fn step_until(h: &mut AppHarness, what: &str, done: impl Fn(&AppHarness) -> bool) {
-    let deadline = Instant::now() + WAIT;
-    loop {
-        step(h);
-        if done(h) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "never {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
 fn view(h: &AppHarness) -> &View {
     &h.state().tabs()[0].view
 }
 
 fn view_mut(h: &mut AppHarness) -> &mut View {
     &mut h.state_mut().tabs_mut()[0].view
-}
-
-/// Frames until the shown tab's read has answered with its published model and nothing more
-/// is read for three frames.
-fn meshes_settled(h: &mut AppHarness, tab: usize) {
-    step_until(h, "the meshes read", |h| {
-        h.state().tabs().get(tab).is_some_and(|tab| {
-            !tab.view.reading() && tab.published.is_some() && tab.view.model() == tab.published
-        })
-    });
-    for _ in 0..3 {
-        step(h);
-    }
-    step_until(h, "the meshes read", |h| {
-        !h.state().tabs()[tab].view.reading()
-    });
 }
 
 fn tessellated(f: &Fixture) -> usize {
@@ -495,7 +463,7 @@ fn reads_over(h: &mut AppHarness, frames: usize) -> u64 {
 fn a_view_at_the_edges_of_serves_reads_once_and_then_never_over_a_hundred_frames() {
     let f = fixture();
     let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     assert_eq!(reads_over(&mut h, 100), 0);
     let height = f64::from(view(&h).frame().unwrap().size_px[1]);
     // Orthographic, the half pixel exactly a power of two, 2⁻⁴ and 2⁻⁵: each served by its
@@ -510,7 +478,7 @@ fn a_view_at_the_edges_of_serves_reads_once_and_then_never_over_a_hundred_frames
             target: [25.0, 25.0, 25.0],
             up: [0.0, 0.0, 1.0],
         });
-        meshes_settled(&mut h, 0);
+        meshes_settled_in(&mut h, 0);
         assert_eq!(reads_over(&mut h, 100), 0, "half pixel {half}");
     }
     // Perspective: the eye in the large cube's box's plane (its depth there 0, so its level
@@ -528,7 +496,7 @@ fn a_view_at_the_edges_of_serves_reads_once_and_then_never_over_a_hundred_frames
             target: [25.0, 25.0, 25.0],
             up: [0.0, 0.0, 1.0],
         });
-        meshes_settled(&mut h, 0);
+        meshes_settled_in(&mut h, 0);
         assert_eq!(reads_over(&mut h, 100), 0, "eye {eye:?}");
     }
     assert_eq!(never_waits::waits(), 0);
@@ -620,7 +588,7 @@ fn a_read_refused_while_the_kernel_fails_is_asked_again_on_its_backoff_and_a_new
     let failing = failing_kernel(&f);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     failing.store(true, Ordering::SeqCst);
     let reads = view(&h).reads();
     let wakes = h.state().wakes();
@@ -722,7 +690,7 @@ fn a_refusal_said_is_cleared_by_the_next_answer_but_a_message_said_since_is_kept
     );
     failing.store(false, Ordering::SeqCst);
     advance(&time, Duration::from_millis(250));
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     assert_eq!(message(&h), None);
     // The retry was of Home's view too, and its camera taken: onto the centre of the two
     // boxes' joined box, (0, 0, 0) to (3000, 1000, 1000).
@@ -761,7 +729,7 @@ fn a_refusal_said_is_cleared_by_the_next_answer_but_a_message_said_since_is_kept
             .get(&1)
             .is_some_and(|body| body.bounds.unwrap()[1][2] == 60.0)
     });
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     assert_eq!(message(&h), Some(other));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -774,7 +742,7 @@ fn a_due_retry_with_no_read_wanted_asks_for_no_frame_at_the_displays_rate() {
     let failing = failing_kernel(&f);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let settled = view(&h).camera().clone();
     failing.store(true, Ordering::SeqCst);
     let reads = view(&h).reads();
@@ -823,7 +791,7 @@ fn a_due_retry_with_no_read_wanted_asks_for_no_frame_at_the_displays_rate() {
 fn a_tab_switched_mid_read_takes_its_answer_when_shown_again_and_the_renderer_follows() {
     let f = fixture();
     let (mut h, record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let first = Arc::clone(&view(&h).bodies()[&1].mesh);
     // Its next read held; the second document opened and shown meanwhile.
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
@@ -841,7 +809,7 @@ fn a_tab_switched_mid_read_takes_its_answer_when_shown_again_and_the_renderer_fo
     h.state_mut().open(&path, false);
     step_until(&mut h, "b shown", |h| h.state().tabs().len() == 2);
     hold.release();
-    meshes_settled(&mut h, 1);
+    meshes_settled_in(&mut h, 1);
     // a's body forgotten, b's two uploaded, as b is shown.
     {
         let told = record.lock().unwrap();
@@ -852,7 +820,7 @@ fn a_tab_switched_mid_read_takes_its_answer_when_shown_again_and_the_renderer_fo
     }
     // a shown again: its held read's answer taken, its finer mesh uploaded.
     h.get_by_label("a.silico").click();
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let mesh = Arc::clone(&view(&h).bodies()[&1].mesh);
     assert!(!Arc::ptr_eq(&mesh, &first));
     let told = record.lock().unwrap();
@@ -866,7 +834,7 @@ fn a_tab_switched_mid_read_takes_its_answer_when_shown_again_and_the_renderer_fo
 fn a_session_closed_mid_read_leaves_nothing_held_and_frames_go_on() {
     let f = fixture();
     let (mut h, record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
     let height = f64::from(view(&h).frame().unwrap().size_px[1]);
     view_mut(&mut h).set_camera(Camera {
@@ -899,7 +867,7 @@ fn a_body_renumbered_keeps_its_mesh_and_is_uploaded_once_under_its_new_number() 
     // it's answered held: no mesh made, its mesh uploaded as body 1, and body 2 forgotten.
     let f = fixture();
     let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let large = Arc::clone(&view(&h).bodies()[&2].mesh);
     let made = tessellated(&f);
     let uploads = record.lock().unwrap().uploads.len();
@@ -931,7 +899,7 @@ fn a_body_renumbered_keeps_its_mesh_and_is_uploaded_once_under_its_new_number() 
 fn a_revision_published_mid_read_is_read_after_it_and_the_last_answer_is_the_newest() {
     let f = fixture();
     let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let id = h.state().tabs()[0].id;
     let set = |f: &Fixture, length: &[u8]| {
         let revision = f.sessions.status(&id).session.unwrap().revision;
@@ -962,7 +930,7 @@ fn a_revision_published_mid_read_is_read_after_it_and_the_last_answer_is_the_new
         h.state().tabs()[0].published == Some(newest) && view(h).reading()
     });
     hold.release();
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     // The held read, then one of the newest revision: two, and the bodies its.
     assert_eq!(view(&h).reads(), reads + 2);
     assert_eq!(view(&h).model(), h.state().tabs()[0].published);
@@ -986,7 +954,7 @@ fn button(h: &AppHarness, at: Pos2, which: PointerButton, pressed: bool) {
 fn a_release_with_no_press_and_a_drag_out_of_the_pane_move_the_view_only_while_held() {
     let f = fixture();
     let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let home = view(&h).camera().clone();
     let viewport = rect(&h);
     let at = viewport.center() - vec2(100.0, 0.0);
@@ -1040,7 +1008,7 @@ fn a_window_too_small_for_a_viewport_draws_on_and_reads_nothing_wrong() {
     // 60 by 40 points: the panes leave the viewport a few pixels or none.
     let f = fixture();
     let (mut h, record) = f.drawn("a.silico", EXAMPLE, (60.0, 40.0));
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     assert!(reads_over(&mut h, 100) == 0);
     let frame = record.lock().unwrap().frames.last().unwrap().clone();
     assert!(
@@ -1071,13 +1039,13 @@ fn at_three_times_the_scale_past_4096_pixels_the_view_reads_once_and_settles() {
     let f = fixture();
     let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (7200.0, 4800.0));
     h.set_pixels_per_point(3.0);
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let size = view(&h).frame().unwrap().size_px;
     assert!(size[0] > MAX_RENDER_SIDE, "{size:?}");
     assert_eq!(reads_over(&mut h, 100), 0);
     // Zoomed at 2×: the same.
     h.set_pixels_per_point(2.0);
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     assert_eq!(reads_over(&mut h, 100), 0);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -1090,7 +1058,7 @@ fn a_drag_whose_release_never_comes_ends_when_the_pointer_leaves_or_the_window_l
     for lost in [Event::PointerGone, Event::WindowFocused(false)] {
         let f = fixture();
         let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
-        meshes_settled(&mut h, 0);
+        meshes_settled_in(&mut h, 0);
         let at = rect(&h).center() - vec2(100.0, 0.0);
         h.hover_at(at);
         button(&h, at, PointerButton::Middle, true);
@@ -1117,7 +1085,7 @@ fn a_view_cube_drag_held_still_isnt_a_settled_view() {
     // then one.
     let f = fixture();
     let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     view_mut(&mut h).set_camera(Camera {
         projection: Projection::Perspective {
             field_of_view: 30.0,
@@ -1126,7 +1094,7 @@ fn a_view_cube_drag_held_still_isnt_a_settled_view() {
         target: [2500.0, 500.0, 500.0],
         up: [0.0, 0.0, 1.0],
     });
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let reads = view(&h).reads();
     let centre = silico_app::viewport::view_cube_rect(rect(&h)).center();
     h.hover_at(centre);
@@ -1144,7 +1112,7 @@ fn a_view_cube_drag_held_still_isnt_a_settled_view() {
     }
     assert_eq!(view(&h).reads(), reads);
     button(&h, centre + vec2(90.0, 0.0), PointerButton::Primary, false);
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     assert_eq!(view(&h).reads(), reads + 1);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -1211,7 +1179,7 @@ fn a_pick_answered_two_frames_late_across_a_renumber_is_taken_only_by_its_own_ta
     silico_app::theme::apply(&h.ctx);
     let path = f.file("a.silico", EXAMPLE);
     h.state_mut().open(&path, false);
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
     let height = f64::from(view(&h).frame().unwrap().size_px[1]);
     view_mut(&mut h).set_camera(Camera {
@@ -1256,7 +1224,7 @@ fn highlights_of_a_body_not_drawn_or_an_element_its_mesh_hasnt_are_left_out_of_t
     // face and twelfth edge kept.
     let f = fixture();
     let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     step_until(&mut h, "the browser", |h| {
         h.query_by_label("Hide Large").is_some()
     });
@@ -1293,7 +1261,7 @@ fn zooming_in_without_end_stops_where_the_bodies_reach_from_the_target_allows() 
     // least, 1e-6 mm.
     let f = fixture();
     let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     view_mut(&mut h).set_camera(Camera {
         projection: Projection::Orthographic { view_height: 80.0 },
         eye: [25.0, -500.0, 25.0],
@@ -1339,7 +1307,7 @@ fn a_zoom_in_stops_at_a_floor_as_much_higher_as_the_pane_is_taller() {
     for tall in [800.0, 1600.0] {
         let f = fixture();
         let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, tall));
-        meshes_settled(&mut h, 0);
+        meshes_settled_in(&mut h, 0);
         view_mut(&mut h).set_camera(Camera {
             projection: Projection::Orthographic { view_height: 80.0 },
             eye: [25.0, -500.0, 25.0],
@@ -1406,7 +1374,7 @@ fn a_view_zoomed_in_before_the_first_read_answers_is_raised_to_the_least_its_bod
     assert!(view_height(view(&h).camera()) < 1e-5);
     assert_eq!(view(&h).camera().target, [0.0; 3]);
     hold.release();
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let least = least_in(&record, 2121f64.sqrt());
     let height = view_height(view(&h).camera());
     assert!((height - least).abs() < 1e-15, "{height} against {least}");
@@ -1431,7 +1399,7 @@ fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() 
     // raised to that reach's least; a pan, an orbit, and a wheel out all move it.
     let f = fixture();
     let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let id = h.state().tabs()[0].id;
     let revision = f.sessions.status(&id).session.unwrap().revision;
     f.sessions
@@ -1445,7 +1413,7 @@ fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() 
         .wait()
         .result
         .unwrap();
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     // Out of the way while zooming: (−2000, 0, 0) to (−1000, 1000, 1000) reaches
     // √(2025² + 975² + 975²) from (25, 25, 25).
     view_mut(&mut h).set_camera(Camera {
@@ -1468,7 +1436,7 @@ fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() 
     }
     let near = least_in(&record, (2025.0f64 * 2025.0 + 2.0 * 975.0 * 975.0).sqrt());
     assert!((view_height(view(&h).camera()) - near).abs() < 1e-12);
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     let revision = f.sessions.status(&id).session.unwrap().revision;
     f.sessions
         .set_field(
@@ -1519,7 +1487,7 @@ fn a_view_moving_while_a_new_revision_is_refused_for_the_moment_reads_nothing_un
     let failing = failing_kernel(&f);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     failing.store(true, Ordering::SeqCst);
     let id = h.state().tabs()[0].id;
     let revision = f.sessions.status(&id).session.unwrap().revision;
@@ -1571,7 +1539,7 @@ fn wheel_notches_during_a_backoff_read_at_most_once() {
     let failing = failing_kernel(&f);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     failing.store(true, Ordering::SeqCst);
     let id = h.state().tabs()[0].id;
     let revision = f.sessions.status(&id).session.unwrap().revision;
@@ -1624,7 +1592,7 @@ fn a_body_shown_again_raises_a_view_under_the_least_its_reach_allows() {
     let f = fixture();
     let (_time, clock) = hand_clock();
     let (mut h, record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     step_until(&mut h, "the browser", |h| {
         h.query_by_label("Hide Large").is_some()
     });
@@ -1692,7 +1660,7 @@ fn a_retry_falling_due_mid_pan_keeps_its_run_growing() {
     let failing = failing_kernel(&f);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     failing.store(true, Ordering::SeqCst);
     let reads = view(&h).reads();
     let wakes = h.state().wakes();
@@ -1776,7 +1744,7 @@ fn a_renderer_backing_off_has_the_pane_ask_for_each_frame_at_once_until_it_stops
     silico_app::theme::apply(&h.ctx);
     let path = f.file("boxes.silico", TWO_BOXES);
     h.state_mut().open(&path, false);
-    meshes_settled(&mut h, 0);
+    meshes_settled_in(&mut h, 0);
     // An idle frame: one asked for at most IDLE_FRAME on (less the time the frames took),
     // never at once.
     let idle = |delay: Option<Duration>| {

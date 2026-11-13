@@ -7,9 +7,11 @@
 //! a wait on a command fails. Expected values by hand.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/ui.rs"]
+mod ui;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use eframe::egui::accesskit::Role;
 use eframe::egui::{Key, Modifiers};
@@ -24,6 +26,7 @@ use silico_core::command::{SessionId, Sessions};
 use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
 use silico_core::sketch::SketchSolver;
 use tempfile::TempDir;
+use ui::{anywhere, new_part, step, step_until};
 
 const EXAMPLE: &str = r#"{
   "silico": 1,
@@ -34,8 +37,6 @@ const EXAMPLE: &str = r#"{
   ]
 }
 "#;
-
-const WAIT: Duration = Duration::from_secs(60);
 
 type Fake = Arc<FakeKernel>;
 type AppHarness = Harness<'static, App<Fake>>;
@@ -137,32 +138,10 @@ impl Fixture {
     }
 }
 
-fn step(h: &mut AppHarness) {
-    let _marked = never_waits::marked();
-    h.step();
-}
-
-#[track_caller]
-fn step_until(h: &mut AppHarness, what: &str, done: impl Fn(&AppHarness) -> bool) {
-    let deadline = Instant::now() + WAIT;
-    loop {
-        step(h);
-        if done(h) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "never {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
 fn steps(h: &mut AppHarness, n: usize) {
     for _ in 0..n {
         step(h);
     }
-}
-
-fn anywhere(h: &AppHarness, label: &str) -> bool {
-    h.query_by_label(label).is_some()
 }
 
 fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a Tab {
@@ -175,15 +154,6 @@ fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a Tab {
 
 fn press_keys(h: &mut AppHarness, modifiers: Modifiers, key: Key) {
     h.key_press_modifiers(modifiers, key);
-}
-
-/// Command+N, and the part's tab waited for.
-fn new_part(h: &mut AppHarness) {
-    let before = h.state().tabs().len();
-    press_keys(h, Modifiers::COMMAND, Key::N);
-    step_until(h, "the part's tab", |h| {
-        h.state().tabs().len() == before + 1
-    });
 }
 
 /// A sketch added to the part `name`, shown, as a part is begun sketch-first (the app makes
