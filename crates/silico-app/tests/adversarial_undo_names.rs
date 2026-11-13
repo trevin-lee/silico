@@ -229,12 +229,19 @@ fn undo_and_redo_pressed_one_a_frame_leave_the_names_and_the_count_of_the_state_
         step(&mut h);
     }
     settled(&mut h);
-    let taken = h.state().tabs()[0]
-        .sent
-        .iter()
-        .filter(|sent| matches!(sent, Sent::Undo(_) | Sent::Redo(_)))
-        .count();
-    assert!((1..=8).contains(&taken), "{taken} steps taken of 8 pressed");
+    let (undone, redone) =
+        h.state().tabs()[0]
+            .sent
+            .iter()
+            .fold((0, 0), |(u, r), sent| match sent {
+                Sent::Undo(_) => (u + 1, r),
+                Sent::Redo(_) => (u, r + 1),
+                _ => (u, r),
+            });
+    assert!(
+        (1..=8).contains(&(undone + redone)),
+        "{undone} undos and {redone} redos taken of 8 pressed"
+    );
     step_until(&mut h, "the status of the state reached", |h| {
         let tab = &h.state().tabs()[0];
         !tab.unsettled() && tab.status.is_some()
@@ -247,6 +254,13 @@ fn undo_and_redo_pressed_one_a_frame_leave_the_names_and_the_count_of_the_state_
         .iter()
         .take_while(|name| text.contains(&format!(r#""name": "{name}""#)))
         .count();
+    // The steps taken are what moved it: from three, one less for each undo, one more for
+    // each redo.
+    assert_eq!(
+        standing,
+        3 + redone - undone,
+        "{undone} undone, {redone} redone"
+    );
     // Renames undo in order: whatever stands is a prefix of the three.
     for (at, name) in ["Pinp", "Holeh", "Blockb"].iter().enumerate() {
         assert_eq!(

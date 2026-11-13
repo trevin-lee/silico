@@ -25372,6 +25372,12 @@ fn a_drags_edit_is_a_step_named_by_its_sketch_and_counted_once() {
     step_until(&mut h, "one counted", |h| {
         in_status_bar(h, "Unsaved · 1 edit")
     });
+    // Finished: the drag's edit the sketch's one step, so named, and still one.
+    leave_sketch(&mut h, true);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Edit Box");
+    step_until(&mut h, "one counted after Finish", |h| {
+        in_status_bar(h, "Unsaved · 1 edit")
+    });
     assert_eq!(never_waits::waits(), 0);
 }
 
