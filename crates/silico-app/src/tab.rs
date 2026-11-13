@@ -10998,13 +10998,7 @@ mod tests {
         polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
         let pin = FeatureId::new("a91cw0de").unwrap();
         tab.rename(&sessions, pin.clone(), "PinA");
-        polled_until(&mut tab, &sessions, |tab| {
-            tab.quiet()
-                && tab
-                    .timeline
-                    .as_ref()
-                    .is_some_and(|timeline| timeline.revision == tab.revision)
-        });
+        polled_until_listed(&mut tab, &sessions);
         assert_eq!(tab.name_of(&pin), "PinA");
         (dir, sessions, tab, pin)
     }
@@ -11063,19 +11057,15 @@ mod tests {
         tab.restore(&sessions, Revision::OPENED);
         tab.suppress_feature(&sessions, pin, true);
         assert_eq!(undo_named(&mut tab, &sessions), None);
-        polled_until(&mut tab, &sessions, |tab| {
-            tab.quiet()
-                && tab
-                    .timeline
-                    .as_ref()
-                    .is_some_and(|timeline| timeline.revision == tab.revision)
-        });
-        assert_eq!(tab.undo_step().as_deref(), Some("Suppress Pin"));
+        assert_eq!(
+            named_once_listed(&mut tab, &sessions).as_deref(),
+            Some("Suppress Pin")
+        );
     }
 
     /// Polled until nothing of the tab's is under way and a timeline lists the revision the
-    /// session is at: what Undo names then.
-    fn named_once_listed(tab: &mut Tab, sessions: &FakeSessions) -> Option<String> {
+    /// session is at.
+    fn polled_until_listed(tab: &mut Tab, sessions: &FakeSessions) {
         polled_until(tab, sessions, |tab| {
             tab.quiet()
                 && tab
@@ -11083,6 +11073,12 @@ mod tests {
                     .as_ref()
                     .is_some_and(|timeline| timeline.revision == tab.revision)
         });
+    }
+
+    /// Polled until a timeline lists the revision the session is at, nothing of the tab's
+    /// under way: what Undo names then.
+    fn named_once_listed(tab: &mut Tab, sessions: &FakeSessions) -> Option<String> {
+        polled_until_listed(tab, sessions);
         tab.undo_step()
     }
 
@@ -11140,13 +11136,9 @@ mod tests {
         });
     }
 
-    /// The file `dir/part.silico` written by another program: BLOCK with its pin named Bolt.
-    fn pin_named_bolt_on_disk(dir: &tempfile::TempDir) {
-        std::fs::write(
-            dir.path().join("part.silico"),
-            BLOCK.replace(r#""name": "Pin""#, r#""name": "Bolt""#),
-        )
-        .unwrap();
+    /// The file at `path` written by another program: BLOCK with its pin named Bolt.
+    fn pin_named_bolt_at(path: &std::path::Path) {
+        std::fs::write(path, BLOCK.replace(r#""name": "Pin""#, r#""name": "Bolt""#)).unwrap();
     }
 
     /// The session's revision as `status` says it now.
@@ -11154,12 +11146,15 @@ mod tests {
         sessions.status(&tab.id).session.unwrap().revision
     }
 
-    /// The session's own reload of its changed file, asked by a read of its text: the
-    /// revision it came to.
-    fn reloaded_now(tab: &Tab, sessions: &FakeSessions) -> Revision {
-        let session = sessions.text(&tab.id, None).wait().session.unwrap();
-        assert!(session.reloaded, "the file not reloaded");
-        session.revision
+    /// The session's own reload of its file, written with the pin named Bolt, past the
+    /// revision `past`: asked by a read of its text, if the disk watch hasn't had it read
+    /// first. The revision it came to.
+    fn reloaded_past(tab: &Tab, sessions: &FakeSessions, past: Revision) -> Revision {
+        let read = sessions.text(&tab.id, None).wait();
+        let revision = read.session.unwrap().revision;
+        assert!(revision > past, "the file not reloaded");
+        assert!(read.result.unwrap().text.contains(r#""name": "Bolt""#));
+        revision
     }
 
     /// The reload banner's from and to, if one is shown.
@@ -11185,11 +11180,11 @@ mod tests {
         // rollback's revision to the reload's. The pin suppressed then, from the reload's
         // state: nothing named till a timeline lists it, then Bolt.
         let (dir, sessions, mut tab, pin) = pin_renamed();
-        pin_named_bolt_on_disk(&dir);
+        pin_named_bolt_at(&dir.path().join("part.silico"));
         tab.revert(&sessions, false);
         ended_off_poll(&tab, &sessions);
         let rolled_back = revision_now(&tab, &sessions);
-        let reload = reloaded_now(&tab, &sessions);
+        let reload = reloaded_past(&tab, &sessions, rolled_back);
         status_then_answers(&mut tab, &sessions);
         assert!(!tab.transaction);
         assert_eq!(banner(&tab), Some((rolled_back, reload)));
@@ -11235,8 +11230,8 @@ mod tests {
         tab.save(&sessions, false);
         ended_off_poll(&tab, &sessions);
         let saved = revision_now(&tab, &sessions);
-        pin_named_bolt_on_disk(&dir);
-        let reload = reloaded_now(&tab, &sessions);
+        pin_named_bolt_at(&dir.path().join("part.silico"));
+        let reload = reloaded_past(&tab, &sessions, saved);
         status_then_answers(&mut tab, &sessions);
         assert_eq!(banner(&tab), Some((saved, reload)));
         tab.suppress_feature(&sessions, pin, true);
@@ -11259,12 +11254,8 @@ mod tests {
         tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
         ended_off_poll(&tab, &sessions);
         let saved = revision_now(&tab, &sessions);
-        std::fs::write(
-            &copy,
-            BLOCK.replace(r#""name": "Pin""#, r#""name": "Bolt""#),
-        )
-        .unwrap();
-        let reload = reloaded_now(&tab, &sessions);
+        pin_named_bolt_at(&copy);
+        let reload = reloaded_past(&tab, &sessions, saved);
         status_then_answers(&mut tab, &sessions);
         assert_eq!(banner(&tab), Some((saved, reload)));
         tab.suppress_feature(&sessions, pin, true);
@@ -11284,7 +11275,7 @@ mod tests {
         let (dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
         polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
         let pin = FeatureId::new("a91cw0de").unwrap();
-        pin_named_bolt_on_disk(&dir);
+        pin_named_bolt_at(&dir.path().join("part.silico"));
         let copy = dir.path().join("copy.silico");
         tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
         tab.suppress_feature(&sessions, pin, true);
@@ -11306,7 +11297,7 @@ mod tests {
         assert_eq!(listed.revision, Revision::OPENED);
         change(&mut tab, &sessions);
         until("the change applied", &|| {
-            sessions.status(&tab.id).session.unwrap().revision != Revision::OPENED
+            revision_now(&tab, &sessions) != Revision::OPENED
         });
         status_now(&mut tab, &sessions);
         tab.took_timeline(listed);
@@ -11521,7 +11512,7 @@ mod tests {
         let before = tab.revision;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let moved = loop {
-            let at = sessions.status(&tab.id).session.unwrap().revision;
+            let at = revision_now(&tab, &sessions);
             if at != before {
                 break at;
             }
