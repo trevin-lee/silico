@@ -589,6 +589,8 @@ enum Under {
     Commit {
         running: Running<Committed>,
         then_close: bool,
+        /// The state it was sent from: the one whose names the state it saves takes.
+        from: Revision,
     },
     /// A rollback, and what Cancel or revert it lands ([`Tab::land`]) where it answers.
     Rollback {
@@ -631,6 +633,8 @@ enum Under {
         path: String,
         began: bool,
         then_close: bool,
+        /// The state it was sent from, as a save's ([`Under::Commit`]'s).
+        from: Revision,
     },
     Close(Running<Closed>),
     /// A dialog's add, of the dialog numbered `serial`, as it was sent.
@@ -718,6 +722,36 @@ enum Under {
         sending: Sending,
         running: Running<Replaced>,
     },
+}
+
+impl Under {
+    /// The state the change or the save under way was sent from, if it's one: what the
+    /// state it makes, or saves, takes its names from ([`Tab::names`]).
+    fn made_from(&self) -> Option<Revision> {
+        match self {
+            Under::Move { sending, .. }
+            | Under::Suppress { sending, .. }
+            | Under::Remove { sending, .. }
+            | Under::Add { sending, .. }
+            | Under::AddSketch { sending, .. }
+            | Under::SketchEdit { sending, .. }
+            | Under::SketchJoin { sending, .. }
+            | Under::SketchAdd { sending, .. }
+            | Under::SketchCut { sending, .. }
+            | Under::DimensionValue { sending, .. }
+            | Under::OfferField { sending, .. }
+            | Under::Replace { sending, .. } => Some(sending.state),
+            Under::Commit { from, .. } | Under::SaveAs { from, .. } => Some(*from),
+            Under::Begin(_)
+            | Under::Rollback { .. }
+            | Under::Step { .. }
+            | Under::Close(_)
+            | Under::Base { .. }
+            | Under::Load { .. }
+            | Under::ReloadRead { .. }
+            | Under::Restore { .. } => None,
+        }
+    }
 }
 
 /// The choice offered for a file changed on disk while edits are held (section 4).
@@ -2685,13 +2719,14 @@ impl Tab {
             Under::Commit {
                 running,
                 then_close,
+                from,
             } => match running.try_take() {
                 Ok(response) => {
-                    let was = self.revision;
                     self.took_session(&response);
-                    // Saved as it was: its names those it had.
-                    if response.result.is_ok() {
-                        self.names_carried(was, self.revision);
+                    // Saved as it was: its names those of the state it was sent from, at the
+                    // revision it came to (`status` may have read that before this answer).
+                    if let (Ok(_), Some(session)) = (&response.result, &response.session) {
+                        self.names_carried(from, session.revision);
                     }
                     self.ended(response.result.map(|_| ()), then_close, close);
                     None
@@ -2699,6 +2734,7 @@ impl Tab {
                 Err(running) => Some(Under::Commit {
                     running,
                     then_close,
+                    from,
                 }),
             },
             Under::SaveAs {
@@ -2706,15 +2742,19 @@ impl Tab {
                 path,
                 began,
                 then_close,
+                from,
             } => match running.try_take() {
                 Ok(response) => {
-                    let was = self.revision;
                     self.took_session(&response);
+                    let made = response.session.as_ref().map(|session| session.revision);
                     match response.result {
                         // The session holds the new file from now on, by the path given: its
-                        // transaction ended as a save's is, its names those it had.
+                        // transaction ended as a save's is, its names those of the state it
+                        // was sent from.
                         Ok(committed) => {
-                            self.names_carried(was, self.revision);
+                            if let Some(made) = made {
+                                self.names_carried(from, made);
+                            }
                             self.path = Some(committed.path);
                             self.ended(Ok(()), then_close, close);
                         }
@@ -2744,6 +2784,7 @@ impl Tab {
                     path,
                     began,
                     then_close,
+                    from,
                 }),
             },
             Under::Rollback {
@@ -3804,6 +3845,7 @@ impl Tab {
                     }
                     self.saves += 1;
                     self.under.push(Under::SaveAs {
+                        from: self.state_of(self.revision),
                         running: sessions.save_as(&self.id, path.clone(), replace),
                         path,
                         began,
@@ -3814,6 +3856,7 @@ impl Tab {
                     self.saves += 1;
                     self.record(Sent::Commit);
                     self.under.push(Under::Commit {
+                        from: self.state_of(self.revision),
                         running: sessions.commit(&self.id),
                         then_close,
                     });
@@ -4905,7 +4948,7 @@ impl Tab {
 
     /// The features' names the timeline `timeline` lists, kept for the state it's of, shared
     /// with the newest kept if they're the same; and those of states no step was made from or
-    /// made, nor the session's now, let go.
+    /// made, no change or save under way was sent from, nor the session's now, let go.
     fn took_names(&mut self, timeline: &TimelineAnswer) {
         let Some(features) = timeline.features.as_ref() else {
             return;
@@ -4939,6 +4982,16 @@ impl Tab {
                 .iter()
                 .flat_map(|group| [group.start, group.end]),
         );
+        // And those a change or a save under way was sent from: the state it makes, or saves,
+        // takes them.
+        kept.extend(
+            self.edits
+                .in_flight
+                .as_ref()
+                .map(|flying| flying.sending.state),
+        );
+        kept.extend(self.drag_sending.as_ref().map(|sending| sending.state));
+        kept.extend(self.under.iter().filter_map(Under::made_from));
         kept.insert(now);
         self.names.retain(|state, _| kept.contains(state));
     }
@@ -11040,6 +11093,25 @@ mod tests {
         assert!(
             named.is_none() || named.as_deref() == Some("Suppress Bolt"),
             "{named:?}"
+        );
+    }
+
+    #[test]
+    fn a_saves_answer_taken_after_status_read_its_revision_keeps_the_names_it_saved() {
+        // Round 3's R3-2: PinA, listed; PinB answered; a save, applied, and a poll that reads
+        // its revision from `status` before it takes its answer. The pin suppressed then,
+        // from the state the save kept: PinB's.
+        let (_dir, sessions, mut tab, pin) = pin_renamed();
+        tab.rename(&sessions, pin.clone(), "PinB");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        tab.save(&sessions, false);
+        ended_off_poll(&tab, &sessions);
+        tab.poll(&sessions);
+        assert!(!tab.transaction);
+        tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(
+            undo_named(&mut tab, &sessions).as_deref(),
+            Some("Suppress PinB")
         );
     }
 
