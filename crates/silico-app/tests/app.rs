@@ -4910,53 +4910,36 @@ fn pin_dialog_edited(f: &Fixture, typed: &[(&str, &str)]) -> AppHarness {
 
 #[test]
 fn a_dialogs_ok_waiting_behind_its_last_edit_counts_its_edits_as_the_one_step_it_makes() {
-    // Round 2's B, by hand: PinK (one edit), then Edit Feature, its height and radius edited
-    // (two of the dialog's), a third edit held in the session's queue, and OK: the dialog's
-    // edits are the one step OK makes, so two edits are unsaved, while the OK waits too.
-    let f = fixture();
-    let mut h = pin_dialog_edited(&f, &[("Height", "3"), ("Radius", "1")]);
-    let (hold, check) = hold_queue(&f, &h, 0);
-    type_into(&mut h, "Height", "4");
-    {
-        let sessions = Arc::clone(&f.sessions);
-        h.state_mut().tabs_mut()[0].close_dialog(&sessions, true);
+    // Round 2's B, by hand: PinK (one edit), then Edit Feature, two of its edits applied (or
+    // three, robustness's count), a further edit held in the session's queue, and OK: the
+    // dialog's edits are the one step OK makes, so two edits are unsaved, while the OK
+    // waits too, and after.
+    let typed: [&[(&str, &str)]; 2] = [
+        &[("Height", "3"), ("Radius", "1")],
+        &[("Height", "3"), ("Radius", "1"), ("X", "5")],
+    ];
+    for typed in typed {
+        let f = fixture();
+        let mut h = pin_dialog_edited(&f, typed);
+        let (hold, check) = hold_queue(&f, &h, 0);
+        type_into(&mut h, "Height", "4");
+        {
+            let sessions = Arc::clone(&f.sessions);
+            h.state_mut().tabs_mut()[0].close_dialog(&sessions, true);
+        }
+        step(&mut h);
+        assert!(h.state().tabs()[0].unsettled(), "the OK didn't wait");
+        assert!(
+            in_status_bar(&h, "Unsaved · 2 edits"),
+            "{} of the dialog's: {:?}",
+            typed.len(),
+            everything(&h)
+        );
+        hold.release();
+        let _ = check.wait();
+        settled(&mut h);
+        assert!(in_status_bar(&h, "Unsaved · 2 edits"));
     }
-    step(&mut h);
-    assert!(h.state().tabs()[0].unsettled(), "the OK didn't wait");
-    assert!(
-        in_status_bar(&h, "Unsaved · 2 edits"),
-        "{:?}",
-        everything(&h)
-    );
-    hold.release();
-    let _ = check.wait();
-    settled(&mut h);
-    assert!(in_status_bar(&h, "Unsaved · 2 edits"));
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
-fn a_dialogs_ok_waiting_behind_its_last_edit_counts_its_edits_as_one() {
-    // Round 2's B (robustness's count): three of the dialog's edits applied before the held
-    // one: still two unsaved, the rename and the dialog's one step.
-    let f = fixture();
-    let mut h = pin_dialog_edited(&f, &[("Height", "3"), ("Radius", "1"), ("X", "5")]);
-    let (hold, check) = hold_queue(&f, &h, 0);
-    type_into(&mut h, "Height", "4");
-    {
-        let sessions = Arc::clone(&f.sessions);
-        h.state_mut().tabs_mut()[0].close_dialog(&sessions, true);
-    }
-    step(&mut h);
-    assert!(
-        in_status_bar(&h, "Unsaved · 2 edits"),
-        "{:?}",
-        everything(&h)
-    );
-    hold.release();
-    let _ = check.wait();
-    settled(&mut h);
-    assert!(in_status_bar(&h, "Unsaved · 2 edits"));
     assert_eq!(never_waits::waits(), 0);
 }
 

@@ -11024,7 +11024,7 @@ mod tests {
     fn undo_named(tab: &mut Tab, sessions: &FakeSessions) -> Option<String> {
         taken_until(tab, sessions, Tab::quiet);
         status_now(tab, sessions);
-        tab.undo_step().map(|said| said.to_string())
+        tab.undo_step()
     }
 
     #[test]
