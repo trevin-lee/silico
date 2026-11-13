@@ -2635,16 +2635,11 @@ impl Tab {
                 Ok(response) => {
                     self.took_session(&response);
                     match response.result {
-                        // The session holds the new file from now on, by the path given.
+                        // The session holds the new file from now on, by the path given: its
+                        // transaction ended as a save's is.
                         Ok(committed) => {
                             self.path = Some(committed.path);
-                            self.disk_choice = DiskChoice::None;
-                            self.stack_gone();
-                            *close |= then_close;
-                            if then_close {
-                                // Closing: nothing after it is sent.
-                                self.edits.queue.clear();
-                            }
+                            self.ended(Ok(()), then_close, close);
                         }
                         Err(problems) => {
                             // Its own transaction, begun for it, ended: it held nothing.
@@ -3186,8 +3181,10 @@ impl Tab {
         self.redo_fence = None;
     }
 
-    /// A save's or a revert's answer: the transaction ended, then closed if `then_close`; or
-    /// refused, said, and, if it was to close, the tab kept and that said too.
+    /// A save's, a Save As's, or a revert's answer: the transaction ended, then closed if
+    /// `then_close`; or refused, said, and, if it was to close, the tab kept and that said
+    /// too. A Save As's refusal is its own to say (it may ask to replace a file, or save
+    /// again), so it comes here only answered.
     fn ended(&mut self, result: Result<(), Problems>, then_close: bool, close: &mut bool) {
         match result {
             Ok(()) => {
