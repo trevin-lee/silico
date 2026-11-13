@@ -11288,6 +11288,56 @@ mod tests {
         );
     }
 
+    /// PinA listed, PinB answered; then `end` (a save, a Save As, or a revert) asked, the
+    /// file as the session holds it: its answer taken with `status` read once it's applied
+    /// (`status_first`), or with no status read. The reload banner then.
+    fn banner_after(
+        status_first: bool,
+        end: impl FnOnce(&mut Tab, &FakeSessions, &std::path::Path),
+    ) -> Option<(Revision, Revision)> {
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.rename(&sessions, pin, "PinB");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        end(&mut tab, &sessions, dir.path());
+        if status_first {
+            ended_off_poll(&tab, &sessions);
+            status_now(&mut tab, &sessions);
+        }
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        banner(&tab)
+    }
+
+    #[test]
+    fn a_saves_answer_with_no_reload_before_it_shows_no_banner() {
+        // The person's own save, the file unchanged: whether `status` read the revision it
+        // came to before its answer was taken or nothing read it, no reload is announced.
+        for status_first in [true, false] {
+            let shown = banner_after(status_first, |tab, sessions, _| tab.save(sessions, false));
+            assert_eq!(shown, None, "status first: {status_first}");
+        }
+    }
+
+    #[test]
+    fn a_save_as_answer_with_no_reload_before_it_shows_no_banner() {
+        // As a save, a Save As to another file.
+        for status_first in [true, false] {
+            let shown = banner_after(status_first, |tab, sessions, dir| {
+                let copy = dir.join("copy.silico");
+                tab.save_as(sessions, copy.to_str().unwrap().to_owned(), false, false);
+            });
+            assert_eq!(shown, None, "status first: {status_first}");
+        }
+    }
+
+    #[test]
+    fn a_reverts_answer_with_no_reload_before_it_shows_no_banner() {
+        // As a save, a revert.
+        for status_first in [true, false] {
+            let shown = banner_after(status_first, |tab, sessions, _| tab.revert(sessions, false));
+            assert_eq!(shown, None, "status first: {status_first}");
+        }
+    }
+
     #[test]
     fn a_save_as_whose_own_begin_reloaded_the_file_lends_the_saved_state_no_old_names() {
         // Round 4's R4-1: BLOCK open and listed, no transaction; another program writes it with
