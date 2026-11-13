@@ -4638,14 +4638,15 @@ impl Tab {
         self.rebuild_stopped() && !self.rebuild_out
     }
 
-    /// Esc given to what takes it before the prototype's `escChain` (its `keydown` gives it
-    /// to an open menu, a modal, and the Modify box first), if one is open: a sketch drag
-    /// held ends from its begin state (section 3's first, before anything else); sketch
-    /// mode's canvas menu closes; the over-define prompt's Esc is its Cancel (the
-    /// prototype's key); a placed dimension's Modify box closes, its value as it was. Whether
-    /// one took it. The one list of them: [`escape`](Self::escape) begins with it, and the
-    /// app asks it before the navigation bar's tool, the chain's first, is let go.
-    pub fn escape_held<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
+    /// Gives Esc to what takes it before the prototype's `escChain` (its `keydown` gives it
+    /// to an open menu, a modal, and the Modify box first), if one is open, and acts on it:
+    /// a sketch drag held ends from its begin state (section 3's first, before anything
+    /// else); sketch mode's canvas menu closes; the over-define prompt is cancelled (its
+    /// Cancel, the prototype's key), the edit undone; a placed dimension's Modify box
+    /// closes, its value as it was. Whether one took it. The one list of them:
+    /// [`escape`](Self::escape) begins with it, and the app gives Esc to it before it lets
+    /// the navigation bar's tool, the chain's first, go.
+    pub fn escape_first<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
         if self.cancel_drag(sessions) {
             return true;
         }
@@ -4670,7 +4671,7 @@ impl Tab {
     }
 
     /// Esc with no dialog open (section 3's order, the prototype's `escChain`, the nearest
-    /// thing first): what takes it before the chain ([`escape_held`](Self::escape_held));
+    /// thing first): what takes it before the chain ([`escape_first`](Self::escape_first));
     /// or else sketch mode's tool left, its chain or gesture ended with it (section 9,
     /// *Line*); or else sketch mode's selection cleared, if it has one; or else the reload's
     /// info banner dismissed, if one shows (DESIGN.md, 6c; an amber or red one in its
@@ -4678,7 +4679,7 @@ impl Tab {
     /// none of them, a rebuild running stopped quietly
     /// ([`stop_quietly`](Self::stop_quietly)).
     pub fn escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if self.escape_held(sessions) {
+        if self.escape_first(sessions) {
             return;
         }
         let tool_left = self.sketch.as_mut().is_some_and(SketchMode::escape_tool);

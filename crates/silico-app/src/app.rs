@@ -1457,18 +1457,20 @@ impl<P: Clients + 'static> App<P> {
         } else {
             stop
         };
-        // Esc with a navigation bar's tool chosen: first what takes Esc before the
-        // prototype's `escChain` takes it, if one is open (`Tab::escape_held`: a held drag,
-        // sketch mode's menu, the over-define prompt, the Modify box); or else the tool is
-        // let go, back to Select (the chain's first; the Orbit button's tooltip says so),
-        // before a dialog's Esc and the rest of the chain. Either way, nothing more.
-        let stop = if stop && tab.view.tool.is_some() {
-            if !tab.escape_held(&self.sessions) {
+        // Esc with a navigation bar's tool chosen: given first to what takes it before the
+        // prototype's `escChain` (`Tab::escape_first`); or else the tool is let go, back to
+        // Select (the chain's first; the Orbit button's tooltip says so), before a dialog's
+        // Esc and the rest of the chain. Either way nothing further down the chain, but the
+        // Esc was taken: the frame after is asked for, as any Esc's is (what it did may have
+        // sent a command, an over-define prompt's Undo or a drag's end, which that frame
+        // polls).
+        let (stop, escaped) = if stop && tab.view.tool.is_some() {
+            if !tab.escape_first(&self.sessions) {
                 tab.view.tool = None;
             }
-            false
+            (false, true)
         } else {
-            stop
+            (stop, false)
         };
         if let Some(ask) = view {
             tab.view.ask(ask);
@@ -1541,6 +1543,7 @@ impl<P: Clients + 'static> App<P> {
                 || reload
                 || redo
                 || stop
+                || escaped
                 || close
                 || enter
                 || rebuild

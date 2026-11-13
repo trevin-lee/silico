@@ -16370,7 +16370,7 @@ fn tooltip_caps(h: &AppHarness, title: &str) -> Vec<String> {
     let shapes = painted(h);
     let is_title = |shape: &eframe::egui::Shape| matches!(shape, eframe::egui::Shape::Text(t) if t.galley.text() == title);
     let Some(at) = shapes.iter().rposition(is_title) else {
-        return Vec::new();
+        panic!("{title} isn't painted");
     };
     let row = eframe::egui::Shape::visual_bounding_rect(&shapes[at]);
     let mut caps: Vec<(f32, String)> = shapes[at + 1..]
@@ -42965,7 +42965,7 @@ fn esc_with_sketch_modes_canvas_menu_open_closes_the_menu_before_it_lets_the_bar
 #[test]
 fn esc_with_the_modify_box_the_over_define_prompt_or_a_held_drag_takes_them_before_the_bars_tool() {
     // As the canvas's menu (above), each takes Esc before the prototype's `escChain` gives
-    // it to the navigation bar's tool (`Tab::escape_held`), Pan chosen throughout: a drag
+    // it to the navigation bar's tool (`Tab::escape_first`), Pan chosen throughout: a drag
     // of the free far corner ends from its begin; the bottom's dimension's Modify box
     // closes, its value as it was; the over-define prompt (the bottom set to 99, which
     // repeats the others) is cancelled, the edit undone. Pan stays through each; the Esc
@@ -43304,15 +43304,20 @@ fn the_app_bars_file_is_its_icon_a_gap_its_word_and_its_padding_wide() {
 #[test]
 fn the_view_cubes_home_and_its_down_arrow_are_filled_gray_200_at_rest_and_hovered() {
     // app.js gives each `style="background:var(--g200)"`, inline, over `.ab-btn:hover`'s
-    // Gray.300: a fill of #212121 over each button's place, with the pointer away and with it
-    // on the button.
+    // Gray.300: the last fill painted over each button's place is #212121, with the pointer
+    // away and with it on the button (its hover taken: its tooltip shows).
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
-    let filled = |h: &AppHarness, rect: eframe::egui::Rect| {
-        painted(h).iter().any(|shape| {
-            matches!(shape, eframe::egui::Shape::Rect(r) if r.rect == rect && r.fill == G200)
-        })
+    let last_fill = |h: &AppHarness, rect: eframe::egui::Rect| {
+        let shapes = painted(h);
+        let at = shapes
+            .iter()
+            .rposition(|shape| matches!(shape, eframe::egui::Shape::Rect(r) if r.rect == rect))?;
+        match &shapes[at] {
+            eframe::egui::Shape::Rect(r) => Some(r.fill),
+            _ => None,
+        }
     };
     for label in ["Home view", "View cube options"] {
         let rect = h
@@ -43322,11 +43327,65 @@ fn the_view_cubes_home_and_its_down_arrow_are_filled_gray_200_at_rest_and_hovere
         h.hover_at(the_viewport(&h).center());
         step(&mut h);
         step(&mut h);
-        assert!(filled(&h, rect), "{label} at rest");
+        assert!(h.query_by_role_and_label(Role::Label, label).is_none());
+        assert_eq!(last_fill(&h, rect), Some(G200), "{label} at rest");
         h.hover_at(rect.center());
+        step_until(&mut h, "its tooltip", |h| {
+            h.query_by_role_and_label(Role::Label, label).is_some()
+        });
         step(&mut h);
-        step(&mut h);
-        assert!(filled(&h, rect), "{label} hovered");
+        assert_eq!(last_fill(&h, rect), Some(G200), "{label} hovered");
     }
     assert_eq!(never_waits::waits(), 0);
+}
+
+/// In sketch mode on the boxed rectangle, the bottom's length set to 99 (which repeats the
+/// others, so the over-define prompt offers its three), Pan chosen first if `pan`: Esc is the
+/// prompt's Cancel, which sends an Undo only the next frame polls, so it asks for that frame
+/// at once, as Esc alone does (`esc_alone_asks_for_the_next_frame_at_once`). The prompt
+/// gone, the edit undone, and the tool as it was.
+fn esc_cancelling_the_over_define_prompt_asks_at_once(pan: bool) {
+    use silico_app::sketch::dimension::ModifyAction;
+    use silico_app::viewport::Navigation::Pan;
+    let f = fixture();
+    counting_redundant_99(&f);
+    let (mut h, _) = f.opened("boxed.silico", BOXED_LENGTH);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    if pan {
+        click_on_bar(&mut h, "Pan");
+    }
+    let tool = pan.then_some(Pan);
+    assert_eq!(view(&h).tool, tool);
+    sketch_events(&f, &mut h, &[]);
+    let at = label_of_dimension(&h, "ka000005");
+    sketch_events(&f, &mut h, &double_clicked_at(at));
+    step_until(&mut h, "the Modify box", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.edit_box.is_some())
+    });
+    modify_dimension(&f, &mut h, ModifyAction::Typed("99".to_owned()));
+    modify_dimension(&f, &mut h, ModifyAction::Accept);
+    settled(&mut h);
+    step_until(&mut h, "the offer", |h| {
+        sketch_mode(h).is_some_and(|m| m.offer().is_some())
+    });
+    assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Escape));
+    settled(&mut h);
+    assert!(sketch_mode(&h).unwrap().offer().is_none());
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    assert_eq!(view(&h).tool, tool);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_that_cancels_the_over_define_prompt_with_the_bars_tool_chosen_asks_for_the_next_frame_at_once()
+ {
+    esc_cancelling_the_over_define_prompt_asks_at_once(true);
+}
+
+#[test]
+fn esc_that_cancels_the_over_define_prompt_asks_for_the_next_frame_at_once() {
+    esc_cancelling_the_over_define_prompt_asks_at_once(false);
 }
