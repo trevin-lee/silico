@@ -2341,7 +2341,7 @@ impl Tab {
             }
         }
         if reloaded {
-            self.reloaded_under_dialog(sessions);
+            self.reloaded_under_dialog();
         }
         let published = sessions.published(&self.id);
         self.count_published(&published);
@@ -2457,7 +2457,7 @@ impl Tab {
         };
         if session.reloaded || session.revision != sent_at {
             self.reload_seen(sessions, sent_at, session.revision);
-            self.reloaded_under_dialog(sessions);
+            self.reloaded_under_dialog();
         }
     }
 
@@ -2475,7 +2475,7 @@ impl Tab {
             && session.revision < self.revision
         {
             self.reload_seen(sessions, session.revision, self.revision);
-            self.reloaded_under_dialog(sessions);
+            self.reloaded_under_dialog();
         }
     }
 
@@ -5459,6 +5459,12 @@ impl Tab {
         kind: Kind,
         feature: FeatureId,
     ) {
+        self.queue_load(kind, feature);
+        self.advance(sessions);
+    }
+
+    /// [`load`](Self::load) queued, sent by the next [`advance`](Self::advance).
+    fn queue_load(&mut self, kind: Kind, feature: FeatureId) {
         let serial = self.opening();
         self.loading = Some(serial);
         self.edits.queue.push_back(Queued::Load {
@@ -5466,15 +5472,17 @@ impl Tab {
             kind,
             feature,
         });
-        self.advance(sessions);
     }
 
     /// The session reloaded its file with a dialog open: an existing
     /// feature's dialog is read again, opening at the reloaded revision, its values the
     /// file's; a new feature's not yet added opens at the reloaded revision; one already
     /// added can't have been reloaded under (its add opened a transaction, and a session
-    /// never reloads inside one), but if it was, it's closed, said.
-    fn reloaded_under_dialog<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+    /// never reloads inside one), but if it was, it's closed, said. The read is queued, never
+    /// sent here: a reload is seen while a poll takes its answers, and the advance after them
+    /// sends it, behind what's still under way, or not at all once a save or a revert closing
+    /// the tab has let go of what was queued.
+    fn reloaded_under_dialog(&mut self) {
         // Sketch mode on a sketch with nothing of its own sent (a session reloads only with
         // no transaction open, and Create Sketch's add opens one): it opens at the reloaded
         // revision, its next read the reloaded sketch's.
@@ -5489,7 +5497,7 @@ impl Tab {
             return;
         };
         match (dialog.made, dialog.feature.clone()) {
-            (false, Some(feature)) => self.load(sessions, dialog.kind, feature),
+            (false, Some(feature)) => self.queue_load(dialog.kind, feature),
             (true, None) => {
                 // A session reloads only with no transaction open: the dialog's own edits
                 // will begin one.
@@ -11320,6 +11328,50 @@ mod tests {
         tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
         taken_until(&mut tab, &sessions, Tab::quiet);
         assert_eq!(banner(&tab), Some((Revision::OPENED, after_opened())));
+    }
+
+    #[test]
+    fn a_save_and_close_answered_after_a_reload_with_a_dialog_open_still_closes() {
+        // The pin's Edit Feature dialog open; Save and close asked (a save, or an untitled
+        // part's Save As), and the pin's radius typed behind it; the save applied, another
+        // program writes the file, and the session reloads it, read from `status` before the
+        // save's answer is taken. The tab closes: nothing queued behind the save is sent, so
+        // no transaction is open for the close to be refused in.
+        for save_as in [false, true] {
+            let (dir, sessions, mut tab, pin) = pin_renamed();
+            tab.edit_feature(&sessions, &pin);
+            polled_until(&mut tab, &sessions, |tab| {
+                tab.dialog.is_some() && tab.quiet()
+            });
+            let file = if save_as {
+                let copy = dir.path().join("copy.silico");
+                tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, true);
+                copy
+            } else {
+                tab.save(&sessions, true);
+                dir.path().join("part.silico")
+            };
+            tab.edit(
+                &sessions,
+                Edit {
+                    feature: pin,
+                    field: "radius".to_owned(),
+                    value: silico_core::document::json::read(b"0.75").unwrap(),
+                },
+            );
+            ended_off_poll(&tab, &sessions);
+            let saved = revision_now(&tab, &sessions);
+            pin_named_bolt_at(&file);
+            reloaded_past(&tab, &sessions, saved);
+            status_now(&mut tab, &sessions);
+            taken_until(&mut tab, &sessions, |tab| tab.closed || tab.close_refused);
+            assert!(
+                !tab.take_close_refused(),
+                "save as: {save_as}: {:?}",
+                tab.message
+            );
+            assert!(tab.closed, "save as: {save_as}");
+        }
     }
 
     /// BLOCK open and listed (revision 1); then `change` asked of the tab and applied by the
