@@ -592,8 +592,6 @@ enum Under {
     Commit {
         running: Running<Committed>,
         then_close: bool,
-        /// The state it was sent from: the one whose names the state it saves takes.
-        from: Revision,
     },
     /// A rollback, and what Cancel or revert it lands ([`Tab::land`]) where it answers.
     Rollback {
@@ -636,8 +634,6 @@ enum Under {
         path: String,
         began: bool,
         then_close: bool,
-        /// The state it was sent from, as a save's ([`Under::Commit`]'s).
-        from: Revision,
     },
     Close(Running<Closed>),
     /// A dialog's add, of the dialog numbered `serial`, as it was sent.
@@ -742,17 +738,20 @@ impl Under {
             | Under::SketchAdd { sending, .. }
             | Under::SketchCut { sending, .. }
             | Under::DimensionValue { sending, .. }
-            | Under::OfferField { sending, .. }
-            | Under::Replace { sending, .. } => Some(sending.state),
-            Under::Commit { from, .. } | Under::SaveAs { from, .. } => Some(*from),
+            | Under::OfferField { sending, .. } => Some(sending.state),
             Under::Begin(_)
+            | Under::Commit { .. }
+            | Under::SaveAs { .. }
             | Under::Rollback { .. }
             | Under::Step { .. }
             | Under::Close(_)
             | Under::Base { .. }
             | Under::Load { .. }
             | Under::ReloadRead { .. }
-            | Under::Restore { .. } => None,
+            | Under::Restore { .. }
+            // What a Restore puts back names what it names: nothing of the state it's sent
+            // from.
+            | Under::Replace { .. } => None,
         }
     }
 }
@@ -1151,11 +1150,16 @@ pub struct Tab {
     /// ends.
     steps: BTreeMap<Revision, Step>,
     /// The features' names in each state the tab knows them in, by the state's first
-    /// revision: from each timeline it takes (of that state), and, for each state its own
-    /// changes make, from the state each was made from and what it did ([`Effect`]). An undo
-    /// or a redo comes back to a state already here. What a step says is worked out from it
-    /// ([`step_text`](Self::step_text)). Kept for the states the steps were made from and made, and the
-    /// session's now.
+    /// revision: from a timeline listing exactly that revision, or, for a state the tab's own
+    /// changes make inside a transaction, from the state each was made from and what it did
+    /// ([`Effect`]). Never carried across a save, a Save As, or a rollback: the state each
+    /// comes to has none till a timeline lists it (names lent across a reload would be
+    /// wrong; none is never wrong). An undo or a redo comes back to a state already here.
+    /// What a step says is worked out from it ([`step_text`](Self::step_text)). Kept for:
+    /// - the states the steps were made from and made, and the groups' starts and ends;
+    /// - the states a change in flight, a drag's end, or a change under way was sent from
+    ///   ([`Under::made_from`]), whose made state takes them;
+    /// - the session's now.
     names: BTreeMap<Revision, Names>,
     /// The unsaved edits the bar holds while something of the tab's is under way
     /// ([`unsaved_edits`](Self::unsaved_edits)), set three ways: by the last poll that found
@@ -2736,22 +2740,15 @@ impl Tab {
             Under::Commit {
                 running,
                 then_close,
-                from,
             } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
-                    // Saved as it was: its names those of the state it was sent from, at the
-                    // revision it came to (`status` may have read that before this answer).
-                    if let (Ok(_), Some(session)) = (&response.result, &response.session) {
-                        self.names_carried(from, session.revision);
-                    }
                     self.ended(response.result.map(|_| ()), then_close, close);
                     None
                 }
                 Err(running) => Some(Under::Commit {
                     running,
                     then_close,
-                    from,
                 }),
             },
             Under::SaveAs {
@@ -2759,19 +2756,13 @@ impl Tab {
                 path,
                 began,
                 then_close,
-                from,
             } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
-                    let made = response.session.as_ref().map(|session| session.revision);
                     match response.result {
                         // The session holds the new file from now on, by the path given: its
-                        // transaction ended as a save's is, its names those of the state it
-                        // was sent from.
+                        // transaction ended as a save's is.
                         Ok(committed) => {
-                            if let Some(made) = made {
-                                self.names_carried(from, made);
-                            }
                             self.path = Some(committed.path);
                             self.ended(Ok(()), then_close, close);
                         }
@@ -2801,7 +2792,6 @@ impl Tab {
                     path,
                     began,
                     then_close,
-                    from,
                 }),
             },
             Under::Rollback {
@@ -2822,11 +2812,6 @@ impl Tab {
                         self.reloaded_under_dialog(sessions);
                     }
                     self.took_session(&response);
-                    // The document `begin` saw, its names that state's, at the revision the
-                    // rollback came to (not a reload's past it, seen first).
-                    if let (Ok(rolled), Some(session)) = (&response.result, &response.session) {
-                        self.names_carried(rolled.restored, session.revision);
-                    }
                     // Typing queued after it is applied next: the field keeps it.
                     if response.result.is_ok() && self.edits.idle() {
                         self.resets += 1;
@@ -3322,17 +3307,17 @@ impl Tab {
     }
 
     /// The transaction ended (a save, a Save As, a revert): its undo stack is gone, and with
-    /// it the states it held, the dialogs' groups on them, their steps, and their names but
-    /// the session's state's, kept for its revision now; and the unsaved edits it counted.
+    /// it the states it held, the dialogs' groups on them, their steps, and their names, but
+    /// any a timeline listed for exactly the revision it came to; and the unsaved edits it
+    /// counted.
     fn stack_gone(&mut self) {
-        let names = self.names.remove(&self.state_of(self.revision));
         self.groups.clear();
         self.steps.clear();
         self.restored.clear();
-        self.names.clear();
-        if let Some(names) = names {
-            self.names.insert(self.revision, names);
-        }
+        // Names are never carried across it: the state it came to has none till a timeline
+        // lists exactly that revision (one may have, before its answer was taken).
+        let revision = self.revision;
+        self.names.retain(|state, _| *state == revision);
         self.redo_fence = None;
         // Its edits are saved, or gone: none of them is counted while what follows waits.
         self.held_count = 0;
@@ -3855,7 +3840,6 @@ impl Tab {
                     }
                     self.saves += 1;
                     self.under.push(Under::SaveAs {
-                        from: self.state_of(self.revision),
                         running: sessions.save_as(&self.id, path.clone(), replace),
                         path,
                         began,
@@ -3866,7 +3850,6 @@ impl Tab {
                     self.saves += 1;
                     self.record(Sent::Commit);
                     self.under.push(Under::Commit {
-                        from: self.state_of(self.revision),
                         running: sessions.commit(&self.id),
                         then_close,
                     });
@@ -5007,14 +4990,6 @@ impl Tab {
         kept.extend(self.under.iter().filter_map(Under::made_from));
         kept.insert(now);
         self.names.retain(|state, _| kept.contains(state));
-    }
-
-    /// The names of the state at the revision `from`, kept also for the revision `to`: a
-    /// commit's (the document as it was) or a rollback's (the document `begin` saw).
-    fn names_carried(&mut self, from: Revision, to: Revision) {
-        if let Some(names) = self.names.get(&self.state_of(from)).cloned() {
-            self.names.insert(to, names);
-        }
     }
 
     /// What the step `queued` makes says, as it's sent: none for what changes nothing of the
@@ -11083,43 +11058,61 @@ mod tests {
         assert_eq!(tab.undo_step().as_deref(), Some("Suppress Pin"));
     }
 
+    /// Polled until nothing of the tab's is under way and a timeline lists the revision the
+    /// session is at: what Undo names then.
+    fn named_once_listed(tab: &mut Tab, sessions: &FakeSessions) -> Option<String> {
+        polled_until(tab, sessions, |tab| {
+            tab.quiet()
+                && tab
+                    .timeline
+                    .as_ref()
+                    .is_some_and(|timeline| timeline.revision == tab.revision)
+        });
+        tab.undo_step()
+    }
+
     #[test]
-    fn a_suppression_sent_as_a_reverts_rollback_answers_names_the_files_name() {
-        // Round 3's T3-2: PinA, listed; a revert, and the pin suppressed behind it, from the
-        // state the rollback restored: the file's, with Pin.
+    fn a_suppression_sent_as_a_reverts_rollback_answers_is_named_once_its_state_is_listed() {
+        // Round 4's rule: names are never carried across a rollback. PinA, listed; a revert,
+        // and the pin suppressed behind it, from the state the rollback came to: its names
+        // aren't known till a timeline lists one, so Undo names nothing; then, listed, the
+        // file's Pin.
         let (_dir, sessions, mut tab, pin) = pin_renamed();
         tab.revert(&sessions, false);
         tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(undo_named(&mut tab, &sessions), None);
         assert_eq!(
-            undo_named(&mut tab, &sessions).as_deref(),
+            named_once_listed(&mut tab, &sessions).as_deref(),
             Some("Suppress Pin")
         );
     }
 
     #[test]
-    fn a_suppression_sent_as_a_saves_answer_is_taken_names_the_name_the_save_kept() {
-        // Round 3's T3-2: PinA, listed; PinB, a save, and the pin suppressed behind them, from
-        // the state the save kept: PinB's.
+    fn a_suppression_sent_as_a_saves_answer_is_taken_is_named_once_its_state_is_listed() {
+        // Round 4's rule: names are never carried across a save. PinA, listed; PinB, a save,
+        // and the pin suppressed behind them: nothing named till listed, then PinB.
         let (_dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         tab.save(&sessions, false);
         tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(undo_named(&mut tab, &sessions), None);
         assert_eq!(
-            undo_named(&mut tab, &sessions).as_deref(),
+            named_once_listed(&mut tab, &sessions).as_deref(),
             Some("Suppress PinB")
         );
     }
 
     #[test]
-    fn a_suppression_sent_as_a_save_ass_answer_is_taken_names_the_name_the_save_as_kept() {
-        // Round 3's T3-2: as a save, a Save As to another file.
+    fn a_suppression_sent_as_a_save_ass_answer_is_taken_is_named_once_its_state_is_listed() {
+        // Round 4's rule: as a save, a Save As to another file.
         let (dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         let copy = dir.path().join("copy.silico");
         tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
         tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(undo_named(&mut tab, &sessions), None);
         assert_eq!(
-            undo_named(&mut tab, &sessions).as_deref(),
+            named_once_listed(&mut tab, &sessions).as_deref(),
             Some("Suppress PinB")
         );
     }
@@ -11134,50 +11127,132 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_rollback_answered_after_the_sessions_own_reload_lends_the_reload_no_names() {
-        // Round 3's R3-1: PinA, listed; another program writes the file with the pin named
-        // Bolt; a revert, applied, then the session's own reload of the changed file (a read
-        // of its text, outside a transaction now) before the tab takes the rollback's answer,
-        // a poll reading the reload's revision first. The pin suppressed then, from the
-        // reload's state: named Bolt once a timeline lists it, or nothing; never the Pin the
-        // rollback restored.
-        let (dir, sessions, mut tab, pin) = pin_renamed();
+    /// The file `dir/part.silico` written by another program: BLOCK with its pin named Bolt.
+    fn pin_named_bolt_on_disk(dir: &tempfile::TempDir) {
         std::fs::write(
             dir.path().join("part.silico"),
             BLOCK.replace(r#""name": "Pin""#, r#""name": "Bolt""#),
         )
         .unwrap();
+    }
+
+    /// The session's status read, then its answers taken, as a poll takes them, but no
+    /// timeline read started: what `status` says comes before the answers it may be ahead of.
+    fn status_then_answers(tab: &mut Tab, sessions: &FakeSessions) {
+        status_now(tab, sessions);
+        taken_until(tab, sessions, Tab::quiet);
+    }
+
+    #[test]
+    fn a_rollback_answered_after_the_sessions_own_reload_lends_the_reload_no_names() {
+        // Round 3's R3-1, to round 4's rule: PinA, listed; another program writes the file with
+        // the pin named Bolt; a revert, applied, then the session's own reload of the changed
+        // file (a read of its text, outside a transaction now), its revision read from
+        // `status` before the rollback's answer is taken. The pin suppressed then, from the
+        // reload's state: nothing named till a timeline lists it, then Bolt.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        pin_named_bolt_on_disk(&dir);
         tab.revert(&sessions, false);
         ended_off_poll(&tab, &sessions);
         let reloaded = sessions.text(&tab.id, None).wait();
         assert!(reloaded.session.unwrap().reloaded, "the file not reloaded");
-        tab.poll(&sessions);
+        status_then_answers(&mut tab, &sessions);
         assert!(!tab.transaction);
         tab.suppress_feature(&sessions, pin, true);
-        let named = undo_named(&mut tab, &sessions);
-        assert!(
-            named.is_none() || named.as_deref() == Some("Suppress Bolt"),
-            "{named:?}"
+        assert_eq!(undo_named(&mut tab, &sessions), None);
+        assert_eq!(
+            named_once_listed(&mut tab, &sessions).as_deref(),
+            Some("Suppress Bolt")
         );
     }
 
     #[test]
-    fn a_saves_answer_taken_after_status_read_its_revision_keeps_the_names_it_saved() {
-        // Round 3's R3-2: PinA, listed; PinB answered; a save, applied, and a poll that reads
-        // its revision from `status` before it takes its answer. The pin suppressed then,
-        // from the state the save kept: PinB's.
+    fn a_saves_answer_taken_after_status_read_its_revision_is_named_once_its_state_is_listed() {
+        // Round 3's R3-2, to round 4's rule: PinA, listed; PinB answered; a save, applied, its
+        // revision read from `status` before its answer is taken. The pin suppressed then:
+        // nothing named till a timeline lists it, then PinB.
         let (_dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         taken_until(&mut tab, &sessions, Tab::quiet);
         tab.save(&sessions, false);
         ended_off_poll(&tab, &sessions);
-        tab.poll(&sessions);
+        status_then_answers(&mut tab, &sessions);
         assert!(!tab.transaction);
         tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(undo_named(&mut tab, &sessions), None);
         assert_eq!(
-            undo_named(&mut tab, &sessions).as_deref(),
+            named_once_listed(&mut tab, &sessions).as_deref(),
             Some("Suppress PinB")
+        );
+    }
+
+    #[test]
+    fn a_saves_answer_taken_after_the_sessions_own_reload_lends_the_reload_no_names() {
+        // Round 4's T4-2: PinA, listed; PinB answered; a save, applied; another program then
+        // writes the file with the pin named Bolt, and the session reloads it, its revision
+        // read from `status` before the save's answer is taken. The pin
+        // suppressed then, from the reload's state: nothing named till a timeline lists it,
+        // then Bolt, never the PinB the save kept.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.rename(&sessions, pin.clone(), "PinB");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        tab.save(&sessions, false);
+        ended_off_poll(&tab, &sessions);
+        pin_named_bolt_on_disk(&dir);
+        let reloaded = sessions.text(&tab.id, None).wait();
+        assert!(reloaded.session.unwrap().reloaded, "the file not reloaded");
+        status_then_answers(&mut tab, &sessions);
+        tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(undo_named(&mut tab, &sessions), None);
+        assert_eq!(
+            named_once_listed(&mut tab, &sessions).as_deref(),
+            Some("Suppress Bolt")
+        );
+    }
+
+    #[test]
+    fn a_save_ass_answer_taken_after_the_sessions_own_reload_lends_the_reload_no_names() {
+        // Round 4's T4-2, its Save As twin: the Save As writes another file, and the session,
+        // holding that file from then on, reloads it once another program writes it Bolt.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.rename(&sessions, pin.clone(), "PinB");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        let copy = dir.path().join("copy.silico");
+        tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
+        ended_off_poll(&tab, &sessions);
+        std::fs::write(
+            &copy,
+            BLOCK.replace(r#""name": "Pin""#, r#""name": "Bolt""#),
+        )
+        .unwrap();
+        let reloaded = sessions.text(&tab.id, None).wait();
+        assert!(reloaded.session.unwrap().reloaded, "the file not reloaded");
+        status_then_answers(&mut tab, &sessions);
+        tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(undo_named(&mut tab, &sessions), None);
+        assert_eq!(
+            named_once_listed(&mut tab, &sessions).as_deref(),
+            Some("Suppress Bolt")
+        );
+    }
+
+    #[test]
+    fn a_save_as_whose_own_begin_reloaded_the_file_lends_the_saved_state_no_old_names() {
+        // Round 4's R4-1: BLOCK open and listed, no transaction; another program writes it with
+        // the pin named Bolt; a Save As, whose own `begin` reloads the file first, and the pin
+        // suppressed behind it: nothing named till a timeline lists it, then Bolt, never the
+        // Pin of the state the Save As was asked at.
+        let (dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        pin_named_bolt_on_disk(&dir);
+        let copy = dir.path().join("copy.silico");
+        tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
+        tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(undo_named(&mut tab, &sessions), None);
+        assert_eq!(
+            named_once_listed(&mut tab, &sessions).as_deref(),
+            Some("Suppress Bolt")
         );
     }
 
