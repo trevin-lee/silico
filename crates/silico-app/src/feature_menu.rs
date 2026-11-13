@@ -301,6 +301,7 @@ fn draw(ui: &mut Ui, name: &str, shown: Vec<Shown>) -> Option<Item> {
             off: shown.off.as_deref(),
             danger: shown.item == Item::Delete,
             lit: false,
+            checked: None,
         })
         .collect();
     let width = menu::width(ui, Some(name), &lines, 0.0);

@@ -70,6 +70,53 @@ pub(crate) fn border(ui: &Ui, rect: Rect) {
     );
 }
 
+/// Where a bar button (`.ab-btn`) stands: its height and least width, and its own fill, if
+/// its place gives it one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Place {
+    pub height: f32,
+    pub least_width: f32,
+    /// A fill at rest and hovered alike, which its place sets inline over `.ab-btn`'s own
+    /// (`:hover`'s and `.on`'s): the ViewCube's Home and ▾.
+    pub fill: Option<Color32>,
+}
+
+impl Place {
+    /// The app bar's (`.ab-btn`: `--btn`, 22, each way).
+    pub(crate) const APP_BAR: Place = Place {
+        height: theme::APP_BAR_BUTTON_SIZE,
+        least_width: theme::APP_BAR_BUTTON_SIZE,
+        fill: None,
+    };
+
+    /// The navigation bar's (`.nav-bar .ab-btn`: 24 high, 26 wide at least).
+    pub(crate) const NAVIGATION_BAR: Place = Place {
+        height: theme::NAVIGATION_BAR_BUTTON_HEIGHT,
+        least_width: theme::NAVIGATION_BAR_BUTTON_WIDTH,
+        fill: None,
+    };
+
+    /// The ViewCube's Home and ▾ (the app bar's size, Gray.200 at rest and hovered).
+    pub(crate) const VIEW_CUBE: Place = Place {
+        fill: Some(theme::VIEW_CUBE_BUTTON_BG),
+        ..Place::APP_BAR
+    };
+
+    /// How wide a button is here whose content is `content` wide: 5 of padding at each side
+    /// (`.ab-btn { padding: 0 5px }`), and its least width at least.
+    pub(crate) fn width(self, content: f32) -> f32 {
+        (content + 2.0 * theme::APP_BAR_BUTTON_PADDING).max(self.least_width)
+    }
+}
+
+/// How wide a button's content is: `icons` icons and a text `text` wide (if it has one), 4
+/// apart (`.ab-btn { gap: 4px }`).
+pub(crate) fn content_width(icons: usize, text: Option<f32>) -> f32 {
+    let items = icons + usize::from(text.is_some());
+    let gaps = items.saturating_sub(1) as f32 * theme::APP_BAR_BUTTON_GAP;
+    icons as f32 * ICON_SIZE + text.unwrap_or(0.0) + gaps
+}
+
 /// A bar button (`.ab-btn`): `icon`, and `text` after it if given, labelled `label`; `on`
 /// for one that shows a state, as Home does. Off unless `enabled`.
 pub(crate) fn button(
@@ -79,6 +126,20 @@ pub(crate) fn button(
     label: &str,
     enabled: bool,
     on: Option<bool>,
+) -> Response {
+    button_at(ui, &[icon], text, label, enabled, on, Place::APP_BAR)
+}
+
+/// A bar button (`.ab-btn`) at `place`: `icons` in a row, 4 apart, and `text` after them if
+/// given, labelled `label`; `on` for one that shows a state. Off unless `enabled`.
+pub(crate) fn button_at(
+    ui: &mut Ui,
+    icons: &[Icon],
+    text: Option<&str>,
+    label: &str,
+    enabled: bool,
+    on: Option<bool>,
+    place: Place,
 ) -> Response {
     // Painted at the bar's opacity, not faded further when off: `.ab-btn:disabled` is
     // Gray.400 itself.
@@ -92,14 +153,8 @@ pub(crate) fn button(
                 theme::TEXT_DEFAULT,
             )
         });
-        let content = ICON_SIZE
-            + galley
-                .as_ref()
-                .map_or(0.0, |galley| theme::APP_BAR_BUTTON_GAP + galley.size().x);
-        let size = Vec2::new(
-            (content + 2.0 * theme::APP_BAR_BUTTON_PADDING).max(theme::APP_BAR_BUTTON_SIZE),
-            theme::APP_BAR_BUTTON_SIZE,
-        );
+        let content = content_width(icons.len(), galley.as_ref().map(|g| g.size().x));
+        let size = Vec2::new(place.width(content), place.height);
         let (rect, response) = ui.allocate_exact_size(size, Sense::click());
         let enabled = ui.is_enabled();
         response.widget_info(|| match on {
@@ -120,7 +175,8 @@ pub(crate) fn button(
         } else {
             (None, theme::TEXT_DEFAULT)
         };
-        if let Some(fill) = fill {
+        // A fill set inline outweighs every rule's.
+        if let Some(fill) = place.fill.or(fill) {
             ui.painter()
                 .rect_filled(rect, theme::SMALL_CORNER_RADIUS, fill);
         }
@@ -131,19 +187,19 @@ pub(crate) fn button(
             theme::SMALL_CORNER_RADIUS,
             StrokeKind::Outside,
         );
-        let left = rect.center().x - content / 2.0;
-        let icon_rect = Rect::from_min_size(
-            Pos2::new(left, rect.center().y - ICON_SIZE / 2.0),
-            Vec2::splat(ICON_SIZE),
-        );
-        icon.image(IconSize::Small)
-            .tint(color)
-            .paint_at(ui, icon_rect);
-        if let Some(galley) = galley {
-            let at = Pos2::new(
-                icon_rect.right() + theme::APP_BAR_BUTTON_GAP,
-                rect.center().y - galley.size().y / 2.0,
+        let mut left = rect.center().x - content / 2.0;
+        for icon in icons {
+            let icon_rect = Rect::from_min_size(
+                Pos2::new(left, rect.center().y - ICON_SIZE / 2.0),
+                Vec2::splat(ICON_SIZE),
             );
+            icon.image(IconSize::Small)
+                .tint(color)
+                .paint_at(ui, icon_rect);
+            left = icon_rect.right() + theme::APP_BAR_BUTTON_GAP;
+        }
+        if let Some(galley) = galley {
+            let at = Pos2::new(left, rect.center().y - galley.size().y / 2.0);
             ui.painter()
                 .galley_with_override_text_color(at, galley, color);
         }
@@ -154,23 +210,37 @@ pub(crate) fn button(
 /// The drop-down menu `add` fills, opened and closed by clicks on `response` (`.menu`):
 /// the File menu, and the toolbar's.
 pub(crate) fn menu(response: &Response, add: impl FnOnce(&mut Ui)) {
+    as_menu(egui::Popup::menu(response)).show(add);
+}
+
+/// `popup` as the app's drop-down menus are: egui's menu, in its style, closed by a click on
+/// an item or off it, and by `Ui::close`.
+pub(crate) fn as_menu(popup: egui::Popup<'_>) -> egui::Popup<'_> {
     let config = egui::containers::menu::MenuConfig::new();
-    egui::Popup::menu(response)
+    popup
+        .kind(egui::PopupKind::Menu)
+        .layout(egui::Layout::top_down_justified(egui::Align::Min))
         .close_behavior(config.close_behavior)
         .style(config.style.clone())
         .info(
             egui::UiStackInfo::new(egui::UiKind::Menu)
                 .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
         )
-        .show(add);
 }
 
 /// The separator between the bar's buttons and the documents' tabs (`.ab-sep`).
 pub(crate) fn separator(ui: &mut Ui) {
-    let size = Vec2::new(
-        theme::BORDER_WIDTH + 2.0 * theme::APP_BAR_SEPARATOR_MARGIN,
+    separator_of(
+        ui,
         theme::APP_BAR_SEPARATOR_HEIGHT,
+        theme::APP_BAR_SEPARATOR_MARGIN,
     );
+}
+
+/// A bar's separator (`.ab-sep`), `height` high with `margin` at each side: the app bar's,
+/// and the navigation bar's (`.nav-bar .ab-sep`).
+pub(crate) fn separator_of(ui: &mut Ui, height: f32, margin: f32) {
+    let size = Vec2::new(theme::BORDER_WIDTH + 2.0 * margin, height);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     ui.painter().vline(
         rect.center().x,

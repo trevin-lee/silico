@@ -763,7 +763,7 @@ fn panel(ui: &mut Ui, panel: &Panel, last: bool, shown: &Shown<'_>, act: &mut Op
             drop_down_label(ui, panel.label, label)
         });
         bar::menu(&opener, |ui| {
-            menu_node(ui, panel.label, |ui| match panel.menu {
+            crate::menu::node(ui, panel.label, |ui| match panel.menu {
                 Some(entries) => {
                     for entry in entries {
                         menu_entry(ui, entry, shown, act);
@@ -943,17 +943,6 @@ fn drop_down_label(ui: &mut Ui, label: &str, galley: Arc<Galley>) -> Response {
     response
 }
 
-/// `add` in a menu for a screen reader, labelled `label`.
-fn menu_node(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
-    ui.scope_builder(UiBuilder::new().id_salt(label), |ui| {
-        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
-            node.set_role(Role::Menu);
-            node.set_label(label);
-        });
-        add(ui);
-    });
-}
-
 /// One of a drop-down's entries (`.menu .mi`, `.mh`, `.msep`).
 fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Act>) {
     match entry {
@@ -1054,7 +1043,7 @@ fn filter_command(kind: FilterKind) -> crate::shortcuts::Command {
 /// canvas's context menu over nothing (`crate::canvas_menu`).
 pub(crate) fn planes(ui: &mut Ui) -> Option<OriginPlane> {
     let mut chosen = None;
-    menu_node(ui, CREATE_SKETCH.label, |ui| {
+    crate::menu::node(ui, CREATE_SKETCH.label, |ui| {
         for (plane, word) in PLANES {
             if ui.button(word).clicked() {
                 chosen = Some(plane);

@@ -134,6 +134,7 @@ impl Shown {
             off: self.off.as_deref(),
             danger: false,
             lit,
+            checked: None,
         }
     }
 

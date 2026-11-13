@@ -13,6 +13,12 @@
 //! gap and its padding). Every item of a menu is as wide as its widest line (`width: 100%`,
 //! `white-space: nowrap`, the menu as wide as its lines), and that at least `.menu`'s
 //! `min-width: 200px` less its border and its padding (`box-sizing: border-box`).
+//!
+//! An item that shows a state (the display settings' and the ViewCube's, interact.js's
+//! `displayMenu` and `cubeMenu`) writes the prototype's mark before its words: `✓ ` when it's
+//! chosen, three spaces when it isn't. A screen reader is told the state, not the mark: one
+//! of a choice (a projection, a visual style) as a radio button, a setting on or off (the
+//! ground grid) as a check box.
 
 use eframe::egui::{
     self, Color32, FontId, Pos2, Rect, Response, Sense, Ui, Vec2, WidgetInfo, WidgetType, vec2,
@@ -22,8 +28,8 @@ use crate::icons::{ICON_SIZE, Icon, IconSize};
 use crate::theme;
 
 /// An item as a menu draws it: its icon, its words, its dim words after them, its keys'
-/// caps, why it's off if it is, whether its words are red (`.danger`), and whether it's lit
-/// by the keys (`.kfocus`) as a hovered item is.
+/// caps, why it's off if it is, whether its words are red (`.danger`), whether it's lit
+/// by the keys (`.kfocus`) as a hovered item is, and the state it shows, if it shows one.
 #[derive(Debug, Clone, Copy)]
 pub struct Item<'a> {
     pub icon: Option<Icon>,
@@ -33,9 +39,42 @@ pub struct Item<'a> {
     pub off: Option<&'a str>,
     pub danger: bool,
     pub lit: bool,
+    pub checked: Option<Checked>,
+}
+
+/// The state an item shows, marked as the prototype marks it (`✓ ` before its words, or
+/// three spaces).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Checked {
+    /// One of a choice, chosen or not: a radio button for a screen reader.
+    Choice(bool),
+    /// A setting, on or off: a check box for a screen reader.
+    Toggle(bool),
+}
+
+impl Checked {
+    /// Whether it's chosen, or on.
+    pub fn on(self) -> bool {
+        match self {
+            Checked::Choice(on) | Checked::Toggle(on) => on,
+        }
+    }
+
+    /// The mark before an item's words (interact.js's `'✓ '` or `'   '`).
+    pub fn mark(self) -> &'static str {
+        if self.on() { "✓ " } else { "   " }
+    }
 }
 
 impl Item<'_> {
+    /// Its words as drawn: its label, after its mark if it shows a state.
+    pub fn words(&self) -> std::borrow::Cow<'_, str> {
+        match self.checked {
+            Some(checked) => format!("{}{}", checked.mark(), self.label).into(),
+            None => self.label.into(),
+        }
+    }
+
     /// What a screen reader (and a test) is told it is, its name: its words, then its dim
     /// words. Its keys aren't in it: [`item`] gives them as its keyboard shortcut
     /// ([`Item::shortcut`]), which a screen reader announces as one, apart from the name, as
@@ -62,6 +101,24 @@ impl Item<'_> {
 /// [`theme::MENU_PADDING`].
 pub fn frame(ui: &Ui) -> egui::Frame {
     egui::Frame::menu(ui.style())
+}
+
+/// `add` in a menu for a screen reader, labelled `label`, its bounds what it holds (egui gives
+/// a scope that senses nothing none): what a test, too, finds its items in.
+pub fn node<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.scope_builder(egui::UiBuilder::new().id_salt(label), |ui| {
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+            node.set_role(egui::accesskit::Role::Menu);
+            node.set_label(label);
+        });
+        let inner = add(ui);
+        let held = ui.min_rect();
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+            node.set_bounds(crate::panes::bounds(held));
+        });
+        inner
+    })
+    .inner
 }
 
 /// The least a menu's lines are wide: `.menu`'s `min-width: 200px`, less its border and its
@@ -93,7 +150,7 @@ pub fn item_width(ui: &Ui, item: &Item<'_>) -> f32 {
     2.0 * theme::MENU_ITEM_PADDING
         + ICON_SIZE
         + theme::MENU_ITEM_GAP
-        + text_width(ui, item.label, theme::BODY_SIZE)
+        + text_width(ui, &item.words(), theme::BODY_SIZE)
         + sub
         + theme::MENU_ITEM_GAP
         + theme::MENU_KEYS_PADDING
@@ -179,7 +236,15 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
         let (rect, response) =
             ui.allocate_exact_size(vec2(width, theme::MENU_ITEM_HEIGHT), Sense::click());
         let enabled = ui.is_enabled();
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, &said));
+        response.widget_info(|| match item.checked {
+            Some(Checked::Choice(on)) => {
+                WidgetInfo::selected(WidgetType::RadioButton, enabled, on, &said)
+            }
+            Some(Checked::Toggle(on)) => {
+                WidgetInfo::selected(WidgetType::Checkbox, enabled, on, &said)
+            }
+            None => WidgetInfo::labeled(WidgetType::Button, enabled, &said),
+        });
         if !ui.is_rect_visible(rect) {
             return response;
         }
@@ -215,7 +280,7 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
                 .paint_at(ui, icon_rect);
         }
         let label = ui.painter().layout_no_wrap(
-            item.label.to_owned(),
+            item.words().into_owned(),
             FontId::proportional(theme::BODY_SIZE),
             ink,
         );
@@ -278,5 +343,41 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
             response.on_disabled_hover_text(off)
         }
         None => response,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn marked(label: &str, checked: Option<Checked>) -> Item<'_> {
+        Item {
+            icon: None,
+            label,
+            sub: None,
+            caps: &[],
+            off: None,
+            danger: false,
+            lit: false,
+            checked,
+        }
+    }
+
+    #[test]
+    fn an_item_showing_a_state_draws_the_prototypes_mark_and_is_named_by_its_words_alone() {
+        // interact.js's display and cube menus: `'✓ ' + 'Orthographic'` chosen, `'   ' +
+        // 'Perspective'` not (three spaces), and no mark on an item that shows no state; a
+        // screen reader is told the words alone, the state apart.
+        for (checked, drawn) in [
+            (Some(Checked::Choice(true)), "✓ Orthographic"),
+            (Some(Checked::Choice(false)), "   Orthographic"),
+            (Some(Checked::Toggle(true)), "✓ Orthographic"),
+            (Some(Checked::Toggle(false)), "   Orthographic"),
+            (None, "Orthographic"),
+        ] {
+            let item = marked("Orthographic", checked);
+            assert_eq!(item.words(), drawn, "{checked:?}");
+            assert_eq!(item.said(), "Orthographic", "{checked:?}");
+        }
     }
 }

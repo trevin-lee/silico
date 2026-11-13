@@ -4638,6 +4638,18 @@ impl Tab {
         self.rebuild_stopped() && !self.rebuild_out
     }
 
+    /// Whether something open takes Esc before the prototype's `escChain` would (its
+    /// `keydown`, which gives Esc to an open menu, a modal, and the Modify box first): a
+    /// sketch drag held (section 3's first), sketch mode's canvas menu, its over-define
+    /// prompt, or a placed dimension's Modify box. Until they're closed, Esc is theirs,
+    /// and not the navigation bar's tool's.
+    pub fn holds_escape(&self) -> bool {
+        self.drag.as_ref().is_some_and(|drag| drag.held())
+            || self.sketch.as_ref().is_some_and(|mode| {
+                mode.menu_at.is_some() || mode.offer().is_some() || mode.edit_box.is_some()
+            })
+    }
+
     /// Esc with no dialog open (section 3's order, the prototype's `escChain`, the nearest
     /// thing first): sketch mode's tool left, its chain or gesture ended with it (section 9,
     /// *Line*); or else sketch mode's selection cleared, if it has one; or else the reload's

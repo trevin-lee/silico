@@ -15,7 +15,6 @@ use eframe::egui::{self, Key, Modifiers, Ui};
 use silico_core::command::{Opened, Response, Running, SessionId, Sessions};
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::kernel::Clients;
-use silico_core::views::NamedView;
 
 use crate::banner::{self, Banner, Style, Tone};
 use crate::bar;
@@ -35,11 +34,6 @@ use crate::start::{self, Warm};
 use crate::tab::{DiskChoice, Tab, said};
 use crate::theme::{self, FieldKind};
 use crate::toolbar;
-use crate::viewport::ViewAsk;
-
-/// SolidWorks' isometric view (Ctrl+7), Z up: its front, right, and top toward the viewer,
-/// as the ViewCube's top front right corner gives it.
-const ISOMETRIC: NamedView = NamedView::TopFrontRight;
 
 /// How long past [`DISK_CHECK_INTERVAL`] the idle frame comes: a comparison is due once the
 /// last one ended a whole interval ago, so a frame exactly an interval after the one that
@@ -1364,26 +1358,16 @@ impl<P: Clients + 'static> App<P> {
         let view = if typing {
             None
         } else {
-            [
-                (Command::Fit, ViewAsk::Fit),
-                (Command::Home, ViewAsk::Named(crate::navigate::HOME)),
-                (Command::Front, ViewAsk::Named(NamedView::Front)),
-                (Command::Back, ViewAsk::Named(NamedView::Back)),
-                (Command::Left, ViewAsk::Named(NamedView::Left)),
-                (Command::Right, ViewAsk::Named(NamedView::Right)),
-                (Command::Top, ViewAsk::Named(NamedView::Top)),
-                (Command::Bottom, ViewAsk::Named(NamedView::Bottom)),
-                (Command::Isometric, ViewAsk::Named(ISOMETRIC)),
-            ]
-            .into_iter()
-            // Each taken, the last pressed given.
-            .fold(None, |asked, (command, ask)| {
-                if shortcuts::take(ui, command) {
-                    Some(ask)
-                } else {
-                    asked
-                }
-            })
+            crate::viewport::VIEW_COMMANDS
+                .into_iter()
+                // Each taken, the last pressed given.
+                .fold(None, |asked, (command, ask)| {
+                    if shortcuts::take(ui, command) {
+                        Some(ask)
+                    } else {
+                        asked
+                    }
+                })
         };
         // Look At (⌘8), never a field's: its view depends on the selection or the sketch.
         let look_at = !typing && shortcuts::take(ui, Command::LookAt);
@@ -1469,6 +1453,16 @@ impl<P: Clients + 'static> App<P> {
         // further down Esc's chain done (the field lost its focus to the Esc already).
         let stop = if stop && tab.renaming.is_some() {
             tab.renaming = None;
+            false
+        } else {
+            stop
+        };
+        // Esc with a navigation bar's tool chosen: back to Select, the left drag the
+        // selection's again, and nothing further down Esc's chain done (the prototype's
+        // `escChain`, its first; the Orbit button's tooltip says so); but not while what
+        // takes Esc before that chain is open (`Tab::holds_escape`).
+        let stop = if stop && tab.view.tool.is_some() && !tab.holds_escape() {
+            tab.view.tool = None;
             false
         } else {
             stop
