@@ -319,12 +319,12 @@ enum Queued {
     /// Sketch mode's Finish or Cancel (`sketch`) does the same, and a Finish fences Redo off
     /// at the state it ended at, so what sketch mode undid isn't redone past its edits. A
     /// dialog's carries its serial (`dialog`), so its Cancel lands what it unmade. An OK or a
-    /// Finish carries what the one step it makes says (`said`: "Edit Pad", "Add Sketch1").
+    /// Finish carries what the one step it makes says (`words`: "Edit Pad", "Add Sketch1").
     Closed {
         ok: bool,
         sketch: bool,
         dialog: Option<u64>,
-        said: Option<Words>,
+        words: Option<Words>,
     },
     /// Restore (Fable's decision of 2026-11-04, section 2): the text of `revision`, the one
     /// a reload replaced, read (`text` with `revision`), then put back as an edit.
@@ -488,7 +488,7 @@ pub enum Sent {
 struct Group {
     start: Revision,
     end: Revision,
-    said: Words,
+    words: Words,
 }
 
 /// An edit in flight: its feature and field, and its value, as it was sent, and its answer
@@ -2011,7 +2011,7 @@ impl Tab {
             .iter()
             .find(|group| self.sketch.is_none() && group.end == at);
         match group {
-            Some(group) => self.step_text(&group.said, group.start, group.end),
+            Some(group) => self.step_text(&group.words, group.start, group.end),
             None => {
                 let step = self.steps.get(&at)?;
                 self.step_text(&step.words, step.from, at)
@@ -2033,7 +2033,7 @@ impl Tab {
             .iter()
             .find(|group| self.sketch.is_none() && group.start == at);
         match group {
-            Some(group) => self.step_text(&group.said, group.start, group.end),
+            Some(group) => self.step_text(&group.words, group.start, group.end),
             None => {
                 let (made, step) = self.steps.range(at..).find(|(state, _)| **state != at)?;
                 self.step_text(&step.words, step.from, *made)
@@ -3004,7 +3004,7 @@ impl Tab {
                                     ok: false,
                                     sketch: true,
                                     dialog: None,
-                                    said: None,
+                                    words: None,
                                 });
                             }
                         }
@@ -3362,8 +3362,8 @@ impl Tab {
                     // A rename says the name it replaced, as the session answers it, and
                     // names the state it made with the one it gave.
                     match response.result.as_ref().ok().and_then(renaming) {
-                        Some((said, effect)) => {
-                            self.applied_as(&sending, &response, Some(said), effect);
+                        Some((words, effect)) => {
+                            self.applied_as(&sending, &response, Some(words), effect);
                         }
                         None => self.applied(&sending, &response),
                     }
@@ -3731,7 +3731,7 @@ impl Tab {
                     ok,
                     sketch,
                     dialog,
-                    said,
+                    words,
                 } => {
                     // Every edit sent before it has answered: what a Cancel put back of the
                     // selection is read from the revision its undo or rollback comes to,
@@ -3785,7 +3785,7 @@ impl Tab {
                         self.groups.push(Group {
                             start: self.state_of(base),
                             end: self.state_of(self.revision),
-                            said: said.unwrap_or_else(Words::edit),
+                            words: words.unwrap_or_else(Words::edit),
                         });
                     } else {
                         self.read_restored_from(ok, undone);
@@ -4041,11 +4041,11 @@ impl Tab {
     /// (decision 1), and sent now if no edit is in flight, or else waiting (section 3).
     pub fn edit<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, edit: Edit) {
         let step = self.edit_words(&edit);
-        self.edit_said(sessions, edit, step);
+        self.edit_with_words(sessions, edit, step);
     }
 
     /// [`edit`](Self::edit), the step it makes named `step`.
-    fn edit_said<P: Clients + 'static>(
+    fn edit_with_words<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
         edit: Edit,
@@ -4889,7 +4889,7 @@ impl Tab {
     /// (taken, and the session's revision moved past the one it was sent against), the
     /// dialogs' groups and the steps past the state it was made from let go, as it dropped
     /// the redo branch they're on (a group ending after that state was undone to reach it);
-    /// the state it made kept as a step, saying `said`, what its answer says (a rename's, a
+    /// the state it made kept as a step, saying `words`, what its answer says (a rename's, a
     /// deletion's, an add's), or else what it was sent saying (or else [`Words::edit`]), from
     /// that state; and that state's names, as the state it was made from has them and
     /// `effect` changes them, if they're known there. A refused change, or one that changed
@@ -4898,7 +4898,7 @@ impl Tab {
         &mut self,
         sending: &Sending,
         response: &Response<T>,
-        said: Option<Words>,
+        words: Option<Words>,
         effect: Effect,
     ) {
         if response.result.is_ok()
@@ -4914,7 +4914,7 @@ impl Tab {
             self.steps.insert(
                 made,
                 Step {
-                    words: said
+                    words: words
                         .or_else(|| sending.step.clone())
                         .unwrap_or_else(Words::edit),
                     from,
@@ -4991,7 +4991,7 @@ impl Tab {
     /// changes nothing of the document, or its answer names it (a rename, a deletion, an add:
     /// [`applied_as`](Self::applied_as)). A dialog's or sketch mode's own changes say what
     /// they change ("Edit Pad", "Edit Sketch1"), its OK or Finish making them one step of the
-    /// dialog's or the sketch's own ([`Queued::Closed`]'s `said`); every other one what it
+    /// dialog's or the sketch's own ([`Queued::Closed`]'s `words`); every other one what it
     /// does to which feature, named by the name it has in the state the step is made from
     /// ([`step_text`](Self::step_text)).
     fn step_words(&self, queued: &Queued) -> Option<Words> {
@@ -5095,8 +5095,8 @@ impl Tab {
     fn took_added(&mut self, sending: &Sending, response: &Response<Added>) {
         match &response.result {
             Ok(added) => {
-                let (said, effect) = made_by(&added.feature);
-                self.applied_as(sending, response, Some(said), effect);
+                let (words, effect) = made_by(&added.feature);
+                self.applied_as(sending, response, Some(words), effect);
             }
             Err(_) => self.applied(sending, response),
         }
@@ -5671,8 +5671,8 @@ impl Tab {
         let read = |name: &str, base: &FeatureId| self.selection.read_on(name, base);
         match crate::repair::used(broken, candidate, &dressing, &read, &name) {
             Ok((edit, told)) => {
-                let said = Words::Then(broken.feature.clone(), crate::repair::USED_STEP);
-                self.edit_said(sessions, edit, Some(said));
+                let words = Words::Then(broken.feature.clone(), crate::repair::USED_STEP);
+                self.edit_with_words(sessions, edit, Some(words));
                 self.told = Some(told);
                 true
             }
@@ -5720,8 +5720,8 @@ impl Tab {
         let read = |name: &str, base: &FeatureId| self.selection.read_on(name, base);
         match crate::repair::removed(broken, &dressing, &read, &name) {
             Ok((edit, told)) => {
-                let said = Words::Then(broken.feature.clone(), crate::repair::REMOVED_STEP);
-                self.edit_said(sessions, edit, Some(said));
+                let words = Words::Then(broken.feature.clone(), crate::repair::REMOVED_STEP);
+                self.edit_with_words(sessions, edit, Some(words));
                 self.told = Some(told);
                 true
             }
@@ -5964,7 +5964,7 @@ impl Tab {
         let serial = closed.as_ref().map(|closed| closed.serial);
         // What the one step its OK makes of its edits says: its feature, named from the state
         // it opened at once the step is made ([`dialog_step`](Self::dialog_step)).
-        let said = closed
+        let words = closed
             .as_ref()
             .filter(|_| ok)
             .map(|closed| self.dialog_step(closed));
@@ -5996,7 +5996,7 @@ impl Tab {
             ok,
             sketch: false,
             dialog: serial,
-            said,
+            words,
         });
         self.advance(sessions);
     }
@@ -6184,7 +6184,7 @@ impl Tab {
         // The one step its Finish makes of its edits: "Add" and the sketch's name for Create
         // Sketch's (the prototype's `'Add ' + name`), "Edit" and it for Edit Sketch's
         // (`'Edit Bracket profile'`).
-        let said = self.sketch.as_ref().filter(|_| ok).map(|mode| {
+        let words = self.sketch.as_ref().filter(|_| ok).map(|mode| {
             self.sketch_words(if mode.created.is_some() {
                 "Add"
             } else {
@@ -6202,7 +6202,7 @@ impl Tab {
             ok,
             sketch: true,
             dialog: None,
-            said,
+            words,
         });
         self.advance(sessions);
     }
@@ -8840,7 +8840,7 @@ mod tests {
         tab.groups.push(Group {
             start: one,
             end: two,
-            said: Words::Text("Edit Pad".to_owned()),
+            words: Words::Text("Edit Pad".to_owned()),
         });
         tab.steps.insert(
             two,
@@ -9079,21 +9079,21 @@ mod tests {
                     ok: true,
                     sketch: false,
                     dialog: Some(1),
-                    said: Some(Words::Text("Edit Pad".to_owned())),
+                    words: Some(Words::Text("Edit Pad".to_owned())),
                 },
                 None,
             ),
             (Queued::Restore { revision: rev(4) }, None),
         ];
         let one = Revision::OPENED;
-        for (queued, said) in cases {
+        for (queued, text) in cases {
             let words = tab.step_words(&queued);
             assert_eq!(
                 words
                     .as_ref()
                     .and_then(|words| tab.step_text(words, one, one))
                     .as_deref(),
-                said,
+                text,
                 "{queued:?}"
             );
         }
@@ -9120,7 +9120,7 @@ mod tests {
     fn an_edit_is_named_by_the_dialog_or_sketch_its_made_in_else_as_a_rename_of_the_name_it_replaces()
      {
         // What an edit asked says, decided as it's asked (its feature named once its step is
-        // made, from the state it's made from: `said`; a rename's by its own answer).
+        // made, from the state it's made from: `step_text`; a rename's by its own answer).
         let fid = |id: &str| FeatureId::new(id).unwrap();
         let mut tab = tab();
         tab.took_timeline(named_timeline());
@@ -9136,14 +9136,14 @@ mod tests {
             field: "radius".to_owned(),
             value: silico_core::document::json::read(b"3").unwrap(),
         };
-        let said = |tab: &Tab, edit: &Edit| {
+        let text = |tab: &Tab, edit: &Edit| {
             tab.edit_words(edit)
                 .and_then(|words| tab.step_text(&words, one, one))
         };
         // A rename says nothing as it's asked, wherever: its answer names it. Anything else
         // outside a dialog, "Edit" and the feature.
         assert_eq!(tab.edit_words(&name("PinA")), None);
-        assert_eq!(said(&tab, &radius).as_deref(), Some("Edit Pin"));
+        assert_eq!(text(&tab, &radius).as_deref(), Some("Edit Pin"));
         // Two edits of a field with nothing between them are one: the second takes the first's
         // place, keeping what it says.
         let mut edits = Edits::default();
@@ -9163,7 +9163,7 @@ mod tests {
         // A new feature's dialog: its edits, and its OK's one step, by its kind's title till
         // its add answers; then by its feature.
         tab.dialog = Some(Dialog::new(Kind::Pad, None, 1));
-        assert_eq!(said(&tab, &radius).as_deref(), Some("Edit Pad"));
+        assert_eq!(text(&tab, &radius).as_deref(), Some("Edit Pad"));
         assert_eq!(
             tab.dialog_step(tab.dialog.as_ref().unwrap()),
             Words::Text("Add Pad".to_owned())
@@ -9179,7 +9179,7 @@ mod tests {
         tab.dialog = None;
         // Sketch mode's: "Edit" and the sketch; a rename made in it, a rename still.
         tab.sketch = Some(SketchMode::new(3, Some(fid("s0000001"))));
-        assert_eq!(said(&tab, &radius).as_deref(), Some("Edit Triangle"));
+        assert_eq!(text(&tab, &radius).as_deref(), Some("Edit Triangle"));
         assert_eq!(tab.edit_words(&name("PinA")), None);
         // A name past the window's width, or across lines, as the tooltip shows it: on one
         // line, cut at 60 characters with an ellipsis.
@@ -9190,7 +9190,7 @@ mod tests {
         }
         tab.took_timeline(long);
         assert_eq!(
-            said(&tab, &radius),
+            text(&tab, &radius),
             Some(format!("Edit Pin {}…", "W".repeat(56)))
         );
     }
@@ -9208,7 +9208,7 @@ mod tests {
         tab.groups.push(Group {
             start: rev(2),
             end: rev(4),
-            said: Words::Text("Add Pad".to_owned()),
+            words: Words::Text("Add Pad".to_owned()),
         });
         apply(&mut tab, rev(4), rev(4), "Suppress Pin", rev(5));
         // At 5, the core counting four edits to undo: Undo takes back the suppression;
@@ -9353,8 +9353,8 @@ mod tests {
         tab.applied(&sending, &answered_at(rev(4), Err(refused)));
         // Changing nothing: answered at the revision it was sent against.
         tab.applied(&sending, &answered_at(rev(4), Ok(())));
-        let step = |said: &str, from: Revision| Step {
-            words: Words::Text(said.to_owned()),
+        let step = |text: &str, from: Revision| Step {
+            words: Words::Text(text.to_owned()),
             from,
         };
         assert_eq!(
@@ -9395,7 +9395,7 @@ mod tests {
             ok: true,
             sketch: true,
             dialog: None,
-            said: Some(Words::Text("Edit Triangle".to_owned())),
+            words: Some(Words::Text("Edit Triangle".to_owned())),
         });
         assert_eq!(tab.edits_now(), 4);
         assert_eq!(tab.unsaved_edits(), 2);
@@ -9405,7 +9405,7 @@ mod tests {
         tab.groups.push(Group {
             start: rev(2),
             end: rev(5),
-            said: Words::Text("Edit Triangle".to_owned()),
+            words: Words::Text("Edit Triangle".to_owned()),
         });
         assert_eq!(tab.unsaved_edits(), 2);
         assert_eq!(tab.undo_step().as_deref(), Some("Edit Triangle"));
@@ -9554,7 +9554,7 @@ mod tests {
             ok: false,
             sketch: false,
             dialog: None,
-            said: None,
+            words: None,
         });
         tab.read_restored_from(false, three);
         tab.selection.published(unnamed(), 2);
@@ -11107,7 +11107,7 @@ mod tests {
     }
 
     #[test]
-    fn a_suppression_sent_as_a_save_ass_answer_is_taken_is_named_once_its_state_is_listed() {
+    fn a_suppression_sent_as_a_save_as_answer_is_taken_is_named_once_its_state_is_listed() {
         // Round 4's rule: as a save, a Save As to another file.
         let (dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
@@ -11213,7 +11213,7 @@ mod tests {
     }
 
     #[test]
-    fn a_save_ass_answer_taken_after_the_sessions_own_reload_lends_the_reload_no_names() {
+    fn a_save_as_answer_taken_after_the_sessions_own_reload_lends_the_reload_no_names() {
         // Round 4's T4-2, its Save As twin: the Save As writes another file, and the session,
         // holding that file from then on, reloads it once another program writes it Bolt.
         let (dir, sessions, mut tab, pin) = pin_renamed();
