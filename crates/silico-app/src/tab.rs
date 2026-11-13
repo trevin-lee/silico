@@ -1120,9 +1120,10 @@ pub struct Tab {
     /// ([`said`](Self::said)). Kept for the states the steps were made from and made, and the
     /// session's now.
     names: BTreeMap<Revision, Names>,
-    /// The unsaved edits counted the last time a poll found nothing of the tab's under way
-    /// ([`unsaved_edits`](Self::unsaved_edits)).
-    counted: usize,
+    /// The unsaved edits the bar holds while something of the tab's is under way
+    /// ([`unsaved_edits`](Self::unsaved_edits)): as the last poll that found nothing under
+    /// way counted them, or as a dialog's or sketch mode's close asked since leaves them.
+    held_count: usize,
     /// The state sketch mode's Finish or Cancel ended at, or an over-defining dimension's
     /// Cancel undid to: Redo is off there till the next edit, so what it undid isn't redone
     /// past its Finish, nor the dimension Cancel refused.
@@ -1344,7 +1345,7 @@ impl Tab {
             groups: Vec::new(),
             steps: BTreeMap::new(),
             names: BTreeMap::new(),
-            counted: 0,
+            held_count: 0,
             redo_fence: None,
             sketch_edited: false,
             restored: BTreeMap::new(),
@@ -2013,14 +2014,14 @@ impl Tab {
     /// as Undo takes them, and the edits of sketch mode open one step as its Finish will make
     /// them. Counted from the steps the tab made, so those the undo stack's bound put out of
     /// reach count still: they're unsaved all the same. While anything of the tab's is under
-    /// way, the count of the last moment nothing was ([`counted`](Self::counted)): the
+    /// way, the count of the last moment nothing was ([`held_count`](Self::held_count)): the
     /// session's revision, read from `status`, can be past the steps the answers not yet
     /// taken will name.
     pub fn unsaved_edits(&self) -> usize {
         if self.quiet() {
             self.edits_now()
         } else {
-            self.counted
+            self.held_count
         }
     }
 
@@ -2064,14 +2065,14 @@ impl Tab {
 
     /// The count a dialog's or sketch mode's close leaves, asked now with what it opened at,
     /// `base` (its own opening's), kept while the close and what it sends wait
-    /// ([`counted`](Self::counted)): the edits before it, and, for an OK or a Finish that
+    /// ([`held_count`](Self::held_count)): the edits before it, and, for an OK or a Finish that
     /// made anything (the session moved past `base`, or an edit of its is still to answer),
     /// its one step; a Cancel's none of its edits, which it takes back.
     fn count_closed(&mut self, ok: bool, base: Revision) {
         let base = self.state_of(base);
         let made =
             ok && (self.state_of(self.revision) != base || !self.edits.idle() || self.changing());
-        self.counted = self.count_to(base, None) + usize::from(made);
+        self.held_count = self.count_to(base, None) + usize::from(made);
     }
 
     /// Whether sketch mode, if it's open, lets an undo step: it has opened (everything asked
@@ -2310,7 +2311,7 @@ impl Tab {
         // The unsaved edits, counted while every answer of the tab's is taken: what the bar
         // holds while the next is under way.
         if self.quiet() {
-            self.counted = self.edits_now();
+            self.held_count = self.edits_now();
         }
     }
 
@@ -3283,7 +3284,7 @@ impl Tab {
         }
         self.redo_fence = None;
         // Its edits are saved, or gone: none of them is counted while what follows waits.
-        self.counted = 0;
+        self.held_count = 0;
     }
 
     /// A save's, a Save As's, or a revert's answer: the transaction ended, then closed if
@@ -9286,7 +9287,7 @@ mod tests {
         assert_eq!(tab.unsaved_edits(), 2);
         assert_eq!(tab.undo_step().as_deref(), Some("Edit Triangle"));
         // As a poll keeps it, nothing of the tab's under way.
-        tab.counted = tab.edits_now();
+        tab.held_count = tab.edits_now();
         // Finished: sketch mode gone, its close waiting in the queue, its group not yet made:
         // the count held, two, not the four steps not yet one.
         tab.sketch = None;
@@ -9328,9 +9329,9 @@ mod tests {
         // taken back.
         tab.dialog = None;
         tab.count_closed(true, rev(6));
-        assert_eq!(tab.counted, 4);
+        assert_eq!(tab.held_count, 4);
         tab.count_closed(false, rev(6));
-        assert_eq!(tab.counted, 3);
+        assert_eq!(tab.held_count, 3);
     }
 
     #[test]
