@@ -25303,28 +25303,51 @@ fn counting_redundant_99(f: &Fixture) {
     });
 }
 
-#[test]
-fn esc_takes_a_held_drag_before_the_over_define_prompt_and_then_the_prompts_cancel() {
-    use silico_app::sketch::PointerAction::{Move, Press};
+/// The bottom's dimension's Modify box opened, by a double-click on its label as the sketch
+/// read draws it.
+fn open_modify_box(f: &Fixture, h: &mut AppHarness) {
+    sketch_events(f, h, &[]);
+    let at = label_of_dimension(h, "ka000005");
+    sketch_events(f, h, &double_clicked_at(at));
+    step_until(h, "the Modify box", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.edit_box.is_some())
+    });
+}
+
+/// The boxed rectangle (BOXED_LENGTH) in sketch mode, the solve counting a length of 99 as
+/// repeating the others ([`counting_redundant_99`]), the navigation bar's Pan chosen first if
+/// `pan`, and its bottom's length set to 99 through its dimension's Modify box: the
+/// over-define prompt up, offering its three. The harness, and the document's text before
+/// the edit.
+fn over_define_offered(f: &Fixture, pan: bool) -> (AppHarness, String) {
     use silico_app::sketch::dimension::ModifyAction;
-    let f = fixture();
-    counting_redundant_99(&f);
+    counting_redundant_99(f);
     let (mut h, _) = f.opened("boxed.silico", BOXED_LENGTH);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
     double_click(&mut h, "Browser", "Box");
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
     sketch_read(&mut h);
-    let text = text_of(&f, &h);
-    // The bottom's length set to 99, which repeats the others: the three offered.
-    sketch_events(&f, &mut h, &[]);
-    let at = label_of_dimension(&h, "ka000005");
-    sketch_events(&f, &mut h, &double_clicked_at(at));
-    modify_dimension(&f, &mut h, ModifyAction::Typed("99".to_owned()));
-    modify_dimension(&f, &mut h, ModifyAction::Accept);
+    let text = text_of(f, &h);
+    if pan {
+        click_on_bar(&mut h, "Pan");
+        assert_eq!(view(&h).tool, Some(silico_app::viewport::Navigation::Pan));
+    }
+    open_modify_box(f, &mut h);
+    modify_dimension(f, &mut h, ModifyAction::Typed("99".to_owned()));
+    modify_dimension(f, &mut h, ModifyAction::Accept);
     settled(&mut h);
     step_until(&mut h, "the offer", |h| {
         sketch_mode(h).is_some_and(|m| m.offer().is_some())
     });
+    (h, text)
+}
+
+#[test]
+fn esc_takes_a_held_drag_before_the_over_define_prompt_and_then_the_prompts_cancel() {
+    use silico_app::sketch::PointerAction::{Move, Press};
+    let f = fixture();
+    // The bottom's length set to 99, which repeats the others: the three offered.
+    let (mut h, text) = over_define_offered(&f, false);
     // The far corner, still free, dragged while the prompt is up.
     sketch_events(
         &f,
@@ -42965,34 +42988,18 @@ fn esc_with_sketch_modes_canvas_menu_open_closes_the_menu_before_it_lets_the_bar
 #[test]
 fn esc_with_the_modify_box_the_over_define_prompt_or_a_held_drag_takes_them_before_the_bars_tool() {
     // As the canvas's menu (above), each takes Esc before the prototype's `escChain` gives
-    // it to the navigation bar's tool (`Tab::escape_first`), Pan chosen throughout: a drag
-    // of the free far corner ends from its begin; the bottom's dimension's Modify box
-    // closes, its value as it was; the over-define prompt (the bottom set to 99, which
-    // repeats the others) is cancelled, the edit undone. Pan stays through each; the Esc
-    // after them lets it go, sketch mode still open.
+    // it to the navigation bar's tool (`Tab::escape_first`), Pan chosen throughout. With the
+    // over-define prompt up (the bottom set to 99, which repeats the others): a drag of the
+    // free far corner ends from its begin, the prompt staying; then the prompt is
+    // cancelled, the edit undone; then the bottom's dimension's Modify box closes, its value
+    // as it was. Pan stays through each; the Esc after them lets it go, sketch mode still
+    // open.
     use eframe::egui::Key;
     use silico_app::sketch::PointerAction::{Move, Press};
-    use silico_app::sketch::dimension::ModifyAction;
     use silico_app::viewport::Navigation::Pan;
     let f = fixture();
-    counting_redundant_99(&f);
-    let (mut h, _) = f.opened("boxed.silico", BOXED_LENGTH);
-    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
-    double_click(&mut h, "Browser", "Box");
-    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
-    sketch_read(&mut h);
-    let text = text_of(&f, &h);
-    click_on_bar(&mut h, "Pan");
-    assert_eq!(view(&h).tool, Some(Pan));
-    let open_box = |h: &mut AppHarness| {
-        sketch_events(&f, h, &[]);
-        let at = label_of_dimension(h, "ka000005");
-        sketch_events(&f, h, &double_clicked_at(at));
-        step_until(h, "the Modify box", |h| {
-            sketch_mode(h).is_some_and(|mode| mode.edit_box.is_some())
-        });
-    };
-    // A drag of the far corner, held; ended, the sketch read again.
+    let (mut h, text) = over_define_offered(&f, true);
+    // A drag of the far corner, held while the prompt is up.
     sketch_events(
         &f,
         &mut h,
@@ -43004,28 +43011,22 @@ fn esc_with_the_modify_box_the_over_define_prompt_or_a_held_drag_takes_them_befo
     step(&mut h);
     settled(&mut h);
     assert_eq!(drag_sends(&h, "drag_end"), ended + 1);
-    assert_eq!(view(&h).tool, Some(Pan));
-    sketch_read(&mut h);
-    // The Modify box.
-    open_box(&mut h);
-    h.key_press(Key::Escape);
-    step(&mut h);
-    assert!(sketch_mode(&h).unwrap().edit_box.is_none());
+    assert!(sketch_mode(&h).unwrap().offer().is_some());
     assert_eq!(view(&h).tool, Some(Pan));
     // The over-define prompt.
-    open_box(&mut h);
-    modify_dimension(&f, &mut h, ModifyAction::Typed("99".to_owned()));
-    modify_dimension(&f, &mut h, ModifyAction::Accept);
-    settled(&mut h);
-    step_until(&mut h, "the offer", |h| {
-        sketch_mode(h).is_some_and(|m| m.offer().is_some())
-    });
     h.key_press(Key::Escape);
     step(&mut h);
     settled(&mut h);
     assert!(sketch_mode(&h).unwrap().offer().is_none());
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
     assert_eq!(text_of(&f, &h), text);
+    assert_eq!(view(&h).tool, Some(Pan));
+    // The Modify box, the sketch read again.
+    sketch_read(&mut h);
+    open_modify_box(&f, &mut h);
+    h.key_press(Key::Escape);
+    step(&mut h);
+    assert!(sketch_mode(&h).unwrap().edit_box.is_none());
     assert_eq!(view(&h).tool, Some(Pan));
     // Then the bar's tool.
     h.key_press(Key::Escape);
@@ -43310,14 +43311,10 @@ fn the_view_cubes_home_and_its_down_arrow_are_filled_gray_200_at_rest_and_hovere
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     let last_fill = |h: &AppHarness, rect: eframe::egui::Rect| {
-        let shapes = painted(h);
-        let at = shapes
-            .iter()
-            .rposition(|shape| matches!(shape, eframe::egui::Shape::Rect(r) if r.rect == rect))?;
-        match &shapes[at] {
-            eframe::egui::Shape::Rect(r) => Some(r.fill),
+        painted(h).iter().rev().find_map(|shape| match shape {
+            eframe::egui::Shape::Rect(r) if r.rect == rect => Some(r.fill),
             _ => None,
-        }
+        })
     };
     for label in ["Home view", "View cube options"] {
         let rect = h
@@ -43339,43 +43336,15 @@ fn the_view_cubes_home_and_its_down_arrow_are_filled_gray_200_at_rest_and_hovere
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// In sketch mode on the boxed rectangle, the bottom's length set to 99 (which repeats the
-/// others, so the over-define prompt offers its three), Pan chosen first if `pan`: Esc is the
-/// prompt's Cancel, which sends an Undo only the next frame polls, so it asks for that frame
-/// at once, as Esc alone does (`esc_alone_asks_for_the_next_frame_at_once`). The prompt
-/// gone, the edit undone, and the tool as it was.
+/// With the over-define prompt up ([`over_define_offered`]), the navigation bar's Pan
+/// chosen first if `pan`: Esc is the prompt's Cancel, which sends an Undo only the next frame
+/// polls, so it asks for that frame at once, as Esc alone does
+/// (`esc_alone_asks_for_the_next_frame_at_once`). What the Cancel does, with Pan chosen, is
+/// pinned by `esc_with_the_modify_box_the_over_define_prompt_or_a_held_drag_takes_them_before_the_bars_tool`.
 fn esc_cancelling_the_over_define_prompt_asks_at_once(pan: bool) {
-    use silico_app::sketch::dimension::ModifyAction;
-    use silico_app::viewport::Navigation::Pan;
     let f = fixture();
-    counting_redundant_99(&f);
-    let (mut h, _) = f.opened("boxed.silico", BOXED_LENGTH);
-    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
-    double_click(&mut h, "Browser", "Box");
-    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
-    sketch_read(&mut h);
-    if pan {
-        click_on_bar(&mut h, "Pan");
-    }
-    let tool = pan.then_some(Pan);
-    assert_eq!(view(&h).tool, tool);
-    sketch_events(&f, &mut h, &[]);
-    let at = label_of_dimension(&h, "ka000005");
-    sketch_events(&f, &mut h, &double_clicked_at(at));
-    step_until(&mut h, "the Modify box", |h| {
-        sketch_mode(h).is_some_and(|mode| mode.edit_box.is_some())
-    });
-    modify_dimension(&f, &mut h, ModifyAction::Typed("99".to_owned()));
-    modify_dimension(&f, &mut h, ModifyAction::Accept);
-    settled(&mut h);
-    step_until(&mut h, "the offer", |h| {
-        sketch_mode(h).is_some_and(|m| m.offer().is_some())
-    });
+    let (mut h, _) = over_define_offered(&f, pan);
     assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Escape));
-    settled(&mut h);
-    assert!(sketch_mode(&h).unwrap().offer().is_none());
-    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
-    assert_eq!(view(&h).tool, tool);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -43388,4 +43357,19 @@ fn esc_that_cancels_the_over_define_prompt_with_the_bars_tool_chosen_asks_for_th
 #[test]
 fn esc_that_cancels_the_over_define_prompt_asks_for_the_next_frame_at_once() {
     esc_cancelling_the_over_define_prompt_asks_at_once(false);
+}
+
+#[test]
+fn esc_that_lets_the_bars_tool_go_asks_for_the_next_frame_at_once() {
+    // As Esc alone does (`esc_alone_asks_for_the_next_frame_at_once`): the example open and
+    // settled, Pan chosen, Esc lets Pan go and asks for the frame after at once.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    settled(&mut h);
+    click_on_bar(&mut h, "Pan");
+    assert_eq!(view(&h).tool, Some(silico_app::viewport::Navigation::Pan));
+    assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Escape));
+    assert_eq!(view(&h).tool, None);
+    assert_eq!(never_waits::waits(), 0);
 }

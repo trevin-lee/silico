@@ -329,7 +329,7 @@ impl CanvasMenu {
         on.get(usize::try_from(to).ok()?).copied()
     }
 
-    /// Its lines' width: its widest line's, its head's too, and a menu's least at least
+    /// Its rows' width: its widest row's, its head's too, and a menu's least at least
     /// (`crate::menu::width`).
     fn width(&self, ui: &Ui) -> f32 {
         let lines: Vec<menu::Item<'_>> = self.items.iter().map(|shown| shown.line(false)).collect();

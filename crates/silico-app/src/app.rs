@@ -1345,9 +1345,12 @@ impl<P: Clients + 'static> App<P> {
         // and an exact chord's. Done while typing too, as Save is: it's no key of a field's,
         // and what it would drop is asked about first.
         let reload = shortcuts::take(ui, Command::Reload);
-        // Esc with a menu open (a feature's right-click menu, a drop-down) closes the menu
-        // alone, as the prototype's `keydown` has it: left for the menu to take.
-        let stop = !egui::Popup::is_any_open(ui.ctx()) && shortcuts::take(ui, Command::Stop);
+        // Esc, pressed: with a menu open (a feature's right-click menu, a drop-down) it closes
+        // the menu alone, as the prototype's `keydown` has it, left for the menu to take;
+        // else it's taken here, and whatever it does below, the frame after is asked for
+        // (`esc` in what this returns), so what it sent (an over-define prompt's Undo, a
+        // drag's end) is polled at once.
+        let esc = !egui::Popup::is_any_open(ui.ctx()) && shortcuts::take(ui, Command::Stop);
         // H hides or shows the selection (DESIGN.md, *Keyboard*), never a letter typed.
         let hide = !typing && shortcuts::take(ui, Command::Hide);
         // F2 renames the selected feature, and Del (or ⌫) deletes it: never a field's keys.
@@ -1407,8 +1410,10 @@ impl<P: Clients + 'static> App<P> {
         // F5: where the filters are (the prototype's, no command of the registry's).
         let filters_said =
             !typing && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::F5));
+        // No document shown (the start page): nothing below acts, but an Esc taken asks for
+        // its frame, as every one does.
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
-            return (false, None);
+            return (esc, None);
         };
         if hide {
             tab.toggle_selected_shown();
@@ -1449,28 +1454,26 @@ impl<P: Clients + 'static> App<P> {
                 None => {}
             }
         }
-        // Esc with a feature's name being typed: the name dropped, nothing sent, and nothing
-        // further down Esc's chain done (the field lost its focus to the Esc already).
-        let stop = if stop && tab.renaming.is_some() {
+        // Whether Esc goes on down its chain (section 3's order, the prototype's `escChain`):
+        // a dialog's Esc, or `Tab::escape`. Not with a feature's name being typed: the name
+        // is dropped, nothing sent (the field lost its focus to the Esc already).
+        let chain = if esc && tab.renaming.is_some() {
             tab.renaming = None;
             false
         } else {
-            stop
+            esc
         };
-        // Esc with a navigation bar's tool chosen: given first to what takes it before the
-        // prototype's `escChain` (`Tab::escape_first`); or else the tool is let go, back to
-        // Select (the chain's first; the Orbit button's tooltip says so), before a dialog's
-        // Esc and the rest of the chain. Either way nothing further down the chain, but the
-        // Esc was taken: the frame after is asked for, as any Esc's is (what it did may have
-        // sent a command, an over-define prompt's Undo or a drag's end, which that frame
-        // polls).
-        let (stop, escaped) = if stop && tab.view.tool.is_some() {
+        // Nor with a navigation bar's tool chosen: Esc is given first to what takes it before
+        // the chain (`Tab::escape_first`); or else it lets the tool go, back to Select (the
+        // chain's first step; the Orbit button's tooltip says so), before a dialog's Esc and
+        // the rest of the chain.
+        let chain = if chain && tab.view.tool.is_some() {
             if !tab.escape_first(&self.sessions) {
                 tab.view.tool = None;
             }
-            (false, true)
+            false
         } else {
-            (stop, false)
+            chain
         };
         if let Some(ask) = view {
             tab.view.ask(ask);
@@ -1517,14 +1520,14 @@ impl<P: Clients + 'static> App<P> {
         if rebuild {
             tab.rebuild(sessions);
         }
-        let dialog_key = match (enter, stop && in_dialog) {
+        let dialog_key = match (enter, chain && in_dialog) {
             (true, _) => Some(Key::Enter),
             (false, true) => Some(Key::Escape),
             (false, false) => None,
         };
         // Esc, with no dialog open: the reload's banner dismissed first, then the selection
         // cleared, then a rebuild running stopped, as the stop does (section 3's order).
-        if stop && !in_dialog {
+        if chain && !in_dialog {
             tab.escape(sessions);
         }
         if let Some(id) = save_panel {
@@ -1542,8 +1545,7 @@ impl<P: Clients + 'static> App<P> {
             save || undo
                 || reload
                 || redo
-                || stop
-                || escaped
+                || esc
                 || close
                 || enter
                 || rebuild
