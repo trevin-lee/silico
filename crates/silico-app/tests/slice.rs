@@ -270,12 +270,6 @@ fn read_until(
     }
 }
 
-/// The Modify box's field.
-fn modify_field(h: &AppUi<KernelPool>) -> Option<egui_kittest::Node<'_>> {
-    h.query_by_role_and_label(Role::Dialog, "Modify dimension")
-        .and_then(|d| d.query_by_label("Value in millimetres"))
-}
-
 /// Smart Dimension's pick at `pick`, then its click on nothing at `place`; the Modify box,
 /// once open, typed over with `value` (Home, a Delete for each character it holds, then the
 /// value), and Enter; stepped until the read has `constraints` constraints, and checked

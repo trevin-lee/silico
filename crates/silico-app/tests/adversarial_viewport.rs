@@ -11,15 +11,15 @@ mod ui;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use eframe::egui::{self, Event, Modifiers, PointerButton, Pos2, vec2};
+use eframe::egui::{self, Event, Modifiers, PointerButton, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use silico_app::App;
 use silico_app::navigate;
 use silico_app::renderer::{Change, FrameData, Picking, Present, ViewRenderer};
-use silico_app::viewport::{View, read_size};
+use silico_app::viewport::read_size;
 use silico_core::cache::Cache;
 use silico_core::command::Sessions;
 use silico_core::document::FeatureId;
@@ -30,7 +30,10 @@ use silico_core::sketch::SketchSolver;
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 use tempfile::TempDir;
-use ui::{WAIT, meshes_settled_in, step, step_until};
+use ui::{
+    FAKE_WAIT as WAIT, advance, button_event, hand_clock, meshes_settled, meshes_settled_in,
+    repaint_delay, step, step_until, tessellated, the_viewport, view, view_mut,
+};
 
 const EXAMPLE: &str = r#"{
   "silico": 1,
@@ -195,26 +198,6 @@ impl Fixture {
         h.state_mut().open(&path, false);
         (h, record)
     }
-}
-
-fn view(h: &AppHarness) -> &View {
-    &h.state().tabs()[0].view
-}
-
-fn view_mut(h: &mut AppHarness) -> &mut View {
-    &mut h.state_mut().tabs_mut()[0].view
-}
-
-fn tessellated(f: &Fixture) -> usize {
-    f.kernel
-        .calls()
-        .iter()
-        .filter(|call| matches!(call.op, Op::Tessellate { .. }))
-        .count()
-}
-
-fn rect(h: &AppHarness) -> egui::Rect {
-    view(h).frame().unwrap().rect
 }
 
 fn view_height(camera: &Camera) -> f64 {
@@ -463,7 +446,7 @@ fn reads_over(h: &mut AppHarness, frames: usize) -> u64 {
 fn a_view_at_the_edges_of_serves_reads_once_and_then_never_over_a_hundred_frames() {
     let f = fixture();
     let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     assert_eq!(reads_over(&mut h, 100), 0);
     let height = f64::from(view(&h).frame().unwrap().size_px[1]);
     // Orthographic, the half pixel exactly a power of two, 2⁻⁴ and 2⁻⁵: each served by its
@@ -478,7 +461,7 @@ fn a_view_at_the_edges_of_serves_reads_once_and_then_never_over_a_hundred_frames
             target: [25.0, 25.0, 25.0],
             up: [0.0, 0.0, 1.0],
         });
-        meshes_settled_in(&mut h, 0);
+        meshes_settled(&mut h);
         assert_eq!(reads_over(&mut h, 100), 0, "half pixel {half}");
     }
     // Perspective: the eye in the large cube's box's plane (its depth there 0, so its level
@@ -496,22 +479,10 @@ fn a_view_at_the_edges_of_serves_reads_once_and_then_never_over_a_hundred_frames
             target: [25.0, 25.0, 25.0],
             up: [0.0, 0.0, 1.0],
         });
-        meshes_settled_in(&mut h, 0);
+        meshes_settled(&mut h);
         assert_eq!(reads_over(&mut h, 100), 0, "eye {eye:?}");
     }
     assert_eq!(never_waits::waits(), 0);
-}
-
-/// A clock moved by hand, and what reads it.
-fn hand_clock() -> (Arc<Mutex<Instant>>, silico_core::disk::Clock) {
-    let time = Arc::new(Mutex::new(Instant::now()));
-    let read = Arc::clone(&time);
-    (time, Arc::new(move || *read.lock().unwrap()))
-}
-
-fn advance(time: &Mutex<Instant>, by: Duration) {
-    let mut now = time.lock().unwrap();
-    *now += by;
 }
 
 /// Frames until the core's waker has told of everything since `before` wakes: a read's
@@ -519,14 +490,6 @@ fn advance(time: &Mutex<Instant>, by: Duration) {
 /// and its frame asked at once would make a measured delay ZERO.
 fn woken(h: &mut AppHarness, before: u64) {
     step_until(h, "the read's wake", |h| h.state().wakes() > before);
-}
-
-/// The frame the last one asked for, in time.
-fn repaint_delay(h: &AppHarness) -> Option<Duration> {
-    h.output()
-        .viewport_output
-        .get(&egui::ViewportId::ROOT)
-        .map(|viewport| viewport.repaint_delay)
 }
 
 impl Fixture {
@@ -588,7 +551,7 @@ fn a_read_refused_while_the_kernel_fails_is_asked_again_on_its_backoff_and_a_new
     let failing = failing_kernel(&f);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     failing.store(true, Ordering::SeqCst);
     let reads = view(&h).reads();
     let wakes = h.state().wakes();
@@ -690,7 +653,7 @@ fn a_refusal_said_is_cleared_by_the_next_answer_but_a_message_said_since_is_kept
     );
     failing.store(false, Ordering::SeqCst);
     advance(&time, Duration::from_millis(250));
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     assert_eq!(message(&h), None);
     // The retry was of Home's view too, and its camera taken: onto the centre of the two
     // boxes' joined box, (0, 0, 0) to (3000, 1000, 1000).
@@ -729,7 +692,7 @@ fn a_refusal_said_is_cleared_by_the_next_answer_but_a_message_said_since_is_kept
             .get(&1)
             .is_some_and(|body| body.bounds.unwrap()[1][2] == 60.0)
     });
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     assert_eq!(message(&h), Some(other));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -742,7 +705,7 @@ fn a_due_retry_with_no_read_wanted_asks_for_no_frame_at_the_displays_rate() {
     let failing = failing_kernel(&f);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let settled = view(&h).camera().clone();
     failing.store(true, Ordering::SeqCst);
     let reads = view(&h).reads();
@@ -791,7 +754,7 @@ fn a_due_retry_with_no_read_wanted_asks_for_no_frame_at_the_displays_rate() {
 fn a_tab_switched_mid_read_takes_its_answer_when_shown_again_and_the_renderer_follows() {
     let f = fixture();
     let (mut h, record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let first = Arc::clone(&view(&h).bodies()[&1].mesh);
     // Its next read held; the second document opened and shown meanwhile.
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
@@ -820,7 +783,7 @@ fn a_tab_switched_mid_read_takes_its_answer_when_shown_again_and_the_renderer_fo
     }
     // a shown again: its held read's answer taken, its finer mesh uploaded.
     h.get_by_label("a.silico").click();
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let mesh = Arc::clone(&view(&h).bodies()[&1].mesh);
     assert!(!Arc::ptr_eq(&mesh, &first));
     let told = record.lock().unwrap();
@@ -834,7 +797,7 @@ fn a_tab_switched_mid_read_takes_its_answer_when_shown_again_and_the_renderer_fo
 fn a_session_closed_mid_read_leaves_nothing_held_and_frames_go_on() {
     let f = fixture();
     let (mut h, record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
     let height = f64::from(view(&h).frame().unwrap().size_px[1]);
     view_mut(&mut h).set_camera(Camera {
@@ -867,9 +830,9 @@ fn a_body_renumbered_keeps_its_mesh_and_is_uploaded_once_under_its_new_number() 
     // it's answered held: no mesh made, its mesh uploaded as body 1, and body 2 forgotten.
     let f = fixture();
     let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let large = Arc::clone(&view(&h).bodies()[&2].mesh);
-    let made = tessellated(&f);
+    let made = tessellated(&f.kernel);
     let uploads = record.lock().unwrap().uploads.len();
     let id = h.state().tabs()[0].id;
     let revision = f.sessions.status(&id).session.unwrap().revision;
@@ -883,7 +846,7 @@ fn a_body_renumbered_keeps_its_mesh_and_is_uploaded_once_under_its_new_number() 
     });
     step(&mut h);
     assert!(Arc::ptr_eq(&view(&h).bodies()[&1].mesh, &large));
-    assert_eq!(tessellated(&f), made);
+    assert_eq!(tessellated(&f.kernel), made);
     let told = record.lock().unwrap();
     assert_eq!(told.forgets, [2]);
     assert_eq!(told.uploads.len(), uploads + 1);
@@ -899,7 +862,7 @@ fn a_body_renumbered_keeps_its_mesh_and_is_uploaded_once_under_its_new_number() 
 fn a_revision_published_mid_read_is_read_after_it_and_the_last_answer_is_the_newest() {
     let f = fixture();
     let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let id = h.state().tabs()[0].id;
     let set = |f: &Fixture, length: &[u8]| {
         let revision = f.sessions.status(&id).session.unwrap().revision;
@@ -930,7 +893,7 @@ fn a_revision_published_mid_read_is_read_after_it_and_the_last_answer_is_the_new
         h.state().tabs()[0].published == Some(newest) && view(h).reading()
     });
     hold.release();
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     // The held read, then one of the newest revision: two, and the bodies its.
     assert_eq!(view(&h).reads(), reads + 2);
     assert_eq!(view(&h).model(), h.state().tabs()[0].published);
@@ -941,22 +904,13 @@ fn a_revision_published_mid_read_is_read_after_it_and_the_last_answer_is_the_new
 
 // ---- Pointer events out of order ----
 
-fn button(h: &AppHarness, at: Pos2, which: PointerButton, pressed: bool) {
-    h.event(Event::PointerButton {
-        pos: at,
-        button: which,
-        pressed,
-        modifiers: Modifiers::NONE,
-    });
-}
-
 #[test]
 fn a_release_with_no_press_and_a_drag_out_of_the_pane_move_the_view_only_while_held() {
     let f = fixture();
     let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let home = view(&h).camera().clone();
-    let viewport = rect(&h);
+    let viewport = the_viewport(&h);
     let at = viewport.center() - vec2(100.0, 0.0);
     // Releases with no press, of every button, and a primary drag with no tool chosen.
     h.hover_at(at);
@@ -965,20 +919,26 @@ fn a_release_with_no_press_and_a_drag_out_of_the_pane_move_the_view_only_while_h
         PointerButton::Primary,
         PointerButton::Secondary,
     ] {
-        button(&h, at, which, false);
+        button_event(&h, at, which, false, Modifiers::NONE);
     }
-    button(&h, at, PointerButton::Primary, true);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
     h.hover_at(at + vec2(50.0, 50.0));
-    button(&h, at + vec2(50.0, 50.0), PointerButton::Primary, false);
+    button_event(
+        &h,
+        at + vec2(50.0, 50.0),
+        PointerButton::Primary,
+        false,
+        Modifiers::NONE,
+    );
     step(&mut h);
     assert_eq!(view(&h).camera(), &home);
     // The middle button pressed in the viewport, dragged out of it over the browser, and
     // let go there: a pan by the whole way, then nothing as the pointer comes back.
     let out = egui::pos2(viewport.left() - 60.0, at.y);
     h.hover_at(at);
-    button(&h, at, PointerButton::Middle, true);
+    button_event(&h, at, PointerButton::Middle, true, Modifiers::NONE);
     h.hover_at(out);
-    button(&h, out, PointerButton::Middle, false);
+    button_event(&h, out, PointerButton::Middle, false, Modifiers::NONE);
     step(&mut h);
     let panned = view(&h).camera().clone();
     let mm = view_height(&home) / f64::from(viewport.height());
@@ -995,9 +955,15 @@ fn a_release_with_no_press_and_a_drag_out_of_the_pane_move_the_view_only_while_h
     // A middle press on the ViewCube isn't the viewport's: it pans nothing.
     let cube = silico_app::viewport::view_cube_rect(viewport).center();
     h.hover_at(cube);
-    button(&h, cube, PointerButton::Middle, true);
+    button_event(&h, cube, PointerButton::Middle, true, Modifiers::NONE);
     h.hover_at(cube - vec2(80.0, 0.0));
-    button(&h, cube - vec2(80.0, 0.0), PointerButton::Middle, false);
+    button_event(
+        &h,
+        cube - vec2(80.0, 0.0),
+        PointerButton::Middle,
+        false,
+        Modifiers::NONE,
+    );
     step(&mut h);
     assert_eq!(view(&h).camera(), &panned);
     assert_eq!(never_waits::waits(), 0);
@@ -1008,7 +974,7 @@ fn a_window_too_small_for_a_viewport_draws_on_and_reads_nothing_wrong() {
     // 60 by 40 points: the panes leave the viewport a few pixels or none.
     let f = fixture();
     let (mut h, record) = f.drawn("a.silico", EXAMPLE, (60.0, 40.0));
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     assert!(reads_over(&mut h, 100) == 0);
     let frame = record.lock().unwrap().frames.last().unwrap().clone();
     assert!(
@@ -1019,7 +985,7 @@ fn a_window_too_small_for_a_viewport_draws_on_and_reads_nothing_wrong() {
     );
     assert_eq!(frame.bodies, [1]);
     // A wheel there: refused or a valid camera, never NaN.
-    h.hover_at(rect(&h).center());
+    h.hover_at(the_viewport(&h).center());
     h.event(Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
         delta: vec2(0.0, 200.0),
@@ -1039,13 +1005,13 @@ fn at_three_times_the_scale_past_4096_pixels_the_view_reads_once_and_settles() {
     let f = fixture();
     let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (7200.0, 4800.0));
     h.set_pixels_per_point(3.0);
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let size = view(&h).frame().unwrap().size_px;
     assert!(size[0] > MAX_RENDER_SIDE, "{size:?}");
     assert_eq!(reads_over(&mut h, 100), 0);
     // Zoomed at 2×: the same.
     h.set_pixels_per_point(2.0);
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     assert_eq!(reads_over(&mut h, 100), 0);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -1058,10 +1024,10 @@ fn a_drag_whose_release_never_comes_ends_when_the_pointer_leaves_or_the_window_l
     for lost in [Event::PointerGone, Event::WindowFocused(false)] {
         let f = fixture();
         let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
-        meshes_settled_in(&mut h, 0);
-        let at = rect(&h).center() - vec2(100.0, 0.0);
+        meshes_settled(&mut h);
+        let at = the_viewport(&h).center() - vec2(100.0, 0.0);
         h.hover_at(at);
-        button(&h, at, PointerButton::Middle, true);
+        button_event(&h, at, PointerButton::Middle, true, Modifiers::NONE);
         step(&mut h);
         h.event(lost.clone());
         step(&mut h);
@@ -1085,7 +1051,7 @@ fn a_view_cube_drag_held_still_isnt_a_settled_view() {
     // then one.
     let f = fixture();
     let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     view_mut(&mut h).set_camera(Camera {
         projection: Projection::Perspective {
             field_of_view: 30.0,
@@ -1094,11 +1060,11 @@ fn a_view_cube_drag_held_still_isnt_a_settled_view() {
         target: [2500.0, 500.0, 500.0],
         up: [0.0, 0.0, 1.0],
     });
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let reads = view(&h).reads();
-    let centre = silico_app::viewport::view_cube_rect(rect(&h)).center();
+    let centre = silico_app::viewport::view_cube_rect(the_viewport(&h)).center();
     h.hover_at(centre);
-    button(&h, centre, PointerButton::Primary, true);
+    button_event(&h, centre, PointerButton::Primary, true, Modifiers::NONE);
     step(&mut h);
     h.hover_at(centre + vec2(90.0, 0.0));
     step(&mut h);
@@ -1111,8 +1077,14 @@ fn a_view_cube_drag_held_still_isnt_a_settled_view() {
         step(&mut h);
     }
     assert_eq!(view(&h).reads(), reads);
-    button(&h, centre + vec2(90.0, 0.0), PointerButton::Primary, false);
-    meshes_settled_in(&mut h, 0);
+    button_event(
+        &h,
+        centre + vec2(90.0, 0.0),
+        PointerButton::Primary,
+        false,
+        Modifiers::NONE,
+    );
+    meshes_settled(&mut h);
     assert_eq!(view(&h).reads(), reads + 1);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -1179,7 +1151,7 @@ fn a_pick_answered_two_frames_late_across_a_renumber_is_taken_only_by_its_own_ta
     silico_app::theme::apply(&h.ctx);
     let path = f.file("a.silico", EXAMPLE);
     h.state_mut().open(&path, false);
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
     let height = f64::from(view(&h).frame().unwrap().size_px[1]);
     view_mut(&mut h).set_camera(Camera {
@@ -1224,7 +1196,7 @@ fn highlights_of_a_body_not_drawn_or_an_element_its_mesh_hasnt_are_left_out_of_t
     // face and twelfth edge kept.
     let f = fixture();
     let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     step_until(&mut h, "the browser", |h| {
         h.query_by_label("Hide Large").is_some()
     });
@@ -1261,7 +1233,7 @@ fn zooming_in_without_end_stops_where_the_bodies_reach_from_the_target_allows() 
     // least, 1e-6 mm.
     let f = fixture();
     let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     view_mut(&mut h).set_camera(Camera {
         projection: Projection::Orthographic { view_height: 80.0 },
         eye: [25.0, -500.0, 25.0],
@@ -1271,7 +1243,7 @@ fn zooming_in_without_end_stops_where_the_bodies_reach_from_the_target_allows() 
     step(&mut h);
     let reach = (2975.0f64 * 2975.0 + 975.0 * 975.0 * 2.0).sqrt();
     let least = least_in(&record, reach);
-    let centre = rect(&h).center();
+    let centre = the_viewport(&h).center();
     for _ in 0..40 {
         h.hover_at(centre);
         h.event(Event::MouseWheel {
@@ -1307,7 +1279,7 @@ fn a_zoom_in_stops_at_a_floor_as_much_higher_as_the_pane_is_taller() {
     for tall in [800.0, 1600.0] {
         let f = fixture();
         let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, tall));
-        meshes_settled_in(&mut h, 0);
+        meshes_settled(&mut h);
         view_mut(&mut h).set_camera(Camera {
             projection: Projection::Orthographic { view_height: 80.0 },
             eye: [25.0, -500.0, 25.0],
@@ -1315,7 +1287,7 @@ fn a_zoom_in_stops_at_a_floor_as_much_higher_as_the_pane_is_taller() {
             up: [0.0, 0.0, 1.0],
         });
         step(&mut h);
-        let centre = rect(&h).center();
+        let centre = the_viewport(&h).center();
         for _ in 0..40 {
             h.hover_at(centre);
             h.event(Event::MouseWheel {
@@ -1360,7 +1332,7 @@ fn a_view_zoomed_in_before_the_first_read_answers_is_raised_to_the_least_its_bod
             .first()
             .is_some_and(|tab| tab.view.reading())
     });
-    let centre = rect(&h).center();
+    let centre = the_viewport(&h).center();
     for _ in 0..50 {
         h.hover_at(centre);
         h.event(Event::MouseWheel {
@@ -1374,7 +1346,7 @@ fn a_view_zoomed_in_before_the_first_read_answers_is_raised_to_the_least_its_bod
     assert!(view_height(view(&h).camera()) < 1e-5);
     assert_eq!(view(&h).camera().target, [0.0; 3]);
     hold.release();
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let least = least_in(&record, 2121f64.sqrt());
     let height = view_height(view(&h).camera());
     assert!((height - least).abs() < 1e-15, "{height} against {least}");
@@ -1399,7 +1371,7 @@ fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() 
     // raised to that reach's least; a pan, an orbit, and a wheel out all move it.
     let f = fixture();
     let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let id = h.state().tabs()[0].id;
     let revision = f.sessions.status(&id).session.unwrap().revision;
     f.sessions
@@ -1413,7 +1385,7 @@ fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() 
         .wait()
         .result
         .unwrap();
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     // Out of the way while zooming: (−2000, 0, 0) to (−1000, 1000, 1000) reaches
     // √(2025² + 975² + 975²) from (25, 25, 25).
     view_mut(&mut h).set_camera(Camera {
@@ -1423,7 +1395,7 @@ fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() 
         up: [0.0, 0.0, 1.0],
     });
     step(&mut h);
-    let centre = rect(&h).center();
+    let centre = the_viewport(&h).center();
     for _ in 0..40 {
         h.hover_at(centre);
         h.event(Event::MouseWheel {
@@ -1436,7 +1408,7 @@ fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() 
     }
     let near = least_in(&record, (2025.0f64 * 2025.0 + 2.0 * 975.0 * 975.0).sqrt());
     assert!((view_height(view(&h).camera()) - near).abs() < 1e-12);
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     let revision = f.sessions.status(&id).session.unwrap().revision;
     f.sessions
         .set_field(
@@ -1460,9 +1432,15 @@ fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() 
     assert!((view_height(view(&h).camera()) - far).abs() < 1e-9);
     let at = centre - vec2(100.0, 0.0);
     h.hover_at(at);
-    button(&h, at, PointerButton::Middle, true);
+    button_event(&h, at, PointerButton::Middle, true, Modifiers::NONE);
     h.hover_at(at + vec2(30.0, 0.0));
-    button(&h, at + vec2(30.0, 0.0), PointerButton::Middle, false);
+    button_event(
+        &h,
+        at + vec2(30.0, 0.0),
+        PointerButton::Middle,
+        false,
+        Modifiers::NONE,
+    );
     step(&mut h);
     assert_ne!(view(&h).camera().target, [25.0; 3], "panned");
     h.hover_at(centre);
@@ -1487,7 +1465,7 @@ fn a_view_moving_while_a_new_revision_is_refused_for_the_moment_reads_nothing_un
     let failing = failing_kernel(&f);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     failing.store(true, Ordering::SeqCst);
     let id = h.state().tabs()[0].id;
     let revision = f.sessions.status(&id).session.unwrap().revision;
@@ -1510,16 +1488,22 @@ fn a_view_moving_while_a_new_revision_is_refused_for_the_moment_reads_nothing_un
     woken(&mut h, wakes);
     let refused = view(&h).reads();
     assert_eq!(refused, reads + 1);
-    let at = rect(&h).center() - vec2(100.0, 0.0);
+    let at = the_viewport(&h).center() - vec2(100.0, 0.0);
     h.hover_at(at);
-    button(&h, at, PointerButton::Middle, true);
+    button_event(&h, at, PointerButton::Middle, true, Modifiers::NONE);
     step(&mut h);
     for i in 1..=30u8 {
         h.hover_at(at + vec2(2.0 * f32::from(i), 0.0));
         step(&mut h);
     }
     assert_eq!(view(&h).reads(), refused, "a read while the view moved");
-    button(&h, at + vec2(60.0, 0.0), PointerButton::Middle, false);
+    button_event(
+        &h,
+        at + vec2(60.0, 0.0),
+        PointerButton::Middle,
+        false,
+        Modifiers::NONE,
+    );
     assert_eq!(reads_over(&mut h, 20), 0);
     advance(&time, Duration::from_millis(250));
     assert_eq!(reads_over(&mut h, 5), 1);
@@ -1539,7 +1523,7 @@ fn wheel_notches_during_a_backoff_read_at_most_once() {
     let failing = failing_kernel(&f);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     failing.store(true, Ordering::SeqCst);
     let id = h.state().tabs()[0].id;
     let revision = f.sessions.status(&id).session.unwrap().revision;
@@ -1561,7 +1545,7 @@ fn wheel_notches_during_a_backoff_read_at_most_once() {
     });
     woken(&mut h, wakes);
     let refused = view(&h).reads();
-    let centre = rect(&h).center();
+    let centre = the_viewport(&h).center();
     for _ in 0..5 {
         h.hover_at(centre);
         h.event(Event::MouseWheel {
@@ -1592,7 +1576,7 @@ fn a_body_shown_again_raises_a_view_under_the_least_its_reach_allows() {
     let f = fixture();
     let (_time, clock) = hand_clock();
     let (mut h, record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     step_until(&mut h, "the browser", |h| {
         h.query_by_label("Hide Large").is_some()
     });
@@ -1605,7 +1589,7 @@ fn a_body_shown_again_raises_a_view_under_the_least_its_reach_allows() {
         up: [0.0, 0.0, 1.0],
     });
     step(&mut h);
-    let centre = rect(&h).center();
+    let centre = the_viewport(&h).center();
     for _ in 0..40 {
         h.hover_at(centre);
         h.event(Event::MouseWheel {
@@ -1660,7 +1644,7 @@ fn a_retry_falling_due_mid_pan_keeps_its_run_growing() {
     let failing = failing_kernel(&f);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     failing.store(true, Ordering::SeqCst);
     let reads = view(&h).reads();
     let wakes = h.state().wakes();
@@ -1670,9 +1654,9 @@ fn a_retry_falling_due_mid_pan_keeps_its_run_growing() {
         view(h).reads() > reads && !view(h).reading()
     });
     woken(&mut h, wakes);
-    let at = rect(&h).center() - vec2(100.0, 0.0);
+    let at = the_viewport(&h).center() - vec2(100.0, 0.0);
     h.hover_at(at);
-    button(&h, at, PointerButton::Middle, true);
+    button_event(&h, at, PointerButton::Middle, true, Modifiers::NONE);
     step(&mut h);
     advance(&time, Duration::from_millis(300));
     for i in 1..=10u8 {
@@ -1681,7 +1665,13 @@ fn a_retry_falling_due_mid_pan_keeps_its_run_growing() {
     }
     assert_eq!(view(&h).reads(), reads + 1);
     let wakes = h.state().wakes();
-    button(&h, at + vec2(20.0, 0.0), PointerButton::Middle, false);
+    button_event(
+        &h,
+        at + vec2(20.0, 0.0),
+        PointerButton::Middle,
+        false,
+        Modifiers::NONE,
+    );
     step_until(&mut h, "the read at rest refused", |h| {
         view(h).reads() == reads + 2 && !view(h).reading()
     });
@@ -1744,7 +1734,7 @@ fn a_renderer_backing_off_has_the_pane_ask_for_each_frame_at_once_until_it_stops
     silico_app::theme::apply(&h.ctx);
     let path = f.file("boxes.silico", TWO_BOXES);
     h.state_mut().open(&path, false);
-    meshes_settled_in(&mut h, 0);
+    meshes_settled(&mut h);
     // An idle frame: one asked for at most IDLE_FRAME on (less the time the frames took),
     // never at once.
     let idle = |delay: Option<Duration>| {

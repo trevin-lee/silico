@@ -13,20 +13,20 @@ mod ui;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use eframe::egui::accesskit::Role;
 use eframe::egui::{Key, Modifiers};
 use egui_kittest::Harness;
-use egui_kittest::kittest::{NodeT, Queryable};
+use egui_kittest::kittest::Queryable;
 use silico_app::App;
 use silico_app::browse::{Answer, Ask, Browse, Pick};
 use silico_app::export::ExportForm;
-use silico_app::tab::Tab;
 use silico_core::cache::Cache;
 use silico_core::command::{SessionId, Sessions};
 use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
 use silico_core::sketch::SketchSolver;
 use tempfile::TempDir;
-use ui::{anywhere, new_part, step, step_until};
+use ui::{
+    answer_question, anywhere, begin_sketch_on, close_window, new_part, step, step_until, tab_named,
+};
 
 const EXAMPLE: &str = r#"{
   "silico": 1,
@@ -144,14 +144,6 @@ fn steps(h: &mut AppHarness, n: usize) {
     }
 }
 
-fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a Tab {
-    h.state()
-        .tabs()
-        .iter()
-        .find(|tab| tab.name() == name)
-        .unwrap_or_else(|| panic!("no tab {name}"))
-}
-
 fn press_keys(h: &mut AppHarness, modifiers: Modifiers, key: Key) {
     h.key_press_modifiers(modifiers, key);
 }
@@ -162,41 +154,12 @@ fn press_keys(h: &mut AppHarness, modifiers: Modifiers, key: Key) {
 /// is then unsaved.
 fn add_sketch(h: &mut AppHarness, name: &str) {
     // Create Sketch on once the part's timeline is read.
-    step_until(h, "Create Sketch on", |h| {
-        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Create Sketch")
-            .accesskit_node()
-            .is_disabled()
-    });
-    h.get_by_role_and_label(Role::Toolbar, "CREATE")
-        .get_by_label("Create Sketch")
-        .click();
-    step_until(h, "its planes", |h| {
-        h.query_by_role_and_label(Role::Button, "XY plane")
-            .is_some()
-    });
-    step(h);
-    h.get_by_role_and_label(Role::Button, "XY plane").click();
-    step_until(h, "its sketch added and read", |h| {
-        tab_named(h, name)
-            .sketch
-            .as_ref()
-            .is_some_and(|mode| mode.sketch.is_some() && mode.drawable().is_some())
-    });
+    begin_sketch_on(h, name, "XY plane");
     press_keys(h, Modifiers::COMMAND, Key::Enter);
     step_until(h, "unsaved", |h| {
         let tab = tab_named(h, name);
         tab.sketch.is_none() && tab.edits.idle() && tab.unsaved()
     });
-}
-
-/// The question's button `label`: the last of that label (after the app bar's).
-fn answer_question(h: &mut AppHarness, label: &str) {
-    h.query_all_by_role_and_label(Role::Button, label)
-        .last()
-        .unwrap()
-        .click_accesskit();
-    step(h);
 }
 
 /// Frames stepped until the native dialog has been asked `n` times in all.
@@ -205,24 +168,6 @@ fn asked_times(h: &mut AppHarness, browser: &FakeBrowser, n: usize) {
     step_until(h, "the panel asked", |_| browser.asked().len() >= n);
     assert_eq!(browser.asked().len(), n);
     assert_eq!(browser.asked()[n - 1].pick, Pick::Save);
-}
-
-/// The window asked to close, as its close button asks.
-fn close_window(h: &mut AppHarness) {
-    let root = eframe::egui::ViewportId::ROOT;
-    h.input_mut()
-        .viewports
-        .get_mut(&root)
-        .unwrap()
-        .events
-        .push(eframe::egui::ViewportEvent::Close);
-    step(h);
-    h.input_mut()
-        .viewports
-        .get_mut(&root)
-        .unwrap()
-        .events
-        .clear();
 }
 
 fn closing_told(h: &AppHarness) -> bool {

@@ -26,7 +26,7 @@ use silico_app::tab::Sent;
 use silico_core::cache::Cache;
 use silico_core::command::wire::Named;
 use silico_core::command::{CheckAnswer, CheckModel, ModelChoice, Revision, Running, Sessions};
-use silico_core::disk::{Clock, Found, Reader};
+use silico_core::disk::{Clock, Reader};
 use silico_core::document::json::{self, Plain};
 use silico_core::fake::never_waits;
 use silico_core::fake::{FakeKernel, FakeSketches, Hold};
@@ -35,11 +35,14 @@ use silico_core::sketch::SketchSolver;
 use silico_core::{Error, ErrorCode};
 use tempfile::TempDir;
 use ui::{
-    In, WAIT, added, anywhere, boxed, button_event, choose, chosen, click_at, create,
-    create_sketch, dialog, dialog_open, drag, everything, f2_typed, in_status_bar, keyed,
-    lavapipe_render_state, leave_sketch, leave_sketch_unsettled, meshes_settled, modify, new_part,
-    ok_enabled, on_lavapipe, open_export, press, prompt, rename_field, retype, save_as_of, select,
-    selected_names, settled, sketch_mode, sketch_read, step, step_until, tooltip_title, wheel,
+    FAKE_WAIT as WAIT, In, added, advance, answer_question, anywhere, begin_sketch_on, boxed,
+    button_event, choose, chosen, click_at, click_canvas, close_window, create, create_sketch,
+    dialog, dialog_open, drag, everything, f2_typed, field, hand_clock, in_status_bar,
+    lavapipe_render_state, leave_sketch, leave_sketch_unsettled, meshes_settled, modify,
+    modify_field, name_field, new_part, ok_enabled, on_lavapipe, open_export, pointer_away, press,
+    prompt, real, redo_by_key, rename_field, repaint_delay, retype, save_as_of, select,
+    selected_names, settled, sketch_mode, sketch_read, step, step_until, tab_named, tessellated,
+    the_viewport, tooltip_title, type_name, undo_by_key, view, view_mut, wheel,
 };
 
 /// The M2.1 document's example (docs/design/m2.1-document-format.md): a block, a pin, and
@@ -186,23 +189,6 @@ fn button_off_start<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node
         .unwrap_or_else(|| panic!("no {label} off the start page"));
     assert!(found.next().is_none(), "two {label}s off the start page");
     node
-}
-
-/// The property panel's Name field.
-fn name_field(h: &AppHarness) -> egui_kittest::Node<'_> {
-    h.get_by_role_and_label(Role::Pane, "Properties")
-        .get_by_role(Role::TextInput)
-}
-
-/// Typed into the property panel's Name field, one keystroke a frame: focused, the field's
-/// cursor is at its end, so what's typed comes after the name.
-fn type_name(h: &mut AppHarness, text: &str) {
-    name_field(h).focus();
-    step(h);
-    for c in text.chars() {
-        name_field(h).type_text(&c.to_string());
-        step(h);
-    }
 }
 
 fn is_box(op: &Op) -> bool {
@@ -2467,22 +2453,25 @@ fn show_changes_lists_their_radius_and_your_height_and_the_revision_never_moves(
     double_click(&mut h, "Timeline", "Block");
     step_until(&mut h, "its dialog, loaded", |h| {
         h.query_by_role_and_label(Role::Dialog, "Box").is_some()
-            && input(h, "Height").value().as_deref() == Some("10")
+            && field(h, In::Dialog, "Height").value().as_deref() == Some("10")
     });
     settled(&mut h);
     for _ in 0..10 {
         step(&mut h);
     }
-    input(&h, "Height").focus();
+    field(&h, In::Dialog, "Height").focus();
     step(&mut h);
     for _ in 0..2 {
         h.key_press(eframe::egui::Key::Backspace);
         step(&mut h);
     }
-    assert_eq!(input(&h, "Height").value().as_deref(), Some(""));
+    assert_eq!(field(&h, In::Dialog, "Height").value().as_deref(), Some(""));
     type_into(&mut h, "Height", "12");
     settled(&mut h);
-    assert_eq!(input(&h, "Height").value().as_deref(), Some("12"));
+    assert_eq!(
+        field(&h, In::Dialog, "Height").value().as_deref(),
+        Some("12")
+    );
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
@@ -2624,16 +2613,6 @@ fn the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks() {
             assert_eq!(never_waits::waits(), 0);
         },
     );
-}
-
-/// The session's own read of its file, as `silico_core::disk` reads it, for a test that
-/// compares with no interval.
-fn real(path: &Path) -> Found {
-    match std::fs::read(path) {
-        Ok(bytes) => Found::Bytes(bytes),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Found::Gone,
-        Err(_) => Found::Unreadable,
-    }
 }
 
 // ---- Frames keep coming, and the UI thread never waits ----
@@ -2980,24 +2959,6 @@ fn hold_queue(f: &Fixture, h: &AppHarness, at: usize) -> (Hold, Running<CheckAns
     let check = f.sessions.check(&id, CheckModel::Current { fresh: true });
     assert!(f.kernel.wait_running(1, WAIT));
     (hold, check)
-}
-
-/// The window asked to close, as its close button asks.
-fn close_window(h: &mut AppHarness) {
-    let root = eframe::egui::ViewportId::ROOT;
-    h.input_mut()
-        .viewports
-        .get_mut(&root)
-        .unwrap()
-        .events
-        .push(eframe::egui::ViewportEvent::Close);
-    step(h);
-    h.input_mut()
-        .viewports
-        .get_mut(&root)
-        .unwrap()
-        .events
-        .clear();
 }
 
 /// Whether the last frame told the window to close, or to cancel a close.
@@ -4517,21 +4478,21 @@ fn undo_and_redo_name_the_renames_they_take_and_the_bar_counts_the_edits_unsaved
     });
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Hole");
     // Undone: Undo names the first rename, Redo the second.
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     step_until(&mut h, "one counted again", |h| {
         in_status_bar(h, "Unsaved · 1 edit")
     });
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Pin");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Rename Hole");
     // Redone.
-    keyed(&mut h, Key::Y);
+    redo_by_key(&mut h);
     step_until(&mut h, "two counted again", |h| {
         in_status_bar(h, "Unsaved · 2 edits")
     });
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Hole");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
     // Undone, then an edit: it drops what was undone, and counts in its place.
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     select(&mut h, "Block");
     type_name(&mut h, "z");
     settled(&mut h);
@@ -4542,9 +4503,9 @@ fn undo_and_redo_name_the_renames_they_take_and_the_bar_counts_the_edits_unsaved
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
     // Both undone, back to the file's document: nothing unsaved, nothing for Undo to name,
     // and Redo the pin's rename.
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Rename Block");
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     step_until(&mut h, "saved", |h| in_status_bar(h, "Saved"));
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Rename Pin");
@@ -4563,7 +4524,7 @@ fn a_suppression_a_move_and_a_deletion_are_each_named_by_what_they_did_to_which_
     step_until(&mut h, "one counted", |h| {
         in_status_bar(h, "Unsaved · 1 edit")
     });
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Suppress Pin");
     // The pin dragged before the block.
     let block = timeline(&h).get_by_label("Block").rect();
@@ -4587,7 +4548,7 @@ fn a_suppression_a_move_and_a_deletion_are_each_named_by_what_they_did_to_which_
     step_until(&mut h, "two counted", |h| {
         in_status_bar(h, "Unsaved · 2 edits")
     });
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Delete Hole");
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Move Pin");
     assert_eq!(never_waits::waits(), 0);
@@ -4616,13 +4577,13 @@ fn a_dialogs_edits_okd_are_one_step_the_dialogs_words_name_and_the_bar_counts_on
     step_until(&mut h, "two counted", |h| {
         in_status_bar(h, "Unsaved · 2 edits")
     });
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Pin");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Add Pad");
     step_until(&mut h, "one counted", |h| {
         in_status_bar(h, "Unsaved · 1 edit")
     });
-    keyed(&mut h, Key::Y);
+    redo_by_key(&mut h);
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Pad");
     // Edit Feature of the pin: its OK's one step, "Edit" and its name (`'Edit ' + D.name`).
     double_click(&mut h, "Timeline", "PinK");
@@ -4642,7 +4603,7 @@ fn a_dialogs_edits_okd_are_one_step_the_dialogs_words_name_and_the_bar_counts_on
     step_until(&mut h, "three counted", |h| {
         in_status_bar(h, "Unsaved · 3 edits")
     });
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Edit PinK");
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Pad");
     assert_eq!(never_waits::waits(), 0);
@@ -4660,7 +4621,7 @@ fn sketch_modes_own_edits_are_named_by_the_sketch_and_its_finish_makes_them_one_
     step_until(&mut h, "two counted", |h| {
         in_status_bar(h, "Unsaved · 2 edits")
     });
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Edit Triangle");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Edit Triangle");
     step_until(&mut h, "two counted still", |h| {
@@ -4670,7 +4631,7 @@ fn sketch_modes_own_edits_are_named_by_the_sketch_and_its_finish_makes_them_one_
     leave_sketch(&mut h, true);
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Edit Triangle");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Plate");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Edit Triangle");
     step_until(&mut h, "one counted", |h| {
@@ -4724,7 +4685,7 @@ fn an_undo_refused_after_another_clients_step_names_no_step_it_doesnt_know() {
     // The next undo works, and lands where the app knows the state again: the file's
     // document, nothing to undo, the pin's rename to redo (the session's redo states, Pinx
     // then Holey).
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), EXAMPLE);
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Rename Pin");
@@ -6034,17 +5995,12 @@ fn create_off(h: &mut AppHarness, kind: &str) -> bool {
         .is_disabled()
 }
 
-/// The dialog's input labelled `label`.
-fn input<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
-    dialog(h).get_by_role_and_label(Role::TextInput, label)
-}
-
 /// Typed into the dialog's input `label`, one keystroke a frame, at its end.
 fn type_into(h: &mut AppHarness, label: &str, text: &str) {
-    input(h, label).focus();
+    field(h, In::Dialog, label).focus();
     step(h);
     for c in text.chars() {
-        input(h, label).type_text(&c.to_string());
+        field(h, In::Dialog, label).type_text(&c.to_string());
         step(h);
     }
 }
@@ -6258,7 +6214,7 @@ fn ok_clicked_in_the_frame_an_input_turns_invalid_leaves_the_dialog_open() {
     });
     settled(&mut h);
     assert!(ok_enabled(&h));
-    input(&h, "Length").focus();
+    field(&h, In::Dialog, "Length").focus();
     step(&mut h);
     let (target_node, target_tree) = dialog(&h)
         .get_by_role_and_label(Role::Button, "OK")
@@ -6274,7 +6230,10 @@ fn ok_clicked_in_the_frame_an_input_turns_invalid_leaves_the_dialog_open() {
         }),
     ]);
     step(&mut h);
-    assert_eq!(input(&h, "Length").value().as_deref(), Some("5x"));
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("5x")
+    );
     step(&mut h);
     assert!(dialog_open(&h));
     assert!(!ok_enabled(&h));
@@ -6308,13 +6267,13 @@ fn ok_clicked_in_the_frame_a_new_features_inputs_turn_valid_waits_for_its_add() 
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
     create(&mut h, "Pad");
     settled(&mut h);
-    input(&h, "Length").focus();
+    field(&h, In::Dialog, "Length").focus();
     step(&mut h);
     for _ in 0..4 {
         h.key_press(Key::Backspace);
         step(&mut h);
     }
-    assert_eq!(input(&h, "Length").value().as_deref(), Some(""));
+    assert_eq!(field(&h, In::Dialog, "Length").value().as_deref(), Some(""));
     h.get_by_role_and_label(Role::Pane, "Browser")
         .get_by_label("Triangle")
         .click();
@@ -6328,7 +6287,7 @@ fn ok_clicked_in_the_frame_a_new_features_inputs_turn_valid_waits_for_its_add() 
                 && dialog.feature.is_none()
                 && !dialog.adding)
     );
-    input(&h, "Length").focus();
+    field(&h, In::Dialog, "Length").focus();
     step(&mut h);
     let (target_node, target_tree) = dialog(&h)
         .get_by_role_and_label(Role::Button, "OK")
@@ -6344,7 +6303,10 @@ fn ok_clicked_in_the_frame_a_new_features_inputs_turn_valid_waits_for_its_add() 
         }),
     ]);
     step(&mut h);
-    assert_eq!(input(&h, "Length").value().as_deref(), Some("5"));
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("5")
+    );
     assert!(dialog_open(&h));
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
@@ -6441,7 +6403,7 @@ fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
         ]
     );
     // The field's text, the 10 and the three digits after it, is the document's.
-    let typed = input(&h, "Length").value().unwrap();
+    let typed = field(&h, In::Dialog, "Length").value().unwrap();
     assert_eq!(typed, "10123");
     let text = text_of(&f, &h);
     let fields = fields_of(&text, "Pad").unwrap();
@@ -6470,7 +6432,10 @@ fn an_unparseable_value_is_red_sends_nothing_and_keeps_ok_off() {
     for _ in 0..10 {
         step(&mut h);
     }
-    assert_eq!(input(&h, "Length").value().as_deref(), Some("10x"));
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("10x")
+    );
     assert!(!ok_enabled(&h));
     assert_eq!(h.state().tabs()[0].edits.sent, sent);
     // Enter is OK only when OK is on.
@@ -6495,14 +6460,17 @@ fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
     settled(&mut h);
     // "-10": a number, sent, and refused by the gate (a sweep's length is above 0).
     // The minus at the field's start, where a person puts it: Home, then "-".
-    input(&h, "Length").focus();
+    field(&h, In::Dialog, "Length").focus();
     step(&mut h);
     h.key_press(eframe::egui::Key::Home);
     step(&mut h);
-    input(&h, "Length").type_text("-");
+    field(&h, In::Dialog, "Length").type_text("-");
     step(&mut h);
     settled(&mut h);
-    assert_eq!(input(&h, "Length").value().as_deref(), Some("-10"));
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("-10")
+    );
     // Said in the dialog, as the core words it: the pad's length, refused for what it is,
     // the gate's words for a sweep's length out of its range (validate.rs's), and the
     // suggestion after them, written here by hand.
@@ -6520,7 +6488,10 @@ fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
     h.key_press(eframe::egui::Key::Delete);
     step(&mut h);
     settled(&mut h);
-    assert_eq!(input(&h, "Length").value().as_deref(), Some("10"));
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("10")
+    );
     assert!(ok_enabled(&h));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -7135,7 +7106,11 @@ fn edit_feature_from_a_double_click_loads_the_features_values_and_ok_applies_a_c
         ("Radius", "2.5"),
         ("Height", "12"),
     ] {
-        assert_eq!(input(&h, label).value().as_deref(), Some(value), "{label}");
+        assert_eq!(
+            field(&h, In::Dialog, label).value().as_deref(),
+            Some(value),
+            "{label}"
+        );
     }
     // Loaded, nothing sent.
     for _ in 0..10 {
@@ -7175,7 +7150,11 @@ fn edit_feature_from_the_context_menu_opens_the_same_dialog() {
         h.query_by_role_and_label(Role::Dialog, "Box").is_some()
     });
     for (label, value) in [("Length", "40"), ("Width", "20"), ("Height", "10")] {
-        assert_eq!(input(&h, label).value().as_deref(), Some(value), "{label}");
+        assert_eq!(
+            field(&h, In::Dialog, label).value().as_deref(),
+            Some(value),
+            "{label}"
+        );
     }
     // The cut's opens its Subtract dialog, its boxes the cut's base and tool by their
     // names, though the part has one body (the cut consumes the two it combines).
@@ -7237,11 +7216,11 @@ fn edited(
     double_click(h, "Timeline", name);
     step_until(h, "its dialog, loaded", |h| {
         h.query_by_role_and_label(Role::Dialog, kind).is_some()
-            && input(h, loaded[0].0).value().as_deref() == Some(loaded[0].1)
+            && ui::field(h, In::Dialog, loaded[0].0).value().as_deref() == Some(loaded[0].1)
     });
     for (label, value) in loaded {
         assert_eq!(
-            input(h, label).value().as_deref(),
+            ui::field(h, In::Dialog, label).value().as_deref(),
             Some(*value),
             "{name}'s {label}"
         );
@@ -7437,15 +7416,18 @@ fn a_refused_values_mark_goes_with_its_dialog() {
             .is_some()
     });
     // The minus at the field's start, where a person puts it: Home, then "-".
-    input(&h, "Radius").focus();
+    field(&h, In::Dialog, "Radius").focus();
     step(&mut h);
     h.key_press(eframe::egui::Key::Home);
     step(&mut h);
-    input(&h, "Radius").type_text("-");
+    field(&h, In::Dialog, "Radius").type_text("-");
     step(&mut h);
     settled(&mut h);
     // "-2.5": a number, sent, and refused by the gate, said in the dialog as the core words it.
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("-2.5"));
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("-2.5")
+    );
     let said = h.state().tabs()[0].message.clone().unwrap();
     assert!(dialog(&h).query_by_label(&said).is_some(), "{said}");
     assert!(!ok_enabled(&h));
@@ -7472,7 +7454,10 @@ fn a_refused_values_mark_goes_with_its_dialog() {
         h.query_by_role_and_label(Role::Dialog, "Cylinder")
             .is_some()
     });
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("2.5"));
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("2.5")
+    );
     assert!(ok_enabled(&h));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -7600,7 +7585,11 @@ fn a_dialog_and_create_are_off_while_the_tab_closes() {
     step(&mut h);
     assert!(dialog_open(&h));
     assert_eq!(h.state().tabs()[0].sent, sent);
-    assert!(input(&h, "Length").accesskit_node().is_disabled());
+    assert!(
+        field(&h, In::Dialog, "Length")
+            .accesskit_node()
+            .is_disabled()
+    );
     hold.release();
     check.wait();
     assert_eq!(never_waits::waits(), 0);
@@ -7642,7 +7631,10 @@ fn edit_feature_of_a_revolve_about_a_sketch_line_keeps_that_axis() {
     });
     assert!(chosen(&h, "Axis", "nc000000"));
     assert!(chosen(&h, "Extent", "Symmetric"));
-    assert_eq!(input(&h, "Angle").value().as_deref(), Some("90"));
+    assert_eq!(
+        field(&h, In::Dialog, "Angle").value().as_deref(),
+        Some("90")
+    );
     assert!(dialog(&h).query_by_label("Triangle").is_some());
     type_into(&mut h, "Angle", ".5");
     settled(&mut h);
@@ -7913,7 +7905,7 @@ fn typing_while_the_add_is_unanswered_makes_one_feature_and_edits_it() {
     let (hold, check) = hold_queue(&f, &h, 0);
     pad_until_add_sent(&mut h);
     type_into(&mut h, "Length", "12");
-    let typed = input(&h, "Length").value().unwrap();
+    let typed = field(&h, In::Dialog, "Length").value().unwrap();
     hold.release();
     check.wait();
     settled(&mut h);
@@ -7949,7 +7941,7 @@ fn a_reload_under_edit_feature_reads_the_feature_again_and_cancel_undoes_from_th
     let theirs = EXAMPLE.replace(r#""radius": 2.5"#, r#""radius": 3"#);
     std::fs::write(&path, &theirs).unwrap();
     step_until(&mut h, "the reloaded radius", |h| {
-        dialog_open(h) && input(h, "Radius").value().as_deref() == Some("3")
+        dialog_open(h) && field(h, In::Dialog, "Radius").value().as_deref() == Some("3")
     });
     type_into(&mut h, "Height", "1");
     settled(&mut h);
@@ -8116,7 +8108,7 @@ fn edit_features_read_comes_after_the_edits_asked_before_it() {
     // Edit Feature again.
     let (hold, check) = hold_queue(&f, &h, 0);
     type_into(&mut h, "Radius", "12");
-    let typed = input(&h, "Radius").value().unwrap();
+    let typed = field(&h, In::Dialog, "Radius").value().unwrap();
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     double_click(&mut h, "Timeline", "Pin");
@@ -8126,7 +8118,7 @@ fn edit_features_read_comes_after_the_edits_asked_before_it() {
         h.query_by_role_and_label(Role::Dialog, "Cylinder")
             .is_some()
     });
-    assert_eq!(input(&h, "Radius").value(), Some(typed));
+    assert_eq!(field(&h, In::Dialog, "Radius").value(), Some(typed));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -8189,7 +8181,7 @@ fn a_digit_typed_in_the_frame_enter_is_pressed_is_in_what_ok_keeps() {
     open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
-    input(&h, "Length").focus();
+    field(&h, In::Dialog, "Length").focus();
     step(&mut h);
     {
         use eframe::egui::{Event, Key, Modifiers};
@@ -8279,15 +8271,15 @@ fn a_dialog_undone_then_another_made_lets_the_other_be_redone_whole() {
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     let before = text_of(&f, &h);
     made(&mut h, "Pad", "Length");
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), before);
     // The pad's edits are the redo branch the pocket's add drops.
     made(&mut h, "Pocket", "Length");
     let pocket = text_of(&f, &h);
     assert!(fields_of(&pocket, "Pocket").is_some() && fields_of(&pocket, "Pad").is_none());
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), before);
-    keyed(&mut h, Key::Y);
+    redo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), pocket);
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
@@ -8300,7 +8292,7 @@ fn a_dialog_undone_then_a_name_typed_lets_the_name_be_redone() {
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     let before = text_of(&f, &h);
     made(&mut h, "Pad", "Length");
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), before);
     // A name typed in the property panel drops the pad's edits.
     select(&mut h, "Pin");
@@ -8308,9 +8300,9 @@ fn a_dialog_undone_then_a_name_typed_lets_the_name_be_redone() {
     settled(&mut h);
     let named = text_of(&f, &h);
     assert!(named.contains(r#""name": "PinK""#));
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), before);
-    keyed(&mut h, Key::Y);
+    redo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), named);
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Redo(None)));
     assert_eq!(h.state().tabs()[0].message, None);
@@ -8325,7 +8317,7 @@ fn ok_and_enter_wait_for_the_add_so_what_was_typed_meanwhile_is_kept() {
     let (hold, check) = hold_queue(&f, &h, 0);
     pad_until_add_sent(&mut h);
     type_into(&mut h, "Length", "12");
-    let typed = input(&h, "Length").value().unwrap();
+    let typed = field(&h, In::Dialog, "Length").value().unwrap();
     // The add unanswered: OK off, and Enter does nothing.
     assert!(!ok_enabled(&h));
     h.key_press(eframe::egui::Key::Enter);
@@ -8374,7 +8366,10 @@ fn edit_feature_opens_at_the_revision_its_read_found_when_the_session_moved_unde
         h.query_by_role_and_label(Role::Dialog, "Cylinder")
             .is_some()
     });
-    assert_eq!(input(&h, "Height").value().as_deref(), Some("15"));
+    assert_eq!(
+        field(&h, In::Dialog, "Height").value().as_deref(),
+        Some("15")
+    );
     settled(&mut h);
     let moved = text_of(&f, &h);
     // A change, OK, then one undo: back to what the read found, not refused.
@@ -8383,7 +8378,7 @@ fn edit_feature_opens_at_the_revision_its_read_found_when_the_session_moved_unde
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), moved);
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
@@ -8443,7 +8438,7 @@ fn a_refused_edit_after_an_undone_dialog_leaves_its_redo_whole() {
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "P"));
     made(&mut h, "Pad", "Length");
     let padded = text_of(&f, &h);
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), one_letter);
     // The one-letter name emptied: refused, so the pad's edits stay the redo branch.
     select(&mut h, "P");
@@ -8456,7 +8451,7 @@ fn a_refused_edit_after_an_undone_dialog_leaves_its_redo_whole() {
             && !h.state().tabs()[0].unsettled()
     });
     settled(&mut h);
-    keyed(&mut h, Key::Y);
+    redo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), padded);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -8519,7 +8514,7 @@ fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     made(&mut h, "Pad", "Length");
     let padded = text_of(&f, &h);
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
     // The Pin's radius made "-2.5" (refused), then "2.5" again: a set_field of the value
     // the document holds, which changes nothing.
@@ -8529,11 +8524,11 @@ fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
             .is_some()
     });
     // The minus at the field's start, where a person puts it: Home, then "-".
-    input(&h, "Radius").focus();
+    field(&h, In::Dialog, "Radius").focus();
     step(&mut h);
     h.key_press(eframe::egui::Key::Home);
     step(&mut h);
-    input(&h, "Radius").type_text("-");
+    field(&h, In::Dialog, "Radius").type_text("-");
     step(&mut h);
     settled(&mut h);
     let sent = h.state().tabs()[0].edits.sent;
@@ -8542,13 +8537,16 @@ fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
     h.key_press(eframe::egui::Key::Delete);
     step(&mut h);
     settled(&mut h);
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("2.5"));
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("2.5")
+    );
     assert_eq!(h.state().tabs()[0].edits.sent, sent + 1);
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
-    keyed(&mut h, Key::Y);
+    redo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), padded);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -8563,7 +8561,7 @@ fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_re
     settled(&mut h);
     made(&mut h, "Pad", "Length");
     let padded = text_of(&f, &h);
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     select(&mut h, "PinK");
     // The queue held: another client's undo (of PinK), then a name typed here against the
     // revision before it, refused as stale, the session's revision moved by the undo,
@@ -8581,8 +8579,8 @@ fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_re
     settled(&mut h);
     assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
     // Redo: PinK, then the pad's edits whole.
-    keyed(&mut h, Key::Y);
-    keyed(&mut h, Key::Y);
+    redo_by_key(&mut h);
+    redo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), padded);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -8806,7 +8804,10 @@ fn edit_feature_of_a_reversed_pad_loads_it_reversed_and_sends_nothing() {
             .toggled(),
         Some(eframe::egui::accesskit::Toggled::True)
     );
-    assert_eq!(input(&h, "Length").value().as_deref(), Some("3"));
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("3")
+    );
     for _ in 0..10 {
         step(&mut h);
     }
@@ -10314,23 +10315,6 @@ impl Fixture {
     }
 }
 
-fn view(h: &AppHarness) -> &silico_app::viewport::View {
-    &h.state().tabs()[0].view
-}
-
-fn view_mut(h: &mut AppHarness) -> &mut silico_app::viewport::View {
-    &mut h.state_mut().tabs_mut()[0].view
-}
-
-/// How many meshes the fake kernel has made.
-fn tessellated(f: &Fixture) -> usize {
-    f.kernel
-        .calls()
-        .iter()
-        .filter(|call| matches!(call.op, Op::Tessellate { .. }))
-        .count()
-}
-
 fn uploads(record: &Record) -> Vec<u32> {
     record
         .lock()
@@ -10339,11 +10323,6 @@ fn uploads(record: &Record) -> Vec<u32> {
         .iter()
         .map(|(body, _)| *body)
         .collect()
-}
-
-/// The viewport's place in the window, in points, as it was last frame.
-fn the_viewport(h: &AppHarness) -> eframe::egui::Rect {
-    view(h).frame().unwrap().rect
 }
 
 #[track_caller]
@@ -10366,7 +10345,7 @@ fn a_models_buffers_are_uploaded_once_over_a_hundred_frames_and_an_orthographic_
     // One body, the cut, as body 1, read once (Home's view, fitted by the core), meshed
     // once, and uploaded once, with the mesh the read gave.
     assert_eq!(view(&h).reads(), 1);
-    assert_eq!(tessellated(&f), 1);
+    assert_eq!(tessellated(&f.kernel), 1);
     assert_eq!(uploads(&record), [1]);
     let mesh = Arc::clone(&view(&h).bodies()[&1].mesh);
     assert!(Arc::ptr_eq(&record.lock().unwrap().uploads[0].1, &mesh));
@@ -10390,7 +10369,7 @@ fn a_models_buffers_are_uploaded_once_over_a_hundred_frames_and_an_orthographic_
                 .all(|frame| frame.bodies == [1] && frame.camera == home)
         );
     }
-    assert_eq!((view(&h).reads(), tessellated(&f)), (1, 1));
+    assert_eq!((view(&h).reads(), tessellated(&f.kernel)), (1, 1));
     // An orbit, Shift and the middle button dragged 90 points right, ten at a time: 45°
     // about z through the target. The eye's way from the target, (1, −1, 1)/√3, turned
     // by −45°, is (0, −√2, 1)/√3: the front, from above. The half pixel of an
@@ -10429,7 +10408,7 @@ fn a_models_buffers_are_uploaded_once_over_a_hundred_frames_and_an_orthographic_
     let way = [0.0, -(2f64.sqrt()), 1.0].map(|c| c / 3f64.sqrt() * distance);
     near(minus(turned.eye, turned.target), way, 1e-9 * distance);
     assert_eq!(turned.projection, home.projection);
-    assert_eq!((view(&h).reads(), tessellated(&f)), (1, 1));
+    assert_eq!((view(&h).reads(), tessellated(&f.kernel)), (1, 1));
     assert_eq!(uploads(&record), [1]);
     assert_eq!(record.lock().unwrap().frames.last().unwrap().camera, turned);
     assert_eq!(never_waits::waits(), 0);
@@ -10466,7 +10445,7 @@ fn a_zoom_past_serves_reads_again_listing_what_is_held_and_uploads_only_the_body
     let (level, deflection, serves) = at(&h, 2);
     assert_eq!((level, serves), (0.03125, [0.0, 0.25]));
     assert!((deflection - floor).abs() < 1e-12, "{deflection}");
-    let (made, told) = (tessellated(&f), uploads(&record).len());
+    let (made, told) = (tessellated(&f.kernel), uploads(&record).len());
     // The wheel, 200 points toward the model at the view's centre: the view halves, so
     // the half pixel is 0.02, under the small cube's [0.03125, 0.0625); the large one's
     // [0, 0.25) still serves it. One read, holding both; the small cube meshed at 2⁻⁶
@@ -10506,7 +10485,7 @@ fn a_zoom_past_serves_reads_again_listing_what_is_held_and_uploads_only_the_body
     // sent were its own), the small one, at a new level, with arrays.
     assert!(view(&h).bodies()[&2].held);
     assert!(!view(&h).bodies()[&1].held);
-    assert_eq!(tessellated(&f), made + 1);
+    assert_eq!(tessellated(&f.kernel), made + 1);
     assert_eq!(uploads(&record)[told..], [1]);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -10556,7 +10535,7 @@ fn an_edits_new_revision_reads_again_and_a_body_gone_is_forgotten() {
             .collect()
     };
     let before = keys(&h);
-    let made = tessellated(&f);
+    let made = tessellated(&f.kernel);
     // Another client lengthens the small cube: a new revision, whose model is read with
     // both meshes held; the small cube's key changes, so it alone is uploaded again.
     let small = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
@@ -10580,7 +10559,7 @@ fn an_edits_new_revision_reads_again_and_a_body_gone_is_forgotten() {
     assert_eq!(after[1], before[1]);
     // Only the small cube meshed: the large one was held, at its key and deflection, and
     // answered so.
-    assert_eq!(tessellated(&f), made + 1);
+    assert_eq!(tessellated(&f.kernel), made + 1);
     assert!(view(&h).bodies()[&2].held);
     assert!(!view(&h).bodies()[&1].held);
     assert_eq!(uploads(&record), [1, 2, 1]);
@@ -15175,7 +15154,7 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
             double_click(&mut h, "Timeline", "Block");
             step_until(&mut h, "its dialog, loaded", |h| {
                 h.query_by_role_and_label(Role::Dialog, "Box").is_some()
-                    && input(h, "Length").value().as_deref() == Some("40")
+                    && ui::field(h, In::Dialog, "Length").value().as_deref() == Some("40")
             });
             settled(&mut h);
             // The pointer off it, on the dialog's title.
@@ -15187,7 +15166,7 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
             let pixel = |at: eframe::egui::Pos2| {
                 image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
             };
-            let field = input(&h, "Length").rect();
+            let field = ui::field(&h, In::Dialog, "Length").rect();
             assert!(field.width() > 30.0 && field.height() > 10.0, "{field:?}");
             // Inside it, clear of its text (at its left) and its border.
             let inside = field.right_center() + eframe::egui::vec2(-4.0, 0.0);
@@ -15201,7 +15180,7 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
                 "{field:?}"
             );
             // Hovered: Gray.250 (`.field:hover`).
-            input(&h, "Length").hover();
+            ui::field(&h, In::Dialog, "Length").hover();
             for _ in 0..5 {
                 step(&mut h);
             }
@@ -15216,7 +15195,9 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
                 step(&mut h);
             }
             // Its 40 and the x, in either order (where the caret was), parse as no number.
-            let typed = input(&h, "Length").value().unwrap_or_default();
+            let typed = ui::field(&h, In::Dialog, "Length")
+                .value()
+                .unwrap_or_default();
             assert!(["x40", "40x"].contains(&typed.as_str()), "{typed}");
             let image = h.render().unwrap();
             let pixel = |at: eframe::egui::Pos2| {
@@ -16292,13 +16273,6 @@ fn texts_in(h: &AppHarness, rect: eframe::egui::Rect) -> Vec<(String, eframe::eg
             _ => None,
         })
         .collect()
-}
-
-/// The pointer away from the app bar, over the viewport, a frame drawn.
-fn pointer_away(h: &mut AppHarness) {
-    h.hover_at(eframe::egui::pos2(640.0, 400.0));
-    step(h);
-    step(h);
 }
 
 #[test]
@@ -24204,12 +24178,6 @@ fn pressed(h: &mut AppHarness, keys: &[eframe::egui::Key]) {
     step(h);
 }
 
-/// The Modify box's field, if a box is open.
-fn modify_field(h: &AppHarness) -> Option<egui_kittest::Node<'_>> {
-    h.query_by_role_and_label(Role::Dialog, "Modify dimension")?
-        .query_by_label("Value in millimetres")
-}
-
 /// Where the open Modify box's field has its cursor, as egui keeps it for the field: its two
 /// ends, in characters. None if no box is open, or its field keeps no cursor.
 fn box_cursor(h: &AppHarness) -> Option<[usize; 2]> {
@@ -27319,15 +27287,6 @@ fn a_trim_asked_while_the_tab_closes_is_never_queued() {
 // ---- #364's mutants, the second round: sketch mode's keys, its tool chosen and its chain
 // ended from outside the palette, and what its tool asks ----
 
-/// The sketched part's Triangle open in sketch mode, and read.
-fn triangle_sketch(f: &Fixture) -> AppHarness {
-    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
-    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
-    double_click(&mut h, "Browser", "Triangle");
-    sketch_read(&mut h);
-    h
-}
-
 #[test]
 fn a_segment_drawn_while_the_tab_closes_is_refused_to_its_tool_and_never_queued() {
     use silico_core::sketch_tools::ToolKind;
@@ -27354,7 +27313,7 @@ fn enter_alone_in_sketch_mode_ends_the_chain_and_asks_for_the_next_frame_at_once
     use silico_app::sketch::tools::Choice;
     use silico_core::sketch_tools::ToolKind;
     let f = fixture();
-    let mut h = triangle_sketch(&f);
+    let mut h = triangle_opened(&f);
     h.key_press(Key::L);
     step(&mut h);
     // A chain's first click, at (60, 30), clear of the triangle: under way, nothing added.
@@ -27374,7 +27333,7 @@ fn enter_alone_in_sketch_mode_ends_the_chain_and_asks_for_the_next_frame_at_once
 #[test]
 fn command_enter_alone_in_sketch_mode_finishes_it_and_asks_for_the_next_frame_at_once() {
     let f = fixture();
-    let mut h = triangle_sketch(&f);
+    let mut h = triangle_opened(&f);
     settled(&mut h);
     // ⌘↵ alone, the prototype's Finish Sketch: sketch mode closed, and its frame asks for
     // the next at once.
@@ -27390,7 +27349,7 @@ fn sketch_tool_chooses_a_drawing_tool_that_then_draws_and_none_leaves_it() {
     use silico_app::sketch::tools::Choice;
     use silico_core::sketch_tools::ToolKind;
     let f = fixture();
-    let mut h = triangle_sketch(&f);
+    let mut h = triangle_opened(&f);
     let tool = |h: &AppHarness| sketch_mode(h).unwrap().tools.choice();
     h.state_mut().tabs_mut()[0].sketch_tool(Some(ToolKind::CornerRectangle));
     assert_eq!(tool(&h), Some(Choice::Draw(ToolKind::CornerRectangle)));
@@ -27415,7 +27374,7 @@ fn sketch_end_chain_ends_the_chain_under_way_and_keeps_the_tool() {
     use silico_app::sketch::tools::Choice;
     use silico_core::sketch_tools::ToolKind;
     let f = fixture();
-    let mut h = triangle_sketch(&f);
+    let mut h = triangle_opened(&f);
     h.key_press(Key::L);
     step(&mut h);
     sketch_events(&f, &mut h, &clicked(60.0, 30.0));
@@ -27440,7 +27399,7 @@ fn sketch_end_chain_ends_the_chain_under_way_and_keeps_the_tool() {
 #[test]
 fn a_tools_add_lets_go_of_what_was_said_and_of_what_sketch_mode_undid() {
     let f = fixture();
-    let mut h = triangle_sketch(&f);
+    let mut h = triangle_opened(&f);
     h.key_press(Key::L);
     step(&mut h);
     // A segment from (30, 30) to (40, 35), its chain ended by Enter; then undone by Ctrl+Z,
@@ -27789,44 +27748,11 @@ fn an_undo_refused_as_a_conflict_says_the_cores_refusal_not_the_prompts_overtake
 // paths are written here by hand; files' contents are the session's text, read from the
 // core, and the features' names in them.
 
-/// The tab named `name`.
-fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a silico_app::tab::Tab {
-    h.state()
-        .tabs()
-        .iter()
-        .find(|tab| tab.name() == name)
-        .unwrap_or_else(|| panic!("no tab {name}"))
-}
-
 /// The part `part`, shown, in sketch mode on a new sketch, as a part is begun sketch-first
 /// (the app makes no primitive: Trevin's decision of 2026-11-09): CREATE's Create Sketch,
 /// once the part's timeline is read, on the XY plane, its sketch added and read.
 fn begin_sketch_on_xy(h: &mut AppHarness, part: &str) {
     begin_sketch_on(h, part, "XY plane");
-}
-
-/// [`begin_sketch_on_xy`] on the origin plane labelled `plane` ("XZ plane").
-fn begin_sketch_on(h: &mut AppHarness, part: &str, plane: &str) {
-    step_until(h, "Create Sketch on", |h| {
-        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Create Sketch")
-            .accesskit_node()
-            .is_disabled()
-    });
-    h.get_by_role_and_label(Role::Toolbar, "CREATE")
-        .get_by_label("Create Sketch")
-        .click();
-    step_until(h, "its planes", |h| {
-        h.query_by_role_and_label(Role::Button, plane).is_some()
-    });
-    step(h);
-    h.get_by_role_and_label(Role::Button, plane).click();
-    step_until(h, "its sketch added and read", |h| {
-        tab_named(h, part)
-            .sketch
-            .as_ref()
-            .is_some_and(|mode| mode.sketch.is_some() && mode.drawable().is_some())
-    });
 }
 
 /// Finish Sketch (⌘↵) in the part `part`, shown, which keeps its sketch: sketch mode
@@ -27898,15 +27824,6 @@ fn add_pad(f: &Fixture, h: &mut AppHarness, part: &str) {
         let tab = tab_named(h, part);
         tab.edits.idle() && tab.unsaved() && anywhere(h, &marked)
     });
-}
-
-/// The question's button `label`, the last of that label (after the app bar's Save).
-fn answer_question(h: &mut AppHarness, label: &str) {
-    h.query_all_by_role_and_label(Role::Button, label)
-        .last()
-        .unwrap()
-        .click_accesskit();
-    step(h);
 }
 
 #[test]
@@ -29043,7 +28960,7 @@ fn an_export_form_opened_while_untitled_takes_a_relative_path_in_the_folder_of_i
 fn enter_with_shift_or_alt_held_in_sketch_mode_leaves_the_chain_under_way() {
     use eframe::egui::Event;
     let f = fixture();
-    let mut h = triangle_sketch(&f);
+    let mut h = triangle_opened(&f);
     h.key_press(Key::L);
     step(&mut h);
     // A chain's first click, at (60, 30), clear of the triangle: under way.
@@ -29142,24 +29059,6 @@ fn pixel_at(h: &AppHarness, at: eframe::egui::Pos2) -> [u32; 2] {
     let frame = view(h).frame().unwrap();
     let d = (at - frame.rect.min) * frame.pixels_per_point;
     [d.x.floor() as u32, d.y.floor() as u32]
-}
-
-/// A left click on the canvas at `at`, Ctrl (Cmd) held if `ctrl`: its press one frame, its
-/// release the next.
-fn click_canvas(h: &mut AppHarness, at: eframe::egui::Pos2, ctrl: bool) {
-    use eframe::egui::{Event, Modifiers, PointerButton};
-    let held = if ctrl {
-        Modifiers::COMMAND
-    } else {
-        Modifiers::NONE
-    };
-    h.event(Event::ModifiersChanged(held));
-    h.hover_at(at);
-    button_event(h, at, PointerButton::Primary, true, held);
-    step(h);
-    button_event(h, at, PointerButton::Primary, false, held);
-    h.event(Event::ModifiersChanged(Modifiers::NONE));
-    step(h);
 }
 
 /// What the fake renderer finds at every pick from now on: `hit` (the body, the element,
@@ -31846,25 +31745,6 @@ fn published_of_with_meshes_held_once(
     );
 }
 
-/// A clock that says what the test sets, from now: frozen until [`advance`]d.
-fn hand_clock() -> (Arc<Mutex<Instant>>, Clock) {
-    let time = Arc::new(Mutex::new(Instant::now()));
-    let read = Arc::clone(&time);
-    (time, Arc::new(move || *read.lock().unwrap()))
-}
-
-fn advance(time: &Mutex<Instant>, by: Duration) {
-    *time.lock().unwrap() += by;
-}
-
-/// The delay the last frame asked for the next one at.
-fn repaint_delay(h: &AppHarness) -> Option<Duration> {
-    h.output()
-        .viewport_output
-        .get(&eframe::egui::ViewportId::ROOT)
-        .map(|viewport| viewport.repaint_delay)
-}
-
 /// Whether the view's meshes are of the model the tab has published (the selection's).
 fn meshes_current(h: &AppHarness) -> bool {
     let tab = &h.state().tabs()[0];
@@ -32766,7 +32646,7 @@ fn a_press_after_the_camera_moved_under_a_still_pointer_isnt_decided_by_the_hove
 fn x_with_a_sketch_open_is_construction_and_e_and_v_leave_the_filter_be() {
     use eframe::egui::Key;
     let f = fixture();
-    let mut h = triangle_sketch(&f);
+    let mut h = triangle_opened(&f);
     let filter = |h: &AppHarness| h.state().tabs()[0].selection().filter;
     let every = silico_app::selection::Filter::default();
     assert_eq!(filter(&h), every);
@@ -32806,7 +32686,7 @@ fn x_with_a_sketch_open_is_construction_and_e_and_v_leave_the_filter_be() {
 fn x_e_and_v_filter_the_selection_once_the_sketch_is_left() {
     use eframe::egui::Key;
     let f = fixture();
-    let mut h = triangle_sketch(&f);
+    let mut h = triangle_opened(&f);
     leave_sketch(&mut h, false);
     let kinds = |h: &AppHarness| {
         let filter = h.state().tabs()[0].selection().filter;
@@ -32930,7 +32810,10 @@ fn a_fillet_dialog_fed_the_selection_of_two_edges_writes_a_fillet_naming_them() 
             "{name}"
         );
     }
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("1"));
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("1")
+    );
     // The selection stays, the edges highlighted.
     assert_eq!(
         selected_names(&h),
@@ -33527,7 +33410,10 @@ fn a_fillets_radius_opens_at_the_last_okd_cancel_leaves_it_and_edit_feature_show
     modify(&mut h, "Fillet");
     added(&mut h);
     settled(&mut h);
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("1"));
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("1")
+    );
     retype(&mut h, In::Dialog, "Radius", "2.5");
     settled(&mut h);
     assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("2.5")));
@@ -33538,29 +33424,44 @@ fn a_fillets_radius_opens_at_the_last_okd_cancel_leaves_it_and_edit_feature_show
     modify(&mut h, "Fillet");
     added(&mut h);
     settled(&mut h);
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("2.5"));
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("2.5")
+    );
     retype(&mut h, In::Dialog, "Radius", "7");
     settled(&mut h);
     cancel_dialog(&mut h);
     // Cancelled at 7: still 2.5.
     modify(&mut h, "Fillet");
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("2.5"));
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("2.5")
+    );
     cancel_dialog(&mut h);
     // Edit Feature: the feature's own radius, not the one remembered.
     edit_from_the_timeline(&mut h, "Round");
     step_until(&mut h, "Round's dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, "Fillet").is_some()
     });
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("0.5"));
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("0.5")
+    );
     assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3"]);
     cancel_dialog(&mut h);
     // A chamfer remembers its own: none OK'd yet, so its first, 1.
     modify(&mut h, "Chamfer");
-    assert_eq!(input(&h, "Distance").value().as_deref(), Some("1"));
+    assert_eq!(
+        field(&h, In::Dialog, "Distance").value().as_deref(),
+        Some("1")
+    );
     cancel_dialog(&mut h);
     // And the fillet's is kept still.
     modify(&mut h, "Fillet");
-    assert_eq!(input(&h, "Radius").value().as_deref(), Some("2.5"));
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("2.5")
+    );
     cancel_dialog(&mut h);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -33775,7 +33676,10 @@ fn a_chamfer_dialog_fed_the_selection_of_an_edge_writes_a_chamfer_of_its_distanc
     settled(&mut h);
     assert!(dialog(&h).query_by_label("1 edge").is_some());
     assert!(dialog(&h).query_by_label("k7f2qx3m.box.Edge3").is_some());
-    assert_eq!(input(&h, "Distance").value().as_deref(), Some("1"));
+    assert_eq!(
+        field(&h, In::Dialog, "Distance").value().as_deref(),
+        Some("1")
+    );
     assert_eq!(
         fields_of(&text_of(&f, &h), "Chamfer"),
         Some(expected(
@@ -36854,7 +36758,7 @@ fn a_broken_edges_card_lists_the_cores_candidates_closest_first_and_use_writes_o
         tooltip_title(&mut h, "Undo"),
         "Undo: Inside corner: use the edge you picked"
     );
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), before);
     step_until(&mut h, "broken again", |h| {
         h.state().tabs()[0].errors() == 1
@@ -36901,7 +36805,7 @@ fn remove_the_edge_drops_the_broken_name_alone_and_undo_puts_it_back() {
         tooltip_title(&mut h, "Undo"),
         "Undo: Inside corner: remove its edge"
     );
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -37051,7 +36955,7 @@ fn the_fillets_own_dialog_shows_its_candidates_and_use_puts_one_in_its_box_in_th
         before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE4}""#))
     );
     // One undo takes the dialog's edits back, the broken name with them.
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -40925,11 +40829,11 @@ fn a_removed_consumer_frees_its_sketch_and_undo_and_redo_follow_the_document() {
     let (mut h, _) = absorbed(&f, ABSORBED_AND_LOOSE);
     timeline_act(&mut h, "Legs", "Delete", None);
     assert!(eye_says(&h, "Hide", "Profile"));
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     step_until(&mut h, "Legs back", |h| shows(h, "Timeline", "Legs"));
     settled(&mut h);
     assert!(eye_says(&h, "Show", "Profile"));
-    keyed(&mut h, Key::Y);
+    redo_by_key(&mut h);
     step_until(&mut h, "Legs gone again", |h| !shows(h, "Timeline", "Legs"));
     settled(&mut h);
     assert!(eye_says(&h, "Hide", "Profile"));
@@ -40970,7 +40874,7 @@ fn a_cancel_that_rolls_back_ends_the_edit_features_freeze() {
     assert!(h.state().tabs()[0].sent.contains(&Sent::Rollback));
     timeline_act(&mut h, "Legs", "Delete", None);
     assert!(eye_says(&h, "Hide", "Profile"));
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     step_until(&mut h, "Legs back", |h| shows(h, "Timeline", "Legs"));
     settled(&mut h);
     assert!(eye_says(&h, "Show", "Profile"));
@@ -40991,7 +40895,7 @@ fn an_override_survives_a_lost_consumer_and_falls_to_a_gained_one() {
     click_eye(&mut h, "Show", "Profile");
     timeline_act(&mut h, "Cut", "Delete", None);
     assert!(eye_says(&h, "Hide", "Profile"), "a loss drops nothing");
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     step_until(&mut h, "Cut back", |h| shows(h, "Timeline", "Cut"));
     settled(&mut h);
     assert!(eye_says(&h, "Show", "Profile"), "a gain drops it");
@@ -41044,7 +40948,7 @@ fn a_sketch_is_absorbed_at_ok_not_while_its_dialog_makes_the_feature() {
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert!(eye_says(&h, "Show", "Loose"));
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     step_until(&mut h, "the pad undone", |h| {
         h.state().tabs()[0]
             .timeline
@@ -41219,7 +41123,7 @@ fn a_new_feature_cancelled_then_redone_counts_again_though_no_read_came_between(
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    keyed(&mut h, Key::Z);
+    undo_by_key(&mut h);
     step_until(&mut h, "the pad undone", |h| {
         h.state().tabs()[0]
             .timeline

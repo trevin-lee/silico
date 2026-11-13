@@ -2,23 +2,44 @@
 //! control found by its role and label in the accessibility tree and clicked or typed into,
 //! keys pressed, and the canvas given the pointer's own events; and reads of what the window
 //! and the tab show, which act on nothing. Every frame is stepped on a thread marked so that
-//! a wait on a command there is counted.
+//! a wait on a command there is counted. Last, what the stand-ins several files share give
+//! the tests: the fake kernel's meshes counted, a file read as the core reads it, and a clock
+//! moved by hand.
 //!
-//! The app's tests take their UI helpers from here, one copy each: tests/app.rs, the
+//! The app's tests take these helpers from here, one copy each: tests/app.rs, the
 //! hostile-input tests, and the slice. How long a wait may take follows the kernel the app
-//! runs on: [`WAIT`] on the fake kernel, [`SLICE_WAIT`] on the real workers. Two pairs do
-//! one job two ways, and are kept apart because the events each sends are what its tests
-//! have checked the app against:
+//! runs on: [`FAKE_WAIT`] on the fake kernel, [`SLICE_WAIT`] on the real workers.
+//!
+//! Three clicks and two ways of typing over a field do one job differently, and are kept
+//! apart because the events each sends are what its tests have checked the app against:
 //! - [`click_at`] gives the press and the release in one frame, as the harness's own clicks
-//!   do; [`click_as_a_person`] waits out egui's double-click delay first, so that no click
-//!   is read as another's second, and gives the press and the release a frame each;
+//!   do; [`click_canvas`] gives the press, held keys and all, in the pointer's first frame
+//!   there and the release in the next; [`click_as_a_person`] waits out egui's double-click
+//!   delay first, so that no click is read as another's second, and gives the move, the
+//!   press, and the release a frame each;
 //! - [`retype`] takes a field's characters away a Backspace a frame and reads `text` back at
 //!   once; [`type_over`] takes them in one frame (Home, and a Delete each) and waits for the
 //!   field to read `text`.
+//!
+//! What stays in each file is its own, not a copy:
+//! - each file's `fixture` and `Fixture`, since each sets its sessions up as its tests need
+//!   (app.rs's write STEP through the fake kernel, and compare the disk through a test's
+//!   reader when one is given; adversarial_undo_names.rs's compare it through [`real`] with
+//!   no interval, and write no STEP; the untitled and viewport tests' are the stand-ins
+//!   alone) and has its own methods for opening the app;
+//! - app.rs's and adversarial_viewport.rs's renderer stand-ins (`Told`, `FakeRenderer`,
+//!   `Recorder`), which record different things and answer picks differently: app.rs's give
+//!   the pick a test sets, or hold, drop, or never give it; the viewport's give the
+//!   background's every time, and count frames drawn with no tab;
+//! - adversarial_untitled.rs's `add_sketch` finishes its sketch without waiting for the tab's
+//!   asterisk, where app.rs's (`finish_sketch_unsaved`) waits for it;
+//! - helpers that share a name but not a job: app.rs's `renamed` (the name typed and its edit
+//!   landed) and adversarial_undo_names.rs's (the feature selected, the name typed, and
+//!   everything settled); app.rs's and slice.rs's `fully_defined` and `seen`.
 #![allow(dead_code)]
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui::accesskit::Role;
@@ -26,19 +47,20 @@ use eframe::egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, R
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
+use silico_core::disk::{Clock, Found};
 use silico_core::fake::{FakeKernel, never_waits};
-use silico_core::kernel::Clients;
+use silico_core::kernel::{Clients, Op};
 use silico_core::pool::KernelPool;
 
 /// The app in a harness.
 pub type AppUi<P> = Harness<'static, App<P>>;
 
 /// Long enough for anything the fake kernel does on a loaded machine.
-pub const WAIT: Duration = Duration::from_secs(60);
+pub const FAKE_WAIT: Duration = Duration::from_secs(60);
 
 /// Long enough for anything a real worker does on a loaded machine, a first start included:
-/// longer than [`WAIT`], since here every answer is a real kernel's, sketch worker's, or STEP
-/// worker's, and every frame is drawn on lavapipe.
+/// longer than [`FAKE_WAIT`], since in the slice every answer is a real kernel's, sketch
+/// worker's, or STEP worker's, and every frame is drawn on lavapipe.
 pub const SLICE_WAIT: Duration = Duration::from_secs(120);
 
 /// A kernel the app is driven on here, and how long [`step_until`] waits on it.
@@ -49,7 +71,7 @@ pub trait AppKernel: Clients + 'static {
 
 /// The fake kernel, which app.rs and the hostile-input tests drive the app on.
 impl AppKernel for Arc<FakeKernel> {
-    const WAIT: Duration = WAIT;
+    const WAIT: Duration = FAKE_WAIT;
 }
 
 /// The real kernel's pool, which the slice drives the app on.
@@ -114,6 +136,13 @@ pub fn settled<P: AppKernel>(h: &mut AppUi<P>) {
 
 // --- The app bar and the status bar --------------------------------------------------------
 
+/// The pointer away from the app bar, over the viewport, a frame drawn.
+pub fn pointer_away<P: AppKernel>(h: &mut AppUi<P>) {
+    h.hover_at(Pos2::new(640.0, 400.0));
+    step(h);
+    step(h);
+}
+
 /// The title the app bar's `button` ("Undo" or "Redo") shows in its tooltip, the pointer
 /// brought over it from over the canvas, where no tooltip shows, and where its label is: the
 /// word alone, or the word, a colon, and the step it would take (the prototype's `data-tip`,
@@ -128,9 +157,7 @@ pub fn tooltip<P: AppKernel>(h: &mut AppUi<P>, button: &str) -> (String, Rect) {
             (said == button || said.starts_with(&named)).then_some((said, rect))
         })
     };
-    h.hover_at(Pos2::new(640.0, 400.0));
-    step(h);
-    step(h);
+    pointer_away(h);
     assert_eq!(
         title(h).map(|(said, _)| said),
         None,
@@ -155,17 +182,46 @@ pub fn in_status_bar<P: AppKernel>(h: &AppUi<P>, words: &str) -> bool {
         .any(|node| bar.y_range().contains(node.rect().center().y))
 }
 
-/// Command+`key` pressed (Z undoes, Y redoes) once Undo, or Redo, is on in the first tab, and
-/// its answer settled.
-pub fn keyed<P: AppKernel>(h: &mut AppUi<P>, key: Key) {
-    if key == Key::Z {
-        step_until(h, "undoable", |h| h.state().tabs()[0].undoable());
-    } else {
-        step_until(h, "redoable", |h| h.state().tabs()[0].redoable());
-    }
-    h.key_press_modifiers(Modifiers::COMMAND, key);
+/// Command+Z pressed once Undo is on in the first tab, and its answer settled.
+pub fn undo_by_key<P: AppKernel>(h: &mut AppUi<P>) {
+    step_until(h, "undoable", |h| h.state().tabs()[0].undoable());
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     step(h);
     settled(h);
+}
+
+/// Command+Y pressed once Redo is on in the first tab, and its answer settled.
+pub fn redo_by_key<P: AppKernel>(h: &mut AppUi<P>) {
+    step_until(h, "redoable", |h| h.state().tabs()[0].redoable());
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Y);
+    step(h);
+    settled(h);
+}
+
+/// The window asked to close, as its close button asks.
+pub fn close_window<P: AppKernel>(h: &mut AppUi<P>) {
+    let root = eframe::egui::ViewportId::ROOT;
+    h.input_mut()
+        .viewports
+        .get_mut(&root)
+        .unwrap()
+        .events
+        .push(eframe::egui::ViewportEvent::Close);
+    step(h);
+    h.input_mut()
+        .viewports
+        .get_mut(&root)
+        .unwrap()
+        .events
+        .clear();
+}
+
+/// The delay the last frame asked for the next one at.
+pub fn repaint_delay<P: AppKernel>(h: &AppUi<P>) -> Option<Duration> {
+    h.output()
+        .viewport_output
+        .get(&eframe::egui::ViewportId::ROOT)
+        .map(|viewport| viewport.repaint_delay)
 }
 
 // --- Files ---------------------------------------------------------------------------------
@@ -202,6 +258,24 @@ pub fn save_as_of<P: AppKernel>(h: &mut AppUi<P>, name: &str, path: &Path) {
     step_until(h, "the Save As dialog gone", |h| {
         h.query_by_label_contains(&title).is_none()
     });
+}
+
+/// The tab named `name`.
+pub fn tab_named<'a, P: AppKernel>(h: &'a AppUi<P>, name: &str) -> &'a silico_app::tab::Tab {
+    h.state()
+        .tabs()
+        .iter()
+        .find(|tab| tab.name() == name)
+        .unwrap_or_else(|| panic!("no tab {name}"))
+}
+
+/// The question's button `label`, the last of that label (after the app bar's Save).
+pub fn answer_question<P: AppKernel>(h: &mut AppUi<P>, label: &str) {
+    h.query_all_by_role_and_label(Role::Button, label)
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step(h);
 }
 
 // --- The export dialog ---------------------------------------------------------------------
@@ -405,6 +479,23 @@ pub fn select<P: AppKernel>(h: &mut AppUi<P>, name: &str) {
     });
 }
 
+/// The property panel's Name field.
+pub fn name_field<P: AppKernel>(h: &AppUi<P>) -> egui_kittest::Node<'_> {
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role(Role::TextInput)
+}
+
+/// Typed into the property panel's Name field, one keystroke a frame: focused, the field's
+/// cursor is at its end, so what's typed comes after the name.
+pub fn type_name<P: AppKernel>(h: &mut AppUi<P>, text: &str) {
+    name_field(h).focus();
+    step(h);
+    for c in text.chars() {
+        name_field(h).type_text(&c.to_string());
+        step(h);
+    }
+}
+
 /// The rename field of the feature `name`, if it's open.
 pub fn rename_field<'a, P: AppKernel>(
     h: &'a AppUi<P>,
@@ -438,6 +529,31 @@ pub fn f2_typed<P: AppKernel>(h: &mut AppUi<P>, name: &str, typed: &str) {
 /// Sketch mode's state, in the first tab.
 pub fn sketch_mode<P: AppKernel>(h: &AppUi<P>) -> Option<&silico_app::sketch::SketchMode> {
     h.state().tabs()[0].sketch.as_ref()
+}
+
+/// Create Sketch on the plane labelled `plane` in the part `part`'s tab, once Create Sketch
+/// is on: sketch mode open, its sketch added and read.
+pub fn begin_sketch_on<P: AppKernel>(h: &mut AppUi<P>, part: &str, plane: &str) {
+    step_until(h, "Create Sketch on", |h| {
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    });
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, plane).is_some()
+    });
+    step(h);
+    h.get_by_role_and_label(Role::Button, plane).click();
+    step_until(h, "its sketch added and read", |h| {
+        tab_named(h, part)
+            .sketch
+            .as_ref()
+            .is_some_and(|mode| mode.sketch.is_some() && mode.drawable().is_some())
+    });
 }
 
 /// Create Sketch from CREATE's menu, on the plane labelled `plane` ("XY plane"): sketch
@@ -495,7 +611,28 @@ pub fn prompt<P: AppKernel>(h: &AppUi<P>) -> Option<egui_kittest::Node<'_>> {
     h.query_by_role_and_label(Role::Dialog, "Dimension over-defines the sketch")
 }
 
+/// The Modify box's field, if a box is open.
+pub fn modify_field<P: AppKernel>(h: &AppUi<P>) -> Option<egui_kittest::Node<'_>> {
+    h.query_by_role_and_label(Role::Dialog, "Modify dimension")?
+        .query_by_label("Value in millimetres")
+}
+
 // --- The canvas ----------------------------------------------------------------------------
+
+/// The first tab's view.
+pub fn view<P: AppKernel>(h: &AppUi<P>) -> &silico_app::viewport::View {
+    &h.state().tabs()[0].view
+}
+
+/// The first tab's view, to change.
+pub fn view_mut<P: AppKernel>(h: &mut AppUi<P>) -> &mut silico_app::viewport::View {
+    &mut h.state_mut().tabs_mut()[0].view
+}
+
+/// The viewport's place in the window, in points, as it was last frame.
+pub fn the_viewport<P: AppKernel>(h: &AppUi<P>) -> Rect {
+    view(h).frame().unwrap().rect
+}
 
 /// The viewport's frame, as it was last drawn.
 pub fn frame<P: AppKernel>(h: &AppUi<P>) -> Option<&silico_app::viewport::ViewFrame> {
@@ -562,6 +699,23 @@ pub fn click_at<P: AppKernel>(h: &mut AppUi<P>, at: Pos2) {
     step(h);
 }
 
+/// A left click at `at`, Ctrl (Cmd) held if `ctrl`: the pointer there and the press in one
+/// frame, the release in the next.
+pub fn click_canvas<P: AppKernel>(h: &mut AppUi<P>, at: Pos2, ctrl: bool) {
+    let held = if ctrl {
+        Modifiers::COMMAND
+    } else {
+        Modifiers::NONE
+    };
+    h.event(Event::ModifiersChanged(held));
+    h.hover_at(at);
+    button_event(h, at, PointerButton::Primary, true, held);
+    step(h);
+    button_event(h, at, PointerButton::Primary, false, held);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    step(h);
+}
+
 /// A wheel of `delta` in `unit`s at `at`.
 pub fn wheel<P: AppKernel>(h: &mut AppUi<P>, at: Pos2, unit: MouseWheelUnit, delta: f32) {
     h.hover_at(at);
@@ -624,6 +778,39 @@ pub fn meshes_settled_in<P: AppKernel>(h: &mut AppUi<P>, tab: usize) {
     step_until(h, "the meshes read", |h| {
         !h.state().tabs()[tab].view.reading()
     });
+}
+
+// --- The stand-ins -------------------------------------------------------------------------
+
+/// How many meshes the fake kernel has made.
+pub fn tessellated(kernel: &FakeKernel) -> usize {
+    kernel
+        .calls()
+        .iter()
+        .filter(|call| matches!(call.op, Op::Tessellate { .. }))
+        .count()
+}
+
+/// The session's own read of its file, as `silico_core::disk` reads it, for a test that
+/// compares with no interval.
+pub fn real(path: &Path) -> Found {
+    match std::fs::read(path) {
+        Ok(bytes) => Found::Bytes(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Found::Gone,
+        Err(_) => Found::Unreadable,
+    }
+}
+
+/// A clock that says what the test sets, from now: frozen until [`advance`]d.
+pub fn hand_clock() -> (Arc<Mutex<Instant>>, Clock) {
+    let time = Arc::new(Mutex::new(Instant::now()));
+    let read = Arc::clone(&time);
+    (time, Arc::new(move || *read.lock().unwrap()))
+}
+
+/// [`hand_clock`]'s time moved on `by`.
+pub fn advance(time: &Mutex<Instant>, by: Duration) {
+    *time.lock().unwrap() += by;
 }
 
 // --- Lavapipe ------------------------------------------------------------------------------
