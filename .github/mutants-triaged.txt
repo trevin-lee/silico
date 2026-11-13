@@ -720,3 +720,4 @@ crates/silico-app/src/sketch/lines.rs | dashes | replace < with <= | #457
 crates/silico-app/src/sketch/lines.rs | dashes | replace < with <= | #457
 crates/silico-app/src/sketch/lines.rs | dashes | replace < with <= | #457
 crates/silico-app/src/sketch/lines.rs | dashes | replace + with * | #457
+crates/silico-app/src/tab.rs | Tab::count_to | replace < with <= | #464
