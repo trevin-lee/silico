@@ -3,6 +3,12 @@
 //! documents' tabs, and the tooltips that name a button's shortcut. What each does is the
 //! app's (`app`); this draws them, each with the label a test or a screen reader finds it by.
 //!
+//! Its button (`.ab-btn`) and separator (`.ab-sep`) are the prototype's wherever they stand,
+//! and are drawn here for the canvas's controls too, each in its own [`ButtonStyle`]: the
+//! navigation bar's (`.nav-bar .ab-btn`, `.nav-bar .ab-sep`) and the ViewCube's Home and ▾
+//! (`crate::viewport`). So are the drop-down menus they open ([`menu`], [`as_menu`]) and
+//! their tooltips ([`tooltip`]).
+//!
 //! On macOS the window's title bar is the app bar, as Rerun's is: the window's content runs
 //! under the title bar ([`TITLE_BAR_IS_APP_BAR`]), the bar leaves room at its left for the
 //! window's buttons ([`inset`]), and its empty space moves the window ([`move_window`]).
@@ -70,36 +76,36 @@ pub(crate) fn border(ui: &Ui, rect: Rect) {
     );
 }
 
-/// Where a bar button (`.ab-btn`) stands: its height and least width, and its own fill, if
-/// its place gives it one.
+/// A bar button's (`.ab-btn`'s) style where it stands: its height and least width, and its
+/// own fill, if where it stands gives it one.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Place {
+pub(crate) struct ButtonStyle {
     pub height: f32,
     pub least_width: f32,
-    /// A fill at rest and hovered alike, which its place sets inline over `.ab-btn`'s own
-    /// (`:hover`'s and `.on`'s): the ViewCube's Home and ▾.
+    /// A fill at rest and hovered alike, which where it stands sets inline over `.ab-btn`'s
+    /// own (`:hover`'s and `.on`'s): the ViewCube's Home and ▾.
     pub fill: Option<Color32>,
 }
 
-impl Place {
+impl ButtonStyle {
     /// The app bar's (`.ab-btn`: `--btn`, 22, each way).
-    pub(crate) const APP_BAR: Place = Place {
+    pub(crate) const APP_BAR: ButtonStyle = ButtonStyle {
         height: theme::APP_BAR_BUTTON_SIZE,
         least_width: theme::APP_BAR_BUTTON_SIZE,
         fill: None,
     };
 
     /// The navigation bar's (`.nav-bar .ab-btn`: 24 high, 26 wide at least).
-    pub(crate) const NAVIGATION_BAR: Place = Place {
+    pub(crate) const NAVIGATION_BAR: ButtonStyle = ButtonStyle {
         height: theme::NAVIGATION_BAR_BUTTON_HEIGHT,
         least_width: theme::NAVIGATION_BAR_BUTTON_WIDTH,
         fill: None,
     };
 
     /// The ViewCube's Home and ▾ (the app bar's size, Gray.200 at rest and hovered).
-    pub(crate) const VIEW_CUBE: Place = Place {
+    pub(crate) const VIEW_CUBE: ButtonStyle = ButtonStyle {
         fill: Some(theme::VIEW_CUBE_BUTTON_BG),
-        ..Place::APP_BAR
+        ..ButtonStyle::APP_BAR
     };
 
     /// How wide a button is here whose content is `content` wide: 5 of padding at each side
@@ -127,19 +133,19 @@ pub(crate) fn button(
     enabled: bool,
     on: Option<bool>,
 ) -> Response {
-    button_at(ui, &[icon], text, label, enabled, on, Place::APP_BAR)
+    styled_button(ui, &[icon], text, label, enabled, on, ButtonStyle::APP_BAR)
 }
 
-/// A bar button (`.ab-btn`) at `place`: `icons` in a row, 4 apart, and `text` after them if
+/// A bar button (`.ab-btn`) in `style`: `icons` in a row, 4 apart, and `text` after them if
 /// given, labelled `label`; `on` for one that shows a state. Off unless `enabled`.
-pub(crate) fn button_at(
+pub(crate) fn styled_button(
     ui: &mut Ui,
     icons: &[Icon],
     text: Option<&str>,
     label: &str,
     enabled: bool,
     on: Option<bool>,
-    place: Place,
+    style: ButtonStyle,
 ) -> Response {
     // Painted at the bar's opacity, not faded further when off: `.ab-btn:disabled` is
     // Gray.400 itself.
@@ -154,7 +160,7 @@ pub(crate) fn button_at(
             )
         });
         let content = content_width(icons.len(), galley.as_ref().map(|g| g.size().x));
-        let size = Vec2::new(place.width(content), place.height);
+        let size = Vec2::new(style.width(content), style.height);
         let (rect, response) = ui.allocate_exact_size(size, Sense::click());
         let enabled = ui.is_enabled();
         response.widget_info(|| match on {
@@ -176,7 +182,7 @@ pub(crate) fn button_at(
             (None, theme::TEXT_DEFAULT)
         };
         // A fill set inline outweighs every rule's.
-        if let Some(fill) = place.fill.or(fill) {
+        if let Some(fill) = style.fill.or(fill) {
             ui.painter()
                 .rect_filled(rect, theme::SMALL_CORNER_RADIUS, fill);
         }

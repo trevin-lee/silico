@@ -1457,12 +1457,15 @@ impl<P: Clients + 'static> App<P> {
         } else {
             stop
         };
-        // Esc with a navigation bar's tool chosen: back to Select, the left drag the
-        // selection's again, and nothing further down Esc's chain done (the prototype's
-        // `escChain`, its first; the Orbit button's tooltip says so); but not while what
-        // takes Esc before that chain is open (`Tab::holds_escape`).
-        let stop = if stop && tab.view.tool.is_some() && !tab.holds_escape() {
-            tab.view.tool = None;
+        // Esc with a navigation bar's tool chosen: first what takes Esc before the
+        // prototype's `escChain` takes it, if one is open (`Tab::escape_held`: a held drag,
+        // sketch mode's menu, the over-define prompt, the Modify box); or else the tool is
+        // let go, back to Select (the chain's first; the Orbit button's tooltip says so),
+        // before a dialog's Esc and the rest of the chain. Either way, nothing more.
+        let stop = if stop && tab.view.tool.is_some() {
+            if !tab.escape_held(&self.sessions) {
+                tab.view.tool = None;
+            }
             false
         } else {
             stop

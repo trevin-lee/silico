@@ -2292,6 +2292,13 @@ struct CubeEdge {
     faces: [[f64; 3]; 2],
 }
 
+impl CubeEdge {
+    /// Its middle: the sum of the two faces' normals, its one 0 along the edge.
+    fn middle(self) -> [f64; 3] {
+        std::array::from_fn(|k| self.faces[0][k] + self.faces[1][k])
+    }
+}
+
 /// The cube's twelve edges: for each axis, the four along it, from −1 to 1 on it.
 fn cube_edges() -> impl Iterator<Item = CubeEdge> {
     (0..3).flat_map(|k| {
@@ -2482,9 +2489,8 @@ fn words(view: NamedView) -> String {
 
 /// An edge's words, as the ViewCube labels it: the two faces it joins, named in the order a
 /// corner's are (`top_front_right`: top or bottom, then front or back, then left or right),
-/// so "Top front", "Front right", "Top right". `middle` is the edge's middle, the sum of
-/// the two faces' normals.
-fn edge_words(middle: [f64; 3]) -> String {
+/// so "Top front", "Front right", "Top right".
+fn edge_words(edge: CubeEdge) -> String {
     let side = |c: f64, less: &'static str, more: &'static str| {
         if c > 0.0 {
             Some(more)
@@ -2494,7 +2500,7 @@ fn edge_words(middle: [f64; 3]) -> String {
             None
         }
     };
-    let [x, y, z] = middle;
+    let [x, y, z] = edge.middle();
     let named: Vec<&str> = [
         side(z, "bottom", "top"),
         side(y, "front", "back"),
@@ -2507,10 +2513,10 @@ fn edge_words(middle: [f64; 3]) -> String {
 }
 
 /// An edge's view (the prototype's cube clicked near an edge, viewport.js's `mouseup`: the
-/// view from the direction its region names, Z up): from `middle`, the edge's middle, made
-/// a unit, up as the named views have it ([`navigate::up_across`]), and fitted as they are.
-fn edge_view(middle: [f64; 3]) -> ViewAsk {
-    let toward = middle.map(|c| c * std::f64::consts::FRAC_1_SQRT_2);
+/// view from the direction its region names, Z up): from its middle made a unit, up as the
+/// named views have it ([`navigate::up_across`]), and fitted as they are.
+fn edge_view(edge: CubeEdge) -> ViewAsk {
+    let toward = edge.middle().map(|c| c * std::f64::consts::FRAC_1_SQRT_2);
     ViewAsk::LookAt {
         toward,
         up: navigate::up_across(toward),
@@ -2535,48 +2541,6 @@ pub const DISPLAY_SETTINGS: &str = "Display settings";
 /// The one visual style the renderer draws (the prototype's display menu's first, its
 /// others left out until the renderer draws them).
 pub const SHADED_WITH_VISIBLE_EDGES: &str = "Shaded with visible edges";
-
-/// A line of a menu over the canvas: a head (`.mh`), a separator (`.msep`), or an item and
-/// what it asks when it's clicked.
-enum Line<'a, A> {
-    Head(&'a str),
-    Separator,
-    Item(menu::Item<'a>, A),
-}
-
-/// `lines` drawn as every menu's are (`crate::menu`), each as wide as the widest line, in a
-/// menu for a screen reader labelled `label`: what the item clicked asks, the menu closed.
-fn menu_lines<A: Copy>(ui: &mut Ui, label: &str, lines: &[Line<'_, A>]) -> Option<A> {
-    menu::node(ui, label, |ui| {
-        ui.spacing_mut().item_spacing = Vec2::ZERO;
-        let heads = lines
-            .iter()
-            .filter_map(|line| match line {
-                Line::Head(text) => Some(menu::head_width(ui, text)),
-                _ => None,
-            })
-            .fold(0.0, f32::max);
-        let items = lines.iter().filter_map(|line| match line {
-            Line::Item(item, _) => Some(item),
-            _ => None,
-        });
-        let width = menu::width(ui, None, items, heads);
-        let mut asked = None;
-        for line in lines {
-            match line {
-                Line::Head(text) => menu::head(ui, text, width),
-                Line::Separator => menu::separator(ui, width),
-                Line::Item(item, act) => {
-                    if menu::item(ui, item, width).clicked() {
-                        asked = Some(*act);
-                        ui.close();
-                    }
-                }
-            }
-        }
-        asked
-    })
-}
 
 /// What the ViewCube's menu asks: a view, or the projection.
 #[derive(Debug, Clone, Copy)]
@@ -2609,14 +2573,14 @@ fn cube_menu(ui: &mut Ui, perspective: bool) -> Option<CubeAct> {
             lit: false,
             checked: None,
         };
-        lines.push(Line::Item(item, CubeAct::View(*ask)));
+        lines.push(menu::Line::Item(item, CubeAct::View(*ask)));
         if home {
-            lines.push(Line::Separator);
-            lines.push(Line::Head("Views"));
+            lines.push(menu::Line::Separator);
+            lines.push(menu::Line::Head("Views"));
         }
     }
-    lines.push(Line::Separator);
-    lines.push(Line::Head("Camera"));
+    lines.push(menu::Line::Separator);
+    lines.push(menu::Line::Head("Camera"));
     for (word, wanted) in [("Orthographic", false), ("Perspective", true)] {
         let item = menu::Item {
             icon: None,
@@ -2628,9 +2592,9 @@ fn cube_menu(ui: &mut Ui, perspective: bool) -> Option<CubeAct> {
             lit: false,
             checked: Some(Checked::Choice(perspective == wanted)),
         };
-        lines.push(Line::Item(item, CubeAct::Perspective(wanted)));
+        lines.push(menu::Line::Item(item, CubeAct::Perspective(wanted)));
     }
-    menu_lines(ui, CUBE_MENU, &lines)
+    menu::lines(ui, CUBE_MENU, &lines)
 }
 
 /// What the display settings' menu asks: the visual style (the one there is), the
@@ -2659,14 +2623,14 @@ fn display_menu(ui: &mut Ui, perspective: bool, grid: bool) -> Option<DisplayAct
         checked: Some(checked),
     };
     let lines = [
-        Line::Head("Visual style"),
-        Line::Item(
+        menu::Line::Head("Visual style"),
+        menu::Line::Item(
             item(None, SHADED_WITH_VISIBLE_EDGES, Checked::Choice(true)),
             DisplayAct::Style,
         ),
-        Line::Separator,
-        Line::Head("Camera"),
-        Line::Item(
+        menu::Line::Separator,
+        menu::Line::Head("Camera"),
+        menu::Line::Item(
             item(
                 Some(Icon::Ortho),
                 "Orthographic",
@@ -2674,7 +2638,7 @@ fn display_menu(ui: &mut Ui, perspective: bool, grid: bool) -> Option<DisplayAct
             ),
             DisplayAct::Perspective(false),
         ),
-        Line::Item(
+        menu::Line::Item(
             item(
                 Some(Icon::Persp),
                 "Perspective",
@@ -2682,13 +2646,13 @@ fn display_menu(ui: &mut Ui, perspective: bool, grid: bool) -> Option<DisplayAct
             ),
             DisplayAct::Perspective(true),
         ),
-        Line::Separator,
-        Line::Item(
+        menu::Line::Separator,
+        menu::Line::Item(
             item(Some(Icon::Grid), "Ground grid", Checked::Toggle(grid)),
             DisplayAct::Grid,
         ),
     ];
-    menu_lines(ui, DISPLAY_SETTINGS, &lines)
+    menu::lines(ui, DISPLAY_SETTINGS, &lines)
 }
 
 /// Where the ViewCube is drawn in `viewport`: its margin in from the canvas's top and right.
@@ -2706,8 +2670,8 @@ pub fn view_cube_rect(viewport: Rect) -> Rect {
 /// (one icon each) in a column at its left, its right [`theme::VIEW_CUBE_BUTTONS_GAP`] left
 /// of the cube, Home's top level with the cube's, the ▾ under it.
 fn view_cube_buttons(cube: Rect) -> [Rect; 2] {
-    let place = bar::Place::VIEW_CUBE;
-    let size = Vec2::new(place.width(bar::content_width(1, None)), place.height);
+    let style = bar::ButtonStyle::VIEW_CUBE;
+    let size = Vec2::new(style.width(bar::content_width(1, None)), style.height);
     let home = Rect::from_min_size(
         egui::pos2(
             cube.left() - theme::VIEW_CUBE_BUTTONS_GAP - size.x,
@@ -2821,14 +2785,14 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
         // Each edge whose view faces it more than a tenth, as a corner's, clickable at its
         // middle (before the corners, so a corner keeps its own square where they meet).
         for edge in cube_edges() {
-            let middle: [f64; 3] = std::array::from_fn(|k| edge.faces[0][k] + edge.faces[1][k]);
+            let middle = edge.middle();
             if facing(middle) * std::f64::consts::FRAC_1_SQRT_2 <= CUBE_CORNER_SHOWN {
                 continue;
             }
             let part = Rect::from_center_size(at(middle), Vec2::splat(CUBE_CORNER_SIDE));
-            let response = cube_part(ui, part, &edge_words(middle));
+            let response = cube_part(ui, part, &edge_words(edge));
             if response.clicked() {
-                chosen = Some(edge_view(middle));
+                chosen = Some(edge_view(edge));
             }
             parts.push(response);
         }
@@ -2851,16 +2815,16 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
         }
         // Home view and the ▾, in their column at its left.
         let ctx = ui.ctx().clone();
-        let place = bar::Place::VIEW_CUBE;
+        let style = bar::ButtonStyle::VIEW_CUBE;
         let label = Command::Home.label();
         let home = ui.put(home, |ui: &mut Ui| {
-            bar::button_at(ui, &[Icon::Home], None, label, true, None, place)
+            bar::styled_button(ui, &[Icon::Home], None, label, true, None, style)
         });
         if bar::tooltip(home, label, Command::Home.shown(&ctx), None).clicked() {
             chosen = Some(ViewAsk::Named(HOME));
         }
         let options = ui.put(options, |ui: &mut Ui| {
-            bar::button_at(ui, &[Icon::Down], None, CUBE_MENU, true, None, place)
+            bar::styled_button(ui, &[Icon::Down], None, CUBE_MENU, true, None, style)
         });
         ctx.accesskit_node_builder(options.id, |node| {
             node.set_has_popup(egui::accesskit::HasPopup::Menu);
@@ -2985,21 +2949,21 @@ fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2
             ui.scope_builder(row, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(theme::NAVIGATION_BAR_GAP, 0.0);
                 let ctx = ui.ctx().clone();
-                let place = bar::Place::NAVIGATION_BAR;
+                let style = bar::ButtonStyle::NAVIGATION_BAR;
                 for (tool, icon, word, command, said) in TOOLS {
                     let on = view.tool == Some(tool);
-                    let button = bar::button_at(ui, &[icon], None, word, true, Some(on), place);
+                    let button = bar::styled_button(ui, &[icon], None, word, true, Some(on), style);
                     if bar::tooltip(button, word, command.shown(&ctx), said).clicked() {
                         view.tool = (!on).then_some(tool);
                     }
                 }
                 let word = Command::Fit.label();
-                let fit = bar::button_at(ui, &[Icon::Fit], None, word, true, None, place);
+                let fit = bar::styled_button(ui, &[Icon::Fit], None, word, true, None, style);
                 if bar::tooltip(fit, word, Command::Fit.shown(&ctx), None).clicked() {
                     view.fit(size_px);
                 }
                 let word = Command::LookAt.label();
-                let look = bar::button_at(ui, &[Icon::LookAt], None, word, true, None, place);
+                let look = bar::styled_button(ui, &[Icon::LookAt], None, word, true, None, style);
                 let said = Some("Square to the selected face");
                 look_at = bar::tooltip(look, word, Command::LookAt.shown(&ctx), said).clicked();
                 bar::separator_of(
@@ -3008,7 +2972,8 @@ fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2
                     theme::NAVIGATION_BAR_SEPARATOR_MARGIN,
                 );
                 let icons = [Icon::Display, Icon::Down];
-                let display = bar::button_at(ui, &icons, None, DISPLAY_SETTINGS, true, None, place);
+                let display =
+                    bar::styled_button(ui, &icons, None, DISPLAY_SETTINGS, true, None, style);
                 ctx.accesskit_node_builder(display.id, |node| {
                     node.set_has_popup(egui::accesskit::HasPopup::Menu);
                 });
@@ -3029,7 +2994,7 @@ fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2
                 // The canvas was painted before the bar: the next frame, which egui draws
                 // after any frame with input, shows the change.
                 let shown = Some(view.grid);
-                let grid = bar::button_at(ui, &[Icon::Grid], None, "Grid", true, shown, place);
+                let grid = bar::styled_button(ui, &[Icon::Grid], None, "Grid", true, shown, style);
                 if bar::tooltip(grid, "Grid", None, None).clicked() {
                     view.grid = !view.grid;
                 }
@@ -3405,7 +3370,7 @@ mod tests {
         // 792 to 900 − 16 = 884 across, 50 + 16 = 66 to 66 + 92 = 158 down. Home view and the
         // ▾ (app.js: `right: 16 + 92 + 4`, `top: 16px`, a column 2 apart), each a bar button
         // of one 14-point icon, 5 of padding each side (24 wide, over `--btn`'s 22) and 22
-        // high: from 792 − 4 − 24 = 768 to 788 across; Home 66 to 88 down, the ▾ 90 to 112.
+        // high: from 792 − 4 − 24 = 764 to 788 across; Home 66 to 88 down, the ▾ 90 to 112.
         let viewport = Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(900.0, 650.0));
         let cube = view_cube_rect(viewport);
         assert_eq!(
@@ -3439,9 +3404,7 @@ mod tests {
         // by hand: (0, −1, 1)/√2 for the top front, up (0, 1, 1)/√2 (+z made square to it);
         // (1, −1, 0)/√2 for the front right, up +z.
         let r = std::f64::consts::FRAC_1_SQRT_2;
-        let mut named: Vec<String> = cube_edges()
-            .map(|edge| edge_words(std::array::from_fn(|k| edge.faces[0][k] + edge.faces[1][k])))
-            .collect();
+        let mut named: Vec<String> = cube_edges().map(edge_words).collect();
         named.sort_unstable();
         assert_eq!(
             named,
@@ -3466,10 +3429,15 @@ mod tests {
             ([1.0, -1.0, 0.0], [r, -r, 0.0], [0.0, 0.0, 1.0]),
             ([-1.0, 0.0, -1.0], [-r, 0.0, -r], [-r, 0.0, r]),
         ] {
+            // The edge of that middle: the one there is.
+            let mut found = cube_edges().filter(|edge| edge.middle() == middle);
+            let (Some(edge), None) = (found.next(), found.next()) else {
+                panic!("{middle:?}: no one edge there");
+            };
             let ViewAsk::LookAt {
                 toward: got,
                 up: got_up,
-            } = edge_view(middle)
+            } = edge_view(edge)
             else {
                 panic!("{middle:?}: not a look");
             };

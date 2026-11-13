@@ -346,6 +346,49 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
     }
 }
 
+/// A menu's line: a head (`.mh`), a separator (`.msep`), or an item and what it asks when
+/// it's clicked.
+pub enum Line<'a, A> {
+    Head(&'a str),
+    Separator,
+    Item(Item<'a>, A),
+}
+
+/// `lines` drawn as every menu's are, each as wide as the widest line, in a menu for a screen
+/// reader labelled `label` ([`node`]): what the item clicked asks, the menu closed (the
+/// display settings' and the ViewCube's menus).
+pub fn lines<A: Copy>(ui: &mut Ui, label: &str, lines: &[Line<'_, A>]) -> Option<A> {
+    node(ui, label, |ui| {
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
+        let heads = lines
+            .iter()
+            .filter_map(|line| match line {
+                Line::Head(text) => Some(head_width(ui, text)),
+                _ => None,
+            })
+            .fold(0.0, f32::max);
+        let items = lines.iter().filter_map(|line| match line {
+            Line::Item(item, _) => Some(item),
+            _ => None,
+        });
+        let width = width(ui, None, items, heads);
+        let mut asked = None;
+        for line in lines {
+            match line {
+                Line::Head(text) => head(ui, text, width),
+                Line::Separator => separator(ui, width),
+                Line::Item(line, act) => {
+                    if item(ui, line, width).clicked() {
+                        asked = Some(*act);
+                        ui.close();
+                    }
+                }
+            }
+        }
+        asked
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
