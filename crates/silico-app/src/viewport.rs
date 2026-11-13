@@ -4514,6 +4514,14 @@ mod tests {
                 assert_eq!(normal[a], start[a], "{normal:?} at {start:?}");
             }
             assert!(seen.insert((start.map(f64::to_bits), end.map(f64::to_bits))));
+            // Its middle the midpoint of its ends: their mean, by hand, on the axis it runs
+            // along 0 and on the others its faces' ±1.
+            let edge = CubeEdge {
+                ends: [start, end],
+                faces: [one, other],
+            };
+            let midpoint: [f64; 3] = std::array::from_fn(|a| (start[a] + end[a]) / 2.0);
+            assert_eq!(edge.middle(), midpoint, "{start:?} {end:?}");
         }
         assert_eq!(seen.len(), 12);
         assert_eq!(along, [4, 4, 4]);

@@ -459,10 +459,10 @@ mod tests {
     }
 
     #[test]
-    fn a_menus_lines_are_its_heads_width_where_a_head_is_the_widest() {
+    fn a_menu_is_its_heads_width_where_a_head_is_its_widest_line() {
         // `.menu` is as wide as its widest line, and at least its `min-width: 200px` less
         // its border and padding, 200 − 2·(4 + 1) = 190. A head of 40 W's is wider than that
-        // and than the one short item, Fit, so every line is the head's width.
+        // and than the one short item, Fit, so the menu is the head's width.
         assert_eq!(least_width(), 190.0);
         let words = "W".repeat(40);
         let drawn = [Line::Head(&words), Line::Item(marked("Fit", None), ())];
@@ -475,9 +475,9 @@ mod tests {
     }
 
     #[test]
-    fn a_menus_lines_are_its_items_width_where_an_item_is_the_widest() {
+    fn a_menu_is_its_items_width_where_an_item_is_its_widest_line() {
         // As above, the widest line an item of 30 W's, wider than the least 190 and than
-        // the short head: every line is the item's width.
+        // the short head: the menu is the item's width.
         let words = "W".repeat(30);
         let drawn = [Line::Head("Short"), Line::Item(marked(&words, None), ())];
         let (width, heads, items) = laid_out(&drawn);
@@ -486,5 +486,59 @@ mod tests {
             "{heads:?} {items:?}"
         );
         assert!((width - items[0]).abs() <= 1.0 / 16.0, "{width} {items:?}");
+    }
+
+    #[test]
+    fn every_line_of_a_menu_is_laid_out_as_wide_as_its_widest_line() {
+        // `.menu .mi { width: 100% }`, and `.mh` and `.msep` the same: every line as wide as
+        // the menu, and the menu as wide as its widest line. Head Short, item Fit, a
+        // separator, a head of 40 W's, item Home: the W's head, laid out alone, is the
+        // widest, wider than the least 190, so the menu is its width; and SHORT, the W's,
+        // Fit, and Home each start at the menu's left and are as wide.
+        use egui_kittest::kittest::Queryable;
+        let words = "W".repeat(40);
+        let drawn = [
+            Line::Head("Short"),
+            Line::Item(marked("Fit", None), ()),
+            Line::Separator,
+            Line::Head(&words),
+            Line::Item(marked("Home", None), ()),
+        ];
+        let widest = std::cell::Cell::new(0.0);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size((800.0, 600.0))
+            .build_ui(|ui| {
+                widest.set(head_width(ui, &words));
+                lines(ui, "Test", &drawn);
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        let menu = h
+            .get_by_role_and_label(egui::accesskit::Role::Menu, "Test")
+            .rect();
+        let near = |a: f32, b: f32| (a - b).abs() <= 1.0 / 16.0;
+        assert!(widest.get() > least_width(), "{}", widest.get());
+        assert!(
+            near(menu.width(), widest.get()),
+            "{menu:?} {}",
+            widest.get()
+        );
+        let capitals = words.to_uppercase();
+        let shown = [
+            h.get_by_value("SHORT").rect(),
+            h.get_by_value(&capitals).rect(),
+            h.get_by_label("Fit").rect(),
+            h.get_by_label("Home").rect(),
+        ];
+        for (line, rect) in ["SHORT", "the W's", "Fit", "Home"].into_iter().zip(shown) {
+            assert!(
+                near(rect.left(), menu.left()),
+                "{line}: {rect:?} in {menu:?}"
+            );
+            assert!(
+                near(rect.width(), menu.width()),
+                "{line}: {rect:?} in {menu:?}"
+            );
+        }
     }
 }
