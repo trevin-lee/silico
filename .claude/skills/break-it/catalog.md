@@ -401,3 +401,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Range limits a check sets once for every image size (a field of view down to 0.001°, a view height down to 1e-5 of the reach): f32's position and depth are coarse by a fixed fraction of the scene, so at 2048 to 4096 rows hidden faces show through their neighbours along shared edges; draw at the limit at the tallest size (the render's limits are by the image's size now: at the limit at the tallest size, passes)
 - A perspective near plane fitted to the farthest point in the scene (a millionth of the reach): a second body 1 km off clips a close look at a small part whole (the render cuts what it draws to its pyramid now, its near plane a constant half a nanometre: at the limit at the tallest size, passes)
 - A long planar face meshed as two triangles (as OCCT meshes a plane), seen close from before its middle at a narrow angle (318 m either way at 48 mm, 0.5°): its corners are ~1e8 pixels off the image and lavapipe's clipping drops half the face; the same face cut into 10,000 strips is drawn whole
+
+## The app
+
+- Names a person or a file gives, shown on one line in a horizontal egui layout (a tooltip's title row): egui's wrap mode there is Extend, so a 400-character name runs 4,800 points wide across a 1280-point window; give every label that shows a name 400 W's, and a name holding a line break (the prototype's HTML collapses it to a space)
+- What a client keeps of its own steps beside the session's state (the app's undo step names, its count of unsaved edits): another client of the same session moves the state under it, and it names a step it didn't take or counts one undone; hold the session's queue and send another client's undo ahead of the client's own
