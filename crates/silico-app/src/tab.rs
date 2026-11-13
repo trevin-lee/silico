@@ -11256,6 +11256,50 @@ mod tests {
         );
     }
 
+    /// BLOCK open and listed (revision 1); then `change` asked of the tab and applied by the
+    /// session, its revision read from `status` (the session's state now the one it made) but
+    /// its answer not taken; and the opened revision's listing taken late, as a timeline read
+    /// asked before it answers then. What Undo names once every answer is taken.
+    fn named_after_a_late_listing(change: impl FnOnce(&mut Tab, &FakeSessions)) -> Option<String> {
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        let listed = tab.timeline.clone().unwrap();
+        assert_eq!(listed.revision, Revision::OPENED);
+        change(&mut tab, &sessions);
+        until("the change applied", &|| {
+            sessions.status(&tab.id).session.unwrap().revision != Revision::OPENED
+        });
+        status_now(&mut tab, &sessions);
+        tab.took_timeline(listed);
+        undo_named(&mut tab, &sessions)
+    }
+
+    #[test]
+    fn a_timeline_taken_while_a_change_waits_keeps_the_names_of_the_state_it_was_sent_from() {
+        // Round 4's T4-3: a suppression of the pin under way when the late listing is taken:
+        // the state it was sent from keeps its names, and its step says "Suppress Pin".
+        let named = named_after_a_late_listing(|tab, sessions| {
+            tab.suppress_feature(sessions, FeatureId::new("a91cw0de").unwrap(), true);
+        });
+        assert_eq!(named.as_deref(), Some("Suppress Pin"));
+    }
+
+    #[test]
+    fn a_timeline_taken_while_an_edit_is_in_flight_keeps_the_names_of_the_state_it_was_sent_from() {
+        // Round 4's T4-3, its twin for the edit in flight: the pin's radius edited, "Edit Pin".
+        let named = named_after_a_late_listing(|tab, sessions| {
+            tab.edit(
+                sessions,
+                Edit {
+                    feature: FeatureId::new("a91cw0de").unwrap(),
+                    field: "radius".to_owned(),
+                    value: silico_core::document::json::read(b"0.75").unwrap(),
+                },
+            );
+        });
+        assert_eq!(named.as_deref(), Some("Edit Pin"));
+    }
+
     #[test]
     fn what_waits_after_a_rename_decides_the_name_the_next_replaces() {
         // Round 2's A: PinA, listed; PinB sent; then, queued behind it, a revert, a Reload
