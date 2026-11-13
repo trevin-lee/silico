@@ -19,7 +19,7 @@ use egui_kittest::kittest::Queryable;
 use silico_app::App;
 use silico_app::navigate;
 use silico_app::renderer::{Change, FrameData, Picking, Present, ViewRenderer};
-use silico_app::viewport::read_size;
+use silico_app::viewport::{Navigation, read_size};
 use silico_core::cache::Cache;
 use silico_core::command::Sessions;
 use silico_core::document::FeatureId;
@@ -1966,24 +1966,13 @@ fn each_bar_and_cube_button_clicked_while_the_rebuild_is_held_waits_on_nothing()
             assert_eq!(said.as_deref(), Some(silico_app::tab::LOOK_AT_NO_FACE));
         }
     }
-    assert_eq!(view(&h).tool, Some(navigate_tool("Zoom")));
+    assert_eq!(view(&h).tool, Some(Navigation::Zoom));
     assert!(!view(&h).grid);
     hold.release();
     meshes_settled(&mut h);
     assert!(h.state().tabs()[0].published.is_some());
     assert!(!view(&h).bodies().is_empty());
     assert_eq!(never_waits::waits(), 0);
-}
-
-/// The navigation bar's tool named `word`.
-fn navigate_tool(word: &str) -> silico_app::viewport::Navigation {
-    use silico_app::viewport::Navigation;
-    match word {
-        "Orbit" => Navigation::Orbit,
-        "Pan" => Navigation::Pan,
-        "Zoom" => Navigation::Zoom,
-        _ => panic!("no tool {word}"),
-    }
 }
 
 #[test]
@@ -2022,7 +2011,7 @@ fn in_windows_too_small_for_the_bar_its_buttons_keep_finite_bounds_and_still_ans
             step(&mut h);
         }
         assert!(!view(&h).grid, "{size:?}");
-        assert_eq!(view(&h).tool, Some(navigate_tool("Orbit")), "{size:?}");
+        assert_eq!(view(&h).tool, Some(Navigation::Orbit), "{size:?}");
         for (role, holder, label) in BAR_AND_CUBE_BUTTONS {
             button(&h, role, holder, label).click_accesskit();
             step(&mut h);
@@ -2055,7 +2044,7 @@ fn the_bars_and_the_cubes_toggles_clicked_nine_times_a_frame_apart_end_as_one_cl
     nine(&mut h, Toolbar, "Navigation bar", "Grid");
     assert!(!view(&h).grid);
     nine(&mut h, Toolbar, "Navigation bar", "Orbit");
-    assert_eq!(view(&h).tool, Some(navigate_tool("Orbit")));
+    assert_eq!(view(&h).tool, Some(Navigation::Orbit));
     nine(&mut h, Group, "ViewCube", "View cube options");
     assert!(
         h.query_by_role_and_label(Menu, "View cube options")
@@ -2072,7 +2061,7 @@ fn the_bars_and_the_cubes_toggles_clicked_nine_times_a_frame_apart_end_as_one_cl
     );
     // The camera through it all one a frame draws, and Orbit still chosen.
     assert!(view(&h).camera().frame().is_ok());
-    assert_eq!(view(&h).tool, Some(navigate_tool("Orbit")));
+    assert_eq!(view(&h).tool, Some(Navigation::Orbit));
     assert_eq!(never_waits::waits(), 0);
 }
 

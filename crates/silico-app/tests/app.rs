@@ -16363,17 +16363,23 @@ fn the_app_bar_holds_home_file_save_undo_and_redo_then_the_tabs_as_the_prototype
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// The texts the tooltip titled `title` draws in its title's row, after the title, left to
-/// right: its key caps.
+/// The key caps the tooltip titled `title` draws after its title, left to right: the texts
+/// painted after the title's own (the tooltip is painted over everything else) on its row,
+/// so no other text on that row of the window (a path in the properties) is taken for one.
 fn tooltip_caps(h: &AppHarness, title: &str) -> Vec<String> {
-    let row = h.get_by_role_and_label(Role::Label, title).rect();
-    let mut caps: Vec<(f32, String)> = painted(h)
-        .into_iter()
+    let shapes = painted(h);
+    let is_title = |shape: &eframe::egui::Shape| matches!(shape, eframe::egui::Shape::Text(t) if t.galley.text() == title);
+    let Some(at) = shapes.iter().rposition(is_title) else {
+        return Vec::new();
+    };
+    let row = eframe::egui::Shape::visual_bounding_rect(&shapes[at]);
+    let mut caps: Vec<(f32, String)> = shapes[at + 1..]
+        .iter()
         .filter_map(|shape| match shape {
             eframe::egui::Shape::Text(text) => {
-                let at = eframe::egui::Shape::Text(text.clone()).visual_bounding_rect();
-                (at.left() >= row.right() && row.y_range().contains(at.center().y))
-                    .then(|| (at.left(), text.galley.text().to_owned()))
+                let rect = shape.visual_bounding_rect();
+                (rect.left() >= row.right() && row.y_range().contains(rect.center().y))
+                    .then(|| (rect.left(), text.galley.text().to_owned()))
             }
             _ => None,
         })
@@ -42311,30 +42317,6 @@ fn click_on_bar(h: &mut AppHarness, word: &str) {
     step(h);
 }
 
-/// The key caps the tooltip titled `title` draws after its title, left to right: the text
-/// painted after the title's own (the tooltip is painted over everything else) on its row.
-fn tip_caps(h: &AppHarness, title: &str) -> Vec<String> {
-    let shapes = painted(h);
-    let is_title = |shape: &eframe::egui::Shape| matches!(shape, eframe::egui::Shape::Text(t) if t.galley.text() == title);
-    let Some(at) = shapes.iter().rposition(is_title) else {
-        return Vec::new();
-    };
-    let row = eframe::egui::Shape::visual_bounding_rect(&shapes[at]);
-    let mut caps: Vec<(f32, String)> = shapes[at + 1..]
-        .iter()
-        .filter_map(|shape| match shape {
-            eframe::egui::Shape::Text(text) => {
-                let rect = shape.visual_bounding_rect();
-                (rect.left() >= row.right() && row.y_range().contains(rect.center().y))
-                    .then(|| (rect.left(), text.galley.text().to_owned()))
-            }
-            _ => None,
-        })
-        .collect();
-    caps.sort_by(|a, b| a.0.total_cmp(&b.0));
-    caps.into_iter().map(|(_, cap)| cap).collect()
-}
-
 /// The ViewCube's ▾ clicked, and frames drawn for its menu.
 fn cube_options(h: &mut AppHarness) {
     h.get_by_role_and_label(Role::Group, "ViewCube")
@@ -42482,7 +42464,7 @@ fn the_navigation_bars_and_the_view_cubes_buttons_have_the_prototypes_tooltips()
             });
             // Drawn from the frame after it's laid out (egui sizes a new popup unseen).
             step(&mut h);
-            assert_eq!(tip_caps(&h, title), caps[at], "{os:?} {title}");
+            assert_eq!(tooltip_caps(&h, title), caps[at], "{os:?} {title}");
             let shown = label_texts(h.query_all_by_role(Role::Label));
             let title_at = shown.iter().position(|text| text == title).unwrap();
             let after: Vec<&str> = shown[title_at + 1..].iter().map(String::as_str).collect();
@@ -42916,11 +42898,12 @@ fn a_click_on_a_view_cube_edge_looks_from_between_its_two_faces() {
 }
 
 #[test]
-fn esc_lets_the_navigation_bars_tool_go_before_anything_else_esc_does() {
-    // The prototype's `escChain`, its first: with Orbit chosen and the block's top selected,
-    // Esc lets Orbit go (back to Select, as its tooltip says) and leaves the selection; Esc
-    // again clears the selection. With a menu open over it, Esc closes the menu alone, and
-    // the tool stays until the next.
+fn esc_lets_the_navigation_bars_tool_go_before_the_selection_and_after_an_open_menu() {
+    // The prototype's `escChain`, whose first step the tool is: with Orbit chosen and the
+    // block's top selected, Esc lets Orbit go (back to Select, as its tooltip says) and
+    // leaves the selection; Esc again clears the selection. A menu open over it takes Esc
+    // before the chain (the prototype's `keydown`): Esc closes the menu alone, and the tool
+    // stays until the next.
     use eframe::egui::Key;
     let f = fixture();
     let mut h = a_measured_box(&f);
@@ -42982,7 +42965,7 @@ fn esc_with_sketch_modes_canvas_menu_open_closes_the_menu_before_it_lets_the_bar
 #[test]
 fn esc_with_the_modify_box_the_over_define_prompt_or_a_held_drag_takes_them_before_the_bars_tool() {
     // As the canvas's menu (above), each takes Esc before the prototype's `escChain` gives
-    // it to the navigation bar's tool (`Tab::holds_escape`), Pan chosen throughout: a drag
+    // it to the navigation bar's tool (`Tab::escape_held`), Pan chosen throughout: a drag
     // of the free far corner ends from its begin; the bottom's dimension's Modify box
     // closes, its value as it was; the over-define prompt (the bottom set to 99, which
     // repeats the others) is cancelled, the edit undone. Pan stays through each; the Esc
@@ -43049,5 +43032,301 @@ fn esc_with_the_modify_box_the_over_define_prompt_or_a_held_drag_takes_them_befo
     step(&mut h);
     assert_eq!(view(&h).tool, None);
     assert!(sketch_mode(&h).is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_left_press_in_the_navigation_bars_right_or_bottom_padding_is_not_handed_on() {
+    // The bar's whole place is its own, to its border all round (its `rect` taken whole, not
+    // only its buttons' row, which egui would sense from the scope's top left to the row's
+    // bottom right): a press 2 points right of Grid, in the right padding (Grid ends 4 in,
+    // the 1 border and 3 of padding), and one 2 points above the bar's bottom, under the
+    // separator (no button there), reach nothing of the canvas's, and press no button. The
+    // same press on the canvas, well after, is handed on.
+    use eframe::egui::{Modifiers, PointerButton, Pos2, vec2};
+    use silico_app::viewport::LeftKind::{Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let (left, none) = (PointerButton::Primary, Modifiers::NONE);
+    let bar = bar_node(&h).rect();
+    let at = |h: &AppHarness, word: &str| bar_node(h).get_by_label(word).rect();
+    let grid = at(&h, "Grid");
+    let (look, display) = (at(&h, "Look At"), at(&h, "Display settings"));
+    let right = Pos2::new(grid.right() + 2.0, grid.center().y);
+    let bottom = Pos2::new((look.right() + display.left()) / 2.0, bar.bottom() - 2.0);
+    for press in [right, bottom] {
+        assert!(bar.contains(press), "{press:?} outside {bar:?}");
+        left_taken(&seen);
+        h.hover_at(press);
+        button_event(&h, press, left, true, none);
+        button_event(&h, press, left, false, none);
+        for _ in 0..3 {
+            step(&mut h);
+        }
+        let taken = left_taken(&seen);
+        assert!(taken.is_empty(), "{press:?}: {taken:?}");
+        for _ in 0..30 {
+            step(&mut h);
+        }
+    }
+    assert_eq!(view(&h).tool, None);
+    assert!(view(&h).grid);
+    let canvas = the_viewport(&h).center() - vec2(100.0, 0.0);
+    h.hover_at(canvas);
+    button_event(&h, canvas, left, true, none);
+    button_event(&h, canvas, left, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(kinds(&left_taken(&seen)), [Press, Release]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_with_a_dialog_open_lets_the_bars_tool_go_first_and_cancels_the_dialog_second() {
+    // The prototype's `escChain`: its navigation tool first, then the dialog. Pad open on the
+    // triangle, its preview built, Orbit chosen: Esc lets Orbit go and leaves the dialog,
+    // nothing undone; Esc again is the dialog's Cancel, its transaction rolled back, the
+    // document's text as it was.
+    use silico_app::viewport::Navigation::Orbit;
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    open_pad_on_triangle(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "the preview built", |h| {
+        !h.state().tabs()[0].preview_rebuilding()
+    });
+    click_on_bar(&mut h, "Orbit");
+    assert_eq!(view(&h).tool, Some(Orbit));
+    let sent = h.state().tabs()[0].sent.len();
+    h.key_press(eframe::egui::Key::Escape);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).tool, None);
+    assert!(dialog_open(&h));
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_with_a_features_name_being_typed_drops_the_name_and_leaves_the_bars_tool() {
+    // As the app orders them: a name being typed takes Esc before the prototype's chain (as
+    // its `keydown` gives a field its own Esc): Orbit chosen and Pin's name typed over by F2,
+    // Esc drops the name, nothing sent, Pin still Pin, and Orbit stays; the next Esc lets
+    // Orbit go.
+    use silico_app::viewport::Navigation::Orbit;
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    click_on_bar(&mut h, "Orbit");
+    f2_typed(&mut h, "Pin", "Peg");
+    let sent = h.state().tabs()[0].sent.len();
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(h.state().tabs()[0].renaming.is_none());
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert!(shows(&h, "Timeline", "Pin"));
+    assert_eq!(view(&h).tool, Some(Orbit));
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert_eq!(view(&h).tool, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_during_the_bars_tools_own_drag_stops_it_navigating_and_hands_the_selection_nothing() {
+    // As the app orders it: Orbit chosen, a left drag on the canvas orbits; Esc mid-drag lets
+    // Orbit go, so the rest of the drag moves the view no more. None of it reaches the
+    // selection: its press was the tool's, so its moves and its release are no stream of the
+    // selection's. The next press, well after, is the selection's.
+    use eframe::egui::{Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let (left, none) = (PointerButton::Primary, Modifiers::NONE);
+    click_on_bar(&mut h, "Orbit");
+    let at = the_viewport(&h).center() - vec2(100.0, 0.0);
+    let before = view(&h).camera().clone();
+    left_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, left, true, none);
+    step(&mut h);
+    h.hover_at(at + vec2(30.0, 0.0));
+    step(&mut h);
+    let turned = view(&h).camera().clone();
+    assert_ne!(turned, before, "the tool didn't orbit");
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert_eq!(view(&h).tool, None);
+    let mut last = at;
+    for i in 1..=3u8 {
+        last = at + vec2(30.0 + 20.0 * f32::from(i), 0.0);
+        h.hover_at(last);
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &turned);
+    button_event(&h, last, left, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let taken = left_taken(&seen);
+    assert!(taken.is_empty(), "{taken:?}");
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    h.hover_at(at);
+    button_event(&h, at, left, true, none);
+    button_event(&h, at, left, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(kinds(&left_taken(&seen)), [Press, Release]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_cube_edge_is_clickable_just_over_a_tenth_and_not_just_under() {
+    // From (0, −a, 1), orthographic: the top left's and the top right's views, (∓1, 0, 1)/√2,
+    // face it at 1/(√2·√(a² + 1)), by hand 0.10142 at a = 6.9, over a tenth, so each is
+    // clickable, and 0.098619 at a = 7.1, under, so neither is. The top front's, (a + 1)/
+    // (√2·√(a² + 1)), about 0.8, is either way.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    for (a, faced, shown) in [(6.9, 0.101_42, true), (7.1, 0.098_619, false)] {
+        let camera = silico_protocol::Camera {
+            projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+            eye: [0.0, -a, 1.0],
+            target: [0.0; 3],
+            up: [0.0, 0.0, 1.0],
+        };
+        let back = camera.frame().unwrap().back;
+        let r = std::f64::consts::FRAC_1_SQRT_2;
+        let got = -r * back[0] + r * back[2];
+        assert!((got - faced).abs() < 1e-5, "{a}: {got}");
+        view_mut(&mut h).set_camera(camera);
+        step(&mut h);
+        step(&mut h);
+        let buttons = cube_buttons(&h);
+        for edge in ["Top left", "Top right"] {
+            assert_eq!(buttons.contains_key(edge), shown, "{a}: {edge}");
+        }
+        assert!(buttons.contains_key("Top front"), "{a}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn where_an_edges_square_meets_a_corners_the_corner_takes_the_click() {
+    // From (9.8, −1.4, 1.4) = 1.4·(7, −1, 1), z up: the view's back (7, −1, 1)/√51, its up
+    // (−7, 1, 50)/√2550, and its right (1, 7, 0)/√50, by hand. A point p is drawn at
+    // (p·right, −p·up)·s from the cube's centre, s = 92/3.5: the top front right corner
+    // (1, −1, 1) at (−6/√50, −42/√2550)·s = (−22.304, −21.862), and the top front edge's
+    // middle (0, −1, 1) at (−7/√50, −49/√2550)·s = (−26.022, −25.506). Both face the view
+    // more than a tenth (0.728 and 0.198), so each has its 12-point square, and the two
+    // overlap. A click in the overlap is the corner's, its square laid after the edges': the
+    // view from (1, −1, 1)/√3, up (−1, 1, 2)/√6.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+        eye: [9.8, -1.4, 1.4],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 1.0],
+    });
+    step(&mut h);
+    step(&mut h);
+    let centre = silico_app::viewport::view_cube_rect(the_viewport(&h)).center();
+    let buttons = cube_buttons(&h);
+    let (corner, edge) = (buttons["Top front right"], buttons["Top front"]);
+    at_point(
+        corner.center(),
+        centre + eframe::egui::vec2(-22.304, -21.862),
+        "the corner",
+    );
+    at_point(
+        edge.center(),
+        centre + eframe::egui::vec2(-26.022, -25.506),
+        "the edge",
+    );
+    let overlap = corner.intersect(edge);
+    assert!(
+        overlap.width() > 0.0 && overlap.height() > 0.0,
+        "{overlap:?}"
+    );
+    click_at(&mut h, overlap.center());
+    let (d, six) = (1.0 / 3f64.sqrt(), 6f64.sqrt());
+    assert!(
+        looks(&h, [d, -d, d], [-1.0 / six, 1.0 / six, 2.0 / six]),
+        "{:?}",
+        view(&h).camera()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_app_bars_file_is_its_icon_a_gap_its_word_and_its_padding_wide() {
+    // `.ab-btn { padding: 0 5px; gap: 4px }`: File's 14-point icon, 4, its word as egui lays
+    // it out at the body's 12, and 5 of padding at each side; to the 1/16 point egui places
+    // widgets on.
+    let f = fixture();
+    let h = f.themed_with(&[]);
+    let word = h.ctx.fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(
+                "File".to_owned(),
+                eframe::egui::FontId::proportional(12.0),
+                eframe::egui::Color32::WHITE,
+            )
+            .size()
+            .x
+    });
+    assert!(word > 0.0);
+    let want = 14.0 + 4.0 + word + 2.0 * 5.0;
+    let file = bar_button(&h, "File").rect();
+    assert!(
+        (file.width() - want).abs() <= 1.0 / 16.0,
+        "{file:?}, not {want} wide"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_view_cubes_home_and_its_down_arrow_are_filled_gray_200_at_rest_and_hovered() {
+    // app.js gives each `style="background:var(--g200)"`, inline, over `.ab-btn:hover`'s
+    // Gray.300: a fill of #212121 over each button's place, with the pointer away and with it
+    // on the button.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let filled = |h: &AppHarness, rect: eframe::egui::Rect| {
+        painted(h).iter().any(|shape| {
+            matches!(shape, eframe::egui::Shape::Rect(r) if r.rect == rect && r.fill == G200)
+        })
+    };
+    for label in ["Home view", "View cube options"] {
+        let rect = h
+            .get_by_role_and_label(Role::Group, "ViewCube")
+            .get_by_role_and_label(Role::Button, label)
+            .rect();
+        h.hover_at(the_viewport(&h).center());
+        step(&mut h);
+        step(&mut h);
+        assert!(filled(&h, rect), "{label} at rest");
+        h.hover_at(rect.center());
+        step(&mut h);
+        step(&mut h);
+        assert!(filled(&h, rect), "{label} hovered");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
