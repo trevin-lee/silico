@@ -1020,6 +1020,9 @@ pub struct Tab {
     /// whole, for the browser's prefixes and the viewport's lines.
     pub sketch: Option<SketchMode>,
     pub sketch_reads: SketchReads,
+    /// The shown sketches' lines the viewport draws, each made again only when its read is
+    /// replaced or the view's scale at it leaves its bucket (`crate::sketch::lines`).
+    pub sketch_lines: crate::sketch::lines::ShownLines,
     /// The selection as it was before the open dialog's box of names took it, put back if
     /// the dialog is cancelled, as SolidWorks returns to the selection its command started
     /// with.
@@ -1211,6 +1214,7 @@ impl Tab {
             dialog_began: false,
             sketch: None,
             sketch_reads: SketchReads::default(),
+            sketch_lines: Default::default(),
             before_dialog: None,
             oked: None,
             groups: Vec::new(),

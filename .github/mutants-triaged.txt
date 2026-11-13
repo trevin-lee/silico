@@ -706,3 +706,17 @@ crates/silico-app/src/columns.rs | Columns::handles | replace | with ^ | #436
 # gives 308 or 92, smaller still, so the width stays 888.
 crates/silico-app/src/theme.rs |  | replace + with - | #436
 crates/silico-app/src/theme.rs |  | replace + with - | #436
+crates/silico-app/src/sketch/lines.rs | scale_at | replace || with && | #457
+crates/silico-app/src/sketch/lines.rs | scale_at | replace == with != | #457
+crates/silico-app/src/sketch/lines.rs | count_points | replace < with <= | #457
+crates/silico-app/src/sketch/lines.rs | box_of | replace && with || | #457
+crates/silico-app/src/sketch/lines.rs | ShownLines::frame_within | replace match guard counted_at == bucket with false | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace > with >= | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace > with >= | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace && with || | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace - with + | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace - with / | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace < with <= | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace < with <= | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace < with <= | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace + with * | #457
