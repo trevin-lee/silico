@@ -9061,6 +9061,32 @@ mod tests {
     }
 
     #[test]
+    fn undo_and_redo_name_nothing_while_off_or_while_anything_of_the_tabs_waits() {
+        // Round 1's T3: the pin and the hole renamed (2, 3), one undone (4 restores 2's):
+        // Undo names the pin's rename, Redo the hole's. A dialog open turns Undo off (its
+        // Cancel undoes its edits): it names nothing. A move queued leaves Redo on (it waits
+        // behind it), but names nothing, the move's answer dropping what it would give back.
+        let mut tab = tab();
+        let one = Revision::OPENED;
+        apply(&mut tab, one, one, "Rename Pin", rev(2));
+        apply(&mut tab, rev(2), rev(2), "Rename Hole", rev(3));
+        tab.restored.insert(rev(4), rev(2));
+        stood_at(&mut tab, rev(4), 1, 1);
+        assert_eq!(tab.undo_step(), Some("Rename Pin"));
+        assert_eq!(tab.redo_step(), Some("Rename Hole"));
+        tab.dialog = Some(Dialog::new(Kind::Pad, None, 1));
+        assert!(!tab.undoable());
+        assert_eq!(tab.undo_step(), None);
+        tab.dialog = None;
+        tab.edits.queue.push_back(Queued::Move {
+            feature: FeatureId::new("a0000001").unwrap(),
+            before: None,
+        });
+        assert!(tab.redoable());
+        assert_eq!(tab.redo_step(), None);
+    }
+
+    #[test]
     fn a_change_refused_or_changing_nothing_names_no_state_and_keeps_the_redo_branch() {
         let mut tab = tab();
         let one = Revision::OPENED;
