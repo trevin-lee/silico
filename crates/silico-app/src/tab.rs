@@ -727,8 +727,8 @@ enum Under {
 }
 
 impl Under {
-    /// The state the change or the save under way was sent from, if it's one: what the
-    /// state it makes, or saves, takes its names from ([`Tab::names`]).
+    /// The state the change under way was sent from, if it's one: what the state it makes
+    /// takes its names from ([`Tab::names`]).
     fn made_from(&self) -> Option<Revision> {
         match self {
             Under::Move { sending, .. }
@@ -743,6 +743,7 @@ impl Under {
             | Under::DimensionValue { sending, .. }
             | Under::OfferField { sending, .. } => Some(sending.state),
             Under::Begin { .. }
+            // Names are never carried across a save (see `Tab::names`).
             | Under::Commit { .. }
             | Under::SaveAs { .. }
             | Under::Rollback { .. }
@@ -4964,7 +4965,7 @@ impl Tab {
 
     /// The features' names the timeline `timeline` lists, kept for the state it's of, shared
     /// with the newest kept if they're the same; and those of states no step was made from or
-    /// made, no change or save under way was sent from, nor the session's now, let go.
+    /// made, no change under way was sent from, nor the session's now, let go.
     fn took_names(&mut self, timeline: &TimelineAnswer) {
         let Some(features) = timeline.features.as_ref() else {
             return;
@@ -4998,8 +4999,7 @@ impl Tab {
                 .iter()
                 .flat_map(|group| [group.start, group.end]),
         );
-        // And those a change or a save under way was sent from: the state it makes, or saves,
-        // takes them.
+        // And those a change under way was sent from: the state it makes takes them.
         kept.extend(
             self.edits
                 .in_flight
