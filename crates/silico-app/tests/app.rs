@@ -12508,6 +12508,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     picking: None,
                     edges: true,
                     vertices: None,
+                    lines: Vec::new(),
                 };
                 assert!(ViewRenderer::prepare(renderer, &data.frame()).is_ok());
                 ViewRenderer::forget(renderer, 1);
@@ -41634,6 +41635,288 @@ fn eyes_clicked_and_h_write_nothing_to_the_file() {
     settled(&mut h);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), ABSORBED_AND_LOOSE);
     assert!(!h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Shown sketches drawn in the viewport (the prototype's `syncSketchLines`) ----
+
+/// Every sketch solved as the real solver solves one with no constraints: under defined,
+/// each of its unknowns free (the fake's own answer is fully defined).
+fn under_defined_sketches(f: &Fixture) {
+    f.sketches.answer(|system| {
+        Ok(silico_protocol::Solved {
+            dofs: 2,
+            free: system.unknowns.clone(),
+            ..FakeSketches::as_sent(system)
+        })
+    });
+}
+
+/// The newest recorded frame's lines.
+fn last_lines(record: &Record) -> Vec<silico_app::sketch::lines::FrameLines> {
+    record
+        .lock()
+        .unwrap()
+        .frames
+        .last()
+        .map(|frame| frame.lines.clone())
+        .unwrap_or_default()
+}
+
+#[test]
+fn the_frame_holds_each_shown_sketchs_strips_in_its_colour_and_none_while_one_is_open() {
+    // The study's test 10 on Fable's fixture. Loose shown: one set of lines, its four sides
+    // in its lines' order, (x, y) on XZ at (x, 0, y), under defined (no constraints) so
+    // #7a95ff. Profile, hidden (Legs is built from it), none, till its eye shows it: a
+    // second set, its 30 by 20 on XY. Edit Sketch on Loose: no lines at all, sketch mode
+    // drawing it. Loose suppressed: none of its, though its eye is open.
+    use silico_app::tab::Hideable;
+    let f = fixture();
+    under_defined_sketches(&f);
+    let (mut h, record) = f.drawn("absorbed.silico", ABSORBED_AND_LOOSE);
+    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    let lines = last_lines(&record);
+    assert_eq!(lines[0].colour, [0x7a, 0x95, 0xff, 0xff]);
+    let sides: Vec<Vec<[f64; 3]>> = (0..lines[0].strips.len())
+        .filter_map(|k| lines[0].strips.strip(k).map(<[_]>::to_vec))
+        .collect();
+    assert_eq!(
+        sides,
+        [
+            vec![[0.0, 0.0, 0.0], [40.0, 0.0, 0.0]],
+            vec![[40.0, 0.0, 0.0], [40.0, 0.0, 20.0]],
+            vec![[40.0, 0.0, 20.0], [0.0, 0.0, 20.0]],
+            vec![[0.0, 0.0, 20.0], [0.0, 0.0, 0.0]],
+        ]
+    );
+    assert_eq!(silico_app::theme::VIEWPORT_SKETCH_WIDTH, 1.5);
+    // Made once: the same strips frame after frame.
+    let made = Arc::clone(&lines[0].strips);
+    for _ in 0..20 {
+        step(&mut h);
+        let lines = last_lines(&record);
+        assert_eq!(lines.len(), 1, "Profile hidden");
+        assert!(Arc::ptr_eq(&lines[0].strips, &made), "made again");
+    }
+    click_eye(&mut h, "Show", "Profile");
+    step_until(&mut h, "Profile's lines too", |_| {
+        last_lines(&record).len() == 2
+    });
+    let profile = last_lines(&record)
+        .into_iter()
+        .find(|lines| lines.strips.bounds() == Some(([0.0, 0.0, 0.0], [30.0, 20.0, 0.0])));
+    assert!(profile.is_some(), "Profile's 30 by 20 on XY");
+    click_eye(&mut h, "Hide", "Profile");
+    step_until(&mut h, "Profile's gone", |_| last_lines(&record).len() == 1);
+    // Two thirds of a second on (forty frames: this harness's time moves a sixtieth of a
+    // second a frame), past twice egui's double-click time, so Loose's double-click isn't
+    // taken for a triple click with the eye's clicks before it.
+    for _ in 0..40 {
+        step(&mut h);
+    }
+    // Sketch mode on Loose: no lines at all, while it's open.
+    double_click(&mut h, "Browser", "Loose");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(
+            last_lines(&record).is_empty(),
+            "none while a sketch is open"
+        );
+    }
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Enter);
+    step_until(&mut h, "sketch mode left", |h| sketch_mode(h).is_none());
+    step_until(&mut h, "Loose's lines back", |_| {
+        last_lines(&record).len() == 1
+    });
+    // Kept through sketch mode, not made again after it.
+    assert!(Arc::ptr_eq(&last_lines(&record)[0].strips, &made));
+    // Loose suppressed: none of its, though its eye is open.
+    timeline_act(&mut h, "Loose", "Suppress", Some(true));
+    step_until(&mut h, "Loose's lines gone", |_| {
+        last_lines(&record).is_empty()
+    });
+    assert!(h.state().tabs()[0].shown(&Hideable::Feature(sketch_id("s0000002"))));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_the_solver_finds_fully_defined_is_drawn_in_eeeeed() {
+    // The fake solver's own answer, fully defined: Loose's lines in #eeeeed.
+    let f = fixture();
+    let (mut h, record) = f.drawn("absorbed.silico", ABSORBED_AND_LOOSE);
+    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    assert_eq!(last_lines(&record)[0].colour, [0xee, 0xee, 0xed, 0xff]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_far_shown_sketch_raises_the_least_view_its_frames_are_drawn_at() {
+    // Loose moved 300 mm along x (x 300 to 340, z 0 to 20, on XZ) and hidden; the view from
+    // −y onto (20, 10, 5) set to 10⁻⁵ mm, under every least. Shown again: its lines' box
+    // reaches √(320² + 10² + 15²) = 320.507 mm from the target, past the bodies', so its
+    // frames are drawn at a view no lower than rows · 320.507 / 2^19 · 1.01, the rows the
+    // frame's own.
+    let far = ABSORBED_AND_LOOSE
+        .replace("\"pb000001\", \"x\": 0,", "\"pb000001\", \"x\": 300,")
+        .replace("\"pb000002\", \"x\": 40,", "\"pb000002\", \"x\": 340,")
+        .replace("\"pb000003\", \"x\": 40,", "\"pb000003\", \"x\": 340,")
+        .replace("\"pb000004\", \"x\": 0,", "\"pb000004\", \"x\": 300,");
+    assert_eq!(far.matches(": 340,").count(), 2);
+    let f = fixture();
+    let (mut h, record) = f.drawn("far.silico", &far);
+    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    click_eye(&mut h, "Hide", "Loose");
+    step_until(&mut h, "Loose's lines gone", |_| {
+        last_lines(&record).is_empty()
+    });
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 1e-5 },
+        eye: [20.0, -100.0, 5.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    });
+    click_eye(&mut h, "Show", "Loose");
+    step_until(&mut h, "Loose's lines back", |_| {
+        last_lines(&record).len() == 1
+    });
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let reach = (320f64 * 320.0 + 100.0 + 225.0).sqrt();
+    let record = record.lock().unwrap();
+    let frame = record.frames.last().unwrap();
+    let least = f64::from(frame.size_px[1]) * reach / 524_288.0 * 1.01;
+    let silico_protocol::Projection::Orthographic { view_height } = frame.camera.projection else {
+        panic!("orthographic")
+    };
+    assert!(
+        view_height >= least * (1.0 - 1e-12),
+        "{view_height} under {least}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`A_BOX`] with Front, a sketch on XZ of one line at z = 7.5 from x = 0 to 40: on the
+/// box's front face, y = 0, nothing built from it.
+fn boxed_front_line() -> String {
+    A_BOX.replace(
+        "\n  ]\n}",
+        ",\n    {\"id\": \"s0000001\", \"type\": \"sketch\", \"v\": 1, \"name\": \"Front\", \"plane\": \"xz\", \"points\": [{\"id\": \"pa000001\", \"x\": 0, \"y\": 7.5, \"construction\": false}, {\"id\": \"pa000002\", \"x\": 40, \"y\": 7.5, \"construction\": false}], \"lines\": [{\"id\": \"na000001\", \"from\": \"pa000001\", \"to\": \"pa000002\", \"construction\": false}], \"circles\": [], \"arcs\": [], \"constraints\": []}\n  ]\n}",
+    )
+}
+
+#[test]
+fn on_lavapipe_a_shown_sketchs_line_is_drawn_on_its_face_in_eguis_image_and_its_eye_hides_it() {
+    // The study's test 13: from the front, 20 mm over the pane about (20, 10, 5), at two
+    // pixels a point (so the 1.5-point line is 3 pixels wide, and the pixel nearest its
+    // middle wholly under it). Front's line, z = 7.5, is 2.5 mm above the pane's centre, as
+    // `render::project` puts it: that pixel within 8 levels of #7a95ff (under defined).
+    // Its eye clicked shut: the face's own shade there, as 2.5 mm below the centre.
+    on_lavapipe(
+        "on_lavapipe_a_shown_sketchs_line_is_drawn_on_its_face_in_eguis_image_and_its_eye_hides_it",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            under_defined_sketches(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_pixels_per_point(2.0)
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            let path = f.file("box.silico", &boxed_front_line());
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            let camera = silico_protocol::Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 20.0 },
+                eye: [20.0, -100.0, 5.0],
+                target: [20.0, 10.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            view_mut(&mut h).set_camera(camera.clone());
+            meshes_settled(&mut h);
+            step_until(&mut h, "Front read and shown", |h| {
+                shows(h, "Browser", "Hide Front")
+                    && h.state().tabs()[0]
+                        .sketch_reads
+                        .held(&sketch_id("s0000001"))
+                        .is_some()
+            });
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let size_px = view(&h).frame().unwrap().size_px;
+            // Where `project` puts the line's middle, (20, 0, 7.5), and the face's below it.
+            let at =
+                |z: f64| silico_render::render::project(&camera, size_px, [20.0, 0.0, z]).unwrap();
+            let (line, face) = (at(7.5), at(2.5));
+            let rect = the_viewport(&h);
+            let ppp = h.ctx.pixels_per_point();
+            // The pixel the point lies in, in egui's image of the window.
+            let spot = |[x, y]: [f64; 2]| {
+                (
+                    (f64::from(rect.left() * ppp) + x).floor() as u32,
+                    (f64::from(rect.top() * ppp) + y).floor() as u32,
+                )
+            };
+            let ((lx, ly), (fx, fy)) = (spot(line), spot(face));
+            let near = |got: [u8; 4], want: [u8; 3]| (0..3).all(|k| got[k].abs_diff(want[k]) <= 8);
+            let image = h.render().unwrap();
+            let drawn = image.get_pixel(lx, ly).0;
+            assert!(near(drawn, [0x7a, 0x95, 0xff]), "{drawn:?}");
+            // 2 points (4 pixels) below the line's centre, past its 1.5-point stroke: the
+            // face's own shade, as 2.5 mm below the centre is.
+            let (ox, oy) = spot(at(7.5 - 4.0 * 20.0 / f64::from(size_px[1])));
+            assert_eq!(
+                image.get_pixel(ox, oy).0,
+                image.get_pixel(fx, fy).0,
+                "2 points off"
+            );
+            browser(&h).get_by_label("Hide Front").click();
+            for _ in 0..4 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let (shut, below) = (image.get_pixel(lx, ly).0, image.get_pixel(fx, fy).0);
+            assert!(!near(shut, [0x7a, 0x95, 0xff]), "{shut:?}");
+            assert_eq!(shut, below);
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
+}
+
+#[test]
+fn a_shown_sketch_its_plane_doesnt_place_draws_no_lines() {
+    // The study's test 10, its last case: Top, on a face the model doesn't have as a plane,
+    // shown (nothing is built from it) and read, its plane an error: no lines, frame after
+    // frame (nothing guesses a placement).
+    let f = fixture();
+    let (mut h, record) = f.drawn("face.silico", ON_A_FACE);
+    // The tab opens a frame or more after the file is asked for.
+    step_until(&mut h, "Top read", |h| {
+        h.state().tabs().first().is_some_and(|tab| {
+            tab.sketch_reads
+                .held(&sketch_id("s0000001"))
+                .is_some_and(|held| held.read.plane.is_err())
+        })
+    });
+    assert!(shows(&h, "Browser", "Hide Top"));
+    for _ in 0..20 {
+        step(&mut h);
+        assert!(last_lines(&record).is_empty());
+    }
+    assert!(!record.lock().unwrap().frames.is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
 

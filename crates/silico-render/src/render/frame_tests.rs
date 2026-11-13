@@ -6266,6 +6266,30 @@ fn a_line_just_behind_a_face_is_drawn_within_its_strokes_reach_and_hidden_past_i
                 drawn(r, 1.8, 1.5).pixels == without.pixels,
                 "1.8 behind, 1.5 wide: drawn"
             );
+            // At 2 pixels a point, 512 by 384 (44 mm over 384 rows, 11/96 mm a pixel, z = 7 on
+            // row 192), 1.5 points is 3 pixels: √2 × 1.5 + 1/2 = 2.62 pixels of depth, held to
+            // the 2. The line at d = 1.8 (y = 1.8 × 11/96), z = 7 − 20.5 × 11/96 (row 212.5),
+            // over columns 256 + (x − 21) × 96/11, 90.2 to 404.4: moved 0.2 in front of the
+            // face, and drawn. Taken at a pixel a point (1.561) it would stay behind.
+            let size = [512, 384];
+            let mm = 44.0 / 384.0;
+            let z = 7.0 - 20.5 * mm;
+            assert_pixel(project(&camera, size, [21.0, 0.0, z]), [256.0, 212.5], 1e-6);
+            let strips = line_at(1.8 * mm, z);
+            let image = drawn_image(
+                r,
+                &Frame {
+                    lines: &[magenta_wide(&strips, 1.5)],
+                    ..plain_frame(&camera, size, 2.0)
+                },
+            );
+            for x in 120..=380 {
+                let got = image.at([x, 212]);
+                assert!(
+                    within(got, MAGENTA, 8),
+                    "1.8 behind at 2 pixels a point, ({x}, 212): {got:?}"
+                );
+            }
         },
     );
 }
