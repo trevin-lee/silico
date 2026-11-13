@@ -1233,4 +1233,430 @@ mod tests {
             Some(Some(NotDrawn::TooMany))
         );
     }
+
+    /// Loose's rectangle on XY with a circle of radius 3 about (20, 1): the circle's square,
+    /// 17 to 23 by −2 to 4, reaches 2 below the rectangle, which no point does.
+    fn off_centre() -> SketchRead {
+        let mut sketch = rectangle(Vec::new());
+        sketch.points.push(point("pa000006", 20.0, 1.0));
+        sketch.circles.push(SketchCircle {
+            id: id("ca000001"),
+            center: id("pa000006"),
+            radius: Coordinate::new(3.0).unwrap(),
+            construction: false,
+        });
+        under(sketch)
+    }
+
+    /// `n` lines end to end along x, from (0, 0) to (n, 0): 2n points.
+    fn chain(n: u32) -> SketchRead {
+        let mut sketch = rectangle(Vec::new());
+        sketch.points = (0..=n)
+            .map(|k| point(&format!("p{k:07}"), f64::from(k), 0.0))
+            .collect();
+        sketch.lines = (0..n)
+            .map(|k| {
+                line(
+                    &format!("n{k:07}"),
+                    &format!("p{k:07}"),
+                    &format!("p{:07}", k + 1),
+                )
+            })
+            .collect();
+        under(sketch)
+    }
+
+    /// One line from `from` to `to`, construction or not, alone on XY.
+    fn lone_line(from: [f64; 2], to: [f64; 2], construction: bool) -> SketchRead {
+        let mut sketch = rectangle(Vec::new());
+        sketch.points = vec![
+            point("pa000001", from[0], from[1]),
+            point("pa000002", to[0], to[1]),
+        ];
+        sketch.lines.truncate(1);
+        sketch.lines[0].construction = construction;
+        under(sketch)
+    }
+
+    #[test]
+    fn a_reads_box_is_its_points_and_each_round_curves_square_placed_by_its_plane() {
+        // The small circle alone, radius 2.75 about (40, 12) on XY: its square, 40 ± 2.75 by
+        // 12 ± 2.75, each side the radius from its centre (the one point), at z = 0.
+        assert_eq!(
+            box_of(&round()),
+            Some(([37.25, 9.25, 0.0], [42.75, 14.75, 0.0]))
+        );
+        // The rectangle (0 to 40 by 0 to 20) with the circle about (20, 1): x 0 to 40, y from
+        // the circle's −2 to the rectangle's 20. On XZ, (x, y) at (x, 0, y).
+        let xz = SketchRead {
+            plane: Ok(OriginPlane::Xz.into()),
+            ..off_centre()
+        };
+        assert_eq!(box_of(&xz), Some(([0.0, 0.0, -2.0], [40.0, 0.0, 20.0])));
+        // On a face frame at (100, 0, 0), its x along −y and its y along +z: the square's x,
+        // 37.25 to 42.75, runs from y = −42.75 to −37.25; its y, 9.25 to 14.75, along z.
+        let face = SketchRead {
+            plane: Ok(silico_core::kernel::SketchPlane::Face(
+                silico_protocol::FaceFrame {
+                    origin: [100.0, 0.0, 0.0],
+                    x: [0.0, -1.0, 0.0],
+                    y: [0.0, 0.0, 1.0],
+                },
+            )),
+            ..round()
+        };
+        assert_eq!(
+            box_of(&face),
+            Some(([100.0, -42.75, 9.25], [100.0, -37.25, 14.75]))
+        );
+        // No point, so no curve: no box.
+        let mut empty = rectangle(Vec::new());
+        empty.points.clear();
+        empty.lines.clear();
+        assert_eq!(box_of(&under(empty)), None);
+    }
+
+    #[test]
+    fn a_scale_is_none_for_no_positive_height_and_on_a_slant_taken_where_x_and_y_are_lowest() {
+        let ortho = |view_height: f64| Camera {
+            projection: Projection::Orthographic { view_height },
+            eye: [0.0, -100.0, 0.0],
+            target: [0.0; 3],
+            up: [0.0, 0.0, 1.0],
+        };
+        let anywhere = ([0.0; 3], [1.0; 3]);
+        // A view of no height: 0 / 800 = 0 mm a point, none. A view of negative height,
+        // −120 / 800 = −0.15, none; nor over a pane of negative height, though −120 / −800
+        // is 0.15. A view infinitely high: none.
+        assert_eq!(scale_at(&ortho(0.0), 800.0, anywhere), None);
+        assert_eq!(scale_at(&ortho(-120.0), 800.0, anywhere), None);
+        assert_eq!(scale_at(&ortho(-120.0), -800.0, anywhere), None);
+        assert_eq!(scale_at(&ortho(f64::INFINITY), 800.0, anywhere), None);
+        // 60° vertical, from the origin toward (30, 40, 0): the view (0.6, 0.8, 0), a corner's
+        // depth 0.6x + 0.8y. The box (10, 5, −1) to (20, 30, 1): its corners at depths 10 (x
+        // and y lowest), 16 (x highest, y lowest), 30 and 36; the nearest, 10. There the view
+        // is 2 · 10 · tan 30° = 20/√3 high, over 200 points 0.1/√3 mm a point.
+        let slant = Camera {
+            projection: Projection::Perspective {
+                field_of_view: 60.0,
+            },
+            eye: [0.0; 3],
+            target: [30.0, 40.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        };
+        let expected = 0.1 / 3.0_f64.sqrt();
+        let scale = scale_at(&slant, 200.0, ([10.0, 5.0, -1.0], [20.0, 30.0, 1.0])).unwrap();
+        assert!((scale.0 - expected).abs() < 1e-12, "{scale:?}");
+        // The box given highest corner first: the same eight corners, the same scale.
+        let swapped = scale_at(&slant, 200.0, ([20.0, 30.0, 1.0], [10.0, 5.0, -1.0])).unwrap();
+        assert!((swapped.0 - expected).abs() < 1e-12, "{swapped:?}");
+    }
+
+    #[test]
+    fn a_perspectives_bucket_is_taken_at_the_side_only_a_circles_square_reaches() {
+        // The rectangle with the circle of radius 3 about (20, 1), one sketch: 8 points and
+        // the circle's. Orthographic, 240 mm over 800 points: 0.3, bucket 0.25; the circle 12
+        // points in radius, each chord's angle 2·acos(1 − 0.25/12) = 0.40896, 2π over it 15.36,
+        // so 16 segments: 8 + 17 = 25.
+        let sid = FeatureId::new("s0000001").unwrap();
+        let read = Arc::new(off_centre());
+        let mut lines = ShownLines::default();
+        let ortho = Camera {
+            projection: Projection::Orthographic { view_height: 240.0 },
+            ..at_120()
+        };
+        assert_eq!(points(&lines.frame([(&sid, &read)], &ortho, 800.0)), [25]);
+        // 90° vertical from (20, −60, 80) toward (20, 0, 0): the view (0, 0.6, −0.8), a point
+        // (x, y, 0) at depth 0.6(y + 60) + 64. Its nearest, y = −2 (the circle's square's, the
+        // rectangle's lowest being 0), at 98.8: 2 · 98.8 · tan 45° / 795 = 0.24855, bucket
+        // 0.125 (at y = 0, 100, it would be 0.25157, bucket 0.25). The circle 24 points in
+        // radius, 2·acos(1 − 0.25/24) = 0.28893, 2π over it 21.75: 22 segments, 8 + 23 = 31.
+        let slant = Camera {
+            projection: Projection::Perspective {
+                field_of_view: 90.0,
+            },
+            eye: [20.0, -60.0, 80.0],
+            target: [20.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        };
+        assert_eq!(points(&lines.frame([(&sid, &read)], &slant, 795.0)), [31]);
+        assert_eq!(lines.built, 31);
+    }
+
+    #[test]
+    fn each_curves_count_is_its_polylines_and_a_construction_curves_bounds_its_dashes() {
+        // At 0.125 mm a point: dashes of 0.625 mm and gaps of 0.375, a period of 1 mm.
+        let at = Scale(0.125);
+        // A line: its 2 ends.
+        assert_eq!(count_points(&side(), at), Some(2));
+        // The circle of radius 2.75: 22 points in radius, 2·acos(1 − 0.25/22) = 0.30180, 2π
+        // over it 20.82, so 21 segments and 22 points.
+        assert_eq!(count_points(&round(), at), Some(22));
+        // A quarter arc of radius 10 about the origin, (10, 0) to (0, 10): 80 points in
+        // radius, 2·acos(1 − 0.25/80) = 0.15816, π/2 over it 9.93, so 10 segments and 11
+        // points. As construction, 11 and 2 ends for each of ⌈10 · π/2⌉ = ⌈15.71⌉ = 16
+        // dashes: 43.
+        let arc = |construction: bool| {
+            let mut sketch = rectangle(Vec::new());
+            sketch.lines.clear();
+            sketch.points = vec![
+                point("pa000010", 0.0, 0.0),
+                point("pa000011", 10.0, 0.0),
+                point("pa000012", 0.0, 10.0),
+            ];
+            sketch.arcs.push(silico_core::document::SketchArc {
+                id: id("aa000001"),
+                center: id("pa000010"),
+                start: id("pa000011"),
+                end: id("pa000012"),
+                construction,
+            });
+            under(sketch)
+        };
+        assert_eq!(count_points(&arc(false), at), Some(11));
+        assert_eq!(count_points(&arc(true), at), Some(43));
+        // The circle as construction: 22 and 2 for each of ⌈2.75 · 2π⌉ = ⌈17.28⌉ = 18: 58.
+        let mut circle = round();
+        circle.members.circles[0].construction = true;
+        assert_eq!(count_points(&circle, at), Some(58));
+        // A construction line from (10, 20) to (40, 60), 30 by 40, so 50 long: 2 and 2 for
+        // each of 50 dashes, 102 (of x 10 + 40 or y 20 + 60 it would be 132 or 174). Made, 50
+        // dashes of 2 points.
+        let slanted = lone_line([10.0, 20.0], [40.0, 60.0], true);
+        assert_eq!(count_points(&slanted, at), Some(102));
+        assert_eq!(strips_of(&slanted, at).unwrap().unwrap().points(), 100);
+        // A construction line 2,000 long: 2,000 dashes, past MAX_CURVE_DASHES, so 1,024 and 1
+        // at most: 2 + 2 · 1,025 = 2,052. Made, 1,024 dashes stretched to fit, 2,048 points.
+        let long = lone_line([0.0, 0.0], [2000.0, 0.0], true);
+        assert_eq!(count_points(&long, at), Some(2052));
+        assert_eq!(strips_of(&long, at).unwrap().unwrap().points(), 2048);
+    }
+
+    #[test]
+    fn a_count_stops_at_the_first_curve_past_the_cap() {
+        // 100,000 lines: 200,000 points, the cap exactly, every one counted. 100,001: the
+        // last takes it to 200,002, past the cap. 150,000: the same 200,002, the count
+        // stopped there, not the 300,000 of all of them.
+        let at = Scale(0.125);
+        assert_eq!(count_points(&chain(100_000), at), Some(200_000));
+        assert_eq!(count_points(&chain(100_001), at), Some(200_002));
+        assert_eq!(count_points(&chain(150_000), at), Some(200_002));
+    }
+
+    #[test]
+    fn a_sketch_of_exactly_its_cap_is_drawn_and_one_more_line_is_neither_built_nor_drawn() {
+        // 100,000 lines, 200,000 points (MAX_LINE_POINTS): made whole, built and drawn in one
+        // frame (500,000 a frame may build, 2,000,000 draw). 100,001, 200,002 points: counted
+        // past the cap, so no polyline made, nothing built or drawn.
+        let at = Scale(0.125);
+        let exact = Arc::new(chain(100_000));
+        let made = strips_of(&exact, at).unwrap().unwrap();
+        assert_eq!((made.len(), made.points()), (100_000, 200_000));
+        let sid = FeatureId::new("s0000001").unwrap();
+        let mut lines = ShownLines::default();
+        assert_eq!(
+            points(&lines.frame([(&sid, &exact)], &at_120(), 800.0)),
+            [200_000]
+        );
+        assert_eq!(lines.built, 200_000);
+        let past = Arc::new(chain(100_001));
+        assert_eq!(
+            strips_of(&past, at).map(|made| made.err()),
+            Some(Some(NotDrawn::TooMany))
+        );
+        let mut lines = ShownLines::default();
+        super::super::draw::POLYLINES_MADE.with(|made| made.set(0));
+        assert!(lines.frame([(&sid, &past)], &at_120(), 800.0).is_empty());
+        assert_eq!(lines.built, 0);
+        assert_eq!(
+            super::super::draw::POLYLINES_MADE.with(std::cell::Cell::get),
+            0
+        );
+    }
+
+    #[test]
+    fn a_new_bucket_counts_and_builds_again_and_the_same_bucket_does_neither() {
+        // The circle of radius 2.75. At 120 mm over 800 points (0.15, bucket 0.125): 22
+        // points, built. At 60 (0.075, bucket 0.0625): 44 points in radius,
+        // 2·acos(1 − 0.25/44) = 0.21330, 2π over it 29.46, 30 segments: 31 points, counted
+        // and built again. At 55 (0.06875, the same bucket): nothing built, the same strips.
+        // Back at 120: 22, counted and built again.
+        let view = |view_height: f64| Camera {
+            projection: Projection::Orthographic { view_height },
+            ..at_120()
+        };
+        let sid = FeatureId::new("s0000001").unwrap();
+        let read = Arc::new(round());
+        let mut lines = ShownLines::default();
+        assert_eq!(
+            points(&lines.frame([(&sid, &read)], &view(120.0), 800.0)),
+            [22]
+        );
+        assert_eq!(lines.built, 22);
+        let finer = lines.frame([(&sid, &read)], &view(60.0), 800.0);
+        assert_eq!((points(&finer), lines.built), (vec![31], 31));
+        let same = lines.frame([(&sid, &read)], &view(55.0), 800.0);
+        assert_eq!(lines.built, 0);
+        assert!(Arc::ptr_eq(&finer[0].strips, &same[0].strips));
+        let back = lines.frame([(&sid, &read)], &view(120.0), 800.0);
+        assert_eq!((points(&back), lines.built), (vec![22], 22));
+    }
+
+    #[test]
+    fn a_sketch_exactly_filling_whats_left_to_draw_is_drawn() {
+        // 10 points to draw: the rectangle (8), then the side (2), which fills the 2 left.
+        let (rect, one) = (
+            FeatureId::new("s0000001").unwrap(),
+            FeatureId::new("s0000002").unwrap(),
+        );
+        let reads = [Arc::new(loose()), Arc::new(side())];
+        let budget = Budget {
+            draw: 10,
+            build: MAX_FRAME_LINE_BUILD,
+        };
+        let mut lines = ShownLines::default();
+        let drawn = lines.frame_within(
+            [(&rect, &reads[0]), (&one, &reads[1])],
+            &at_120(),
+            800.0,
+            budget,
+        );
+        assert_eq!(points(&drawn), [8, 2]);
+        assert!(lines.capped.is_empty());
+    }
+
+    #[test]
+    fn a_sketch_past_a_whole_frames_build_is_built_while_nothing_else_has_been() {
+        // 5 points a frame to build: the rectangle (8) is past it, but the frame has built
+        // nothing yet, so it's built (8); the side (2), past the 0 then left, waits for the
+        // next frame, which builds it (2).
+        let (rect, one) = (
+            FeatureId::new("s0000001").unwrap(),
+            FeatureId::new("s0000002").unwrap(),
+        );
+        let reads = [Arc::new(loose()), Arc::new(side())];
+        let shown = [(&rect, &reads[0]), (&one, &reads[1])];
+        let budget = Budget {
+            draw: MAX_FRAME_LINE_POINTS,
+            build: 5,
+        };
+        let mut lines = ShownLines::default();
+        let first = lines.frame_within(shown, &at_120(), 800.0, budget);
+        assert_eq!((points(&first), lines.built), (vec![8], 8));
+        assert!(lines.pending());
+        let second = lines.frame_within(shown, &at_120(), 800.0, budget);
+        assert_eq!((points(&second), lines.built), (vec![8, 2], 2));
+        assert!(!lines.pending());
+    }
+
+    #[test]
+    fn a_sketch_whose_strips_are_empty_draws_no_lines() {
+        // The rectangle's points without its lines: no curve, so 0 points counted and an
+        // empty set of strips. A construction line of no length, from (5, 5) to (5, 5):
+        // counted as its 2 ends and no dash, built (2), no dash made. Neither is drawn, and
+        // neither is left out.
+        let mut points_only = rectangle(Vec::new());
+        points_only.lines.clear();
+        let (dots, nil) = (
+            FeatureId::new("s0000001").unwrap(),
+            FeatureId::new("s0000002").unwrap(),
+        );
+        let reads = [
+            Arc::new(under(points_only)),
+            Arc::new(lone_line([5.0, 5.0], [5.0, 5.0], true)),
+        ];
+        let mut lines = ShownLines::default();
+        let drawn = lines.frame([(&dots, &reads[0]), (&nil, &reads[1])], &at_120(), 800.0);
+        assert!(drawn.is_empty(), "{:?}", points(&drawn));
+        assert_eq!(lines.built, 2);
+        assert!(lines.capped.is_empty());
+    }
+
+    #[test]
+    fn a_pattern_past_the_most_dashes_is_stretched_by_its_length_over_its_period() {
+        // 4,096 long, dashes of 1 and gaps of 1: 2,048 periods of 2, past 1,024, so both are
+        // stretched by 4,096 / 2 / 1,024 = 2: dashes of 2 every 4, 1,024 of them, the kth from
+        // 4k to 4k + 2.
+        let expected: Vec<Vec<[f64; 2]>> = (0..1024)
+            .map(|k| {
+                let start = 4.0 * f64::from(k);
+                vec![[start, 0.0], [start + 2.0, 0.0]]
+            })
+            .collect();
+        assert_eq!(dashes(&[[0.0, 0.0], [4096.0, 0.0]], 1.0, 1.0), expected);
+    }
+
+    #[test]
+    fn dashes_follow_chords_off_the_axes() {
+        // Two chords, (0, 0) to (3, 4) and on to (6, 0), each 5 long. Dashes of 2.5 and gaps
+        // of 2.5: one along each chord's first half, [(0, 0), (1.5, 2)] and [(3, 4), (4.5,
+        // 2)]. Dashes of 7.5 and gaps of 2.5: one, over the corner to the second chord's
+        // middle, (4.5, 2).
+        let chords = [[0.0, 0.0], [3.0, 4.0], [6.0, 0.0]];
+        let near = |made: Vec<Vec<[f64; 2]>>, expected: &[&[[f64; 2]]]| {
+            assert_eq!(made.len(), expected.len(), "{made:?}");
+            for (dash, want) in made.iter().zip(expected) {
+                assert_eq!(dash.len(), want.len(), "{made:?}");
+                for (p, q) in dash.iter().zip(want.iter()) {
+                    let off = libm::hypot(p[0] - q[0], p[1] - q[1]);
+                    assert!(off < 1e-12, "{made:?}");
+                }
+            }
+        };
+        near(
+            dashes(&chords, 2.5, 2.5),
+            &[&[[0.0, 0.0], [1.5, 2.0]], &[[3.0, 4.0], [4.5, 2.0]]],
+        );
+        near(
+            dashes(&chords, 7.5, 2.5),
+            &[&[[0.0, 0.0], [3.0, 4.0], [4.5, 2.0]]],
+        );
+        // An L a unit above the axis, (0, 1) to (4, 1) to (4, 5), dashes and gaps of 1: two
+        // along each side, every end a quarter of the way along one.
+        assert_eq!(
+            dashes(&[[0.0, 1.0], [4.0, 1.0], [4.0, 5.0]], 1.0, 1.0),
+            vec![
+                vec![[0.0, 1.0], [1.0, 1.0]],
+                vec![[2.0, 1.0], [3.0, 1.0]],
+                vec![[4.0, 1.0], [4.0, 2.0]],
+                vec![[4.0, 3.0], [4.0, 4.0]],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stretch_rounded_short_of_the_length_leaves_one_sliver_dash_more() {
+        // Dashes of 0.2 and gaps of 0.1 along 385: a period of fl(0.2 + 0.1) =
+        // 0.30000000000000004, 1,283.3 of them, past 1,024, so both are stretched by
+        // fl(385 / 0.30000000000000004) / 1,024. The quotient, 1,283.333333333333, is
+        // rounded down by 1.13e-13 (just under half its ulp, 2⁻⁴²); the stretched period,
+        // 0.30000000000000004 times it over 1,024, is exactly 385/1,024 less 3.3e-17, which
+        // rounds down a whole ulp (2⁻⁵⁴) to 0.37597656249999994. 1,024 periods reach
+        // 385 − 2⁻⁴⁴ (384.99999999999994, an ulp of 385 short of it): the 1,025th dash is the
+        // sliver from there to 385, the one dash past MAX_CURVE_DASHES a curve may have.
+        // (Worked in exact rationals.)
+        let made = dashes(&[[0.0, 0.0], [385.0, 0.0]], 0.2, 0.1);
+        assert_eq!(made.len(), MAX_CURVE_DASHES + 1);
+        assert_eq!(
+            made[MAX_CURVE_DASHES],
+            vec![[385.0 - libm::ldexp(1.0, -44), 0.0], [385.0, 0.0]]
+        );
+    }
+
+    #[test]
+    fn a_pattern_whose_period_overflows_makes_no_point_that_isnt_finite() {
+        // Dashes and gaps of 10³⁰⁸, whose sum overflows; or dashes of 10⁻³⁰⁰ along 10¹⁰,
+        // whose count of periods overflows, so its stretch: either way an infinite period,
+        // whose first dash's start, 0 · ∞, is no number. No dash has a point that isn't
+        // finite.
+        for made in [
+            dashes(&[[0.0, 0.0], [1.0, 0.0]], 1e308, 1e308),
+            dashes(&[[0.0, 0.0], [1e10, 0.0]], 1e-300, 0.0),
+        ] {
+            assert!(
+                made.iter().flatten().flatten().all(|c| c.is_finite()),
+                "{made:?}"
+            );
+        }
+    }
 }
