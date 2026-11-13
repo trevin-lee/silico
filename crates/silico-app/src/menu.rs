@@ -1,4 +1,4 @@
-//! A menu's rows as the approved prototype draws them (docs/design/m5-ui: styles.css's
+//! A menu's lines as the approved prototype draws them (docs/design/m5-ui: styles.css's
 //! `.menu`, `.menu .mi`, `.menu .mh`, `.menu .msep`; app.js's `renderFloating`, which every
 //! menu of the prototype goes through): one way to draw them, which every menu the app draws
 //! over the window takes, a feature's (`crate::feature_menu`), the canvas's
@@ -10,8 +10,8 @@
 //! (`<span style="width:14px">`); its words; its dim words after them (the `subdued` span,
 //! 11 high, `margin-left: 8px`), if it has them; and its keys' caps at its right (`.sc`,
 //! `margin-left: auto; padding-left: 24px`, there with no keys too, so it always takes its
-//! gap and its padding). Every item of a menu is as wide as its widest row (`width: 100%`,
-//! `white-space: nowrap`, the menu as wide as its rows), and that at least `.menu`'s
+//! gap and its padding). Every item of a menu is as wide as its widest line (`width: 100%`,
+//! `white-space: nowrap`, the menu as wide as its lines), and that at least `.menu`'s
 //! `min-width: 200px` less its border and its padding (`box-sizing: border-box`).
 //!
 //! An item that shows a state (the display settings' and the ViewCube's, interact.js's
@@ -121,7 +121,7 @@ pub fn node<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     .inner
 }
 
-/// The least a menu's rows are wide: `.menu`'s `min-width: 200px`, less its border and its
+/// The least a menu's lines are wide: `.menu`'s `min-width: 200px`, less its border and its
 /// padding inside it.
 pub fn least_width() -> f32 {
     theme::MENU_MIN_WIDTH - 2.0 * (f32::from(theme::MENU_PADDING) + theme::BORDER_WIDTH)
@@ -177,7 +177,7 @@ pub fn head_width(ui: &Ui, text: &str) -> f32 {
     head_galley(ui, text).size().x + 2.0 * theme::MENU_ITEM_PADDING
 }
 
-/// A menu's rows' width: the widest of its head's, its items', and `more` (its other rows',
+/// A menu's lines' width: the widest of its head's, its items', and `more` (its other lines',
 /// as Select Other's foot), and [`least_width`] at least.
 pub fn width<'a>(
     ui: &Ui,
@@ -346,17 +346,17 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
     }
 }
 
-/// A menu's row: a head (`.mh`), a separator (`.msep`), or an item and what it asks when it's
-/// clicked.
+/// A menu's line, as [`rows`] takes it: a head (`.mh`), a separator (`.msep`), or an item and
+/// what it asks when it's clicked.
 pub enum Row<'a, A> {
     Head(&'a str),
     Separator,
     Item(Item<'a>, A),
 }
 
-/// `rows` drawn as every menu's are, each as wide as the widest, in a menu for a screen reader
-/// labelled `label` ([`node`]): what the item clicked asks, the menu closed (the display
-/// settings' and the ViewCube's menus).
+/// `rows` drawn as a menu's lines, as every menu's are, each as wide as the widest line, in a
+/// menu for a screen reader labelled `label` ([`node`]): what the item clicked asks, the menu
+/// closed (the display settings' and the ViewCube's menus).
 pub fn rows<A: Copy>(ui: &mut Ui, label: &str, rows: &[Row<'_, A>]) -> Option<A> {
     node(ui, label, |ui| {
         ui.spacing_mut().item_spacing = Vec2::ZERO;

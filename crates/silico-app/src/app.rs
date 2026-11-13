@@ -1204,7 +1204,9 @@ impl<P: Clients + 'static> App<P> {
     /// With a modal open (the sheet too), none acts: Esc is the modal's Cancel (the sheet's
     /// close), and Enter its OK. With a dialog open, Enter and Esc are the dialog's, taken
     /// here and given to it once its inputs have taken this frame's typing (`Panes::dialog`,
-    /// in `crate::panes`). Whether a command was started, and the dialog's key.
+    /// in `crate::panes`). Whether the frame after is to be asked for (a command started, a
+    /// modal's key taken, or an Esc [`command_keys`](Self::command_keys) takes; not the
+    /// sheet's or What's Wrong's Esc, which closes it and asks nothing), and the dialog's key.
     fn keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
         self.modal_key = None;
         if self.asking.is_some() {
@@ -1269,7 +1271,10 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The keyboard's commands with no modal open: [`keys`](Self::keys)'s, a name being
-    /// typed already sent where one asks it.
+    /// typed already sent where one asks it. Whether the frame after is to be asked for: a
+    /// command started, or an Esc taken past Home and Select Other's menu (whose Esc leaves
+    /// Home, or closes the menu, and asks nothing), whatever that Esc does, with a document
+    /// shown or none; and the dialog's key.
     fn command_keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
         // Never a letter typed, nor a key a text field moves its cursor with (Home).
         let typing = ui.ctx().text_edit_focused();
@@ -1411,7 +1416,7 @@ impl<P: Clients + 'static> App<P> {
         let filters_said =
             !typing && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::F5));
         // No document shown (the start page): nothing below acts, but an Esc taken asks for
-        // its frame, as every one does.
+        // its frame, as one with a document shown does.
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return (esc, None);
         };

@@ -982,8 +982,8 @@ mod tests {
                 head.galley.job.sections[0].format.extra_letter_spacing,
                 MH_SPACING
             );
-            // A menu is as wide as its widest row (`.menu` is `position: fixed`, so it
-            // shrinks to fit its rows): here the head's, its words and `.mh`'s `padding: 6px
+            // A menu is as wide as its widest line (`.menu` is `position: fixed`, so it
+            // shrinks to fit its lines): here the head's, its words and `.mh`'s `padding: 6px
             // 8px 2px`, 8 at each side; past `.menu`'s least, and every item as wide.
             let width = head.galley.size().x + 2.0 * MI_PAD;
             assert!(
