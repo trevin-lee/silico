@@ -346,39 +346,39 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
     }
 }
 
-/// A menu's line, as [`rows`] takes it: a head (`.mh`), a separator (`.msep`), or an item and
+/// A menu's line, as [`lines`] takes it: a head (`.mh`), a separator (`.msep`), or an item and
 /// what it asks when it's clicked.
-pub enum Row<'a, A> {
+pub enum Line<'a, A> {
     Head(&'a str),
     Separator,
     Item(Item<'a>, A),
 }
 
-/// `rows` drawn as a menu's lines, as every menu's are, each as wide as the widest line, in a
-/// menu for a screen reader labelled `label` ([`node`]): what the item clicked asks, the menu
-/// closed (the display settings' and the ViewCube's menus).
-pub fn rows<A: Copy>(ui: &mut Ui, label: &str, rows: &[Row<'_, A>]) -> Option<A> {
+/// `lines` drawn as every menu's are, each as wide as the widest, in a menu for a screen
+/// reader labelled `label` ([`node`]): what the item clicked asks, the menu closed (the
+/// display settings' and the ViewCube's menus).
+pub fn lines<A: Copy>(ui: &mut Ui, label: &str, lines: &[Line<'_, A>]) -> Option<A> {
     node(ui, label, |ui| {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
-        let heads = rows
+        let heads = lines
             .iter()
-            .filter_map(|row| match row {
-                Row::Head(text) => Some(head_width(ui, text)),
+            .filter_map(|line| match line {
+                Line::Head(text) => Some(head_width(ui, text)),
                 _ => None,
             })
             .fold(0.0, f32::max);
-        let items = rows.iter().filter_map(|row| match row {
-            Row::Item(row_item, _) => Some(row_item),
+        let items = lines.iter().filter_map(|line| match line {
+            Line::Item(line_item, _) => Some(line_item),
             _ => None,
         });
         let widest = width(ui, None, items, heads);
         let mut asked = None;
-        for row in rows {
-            match row {
-                Row::Head(text) => head(ui, text, widest),
-                Row::Separator => separator(ui, widest),
-                Row::Item(row_item, act) => {
-                    if item(ui, row_item, widest).clicked() {
+        for line in lines {
+            match line {
+                Line::Head(text) => head(ui, text, widest),
+                Line::Separator => separator(ui, widest),
+                Line::Item(line_item, act) => {
+                    if item(ui, line_item, widest).clicked() {
                         asked = Some(*act);
                         ui.close();
                     }

@@ -721,7 +721,7 @@ impl<P: Clients + 'static> App<P> {
         // A name being typed, clicked away from: sent before any control the click lands on
         // acts, so it comes first in the tab's queue.
         let renamed = self.rename_clicked_away(ui.ctx());
-        let (mut started, dialog_key) = self.keys(ui);
+        let (mut next_frame, dialog_key) = self.keys(ui);
         // The canvas's Select Other closed under a modal, the shortcut sheet, or What's
         // Wrong (one its keys just opened, `?`, too): the focus and the keys are theirs.
         let over =
@@ -729,12 +729,12 @@ impl<P: Clients + 'static> App<P> {
         if over && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
             tab.close_select_other(ui.ctx());
         }
-        started |= renamed;
-        started |= self.take_browsed();
-        self.app_bar(ui, &mut started);
+        next_frame |= renamed;
+        next_frame |= self.take_browsed();
+        self.app_bar(ui, &mut next_frame);
         if self.start_shown() {
             // The start page alone between the bars: no toolbar, panes, or dialog.
-            self.status_bar(ui, &mut started);
+            self.status_bar(ui, &mut next_frame);
             let act = egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(theme::PANEL_BG))
                 .show(ui, |ui| {
@@ -749,12 +749,12 @@ impl<P: Clients + 'static> App<P> {
                     start::page(ui, &shown)
                 })
                 .inner;
-            self.start_act(ui, act, &mut started);
-            self.after_drawing(ui, started);
+            self.start_act(ui, act, &mut next_frame);
+            self.after_drawing(ui, next_frame);
             return;
         }
-        self.toolbar(ui, &mut started);
-        self.status_bar(ui, &mut started);
+        self.toolbar(ui, &mut next_frame);
+        self.status_bar(ui, &mut next_frame);
         // What sketch mode adds to each view's fits: its geometry, and the bands its bar and
         // palette cover, set before the viewport takes the frame's asked view.
         let ppp = ui.ctx().pixels_per_point();
@@ -769,7 +769,7 @@ impl<P: Clients + 'static> App<P> {
             ui,
             active.and_then(|at| self.tabs.get_mut(at)),
             &self.sessions,
-            &mut started,
+            &mut next_frame,
         );
         // The panes reach the bars and the window's sides, as `#main` fills its grid area.
         let main = egui::Frame::NONE.fill(theme::PANEL_BG);
@@ -798,7 +798,7 @@ impl<P: Clients + 'static> App<P> {
                 tab: active.and_then(|at| tabs.get_mut(at)),
                 sessions,
                 name,
-                started: &mut started,
+                started: &mut next_frame,
                 drawing,
                 dialog_key,
                 remembered,
@@ -817,10 +817,10 @@ impl<P: Clients + 'static> App<P> {
                 .unwrap_or_else(|| ui.max_rect());
             // Where sketch mode's panels float.
             self.canvas = Some(canvas);
-            self.disk_banner(ui, canvas, &mut started);
+            self.disk_banner(ui, canvas, &mut next_frame);
             self.show_toast(ui, canvas);
         });
-        self.sketch_canvas(ui, &mut started);
+        self.sketch_canvas(ui, &mut next_frame);
         // A toast the tab shown asked for this frame (a box's), drawn from the next; one a tab
         // not shown asked for (its drag ended as it was left) dropped, never shown later out
         // of its context.
@@ -836,7 +836,7 @@ impl<P: Clients + 'static> App<P> {
             self.toast = Some((text, ui.input(|input| input.time)));
             ui.ctx().request_repaint();
         }
-        self.after_drawing(ui, started);
+        self.after_drawing(ui, next_frame);
     }
 
     /// The active tab's rename field, if a press of the pointer this frame lands away from
@@ -864,15 +864,15 @@ impl<P: Clients + 'static> App<P> {
 
     /// What the start page's `act` asks: a new untitled part, Open's panel, a recent
     /// document opened (or its tab shown, if it's open), or the MCP config copied.
-    fn start_act(&mut self, ui: &Ui, act: start::Act, started: &mut bool) {
+    fn start_act(&mut self, ui: &Ui, act: start::Act, next_frame: &mut bool) {
         match act {
             start::Act::None => {}
             start::Act::New => {
                 self.new_part();
-                *started = true;
+                *next_frame = true;
             }
             start::Act::Open => self.ask_open(ui.ctx()),
-            start::Act::Recent(path) => *started |= self.open_recent(&path),
+            start::Act::Recent(path) => *next_frame |= self.open_recent(&path),
             start::Act::CopyMcpConfig => ui.ctx().copy_text(self.mcp_config()),
         }
     }
@@ -906,8 +906,8 @@ impl<P: Clients + 'static> App<P> {
 
     /// The frame's end, the window drawn: what's asked, as a modal; the window closed once
     /// a quit has closed every tab, or kept open while one holds edits; and the next frame
-    /// asked for.
-    fn after_drawing(&mut self, ui: &mut Ui, mut started: bool) {
+    /// asked for, if `next_frame` (or what's done here) says it's to be.
+    fn after_drawing(&mut self, ui: &mut Ui, mut next_frame: bool) {
         // A border's drag whose release the panes didn't see (they're gone) ended.
         self.columns.settle(ui.ctx());
         // The dialog OK'd this frame, if one was (one tab's panes draw a frame), remembered.
@@ -939,12 +939,12 @@ impl<P: Clients + 'static> App<P> {
                     ) {
                         tab.whats_wrong = false;
                     }
-                    started |= tab.card_asked(&sessions, asked);
+                    next_frame |= tab.card_asked(&sessions, asked);
                 }
             }
         }
-        self.ask(ui, &mut started);
-        started |= self.next_quit_save(ui.ctx());
+        self.ask(ui, &mut next_frame);
+        next_frame |= self.next_quit_save(ui.ctx());
         if self.quitting && self.tabs.is_empty() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -966,7 +966,7 @@ impl<P: Clients + 'static> App<P> {
                 self.asking = Some(Asking::Quit);
             }
         }
-        if started {
+        if next_frame {
             // Polled next frame, even if it answered at once.
             ui.ctx().request_repaint();
         }
@@ -1238,8 +1238,8 @@ impl<P: Clients + 'static> App<P> {
             return (false, None);
         }
         let renamed = self.rename_before_command(ui.ctx());
-        let (started, dialog_key) = self.command_keys(ui);
-        (started || renamed, dialog_key)
+        let (next_frame, dialog_key) = self.command_keys(ui);
+        (next_frame || renamed, dialog_key)
     }
 
     /// The commands' shortcuts that act on a document, which send a name being typed in
@@ -1922,7 +1922,7 @@ impl<P: Clients + 'static> App<P> {
     /// File menu, Save, Undo and Redo, and the open documents' tabs, an asterisk on a changed
     /// one's (docs/ux/solidworks.md, §6), scrolling across when they overflow. On macOS it's
     /// the window's title bar (`bar`).
-    fn app_bar(&mut self, ui: &mut Ui, started: &mut bool) {
+    fn app_bar(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         egui::Panel::top("app_bar")
             .exact_size(theme::TOP_BAR_HEIGHT)
             .frame(egui::Frame::NONE.fill(theme::TOP_BAR_BG))
@@ -1941,9 +1941,9 @@ impl<P: Clients + 'static> App<P> {
                     |ui| {
                         ui.spacing_mut().item_spacing.x = theme::APP_BAR_ITEM_SPACING;
                         bar::inset(ui);
-                        self.app_bar_buttons(ui, started);
+                        self.app_bar_buttons(ui, next_frame);
                         bar::separator(ui);
-                        self.document_tabs(ui, started);
+                        self.document_tabs(ui, next_frame);
                     },
                 );
             });
@@ -1951,7 +1951,7 @@ impl<P: Clients + 'static> App<P> {
 
     /// The app bar's buttons: Home, at the far left (the start page, over the open
     /// documents), the File menu, Save, Undo, and Redo.
-    fn app_bar_buttons(&mut self, ui: &mut Ui, started: &mut bool) {
+    fn app_bar_buttons(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         let start_shown = self.start_shown();
         let home = bar::button(ui, Icon::Home, None, "Home", true, Some(start_shown));
         let home = bar::tooltip(
@@ -1964,7 +1964,7 @@ impl<P: Clients + 'static> App<P> {
             self.home = true;
         }
         let file = bar::button(ui, Icon::Menu, Some("File"), "File", true, None);
-        bar::menu(&file, |ui| self.file_menu(ui, started));
+        bar::menu(&file, |ui| self.file_menu(ui, next_frame));
         // Off on Home, as the shortcuts are (the prototype's `S.view === 'doc'`): the
         // document is hidden.
         let tab = self
@@ -1997,7 +1997,7 @@ impl<P: Clients + 'static> App<P> {
                 self.ask_save_as(id, false, &ctx);
             } else {
                 tab.save(&self.sessions, false);
-                *started = true;
+                *next_frame = true;
             }
         }
         let tab = self
@@ -2026,13 +2026,13 @@ impl<P: Clients + 'static> App<P> {
                 && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at))
             {
                 tab.step(&self.sessions, undo);
-                *started = true;
+                *next_frame = true;
             }
         }
     }
 
     /// The File menu's items: New, Open…, Save As…, Export…, Revert, Reload, and Close.
-    fn file_menu(&mut self, ui: &mut Ui, started: &mut bool) {
+    fn file_menu(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         let open = !self.tabs.is_empty();
         let transaction = self
             .active_place()
@@ -2047,7 +2047,7 @@ impl<P: Clients + 'static> App<P> {
         // New asks nothing: an untitled part at once.
         if ui.button("New").clicked() {
             self.new_part();
-            *started = true;
+            *next_frame = true;
             ui.close();
         }
         if ui.button("Open…").clicked() {
@@ -2086,7 +2086,7 @@ impl<P: Clients + 'static> App<P> {
         {
             if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
                 tab.revert(&self.sessions, false);
-                *started = true;
+                *next_frame = true;
             }
             ui.close();
         }
@@ -2104,7 +2104,7 @@ impl<P: Clients + 'static> App<P> {
             if let Some(id) = self.active {
                 let now = ui.input(|input| input.time);
                 self.reload(id, now);
-                *started = true;
+                *next_frame = true;
             }
             ui.close();
         }
@@ -2112,7 +2112,7 @@ impl<P: Clients + 'static> App<P> {
             if let Some(id) = self.active {
                 self.close(id);
             }
-            *started = true;
+            *next_frame = true;
             ui.close();
         }
     }
@@ -2120,7 +2120,7 @@ impl<P: Clients + 'static> App<P> {
     /// The open documents' tabs, after the separator: a click shows one's document, and its
     /// ×, shown while it's hovered or shown, closes it. A tab newly shown is scrolled into
     /// view.
-    fn document_tabs(&mut self, ui: &mut Ui, started: &mut bool) {
+    fn document_tabs(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         let start_shown = self.start_shown();
         let mut show = None;
         let mut close = None;
@@ -2157,7 +2157,7 @@ impl<P: Clients + 'static> App<P> {
         }
         if let Some(id) = close {
             self.close(id);
-            *started = true;
+            *next_frame = true;
         }
     }
 
@@ -2167,7 +2167,7 @@ impl<P: Clients + 'static> App<P> {
     /// sketch-first (Trevin's decision of 2026-11-09), never as primitives; and
     /// SELECT's Clear selection. In a sketch, SKETCH's: a tool chosen, or left if it's on,
     /// Construction turned on or off, as their keys do, and Finish Sketch.
-    fn toolbar(&mut self, ui: &mut Ui, started: &mut bool) {
+    fn toolbar(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         let mut tab = self
             .active
             .and_then(|active| self.tabs.iter_mut().find(|tab| tab.id == active));
@@ -2202,7 +2202,7 @@ impl<P: Clients + 'static> App<P> {
         match act {
             Some(toolbar::Act::Dialog(kind)) => {
                 tab.open_dialog(&self.sessions, kind, &self.remembered);
-                *started = true;
+                *next_frame = true;
             }
             Some(toolbar::Act::ClearSelection) => tab.selection_mut().clear(),
             Some(toolbar::Act::Filter(kind)) => {
@@ -2214,11 +2214,11 @@ impl<P: Clients + 'static> App<P> {
             }
             Some(toolbar::Act::CreateSketch(plane)) => {
                 tab.create_sketch(&self.sessions, plane);
-                *started = true;
+                *next_frame = true;
             }
             Some(toolbar::Act::FinishSketch) => {
                 tab.finish_sketch(&self.sessions, true);
-                *started = true;
+                *next_frame = true;
             }
             Some(toolbar::Act::SketchTool(choice)) => tab.sketch_toggle(choice),
             Some(toolbar::Act::Construction) => tab.sketch_toggle_construction(),
@@ -2231,7 +2231,7 @@ impl<P: Clients + 'static> App<P> {
     /// command runs: section 3, *Stop*), Rebuild, the last refusal, the file on disk (its
     /// chip offering again the choice kept), whether the document is saved, and Shortcuts,
     /// which opens the shortcut sheet.
-    fn status_bar(&mut self, ui: &mut Ui, started: &mut bool) {
+    fn status_bar(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         let shortcuts = egui::Panel::bottom("status_bar")
             .exact_size(theme::STATUS_BAR_HEIGHT)
             .resizable(false)
@@ -2247,11 +2247,11 @@ impl<P: Clients + 'static> App<P> {
                 let asked = crate::status::bar(ui, &crate::status::of(tab, message));
                 if asked.stop {
                     tab.stop(&self.sessions);
-                    *started = true;
+                    *next_frame = true;
                 }
                 if asked.rebuild {
                     tab.rebuild(&self.sessions);
-                    *started = true;
+                    *next_frame = true;
                 }
                 if asked.whats_wrong {
                     tab.whats_wrong = true;
@@ -2274,7 +2274,7 @@ impl<P: Clients + 'static> App<P> {
     /// Sketch mode's panels in the canvas while a sketch is open in the tab shown (the
     /// prototype's): the sketch bar at the canvas's top centre, its Finish Sketch and Cancel
     /// taken, and the Sketch Palette at its right.
-    fn sketch_canvas(&mut self, ui: &mut Ui, started: &mut bool) {
+    fn sketch_canvas(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         // A tab not shown has no menu open: it closes as the tab is hidden.
         let shown_at = self.active_place();
         for (at, tab) in self.tabs.iter_mut().enumerate() {
@@ -2335,13 +2335,13 @@ impl<P: Clients + 'static> App<P> {
         if look_at {
             tab.look_at();
         }
-        *started |= action != BarAction::None;
+        *next_frame |= action != BarAction::None;
         // Whole in the canvas, and clear of the palette.
         if let Some(asked) = modify
             .and_then(|view| sketch::dimension::modify_box(ui.ctx(), owner, &view, canvas, palette))
         {
             tab.sketch_modify(sessions, asked);
-            *started = true;
+            *next_frame = true;
         }
         // The canvas's right-click menu, at the click (the prototype's): what it asks done,
         // and closed by it, or by any button pressed outside it (a click, a drag, a right
@@ -2383,13 +2383,13 @@ impl<P: Clients + 'static> App<P> {
             {
                 mode.menu_at = None;
             }
-            *started |= asked != sketch::bar::MenuAction::None;
+            *next_frame |= asked != sketch::bar::MenuAction::None;
         }
         if let Some(choice) =
             offer.and_then(|view| sketch::dimension::offer_prompt(ui.ctx(), &view))
         {
             tab.sketch_offer(sessions, choice);
-            *started = true;
+            *next_frame = true;
         }
     }
 
@@ -2398,7 +2398,7 @@ impl<P: Clients + 'static> App<P> {
     /// the session reloads it) or to keep the edits (a commit is then a conflict); or else,
     /// once the session has reloaded its file with nothing held, in the info tone, saying so until
     /// it's dismissed.
-    fn disk_banner(&mut self, ui: &mut Ui, canvas: egui::Rect, started: &mut bool) {
+    fn disk_banner(&mut self, ui: &mut Ui, canvas: egui::Rect, next_frame: &mut bool) {
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return;
         };
@@ -2464,11 +2464,11 @@ impl<P: Clients + 'static> App<P> {
                 Some("Show changes") => {
                     tab.show_changes(&self.sessions);
                     self.asking = Some(Asking::Changes(tab.id));
-                    *started = true;
+                    *next_frame = true;
                 }
                 Some("Reload, discard my edits") => {
                     tab.revert(&self.sessions, false);
-                    *started = true;
+                    *next_frame = true;
                 }
                 Some(_) => tab.disk_choice = DiskChoice::Kept,
                 None => {}
@@ -2542,14 +2542,14 @@ impl<P: Clients + 'static> App<P> {
             banner::Clicked::Dismiss => tab.reloaded = None,
             banner::Clicked::Button(_) => {
                 tab.restore(&self.sessions, reloaded.from);
-                *started = true;
+                *next_frame = true;
             }
             banner::Clicked::None => {}
         }
     }
 
     /// What the app is asking, as a modal (`modal`): a path, or whether to save.
-    fn ask(&mut self, ui: &mut Ui, started: &mut bool) {
+    fn ask(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         let Some(asking) = self.asking.clone() else {
             return;
         };
@@ -2590,7 +2590,7 @@ impl<P: Clients + 'static> App<P> {
                 if (ok || enter) && !self.open_path.trim().is_empty() {
                     let path = std::mem::take(&mut self.open_path);
                     self.open(&path, false);
-                    *started = true;
+                    *next_frame = true;
                     done = true;
                 }
                 if cancel || escape {
@@ -2650,7 +2650,7 @@ impl<P: Clients + 'static> App<P> {
                         let (path, _) = browse::document_path(path.to_string_lossy().into_owned());
                         tab.save_as(&self.sessions, path, false, then_close);
                     }
-                    *started = true;
+                    *next_frame = true;
                     done = true;
                 }
                 if cancel || escape {
@@ -2697,7 +2697,7 @@ impl<P: Clients + 'static> App<P> {
                     );
                 if reload {
                     tab.reload(sessions);
-                    *started = true;
+                    *next_frame = true;
                     done = true;
                 }
                 if cancel || escape {
@@ -2741,7 +2741,7 @@ impl<P: Clients + 'static> App<P> {
                 );
                 if reload {
                     tab.revert(sessions, false);
-                    *started = true;
+                    *next_frame = true;
                     done = true;
                 }
                 if save_as {
@@ -2784,15 +2784,15 @@ impl<P: Clients + 'static> App<P> {
                     export::Action::Browse => browse = true,
                     export::Action::Export(request) => {
                         tab.export(sessions, request);
-                        *started = true;
+                        *next_frame = true;
                     }
                     export::Action::Replace => {
                         tab.replace_export(sessions);
-                        *started = true;
+                        *next_frame = true;
                     }
                     export::Action::Cancel => {
                         tab.stop_export();
-                        *started = true;
+                        *next_frame = true;
                         done = true;
                     }
                 }
@@ -2822,7 +2822,7 @@ impl<P: Clients + 'static> App<P> {
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
                         tab.save_as(&self.sessions, path.clone(), true, then_close);
                     }
-                    *started = true;
+                    *next_frame = true;
                     done = true;
                 }
                 if cancel || escape {
@@ -2866,14 +2866,14 @@ impl<P: Clients + 'static> App<P> {
                         Some(tab) => tab.save(sessions, true),
                         None => {}
                     }
-                    *started = true;
+                    *next_frame = true;
                     done = true;
                 }
                 if drop {
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
                         tab.revert(sessions, true);
                     }
-                    *started = true;
+                    *next_frame = true;
                     done = true;
                 }
                 if cancel || escape {
@@ -2944,7 +2944,7 @@ impl<P: Clients + 'static> App<P> {
                         }
                     }
                     self.quitting = true;
-                    *started = true;
+                    *next_frame = true;
                     done = true;
                 }
                 if cancel || escape {
@@ -3578,9 +3578,9 @@ mod tests {
 
     #[test]
     fn sketch_modes_panels_asked_nothing_leave_whether_a_command_was_started_as_it_was() {
-        // `started` says whether the frame started a command, so its next frame is asked for
-        // at once: the sketch bar and the palette, Finish Sketch and Cancel unclicked, start
-        // none, and never take back one started before them.
+        // `next_frame` says whether the frame after is asked for at once (a command
+        // started): the sketch bar and the palette, Finish Sketch and Cancel unclicked, ask
+        // for none, and never take back an ask made before them.
         let (mut app, dir) = app();
         let open = answered(&app, &dir, 1, "one.silico", true);
         let id = session(&open);
@@ -3597,12 +3597,12 @@ mod tests {
         for before in [false, true] {
             let mut after = None;
             let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
-                let mut started = before;
-                app.sketch_canvas(ui, &mut started);
-                after = Some(started);
+                let mut next_frame = before;
+                app.sketch_canvas(ui, &mut next_frame);
+                after = Some(next_frame);
             });
             output.textures_delta.clear();
-            assert_eq!(after, Some(before), "started {before}");
+            assert_eq!(after, Some(before), "asked before: {before}");
             // Drawn, so not passed over: the sketch bar's Finish Sketch among what's painted.
             fn texts(shape: &eframe::egui::Shape, into: &mut Vec<String>) {
                 match shape {

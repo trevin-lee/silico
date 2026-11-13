@@ -2560,7 +2560,7 @@ fn cube_menu(ui: &mut Ui, perspective: bool) -> Option<CubeAct> {
         .filter(|(command, _)| *command != Command::Fit)
         .map(|(command, ask)| (command, ask, command.caps(&ctx)))
         .collect();
-    let mut rows = Vec::new();
+    let mut lines = Vec::new();
     for (command, ask, caps) in &views {
         let home = *command == Command::Home;
         let item = menu::Item {
@@ -2573,14 +2573,14 @@ fn cube_menu(ui: &mut Ui, perspective: bool) -> Option<CubeAct> {
             lit: false,
             checked: None,
         };
-        rows.push(menu::Row::Item(item, CubeAct::View(*ask)));
+        lines.push(menu::Line::Item(item, CubeAct::View(*ask)));
         if home {
-            rows.push(menu::Row::Separator);
-            rows.push(menu::Row::Head("Views"));
+            lines.push(menu::Line::Separator);
+            lines.push(menu::Line::Head("Views"));
         }
     }
-    rows.push(menu::Row::Separator);
-    rows.push(menu::Row::Head("Camera"));
+    lines.push(menu::Line::Separator);
+    lines.push(menu::Line::Head("Camera"));
     for (word, wanted) in [("Orthographic", false), ("Perspective", true)] {
         let item = menu::Item {
             icon: None,
@@ -2592,9 +2592,9 @@ fn cube_menu(ui: &mut Ui, perspective: bool) -> Option<CubeAct> {
             lit: false,
             checked: Some(Checked::Choice(perspective == wanted)),
         };
-        rows.push(menu::Row::Item(item, CubeAct::Perspective(wanted)));
+        lines.push(menu::Line::Item(item, CubeAct::Perspective(wanted)));
     }
-    menu::rows(ui, CUBE_MENU, &rows)
+    menu::lines(ui, CUBE_MENU, &lines)
 }
 
 /// What the display settings' menu asks: the visual style (the one there is), the
@@ -2622,15 +2622,15 @@ fn display_menu(ui: &mut Ui, perspective: bool, grid: bool) -> Option<DisplayAct
         lit: false,
         checked: Some(checked),
     };
-    let rows = [
-        menu::Row::Head("Visual style"),
-        menu::Row::Item(
+    let lines = [
+        menu::Line::Head("Visual style"),
+        menu::Line::Item(
             item(None, SHADED_WITH_VISIBLE_EDGES, Checked::Choice(true)),
             DisplayAct::Style,
         ),
-        menu::Row::Separator,
-        menu::Row::Head("Camera"),
-        menu::Row::Item(
+        menu::Line::Separator,
+        menu::Line::Head("Camera"),
+        menu::Line::Item(
             item(
                 Some(Icon::Ortho),
                 "Orthographic",
@@ -2638,7 +2638,7 @@ fn display_menu(ui: &mut Ui, perspective: bool, grid: bool) -> Option<DisplayAct
             ),
             DisplayAct::Perspective(false),
         ),
-        menu::Row::Item(
+        menu::Line::Item(
             item(
                 Some(Icon::Persp),
                 "Perspective",
@@ -2646,13 +2646,13 @@ fn display_menu(ui: &mut Ui, perspective: bool, grid: bool) -> Option<DisplayAct
             ),
             DisplayAct::Perspective(true),
         ),
-        menu::Row::Separator,
-        menu::Row::Item(
+        menu::Line::Separator,
+        menu::Line::Item(
             item(Some(Icon::Grid), "Ground grid", Checked::Toggle(grid)),
             DisplayAct::Grid,
         ),
     ];
-    menu::rows(ui, DISPLAY_SETTINGS, &rows)
+    menu::lines(ui, DISPLAY_SETTINGS, &lines)
 }
 
 /// Where the ViewCube is drawn in `viewport`: its margin in from the canvas's top and right.

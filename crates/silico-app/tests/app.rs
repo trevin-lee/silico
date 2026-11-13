@@ -25340,12 +25340,21 @@ fn esc_takes_a_held_drag_then_the_prompts_cancel(tool: Option<silico_app::viewpo
     assert_eq!(text_of(&f, &h), text);
     assert_eq!(view(&h).tool, tool);
     if tool.is_some() {
-        // The Modify box, the sketch read again.
+        // The Modify box, the sketch read again, 33 typed into it: Esc closes it, its value
+        // as it was, nothing sent.
         sketch_read(&mut h);
         open_modify_box(&f, &mut h);
+        modify_dimension(
+            &f,
+            &mut h,
+            silico_app::sketch::dimension::ModifyAction::Typed("33".to_owned()),
+        );
         h.key_press(Key::Escape);
         step(&mut h);
+        settled(&mut h);
         assert!(sketch_mode(&h).unwrap().edit_box.is_none());
+        assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+        assert_eq!(text_of(&f, &h), text);
         assert_eq!(view(&h).tool, tool);
         // Then the bar's tool.
         h.key_press(Key::Escape);
