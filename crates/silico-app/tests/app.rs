@@ -4887,11 +4887,11 @@ fn a_rename_behind_sketch_modes_cancel_replaces_the_name_the_cancel_puts_back() 
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// EXAMPLE open, Pin renamed PinK, and its Edit Feature dialog open with `typed` typed into
-/// each of its inputs, one by one, each settled: one edit before the dialog, and one of the
-/// dialog's for each input.
-fn pin_dialog_edited(f: &Fixture, typed: &[(&str, &str)]) -> AppHarness {
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+/// `text` (a document with the M2.1 example's pin) open, Pin renamed PinK, and its Edit
+/// Feature dialog open with `typed` typed into each of its inputs, one by one, each settled:
+/// one edit before the dialog, and one of the dialog's for each input.
+fn pin_dialog_edited(f: &Fixture, text: &str, typed: &[(&str, &str)]) -> AppHarness {
+    let (mut h, _) = f.opened("example.silico", text);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     type_name(&mut h, "K");
@@ -4911,16 +4911,17 @@ fn pin_dialog_edited(f: &Fixture, typed: &[(&str, &str)]) -> AppHarness {
 #[test]
 fn a_dialogs_ok_waiting_behind_its_last_edit_counts_its_edits_as_the_one_step_it_makes() {
     // Round 2's B, by hand: PinK (one edit), then Edit Feature, two of its edits applied (or
-    // three, robustness's count), a further edit held in the session's queue, and OK: the
-    // dialog's edits are the one step OK makes, so two edits are unsaved, while the OK
-    // waits too, and after.
-    let typed: [&[(&str, &str)]; 2] = [
+    // three, robustness's count; or none, round 3's T3-1, the held edit its only one), a
+    // further edit held in the session's queue, and OK: the dialog's edits are the one step
+    // OK makes, so two edits are unsaved, while the OK waits too, and after.
+    let typed: [&[(&str, &str)]; 3] = [
         &[("Height", "3"), ("Radius", "1")],
         &[("Height", "3"), ("Radius", "1"), ("X", "5")],
+        &[],
     ];
     for typed in typed {
         let f = fixture();
-        let mut h = pin_dialog_edited(&f, typed);
+        let mut h = pin_dialog_edited(&f, EXAMPLE, typed);
         let (hold, check) = hold_queue(&f, &h, 0);
         type_into(&mut h, "Height", "4");
         {
@@ -4940,33 +4941,6 @@ fn a_dialogs_ok_waiting_behind_its_last_edit_counts_its_edits_as_the_one_step_it
         settled(&mut h);
         assert!(in_status_bar(&h, "Unsaved · 2 edits"));
     }
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
-fn a_dialogs_ok_asked_while_its_only_edit_waits_counts_the_one_step_it_makes() {
-    // Round 3's T3-1: PinK, then Edit Feature with nothing of its own applied; the session's
-    // queue held, its height typed (its only edit, waiting), and OK: the edit waiting is
-    // what OK makes its one step, so two edits are unsaved, while it waits and after.
-    let f = fixture();
-    let mut h = pin_dialog_edited(&f, &[]);
-    let (hold, check) = hold_queue(&f, &h, 0);
-    type_into(&mut h, "Height", "4");
-    {
-        let sessions = Arc::clone(&f.sessions);
-        h.state_mut().tabs_mut()[0].close_dialog(&sessions, true);
-    }
-    step(&mut h);
-    assert!(h.state().tabs()[0].unsettled(), "the OK didn't wait");
-    assert!(
-        in_status_bar(&h, "Unsaved · 2 edits"),
-        "{:?}",
-        everything(&h)
-    );
-    hold.release();
-    let _ = check.wait();
-    settled(&mut h);
-    assert!(in_status_bar(&h, "Unsaved · 2 edits"));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -5006,7 +4980,7 @@ fn a_dialogs_cancel_waiting_counts_none_of_its_edits() {
     // session's queue held and Cancel clicked: its undo waits, and the dialog's edits it
     // takes back count for nothing, one edit unsaved, the rename.
     let f = fixture();
-    let mut h = pin_dialog_edited(&f, &[("Height", "3"), ("Radius", "1")]);
+    let mut h = pin_dialog_edited(&f, EXAMPLE, &[("Height", "3"), ("Radius", "1")]);
     let (hold, check) = hold_queue(&f, &h, 0);
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Cancel")

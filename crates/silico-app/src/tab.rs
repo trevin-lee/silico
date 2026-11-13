@@ -11124,11 +11124,9 @@ mod tests {
     /// Off any poll, until the session's transaction has closed (a commit's or a rollback's
     /// applied, its answer not yet taken).
     fn ended_off_poll(tab: &Tab, sessions: &FakeSessions) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while sessions.status(&tab.id).session.unwrap().transaction {
-            assert!(std::time::Instant::now() < deadline, "never ended");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        until("the transaction ended", &|| {
+            !sessions.status(&tab.id).session.unwrap().transaction
+        });
     }
 
     /// The file `dir/part.silico` written by another program: BLOCK with its pin named Bolt.
