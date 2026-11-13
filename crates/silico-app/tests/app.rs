@@ -20692,11 +20692,9 @@ fn started_line() -> u32 {
     u32::try_from(source[..at].matches('\n').count() + 1).unwrap()
 }
 
-/// Whether the frame that takes `key`'s press, `modifiers` held, asks for the next at
-/// once itself, beyond egui's own ask after any input (`asked_from_app`): the app idle
-/// first, its idle frame asking no such thing. Each event its own frame, as the harness
-/// steps them, one pass each.
-fn asks_at_once_after(h: &mut AppHarness, modifiers: Modifiers, key: Key) -> bool {
+/// The app idle, one pass a frame, its idle frame asking for no frame of its own at once
+/// (`asked_from_app`): where [`asks_at_once_after`] and [`asks_at_once_after_events`] begin.
+fn idle_asking_nothing(h: &mut AppHarness) {
     // One pass a frame: a second, which egui runs when a layout asks it to, would take the
     // causes the frame before asked for out of `repaint_causes`.
     h.ctx
@@ -20709,6 +20707,43 @@ fn asks_at_once_after(h: &mut AppHarness, modifiers: Modifiers, key: Key) -> boo
         !asked_from_app(h).contains(&started_line()),
         "an idle frame asked"
     );
+}
+
+/// Whether the frame that takes `events`, all in one frame, asks for the next at once
+/// itself, as [`asks_at_once_after`] reads it for a key: the app idle first, its idle frame
+/// asking no such thing; then the events' frame, and the next, whose causes are theirs.
+fn asks_at_once_after_events(h: &mut AppHarness, events: Vec<eframe::egui::Event>) -> bool {
+    idle_asking_nothing(h);
+    for event in events {
+        h.event(event);
+    }
+    step(h);
+    step(h);
+    asked_from_app(h).contains(&started_line())
+}
+
+/// [`asks_at_once_after_events`] of a left click at `at`: the pointer there, pressed and let
+/// go, in one frame.
+fn asks_at_once_after_click(h: &mut AppHarness, at: eframe::egui::Pos2) -> bool {
+    use eframe::egui::{Event, PointerButton};
+    let button = |pressed| Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    asks_at_once_after_events(
+        h,
+        vec![Event::PointerMoved(at), button(true), button(false)],
+    )
+}
+
+/// Whether the frame that takes `key`'s press, `modifiers` held, asks for the next at
+/// once itself, beyond egui's own ask after any input (`asked_from_app`): the app idle
+/// first, its idle frame asking no such thing. Each event its own frame, as the harness
+/// steps them, one pass each.
+fn asks_at_once_after(h: &mut AppHarness, modifiers: Modifiers, key: Key) -> bool {
+    idle_asking_nothing(h);
     let event = |pressed| eframe::egui::Event::Key {
         key,
         pressed,
@@ -43389,5 +43424,105 @@ fn esc_on_the_start_page_with_no_document_asks_for_the_next_frame_at_once() {
     step(&mut h);
     assert!(h.state().tabs().is_empty());
     assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Escape));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_choice_from_sketch_modes_canvas_menu_asks_for_the_next_frame_at_once() {
+    // The boxed rectangle in sketch mode, its canvas menu open by a right click: the menu
+    // open and nothing chosen asks for no frame of its own; Smart Dimension chosen from it
+    // (which only chooses the tool, sending nothing) asks for the next at once, the menu
+    // closed and the tool chosen.
+    let f = fixture();
+    let mut h = boxed_sketch(&f);
+    open_menu(&f, &mut h, 20.0, 20.0);
+    step(&mut h);
+    let at = sketch_menu(&h)
+        .unwrap()
+        .get_by_label("Smart Dimension")
+        .rect()
+        .center();
+    assert!(asks_at_once_after_click(&mut h, at));
+    assert!(sketch_mode(&h).unwrap().menu_at.is_none());
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(silico_app::sketch::tools::Choice::Dimension)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_candidate_used_in_its_fillets_dialog_asks_for_the_next_frame_at_once() {
+    // The fillet whose edge broke, its own dialog open from the timeline, its card's
+    // candidates shown: Use on one puts it in the box, sent as the dialog's edit, which the
+    // frame after polls, so the click's frame asks for it at once.
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    edit_from_the_timeline(&mut h, "Inside corner");
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]);
+    let used = format!("Use {EDGE4}");
+    step_until(&mut h, "the candidates in the dialog", |h| {
+        dialog(h)
+            .query_by_role_and_label(Role::Button, &used)
+            .is_some()
+    });
+    settled(&mut h);
+    let at = dialog(&h)
+        .get_by_role_and_label(Role::Button, &used)
+        .rect()
+        .center();
+    assert!(asks_at_once_after_click(&mut h, at));
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge1", EDGE4]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_value_typed_into_an_open_dialog_asks_for_the_next_frame_at_once() {
+    // Pad's dialog on the triangle, its add answered and settled, its Length focused: a
+    // digit typed is sent as the Length's edit as it's typed, which the frame after polls, so the typing's
+    // frame asks for it at once.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
+    open_pad_on_triangle(&mut h);
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    field(&h, In::Dialog, "Length").focus();
+    step(&mut h);
+    step(&mut h);
+    let sent = h.state().tabs()[0].sent.len();
+    assert!(asks_at_once_after_events(
+        &mut h,
+        vec![eframe::egui::Event::Text("5".to_owned())]
+    ));
+    assert!(h.state().tabs()[0].sent.len() > sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dialogs_cancel_clicked_asks_for_the_next_frame_at_once() {
+    // Its button, not Esc (whose key the app asks for itself): Pad's dialog on the
+    // triangle, its add answered and settled, its Cancel clicked closes it, its transaction rolled back, which
+    // the frame after polls, so the click's frame asks for it at once.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
+    open_pad_on_triangle(&mut h);
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    let at = dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .rect()
+        .center();
+    assert!(asks_at_once_after_click(&mut h, at));
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     assert_eq!(never_waits::waits(), 0);
 }
