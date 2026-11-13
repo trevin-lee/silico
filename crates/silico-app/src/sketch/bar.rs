@@ -426,6 +426,7 @@ impl MenuItem {
             off: self.off,
             danger: false,
             lit: false,
+            checked: None,
         }
     }
 }

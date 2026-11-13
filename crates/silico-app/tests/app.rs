@@ -10936,9 +10936,9 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
     for (k, expected) in [1.0 / six, 1.0 / six, 2.0 / six].into_iter().enumerate() {
         assert!((corner.up[k] - expected).abs() < 1e-12);
     }
-    // Home: from (1, −1, 1)/√3 again.
+    // Home view: from (1, −1, 1)/√3 again.
     h.get_by_role_and_label(Role::Pane, "Viewport")
-        .get_by_label("Home")
+        .get_by_label("Home view")
         .click();
     step(&mut h);
     let home = view(&h).camera().clone();
@@ -10962,7 +10962,7 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
     // Its menu: Perspective, at 30°, the eye as far back as shows Home's height at the
     // target; Home then keeps the perspective.
     h.get_by_role_and_label(Role::Pane, "Viewport")
-        .get_by_label("Home")
+        .get_by_label("Home view")
         .click();
     step(&mut h);
     let height = ortho_height(view(&h).camera());
@@ -11085,7 +11085,7 @@ fn at_point(got: eframe::egui::Pos2, expected: eframe::egui::Pos2, what: &str) {
 }
 
 #[test]
-fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
+fn the_view_cubes_faces_edges_corners_and_buttons_are_where_the_home_view_sees_them() {
     // From (1, −1, 1) onto the cut's box's centre, z up: the view's right is (1, 1, 0)/√2
     // and its up (−1, 1, 2)/√6, so the cube's point (x, y, z), its faces at ±1, is drawn
     // at ((x + y)/√2, −(−x + y + 2z)/√6) · s from the cube's centre, y down, s half its
@@ -11103,7 +11103,14 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     // ±(1 − 6/128) = ±61/64 of a half side from its centre. The corners facing it more than
     // a tenth, 1 or 1/3, are clickable at theirs: the top front right (at the cube's
     // centre), the top front left, the top back right, and the bottom front right; none is
-    // drawn as a dot. The cube's edges are drawn once each, over the faces, in #827f7f, 1
+    // drawn as a dot. So are the edges whose views, between their faces', face it more than
+    // a tenth, (1, −1, 1)/√3 · (0, −1, 1)/√2 = 2/√6 for the top front and as much for the top
+    // right and the front right, the rest none: each at its middle, the top front's
+    // (0, −1, 1) at (−1/√2, −1/√6)·s, the top right's (1, 0, 1) at (1/√2, −1/√6)·s, and the
+    // front right's (1, −1, 0) at (0, 2/√6)·s. Home view and the ▾ (app.js's `home3d` and
+    // `cubeMenu`), 24 by 22 each (a 14-point icon, 5 each side), in a column whose right is
+    // 4 left of the cube, Home's top the cube's, the ▾ 2 under it. The cube's edges are
+    // drawn once each, over the faces, in #827f7f, 1
     // wide: the nine of a face drawn (the three between the back, left, and bottom, none
     // drawn, aren't). Over them, the axis stubs, 1 wide in the axes' colours, from
     // (−1.02, −1.02, −1.02), 1.02 times the bottom front left corner's place, 1.4 along
@@ -11135,20 +11142,24 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     let bottom_front_left = at(-r2, 2.0 / r6);
     let bottom_back_right = at(r2, 2.0 / r6);
     let buttons = cube_buttons(&h);
-    // Home: 44 by 18 points at the cube's top left, in the 20-point row above it.
     let home = eframe::egui::Rect::from_min_size(
-        cube.left_top() - eframe::egui::vec2(0.0, 20.0),
-        eframe::egui::vec2(44.0, 18.0),
+        cube.left_top() - eframe::egui::vec2(4.0 + 24.0, 0.0),
+        eframe::egui::vec2(24.0, 22.0),
     );
+    let options = home.translate(eframe::egui::vec2(0.0, 22.0 + 2.0));
     let expected = [
         ("Front", at(-1.0 / r2, 1.0 / r6)),
         ("Right", at(1.0 / r2, 1.0 / r6)),
         ("Top", at(0.0, -2.0 / r6)),
+        ("Top front", at(-1.0 / r2, -1.0 / r6)),
+        ("Top right", at(1.0 / r2, -1.0 / r6)),
+        ("Front right", at(0.0, 2.0 / r6)),
         ("Top front right", top_front_right),
         ("Top front left", top_front_left),
         ("Top back right", top_back_right),
         ("Bottom front right", bottom_front_right),
-        ("Home", home.center()),
+        ("Home view", home.center()),
+        ("View cube options", options.center()),
     ];
     let mut labels: Vec<&str> = expected.iter().map(|(label, _)| *label).collect();
     labels.sort_unstable();
@@ -11159,8 +11170,10 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     for (label, centre) in expected {
         at_point(buttons[label].center(), centre, label);
     }
-    at_point(buttons["Home"].min, home.min, "Home's corner");
-    at_point(buttons["Home"].max, home.max, "Home's far corner");
+    for (label, rect) in [("Home view", home), ("View cube options", options)] {
+        at_point(buttons[label].min, rect.min, label);
+        at_point(buttons[label].max, rect.max, label);
+    }
     let faces = cube_faces(&h);
     let expected = [
         (
@@ -11281,7 +11294,13 @@ fn a_face_turned_a_quarter_toward_the_view_is_drawn_and_left_unlabelled_and_one_
     // its border and its fill, the front's label after them; the top has none. From
     // (0, −a, 1), the top faces the view at 1/√(a² + 1): a = 3.86 just over a quarter,
     // 0.25079, labelled and clicked; a = 3.88 just under, 0.24958, not. The same corners
-    // face it more than a tenth, (a ± 1)/(√(a² + 1)·√3), 0.70 and 0.41 or so.
+    // face it more than a tenth, (a ± 1)/(√(a² + 1)·√3), 0.70 and 0.41 or so. Six edges'
+    // views do too, each by its middle over √2: the top front's (0, −1, 1), (a + 1)/(√2·√(a²
+    // + 1)), 0.86 or so; the bottom front's (0, −1, −1), (a − 1)/(…), 0.51; the front left's
+    // and right's (∓1, −1, 0), a/(…), 0.68; and the top left's and right's (∓1, 0, 1),
+    // 1/(…), 0.177, over a tenth though the top isn't labelled. The others face away or
+    // edge-on: the top back's (0, 1, 1), (1 − a)/(…); the bottom left's and right's, the
+    // back left's and right's, and the bottom back's, each below 0.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
@@ -11312,7 +11331,15 @@ fn a_face_turned_a_quarter_toward_the_view_is_drawn_and_left_unlabelled_and_one_
         step(&mut h);
         step(&mut h);
         let mut buttons: Vec<&str> = corners.to_vec();
-        buttons.extend(["Front", "Home"]);
+        buttons.extend(["Front", "Home view", "View cube options"]);
+        buttons.extend([
+            "Top front",
+            "Bottom front",
+            "Front left",
+            "Front right",
+            "Top left",
+            "Top right",
+        ]);
         if labelled {
             buttons.push("Top");
         }
@@ -11853,27 +11880,39 @@ fn a_view_cube_label_samples_its_glyphs_where_the_atlas_holds_them_as_its_pass_e
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The navigation bar's buttons, in order, as the prototype's `.nav-bar` holds them.
+const NAVIGATION_BAR_BUTTONS: [&str; 7] = [
+    "Orbit",
+    "Pan",
+    "Zoom",
+    "Fit",
+    "Look At",
+    "Display settings",
+    "Grid",
+];
+
 #[test]
 fn the_view_cube_and_the_navigation_bar_have_their_bounds_where_theyre_drawn() {
-    // The ViewCube's group: the cube (92 square, 16 from the canvas's top and right below
-    // Home's 20-point row) and Home (44 by 18 at its top left, in that row). The navigation
-    // bar's toolbar: finite, holding each of its tools, inside its 220 by 32 place 12 above
-    // the canvas's bottom centre. Neither sensed alone gets egui's own: the cube senses
-    // nothing as a group, and the bar's scope is given bounds only as it begins, none.
+    // The ViewCube's group: the cube (92 square, 16 from the canvas's top and right) and its
+    // buttons' column (24 wide, its right 4 left of the cube, Home view's top the cube's),
+    // so from 16 + 92 + 4 + 24 = 136 left of the canvas's right, along the cube's top and
+    // bottom. The navigation bar's toolbar: its 220 by 32 place 12 above the canvas's bottom
+    // centre, finite and inside the canvas, holding each of its buttons, each on its middle
+    // line. Neither sensed alone gets egui's own: the cube senses nothing as a group, and
+    // the bar's scope is given bounds only as it begins, none (audit N2: they were NaN).
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     let canvas = the_viewport(&h);
     let cube = eframe::egui::Rect::from_min_size(
-        eframe::egui::pos2(canvas.right() - 16.0 - 92.0, canvas.top() + 16.0 + 20.0),
+        eframe::egui::pos2(canvas.right() - 16.0 - 92.0, canvas.top() + 16.0),
         eframe::egui::vec2(92.0, 92.0),
     );
-    let home = eframe::egui::Rect::from_min_size(
-        cube.left_top() - eframe::egui::vec2(0.0, 20.0),
-        eframe::egui::vec2(44.0, 18.0),
-    );
     let group = h.get_by_role_and_label(Role::Group, "ViewCube").rect();
-    let whole = cube.union(home);
+    let whole = eframe::egui::Rect::from_min_max(
+        eframe::egui::pos2(canvas.right() - 136.0, cube.top()),
+        cube.max,
+    );
     at_point(group.min, whole.min, "the ViewCube's corner");
     at_point(group.max, whole.max, "the ViewCube's far corner");
     let place = eframe::egui::Rect::from_center_size(
@@ -11886,17 +11925,19 @@ fn the_view_cube_and_the_navigation_bar_have_their_bounds_where_theyre_drawn() {
     for k in [bar.min.x, bar.min.y, bar.max.x, bar.max.y] {
         assert!(k.is_finite(), "{bar:?}");
     }
-    assert!(bar.width() > 0.0 && bar.height() > 0.0, "{bar:?}");
-    assert!(
-        place.expand(0.5).contains_rect(bar),
-        "{bar:?} outside {place:?}"
-    );
-    for word in ["Orbit", "Pan", "Zoom", "Fit"] {
+    at_point(bar.min, place.min, "the bar's corner");
+    at_point(bar.max, place.max, "the bar's far corner");
+    assert!(canvas.contains_rect(bar), "{bar:?} outside {canvas:?}");
+    for word in NAVIGATION_BAR_BUTTONS {
         let tool = h
             .get_by_role_and_label(Role::Toolbar, "Navigation bar")
             .get_by_label(word)
             .rect();
         assert!(bar.contains_rect(tool), "{word}: {tool:?} outside {bar:?}");
+        assert!(
+            (tool.center().y - bar.center().y).abs() <= 0.5,
+            "{word}: {tool:?} off {bar:?}'s middle"
+        );
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -11975,11 +12016,15 @@ fn the_view_cubes_menu_marks_the_projection_the_view_has() {
 }
 
 #[test]
-fn the_navigation_bar_floats_its_margin_above_the_canvass_bottom_centre() {
+fn the_navigation_bar_floats_its_margin_above_the_canvass_bottom_centre_its_buttons_in_a_row() {
     // 220 by 32 points (the prototype's `.nav-bar`: a 24-point button, 3 of padding and a
     // 1 border above and below, 24 + 2·3 + 2·1 = 32) about the canvas's middle, its bottom
     // 12 points (`bottom: 12px`) above the canvas's: its middle 12 + 32/2 = 28 points up.
-    // Its tools sit in a row along that middle.
+    // Its buttons in app.js's order, 1 apart from 4 in (the border and padding), each 24
+    // high from 4 down: Orbit, Pan, Zoom, Fit, and Look At, each 26 wide (`min-width:
+    // 26px` over a 14-point icon's 24), so at 4, 31, 58, 85, and 112; the separator's 7
+    // (`margin: 0 3px` about its 1) from 139; Display settings, two icons 4 apart and 5 of
+    // padding each side, 42 wide, from 147; and Grid, 26, from 190 to 216, 4 from the end.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
@@ -11988,16 +12033,34 @@ fn the_navigation_bar_floats_its_margin_above_the_canvass_bottom_centre() {
         eframe::egui::pos2(canvas.center().x, canvas.bottom() - 28.0),
         eframe::egui::vec2(220.0, 32.0),
     );
-    for word in ["Orbit", "Pan", "Zoom", "Fit"] {
-        let tool = h
-            .get_by_role_and_label(Role::Toolbar, "Navigation bar")
+    let lefts = [4.0, 31.0, 58.0, 85.0, 112.0, 147.0, 190.0];
+    let widths = [26.0, 26.0, 26.0, 26.0, 26.0, 42.0, 26.0];
+    let buttons: Vec<String> = h
+        .get_by_role_and_label(Role::Toolbar, "Navigation bar")
+        .query_all_by_role(Role::Button)
+        .filter_map(|node| node.accesskit_node().label())
+        .collect();
+    assert_eq!(buttons, NAVIGATION_BAR_BUTTONS);
+    let rect = |h: &AppHarness, word: &str| {
+        h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
             .get_by_label(word)
-            .rect();
-        assert!(bar.contains_rect(tool), "{word}: {tool:?} outside {bar:?}");
-        assert!(
-            (tool.center().y - bar.center().y).abs() <= 1.0,
-            "{word}: {tool:?} off {bar:?}'s middle"
+            .rect()
+    };
+    // Orbit 4 in, within the half point egui may round the row's start by; the rest from it.
+    let orbit = rect(&h, "Orbit");
+    let start = bar.left_top() + eframe::egui::vec2(4.0, 4.0);
+    assert!(
+        (orbit.min - start).length() <= 0.5,
+        "{orbit:?} not at {start:?}"
+    );
+    for ((word, left), width) in NAVIGATION_BAR_BUTTONS.into_iter().zip(lefts).zip(widths) {
+        let tool = rect(&h, word);
+        let expected = eframe::egui::Rect::from_min_size(
+            orbit.min + eframe::egui::vec2(left - 4.0, 0.0),
+            eframe::egui::vec2(width, 24.0),
         );
+        at_point(tool.min, expected.min, word);
+        at_point(tool.max, expected.max, word);
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -12623,13 +12686,16 @@ fn the_overlay_sees_the_frame_and_paints_over_the_bodies_and_under_the_view_cube
         &|shape| matches!(shape, eframe::egui::Shape::Circle(c) if c.fill == OVERLAY_MARK),
     );
     // The ViewCube's front face (its fill, viewport.js's `#303030`), and the navigation
-    // bar's Fit.
-    let text = |word: &'static str| move |shape: &eframe::egui::Shape| matches!(shape, eframe::egui::Shape::Text(t) if t.galley.text() == word);
+    // bar's frame (`.nav-bar`'s `--g200`, where the bar stands).
     let cube = place(
         "ViewCube's Front",
         &|shape| matches!(shape, eframe::egui::Shape::Path(p) if p.fill == CUBE_FRONT),
     );
-    let bar = place("bar's Fit", &text("Fit"));
+    let frame = bar_node(&h).rect();
+    let bar = place(
+        "navigation bar's frame",
+        &|shape| matches!(shape, eframe::egui::Shape::Rect(r) if r.rect == frame && r.fill == G200),
+    );
     assert!(bodies < overlay, "{bodies} {overlay}");
     assert!(overlay < cube && overlay < bar, "{overlay} {cube} {bar}");
     assert_eq!(never_waits::waits(), 0);
@@ -13353,7 +13419,7 @@ fn a_left_press_in_the_navigation_bars_padding_or_during_a_middle_pan_is_not_han
     let rect = the_viewport(&h);
     let left = PointerButton::Primary;
     let none = Modifiers::NONE;
-    // Left of Orbit, inside the bar's frame (its padding is 6 points each side).
+    // Left of Orbit, inside the bar's frame (its border and padding, 4 points each side).
     let orbit = h
         .get_by_role_and_label(Role::Toolbar, "Navigation bar")
         .get_by_label("Orbit")
@@ -13898,7 +13964,8 @@ fn a_right_click_on_the_view_cube_or_the_navigation_bar_is_theirs_not_the_canvas
             .is_none(),
         "the cube's menu didn't close"
     );
-    // On the bar's Orbit, and in its padding left of Orbit (6 points each side): none.
+    // On the bar's Orbit, and in its padding left of Orbit (its border and padding, 4 points
+    // each side): none.
     let orbit = h
         .get_by_role_and_label(Role::Toolbar, "Navigation bar")
         .get_by_label("Orbit")
@@ -16296,17 +16363,23 @@ fn the_app_bar_holds_home_file_save_undo_and_redo_then_the_tabs_as_the_prototype
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// The texts the tooltip titled `title` draws in its title's row, after the title, left to
-/// right: its key caps.
+/// The key caps the tooltip titled `title` draws after its title, left to right: the texts
+/// painted after the title's own (the tooltip is painted over everything else) on its row,
+/// so no other text on that row of the window (a path in the properties) is taken for one.
 fn tooltip_caps(h: &AppHarness, title: &str) -> Vec<String> {
-    let row = h.get_by_role_and_label(Role::Label, title).rect();
-    let mut caps: Vec<(f32, String)> = painted(h)
-        .into_iter()
+    let shapes = painted(h);
+    let is_title = |shape: &eframe::egui::Shape| matches!(shape, eframe::egui::Shape::Text(t) if t.galley.text() == title);
+    let Some(at) = shapes.iter().rposition(is_title) else {
+        panic!("{title} isn't painted");
+    };
+    let row = eframe::egui::Shape::visual_bounding_rect(&shapes[at]);
+    let mut caps: Vec<(f32, String)> = shapes[at + 1..]
+        .iter()
         .filter_map(|shape| match shape {
             eframe::egui::Shape::Text(text) => {
-                let at = eframe::egui::Shape::Text(text.clone()).visual_bounding_rect();
-                (at.left() >= row.right() && row.y_range().contains(at.center().y))
-                    .then(|| (at.left(), text.galley.text().to_owned()))
+                let rect = shape.visual_bounding_rect();
+                (rect.left() >= row.right() && row.y_range().contains(rect.center().y))
+                    .then(|| (rect.left(), text.galley.text().to_owned()))
             }
             _ => None,
         })
@@ -19553,7 +19626,7 @@ fn f6_is_the_navigation_bars_fit_and_home_the_view_cubes_home() {
     near(unit(minus(home.eye, home.target)), [d, -d, d], 1e-12);
     panned(&mut h);
     h.get_by_role_and_label(Role::Group, "ViewCube")
-        .get_by_label("Home")
+        .get_by_label("Home view")
         .click();
     step(&mut h);
     assert_eq!(view(&h).camera(), &home);
@@ -20136,7 +20209,7 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
             }),
             Command::Home => same_view(command, |h| {
                 h.get_by_role_and_label(Role::Group, "ViewCube")
-                    .get_by_label("Home")
+                    .get_by_label(entry.label)
             }),
             Command::Front
             | Command::Back
@@ -20152,8 +20225,9 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                     .get_by_label("Top front right")
             }),
             Command::LookAt => {
-                // In sketch mode, by its keys and by the Sketch Palette's Look At, each from
-                // a view moved off: the same camera (Look At's own tests check which).
+                // In sketch mode, by its keys, by the Sketch Palette's Look At, and by the
+                // navigation bar's, each from a view moved off: the same camera (Look At's
+                // own tests check which).
                 let f = fixture();
                 let mut h = triangle_opened(&f);
                 for chord in keys_of(command) {
@@ -20167,12 +20241,23 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                     step(&mut h);
                     let keyed = view(&h).camera().clone();
                     assert_ne!(keyed, moved, "Look At moved nothing");
-                    view_mut(&mut h).set_camera(moved);
-                    step(&mut h);
-                    h.get_by_role_and_label(Role::Button, entry.label).click();
-                    step(&mut h);
-                    step(&mut h);
-                    assert_eq!(view(&h).camera(), &keyed, "the palette's Look At");
+                    for (holder, role, what) in [
+                        ("Sketch Palette", Role::Group, "the palette's Look At"),
+                        (
+                            "Navigation bar",
+                            Role::Toolbar,
+                            "the navigation bar's Look At",
+                        ),
+                    ] {
+                        view_mut(&mut h).set_camera(moved.clone());
+                        step(&mut h);
+                        h.get_by_role_and_label(role, holder)
+                            .get_by_role_and_label(Role::Button, entry.label)
+                            .click();
+                        step(&mut h);
+                        step(&mut h);
+                        assert_eq!(view(&h).camera(), &keyed, "{what}");
+                    }
                 }
             }
             // The pointer's: the viewport takes them, no key (their own tests: the middle
@@ -20607,11 +20692,9 @@ fn started_line() -> u32 {
     u32::try_from(source[..at].matches('\n').count() + 1).unwrap()
 }
 
-/// Whether the frame that takes `key`'s press, `modifiers` held, asks for the next at
-/// once itself, beyond egui's own ask after any input (`asked_from_app`): the app idle
-/// first, its idle frame asking no such thing. Each event its own frame, as the harness
-/// steps them, one pass each.
-fn asks_at_once_after(h: &mut AppHarness, modifiers: Modifiers, key: Key) -> bool {
+/// The app idle, one pass a frame, its idle frame asking for no frame of its own at once
+/// (`asked_from_app`): where [`asks_at_once_after`] and [`asks_at_once_after_events`] begin.
+fn idle_asking_nothing(h: &mut AppHarness) {
     // One pass a frame: a second, which egui runs when a layout asks it to, would take the
     // causes the frame before asked for out of `repaint_causes`.
     h.ctx
@@ -20624,6 +20707,43 @@ fn asks_at_once_after(h: &mut AppHarness, modifiers: Modifiers, key: Key) -> boo
         !asked_from_app(h).contains(&started_line()),
         "an idle frame asked"
     );
+}
+
+/// Whether the frame that takes `events`, all in one frame, asks for the next at once
+/// itself, as [`asks_at_once_after`] reads it for a key: the app idle first, its idle frame
+/// asking no such thing; then the events' frame, and the next, whose causes are theirs.
+fn asks_at_once_after_events(h: &mut AppHarness, events: Vec<eframe::egui::Event>) -> bool {
+    idle_asking_nothing(h);
+    for event in events {
+        h.event(event);
+    }
+    step(h);
+    step(h);
+    asked_from_app(h).contains(&started_line())
+}
+
+/// [`asks_at_once_after_events`] of a left click at `at`: the pointer there, pressed and let
+/// go, in one frame.
+fn asks_at_once_after_click(h: &mut AppHarness, at: eframe::egui::Pos2) -> bool {
+    use eframe::egui::{Event, PointerButton};
+    let button = |pressed| Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    asks_at_once_after_events(
+        h,
+        vec![Event::PointerMoved(at), button(true), button(false)],
+    )
+}
+
+/// Whether the frame that takes `key`'s press, `modifiers` held, asks for the next at
+/// once itself, beyond egui's own ask after any input (`asked_from_app`): the app idle
+/// first, its idle frame asking no such thing. Each event its own frame, as the harness
+/// steps them, one pass each.
+fn asks_at_once_after(h: &mut AppHarness, modifiers: Modifiers, key: Key) -> bool {
+    idle_asking_nothing(h);
     let event = |pressed| eframe::egui::Event::Key {
         key,
         pressed,
@@ -21203,15 +21323,17 @@ fn triangle_in_sketch_mode(f: &Fixture) -> AppHarness {
 
 /// The rectangles the last frame painted filled `--g200` and bordered in `border`, standing
 /// in the canvas (from their top left: a palette taller than the canvas's room runs past its
-/// bottom).
+/// bottom), but the navigation bar's (`.nav-bar`, `--g200` in `--g250` too).
 fn floating_frames(h: &AppHarness, border: eframe::egui::Color32) -> Vec<eframe::egui::Rect> {
     let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
+    let navigation = bar_node(h).rect();
     painted(h)
         .into_iter()
         .filter_map(|shape| match shape {
             eframe::egui::Shape::Rect(rect)
                 if rect.fill == G200
                     && rect.stroke.color == border
+                    && rect.rect != navigation
                     && canvas.expand(0.5).contains(rect.rect.left_top()) =>
             {
                 Some(rect.rect)
@@ -25216,28 +25338,19 @@ fn counting_redundant_99(f: &Fixture) {
     });
 }
 
-#[test]
-fn esc_takes_a_held_drag_before_the_over_define_prompt_and_then_the_prompts_cancel() {
+/// The over-define prompt up ([`over_define_offered`]), the navigation bar's `tool` chosen
+/// first, if any: Esc takes a held drag first, then the prompt, each before the prototype's
+/// `escChain` gives it to the tool (`Tab::escape_first`). A drag of the free far corner, held
+/// while the prompt is up, ends from its begin, the prompt staying and nothing undone; the
+/// next Esc is the prompt's Cancel, the edit undone, the text as it was. The tool stays
+/// through each; with one chosen, the bottom's dimension's Modify box then closes, its value
+/// as it was, the tool still staying, and the Esc after lets it go, sketch mode still open.
+fn esc_takes_a_held_drag_then_the_prompts_cancel(tool: Option<silico_app::viewport::Navigation>) {
+    use eframe::egui::Key;
     use silico_app::sketch::PointerAction::{Move, Press};
-    use silico_app::sketch::dimension::ModifyAction;
     let f = fixture();
-    counting_redundant_99(&f);
-    let (mut h, _) = f.opened("boxed.silico", BOXED_LENGTH);
-    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
-    double_click(&mut h, "Browser", "Box");
-    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
-    sketch_read(&mut h);
-    let text = text_of(&f, &h);
     // The bottom's length set to 99, which repeats the others: the three offered.
-    sketch_events(&f, &mut h, &[]);
-    let at = label_of_dimension(&h, "ka000005");
-    sketch_events(&f, &mut h, &double_clicked_at(at));
-    modify_dimension(&f, &mut h, ModifyAction::Typed("99".to_owned()));
-    modify_dimension(&f, &mut h, ModifyAction::Accept);
-    settled(&mut h);
-    step_until(&mut h, "the offer", |h| {
-        sketch_mode(h).is_some_and(|m| m.offer().is_some())
-    });
+    let (mut h, text) = over_define_offered(&f, tool);
     // The far corner, still free, dragged while the prompt is up.
     sketch_events(
         &f,
@@ -25246,20 +25359,57 @@ fn esc_takes_a_held_drag_before_the_over_define_prompt_and_then_the_prompts_canc
     );
     drag_frames(&mut h, 1);
     // The first Esc ends the drag from its begin; the prompt stays.
-    h.key_press(eframe::egui::Key::Escape);
+    h.key_press(Key::Escape);
     step(&mut h);
     settled(&mut h);
     assert_eq!(drag_sends(&h, "drag_end"), 1);
     assert!(sketch_mode(&h).unwrap().offer().is_some());
     assert!(!h.state().tabs()[0].sent.contains(&Sent::Undo(None)));
+    assert_eq!(view(&h).tool, tool);
     // The second is the prompt's Cancel: the edit undone, the text as it was.
-    h.key_press(eframe::egui::Key::Escape);
+    h.key_press(Key::Escape);
     step(&mut h);
     settled(&mut h);
     assert!(sketch_mode(&h).unwrap().offer().is_none());
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
     assert_eq!(text_of(&f, &h), text);
+    assert_eq!(view(&h).tool, tool);
+    if tool.is_some() {
+        // The Modify box, the sketch read again, 33 typed into it: Esc closes it, its value
+        // as it was, nothing sent.
+        sketch_read(&mut h);
+        open_modify_box(&f, &mut h);
+        modify_dimension(
+            &f,
+            &mut h,
+            silico_app::sketch::dimension::ModifyAction::Typed("33".to_owned()),
+        );
+        let typed = sketch_mode(&h)
+            .unwrap()
+            .edit_box
+            .as_ref()
+            .map(|edit| edit.text.clone());
+        assert_eq!(typed.as_deref(), Some("33"));
+        let sent = h.state().tabs()[0].sent.clone();
+        h.key_press(Key::Escape);
+        step(&mut h);
+        settled(&mut h);
+        assert!(sketch_mode(&h).unwrap().edit_box.is_none());
+        assert_eq!(h.state().tabs()[0].sent, sent);
+        assert_eq!(text_of(&f, &h), text);
+        assert_eq!(view(&h).tool, tool);
+        // Then the bar's tool.
+        h.key_press(Key::Escape);
+        step(&mut h);
+        assert_eq!(view(&h).tool, None);
+        assert!(sketch_mode(&h).is_some());
+    }
     assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_takes_a_held_drag_before_the_over_define_prompt_and_then_the_prompts_cancel() {
+    esc_takes_a_held_drag_then_the_prompts_cancel(None);
 }
 
 #[test]
@@ -25462,17 +25612,45 @@ fn boxed_length(f: &Fixture) -> AppHarness {
     h
 }
 
-/// The bottom's length, ka000005, double-clicked and set to `text`: stepped until its
-/// edit has answered.
-fn edit_length(f: &Fixture, h: &mut AppHarness, text: &str) {
-    use silico_app::sketch::dimension::ModifyAction;
+/// The bottom's length, ka000005, its label double-clicked as the sketch read draws it: its
+/// Modify box open at once.
+fn open_modify_box(f: &Fixture, h: &mut AppHarness) {
     sketch_events(f, h, &[]);
     let at = label_of_dimension(h, "ka000005");
     sketch_events(f, h, &double_clicked_at(at));
     assert!(sketch_mode(h).unwrap().edit_box.is_some());
+}
+
+/// The bottom's length, ka000005, double-clicked and set to `text`: stepped until its
+/// edit has answered.
+fn edit_length(f: &Fixture, h: &mut AppHarness, text: &str) {
+    use silico_app::sketch::dimension::ModifyAction;
+    open_modify_box(f, h);
     modify_dimension(f, h, ModifyAction::Typed(text.to_owned()));
     modify_dimension(f, h, ModifyAction::Accept);
     settled(h);
+}
+
+/// The boxed rectangle in sketch mode ([`boxed_length`]), the solve counting a length of 99
+/// as repeating the others ([`counting_redundant_99`]), the navigation bar's `tool` chosen
+/// first, if any, and the bottom's length set to 99 ([`edit_length`]): the over-define
+/// prompt up, offering its three. The harness, and the document's text before the edit.
+fn over_define_offered(
+    f: &Fixture,
+    tool: Option<silico_app::viewport::Navigation>,
+) -> (AppHarness, String) {
+    counting_redundant_99(f);
+    let mut h = boxed_length(f);
+    let text = text_of(f, &h);
+    if let Some(tool) = tool {
+        click_on_bar(&mut h, &format!("{tool:?}"));
+    }
+    assert_eq!(view(&h).tool, tool);
+    edit_length(f, &mut h, "99");
+    step_until(&mut h, "the offer", |h| {
+        sketch_mode(h).is_some_and(|m| m.offer().is_some())
+    });
+    (h, text)
 }
 
 #[test]
@@ -41667,7 +41845,9 @@ fn look_at_in_sketch_mode_turns_square_to_its_plane_its_x_across_and_its_y_up() 
     // Home again, then the palette's Look At: the same view.
     h.key_press(Key::Home);
     step_until(&mut h, "home", |h| !looks(h, front, z));
-    h.get_by_role_and_label(Role::Button, "Look At").click();
+    h.get_by_role_and_label(Role::Group, "Sketch Palette")
+        .get_by_role_and_label(Role::Button, "Look At")
+        .click();
     step_until(&mut h, "square again", |h| view(h).camera() == &keyed);
     assert!(toast_said(&h).is_none());
     assert_eq!(never_waits::waits(), 0);
@@ -42209,5 +42389,1140 @@ fn a_middle_double_click_just_after_a_left_click_on_a_timeline_item_fits() {
     step(&mut h);
     step(&mut h);
     assert_eq!(view(&h).camera().target, [20.0, 10.0, 5.0]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The navigation bar's and the ViewCube's controls, as the prototype draws them (app.js's
+// `renderCanvasUI`, interact.js's `displayMenu` and `cubeMenu`; the prototype audit's item 11)
+
+/// The navigation bar.
+fn bar_node(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+}
+
+/// The navigation bar's button `word` clicked, and two frames drawn: the one that takes the
+/// click (the bar is laid out before it's read), and one laid out after it.
+fn click_on_bar(h: &mut AppHarness, word: &str) {
+    bar_node(h).get_by_label(word).click();
+    step(h);
+    step(h);
+}
+
+/// The ViewCube's ▾ clicked, and frames drawn for its menu.
+fn cube_options(h: &mut AppHarness) {
+    h.get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_role_and_label(Role::Button, "View cube options")
+        .click();
+    step(h);
+    step(h);
+}
+
+/// The open menu `menu`'s lines as a screen reader has them, in order: a head by its words
+/// (in capitals, as drawn), with no role of an item's; an item by its name, its role, whether
+/// it's marked (a choice's, or a setting's), and its keys.
+fn menu_said(h: &AppHarness, menu: &str) -> Vec<(String, Role, Option<bool>, Option<String>)> {
+    h.get_by_role_and_label(Role::Menu, menu)
+        .query_all(egui_kittest::kittest::by().recursive(true))
+        .filter_map(|node| {
+            let node = node.accesskit_node();
+            let role = node.role();
+            let said = match role {
+                Role::Label => node.value()?,
+                Role::Button | Role::RadioButton | Role::CheckBox => node.label()?,
+                _ => return None,
+            };
+            let marked = node
+                .toggled()
+                .map(|toggled| toggled == eframe::egui::accesskit::Toggled::True);
+            let keys = node.data().keyboard_shortcut().map(str::to_owned);
+            Some((said, role, marked, keys))
+        })
+        .collect()
+}
+
+/// A head, an item, and a marked item as [`menu_said`] gives them.
+fn head(words: &str) -> (String, Role, Option<bool>, Option<String>) {
+    (words.to_owned(), Role::Label, None, None)
+}
+fn item(words: &str, keys: Option<&str>) -> (String, Role, Option<bool>, Option<String>) {
+    (
+        words.to_owned(),
+        Role::Button,
+        None,
+        keys.map(str::to_owned),
+    )
+}
+fn choice(words: &str, on: bool) -> (String, Role, Option<bool>, Option<String>) {
+    (words.to_owned(), Role::RadioButton, Some(on), None)
+}
+fn setting(words: &str, on: bool) -> (String, Role, Option<bool>, Option<String>) {
+    (words.to_owned(), Role::CheckBox, Some(on), None)
+}
+
+/// A button's tooltip, as the prototype gives it: its holder's label and role, its own label
+/// (the tooltip's title), its key caps off macOS and on it, and its lines.
+type Tip = (
+    &'static str,
+    Role,
+    &'static str,
+    [&'static [&'static str]; 2],
+    &'static [&'static str],
+);
+
+#[test]
+fn the_navigation_bars_and_the_view_cubes_buttons_have_the_prototypes_tooltips() {
+    // app.js's `renderCanvasUI`: each button's `data-tip` its title, its `data-tipk` its key
+    // caps as the registry's keys name them (`KEYNAME`: Mod is Ctrl off macOS and ⌘ on it,
+    // Shift ⇧ there), and its `data-tipd` its line. Orbit's line but its prototype-only last
+    // sentence ("Alt-drag also orbits in this prototype"). Display settings and the ▾ say
+    // they open a menu (`aria-haspopup`), and Grid shows whether the grid is shown
+    // (`aria-pressed`).
+    use eframe::egui::os::OperatingSystem;
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    let tips: [Tip; 9] = [
+        (
+            "Navigation bar",
+            Role::Toolbar,
+            "Orbit",
+            [&["Shift", "Middle-drag"], &["⇧", "Middle-drag"]],
+            &["Or click here, then drag with the left button. Esc returns to Select."],
+        ),
+        (
+            "Navigation bar",
+            Role::Toolbar,
+            "Pan",
+            [&["Middle-drag"], &["Middle-drag"]],
+            &[],
+        ),
+        (
+            "Navigation bar",
+            Role::Toolbar,
+            "Zoom",
+            [&["Wheel"], &["Wheel"]],
+            &["The wheel zooms toward the pointer"],
+        ),
+        (
+            "Navigation bar",
+            Role::Toolbar,
+            "Fit",
+            [&["F6"], &["F6"]],
+            &[],
+        ),
+        (
+            "Navigation bar",
+            Role::Toolbar,
+            "Look At",
+            [&["Ctrl", "8"], &["⌘", "8"]],
+            &["Square to the selected face"],
+        ),
+        (
+            "Navigation bar",
+            Role::Toolbar,
+            "Display settings",
+            [&[], &[]],
+            &["Visual style, camera, grid"],
+        ),
+        ("Navigation bar", Role::Toolbar, "Grid", [&[], &[]], &[]),
+        (
+            "ViewCube",
+            Role::Group,
+            "Home view",
+            [&["Home"], &["Home"]],
+            &[],
+        ),
+        (
+            "ViewCube",
+            Role::Group,
+            "View cube options",
+            [&[], &[]],
+            &["Orthographic or perspective"],
+        ),
+    ];
+    for (os, at) in [(OperatingSystem::Windows, 0), (OperatingSystem::Mac, 1)] {
+        h.ctx.set_os(os);
+        for (holder, role, title, caps, lines) in tips {
+            pointer_away(&mut h);
+            assert!(
+                h.query_by_role_and_label(Role::Label, title).is_none(),
+                "{title}'s tooltip shown with the pointer away"
+            );
+            h.get_by_role_and_label(role, holder)
+                .get_by_role_and_label(Role::Button, title)
+                .hover();
+            step_until(&mut h, "its tooltip", |h| {
+                h.query_by_role_and_label(Role::Label, title).is_some()
+            });
+            // Drawn from the frame after it's laid out (egui sizes a new popup unseen).
+            step(&mut h);
+            assert_eq!(tooltip_caps(&h, title), caps[at], "{os:?} {title}");
+            let shown = label_texts(h.query_all_by_role(Role::Label));
+            let title_at = shown.iter().position(|text| text == title).unwrap();
+            let after: Vec<&str> = shown[title_at + 1..].iter().map(String::as_str).collect();
+            assert!(after.starts_with(lines), "{title}: {shown:?}");
+        }
+    }
+    let popup = |holder: &str, role: Role, button: &str| {
+        h.get_by_role_and_label(role, holder)
+            .get_by_role_and_label(Role::Button, button)
+            .accesskit_node()
+            .has_popup()
+    };
+    let menu = Some(eframe::egui::accesskit::HasPopup::Menu);
+    assert_eq!(
+        popup("Navigation bar", Role::Toolbar, "Display settings"),
+        menu
+    );
+    assert_eq!(popup("ViewCube", Role::Group, "View cube options"), menu);
+    assert_eq!(popup("Navigation bar", Role::Toolbar, "Look At"), None);
+    // The tools and Grid show their state; Fit, Look At, and the menus' buttons have none.
+    for (word, state) in [
+        ("Orbit", Some(false)),
+        ("Pan", Some(false)),
+        ("Zoom", Some(false)),
+        ("Fit", None),
+        ("Look At", None),
+        ("Display settings", None),
+        ("Grid", Some(true)),
+    ] {
+        assert_eq!(toggled(&bar_node(&h).get_by_label(word)), state, "{word}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_navigation_bars_look_at_turns_square_to_the_face_selected_as_command_8_does() {
+    // The block's top described tilted, facing (0.6, 0, 0.8), so the turn is the face's, not
+    // the Top view the view from above starts near: the eye out along that normal, its up
+    // (z − 0.8 n) / 0.6 = (−0.8, 0, 0.6), by hand. The bar's Look At and Ctrl+8, each from
+    // the same view: the same camera, and nothing said.
+    let tilted = || {
+        let mut description = real_box_description();
+        description.faces[5].surface = silico_core::kernel::Surface::Plane {
+            normal: [0.6, 0.0, 0.8],
+            location: [20.0, 10.0, 10.0],
+        };
+        description
+    };
+    let f = fixture();
+    describes_the_box_as(&f, tilted());
+    let (mut h, _record) = box_from_above(&f);
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    let before = view(&h).camera().clone();
+    click_on_bar(&mut h, "Look At");
+    step_until(&mut h, "turned", |h| view(h).camera() != &before);
+    assert!(
+        looks(&h, [0.6, 0.0, 0.8], [-0.8, 0.0, 0.6]),
+        "{:?}",
+        view(&h).camera()
+    );
+    let by_bar = view(&h).camera().clone();
+    assert!(toast_said(&h).is_none());
+    view_mut(&mut h).set_camera(before.clone());
+    step(&mut h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Num8);
+    step_until(&mut h, "turned by its keys", |h| {
+        view(h).camera() != &before
+    });
+    assert_eq!(view(&h).camera(), &by_bar);
+    // The selection is left as it was.
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face6"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_navigation_bars_look_at_with_no_flat_face_selected_says_so_and_the_view_stays() {
+    // As the prototype's `lookAt`: nothing selected, two faces, an edge, or a face gone from
+    // the model (the block removed, its top dropped from the selection) each say "Look At:
+    // select a flat face first." (a newer toast each time), and the view stays.
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    let said_again = |h: &mut AppHarness, why: &str| {
+        let (_, first) = toast_said(h).unwrap_or_default();
+        let before = view(h).camera().clone();
+        click_on_bar(h, "Look At");
+        step_until(h, why, |h| {
+            toast_said(h)
+                .is_some_and(|(text, at)| text == silico_app::tab::LOOK_AT_NO_FACE && at > first)
+        });
+        step(h);
+        assert_eq!(view(h).camera(), &before, "{why}");
+    };
+    said_again(&mut h, "nothing selected");
+    select_in_box(&mut h, &["Face6", "Face2"]);
+    step(&mut h);
+    said_again(&mut h, "two faces");
+    select_in_box(&mut h, &["Edge12"]);
+    row_until(&mut h, "Length", "40.00 mm");
+    said_again(&mut h, "an edge");
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let id = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
+        h.state_mut().tabs_mut()[0].remove_feature(&sessions, id);
+    }
+    settled(&mut h);
+    step_until(&mut h, "the top dropped", |h| selected_names(h).is_empty());
+    said_again(&mut h, "the face gone");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_navigation_bars_look_at_on_a_cylindrical_face_says_so_and_the_view_stays() {
+    // The block's top described as a cylinder's side (about an axis along y through
+    // (20, 0, −10), radius 20, by hand): measured, it isn't flat, so the bar's Look At says
+    // "Look At: select a flat face first." and the view stays, as Ctrl+8 does.
+    let f = fixture();
+    let mut description = real_box_description();
+    description.faces[5].surface = silico_core::kernel::Surface::Cylinder {
+        axis: silico_core::kernel::Axis {
+            origin: [20.0, 0.0, -10.0],
+            direction: [0.0, 1.0, 0.0],
+        },
+        radius: 20.0,
+    };
+    describes_the_box_as(&f, description);
+    measures_the_box(&f);
+    let (mut h, _) = f.opened("box.silico", A_BOX);
+    step_until(&mut h, "the model published", |h| {
+        h.state().tabs()[0].published.is_some()
+    });
+    select_in_box(&mut h, &["Face6"]);
+    step_until(&mut h, "measured", |h| {
+        shows(h, "Properties", "Cylindrical face · Block")
+    });
+    let before = view(&h).camera().clone();
+    click_on_bar(&mut h, "Look At");
+    step_until(&mut h, "said", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == silico_app::tab::LOOK_AT_NO_FACE)
+    });
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_display_settings_menu_holds_what_the_app_draws_and_sets_the_projection_and_the_grid() {
+    // interact.js's `displayMenu`, of what the renderer draws: under VISUAL STYLE, Shaded
+    // with visible edges, the one style it draws, marked (the prototype's Shaded, Wireframe,
+    // and Hidden edges left out); under CAMERA, Orthographic, marked as a view opens, and
+    // Perspective, one of a choice; and Ground grid, marked while the grid is shown. It
+    // opens above its button (`r.top - 4`), its left the button's, its lines inside the
+    // menu's 1 border and 4 of padding (`.menu`).
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let open = |h: &mut AppHarness| {
+        click_on_bar(h, "Display settings");
+        step(h);
+        step(h);
+    };
+    open(&mut h);
+    assert_eq!(
+        menu_said(&h, "Display settings"),
+        [
+            head("VISUAL STYLE"),
+            choice("Shaded with visible edges", true),
+            head("CAMERA"),
+            choice("Orthographic", true),
+            choice("Perspective", false),
+            setting("Ground grid", true),
+        ]
+    );
+    // Each marked as the prototype writes it: `✓ ` before the words, or three spaces.
+    let drawn: Vec<String> = painted(&h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect();
+    for words in [
+        "✓ Shaded with visible edges",
+        "✓ Orthographic",
+        "   Perspective",
+        "✓ Ground grid",
+    ] {
+        assert!(
+            drawn.iter().any(|text| text == words),
+            "{words:?} in {drawn:?}"
+        );
+    }
+    let button = bar_node(&h).get_by_label("Display settings").rect();
+    let lines = h
+        .get_by_role_and_label(Role::Menu, "Display settings")
+        .rect();
+    assert!(
+        (lines.left() - (button.left() + 5.0)).abs() <= 1.0,
+        "{lines:?} beside {button:?}"
+    );
+    assert!(
+        (lines.bottom() - (button.top() - 4.0 - 5.0)).abs() <= 1.0,
+        "{lines:?} over {button:?}"
+    );
+    // The style: the one drawn, so nothing changes, and the menu closes.
+    let camera = view(&h).camera().clone();
+    h.get_by_role_and_label(Role::Menu, "Display settings")
+        .get_by_label("Shaded with visible edges")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Display settings")
+            .is_none()
+    );
+    assert_eq!(view(&h).camera(), &camera);
+    assert!(view(&h).grid && !view(&h).perspective());
+    // Perspective: at 30°, the eye as far back as shows the orthographic view's height at
+    // the target, h / (2 tan 15°), by hand; its mark moves.
+    let height = ortho_height(view(&h).camera());
+    open(&mut h);
+    h.get_by_role_and_label(Role::Menu, "Display settings")
+        .get_by_label("Perspective")
+        .click();
+    step(&mut h);
+    let camera = view(&h).camera().clone();
+    assert!(view(&h).perspective());
+    assert_eq!(
+        camera.projection,
+        silico_protocol::Projection::Perspective {
+            field_of_view: 30.0
+        }
+    );
+    let back = height / (2.0 * libm::tan(15f64.to_radians()));
+    let way = minus(camera.eye, camera.target);
+    assert!(((way[0] * way[0] + way[1] * way[1] + way[2] * way[2]).sqrt() - back).abs() < 1e-9);
+    open(&mut h);
+    let said = menu_said(&h, "Display settings");
+    assert_eq!(
+        said[3..5],
+        [choice("Orthographic", false), choice("Perspective", true)]
+    );
+    // Orthographic again: as high as before.
+    h.get_by_role_and_label(Role::Menu, "Display settings")
+        .get_by_label("Orthographic")
+        .click();
+    step(&mut h);
+    assert!(!view(&h).perspective());
+    assert!((ortho_height(view(&h).camera()) - height).abs() < 1e-9);
+    // Ground grid: hidden, its mark and the Grid button's off; again, shown.
+    for shown in [false, true] {
+        open(&mut h);
+        h.get_by_role_and_label(Role::Menu, "Display settings")
+            .get_by_label("Ground grid")
+            .click();
+        step(&mut h);
+        assert_eq!(view(&h).grid, shown);
+        assert_eq!(toggled(&bar_node(&h).get_by_label("Grid")), Some(shown));
+        open(&mut h);
+        assert_eq!(
+            menu_said(&h, "Display settings")[5],
+            setting("Ground grid", shown)
+        );
+        // Closed again by its button.
+        click_on_bar(&mut h, "Display settings");
+        step(&mut h);
+        assert!(
+            h.query_by_role_and_label(Role::Menu, "Display settings")
+                .is_none()
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_view_cubes_menu_holds_home_the_named_views_and_the_camera_each_view_as_its_key_gives() {
+    // interact.js's `cubeMenu`: Home view, with its icon and the Home key; under VIEWS,
+    // Front to Bottom and Isometric, each with its key (SolidWorks' Ctrl+1 to Ctrl+7); under
+    // CAMERA, Orthographic and Perspective, one of a choice, the view's marked. From the ▾,
+    // its top left 150 left of the ▾'s left and 2 under its bottom (`r.left - 150,
+    // r.bottom + 2`), its lines inside the menu's 1 border and 4 of padding; the ▾ again
+    // closes it. Each view chosen from it, the menu closed, is the camera its key gives
+    // from the same place.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    cube_options(&mut h);
+    assert_eq!(
+        menu_said(&h, "View cube options"),
+        [
+            item("Home view", Some("Home")),
+            head("VIEWS"),
+            item("Front", Some("Ctrl+1")),
+            item("Back", Some("Ctrl+2")),
+            item("Left", Some("Ctrl+3")),
+            item("Right", Some("Ctrl+4")),
+            item("Top", Some("Ctrl+5")),
+            item("Bottom", Some("Ctrl+6")),
+            item("Isometric", Some("Ctrl+7")),
+            head("CAMERA"),
+            choice("Orthographic", true),
+            choice("Perspective", false),
+        ]
+    );
+    let down = h
+        .get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_role_and_label(Role::Button, "View cube options")
+        .rect();
+    let lines = h
+        .get_by_role_and_label(Role::Menu, "View cube options")
+        .rect();
+    let corner = down.left_bottom() + eframe::egui::vec2(-150.0 + 5.0, 2.0 + 5.0);
+    assert!(
+        (lines.left_top() - corner).length() <= 1.0,
+        "{lines:?} not from {corner:?}"
+    );
+    cube_options(&mut h);
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "View cube options")
+            .is_none()
+    );
+    for (word, keys, key) in [
+        ("Home view", Modifiers::NONE, Key::Home),
+        ("Front", Modifiers::COMMAND, Key::Num1),
+        ("Back", Modifiers::COMMAND, Key::Num2),
+        ("Left", Modifiers::COMMAND, Key::Num3),
+        ("Right", Modifiers::COMMAND, Key::Num4),
+        ("Top", Modifiers::COMMAND, Key::Num5),
+        ("Bottom", Modifiers::COMMAND, Key::Num6),
+        ("Isometric", Modifiers::COMMAND, Key::Num7),
+    ] {
+        panned(&mut h);
+        let moved = view(&h).camera().clone();
+        h.key_press_modifiers(keys, key);
+        step(&mut h);
+        let keyed = view(&h).camera().clone();
+        assert_ne!(keyed, moved, "{word}");
+        view_mut(&mut h).set_camera(moved);
+        step(&mut h);
+        cube_options(&mut h);
+        h.get_by_role_and_label(Role::Menu, "View cube options")
+            .get_by_label(word)
+            .click();
+        step(&mut h);
+        step(&mut h);
+        assert_eq!(view(&h).camera(), &keyed, "{word}");
+        assert!(
+            h.query_by_role_and_label(Role::Menu, "View cube options")
+                .is_none(),
+            "{word}: the menu left open"
+        );
+    }
+    // A right click on the cube opens it too, its top left 160 left of the click
+    // (`onCubeMenu`'s `e.clientX - 160, e.clientY`).
+    let front = h
+        .get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label("Front")
+        .rect()
+        .center();
+    right_click(&mut h, front, front, Modifiers::NONE);
+    let lines = h
+        .get_by_role_and_label(Role::Menu, "View cube options")
+        .rect();
+    let corner = front + eframe::egui::vec2(-160.0 + 5.0, 5.0);
+    assert!(
+        (lines.left_top() - corner).length() <= 1.0,
+        "{lines:?} not from {corner:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_on_a_view_cube_edge_looks_from_between_its_two_faces() {
+    // The prototype's cube, clicked near an edge (viewport.js's `mouseup`, the region's
+    // direction with a 0 across the edge): the view from the edge's middle made a unit, Z
+    // up, fitted to the cut's box, [0, 40] × [0, 20] × [0, 10], about its centre
+    // (20, 10, 5). From Home: the top front, (0, −1, 1)/√2, its up (0, 1, 1)/√2, the box
+    // 1.1 times the larger of its 20/√2 + 10/√2 = 30/√2 up the image and its 40 across (x)
+    // times the view's rows over its columns; then the front right, (1, −1, 0)/√2, up z.
+    // Seen from the front, the four edges about the front face are the ones clickable,
+    // each facing the view at 1/√2, the others not at all.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let r = std::f64::consts::FRAC_1_SQRT_2;
+    // Two frames a click: the one that takes it (the cube laid out for the view before it),
+    // and one laid out for the view it gives, so the next click finds its part there.
+    let cube = |h: &mut AppHarness, label: &str| {
+        h.get_by_role_and_label(Role::Group, "ViewCube")
+            .get_by_label(label)
+            .click();
+        step(h);
+        step(h);
+    };
+    cube(&mut h, "Top front");
+    assert!(
+        looks(&h, [0.0, -r, r], [0.0, r, r]),
+        "{:?}",
+        view(&h).camera()
+    );
+    let camera = view(&h).camera().clone();
+    near(camera.target, [20.0, 10.0, 5.0], 1e-9);
+    let [columns, rows] = view(&h).frame().unwrap().size_px.map(f64::from);
+    let want = 1.1 * f64::max(30.0 * r, 40.0 * rows / columns);
+    assert!(
+        (ortho_height(&camera) - want).abs() < 1e-9,
+        "{camera:?}, not {want} high"
+    );
+    cube(&mut h, "Front right");
+    assert!(
+        looks(&h, [r, -r, 0.0], [0.0, 0.0, 1.0]),
+        "{:?}",
+        view(&h).camera()
+    );
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Num1);
+    step(&mut h);
+    step(&mut h);
+    // An edge's label is two words (a face's one, a corner's three); Home view's aside.
+    let edges: Vec<String> = cube_buttons(&h)
+        .into_keys()
+        .filter(|label| label.split(' ').count() == 2 && label != "Home view")
+        .collect();
+    assert_eq!(
+        edges,
+        ["Bottom front", "Front left", "Front right", "Top front"]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_lets_the_navigation_bars_tool_go_before_the_selection_and_after_an_open_menu() {
+    // The prototype's `escChain`, whose first step the tool is: with Orbit chosen and the
+    // block's top selected, Esc lets Orbit go (back to Select, as its tooltip says) and
+    // leaves the selection; Esc again clears the selection. A menu open over it takes Esc
+    // before the chain (the prototype's `keydown`): Esc closes the menu alone, and the tool
+    // stays until the next.
+    use eframe::egui::Key;
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    select_in_box(&mut h, &["Face6"]);
+    click_on_bar(&mut h, "Orbit");
+    assert_eq!(view(&h).tool, Some(silico_app::viewport::Navigation::Orbit));
+    assert_eq!(toggled(&bar_node(&h).get_by_label("Orbit")), Some(true));
+    h.key_press(Key::Escape);
+    step(&mut h);
+    assert_eq!(view(&h).tool, None);
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face6"]);
+    h.key_press(Key::Escape);
+    step(&mut h);
+    assert!(selected_names(&h).is_empty());
+    // Pan chosen, the display settings open: Esc closes them alone; the next lets Pan go.
+    click_on_bar(&mut h, "Pan");
+    click_on_bar(&mut h, "Display settings");
+    step(&mut h);
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Display settings")
+            .is_some()
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Display settings")
+            .is_none()
+    );
+    assert_eq!(view(&h).tool, Some(silico_app::viewport::Navigation::Pan));
+    h.key_press(Key::Escape);
+    step(&mut h);
+    assert_eq!(view(&h).tool, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_with_sketch_modes_canvas_menu_open_closes_the_menu_before_it_lets_the_bars_tool_go() {
+    // The prototype's `keydown` gives Esc to an open menu before its `escChain`: in sketch
+    // mode, Pan chosen and the canvas's menu open, Esc closes the menu and leaves Pan; the
+    // next lets Pan go, and sketch mode stays open (its own Esc is the one after).
+    use eframe::egui::Key;
+    let f = fixture();
+    let mut h = boxed_sketch(&f);
+    click_on_bar(&mut h, "Pan");
+    open_menu(&f, &mut h, 20.0, 20.0);
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(sketch_menu(&h).is_none());
+    assert_eq!(view(&h).tool, Some(silico_app::viewport::Navigation::Pan));
+    h.key_press(Key::Escape);
+    step(&mut h);
+    assert_eq!(view(&h).tool, None);
+    assert!(sketch_mode(&h).is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_with_the_modify_box_the_over_define_prompt_or_a_held_drag_takes_them_before_the_bars_tool() {
+    esc_takes_a_held_drag_then_the_prompts_cancel(Some(silico_app::viewport::Navigation::Pan));
+}
+
+#[test]
+fn a_left_press_in_the_navigation_bars_right_or_bottom_padding_is_not_handed_on() {
+    // The bar's whole place is its own, to its border all round (its `rect` taken whole, not
+    // only its buttons' row, which egui would sense from the scope's top left to the row's
+    // bottom right): a press 2 points right of Grid, in the right padding (Grid ends 4 in,
+    // the 1 border and 3 of padding), and one 2 points above the bar's bottom, under the
+    // separator (no button there), reach nothing of the canvas's, and press no button. The
+    // same press on the canvas, well after, is handed on.
+    use eframe::egui::{Modifiers, PointerButton, Pos2, vec2};
+    use silico_app::viewport::LeftKind::{Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let (left, none) = (PointerButton::Primary, Modifiers::NONE);
+    let bar = bar_node(&h).rect();
+    let at = |h: &AppHarness, word: &str| bar_node(h).get_by_label(word).rect();
+    let grid = at(&h, "Grid");
+    let (look, display) = (at(&h, "Look At"), at(&h, "Display settings"));
+    let right = Pos2::new(grid.right() + 2.0, grid.center().y);
+    let bottom = Pos2::new((look.right() + display.left()) / 2.0, bar.bottom() - 2.0);
+    for press in [right, bottom] {
+        assert!(bar.contains(press), "{press:?} outside {bar:?}");
+        left_taken(&seen);
+        h.hover_at(press);
+        button_event(&h, press, left, true, none);
+        button_event(&h, press, left, false, none);
+        for _ in 0..3 {
+            step(&mut h);
+        }
+        let taken = left_taken(&seen);
+        assert!(taken.is_empty(), "{press:?}: {taken:?}");
+        for _ in 0..30 {
+            step(&mut h);
+        }
+    }
+    assert_eq!(view(&h).tool, None);
+    assert!(view(&h).grid);
+    let canvas = the_viewport(&h).center() - vec2(100.0, 0.0);
+    h.hover_at(canvas);
+    button_event(&h, canvas, left, true, none);
+    button_event(&h, canvas, left, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(kinds(&left_taken(&seen)), [Press, Release]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_with_a_dialog_open_lets_the_bars_tool_go_first_and_cancels_the_dialog_second() {
+    // The prototype's `escChain`: its navigation tool first, then the dialog. Pad open on the
+    // triangle, its preview built, Orbit chosen: Esc lets Orbit go and leaves the dialog,
+    // nothing undone; Esc again is the dialog's Cancel, its transaction rolled back, the
+    // document's text as it was.
+    use silico_app::viewport::Navigation::Orbit;
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    open_pad_on_triangle(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "the preview built", |h| {
+        !h.state().tabs()[0].preview_rebuilding()
+    });
+    click_on_bar(&mut h, "Orbit");
+    assert_eq!(view(&h).tool, Some(Orbit));
+    let sent = h.state().tabs()[0].sent.len();
+    h.key_press(eframe::egui::Key::Escape);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).tool, None);
+    assert!(dialog_open(&h));
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_with_a_features_name_being_typed_drops_the_name_and_leaves_the_bars_tool() {
+    // As the app orders them: a name being typed takes Esc before the prototype's chain (as
+    // its `keydown` gives a field its own Esc): Orbit chosen and Pin's name typed over by F2,
+    // Esc drops the name, nothing sent, Pin still Pin, and Orbit stays; the next Esc lets
+    // Orbit go.
+    use silico_app::viewport::Navigation::Orbit;
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    click_on_bar(&mut h, "Orbit");
+    f2_typed(&mut h, "Pin", "Peg");
+    let sent = h.state().tabs()[0].sent.len();
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(h.state().tabs()[0].renaming.is_none());
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert!(shows(&h, "Timeline", "Pin"));
+    assert_eq!(view(&h).tool, Some(Orbit));
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert_eq!(view(&h).tool, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_during_the_bars_tools_own_drag_stops_it_navigating_and_hands_the_selection_nothing() {
+    // As the app orders it: Orbit chosen, a left drag on the canvas orbits; Esc mid-drag lets
+    // Orbit go, so the rest of the drag moves the view no more. None of it reaches the
+    // selection: its press was the tool's, so its moves and its release are no stream of the
+    // selection's. The next press, well after, is the selection's.
+    use eframe::egui::{Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let (left, none) = (PointerButton::Primary, Modifiers::NONE);
+    click_on_bar(&mut h, "Orbit");
+    let at = the_viewport(&h).center() - vec2(100.0, 0.0);
+    let before = view(&h).camera().clone();
+    left_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, left, true, none);
+    step(&mut h);
+    h.hover_at(at + vec2(30.0, 0.0));
+    step(&mut h);
+    let turned = view(&h).camera().clone();
+    assert_ne!(turned, before, "the tool didn't orbit");
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert_eq!(view(&h).tool, None);
+    let mut last = at;
+    for i in 1..=3u8 {
+        last = at + vec2(30.0 + 20.0 * f32::from(i), 0.0);
+        h.hover_at(last);
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &turned);
+    button_event(&h, last, left, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let taken = left_taken(&seen);
+    assert!(taken.is_empty(), "{taken:?}");
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    h.hover_at(at);
+    button_event(&h, at, left, true, none);
+    button_event(&h, at, left, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(kinds(&left_taken(&seen)), [Press, Release]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_cube_edge_is_clickable_just_over_a_tenth_and_not_just_under() {
+    // From (0, −a, 1), orthographic: the top left's and the top right's views, (∓1, 0, 1)/√2,
+    // face it at 1/(√2·√(a² + 1)), by hand 0.10142 at a = 6.9, over a tenth, so each is
+    // clickable, and 0.098619 at a = 7.1, under, so neither is. The top front's, (a + 1)/
+    // (√2·√(a² + 1)), about 0.8, is either way.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    for (a, faced, shown) in [(6.9, 0.101_42, true), (7.1, 0.098_619, false)] {
+        let camera = silico_protocol::Camera {
+            projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+            eye: [0.0, -a, 1.0],
+            target: [0.0; 3],
+            up: [0.0, 0.0, 1.0],
+        };
+        let back = camera.frame().unwrap().back;
+        let r = std::f64::consts::FRAC_1_SQRT_2;
+        let got = -r * back[0] + r * back[2];
+        assert!((got - faced).abs() < 1e-5, "{a}: {got}");
+        view_mut(&mut h).set_camera(camera);
+        step(&mut h);
+        step(&mut h);
+        let buttons = cube_buttons(&h);
+        for edge in ["Top left", "Top right"] {
+            assert_eq!(buttons.contains_key(edge), shown, "{a}: {edge}");
+        }
+        assert!(buttons.contains_key("Top front"), "{a}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn where_an_edges_square_meets_a_corners_the_corner_takes_the_click() {
+    // From (9.8, −1.4, 1.4) = 1.4·(7, −1, 1), z up: the view's back (7, −1, 1)/√51, its up
+    // (−7, 1, 50)/√2550, and its right (1, 7, 0)/√50, by hand. A point p is drawn at
+    // (p·right, −p·up)·s from the cube's centre, s = 92/3.5: the top front right corner
+    // (1, −1, 1) at (−6/√50, −42/√2550)·s = (−22.304, −21.862), and the top front edge's
+    // middle (0, −1, 1) at (−7/√50, −49/√2550)·s = (−26.022, −25.506). Both face the view
+    // more than a tenth (0.728 and 0.198), so each has its 12-point square, and the two
+    // overlap. A click in the overlap is the corner's, its square laid after the edges': the
+    // view from (1, −1, 1)/√3, up (−1, 1, 2)/√6.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+        eye: [9.8, -1.4, 1.4],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 1.0],
+    });
+    step(&mut h);
+    step(&mut h);
+    let centre = silico_app::viewport::view_cube_rect(the_viewport(&h)).center();
+    let buttons = cube_buttons(&h);
+    let (corner, edge) = (buttons["Top front right"], buttons["Top front"]);
+    at_point(
+        corner.center(),
+        centre + eframe::egui::vec2(-22.304, -21.862),
+        "the corner",
+    );
+    at_point(
+        edge.center(),
+        centre + eframe::egui::vec2(-26.022, -25.506),
+        "the edge",
+    );
+    let overlap = corner.intersect(edge);
+    assert!(
+        overlap.width() > 0.0 && overlap.height() > 0.0,
+        "{overlap:?}"
+    );
+    click_at(&mut h, overlap.center());
+    let (d, six) = (1.0 / 3f64.sqrt(), 6f64.sqrt());
+    assert!(
+        looks(&h, [d, -d, d], [-1.0 / six, 1.0 / six, 2.0 / six]),
+        "{:?}",
+        view(&h).camera()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_app_bars_file_is_its_icon_a_gap_its_word_and_its_padding_wide() {
+    // `.ab-btn { padding: 0 5px; gap: 4px }`: File's 14-point icon, 4, its word as egui lays
+    // it out at the body's 12, and 5 of padding at each side; to the 1/16 point egui places
+    // widgets on.
+    let f = fixture();
+    let h = f.themed_with(&[]);
+    let word = h.ctx.fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(
+                "File".to_owned(),
+                eframe::egui::FontId::proportional(12.0),
+                eframe::egui::Color32::WHITE,
+            )
+            .size()
+            .x
+    });
+    assert!(word > 0.0);
+    let want = 14.0 + 4.0 + word + 2.0 * 5.0;
+    let file = bar_button(&h, "File").rect();
+    assert!(
+        (file.width() - want).abs() <= 1.0 / 16.0,
+        "{file:?}, not {want} wide"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_view_cubes_home_and_its_down_arrow_are_filled_gray_200_at_rest_and_hovered() {
+    // app.js gives each `style="background:var(--g200)"`, inline, over `.ab-btn:hover`'s
+    // Gray.300: the last fill painted over each button's place is #212121, with the pointer
+    // away and with it on the button (its hover taken: its tooltip shows).
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let last_fill = |h: &AppHarness, rect: eframe::egui::Rect| {
+        painted(h).iter().rev().find_map(|shape| match shape {
+            eframe::egui::Shape::Rect(r) if r.rect == rect => Some(r.fill),
+            _ => None,
+        })
+    };
+    for label in ["Home view", "View cube options"] {
+        let rect = h
+            .get_by_role_and_label(Role::Group, "ViewCube")
+            .get_by_role_and_label(Role::Button, label)
+            .rect();
+        h.hover_at(the_viewport(&h).center());
+        step(&mut h);
+        step(&mut h);
+        assert!(h.query_by_role_and_label(Role::Label, label).is_none());
+        assert_eq!(last_fill(&h, rect), Some(G200), "{label} at rest");
+        h.hover_at(rect.center());
+        step_until(&mut h, "its tooltip", |h| {
+            h.query_by_role_and_label(Role::Label, label).is_some()
+        });
+        step(&mut h);
+        assert_eq!(last_fill(&h, rect), Some(G200), "{label} hovered");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// With the over-define prompt up ([`over_define_offered`]), the navigation bar's `tool`
+/// chosen first, if any: Esc is the prompt's Cancel, which sends an Undo only the next frame
+/// polls, so it asks for that frame at once, as Esc alone does
+/// (`esc_alone_asks_for_the_next_frame_at_once`). What the Cancel does, with Pan chosen, is
+/// pinned by `esc_with_the_modify_box_the_over_define_prompt_or_a_held_drag_takes_them_before_the_bars_tool`.
+fn esc_cancelling_the_over_define_prompt_asks_at_once(
+    tool: Option<silico_app::viewport::Navigation>,
+) {
+    let f = fixture();
+    let (mut h, _) = over_define_offered(&f, tool);
+    assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Escape));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_that_cancels_the_over_define_prompt_with_the_bars_tool_chosen_asks_for_the_next_frame_at_once()
+ {
+    esc_cancelling_the_over_define_prompt_asks_at_once(Some(silico_app::viewport::Navigation::Pan));
+}
+
+#[test]
+fn esc_that_cancels_the_over_define_prompt_asks_for_the_next_frame_at_once() {
+    esc_cancelling_the_over_define_prompt_asks_at_once(None);
+}
+
+#[test]
+fn esc_that_lets_the_bars_tool_go_asks_for_the_next_frame_at_once() {
+    // As Esc alone does (`esc_alone_asks_for_the_next_frame_at_once`): the example open and
+    // settled, Pan chosen, Esc lets Pan go and asks for the frame after at once.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    settled(&mut h);
+    click_on_bar(&mut h, "Pan");
+    assert_eq!(view(&h).tool, Some(silico_app::viewport::Navigation::Pan));
+    assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Escape));
+    assert_eq!(view(&h).tool, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_that_drops_a_name_being_typed_asks_for_the_next_frame_at_once() {
+    // As Esc alone does (`esc_alone_asks_for_the_next_frame_at_once`): the example open and
+    // settled, Pin's name typed over by F2, Esc drops the name, nothing sent, Pin still Pin,
+    // and asks for the frame after at once.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    f2_typed(&mut h, "Pin", "Peg");
+    let sent = h.state().tabs()[0].sent.len();
+    assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Escape));
+    assert!(h.state().tabs()[0].renaming.is_none());
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert!(shows(&h, "Timeline", "Pin"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_on_the_start_page_with_no_document_asks_for_the_next_frame_at_once() {
+    // As Esc alone does with a document shown: with none, it asks for the frame after too.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    assert!(h.state().tabs().is_empty());
+    assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Escape));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_choice_from_sketch_modes_canvas_menu_asks_for_the_next_frame_at_once() {
+    // The boxed rectangle in sketch mode, its canvas menu open by a right click: the menu
+    // open and nothing chosen asks for no frame of its own; Smart Dimension chosen from it
+    // (which only chooses the tool, sending nothing) asks for the next at once, the menu
+    // closed and the tool chosen.
+    let f = fixture();
+    let mut h = boxed_sketch(&f);
+    open_menu(&f, &mut h, 20.0, 20.0);
+    step(&mut h);
+    let at = sketch_menu(&h)
+        .unwrap()
+        .get_by_label("Smart Dimension")
+        .rect()
+        .center();
+    assert!(asks_at_once_after_click(&mut h, at));
+    assert!(sketch_mode(&h).unwrap().menu_at.is_none());
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(silico_app::sketch::tools::Choice::Dimension)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_candidate_used_in_its_fillets_dialog_asks_for_the_next_frame_at_once() {
+    // The fillet whose edge broke, its own dialog open from the timeline, its card's
+    // candidates shown: Use on one puts it in the box, sent as the dialog's edit, which the
+    // frame after polls, so the click's frame asks for it at once.
+    let f = fixture();
+    let (mut h, _record) = corner_broken(&f, CORNER);
+    edit_from_the_timeline(&mut h, "Inside corner");
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]);
+    let used = format!("Use {EDGE4}");
+    step_until(&mut h, "the candidates in the dialog", |h| {
+        dialog(h)
+            .query_by_role_and_label(Role::Button, &used)
+            .is_some()
+    });
+    settled(&mut h);
+    let at = dialog(&h)
+        .get_by_role_and_label(Role::Button, &used)
+        .rect()
+        .center();
+    assert!(asks_at_once_after_click(&mut h, at));
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge1", EDGE4]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_value_typed_into_an_open_dialog_asks_for_the_next_frame_at_once() {
+    // Pad's dialog on the triangle, its add answered and settled, its Length focused: a
+    // digit typed is sent as the Length's edit as it's typed, which the frame after polls, so the typing's
+    // frame asks for it at once.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
+    open_pad_on_triangle(&mut h);
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    field(&h, In::Dialog, "Length").focus();
+    step(&mut h);
+    step(&mut h);
+    let sent = h.state().tabs()[0].sent.len();
+    assert!(asks_at_once_after_events(
+        &mut h,
+        vec![eframe::egui::Event::Text("5".to_owned())]
+    ));
+    assert!(h.state().tabs()[0].sent.len() > sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dialogs_cancel_clicked_asks_for_the_next_frame_at_once() {
+    // Its button, not Esc (whose key the app asks for itself): Pad's dialog on the
+    // triangle, its add answered and settled, its Cancel clicked closes it, its transaction rolled back, which
+    // the frame after polls, so the click's frame asks for it at once.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
+    open_pad_on_triangle(&mut h);
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    let at = dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .rect()
+        .center();
+    assert!(asks_at_once_after_click(&mut h, at));
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     assert_eq!(never_waits::waits(), 0);
 }

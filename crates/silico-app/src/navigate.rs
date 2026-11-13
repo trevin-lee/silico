@@ -30,6 +30,10 @@ pub const PERSPECTIVE_FIELD_OF_VIEW: f64 = 30.0;
 /// isometric view, its front and right toward the viewer, Z up.
 pub const HOME: NamedView = NamedView::TopFrontRight;
 
+/// SolidWorks' isometric view (Ctrl+7, and the ViewCube menu's Isometric), Z up: its front,
+/// right, and top toward the viewer, as the ViewCube's top front right corner gives it.
+pub const ISOMETRIC: NamedView = NamedView::TopFrontRight;
+
 /// What a view with no box to fit is fitted to: a 100 mm cube about the origin.
 pub const NO_BOX: [[f64; 3]; 2] = [[-50.0; 3], [50.0; 3]];
 

@@ -1345,6 +1345,7 @@ fn row_line(row: &Row, lit: bool) -> menu::Item<'_> {
         off: None,
         danger: false,
         lit,
+        checked: None,
     }
 }
 

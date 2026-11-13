@@ -260,13 +260,14 @@ pub fn drop_at(centres: &[f32], from: usize, x: f32) -> Option<usize> {
 }
 
 /// The timeline's panel, of `tab`, the tab shown: what it asks is done to `tab` through
-/// `sessions` (a selection, a dialog opened, a feature moved), `started` set if a command
-/// was started; and the feature hovered given to the viewport, which draws after it.
+/// `sessions` (a selection, a dialog opened, a feature moved), `next_frame` set if a command
+/// was started, so the frame after is asked for to poll it; and the feature hovered given to
+/// the viewport, which draws after it.
 pub(crate) fn show<P: Clients + 'static>(
     ui: &mut Ui,
     tab: Option<&mut Tab>,
     sessions: &Arc<Sessions<P>>,
-    started: &mut bool,
+    next_frame: &mut bool,
 ) {
     egui::Panel::bottom("timeline")
         .exact_size(theme::TIMELINE_HEIGHT)
@@ -286,7 +287,7 @@ pub(crate) fn show<P: Clients + 'static>(
             let Some(tab) = tab else {
                 return;
             };
-            features(ui, rest, tab, sessions, started);
+            features(ui, rest, tab, sessions, next_frame);
         });
 }
 
@@ -351,7 +352,7 @@ fn features<P: Clients + 'static>(
     rect: Rect,
     tab: &mut Tab,
     sessions: &Arc<Sessions<P>>,
-    started: &mut bool,
+    next_frame: &mut bool,
 ) {
     let Some(timeline) = &tab.timeline else {
         words(ui, rect, panes::building(tab));
@@ -436,7 +437,7 @@ fn features<P: Clients + 'static>(
         tab.renaming = renaming;
     }
     if let Some((feature, typed)) = asked.renamed {
-        *started |= tab.finish_rename(sessions, feature, &typed);
+        *next_frame |= tab.finish_rename(sessions, feature, &typed);
     }
     if let Some(id) = asked.selected {
         tab.selected_in = feature_menu::Place::Timeline;
@@ -449,16 +450,16 @@ fn features<P: Clients + 'static>(
         tab.selection_mut().clear();
     }
     if let Some(act) = asked.act {
-        *started |= feature_menu::act(tab, sessions, act);
+        *next_frame |= feature_menu::act(tab, sessions, act);
     }
     if let Some((feature, before)) = asked.moved {
         tab.move_feature(sessions, feature, before);
-        *started = true;
+        *next_frame = true;
     }
     if let Some(id) = asked.edit {
         // Edit Sketch for a sketch, a feature's dialog for any other.
         tab.edit_sketch_or_feature(sessions, &id);
-        *started = true;
+        *next_frame = true;
     }
 }
 
@@ -1256,7 +1257,7 @@ mod tests {
     struct Shown {
         tab: Option<Tab>,
         sessions: Arc<Sessions<Fake>>,
-        started: bool,
+        next_frame: bool,
     }
 
     /// `#timeline`'s box; below, its content's middle and its track's left edge, as the
@@ -1329,7 +1330,7 @@ mod tests {
                 Arc::new(FakeKernel::new(1).unwrap()),
                 |dir| silico_core::cache::Cache::unsealed(dir),
             )),
-            started: false,
+            next_frame: false,
         };
         let mut h = Harness::builder()
             .with_size(Vec2::new(PANE.x + W + 40.0, PANE.y + HIGH + 40.0))
@@ -1337,7 +1338,12 @@ mod tests {
                 |ui, shown: &mut Shown| {
                     let scope = Rect::from_min_size(PANE, Vec2::new(W, HIGH));
                     ui.scope_builder(UiBuilder::new().max_rect(scope), |ui| {
-                        show(ui, shown.tab.as_mut(), &shown.sessions, &mut shown.started);
+                        show(
+                            ui,
+                            shown.tab.as_mut(),
+                            &shown.sessions,
+                            &mut shown.next_frame,
+                        );
                     });
                 },
                 shown,
@@ -1975,7 +1981,7 @@ mod tests {
             "the drop line"
         );
         // Nothing is moved until it's dropped.
-        assert!(!h.state().started);
+        assert!(!h.state().next_frame);
     }
 
     #[test]
@@ -2007,10 +2013,10 @@ mod tests {
         // A name typed, then Enter: sent, and the next frame asked for, to poll it.
         h.get_by_role(Role::TextInput).type_text("Plate");
         h.run_steps(2);
-        assert!(!h.state().started, "sent as it's typed");
+        assert!(!h.state().next_frame, "sent as it's typed");
         h.key_press(Key::Enter);
         h.run_steps(2);
-        assert!(h.state().started, "the name sent, never polled");
+        assert!(h.state().next_frame, "the name sent, never polled");
         assert!(h.state().tab.as_ref().unwrap().renaming.is_none());
 
         // The menu's Suppress on the pad: sent, and polled the same.
@@ -2019,6 +2025,6 @@ mod tests {
         h.run_steps(2);
         h.get_by_role_and_label(Role::Button, "Suppress").click();
         h.run_steps(2);
-        assert!(h.state().started, "the suppression sent, never polled");
+        assert!(h.state().next_frame, "the suppression sent, never polled");
     }
 }

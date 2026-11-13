@@ -19,7 +19,7 @@ use egui_kittest::kittest::Queryable;
 use silico_app::App;
 use silico_app::navigate;
 use silico_app::renderer::{Change, FrameData, Picking, Present, ViewRenderer};
-use silico_app::viewport::read_size;
+use silico_app::viewport::{Navigation, read_size};
 use silico_core::cache::Cache;
 use silico_core::command::Sessions;
 use silico_core::document::FeatureId;
@@ -1900,4 +1900,197 @@ fn a_shown_sketch_past_its_lines_cap_draws_none_and_the_frames_go_on() {
     }
     assert!(h.state().frames() >= frames + 20);
     assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The navigation bar's and the ViewCube's buttons (the prototype audit's item 11), clicked
+// while the rebuild is held, in windows too small for them, many times over, and with a menu
+// open as its tab closes ----
+
+/// Every button of the navigation bar and the ViewCube's own (not its faces, edges, and
+/// corners): its holder's role and label, and its own label.
+const BAR_AND_CUBE_BUTTONS: [(egui::accesskit::Role, &str, &str); 9] = {
+    use egui::accesskit::Role::{Group, Toolbar};
+    [
+        (Toolbar, "Navigation bar", "Orbit"),
+        (Toolbar, "Navigation bar", "Pan"),
+        (Toolbar, "Navigation bar", "Zoom"),
+        (Toolbar, "Navigation bar", "Fit"),
+        (Toolbar, "Navigation bar", "Look At"),
+        (Toolbar, "Navigation bar", "Display settings"),
+        (Toolbar, "Navigation bar", "Grid"),
+        (Group, "ViewCube", "Home view"),
+        (Group, "ViewCube", "View cube options"),
+    ]
+};
+
+/// The button `label` of the holder `holder` (`role`).
+fn button<'a>(
+    h: &'a AppHarness,
+    role: egui::accesskit::Role,
+    holder: &'a str,
+    label: &'a str,
+) -> egui_kittest::Node<'a> {
+    h.get_by_role_and_label(role, holder)
+        .get_by_role_and_label(egui::accesskit::Role::Button, label)
+}
+
+/// Whether any menu is open over the window.
+fn a_menu_open(h: &AppHarness) -> bool {
+    h.query_all_by_role(egui::accesskit::Role::Menu)
+        .next()
+        .is_some()
+}
+
+#[test]
+fn each_bar_and_cube_button_clicked_while_the_rebuild_is_held_waits_on_nothing() {
+    // Every kernel request held from the open: the first rebuild runs and publishes nothing.
+    // Each of the bar's and the cube's buttons clicked meanwhile, a frame apart: Orbit, Pan,
+    // and Zoom chosen in turn; Fit with no bodies fits nothing; Look At with nothing selected
+    // says so; the menus open, and close at the next click. Never a wait on the UI thread,
+    // and the camera always one a frame draws. Released, the model is published and read.
+    let f = fixture();
+    let hold = f.kernel.hold(|_| true);
+    let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs()[0].published.is_none());
+    for (role, holder, label) in BAR_AND_CUBE_BUTTONS {
+        button(&h, role, holder, label).click();
+        step(&mut h);
+        step(&mut h);
+        let camera = view(&h).camera();
+        assert!(camera.frame().is_ok(), "{label}: {camera:?}");
+        if label == "Look At" {
+            let said = h.state().toast().map(|(text, _)| text.to_owned());
+            assert_eq!(said.as_deref(), Some(silico_app::tab::LOOK_AT_NO_FACE));
+        }
+    }
+    assert_eq!(view(&h).tool, Some(Navigation::Zoom));
+    assert!(!view(&h).grid);
+    hold.release();
+    meshes_settled(&mut h);
+    assert!(h.state().tabs()[0].published.is_some());
+    assert!(!view(&h).bodies().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_windows_too_small_for_the_bar_its_buttons_keep_finite_bounds_and_still_answer() {
+    // 60 by 40 points, and 400 by 300: the canvas a few points or none, or narrower than
+    // the bar's 220. The bar and the cube still in the tree, every bound finite; each
+    // button clicked as a screen reader clicks it (its action, where the pointer can't
+    // reach): Grid hides the grid, Orbit is chosen, and the camera is always one a frame
+    // draws; nothing waits.
+    for size in [(60.0, 40.0), (400.0, 300.0)] {
+        let f = fixture();
+        let (mut h, _record) = f.drawn("a.silico", EXAMPLE, size);
+        meshes_settled(&mut h);
+        for (role, holder, label) in BAR_AND_CUBE_BUTTONS {
+            let holder_rect = h.get_by_role_and_label(role, holder).rect();
+            let rect = button(&h, role, holder, label).rect();
+            for k in [
+                holder_rect.min.x,
+                holder_rect.min.y,
+                holder_rect.max.x,
+                holder_rect.max.y,
+                rect.min.x,
+                rect.min.y,
+                rect.max.x,
+                rect.max.y,
+            ] {
+                assert!(
+                    k.is_finite(),
+                    "{size:?} {label}: {rect:?} in {holder_rect:?}"
+                );
+            }
+        }
+        for label in ["Grid", "Orbit"] {
+            button(&h, egui::accesskit::Role::Toolbar, "Navigation bar", label).click_accesskit();
+            step(&mut h);
+            step(&mut h);
+        }
+        assert!(!view(&h).grid, "{size:?}");
+        assert_eq!(view(&h).tool, Some(Navigation::Orbit), "{size:?}");
+        for (role, holder, label) in BAR_AND_CUBE_BUTTONS {
+            button(&h, role, holder, label).click_accesskit();
+            step(&mut h);
+            step(&mut h);
+            let camera = view(&h).camera();
+            assert!(camera.frame().is_ok(), "{size:?} {label}: {camera:?}");
+        }
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn the_bars_and_the_cubes_toggles_clicked_nine_times_a_frame_apart_end_as_one_click_leaves_them() {
+    // Each clicked nine times, a frame apart (within egui's double-click time, so the clicks
+    // pair up as double-clicks too): each click one toggle, so each ends as one click leaves
+    // it. Grid: hidden. Orbit: chosen. The ▾: its menu open. Display settings: its menu
+    // open, and the cube's closed (one popup at a time).
+    use egui::accesskit::Role::{Group, Menu, Toolbar};
+    let f = fixture();
+    let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    let nine = |h: &mut AppHarness, role, holder: &str, label: &str| {
+        for _ in 0..9 {
+            button(h, role, holder, label).click();
+            step(h);
+        }
+        step(h);
+        step(h);
+    };
+    nine(&mut h, Toolbar, "Navigation bar", "Grid");
+    assert!(!view(&h).grid);
+    nine(&mut h, Toolbar, "Navigation bar", "Orbit");
+    assert_eq!(view(&h).tool, Some(Navigation::Orbit));
+    nine(&mut h, Group, "ViewCube", "View cube options");
+    assert!(
+        h.query_by_role_and_label(Menu, "View cube options")
+            .is_some()
+    );
+    nine(&mut h, Toolbar, "Navigation bar", "Display settings");
+    assert!(
+        h.query_by_role_and_label(Menu, "Display settings")
+            .is_some()
+    );
+    assert!(
+        h.query_by_role_and_label(Menu, "View cube options")
+            .is_none()
+    );
+    // The camera through it all one a frame draws, and Orbit still chosen.
+    assert!(view(&h).camera().frame().is_ok());
+    assert_eq!(view(&h).tool, Some(Navigation::Orbit));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_menu_open_over_the_canvas_as_its_tab_closes_goes_with_it() {
+    // The display settings' menu open, then the tab closed (Ctrl+W; its file saved, so
+    // nothing is asked): the menu goes with the bar, nothing waits, and the cube's menu
+    // the same way. A document opened after shows neither open.
+    use egui::accesskit::Role::{Group, Toolbar};
+    for (role, holder, label) in [
+        (Toolbar, "Navigation bar", "Display settings"),
+        (Group, "ViewCube", "View cube options"),
+    ] {
+        let f = fixture();
+        let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
+        meshes_settled(&mut h);
+        button(&h, role, holder, label).click();
+        step(&mut h);
+        step(&mut h);
+        assert!(a_menu_open(&h), "{label}");
+        h.key_press_modifiers(Modifiers::COMMAND, egui::Key::W);
+        step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+        step(&mut h);
+        step(&mut h);
+        assert!(!a_menu_open(&h), "{label}");
+        let path = f.file("b.silico", EXAMPLE);
+        h.state_mut().open(&path, false);
+        meshes_settled(&mut h);
+        assert!(!a_menu_open(&h), "{label}");
+        assert_eq!(never_waits::waits(), 0);
+    }
 }

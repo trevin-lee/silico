@@ -129,8 +129,9 @@ pub struct Panes<'a, P: Clients + 'static> {
     /// The property panel's name field, while it's being typed in: the feature, and the
     /// text.
     pub name: &'a mut Option<NameField>,
-    /// Whether a command was started: the frame after polls it.
-    pub started: &'a mut bool,
+    /// Whether the frame after is to be asked for (`App::keys`' meaning): a command started,
+    /// which it polls, or a key taken, whose change it draws.
+    pub next_frame: &'a mut bool,
     /// What the viewport's renderer holds, and how its frames reach it.
     pub drawing: &'a mut crate::viewport::Drawing,
     /// Enter or Esc pressed this frame, if it's an open dialog's (`App::keys`).
@@ -268,7 +269,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             tab.renaming = renaming;
         }
         if let Some((feature, typed)) = asked.renamed {
-            *self.started |= tab.finish_rename(self.sessions, feature, &typed);
+            *self.next_frame |= tab.finish_rename(self.sessions, feature, &typed);
         }
         for what in asked.toggled {
             tab.toggle_shown(what);
@@ -302,12 +303,12 @@ impl<P: Clients + 'static> Panes<'_, P> {
             tab.selection_mut().select_feature(id);
         }
         if let Some(act) = asked.act {
-            *self.started |= crate::feature_menu::act(tab, self.sessions, act);
+            *self.next_frame |= crate::feature_menu::act(tab, self.sessions, act);
         }
         if let Some(id) = asked.edit {
             // Edit Sketch for a sketch, a feature's dialog for any other.
             tab.edit_sketch_or_feature(self.sessions, &id);
-            *self.started = true;
+            *self.next_frame = true;
         }
         if asked.root {
             // The document's row (§5: "a click on the tree's top node lists them all"):
@@ -362,7 +363,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
         });
         let sessions = self.sessions;
         let name = &mut *self.name;
-        let started = &mut *self.started;
+        let next_frame = &mut *self.next_frame;
         let elements = tab.selection().elements().next().is_some();
         if elements {
             // A pick made this frame (the canvas is drawn before this pane) is measured from
@@ -380,14 +381,14 @@ impl<P: Clients + 'static> Panes<'_, P> {
                         viewed = selected_elements(ui, tab);
                         properties::CardOut::default()
                     }
-                    Some(entry) => feature(ui, tab, &entry, sessions, name, started),
+                    Some(entry) => feature(ui, tab, &entry, sessions, name, next_frame),
                     None => document(ui, tab),
                 }
             })
             .inner;
         tab.hover_candidate(out.hovered);
         if let Some(asked) = out.asked {
-            *self.started |= tab.card_asked(sessions, asked);
+            *self.next_frame |= tab.card_asked(sessions, asked);
         }
         match viewed {
             None => {}
@@ -396,15 +397,15 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 // Never a sketch's: an element's name names the feature that made it in a
                 // solid, which a sketch never is.
                 tab.edit_feature(sessions, &id);
-                *self.started = true;
+                *self.next_frame = true;
             }
             Some(Viewed::Fillet) => {
                 tab.open_dialog(sessions, crate::dialog::Kind::Fillet, self.remembered);
-                *self.started = true;
+                *self.next_frame = true;
             }
             Some(Viewed::SketchOn(face)) => {
                 tab.create_sketch_on_face(sessions, &face.to_string());
-                *self.started = true;
+                *self.next_frame = true;
             }
         }
     }
@@ -484,9 +485,9 @@ impl<P: Clients + 'static> Panes<'_, P> {
         tab.dialog = Some(dialog);
         tab.hover_candidate(cards.out.hovered);
         if let Some(asked) = cards.out.asked {
-            *self.started |= tab.card_asked(sessions, asked);
+            *self.next_frame |= tab.card_asked(sessions, asked);
         }
-        *self.started |= tab.dialog_changed(sessions);
+        *self.next_frame |= tab.dialog_changed(sessions);
         // The button's click, asked of the inputs before this frame's edits were sent, taken
         // as Enter is: only if OK still holds after them.
         if action == Action::Ok && !tab.can_ok() {
@@ -502,7 +503,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             Action::Ok => tab.close_dialog(sessions, true),
             Action::Cancel => tab.close_dialog(sessions, false),
         }
-        *self.started |= action != Action::None;
+        *self.next_frame |= action != Action::None;
     }
 }
 
@@ -551,7 +552,7 @@ fn feature<P: Clients + 'static>(
     entry: &Entry,
     sessions: &Arc<Sessions<P>>,
     name: &mut Option<NameField>,
-    started: &mut bool,
+    next_frame: &mut bool,
 ) -> properties::CardOut {
     let mut sub = properties::body(
         &format!("{} · ", crate::timeline::kind_words(entry.kind)),
@@ -623,7 +624,7 @@ fn feature<P: Clients + 'static>(
         // Each change an edit, coalesced in the tab (section 3); an empty name too, for
         // the core to refuse and the tab to say why.
         tab.rename(sessions, entry.id.clone(), &text);
-        *started = true;
+        *next_frame = true;
         field.typed.push(text.clone());
     }
     field.text = text;
@@ -2192,7 +2193,7 @@ mod tests {
         tab: Option<Tab>,
         sessions: Arc<Sessions<Fake>>,
         name: Option<NameField>,
-        started: bool,
+        next_frame: bool,
         drawing: crate::viewport::Drawing,
         remembered: crate::dialog::Remembered,
     }
@@ -2280,7 +2281,7 @@ mod tests {
                 |dir| silico_core::cache::Cache::unsealed(dir),
             )),
             name: None,
-            started: false,
+            next_frame: false,
             drawing: crate::viewport::Drawing::default(),
             remembered: crate::dialog::Remembered::default(),
         };
@@ -2294,7 +2295,7 @@ mod tests {
                             tab: shown.tab.as_mut(),
                             sessions: &shown.sessions,
                             name: &mut shown.name,
-                            started: &mut shown.started,
+                            next_frame: &mut shown.next_frame,
                             drawing: &mut shown.drawing,
                             dialog_key: None,
                             remembered: &shown.remembered,
@@ -2878,7 +2879,7 @@ mod tests {
                 .all(|shown| format(shown).font_id.family != FontFamily::Monospace),
             "a prefix"
         );
-        assert!(!h.state().started, "an edit asked");
+        assert!(!h.state().next_frame, "an edit asked");
 
         // A sketch's prefix (`.row .prefix`), as a row with one draws it: 4 after the icon,
         // 11 points of the monospace font, its state's colour on a selected row too; the
@@ -3169,16 +3170,16 @@ mod tests {
 
         // F2 on the block: its row's field; a name typed, then Enter, sent, and the next
         // frame asked for, to poll it.
-        assert!(!h.state().started);
+        assert!(!h.state().next_frame);
         tab_of(&mut h).start_rename(fid("b0000001"), crate::feature_menu::Place::Browser);
         h.run_steps(3);
         assert!(h.get_by_role(Role::TextInput).is_focused());
         h.get_by_role(Role::TextInput).type_text("Plate");
         h.run_steps(2);
-        assert!(!h.state().started, "sent as it's typed");
+        assert!(!h.state().next_frame, "sent as it's typed");
         h.key_press(Key::Enter);
         h.run_steps(2);
-        assert!(h.state().started, "the name sent, never polled");
+        assert!(h.state().next_frame, "the name sent, never polled");
         assert!(tab_of(&mut h).renaming.is_none());
 
         // The menu's Suppress on the shell's row: sent, and polled the same.
@@ -3187,7 +3188,7 @@ mod tests {
         h.run_steps(2);
         h.get_by_role_and_label(Role::Button, "Suppress").click();
         h.run_steps(2);
-        assert!(h.state().started, "the suppression sent, never polled");
+        assert!(h.state().next_frame, "the suppression sent, never polled");
     }
 }
 
@@ -3365,7 +3366,7 @@ mod property_panel_drawn {
         tab: Option<Tab>,
         sessions: Arc<Sessions<Fake>>,
         name: Option<NameField>,
-        started: bool,
+        next_frame: bool,
         drawing: crate::viewport::Drawing,
         remembered: crate::dialog::Remembered,
     }
@@ -3434,7 +3435,7 @@ mod property_panel_drawn {
                 |dir| silico_core::cache::Cache::unsealed(dir),
             )),
             name: None,
-            started: false,
+            next_frame: false,
             drawing: crate::viewport::Drawing::default(),
             remembered: crate::dialog::Remembered::default(),
         };
@@ -3448,7 +3449,7 @@ mod property_panel_drawn {
                             tab: shown.tab.as_mut(),
                             sessions: &shown.sessions,
                             name: &mut shown.name,
-                            started: &mut shown.started,
+                            next_frame: &mut shown.next_frame,
                             drawing: &mut shown.drawing,
                             dialog_key: None,
                             remembered: &shown.remembered,
@@ -4591,7 +4592,7 @@ mod property_panel_drawn {
         // Edit Feature's read of the box, under way: the dialog opens once it answers.
         let shown = h.state();
         assert!(shown.tab.as_ref().unwrap().in_dialog());
-        assert!(shown.started);
+        assert!(shown.next_frame);
     }
 
     #[test]
@@ -4627,7 +4628,7 @@ mod property_panel_drawn {
         let tab = h.state().tab.as_ref().unwrap();
         assert_eq!(tab.selection().feature(), Some(&fid("c0000001")));
         assert_eq!(tab.timeline_scroll(), Some(&fid("c0000001")));
-        assert!(!h.state().started, "a selection sends nothing");
+        assert!(!h.state().next_frame, "a selection sends nothing");
     }
 
     /// The pane's width in the app's 1280 × 800 window (its fixture's screenshots): the

@@ -749,12 +749,24 @@ pub const TOOLTIP_SHADOW: Shadow = Shadow {
 };
 
 /// The ViewCube's side, and its margin from the canvas's top and right (the prototype's
-/// viewport.js:101, `CUBE` and `CUBE_M`); the Home button sits above it, this high. The
-/// prototype's Home is a 22 high button 4 to the cube's left (app.js's `renderCanvasUI`,
-/// `home3d`), which the viewport's overlay places.
+/// viewport.js:101, `CUBE` and `CUBE_M`).
 pub const VIEW_CUBE_SIDE: f32 = 92.0;
 pub const VIEW_CUBE_MARGIN: f32 = 16.0;
-pub const VIEW_CUBE_HOME_HEIGHT: f32 = 20.0;
+
+/// The ViewCube's two buttons, Home view and its options' ▾ (app.js's `renderCanvasUI`, the
+/// `home3d` and `cubeMenu` buttons): bar buttons (`.ab-btn`) in a column at the cube's left,
+/// its right 4 left of the cube (`right: 16 + 92 + 4`) and its top level with the cube's
+/// (`top: 16px`), 2 apart (`gap: 2px`), each filled Gray.200 at rest and hovered alike (an
+/// inline `background`, over `.ab-btn:hover`'s).
+pub const VIEW_CUBE_BUTTONS_GAP: f32 = 4.0;
+pub const VIEW_CUBE_BUTTONS_SPACING: f32 = 2.0;
+pub const VIEW_CUBE_BUTTON_BG: Color32 = GRAY_200;
+
+/// Where the ViewCube's menu opens, from the ▾'s bottom left corner (interact.js's
+/// `cubeMenu(r.left - 150, r.bottom + 2)`), and from a right click on the cube
+/// (`onCubeMenu`'s `e.clientX - 160, e.clientY`): its top left corner there.
+pub const VIEW_CUBE_MENU_FROM_BUTTON: Vec2 = Vec2::new(-150.0, 2.0);
+pub const VIEW_CUBE_MENU_FROM_CLICK: Vec2 = Vec2::new(-160.0, 0.0);
 
 /// The ViewCube's faces' fills (viewport.js's `buildCube`): the right and left alike
 /// (Gray.300), the top lightest, the bottom darkest (Gray.200), the front and back between.
@@ -792,6 +804,32 @@ pub const VIEW_CUBE_STUB_WIDTH: f32 = 1.0;
 pub const NAVIGATION_BAR_WIDTH: f32 = 220.0;
 pub const NAVIGATION_BAR_HEIGHT: f32 = 32.0;
 pub const NAVIGATION_BAR_MARGIN: f32 = 12.0;
+
+/// The navigation bar's frame (`.nav-bar`): Gray.200 inside a 1 Gray.250 border, `--r`'s
+/// corners, 3 of padding inside the border, 1 between its items, and its shadow (`0 4px
+/// 14px`, black at half).
+pub const NAVIGATION_BAR_BG: Color32 = FLOATING_BG;
+pub const NAVIGATION_BAR_BORDER: Color32 = PANEL_BORDER;
+pub const NAVIGATION_BAR_PADDING: f32 = 3.0;
+pub const NAVIGATION_BAR_GAP: f32 = 1.0;
+pub const NAVIGATION_BAR_SHADOW: Shadow = Shadow {
+    offset: [0, 4],
+    blur: 14,
+    spread: 0,
+    color: with_alpha(GRAY_0, 128),
+};
+
+/// A navigation bar button's height and least width (`.nav-bar .ab-btn`: 24 and 26), and
+/// its separator's height and its margin at each side (`.nav-bar .ab-sep`: 14 and 3).
+pub const NAVIGATION_BAR_BUTTON_HEIGHT: f32 = 24.0;
+pub const NAVIGATION_BAR_BUTTON_WIDTH: f32 = 26.0;
+pub const NAVIGATION_BAR_SEPARATOR_HEIGHT: f32 = 14.0;
+pub const NAVIGATION_BAR_SEPARATOR_MARGIN: f32 = 3.0;
+
+/// How far above its button the display settings' menu opens (interact.js's
+/// `displayMenu(r.left, r.top - 4, true)`: its bottom 4 above the button's top, its left at
+/// the button's).
+pub const NAVIGATION_BAR_MENU_GAP: f32 = 4.0;
 
 /// A small button's height (`.btn`): Copy MCP config, and the dialogs' buttons.
 pub const BUTTON_HEIGHT: f32 = 22.0;
@@ -2702,6 +2740,64 @@ mod tests {
         // A WebGL line's one pixel, the edges' and the axis stubs'.
         assert_eq!(VIEW_CUBE_EDGE.width, 1.0);
         assert_eq!(VIEW_CUBE_STUB_WIDTH, 1.0);
+        // Home and ▾: `right: 16 + 92 + 4`, `gap: 2px`, `background: var(--g200)`; the menu
+        // at `r.left - 150, r.bottom + 2` from the ▾, and `e.clientX - 160` from a click.
+        assert_eq!(VIEW_CUBE_BUTTONS_GAP, 4.0);
+        assert_eq!(VIEW_CUBE_BUTTONS_SPACING, 2.0);
+        assert_eq!(VIEW_CUBE_BUTTON_BG, opaque(0x212121));
+        assert_eq!(VIEW_CUBE_MENU_FROM_BUTTON, Vec2::new(-150.0, 2.0));
+        assert_eq!(VIEW_CUBE_MENU_FROM_CLICK, Vec2::new(-160.0, 0.0));
+    }
+
+    /// The navigation bar, typed from styles.css's `.nav-bar`, `.nav-bar .ab-btn`, and
+    /// `.nav-bar .ab-sep`, and app.js's buttons in it.
+    #[test]
+    fn the_navigation_bars_look_is_the_prototypes_and_its_size_its_parts() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `background: var(--g200); border: 1px solid var(--g250); padding: 3px; gap: 1px;
+        // box-shadow: 0 4px 14px rgba(0,0,0,.5)`.
+        assert_eq!(NAVIGATION_BAR_BG, opaque(0x212121));
+        assert_eq!(NAVIGATION_BAR_BORDER, opaque(0x272626));
+        assert_eq!(NAVIGATION_BAR_PADDING, 3.0);
+        assert_eq!(NAVIGATION_BAR_GAP, 1.0);
+        assert_eq!(
+            (
+                NAVIGATION_BAR_SHADOW.offset,
+                NAVIGATION_BAR_SHADOW.blur,
+                NAVIGATION_BAR_SHADOW.spread,
+                NAVIGATION_BAR_SHADOW.color,
+            ),
+            ([0, 4], 14, 0, Color32::from_rgba_unmultiplied(0, 0, 0, 128))
+        );
+        // A button 24 high, 26 wide at least; a separator 14 high, 3 each side.
+        assert_eq!(NAVIGATION_BAR_BUTTON_HEIGHT, 24.0);
+        assert_eq!(NAVIGATION_BAR_BUTTON_WIDTH, 26.0);
+        assert_eq!(NAVIGATION_BAR_SEPARATOR_HEIGHT, 14.0);
+        assert_eq!(NAVIGATION_BAR_SEPARATOR_MARGIN, 3.0);
+        // Seven buttons: five of one icon (14 and 5 each side, 24, so 26), Display settings'
+        // two icons 4 apart (5 + 14 + 4 + 14 + 5 = 42), and Grid's 26; the separator's 1
+        // and 3 each side; a 1 gap between each of the eight; the padding and border each
+        // side: 5·26 + 42 + 26 + 7 + 7 + 2·4 = 220 across, 24 + 2·4 = 32 high.
+        assert_eq!(NAVIGATION_BAR_WIDTH, 220.0);
+        assert_eq!(NAVIGATION_BAR_HEIGHT, 32.0);
+        assert_eq!(
+            5.0 * NAVIGATION_BAR_BUTTON_WIDTH
+                + 42.0
+                + NAVIGATION_BAR_BUTTON_WIDTH
+                + (BORDER_WIDTH + 2.0 * NAVIGATION_BAR_SEPARATOR_MARGIN)
+                + 7.0 * NAVIGATION_BAR_GAP
+                + 2.0 * (NAVIGATION_BAR_PADDING + BORDER_WIDTH),
+            NAVIGATION_BAR_WIDTH
+        );
+        assert_eq!(
+            NAVIGATION_BAR_BUTTON_HEIGHT + 2.0 * (NAVIGATION_BAR_PADDING + BORDER_WIDTH),
+            NAVIGATION_BAR_HEIGHT
+        );
+        // The display menu 4 above its button (`r.top - 4`).
+        assert_eq!(NAVIGATION_BAR_MENU_GAP, 4.0);
     }
 
     // ---- A key cap's border, as `.kbd` draws it (border 1/1/2/1, radius 3, border-box) ----

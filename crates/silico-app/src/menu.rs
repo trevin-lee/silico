@@ -13,6 +13,12 @@
 //! gap and its padding). Every item of a menu is as wide as its widest line (`width: 100%`,
 //! `white-space: nowrap`, the menu as wide as its lines), and that at least `.menu`'s
 //! `min-width: 200px` less its border and its padding (`box-sizing: border-box`).
+//!
+//! An item that shows a state (the display settings' and the ViewCube's, interact.js's
+//! `displayMenu` and `cubeMenu`) writes the prototype's mark before its words: `✓ ` when it's
+//! chosen, three spaces when it isn't. A screen reader is told the state, not the mark: one
+//! of a choice (a projection, a visual style) as a radio button, a setting on or off (the
+//! ground grid) as a check box.
 
 use eframe::egui::{
     self, Color32, FontId, Pos2, Rect, Response, Sense, Ui, Vec2, WidgetInfo, WidgetType, vec2,
@@ -22,8 +28,8 @@ use crate::icons::{ICON_SIZE, Icon, IconSize};
 use crate::theme;
 
 /// An item as a menu draws it: its icon, its words, its dim words after them, its keys'
-/// caps, why it's off if it is, whether its words are red (`.danger`), and whether it's lit
-/// by the keys (`.kfocus`) as a hovered item is.
+/// caps, why it's off if it is, whether its words are red (`.danger`), whether it's lit
+/// by the keys (`.kfocus`) as a hovered item is, and the state it shows, if it shows one.
 #[derive(Debug, Clone, Copy)]
 pub struct Item<'a> {
     pub icon: Option<Icon>,
@@ -33,9 +39,42 @@ pub struct Item<'a> {
     pub off: Option<&'a str>,
     pub danger: bool,
     pub lit: bool,
+    pub checked: Option<Checked>,
+}
+
+/// The state an item shows, marked as the prototype marks it (`✓ ` before its words, or
+/// three spaces).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Checked {
+    /// One of a choice, chosen or not: a radio button for a screen reader.
+    Choice(bool),
+    /// A setting, on or off: a check box for a screen reader.
+    Toggle(bool),
+}
+
+impl Checked {
+    /// Whether it's chosen, or on.
+    pub fn on(self) -> bool {
+        match self {
+            Checked::Choice(on) | Checked::Toggle(on) => on,
+        }
+    }
+
+    /// The mark before an item's words (interact.js's `'✓ '` or `'   '`).
+    pub fn mark(self) -> &'static str {
+        if self.on() { "✓ " } else { "   " }
+    }
 }
 
 impl Item<'_> {
+    /// Its words as drawn: its label, after its mark if it shows a state.
+    pub fn words(&self) -> std::borrow::Cow<'_, str> {
+        match self.checked {
+            Some(checked) => format!("{}{}", checked.mark(), self.label).into(),
+            None => self.label.into(),
+        }
+    }
+
     /// What a screen reader (and a test) is told it is, its name: its words, then its dim
     /// words. Its keys aren't in it: [`item`] gives them as its keyboard shortcut
     /// ([`Item::shortcut`]), which a screen reader announces as one, apart from the name, as
@@ -62,6 +101,24 @@ impl Item<'_> {
 /// [`theme::MENU_PADDING`].
 pub fn frame(ui: &Ui) -> egui::Frame {
     egui::Frame::menu(ui.style())
+}
+
+/// `add` in a menu for a screen reader, labelled `label`, its bounds what it holds (egui gives
+/// a scope that senses nothing none): what a test, too, finds its items in.
+pub fn node<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.scope_builder(egui::UiBuilder::new().id_salt(label), |ui| {
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+            node.set_role(egui::accesskit::Role::Menu);
+            node.set_label(label);
+        });
+        let inner = add(ui);
+        let held = ui.min_rect();
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+            node.set_bounds(crate::panes::bounds(held));
+        });
+        inner
+    })
+    .inner
 }
 
 /// The least a menu's lines are wide: `.menu`'s `min-width: 200px`, less its border and its
@@ -93,7 +150,7 @@ pub fn item_width(ui: &Ui, item: &Item<'_>) -> f32 {
     2.0 * theme::MENU_ITEM_PADDING
         + ICON_SIZE
         + theme::MENU_ITEM_GAP
-        + text_width(ui, item.label, theme::BODY_SIZE)
+        + text_width(ui, &item.words(), theme::BODY_SIZE)
         + sub
         + theme::MENU_ITEM_GAP
         + theme::MENU_KEYS_PADDING
@@ -179,7 +236,15 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
         let (rect, response) =
             ui.allocate_exact_size(vec2(width, theme::MENU_ITEM_HEIGHT), Sense::click());
         let enabled = ui.is_enabled();
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, &said));
+        response.widget_info(|| match item.checked {
+            Some(Checked::Choice(on)) => {
+                WidgetInfo::selected(WidgetType::RadioButton, enabled, on, &said)
+            }
+            Some(Checked::Toggle(on)) => {
+                WidgetInfo::selected(WidgetType::Checkbox, enabled, on, &said)
+            }
+            None => WidgetInfo::labeled(WidgetType::Button, enabled, &said),
+        });
         if !ui.is_rect_visible(rect) {
             return response;
         }
@@ -215,7 +280,7 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
                 .paint_at(ui, icon_rect);
         }
         let label = ui.painter().layout_no_wrap(
-            item.label.to_owned(),
+            item.words().into_owned(),
             FontId::proportional(theme::BODY_SIZE),
             ink,
         );
@@ -278,5 +343,238 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
             response.on_disabled_hover_text(off)
         }
         None => response,
+    }
+}
+
+/// A menu's line, as [`lines`] takes it: a head (`.mh`), a separator (`.msep`), or an item and
+/// what it asks when it's clicked.
+pub enum Line<'a, A> {
+    Head(&'a str),
+    Separator,
+    Item(Item<'a>, A),
+}
+
+/// `lines` drawn as every menu's are, each as wide as the widest, in a menu for a screen
+/// reader labelled `label` ([`node`]): what the item clicked asks, the menu closed (the
+/// display settings' and the ViewCube's menus).
+pub fn lines<A: Copy>(ui: &mut Ui, label: &str, lines: &[Line<'_, A>]) -> Option<A> {
+    node(ui, label, |ui| {
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
+        let heads = lines
+            .iter()
+            .filter_map(|line| match line {
+                Line::Head(text) => Some(head_width(ui, text)),
+                _ => None,
+            })
+            .fold(0.0, f32::max);
+        let items = lines.iter().filter_map(|line| match line {
+            Line::Item(line_item, _) => Some(line_item),
+            _ => None,
+        });
+        let widest = width(ui, None, items, heads);
+        let mut asked = None;
+        for line in lines {
+            match line {
+                Line::Head(text) => head(ui, text, widest),
+                Line::Separator => separator(ui, widest),
+                Line::Item(line_item, act) => {
+                    if item(ui, line_item, widest).clicked() {
+                        asked = Some(*act);
+                        ui.close();
+                    }
+                }
+            }
+        }
+        asked
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn marked(label: &str, checked: Option<Checked>) -> Item<'_> {
+        Item {
+            icon: None,
+            label,
+            sub: None,
+            caps: &[],
+            off: None,
+            danger: false,
+            lit: false,
+            checked,
+        }
+    }
+
+    #[test]
+    fn an_item_showing_a_state_draws_the_prototypes_mark_and_is_named_by_its_words_alone() {
+        // interact.js's display and cube menus: `'✓ ' + 'Orthographic'` chosen, `'   ' +
+        // 'Perspective'` not (three spaces), and no mark on an item that shows no state; a
+        // screen reader is told the words alone, the state apart.
+        for (checked, drawn) in [
+            (Some(Checked::Choice(true)), "✓ Orthographic"),
+            (Some(Checked::Choice(false)), "   Orthographic"),
+            (Some(Checked::Toggle(true)), "✓ Orthographic"),
+            (Some(Checked::Toggle(false)), "   Orthographic"),
+            (None, "Orthographic"),
+        ] {
+            let item = marked("Orthographic", checked);
+            assert_eq!(item.words(), drawn, "{checked:?}");
+            assert_eq!(item.said(), "Orthographic", "{checked:?}");
+        }
+    }
+
+    /// The width [`lines`] lays `drawn` out at, in the app's fonts (set, then a pass run to
+    /// load them), with each head's and each item's own width there.
+    fn laid_out(drawn: &[Line<'_, ()>]) -> (f32, Vec<f32>, Vec<f32>) {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(theme::fonts());
+        let mut got = (0.0, Vec::new(), Vec::new());
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let width = ui
+                    .scope(|ui| lines(ui, "Test", drawn))
+                    .response
+                    .rect
+                    .width();
+                let heads = drawn
+                    .iter()
+                    .filter_map(|line| match line {
+                        Line::Head(text) => Some(head_width(ui, text)),
+                        _ => None,
+                    })
+                    .collect();
+                let items = drawn
+                    .iter()
+                    .filter_map(|line| match line {
+                        Line::Item(line_item, _) => Some(item_width(ui, line_item)),
+                        _ => None,
+                    })
+                    .collect();
+                got = (width, heads, items);
+            });
+            output.textures_delta.clear();
+        }
+        got
+    }
+
+    #[test]
+    fn a_menu_is_its_heads_width_where_a_head_is_its_widest_line() {
+        // `.menu` is as wide as its widest line, and at least its `min-width: 200px` less
+        // its border and padding, 200 − 2·(4 + 1) = 190. A head of 40 W's is wider than that
+        // and than the one short item, Fit, so the menu is the head's width.
+        assert_eq!(least_width(), 190.0);
+        let words = "W".repeat(40);
+        let drawn = [Line::Head(&words), Line::Item(marked("Fit", None), ())];
+        let (width, heads, items) = laid_out(&drawn);
+        assert!(
+            heads[0] > 190.0 && heads[0] > items[0],
+            "{heads:?} {items:?}"
+        );
+        assert!((width - heads[0]).abs() <= 1.0 / 16.0, "{width} {heads:?}");
+    }
+
+    #[test]
+    fn a_menu_is_its_items_width_where_an_item_is_its_widest_line() {
+        // As above, the widest line an item of 30 W's, wider than the least 190 and than
+        // the short head: the menu is the item's width.
+        let words = "W".repeat(30);
+        let drawn = [Line::Head("Short"), Line::Item(marked(&words, None), ())];
+        let (width, heads, items) = laid_out(&drawn);
+        assert!(
+            items[0] > 190.0 && items[0] > heads[0],
+            "{heads:?} {items:?}"
+        );
+        assert!((width - items[0]).abs() <= 1.0 / 16.0, "{width} {items:?}");
+    }
+
+    #[test]
+    fn every_line_of_a_menu_is_laid_out_as_wide_as_its_widest_line() {
+        // `.menu .mi { width: 100% }`, and `.mh` and `.msep` the same: every line as wide as
+        // the menu, and the menu as wide as its widest line. Head Short, item Fit, a
+        // separator, a head of 40 W's, item Home: the W's head, laid out alone, is the
+        // widest, wider than the least 190, so the menu is its width; and SHORT, the W's,
+        // Fit, and Home each start at the menu's left and are as wide.
+        use egui_kittest::kittest::Queryable;
+        let words = "W".repeat(40);
+        let drawn = [
+            Line::Head("Short"),
+            Line::Item(marked("Fit", None), ()),
+            Line::Separator,
+            Line::Head(&words),
+            Line::Item(marked("Home", None), ()),
+        ];
+        let widest = std::cell::Cell::new(0.0);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size((800.0, 600.0))
+            .build_ui(|ui| {
+                widest.set(head_width(ui, &words));
+                lines(ui, "Test", &drawn);
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        let menu = h
+            .get_by_role_and_label(egui::accesskit::Role::Menu, "Test")
+            .rect();
+        let near = |a: f32, b: f32| (a - b).abs() <= 1.0 / 16.0;
+        assert!(widest.get() > least_width(), "{}", widest.get());
+        assert!(
+            near(menu.width(), widest.get()),
+            "{menu:?} {}",
+            widest.get()
+        );
+        let capitals = words.to_uppercase();
+        let shown = [
+            h.get_by_value("SHORT").rect(),
+            h.get_by_value(&capitals).rect(),
+            h.get_by_label("Fit").rect(),
+            h.get_by_label("Home").rect(),
+        ];
+        for (line, rect) in ["SHORT", "the W's", "Fit", "Home"].into_iter().zip(shown) {
+            assert!(
+                near(rect.left(), menu.left()),
+                "{line}: {rect:?} in {menu:?}"
+            );
+            assert!(
+                near(rect.width(), menu.width()),
+                "{line}: {rect:?} in {menu:?}"
+            );
+        }
+        // The separator (`.menu .msep`: 1 high, Gray.250, 4 above and below): a fill 4 under
+        // Fit, 1 high, across the menu's whole width.
+        let fit = shown[2];
+        let rule = Rect::from_min_size(
+            Pos2::new(menu.left(), fit.bottom() + 4.0),
+            vec2(menu.width(), 1.0),
+        );
+        assert_eq!(
+            crate::modal::tests::fills_at(&h, rule),
+            [(crate::modal::tests::css::G250, egui::CornerRadius::ZERO)],
+            "the separator, {rule:?}"
+        );
+    }
+
+    #[test]
+    fn a_menus_widest_line_widens_it_wherever_it_comes() {
+        // The menu is as wide as its widest line wherever that line comes: first of two
+        // heads (40 W's, then Short, then Fit), or between items (Short, Fit, 30 W's, Home);
+        // each wider than the least 190.
+        let words = "W".repeat(40);
+        let (width, heads, _) = laid_out(&[
+            Line::Head(&words),
+            Line::Head("Short"),
+            Line::Item(marked("Fit", None), ()),
+        ]);
+        assert!(heads[0] > 190.0, "{heads:?}");
+        assert!((width - heads[0]).abs() <= 1.0 / 16.0, "{width} {heads:?}");
+        let words = "W".repeat(30);
+        let (width, _, items) = laid_out(&[
+            Line::Head("Short"),
+            Line::Item(marked("Fit", None), ()),
+            Line::Item(marked(&words, None), ()),
+            Line::Item(marked("Home", None), ()),
+        ]);
+        assert!(items[1] > 190.0, "{items:?}");
+        assert!((width - items[1]).abs() <= 1.0 / 16.0, "{width} {items:?}");
     }
 }
