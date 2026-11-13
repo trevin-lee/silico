@@ -4810,9 +4810,9 @@ fn an_undo_refused_after_another_clients_step_names_no_step_it_doesnt_know() {
 
 #[test]
 fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_characters() {
-    // Round 1's T4: the plate named 400 W's and the triangle 400 V's. Edit Feature's OK on
-    // the plate, and Edit Sketch's Finish on the triangle, are each one step named "Edit"
-    // and the name cut at 60 characters with an ellipsis (`changes::SHOWN_CHARS`).
+    // The plate named 400 W's and the triangle 400 V's. Edit Feature's OK on the plate, and Edit
+    // Sketch's Finish on the triangle, are each one step named "Edit" and the name cut at 60
+    // characters with an ellipsis (`changes::SHOWN_CHARS`).
     let f = fixture();
     let (plate, triangle) = ("W".repeat(400), "V".repeat(400));
     let text = SKETCHED
@@ -4864,10 +4864,9 @@ fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_cha
 
 #[test]
 fn a_rename_behind_sketch_modes_cancel_replaces_the_name_the_cancel_puts_back() {
-    // Round 2's A(c): Plate renamed PlateK, then Triangle open in sketch mode. The session's
-    // queue held, a rename to PlateKA sent, sketch mode cancelled, and a rename to PlateKB
-    // asked behind it. Cancel undoes to where sketch mode opened, PlateKA with it, so
-    // PlateKB replaces PlateK.
+    // Plate renamed PlateK, then Triangle open in sketch mode. The session's queue held, a rename
+    // to PlateKA sent, sketch mode cancelled, and a rename to PlateKB asked behind it. Cancel
+    // undoes to where sketch mode opened, PlateKA with it, so PlateKB replaces PlateK.
     let f = fixture();
     let (mut h, _) = triangle_open(&f, true);
     let (hold, check) = hold_queue(&f, &h, 0);
@@ -4887,11 +4886,11 @@ fn a_rename_behind_sketch_modes_cancel_replaces_the_name_the_cancel_puts_back() 
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// `text` (a document with the M2.1 example's pin) open, Pin renamed PinK, and its Edit
-/// Feature dialog open with `typed` typed into each of its inputs, one by one, each settled:
-/// one edit before the dialog, and one of the dialog's for each input.
-fn pin_dialog_edited(f: &Fixture, text: &str, typed: &[(&str, &str)]) -> AppHarness {
-    let (mut h, _) = f.opened("example.silico", text);
+/// The M2.1 example open, Pin renamed PinK, and its Edit Feature dialog open with `typed`
+/// typed into each of its inputs, one by one, each settled: one edit before the dialog, and
+/// one of the dialog's for each input.
+fn pin_dialog_edited(f: &Fixture, typed: &[(&str, &str)]) -> AppHarness {
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     type_name(&mut h, "K");
@@ -4910,10 +4909,9 @@ fn pin_dialog_edited(f: &Fixture, text: &str, typed: &[(&str, &str)]) -> AppHarn
 
 #[test]
 fn a_dialogs_ok_waiting_behind_its_last_edit_counts_its_edits_as_the_one_step_it_makes() {
-    // Round 2's B, by hand: PinK (one edit), then Edit Feature, two of its edits applied (or
-    // three, robustness's count; or none, round 3's T3-1, the held edit its only one), a
-    // further edit held in the session's queue, and OK: the dialog's edits are the one step
-    // OK makes, so two edits are unsaved, while the OK waits too, and after.
+    // By hand: PinK (one edit), then Edit Feature, two of its edits applied (or three, or none, the
+    // held edit its only one), a further edit held in the session's queue, and OK: the dialog's
+    // edits are the one step OK makes, so two edits are unsaved, while the OK waits too, and after.
     let typed: [&[(&str, &str)]; 3] = [
         &[("Height", "3"), ("Radius", "1")],
         &[("Height", "3"), ("Radius", "1"), ("X", "5")],
@@ -4921,7 +4919,7 @@ fn a_dialogs_ok_waiting_behind_its_last_edit_counts_its_edits_as_the_one_step_it
     ];
     for typed in typed {
         let f = fixture();
-        let mut h = pin_dialog_edited(&f, EXAMPLE, typed);
+        let mut h = pin_dialog_edited(&f, typed);
         let (hold, check) = hold_queue(&f, &h, 0);
         type_into(&mut h, "Height", "4");
         {
@@ -4946,9 +4944,9 @@ fn a_dialogs_ok_waiting_behind_its_last_edit_counts_its_edits_as_the_one_step_it
 
 #[test]
 fn sketch_modes_cancel_waiting_counts_none_of_its_edits() {
-    // Round 3's T3-1: Plate renamed PlateK, then Triangle in sketch mode and a line of it
-    // deleted: two edits, the sketch's one. The session's queue held and sketch mode
-    // cancelled: its undo waits, and the delete it takes back counts for nothing, one edit.
+    // Plate renamed PlateK, then Triangle in sketch mode and a line of it deleted: two edits, the
+    // sketch's one. The session's queue held and sketch mode cancelled: its undo waits, and the
+    // delete it takes back counts for nothing, one edit.
     let f = fixture();
     let (mut h, _) = triangle_open(&f, true);
     delete_line(&mut h, "na000000");
@@ -4976,11 +4974,11 @@ fn sketch_modes_cancel_waiting_counts_none_of_its_edits() {
 
 #[test]
 fn a_dialogs_cancel_waiting_counts_none_of_its_edits() {
-    // Round 2's B: PinK, then Edit Feature, its height and radius edited and settled; the
-    // session's queue held and Cancel clicked: its undo waits, and the dialog's edits it
-    // takes back count for nothing, one edit unsaved, the rename.
+    // PinK, then Edit Feature, its height and radius edited and settled; the session's queue held
+    // and Cancel clicked: its undo waits, and the dialog's edits it takes back count for nothing,
+    // one edit unsaved, the rename.
     let f = fixture();
-    let mut h = pin_dialog_edited(&f, EXAMPLE, &[("Height", "3"), ("Radius", "1")]);
+    let mut h = pin_dialog_edited(&f, &[("Height", "3"), ("Radius", "1")]);
     let (hold, check) = hold_queue(&f, &h, 0);
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Cancel")
@@ -5002,8 +5000,8 @@ fn a_dialogs_cancel_waiting_counts_none_of_its_edits() {
 
 #[test]
 fn a_long_named_features_deletion_is_cut_at_sixty_characters() {
-    // Round 3's T3-4: the hole named 400 W's and deleted: "Delete" and its name as the
-    // session held it, cut at 60 characters with an ellipsis (`changes::SHOWN_CHARS`).
+    // The hole named 400 W's and deleted: "Delete" and its name as the session held it, cut at 60
+    // characters with an ellipsis (`changes::SHOWN_CHARS`).
     let f = fixture();
     let hole = "W".repeat(400);
     let text = EXAMPLE.replace(r#""name": "Hole""#, &format!(r#""name": "{hole}""#));
@@ -5025,10 +5023,10 @@ fn a_long_named_features_deletion_is_cut_at_sixty_characters() {
 
 #[test]
 fn a_dialog_cancelled_before_its_opening_is_taken_leaves_the_count_the_last_ones_ok_left() {
-    // Round 3's T3-5: PinK; Edit Feature (A), its height edited; the session's queue held,
-    // A's height edited again (held) and A OK'd: A's OK waits, leaving two edits. Then a
-    // new pad's dialog (B) opened, its opening queued behind A's, and cancelled at once:
-    // nothing of B's is made, so the count A's OK left holds, two, not the one before A.
+    // PinK; Edit Feature (A), its height edited; the session's queue held, A's height edited again
+    // (held) and A OK'd: A's OK waits, leaving two edits. Then a new pad's dialog (B) opened, its
+    // opening queued behind A's, and cancelled at once: nothing of B's is made, so the count A's OK
+    // left holds, two, not the one before A.
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
@@ -5066,9 +5064,9 @@ fn a_dialog_cancelled_before_its_opening_is_taken_leaves_the_count_the_last_ones
 
 #[test]
 fn a_rename_typed_in_the_frame_the_last_ones_answer_lands_names_the_name_that_one_gave() {
-    // Round 1's T1: PinA, then "B" typed and applied by the session while no frame runs;
-    // then "C" typed in the frame that takes B's answer, before the timeline is read again.
-    // Each rename replaces the name before it: Undo takes back the rename of PinAB.
+    // PinA, then "B" typed and applied by the session while no frame runs; then "C" typed in the
+    // frame that takes B's answer, before the timeline is read again. Each rename replaces the name
+    // before it: Undo takes back the rename of PinAB.
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
@@ -5093,9 +5091,9 @@ fn a_rename_typed_in_the_frame_the_last_ones_answer_lands_names_the_name_that_on
 
 #[test]
 fn a_suppression_sent_as_a_rename_before_it_answers_names_the_name_that_rename_gave() {
-    // Round 1's T1: PinA, then the session's queue held, "B" typed (sent, held), and the pin
-    // suppressed behind it. Released: the suppression is sent as B's answer is taken, before
-    // the timeline is read again; it suppresses PinAB.
+    // PinA, then the session's queue held, "B" typed (sent, held), and the pin suppressed behind
+    // it. Released: the suppression is sent as B's answer is taken, before the timeline is read
+    // again; it suppresses PinAB.
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
@@ -25421,8 +25419,8 @@ fn a_drags_end_refused_after_another_clients_edit_is_let_go_at_once_not_at_a_rea
 
 #[test]
 fn a_drags_edit_is_a_step_named_by_its_sketch_and_counted_once() {
-    // Round 1's T2: the sketch Box's corner dragged in sketch mode. Its end's edit is a step
-    // of sketch mode's own, named as Finish names them all ("Edit Box"), and counted once.
+    // The sketch Box's corner dragged in sketch mode. Its end's edit is a step of sketch mode's
+    // own, named as Finish names them all ("Edit Box"), and counted once.
     use silico_app::sketch::PointerAction::{Move, Press, Release};
     let f = fixture();
     counting(&f);

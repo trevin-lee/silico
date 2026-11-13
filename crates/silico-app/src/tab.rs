@@ -9150,8 +9150,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_is_named_by_the_dialog_or_sketch_its_made_in_else_as_a_rename_of_the_name_it_replaces()
-     {
+    fn an_edit_is_named_by_the_dialog_or_sketch_its_made_in_and_a_rename_only_by_its_answer() {
         // What an edit asked says, decided as it's asked (its feature named once its step is
         // made, from the state it's made from: `step_text`; a rename's by its own answer).
         let fid = |id: &str| FeatureId::new(id).unwrap();
@@ -9180,10 +9179,10 @@ mod tests {
         // Two edits of a field with nothing between them are one: the second takes the first's
         // place, keeping what it says.
         let mut edits = Edits::default();
-        let height = |text: &str| Edit {
+        let height = |number: &str| Edit {
             feature: pin.clone(),
             field: "height".to_owned(),
-            value: silico_core::document::json::read(text.as_bytes()).unwrap(),
+            value: silico_core::document::json::read(number.as_bytes()).unwrap(),
         };
         edits.push(height("4"), Some(Words::Text("Edit Pin".to_owned())));
         edits.push(height("5"), Some(Words::Text("Edit Peg".to_owned())));
@@ -9300,10 +9299,10 @@ mod tests {
 
     #[test]
     fn undo_and_redo_name_nothing_while_off_or_while_anything_of_the_tabs_waits() {
-        // Round 1's T3: the pin and the hole renamed (2, 3), one undone (4 restores 2's):
-        // Undo names the pin's rename, Redo the hole's. A dialog open turns Undo off (its
-        // Cancel undoes its edits): it names nothing. A move queued leaves Redo on (it waits
-        // behind it), but names nothing, the move's answer dropping what it would give back.
+        // The pin and the hole renamed (2, 3), one undone (4 restores 2's): Undo names the pin's
+        // rename, Redo the hole's. A dialog open turns Undo off (its Cancel undoes its edits): it
+        // names nothing. A move queued leaves Redo on (it waits behind it), but names nothing, the
+        // move's answer dropping what it would give back.
         let mut tab = tab();
         let one = Revision::OPENED;
         apply(&mut tab, one, one, "Rename Pin", rev(2));
@@ -9326,8 +9325,8 @@ mod tests {
 
     #[test]
     fn a_steps_feature_is_named_in_the_state_it_was_made_from_else_in_the_one_it_made() {
-        // Round 3's T3-3, names by hand: at 1 the pin is Pin; at 2 it's Peg; at 3 it's Pin
-        // and the pad, made there, is Pad; 4 and 5 aren't known.
+        // Names by hand: at 1 the pin is Pin; at 2 it's Peg; at 3 it's Pin and the pad, made there,
+        // is Pad; 4 and 5 aren't known.
         let mut tab = tab();
         let pin = FeatureId::new("b0000001").unwrap();
         let pad = FeatureId::new("p0000001").unwrap();
@@ -11003,8 +11002,10 @@ mod tests {
         assert_eq!(tab.unsaved_edits(), 1);
     }
 
-    /// The session's status read into `tab` as a poll reads it, and nothing else of a poll's:
-    /// no answer taken, no timeline read. For a tab with nothing under way.
+    /// The session's status read into `tab` as [`Tab::poll`] reads it, without poll's check for
+    /// the session's own reload (a move seen with nothing of the tab's under way), and nothing
+    /// else of a poll's: no answer taken, no timeline read. Valid with work of the tab's under
+    /// way, whose answers the status read may be ahead of.
     fn status_now(tab: &mut Tab, sessions: &FakeSessions) {
         let status = sessions.status(&tab.id);
         let session = status.session.unwrap();
@@ -11035,9 +11036,9 @@ mod tests {
 
     #[test]
     fn a_rename_behind_or_after_an_undo_of_a_rename_replaces_the_name_the_undo_gave_back() {
-        // Round 2's A(a) and (b): PinA, listed. An undo asked and a rename asked while it
-        // runs: the undo gives Pin back, so the rename replaces Pin. Then that undone too, its
-        // answer taken but the timeline not read again, and a rename: it replaces Pin too.
+        // PinA, listed. An undo asked and a rename asked while it runs: the undo gives Pin back, so
+        // the rename replaces Pin. Then that undone too, its answer taken but the timeline not read
+        // again, and a rename: it replaces Pin too.
         let (_dir, sessions, mut tab, pin) = pin_renamed();
         tab.step(&sessions, true);
         assert!(tab.stepping());
@@ -11057,9 +11058,8 @@ mod tests {
 
     #[test]
     fn a_suppression_sent_as_an_undo_answers_names_the_name_the_undo_gave_back() {
-        // Round 2's A(b): PinA, listed; an undo asked, and the pin suppressed behind it, sent
-        // as the undo's answer is taken, before the timeline is read again: it suppresses
-        // Pin.
+        // PinA, listed; an undo asked, and the pin suppressed behind it, sent as the undo's answer
+        // is taken, before the timeline is read again: it suppresses Pin.
         let (_dir, sessions, mut tab, pin) = pin_renamed();
         tab.step(&sessions, true);
         tab.suppress_feature(&sessions, pin, true);
@@ -11071,10 +11071,10 @@ mod tests {
 
     #[test]
     fn a_suppression_after_a_restore_names_the_pin_as_the_restore_put_it_back() {
-        // Round 3's T3-2: PinA, listed; a Restore of the revision the transaction began at
-        // (its text, with Pin, put back: what that state names isn't known till a timeline
-        // lists it), and the pin suppressed after. Undo names nothing till a timeline lists
-        // the state the suppression made, then "Suppress Pin": never PinA.
+        // PinA, listed; a Restore of the revision the transaction began at (its text, with Pin, put
+        // back: what that state names isn't known till a timeline lists it), and the pin suppressed
+        // after. Undo names nothing till a timeline lists the state the suppression made, then
+        // "Suppress Pin": never PinA.
         let (_dir, sessions, mut tab, pin) = pin_renamed();
         tab.restore(&sessions, Revision::OPENED);
         tab.suppress_feature(&sessions, pin, true);
@@ -11106,10 +11106,9 @@ mod tests {
 
     #[test]
     fn a_suppression_sent_as_a_reverts_rollback_answers_is_named_once_its_state_is_listed() {
-        // Round 4's rule: names are never carried across a rollback. PinA, listed; a revert,
-        // and the pin suppressed behind it, from the state the rollback came to: its names
-        // aren't known till a timeline lists one, so Undo names nothing; then, listed, the
-        // file's Pin.
+        // Names are never carried across a rollback. PinA, listed; a revert, and the pin suppressed
+        // behind it, from the state the rollback came to: its names aren't known till a timeline
+        // lists one, so Undo names nothing; then, listed, the file's Pin.
         let (_dir, sessions, mut tab, pin) = pin_renamed();
         tab.revert(&sessions, false);
         tab.suppress_feature(&sessions, pin, true);
@@ -11122,8 +11121,8 @@ mod tests {
 
     #[test]
     fn a_suppression_sent_as_a_saves_answer_is_taken_is_named_once_its_state_is_listed() {
-        // Round 4's rule: names are never carried across a save. PinA, listed; PinB, a save,
-        // and the pin suppressed behind them: nothing named till listed, then PinB.
+        // Names are never carried across a save. PinA, listed; PinB, a save, and the pin suppressed
+        // behind them: nothing named till listed, then PinB.
         let (_dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         tab.save(&sessions, false);
@@ -11137,7 +11136,7 @@ mod tests {
 
     #[test]
     fn a_suppression_sent_as_a_save_as_answer_is_taken_is_named_once_its_state_is_listed() {
-        // Round 4's rule: as a save, a Save As to another file.
+        // As a save, a Save As to another file.
         let (dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         let copy = dir.path().join("copy.silico");
@@ -11195,12 +11194,11 @@ mod tests {
 
     #[test]
     fn a_rollback_answered_after_the_sessions_own_reload_lends_the_reload_no_names() {
-        // Round 3's R3-1, to round 4's rule: PinA, listed; another program writes the file with
-        // the pin named Bolt; a revert, applied, then the session's own reload of the changed
-        // file (a read of its text, outside a transaction now), its revision read from
-        // `status` before the rollback's answer is taken: the reload's banner, from the
-        // rollback's revision to the reload's. The pin suppressed then, from the reload's
-        // state: nothing named till a timeline lists it, then Bolt.
+        // PinA, listed; another program writes the file with the pin named Bolt; a revert, applied,
+        // then the session's own reload of the changed file (a read of its text, outside a
+        // transaction now), its revision read from `status` before the rollback's answer is taken:
+        // the reload's banner, from the rollback's revision to the reload's. The pin suppressed
+        // then, from the reload's state: nothing named till a timeline lists it, then Bolt.
         let (dir, sessions, mut tab, pin) = pin_renamed();
         pin_named_bolt_at(&dir.path().join("part.silico"));
         tab.revert(&sessions, false);
@@ -11220,9 +11218,9 @@ mod tests {
 
     #[test]
     fn a_saves_answer_taken_after_status_read_its_revision_is_named_once_its_state_is_listed() {
-        // Round 3's R3-2, to round 4's rule: PinA, listed; PinB answered; a save, applied, its
-        // revision read from `status` before its answer is taken. The pin suppressed then:
-        // nothing named till a timeline lists it, then PinB.
+        // PinA, listed; PinB answered; a save, applied, its revision read from `status` before its
+        // answer is taken. The pin suppressed then: nothing named till a timeline lists it, then
+        // PinB.
         let (_dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         taken_until(&mut tab, &sessions, Tab::quiet);
@@ -11240,12 +11238,11 @@ mod tests {
 
     #[test]
     fn a_saves_answer_taken_after_the_sessions_own_reload_lends_the_reload_no_names() {
-        // Round 4's T4-2: PinA, listed; PinB answered; a save, applied; another program then
-        // writes the file with the pin named Bolt, and the session reloads it, its revision
-        // read from `status` before the save's answer is taken: the reload's banner, from the
-        // save's revision to the reload's, as a rollback's. The pin suppressed then, from the
-        // reload's state: nothing named till a timeline lists it, then Bolt, never the PinB
-        // the save kept.
+        // PinA, listed; PinB answered; a save, applied; another program then writes the file with
+        // the pin named Bolt, and the session reloads it, its revision read from `status` before
+        // the save's answer is taken: the reload's banner, from the save's revision to the
+        // reload's, as a rollback's. The pin suppressed then, from the reload's state: nothing
+        // named till a timeline lists it, then Bolt, never the PinB the save kept.
         let (dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         taken_until(&mut tab, &sessions, Tab::quiet);
@@ -11266,9 +11263,9 @@ mod tests {
 
     #[test]
     fn a_save_as_answer_taken_after_the_sessions_own_reload_lends_the_reload_no_names() {
-        // Round 4's T4-2, its Save As twin: the Save As writes another file, and the session,
-        // holding that file from then on, reloads it once another program writes it Bolt: the
-        // reload's banner, from the Save As's revision to the reload's.
+        // As the save above, a Save As: it writes another file, and the session, holding that file
+        // from then on, reloads it once another program writes it Bolt: the reload's banner, from
+        // the Save As's revision to the reload's.
         let (dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         taken_until(&mut tab, &sessions, Tab::quiet);
@@ -11393,10 +11390,10 @@ mod tests {
 
     #[test]
     fn a_save_as_whose_own_begin_reloaded_the_file_lends_the_saved_state_no_old_names() {
-        // Round 4's R4-1: BLOCK open and listed, no transaction; another program writes it with
-        // the pin named Bolt; a Save As, whose own `begin` reloads the file first, and the pin
-        // suppressed behind it: nothing named till a timeline lists it, then Bolt, never the
-        // Pin of the state the Save As was asked at.
+        // BLOCK open and listed, no transaction; another program writes it with the pin named Bolt;
+        // a Save As, whose own `begin` reloads the file first, and the pin suppressed behind it:
+        // nothing named till a timeline lists it, then Bolt, never the Pin of the state the Save As
+        // was asked at.
         let (dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
         polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
         let pin = FeatureId::new("a91cw0de").unwrap();
@@ -11497,8 +11494,8 @@ mod tests {
 
     #[test]
     fn a_timeline_taken_while_a_change_waits_keeps_the_names_of_the_state_it_was_sent_from() {
-        // Round 4's T4-3: a suppression of the pin under way when the late listing is taken:
-        // the state it was sent from keeps its names, and its step says "Suppress Pin".
+        // A suppression of the pin under way when the late listing is taken: the state it was sent
+        // from keeps its names, and its step says "Suppress Pin".
         let named = named_after_a_late_listing(|tab, sessions| {
             tab.suppress_feature(sessions, FeatureId::new("a91cw0de").unwrap(), true);
         });
@@ -11507,7 +11504,7 @@ mod tests {
 
     #[test]
     fn a_timeline_taken_while_an_edit_is_in_flight_keeps_the_names_of_the_state_it_was_sent_from() {
-        // Round 4's T4-3, its twin for the edit in flight: the pin's radius edited, "Edit Pin".
+        // Its twin for an edit in flight: the pin's radius edited, "Edit Pin".
         let named = named_after_a_late_listing(|tab, sessions| {
             tab.edit(
                 sessions,
@@ -11543,10 +11540,10 @@ mod tests {
 
     #[test]
     fn what_waits_after_a_rename_decides_the_name_the_next_replaces() {
-        // Round 2's A: PinA, listed; PinB sent; then, queued behind it, a revert, a Reload
-        // (of the file as it was opened), or a Restore of the revision the transaction began
-        // at (its read, then its put-back, `replace_text`): each leaves the file's Pin, so
-        // the rename queued after it replaces Pin.
+        // PinA, listed; PinB sent; then, queued behind it, a revert, a Reload (of the file as it
+        // was opened), or a Restore of the revision the transaction began at (its read, then its
+        // put-back, `replace_text`): each leaves the file's Pin, so the rename queued after it
+        // replaces Pin.
         type Ask = fn(&mut Tab, &FakeSessions);
         let asks: [(&str, Ask); 3] = [
             ("revert", |tab, sessions| tab.revert(sessions, false)),
@@ -11583,8 +11580,8 @@ mod tests {
 
     #[test]
     fn a_rename_in_flight_or_an_undo_under_way_or_answered_decides_the_name_the_next_replaces() {
-        // Round 2's A: a rename in flight gives the next its name; a rollback under way (a
-        // revert) gives the file's back.
+        // A rename in flight gives the next its name; a rollback under way (a revert) gives the
+        // file's back.
         let (_dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         assert!(tab.edits.in_flight.is_some());
@@ -11610,8 +11607,8 @@ mod tests {
 
     #[test]
     fn a_tool_edit_answered_names_no_rename() {
-        // Round 2's A: a boolean's `tool` set (a string, as a name is) is no rename: its
-        // answer says nothing of a name, nor names the state it made. A name's is one.
+        // A boolean's `tool` set (a string, as a name is) is no rename: its answer says nothing of
+        // a name, nor names the state it made. A name's is one.
         let set = |field: &str| FieldSet {
             feature: FeatureId::new("m3tq8v0z").unwrap(),
             field: field.to_owned(),
@@ -11632,10 +11629,10 @@ mod tests {
 
     #[test]
     fn a_poll_that_reads_the_new_revision_before_its_answer_is_taken_keeps_the_count() {
-        // Round 2's C: one rename counted. The session then moves past it (another client's
-        // rename here, as an edit's own does once applied, before its answer is taken), with
-        // something of the tab's under way (a `begin`): a poll reads a revision none of the
-        // tab's steps made, and keeps the count it had.
+        // One rename counted. The session then moves past it (another client's rename here, as an
+        // edit's own does once applied, before its answer is taken), with something of the tab's
+        // under way (a `begin`): a poll reads a revision none of the tab's steps made, and keeps
+        // the count it had.
         let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
         polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
         tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
@@ -11661,9 +11658,9 @@ mod tests {
 
     #[test]
     fn a_rename_sent_as_a_saves_answer_is_taken_counts_none_of_the_saved_edits() {
-        // Round 2's D (R2-2): PinA counted; Save, and a rename asked behind it. Once the save's
-        // answer is taken, PinB is sent: the saved edit is no unsaved one, and PinB isn't
-        // applied yet, so none is counted.
+        // PinA counted; Save, and a rename asked behind it. Once the save's answer is taken, PinB
+        // is sent: the saved edit is no unsaved one, and PinB isn't applied yet, so none is
+        // counted.
         let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
         polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
         let pin = FeatureId::new("a91cw0de").unwrap();
@@ -11684,9 +11681,9 @@ mod tests {
 
     #[test]
     fn a_rename_after_one_answered_but_not_yet_read_again_replaces_the_name_that_one_gave() {
-        // Round 1's T1: the pin renamed PinA, its answer taken (the session at revision 2)
-        // but the timeline not read again (still revision 1's, "Pin"): the next rename
-        // replaces PinA, the name the document holds when it applies.
+        // The pin renamed PinA, its answer taken (the session at revision 2) but the timeline not
+        // read again (still revision 1's, "Pin"): the next rename replaces PinA, the name the
+        // document holds when it applies.
         let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
         polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
         let pin = FeatureId::new("a91cw0de").unwrap();
@@ -11708,9 +11705,9 @@ mod tests {
 
     #[test]
     fn the_unsaved_count_holds_while_an_edits_answer_is_yet_to_be_taken() {
-        // Round 1's R1: one rename counted; a second sent, and `status` already of the
-        // revision it came to (poll reads it before it takes the answers) with its answer not
-        // yet taken: the bar holds the count it had, 1, not none for a frame.
+        // One rename counted; a second sent, and `status` already of the revision it came to (poll
+        // reads it before it takes the answers) with its answer not yet taken: the bar holds the
+        // count it had, 1, not none for a frame.
         let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
         polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
         let pin = FeatureId::new("a91cw0de").unwrap();
