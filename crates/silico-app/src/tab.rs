@@ -3271,7 +3271,7 @@ impl Tab {
 
     /// The transaction ended (a save, a Save As, a revert): its undo stack is gone, and with
     /// it the states it held, the dialogs' groups on them, their steps, and their names but
-    /// the session's state's, kept for its revision now.
+    /// the session's state's, kept for its revision now; and the unsaved edits it counted.
     fn stack_gone(&mut self) {
         let names = self.names.remove(&self.state_of(self.revision));
         self.groups.clear();
@@ -3282,6 +3282,8 @@ impl Tab {
             self.names.insert(self.revision, names);
         }
         self.redo_fence = None;
+        // Its edits are saved, or gone: none of them is counted while what follows waits.
+        self.counted = 0;
     }
 
     /// A save's, a Save As's, or a revert's answer: the transaction ended, then closed if
@@ -11056,6 +11058,29 @@ mod tests {
         assert_eq!(tab.revision, moved.session.unwrap().revision);
         assert!(!tab.quiet());
         assert_eq!(tab.unsaved_edits(), 1);
+    }
+
+    #[test]
+    fn a_rename_sent_as_a_saves_answer_is_taken_counts_none_of_the_saved_edits() {
+        // Round 2's D (R2-2): PinA counted; Save, and a rename asked behind it. Once the save's
+        // answer is taken, PinB is sent: the saved edit is no unsaved one, and PinB isn't
+        // applied yet, so none is counted.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        tab.rename(&sessions, pin.clone(), "PinA");
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.quiet() && tab.unsaved_edits() == 1
+        });
+        tab.save(&sessions, false);
+        tab.rename(&sessions, pin, "PinB");
+        taken_until(&mut tab, &sessions, |tab| {
+            !tab.under
+                .iter()
+                .any(|under| matches!(under, Under::Commit { .. }))
+                && tab.edits.in_flight.is_some()
+        });
+        assert_eq!(tab.unsaved_edits(), 0);
     }
 
     #[test]
