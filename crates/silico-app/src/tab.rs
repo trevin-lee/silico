@@ -189,8 +189,8 @@ pub struct Edit {
 enum Queued {
     /// An edit, and what the step it makes says ([`Tab::edit_words`]), decided as it's asked
     /// (the dialog or sketch it's made in, or what it does), its feature named once the step
-    /// is made, from the state it's made from.
-    Edit(Edit, Words),
+    /// is made, from the state it's made from; none for a rename, which its answer names.
+    Edit(Edit, Option<Words>),
     Save {
         then_close: bool,
     },
@@ -352,29 +352,32 @@ enum Body {
 
 /// What changes the document as it's sent (an edit, an add): the revision it's sent
 /// against, the state the session is at then ([`Tab::state_of`]): the state its step is made
-/// from; and what that step says. Once it's applied (it answers, and the session's revision
-/// moved past the one it was sent against), the dialogs' groups and the steps past that
-/// state are let go (the redo branch the change dropped), and the state it made is kept as
-/// a step, with what it says and the state it was made from.
+/// from; and what that step says, if it's said as it's sent (none for a rename, a deletion,
+/// or an add, which their answers name). Once it's applied (it answers, and the session's
+/// revision moved past the one it was sent against), the dialogs' groups and the steps past
+/// that state are let go (the redo branch the change dropped), and the state it made is kept
+/// as a step, with what it says and the state it was made from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Sending {
     against: Revision,
     state: Revision,
-    step: Words,
+    step: Option<Words>,
 }
 
-/// What a step says, as the Undo and Redo tooltips name it (the prototype's labels): a verb
-/// and a feature, or a feature and what was done to it, the feature named by the name it has
-/// in the state the step was made from (for a feature the step made, in the state it made:
-/// [`Tab::said`]); or words that need no name, or have it already, from the session's own
-/// answer (a rename's `before`, a deletion's or an add's feature).
+/// What a step says, as the Undo and Redo tooltips name it (the prototype's labels). Each
+/// kind of step says it from one source: a rename, a deletion, and an add from the session's
+/// answer (`set_field`'s `before`, the feature removed, the feature added: [`Words::Said`]);
+/// every other one as it's sent, a verb and a feature, or a feature and what was done to it,
+/// the feature named by the name it has in the state the step was made from, or, a feature
+/// the step made (a dialog's OK'd add), in the state it made ([`Tab::said`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Words {
-    /// "Suppress Pin", "Move Pin", "Edit Pad", "Add Pad".
+    /// "Suppress Pin", "Move Pin", "Edit Pad", and a dialog's OK'd add, "Add Pad".
     Of(&'static str, FeatureId),
     /// "Inside corner: use the edge you picked".
     Then(FeatureId, &'static str),
-    /// "Rename Pin", "Delete Hole", "Restore revision 4", "Edit".
+    /// "Rename Pin", "Delete Hole", "Add Pad" (from their answers), "Restore revision 4",
+    /// "Add Sketch1" (Create Sketch's Finish before its add answers), "Edit".
     Said(String),
 }
 
@@ -544,7 +547,7 @@ impl Edits {
     /// `edit` made, its step's words `step`: in place of one of the same field that waits
     /// last, with only edits after it (keeping that one's words: the step is still the one
     /// it was asked as, a rename of the name it replaced), or at the end.
-    fn push(&mut self, edit: Edit, step: Words) {
+    fn push(&mut self, edit: Edit, step: Option<Words>) {
         for queued in self.queue.iter_mut().rev() {
             match queued {
                 Queued::Edit(waiting, _)
@@ -1236,12 +1239,22 @@ pub type Watch = Box<dyn FnMut(&eframe::egui::Painter, &crate::viewport::ViewFra
 #[doc(hidden)]
 pub type AfterStatus = Box<dyn FnMut()>;
 
+/// What `dialog`'s step says, `verb` and its feature: by its ID once it has one (a new
+/// feature's, once its add has answered); till then, by its kind's title ([`Kind::title`]),
+/// the name its add gives it.
+fn dialog_words(dialog: &Dialog, verb: &'static str) -> Words {
+    match &dialog.feature {
+        Some(feature) => Words::Of(verb, feature.clone()),
+        None => Words::Said(format!("{verb} {}", dialog.kind.title())),
+    }
+}
+
 /// What an add's answer says of the step it made, `feature`: "Add" and its name, and the
 /// name it gives the state it made.
-fn made_by(feature: &silico_core::document::Feature) -> (Option<Words>, Effect) {
+fn made_by(feature: &silico_core::document::Feature) -> (Words, Effect) {
     let name = feature.name.as_str();
     (
-        Some(Words::Said(format!("Add {}", step_name(name)))),
+        Words::Said(format!("Add {}", step_name(name))),
         Effect::Names(feature.id.clone(), name.to_owned()),
     )
 }
@@ -2880,11 +2893,7 @@ impl Tab {
             } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
-                    let (words, effect) = response
-                        .result
-                        .as_ref()
-                        .map_or_else(|_| (None, Effect::Same), |added| made_by(&added.feature));
-                    self.applied_as(&sending, &response, words, effect);
+                    self.took_added(&sending, &response);
                     match response.result {
                         Ok(added) => self.add_answered(serial, added.feature.id),
                         Err(problems) => self.add_refused(serial, &problems),
@@ -2983,11 +2992,7 @@ impl Tab {
             } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
-                    let (words, effect) = response
-                        .result
-                        .as_ref()
-                        .map_or_else(|_| (None, Effect::Same), |added| made_by(&added.feature));
-                    self.applied_as(&sending, &response, words, effect);
+                    self.took_added(&sending, &response);
                     let ours = self
                         .sketch
                         .as_ref()
@@ -3681,7 +3686,7 @@ impl Tab {
                             let sending = Sending {
                                 against: revision,
                                 state: self.state_of(revision),
-                                step: step.unwrap_or_else(Words::edit),
+                                step,
                             };
                             let running =
                                 sessions.set_field(&self.id, revision, feature, field, value);
@@ -4060,7 +4065,7 @@ impl Tab {
         &mut self,
         sessions: &Arc<Sessions<P>>,
         edit: Edit,
-        step: Words,
+        step: Option<Words>,
     ) {
         self.hush();
         self.edits.push(edit, step);
@@ -4880,13 +4885,13 @@ impl Tab {
     }
 
     /// An edit or an add about to be sent, as it's sent: against the tab's revision, at the
-    /// state the session is at (the one its step is made from), saying `step` (or, with none,
-    /// [`Words::edit`]).
+    /// state the session is at (the one its step is made from), saying `step`, if it's said
+    /// as it's sent (none for what its answer names).
     fn sending(&self, step: Option<Words>) -> Sending {
         Sending {
             against: self.revision,
             state: self.state_of(self.revision),
-            step: step.unwrap_or_else(Words::edit),
+            step,
         }
     }
 
@@ -4900,8 +4905,9 @@ impl Tab {
     /// (taken, and the session's revision moved past the one it was sent against), the
     /// dialogs' groups and the steps past the state it was made from let go, as it dropped
     /// the redo branch they're on (a group ending after that state was undone to reach it);
-    /// the state it made kept as a step, saying `said` if its answer says better than it was
-    /// sent saying (a rename's, a deletion's, an add's), from that state; and that state's
+    /// the state it made kept as a step, saying `said`, what its answer says (a rename's, a
+    /// deletion's, an add's), or else what it was sent saying (or else [`Words::edit`]), from
+    /// that state; and that state's
     /// names, as the state it was made from has them and `effect` changes them, if they're
     /// known there. A refused change, or one that changed nothing, leaves the redo branch
     /// whole, and them with it.
@@ -4925,7 +4931,9 @@ impl Tab {
             self.steps.insert(
                 made,
                 Step {
-                    words: said.unwrap_or_else(|| sending.step.clone()),
+                    words: said
+                        .or_else(|| sending.step.clone())
+                        .unwrap_or_else(Words::edit),
                     from,
                 },
             );
@@ -5013,8 +5021,7 @@ impl Tab {
     /// ([`applied_as`](Self::applied_as)).
     fn step_words(&self, queued: &Queued) -> Option<Words> {
         match queued {
-            Queued::Edit(_, step) => Some(step.clone()),
-            Queued::Add { kind, .. } => Some(Words::Said(format!("Add {}", kind.title()))),
+            Queued::Edit(_, step) => step.clone(),
             Queued::Move { feature, .. } => Some(Words::Of("Move", feature.clone())),
             Queued::Suppress {
                 feature,
@@ -5027,8 +5034,6 @@ impl Tab {
                 },
                 feature.clone(),
             )),
-            Queued::Remove { feature } => Some(Words::Of("Delete", feature.clone())),
-            Queued::AddSketch { name, .. } => Some(Words::Said(format!("Add {}", step_name(name)))),
             Queued::SketchRemove { sketch, .. }
             | Queued::SketchJoin { sketch, .. }
             | Queued::SketchAdd { sketch, .. }
@@ -5049,6 +5054,9 @@ impl Tab {
                 "Restore revision {}",
                 revision.number()
             ))),
+            // Named by their answers ([`applied_as`](Self::applied_as)): the feature removed,
+            // the feature added.
+            Queued::Remove { .. } | Queued::Add { .. } | Queued::AddSketch { .. } => None,
             Queued::Offer {
                 request: OfferRequest::Undo { .. },
                 ..
@@ -5086,31 +5094,37 @@ impl Tab {
     /// `'Edit ' + D.name`; Create Sketch's Finish, `'Add ' + name`); a new one's whose add
     /// hasn't answered, by its kind's title ([`Kind::title`]), the name its add gives it.
     fn dialog_step(&self, dialog: &Dialog) -> Words {
-        let verb = if dialog.made { "Add" } else { "Edit" };
-        match &dialog.feature {
-            Some(feature) => Words::Of(verb, feature.clone()),
-            None => Words::Said(format!("{verb} {}", dialog.kind.title())),
-        }
+        dialog_words(dialog, if dialog.made { "Add" } else { "Edit" })
     }
 
-    /// What the step an edit asked now makes says ([`edit`](Self::edit)): the open dialog's
-    /// ("Edit Pad"), if one is open; else a rename's, wherever it's made, which its answer
-    /// says better, naming the name it replaced (the prototype's `'Rename ' + f.name`); else
-    /// sketch mode's, if it's open; else "Edit" and the feature.
-    fn edit_words(&self, edit: &Edit) -> Words {
-        if let Some(dialog) = &self.dialog {
-            return match &dialog.feature {
-                Some(feature) => Words::Of("Edit", feature.clone()),
-                None => Words::Said(format!("Edit {}", dialog.kind.title())),
-            };
-        }
+    /// What the step an edit asked now makes says ([`edit`](Self::edit)), as it's asked:
+    /// none for a rename, wherever it's made, which its answer names, saying the name it
+    /// replaced (the prototype's `'Rename ' + f.name`: [`renaming`]); else the open dialog's
+    /// ("Edit Pad"), if one is open; else sketch mode's, if it's open; else "Edit" and the
+    /// feature.
+    fn edit_words(&self, edit: &Edit) -> Option<Words> {
         if edit.field == "name" {
-            return Words::Of("Rename", edit.feature.clone());
+            return None;
         }
-        if self.sketch.is_some() {
-            return self.sketch_words("Edit");
+        Some(if let Some(dialog) = &self.dialog {
+            dialog_words(dialog, "Edit")
+        } else if self.sketch.is_some() {
+            self.sketch_words("Edit")
+        } else {
+            Words::Of("Edit", edit.feature.clone())
+        })
+    }
+
+    /// An add's answer, `response`, to what was `sending`: applied, saying "Add" and the
+    /// feature's name as it answers it, and naming the state it made with it ([`made_by`]).
+    fn took_added(&mut self, sending: &Sending, response: &Response<Added>) {
+        match &response.result {
+            Ok(added) => {
+                let (said, effect) = made_by(&added.feature);
+                self.applied_as(sending, response, Some(said), effect);
+            }
+            Err(_) => self.applied(sending, response),
         }
-        Words::Of("Edit", edit.feature.clone())
     }
 
     /// The tip of the document as the tab's timeline last listed it ([`tip_of`]): whether a
@@ -5683,7 +5697,7 @@ impl Tab {
         match crate::repair::used(broken, candidate, &dressing, &read, &name) {
             Ok((edit, told)) => {
                 let said = Words::Then(broken.feature.clone(), crate::repair::USED_STEP);
-                self.edit_said(sessions, edit, said);
+                self.edit_said(sessions, edit, Some(said));
                 self.told = Some(told);
                 true
             }
@@ -5732,7 +5746,7 @@ impl Tab {
         match crate::repair::removed(broken, &dressing, &read, &name) {
             Ok((edit, told)) => {
                 let said = Words::Then(broken.feature.clone(), crate::repair::REMOVED_STEP);
-                self.edit_said(sessions, edit, said);
+                self.edit_said(sessions, edit, Some(said));
                 self.told = Some(told);
                 true
             }
@@ -8620,7 +8634,7 @@ mod tests {
                 sending: Sending {
                     against: tab.revision,
                     state: tab.revision,
-                    step: Words::edit(),
+                    step: None,
                 },
                 running: sessions.set_field(
                     &tab.id,
@@ -8755,7 +8769,7 @@ mod tests {
                     field: field.to_owned(),
                     value: silico_core::document::json::read(b"\"s0000001\"").unwrap(),
                 },
-                Words::Said("Edit Pocket".to_owned()),
+                Some(Words::Said("Edit Pocket".to_owned())),
             )
         };
         let mut tab = tab();
@@ -8915,7 +8929,7 @@ mod tests {
         let sending = Sending {
             against,
             state,
-            step: Words::Said(step.to_owned()),
+            step: Some(Words::Said(step.to_owned())),
         };
         tab.applied(&sending, &answered_at(made, Ok(())));
     }
@@ -8935,12 +8949,13 @@ mod tests {
     }
 
     #[test]
-    fn each_change_is_named_by_what_it_does_to_which_feature_as_the_timeline_lists_it() {
-        // The prototype's step labels (app.js and interact.js: `'Rename ' + f.name`,
-        // `'Suppress '`/`'Unsuppress ' + featName`, `'Add ' + name`, `'Edit ' + name`) in
-        // its grammar, a verb and the feature's name, for each kind of change the tab sends;
-        // Restore by its banner's button (Fable's decision of 2026-11-04). What changes
-        // nothing is no step.
+    fn each_change_sent_says_what_it_does_to_which_feature_and_whats_answered_nothing() {
+        // The prototype's step labels (app.js and interact.js: `'Suppress '`/`'Unsuppress ' +
+        // featName`, `'Edit ' + name`) in its grammar, a verb and the feature's name, for each
+        // kind of change the tab sends and says as it sends it; Restore by its banner's
+        // button (Fable's decision of 2026-11-04). A deletion and an add say nothing as
+        // they're sent: their answers name them, as a rename's does. What changes nothing is
+        // no step.
         let fid = |id: &str| FeatureId::new(id).unwrap();
         let mut tab = tab();
         tab.took_timeline(named_timeline());
@@ -8974,7 +8989,7 @@ mod tests {
                 Queued::Remove {
                     feature: fid("a0000001"),
                 },
-                Some("Delete Block"),
+                None,
             ),
             (
                 Queued::Add {
@@ -8983,7 +8998,7 @@ mod tests {
                     members: Vec::new(),
                     body: Body::Unread,
                 },
-                Some("Add Pad"),
+                None,
             ),
             (
                 Queued::Add {
@@ -8992,7 +9007,7 @@ mod tests {
                     members: Vec::new(),
                     body: Body::Unread,
                 },
-                Some("Add Subtract"),
+                None,
             ),
             (
                 Queued::AddSketch {
@@ -9000,7 +9015,7 @@ mod tests {
                     feature: value(),
                     name: "Sketch2".to_owned(),
                 },
-                Some("Add Sketch2"),
+                None,
             ),
             (
                 Queued::SketchTrim {
@@ -9052,7 +9067,7 @@ mod tests {
                         field: "name".to_owned(),
                         value: value(),
                     },
-                    Words::Said("Rename Pin".to_owned()),
+                    Some(Words::Said("Rename Pin".to_owned())),
                 ),
                 Some("Rename Pin"),
             ),
@@ -9137,23 +9152,29 @@ mod tests {
             field: "radius".to_owned(),
             value: silico_core::document::json::read(b"3").unwrap(),
         };
-        let said = |tab: &Tab, edit: &Edit| tab.said(&tab.edit_words(edit), one, one);
-        // Outside a dialog: a rename; anything else "Edit" and the feature.
-        assert_eq!(
-            tab.edit_words(&name("PinA")),
-            Words::Of("Rename", pin.clone())
-        );
+        let said = |tab: &Tab, edit: &Edit| {
+            tab.edit_words(edit)
+                .and_then(|words| tab.said(&words, one, one))
+        };
+        // A rename says nothing as it's asked, wherever: its answer names it. Anything else
+        // outside a dialog, "Edit" and the feature.
+        assert_eq!(tab.edit_words(&name("PinA")), None);
         assert_eq!(said(&tab, &radius).as_deref(), Some("Edit Pin"));
-        // Two renames with nothing between them are one: the second takes the first's place,
-        // keeping what it says.
+        // Two edits of a field with nothing between them are one: the second takes the first's
+        // place, keeping what it says.
         let mut edits = Edits::default();
-        edits.push(name("PinA"), Words::Said("Rename Pin".to_owned()));
-        edits.push(name("PinAB"), Words::Said("Rename PinA".to_owned()));
+        let height = |text: &str| Edit {
+            feature: pin.clone(),
+            field: "height".to_owned(),
+            value: silico_core::document::json::read(text.as_bytes()).unwrap(),
+        };
+        edits.push(height("4"), Some(Words::Said("Edit Pin".to_owned())));
+        edits.push(height("5"), Some(Words::Said("Edit Peg".to_owned())));
         assert_eq!(edits.queue.len(), 1);
         assert!(matches!(
             &edits.queue[0],
-            Queued::Edit(edit, Words::Said(words))
-                if edit.value.value.as_str() == Some("PinAB") && words == "Rename Pin"
+            Queued::Edit(edit, Some(Words::Said(words)))
+                if edit.value == height("5").value && words == "Edit Pin"
         ));
         // A new feature's dialog: its edits, and its OK's one step, by its kind's title till
         // its add answers; then by its feature.
@@ -9169,12 +9190,12 @@ mod tests {
         editing.feature = Some(pin.clone());
         assert_eq!(tab.dialog_step(&editing), Words::Of("Edit", pin.clone()));
         tab.dialog = Some(editing);
-        assert_eq!(said(&tab, &name("PinA")).as_deref(), Some("Edit Pin"));
+        assert_eq!(tab.edit_words(&name("PinA")), None);
         tab.dialog = None;
         // Sketch mode's: "Edit" and the sketch; a rename made in it, a rename still.
         tab.sketch = Some(SketchMode::new(3, Some(fid("s0000001"))));
         assert_eq!(said(&tab, &radius).as_deref(), Some("Edit Triangle"));
-        assert_eq!(tab.edit_words(&name("PinA")), Words::Of("Rename", pin));
+        assert_eq!(tab.edit_words(&name("PinA")), None);
         // A name past the window's width, or across lines, as the tooltip shows it: on one
         // line, cut at 60 characters with an ellipsis.
         tab.sketch = None;
@@ -9232,7 +9253,7 @@ mod tests {
                 field: "radius".to_owned(),
                 value: silico_core::document::json::read(b"3").unwrap(),
             },
-            Words::Said("Edit Pin".to_owned()),
+            Some(Words::Said("Edit Pin".to_owned())),
         );
         assert!(tab.undoable());
         assert_eq!(tab.undo_step().as_deref(), None);
@@ -9303,7 +9324,7 @@ mod tests {
         let sending = Sending {
             against: rev(4),
             state: rev(2),
-            step: Words::Said("Delete Block".to_owned()),
+            step: Some(Words::Said("Delete Block".to_owned())),
         };
         tab.applied(&sending, &answered_at(rev(4), Err(refused)));
         // Changing nothing: answered at the revision it was sent against.
