@@ -450,6 +450,17 @@ pub struct Edits {
     pub sent: u64,
 }
 
+/// What the edits waiting say a field will hold ([`Edits::pending_string`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pending<'a> {
+    /// The string the newest of them sets.
+    Set(&'a str),
+    /// Not known here: something waits after the newest that may set the document back.
+    Unknown,
+    /// None of them sets it.
+    Nothing,
+}
+
 impl Edits {
     /// Whether an edit of `feature`'s `field` is in flight or queued.
     fn pending_field(&self, feature: &FeatureId, field: &str) -> bool {
@@ -461,25 +472,36 @@ impl Edits {
             })
     }
 
-    /// The newest value of `feature`'s `field` waiting to be applied, as a string, if one is
-    /// queued or in flight and is one: what a rename asked now replaces.
-    fn pending_string(&self, feature: &FeatureId, field: &str) -> Option<&str> {
-        self.queue
-            .iter()
-            .rev()
-            .find_map(|queued| match queued {
+    /// What `feature`'s `field` holds once what waits is applied, as far as the edits waiting
+    /// say: the newest one's string, if one of it is queued or in flight with nothing after it
+    /// that may set the document back (a step, a Restore, a revert, a reload); not known, if
+    /// such a thing waits after it, or with none of it; or nothing said, with neither.
+    fn pending_string(&self, feature: &FeatureId, field: &str) -> Pending<'_> {
+        for queued in self.queue.iter().rev() {
+            match queued {
                 Queued::Edit(edit, _) if &edit.feature == feature && edit.field == field => {
-                    Some(&edit.value)
+                    return edit
+                        .value
+                        .value
+                        .as_str()
+                        .map_or(Pending::Unknown, Pending::Set);
                 }
-                _ => None,
-            })
-            .or_else(|| {
-                self.in_flight
-                    .as_ref()
-                    .filter(|flying| &flying.field.0 == feature && flying.field.1 == field)
-                    .map(|flying| &flying.value)
-            })
-            .and_then(|value| value.value.as_str())
+                Queued::Step { .. }
+                | Queued::Restore { .. }
+                | Queued::Replace { .. }
+                | Queued::Revert { .. }
+                | Queued::Reload => return Pending::Unknown,
+                _ => {}
+            }
+        }
+        match &self.in_flight {
+            Some(flying) if &flying.field.0 == feature && flying.field.1 == field => flying
+                .value
+                .value
+                .as_str()
+                .map_or(Pending::Unknown, Pending::Set),
+            _ => Pending::Nothing,
+        }
     }
 
     /// Whether an edit of `feature` is in flight or queued.
@@ -679,6 +701,22 @@ enum Under {
         sending: Sending,
         running: Running<Replaced>,
     },
+}
+
+impl Under {
+    /// Whether, once it answers, the document may be at a state the tab's own edits don't
+    /// say the names of: an undo or a redo, a rollback, Restore's read or its put-back, or
+    /// Reload's read of the file.
+    fn sets_back(&self) -> bool {
+        matches!(
+            self,
+            Under::Step { .. }
+                | Under::Rollback { .. }
+                | Under::Restore { .. }
+                | Under::Replace { .. }
+                | Under::ReloadRead { .. }
+        )
+    }
 }
 
 /// The choice offered for a file changed on disk while edits are held (section 4).
@@ -1074,6 +1112,12 @@ pub struct Tab {
     /// change was made at let go as it's applied (the redo branch it dropped), and all of
     /// them as the transaction ends.
     steps: BTreeMap<Revision, String>,
+    /// The names the tab's own renames gave, as they were answered, by feature, with the
+    /// revision each came to: what a step names a feature by till the timeline lists that
+    /// revision or a later one (`took_timeline`), as its read comes frames after. Let go as
+    /// anything answers that may set names back (an undo, a redo, a rollback, a Restore, a
+    /// reload).
+    renamed: BTreeMap<FeatureId, (Revision, String)>,
     /// The state sketch mode's Finish or Cancel ended at, or an over-defining dimension's
     /// Cancel undid to: Redo is off there till the next edit, so what it undid isn't redone
     /// past its Finish, nor the dimension Cancel refused.
@@ -1271,6 +1315,7 @@ impl Tab {
             oked: None,
             groups: Vec::new(),
             steps: BTreeMap::new(),
+            renamed: BTreeMap::new(),
             redo_fence: None,
             sketch_edited: false,
             restored: BTreeMap::new(),
@@ -2237,6 +2282,7 @@ impl Tab {
     ) {
         self.resets += 1;
         self.reloaded_to = Some(to);
+        self.renamed.clear();
         self.take_diffs();
         let unlisted = match self.reloaded.take() {
             Some(older) => {
@@ -2335,8 +2381,12 @@ impl Tab {
         }
         let mut close = false;
         for under in std::mem::take(&mut self.under) {
-            if let Some(under) = self.take(sessions, under, &mut close) {
-                self.under.push(under);
+            let sets_back = under.sets_back();
+            match self.take(sessions, under, &mut close) {
+                Some(under) => self.under.push(under),
+                // Its names are the timeline's to say again.
+                None if sets_back => self.renamed.clear(),
+                None => {}
             }
         }
         if close {
@@ -2537,6 +2587,8 @@ impl Tab {
         if timeline.problems == 0 {
             self.document_problems.clear();
         }
+        // Its names are the session's from its revision on.
+        self.renamed.retain(|_, (at, _)| *at > timeline.revision);
         self.timeline = Some(timeline);
         self.rebrowse();
     }
@@ -3171,6 +3223,7 @@ impl Tab {
                 Ok(response) => {
                     self.took_session(&response);
                     self.applied(&sending, &response);
+                    self.took_rename(&field, &value, &sending, &response);
                     // Said, the field keeping what the person typed (#298's review): a
                     // conflict's too, whose next edit is sent against the reloaded revision.
                     // A box of one body shows what the document holds instead, so it isn't
@@ -4783,10 +4836,62 @@ impl Tab {
             .map_or_else(|| "Sketch".to_owned(), step_name)
     }
 
-    /// The feature `feature`'s name as a step's words say it ([`step_name`]), as the timeline
-    /// lists it now ([`name_of`](Self::name_of)).
+    /// The feature `feature`'s name as a step sent now says it ([`step_name`]): the name the
+    /// document holds once everything sent before it has answered
+    /// ([`answered_name`](Self::answered_name)).
     fn called(&self, feature: &FeatureId) -> String {
-        step_name(&self.name_of(feature))
+        step_name(&self.answered_name(feature))
+    }
+
+    /// The name the feature `feature` has once everything the tab sent has answered: the
+    /// last of its own renames answered, while the timeline lists a revision before the one
+    /// that rename came to (its read comes frames after); else the timeline's.
+    fn answered_name(&self, feature: &FeatureId) -> String {
+        let listed = self.timeline.as_ref().map(|timeline| timeline.revision);
+        match self.renamed.get(feature) {
+            Some((at, name)) if listed.is_none_or(|listed| listed < *at) => name.clone(),
+            _ => self.name_of(feature),
+        }
+    }
+
+    /// The name the feature `feature` has when an edit asked now applies, after everything
+    /// asked before it: the newest rename of it waiting ([`Edits::pending_string`]); else,
+    /// with nothing waiting or under way that may set the document back, the name
+    /// everything answered gave it ([`answered_name`](Self::answered_name)); else, not known
+    /// here, the timeline's.
+    fn name_when_applied(&self, feature: &FeatureId) -> String {
+        match self.edits.pending_string(feature, "name") {
+            Pending::Set(name) => name.to_owned(),
+            Pending::Unknown => self.name_of(feature),
+            Pending::Nothing if self.under.iter().any(Under::sets_back) => self.name_of(feature),
+            Pending::Nothing => self.answered_name(feature),
+        }
+    }
+
+    /// The edit in flight of `field`, `value`, answered as `response` to what was `sending`:
+    /// a rename applied, the name it gave kept with the revision it came to
+    /// ([`renamed`](Self::renamed)), till the timeline lists that revision.
+    fn took_rename<T>(
+        &mut self,
+        field: &(FeatureId, String),
+        value: &Node,
+        sending: &Sending,
+        response: &Response<T>,
+    ) {
+        let made = response
+            .session
+            .as_ref()
+            .map(|session| session.revision)
+            .filter(|revision| *revision != sending.against);
+        if let (Ok(_), Some(made), Some(name), true) = (
+            &response.result,
+            made,
+            value.value.as_str(),
+            field.1 == "name",
+        ) {
+            self.renamed
+                .insert(field.0.clone(), (made, name.to_owned()));
+        }
     }
 
     /// The name of `dialog`'s feature, as its steps say it: the timeline's, or, for a new
@@ -4813,24 +4918,21 @@ impl Tab {
 
     /// The words of the step an edit asked now makes ([`edit`](Self::edit)): the open
     /// dialog's ("Edit Pad"), if one is open; else a rename's, wherever it's made, naming the
-    /// name it replaces (the prototype's `'Rename ' + f.name`): the newest one asked of it,
-    /// if one is still to be applied, else the timeline's; else sketch mode's, if it's open;
-    /// else "Edit" and the feature's name.
+    /// name it replaces (the prototype's `'Rename ' + f.name`), the one the feature has when
+    /// it applies ([`name_when_applied`](Self::name_when_applied)); else sketch mode's, if
+    /// it's open; else "Edit" and that name.
     fn edit_words(&self, edit: &Edit) -> String {
         if let Some(dialog) = &self.dialog {
             return format!("Edit {}", self.dialog_called(dialog));
         }
+        let name = step_name(&self.name_when_applied(&edit.feature));
         if edit.field == "name" {
-            let replaced = self
-                .edits
-                .pending_string(&edit.feature, "name")
-                .map_or_else(|| self.called(&edit.feature), step_name);
-            return format!("Rename {replaced}");
+            return format!("Rename {name}");
         }
         if let Some(mode) = &self.sketch {
             return format!("Edit {}", self.sketch_called(mode.sketch.as_ref()));
         }
-        format!("Edit {}", self.called(&edit.feature))
+        format!("Edit {name}")
     }
 
     /// The tip of the document as the tab's timeline last listed it ([`tip_of`]): whether a
@@ -8822,14 +8924,22 @@ mod tests {
         // Outside a dialog: a rename by the name it replaces; anything else by the feature.
         assert_eq!(tab.edit_words(&name("PinA")), "Rename Pin");
         assert_eq!(tab.edit_words(&radius), "Edit Pin");
-        // A rename waiting: the next replaces the name it gives, not the timeline's.
+        // A rename waiting, a move of another feature after it: the next replaces the name
+        // it gives, not the timeline's.
         tab.edits.push(name("PinA"), "Rename Pin".to_owned());
+        tab.edits.queue.push_back(Queued::Move {
+            feature: FeatureId::new("a0000001").unwrap(),
+            before: None,
+        });
+        assert_eq!(tab.edit_words(&name("PinAB")), "Rename PinA");
+        // An undo queued after it: by the order the session applies them, PinA is applied,
+        // the undo takes it back to Pin, and then the next rename: it replaces Pin.
         tab.edits.queue.push_back(Queued::Step {
             undo: true,
             floor: None,
             sketch: None,
         });
-        assert_eq!(tab.edit_words(&name("PinAB")), "Rename PinA");
+        assert_eq!(tab.edit_words(&name("PinAB")), "Rename Pin");
         // Two renames with nothing between them are one, from the first one's name: the
         // second takes the first's place, keeping its words.
         let mut edits = Edits::default();
@@ -10565,6 +10675,31 @@ mod tests {
         assert_eq!(tab.undo_step(), Some("Rename Pin"));
         assert_eq!(tab.redo_step(), None);
         assert_eq!(tab.unsaved_edits(), 1);
+    }
+
+    #[test]
+    fn a_rename_after_one_answered_but_not_yet_read_again_replaces_the_name_that_one_gave() {
+        // Round 1's T1: the pin renamed PinA, its answer taken (the session at revision 2)
+        // but the timeline not read again (still revision 1's, "Pin"): the next rename
+        // replaces PinA, the name the document holds when it applies.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        tab.rename(&sessions, pin.clone(), "PinA");
+        taken_until(&mut tab, &sessions, |tab| tab.edits.idle());
+        assert!(
+            tab.timeline
+                .as_ref()
+                .is_some_and(|timeline| timeline.revision < tab.revision),
+            "the timeline read again"
+        );
+        assert_eq!(tab.name_of(&pin), "Pin");
+        let next = Edit {
+            feature: pin,
+            field: "name".to_owned(),
+            value: name_value("PinAB").unwrap(),
+        };
+        assert_eq!(tab.edit_words(&next), "Rename PinA");
     }
 
     #[test]

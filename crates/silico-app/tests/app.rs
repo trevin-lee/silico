@@ -4809,6 +4809,62 @@ fn an_undo_refused_after_another_clients_step_names_no_step_it_doesnt_know() {
 }
 
 #[test]
+fn a_rename_typed_in_the_frame_the_last_ones_answer_lands_names_the_name_that_one_gave() {
+    // Round 1's T1: PinA, then "B" typed and applied by the session while no frame runs;
+    // then "C" typed in the frame that takes B's answer, before the timeline is read again.
+    // Each rename replaces the name before it: Undo takes back the rename of PinAB.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "A");
+    settled(&mut h);
+    let id = h.state().tabs()[0].id;
+    let before = h.state().tabs()[0].revision;
+    type_name(&mut h, "B");
+    let deadline = Instant::now() + WAIT;
+    while f.sessions.status(&id).session.unwrap().revision == before {
+        assert!(Instant::now() < deadline, "B never applied");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    name_field(&h).type_text("C");
+    step(&mut h);
+    settled(&mut h);
+    assert!(shows(&h, "Timeline", "PinABC"));
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename PinAB");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_suppression_sent_as_a_rename_before_it_answers_names_the_name_that_rename_gave() {
+    // Round 1's T1: PinA, then the session's queue held, "B" typed (sent, held), and the pin
+    // suppressed behind it. Released: the suppression is sent as B's answer is taken, before
+    // the timeline is read again; it suppresses PinAB.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "A");
+    settled(&mut h);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "B");
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.suppress_feature(
+            &sessions,
+            silico_core::document::FeatureId::new("a91cw0de").unwrap(),
+            true,
+        );
+    }
+    hold.release();
+    let _ = check.wait();
+    settled(&mut h);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Suppress PinAB");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_close_while_a_redo_waits_asks_first() {
     // Undone back to the file's document, then Redo held behind the session's queue: the
     // tab holds an edit still to come back, so Close asks, and nothing is rolled back.
