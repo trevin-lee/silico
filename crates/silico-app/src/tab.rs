@@ -10944,6 +10944,67 @@ mod tests {
     }
 
     #[test]
+    fn a_suppression_after_a_restore_names_the_pin_as_the_restore_put_it_back() {
+        // Round 3's T3-2: PinA, listed; a Restore of the revision the transaction began at
+        // (its text, with Pin, put back: what that state names isn't known till a timeline
+        // lists it), and the pin suppressed after. Undo names nothing till a timeline lists
+        // the state the suppression made, then "Suppress Pin": never PinA.
+        let (_dir, sessions, mut tab, pin) = pin_renamed();
+        tab.restore(&sessions, Revision::OPENED);
+        tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(undo_named(&mut tab, &sessions), None);
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.quiet()
+                && tab
+                    .timeline
+                    .as_ref()
+                    .is_some_and(|timeline| timeline.revision == tab.revision)
+        });
+        assert_eq!(tab.undo_step().as_deref(), Some("Suppress Pin"));
+    }
+
+    #[test]
+    fn a_suppression_sent_as_a_reverts_rollback_answers_names_the_files_name() {
+        // Round 3's T3-2: PinA, listed; a revert, and the pin suppressed behind it, from the
+        // state the rollback restored: the file's, with Pin.
+        let (_dir, sessions, mut tab, pin) = pin_renamed();
+        tab.revert(&sessions, false);
+        tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(
+            undo_named(&mut tab, &sessions).as_deref(),
+            Some("Suppress Pin")
+        );
+    }
+
+    #[test]
+    fn a_suppression_sent_as_a_saves_answer_is_taken_names_the_name_the_save_kept() {
+        // Round 3's T3-2: PinA, listed; PinB, a save, and the pin suppressed behind them, from
+        // the state the save kept: PinB's.
+        let (_dir, sessions, mut tab, pin) = pin_renamed();
+        tab.rename(&sessions, pin.clone(), "PinB");
+        tab.save(&sessions, false);
+        tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(
+            undo_named(&mut tab, &sessions).as_deref(),
+            Some("Suppress PinB")
+        );
+    }
+
+    #[test]
+    fn a_suppression_sent_as_a_save_ass_answer_is_taken_names_the_name_the_save_as_kept() {
+        // Round 3's T3-2: as a save, a Save As to another file.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.rename(&sessions, pin.clone(), "PinB");
+        let copy = dir.path().join("copy.silico");
+        tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
+        tab.suppress_feature(&sessions, pin, true);
+        assert_eq!(
+            undo_named(&mut tab, &sessions).as_deref(),
+            Some("Suppress PinB")
+        );
+    }
+
+    #[test]
     fn what_waits_after_a_rename_decides_the_name_the_next_replaces() {
         // Round 2's A: PinA, listed; PinB sent; then, queued behind it, a revert, a Reload
         // (of the file as it was opened), or a Restore of the revision the transaction began
