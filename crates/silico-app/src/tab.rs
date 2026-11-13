@@ -247,12 +247,10 @@ enum Queued {
     Opened {
         serial: u64,
     },
-    /// Create Sketch's new sketch (`add_feature`), for sketch mode numbered `serial`, and
-    /// the name it's added with.
+    /// Create Sketch's new sketch (`add_feature`), for sketch mode numbered `serial`.
     AddSketch {
         serial: u64,
         feature: Node,
-        name: String,
     },
     /// Delete in sketch mode: `members` of the sketch `sketch` removed (`sketch_remove`).
     SketchRemove {
@@ -3562,9 +3560,7 @@ impl Tab {
                         mode.opened_at = Some(self.revision);
                     }
                 }
-                Queued::AddSketch {
-                    serial, feature, ..
-                } => {
+                Queued::AddSketch { serial, feature } => {
                     self.begin_if_none(sessions);
                     self.supersede_preview();
                     self.record(Sent::Add);
@@ -4895,10 +4891,9 @@ impl Tab {
     /// the redo branch they're on (a group ending after that state was undone to reach it);
     /// the state it made kept as a step, saying `said`, what its answer says (a rename's, a
     /// deletion's, an add's), or else what it was sent saying (or else [`Words::edit`]), from
-    /// that state; and that state's
-    /// names, as the state it was made from has them and `effect` changes them, if they're
-    /// known there. A refused change, or one that changed nothing, leaves the redo branch
-    /// whole, and them with it.
+    /// that state; and that state's names, as the state it was made from has them and
+    /// `effect` changes them, if they're known there. A refused change, or one that changed
+    /// nothing, leaves the redo branch whole, and them with it.
     fn applied_as<T>(
         &mut self,
         sending: &Sending,
@@ -4992,13 +4987,13 @@ impl Tab {
         self.names.retain(|state, _| kept.contains(state));
     }
 
-    /// What the step `queued` makes says, as it's sent: none for what changes nothing of the
-    /// document. A dialog's or sketch mode's own changes say what they change ("Add Pad",
-    /// "Edit Sketch1"), its OK or Finish making them one step of the dialog's or the sketch's
-    /// own ([`Queued::Closed`]'s `said`); every other one what it does to which feature, its
-    /// name the one it has in the state the step is made from ([`step_text`](Self::step_text)). A
-    /// rename, a deletion, and an add say better once answered
-    /// ([`applied_as`](Self::applied_as)).
+    /// What the step `queued` makes says, as it's sent. None means one of two things: it
+    /// changes nothing of the document, or its answer names it (a rename, a deletion, an add:
+    /// [`applied_as`](Self::applied_as)). A dialog's or sketch mode's own changes say what
+    /// they change ("Edit Pad", "Edit Sketch1"), its OK or Finish making them one step of the
+    /// dialog's or the sketch's own ([`Queued::Closed`]'s `said`); every other one what it
+    /// does to which feature, named by the name it has in the state the step is made from
+    /// ([`step_text`](Self::step_text)).
     fn step_words(&self, queued: &Queued) -> Option<Words> {
         match queued {
             Queued::Edit(_, step) => step.clone(),
@@ -6141,13 +6136,11 @@ impl Tab {
         };
         let serial = self.opening();
         let mut mode = SketchMode::new(serial, None);
-        mode.created = Some(name.clone());
+        mode.created = Some(name);
         self.sketch = Some(mode);
-        self.edits.queue.push_back(Queued::AddSketch {
-            serial,
-            feature,
-            name,
-        });
+        self.edits
+            .queue
+            .push_back(Queued::AddSketch { serial, feature });
         self.advance(sessions);
     }
 
@@ -8994,7 +8987,6 @@ mod tests {
                 Queued::AddSketch {
                     serial: 2,
                     feature: value(),
-                    name: "Sketch2".to_owned(),
                 },
                 None,
             ),
@@ -9045,12 +9037,23 @@ mod tests {
                 Queued::Edit(
                     Edit {
                         feature: pin.clone(),
-                        field: "name".to_owned(),
+                        field: "radius".to_owned(),
                         value: value(),
                     },
-                    Some(Words::Text("Rename Pin".to_owned())),
+                    Some(Words::Of("Edit", pin.clone())),
                 ),
-                Some("Rename Pin"),
+                Some("Edit Pin"),
+            ),
+            (
+                Queued::Edit(
+                    Edit {
+                        feature: pin.clone(),
+                        field: "name".to_owned(),
+                        value: name_value("PinA").unwrap(),
+                    },
+                    None,
+                ),
+                None,
             ),
             (
                 Queued::Offer {
@@ -9165,7 +9168,8 @@ mod tests {
             tab.dialog_step(tab.dialog.as_ref().unwrap()),
             Words::Text("Add Pad".to_owned())
         );
-        // An existing feature's (Edit Feature's): "Edit" and it, the rename's too.
+        // An existing feature's (Edit Feature's): "Edit" and it; a rename made in it says
+        // nothing as it's asked, its answer naming it, as anywhere.
         let mut editing = Dialog::new(Kind::Cylinder, None, 2);
         editing.made = false;
         editing.feature = Some(pin.clone());
