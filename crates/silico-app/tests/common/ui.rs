@@ -2,13 +2,14 @@
 //! control found by its role and label in the accessibility tree and clicked or typed into,
 //! keys pressed, and the canvas given the pointer's own events; and reads of what the window
 //! and the tab show, which act on nothing. Every frame is stepped on a thread marked so that
-//! a wait on a command there is counted. Last, what the stand-ins several files share give
-//! the tests: the fake kernel's meshes counted, a file read as the core reads it, and a clock
-//! moved by hand.
+//! a wait on a command there is counted. Last, the stand-ins more than one file uses: the
+//! native file dialog ([`FakeBrowser`]), the fake kernel's meshes counted, a file's bytes
+//! read plainly, and a clock moved by hand.
 //!
-//! The app's tests take these helpers from here, one copy each: tests/app.rs, the
-//! hostile-input tests, and the slice. How long a wait may take follows the kernel the app
-//! runs on: [`FAKE_WAIT`] on the fake kernel, [`SLICE_WAIT`] on the real workers.
+//! tests/app.rs, the hostile-input tests, and the slice take from here the helpers that more
+//! than one of them had a copy of, the ones those call, and the twins below. How long a wait
+//! may take follows the kernel the app runs on: [`FAKE_WAIT`] on the fake kernel,
+//! [`SLICE_WAIT`] on the real workers.
 //!
 //! Three clicks and two ways of typing over a field do one job differently, and are kept
 //! apart because the events each sends are what its tests have checked the app against:
@@ -24,9 +25,9 @@
 //! What stays in each file is its own, not a copy:
 //! - each file's `fixture` and `Fixture`, since each sets its sessions up as its tests need
 //!   (app.rs's write STEP through the fake kernel, and compare the disk through a test's
-//!   reader when one is given; adversarial_undo_names.rs's compare it through [`real`] with
-//!   no interval, and write no STEP; the untitled and viewport tests' are the stand-ins
-//!   alone) and has its own methods for opening the app;
+//!   reader when one is given; adversarial_undo_names.rs's compare it through
+//!   [`plain_read`] with no interval, and write no STEP; the untitled and viewport tests' are
+//!   the stand-ins alone) and has its own methods for opening the app;
 //! - app.rs's and adversarial_viewport.rs's renderer stand-ins (`Told`, `FakeRenderer`,
 //!   `Recorder`), which record different things and answer picks differently: app.rs's give
 //!   the pick a test sets, or hold, drop, or never give it; the viewport's give the
@@ -36,17 +37,24 @@
 //! - helpers that share a name but not a job: app.rs's `renamed` (the name typed and its edit
 //!   landed) and adversarial_undo_names.rs's (the feature selected, the name typed, and
 //!   everything settled); app.rs's and slice.rs's `fully_defined` and `seen`.
+//!
+//! The next layer is #470's: the fixtures' common base, the documents each file writes out
+//! again, steps written inline where a helper here does them, app.rs's `type_into`, and the
+//! click helpers' names.
 #![allow(dead_code)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui::accesskit::Role;
-use eframe::egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect};
+use eframe::egui::{
+    Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, ViewportCommand,
+};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
+use silico_app::browse::{Answer, Ask, Browse};
 use silico_core::disk::{Clock, Found};
 use silico_core::fake::{FakeKernel, never_waits};
 use silico_core::kernel::{Clients, Op};
@@ -117,6 +125,15 @@ pub fn everything<P: AppKernel>(h: &AppUi<P>) -> Vec<String> {
             node.label().or_else(|| node.value())
         })
         .collect()
+}
+
+/// Whether the last frame told the window `command` (to close, or to cancel a close): in any
+/// harness, the app's or another window's.
+pub fn window_told<S>(h: &Harness<'_, S>, command: ViewportCommand) -> bool {
+    h.output()
+        .viewport_output
+        .get(&eframe::egui::ViewportId::ROOT)
+        .is_some_and(|viewport| viewport.commands.contains(&command))
 }
 
 /// Whether the window holds a node labelled `label`, anywhere.
@@ -782,6 +799,93 @@ pub fn meshes_settled_in<P: AppKernel>(h: &mut AppUi<P>, tab: usize) {
 
 // --- The stand-ins -------------------------------------------------------------------------
 
+/// [`FakeBrowser`]'s state: what each dialog was asked, the answer the test gave (`None`
+/// until it does), the waker of the last poll, how many polls there were, and whether a
+/// dialog asked for opens none.
+#[derive(Default)]
+pub struct Dialogs {
+    asked: Vec<Ask>,
+    answer: Option<Option<PathBuf>>,
+    waker: Option<std::task::Waker>,
+    polls: u64,
+    refusing: bool,
+}
+
+/// The platform's file dialog, stood in for through the same `Browse` trait (the platform's
+/// own needs a window server and a person): it records what each dialog was asked and
+/// answers when the test says, from a thread of its own, as the platform's completion does;
+/// or, told to, opens none, as when the platform's won't.
+#[derive(Clone, Default)]
+pub struct FakeBrowser(Arc<Mutex<Dialogs>>);
+
+impl Browse for FakeBrowser {
+    fn browse(&mut self, ask: &Ask) -> Option<Answer> {
+        let mut dialogs = self.0.lock().unwrap();
+        dialogs.asked.push(ask.clone());
+        if dialogs.refusing {
+            return None;
+        }
+        dialogs.answer = None;
+        Some(Box::pin(FakeAnswer(Arc::clone(&self.0))))
+    }
+}
+
+/// A dialog [`FakeBrowser`] opened, answered when the test says.
+pub struct FakeAnswer(Arc<Mutex<Dialogs>>);
+
+impl std::future::Future for FakeAnswer {
+    type Output = Option<PathBuf>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<PathBuf>> {
+        let mut dialogs = self.0.lock().unwrap();
+        dialogs.polls += 1;
+        match dialogs.answer.take() {
+            Some(answer) => std::task::Poll::Ready(answer),
+            None => {
+                dialogs.waker = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
+impl FakeBrowser {
+    /// The dialog open answers `answer` (`None`: cancelled), its waker woken on a thread of
+    /// its own.
+    pub fn answer(&self, answer: Option<&Path>) {
+        let waker = {
+            let mut dialogs = self.0.lock().unwrap();
+            dialogs.answer = Some(answer.map(Path::to_path_buf));
+            dialogs.waker.take()
+        };
+        std::thread::spawn(move || {
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// What each dialog was asked, in order.
+    pub fn asked(&self) -> Vec<Ask> {
+        self.0.lock().unwrap().asked.clone()
+    }
+
+    /// Each dialog asked for from now on opens none (`refusing`), or opens.
+    pub fn refusing(&self, refusing: bool) {
+        self.0.lock().unwrap().refusing = refusing;
+    }
+
+    /// How many times the dialogs opened have been polled.
+    pub fn polls(&self) -> u64 {
+        self.0.lock().unwrap().polls
+    }
+}
+
 /// How many meshes the fake kernel has made.
 pub fn tessellated(kernel: &FakeKernel) -> usize {
     kernel
@@ -791,9 +895,11 @@ pub fn tessellated(kernel: &FakeKernel) -> usize {
         .count()
 }
 
-/// The session's own read of its file, as `silico_core::disk` reads it, for a test that
-/// compares with no interval.
-pub fn real(path: &Path) -> Found {
+/// The file at `path` read plainly, as a disk watch's reader for a test that compares with no
+/// interval: its bytes, gone if nothing is there, unreadable on any other error. None of the
+/// session's own checks (`silico_core::disk`'s reader: the workspace, a regular file, and
+/// `MAX_INPUT_LEN`, past which it's unreadable).
+pub fn plain_read(path: &Path) -> Found {
     match std::fs::read(path) {
         Ok(bytes) => Found::Bytes(bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Found::Gone,

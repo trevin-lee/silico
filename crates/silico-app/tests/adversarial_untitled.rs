@@ -11,13 +11,13 @@
 mod ui;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use eframe::egui::{Key, Modifiers};
+use eframe::egui::{Key, Modifiers, ViewportCommand};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use silico_app::App;
-use silico_app::browse::{Answer, Ask, Browse, Pick};
+use silico_app::browse::Pick;
 use silico_app::export::ExportForm;
 use silico_core::cache::Cache;
 use silico_core::command::{SessionId, Sessions};
@@ -25,7 +25,8 @@ use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
 use silico_core::sketch::SketchSolver;
 use tempfile::TempDir;
 use ui::{
-    answer_question, anywhere, begin_sketch_on, close_window, new_part, step, step_until, tab_named,
+    FakeBrowser, answer_question, anywhere, begin_sketch_on, close_window, new_part, step,
+    step_until, tab_named, window_told,
 };
 
 const EXAMPLE: &str = r#"{
@@ -59,69 +60,6 @@ fn fixture() -> Fixture {
     Fixture {
         dir,
         sessions: Arc::new(sessions),
-    }
-}
-
-/// The stand-in's state: what each dialog was asked, the answer the test gave (`None`
-/// until it does), and the waker of the last poll.
-#[derive(Default)]
-struct Dialogs {
-    asked: Vec<Ask>,
-    answer: Option<Option<PathBuf>>,
-    waker: Option<std::task::Waker>,
-}
-
-/// A native dialog that answers when the test says, from a thread of its own.
-#[derive(Clone, Default)]
-struct FakeBrowser(Arc<Mutex<Dialogs>>);
-
-impl Browse for FakeBrowser {
-    fn browse(&mut self, ask: &Ask) -> Option<Answer> {
-        let mut dialogs = self.0.lock().unwrap();
-        dialogs.asked.push(ask.clone());
-        dialogs.answer = None;
-        Some(Box::pin(FakeAnswer(Arc::clone(&self.0))))
-    }
-}
-
-struct FakeAnswer(Arc<Mutex<Dialogs>>);
-
-impl std::future::Future for FakeAnswer {
-    type Output = Option<PathBuf>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<PathBuf>> {
-        let mut dialogs = self.0.lock().unwrap();
-        match dialogs.answer.take() {
-            Some(answer) => std::task::Poll::Ready(answer),
-            None => {
-                dialogs.waker = Some(cx.waker().clone());
-                std::task::Poll::Pending
-            }
-        }
-    }
-}
-
-impl FakeBrowser {
-    fn answer(&self, answer: Option<&Path>) {
-        let waker = {
-            let mut dialogs = self.0.lock().unwrap();
-            dialogs.answer = Some(answer.map(Path::to_path_buf));
-            dialogs.waker.take()
-        };
-        std::thread::spawn(move || {
-            if let Some(waker) = waker {
-                waker.wake();
-            }
-        })
-        .join()
-        .unwrap();
-    }
-
-    fn asked(&self) -> Vec<Ask> {
-        self.0.lock().unwrap().asked.clone()
     }
 }
 
@@ -168,17 +106,6 @@ fn asked_times(h: &mut AppHarness, browser: &FakeBrowser, n: usize) {
     step_until(h, "the panel asked", |_| browser.asked().len() >= n);
     assert_eq!(browser.asked().len(), n);
     assert_eq!(browser.asked()[n - 1].pick, Pick::Save);
-}
-
-fn closing_told(h: &AppHarness) -> bool {
-    h.output()
-        .viewport_output
-        .get(&eframe::egui::ViewportId::ROOT)
-        .is_some_and(|viewport| {
-            viewport
-                .commands
-                .contains(&eframe::egui::ViewportCommand::Close)
-        })
 }
 
 #[test]
@@ -348,7 +275,7 @@ fn a_quits_save_to_a_file_another_session_holds_stops_the_quit() {
         h.state().message() == Some("Quit stopped: Untitled wasn't closed")
     });
     steps(&mut h, 20);
-    assert!(!closing_told(&h));
+    assert!(!window_told(&h, ViewportCommand::Close));
     assert!(tab_named(&h, "Untitled").unsaved());
     assert_eq!(std::fs::read_to_string(&held).unwrap(), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
@@ -427,7 +354,7 @@ fn a_quits_save_panel_answering_a_path_that_isnt_utf8_stops_the_quit() {
         h.state().message() == Some("Quit stopped: Untitled wasn't closed")
     });
     steps(&mut h, 20);
-    assert!(!closing_told(&h));
+    assert!(!window_told(&h, ViewportCommand::Close));
     assert!(tab_named(&h, "Untitled").unsaved());
     assert_eq!(never_waits::waits(), 0);
 }

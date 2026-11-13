@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use eframe::egui::ViewportCommand;
 use eframe::egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -35,14 +36,15 @@ use silico_core::sketch::SketchSolver;
 use silico_core::{Error, ErrorCode};
 use tempfile::TempDir;
 use ui::{
-    FAKE_WAIT as WAIT, In, added, advance, answer_question, anywhere, begin_sketch_on, boxed,
-    button_event, choose, chosen, click_at, click_canvas, close_window, create, create_sketch,
-    dialog, dialog_open, drag, everything, f2_typed, field, hand_clock, in_status_bar,
-    lavapipe_render_state, leave_sketch, leave_sketch_unsettled, meshes_settled, modify,
-    modify_field, name_field, new_part, ok_enabled, on_lavapipe, open_export, pointer_away, press,
-    prompt, real, redo_by_key, rename_field, repaint_delay, retype, save_as_of, select,
-    selected_names, settled, sketch_mode, sketch_read, step, step_until, tab_named, tessellated,
-    the_viewport, tooltip_title, type_name, undo_by_key, view, view_mut, wheel,
+    FAKE_WAIT as WAIT, FakeBrowser, In, added, advance, answer_question, anywhere, begin_sketch_on,
+    boxed, button_event, choose, chosen, click_at, click_canvas, close_window, create,
+    create_sketch, dialog, dialog_open, drag, everything, f2_typed, field, hand_clock,
+    in_status_bar, lavapipe_render_state, leave_sketch, leave_sketch_unsettled, meshes_settled,
+    modify, modify_field, name_field, new_part, ok_enabled, on_lavapipe, open_export, plain_read,
+    pointer_away, press, prompt, redo_by_key, rename_field, repaint_delay, retype, save_as_of,
+    select, selected_names, settled, sketch_mode, sketch_read, step, step_until, tab_named,
+    tessellated, the_viewport, tooltip_title, type_name, undo_by_key, view, view_mut, wheel,
+    window_told,
 };
 
 /// The M2.1 document's example (docs/design/m2.1-document-format.md): a block, a pin, and
@@ -1040,7 +1042,7 @@ fn a_documents_tab_is_marked_for_its_errors_and_for_features_changed_outside_unt
     });
     // Another program renames both blocks while nothing is held: the session reloads, and
     // the tab is marked changed outside (`d.outside`, 6c) until each is marked seen.
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
     assert_eq!(tab_described(&h, "blocks.silico"), None);
@@ -1286,7 +1288,7 @@ fn ten_keystrokes_while_an_edit_waits_make_two_edits_and_the_text_holds_the_last
 
 #[test]
 fn an_agents_commit_reloads_with_no_edits_held_and_is_announced_with_edits_held() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     // No edits held: the session reloads it itself, and the app shows it.
@@ -1328,7 +1330,7 @@ fn an_agents_commit_reloads_with_no_edits_held_and_is_announced_with_edits_held(
 
 #[test]
 fn a_reload_with_nothing_held_is_announced_in_the_info_tone_until_dismissed_or_overtaken() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let reloaded = RELOADED;
@@ -1438,7 +1440,7 @@ fn written_outside(h: &mut AppHarness, path: &Path, name: &str) {
 
 #[test]
 fn the_info_banner_comes_only_from_the_sessions_own_reload() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     written_outside(&mut h, &path, "Bore");
@@ -1468,7 +1470,7 @@ fn the_info_banner_comes_only_from_the_sessions_own_reload() {
 
 #[test]
 fn a_reload_the_person_asked_for_shows_no_info_banner() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     let changed = "example.silico changed on disk while you have unsaved edits.";
@@ -1519,7 +1521,7 @@ fn a_reload_the_person_asked_for_shows_no_info_banner() {
 
 #[test]
 fn esc_dismisses_the_info_banner_before_it_clears_the_selection() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     written_outside(&mut h, &path, "Bore");
@@ -1564,7 +1566,7 @@ const NOTE_CHANGE: &str = r#""Clearance for an M5 bolt" → "Clearance for an M6
 
 #[test]
 fn a_reload_lists_what_changed_by_feature_and_field_each_value_as_the_file_writes_it() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", &pinned());
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     std::fs::write(&path, agents_pin()).unwrap();
@@ -1635,7 +1637,7 @@ fn outside_marks(h: &AppHarness, pane: &str) -> usize {
 #[test]
 fn the_changed_features_are_marked_in_the_info_tone_until_marked_seen_and_esc_dismisses_the_banner()
 {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
     assert_eq!(outside_marks(&h, "Timeline"), 0);
@@ -1696,7 +1698,7 @@ fn the_changed_features_are_marked_in_the_info_tone_until_marked_seen_and_esc_di
 
 #[test]
 fn a_reload_lists_features_added_removed_and_moved_each_in_its_words() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     // The two blocks and a Peg, 4 × 4 × 4 from x = 70 (volume 64, area 6 × 16 = 96, centre
     // (72, 2, 2)).
     let peg = r#"    {"id": "g5r9x3k1", "type": "box", "v": 1, "name": "Peg", "position": [70, 0, 0], "length": 4, "width": 4, "height": 4, "fingerprint": {"volume": 64, "area": 96, "center": [72, 2, 2], "bbox": [70, 0, 0, 74, 4, 4], "faces": 6, "edges": 12, "vertices": 8}}"#;
@@ -1795,7 +1797,7 @@ fn changed(f: &Fixture, h: &AppHarness) -> bool {
 
 #[test]
 fn restore_puts_the_replaced_revision_back_as_an_edit_that_undo_takes_and_save_writes() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("block.silico", BLOCK_10);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
     std::fs::write(&path, BLOCK_11).unwrap();
@@ -1846,7 +1848,7 @@ fn restore_puts_the_replaced_revision_back_as_an_edit_that_undo_takes_and_save_w
 fn restore_is_off_in_sketch_mode_and_on_again_once_it_is_left() {
     // Sketch mode's Cancel would undo a Restore made inside it, and its Finish take it as
     // its own: Restore waits for it to end, as it does for a dialog.
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("block.silico", BLOCK_10);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
     std::fs::write(&path, BLOCK_11).unwrap();
@@ -1880,7 +1882,7 @@ fn restore_is_off_in_sketch_mode_and_on_again_once_it_is_left() {
 
 #[test]
 fn restore_of_a_revision_no_longer_held_says_the_cores_refusal_and_its_candidates() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("block.silico", BLOCK_10);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
     std::fs::write(&path, BLOCK_11).unwrap();
@@ -1958,7 +1960,7 @@ fn restore_refused_by_a_reload_before_its_begin_leaves_no_transaction_and_follow
 fn restore_refused_by_a_reload_before_its_begin(read: StatusRead) {
     use silico_core::command::{RunningCommand, SessionCommand};
     let at = format!("{read:?}");
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("block.silico", BLOCK_10);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
     std::fs::write(&path, BLOCK_11).unwrap();
@@ -2087,7 +2089,7 @@ fn revision_now(f: &Fixture, h: &AppHarness) -> u64 {
 
 #[test]
 fn a_reload_overtaken_before_its_changes_were_read_is_said_in_the_next_banner() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("block.silico", BLOCK_10);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
     let id = h.state().tabs()[0].id;
@@ -2189,7 +2191,7 @@ fn block_renamed() -> String {
 
 #[test]
 fn the_marks_of_each_reload_accumulate_until_each_is_marked_seen() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
     std::fs::write(&path, block_renamed()).unwrap();
@@ -2216,7 +2218,7 @@ fn the_marks_of_each_reload_accumulate_until_each_is_marked_seen() {
 
 #[test]
 fn a_diff_answered_after_a_newer_reload_marks_its_features_but_is_never_listed_in_its_banner() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
     let id = h.state().tabs()[0].id;
@@ -2255,7 +2257,7 @@ fn a_diff_answered_after_a_newer_reload_marks_its_features_but_is_never_listed_i
 
 #[test]
 fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("blocks.silico", BLOCK_AND_PLATE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Plate"));
     let changed = "blocks.silico changed on disk while you have unsaved edits.";
@@ -2312,7 +2314,7 @@ fn reload_discarding_the_edits_marks_what_came_in_with_no_banner() {
 
 #[test]
 fn restore_is_off_and_says_why_once_the_reloads_diff_finds_its_revision_gone() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("block.silico", BLOCK_10);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
     let id = h.state().tabs()[0].id;
@@ -2360,7 +2362,7 @@ fn restore_is_off_and_says_why_once_the_reloads_diff_finds_its_revision_gone() {
 
 #[test]
 fn show_changes_lists_what_changed_on_disk_and_the_edits_held_each_in_its_section() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
@@ -2445,7 +2447,7 @@ fn show_changes_lists_what_changed_on_disk_and_the_edits_held_each_in_its_sectio
 
 #[test]
 fn show_changes_lists_their_radius_and_your_height_and_the_revision_never_moves() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", &pinned());
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     // The person's edit, in the Block's dialog: its height 10 → 12, the field focused with
@@ -2519,7 +2521,7 @@ fn show_changes_lists_their_radius_and_your_height_and_the_revision_never_moves(
 
 #[test]
 fn show_changes_says_the_readers_message_for_a_file_that_doesnt_read_in_its_own_section() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
@@ -2562,7 +2564,7 @@ fn the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks() {
     on_lavapipe(
         "the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks",
         || {
-            let f = fixture_reading(Some(Arc::new(real)));
+            let f = fixture_reading(Some(Arc::new(plain_read)));
             meshes_a_real_box(&f);
             let state = lavapipe_render_state();
             let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
@@ -2661,7 +2663,7 @@ impl HeldReader {
                 held = me.opened.wait(held).unwrap();
             }
             drop(held);
-            real(path)
+            plain_read(path)
         })
     }
 }
@@ -2961,19 +2963,6 @@ fn hold_queue(f: &Fixture, h: &AppHarness, at: usize) -> (Hold, Running<CheckAns
     (hold, check)
 }
 
-/// Whether the last frame told the window to close, or to cancel a close.
-fn told(h: &AppHarness, close: bool) -> bool {
-    let want = if close {
-        eframe::egui::ViewportCommand::Close
-    } else {
-        eframe::egui::ViewportCommand::CancelClose
-    };
-    h.output()
-        .viewport_output
-        .get(&eframe::egui::ViewportId::ROOT)
-        .is_some_and(|viewport| viewport.commands.contains(&want))
-}
-
 #[test]
 fn the_close_questions_save_writes_the_edit_then_closes() {
     let f = fixture();
@@ -3051,7 +3040,10 @@ fn quitting_with_two_changed_documents_and_save_all_saves_both_then_closes_the_w
         step_until(&mut h, "unsaved", |h| anywhere(h, &format!("{name} *")));
     }
     close_window(&mut h);
-    assert!(told(&h, false), "a close with edits held wasn't cancelled");
+    assert!(
+        window_told(&h, ViewportCommand::CancelClose),
+        "a close with edits held wasn't cancelled"
+    );
     step_until(&mut h, "the question", |h| {
         h.query_by_label_contains("Save changes before quitting?")
             .is_some()
@@ -3066,12 +3058,14 @@ fn quitting_with_two_changed_documents_and_save_all_saves_both_then_closes_the_w
     assert!(!h.state().tabs().is_empty());
     close_window(&mut h);
     assert!(
-        told(&h, false),
+        window_told(&h, ViewportCommand::CancelClose),
         "a close while the saves ran wasn't cancelled"
     );
     hold.release();
     let _ = check.wait();
-    step_until(&mut h, "the window closing", |h| told(h, true));
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
     assert!(h.state().tabs().is_empty());
     for path in [&a, &b] {
         assert_eq!(names_in(path), ["Block", "PinQ", "Hole"]);
@@ -3114,7 +3108,7 @@ fn a_quit_whose_save_is_a_conflict_keeps_that_document_and_the_window_open() {
     for _ in 0..20 {
         step(&mut h);
         assert!(
-            !told(&h, true),
+            !window_told(&h, ViewportCommand::Close),
             "the window closed with a.silico's edits held"
         );
     }
@@ -3124,7 +3118,7 @@ fn a_quit_whose_save_is_a_conflict_keeps_that_document_and_the_window_open() {
     assert_eq!(names_in(&b), ["Block", "PinQ", "Hole"]);
     // A second close of the window asks again: never closes it silently.
     close_window(&mut h);
-    assert!(told(&h, false));
+    assert!(window_told(&h, ViewportCommand::CancelClose));
     step_until(&mut h, "asked again", |h| {
         h.query_by_label_contains("Save changes before quitting?")
             .is_some()
@@ -3145,7 +3139,10 @@ fn a_quit_whose_save_is_a_conflict_keeps_that_document_and_the_window_open() {
     step_until(&mut h, "a closed", |h| h.state().tabs().is_empty());
     for _ in 0..5 {
         step(&mut h);
-        assert!(!told(&h, true), "the stopped quit closed the window");
+        assert!(
+            !window_told(&h, ViewportCommand::Close),
+            "the stopped quit closed the window"
+        );
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -3256,7 +3253,7 @@ fn esc_stops_the_command_waiting_on_a_held_rebuild() {
 
 #[test]
 fn keep_my_edits_hides_the_banner_and_the_save_is_then_a_conflict() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
@@ -3285,7 +3282,7 @@ fn keep_my_edits_hides_the_banner_and_the_save_is_then_a_conflict() {
 
 #[test]
 fn a_file_deleted_with_edits_held_is_announced_as_gone() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
@@ -3625,14 +3622,7 @@ fn the_window_for_missing_workers_says_each_and_quits() {
     }
     h.get_by_role_and_label(Role::Button, "Quit").click();
     h.step();
-    assert!(
-        h.output()
-            .viewport_output
-            .get(&eframe::egui::ViewportId::ROOT)
-            .is_some_and(|viewport| viewport
-                .commands
-                .contains(&eframe::egui::ViewportCommand::Close))
-    );
+    assert!(window_told(&h, ViewportCommand::Close));
 }
 
 #[test]
@@ -3733,7 +3723,9 @@ fn ctrl_z_while_quits_save_waits_never_drops_the_save_that_closes() {
     step(&mut h);
     hold.release();
     let _ = check.wait();
-    step_until(&mut h, "the window closing", |h| told(h, true));
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
     assert_eq!(names_in(&path), ["Block", typed.as_str(), "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -3888,7 +3880,7 @@ fn a_quit_while_a_save_runs_closes_once_it_has_saved() {
     step(&mut h);
     hold.release();
     let _ = check.wait();
-    step_until_event(&mut h, |h| told(h, true));
+    step_until_event(&mut h, |h| window_told(h, ViewportCommand::Close));
     assert_eq!(names_in(&path), ["Block", "Pinq", "Hole"]);
     assert!(h.state().tabs().is_empty());
     assert_eq!(never_waits::waits(), 0);
@@ -4059,7 +4051,9 @@ fn a_revert_after_a_quits_save_waits_behind_it_and_the_quit_closes() {
     step(&mut h);
     hold.release();
     let _ = check.wait();
-    step_until(&mut h, "the window closing", |h| told(h, true));
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
     assert!(h.state().tabs().is_empty());
     assert_eq!(names_in(&path), ["Block", typed.as_str(), "Hole"]);
     assert_eq!(never_waits::waits(), 0);
@@ -4142,7 +4136,7 @@ fn revert_to_a_name_the_field_typed_before_shows_that_name() {
 
 #[test]
 fn reload_to_a_name_the_field_typed_before_shows_that_name() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     saved_then_typed(&mut h);
     let theirs = std::fs::read_to_string(&path)
@@ -4226,7 +4220,9 @@ fn dont_save_on_a_quit_while_a_save_runs_closes_once_it_has_saved() {
     step(&mut h);
     hold.release();
     let _ = check.wait();
-    step_until(&mut h, "the window closing", |h| told(h, true));
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
     // The save asked before the quit stands.
     assert_eq!(names_in(&path), ["Block", "Pinq", "Hole"]);
     assert!(h.state().tabs().is_empty());
@@ -4238,7 +4234,7 @@ fn the_sessions_own_reload_to_a_name_the_field_typed_before_shows_that_name() {
     // Two saves, "Pinx" then "Pinxy", the field having typed both; then an agent writes
     // "Pinx" back with no transaction open: the session reloads it itself, and the field
     // shows it, not the "Pinxy" it last typed.
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
@@ -4332,7 +4328,9 @@ fn a_revert_after_dont_save_on_a_quit_still_closes_the_tab() {
     h.state_mut().tabs_mut()[0].revert(&sessions, false);
     hold.release();
     let _ = check.wait();
-    step_until(&mut h, "the window closing", |h| told(h, true));
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
     assert!(h.state().tabs().is_empty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
@@ -4342,7 +4340,7 @@ fn a_revert_after_dont_save_on_a_quit_still_closes_the_tab() {
 fn reload_is_off_while_the_tab_closes() {
     // Don't save on a close while an edit is held, then the file changes on disk: the
     // banner says so, and its Reload is off, the close dropping the edits already.
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
@@ -5127,7 +5125,7 @@ fn ctrl_y_redoes_and_redo_turns_off_once_typing_starts() {
 fn a_file_changed_on_disk_under_a_transaction_that_changed_nothing_offers_no_choice() {
     // Undone back to the file's document: a transaction open, nothing unsaved. An agent's
     // change to the file isn't announced as one "while you have unsaved edits".
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = undone_back(&f);
     std::fs::write(
         &path,
@@ -5309,7 +5307,7 @@ fn a_quit_asked_while_a_save_waits_queued_keeps_that_save_and_closes() {
     step(&mut h);
     hold.release();
     let _ = check.wait();
-    step_until_event(&mut h, |h| told(h, true));
+    step_until_event(&mut h, |h| window_told(h, ViewportCommand::Close));
     assert_eq!(names_in(&path), ["Block", typed.as_str(), "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -5684,7 +5682,7 @@ fn a_refused_save_as_that_began_its_own_transaction_rolls_it_back() {
     // No transaction open, then Save As to a file already there: the Save As began one,
     // and, asked whether to replace and told Cancel, the tab holds none, so an agent's
     // change to the file is reloaded as with no Save As tried.
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, old) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     let there = f.file("there.silico", "an older copy");
@@ -7726,7 +7724,7 @@ fn a_cancel_before_the_add_answers_waits_for_it_and_rolls_it_back() {
 
 #[test]
 fn a_cancel_with_nothing_of_the_dialogs_after_the_file_reloaded_undoes_nothing() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     double_click(&mut h, "Timeline", "Pin");
@@ -7929,7 +7927,7 @@ fn typing_while_the_add_is_unanswered_makes_one_feature_and_edits_it() {
 
 #[test]
 fn a_reload_under_edit_feature_reads_the_feature_again_and_cancel_undoes_from_there() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     double_click(&mut h, "Timeline", "Pin");
@@ -7957,7 +7955,7 @@ fn a_reload_under_edit_feature_reads_the_feature_again_and_cancel_undoes_from_th
 
 #[test]
 fn a_reload_under_a_new_sweeps_dialog_opens_it_at_the_reloaded_revision() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("sketched.silico", SKETCHED);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
     let sketched = text_of(&f, &h);
@@ -8124,7 +8122,7 @@ fn edit_features_read_comes_after_the_edits_asked_before_it() {
 
 #[test]
 fn cancel_of_a_dialog_that_began_the_transaction_leaves_none_open_so_outside_writes_reload() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     open_pad_on_triangle(&mut h);
@@ -9963,7 +9961,7 @@ fn esc_is_no_on_the_replace_close_and_quit_questions() {
     });
     for _ in 0..5 {
         step(&mut h);
-        assert!(!told(&h, true));
+        assert!(!window_told(&h, ViewportCommand::Close));
     }
     assert_eq!(h.state().tabs().len(), 1);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
@@ -13404,93 +13402,13 @@ fn a_left_press_in_the_navigation_bars_padding_or_during_a_middle_pan_is_not_han
 // ---- Native file dialogs: Open's panel, and Browse… beside each path field ----
 //
 // The platform's own dialog (rfd's, `browse::Native`) needs a window server and a person, so
-// it can't run headless: these drive a stand-in through the same `Browse` trait, which
-// records what each dialog was asked and answers when the test says, from a thread of its
-// own, as the platform's completion does; or, told to, opens none, as when the platform's
-// won't. Open goes straight to the panel; its typed-path question, which has a Browse… of
-// its own, is the fallback for a panel that won't open.
+// it can't run headless: these drive a stand-in through the same `Browse` trait (ui.rs's
+// `FakeBrowser`), which records what each dialog was asked and answers when the test says,
+// from a thread of its own, as the platform's completion does; or, told to, opens none, as
+// when the platform's won't. Open goes straight to the panel; its typed-path question,
+// which has a Browse… of its own, is the fallback for a panel that won't open.
 
-use silico_app::browse::{self as browse_mod, Ask, Browse, Pick};
-
-/// The stand-in's state: what each dialog was asked, the answer the test gave (`None` until
-/// it does), the waker of the last poll, how many polls there were, and whether a dialog
-/// asked for opens none.
-#[derive(Default)]
-struct Dialogs {
-    asked: Vec<Ask>,
-    answer: Option<Option<PathBuf>>,
-    waker: Option<std::task::Waker>,
-    polls: u64,
-    refusing: bool,
-}
-
-#[derive(Clone, Default)]
-struct FakeBrowser(Arc<Mutex<Dialogs>>);
-
-impl Browse for FakeBrowser {
-    fn browse(&mut self, ask: &Ask) -> Option<browse_mod::Answer> {
-        let mut dialogs = self.0.lock().unwrap();
-        dialogs.asked.push(ask.clone());
-        if dialogs.refusing {
-            return None;
-        }
-        dialogs.answer = None;
-        Some(Box::pin(FakeAnswer(Arc::clone(&self.0))))
-    }
-}
-
-struct FakeAnswer(Arc<Mutex<Dialogs>>);
-
-impl std::future::Future for FakeAnswer {
-    type Output = Option<PathBuf>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<PathBuf>> {
-        let mut dialogs = self.0.lock().unwrap();
-        dialogs.polls += 1;
-        match dialogs.answer.take() {
-            Some(answer) => std::task::Poll::Ready(answer),
-            None => {
-                dialogs.waker = Some(cx.waker().clone());
-                std::task::Poll::Pending
-            }
-        }
-    }
-}
-
-impl FakeBrowser {
-    /// The dialog open answers `answer` (`None`: cancelled), its waker woken on a thread of
-    /// its own.
-    fn answer(&self, answer: Option<&Path>) {
-        let waker = {
-            let mut dialogs = self.0.lock().unwrap();
-            dialogs.answer = Some(answer.map(Path::to_path_buf));
-            dialogs.waker.take()
-        };
-        std::thread::spawn(move || {
-            if let Some(waker) = waker {
-                waker.wake();
-            }
-        })
-        .join()
-        .unwrap();
-    }
-
-    fn asked(&self) -> Vec<Ask> {
-        self.0.lock().unwrap().asked.clone()
-    }
-
-    /// Each dialog asked for from now on opens none (`refusing`), or opens.
-    fn refusing(&self, refusing: bool) {
-        self.0.lock().unwrap().refusing = refusing;
-    }
-
-    fn polls(&self) -> u64 {
-        self.0.lock().unwrap().polls
-    }
-}
+use silico_app::browse::{self as browse_mod, Ask, Pick};
 
 impl Fixture {
     /// The app on these sessions with `browser` opening its file dialogs, nothing open.
@@ -18868,7 +18786,7 @@ fn rebuilt_at(h: &AppHarness, revision: u64) -> bool {
 
 #[test]
 fn with_nothing_selected_the_property_panel_shows_the_documents_properties() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     step_until(&mut h, "its file compared", |h| {
@@ -19060,7 +18978,7 @@ fn the_status_bar_says_a_rebuild_with_errors_and_an_edit_unsaved() {
 
 #[test]
 fn the_changed_on_disk_chip_offers_again_the_choice_the_edits_were_kept_over() {
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     assert!(
@@ -27971,7 +27889,10 @@ fn closing_an_edited_untitled_part_asks_and_dont_save_leaves_nothing_and_a_cance
     new_part(&mut h);
     add_sketch(&mut h, "Untitled 2");
     close_window(&mut h);
-    assert!(told(&h, false), "a close with edits held wasn't cancelled");
+    assert!(
+        window_told(&h, ViewportCommand::CancelClose),
+        "a close with edits held wasn't cancelled"
+    );
     step_until(&mut h, "the quit question", |h| {
         h.query_by_label_contains("Save changes before quitting?")
             .is_some()
@@ -27985,7 +27906,10 @@ fn closing_an_edited_untitled_part_asks_and_dont_save_leaves_nothing_and_a_cance
     });
     for _ in 0..20 {
         step(&mut h);
-        assert!(!told(&h, true), "the window closed with Untitled 2's edits");
+        assert!(
+            !window_told(&h, ViewportCommand::Close),
+            "the window closed with Untitled 2's edits"
+        );
     }
     let tab = &h.state().tabs()[0];
     assert_eq!(h.state().tabs().len(), 1);
@@ -28006,7 +27930,10 @@ fn quitting_with_two_edited_untitled_parts_saves_each_through_its_panel_in_turn(
     new_part(&mut h);
     add_sketch(&mut h, "Untitled 2");
     close_window(&mut h);
-    assert!(told(&h, false), "a close with edits held wasn't cancelled");
+    assert!(
+        window_told(&h, ViewportCommand::CancelClose),
+        "a close with edits held wasn't cancelled"
+    );
     step_until(&mut h, "the quit question", |h| {
         anywhere(h, "Save changes before quitting?")
             && h.query_by_label_contains("Unsaved: Untitled, Untitled 2. Quitting")
@@ -28030,7 +27957,9 @@ fn quitting_with_two_edited_untitled_parts_saves_each_through_its_panel_in_turn(
     );
     let two = f.dir.path().join("two.silico");
     browser.answer(Some(&two));
-    step_until(&mut h, "the window closing", |h| told(h, true));
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
     assert!(h.state().tabs().is_empty());
     for path in [&one, &two] {
         assert_eq!(names_in(path), ["Sketch1"], "{}", path.display());
@@ -28067,7 +27996,7 @@ fn quitting_with_three_untitled_parts_stops_at_the_one_whose_panel_is_cancelled(
     // The third's panel never asked: the quit stopped before it.
     for _ in 0..20 {
         step(&mut h);
-        assert!(!told(&h, true));
+        assert!(!window_told(&h, ViewportCommand::Close));
     }
     assert_eq!(browser.asked().len(), 2);
     let names: Vec<&str> = h.state().tabs().iter().map(|tab| tab.name()).collect();
@@ -28323,7 +28252,9 @@ fn quits_save_all_with_a_parts_own_save_panel_open_saves_it_once_through_that_pa
     assert_eq!(browser.asked().len(), 1);
     let part = f.dir.path().join("part.silico");
     browser.answer(Some(&part));
-    step_until(&mut h, "the window closing", |h| told(h, true));
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
     assert!(h.state().tabs().is_empty());
     assert_eq!(browser.asked().len(), 1);
     assert_eq!(names_in(&part), ["Sketch1"]);
@@ -28367,10 +28298,12 @@ fn quits_save_all_while_a_parts_save_as_runs_waits_for_it_and_asks_no_panel() {
         step(&mut h);
     }
     assert_eq!(browser.asked().len(), 1);
-    assert!(!told(&h, true));
+    assert!(!window_told(&h, ViewportCommand::Close));
     hold.release();
     let _ = check.wait();
-    step_until(&mut h, "the window closing", |h| told(h, true));
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
     assert!(h.state().tabs().is_empty());
     assert_eq!(browser.asked().len(), 1);
     assert_eq!(names_in(&part), ["Sketch1", "Pad"]);
@@ -28418,7 +28351,7 @@ fn a_stopped_quit_leaves_a_save_panel_it_marked_to_save_without_closing() {
     });
     for _ in 0..20 {
         step(&mut h);
-        assert!(!told(&h, true));
+        assert!(!window_told(&h, ViewportCommand::Close));
     }
     assert_eq!(h.state().tabs().len(), 2);
     assert!(h.state().tabs().iter().all(|tab| !tab.closing()));
@@ -28469,7 +28402,7 @@ fn with_no_native_dialogs_close_and_quit_save_an_untitled_part_through_the_typed
     });
     for _ in 0..20 {
         step(&mut h);
-        assert!(!told(&h, true));
+        assert!(!window_told(&h, ViewportCommand::Close));
     }
     assert!(h.state().tabs()[0].unsaved());
     // Quit again, Save all, a path to a file there, and Replace: saved over it and closed,
@@ -28489,7 +28422,9 @@ fn with_no_native_dialogs_close_and_quit_save_an_untitled_part_through_the_typed
     let asked = format!("{} already exists. Replace it?", there.to_str().unwrap());
     step_until(&mut h, "the Replace question", |h| anywhere(h, &asked));
     answer_question(&mut h, "Replace");
-    step_until(&mut h, "the window closing", |h| told(h, true));
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
     assert!(h.state().tabs().is_empty());
     assert_eq!(names_in(&there), ["Sketch1"]);
     assert_eq!(never_waits::waits(), 0);
@@ -28754,7 +28689,10 @@ fn a_quits_save_all_with_a_parts_panel_open_then_cancelled_stops_the_quit_asking
     });
     for _ in 0..20 {
         step(&mut h);
-        assert!(!told(&h, true), "the window closed with Untitled's edits");
+        assert!(
+            !window_told(&h, ViewportCommand::Close),
+            "the window closed with Untitled's edits"
+        );
     }
     assert_eq!(browser.asked().len(), 1);
     let tab = &h.state().tabs()[0];
@@ -28809,7 +28747,9 @@ fn a_quit_passes_over_an_untitled_part_closed_without_saving_while_anothers_pane
     assert!(h.state().tabs()[0].closing());
     hold.release();
     let _ = check.wait();
-    step_until(&mut h, "the window closing", |h| told(h, true));
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
     assert!(h.state().tabs().is_empty());
     assert_eq!(browser.asked().len(), 1);
     assert_eq!(names_in(&one), ["Sketch1"]);
@@ -40065,7 +40005,7 @@ fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reloa
 fn command_r_on_a_file_gone_from_disk_says_so_and_drops_none_of_the_edits() {
     // Main's ruling of 2026-11-09: with the file gone, the open document is the only copy
     // of the work, so Reload never drops it, and asks nothing.
-    let f = fixture_reading(Some(Arc::new(real)));
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
@@ -41327,7 +41267,7 @@ fn a_reload_that_builds_from_a_shown_sketch_hides_it_and_drops_its_override() {
     );
     assert_ne!(padded, ABSORBED_AND_LOOSE);
     for clicked in [false, true] {
-        let f = fixture_reading(Some(Arc::new(real)));
+        let f = fixture_reading(Some(Arc::new(plain_read)));
         let (mut h, path) = absorbed(&f, ABSORBED_AND_LOOSE);
         if clicked {
             click_eye(&mut h, "Hide", "Loose");

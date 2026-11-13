@@ -29,8 +29,8 @@ use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
 use silico_core::sketch::SketchSolver;
 use tempfile::TempDir;
 use ui::{
-    in_status_bar, real, redo_by_key, settled, step, step_until, tooltip, tooltip_title, type_name,
-    undo_by_key,
+    in_status_bar, plain_read, redo_by_key, settled, step, step_until, tooltip, tooltip_title,
+    type_name, undo_by_key,
 };
 
 /// The M2.1 example: a block, a pin, and the hole the pin cuts in it.
@@ -81,7 +81,7 @@ fn fixture() -> Fixture {
         move |cache| Cache::with_secret(cache, &secret),
         move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
     )
-    .watching_disk(Duration::ZERO, Arc::new(real), now)
+    .watching_disk(Duration::ZERO, Arc::new(plain_read), now)
     .unwrap();
     Fixture {
         dir,
