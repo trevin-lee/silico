@@ -36,15 +36,16 @@ use silico_core::sketch::SketchSolver;
 use silico_core::{Error, ErrorCode};
 use tempfile::TempDir;
 use ui::{
-    FAKE_WAIT as WAIT, FakeBrowser, In, added, advance, answer_question, anywhere, begin_sketch_on,
-    boxed, button_event, choose, chosen, click_at, click_canvas, close_window, create,
-    create_sketch, dialog, dialog_open, drag, everything, f2_typed, field, hand_clock,
-    in_status_bar, lavapipe_render_state, leave_sketch, leave_sketch_unsettled, meshes_settled,
-    modify, modify_field, name_field, new_part, ok_enabled, on_lavapipe, open_export, plain_read,
-    pointer_away, press, prompt, redo_by_key, rename_field, repaint_delay, retype, save_as_of,
-    select, selected_names, settled, sketch_mode, sketch_read, step, step_until, tab_named,
-    tessellated, the_viewport, tooltip_title, type_name, undo_by_key, view, view_mut, wheel,
-    window_told,
+    AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, FakeBrowser, In, TRIAD_DOT, added, advance,
+    answer_question, anywhere, begin_sketch_on, boxed, button_event, choose, chosen, click_at,
+    click_canvas, close_window, create, create_sketch, dialog, dialog_open, drag, everything,
+    f2_typed, field, hand_clock, in_status_bar, lavapipe_render_state, leave_sketch,
+    leave_sketch_unsettled, looks_from, meshes_settled, modify, modify_field, name_field, new_part,
+    ok_enabled, on_lavapipe, open_export, plain_read, pointer_away, press, prompt, redo_by_key,
+    rename_field, repaint_delay, retype, save_as_of, select, selected_names, settled, sketch_mode,
+    sketch_read, step, step_until, tab_named, tessellated, the_viewport, tooltip_title,
+    triad_origin, type_name, undo_by_key, view, view_direction, view_label, view_label_node,
+    view_mut, wheel, window_told,
 };
 
 /// The M2.1 document's example (docs/design/m2.1-document-format.md): a block, a pin, and
@@ -2055,6 +2056,13 @@ fn restore_refused_by_a_reload_before_its_begin(read: StatusRead) {
         .as_ref()
         .map(|reloaded| (reloaded.from.number(), reloaded.to.number()));
     assert_eq!(banner, Some((2, 3)), "{at}");
+    // Announced once, by the begin's answer: the put-back's refusal, behind it, never again,
+    // which would list the reload as one its own banner replaced.
+    let unlisted = h.state().tabs()[0]
+        .reloaded
+        .as_ref()
+        .map(|reloaded| reloaded.unlisted.clone());
+    assert_eq!(unlisted, Some(Vec::new()), "{at}");
     // The reload announced in the first's place, with what it changed.
     step_until(&mut h, "the second reload listed", |h| seen(h, "11 → 12"));
     assert!(anywhere(&h, &reloaded_sub(2, 3)), "{at}");
@@ -2329,9 +2337,14 @@ fn restore_is_off_and_says_why_once_the_reloads_diff_finds_its_revision_gone() {
     step_until(&mut h, "the first reload announced", |h| {
         anywhere(h, &reloaded_sub(1, 2))
     });
-    // The Block's dialog opened, its read of the feature waiting behind the hold too: the
-    // read ahead reloads the file, so the diff from 1 is refused, while the tab's read is
-    // under way, so no newer banner takes this one's place.
+    // Behind the diff, a second check, its rebuild of the block 12 high held; behind it,
+    // the Block's dialog's read of the feature. The read ahead reloads the file, so the
+    // diff from 1 is refused, while the tab's read waits, so nothing has said the reload
+    // yet and no newer banner takes this one's place.
+    let twelve = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dz, .. }) if *dz == 12.0));
+    let second = f.sessions.check(&id, CheckModel::Current { fresh: true });
     double_click(&mut h, "Timeline", "Block");
     hold.release();
     let _ = check.wait();
@@ -2340,15 +2353,8 @@ fn restore_is_off_and_says_why_once_the_reloads_diff_finds_its_revision_gone() {
         "session {id} doesn't hold the text of revision 1: it holds revisions 2 and 3 \
          (candidates: 2, 3)"
     );
-    step_until(&mut h, "the diff's refusal said, the dialog open", |h| {
-        anywhere(h, &refused) && dialog_open(h)
-    });
-    // The dialog cancelled, having changed nothing: the banner still the first reload's.
-    settled(&mut h);
-    h.key_press(eframe::egui::Key::Escape);
-    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
-    settled(&mut h);
-    assert!(!h.state().tabs()[0].transaction);
+    step_until(&mut h, "the diff's refusal said", |h| anywhere(h, &refused));
+    assert!(!dialog_open(&h));
     assert!(anywhere(&h, &reloaded_sub(1, 2)));
     // Restore of revision 1 could only be refused: off, saying why.
     let restore = h.get_by_role_and_label(Role::Button, "Restore revision 1");
@@ -2357,6 +2363,26 @@ fn restore_is_off_and_says_why_once_the_reloads_diff_finds_its_revision_gone() {
     let why = "Silico no longer holds revision 1: the file changed again before what \
                changed was read, so it can't be put back";
     step_until(&mut h, "its tooltip", |h| anywhere(h, why));
+    // The read let go: it answers at the reload ahead of it, 3, said in the first one's
+    // place, the first said as never listed.
+    twelve.release();
+    let _ = second.wait();
+    step_until(
+        &mut h,
+        "the second reload announced, the dialog open",
+        |h| anywhere(h, &reloaded_sub(2, 3)) && dialog_open(h),
+    );
+    assert!(anywhere(
+        &h,
+        "An earlier change, revision 1 → 2, couldn't be listed: the file changed again \
+         before it was read, so its features aren't marked."
+    ));
+    // The dialog cancelled, having changed nothing: no transaction left.
+    settled(&mut h);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].transaction);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -2650,6 +2676,9 @@ fn frames_climb_and_the_panels_answer_while_a_rebuild_and_its_timeline_read_are_
 struct HeldReader {
     held: Mutex<bool>,
     opened: Condvar,
+    /// Whether a read waits on the hold: set by the read as it waits, and cleared as reads
+    /// are held, each under `held`'s lock, so a read that comes to the hold between the two
+    /// is never missed.
     reading: AtomicBool,
 }
 
@@ -2657,14 +2686,21 @@ impl HeldReader {
     fn reader(self: &Arc<Self>) -> Reader {
         let me = Arc::clone(self);
         Arc::new(move |path: &Path| {
-            me.reading.store(true, Ordering::SeqCst);
             let mut held = me.held.lock().unwrap();
             while *held {
+                me.reading.store(true, Ordering::SeqCst);
                 held = me.opened.wait(held).unwrap();
             }
             drop(held);
             plain_read(path)
         })
+    }
+
+    /// Reads held from now, none yet waiting on the hold.
+    fn hold_reads(&self) {
+        let mut held = self.held.lock().unwrap();
+        *held = true;
+        self.reading.store(false, Ordering::SeqCst);
     }
 }
 
@@ -2674,8 +2710,7 @@ fn frames_climb_and_status_answers_while_a_disk_comparison_is_held() {
     let f = fixture_reading(Some(reader.reader()));
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    *reader.held.lock().unwrap() = true;
-    reader.reading.store(false, Ordering::SeqCst);
+    reader.hold_reads();
     step_until(&mut h, "a comparison held", |_| {
         reader.reading.load(Ordering::SeqCst)
     });
@@ -2704,8 +2739,7 @@ impl HeldReader {
     /// and the session's finding stands, until [`open`](Self::open). A few frames more, so
     /// the comparison before it, which ended as it began, has told what it found.
     fn hold(&self, h: &mut AppHarness) {
-        *self.held.lock().unwrap() = true;
-        self.reading.store(false, Ordering::SeqCst);
+        self.hold_reads();
         step_until(h, "a comparison held", |_| {
             self.reading.load(Ordering::SeqCst)
         });
@@ -6933,8 +6967,13 @@ fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() 
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let hold = f.kernel.hold(is_prism);
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "the preview rebuilding", |h| {
+    // Rebuilding is all `status` says: held at its prism, the first asked, the rebuild has
+    // got there. One the edit stopped before then would ask no prism, and the edit's would
+    // be the first.
+    step_until(&mut h, "the preview rebuilding, held at its prism", |h| {
         h.state().tabs()[0].preview_rebuilding()
+            && prisms_asked(&f) == 1
+            && f.kernel.wait_running(1, Duration::ZERO)
     });
     // The rebuild still held: the edit lands all the same, the old preview's read stopped.
     type_into(&mut h, "Length", "3");
@@ -10897,23 +10936,6 @@ fn the_navigation_bars_tools_orbit_pan_and_zoom_a_left_drag_and_fit_fits() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// A unit vector's parts within 1e-9 of `expected`, as `camera` looks from its target.
-#[track_caller]
-fn looks_from(camera: &silico_protocol::Camera, expected: [f64; 3]) {
-    let way = [
-        camera.eye[0] - camera.target[0],
-        camera.eye[1] - camera.target[1],
-        camera.eye[2] - camera.target[2],
-    ];
-    let length = (way[0] * way[0] + way[1] * way[1] + way[2] * way[2]).sqrt();
-    for k in 0..3 {
-        assert!(
-            (way[k] / length - expected[k]).abs() < 1e-9,
-            "{camera:?} against {expected:?}"
-        );
-    }
-}
-
 #[test]
 fn the_view_cubes_corner_home_drag_and_projection_menu() {
     let f = fixture();
@@ -10930,7 +10952,7 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
     cube(&h, "Top front left");
     step(&mut h);
     let corner = view(&h).camera().clone();
-    looks_from(&corner, [-third, -third, third]);
+    assert!(looks_from(&corner, [-third, -third, third]), "{corner:?}");
     assert_eq!(corner.target, [20.0, 10.0, 5.0]);
     let six = 6f64.sqrt();
     for (k, expected) in [1.0 / six, 1.0 / six, 2.0 / six].into_iter().enumerate() {
@@ -10942,7 +10964,7 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
         .click();
     step(&mut h);
     let home = view(&h).camera().clone();
-    looks_from(&home, [third, -third, third]);
+    assert!(looks_from(&home, [third, -third, third]), "{home:?}");
     // A left drag of the cube, 60 points right in one move: a turn of 30° about z, so the
     // way (1, −1, 1)/√3 turns to (cos 30° − sin 30°, −sin 30° − cos 30°, 1)/√3.
     let centre = silico_app::viewport::view_cube_rect(the_viewport(&h)).center();
@@ -10955,9 +10977,11 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
         1,
     );
     let (sin, cos) = (0.5, 3f64.sqrt() / 2.0);
-    looks_from(
-        view(&h).camera(),
-        [(cos - sin) * third, (-sin - cos) * third, third],
+    let way = [(cos - sin) * third, (-sin - cos) * third, third];
+    assert!(
+        looks_from(view(&h).camera(), way),
+        "{:?}",
+        view(&h).camera()
     );
     // Its menu: Perspective, at 30°, the eye as far back as shows Home's height at the
     // target; Home then keeps the perspective.
@@ -10991,7 +11015,11 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
         view(&h).camera().projection,
         silico_protocol::Projection::Perspective { .. }
     ));
-    looks_from(view(&h).camera(), [0.0, -1.0, 0.0]);
+    assert!(
+        looks_from(view(&h).camera(), [0.0, -1.0, 0.0]),
+        "{:?}",
+        view(&h).camera()
+    );
     // Orthographic again.
     h.get_by_label("Orbit the view").click_secondary();
     step(&mut h);
@@ -11059,10 +11087,6 @@ const CUBE_TOP: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x36, 0x
 const CUBE_BOTTOM: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x21, 0x21, 0x21);
 const CUBE_BORDER: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x52, 0x51, 0x51);
 const CUBE_EDGE: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x82, 0x7f, 0x7f);
-/// The axis stubs' colours (viewport.js's `buildCube`, `ax`: `#ff6981`, `#00b266`, `#7a95ff`).
-const CUBE_AXIS_X: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0xff, 0x69, 0x81);
-const CUBE_AXIS_Y: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x00, 0xb2, 0x66);
-const CUBE_AXIS_Z: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x7a, 0x95, 0xff);
 
 /// `got` holds the points `corners`, in any order, each within 1e-3.
 #[track_caller]
@@ -11258,9 +11282,9 @@ fn the_view_cubes_faces_edges_corners_and_buttons_are_where_the_home_view_sees_t
     let place = |[x, y, z]: [f32; 3]| at((x + y) / r2, -(-x + y + 2.0 * z) / r6);
     let from = [-1.02, -1.02, -1.02];
     let expected_stubs = [
-        (CUBE_AXIS_X, place(from), place([0.38, -1.02, -1.02])),
-        (CUBE_AXIS_Y, place(from), place([-1.02, -0.98, -1.02])),
-        (CUBE_AXIS_Z, place(from), place([-1.02, -1.02, 0.38])),
+        (AXIS_X, place(from), place([0.38, -1.02, -1.02])),
+        (AXIS_Y, place(from), place([-1.02, -0.98, -1.02])),
+        (AXIS_Z, place(from), place([-1.02, -1.02, 0.38])),
     ];
     assert_eq!(stubs.len(), expected_stubs.len(), "{stubs:?}");
     for (([p, q], stroke), (colour, a, b)) in stubs.iter().zip(expected_stubs) {
@@ -12139,7 +12163,7 @@ fn a_model_whose_body_cant_be_measured_opens_at_the_cube_home_and_still_reads() 
     let camera = view(&h).camera().clone();
     assert_eq!(camera.target, [0.0; 3]);
     let third = 1.0 / 3f64.sqrt();
-    looks_from(&camera, [third, -third, third]);
+    assert!(looks_from(&camera, [third, -third, third]), "{camera:?}");
     assert_eq!(view(&h).bodies()[&1].bounds, None);
     assert_eq!(uploads(&record), [1]);
     assert_eq!(never_waits::waits(), 0);
@@ -19540,12 +19564,6 @@ fn under_the_sheet_no_shortcut_acts() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// The unit vector of `v`.
-fn unit(v: [f64; 3]) -> [f64; 3] {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    [v[0] / n, v[1] / n, v[2] / n]
-}
-
 /// The view moved off where `camera` looks, as a pan does: its eye and target 7 along x.
 fn panned(h: &mut AppHarness) {
     let mut camera = view(h).camera().clone();
@@ -19576,7 +19594,7 @@ fn ctrl_1_to_7_are_solidworks_standard_views_and_each_is_the_view_cubes() {
         h.key_press_modifiers(Modifiers::COMMAND, digit);
         step(&mut h);
         let keyed = view(&h).camera().clone();
-        near(unit(minus(keyed.eye, keyed.target)), toward, 1e-12);
+        near(view_direction(&keyed), toward, 1e-12);
         // The cut's box's centre, as every named view fits it.
         near(keyed.target, [20.0, 10.0, 5.0], 1e-12);
         // Moved off, then the ViewCube's own: the same camera.
@@ -19605,11 +19623,7 @@ fn f6_is_the_navigation_bars_fit_and_home_the_view_cubes_home() {
     let keyed = view(&h).camera().clone();
     assert_ne!(keyed, moved);
     // Fit looks as it looked: from the front still, onto the box's centre.
-    near(
-        unit(minus(keyed.eye, keyed.target)),
-        [0.0, -1.0, 0.0],
-        1e-12,
-    );
+    near(view_direction(&keyed), [0.0, -1.0, 0.0], 1e-12);
     near(keyed.target, [20.0, 10.0, 5.0], 1e-12);
     view_mut(&mut h).set_camera(moved);
     step(&mut h);
@@ -19623,7 +19637,7 @@ fn f6_is_the_navigation_bars_fit_and_home_the_view_cubes_home() {
     step(&mut h);
     let home = view(&h).camera().clone();
     let d = 1.0 / 3f64.sqrt();
-    near(unit(minus(home.eye, home.target)), [d, -d, d], 1e-12);
+    near(view_direction(&home), [d, -d, d], 1e-12);
     panned(&mut h);
     h.get_by_role_and_label(Role::Group, "ViewCube")
         .get_by_label("Home view")
@@ -20894,7 +20908,8 @@ fn select_member(h: &mut AppHarness, member: &str, kind: silico_core::document::
         .sketch
         .as_mut()
         .unwrap()
-        .click(Some(hit), false);
+        .selection
+        .click(Some(hit.into()), false);
 }
 
 fn sketch_id(text: &str) -> silico_core::document::FeatureId {
@@ -25213,6 +25228,93 @@ fn cancel_after_a_released_drag_whose_end_is_held_undoes_it_with_no_conflict() {
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(text_of(&f, &h), text);
     assert!(h.state().tabs()[0].transaction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`clicked`], with Ctrl held.
+fn ctrl_clicked(x: f64, y: f64) -> Vec<silico_app::sketch::PointerEvent> {
+    clicked(x, y)
+        .into_iter()
+        .map(|event| silico_app::sketch::PointerEvent {
+            ctrl: true,
+            ..event
+        })
+        .collect()
+}
+
+/// Sketch mode's selection as the constraint tools take it, in pick order.
+fn sketch_picks(h: &AppHarness) -> Vec<silico_core::document::Reference> {
+    sketch_mode(h).map_or_else(Vec::new, |mode| mode.selection.references())
+}
+
+#[test]
+fn sketch_modes_selection_keeps_pick_order_takes_the_origin_and_the_axes_and_delete_ignores_them() {
+    use silico_core::document::Reference;
+    let element = |id: &str| Reference::Element(silico_core::document::ElementId::new(id).unwrap());
+    let f = fixture();
+    let mut h = boxed_sketch(&f);
+    // The box, (10, 10) to (50, 30): its sides na000001 (bottom), na000002 (right), na000003
+    // (top), and na000004 (left); the pick 7 points, 0.7 mm here. A click at the origin, 14
+    // from the box's nearest corner: the origin.
+    sketch_events(&f, &mut h, &clicked(0.0, 0.0));
+    assert_eq!(sketch_picks(&h), [Reference::Origin]);
+    // Ctrl on the top at (30, 30); on the x axis at (80, 0.3), 80 along it and 30 past the
+    // box; and on the left side at (10, 20): each after the last, not in ID order.
+    for (x, y) in [(30.0, 30.0), (80.0, 0.3), (10.0, 20.0)] {
+        sketch_events(&f, &mut h, &ctrl_clicked(x, y));
+    }
+    assert_eq!(
+        sketch_picks(&h),
+        [
+            Reference::Origin,
+            element("na000003"),
+            Reference::XAxis,
+            element("na000004")
+        ]
+    );
+    // The top Ctrl-clicked off, then on again: at the end.
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    assert_eq!(
+        sketch_picks(&h),
+        [
+            Reference::Origin,
+            Reference::XAxis,
+            element("na000004"),
+            element("na000003")
+        ]
+    );
+    // Esc clears it, the origin and the axis with the rest.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(sketch_picks(&h).is_empty());
+    // The y axis far below the origin, at (0.3, −60); then a plain click on the bottom, at
+    // (30, 10), replaces it; then a click on nothing, mid-box at (30, 20), clears it.
+    sketch_events(&f, &mut h, &clicked(0.3, -60.0));
+    assert_eq!(sketch_picks(&h), [Reference::YAxis]);
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    assert_eq!(sketch_picks(&h), [element("na000001")]);
+    sketch_events(&f, &mut h, &clicked(30.0, 20.0));
+    assert!(sketch_picks(&h).is_empty());
+    // The origin and the top, then Delete: the top alone is removed. (The gate refuses a
+    // `sketch_remove` naming the origin, so had it been sent, nothing would go.)
+    sketch_events(&f, &mut h, &clicked(0.0, 0.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    assert_eq!(sketch_picks(&h), [Reference::Origin, element("na000003")]);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    let removes = h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter(|sent| **sent == Sent::SketchEdit("sketch_remove"))
+        .count();
+    assert_eq!(removes, 1);
+    let text = text_of(&f, &h);
+    assert!(!text.contains("na000003"), "{text}");
+    for kept in ["na000001", "na000002", "na000004"] {
+        assert!(text.contains(kept), "{kept}: {text}");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -38526,10 +38628,9 @@ fn over_a_planar_face_the_context_menus_look_at_turns_the_view_square_to_it_as_c
             .click();
         step_until(&mut h, "turned", |h| view(h).camera() != &before);
         let camera = view(&h).camera().clone();
-        let back: [f64; 3] = std::array::from_fn(|k| camera.eye[k] - camera.target[k]);
-        let length = (back[0] * back[0] + back[1] * back[1] + back[2] * back[2]).sqrt();
+        let back = view_direction(&camera);
         for (k, want) in [0.6, 0.0, 0.8].into_iter().enumerate() {
-            assert!((back[k] / length - want).abs() < 1e-12, "{camera:?}");
+            assert!((back[k] - want).abs() < 1e-12, "{camera:?}");
             assert!(
                 (camera.up[k] - [-0.8, 0.0, 0.6][k]).abs() < 1e-12,
                 "{camera:?}"
@@ -40054,12 +40155,16 @@ fn command_r(h: &mut AppHarness) {
 
 #[test]
 fn command_r_reads_a_file_changed_on_disk_that_no_watch_has_found_and_rebuilds_every_feature() {
-    // No disk watch: only a command reads the file, so Reload's own read finds the change.
-    let f = fixture();
+    // The disk watch's comparisons held before the file changes, so no comparison finds it
+    // (one would reload it, with nothing held): only a command reads the file, and Reload's
+    // own read finds the change.
+    let reader = Arc::new(HeldReader::default());
+    let f = fixture_reading(Some(reader.reader()));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
     settled(&mut h);
     assert_eq!(boxes_asked(&f), 1);
+    reader.hold(&mut h);
     let theirs = example_theirs();
     std::fs::write(&path, &theirs).unwrap();
     for _ in 0..10 {
@@ -40096,6 +40201,7 @@ fn command_r_reads_a_file_changed_on_disk_that_no_watch_has_found_and_rebuilds_e
         boxes_asked(&f) == 4 && !h.state().tabs()[0].checking()
     });
     assert_eq!(h.state().tabs()[0].rebuilds_all, 3);
+    reader.open();
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -40103,11 +40209,15 @@ fn command_r_reads_a_file_changed_on_disk_that_no_watch_has_found_and_rebuilds_e
 fn ctrl_r_reloads_on_windows_and_linux() {
     use eframe::egui::os::OperatingSystem;
     for os in [OperatingSystem::Windows, OperatingSystem::Nix] {
-        let f = fixture();
+        // The disk watch's comparisons held before the file changes: only Reload's read
+        // finds it.
+        let reader = Arc::new(HeldReader::default());
+        let f = fixture_reading(Some(reader.reader()));
         let (mut h, path) = f.opened("example.silico", EXAMPLE);
         h.ctx.set_os(os);
         step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
         settled(&mut h);
+        reader.hold(&mut h);
         std::fs::write(&path, example_theirs()).unwrap();
         // ⌘ isn't Ctrl there: the Mac's Command alone does nothing.
         h.key_press_modifiers(eframe::egui::Modifiers::MAC_CMD, eframe::egui::Key::R);
@@ -40121,13 +40231,18 @@ fn ctrl_r_reloads_on_windows_and_linux() {
             shows(h, "Timeline", "Drill") && !h.state().tabs()[0].checking()
         });
         assert_eq!(h.state().tabs()[0].rebuilds_all, 1, "{os:?}");
+        reader.open();
         assert_eq!(never_waits::waits(), 0);
     }
 }
 
 #[test]
 fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reload_drops_them() {
-    let f = fixture();
+    // Only Reload's own read finds the file changed: the disk watch's comparisons are held
+    // before it changes, so no banner announces it. Announced, its banner's "Reload, discard
+    // my edits" would stand beside the question's, as soon as a comparison came.
+    let reader = Arc::new(HeldReader::default());
+    let f = fixture_reading(Some(reader.reader()));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
@@ -40136,6 +40251,7 @@ fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reloa
         let tab = &h.state().tabs()[0];
         tab.transaction && tab.edits.idle() && shows(h, "Timeline", "Pins")
     });
+    reader.hold(&mut h);
     let theirs = example_theirs();
     std::fs::write(&path, &theirs).unwrap();
     // Inside the transaction, `text` reads the session's document, never the file.
@@ -40176,6 +40292,7 @@ fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reloa
     settled(&mut h);
     assert!(h.state().tabs()[0].reloaded.is_none());
     assert_eq!(text_of(&f, &h), theirs);
+    reader.open();
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -41778,9 +41895,7 @@ fn a_shown_sketch_its_plane_doesnt_place_draws_no_lines() {
 /// `up` up the image, each to 1e-9.
 fn looks(h: &AppHarness, toward: [f64; 3], up: [f64; 3]) -> bool {
     let camera = view(h).camera();
-    let d: [f64; 3] = std::array::from_fn(|k| camera.eye[k] - camera.target[k]);
-    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    (0..3).all(|k| (d[k] / n - toward[k]).abs() < 1e-9 && (camera.up[k] - up[k]).abs() < 1e-9)
+    looks_from(camera, toward) && (0..3).all(|k| (camera.up[k] - up[k]).abs() < 1e-9)
 }
 
 /// Where the open sketch's place `at` is drawn, as sketch mode draws it (its `Screen`).
@@ -42944,16 +43059,7 @@ fn a_click_on_a_view_cube_edge_looks_from_between_its_two_faces() {
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     let r = std::f64::consts::FRAC_1_SQRT_2;
-    // Two frames a click: the one that takes it (the cube laid out for the view before it),
-    // and one laid out for the view it gives, so the next click finds its part there.
-    let cube = |h: &mut AppHarness, label: &str| {
-        h.get_by_role_and_label(Role::Group, "ViewCube")
-            .get_by_label(label)
-            .click();
-        step(h);
-        step(h);
-    };
-    cube(&mut h, "Top front");
+    cube_clicked(&mut h, "Top front");
     assert!(
         looks(&h, [0.0, -r, r], [0.0, r, r]),
         "{:?}",
@@ -42967,7 +43073,7 @@ fn a_click_on_a_view_cube_edge_looks_from_between_its_two_faces() {
         (ortho_height(&camera) - want).abs() < 1e-9,
         "{camera:?}, not {want} high"
     );
-    cube(&mut h, "Front right");
+    cube_clicked(&mut h, "Front right");
     assert!(
         looks(&h, [r, -r, 0.0], [0.0, 0.0, 1.0]),
         "{:?}",
@@ -42985,6 +43091,446 @@ fn a_click_on_a_view_cube_edge_looks_from_between_its_two_faces() {
         edges,
         ["Bottom front", "Front left", "Front right", "Top front"]
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The triad and the view label at the canvas's bottom left (viewport.js's `drawOverlay`,
+// styles.css's `.view-label`; the prototype audit's item 10) ----
+
+/// The triad as last painted: each stroke from its origin, by its colour, with its place
+/// among [`painted`]'s shapes and its end; and the place of the dot over its origin.
+fn triad_painted(
+    h: &AppHarness,
+) -> (
+    Vec<(usize, eframe::egui::Color32, eframe::egui::Pos2)>,
+    Option<usize>,
+) {
+    use eframe::egui::Shape;
+    let origin = triad_origin(the_viewport(h));
+    let shapes = painted(h);
+    let strokes = shapes
+        .iter()
+        .enumerate()
+        .filter_map(|(k, shape)| match shape {
+            Shape::LineSegment { points, stroke }
+                if (points[0] - origin).length() < 1e-3
+                    && [AXIS_X, AXIS_Y, AXIS_Z].contains(&stroke.color) =>
+            {
+                Some((k, stroke.color, points[1]))
+            }
+            _ => None,
+        })
+        .collect();
+    let dot = shapes.iter().position(|shape| {
+        matches!(shape, Shape::Circle(c) if (c.center - origin).length() < 1e-3
+            && c.radius == 2.0 && c.fill == TRIAD_DOT)
+    });
+    (strokes, dot)
+}
+
+#[test]
+fn the_triad_and_the_view_label_stand_at_the_canvass_bottom_left_over_the_bodies() {
+    // A part opens at the home view, from (1, −1, 1), up (−1, 1, 2)/√6: right = up × back =
+    // (1, 1, 0)/√2. So from the origin, 44 in and up from the canvas's corner, X runs
+    // 26 (1/√2, 1/√6) = (18.385, 10.614) (right and down the screen), Y (18.385, −10.614),
+    // and Z (0, −52/√6) = (0, −21.229); Y points away (−1/√3), so it's drawn first, X and Z
+    // toward the viewer as far (1/√3), X then Z; then the dot. The label says
+    // "Orthographic · Iso", its line from 82 in from the canvas's left, 16 high, its bottom
+    // 12 up from the canvas's bottom. The triad over the bodies' frame and under the tab's
+    // overlay (the prototype's overlay draws it first), the label over the overlay and under
+    // the ViewCube (it's HTML over the overlay, the cube drawn under both).
+    let f = fixture();
+    let (mut h, _seen) = f.overlaid(EXAMPLE);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Iso");
+    let rect = the_viewport(&h);
+    let o = triad_origin(the_viewport(&h));
+    let (r2, r6) = (2f32.sqrt(), 6f32.sqrt());
+    let (strokes, dot) = triad_painted(&h);
+    let ends: Vec<(eframe::egui::Color32, eframe::egui::Pos2)> = strokes
+        .iter()
+        .map(|(_, colour, end)| (*colour, *end))
+        .collect();
+    assert_eq!(
+        ends.iter().map(|(colour, _)| *colour).collect::<Vec<_>>(),
+        [AXIS_Y, AXIS_X, AXIS_Z]
+    );
+    for ((_, end), want) in ends.iter().zip([
+        o + eframe::egui::vec2(26.0 / r2, -26.0 / r6),
+        o + eframe::egui::vec2(26.0 / r2, 26.0 / r6),
+        o + eframe::egui::vec2(0.0, -52.0 / r6),
+    ]) {
+        at_point(*end, want, "an axis's end");
+    }
+    let dot = dot.expect("no dot over the triad's origin");
+    assert!(strokes.iter().all(|(k, _, _)| *k < dot));
+    // The label's node: its line's place.
+    let line = view_label_node(&h).rect();
+    assert!(
+        (line.left() - (rect.left() + 82.0)).abs() < 1e-3,
+        "{line:?} in {rect:?}"
+    );
+    assert!(
+        (line.bottom() - (rect.bottom() - 12.0)).abs() < 1e-3,
+        "{line:?} in {rect:?}"
+    );
+    assert!((line.height() - 16.0).abs() < 1e-3, "{line:?}");
+    // Where each is painted among the rest.
+    let shapes = painted(&h);
+    let place = |what: &str, found: &dyn Fn(&eframe::egui::Shape) -> bool| {
+        shapes
+            .iter()
+            .position(found)
+            .unwrap_or_else(|| panic!("no {what} painted"))
+    };
+    let bodies = place(
+        "bodies' mark",
+        &|shape| matches!(shape, eframe::egui::Shape::Rect(r) if r.fill == BODIES_MARK),
+    );
+    let overlay = place(
+        "overlay",
+        &|shape| matches!(shape, eframe::egui::Shape::Circle(c) if c.fill == OVERLAY_MARK),
+    );
+    let label = place(
+        "view label",
+        &|shape| matches!(shape, eframe::egui::Shape::Text(t) if t.galley.text() == "Orthographic · Iso"),
+    );
+    let cube = place(
+        "ViewCube's Front",
+        &|shape| matches!(shape, eframe::egui::Shape::Path(p) if p.fill == CUBE_FRONT),
+    );
+    assert!(bodies < strokes[0].0, "{bodies} {strokes:?}");
+    assert!(
+        dot < overlay && overlay < label && label < cube,
+        "{dot} {overlay} {label} {cube}"
+    );
+    // The words painted where the node is: from its left, centred down its line.
+    let eframe::egui::Shape::Text(words) = &shapes[label] else {
+        unreachable!()
+    };
+    assert!((words.pos.x - line.left()).abs() < 1e-3);
+    assert!((words.pos.y + words.galley.size().y / 2.0 - line.center().y).abs() < 1e-3);
+    assert!((words.galley.size().x - line.width()).abs() < 1e-3);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The ViewCube's part labelled `label` clicked, and two frames drawn: the one that takes it
+/// (the label was painted before the cube took the click) and one painted for its view.
+fn cube_clicked(h: &mut AppHarness, label: &str) {
+    h.get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label(label)
+        .click();
+    step(h);
+    step(h);
+}
+
+#[test]
+fn the_view_label_names_each_view_cube_face_and_home_and_no_corner_but_home_s() {
+    // Each face clicked from a view that sees it (more than a quarter): from Home, the
+    // front, right, and top; from the top back left corner, the back and the left; from the
+    // bottom back left, the bottom. Each face's view is the prototype's name for it; Home's
+    // and the top front right corner's (one view) is "Iso"; the other corners and the edges,
+    // which the prototype doesn't name, leave the projection alone.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Iso");
+    for (clicked, said) in [
+        ("Front", "Orthographic · Front"),
+        ("Home view", "Orthographic · Iso"),
+        ("Right", "Orthographic · Right"),
+        ("Home view", "Orthographic · Iso"),
+        ("Top", "Orthographic · Top"),
+        ("Top back left", "Orthographic"),
+        ("Back", "Orthographic · Back"),
+        ("Top back left", "Orthographic"),
+        ("Left", "Orthographic · Left"),
+        ("Bottom back left", "Orthographic"),
+        ("Bottom", "Orthographic · Bottom"),
+        ("Bottom front right", "Orthographic"),
+        ("Front right", "Orthographic"),
+        ("Top front right", "Orthographic · Iso"),
+        ("Top front", "Orthographic"),
+        ("Home view", "Orthographic · Iso"),
+    ] {
+        cube_clicked(&mut h, clicked);
+        assert_eq!(view_label(&h), said, "after {clicked}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_view_label_follows_the_view_cubes_menu_and_the_display_settings_projection() {
+    // The ▾'s views and its camera, and Display settings' camera: each view named, each
+    // projection said, and each kept by the other.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let from_cube_menu = |h: &mut AppHarness, word: &str| {
+        cube_options(h);
+        h.get_by_role_and_label(Role::Menu, "View cube options")
+            .get_by_label(word)
+            .click();
+        step(h);
+        step(h);
+    };
+    let from_display = |h: &mut AppHarness, word: &str| {
+        click_on_bar(h, "Display settings");
+        step(h);
+        step(h);
+        h.get_by_role_and_label(Role::Menu, "Display settings")
+            .get_by_label(word)
+            .click();
+        step(h);
+        step(h);
+    };
+    from_cube_menu(&mut h, "Front");
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    from_cube_menu(&mut h, "Perspective");
+    assert!(view(&h).perspective());
+    assert_eq!(view_label(&h), "Perspective · Front");
+    from_display(&mut h, "Orthographic");
+    assert!(!view(&h).perspective());
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    from_display(&mut h, "Perspective");
+    assert_eq!(view_label(&h), "Perspective · Front");
+    from_cube_menu(&mut h, "Top");
+    assert_eq!(view_label(&h), "Perspective · Top");
+    from_cube_menu(&mut h, "Isometric");
+    assert_eq!(view_label(&h), "Perspective · Iso");
+    from_cube_menu(&mut h, "Bottom");
+    assert_eq!(view_label(&h), "Perspective · Bottom");
+    from_cube_menu(&mut h, "Home view");
+    assert_eq!(view_label(&h), "Perspective · Iso");
+    from_display(&mut h, "Orthographic");
+    assert_eq!(view_label(&h), "Orthographic · Iso");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_orbit_drops_the_view_labels_name_and_a_pan_or_a_zoom_keeps_it() {
+    // A pan and a zoom keep the view's direction, so its name; an orbit of 30 points turns it
+    // 15°, far past a hundredth of a radian, so the label says the projection alone, until
+    // a named view again.
+    use eframe::egui::{Key, Modifiers, PointerButton, vec2};
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    let centre = the_viewport(&h).center();
+    let before = view(&h).camera().clone();
+    drag(
+        &mut h,
+        PointerButton::Middle,
+        centre,
+        centre + vec2(40.0, 25.0),
+        4,
+    );
+    step(&mut h);
+    assert_ne!(view(&h).camera().target, before.target, "no pan");
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    let before = view(&h).camera().clone();
+    wheel(&mut h, centre, eframe::egui::MouseWheelUnit::Point, 120.0);
+    step(&mut h);
+    assert_ne!(view(&h).camera(), &before, "no zoom");
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    // The navigation bar's Orbit, a left drag 30 points across.
+    click_on_bar(&mut h, "Orbit");
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        centre,
+        centre + vec2(30.0, 0.0),
+        3,
+    );
+    step(&mut h);
+    click_on_bar(&mut h, "Orbit");
+    assert_eq!(view_label(&h), "Orthographic");
+    // A drag on the ViewCube orbits too: from the top view, still no name.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num5);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Top");
+    let cube = silico_app::viewport::view_cube_rect(the_viewport(&h)).center();
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        cube,
+        cube + vec2(0.0, 20.0),
+        2,
+    );
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic");
+    h.key_press(Key::Home);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Iso");
+    // In perspective (Display settings), the same: named at Home, the projection alone
+    // once the bar's Orbit turns it.
+    click_on_bar(&mut h, "Display settings");
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Menu, "Display settings")
+        .get_by_label("Perspective")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Perspective · Iso");
+    click_on_bar(&mut h, "Orbit");
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        centre,
+        centre + vec2(30.0, 0.0),
+        3,
+    );
+    step(&mut h);
+    click_on_bar(&mut h, "Orbit");
+    assert!(view(&h).perspective());
+    assert_eq!(view_label(&h), "Perspective");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn look_at_names_the_face_view_it_turns_square_to_and_none_for_a_tilted_face() {
+    // The block's top (Face6, its normal +z) seen square by Look At: from +z, up +y, the
+    // top view. Its front (Face3, −y): from −y, up +z, the front view. A face tilted to
+    // (0.6, 0, 0.8): no named view.
+    let f = fixture();
+    let mut h = a_measured_box(&f);
+    assert_eq!(view_label(&h), "Orthographic · Iso");
+    for (face, area, said) in [
+        ("Face6", "800.00 mm²", "Orthographic · Top"),
+        ("Face3", "400.00 mm²", "Orthographic · Front"),
+    ] {
+        select_in_box(&mut h, &[face]);
+        row_until(&mut h, "Area", area);
+        let before = view(&h).camera().clone();
+        click_on_bar(&mut h, "Look At");
+        step_until(&mut h, "turned", |h| view(h).camera() != &before);
+        step(&mut h);
+        assert_eq!(view_label(&h), said, "{face}");
+    }
+    let f = fixture();
+    let mut tilted = real_box_description();
+    tilted.faces[5].surface = silico_core::kernel::Surface::Plane {
+        normal: [0.6, 0.0, 0.8],
+        location: [20.0, 10.0, 10.0],
+    };
+    describes_the_box_as(&f, tilted);
+    let (mut h, _record) = box_from_above(&f);
+    assert_eq!(view_label(&h), "Orthographic · Top");
+    select_in_box(&mut h, &["Face6"]);
+    row_until(&mut h, "Area", "800.00 mm²");
+    let before = view(&h).camera().clone();
+    click_on_bar(&mut h, "Look At");
+    step_until(&mut h, "turned", |h| view(h).camera() != &before);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_press_on_the_view_label_or_the_triads_origin_is_the_canvass_as_neither_takes_the_pointer() {
+    // `pointer-events: none` (the label's) and the prototype's SVG overlay: a press and its
+    // release at the label's middle, or at the triad's origin, are handed on to the tab's
+    // overlay as the canvas's own, where they came.
+    use eframe::egui::{Modifiers, PointerButton};
+    use silico_app::viewport::LeftKind::{Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    step(&mut h);
+    let rect = the_viewport(&h);
+    let label = view_label_node(&h).rect().center();
+    let origin = triad_origin(the_viewport(&h));
+    assert!(rect.contains(label) && rect.contains(origin));
+    for at in [label, origin] {
+        ui::pause(&mut h);
+        h.hover_at(at);
+        step(&mut h);
+        left_taken(&seen);
+        button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+        step(&mut h);
+        button_event(&h, at, PointerButton::Primary, false, Modifiers::NONE);
+        step(&mut h);
+        let events = left_taken(&seen);
+        assert_eq!(kinds(&events), [Press, Release], "at {at:?}");
+        assert_eq!(events[0].event.at_px, at_px(rect, at), "at {at:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_middle_double_click_on_the_view_label_fits_as_one_anywhere_on_the_canvas_does() {
+    // The canvas counts its own clicks for a middle double-click's fit (`a_middle_double_click_fits`):
+    // over the label, which takes no click, they're still the canvas's, and fit.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        target: [300.0, 10.0, 5.0],
+        eye: [300.0, -100.0, 5.0],
+        ..the_cuts_front()
+    });
+    step(&mut h);
+    let at = view_label_node(&h).rect().center();
+    assert!(the_viewport(&h).contains(at));
+    let middle = eframe::egui::PointerButton::Middle;
+    h.hover_at(at);
+    step(&mut h);
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            h.event(eframe::egui::Event::PointerButton {
+                pos: at,
+                button: middle,
+                pressed,
+                modifiers: eframe::egui::Modifiers::NONE,
+            });
+        }
+    }
+    h.hover_at(at);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera().target, [20.0, 10.0, 5.0]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_mode_keeps_the_triad_and_the_view_label_and_its_look_at_names_the_top() {
+    // The prototype draws both whenever the canvas shows, a sketch open or not. On the XY
+    // plane, Look At (Ctrl+8) turns square to the sketch, its x across and y up: from +z,
+    // the top view; Z along it, drawn last, X and Y 26 right and up.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert!(h.state().tabs()[0].in_sketch());
+    let (strokes, dot) = triad_painted(&h);
+    assert_eq!(strokes.len(), 3, "{strokes:?}");
+    assert!(dot.is_some());
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Top");
+    let o = triad_origin(the_viewport(&h));
+    let (strokes, dot) = triad_painted(&h);
+    // Z seen end on: no stroke; X right, Y up.
+    let ends: Vec<_> = strokes
+        .iter()
+        .map(|(_, colour, end)| (*colour, *end))
+        .collect();
+    assert_eq!(ends.len(), 2, "{ends:?}");
+    assert_eq!(ends[0].0, AXIS_X);
+    at_point(ends[0].1, o + eframe::egui::vec2(26.0, 0.0), "X");
+    assert_eq!(ends[1].0, AXIS_Y);
+    at_point(ends[1].1, o + eframe::egui::vec2(0.0, -26.0), "Y");
+    assert!(dot.is_some());
     assert_eq!(never_waits::waits(), 0);
 }
 

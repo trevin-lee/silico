@@ -1,17 +1,17 @@
 //! Hit-testing a sketch in its own millimetres (the M5.11 plan, *The pointer in the
 //! sketch*): what's under the pointer, from the newest `sketch` read alone, no GPU picking.
-//! In the order they're drawn over one another: a point first, then a relation's glyph or a
-//! dimension's value (each a box on the screen), then a curve, then a dimension's lines;
-//! each the nearest within the tolerance, ties to the lower ID.
-
-use std::f64::consts::TAU;
+//! A point or the origin first, the nearer, ranked as Smart Dimension ranks its picks by
+//! the core's one rule (`sketch_tools::pick`; the constraint tools' C9); then a relation's
+//! glyph or a dimension's value, each a box on the screen, as they're drawn over the
+//! curves; then a curve of the sketch; then a dimension's lines; then an axis, which runs
+//! the whole plane, so a dimension's extension line along one still takes the click. Each
+//! the nearest within the tolerance; a curve against an axis by the core's rule too.
 
 use silico_core::command::sketch::SketchRead;
-use silico_core::document::{ElementId, ElementKind};
+use silico_core::document::{ElementId, ElementKind, Reference};
+use silico_core::sketch_tools::{self, Axes};
 
-use super::draw::{
-    Curve, Geometry, Scale, add, angle, direction, dot, foot, length, mul, placed, sub,
-};
+use super::draw::{Geometry, Scale, dot, foot, length, placed, sub};
 use super::style::{CANVAS_TEXT_SIZE, SKETCH_DIMENSION_LABEL_PADDING, SKETCH_GLYPH_SIZE};
 
 /// A dimension's value's box's height, as it's drawn.
@@ -29,13 +29,84 @@ pub struct Hit {
     pub kind: ElementKind,
 }
 
-/// What of `read` is at `at` (the sketch's millimetres), within `tolerance` millimetres, in
-/// the order they're drawn over one another: the nearest point; or else the nearest
-/// relation glyph or dimension value, each a box (placed at `scale`, as they're drawn, the
-/// box upright on the screen); or else the nearest curve; or else the nearest dimension's
-/// line. Ties go to the lower ID. None for nothing that near, a tolerance below zero, or a
-/// place that isn't one.
-pub fn hit(read: &SketchRead, at: [f64; 2], tolerance: f64, scale: Scale) -> Option<Hit> {
+/// What a click picks in sketch mode, and what its selection holds: a member of the sketch,
+/// or the origin or one of its axes (the constraint tools' C9). In [`Reference`]'s order:
+/// the members by ID, then the origin, the x axis, and the y axis.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SketchPick {
+    Member(Hit),
+    Origin,
+    XAxis,
+    YAxis,
+}
+
+impl SketchPick {
+    /// What it is as a constraint names it.
+    pub fn reference(&self) -> Reference {
+        match self {
+            SketchPick::Member(hit) => Reference::Element(hit.id.clone()),
+            SketchPick::Origin => Reference::Origin,
+            SketchPick::XAxis => Reference::XAxis,
+            SketchPick::YAxis => Reference::YAxis,
+        }
+    }
+
+    /// Whether a read whose members `holds` says hold it has it: a member it holds, or the
+    /// origin or an axis, every sketch's. The one rule for what a read keeps selected.
+    pub fn held_by(&self, holds: impl Fn(&ElementId) -> bool) -> bool {
+        self.member().is_none_or(|hit| holds(&hit.id))
+    }
+
+    /// The member it is, if it's one.
+    pub fn member(&self) -> Option<&Hit> {
+        match self {
+            SketchPick::Member(hit) => Some(hit),
+            SketchPick::Origin | SketchPick::XAxis | SketchPick::YAxis => None,
+        }
+    }
+
+    /// What `reference` names in `read`: a member, with its kind, if the read holds it; the
+    /// origin; or an axis.
+    fn of(read: &SketchRead, reference: Reference) -> Option<SketchPick> {
+        match reference {
+            Reference::Element(id) => {
+                let kind = read
+                    .members
+                    .elements()
+                    .find(|(held, _)| **held == id)
+                    .map(|(_, kind)| kind)?;
+                Some(SketchPick::Member(Hit { id, kind }))
+            }
+            Reference::Origin => Some(SketchPick::Origin),
+            Reference::XAxis => Some(SketchPick::XAxis),
+            Reference::YAxis => Some(SketchPick::YAxis),
+        }
+    }
+}
+
+impl From<Hit> for SketchPick {
+    fn from(hit: Hit) -> Self {
+        SketchPick::Member(hit)
+    }
+}
+
+/// What of `read` is at `at` (the sketch's millimetres), within `tolerance` millimetres: the
+/// nearest point, or the origin where it's nearer (the point on a tie, and a point at its
+/// place always), by the core's `sketch_tools::pick`, as Smart Dimension picks; or else the
+/// nearest relation glyph or dimension value, each a box (placed at `scale`, as they're
+/// drawn, the box upright on the screen); or else the nearest curve of the sketch, by the
+/// core's rule; or else the nearest dimension's line; or else an axis, anywhere along it
+/// (where the core's rule takes it: not where a curve of the sketch is as near, nor where a
+/// line of the sketch lies along it), of the axes `axes` allows: one it doesn't is no
+/// candidate, so the nearest of the rest is taken. Other ties go to the lower ID. None for
+/// nothing that near, a tolerance below zero, or a place that isn't one.
+pub fn hit(
+    read: &SketchRead,
+    at: [f64; 2],
+    tolerance: f64,
+    scale: Scale,
+    axes: Axes,
+) -> Option<SketchPick> {
     if !(at[0].is_finite() && at[1].is_finite()) || tolerance.is_nan() || tolerance < 0.0 {
         return None;
     }
@@ -45,18 +116,25 @@ pub fn hit(read: &SketchRead, at: [f64; 2], tolerance: f64, scale: Scale) -> Opt
             .into_iter()
             .filter(|(d, ..)| *d <= tolerance)
             .min_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1)))
-            .map(|(_, id, kind)| Hit {
-                id: id.clone(),
-                kind,
+            .map(|(_, id, kind)| {
+                SketchPick::Member(Hit {
+                    id: id.clone(),
+                    kind,
+                })
             })
     };
-    let points = geometry
-        .points()
-        .map(|(id, p)| (length(sub(p, at)), id, ElementKind::Point))
-        .collect();
-    if let Some(hit) = near(points) {
-        return Some(hit);
-    }
+    // A point or the origin, if one is near, else a curve or an axis, if one is: the curve
+    // after the boxes, the axis after the dimensions' lines too.
+    let picked = sketch_tools::pick(&read.members, at, tolerance, axes)
+        .and_then(|reference| SketchPick::of(read, reference));
+    let (curve, axis) = match picked {
+        Some(SketchPick::Origin) => return Some(SketchPick::Origin),
+        Some(SketchPick::Member(hit)) if hit.kind == ElementKind::Point => {
+            return Some(SketchPick::Member(hit));
+        }
+        Some(axis @ (SketchPick::XAxis | SketchPick::YAxis)) => (None, Some(axis)),
+        curve => (curve, None),
+    };
     let placed = placed(read, &geometry, scale);
     let glyph = scale.mm(SKETCH_GLYPH_SIZE) / 2.0;
     let mut boxes: Vec<(f64, &ElementId, ElementKind)> = placed
@@ -83,12 +161,8 @@ pub fn hit(read: &SketchRead, at: [f64; 2], tolerance: f64, scale: Scale) -> Opt
     if let Some(hit) = near(boxes) {
         return Some(hit);
     }
-    let curves = geometry
-        .curves()
-        .map(|(id, curve, kind)| (distance(curve, at), id, kind))
-        .collect();
-    if let Some(hit) = near(curves) {
-        return Some(hit);
+    if curve.is_some() {
+        return curve;
     }
     let lines = placed
         .dimensions
@@ -103,7 +177,7 @@ pub fn hit(read: &SketchRead, at: [f64; 2], tolerance: f64, scale: Scale) -> Opt
             (d, &dimension.of, ElementKind::Constraint)
         })
         .collect();
-    near(lines)
+    near(lines).or(axis)
 }
 
 /// How far `at` is from the box about `centre` reaching `half` either way: none inside it.
@@ -113,31 +187,8 @@ fn box_distance(at: [f64; 2], centre: [f64; 2], half: [f64; 2]) -> f64 {
     libm::hypot(dx, dy)
 }
 
-/// How far `at` is from `curve`: from a line's segment, a circle's rim, or an arc's (or its
-/// nearer end, past its sweep).
-pub(crate) fn distance(curve: Curve, at: [f64; 2]) -> f64 {
-    match curve {
-        Curve::Line { from, to } => segment_distance(at, from, to),
-        Curve::Round {
-            centre,
-            radius,
-            start,
-            sweep,
-        } => {
-            let off = sub(at, centre);
-            let within = (angle(off) - start).rem_euclid(TAU) <= sweep;
-            if sweep >= TAU || within {
-                (length(off) - radius).abs()
-            } else {
-                let end = |a: f64| add(centre, mul(direction(a), radius));
-                length(sub(at, end(start))).min(length(sub(at, end(start + sweep))))
-            }
-        }
-    }
-}
-
 /// How far `at` is from the segment from `a` to `b`.
-fn segment_distance(at: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+pub(crate) fn segment_distance(at: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     let d = sub(b, a);
     let dd = dot(d, d);
     if dd <= 0.0 {

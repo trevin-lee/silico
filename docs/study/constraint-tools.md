@@ -420,7 +420,7 @@ SolidWorks' relation group, one numbered relation for all, survives either. Free
 *Recommended:*
 
 - The selection becomes an ordered set in pick order (`IndexSet`, which CLAUDE.md admits). It is deterministic, being the person's own input. Open item 24's rules stay: a plain click replaces, a Ctrl-click toggles, and empty space or Esc clears.
-- Its members become `Reference`s, and the origin and the axes are hit as Smart Dimension picks them (`View::pick`, crates/silico-core/src/sketch_tools/infer.rs:657): a point or the origin, whichever is nearer (the point on a tie), else the nearest curve, an axis anywhere along it.
+- Its members become `Reference`s, and the origin and the axes are hit as Smart Dimension picks them (`sketch_tools::pick`, crates/silico-core/src/sketch_tools/mod.rs, which Smart Dimension's picks go through too): a point or the origin, whichever is nearer (the point on a tie), else the nearest curve, an axis anywhere along it.
 - This amends M5.7's selection in sketch mode, so it is named here as a decision, not an implementation detail.
 
 ## 6. The interaction
@@ -529,7 +529,7 @@ Each case is a headless test of the core function (`sketch_tools`, beside Smart 
 **A plan, core first** (each PR after `/adversarial-review`, with `/break-it` on the core function):
 
 1. **Core: the relations, headless.** A `sketch_tools::relate(sketch, relation, picks, ids)`, from the newest read's members and a selection in pick order to one edit: an add, a merge, or C5's remove and add. It has a `Message` per refusal (§4) and is tested by §7's cases and the refusals. Nine tools, Fix aside. No command or contract changes.
-2. **App: the selection.** C9: pick order, the origin and axes hit as `View::pick` picks them, open item 24's rules kept, and the tests of M5.7's sketch selection updated.
+2. **App: the selection.** C9: pick order, the origin and axes hit as `sketch_tools::pick` picks them, open item 24's rules kept, and the tests of M5.7's sketch selection updated.
 3. **App: the buttons.**
    - `Does::Constraint(relation)` in place of `Does::NotBuilt` for nine buttons; a click sends what `relate` returns through the tab's queue (`sketch_add`, `sketch_merge`, or the grouped pair).
    - A refusal shows in the toast; the step is named for Undo.
@@ -713,7 +713,7 @@ This is the tool's rule only. `sketch_add` still adds whatever it's sent (SD7).
 
 - An ordered set in place of the `BTreeSet`. Open item 24's rules are unchanged: a plain click replaces, a Ctrl-click toggles (a member toggled back in joins at the end), and empty space or Esc clears.
 - Members that join together, as a box's would, join in ID order.
-- The origin and the axes are hit as `View::pick` ranks them: a point or the origin, whichever is nearer, then the nearest curve, an axis anywhere along it. The sketch's own member wins a tie.
+- The origin and the axes are hit as `sketch_tools::pick` ranks them (Smart Dimension's rule, one function for both): a point or the origin, whichever is nearer, then the nearest curve, an axis anywhere along it. The sketch's own member wins a tie.
 - Delete ignores the origin and the axes.
 
 **Why.** C1's survivor, C4's mirror, and C8's first each need pick order, and pick order is the person's own input, so it's deterministic. Symmetric about an axis and Coincident with the origin need the two to be selectable, and the forms and the gate already take them.

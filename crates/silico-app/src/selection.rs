@@ -1952,10 +1952,7 @@ fn gone_words(
     if let [(_, one)] = dropped {
         said = format!("{said}: {}", words(&one.why));
     }
-    let mut chars = said.chars();
-    chars.next().map_or(String::new(), |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
+    crate::words::capitalised(&said)
 }
 
 /// The edge band, in physical pixels, at `ppp` pixels a point: at least one, and at most

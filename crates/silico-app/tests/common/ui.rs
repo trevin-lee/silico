@@ -49,7 +49,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::accesskit::Role;
 use eframe::egui::{
-    Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, ViewportCommand,
+    Color32, Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, ViewportCommand,
 };
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -654,6 +654,58 @@ pub fn the_viewport<P: AppKernel>(h: &AppUi<P>) -> Rect {
 /// The viewport's frame, as it was last drawn.
 pub fn frame<P: AppKernel>(h: &AppUi<P>) -> Option<&silico_app::viewport::ViewFrame> {
     h.state().tabs()[0].view.frame()
+}
+
+/// The axes' colours, the grid's, the triad's, and the ViewCube's stubs' (DESIGN.md's
+/// `axis_color_x/y/z`: `#ff6981`, `#00b266`, `#7a95ff`), and the triad's dot's (viewport.js's
+/// `<circle r="2" fill="#cfcfcf"/>`).
+pub const AXIS_X: Color32 = Color32::from_rgb(0xff, 0x69, 0x81);
+pub const AXIS_Y: Color32 = Color32::from_rgb(0x00, 0xb2, 0x66);
+pub const AXIS_Z: Color32 = Color32::from_rgb(0x7a, 0x95, 0xff);
+pub const TRIAD_DOT: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcf);
+
+/// The triad's origin over the canvas `rect`: 44 in from its left, 44 up from its bottom
+/// (viewport.js's `ox = 44, oy = h - 44`).
+pub fn triad_origin(rect: Rect) -> Pos2 {
+    Pos2::new(rect.left() + 44.0, rect.bottom() - 44.0)
+}
+
+/// The way `camera` looks from its target to its eye, made a unit.
+pub fn view_direction(camera: &silico_protocol::Camera) -> [f64; 3] {
+    let way: [f64; 3] = std::array::from_fn(|k| camera.eye[k] - camera.target[k]);
+    let length = (way[0] * way[0] + way[1] * way[1] + way[2] * way[2]).sqrt();
+    way.map(|part| part / length)
+}
+
+/// Whether `camera` looks from `way`, a unit vector from its target to its eye, each part
+/// within 1e-9.
+pub fn looks_from(camera: &silico_protocol::Camera, way: [f64; 3]) -> bool {
+    let at = view_direction(camera);
+    (0..3).all(|k| (at[k] - way[k]).abs() < 1e-9)
+}
+
+/// The view label's node in the viewport, as a screen reader finds it: the viewport's one
+/// label that names the projection.
+pub fn view_label_node<P: AppKernel>(h: &AppUi<P>) -> egui_kittest::Node<'_> {
+    let mut labels: Vec<_> = h
+        .get_by_role_and_label(Role::Pane, "Viewport")
+        .query_all_by_role(Role::Label)
+        .filter(|node| {
+            node.accesskit_node().value().is_some_and(|words| {
+                words.starts_with("Orthographic") || words.starts_with("Perspective")
+            })
+        })
+        .collect();
+    assert_eq!(labels.len(), 1, "not one view label");
+    labels.remove(0)
+}
+
+/// The view label's words, as a screen reader has them.
+pub fn view_label<P: AppKernel>(h: &AppUi<P>) -> String {
+    view_label_node(h)
+        .accesskit_node()
+        .value()
+        .unwrap_or_default()
 }
 
 /// A button's press or release at `at`, `modifiers` held.

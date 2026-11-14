@@ -721,3 +721,7 @@ crates/silico-app/src/sketch/lines.rs | dashes | replace < with <= | #457
 crates/silico-app/src/sketch/lines.rs | dashes | replace < with <= | #457
 crates/silico-app/src/sketch/lines.rs | dashes | replace + with * | #457
 crates/silico-app/src/tab.rs | Tab::count_to | replace < with <= | #464
+crates/silico-app/src/tab.rs | Tab::reloaded_under_dialog | replace && with || | #474
+crates/silico-app/src/navigate.rs | at_view | replace % with + | #476
+crates/silico-app/src/navigate.rs | at_view | replace < with <= | #476
+crates/silico-app/src/navigate.rs | at_view | replace > with >= | #476
