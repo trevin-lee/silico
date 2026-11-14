@@ -11,7 +11,7 @@ use std::f64::consts::{FRAC_1_SQRT_2, PI, SQRT_2};
 use eframe::egui::{Color32, Pos2, Shape, pos2};
 use silico_core::command::sketch::SketchRead;
 use silico_core::document::{
-    Coordinate, FeatureId, Length, OriginPlane, Sketch, SketchCircle, SketchPoint,
+    Coordinate, FeatureId, Length, OriginPlane, Sketch, SketchArc, SketchCircle, SketchPoint,
 };
 use silico_core::kernel::SketchPlane;
 use silico_protocol::{Camera, FaceFrame, Projection};
@@ -229,6 +229,55 @@ fn a_hole_takes_its_area_away_whichever_way_its_circle_runs() {
     );
     // Not the rectangle's, which a hole added would move the other way.
     assert!(centroid[0] > 21.0, "{centroid:?}");
+}
+
+#[test]
+fn an_arcs_cap_counts_its_half_disc_whichever_way_the_loop_walks_it() {
+    // A 20 × 10 rectangle capped by a half circle of radius 10 about (10, 10), the arc drawn
+    // counter-clockwise from (20, 10) to (0, 10), the loop walking it so: 200 mm² about
+    // (10, 5) and 50π about (10, 10 + 40/3π). Across, 10 by symmetry; up,
+    // (1000 + 50π(10 + 40/3π)) / (200 + 50π). The arc's chords stray a micrometre at most,
+    // its area short by 0.0314 mm² at most, moving the centroid up by 4e-4 at most.
+    let sketch = Sketch {
+        plane: OriginPlane::Xy.into(),
+        points: vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 20.0, 0.0),
+            point("pa000003", 20.0, 10.0),
+            point("pa000004", 0.0, 10.0),
+            point("pc000001", 10.0, 10.0),
+        ],
+        lines: vec![
+            line("na000001", "pa000001", "pa000002"),
+            line("na000002", "pa000002", "pa000003"),
+            line("na000004", "pa000004", "pa000001"),
+        ],
+        circles: Vec::new(),
+        arcs: vec![SketchArc {
+            id: id("ca000001"),
+            center: id("pc000001"),
+            start: id("pa000003"),
+            end: id("pa000004"),
+            construction: false,
+        }],
+        constraints: Vec::new(),
+    };
+    let cap = 50.0 * PI;
+    let up = (1000.0 + cap * (10.0 + 40.0 / (3.0 * PI))) / (200.0 + cap);
+    let mut read = under(sketch);
+    read.regions = vec![region(
+        &["na000001", "na000002", "ca000001", "na000004"],
+        &[],
+    )];
+    let centroid = profile_centroid(&read).unwrap();
+    near(centroid, [10.0, up], 1e-3);
+    assert!((centroid[0] - 10.0).abs() < 1e-9, "{centroid:?}");
+    // The loop listed the other way round, from the left side: the same region.
+    read.regions = vec![region(
+        &["na000004", "ca000001", "na000002", "na000001"],
+        &[],
+    )];
+    near(profile_centroid(&read).unwrap(), [10.0, up], 1e-3);
 }
 
 #[test]
@@ -540,6 +589,85 @@ fn seen_end_on_or_under_six_tenths_of_a_point_a_millimetre_no_arrow_is_drawn() {
     };
     let h = pad_handles(&dialog_of(Kind::Pad), SketchPlane::Xy);
     assert!(on_screen(&h, &far).is_empty());
+}
+
+#[test]
+fn a_camera_or_a_scale_that_makes_no_view_draws_no_arrow() {
+    let h = pad_handles(&dialog_of(Kind::Pad), SketchPlane::Xy);
+    let good = front([20.0, 10.0, 10.0]);
+    for camera in [
+        Camera {
+            eye: [f64::NAN, -490.0, 10.0],
+            ..good.clone()
+        },
+        // The eye on the target: no way to look.
+        Camera {
+            eye: [20.0, 10.0, 10.0],
+            ..good.clone()
+        },
+        Camera {
+            up: [0.0, 1.0, 0.0],
+            ..good.clone()
+        },
+        Camera {
+            projection: Projection::Orthographic {
+                view_height: f64::INFINITY,
+            },
+            ..good.clone()
+        },
+    ] {
+        assert!(on_screen(&h, &camera).is_empty(), "{camera:?}");
+    }
+    for ppp in [0.0, -2.0, f32::NAN, f32::INFINITY] {
+        assert!(arrows(&h, &good, SIZE, ppp, ORIGIN).is_empty(), "{ppp}");
+    }
+    assert!(arrows(&h, &good, [0, 200], PPP, ORIGIN).is_empty());
+    // A canvas whose corner isn't a place.
+    assert!(arrows(&h, &good, SIZE, PPP, pos2(f32::NAN, 0.0)).is_empty());
+}
+
+#[test]
+fn a_pad_as_long_as_a_length_holds_is_drawn_off_the_screen_but_finite() {
+    // 9,223,372 m: its end 9.2e12 mm up, 1.8e13 points above the view.
+    let mut dialog = dialog_of(Kind::Pad);
+    set_text(&mut dialog, LENGTH, "9223372036854");
+    let h = pad_handles(&dialog, SketchPlane::Xy);
+    let a = on_screen(&h, &front([20.0, 10.0, 10.0]));
+    let d = &a.distances[0];
+    assert!(d.arrow.base.is_finite() && d.arrow.tip.is_finite());
+    assert!(d.arrow.base.y < -1e12, "{:?}", d.arrow.base);
+    assert_eq!(d.label, "9,223,372,036,854 mm");
+    with_painter(|painter| assert_eq!(a.shapes(painter, None).len(), 8));
+}
+
+#[test]
+fn events_of_a_stream_never_pressed_are_given_back_and_ask_nothing() {
+    let dialog = dialog_of(Kind::Pad);
+    let arrows = front_arrows(&dialog);
+    let mut grip = Grip::default();
+    // On the arrow's tip, but with no press before them (a press in another tab, say).
+    let events = [
+        event(LeftKind::Move, (140.0, 24.0), 0),
+        event(LeftKind::Release, (140.0, 24.0), 1),
+        event(LeftKind::DoubleClick, (140.0, 24.0), 2),
+        event(LeftKind::Cancel, (140.0, 24.0), 3),
+    ];
+    let (passed, asked) = grip.frame(&events, Some(&arrows), Some(&dialog), PPP, ORIGIN);
+    assert_eq!(passed, events);
+    assert!(asked.is_empty());
+    assert_eq!(grip.escape(Some(7)), None);
+    // A second press with one held (its end lost): the first is let go, the second decides.
+    grip.frame(
+        &[event(LeftKind::Press, (140.0, 24.0), 0)],
+        Some(&arrows),
+        Some(&dialog),
+        PPP,
+        ORIGIN,
+    );
+    let off = [event(LeftKind::Press, (300.0, 150.0), 0)];
+    let (passed, _) = grip.frame(&off, Some(&arrows), Some(&dialog), PPP, ORIGIN);
+    assert_eq!(passed, off);
+    assert!(!grip.holding());
 }
 
 #[test]
