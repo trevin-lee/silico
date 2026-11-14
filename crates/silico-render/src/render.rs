@@ -326,6 +326,140 @@ pub struct Frame<'a> {
     pub lines: &'a [Lines<'a>],
 }
 
+impl Frame<'_> {
+    /// Why a renderer would refuse this frame by its own values, the bodies it holds read by
+    /// `held` (a body's mesh by its number, none if it holds none), if it would: its pixels
+    /// per point, its bodies (ascending, each once, each held), its tint, its highlights,
+    /// hover, and tinted faces (each of a body it draws, numbered within its mesh's counts,
+    /// each tinted one a face), its vertices' radius, its picking rectangle, and its lines.
+    /// No GPU: what a frame's size may be is the device's, and its camera and what's in its
+    /// view are checked as [`Renderer::prepare`] places it, after this.
+    pub fn check<'m>(
+        &self,
+        held: impl Fn(u32) -> Option<&'m Mesh>,
+    ) -> Result<(), InvalidParameter> {
+        let ppp = self.pixels_per_point;
+        if !(ppp.is_finite() && ppp > 0.0 && ppp <= MAX_PIXELS_PER_POINT) {
+            return Err(InvalidParameter {
+                parameter: "pixels_per_point",
+                message: format!(
+                    "pixels_per_point {ppp:?} must be above 0 and at most {MAX_PIXELS_PER_POINT}"
+                ),
+            });
+        }
+        let mut last = 0;
+        for (i, &body) in self.bodies.iter().enumerate() {
+            if body <= last {
+                return Err(InvalidParameter {
+                    parameter: "bodies",
+                    message: format!(
+                        "bodies[{i}], {body}, must be above the one before it ({last}): ascending, each once, from 1"
+                    ),
+                });
+            }
+            if held(body).is_none() {
+                return Err(InvalidParameter {
+                    parameter: "bodies",
+                    message: format!("bodies[{i}], {body}, isn't uploaded"),
+                });
+            }
+            last = body;
+        }
+        self.tint.check()?;
+        let lists = [
+            ("highlights", self.highlights, Listed::Highlighted),
+            ("hovered", self.hovered, Listed::Hovered),
+            ("tinted", self.tinted, Listed::Tinted),
+        ];
+        for (parameter, list, listed) in lists {
+            for (i, &(body, element)) in list.iter().enumerate() {
+                let Some(mesh) = self
+                    .bodies
+                    .binary_search(&body)
+                    .ok()
+                    .and_then(|_| held(body))
+                else {
+                    return Err(InvalidParameter {
+                        parameter,
+                        message: format!("{parameter}[{i}]'s body {body} isn't drawn in the frame"),
+                    });
+                };
+                let (number, count, what) = match element {
+                    Element::Face(n) => (n, mesh.face_triangles.len(), "faces"),
+                    Element::Edge(n) => (n, mesh.edge_point_counts.len(), "edges"),
+                    Element::Vertex(n) => (n, mesh.vertex_points.len(), "vertices"),
+                };
+                if !usize::try_from(number).is_ok_and(|n| (1..=count).contains(&n)) {
+                    return Err(InvalidParameter {
+                        parameter,
+                        message: format!(
+                            "{parameter}[{i}], {element:?} of body {body}, isn't one of its {count} {what} (numbered from 1)"
+                        ),
+                    });
+                }
+                if matches!(listed, Listed::Tinted) && !matches!(element, Element::Face(_)) {
+                    return Err(InvalidParameter {
+                        parameter,
+                        message: format!(
+                            "{parameter}[{i}], {element:?} of body {body}, isn't a face: only faces are tinted"
+                        ),
+                    });
+                }
+            }
+        }
+        if let Some(radius) = self.vertices
+            && !(radius.is_finite() && radius > 0.0)
+        {
+            return Err(InvalidParameter {
+                parameter: "vertices",
+                message: format!(
+                    "vertices {radius:?}, a radius in points, must be finite and above 0"
+                ),
+            });
+        }
+        if let Some(rect) = self.picking
+            && !rect.takes()
+        {
+            return Err(InvalidParameter {
+                parameter: "picking",
+                message: format!(
+                    "picking {rect:?} must be from 1 to {MAX_PICKING_SIDE} pixels on each side, its corner within {MAX_PICKING_OFFSET} of the frame's"
+                ),
+            });
+        }
+        let points: usize = self.lines.iter().map(|set| set.strips.points()).sum();
+        if points > MAX_FRAME_LINE_POINTS {
+            return Err(InvalidParameter {
+                parameter: "lines",
+                message: format!(
+                    "lines have {points} points over their sets, more than a frame's {MAX_FRAME_LINE_POINTS}"
+                ),
+            });
+        }
+        for (i, set) in self.lines.iter().enumerate() {
+            let width = set.width;
+            if !(width.is_finite() && width > 0.0 && width <= MAX_LINE_WIDTH) {
+                return Err(InvalidParameter {
+                    parameter: "lines",
+                    message: format!(
+                        "lines[{i}]'s width {width:?}, in points, must be above 0 and at most {MAX_LINE_WIDTH}"
+                    ),
+                });
+            }
+            if set.colour[3] != 255 {
+                return Err(InvalidParameter {
+                    parameter: "lines",
+                    message: format!(
+                        "lines[{i}]'s colour {:?} must be opaque, its alpha 255",
+                        set.colour
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The widest a frame's [`Lines`] may be, in points: well past an edge's widest, 4.
 pub const MAX_LINE_WIDTH: f32 = 64.0;
 
@@ -459,12 +593,14 @@ pub struct Outlines {
     pub hovered: [u8; 3],
 }
 
-/// The colours [`Renderer::build`] draws a view in: its outlines', and the one behind it,
-/// or none, the view composited over what its pass holds.
+/// The colours [`Renderer::build`] draws a view in: its outlines', the one behind it, or
+/// none, the view composited over what its pass holds, and what a tinted face's instance
+/// adds to its colour ([`Tint::added`]; a render's tints none).
 #[derive(Clone, Copy)]
 struct Colours {
     outlines: Outlines,
     background: Option<Rgba>,
+    tint: Color32,
 }
 
 impl Outlines {
@@ -505,7 +641,7 @@ impl Tint {
 
     /// What `re_renderer` adds to a tinted face's colour, in linear light, for the mix: the
     /// colour's part less the body's, `amount · (colour − body)`, each channel at least 0
-    /// for a tint [`Frame`]'s checks take. Opaque, so the face stays opaque.
+    /// for a tint [`Frame::check`] takes. Opaque, so the face stays opaque.
     fn added(self) -> Color32 {
         let (body, colour) = (srgb(BODY), srgb(self.colour));
         let part = |body: f32, colour: f32| self.amount * (colour - body);
@@ -838,6 +974,7 @@ impl Renderer {
             Colours {
                 outlines: frame.outlines,
                 background: frame.background.map(srgb),
+                tint: frame.tint.added(),
             },
             Drawn {
                 bodies: &drawn,
@@ -968,94 +1105,29 @@ impl Renderer {
                 ),
             });
         }
-        let ppp = frame.pixels_per_point;
-        if !(ppp.is_finite() && ppp > 0.0 && ppp <= MAX_PIXELS_PER_POINT) {
-            return Err(InvalidParameter {
-                parameter: "pixels_per_point",
-                message: format!(
-                    "pixels_per_point {ppp:?} must be above 0 and at most {MAX_PIXELS_PER_POINT}"
-                ),
-            });
-        }
-        let mut last = 0;
-        for (i, &body) in frame.bodies.iter().enumerate() {
-            if body <= last {
-                return Err(InvalidParameter {
-                    parameter: "bodies",
-                    message: format!(
-                        "bodies[{i}], {body}, must be above the one before it ({last}): ascending, each once, from 1"
-                    ),
-                });
-            }
-            if !self.bodies.contains_key(&body) {
-                return Err(InvalidParameter {
-                    parameter: "bodies",
-                    message: format!("bodies[{i}], {body}, isn't uploaded"),
-                });
-            }
-            last = body;
-        }
-        frame.tint.check()?;
+        frame.check(|body| self.bodies.get(&body).map(|uploaded| &*uploaded.mesh))?;
         let mut lit: BTreeMap<u32, Lit> = BTreeMap::new();
         let lists = [
-            ("highlights", frame.highlights, Listed::Highlighted),
-            ("hovered", frame.hovered, Listed::Hovered),
-            ("tinted", frame.tinted, Listed::Tinted),
+            (frame.highlights, Listed::Highlighted),
+            (frame.hovered, Listed::Hovered),
+            (frame.tinted, Listed::Tinted),
         ];
-        for (parameter, list, listed) in lists {
-            for (i, &(body, element)) in list.iter().enumerate() {
-                let Some(uploaded) = frame
-                    .bodies
-                    .binary_search(&body)
-                    .ok()
-                    .and_then(|_| self.bodies.get(&body))
-                else {
-                    return Err(InvalidParameter {
-                        parameter,
-                        message: format!("{parameter}[{i}]'s body {body} isn't drawn in the frame"),
-                    });
-                };
-                let mesh = &uploaded.mesh;
-                let (number, count, what) = match element {
-                    Element::Face(n) => (n, mesh.face_triangles.len(), "faces"),
-                    Element::Edge(n) => (n, mesh.edge_point_counts.len(), "edges"),
-                    Element::Vertex(n) => (n, mesh.vertex_points.len(), "vertices"),
-                };
-                if !usize::try_from(number).is_ok_and(|n| (1..=count).contains(&n)) {
-                    return Err(InvalidParameter {
-                        parameter,
-                        message: format!(
-                            "{parameter}[{i}], {element:?} of body {body}, isn't one of its {count} {what} (numbered from 1)"
-                        ),
-                    });
-                }
+        for (list, listed) in lists {
+            for &(body, element) in list {
                 let entry = lit.entry(body).or_default();
-                let (faces, edges) = match listed {
-                    Listed::Highlighted => (&mut entry.faces, &mut entry.edges),
-                    Listed::Hovered => (&mut entry.hovered_faces, &mut entry.hovered_edges),
-                    Listed::Tinted => {
-                        let Element::Face(n) = element else {
-                            return Err(InvalidParameter {
-                                parameter,
-                                message: format!(
-                                    "{parameter}[{i}], {element:?} of body {body}, isn't a face: only faces are tinted"
-                                ),
-                            });
-                        };
-                        entry.tinted_faces.push(n);
-                        continue;
-                    }
-                };
-                match element {
-                    Element::Face(n) => faces.push(n),
-                    Element::Edge(n) => edges.push(n),
+                match (listed, element) {
+                    (Listed::Highlighted, Element::Face(n)) => entry.faces.push(n),
+                    (Listed::Highlighted, Element::Edge(n)) => entry.edges.push(n),
+                    (Listed::Hovered, Element::Face(n)) => entry.hovered_faces.push(n),
+                    (Listed::Hovered, Element::Edge(n)) => entry.hovered_edges.push(n),
+                    (Listed::Tinted, Element::Face(n)) => entry.tinted_faces.push(n),
                     // A vertex is drawn over the frame by its caller (the app's dot), so
-                    // it's checked, and outlined by nothing here.
-                    Element::Vertex(_) => {}
+                    // it's checked, and outlined by nothing here; the check takes no tinted
+                    // edge or vertex.
+                    (_, Element::Vertex(_)) | (Listed::Tinted, Element::Edge(_)) => {}
                 }
             }
         }
-        let tint = frame.tint.added();
         for entry in lit.values_mut() {
             for numbers in [
                 &mut entry.faces,
@@ -1066,56 +1138,6 @@ impl Renderer {
             ] {
                 numbers.sort_unstable();
                 numbers.dedup();
-            }
-            entry.tint = tint;
-        }
-        if let Some(radius) = frame.vertices
-            && !(radius.is_finite() && radius > 0.0)
-        {
-            return Err(InvalidParameter {
-                parameter: "vertices",
-                message: format!(
-                    "vertices {radius:?}, a radius in points, must be finite and above 0"
-                ),
-            });
-        }
-        if let Some(rect) = frame.picking
-            && !rect.takes()
-        {
-            return Err(InvalidParameter {
-                parameter: "picking",
-                message: format!(
-                    "picking {rect:?} must be from 1 to {MAX_PICKING_SIDE} pixels on each side, its corner within {MAX_PICKING_OFFSET} of the frame's"
-                ),
-            });
-        }
-        let points: usize = frame.lines.iter().map(|set| set.strips.points()).sum();
-        if points > MAX_FRAME_LINE_POINTS {
-            return Err(InvalidParameter {
-                parameter: "lines",
-                message: format!(
-                    "lines have {points} points over their sets, more than a frame's {MAX_FRAME_LINE_POINTS}"
-                ),
-            });
-        }
-        for (i, set) in frame.lines.iter().enumerate() {
-            let width = set.width;
-            if !(width.is_finite() && width > 0.0 && width <= MAX_LINE_WIDTH) {
-                return Err(InvalidParameter {
-                    parameter: "lines",
-                    message: format!(
-                        "lines[{i}]'s width {width:?}, in points, must be above 0 and at most {MAX_LINE_WIDTH}"
-                    ),
-                });
-            }
-            if set.colour[3] != 255 {
-                return Err(InvalidParameter {
-                    parameter: "lines",
-                    message: format!(
-                        "lines[{i}]'s colour {:?} must be opaque, its alpha 255",
-                        set.colour
-                    ),
-                });
             }
         }
         // The camera at this size, and the bodies and lines in its view, by the rules a
@@ -1245,6 +1267,7 @@ impl Renderer {
             Colours {
                 outlines: Outlines::DEFAULT,
                 background: Some(srgb(BACKGROUND)),
+                tint: Color32::BLACK,
             },
             Drawn {
                 bodies: &drawn,
@@ -1286,6 +1309,7 @@ impl Renderer {
         let Colours {
             outlines,
             background,
+            tint,
         } = colours;
         let Drawn {
             bodies: drawn,
@@ -1326,7 +1350,7 @@ impl Renderer {
                 continue;
             }
             uploaded.settle(view, lit);
-            uploaded.faces(ctx, number, lit, view, &mut instances, uploads)?;
+            *uploads += uploaded.faces(ctx, number, lit, tint, view, &mut instances)?;
             edges(&mut lines, number, uploaded, lit, view, (&strokes, reach));
         }
         // The frame's lines after every body's edges, so a line coinciding with an edge is
@@ -1534,16 +1558,16 @@ fn rect_int(rect: PixelRect) -> RectInt {
     }
 }
 
-/// How highlights are drawn. The worker's renders tint a highlighted face (its mesh
-/// uploaded in the tint) and outline it, and draw a highlighted edge wider and blue: the
-/// agents' PNG look (docs/design/m4.6-render.md). The app's frames outline each highlighted
+/// How highlights are drawn. The worker's renders bake the highlight's blue into a
+/// highlighted face's mesh (uploaded mixed with it) and outline it, and draw a highlighted
+/// edge wider and blue: the agents' PNG look (docs/design/m4.6-render.md). The app's frames outline each highlighted
 /// face's and edge's instance alone, with `re_renderer`'s per-instance outline masks, as
 /// Rerun's viewer draws hover and selection, and leave its mesh and colour as uploaded: so a
 /// highlight, which moves with the pointer, never uploads anything, and changes no pixel of
 /// the picking layer (docs/design/m5.0-app.md section 10, "outlines by instance").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Highlight {
-    Tint,
+    Baked,
     /// A frame's: and a body's with no highlights, which looks the same either way.
     #[default]
     Outline,
@@ -3645,9 +3669,10 @@ struct Uploaded {
     faces: Vec<UploadedFace>,
 }
 
-/// What of a body is highlighted, what hovered, and what tinted: its faces' and edges'
-/// numbers from 1, ascending, each once; how it's highlighted (a hover is always outlined);
-/// and what a tinted face's instance adds to its colour ([`Tint::added`]).
+/// What of a body is highlighted, what hovered, and what tinted (a frame's): its faces'
+/// and edges' numbers from 1, ascending, each once; and how it's highlighted (a hover is
+/// always outlined).
+#[derive(Default)]
 struct Lit {
     faces: Vec<u32>,
     edges: Vec<u32>,
@@ -3655,22 +3680,6 @@ struct Lit {
     hovered_edges: Vec<u32>,
     tinted_faces: Vec<u32>,
     style: Highlight,
-    tint: Color32,
-}
-
-impl Default for Lit {
-    /// Nothing lit: a frame's style, and a tint that adds nothing.
-    fn default() -> Self {
-        Lit {
-            faces: Vec::new(),
-            edges: Vec::new(),
-            hovered_faces: Vec::new(),
-            hovered_edges: Vec::new(),
-            tinted_faces: Vec::new(),
-            style: Highlight::default(),
-            tint: Color32::BLACK,
-        }
-    }
 }
 
 impl Lit {
@@ -3680,7 +3689,7 @@ impl Lit {
         Lit {
             faces: numbers(&body.highlight_faces),
             edges: numbers(&body.highlight_edges),
-            style: Highlight::Tint,
+            style: Highlight::Baked,
             ..Lit::default()
         }
     }
@@ -3701,15 +3710,8 @@ impl Lit {
         self.hovered_edges.binary_search(&number).is_ok()
     }
 
-    /// What face `number`'s instance adds to its colour: the tint's, if it's tinted, else
-    /// nothing (opaque black: re_renderer adds the tint's colour and multiplies by its
-    /// alpha).
-    fn added(&self, number: u32) -> Color32 {
-        if self.tinted_faces.binary_search(&number).is_ok() {
-            self.tint
-        } else {
-            Color32::BLACK
-        }
+    fn tinted(&self, number: u32) -> bool {
+        self.tinted_faces.binary_search(&number).is_ok()
     }
 
     /// Whether anything of the body is highlighted or hovered: outlined (a tint isn't).
@@ -3726,7 +3728,7 @@ impl Lit {
 }
 
 /// A face with triangles: which it is, its box (its triangles' positions'), the point its
-/// mesh is about ([`View::anchor`]), and its mesh, plain or tinted, as the last render drew
+/// mesh is about ([`View::anchor`]), and its mesh, plain or baked, as the last render drew
 /// it, each uploaded the first time a render draws the face so about that point.
 struct UploadedFace {
     span: FaceSpan,
@@ -3739,7 +3741,7 @@ struct UploadedFace {
     /// no pixel there, or that the pyramid holds none of, isn't, and keeps its meshes.
     placed: bool,
     plain: Option<Arc<GpuMesh>>,
-    tinted: Option<Arc<GpuMesh>>,
+    baked: Option<Arc<GpuMesh>>,
 }
 
 /// A face's number from 1, and its `count` triangles' place, from `first`, in its body's
@@ -3776,7 +3778,7 @@ impl Uploaded {
                 cut: None,
                 placed: false,
                 plain: None,
-                tinted: None,
+                baked: None,
             });
         }
         Ok(Uploaded {
@@ -3794,13 +3796,13 @@ impl Uploaded {
     fn drop_gpu_meshes(&mut self) {
         for face in &mut self.faces {
             face.plain = None;
-            face.tinted = None;
+            face.baked = None;
         }
     }
 
     /// Each face's point for `view`, and what it won't draw dropped: its meshes about
-    /// another point, and the colour it isn't drawn in (tinted where `lit` highlights it
-    /// in [`Highlight::Tint`], plain otherwise).
+    /// another point, and the colour it isn't drawn in (baked where `lit` highlights it
+    /// in [`Highlight::Baked`], plain otherwise).
     fn settle(&mut self, view: &View, lit: &Lit) {
         let mesh = &self.mesh;
         for face in &mut self.faces {
@@ -3827,35 +3829,35 @@ impl Uploaded {
                 face.anchor = anchor;
                 face.cut = cut;
                 face.plain = None;
-                face.tinted = None;
+                face.baked = None;
             }
-            if lit.style == Highlight::Tint && lit.face(face.span.number) {
+            if lit.style == Highlight::Baked && lit.face(face.span.number) {
                 face.plain = None;
             } else {
-                face.tinted = None;
+                face.baked = None;
             }
         }
     }
 
     /// Each face as a mesh instance of its own, moved into `view` by its own transform, its
     /// picking ID the body's number `body` and the face's; a highlighted one (in `lit`)
-    /// outlined, and tinted in [`Highlight::Tint`]; a frame's tinted one its instance's tint
-    /// added ([`Lit::added`]). A face's mesh is uploaded where it has none (counted in
-    /// `uploads`).
+    /// outlined, and its mesh baked in [`Highlight::Baked`]; a tinted one (a frame's) its
+    /// instance's `tint` added. A face's mesh is uploaded where it has none: how many were.
     fn faces(
         &mut self,
         ctx: &RenderContext,
         body: u32,
         lit: &Lit,
+        tint: Color32,
         view: &View,
         instances: &mut Vec<GpuMeshInstance>,
-        uploads: &mut u64,
-    ) -> Result<(), String> {
-        // The faces to be uploaded: each without the mesh, plain or tinted, it's drawn with.
+    ) -> Result<u64, String> {
+        let mut uploads = 0;
+        // The faces to be uploaded: each without the mesh, plain or baked, it's drawn with.
         let new = self
             .faces
             .iter()
-            .filter(|f| f.placed && f.plain.is_none() && f.tinted.is_none())
+            .filter(|f| f.placed && f.plain.is_none() && f.baked.is_none())
             .count();
         let _span = (new > 0).then(|| tracing::debug_span!("upload", body, faces = new).entered());
         for face in &mut self.faces {
@@ -3864,9 +3866,9 @@ impl Uploaded {
             }
             let number = face.span.number;
             let highlighted = lit.face(number);
-            let tinted = lit.style == Highlight::Tint && highlighted;
-            let held = if tinted {
-                &mut face.tinted
+            let baked = lit.style == Highlight::Baked && highlighted;
+            let held = if baked {
+                &mut face.baked
             } else {
                 &mut face.plain
             };
@@ -3882,16 +3884,22 @@ impl Uploaded {
                     if vertices.triangles.is_empty() {
                         continue;
                     }
-                    let cpu = face_cpu_mesh(ctx, body, face.span, vertices, tinted)?;
+                    let cpu = face_cpu_mesh(ctx, body, face.span, vertices, baked)?;
                     let gpu = GpuMesh::new(ctx, &cpu).map_err(|e| format!("Face{number}: {e}"))?;
-                    *uploads += 1;
+                    uploads += 1;
                     Arc::clone(held.insert(Arc::new(gpu)))
                 }
             };
             instances.push(GpuMeshInstance {
                 gpu_mesh,
                 world_from_mesh: view.world_from_mesh(face.anchor),
-                additive_tint: lit.added(number),
+                // Opaque black, where it isn't tinted: re_renderer adds the tint's colour and
+                // multiplies by its alpha, so this leaves the face's own colour.
+                additive_tint: if lit.tinted(number) {
+                    tint
+                } else {
+                    Color32::BLACK
+                },
                 outline_mask_ids: outlined_as(highlighted, lit.hovered_face(number)),
                 picking_layer_id: PickingLayerId {
                     object: PickingLayerObjectId(u64::from(body)),
@@ -3900,7 +3908,7 @@ impl Uploaded {
                 cull_mode: None,
             });
         }
-        Ok(())
+        Ok(uploads)
     }
 }
 
@@ -3988,7 +3996,7 @@ fn add_edge_strips(
 /// and its rotation into the view, so precise across the view at every distance and angle),
 /// built for each view ([`strip_edges`], [`add_edge_strips`]): its picking ID the body's
 /// number and the edge's with [`EDGE_BIT`]; a highlighted one (in `lit`) wider, in the
-/// highlight's blue, in [`Highlight::Tint`], or outlined, as it is otherwise, in
+/// highlight's blue, in [`Highlight::Baked`], or outlined, as it is otherwise, in
 /// [`Highlight::Outline`]. An edge whose box the view's pyramid holds is placed as it is;
 /// one it holds none of, not at all; any other is cut to it ([`View::cut_strip`]). Each
 /// point is moved toward the eye by `reach` of the view's height ([`drawn_edge_fraction`],
@@ -4008,7 +4016,7 @@ fn edges(
         let highlighted = lit.edge(number);
         let hovered = outlined_as(false, lit.hovered_edge(number));
         let (width, colour, outline) = match (highlighted, lit.style) {
-            (true, Highlight::Tint) => (HIGHLIGHTED_EDGE_WIDTH, HIGHLIGHT, hovered),
+            (true, Highlight::Baked) => (HIGHLIGHTED_EDGE_WIDTH, HIGHLIGHT, hovered),
             (true, Highlight::Outline) => (EDGE_WIDTH, EDGE, outlined_as(true, hovered.is_some())),
             (false, _) => (EDGE_WIDTH, EDGE, hovered),
         };
@@ -4304,13 +4312,13 @@ fn cut_face_vertices(mesh: &Mesh, span: FaceSpan, view: &View) -> Result<FaceVer
 }
 
 /// The face `span` of body `body` as a mesh of its own, of its `vertices` ([`face_vertices`],
-/// or [`cut_face_vertices`]), coloured plain or tinted.
+/// or [`cut_face_vertices`]), coloured plain or baked with the highlight's blue.
 fn face_cpu_mesh(
     ctx: &RenderContext,
     body: u32,
     span: FaceSpan,
     vertices: FaceVertices,
-    tinted: bool,
+    baked: bool,
 ) -> Result<CpuMesh, String> {
     let FaceVertices {
         positions,
@@ -4330,7 +4338,7 @@ fn face_cpu_mesh(
             albedo_factor: Rgba::WHITE,
         }],
         triangle_indices: triangles,
-        vertex_colors: vec![vertex_colour(tinted); vertices],
+        vertex_colors: vec![vertex_colour(baked); vertices],
         vertex_normals: normals,
         vertex_texcoords: vec![glam::Vec2::ZERO; vertices],
         bbox: macaw::BoundingBox::from_points(positions.iter().copied()),
@@ -5038,7 +5046,7 @@ mod tests {
                 let first = ids(r, &front);
                 assert_eq!(ids(r, &front), first);
                 assert_eq!(r.uploads(), 6);
-                // A highlight uploads the face's tinted mesh and drops its plain one; no view
+                // A highlight uploads the face's baked mesh and drops its plain one; no view
                 // after it uploads; its end uploads the plain one again.
                 let mut lit = front.clone();
                 lit.bodies[0].highlight_faces = vec![2];
@@ -5046,7 +5054,7 @@ mod tests {
                 lit.camera = top.camera.clone();
                 assert_eq!(uploads_and_centre(r, &lit), (0, [1, 6]));
                 let face = &r.bodies[&1].faces[2];
-                assert!(face.tinted.is_some() && face.plain.is_none());
+                assert!(face.baked.is_some() && face.plain.is_none());
                 assert_eq!(uploads_and_centre(r, &top), (1, [1, 6]));
                 // A body whose mesh changed is uploaded again; one beside it, out of the view's
                 // rectangle (100 mm off, past its 29.3 each side), isn't placed: none of it.
@@ -5060,7 +5068,7 @@ mod tests {
                 assert_eq!(r.bodies.keys().copied().collect::<Vec<_>>(), [1, 2]);
                 assert_eq!(uploads_and_centre(r, &front), (6, [1, 3]));
                 assert_eq!(r.bodies.keys().copied().collect::<Vec<_>>(), [1]);
-                // A face highlighted the first time it's drawn is uploaded tinted alone.
+                // A face highlighted the first time it's drawn is uploaded baked alone.
                 let mut lit = moved.clone();
                 lit.bodies.truncate(1);
                 lit.bodies[0].highlight_faces = vec![2];

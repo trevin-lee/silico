@@ -1565,7 +1565,7 @@ fn a_hover_moving_across_every_face_and_edge_uploads_nothing() {
                 r.bodies[&1]
                     .faces
                     .iter()
-                    .all(|f| f.tinted.is_none() && f.plain.is_some())
+                    .all(|f| f.baked.is_none() && f.plain.is_some())
             );
         },
     );
@@ -2838,6 +2838,56 @@ fn a_tinted_face_is_the_bodys_colour_mixed_with_the_tint_and_nothing_else_change
             // The tint gone: the plain frame again, and no upload all along.
             assert_eq!(tinted_image(r, &plain_frame, &[], FEATURE_TINT), plain);
             assert_eq!(r.uploads(), uploaded);
+        },
+    );
+}
+
+#[test]
+fn faces_tinted_in_any_order_or_twice_and_of_two_bodies_are_each_tinted() {
+    // The box (body 1) and a second one 12 mm below it (body 2, z = -12 to -2), each seen
+    // from the front by its front face (Face3): body 1's from row 20.73 to 31.64, body 2's
+    // from 24 + 9 × 12/11 = 33.82 to 24 + 19 × 12/11 = 44.73, both from column 9.09 to
+    // 52.73. Tinted as given out of order and one face twice, body 1's faces 3, 6, 2, and 2
+    // again (6 and 2 are edge on from the front), body 2's 3 between them: each front face's
+    // centre row is the tint's mix by hand, as one tinted alone is.
+    on_lavapipe(
+        "render::frame_tests::faces_tinted_in_any_order_or_twice_and_of_two_bodies_are_each_tinted",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            r.upload(
+                2,
+                &Arc::new(box_mesh([0.0, 0.0, -12.0], [40.0, 20.0, 10.0])),
+            )
+            .unwrap();
+            let camera = front();
+            let both = frame(&camera, &[1, 2], &[], None);
+            let plain = tinted_image(r, &both, &[], FEATURE_TINT);
+            let tinted = [
+                (1, Element::Face(3)),
+                (2, Element::Face(3)),
+                (1, Element::Face(6)),
+                (1, Element::Face(2)),
+                (1, Element::Face(2)),
+            ];
+            let lit = tinted_image(r, &both, &tinted, FEATURE_TINT);
+            let want = tinted_by_hand(1.0, FEATURE_TINT.colour, 0.4);
+            for (body, row) in [(1, 26u32), (2, 39)] {
+                for column in [14u32, 32, 48] {
+                    let at = usize::try_from(row * WIDTH + column).unwrap();
+                    assert_colour(
+                        plain[at],
+                        BODY.map(f64::from),
+                        1.0,
+                        &format!("body {body} plain at ({column}, {row})"),
+                    );
+                    assert_colour(
+                        lit[at],
+                        want,
+                        1.0,
+                        &format!("body {body} tinted at ({column}, {row})"),
+                    );
+                }
+            }
         },
     );
 }
