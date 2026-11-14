@@ -2676,6 +2676,9 @@ fn frames_climb_and_the_panels_answer_while_a_rebuild_and_its_timeline_read_are_
 struct HeldReader {
     held: Mutex<bool>,
     opened: Condvar,
+    /// Whether a read waits on the hold: set by the read as it waits, and cleared as reads
+    /// are held, each under `held`'s lock, so a read that comes to the hold between the two
+    /// is never missed.
     reading: AtomicBool,
 }
 
@@ -2683,14 +2686,21 @@ impl HeldReader {
     fn reader(self: &Arc<Self>) -> Reader {
         let me = Arc::clone(self);
         Arc::new(move |path: &Path| {
-            me.reading.store(true, Ordering::SeqCst);
             let mut held = me.held.lock().unwrap();
             while *held {
+                me.reading.store(true, Ordering::SeqCst);
                 held = me.opened.wait(held).unwrap();
             }
             drop(held);
             plain_read(path)
         })
+    }
+
+    /// Reads held from now, none yet waiting on the hold.
+    fn hold_reads(&self) {
+        let mut held = self.held.lock().unwrap();
+        *held = true;
+        self.reading.store(false, Ordering::SeqCst);
     }
 }
 
@@ -2700,8 +2710,7 @@ fn frames_climb_and_status_answers_while_a_disk_comparison_is_held() {
     let f = fixture_reading(Some(reader.reader()));
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    *reader.held.lock().unwrap() = true;
-    reader.reading.store(false, Ordering::SeqCst);
+    reader.hold_reads();
     step_until(&mut h, "a comparison held", |_| {
         reader.reading.load(Ordering::SeqCst)
     });
@@ -2730,8 +2739,7 @@ impl HeldReader {
     /// and the session's finding stands, until [`open`](Self::open). A few frames more, so
     /// the comparison before it, which ended as it began, has told what it found.
     fn hold(&self, h: &mut AppHarness) {
-        *self.held.lock().unwrap() = true;
-        self.reading.store(false, Ordering::SeqCst);
+        self.hold_reads();
         step_until(h, "a comparison held", |_| {
             self.reading.load(Ordering::SeqCst)
         });
@@ -6959,8 +6967,13 @@ fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() 
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let hold = f.kernel.hold(is_prism);
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "the preview rebuilding", |h| {
+    // Rebuilding is all `status` says: held at its prism, the first asked, the rebuild has
+    // got there. One the edit stopped before then would ask no prism, and the edit's would
+    // be the first.
+    step_until(&mut h, "the preview rebuilding, held at its prism", |h| {
         h.state().tabs()[0].preview_rebuilding()
+            && prisms_asked(&f) == 1
+            && f.kernel.wait_running(1, Duration::ZERO)
     });
     // The rebuild still held: the edit lands all the same, the old preview's read stopped.
     type_into(&mut h, "Length", "3");
@@ -40054,12 +40067,16 @@ fn command_r(h: &mut AppHarness) {
 
 #[test]
 fn command_r_reads_a_file_changed_on_disk_that_no_watch_has_found_and_rebuilds_every_feature() {
-    // No disk watch: only a command reads the file, so Reload's own read finds the change.
-    let f = fixture();
+    // The disk watch's comparisons held before the file changes, so no comparison finds it
+    // (one would reload it, with nothing held): only a command reads the file, and Reload's
+    // own read finds the change.
+    let reader = Arc::new(HeldReader::default());
+    let f = fixture_reading(Some(reader.reader()));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
     settled(&mut h);
     assert_eq!(boxes_asked(&f), 1);
+    reader.hold(&mut h);
     let theirs = example_theirs();
     std::fs::write(&path, &theirs).unwrap();
     for _ in 0..10 {
@@ -40096,6 +40113,7 @@ fn command_r_reads_a_file_changed_on_disk_that_no_watch_has_found_and_rebuilds_e
         boxes_asked(&f) == 4 && !h.state().tabs()[0].checking()
     });
     assert_eq!(h.state().tabs()[0].rebuilds_all, 3);
+    reader.open();
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -40103,11 +40121,15 @@ fn command_r_reads_a_file_changed_on_disk_that_no_watch_has_found_and_rebuilds_e
 fn ctrl_r_reloads_on_windows_and_linux() {
     use eframe::egui::os::OperatingSystem;
     for os in [OperatingSystem::Windows, OperatingSystem::Nix] {
-        let f = fixture();
+        // The disk watch's comparisons held before the file changes: only Reload's read
+        // finds it.
+        let reader = Arc::new(HeldReader::default());
+        let f = fixture_reading(Some(reader.reader()));
         let (mut h, path) = f.opened("example.silico", EXAMPLE);
         h.ctx.set_os(os);
         step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
         settled(&mut h);
+        reader.hold(&mut h);
         std::fs::write(&path, example_theirs()).unwrap();
         // ⌘ isn't Ctrl there: the Mac's Command alone does nothing.
         h.key_press_modifiers(eframe::egui::Modifiers::MAC_CMD, eframe::egui::Key::R);
@@ -40121,13 +40143,18 @@ fn ctrl_r_reloads_on_windows_and_linux() {
             shows(h, "Timeline", "Drill") && !h.state().tabs()[0].checking()
         });
         assert_eq!(h.state().tabs()[0].rebuilds_all, 1, "{os:?}");
+        reader.open();
         assert_eq!(never_waits::waits(), 0);
     }
 }
 
 #[test]
 fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reload_drops_them() {
-    let f = fixture();
+    // Only Reload's own read finds the file changed: the disk watch's comparisons are held
+    // before it changes, so no banner announces it. Announced, its banner's "Reload, discard
+    // my edits" would stand beside the question's, as soon as a comparison came.
+    let reader = Arc::new(HeldReader::default());
+    let f = fixture_reading(Some(reader.reader()));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
@@ -40136,6 +40163,7 @@ fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reloa
         let tab = &h.state().tabs()[0];
         tab.transaction && tab.edits.idle() && shows(h, "Timeline", "Pins")
     });
+    reader.hold(&mut h);
     let theirs = example_theirs();
     std::fs::write(&path, &theirs).unwrap();
     // Inside the transaction, `text` reads the session's document, never the file.
@@ -40176,6 +40204,7 @@ fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reloa
     settled(&mut h);
     assert!(h.state().tabs()[0].reloaded.is_none());
     assert_eq!(text_of(&f, &h), theirs);
+    reader.open();
     assert_eq!(never_waits::waits(), 0);
 }
 
