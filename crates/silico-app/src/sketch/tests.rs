@@ -1095,28 +1095,62 @@ fn value_over_the_origin() -> SketchRead {
     under(sketch)
 }
 
+/// The member `name` as a constraint, as a click picks it.
+fn constraint_pick(name: &str) -> Option<SketchPick> {
+    member(name, ElementKind::Constraint)
+}
+
 #[test]
-fn hit_takes_points_and_the_origin_then_boxes_then_curves_then_dimension_lines_then_axes() {
-    let constraint = |name: &str| member(name, ElementKind::Constraint);
-    let read = dimensioned();
+fn a_glyphs_box_is_hit_before_a_line_within_the_pick() {
     // (11.2, −0.6): inside the glyph's box, and 0.6 from the bottom (and the x axis it
     // covers), within the 0.7: the glyph, drawn over the line.
-    assert_eq!(hit(&read, [11.2, -0.6], 0.7, HAND), constraint("ka000001"));
+    let read = dimensioned();
+    assert_eq!(
+        hit(&read, [11.2, -0.6], 0.7, HAND),
+        constraint_pick("ka000001")
+    );
+}
+
+#[test]
+fn an_extension_line_along_an_axis_is_hit_before_the_axis() {
+    let read = dimensioned();
     // (0, −1.5): 1.5 from the corner, the origin, and the left side; on the y axis, and on
     // the left extension line: the dimension, the axis running everywhere.
-    assert_eq!(hit(&read, [0.0, -1.5], 0.7, HAND), constraint("ka000002"));
-    // Past the extension line's end, (0, −3.5): 0.4 from it, but the axis is 0 off: the
-    // dimension's line is still the nearer thing drawn there, within the pick.
-    assert_eq!(hit(&read, [0.0, -3.5], 0.7, HAND), constraint("ka000002"));
+    assert_eq!(
+        hit(&read, [0.0, -1.5], 0.7, HAND),
+        constraint_pick("ka000002")
+    );
+    // Past the extension line's end, (0, −3.5): 0.4 from it, though the axis is 0 off.
+    assert_eq!(
+        hit(&read, [0.0, -3.5], 0.7, HAND),
+        constraint_pick("ka000002")
+    );
     // (0, −4): 0.9 past the line's end, beyond the pick: the axis.
     assert_eq!(hit(&read, [0.0, -4.0], 0.7, HAND), Some(SketchPick::YAxis));
-    let read = value_over_the_origin();
+}
+
+#[test]
+fn a_value_over_an_axis_is_hit_before_the_axis() {
     // (0.9, 0.1): inside the value's box over the x axis, 0.1 from the axis, 0.906 from the
     // origin: the dimension.
-    assert_eq!(hit(&read, [0.9, 0.1], 0.7, HAND), constraint("ka000002"));
+    let read = value_over_the_origin();
+    assert_eq!(
+        hit(&read, [0.9, 0.1], 0.7, HAND),
+        constraint_pick("ka000002")
+    );
+}
+
+#[test]
+fn the_origin_under_a_value_is_hit_before_it() {
     // (0.2, 0.1), inside the box: the origin, 0.224 off, before it.
+    let read = value_over_the_origin();
     assert_eq!(hit(&read, [0.2, 0.1], 0.7, HAND), Some(SketchPick::Origin));
+}
+
+#[test]
+fn a_point_under_a_value_is_hit_before_it() {
     // (−0.8, −0.3), inside the box: the point, 0.2 off (the origin 0.854), before it.
+    let read = value_over_the_origin();
     assert_eq!(
         hit(&read, [-0.8, -0.3], 0.7, HAND),
         member("pf000001", ElementKind::Point)
