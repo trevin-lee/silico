@@ -994,10 +994,10 @@ impl DrawnSelection {
 
 /// What's drawn of `read`, seen through `view`, what `selected` holds drawn selected: the
 /// plane's grid and axes (where the view says what's in it), an axis selected across all
-/// the view draws of it ([`selected_axis`]), and the origin; the profile's fill (unless the sketch is over
-/// defined); each curve a polyline (an arc or a circle within the view's chord tolerance of
-/// itself), construction dashed; each point a square; and each relation's glyphs and each
-/// dimension; each as `shown` says.
+/// the view draws of it ([`selected_axis`]), and the origin; the profile's fill (unless the
+/// sketch is over defined); each curve a polyline (an arc or a circle within the view's
+/// chord tolerance of itself), construction dashed; each point a square; and each
+/// relation's glyphs and each dimension; each as `shown` says.
 pub fn drawing(
     read: &SketchRead,
     view: &View<'_>,
