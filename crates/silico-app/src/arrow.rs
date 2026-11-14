@@ -18,13 +18,15 @@
 //! value it held at the press moved by that, to the nearest half millimetre (a half up, as
 //! `Math.round`), never under half a millimetre: the prototype's
 //! `Math.max(0.5, Math.round((D0 + dd) * 2) / 2)`, set only where it differs from the input's.
-//! So a drag past the profile stops at 0.5 mm and never turns the sweep over. But a drag whose
-//! value so rounded is where the value at the press rounds to leaves that value exactly
-//! (Main's decision on the council's round 1; the prototype puts it on the half millimetres at
-//! the first move): a move square across the arrow, or one inside the value's own step, never
-//! rewrites an exact value, so 10.3, whose step is 10.5's, stays 10.3 until the drag takes it
-//! to 11 or to 10. Nothing caps a drag above: a value past what a sweep takes is the core's to
-//! refuse, as a typed one is. An arrow whose sweep the view foreshortens to under
+//! So a drag past the profile stops at 0.5 mm and never turns the sweep over. But where the
+//! closed span from the value at the press to where the drag takes it holds no half
+//! millimetre, the value stays exactly as it was (Main's rule on the council's round 1; the
+//! prototype puts it on the half millimetres at the first move), worked in whole nanometres: a
+//! value on the grid moves as the prototype's does, and one off it, 10.3, stays 10.3 until the
+//! drag reaches 10.5 (then 10.5, and 11 from 10.75) or 10 (then 10, and 9.5 from 9.75), and is
+//! 10.3 again when the drag comes back. A move square across the arrow never rewrites a value.
+//! Nothing caps a drag above: a value past what a sweep takes is the core's to refuse, as a
+//! typed one is. An arrow whose sweep the view foreshortens to under
 //! 0.6 points a millimetre (seen end on, or zoomed far out) isn't drawn and takes no press, as
 //! the prototype's `flat` one.
 //!
@@ -512,41 +514,49 @@ pub fn cursor(hit: Hit) -> CursorIcon {
 
 /// The value a drag of `distance`'s arrow gives, the arrow as `arrow` was at the press at
 /// `press`, the pointer now at `at` (`onPointerDrag`): the pointer's move along the arrow's way
-/// on the screen over its points a millimetre is how far the end moved, in mm; the value at
-/// the press moved by that times the arrow's factor, to the nearest half millimetre (a half up,
-/// as `Math.round`), and at least half a millimetre ([`on_the_grid`]). But where that's where
-/// the value at the press itself rounds to (a move across the arrow, or one smaller than a
-/// step), the value at the press, exactly (Main's decision on the council's round 1): so an
-/// exact value is never rewritten by a drag that hasn't left its own step, and 10.3 stays 10.3
-/// until a drag takes it to 11 or 10. None where that isn't a length (a move past what one
-/// holds).
+/// on the screen over its points a millimetre is how far the end moved, in mm; times the
+/// arrow's factor, that's how far the value moves, to the nanometre, to `t`; and the value is
+/// [`stepped`]'s from the value at the press to `t`. None where that isn't a length (a move
+/// past what one holds, or one that isn't a number).
 pub fn dragged(distance: &Distance, arrow: &Arrow, press: Pos2, at: Pos2) -> Option<Length> {
     let moved = dot(sub(wide(at), wide(press)), arrow.unit) / arrow.per_mm;
-    let from = distance.value;
-    let to = on_the_grid(from.mm() + distance.factor * moved)?;
-    Some(if Some(to) == on_the_grid(from.mm()) {
-        from
-    } else {
-        to
-    })
-}
-
-/// `mm` on the half millimetres, as the prototype puts a drag's value
-/// (`Math.max(0.5, Math.round(v * 2) / 2)`): to the nearest, a half up, and at least half a
-/// millimetre. None where that isn't a length (not finite, or past what one holds).
-fn on_the_grid(mm: f64) -> Option<Length> {
-    let halves = round_half_up(mm * 2.0);
-    if !halves.is_finite() || halves > (i64::MAX / HALF_MM_NM) as f64 {
+    let by = distance.factor * moved * 1e6;
+    if !by.is_finite() {
         return None;
     }
-    Some(Length::from_nm(halves.max(1.0) as i64 * HALF_MM_NM))
+    // Taken to the nanometre, saturating: a move past any length's reach is past it either
+    // way, down to the least step or up to none.
+    let to = i128::from(distance.value.nm()).saturating_add(by.round() as i128);
+    stepped(distance.value, to)
 }
 
-/// `x` rounded to a whole number as JavaScript's `Math.round` rounds it: to the nearest, a half
-/// up, toward +∞ (`x − ⌊x⌋` is exact, so a half is found exactly).
-fn round_half_up(x: f64) -> f64 {
-    let below = x.floor();
-    if x - below >= 0.5 { below + 1.0 } else { below }
+/// The value a drag from `from` to `to` (in nanometres) gives (Main's rule on the council's
+/// round 1): `from`, exactly, where the closed span between them holds no half millimetre;
+/// else `to` on the half millimetres, as the prototype puts a drag's value ([`on_the_grid`]).
+/// So a value on the grid, which its span always holds, moves as the prototype's does; and
+/// one off it, 10.3, stays until the drag reaches a half millimetre, 10.5 or 10, and comes
+/// back to itself when the drag does. Worked in whole nanometres, so each edge is exact.
+fn stepped(from: Length, to: i128) -> Option<Length> {
+    let half = i128::from(HALF_MM_NM);
+    let at = i128::from(from.nm());
+    let (low, high) = (at.min(to), at.max(to));
+    // The first half millimetre at or above `low` (`low` is at most `from`, so it fits).
+    let first = low.div_euclid(half) + i128::from(low.rem_euclid(half) != 0);
+    if first * half > high {
+        return Some(from);
+    }
+    on_the_grid(to)
+}
+
+/// `nm` on the half millimetres, as the prototype puts a drag's value
+/// (`Math.max(0.5, Math.round(v * 2) / 2)`): to the nearest, a half up, and at least half a
+/// millimetre. None past what a length holds.
+fn on_the_grid(nm: i128) -> Option<Length> {
+    let half = i128::from(HALF_MM_NM);
+    let halves = nm.saturating_add(half / 2).div_euclid(half).max(1);
+    i64::try_from(halves.checked_mul(half)?)
+        .ok()
+        .map(Length::from_nm)
 }
 
 /// What the arrows ask of the dialog's inputs.

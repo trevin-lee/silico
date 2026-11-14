@@ -764,8 +764,8 @@ fn a_move_along_the_arrow_moves_the_value_by_its_points_over_the_points_a_millim
     assert_eq!(drag_by(&arrow, 0.0, -14.142_136), Some(mm("20")));
     assert_eq!(drag_by(&arrow, 0.0, 7.071_068), Some(mm("5")));
     // To the nearest half millimetre, either side of a quarter (a quarter itself is at the
-    // f32 projection's mercy; `round_half_up`'s own test has the half): 0.26 mm up is 10.26,
-    // so 10.5; 0.24 is 10.24, so 10; down, 9.76 is 10 and 9.74 is 9.5.
+    // f32 projection's mercy; `stepped`'s own tests have the edges): 0.26 mm up is 10.26, so
+    // 10.5; 0.24 is 10.24, so 10; down, 9.76 is 10 and 9.74 is 9.5.
     for (by, to) in [(0.26, "10.5"), (0.24, "10"), (-0.24, "10"), (-0.26, "9.5")] {
         let points = -(by * SQRT_2) as f32;
         assert_eq!(drag_by(&arrow, 0.0, points), Some(mm(to)), "{by}");
@@ -778,10 +778,9 @@ fn a_move_along_the_arrow_moves_the_value_by_its_points_over_the_points_a_millim
 }
 
 #[test]
-fn a_drag_inside_the_values_own_step_leaves_it_exactly_as_it_was() {
-    // Main's rounding: where `round_half(D0 + dd)` is `round_half(D0)`, D0 exactly. Across the
-    // arrow, dd 0: 10.3, 10.2, 10.25, and 10.000001 each stay. Along it, 10.3's step is 10.5's,
-    // [10.25, 10.75): 0.4 up (10.7) or 0.04 down (10.26) stay 10.3.
+fn a_drag_whose_span_holds_no_half_millimetre_leaves_the_value_exactly_as_it_was() {
+    // Across the arrow, dd 0: 10.3, 10.2, 10.25, and 10.000001 each stay. Along it from 10.3:
+    // 0.19 up (10.49) and 0.29 down (10.01) stay; 0.21 up reaches 10.5.
     for from in ["10.3", "10.2", "10.25", "10.000001"] {
         let mut dialog = dialog_of(Kind::Pad);
         set_text(&mut dialog, LENGTH, from);
@@ -792,24 +791,35 @@ fn a_drag_inside_the_values_own_step_leaves_it_exactly_as_it_was() {
     let mut dialog = dialog_of(Kind::Pad);
     set_text(&mut dialog, LENGTH, "10.3");
     let arrow = tilted_arrow(&dialog);
-    for by in [0.4, -0.04, 0.0] {
+    for (by, to) in [
+        (0.19, "10.3"),
+        (-0.29, "10.3"),
+        (0.0, "10.3"),
+        (0.21, "10.5"),
+    ] {
         let points = -(by * SQRT_2) as f32;
-        assert_eq!(drag_by(&arrow, 0.0, points), Some(mm("10.3")), "{by}");
+        assert_eq!(drag_by(&arrow, 0.0, points), Some(mm(to)), "{by}");
     }
 }
 
 #[test]
-fn the_first_step_from_a_value_off_the_half_millimetres_lands_on_them() {
-    // 10.3: 0.5 up is 10.8, whose step is 11's; 0.1 down is 10.2, whose step is 10's; 3 up is
-    // 13.3, 13.5; 9.9 down is 0.4, at least 0.5. A value on the grid moves to the next step as
-    // the prototype's does: 10, a quarter and a bit up, 10.5.
+fn the_first_step_from_a_value_off_the_half_millimetres_is_the_half_it_reaches() {
+    // 10.3: 0.5 up is 10.8, whose nearest is 11; 0.31 down is 9.99, 10; 3 up is 13.3, 13.5;
+    // 9.9 down is 0.4, at least 0.5. And the drag at the press's own place, after them, 10.3.
     let mut dialog = dialog_of(Kind::Pad);
     set_text(&mut dialog, LENGTH, "10.3");
     let arrow = tilted_arrow(&dialog);
-    for (by, to) in [(0.5, "11"), (-0.1, "10"), (3.0, "13.5"), (-9.9, "0.5")] {
+    for (by, to) in [
+        (0.5, "11"),
+        (-0.31, "10"),
+        (3.0, "13.5"),
+        (-9.9, "0.5"),
+        (0.0, "10.3"),
+    ] {
         let points = -(by * SQRT_2) as f32;
         assert_eq!(drag_by(&arrow, 0.0, points), Some(mm(to)), "{by}");
     }
+    // A value on the grid moves to the next step as the prototype's does: 10, 0.26 up, 10.5.
     let arrow = tilted_arrow(&dialog_of(Kind::Pad));
     assert_eq!(
         drag_by(&arrow, 0.0, -(0.26 * SQRT_2) as f32),
@@ -864,24 +874,67 @@ fn a_symmetric_extents_drag_moves_its_length_by_twice_its_ends_move() {
     );
 }
 
+/// `text` mm in nanometres, as a drag's `t` is taken.
+fn nm(text: &str) -> i128 {
+    i128::from(mm(text).nm())
+}
+
 #[test]
-fn a_half_rounds_up_as_math_round_rounds_it() {
-    // `Math.round`: to the nearest, a half toward +∞.
-    for (x, rounded) in [
-        (20.5, 21.0),
-        (19.5, 20.0),
-        (20.49, 20.0),
-        (-0.5, 0.0),
-        (-1.5, -1.0),
-        (-0.51, -1.0),
-        (0.0, 0.0),
-        // The largest double under a half: below it, so down (`x + 0.5` would round to 1).
-        (0.499_999_999_999_999_94, 0.0),
-        // 2^52 − ½, the last half a double holds.
-        (4_503_599_627_370_495.5, 4_503_599_627_370_496.0),
+fn on_the_grid_a_half_rounds_up_as_math_round_rounds_it_and_never_under_half_a_millimetre() {
+    // `Math.max(0.5, Math.round(v * 2) / 2)`, in nanometres: a quarter up, 10.25 → 10.5 and
+    // 9.75 → 10; a nanometre under a quarter down; −0.25, 0, and anything below at least 0.5.
+    for (t, to) in [
+        ("10.25", "10.5"),
+        ("9.75", "10"),
+        ("10.249999", "10"),
+        ("10.750001", "11"),
+        ("0", "0.5"),
+        ("-0.25", "0.5"),
+        ("-7.75", "0.5"),
+        ("0.75", "1"),
     ] {
-        assert_eq!(round_half_up(x), rounded, "{x}");
+        assert_eq!(on_the_grid(nm(t)), Some(mm(to)), "{t}");
     }
+    // The last half millimetre a length holds, and past it.
+    let last = i128::from(i64::MAX / HALF_MM_NM * HALF_MM_NM);
+    assert_eq!(on_the_grid(last), Some(Length::from_nm(last as i64)));
+    assert_eq!(on_the_grid(i128::from(i64::MAX)), None);
+    assert_eq!(on_the_grid(i128::MAX), None);
+    assert_eq!(on_the_grid(i128::MIN), Some(mm("0.5")));
+}
+
+#[test]
+fn a_value_off_the_grid_stays_until_the_drag_reaches_a_half_millimetre_by_hand() {
+    // Main's rule, each edge worked by hand: from 10.3, the span to t holds a half millimetre
+    // only from 10.5 up or 10 down.
+    for (t, to) in [
+        ("10.49", "10.3"),
+        ("10.499999", "10.3"),
+        ("10.5", "10.5"),
+        ("10.74", "10.5"),
+        ("10.75", "11"),
+        ("10.01", "10.3"),
+        ("10.000001", "10.3"),
+        ("10", "10"),
+        ("9.76", "10"),
+        ("9.75", "10"),
+        ("9.749999", "9.5"),
+        // Back at the press, after a step: itself again.
+        ("10.3", "10.3"),
+    ] {
+        assert_eq!(stepped(mm("10.3"), nm(t)), Some(mm(to)), "{t}");
+    }
+    // On the grid it holds itself, so it moves as the prototype's: 10.24 → 10, 10.25 → 10.5.
+    assert_eq!(stepped(mm("10"), nm("10.24")), Some(mm("10")));
+    assert_eq!(stepped(mm("10"), nm("10.25")), Some(mm("10.5")));
+    assert_eq!(stepped(mm("10"), nm("9.75")), Some(mm("10")));
+    assert_eq!(stepped(mm("10"), nm("9.749999")), Some(mm("9.5")));
+    // The floor from an off-grid 0.7 dragged down: 0.51 holds no half millimetre, so 0.7;
+    // from 0.5 down, past zero and far below, 0.5.
+    for (t, to) in [("0.51", "0.7"), ("0.5", "0.5"), ("0", "0.5"), ("-3", "0.5")] {
+        assert_eq!(stepped(mm("0.7"), nm(t)), Some(mm(to)), "{t}");
+    }
+    assert_eq!(stepped(mm("0.7"), i128::MIN), Some(mm("0.5")));
 }
 
 // ---- Asked of the dialog ----
