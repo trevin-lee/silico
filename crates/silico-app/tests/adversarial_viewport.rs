@@ -34,9 +34,9 @@ use silico_core::{Error, ErrorCode};
 use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 use tempfile::TempDir;
 use ui::{
-    AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, TRIAD_DOT, advance, button_event, hand_clock,
-    looks_from, meshes_settled, meshes_settled_in, repaint_delay, step, step_until, tessellated,
-    the_viewport, triad_origin, view, view_label, view_mut,
+    AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, TRIAD_DOT, advance, body_of, button_event,
+    hand_clock, hover_item, looks_from, meshes_settled, meshes_settled_in, repaint_delay, step,
+    step_until, tessellated, the_viewport, triad_origin, view, view_label, view_mut,
 };
 
 const EXAMPLE: &str = r#"{
@@ -123,7 +123,7 @@ struct Told {
     hit: Option<silico_app::renderer::Pick>,
     /// The meshes the renderer holds, by body, as it was told.
     held: std::collections::BTreeMap<u32, Arc<Mesh>>,
-    /// Why silico-render would have refused each frame it would have ([`refusal`]).
+    /// Why silico-render would have refused each frame it would have (`Frame::check`).
     refused: Vec<String>,
 }
 
@@ -200,8 +200,15 @@ impl Present for Recorder {
                         edge: None,
                     });
                 }
-                if let Some(why) = refusal(&frame, &told.held) {
-                    told.refused.push(why);
+                // silico-render's own check of the frame's values against the meshes held,
+                // the one its `prepare` refuses by.
+                let refused = frame
+                    .frame()
+                    .check(|body| told.held.get(&body).map(|mesh| &**mesh))
+                    .err();
+                if let Some(why) = refused {
+                    told.refused
+                        .push(format!("{}: {}", why.parameter, why.message));
                 }
                 told.frames.push(frame);
             }
@@ -214,48 +221,6 @@ impl Present for Recorder {
     fn refused(&mut self) -> std::collections::BTreeSet<u32> {
         std::collections::BTreeSet::new()
     }
-}
-
-/// Why silico-render would refuse `frame`, its bodies' meshes `held`, if it would: its
-/// `Frame`'s rules, by hand. Each element listed (highlighted, hovered, or tinted) of a
-/// body the frame draws and the renderer holds, numbered from 1 within its mesh's count of
-/// its kind; each tinted one a face; and the tint's amount from 0 to 1, its colour at least
-/// the body's in every channel where it's above 0.
-fn refusal(frame: &FrameData, held: &std::collections::BTreeMap<u32, Arc<Mesh>>) -> Option<String> {
-    use silico_app::renderer::Element;
-    let lists = [
-        ("highlights", &frame.highlights),
-        ("hovered", &frame.hovered),
-        ("tinted", &frame.tinted),
-    ];
-    for (name, list) in lists {
-        for &(body, element) in list {
-            let Some(mesh) = held.get(&body).filter(|_| frame.bodies.contains(&body)) else {
-                return Some(format!("{name}: body {body} isn't drawn"));
-            };
-            let (n, count) = match element {
-                Element::Face(n) => (n, mesh.face_triangles.len()),
-                Element::Edge(n) => (n, mesh.edge_point_counts.len()),
-                Element::Vertex(n) => (n, mesh.vertex_points.len()),
-            };
-            if n == 0 || n as usize > count {
-                return Some(format!("{name}: {element:?} of body {body}, of {count}"));
-            }
-            if name == "tinted" && !matches!(element, Element::Face(_)) {
-                return Some(format!("tinted: {element:?} isn't a face"));
-            }
-        }
-    }
-    let tint = frame.tint;
-    let below = tint
-        .colour
-        .iter()
-        .zip(silico_render::render::BODY)
-        .any(|(c, body)| *c < body);
-    if !(0.0..=1.0).contains(&tint.amount) || (tint.amount > 0.0 && below) {
-        return Some(format!("tint {tint:?}"));
-    }
-    None
 }
 
 impl Fixture {
@@ -2479,25 +2444,6 @@ fn item<'a>(h: &'a AppHarness, name: &'a str) -> Option<egui_kittest::Node<'a>> 
         .query_by_label(name)
 }
 
-/// Item `name` hovered at its centre, and two frames drawn: the timeline draws before the
-/// canvas, so the frame after the pointer's move draws its tint.
-fn hover_item(h: &mut AppHarness, name: &str) {
-    let at = item(h, name).unwrap().rect().center();
-    h.hover_at(at);
-    step(h);
-    step(h);
-}
-
-/// The body feature `id` made, by its number in the view's table.
-fn body_of(h: &AppHarness, id: &str) -> u32 {
-    view(h)
-        .bodies()
-        .iter()
-        .find(|(_, body)| body.feature.as_str() == id)
-        .map(|(number, _)| *number)
-        .unwrap()
-}
-
 /// Body `body`'s faces 1 to 6, a box's.
 fn box_faces(body: u32) -> Vec<(u32, silico_app::renderer::Element)> {
     (1..=6)
@@ -2524,7 +2470,7 @@ fn finding(record: &Record, hit: Option<(u32, silico_app::renderer::Element)>) {
 fn ringed(h: &AppHarness, at: usize) -> Option<String> {
     h.state().tabs()[at]
         .view
-        .outlined
+        .ringed_feature
         .as_ref()
         .map(|id| id.as_str().to_owned())
 }
@@ -2851,5 +2797,94 @@ fn a_tab_shown_again_rings_no_item_for_a_hover_it_had_before_it_was_hidden() {
     }
     assert!(item(&h, "Large").is_some(), "a not shown");
     assert!(record.lock().unwrap().refused.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tab_shown_again_under_a_still_pointer_asks_its_hover_again() {
+    // a's large cube hovered in its canvas and ringed; b opened over it, the pointer left
+    // there, so a, hidden, lets its hover go, and the pixel it last asked with it. b closed
+    // (Ctrl+W), a is shown again under the same still pointer: its hover is asked again and
+    // found, its item ringed, though the pointer never moved.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = f.drawn("a.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    finding(&record, Some((2, Face(1))));
+    h.hover_at(the_viewport(&h).center());
+    step_until(&mut h, "a's hover", |h| ringed(h, 0).is_some());
+    let path = f.file("b.silico", EXAMPLE);
+    h.state_mut().open(&path, false);
+    step_until(&mut h, "b shown", |h| {
+        h.state().tabs().len() == 2 && item(h, "Hole").is_some()
+    });
+    meshes_settled_in(&mut h, 1);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs()[0].selection().hovered().is_none());
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::W);
+    step_until(&mut h, "b closed", |h| h.state().tabs().len() == 1);
+    meshes_settled(&mut h);
+    step_until(
+        &mut h,
+        "a's hover asked again under the still pointer",
+        |h| ringed(h, 0).as_deref() == Some("a91cw0de"),
+    );
+    assert!(record.lock().unwrap().refused.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tab_shown_again_outlines_no_hover_it_had_before_it_was_hidden() {
+    // As the ring's case above: a's large cube hovered in its canvas, outlined (its face in
+    // the frame's hovered list); b opened over it, the pointer left on the canvas; then the
+    // pointer onto a's tab and a click there. No frame drawing a's bodies again (both
+    // cubes, bodies 1 and 2; b's is one body) outlines the hover it had before it was
+    // hidden.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = f.drawn("a.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    finding(&record, Some((2, Face(1))));
+    h.hover_at(the_viewport(&h).center());
+    step_until(&mut h, "a's hover outlined", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    step(&mut h);
+    assert_eq!(
+        record.lock().unwrap().frames.last().unwrap().hovered,
+        [(2, Face(1))]
+    );
+    let path = f.file("b.silico", EXAMPLE);
+    h.state_mut().open(&path, false);
+    step_until(&mut h, "b shown", |h| {
+        h.state().tabs().len() == 2 && item(h, "Hole").is_some()
+    });
+    meshes_settled_in(&mut h, 1);
+    finding(&record, None);
+    let tab = h.get_by_label("a.silico").rect().center();
+    h.hover_at(tab);
+    step(&mut h);
+    step(&mut h);
+    let from = record.lock().unwrap().frames.len();
+    h.get_by_label("a.silico").click();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(item(&h, "Large").is_some(), "a not shown");
+    let told = record.lock().unwrap();
+    let shown: Vec<_> = told.frames[from..]
+        .iter()
+        .filter(|frame| frame.bodies == [1, 2])
+        .collect();
+    assert!(!shown.is_empty());
+    for frame in shown {
+        assert!(frame.hovered.is_empty(), "{:?}", frame.hovered);
+    }
+    assert!(told.refused.is_empty(), "{:?}", told.refused);
+    drop(told);
     assert_eq!(never_waits::waits(), 0);
 }

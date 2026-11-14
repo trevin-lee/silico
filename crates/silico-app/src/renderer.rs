@@ -309,8 +309,8 @@ struct Callback<R> {
 }
 
 /// A frame's preparation, its GPU's half aside: the changes waiting made; the frame drawn
-/// without the bodies whose uploads were refused, and without highlights of a body it
-/// doesn't draw (the renderer refuses a whole frame for one); a refusal said once until a
+/// without the bodies whose uploads were refused, and without highlights, hovers, or tints
+/// of a body it doesn't draw (the renderer refuses a whole frame for one); a refusal said once until a
 /// frame is drawn again; and a picking answer kept for the pane. With no renderer installed,
 /// the changes are taken, every upload among them refused, so none waits for ever.
 fn prepared<R: ViewRenderer>(
@@ -344,6 +344,7 @@ fn prepared<R: ViewRenderer>(
     };
     let highlights = drawn(&data.highlights);
     let hovered = drawn(&data.hovered);
+    let tinted = drawn(&data.tinted);
     locked(shared).refused.extend(refused);
     let lines: Vec<silico_render::render::Lines<'_>> = data
         .lines
@@ -358,6 +359,7 @@ fn prepared<R: ViewRenderer>(
         bodies: &bodies,
         highlights: &highlights,
         hovered: &hovered,
+        tinted: &tinted,
         lines: &lines,
         ..data.frame()
     };
@@ -662,6 +664,55 @@ mod tests {
         );
         assert_eq!(locked(&shared).picked, Some(pick));
         assert!(locked(&shared).changes.is_empty());
+    }
+
+    /// A renderer that refuses a mesh of more than 10 points, as `Counting` does, and keeps
+    /// what each frame drew and tinted.
+    #[derive(Default)]
+    struct Tints {
+        frames: Vec<Tinted>,
+    }
+
+    /// A frame's bodies and its tinted faces.
+    type Tinted = (Vec<u32>, Vec<(u32, Element)>);
+
+    impl ViewRenderer for Tints {
+        type Failure = String;
+        fn upload(&mut self, _: u32, mesh: &Arc<Mesh>) -> Result<(), String> {
+            if mesh.positions.len() > 10 {
+                return Err("out of memory".to_owned());
+            }
+            Ok(())
+        }
+        fn forget(&mut self, _: u32) {}
+        fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, String> {
+            self.frames
+                .push((frame.bodies.to_vec(), frame.tinted.to_vec()));
+            Err("no GPU here".to_owned())
+        }
+        fn composite(&self, _: &mut wgpu::RenderPass<'_>) {}
+        fn take_picking(&mut self) -> Option<Picking> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_frame_leaves_out_the_tint_of_a_body_refused_now() {
+        // Body 2's mesh is refused as it's uploaded: the frame draws body 1 alone, and tints
+        // only body 1's face, not body 2's, which would have the renderer refuse it whole.
+        let shared = Mutex::new(Shared::default());
+        locked(&shared).queue(vec![
+            Change::Upload(1, mesh(3)),
+            Change::Upload(2, mesh(11)),
+        ]);
+        let face = |body: u32| (body, Element::Face(1));
+        let frame = FrameData {
+            tinted: vec![face(1), face(2)],
+            ..data(&[1, 2], &[])
+        };
+        let mut renderer = Tints::default();
+        prepared(Some(&mut renderer), &shared, &frame);
+        assert_eq!(renderer.frames, [(vec![1], vec![face(1)])]);
     }
 
     #[test]

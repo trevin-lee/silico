@@ -483,6 +483,30 @@ pub fn boxed<P: AppKernel>(h: &AppUi<P>) -> Vec<String> {
 
 // --- The timeline and the browser ----------------------------------------------------------
 
+/// The timeline's item `name`, hovered at its centre, and two frames drawn: the timeline
+/// draws before the canvas, so the frame after the pointer's move draws what it links (the
+/// faces its feature made, tinted).
+pub fn hover_item<P: AppKernel>(h: &mut AppUi<P>, name: &str) {
+    let at = h
+        .get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label(name)
+        .rect()
+        .center();
+    h.hover_at(at);
+    step(h);
+    step(h);
+}
+
+/// The body whose feature is `id`, by its number in the view's table.
+pub fn body_of<P: AppKernel>(h: &AppUi<P>, id: &str) -> u32 {
+    view(h)
+        .bodies()
+        .iter()
+        .find(|(_, body)| body.feature.as_str() == id)
+        .map(|(number, _)| *number)
+        .unwrap()
+}
+
 /// The feature `name` selected on the timeline, its properties shown.
 pub fn select<P: AppKernel>(h: &mut AppUi<P>, name: &str) {
     h.get_by_role_and_label(Role::Pane, "Timeline")

@@ -1119,11 +1119,11 @@ pub const TIMELINE_ITEM_SELECTED_BG: Color32 = SELECTION_BG;
 /// after both.
 pub const TIMELINE_SKETCH_ICON: Color32 = GRAY_600;
 
-/// An item whose feature made what the canvas's hover is over (`.hovered-from-canvas`): a
-/// ring of Gray.600 inside its border, round its corners (`box-shadow: inset 0 0 0 1px
-/// var(--g600)`), this wide.
-pub const TIMELINE_CANVAS_HOVER: Color32 = GRAY_600;
-pub const TIMELINE_CANVAS_HOVER_WIDTH: f32 = 1.0;
+/// The ring of an item whose feature made what the canvas's hover is over
+/// (`.hovered-from-canvas`): Gray.600 inside its border, round its corners (`box-shadow:
+/// inset 0 0 0 1px var(--g600)`), this wide.
+pub const TIMELINE_RING: Color32 = GRAY_600;
+pub const TIMELINE_RING_WIDTH: f32 = 1.0;
 
 /// A failed feature (`.err`): its icon Red.550 and a line of it along the item's bottom;
 /// a warned one's (`.warn`) the warning's orange. The line's width.
@@ -2644,7 +2644,7 @@ mod tests {
         assert_eq!(TIMELINE_ITEM_SIZE, 30.0);
         assert_eq!(TIMELINE_ITEM_CORNER_RADIUS, 4);
         // `.hovered-from-canvas`: `inset 0 0 0 1px`.
-        assert_eq!(TIMELINE_CANVAS_HOVER_WIDTH, 1.0);
+        assert_eq!(TIMELINE_RING_WIDTH, 1.0);
         // `.err`/`.warn`: `inset 0 -2px 0`; `.suppressed`: `opacity: .35`, its strike
         // `left: 5px; right: 5px; height: 1.5px; rotate(-35deg)`; `.queued`: `.45`.
         assert_eq!(TIMELINE_MARK_LINE_WIDTH, 2.0);
@@ -2698,7 +2698,7 @@ mod tests {
             ),
             ("TIMELINE_SKETCH_ICON", TIMELINE_SKETCH_ICON, 0x9f9f9f),
             // `.hovered-from-canvas`, `--g600`.
-            ("TIMELINE_CANVAS_HOVER", TIMELINE_CANVAS_HOVER, 0x9f9f9f),
+            ("TIMELINE_RING", TIMELINE_RING, 0x9f9f9f),
             // `.err`, `--red`; `.warn`, `--orange`; `.err-text`, `--red`.
             ("TIMELINE_ERROR", TIMELINE_ERROR, 0xff3865),
             ("TIMELINE_WARNING", TIMELINE_WARNING, 0xff7a0c),

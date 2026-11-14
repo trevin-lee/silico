@@ -981,7 +981,7 @@ impl SelectOther {
     ) {
         self.waiting = None;
         if self.menu.take().is_some() {
-            selection.release_hover();
+            selection.menu_released();
             view.wheel_held = false;
             ctx.memory_mut(|memory| memory.surrender_focus(menu_id()));
         }

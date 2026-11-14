@@ -242,8 +242,8 @@ pub struct Hovered {
 }
 
 impl Hovered {
-    /// The feature that made it, as its name says (what the timeline outlines, DESIGN.md's
-    /// *Hover linking*).
+    /// The feature that made it, as its name says (whose item the timeline rings, DESIGN.md's
+    /// *Hover a feature, see its geometry*).
     pub fn feature(&self) -> &FeatureId {
         self.name.feature()
     }
@@ -765,9 +765,10 @@ impl Selection {
         }
     }
 
-    /// The hover let go by the menu that held it ([`hold_hover`](Self::hold_hover)): nothing
+    /// The hover let go by the menu that held it, as it closes
+    /// ([`hold_hover`](Self::hold_hover)): nothing
     /// is hovered, and the pointer's hover is asked again at once.
-    pub(crate) fn release_hover(&mut self) {
+    pub(crate) fn menu_released(&mut self) {
         if self.hover_held {
             self.hover_held = false;
             self.hovered = None;
@@ -775,11 +776,12 @@ impl Selection {
         }
     }
 
-    /// What's hovered let go, as the pointer leaving the canvas lets it go, unless a menu
-    /// holds it: for a tab not shown, whose canvas the pointer can't be over, so the tab
-    /// shown again says no hover of before (its timeline's ring, its status bar's name) and
-    /// asks its canvas again.
-    pub fn let_go_hover(&mut self) {
+    /// What's hovered let go as the pointer isn't over the canvas, unless a menu holds it
+    /// (which lets it go as it closes, [`menu_released`](Self::menu_released)): the pointer
+    /// off the canvas, or the tab not shown (`Tab::canvas_unshown`), so the tab shown again
+    /// says no hover of before (its timeline's ring, its status bar's name) and asks its
+    /// canvas again.
+    pub(crate) fn pointer_gone(&mut self) {
         if !self.hover_held {
             self.hovered = None;
             self.hover_asked = None;
@@ -791,8 +793,8 @@ impl Selection {
         self.hover_held
     }
 
-    /// The feature that made what the pointer is over (the timeline outlines it, DESIGN.md's
-    /// *Hover linking*).
+    /// The feature that made what the pointer is over (the timeline rings its item,
+    /// DESIGN.md's *Hover a feature, see its geometry*).
     pub fn hovered_feature(&self) -> Option<&FeatureId> {
         self.hovered.as_ref().map(Hovered::feature)
     }
@@ -1596,8 +1598,7 @@ impl Selection {
             return;
         }
         let Some(pointer) = frame.pointer_px else {
-            self.hovered = None;
-            self.hover_asked = None;
+            self.pointer_gone();
             return;
         };
         if view.navigating() {
@@ -1733,6 +1734,7 @@ impl Selection {
         let key = (self.version, view.table());
         if self.drawn != Some(key) {
             view.highlights = highlights(&self.items, view.bodies(), view.bodies_of());
+            view.feature_faces = feature_faces(&self.items, view.bodies());
             self.drawn = Some(key);
         }
         view.hovered = self
@@ -1801,11 +1803,9 @@ fn toggled(added: bool, place: usize, picked: &Picked) -> Toggled {
 }
 
 /// What the canvas highlights of `items` among `bodies`, read from the model `of`: each
-/// element found, in the body it's in (a vertex as the viewport's dot), if the answer it's drawn by
-/// is of that model (an element's number in another model may be another element of these
-/// meshes); each feature's faces, a body's whole (its browser row), else those it made, as
-/// each face's name says (as `View::linked_faces` finds the faces of a feature hovered in the
-/// timeline).
+/// element found, in the body it's in (a vertex as the viewport's dot), if the answer it's
+/// drawn by is of that model (an element's number in another model may be another element of
+/// these meshes). A feature selected isn't highlighted but tinted ([`feature_faces`]).
 fn highlights(
     items: &[Item],
     bodies: &BTreeMap<u32, ViewBody>,
@@ -1832,20 +1832,35 @@ fn highlights(
                     lit.insert((number, element));
                 }
             }
-            Item::Feature(id) => {
-                for (number, body) in bodies {
-                    let whole = &body.feature == id;
-                    let faces = body.faces.iter().zip(1u32..);
-                    lit.extend(
-                        faces
-                            .filter(|(face, _)| whole || face.name.feature() == id)
-                            .map(|(_, n)| (*number, Element::Face(n))),
-                    );
-                }
-            }
+            Item::Feature(_) => {}
         }
     }
     lit
+}
+
+/// The faces of the features among `items`, in `bodies`: a body's whole (its browser row),
+/// else those it made, as each face's name says (as `View::linked_faces` finds the faces of
+/// a feature hovered in the timeline). The canvas tints them while no feature is hovered in
+/// the timeline, as the prototype's `syncHighlight` tints its `maker`, `hoverFeature ||
+/// selFeature` (DESIGN.md's *Hover a feature, see its geometry*).
+fn feature_faces(items: &[Item], bodies: &BTreeMap<u32, ViewBody>) -> BTreeSet<(u32, Element)> {
+    let mut faces = BTreeSet::new();
+    for item in items {
+        let Item::Feature(id) = item else {
+            continue;
+        };
+        for (number, body) in bodies {
+            let whole = &body.feature == id;
+            faces.extend(
+                body.faces
+                    .iter()
+                    .zip(1u32..)
+                    .filter(|(face, _)| whole || face.name.feature() == id)
+                    .map(|(_, n)| (*number, Element::Face(n))),
+            );
+        }
+    }
+    faces
 }
 
 /// An element as the renderer numbers it: a face, an edge, or a vertex (the viewport's
@@ -3804,7 +3819,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_feature_lights_its_bodys_every_face_or_else_the_faces_named_as_its_own() {
+    fn a_feature_tints_its_bodys_every_face_or_else_the_faces_named_as_its_own() {
         // Body 1, the fuse rrrrrrrr: its Face1 named as aaaaaaaa's, its Face2 as its own,
         // its Face3 as bbbbbbbb's. Body 2, the box cccccccc: both faces its own.
         use Element::Face;
@@ -3828,7 +3843,9 @@ pub(crate) mod tests {
                 ),
             ),
         ]);
-        let lit = |id: &str| highlights(&[Item::Feature(fid(id))], &bodies, None);
+        let lit = |id: &str| feature_faces(&[Item::Feature(fid(id))], &bodies);
+        // Tinted, not highlighted: a feature selected highlights nothing.
+        assert!(highlights(&[Item::Feature(fid("rrrrrrrr"))], &bodies, None).is_empty());
         let set = |lit: &[(u32, Element)]| lit.iter().copied().collect::<BTreeSet<_>>();
         // A body: its whole, and no other body's faces.
         assert_eq!(

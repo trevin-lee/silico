@@ -1825,6 +1825,16 @@ impl Tab {
         &mut self.selection
     }
 
+    /// The tab not shown: its canvas's hover let go, the selection's and the view's (the
+    /// outline its last frame drew), unless a menu holds it, so shown again it neither
+    /// outlines, rings, nor says a hover of before.
+    pub(crate) fn canvas_unshown(&mut self) {
+        if !self.selection.hover_held() {
+            self.selection.pointer_gone();
+            self.view.hovered.clear();
+        }
+    }
+
     /// What the core says of the selection's elements (M5.7's measures), as last answered.
     pub fn measures(&self) -> &crate::measures::Measures {
         &self.measures
