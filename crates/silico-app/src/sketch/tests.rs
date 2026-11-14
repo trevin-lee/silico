@@ -2348,6 +2348,21 @@ fn looking_along_y(elevation: f64) -> Placed {
     through(camera).0
 }
 
+/// The XY plane seen orthographically, 100 mm high on 600 pixels, looking along +x at
+/// (100, 0) from `elevation` degrees above the plane: the x axis runs down the screen's
+/// middle, the screen's right is −y (a sixth of a millimetre a pixel), and a pixel down the
+/// axis is 1/6 ÷ sin(elevation) mm.
+fn looking_along_x(elevation: f64) -> Placed {
+    let e = elevation.to_radians();
+    let camera = silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 100.0 },
+        eye: [100.0 - 500.0 * libm::cos(e), 0.0, 500.0 * libm::sin(e)],
+        target: [100.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    through(camera).0
+}
+
 /// A click at `at` on the screen through `placed`, with Ctrl or not.
 fn click_through(mode: &mut SketchMode, placed: &Placed, at: Pos2, ctrl: bool) {
     let project = |p: [f64; 2]| placed.project(p);
@@ -2390,6 +2405,61 @@ fn in_a_view_oblique_to_the_plane_an_axis_is_taken_only_within_the_picks_points(
     // 20 pixels right of it, past the 7: nothing, so the click clears the selection.
     click_through(&mut mode, &placed, middle + vec2(20.0, 0.0), false);
     assert!(mode.selection.is_empty());
+}
+
+#[test]
+fn in_a_view_oblique_to_the_plane_the_x_axis_is_taken_only_within_the_picks_points() {
+    // The same view turned to look along +x at (100, 0): the x axis down the middle of the
+    // screen. 5 pixels right of it is (100, −0.83), 0.83 mm off; 20 pixels right, 3.33 mm
+    // off, within the pick's 7.28 mm but 20 pixels off it on the screen, past the 7.
+    let placed = looking_along_x(5.0);
+    let middle = placed.project([100.0, 0.0]).unwrap();
+    let mut mode = mode_on(under(box_off_the_origin()));
+    click_through(&mut mode, &placed, middle + vec2(5.0, 0.0), false);
+    assert_eq!(mode.selection.references(), [Reference::XAxis]);
+    click_through(&mut mode, &placed, middle + vec2(20.0, 0.0), false);
+    assert!(mode.selection.is_empty());
+}
+
+#[test]
+fn seen_edge_on_a_selected_axis_keeps_the_kilometre() {
+    // Orthographic, looking along +y exactly in the plane: every ray runs along it, so the
+    // frame knows no part of the plane it shows, and the x axis is drawn across the screen's
+    // middle row. A doubling of its reach moves its end the more the farther it is, so no
+    // vanishing point is closed on: it keeps the kilometre each way, from where the view
+    // puts (−1 km, 0) to where it puts (1 km, 0).
+    let camera = silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 100.0 },
+        eye: [0.0, -500.0, 0.0],
+        target: [0.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let (placed, visible) = through(camera);
+    assert!(visible.is_none());
+    let project = |at: [f64; 2]| placed.project(at);
+    let view = View {
+        project: &project,
+        scale: HAND,
+        visible,
+        chord_tolerance: SKETCH_CHORD_TOLERANCE,
+    };
+    let selected = DrawnSelection {
+        axes: [true, false],
+        ..DrawnSelection::default()
+    };
+    let drawn = drawing(
+        &under(box_off_the_origin()),
+        &view,
+        Shown::default(),
+        &selected,
+        &[],
+    );
+    let reach = silico_protocol::MAX_LENGTH;
+    let ends = vec![
+        project([-reach, 0.0]).unwrap(),
+        project([reach, 0.0]).unwrap(),
+    ];
+    assert_eq!(selected_axes(&drawn), [ends]);
 }
 
 #[test]

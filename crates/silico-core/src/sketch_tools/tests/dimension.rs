@@ -365,6 +365,13 @@ fn an_axis_is_picked_where_no_line_of_the_sketch_lies_on_it() {
             (off_y, [0.1, 20.0], Reference::YAxis),
         ] {
             let mut d = Dim::new(sketch);
+            // The pointer over it first: the preview shows the axis it would pick.
+            d.to(at[0], at[1]);
+            assert_eq!(
+                d.tool.preview().hover,
+                Some(axis.clone()),
+                "{name} at {at:?}"
+            );
             d.click(at[0], at[1]);
             assert_eq!(d.tool.preview().picks, vec![axis], "{name} at {at:?}");
         }
