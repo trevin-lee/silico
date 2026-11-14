@@ -9,7 +9,7 @@
 
 use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, ElementKind, Reference};
-use silico_core::sketch_tools;
+use silico_core::sketch_tools::{self, Axes};
 
 use super::draw::{Geometry, Scale, dot, foot, length, placed, sub};
 use super::style::{CANVAS_TEXT_SIZE, SKETCH_DIMENSION_LABEL_PADDING, SKETCH_GLYPH_SIZE};
@@ -97,9 +97,16 @@ impl From<Hit> for SketchPick {
 /// drawn, the box upright on the screen); or else the nearest curve of the sketch, by the
 /// core's rule; or else the nearest dimension's line; or else an axis, anywhere along it
 /// (where the core's rule takes it: not where a curve of the sketch is as near, nor where a
-/// line of the sketch lies along it). Other ties go to the lower ID. None for nothing that
-/// near, a tolerance below zero, or a place that isn't one.
-pub fn hit(read: &SketchRead, at: [f64; 2], tolerance: f64, scale: Scale) -> Option<SketchPick> {
+/// line of the sketch lies along it), of the axes `axes` allows: one it doesn't is no
+/// candidate, so the nearest of the rest is taken. Other ties go to the lower ID. None for
+/// nothing that near, a tolerance below zero, or a place that isn't one.
+pub fn hit(
+    read: &SketchRead,
+    at: [f64; 2],
+    tolerance: f64,
+    scale: Scale,
+    axes: Axes,
+) -> Option<SketchPick> {
     if !(at[0].is_finite() && at[1].is_finite()) || tolerance.is_nan() || tolerance < 0.0 {
         return None;
     }
@@ -118,7 +125,7 @@ pub fn hit(read: &SketchRead, at: [f64; 2], tolerance: f64, scale: Scale) -> Opt
     };
     // A point or the origin, if one is near, else a curve or an axis, if one is: the curve
     // after the boxes, the axis after the dimensions' lines too.
-    let picked = sketch_tools::pick(&read.members, at, tolerance)
+    let picked = sketch_tools::pick(&read.members, at, tolerance, axes)
         .and_then(|reference| SketchPick::of(read, reference));
     let (curve, axis) = match picked {
         Some(SketchPick::Origin) => return Some(SketchPick::Origin),

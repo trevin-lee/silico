@@ -17,7 +17,7 @@ use silico_core::document::{
 };
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState, SketchStates};
 use silico_core::sketch_tools::{
-    MeasureKind, PlacementKind, Preview, PreviewMeasure, Relation, Shown as Showing,
+    Axes, MeasureKind, PlacementKind, Preview, PreviewMeasure, Relation, Shown as Showing,
 };
 
 use super::draw::{
@@ -1011,7 +1011,7 @@ fn a_construction_previews_curves_are_drawn_as_construction() {
 #[test]
 fn hit_takes_a_point_before_a_curve_and_the_nearest_curve_before_a_farther_one() {
     let read = under(rectangle(Vec::new()));
-    let found = |at: [f64; 2], tolerance: f64| hit(&read, at, tolerance, HAND);
+    let found = |at: [f64; 2], tolerance: f64| hit(&read, at, tolerance, HAND, Axes::BOTH);
     // (1, 0.5): the corner pa000001 is √1.25 = 1.118 off, past 1; the bottom side 0.5,
     // the left side 1.0: the bottom.
     assert_eq!(
@@ -1042,7 +1042,7 @@ fn hit_ties_between_points_go_to_the_lower_id() {
     sketch.lines.clear();
     sketch.points = vec![point("pb000002", 2.0, 0.0), point("pb000001", 0.0, 0.0)];
     assert_eq!(
-        hit(&under(sketch), [1.0, 0.0], 1.5, HAND),
+        hit(&under(sketch), [1.0, 0.0], 1.5, HAND, Axes::BOTH),
         Some(SketchPick::Member(Hit {
             id: id("pb000001"),
             kind: ElementKind::Point
@@ -1064,7 +1064,7 @@ fn hit_finds_a_glyph_and_a_dimension_where_theyre_drawn() {
         MemberState::FullyDefined,
         &[],
     );
-    let found = |at: [f64; 2]| hit(&read, at, 0.1, HAND).map(|h| h.reference());
+    let found = |at: [f64; 2]| hit(&read, at, 0.1, HAND, Axes::BOTH).map(|h| h.reference());
     assert_eq!(found([28.8, 21.3]), Some(element("ka000001")));
     assert_eq!(found([20.0, -2.6]), Some(element("ka000002")));
     // On an extension line, (40, −1.5).
@@ -1106,7 +1106,7 @@ fn a_glyphs_box_is_hit_before_a_line_within_the_pick() {
     // covers), within the 0.7: the glyph, drawn over the line.
     let read = dimensioned();
     assert_eq!(
-        hit(&read, [11.2, -0.6], 0.7, HAND),
+        hit(&read, [11.2, -0.6], 0.7, HAND, Axes::BOTH),
         constraint_pick("ka000001")
     );
 }
@@ -1117,16 +1117,19 @@ fn an_extension_line_along_an_axis_is_hit_before_the_axis() {
     // (0, −1.5): 1.5 from the corner, the origin, and the left side; on the y axis, and on
     // the left extension line: the dimension, the axis running everywhere.
     assert_eq!(
-        hit(&read, [0.0, -1.5], 0.7, HAND),
+        hit(&read, [0.0, -1.5], 0.7, HAND, Axes::BOTH),
         constraint_pick("ka000002")
     );
     // Past the extension line's end, (0, −3.5): 0.4 from it, though the axis is 0 off.
     assert_eq!(
-        hit(&read, [0.0, -3.5], 0.7, HAND),
+        hit(&read, [0.0, -3.5], 0.7, HAND, Axes::BOTH),
         constraint_pick("ka000002")
     );
     // (0, −4): 0.9 past the line's end, beyond the pick: the axis.
-    assert_eq!(hit(&read, [0.0, -4.0], 0.7, HAND), Some(SketchPick::YAxis));
+    assert_eq!(
+        hit(&read, [0.0, -4.0], 0.7, HAND, Axes::BOTH),
+        Some(SketchPick::YAxis)
+    );
 }
 
 #[test]
@@ -1135,7 +1138,7 @@ fn a_value_over_an_axis_is_hit_before_the_axis() {
     // origin: the dimension.
     let read = value_over_the_origin();
     assert_eq!(
-        hit(&read, [0.9, 0.1], 0.7, HAND),
+        hit(&read, [0.9, 0.1], 0.7, HAND, Axes::BOTH),
         constraint_pick("ka000002")
     );
 }
@@ -1144,7 +1147,10 @@ fn a_value_over_an_axis_is_hit_before_the_axis() {
 fn the_origin_under_a_value_is_hit_before_it() {
     // (0.2, 0.1), inside the box: the origin, 0.224 off, before it.
     let read = value_over_the_origin();
-    assert_eq!(hit(&read, [0.2, 0.1], 0.7, HAND), Some(SketchPick::Origin));
+    assert_eq!(
+        hit(&read, [0.2, 0.1], 0.7, HAND, Axes::BOTH),
+        Some(SketchPick::Origin)
+    );
 }
 
 #[test]
@@ -1152,7 +1158,7 @@ fn a_point_under_a_value_is_hit_before_it() {
     // (−0.8, −0.3), inside the box: the point, 0.2 off (the origin 0.854), before it.
     let read = value_over_the_origin();
     assert_eq!(
-        hit(&read, [-0.8, -0.3], 0.7, HAND),
+        hit(&read, [-0.8, -0.3], 0.7, HAND, Axes::BOTH),
         member("pf000001", ElementKind::Point)
     );
 }
@@ -1191,8 +1197,9 @@ fn an_arc_is_hit_on_its_sweep_and_not_on_its_circle_off_it() {
         constraints: Vec::new(),
     };
     let read = under(sketch);
-    let found =
-        |at: [f64; 2]| hit(&read, at, 0.5, HAND).and_then(|h| h.member().map(|member| member.kind));
+    let found = |at: [f64; 2]| {
+        hit(&read, at, 0.5, HAND, Axes::BOTH).and_then(|h| h.member().map(|member| member.kind))
+    };
     // On the sweep, at 45°, 0.2 outside the rim.
     let r = 10.2 * std::f64::consts::FRAC_1_SQRT_2;
     assert_eq!(found([r, r]), Some(ElementKind::Arc));
@@ -1226,10 +1233,10 @@ fn an_empty_sketch_draws_only_the_origin_and_hits_only_the_origin_and_the_axes()
     // The origin at its place (C9); (3, 4) is 5 from it, 4 from the x axis, and 3 from the
     // y axis: nothing within 2.
     assert_eq!(
-        hit(&read, [0.0, 0.0], 100.0, HAND),
+        hit(&read, [0.0, 0.0], 100.0, HAND, Axes::BOTH),
         Some(SketchPick::Origin)
     );
-    assert_eq!(hit(&read, [3.0, 4.0], 2.0, HAND), None);
+    assert_eq!(hit(&read, [3.0, 4.0], 2.0, HAND, Axes::BOTH), None);
     assert_eq!(state_shown(&read).words, "Empty");
 }
 
@@ -1336,7 +1343,7 @@ fn huge_coordinates_draw_finite_and_a_huge_circle_takes_at_most_the_cap() {
     }
     // Its top, (1e6, 0), is on the x axis too: the circle, the sketch's own on the tie.
     assert_eq!(
-        hit(&read, [1e6, 0.0], 1.0, Scale(0.001)),
+        hit(&read, [1e6, 0.0], 1.0, Scale(0.001), Axes::BOTH),
         member("ca000001", ElementKind::Circle)
     );
 }
@@ -1401,7 +1408,7 @@ fn degenerate_members_draw_without_a_number_that_isnt_one() {
             assert!(toward.x.is_finite() && toward.y.is_finite());
         }
     }
-    assert!(hit(&read, [5.0, 5.0], 0.1, HAND).is_some());
+    assert!(hit(&read, [5.0, 5.0], 0.1, HAND, Axes::BOTH).is_some());
 }
 
 #[test]
@@ -1449,7 +1456,7 @@ fn thousands_of_members_draw_and_hit_within_a_frames_budget() {
     let drawn = drawn(&read);
     let drawing_took = started.elapsed();
     let started = std::time::Instant::now();
-    let found = hit(&read, [50.5, 20.5], 0.7, HAND);
+    let found = hit(&read, [50.5, 20.5], 0.7, HAND, Axes::BOTH);
     let hit_took = started.elapsed();
     // The origin, 4,000 sides, 1,000 circles, 4,001 points, 1,000 glyphs, and 1,000
     // dimensions of six.
@@ -1856,17 +1863,20 @@ fn a_point_at_the_origins_place_and_a_line_along_an_axis_win_over_them() {
     let read = under(rectangle(Vec::new()));
     // At the origin, the corner, 0 off as the origin is: the sketch's own.
     assert_eq!(
-        hit(&read, [0.0, 0.0], 0.7, HAND),
+        hit(&read, [0.0, 0.0], 0.7, HAND, Axes::BOTH),
         member("pa000001", ElementKind::Point)
     );
     // (20, −0.3): 0.3 from the bottom and from the axis it lies along: the bottom.
     assert_eq!(
-        hit(&read, [20.0, -0.3], 0.7, HAND),
+        hit(&read, [20.0, -0.3], 0.7, HAND, Axes::BOTH),
         member("na000001", ElementKind::Line)
     );
     // (45, 0.3), past the bottom's end (5 from it, and from the corner and the right
     // side): the axis.
-    assert_eq!(hit(&read, [45.0, 0.3], 0.7, HAND), Some(SketchPick::XAxis));
+    assert_eq!(
+        hit(&read, [45.0, 0.3], 0.7, HAND, Axes::BOTH),
+        Some(SketchPick::XAxis)
+    );
     // A click at the origin's place, (100, 500), selects the corner.
     let mut mode = mode_on(read);
     frame_of(&mut mode, &mut None, &press(pos2(100.0, 500.0), false));
@@ -2216,6 +2226,11 @@ fn through(camera: silico_protocol::Camera) -> (Placed, Visible) {
 /// A camera 200 mm from (100, 0, 0) looking at it, raised `pitch` degrees above the plane
 /// and turned 10° from looking along +x, in perspective 30° high.
 fn panned(pitch: f64) -> silico_protocol::Camera {
+    panned_from(pitch, 200.0)
+}
+
+/// [`panned`], from `distance` millimetres.
+fn panned_from(pitch: f64, distance: f64) -> silico_protocol::Camera {
     let (p, y) = (pitch.to_radians(), 10f64.to_radians());
     let target = [100.0, 0.0, 0.0];
     let back = [
@@ -2227,7 +2242,7 @@ fn panned(pitch: f64) -> silico_protocol::Camera {
         projection: silico_protocol::Projection::Perspective {
             field_of_view: 30.0,
         },
-        eye: std::array::from_fn(|k| target[k] + 200.0 * back[k]),
+        eye: std::array::from_fn(|k| target[k] + distance * back[k]),
         target,
         up: [0.0, 0.0, 1.0],
     }
@@ -2275,43 +2290,150 @@ fn in_perspective_a_selected_axis_is_drawn_where_its_in_front_of_the_eye() {
 }
 
 #[test]
-fn in_a_view_oblique_to_the_plane_an_axis_is_taken_only_within_the_picks_points() {
-    // Orthographic, 100 mm high on 600 pixels (a sixth of a millimetre a pixel across),
-    // looking along +y at (0, 100) from 5° above the plane: the y axis runs down the middle
-    // of the screen, and a pixel down it is 1/6 ÷ sin 5° = 1.91 mm. The pick's millimetres
-    // are the mean of a pixel's step across and down, 1.04, so 7 pixels' reach 7.28 mm;
-    // but a click 20 pixels from the axis on the screen is 3.33 mm from it, within that.
-    let target = [0.0, 100.0, 0.0];
-    let e = 5f64.to_radians();
+fn where_the_view_shows_no_part_of_the_plane_a_selected_axis_runs_to_its_vanishing_point() {
+    // Raised 8°, the horizon in view: the frame knows no part of the plane it shows. The x
+    // axis runs from under the eye out to the horizon. From 200 mm away and from 100 m, its
+    // far end is within a pixel of where the view puts a place a billion metres along it,
+    // its vanishing point to a hair (a kilometre is 15 pixels short of it from 100 m). Its
+    // near end is where halving stops at the eye: a place the view draws, the next float
+    // toward the eye one it doesn't, far off the image.
+    let selected = DrawnSelection {
+        axes: [true, false],
+        ..DrawnSelection::default()
+    };
+    let read = under(box_off_the_origin());
+    for distance in [200.0, 100_000.0] {
+        let (placed, visible) = through(panned_from(8.0, distance));
+        assert!(visible.is_none(), "{distance}");
+        let project = |at: [f64; 2]| placed.project(at);
+        let view = View {
+            project: &project,
+            scale: HAND,
+            visible,
+            chord_tolerance: SKETCH_CHORD_TOLERANCE,
+        };
+        let drawn = drawing(&read, &view, Shown::default(), &selected, &[]);
+        let axes = selected_axes(&drawn);
+        let [ends] = axes.as_slice() else {
+            panic!("{distance}: {axes:?}");
+        };
+        let vanishing = project([1e12, 0.0]).unwrap();
+        let short = (ends[1] - vanishing).length();
+        assert!(short < 1.0, "{distance}: {short} pixels short, {ends:?}");
+        let shown = |t: f64| project([t, 0.0]).is_some();
+        let near = super::draw::last_drawn(&shown, 100.0, -silico_protocol::MAX_LENGTH);
+        assert!(
+            shown(near) && !shown(near.next_down()),
+            "{distance}: {near}"
+        );
+        assert_eq!(ends[0], project([near, 0.0]).unwrap(), "{distance}");
+        assert!(
+            ends[0].x.abs().max(ends[0].y.abs()) > 1e6,
+            "{distance}: {ends:?}"
+        );
+    }
+}
+
+/// The XY plane seen orthographically, 100 mm high on 600 pixels (a sixth of a millimetre a
+/// pixel across), looking along +y at (0, 100) from `elevation` degrees above the plane: the
+/// y axis runs down the screen's middle, and a pixel down it is 1/6 ÷ sin(elevation) mm.
+fn looking_along_y(elevation: f64) -> Placed {
+    let e = elevation.to_radians();
     let camera = silico_protocol::Camera {
         projection: silico_protocol::Projection::Orthographic { view_height: 100.0 },
         eye: [0.0, 100.0 - 500.0 * libm::cos(e), 500.0 * libm::sin(e)],
-        target,
+        target: [0.0, 100.0, 0.0],
         up: [0.0, 0.0, 1.0],
     };
-    let (placed, _) = through(camera);
-    let project = |at: [f64; 2]| placed.project(at);
-    let to_plane = |at: Pos2| placed.to_plane(at);
-    let click = |mode: &mut SketchMode, at: Pos2| {
-        with_painter(|painter| {
-            let events = press(at, false);
-            let input = FrameInput {
-                events: &events,
-                pointer: None,
-                project: &project,
-                to_plane: &to_plane,
-            };
-            mode.frame(painter, &input, &mut None);
-        });
-    };
-    let middle = project([0.0, 100.0]).unwrap();
+    through(camera).0
+}
+
+/// A click at `at` on the screen through `placed`, with Ctrl or not.
+fn click_through(mode: &mut SketchMode, placed: &Placed, at: Pos2, ctrl: bool) {
+    let project = |p: [f64; 2]| placed.project(p);
+    let to_plane = |q: Pos2| placed.to_plane(q);
+    with_painter(|painter| {
+        let events = press(at, ctrl);
+        let input = FrameInput {
+            events: &events,
+            pointer: None,
+            project: &project,
+            to_plane: &to_plane,
+        };
+        mode.frame(painter, &input, &mut None);
+    });
+}
+
+/// A sketch of one line, na000001, from `from` to `to` (its ends pa000001 and pa000002).
+fn one_line(from: [f64; 2], to: [f64; 2]) -> SketchRead {
+    under(sketch_of(
+        vec![
+            point("pa000001", from[0], from[1]),
+            point("pa000002", to[0], to[1]),
+        ],
+        vec![line("na000001", "pa000001", "pa000002")],
+        Vec::new(),
+    ))
+}
+
+#[test]
+fn in_a_view_oblique_to_the_plane_an_axis_is_taken_only_within_the_picks_points() {
+    // From 5° above: a pixel down the axis is 1.91 mm. The pick's millimetres are the mean of
+    // a pixel's step across and down, 1.04, so 7 pixels' reach 7.28 mm; but a click 20
+    // pixels from the axis on the screen is 3.33 mm from it, within that.
+    let placed = looking_along_y(5.0);
+    let middle = placed.project([0.0, 100.0]).unwrap();
     let mut mode = mode_on(under(box_off_the_origin()));
     // 5 pixels right of the axis: the axis.
-    click(&mut mode, middle + vec2(5.0, 0.0));
+    click_through(&mut mode, &placed, middle + vec2(5.0, 0.0), false);
     assert_eq!(mode.selection.references(), [Reference::YAxis]);
     // 20 pixels right of it, past the 7: nothing, so the click clears the selection.
-    click(&mut mode, middle + vec2(20.0, 0.0));
+    click_through(&mut mode, &placed, middle + vec2(20.0, 0.0), false);
     assert!(mode.selection.is_empty());
+}
+
+#[test]
+fn in_an_oblique_view_a_click_beside_a_line_takes_it_though_an_axis_is_nearer_in_mm() {
+    // From 5° above, a line across at y = 105, (−50, 105) to (50, 105): 5 mm up the plane
+    // from (0, 100), 5 ÷ 1.91 = 2.6 pixels above the middle on the screen. A click 20 pixels
+    // right of the middle is 3.33 mm from the y axis (20 pixels off it on the screen, past
+    // the pick's 7) and 5 mm from the line (2.6 pixels), both within the pick's 7.28 mm:
+    // the axis drops out and the line is taken.
+    let placed = looking_along_y(5.0);
+    let middle = placed.project([0.0, 100.0]).unwrap();
+    let mut mode = mode_on(one_line([-50.0, 105.0], [50.0, 105.0]));
+    // Picked first, the axis 5 pixels off; then Ctrl beside the line keeps it and adds the
+    // line, rather than clearing the selection.
+    click_through(&mut mode, &placed, middle + vec2(5.0, 0.0), false);
+    assert_eq!(mode.selection.references(), [Reference::YAxis]);
+    click_through(&mut mode, &placed, middle + vec2(20.0, 0.0), true);
+    assert_eq!(
+        mode.selection.references(),
+        [Reference::YAxis, element("na000001")]
+    );
+    // Robustness's line, (−25, 103.82) to (30, 103.82): 3.82 mm from the click, nearer
+    // than 5 but still farther than the axis's 3.33; 2 pixels above it on the screen.
+    let mut mode = mode_on(one_line([-25.0, 103.82], [30.0, 103.82]));
+    click_through(&mut mode, &placed, middle + vec2(20.0, 0.0), false);
+    assert_eq!(mode.selection.references(), [element("na000001")]);
+}
+
+#[test]
+fn from_thirty_degrees_up_a_click_beside_a_line_takes_it_though_an_axis_is_nearer_in_mm() {
+    // From 30° above, a pixel down the plane is 1/6 ÷ sin 30° = 1/3 mm; the pick's
+    // millimetres are the mean, 1/4, so 7 pixels' reach 1.75 mm. A line across at y = 101.5,
+    // 1.5 mm up from (0, 100), 4.5 pixels above the middle. A click 8 pixels right of the
+    // middle is 1.33 mm from the y axis (8 pixels off it on the screen, past the 7) and
+    // 1.5 mm from the line (4.5 pixels): the line.
+    let placed = looking_along_y(30.0);
+    let middle = placed.project([0.0, 100.0]).unwrap();
+    let mut mode = mode_on(one_line([-50.0, 101.5], [50.0, 101.5]));
+    click_through(&mut mode, &placed, middle + vec2(8.0, 0.0), false);
+    assert_eq!(mode.selection.references(), [element("na000001")]);
+    // 6 pixels right of the middle, the axis is within the 7 on the screen and 1 mm off,
+    // nearer than the line's 1.5: the axis.
+    click_through(&mut mode, &placed, middle + vec2(6.0, 0.0), false);
+    assert_eq!(mode.selection.references(), [Reference::YAxis]);
 }
 
 #[test]
@@ -6753,11 +6875,17 @@ fn assert_icon_part(shape: &egui::Shape, part: &IconPart, kind: GlyphKind) {
 #[test]
 fn hit_takes_no_place_thats_no_number_even_at_any_tolerance_and_an_exact_one_at_none() {
     let read = under(rectangle(Vec::new()));
-    assert_eq!(hit(&read, [f64::INFINITY, 0.0], f64::INFINITY, HAND), None);
-    assert_eq!(hit(&read, [0.0, f64::NAN], f64::INFINITY, HAND), None);
+    assert_eq!(
+        hit(&read, [f64::INFINITY, 0.0], f64::INFINITY, HAND, Axes::BOTH),
+        None
+    );
+    assert_eq!(
+        hit(&read, [0.0, f64::NAN], f64::INFINITY, HAND, Axes::BOTH),
+        None
+    );
     // At a point exactly, with no tolerance: that point.
     assert_eq!(
-        hit(&read, [40.0, 20.0], 0.0, HAND),
+        hit(&read, [40.0, 20.0], 0.0, HAND, Axes::BOTH),
         Some(SketchPick::Member(Hit {
             id: id("pa000003"),
             kind: ElementKind::Point,
@@ -6776,8 +6904,9 @@ fn a_glyphs_and_a_values_boxes_are_hit_to_their_edges_and_not_past_them() {
         horizontal("ka000001", "na000001"),
         length("ka000002", "na000001", "40", true),
     ]));
-    let found =
-        |at: [f64; 2], tolerance: f64| hit(&read, at, tolerance, HAND).map(|h| h.reference());
+    let found = |at: [f64; 2], tolerance: f64| {
+        hit(&read, at, tolerance, HAND, Axes::BOTH).map(|h| h.reference())
+    };
     // Inside the glyph's box, off its middle both ways; 0.2 below it, out of a 0.1 reach.
     assert_eq!(found([11.7, -1.8], 0.1), Some(element("ka000001")));
     assert_eq!(found([11.2, -2.3], 0.1), None);

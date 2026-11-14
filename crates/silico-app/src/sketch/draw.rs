@@ -1237,9 +1237,13 @@ fn grid(view: &View<'_>, axes: [Color32; 2]) -> Vec<Drawn> {
     drawn
 }
 
-/// How far each way along a selected axis it's drawn where the view doesn't say what part of
-/// the plane it shows: a kilometre, as far as a sketch's points may be.
-const SELECTED_AXIS_REACH: f64 = silico_protocol::MAX_LENGTH;
+/// How near, in points on the screen, a selected axis's far end comes to its vanishing
+/// point where the view doesn't say what part of the plane it shows ([`axis_reach`]).
+const VANISHING: f32 = 0.1;
+
+/// How many times [`axis_reach`] doubles its reach at most: from a kilometre, past any
+/// eye's distance a view can have.
+const REACH_DOUBLINGS: u32 = 64;
 
 /// The place `t` along the axis `axis` (0, the sketch's x, along y = 0; 1, its y, along
 /// x = 0).
@@ -1269,41 +1273,72 @@ fn axis_stroke(
 /// A selected axis, white over the halo as a member's line, across all the view draws of
 /// it: the part of the plane the view says it shows (not the grid's part of it: a pick takes
 /// an axis anywhere along it), or, where it doesn't say (its corners' rays miss the plane,
-/// the horizon in view), [`SELECTED_AXIS_REACH`] each way; and that cut where the view
-/// stops drawing it, at the eye in perspective. The part of a line a view draws is one
-/// stretch of it (in perspective, what's at least the drawing's cut ahead of the eye), so
-/// where a stretch's end isn't drawn, its cut is found by halving toward the end that is.
-/// None where the view draws none of it.
+/// the horizon in view), out toward its vanishing point each way ([`axis_reach`]); and that
+/// cut where the view stops drawing it, at the eye in perspective ([`last_drawn`]). None
+/// where the view draws none of it.
 fn selected_axis(view: &View<'_>, axis: usize, colour: Color32) -> Option<Drawn> {
     let other = 1 - axis;
     let [lo, hi] = match view.visible {
         Some((lo, hi)) if lo[other] <= 0.0 && 0.0 <= hi[other] => [lo[axis], hi[axis]],
         Some(_) => return None,
-        None => [-SELECTED_AXIS_REACH, SELECTED_AXIS_REACH],
+        None => [-axis_reach(view, axis, -1.0), axis_reach(view, axis, 1.0)],
     };
     let drawn = |t: f64| view.at(on_axis(axis, t)).is_some();
-    // From a place drawn toward one that isn't, the last drawn, to the float.
-    let cut = |mut inside: f64, mut outside: f64| {
-        for _ in 0..1100 {
-            let middle = inside + (outside - inside) / 2.0;
-            if middle == inside || middle == outside {
-                break;
-            }
-            if drawn(middle) {
-                inside = middle;
-            } else {
-                outside = middle;
-            }
-        }
-        inside
-    };
     let ends = match (drawn(lo), drawn(hi)) {
         (true, true) => [lo, hi],
-        (true, false) => [lo, cut(lo, hi)],
-        (false, true) => [cut(hi, lo), hi],
+        (true, false) => [lo, last_drawn(&drawn, lo, hi)],
+        (false, true) => [last_drawn(&drawn, hi, lo), hi],
         (false, false) => return None,
     };
     axis_stroke(view, axis, ends, colour, true)
+}
+
+/// How far along the axis `axis`, the way `sign` says, a selected axis is drawn where the
+/// view doesn't say what part of the plane it shows: out to where its end comes within
+/// [`VANISHING`] of the axis's vanishing point on the screen. From a kilometre (as far as a
+/// sketch's points may be), doubled while a doubling still moves the end drawn by more:
+/// in perspective each doubling about halves that move, the end closing on the point
+/// however far the eye is from the plane. A view whose move doesn't shrink (orthographic,
+/// seen edge on) has no such point, and keeps the kilometre; so does a way the view draws
+/// nothing of.
+fn axis_reach(view: &View<'_>, axis: usize, sign: f64) -> f64 {
+    let end = |t: f64| view.at(on_axis(axis, sign * t));
+    let mut reach = silico_protocol::MAX_LENGTH;
+    let mut last = f32::INFINITY;
+    for _ in 0..REACH_DOUBLINGS {
+        let (Some(here), Some(there)) = (end(reach), end(2.0 * reach)) else {
+            break;
+        };
+        let moved = (there - here).length();
+        if moved.is_nan() || moved >= last {
+            return silico_protocol::MAX_LENGTH;
+        }
+        reach *= 2.0;
+        if moved <= VANISHING {
+            break;
+        }
+        last = moved;
+    }
+    reach
+}
+
+/// Of a stretch of a line the view draws from the place `inside`, which it draws, toward
+/// `outside`, which it doesn't, the last place drawn, to the float: found by halving, as
+/// the part of a line a view draws is one stretch of it (in perspective, what's at least
+/// the drawing's cut ahead of the eye).
+pub(super) fn last_drawn(drawn: &dyn Fn(f64) -> bool, mut inside: f64, mut outside: f64) -> f64 {
+    for _ in 0..1100 {
+        let middle = inside + (outside - inside) / 2.0;
+        if middle == inside || middle == outside {
+            break;
+        }
+        if drawn(middle) {
+            inside = middle;
+        } else {
+            outside = middle;
+        }
+    }
+    inside
 }
 
 #[cfg(test)]

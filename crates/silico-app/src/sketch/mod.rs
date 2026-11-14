@@ -38,7 +38,7 @@ use silico_core::command::{ModelChoice, Problems, Revision, Running, SessionId, 
 use silico_core::document::{ElementId, ElementKind, FeatureId, Reference};
 use silico_core::kernel::{Clients, SketchPlane};
 use silico_core::sketch_states::{MemberState, SketchState};
-use silico_core::sketch_tools::{DimensionEvent, Event, Modifiers, Offer, OfferChoice};
+use silico_core::sketch_tools::{Axes, DimensionEvent, Event, Modifiers, Offer, OfferChoice};
 
 use crate::tab::{Row, said};
 use bar::{DimensionShown, PaletteView, Settings, StateShown, StatusLine};
@@ -640,8 +640,9 @@ impl SketchMode {
 
     /// What's under `at` on the screen, within the pick tolerance at the view's scale there:
     /// of what's drawn, the drag's last frame while it lasts (once it has ended, until the
-    /// read of its edit comes), or else the newest read. An axis only where it's drawn
-    /// within the pick tolerance on the screen too ([`axis_near`]).
+    /// read of its edit comes), or else the newest read. An axis may be taken only where it's
+    /// drawn within the pick tolerance on the screen too ([`axis_near`]): one that isn't is
+    /// no candidate, and the nearest of the rest is taken.
     fn found(
         &self,
         input: &FrameInput<'_>,
@@ -651,13 +652,12 @@ impl SketchMode {
         let read = dragged.and_then(Drag::shown).or_else(|| self.drawable())?;
         let scale = scale_at(input.to_plane, at)?;
         let on = (input.to_plane)(at)?;
-        let picked = hit(read, on, scale.mm(SKETCH_PICK_TOLERANCE), scale)?;
-        let along = match picked {
-            SketchPick::XAxis => [1.0, 0.0],
-            SketchPick::YAxis => [0.0, 1.0],
-            _ => return Some(picked),
+        let near = |along| axis_near(input.project, along, on, at, scale);
+        let axes = Axes {
+            x: near([1.0, 0.0]),
+            y: near([0.0, 1.0]),
         };
-        axis_near(input.project, along, on, at, scale).then_some(picked)
+        hit(read, on, scale.mm(SKETCH_PICK_TOLERANCE), scale, axes)
     }
 
     /// A drag of `hit`, pressed at `at` on the screen: a point, or a line's, a circle's, or
