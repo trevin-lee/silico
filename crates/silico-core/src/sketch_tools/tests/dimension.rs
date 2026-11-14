@@ -493,6 +493,23 @@ fn a_point_at_the_origins_place_is_picked_over_the_origin_from_any_side() {
     );
 }
 
+#[test]
+fn a_point_as_near_as_the_origin_is_picked_over_it() {
+    // A point at (2, 2), far past one place with the origin, clicked at (1, 1): √2 from
+    // each, exactly, as (1, 1) and (−1, −1) give the same length. The tie goes to the
+    // sketch's own point.
+    let apart = with_point(empty(), "p0000001", [2.0, 2.0]);
+    assert_eq!(
+        pick(&apart, [1.0, 1.0], 1.5, Axes::BOTH),
+        Some(el("p0000001"))
+    );
+    // A hair nearer the origin, it's the origin's.
+    assert_eq!(
+        pick(&apart, [0.999, 0.999], 1.5, Axes::BOTH),
+        Some(Reference::Origin)
+    );
+}
+
 // --- SD1: two points, by the pointer; signs and order ---------------------------------
 
 /// Two points: p (10, 10), q (40, 30). The box they span: x 10 to 40, y 10 to 30.
