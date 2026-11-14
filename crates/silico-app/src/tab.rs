@@ -12085,15 +12085,21 @@ mod tests {
             pin_named_at(&file, "Nut");
             hold.release();
             let _ = check.wait();
-            // Polled until the tab is at the session's revision too: the read's answer moves the
-            // dialog, not the tab's revision, which the poll after takes from `status`.
-            polled_until(&mut tab, &sessions, |tab| {
-                tab.dialog.is_some() && tab.quiet() && tab.revision == rev(5)
+            // The read's answer taken, no `status` read: it says the reload it found itself.
+            taken_until(&mut tab, &sessions, |tab| {
+                tab.quiet() && tab.dialog.is_some()
             });
-            assert_eq!(tab.revision, rev(5), "save as: {save_as}");
-            assert_eq!(revision_now(&tab, &sessions), rev(5), "save as: {save_as}");
             assert_eq!(banner(&tab), Some((rev(4), rev(5))), "save as: {save_as}");
             assert_eq!(banner_unlisted(&tab), NONE_UNLISTED, "save as: {save_as}");
+            // Then polled until the tab is at the session's revision (the read's answer moves
+            // the dialog, not the tab's revision): nothing said again.
+            let resets = tab.resets;
+            polled_until(&mut tab, &sessions, |tab| {
+                tab.quiet() && tab.revision == rev(5)
+            });
+            assert_eq!(tab.resets, resets, "save as: {save_as}");
+            assert_eq!(banner(&tab), Some((rev(4), rev(5))), "save as: {save_as}");
+            assert_eq!(revision_now(&tab, &sessions), rev(5), "save as: {save_as}");
         }
     }
 
