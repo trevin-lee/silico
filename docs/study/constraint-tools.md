@@ -546,7 +546,7 @@ Fable's decisions on C1 to C9, for the maintainer, 2026-11-14, taken on this not
 
 ### The design in one paragraph
 
-One headless function in the core, `sketch_tools::relate(read, relation, picks, ids)`, turns a selection in pick order into one edit, for all ten buttons. It checks only what it needs to choose a form and its roles. Everything else that's wrong with a selection is the gate's to refuse, in the gate's words, when the command runs. The edit is a `sketch_add`, except in two places where the document's structure already is the relation: points made coincident are merged (`sketch_merge`), and a new relation that implies an `on` already there replaces it (a `sketch_add`, then a `sketch_remove`, one undo step). No new form, no new command, and no protected file changes.
+One headless function in the core, `sketch_tools::relate(read, revision, relation, picks, ids)`, turns a selection in pick order into one edit, for all ten buttons. It checks only what it needs to choose a form and its roles. Everything else that's wrong with a selection is the gate's to refuse, in the gate's words, when the command runs. The edit is a `sketch_add`, except in two places where the document's structure already is the relation: points made coincident are merged (`sketch_merge`), and a new relation that implies an `on` already there replaces it (a `sketch_add`, then a `sketch_remove`, one undo step). No new form, no new command, and no protected file changes.
 
 Where this departs from the study, it has fewer cases:
 
@@ -621,12 +621,18 @@ The places two curves can be tangent *at* are the ends they share, and the ends 
 
 **What's read from the drawing** (the newest read's coordinates):
 
-- **A line's side:** the sign of `(to − from) × (centre − from)`, positive `left`, negative `right`. An axis runs toward +x or +y. Zero is refused: "the centre of circle ce000002 is on line ne000002: which side it's tangent on is unclear; move one off the other first", as Smart Dimension refuses a point on its line.
+- **A line's side:** the centre's signed distance off the line, as Smart Dimension measures a point's distance from its line (to the left, facing from `from` to `to`, positive): positive `left`, negative `right`. An axis runs toward +x or +y. A distance that rounds to 0 nm is refused: "the centre of circle ce000002 is on line ne000002: which side it's tangent on is unclear; move one off the other first", as Smart Dimension refuses a point on its line. A line of no length is refused too: "line ne000009 has no length, so it has no side for circle ce000001 to be tangent on".
 - **Two rounds:** `outside` where the centres are at least the larger radius apart, else `inside`. This is FreeCAD's rule.
 - **`tangent_on`'s direction:** `same` where `a`, leaving `at`, runs as `b`'s own direction there, the dot product at least 0. This is trim's `drawn` (now in `document/sketch_edit.rs`, beside the leaving-direction helper both use), and the tool calls that function, not a copy.
 - **`tangent_at`'s direction:** `same` where `a` arriving at `at` and `b` leaving it have a dot product of at least 0. It uses the same leaving-direction helper.
 
-**Refused by the tool:** a selection with no circle or arc among its curves, in the gate's own words, "two lines can't be tangent". The check is needed because two lines sharing an end would otherwise get a `tangent_at`, which the gate takes (split writes one). That is Collinear, not Tangent.
+**Refused by the tool:**
+
+- a selection with no circle or arc among its curves, in the gate's own words, "two lines can't be tangent". The check is needed because two lines sharing an end would otherwise get a `tangent_at`, which the gate takes (split writes one). That is Collinear, not Tangent;
+- a centre on the line at the nanometre, and a line of no length, as above;
+- a point picked with the curves that isn't one of their places: "point pe000012 isn't where line ne000007 and arc ae000002 meet: deselect it, or select pe000010 or pe000011" (with no places, only "…: deselect it");
+- more than one place with no point picked, naming them;
+- more than one point, or other than two curves: Tangent's sentence, "Tangent takes two curves, at least one a circle or an arc, and at most one point where they meet".
 
 **Not refused by the tool:** two rounds about one centre point. The tool writes `inside`, and the solve says what it finds (SD7). A guard for it would be a special case with no rule behind it.
 
@@ -727,7 +733,7 @@ This is the tool's rule only. `sketch_add` still adds whatever it's sent (SD7).
 | Any, nothing selected | "Select the curves or points first; the relation applies to them." |
 | Horizontal, Vertical | "Horizontal takes lines, or two or more points" |
 | Coincident | "Coincident takes points and the curves they lie on, or two or more points to make one" |
-| Tangent | "Tangent takes two curves, at least one a circle or an arc"; and the two in C3 |
+| Tangent | "Tangent takes two curves, at least one a circle or an arc, and at most one point where they meet"; and its own refusals in C3 (the centre on the line, a line of no length, a point not where they meet, more than one place) |
 | Equal | "Equal takes two or more lines, or two or more circles and arcs" |
 | Parallel | "Parallel takes two or more lines" |
 | Perpendicular | "Perpendicular takes two lines" |
@@ -788,7 +794,10 @@ Headless tests of `relate`, beside Smart Dimension's. Each gives a sketch, picks
 - Ctrl-click three lines in an order that isn't ID order, then Equal: each `equal`'s `a` is the first clicked;
 - a click at the origin selects it, and with a point selected too, Coincident sends the pair;
 - Tangent over an `on`: two commands sent, and one Undo takes back both;
-- a refused click leaves the selection as it was and sends nothing more.
+- a refused click leaves the selection as it was and sends nothing more;
+- a double click: the second click, before the first's read comes, is sent against the first's read, refused as stale (`conflict`), and planned again on the next read, so nothing is written twice and the conflict isn't shown;
+- a refused add sends no remove (the add-then-remove pair);
+- the remove is sent at the revision the add made.
 
 ### The plan, amended
 
