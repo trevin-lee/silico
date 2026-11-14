@@ -1,6 +1,6 @@
 # Sketch mode's constraint tools, as SolidWorks and Fusion have them, in Silico's forms
 
-**Decided:** M5.0's open item 34 (docs/design/m5.0-app.md, section 12), Fable's C1 to C9 of 2026-11-14, kept whole in section 9 below. Where anything in sections 4 to 8 differs from them, the decisions govern. They depart most from this note in C2 (Fix is two dimensions from the origin, not a new form), C4 (Symmetric takes two points and a mirror only), and C5 (one rule: a relation that implies an `on` replaces it). They also narrow C3 (two rounds about one centre are added, not refused; a picked point only says which of several places), C6 (`symmetric` is either way round too), C8 (the origin is written as picked, never always `b`), and the refusals (one sentence per tool; the gate says the rest in its own words). So sections 4 and 6 to 8 are superseded wherever they say otherwise, §7's tests 9 and 10 and §8's plan among them.
+**Decided:** M5.0's open item 34 (docs/design/m5.0-app.md, section 12), Fable's C1 to C9 of 2026-11-14, kept whole in section 9 below. Where anything in sections 4 to 8 differs from them, the decisions govern. They depart most from this note in C2 (Fix is two dimensions from the origin, not a new form), C4 (Symmetric takes two points and a mirror only), and C5 (one rule: a relation that implies an `on` replaces it). They also narrow C3 (two rounds about one centre are added, not refused; a picked point only says which of several places), C6 (`symmetric` is either way round too), C8 (the origin is written as picked, never always `b`), and the refusals (one sentence per tool; the gate says the rest in its own words). So sections 4 to 8 are superseded wherever they say otherwise, §7's tests 9 and 10 and §8's plan among them.
 
 A study note for the ten constraint buttons on sketch mode's toolbar: Horizontal, Vertical, Coincident, Tangent, Equal, Parallel, Perpendicular, Midpoint, Symmetric, and Fix. Today each is `Does::NotBuilt` (crates/silico-app/src/toolbar.rs, `constraint` at :367 and `CONSTRAINTS` at :473). The approved prototype only toasts "Select the curves or points first; the relation applies to them." (docs/design/m5-ui/js/interact.js:273; its buttons at app.js:387). So its model is: select first, then click the relation. M5.12's slice had to give the bracket's holes two diameters where the agent wrote `diameter` and `equal`, because Equal isn't built (docs/walkthrough/m5.md:66).
 
@@ -544,14 +544,7 @@ Fable's decisions on C1 to C9, for the maintainer, 2026-11-14, taken on this not
 
 ### The design in one paragraph
 
-One headless function in the core, `sketch_tools::relate(read, relation, picks, ids)`, turns a
-selection in pick order into one edit, for all ten buttons. It checks only what it needs to
-choose a form and its roles. Everything else that's wrong with a selection is the gate's to
-refuse, in the gate's words, when the command runs. The edit is a `sketch_add`, except in two
-places where the document's structure already is the relation: points made coincident are
-merged (`sketch_merge`), and a new relation that implies an `on` already there replaces it
-(a `sketch_add`, then a `sketch_remove`, one undo step). No new form, no new command, and no
-protected file changes.
+One headless function in the core, `sketch_tools::relate(read, relation, picks, ids)`, turns a selection in pick order into one edit, for all ten buttons. It checks only what it needs to choose a form and its roles. Everything else that's wrong with a selection is the gate's to refuse, in the gate's words, when the command runs. The edit is a `sketch_add`, except in two places where the document's structure already is the relation: points made coincident are merged (`sketch_merge`), and a new relation that implies an `on` already there replaces it (a `sketch_add`, then a `sketch_remove`, one undo step). No new form, no new command, and no protected file changes.
 
 Where this departs from the study, it has fewer cases:
 
@@ -568,256 +561,159 @@ Where this departs from the study, it has fewer cases:
 
 ### C1. Coincident of two points
 
-**Decided:** `sketch_merge` of the picked points, in pick order, so the first picked
-survives. Its refusal of a worse solve stands beside SD7.
+**Decided:** `sketch_merge` of the picked points, in pick order, so the first picked survives. Its refusal of a worse solve stands beside SD7.
 
-**Why.** Silico has no coincidence between points: a shared point is the coincidence (D2), so
-the tool has nothing else to write. `sketch_merge` already exists, with its rules settled.
-The first picked surviving is `sketch_merge`'s own rule read from the selection, so the tool
-adds no rule.
+**Why.** Silico has no coincidence between points: a shared point is the coincidence (D2), so the tool has nothing else to write. `sketch_merge` already exists, with its rules settled. The first picked surviving is `sketch_merge`'s own rule read from the selection, so the tool adds no rule.
 
-The refusal doesn't contradict SD7. The line between the two is already drawn in M5.0 section
-7: an add writes what the person wrote, and deleting it takes it back. A merge writes
-structure and a placement of its own, removes a point, and re-points curves and constraints,
-so its solve judges it. The tools inherit that line; they don't make a second one.
-SolidWorks would merge and turn the sketch yellow. That divergence is already M5.0's, and
-it's loud: the refusal names the constraints at fault.
+The refusal doesn't contradict SD7. The line between the two is already drawn in M5.0 section 7: an add writes what the person wrote, and deleting it takes it back. A merge writes structure and a placement of its own, removes a point, and re-points curves and constraints, so its solve judges it. The tools inherit that line; they don't make a second one. SolidWorks would merge and turn the sketch yellow. That divergence is already M5.0's, and it's loud: the refusal names the constraints at fault.
 
 **The rest of Coincident:**
 
-- one or more points and one or more curves: an `on` for each point and each curve, points in
-  pick order, then curves. The origin counts as a point here, and an axis as a curve;
-- one point and the origin: the pair the drawing tools write (#278's A), by the same
-  function, whichever was picked first;
+- one or more points and one or more curves: an `on` for each point and each curve, points in pick order, then curves. The origin counts as a point here, and an axis as a curve;
+- one point and the origin: the pair the drawing tools write (#278's A), by the same function, whichever was picked first;
 - the origin with two or more points: refused, as a selection Coincident can't read;
-- nothing is skipped. A curve's own point in the product is refused by the gate, whole.
-  FreeCAD skips it silently; Silico doesn't.
+- nothing is skipped. A curve's own point in the product is refused by the gate, whole. FreeCAD skips it silently; Silico doesn't.
 
 ### C2. Fix
 
-**Decided:** (b). Fix writes, for each picked point, a driving `distance_x` and a driving
-`distance_y` between `origin` and the point, at the newest read's coordinates rounded to the
-nanometre. No `fix` form. No protected change is needed, so none is approved.
+**Decided:** (b). Fix writes, for each picked point, a driving `distance_x` and a driving `distance_y` between `origin` and the point, at the newest read's coordinates rounded to the nanometre. No `fix` form. No protected change is needed, so none is approved.
 
-**Shape, exactly.** For each point, in pick order, the two dimensions Smart Dimension writes
-for the picks (origin, point), by its own function (`dimension.rs`, the `ordered` closure and
-`rounded`): `a` is the one to the left (below), so the value is never negative, and equal
-coordinates give `{a: origin, b: point, value: 0}`. `distance_x` comes first. One writer,
-so Fix and Smart Dimension can't spell the same dimension two ways.
+**Shape, exactly.** For each point, in pick order, the two dimensions Smart Dimension writes for the picks (origin, point), by its own function (`dimension.rs`, the `ordered` closure and `rounded`): `a` is the one to the left (below), so the value is never negative, and equal coordinates give `{a: origin, b: point, value: 0}`. `distance_x` comes first. One writer, so Fix and Smart Dimension can't spell the same dimension two ways.
 
 **Why not (a).**
 
-- A fix has to carry its place. A place is two numbers from the origin. The document already
-  has exactly that, and `fix {point, x, y}` would send the solver the same two rows.
-- It would be a second spelling of one thing, carried from then on by the reader, the writer,
-  the schema, the gate, the solver's translation, the definition states, the read, the
-  drawing, every sketch edit, and every agent choosing between them.
-- The glyph argument is weaker than the study has it. The prototype's `GLYPH.fix` is an
-  entry in a map. No sketch the prototype draws shows a fixed point.
+- A fix has to carry its place. A place is two numbers from the origin. The document already has exactly that, and `fix {point, x, y}` would send the solver the same two rows.
+- It would be a second spelling of one thing, carried from then on by the reader, the writer, the schema, the gate, the solver's translation, the definition states, the read, the drawing, every sketch edit, and every agent choosing between them.
+- The glyph argument is weaker than the study has it. The prototype's `GLYPH.fix` is an entry in a map. No sketch the prototype draws shows a fixed point.
 - (b) can become (a) later by adding a form. (a) can't be taken back once documents hold it.
-- I also weighed `fix {point}` with no coordinates, pinning the point where the file has it.
-  It fails silently: merging a free point (first) with a fixed one would re-point the fix to
-  the survivor and pin it at a place the person never fixed. Rejected.
+- I also weighed `fix {point}` with no coordinates, pinning the point where the file has it. It fails silently: merging a free point (first) with a fixed one would re-point the fix to the survivor and pin it at a place the person never fixed. Rejected.
 
 **How it behaves,** all of it existing behaviour of dimensions:
 
-- **In the file and the read:** two dimensions. They draw as dimensions, take the Modify
-  box, and can be made driven. Editing a value moves the pin, which a relation couldn't do.
-- **Drags:** a fixed point has no freedom, so a drag leaves it where it is, as any fully
-  dimensioned point.
-- **Split, trim, merge, unjoin:** whatever they do with any constraint naming a point. A
-  merge that puts a fixed point somewhere else conflicts, and is refused by the merge's own
-  rule, loudly.
-- **Unfix:** delete the dimensions. No Fix/UnFix toggle, which would have to recognise its
-  own pair.
-- **Fixed already** falls out of C6: both dimensions are there, at these values, so nothing
-  is added.
-- **Refused:** a curve, a constraint, or nothing a point ("Fix takes points"). The origin
-  alone is the gate's refusal (a constraint names a member of its sketch). A coordinate
-  `Length::rounded` can't hold is Smart Dimension's `TooFar`.
+- **In the file and the read:** two dimensions. They draw as dimensions, take the Modify box, and can be made driven. Editing a value moves the pin, which a relation couldn't do.
+- **Drags:** a fixed point has no freedom, so a drag leaves it where it is, as any fully dimensioned point.
+- **Split, trim, merge, unjoin:** whatever they do with any constraint naming a point. A merge that puts a fixed point somewhere else conflicts, and is refused by the merge's own rule, loudly.
+- **Unfix:** delete the dimensions. No Fix/UnFix toggle, which would have to recognise its own pair.
+- **Fixed already** falls out of C6: both dimensions are there, at these values, so nothing is added.
+- **Refused:** a curve, a constraint, or nothing a point ("Fix takes points"). The origin alone is the gate's refusal (a constraint names a member of its sketch). A coordinate `Length::rounded` can't hold is Smart Dimension's `TooFar`.
 
-**The rounding** is forced, not a heuristic: a `Length` is whole nanometres. The point moves
-by at most half a nanometre on each axis, as a skipped Modify box already does (SD2).
+**The rounding** is forced, not a heuristic: a `Length` is whole nanometres. The point moves by at most half a nanometre on each axis, as a skipped Modify box already does (SD2).
 
-**What's lost.** SolidWorks shows an anchor and no values, and fixes curves. Here Fix shows
-two dimensions and takes points only. A circle is fixed by its centre and a radius
-dimension. This is the one matter of taste in the set; see *For Trevin*.
+**What's lost.** SolidWorks shows an anchor and no values, and fixes curves. Here Fix shows two dimensions and takes points only. A circle is fixed by its centre and a radius dimension. This is the one matter of taste in the set; the maintainer may veto C2 for a `fix {point, x, y}` form, added later without changing anything built now.
 
 ### C3. Tangent
 
 **Decided:** the form follows the sketch's structure, by one rule.
 
-The places two curves can be tangent *at* are the ends they share, and the ends of one that
-an `on` holds on the other.
+The places two curves can be tangent *at* are the ends they share, and the ends of one that an `on` holds on the other.
 
 - **None:** an edge `tangent {a, b, side}`.
-- **One:** tangent there. A shared end gives `tangent_at {a, b, at, direction}`. An end held
-  on gives `tangent_on {a: the curve that ends there, at, b, direction}`, and replaces the
-  `on` (C5).
-- **More than one:** refused, unless a point picked with the curves is one of them, and then
-  it's there.
+- **One:** tangent there. A shared end gives `tangent_at {a, b, at, direction}`. An end held on gives `tangent_on {a: the curve that ends there, at, b, direction}`, and replaces the `on` (C5).
+- **More than one:** refused, unless a point picked with the curves is one of them, and then it's there.
 
 `a` and `b` are in pick order wherever the structure doesn't fix them.
 
 **What's read from the drawing** (the newest read's coordinates):
 
-- **A line's side:** the sign of `(to − from) × (centre − from)`, positive `left`, negative
-  `right`. An axis runs toward +x or +y. Zero is refused: "the centre of circle ce000002 is
-  on line ne000002: which side it's tangent on is unclear; move one off the other first", as
-  Smart Dimension refuses a point on its line.
-- **Two rounds:** `outside` where the centres are at least the larger radius apart, else
-  `inside`. This is FreeCAD's rule.
-- **`tangent_on`'s direction:** `same` where `a`, leaving `at`, runs as `b`'s own direction
-  there, the dot product at least 0. This is trim's `drawn`
-  (`sketch_edit/trim.rs`), and the tool calls that function, not a copy.
-- **`tangent_at`'s direction:** `same` where `a` arriving at `at` and `b` leaving it have a
-  dot product of at least 0. It uses the same leaving-direction helper.
+- **A line's side:** the sign of `(to − from) × (centre − from)`, positive `left`, negative `right`. An axis runs toward +x or +y. Zero is refused: "the centre of circle ce000002 is on line ne000002: which side it's tangent on is unclear; move one off the other first", as Smart Dimension refuses a point on its line.
+- **Two rounds:** `outside` where the centres are at least the larger radius apart, else `inside`. This is FreeCAD's rule.
+- **`tangent_on`'s direction:** `same` where `a`, leaving `at`, runs as `b`'s own direction there, the dot product at least 0. This is trim's `drawn` (`sketch_edit/trim.rs`), and the tool calls that function, not a copy.
+- **`tangent_at`'s direction:** `same` where `a` arriving at `at` and `b` leaving it have a dot product of at least 0. It uses the same leaving-direction helper.
 
-**Refused by the tool:** a selection with no circle or arc among its curves, in the gate's
-own words, "two lines can't be tangent". The check is needed because two lines sharing an
-end would otherwise get a `tangent_at`, which the gate takes (split writes one). That is
-Collinear, not Tangent.
+**Refused by the tool:** a selection with no circle or arc among its curves, in the gate's own words, "two lines can't be tangent". The check is needed because two lines sharing an end would otherwise get a `tangent_at`, which the gate takes (split writes one). That is Collinear, not Tangent.
 
-**Not refused by the tool:** two rounds about one centre point. The tool writes `inside`,
-and the solve says what it finds (SD7). A guard for it would be a special case with no rule
-behind it.
+**Not refused by the tool:** two rounds about one centre point. The tool writes `inside`, and the solve says what it finds (SD7). A guard for it would be a special case with no rule behind it.
 
-**Why.** The gate already forces the form by structure, so the tool's only choices are the
-ones the forms store. Each is a sign read from the drawing, with the tie rules trim already
-set. Counting the places makes the D shape, the split circle, and two curves each ending on
-the other one case.
+**Why.** The gate already forces the form by structure, so the tool's only choices are the ones the forms store. Each is a sign read from the drawing, with the tie rules trim already set. Counting the places makes the D shape, the split circle, and two curves each ending on the other one case.
 
 ### C4. Symmetric
 
-**Decided:** two points and a mirror, exactly three picks, writing one
-`symmetric {a, b, about}`.
+**Decided:** two points and a mirror, exactly three picks, writing one `symmetric {a, b, about}`.
 
-- **The mirror** is the one line or axis picked. With three points (the origin counts as
-  one), it's the last picked.
+- **The mirror** is the one line or axis picked. With three points (the origin counts as one), it's the last picked.
 - **`a` and `b`** are the other two, in pick order.
-- **Anything else** is refused: "Symmetric takes two points and the line or point they
-  mirror about, the point picked last".
-- A circle or an arc is mirrored by picking its centre. A line is mirrored by its ends, a
-  pair at a time.
+- **Anything else** is refused: "Symmetric takes two points and the line or point they mirror about, the point picked last".
+- A circle or an arc is mirrored by picking its centre. A line is mirrored by its ends, a pair at a time.
 
 **Why.**
 
 - The form relates points, so the tool takes points.
-- SolidWorks' help doesn't say what its Symmetric does with lines' ends or arcs' radii. An
-  unknown behaviour isn't guessed.
-- The study's line pairing chose between two pairings by summed distance, with a tie rule. That
-  is a heuristic where no exact rule exists, in code that's two clicks' saving.
-- The mirror rule has no case to chase: a line among points can only be the mirror, and
-  among three points only pick order can say. Fusion and FreeCAD both put the mirror last.
+- SolidWorks' help doesn't say what its Symmetric does with lines' ends or arcs' radii. An unknown behaviour isn't guessed.
+- The study's line pairing chose between two pairings by summed distance, with a tie rule. That is a heuristic where no exact rule exists, in code that's two clicks' saving.
+- The mirror rule has no case to chase: a line among points can only be the mirror, and among three points only pick order can say. Fusion and FreeCAD both put the mirror last.
 - Lines and rounds can be added later without changing anything written now.
 
 ### C5. A relation that meets an `on`
 
-**Decided:** one rule. A relation the tool writes that implies an `on` already in the sketch
-replaces it: a `sketch_add` of the relation, then a `sketch_remove` of the `on`, one undo
-step.
+**Decided:** one rule. A relation the tool writes that implies an `on` already in the sketch replaces it: a `sketch_add` of the relation, then a `sketch_remove` of the `on`, one undo step.
 
-- It applies to exactly two forms, the two that hold a point on a curve themselves:
-  `tangent_on` (its `at` on its `b`) and `midpoint` (its `point` on its `line`).
-- **The order is add, then remove.** If the add is refused, nothing else is sent, so there's
-  no remove to take back. A removal of a constraint by ID isn't refused by the gate.
-- **The step** is the tab's existing undo group (`tab.rs`, `Group`, a dialog's OK'd edits).
-  No contract changes, and an agent makes the same two calls.
-- **Coincident never substitutes.** An `on` where an edge `tangent` already makes the curves
-  tangent is refused by the gate, in its words. The person deletes the tangent and uses
-  Tangent with the `on` in place.
+- It applies to exactly two forms, the two that hold a point on a curve themselves: `tangent_on` (its `at` on its `b`) and `midpoint` (its `point` on its `line`).
+- **The order is add, then remove.** If the add is refused, nothing else is sent, so there's no remove to take back. A removal of a constraint by ID isn't refused by the gate.
+- **The step** is the tab's existing undo group (`tab.rs`, `Group`, a dialog's OK'd edits). No contract changes, and an agent makes the same two calls.
+- **Coincident never substitutes.** An `on` where an edge `tangent` already makes the curves tangent is refused by the gate, in its words. The person deletes the tangent and uses Tangent with the `on` in place.
 
 **Why.**
 
-- Left in, the `on` is redundant, and which of the two PlaneGCS flags is its own choice. It
-  could flag the tangent, and "delete the redundant one" would then delete the wrong one.
+- Left in, the `on` is redundant, and which of the two PlaneGCS flags is its own choice. It could flag the tangent, and "delete the redundant one" would then delete the wrong one.
 - `silico check` would warn `constraints_redundant` on a sketch the app itself made.
-- Drawing a line that ends on a circle and then making it tangent is the common path, and
-  FreeCAD substitutes for this reason (`3a656d8597`).
+- Drawing a line that ends on a circle and then making it tangent is the common path, and FreeCAD substitutes for this reason (`3a656d8597`).
 - `sketch_merge` already removes an `on` it makes implied (open item 13b).
 - The study left Midpoint's `on` in and substituted Tangent's. One rule is simpler than two.
 
-**The cost.** SolidWorks keeps the coincident relation beside a midpoint. Here, deleting the
-midpoint later leaves the point free, not on the line. Undo restores both.
+**The cost.** SolidWorks keeps the coincident relation beside a midpoint. Here, deleting the midpoint later leaves the point free, not on the line. Undo restores both.
 
 ### C6. A relation already there
 
-**Decided:** (b), by exact equality. A constraint the click would write is left out when the
-sketch holds one equal to it in everything but its ID. `a` and `b` may be either way round
-in the forms where they're interchangeable: `horizontal_points`, `vertical_points`,
-`parallel`, `perpendicular`, `equal`, and `symmetric`.
+**Decided:** (b), by exact equality. A constraint the click would write is left out when the sketch holds one equal to it in everything but its ID. `a` and `b` may be either way round in the forms where they're interchangeable: `horizontal_points`, `vertical_points`, `parallel`, `perpendicular`, `equal`, and `symmetric`.
 
-- All left out: nothing is sent, and the toast says so, for example "line ne000002 is
-  already vertical: nothing was added".
+- All left out: nothing is sent, and the toast says so, for example "line ne000002 is already vertical: nothing was added".
 - Some left out: the rest are added, and the toast says how many were already there.
 
-**Why.** A literal duplicate is never meant, and the selection staying after an add makes a
-second click easy. Equality is exact, so there's no judgement in it. Because it compares
-every field, the cases fall out:
+**Why.** A literal duplicate is never meant, and the selection staying after an add makes a second click easy. Equality is exact, so there's no judgement in it. Because it compares every field, the cases fall out:
 
 - a tangent on the other side isn't a repeat, and is added to conflict;
 - a driven dimension isn't a repeat of the driving one Fix writes;
 - a point fixed already is one.
 
-A relation that's implied but not identical is added and reads `redundant`, as SolidWorks'
-FAQ shows it.
+A relation that's implied but not identical is added and reads `redundant`, as SolidWorks' FAQ shows it.
 
 This is the tool's rule only. `sketch_add` still adds whatever it's sent (SD7).
 
 ### C7. Selection first, or tool first
 
-**Decided:** (a), selection first only. With nothing selected, the button toasts the
-prototype's words.
+**Decided:** (a), selection first only. With nothing selected, the button toasts the prototype's words.
 
-**Why.** It's what the approved prototype draws and what SolidWorks' context toolbar does.
-An armed tool would add a picks accumulator, an armed state, a cursor glyph, and Esc, and
-would change the approved prototype. `relate` takes picks in order, so tool first can be
-added later with no change to it.
+**Why.** It's what the approved prototype draws and what SolidWorks' context toolbar does. An armed tool would add a picks accumulator, an armed state, a cursor glyph, and Esc, and would change the approved prototype. `relate` takes picks in order, so tool first can be added later with no change to it.
 
 ### C8. Several members
 
-**Decided:** (a), a star. Each member after the first is paired with the first picked, which
-is `a`.
+**Decided:** (a), a star. Each member after the first is paired with the first picked, which is `a`.
 
-**Why.** A chain loses the relation between its halves when any middle member is deleted. A
-star loses it only when the first is. It also matches "the first is the base" in Fusion's
-help.
+**Why.** A chain loses the relation between its halves when any middle member is deleted. A star loses it only when the first is. It also matches "the first is the base" in Fusion's help.
 
-- **Not promised:** which member moves. `sketch_add` writes no positions, so the solve
-  decides.
-- **No special case for the origin:** `a` is the first picked, whatever it is. C6's
-  either-order equality already treats the two spellings as one.
+- **Not promised:** which member moves. `sketch_add` writes no positions, so the solve decides.
+- **No special case for the origin:** `a` is the first picked, whatever it is. C6's either-order equality already treats the two spellings as one.
 
 ### C9. Sketch mode's selection
 
-**Decided:** as recommended. The selection keeps pick order and admits the origin and the
-axes. This amends M5.7's selection in sketch mode.
+**Decided:** as recommended. The selection keeps pick order and admits the origin and the axes. This amends M5.7's selection in sketch mode.
 
-- An ordered set in place of the `BTreeSet`. Open item 24's rules are unchanged: a plain
-  click replaces, a Ctrl-click toggles (a member toggled back in joins at the end), and
-  empty space or Esc clears.
+- An ordered set in place of the `BTreeSet`. Open item 24's rules are unchanged: a plain click replaces, a Ctrl-click toggles (a member toggled back in joins at the end), and empty space or Esc clears.
 - Members that join together, as a box's would, join in ID order.
-- The origin and the axes are hit as `View::pick` ranks them: a point or the origin,
-  whichever is nearer, then the nearest curve, an axis anywhere along it. The sketch's own
-  member wins a tie.
+- The origin and the axes are hit as `View::pick` ranks them: a point or the origin, whichever is nearer, then the nearest curve, an axis anywhere along it. The sketch's own member wins a tie.
 - Delete ignores the origin and the axes.
 
-**Why.** C1's survivor, C4's mirror, and C8's first each need pick order, and pick order is
-the person's own input, so it's deterministic. Symmetric about an axis and Coincident with
-the origin need the two to be selectable, and the forms and the gate already take them.
+**Why.** C1's survivor, C4's mirror, and C8's first each need pick order, and pick order is the person's own input, so it's deterministic. Symmetric about an axis and Coincident with the origin need the two to be selectable, and the forms and the gate already take them.
 
-**Residual:** a press on an axis selects it, so a box can't start there. That's a visible
-annoyance, not a wrong result.
+**Residual:** a press on an axis selects it, so a box can't start there. That's a visible annoyance, not a wrong result.
 
 ### The interaction, as decided
 
 - **One click, one undo step,** named by the relation ("Horizontal").
-- **The selection stays** after the edit, as SolidWorks' does. Members the edit removed
-  leave it when the read comes (`SketchMode::took`).
+- **The selection stays** after the edit, as SolidWorks' does. Members the edit removed leave it when the read comes (`SketchMode::took`).
 - **A refusal** adds nothing, shows in the toast, and leaves the selection as it was.
 - **The buttons stay enabled** in sketch mode, as the prototype draws them.
-- **What the tool itself refuses,** one sentence per tool, with the selection as the
-  error's elements:
+- **What the tool itself refuses,** one sentence per tool, with the selection as the error's elements:
 
 | Tool | Sentence |
 |---|---|
@@ -832,129 +728,77 @@ annoyance, not a wrong result.
 | Symmetric | "Symmetric takes two points and the line or point they mirror about, the point picked last" |
 | Fix | "Fix takes points" |
 
-  Lines and points together under Horizontal or Vertical are refused by that sentence.
-  FreeCAD ignores the points; Silico does what was asked, or nothing.
-- **Everything else is the gate's,** shown as any refused command's error: a curve's own
-  point, only the origin and axes, a line and a circle made equal, a mirror among its own
-  points. The tool doesn't say the gate's rules ahead of it.
+  Lines and points together under Horizontal or Vertical are refused by that sentence. FreeCAD ignores the points; Silico does what was asked, or nothing.
+- **Everything else is the gate's,** shown as any refused command's error: a curve's own point, only the origin and axes, a line and a circle made equal, a mirror among its own points. The tool doesn't say the gate's rules ahead of it.
 
 ### Tests that must exist
 
-Headless tests of `relate`, beside Smart Dimension's. Each gives a sketch, picks in order,
-and a source of IDs, and puts the returned edit through the gate (`sketch_edit::add`,
-`merge`, `remove`). Expected values are worked here by hand. New IDs are `kt000101` and on.
+Headless tests of `relate`, beside Smart Dimension's. Each gives a sketch, picks in order, and a source of IDs, and puts the returned edit through the gate (`sketch_edit::add`, `merge`, `remove`). Expected values are worked here by hand. New IDs are `kt000101` and on.
 
 **The sketch** is the study's §7 sketch, `s0000005`, with these added:
 
 - points pe000010 (70, 0), pe000011 (70, 20), pe000012 (70, 10);
 - line ne000007, pe000010 → pe000011;
-- arc ae000002 about pe000012, from pe000010 to pe000011, counter-clockwise (−90° to 90°),
-  radius 10. With ne000007 it closes a D, sharing both ends;
+- arc ae000002 about pe000012, from pe000010 to pe000011, counter-clockwise (−90° to 90°), radius 10. With ne000007 it closes a D, sharing both ends;
 - points pe000013 (20, 15) and pe000014 (0, 15); line ne000008, pe000014 → pe000013;
-- constraint kt000002: `on {point: pe000013, curve: ce000001}` (ce000001 is about (20, 10),
-  radius 5, so (20, 15) is on it);
+- constraint kt000002: `on {point: pe000013, curve: ce000001}` (ce000001 is about (20, 10), radius 5, so (20, 15) is on it);
 - constraint kt000003: `on {point: pe000008, curve: ne000001}`.
 
-**Kept from the study's §7 as written:** 1 (Horizontal, and its mixed refusal), 2 (Vertical
-of points; a circle refused by Vertical's sentence), 3's first three (an `on`, the merge,
-the origin pair), 4's first two and its two-lines refusal, 5's star, 6, 7, 8's first, 9's
-first, and 11.
+**Kept from the study's §7 as written:** 1 (Horizontal, and its mixed refusal), 2 (Vertical of points; a circle refused by Vertical's sentence), 3's first three (an `on`, the merge, the origin pair), 4's first two and its two-lines refusal, 5's star, 6, 7, 8's first, 9's first, and 11.
 
 **Changed or added:**
 
-1. **Coincident's own point,** [pe000003, ne000002]: `relate` returns the `on`, and the gate
-   refuses it. The test asserts the gate's error, not a message of the tool's.
-2. **Coincident, the origin either way,** [origin, pe000007] gives the same pair as
-   [pe000007, origin].
-3. **Coincident, the origin and two points,** [pe000007, pe000008, origin]: refused by
-   Coincident's sentence.
-4. **Equal of a line and a circle,** [ne000001, ce000001]: `relate` returns the `equal`, and
-   the gate refuses it, in its words.
+1. **Coincident's own point,** [pe000003, ne000002]: `relate` returns the `on`, and the gate refuses it. The test asserts the gate's error, not a message of the tool's.
+2. **Coincident, the origin either way,** [origin, pe000007] gives the same pair as [pe000007, origin].
+3. **Coincident, the origin and two points,** [pe000007, pe000008, origin]: refused by Coincident's sentence.
+4. **Equal of a line and a circle,** [ne000001, ce000001]: `relate` returns the `equal`, and the gate refuses it, in its words.
 5. **Tangent, several places,** [ne000007, ae000002]: refused, naming pe000010 and pe000011.
-6. **Tangent, the place picked,** [ne000007, ae000002, pe000011]. The line arrives along
-   (0, 20). The arc's own direction at (70, 20) is (−(20 − 10), 70 − 70) = (−10, 0); pe000011
-   is its end, so leaving it is (10, 0). The dot product is 0, and the tie goes to `same`:
-   `tangent_at {a: ne000007, b: ae000002, at: pe000011, direction: same}`.
-7. **Tangent at an end held on,** [ne000008, ce000001]. One place, pe000013, ne000008's `to`.
-   Leaving it along the line is (0 − 20, 15 − 15) = (−20, 0). The circle's own direction at
-   (20, 15) is (−(15 − 10), 20 − 20) = (−5, 0). The dot product is 100, so `same`. The edit is
-   an add of `tangent_on {a: ne000008, at: pe000013, b: ce000001, direction: same}`, then a
-   remove of kt000002. Put through the gate in that order, both are taken. The same picks in
-   the other order give the same edit, since the structure fixes `a`.
-8. **Tangent, a centre on the line.** A circle whose centre is (40, 11), on ne000002: refused,
-   the cross product being 0 × 10 − 20 × 0 = 0.
-9. **Tangent of two rounds,** [ce000001, ce000002]. The centres are 40 apart and the larger
-   radius is 5: `outside`. A second pair, radii 10 and 4 with centres 7 apart: `inside`.
-10. **Midpoint over an `on`,** [pe000008, ne000001]: an add of
-    `midpoint {point: pe000008, line: ne000001}`, then a remove of kt000003.
-11. **Symmetric, three points,** [pe000007, pe000008, pe000005]:
-    `symmetric {a: pe000007, b: pe000008, about: pe000005}`. [pe000005, pe000007, pe000008]
-    gives `about: pe000008`.
-12. **Symmetric, the line picked first,** [ne000005, pe000007, pe000008]: the same constraint
-    as the study's 9, `about: ne000005`.
+6. **Tangent, the place picked,** [ne000007, ae000002, pe000011]. The line arrives along (0, 20). The arc's own direction at (70, 20) is (−(20 − 10), 70 − 70) = (−10, 0); pe000011 is its end, so leaving it is (10, 0). The dot product is 0, and the tie goes to `same`: `tangent_at {a: ne000007, b: ae000002, at: pe000011, direction: same}`.
+7. **Tangent at an end held on,** [ne000008, ce000001]. One place, pe000013, ne000008's `to`. Leaving it along the line is (0 − 20, 15 − 15) = (−20, 0). The circle's own direction at (20, 15) is (−(15 − 10), 20 − 20) = (−5, 0). The dot product is 100, so `same`. The edit is an add of `tangent_on {a: ne000008, at: pe000013, b: ce000001, direction: same}`, then a remove of kt000002. Put through the gate in that order, both are taken. The same picks in the other order give the same edit, since the structure fixes `a`.
+8. **Tangent, a centre on the line.** A circle whose centre is (40, 11), on ne000002: refused, the cross product being 0 × 10 − 20 × 0 = 0.
+9. **Tangent of two rounds,** [ce000001, ce000002]. The centres are 40 apart and the larger radius is 5: `outside`. A second pair, radii 10 and 4 with centres 7 apart: `inside`.
+10. **Midpoint over an `on`,** [pe000008, ne000001]: an add of `midpoint {point: pe000008, line: ne000001}`, then a remove of kt000003.
+11. **Symmetric, three points,** [pe000007, pe000008, pe000005]: `symmetric {a: pe000007, b: pe000008, about: pe000005}`. [pe000005, pe000007, pe000008] gives `about: pe000008`.
+12. **Symmetric, the line picked first,** [ne000005, pe000007, pe000008]: the same constraint as the study's 9, `about: ne000005`.
 13. **Symmetric of lines,** [ne000001, ne000006, ne000005]: refused by Symmetric's sentence.
-14. **Fix,** [pe000007] at (20, 30): `distance_x {a: origin, b: pe000007, value: 20, driving:
-    true}` and `distance_y {a: origin, b: pe000007, value: 30, driving: true}`.
-15. **Fix left of the origin,** [pe000008] at (−10, 30): `distance_x {a: pe000008, b: origin,
-    value: 10, driving: true}` and `distance_y {a: origin, b: pe000008, value: 30, driving:
-    true}`.
-16. **Fix at the origin's place,** [pe000001] at (0, 0): both `{a: origin, b: pe000001,
-    value: 0}`.
-17. **Fix rounds,** a point read at (20.00000049, 30): `value: 20`. At (20.0000006, 30):
-    `value: 20.000001`.
-18. **Fix twice:** the result of 14 applied, then Fix on pe000007 again: nothing added. With
-    the `distance_x` made driven first: a driving `distance_x` is added, and only that.
+14. **Fix,** [pe000007] at (20, 30): `distance_x {a: origin, b: pe000007, value: 20, driving: true}` and `distance_y {a: origin, b: pe000007, value: 30, driving: true}`.
+15. **Fix left of the origin,** [pe000008] at (−10, 30): `distance_x {a: pe000008, b: origin, value: 10, driving: true}` and `distance_y {a: origin, b: pe000008, value: 30, driving: true}`.
+16. **Fix at the origin's place,** [pe000001] at (0, 0): both `{a: origin, b: pe000001, value: 0}`.
+17. **Fix rounds,** a point read at (20.00000049, 30): `value: 20`. At (20.0000006, 30): `value: 20.000001`.
+18. **Fix twice:** the result of 14 applied, then Fix on pe000007 again: nothing added. With the `distance_x` made driven first: a driving `distance_x` is added, and only that.
 19. **Fix of a line,** [ne000001]: refused, "Fix takes points".
-20. **A repeat either way round:** `parallel {a: ne000003, b: ne000001}` in the sketch, then
-    Parallel on [ne000001, ne000003]: nothing added.
-21. **A partial repeat:** `horizontal {line: ne000001}` in the sketch, then Horizontal on
-    [ne000001, ne000003]: only ne000003's is added, and the message counts one left out.
-22. **Not a repeat:** `tangent {a: ne000002, b: ce000002, side: left}` in the sketch, then
-    Tangent on the same two: the `right` one is added.
+20. **A repeat either way round:** `parallel {a: ne000003, b: ne000001}` in the sketch, then Parallel on [ne000001, ne000003]: nothing added.
+21. **A partial repeat:** `horizontal {line: ne000001}` in the sketch, then Horizontal on [ne000001, ne000003]: only ne000003's is added, and the message counts one left out.
+22. **Not a repeat:** `tangent {a: ne000002, b: ce000002, side: left}` in the sketch, then Tangent on the same two: the `right` one is added.
 23. **A constraint selected** with any tool: refused by the tool's sentence.
 
-**A property test:** for every tool and every selection of up to three members of the
-sketch, `relate` returns an edit or a refusal and never panics, and an edit the gate takes
-names only the picked members.
+**A property test:** for every tool and every selection of up to three members of the sketch, `relate` returns an edit or a refusal and never panics, and an edit the gate takes names only the picked members.
 
-**One real solve** (the sketch worker): a line ended on a circle by an `on`, then Tangent.
-After the two commands the sketch solves with no constraint flagged redundant. The same add
-without the remove flags one. This is the reason for C5, so it has to be able to fail.
+**One real solve** (the sketch worker): a line ended on a circle by an `on`, then Tangent. After the two commands the sketch solves with no constraint flagged redundant. The same add without the remove flags one. This is the reason for C5, so it has to be able to fail.
 
 **App tests** (`egui_kittest`): the study's four, and:
 
-- Ctrl-click three lines in an order that isn't ID order, then Equal: each `equal`'s `a` is
-  the first clicked;
+- Ctrl-click three lines in an order that isn't ID order, then Equal: each `equal`'s `a` is the first clicked;
 - a click at the origin selects it, and with a point selected too, Coincident sends the pair;
 - Tangent over an `on`: two commands sent, and one Undo takes back both;
 - a refused click leaves the selection as it was and sends nothing more.
 
 ### The plan, amended
 
-1. **Core:** `relate`, all ten tools, with the tests above. `drawn` moves from `trim.rs` to
-   where both call it. No command, contract, or schema change.
+1. **Core:** `relate`, all ten tools, with the tests above. `drawn` moves from `trim.rs` to where both call it. No command, contract, or schema change.
 2. **App, the selection:** C9.
-3. **App, the buttons:** `Does::Constraint(relation)` for all ten; the add-then-remove pair
-   in the tab's undo group; the toast; the step's name. The walkthrough's Equal finding is
-   struck.
-4. **Docs:** the texts above, and the study into docs/study/.
+3. **App, the buttons:** `Does::Constraint(relation)` for all ten; the add-then-remove pair in the tab's undo group; the toast; the step's name. The walkthrough's Equal finding is struck.
+4. **Docs:** M5.0's item 34 and section 9's bullets, solidworks.md's *Relations added by hand*, and this note into docs/study/ (#477).
 
 The study's separate Fix step, with its form, schema, and oracle case, is gone.
 
 ### Residual risk
 
 - **Fix looks like dimensions, not an anchor.** Visible, and reversible by adding a form.
-- **The add-then-remove pair isn't atomic.** If the app dies between the two, the sketch
-  keeps both, and the `on` reads redundant. That's loud (`constraints_redundant`) and
-  harmless.
-- **I read the gate as taking a `tangent_on` beside an `on` of the same point and curve**
-  (its tangent rule pairs an edge `tangent` with either). I didn't run it; test 7 proves it.
-  If it's refused, the order becomes remove, then add, with an undo to the revision when the
-  add is refused.
-- **Which member moves** when a relation is added is the solver's choice, and isn't
-  promised.
-- **A pin on an unsolved sketch** is taken at the coordinates the read shows. The same is
-  true of Smart Dimension.
+- **The add-then-remove pair isn't atomic.** If the app dies between the two, the sketch keeps both, and the `on` reads redundant. That's loud (`constraints_redundant`) and harmless.
+- **I read the gate as taking a `tangent_on` beside an `on` of the same point and curve** (its tangent rule pairs an edge `tangent` with either). I didn't run it; test 7 proves it. If it's refused, the order becomes remove, then add, with an undo to the revision when the add is refused.
+- **Which member moves** when a relation is added is the solver's choice, and isn't promised.
+- **A pin on an unsolved sketch** is taken at the coordinates the read shows. The same is true of Smart Dimension.
 
 ## Method
 
