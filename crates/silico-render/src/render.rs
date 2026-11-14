@@ -270,6 +270,16 @@ pub struct Frame<'a> {
     /// The colours the highlights and the hover are outlined in: the caller's values (the
     /// app's theme), never read from it here.
     pub outlines: Outlines,
+    /// The faces tinted (the app's feature hovered in its timeline: the faces it made), as
+    /// `highlights` are given and checked as they are, each a face: an edge or a vertex is
+    /// refused. Each is drawn in [`tint`](Self::tint), its instance's own, so a tint, which
+    /// moves with the pointer, uploads nothing, outlines nothing, and changes no picking ID.
+    /// A face tinted and highlighted or hovered too is drawn both: which look wins is the
+    /// caller's to say, by what it lists.
+    pub tinted: &'a [(u32, Element)],
+    /// What the tinted faces are tinted with: the caller's values, checked
+    /// ([`Tint`]'s rules).
+    pub tint: Tint,
     /// The pixels to read back for picking, if any: [`Renderer::take_picking`] gives what
     /// they found, a frame or two later.
     pub picking: Option<PixelRect>,
@@ -468,6 +478,64 @@ impl Outlines {
 impl Default for Outlines {
     fn default() -> Self {
         Outlines::DEFAULT
+    }
+}
+
+/// The tint a frame's tinted faces are drawn in ([`Frame::tinted`]): a face's colour mixed
+/// with `colour` (sRGB) at `amount` in linear light, `(1 − amount) · body + amount ·
+/// colour`, then lit as any face is, as a render's highlighted face is mixed with the
+/// highlight's blue ([`HIGHLIGHT_STRENGTH`]).
+///
+/// `amount` is finite, from 0 (no tint) to 1 (the colour alone). Drawn as `re_renderer`'s
+/// per-instance tint, which is added to a face's colour, opaque (one that isn't makes the
+/// face translucent): so a tint can make a face lighter, never darker, and a `colour` below
+/// the body's ([`BODY`]) in any channel is refused, unless `amount` is 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tint {
+    pub colour: [u8; 3],
+    pub amount: f32,
+}
+
+impl Tint {
+    /// No tint: the body's colour as it is.
+    pub const NONE: Tint = Tint {
+        colour: BODY,
+        amount: 0.0,
+    };
+
+    /// What `re_renderer` adds to a tinted face's colour, in linear light, for the mix: the
+    /// colour's part less the body's, `amount · (colour − body)`, each channel at least 0
+    /// for a tint [`Frame`]'s checks take. Opaque, so the face stays opaque.
+    fn added(self) -> Color32 {
+        let (body, colour) = (srgb(BODY), srgb(self.colour));
+        let part = |body: f32, colour: f32| self.amount * (colour - body);
+        Color32::from(Rgba::from_rgb(
+            part(body.r(), colour.r()),
+            part(body.g(), colour.g()),
+            part(body.b(), colour.b()),
+        ))
+    }
+
+    /// Why a frame can't draw this tint, if it can't: an amount not finite or outside 0 to
+    /// 1, or, for one above 0, a colour below the body's in a channel.
+    fn check(self) -> Result<(), InvalidParameter> {
+        let amount = self.amount;
+        if !(amount.is_finite() && (0.0..=1.0).contains(&amount)) {
+            return Err(InvalidParameter {
+                parameter: "tint",
+                message: format!("tint's amount {amount:?} must be finite, from 0 to 1"),
+            });
+        }
+        if amount > 0.0 && self.colour.iter().zip(BODY).any(|(c, body)| *c < body) {
+            return Err(InvalidParameter {
+                parameter: "tint",
+                message: format!(
+                    "tint's colour {:?} must be at least the body's, {BODY:?}, in every channel: a tint is added to a face's colour, so it can make it lighter, never darker",
+                    self.colour
+                ),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -927,12 +995,14 @@ impl Renderer {
             }
             last = body;
         }
+        frame.tint.check()?;
         let mut lit: BTreeMap<u32, Lit> = BTreeMap::new();
         let lists = [
-            ("highlights", frame.highlights, false),
-            ("hovered", frame.hovered, true),
+            ("highlights", frame.highlights, Listed::Highlighted),
+            ("hovered", frame.hovered, Listed::Hovered),
+            ("tinted", frame.tinted, Listed::Tinted),
         ];
-        for (parameter, list, hovered) in lists {
+        for (parameter, list, listed) in lists {
             for (i, &(body, element)) in list.iter().enumerate() {
                 let Some(uploaded) = frame
                     .bodies
@@ -960,10 +1030,21 @@ impl Renderer {
                     });
                 }
                 let entry = lit.entry(body).or_default();
-                let (faces, edges) = if hovered {
-                    (&mut entry.hovered_faces, &mut entry.hovered_edges)
-                } else {
-                    (&mut entry.faces, &mut entry.edges)
+                let (faces, edges) = match listed {
+                    Listed::Highlighted => (&mut entry.faces, &mut entry.edges),
+                    Listed::Hovered => (&mut entry.hovered_faces, &mut entry.hovered_edges),
+                    Listed::Tinted => {
+                        let Element::Face(n) = element else {
+                            return Err(InvalidParameter {
+                                parameter,
+                                message: format!(
+                                    "{parameter}[{i}], {element:?} of body {body}, isn't a face: only faces are tinted"
+                                ),
+                            });
+                        };
+                        entry.tinted_faces.push(n);
+                        continue;
+                    }
                 };
                 match element {
                     Element::Face(n) => faces.push(n),
@@ -974,16 +1055,19 @@ impl Renderer {
                 }
             }
         }
+        let tint = frame.tint.added();
         for entry in lit.values_mut() {
             for numbers in [
                 &mut entry.faces,
                 &mut entry.edges,
                 &mut entry.hovered_faces,
                 &mut entry.hovered_edges,
+                &mut entry.tinted_faces,
             ] {
                 numbers.sort_unstable();
                 numbers.dedup();
             }
+            entry.tint = tint;
         }
         if let Some(radius) = frame.vertices
             && !(radius.is_finite() && radius > 0.0)
@@ -1473,6 +1557,15 @@ fn outlined_as(highlighted: bool, hovered: bool) -> OutlineMaskPreference {
     } else {
         OutlineMaskPreference::NONE
     }
+}
+
+/// Which of a frame's lists an element is in ([`Frame::highlights`], [`Frame::hovered`],
+/// [`Frame::tinted`]).
+#[derive(Clone, Copy)]
+enum Listed {
+    Highlighted,
+    Hovered,
+    Tinted,
 }
 
 /// What a view draws: its bodies, each by number with its highlights, and its lines
@@ -3552,15 +3645,32 @@ struct Uploaded {
     faces: Vec<UploadedFace>,
 }
 
-/// What of a body is highlighted, and what hovered: its faces' and edges' numbers from 1,
-/// ascending, each once; and how it's highlighted (a hover is always outlined).
-#[derive(Default)]
+/// What of a body is highlighted, what hovered, and what tinted: its faces' and edges'
+/// numbers from 1, ascending, each once; how it's highlighted (a hover is always outlined);
+/// and what a tinted face's instance adds to its colour ([`Tint::added`]).
 struct Lit {
     faces: Vec<u32>,
     edges: Vec<u32>,
     hovered_faces: Vec<u32>,
     hovered_edges: Vec<u32>,
+    tinted_faces: Vec<u32>,
     style: Highlight,
+    tint: Color32,
+}
+
+impl Default for Lit {
+    /// Nothing lit: a frame's style, and a tint that adds nothing.
+    fn default() -> Self {
+        Lit {
+            faces: Vec::new(),
+            edges: Vec::new(),
+            hovered_faces: Vec::new(),
+            hovered_edges: Vec::new(),
+            tinted_faces: Vec::new(),
+            style: Highlight::default(),
+            tint: Color32::BLACK,
+        }
+    }
 }
 
 impl Lit {
@@ -3570,9 +3680,8 @@ impl Lit {
         Lit {
             faces: numbers(&body.highlight_faces),
             edges: numbers(&body.highlight_edges),
-            hovered_faces: Vec::new(),
-            hovered_edges: Vec::new(),
             style: Highlight::Tint,
+            ..Lit::default()
         }
     }
 
@@ -3592,7 +3701,18 @@ impl Lit {
         self.hovered_edges.binary_search(&number).is_ok()
     }
 
-    /// Whether anything of the body is highlighted or hovered.
+    /// What face `number`'s instance adds to its colour: the tint's, if it's tinted, else
+    /// nothing (opaque black: re_renderer adds the tint's colour and multiplies by its
+    /// alpha).
+    fn added(&self, number: u32) -> Color32 {
+        if self.tinted_faces.binary_search(&number).is_ok() {
+            self.tint
+        } else {
+            Color32::BLACK
+        }
+    }
+
+    /// Whether anything of the body is highlighted or hovered: outlined (a tint isn't).
     fn any(&self) -> bool {
         [
             &self.faces,
@@ -3719,8 +3839,9 @@ impl Uploaded {
 
     /// Each face as a mesh instance of its own, moved into `view` by its own transform, its
     /// picking ID the body's number `body` and the face's; a highlighted one (in `lit`)
-    /// outlined, and tinted in [`Highlight::Tint`]. A face's mesh is uploaded where it has
-    /// none (counted in `uploads`).
+    /// outlined, and tinted in [`Highlight::Tint`]; a frame's tinted one its instance's tint
+    /// added ([`Lit::added`]). A face's mesh is uploaded where it has none (counted in
+    /// `uploads`).
     fn faces(
         &mut self,
         ctx: &RenderContext,
@@ -3770,9 +3891,7 @@ impl Uploaded {
             instances.push(GpuMeshInstance {
                 gpu_mesh,
                 world_from_mesh: view.world_from_mesh(face.anchor),
-                // Opaque black: re_renderer adds the tint's colour and multiplies by its
-                // alpha, so this leaves the face's own colour.
-                additive_tint: Color32::BLACK,
+                additive_tint: lit.added(number),
                 outline_mask_ids: outlined_as(highlighted, lit.hovered_face(number)),
                 picking_layer_id: PickingLayerId {
                     object: PickingLayerObjectId(u64::from(body)),
