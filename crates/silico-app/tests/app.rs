@@ -18925,11 +18925,13 @@ fn a_timeline_item_selected_tints_its_own_faces_as_hovered_and_its_body_row_the_
         step(h);
         step(h);
     };
+    // Each click a person's own, never a double-click's second (which opens a dialog).
     select(&mut h, "Cut");
     off(&mut h);
     assert_eq!(tinted(&record), own, "selected by its item: {names:?}");
     hover_item(&mut h, "Cut");
     assert_eq!(tinted(&record), own, "hovered: {names:?}");
+    ui::pause(&mut h);
     browser(&h).get_by_label("Cut").click();
     off(&mut h);
     assert_eq!(tinted(&record), every, "its body's row");
@@ -18943,10 +18945,27 @@ fn a_timeline_item_selected_tints_its_own_faces_as_hovered_and_its_body_row_the_
     hover_item(&mut h, "Cut");
     assert_eq!(tinted(&record), own, "hovered over its body's row");
     // Its item clicked: itself again, its own faces.
+    ui::pause(&mut h);
     timeline(&h).get_by_label("Cut").click();
     off(&mut h);
     assert_eq!(tinted(&record), own, "its item again");
+    // Another feature selected, then the body's row clicked: the body, whole, from a
+    // selection of something else too.
+    ui::pause(&mut h);
+    select(&mut h, "Plate");
+    ui::pause(&mut h);
+    browser(&h).get_by_label("Cut").click();
+    off(&mut h);
+    assert_eq!(
+        h.state().tabs()[0]
+            .selection()
+            .feature()
+            .map(|id| id.as_str()),
+        Some("q0000003")
+    );
+    assert_eq!(tinted(&record), every, "its body's row, from the plate");
     assert!(highlighted(&record).is_empty());
+    assert!(!dialog_open(&h), "a click taken as a double-click");
     assert_eq!(never_waits::waits(), 0);
 }
 
