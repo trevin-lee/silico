@@ -6959,8 +6959,13 @@ fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() 
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let hold = f.kernel.hold(is_prism);
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "the preview rebuilding", |h| {
+    // Rebuilding is all `status` says: held at its prism, the first asked, the rebuild has
+    // got there. One the edit stopped before then would ask no prism, and the edit's would
+    // be the first.
+    step_until(&mut h, "the preview rebuilding, held at its prism", |h| {
         h.state().tabs()[0].preview_rebuilding()
+            && prisms_asked(&f) == 1
+            && f.kernel.wait_running(1, Duration::ZERO)
     });
     // The rebuild still held: the edit lands all the same, the old preview's read stopped.
     type_into(&mut h, "Length", "3");
