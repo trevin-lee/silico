@@ -23,7 +23,8 @@ use silico_core::sketch::{SketchSolver, SketchWorker};
 use silico_core::sketch_states::{ConstraintState, SketchState};
 use silico_core::sketch_tools::{
     Context, DimensionEvent, Event, Modifiers, NewIds, Offer, OfferChoice, OfferRequest, Placement,
-    PlacementKind, SketchTool, SmartDimension, ToolKind, offer, read_typed,
+    PlacementKind, RelateEdit, RelationTool, SketchTool, SmartDimension, ToolKind, offer,
+    read_typed, relate,
 };
 use tempfile::TempDir;
 
@@ -2260,4 +2261,87 @@ fn a_dimension_that_takes_a_freedom_from_a_solved_sketch_is_never_offered() {
         moved > 0,
         "of {judged_count} judged, the contest's flags moved for none"
     );
+}
+
+// --- The constraint tools (`relate`) on the real solve ------------------------------------
+
+/// A line ended on a circle by an `on`, as a line drawn to a circle's rim is left: the line
+/// ne000001 from pe000001 (0, 15) to pe000002 (20, 15), its end held by kt000001 on the
+/// circle ce000001 about pe000003 (20, 10), radius 5, whose top (20, 15) it is.
+fn ended_on() -> String {
+    r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{"id": "pe000001", "x": 0, "y": 15, "construction": false}, {"id": "pe000002", "x": 20, "y": 15, "construction": false}, {"id": "pe000003", "x": 20, "y": 10, "construction": false}], "lines": [{"id": "ne000001", "from": "pe000001", "to": "pe000002", "construction": false}], "circles": [{"id": "ce000001", "center": "pe000003", "radius": 5, "construction": false}], "arcs": [], "constraints": [{"id": "kt000001", "type": "on", "point": "pe000002", "curve": "ce000001"}]}]}"#.to_owned()
+}
+
+/// `members` sent as a `sketch_remove`, which must be taken.
+fn sketch_remove(f: &Fixture, members: Vec<Reference>) {
+    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let removed = f
+        .sessions
+        .sketch_remove(&s1(), revision, sketch_id(), members)
+        .wait_timeout(HANG)
+        .unwrap_or_else(|_| panic!("sketch_remove didn't answer in {HANG:?}"));
+    assert!(removed.result.unwrap_or_else(|p| panic!("{p:?}")).changed);
+}
+
+#[test]
+fn tangent_over_an_on_replaces_it_and_the_solve_flags_nothing_where_the_add_alone_flags_one() {
+    // C5's reason, on PlaneGCS. Unknowns: the line's two points, four; the circle's centre
+    // and radius, three: seven. The `on` is one equation: six freedoms, nothing flagged.
+    // Tangent of [ne000001, ce000001]: the tool's add of the tangent_on (its end on the
+    // circle, and the angle there: two equations, FreeCAD's endpoint-to-edge tangency), then
+    // the removal of kt000001. After both: five freedoms, nothing flagged.
+    let mut f = opened_with(ToolKind::Line, &ended_on());
+    let read = f.read();
+    assert_eq!(read.states.dofs, 6);
+    assert!(
+        flagged_in(&read).is_empty(),
+        "{:?}",
+        read.states.constraints
+    );
+    let picks = [
+        Reference::Element(element("ne000001")),
+        Reference::Element(element("ce000001")),
+    ];
+    let related = relate(&read.members, RelationTool::Tangent, &picks, &mut f.ids).unwrap();
+    assert_eq!(related.already, Vec::<ElementId>::new());
+    let Some(RelateEdit::AddThenRemove { add, remove }) = related.edit else {
+        panic!("{related:?}");
+    };
+    assert_eq!(remove, vec![element("kt000001")]);
+    let [tangent] = add.constraints.as_slice() else {
+        panic!("{add:?}");
+    };
+    assert_eq!(
+        tangent.form,
+        Form::TangentOn {
+            a: Reference::Element(element("ne000001")),
+            at: Reference::Element(element("pe000002")),
+            b: Reference::Element(element("ce000001")),
+            direction: silico_core::document::Direction::Same,
+        }
+    );
+    f.sketch_add(&add);
+    sketch_remove(&f, remove.into_iter().map(Reference::Element).collect());
+    let read = f.read();
+    assert_eq!(read.states.dofs, 5);
+    assert_eq!(read.members.constraints.len(), 1);
+    assert!(
+        flagged_in(&read).is_empty(),
+        "{:?}",
+        read.states.constraints
+    );
+    assert_eq!(
+        state_of(&read, tangent.id.as_str()),
+        ConstraintState::Satisfied
+    );
+
+    // The same add without the removal: the `on` repeats the tangent_on's end on the circle,
+    // so the freedoms are the same five, and one of the two is flagged, whichever PlaneGCS
+    // picks.
+    let f = opened_with(ToolKind::Line, &ended_on());
+    f.sketch_add(&add);
+    let read = f.read();
+    assert_eq!(read.states.dofs, 5);
+    assert_eq!(read.members.constraints.len(), 2);
+    assert_eq!(flagged_in(&read).len(), 1, "{:?}", read.states.constraints);
 }
