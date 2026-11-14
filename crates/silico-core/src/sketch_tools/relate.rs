@@ -1,11 +1,11 @@
 //! Sketch mode's ten constraint tools, headless: Horizontal, Vertical, Coincident, Tangent,
 //! Equal, Parallel, Perpendicular, Midpoint, Symmetric, and Fix (Fable's decisions C1 to C9
-//! of 2026-11-14, open item 34 of docs/design/m5.0-app.md, on the study
-//! docs/study/constraint-tools.md). Each is a click on a selection made first (C7), which
-//! [`relate`] turns into one edit, from the newest `sketch` read's members and the selection
-//! in the order it was picked (C9: the sketch's points, lines, circles, and arcs, the origin,
-//! and the axes). No viewport, no session: the app sends the edit, and shows the refusal or
-//! the message.
+//! of 2026-11-14, as amended on #478's port review, open item 34 of docs/design/m5.0-app.md,
+//! on the study docs/study/constraint-tools.md). Each is a click on a selection made first
+//! (C7), which [`relate`] turns into one edit, from the newest `sketch` read's members and the
+//! selection in the order it was picked (C9: the sketch's points, lines, circles, and arcs,
+//! the origin, and the axes). No viewport, no session: the app sends the edit against the
+//! read's revision, and shows the refusal or the message.
 //!
 //! - **What it checks** is only what it needs to choose a form and its roles: what each
 //!   member picked is (a point, the origin among them; a line or an axis; a circle or an
@@ -13,37 +13,48 @@
 //!   ([`RelationTool::takes`]), the selection as the error's elements. Everything else wrong
 //!   with a selection (a curve's own point, only the origin and the axes, a line made equal
 //!   to a circle, a mirror among its own points) is the gate's to refuse, in its words, when
-//!   the command runs.
+//!   the command runs. A member picked twice counts once, where it was first picked.
 //! - **The edit** is a `sketch_add` of the constraints written, applied whatever the solve
-//!   finds (SD7), but in two places where the document's structure is the relation:
+//!   finds (SD7), but where the document's structure is the relation:
 //!   - Coincident of two or more points is a `sketch_merge` of them in pick order, the first
 //!     picked surviving (C1), refused where its solve is worse, as every merge is;
 //!   - a `tangent_on` or a `midpoint` that implies an `on` the sketch holds replaces it: the
-//!     add, then a `sketch_remove` of the `on` (C5), one undo step for the app.
+//!     add, then a `sketch_remove` of the `on` (C5), one undo step for the app; where the
+//!     relation is held already, the remove alone (Fable's P3).
 //! - **Roles.** `a` is the first picked and `b` the second wherever the structure doesn't
 //!   fix them. Several members are a star, each after the first paired with the first (C8),
 //!   the origin as any other.
 //! - **Already there** (C6): a constraint the click would write is left out where the sketch
 //!   holds one equal to it in everything but its ID, `a` and `b` either way round in the
-//!   forms where they're interchangeable. With every one left out, nothing is sent, and
-//!   [`Related::message`] says so; with some, it counts them.
-//! - **Read from the drawing,** the newest read's coordinates: a tangent's `side`, a
-//!   `tangent_at`'s or `tangent_on`'s `direction` (C3, by `sketch_edit::drawn` and
-//!   `sketch_edit::leaving`, trim's own), and Fix's values, written by Smart Dimension's own
-//!   writer and rounded to the nanometre (C2).
+//!   forms where they're interchangeable. With every one left out (and no `on` to remove),
+//!   nothing is sent ([`Related::AllHeld`]), and the message says so; with some, it counts
+//!   them.
+//! - **Read from the drawing,** the newest read's coordinates: a tangent's `side` (the side
+//!   of the line the round's centre is on, at Smart Dimension's nanometre), a `tangent_at`'s
+//!   or `tangent_on`'s `direction` (C3, by `sketch_edit::drawn` and `sketch_edit::leaving`,
+//!   trim's own), and Fix's values, written by Smart Dimension's own writer and rounded to
+//!   the nanometre (C2).
+//! - **Bounded:** a click is refused, in the gate's words, before it writes more constraints
+//!   than the sketch solver takes, and each constraint it would write is looked up among the
+//!   sketch's once, so its work is in proportion to what it writes and what the sketch holds.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use silico_protocol::MAX_SKETCH_CONSTRAINTS;
 
 use super::build::Builder;
-use super::dimension::{Axis, along};
-use super::geometry::{cross, distance, dot, sub};
+use super::dimension::{Along, NotOff, distance_along, off_line};
+use super::geometry::dot;
 use super::infer::{View, at_origin};
-use super::{NewIds, Xy};
-use crate::document::sketch_edit::{self, Geo, Members};
+use super::{Message, NewIds, Xy};
+use crate::command::Revision;
+use crate::document::sketch_edit::{self, Geo, Members, end_ids};
 use crate::document::{
-    Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchConstraint, TangentSide,
+    CONSTRAINTS_COUNTED, Direction, ElementId, ElementKind, Form, LineSide, PROBLEMS_LISTED,
+    Reference, SPLIT_THE_SKETCH, Sketch, SketchConstraint, TWO_LINES_TANGENT, TangentSide,
+    counted_constraints, past_the_solver,
 };
-use crate::{Error, ErrorCode};
+use crate::{Error, ErrorCode, either, listed};
 
 /// What every tool says with nothing selected: the approved prototype's words.
 pub const NOTHING_SELECTED: &str =
@@ -116,32 +127,79 @@ impl RelationTool {
     }
 }
 
-/// The edit a click makes, for the app to send.
+/// The edit a click makes, for the app to send against the read's revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelateEdit {
     /// A `sketch_add` of these constraints.
     Add(Members),
     /// A `sketch_merge` of these points, in pick order, the first surviving (C1).
     Merge(Vec<ElementId>),
-    /// A `sketch_add` of `add`, then, once it's taken, a `sketch_remove` of the `on`s it
-    /// implies (C5): one undo step. If the add is refused, nothing else is sent.
+    /// A `sketch_add` of `add`, then a `sketch_remove` of the `on`s it implies (C5): one undo
+    /// step. The app sends the remove only once the add is taken, against the revision the
+    /// add made; if the add is refused, nothing else is sent, and if the remove is refused,
+    /// the add stands alone as the step (the `on` then reads redundant, and the same click
+    /// again removes it).
     AddThenRemove {
         add: Members,
         remove: Vec<ElementId>,
     },
+    /// A `sketch_remove` alone of the `on`s a relation the sketch holds already implies
+    /// (C5 with C6, Fable's P3): the pair an interrupted click, or an agent, left.
+    Remove(Vec<ElementId>),
 }
 
-/// What a click on a constraint tool makes ([`relate`]).
+/// What a click on a constraint tool makes ([`relate`]), planned on the read of `revision`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Related {
-    /// The edit to send: none where every constraint the click would write is in the sketch
-    /// already (C6).
-    pub edit: Option<RelateEdit>,
-    /// The sketch's constraints that are those the click would write, left out (C6), by ID,
-    /// in the order the click would write them.
-    pub already: Vec<ElementId>,
+pub enum Related {
+    /// An edit to send against `revision`: `held` the sketch's constraints the click would
+    /// have written again, left out (C6), and what the app's toast says, if anything.
+    Edit {
+        revision: Revision,
+        edit: RelateEdit,
+        held: Vec<ElementId>,
+        message: Option<Message>,
+    },
+    /// Nothing to send: every constraint the click would write is held already (C6), by
+    /// `held`, and nothing it implies is left to remove. The toast says so.
+    AllHeld {
+        revision: Revision,
+        held: Vec<ElementId>,
+        message: Message,
+    },
+}
+
+impl Related {
+    /// The revision of the read the click was planned on: the edit's to be sent against it,
+    /// so a session that has moved on refuses it as a conflict (decision 12).
+    pub fn revision(&self) -> Revision {
+        match self {
+            Related::Edit { revision, .. } | Related::AllHeld { revision, .. } => *revision,
+        }
+    }
+
+    /// The edit to send, if any.
+    pub fn edit(&self) -> Option<&RelateEdit> {
+        match self {
+            Related::Edit { edit, .. } => Some(edit),
+            Related::AllHeld { .. } => None,
+        }
+    }
+
+    /// The sketch's constraints the click would have written again, left out (C6), in the
+    /// order it would have written them.
+    pub fn held(&self) -> &[ElementId] {
+        match self {
+            Related::Edit { held, .. } | Related::AllHeld { held, .. } => held,
+        }
+    }
+
     /// What the app's toast says: none where nothing was left out.
-    pub message: Option<String>,
+    pub fn message(&self) -> Option<&Message> {
+        match self {
+            Related::Edit { message, .. } => message.as_ref(),
+            Related::AllHeld { message, .. } => Some(message),
+        }
+    }
 }
 
 /// What a member picked is, as the tools read it.
@@ -158,36 +216,48 @@ enum Kind {
 }
 
 /// What a tool writes, before C6 and the IDs: constraints, with the `on`s the one it writes
-/// implies (C5) and what it says if they're all there already; or a merge.
+/// implies (C5) and what it says if they're all held already; or a merge.
 enum Plan {
     Constraints {
         forms: Vec<Form>,
         replaces: Vec<ElementId>,
         /// "line ne000002 is already vertical", for C6's message.
-        already: String,
+        said_if_held: String,
     },
     Merge(Vec<ElementId>),
 }
 
-/// A place two curves can be tangent at (C3): an end they share, or an end of `curve` held
-/// on `on` by the `on`s `ons`, or by a `tangent_on`, which holds its end on its `b` as an `on`
-/// does (`ons` empty where only a `tangent_on` holds it: then there's no `on` to replace).
+/// A place two curves can be tangent at (C3): an end they share, or an end of `ending` that
+/// a constraint holds on `held_on` (an `on`, a `tangent_on`, or a `midpoint`, [`Form::hold`]),
+/// with the `on`s among those holds, which a `tangent_on` there replaces (C5): none where only
+/// a `tangent_on` or a `midpoint` holds it.
 enum Place<'p> {
     Shared,
     Held {
-        curve: &'p Reference,
-        on: &'p Reference,
+        ending: &'p Reference,
+        held_on: &'p Reference,
         ons: Vec<ElementId>,
     },
 }
 
 /// The edit `relation`'s click makes of `picks`, the selection in the order it was picked,
-/// in the sketch `read`, the newest `sketch` read's members as solved; its new constraints'
-/// IDs from `ids`. Refused with the tool's sentence ([`RelationTool::takes`]) for a
-/// selection it can't read, the selection as the error's elements; with
-/// [`NOTHING_SELECTED`] for none; and, for Tangent, two lines (in the gate's words), a
-/// round's centre on the line exactly, and more than one place the curves could be tangent
-/// at with no point picked to say which (C3). Each tool, as C1 to C8 decide:
+/// in the sketch `read`, the members of the newest `sketch` read, of the model at `revision`,
+/// as solved; its new constraints' IDs from `ids`.
+///
+/// **The read is the newest the app has, and the plan is only good for it:** `relate` knows
+/// no edit the app has sent since. The app sends the edit against [`Related::revision`], so
+/// if anything changed the session since that read (the click before, its read not in yet),
+/// decision 12's check refuses it as a `conflict`, and nothing is written twice or half (the
+/// app's double-click test comes with the buttons). A [`RelateEdit::AddThenRemove`] is sent
+/// as its doc says.
+///
+/// Refused with the tool's sentence ([`RelationTool::takes`]) for a selection it can't read,
+/// the selection as the error's elements; with [`NOTHING_SELECTED`] for none; for Tangent,
+/// two lines (in the gate's words), a round's centre on the line at the nanometre, a line of
+/// no length, a point picked with the curves that isn't one of their places, and more than
+/// one place with no point picked to say which (C3); and, in the gate's words, a click that
+/// would give the sketch more constraints than the sketch solver takes. Each tool, as C1 to
+/// C8 decide:
 ///
 /// - **Horizontal, Vertical:** one `horizontal` (`vertical`) for each line, in pick order;
 ///   or, for two or more points, a `horizontal_points` (`vertical_points`) of each with the
@@ -197,14 +267,15 @@ enum Place<'p> {
 ///   two or more points, a merge, the first surviving; a point and the origin, #278's A pair,
 ///   whichever was picked first. The origin with two or more points is refused.
 /// - **Tangent:** two curves, and a point if it says which place. The places they can be
-///   tangent at are the ends they share and the ends of one that an `on` or a `tangent_on`
-///   holds on the other (so a second click where a `tangent_on` holds is C6's repeat):
-///   none, an edge `tangent`, its `side` the side of the line the round's centre is drawn on
-///   (an axis faces +x or +y), or for two rounds `outside` where their centres are at least
-///   the larger radius apart, else `inside` (FreeCAD's rule); one, or the one picked, a
-///   `tangent_at` there, `same` where `a` arriving and `b` leaving have a dot product of at
-///   least 0, or a `tangent_on` of the curve that ends there, `same` by trim's rule, which
-///   replaces an `on` holding that end, where one does (C5).
+///   tangent at are the ends they share and the ends of one that a constraint holds on the
+///   other, an `on`, a `tangent_on`, or a `midpoint` ([`Form::hold`]): none, an edge
+///   `tangent`, its `side` the side of the line the round's centre is drawn on, at Smart
+///   Dimension's nanometre (an axis faces +x or +y), or for two rounds `outside` where their
+///   centres are at least the larger radius apart, else `inside` (FreeCAD's rule); one, or
+///   the one picked, a `tangent_at` there, `same` where `a` arriving and `b` leaving have a
+///   dot product of at least 0, or a `tangent_on` of the curve that ends there, `same` by
+///   trim's rule, which replaces each `on` that holds that end (C5): beside a `midpoint` that
+///   holds it, which stays, and C6's repeat where a `tangent_on` holds it as drawn.
 /// - **Equal:** two or more lines, circles, or arcs, each with the first picked (lines with
 ///   rounds are the gate's). **Parallel:** two or more lines, likewise. **Perpendicular:**
 ///   two lines.
@@ -215,9 +286,10 @@ enum Place<'p> {
 /// - **Fix:** for each point, a driving `distance_x` and `distance_y` from the origin, as
 ///   Smart Dimension writes them for the picks (origin, point), at the read's coordinates
 ///   rounded to the nanometre; refused where one is past what a length holds, as Smart
-///   Dimension refuses it ([`Message::TooFar`](super::Message::TooFar)).
+///   Dimension refuses it ([`Message::TooFar`]).
 pub fn relate(
     read: &Sketch,
+    revision: Revision,
     relation: RelationTool,
     picks: &[Reference],
     ids: &mut dyn NewIds,
@@ -227,12 +299,15 @@ pub fn relate(
     if picks.is_empty() {
         return Err(Error::new(ErrorCode::InvalidInput, NOTHING_SELECTED));
     }
+    // A member picked twice counts once, where it was first picked.
+    let mut seen = BTreeSet::new();
+    let picks: Vec<Reference> = picks.iter().filter(|r| seen.insert(*r)).cloned().collect();
     let kinds = kinds(read);
     let view = View::of(read, &Members::default());
     let picked = Picked {
         read,
         kinds: &kinds,
-        picks,
+        picks: &picks,
     };
     let plan = match relation {
         RelationTool::Horizontal | RelationTool::Vertical => picked.aligned(relation)?,
@@ -254,36 +329,53 @@ pub fn relate(
         RelationTool::Symmetric => picked.symmetric()?,
         RelationTool::Fix => picked.fix(&view)?,
     };
-    let (forms, replaces, already_said) = match plan {
+    let (forms, replaces, said_if_held) = match plan {
         Plan::Merge(points) => {
-            return Ok(Related {
-                edit: Some(RelateEdit::Merge(points)),
-                already: Vec::new(),
+            return Ok(Related::Edit {
+                revision,
+                edit: RelateEdit::Merge(points),
+                held: Vec::new(),
                 message: None,
             });
         }
         Plan::Constraints {
             forms,
             replaces,
-            already,
-        } => (forms, replaces, already),
+            said_if_held,
+        } => (forms, replaces, said_if_held),
     };
-    // C6: each the sketch holds already left out.
+    #[cfg(test)]
+    work::PLANNED.with(|n| n.set(n.get() + forms.len()));
+    // C6: each the sketch holds already left out, found by one lookup.
+    let index = Held::of(read);
     let mut new = Vec::new();
-    let mut already = Vec::new();
+    let mut held = Vec::new();
     for form in forms {
-        match read.constraints.iter().find(|c| repeats(&form, &c.form)) {
-            Some(held) => already.push(held.id.clone()),
+        match index.find(&form) {
+            Some(id) => held.push(id.clone()),
             None => new.push(form),
         }
     }
     if new.is_empty() {
-        return Ok(Related {
-            edit: None,
-            already,
-            message: Some(format!("{already_said}: nothing was added")),
+        return Ok(if replaces.is_empty() {
+            Related::AllHeld {
+                revision,
+                held,
+                message: Message::AllHeld(said_if_held),
+            }
+        } else {
+            Related::Edit {
+                revision,
+                message: Some(Message::HeldRemoved {
+                    said: said_if_held,
+                    removed: replaces.clone(),
+                }),
+                edit: RelateEdit::Remove(replaces),
+                held,
+            }
         });
     }
+    picked.within_the_solver(new.len())?;
     let mut builder = Builder::new(ids, &view, false);
     for form in new {
         builder.constraint(form)?;
@@ -297,22 +389,53 @@ pub fn relate(
             remove: replaces,
         }
     };
-    let message = match already.len() {
-        0 => None,
-        1 => Some("1 of these constraints was already there: it wasn't added again".to_owned()),
-        n => Some(format!(
-            "{n} of these constraints were already there: they weren't added again"
-        )),
-    };
-    Ok(Related {
-        edit: Some(edit),
-        already,
+    let message = (!held.is_empty()).then_some(Message::SomeHeld(held.len()));
+    Ok(Related::Edit {
+        revision,
+        edit,
+        held,
         message,
     })
 }
 
+/// The sketch's constraints, by their type and their references in order of [`Reference`]
+/// (so `a` and `b` either way round find the same entry), each entry's in the sketch's
+/// order: built once a click, so each constraint the click would write is one lookup (C6).
+struct Held<'s>(BTreeMap<(&'static str, Vec<&'s Reference>), Vec<&'s SketchConstraint>>);
+
+impl<'s> Held<'s> {
+    fn of(read: &'s Sketch) -> Self {
+        let mut index: BTreeMap<_, Vec<&SketchConstraint>> = BTreeMap::new();
+        for c in &read.constraints {
+            index.entry(key(&c.form)).or_default().push(c);
+        }
+        Held(index)
+    }
+
+    /// The first of the sketch's constraints that `form` repeats, if any.
+    fn find(&self, form: &Form) -> Option<&'s ElementId> {
+        self.0.get(&key(form))?.iter().find_map(|c| {
+            #[cfg(test)]
+            work::COMPARED.with(|n| n.set(n.get() + 1));
+            repeats(form, &c.form).then_some(&c.id)
+        })
+    }
+}
+
+/// A form's entry in [`Held`]: its type, and its references sorted.
+fn key(form: &Form) -> (&'static str, Vec<&Reference>) {
+    let mut references: Vec<&Reference> =
+        form.references().into_iter().map(|(_, r, _)| r).collect();
+    references.sort();
+    (form.type_name(), references)
+}
+
 /// Whether `form` is `held` in everything but an ID (C6): equal, or, in the forms whose `a`
-/// and `b` are interchangeable, equal with them swapped.
+/// and `b` are interchangeable, equal with them swapped: `horizontal_points`,
+/// `vertical_points`, `parallel`, `perpendicular`, `equal`, `symmetric` (its `about` the
+/// same), `tangent` (its `side` the same: the line's, or symmetric in two rounds), and
+/// `tangent_at` (its `at` and `direction` the same: a smooth path is smooth both ways)
+/// (Fable's P2).
 fn repeats(form: &Form, held: &Form) -> bool {
     form == held
         || match (form, held) {
@@ -329,6 +452,28 @@ fn repeats(form: &Form, held: &Form) -> bool {
                     about: mirror,
                 },
             ) => about == mirror && a == d && b == c,
+            (
+                Form::Tangent { a, b, side },
+                Form::Tangent {
+                    a: c,
+                    b: d,
+                    side: held_side,
+                },
+            ) => side == held_side && a == d && b == c,
+            (
+                Form::TangentAt {
+                    a,
+                    b,
+                    at,
+                    direction,
+                },
+                Form::TangentAt {
+                    a: c,
+                    b: d,
+                    at: held_at,
+                    direction: held_direction,
+                },
+            ) => at == held_at && direction == held_direction && a == d && b == c,
             _ => false,
         }
 }
@@ -379,10 +524,34 @@ impl<'p> Picked<'p> {
         self.refusal(relation.takes())
     }
 
-    /// A refusal saying `message`, the selection as its elements.
+    /// A refusal saying `message`, the selection as its elements (the first
+    /// [`PROBLEMS_LISTED`], all counted).
     fn refusal(&self, message: impl Into<String>) -> Error {
         Error::new(ErrorCode::InvalidInput, message)
-            .with_elements(self.picks.iter().map(|r| r.as_str().to_owned()))
+            .with_elements(
+                self.picks
+                    .iter()
+                    .take(PROBLEMS_LISTED)
+                    .map(|r| r.as_str().to_owned()),
+            )
+            .with_elements_total(u64::try_from(self.picks.len()).unwrap_or(u64::MAX))
+    }
+
+    /// Refused, in the gate's words, where `adding` constraints would give the sketch more
+    /// than the sketch solver takes (`MAX_SKETCH_CONSTRAINTS`, counting each arc's rules as
+    /// one, as the gate counts them).
+    fn within_the_solver(&self, adding: usize) -> Result<(), Error> {
+        let n = counted_constraints(self.read).saturating_add(adding);
+        if n > MAX_SKETCH_CONSTRAINTS {
+            return Err(self
+                .refusal(past_the_solver(
+                    n,
+                    MAX_SKETCH_CONSTRAINTS,
+                    CONSTRAINTS_COUNTED,
+                ))
+                .with_suggestion(SPLIT_THE_SKETCH));
+        }
+        Ok(())
     }
 
     /// A reference as messages name it: "point pe000001", "the origin", "x_axis".
@@ -449,12 +618,14 @@ impl<'p> Picked<'p> {
         Ok(Plan::Constraints {
             forms,
             replaces: Vec::new(),
-            already: format!("{} {} already {word}", self.named(&all), be(all.len())),
+            said_if_held: format!("{} {} already {word}", self.named(&all), be(all.len())),
         })
     }
 
     /// Coincident: points and curves, an `on` of each pair; two or more points, a merge; a
-    /// point and the origin, #278's A pair (C1).
+    /// point and the origin, #278's A pair (C1). The pairs are counted before they're
+    /// written: past what the sketch solver takes, with those the sketch holds already
+    /// left out, the click is refused unwritten.
     fn coincident(&self) -> Result<Plan, Error> {
         let refused = || self.refused(RelationTool::Coincident);
         if !self.all(&[Kind::Point, Kind::Line, Kind::Round]) {
@@ -467,6 +638,29 @@ impl<'p> Picked<'p> {
             .filter(|r| matches!(self.kind(r), Kind::Line | Kind::Round))
             .collect();
         if !points.is_empty() && !curves.is_empty() {
+            let (point_set, curve_set): (BTreeSet<_>, BTreeSet<_>) = (
+                points.iter().copied().collect(),
+                curves.iter().copied().collect(),
+            );
+            let held: BTreeSet<(&Reference, &Reference)> = self
+                .read
+                .constraints
+                .iter()
+                .filter_map(|c| match &c.form {
+                    Form::On { point, curve }
+                        if point_set.contains(point) && curve_set.contains(curve) =>
+                    {
+                        Some((point, curve))
+                    }
+                    _ => None,
+                })
+                .collect();
+            self.within_the_solver(
+                points
+                    .len()
+                    .saturating_mul(curves.len())
+                    .saturating_sub(held.len()),
+            )?;
             let forms = points
                 .iter()
                 .flat_map(|point| {
@@ -479,7 +673,7 @@ impl<'p> Picked<'p> {
             return Ok(Plan::Constraints {
                 forms,
                 replaces: Vec::new(),
-                already: format!(
+                said_if_held: format!(
                     "{} {} already on {}",
                     self.named(&points),
                     be(points.len()),
@@ -498,7 +692,7 @@ impl<'p> Picked<'p> {
             (2, [point]) => {
                 let point = Reference::Element((*point).clone());
                 Ok(Plan::Constraints {
-                    already: format!("{} is already at the origin", self.noun(&point)),
+                    said_if_held: format!("{} is already at the origin", self.noun(&point)),
                     forms: at_origin(point).into(),
                     replaces: Vec::new(),
                 })
@@ -522,7 +716,7 @@ impl<'p> Picked<'p> {
         Ok(Plan::Constraints {
             forms: star(self.picks, form),
             replaces: Vec::new(),
-            already: format!("{} are already {word}", self.named(&all)),
+            said_if_held: format!("{} are already {word}", self.named(&all)),
         })
     }
 
@@ -540,7 +734,7 @@ impl<'p> Picked<'p> {
                 b: b.clone(),
             }],
             replaces: Vec::new(),
-            already: format!("{} are already perpendicular", self.named(&[a, b])),
+            said_if_held: format!("{} are already perpendicular", self.named(&[a, b])),
         })
     }
 
@@ -556,8 +750,8 @@ impl<'p> Picked<'p> {
                 point: (*point).clone(),
                 line: (*line).clone(),
             }],
-            replaces: ons(self.read, point, line),
-            already: format!(
+            replaces: holds(self.read, point, line).ons,
+            said_if_held: format!(
                 "{} is already the midpoint of {}",
                 self.noun(point),
                 self.noun(line)
@@ -585,7 +779,7 @@ impl<'p> Picked<'p> {
                 about: about.clone(),
             }],
             replaces: Vec::new(),
-            already: format!(
+            said_if_held: format!(
                 "{} and {} are already symmetric about {}",
                 self.noun(a),
                 self.noun(b),
@@ -606,8 +800,8 @@ impl<'p> Picked<'p> {
             let Some(at) = place(view, point) else {
                 return Err(self.refused(RelationTool::Fix));
             };
-            for axis in [Axis::X, Axis::Y] {
-                let form = along(axis, origin, (point, at))
+            for along in [Along::X, Along::Y] {
+                let form = distance_along(along, origin, (point, at))
                     .map_err(|message| self.refusal(message.text()))?;
                 forms.push(form);
             }
@@ -616,7 +810,7 @@ impl<'p> Picked<'p> {
         Ok(Plan::Constraints {
             forms,
             replaces: Vec::new(),
-            already: format!("{} {} already fixed", self.named(&all), be(all.len())),
+            said_if_held: format!("{} {} already fixed", self.named(&all), be(all.len())),
         })
     }
 
@@ -638,19 +832,32 @@ impl<'p> Picked<'p> {
         };
         let (a, b) = (*a, *b);
         if self.kind(a) != Kind::Round && self.kind(b) != Kind::Round {
-            return Err(self.refusal(crate::document::TWO_LINES_TANGENT));
+            return Err(self.refusal(TWO_LINES_TANGENT));
         }
         let places = self.places(a, b);
+        let at: Vec<String> = places.keys().map(|id| id.to_string()).collect();
         let chosen = match points.first() {
             Some(point) => match point.element().and_then(|id| places.get_key_value(id)) {
                 Some(place) => Some(place),
-                None => return Err(refused()),
+                None => {
+                    let not_there = format!(
+                        "{} isn't where {} and {} meet: deselect it",
+                        self.noun(point),
+                        self.noun(a),
+                        self.noun(b)
+                    );
+                    return Err(if at.is_empty() {
+                        self.refusal(not_there)
+                    } else {
+                        self.refusal(format!("{not_there}, or select {}", either(&at)))
+                            .with_elements(at)
+                    });
+                }
             },
             None => match places.len() {
                 0 => None,
                 1 => places.iter().next(),
                 _ => {
-                    let at: Vec<String> = places.keys().map(|id| id.to_string()).collect();
                     return Err(self
                         .refusal(format!(
                             "{} and {} could be tangent at more than one point, {}: select the one they're tangent at too",
@@ -662,7 +869,7 @@ impl<'p> Picked<'p> {
                 }
             },
         };
-        let already = format!("{} and {} are already tangent", self.noun(a), self.noun(b));
+        let said_if_held = format!("{} and {} are already tangent", self.noun(a), self.noun(b));
         let (form, replaces) = match chosen {
             None => (self.edge_tangent(view, a, b)?, Vec::new()),
             Some((at, Place::Shared)) => {
@@ -687,14 +894,21 @@ impl<'p> Picked<'p> {
                     Vec::new(),
                 )
             }
-            Some((at, Place::Held { curve, on, ons })) => {
+            Some((
+                at,
+                Place::Held {
+                    ending,
+                    held_on,
+                    ons,
+                },
+            )) => {
                 let at = Reference::Element((*at).clone());
                 (
                     Form::TangentOn {
-                        direction: sketch_edit::drawn(self.read, self.read, curve, &at, on),
-                        a: (*curve).clone(),
+                        direction: sketch_edit::drawn(self.read, self.read, ending, &at, held_on),
+                        a: (*ending).clone(),
                         at,
-                        b: (*on).clone(),
+                        b: (*held_on).clone(),
                     },
                     ons.clone(),
                 )
@@ -703,29 +917,34 @@ impl<'p> Picked<'p> {
         Ok(Plan::Constraints {
             forms: vec![form],
             replaces,
-            already,
+            said_if_held,
         })
     }
 
     /// The places `a` and `b` can be tangent at, by point (C3): each end they share, then
-    /// each end of one that an `on` or a `tangent_on` holds on the other.
+    /// each end of one that a constraint holds on the other ([`Form::hold`]).
     fn places(&self, a: &'p Reference, b: &'p Reference) -> BTreeMap<&'p ElementId, Place<'p>> {
-        let (ends_a, ends_b) = (ends(self.read, a), ends(self.read, b));
+        let ends_of = |curve: &Reference| {
+            curve
+                .element()
+                .map(|id| end_ids(self.read, id))
+                .unwrap_or_default()
+        };
+        let (ends_a, ends_b) = (ends_of(a), ends_of(b));
         let mut places = BTreeMap::new();
         for end in &ends_a {
             if ends_b.contains(end) {
                 places.entry(*end).or_insert(Place::Shared);
             }
         }
-        for (curve, on, curve_ends) in [(a, b, &ends_a), (b, a, &ends_b)] {
-            for end in curve_ends {
-                let end_ref = Reference::Element((*end).clone());
-                let held = ons(self.read, &end_ref, on);
-                if !held.is_empty() || tangent_on_holds(self.read, &end_ref, on) {
+        for (ending, held_on, ending_ends) in [(a, b, &ends_a), (b, a, &ends_b)] {
+            for end in ending_ends {
+                let held = holds(self.read, &Reference::Element((*end).clone()), held_on);
+                if held.any {
                     places.entry(*end).or_insert(Place::Held {
-                        curve,
-                        on,
-                        ons: held,
+                        ending,
+                        held_on,
+                        ons: held.ons,
                     });
                 }
             }
@@ -733,7 +952,9 @@ impl<'p> Picked<'p> {
         places
     }
 
-    /// An edge `tangent` of `a` and `b`, its `side` read from the drawing (C3).
+    /// An edge `tangent` of `a` and `b`, its `side` read from the drawing (C3): for a line
+    /// and a round, the side of the line the round's centre is on, as Smart Dimension
+    /// measures a point off a line, refused where it's on it at the nanometre.
     fn edge_tangent(&self, view: &View<'_>, a: &Reference, b: &Reference) -> Result<Form, Error> {
         let refused = || self.refused(RelationTool::Tangent);
         let (Some(geo_a), Some(geo_b)) = (view.geo(a), view.geo(b)) else {
@@ -746,28 +967,37 @@ impl<'p> Picked<'p> {
                 } else {
                     (b, a)
                 };
-                let Some((centre, _)) = round_of(round) else {
+                let Some((centre, _)) = round.round() else {
                     return Err(refused());
                 };
-                let side = cross(sub(*to, *from), sub(centre, *from));
-                if side > 0.0 {
-                    TangentSide::Left
-                } else if side < 0.0 {
-                    TangentSide::Right
-                } else {
-                    return Err(self.refusal(format!(
-                        "the centre of {} is on {}: which side it's tangent on is unclear; move one off the other first",
-                        self.noun(round_ref),
-                        self.noun(line)
-                    )));
+                let direction = [to[0] - from[0], to[1] - from[1]];
+                match off_line(*from, direction, centre) {
+                    Ok(off) => match off.side {
+                        LineSide::Left => TangentSide::Left,
+                        LineSide::Right => TangentSide::Right,
+                    },
+                    Err(NotOff::OnIt) => {
+                        return Err(self.refusal(format!(
+                            "the centre of {} is on {}: which side it's tangent on is unclear; move one off the other first",
+                            self.noun(round_ref),
+                            self.noun(line)
+                        )));
+                    }
+                    Err(NotOff::NoDirection) => {
+                        return Err(self.refusal(format!(
+                            "{} has no length, so it has no side for {} to be tangent on",
+                            self.noun(line),
+                            self.noun(round_ref)
+                        )));
+                    }
+                    Err(NotOff::TooFar) => return Err(self.refusal(Message::TooFar.text())),
                 }
             }
             (round_a, round_b) => {
-                let (Some((ca, ra)), Some((cb, rb))) = (round_of(round_a), round_of(round_b))
-                else {
+                let (Some((ca, ra)), Some((cb, rb))) = (round_a.round(), round_b.round()) else {
                     return Err(refused());
                 };
-                if distance(ca, cb) >= ra.max(rb) {
+                if super::geometry::distance(ca, cb) >= ra.max(rb) {
                     TangentSide::Outside
                 } else {
                     TangentSide::Inside
@@ -792,48 +1022,27 @@ fn star(picks: &[Reference], form: impl Fn(Reference, Reference) -> Form) -> Vec
         .collect()
 }
 
-/// The sketch's `on`s of `point` on `curve`, by ID, in the sketch's order.
-fn ons(read: &Sketch, point: &Reference, curve: &Reference) -> Vec<ElementId> {
-    read.constraints
-        .iter()
-        .filter(|SketchConstraint { form, .. }| {
-            matches!(form, Form::On { point: p, curve: c } if p == point && c == curve)
-        })
-        .map(|c| c.id.clone())
-        .collect()
+/// The sketch's holds of `point` on `curve` ([`Form::hold`]): whether there's any, and the
+/// `on`s among them, by ID, in the sketch's order.
+struct Holds {
+    any: bool,
+    ons: Vec<ElementId>,
 }
 
-/// Whether a `tangent_on` of the sketch holds `point` on `curve`: its `at` on its `b`, as an
-/// `on` holds a point (the gate's tangent rule reads it so, #258).
-fn tangent_on_holds(read: &Sketch, point: &Reference, curve: &Reference) -> bool {
-    read.constraints.iter().any(|SketchConstraint { form, .. }| {
-        matches!(form, Form::TangentOn { at, b, .. } if at == point && b == curve)
-    })
-}
-
-/// A line's or an arc's two ends; none for anything else.
-fn ends<'s>(read: &'s Sketch, curve: &Reference) -> Vec<&'s ElementId> {
-    let Some(id) = curve.element() else {
-        return Vec::new();
+fn holds(read: &Sketch, point: &Reference, curve: &Reference) -> Holds {
+    let mut found = Holds {
+        any: false,
+        ons: Vec::new(),
     };
-    if let Some(line) = read.lines.iter().find(|l| &l.id == id) {
-        return vec![&line.from, &line.to];
-    }
-    read.arcs
-        .iter()
-        .find(|a| &a.id == id)
-        .map(|arc| vec![&arc.start, &arc.end])
-        .unwrap_or_default()
-}
-
-/// A round's centre and radius: none for a line.
-fn round_of(geo: &Geo) -> Option<(Xy, f64)> {
-    match geo {
-        Geo::Circle { center, radius } | Geo::Arc { center, radius, .. } => {
-            Some((*center, *radius))
+    for c in &read.constraints {
+        if c.form.hold() == Some((point, curve)) {
+            found.any = true;
+            if matches!(c.form, Form::On { .. }) {
+                found.ons.push(c.id.clone());
+            }
         }
-        Geo::Line { .. } => None,
     }
+    found
 }
 
 /// Where a point picked is: the origin's place, or the read's coordinates.
@@ -845,32 +1054,19 @@ fn place(view: &View<'_>, point: &Reference) -> Option<Xy> {
     }
 }
 
-/// "a", "a and b", "a, b, and c".
-fn listed(items: &[String]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => one.clone(),
-        [one, two] => format!("{one} and {two}"),
-        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
-    }
-}
-
 /// "is" for one, "are" for more.
 fn be(n: usize) -> &'static str {
     if n == 1 { "is" } else { "are" }
 }
 
+/// How much work a click did, counted in tests: each constraint planned, and each held
+/// constraint one was compared with for C6.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(super) mod work {
+    use std::cell::Cell;
 
-    #[test]
-    fn a_list_reads_with_and_and_a_serial_comma() {
-        let names = |n: usize| (1..=n).map(|i| i.to_string()).collect::<Vec<_>>();
-        assert_eq!(listed(&names(0)), "");
-        assert_eq!(listed(&names(1)), "1");
-        assert_eq!(listed(&names(2)), "1 and 2");
-        assert_eq!(listed(&names(3)), "1, 2, and 3");
-        assert_eq!(listed(&names(4)), "1, 2, 3, and 4");
+    thread_local! {
+        pub(in crate::sketch_tools) static PLANNED: Cell<usize> = const { Cell::new(0) };
+        pub(in crate::sketch_tools) static COMPARED: Cell<usize> = const { Cell::new(0) };
     }
 }

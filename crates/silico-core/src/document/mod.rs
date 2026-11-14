@@ -46,10 +46,12 @@ pub use sketch::{
     SketchLine, SketchPoint, TangentSide,
 };
 pub(crate) use sketch::{MemberPaths, member_id};
-pub use sketch_gate::{MAX_ANGLE_DEGREES, MAX_REFERENCE_LENGTH};
 pub(crate) use sketch_gate::{
-    TWO_LINES_TANGENT, an_id_of_its_own, id_held, nearest_ids, repeats, too_small, with_candidates,
+    CONSTRAINTS_COUNTED, SPLIT_THE_SKETCH, TWO_LINES_TANGENT, an_id_of_its_own,
+    counted_constraints, id_held, nearest_ids, past_the_solver, repeats, too_small,
+    with_candidates,
 };
+pub use sketch_gate::{MAX_ANGLE_DEGREES, MAX_REFERENCE_LENGTH};
 pub use validate::{Checked, Invalid, PROBLEMS_LISTED, validate};
 pub(crate) use write::sketch_elements;
 

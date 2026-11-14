@@ -1050,8 +1050,8 @@ fn points(
         _ => Measure::Distance,
     };
     let form = match measure {
-        Measure::DistanceX => along(Axis::X, (a, *p), (b, *q)).map_err(Some)?,
-        Measure::DistanceY => along(Axis::Y, (a, *p), (b, *q)).map_err(Some)?,
+        Measure::DistanceX => distance_along(Along::X, (a, *p), (b, *q)).map_err(Some)?,
+        Measure::DistanceY => distance_along(Along::Y, (a, *p), (b, *q)).map_err(Some)?,
         _ => {
             let value = rounded(distance(*p, *q))?;
             if value.nm() == 0 {
@@ -1068,50 +1068,102 @@ fn points(
     Ok(Offered { measure, form })
 }
 
-/// Which of the sketch's axes a dimension of two points runs along ([`along`]).
+/// Which of the sketch's axes a dimension of two points runs along ([`distance_along`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Axis {
+pub(super) enum Along {
     /// `distance_x`.
     X,
     /// `distance_y`.
     Y,
 }
 
-/// The driving dimension of two points along `axis`, `first` and `second` each a point and
+/// The driving dimension of two points along an axis, `first` and `second` each a point and
 /// where it is, as Smart Dimension writes `distance_x` and `distance_y`, and Fix each
-/// point's two from the origin (the constraint tools' C2): `a` the point to the left
-/// (below), so the value is never negative, `first` where the two are level (plumb); the
-/// value rounded to the nanometre (SD2). One writer, so the two tools can't spell one
-/// dimension two ways.
-pub(super) fn along(
-    axis: Axis,
+/// point's two from the origin (the constraint tools' C2): the difference rounded to the
+/// nanometre (SD2), `a` the point to the left (below), so the value is never negative,
+/// `first` where they're level (plumb) at the nanometre. Ordered by the rounded difference,
+/// so a point a fraction of a nanometre either side of level is written the one way (Fix of
+/// it again is C6's repeat). One writer, so the two tools can't spell one dimension two
+/// ways.
+pub(super) fn distance_along(
+    along: Along,
     first: (&Reference, Xy),
     second: (&Reference, Xy),
 ) -> Result<Form, Message> {
     let ((a, p), (b, q)) = (first, second);
-    let i = match axis {
-        Axis::X => 0,
-        Axis::Y => 1,
+    let i = match along {
+        Along::X => 0,
+        Along::Y => 1,
     };
-    let (a, b, value) = if q[i] < p[i] {
-        (b.clone(), a.clone(), p[i] - q[i])
+    let signed = Length::rounded(q[i] - p[i]).ok_or(Message::TooFar)?;
+    let value = signed
+        .nm()
+        .checked_abs()
+        .map(Length::from_nm)
+        .ok_or(Message::TooFar)?;
+    let (a, b) = if signed.nm() < 0 {
+        (b.clone(), a.clone())
     } else {
-        (a.clone(), b.clone(), q[i] - p[i])
+        (a.clone(), b.clone())
     };
-    let value = Length::rounded(value).ok_or(Message::TooFar)?;
-    Ok(match axis {
-        Axis::X => Form::DistanceX {
+    Ok(match along {
+        Along::X => Form::DistanceX {
             a,
             b,
             value,
             driving: true,
         },
-        Axis::Y => Form::DistanceY {
+        Along::Y => Form::DistanceY {
             a,
             b,
             value,
             driving: true,
         },
+    })
+}
+
+/// Where a point lies off a line, as Smart Dimension measures a `point_line_distance`: the
+/// line's unit direction, the point's signed distance off it (to its left, facing along it,
+/// positive), that distance rounded to the nanometre, and the side it's on.
+pub(super) struct Off {
+    pub(super) along: Xy,
+    pub(super) off: f64,
+    pub(super) distance: Length,
+    pub(super) side: LineSide,
+}
+
+/// Why a point has no side of a line ([`off_line`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NotOff {
+    /// The line has no direction: no length.
+    NoDirection,
+    /// The point is on the line at the nanometre.
+    OnIt,
+    /// The distance is past what a length holds.
+    TooFar,
+}
+
+/// Where `point` lies off the line through `start` along `direction` ([`Off`]): refused
+/// where the line has no length, or the point is on it at the nanometre (no side to hold it
+/// on), as Smart Dimension refuses a distance of a point on its line. The constraint tools'
+/// Tangent reads a round's side of a line the same way.
+pub(super) fn off_line(start: Xy, direction: Xy, point: Xy) -> Result<Off, NotOff> {
+    let along = unit(direction).ok_or(NotOff::NoDirection)?;
+    let off = cross(along, sub(point, start));
+    let distance = Length::rounded(off.abs()).ok_or(NotOff::TooFar)?;
+    if distance.nm() == 0 {
+        return Err(NotOff::OnIt);
+    }
+    let side = if off > 0.0 {
+        LineSide::Left
+    } else {
+        LineSide::Right
+    };
+    Ok(Off {
+        along,
+        off,
+        distance,
+        side,
     })
 }
 
@@ -1142,12 +1194,16 @@ fn point_line(point: &Item, line: &Item, at: Option<Xy>) -> Result<Offered, NotO
     else {
         return Err(None);
     };
-    let along = unit(*direction).ok_or(None)?;
-    let off = cross(along, sub(*p, *start));
-    let value = rounded(off.abs())?;
-    if value.nm() == 0 {
-        return Err(Some(Message::NoDistance));
-    }
+    let Off {
+        along,
+        off,
+        distance: value,
+        side,
+    } = off_line(*start, *direction, *p).map_err(|not| match not {
+        NotOff::NoDirection => None,
+        NotOff::OnIt => Some(Message::NoDistance),
+        NotOff::TooFar => Some(Message::TooFar),
+    })?;
     if let Some(at) = at
         && *centreline
         && across(*start, along, off, at)
@@ -1160,11 +1216,7 @@ fn point_line(point: &Item, line: &Item, at: Option<Xy>) -> Result<Offered, NotO
             point: p_ref.clone(),
             line: reference.clone(),
             value,
-            side: if off > 0.0 {
-                LineSide::Left
-            } else {
-                LineSide::Right
-            },
+            side,
             driving: true,
         },
     })

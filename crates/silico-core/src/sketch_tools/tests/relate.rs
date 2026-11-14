@@ -6,40 +6,16 @@
 //! decisions, the forms' definitions, and plain geometry: never from the tool.
 
 use super::*;
-use crate::document::{Direction, Length, SketchArc, SketchCircle, TangentSide};
+use crate::document::{Direction, Length, TangentSide};
+use crate::sketch_tools::relate::work;
+use RelationTool::*;
+
+/// The revision of the read every click here is planned on.
+const READ: Revision = Revision::OPENED;
 
 /// IDs `kt000101`, `kt000102`, ... in turn, skipping any taken.
-struct Kt(u32);
-
-impl NewIds for Kt {
-    fn next(&mut self, taken: &dyn Fn(&ElementId) -> bool) -> Result<ElementId, Error> {
-        loop {
-            self.0 += 1;
-            let id = id(&format!("kt{:06}", self.0));
-            if !taken(&id) {
-                return Ok(id);
-            }
-        }
-    }
-}
-
-fn circle(name: &str, center: &str, radius: f64) -> SketchCircle {
-    SketchCircle {
-        id: id(name),
-        center: id(center),
-        radius: Coordinate::new(radius).unwrap(),
-        construction: false,
-    }
-}
-
-fn arc(name: &str, center: &str, start: &str, end: &str) -> SketchArc {
-    SketchArc {
-        id: id(name),
-        center: id(center),
-        start: id(start),
-        end: id(end),
-        construction: false,
-    }
+fn kt_ids() -> Counter {
+    Counter::with("kt", 100)
 }
 
 fn kt(name: &str, form: Form) -> SketchConstraint {
@@ -132,19 +108,54 @@ fn r(text: &str) -> Reference {
     Reference::new(text).unwrap()
 }
 
-/// `tool`'s click on `picks`, in order, in `sketch`, IDs from `kt000101`.
+/// `tool`'s click on `picks`, in order, in `sketch`, read at [`READ`], IDs from `kt000101`.
 fn click(sketch: &Sketch, tool: RelationTool, picks: &[&str]) -> Result<Related, Error> {
     let picks: Vec<Reference> = picks.iter().map(|p| r(p)).collect();
-    relate(sketch, tool, &picks, &mut Kt(100))
+    relate(sketch, READ, tool, &picks, &mut kt_ids())
 }
 
 /// `tool`'s click, which must make an edit and leave nothing out.
 fn edit(sketch: &Sketch, tool: RelationTool, picks: &[&str]) -> RelateEdit {
-    let related =
-        click(sketch, tool, picks).unwrap_or_else(|e| panic!("{tool:?} {picks:?}: {e:?}"));
-    assert_eq!(related.already, Vec::<ElementId>::new(), "{related:?}");
-    assert_eq!(related.message, None, "{related:?}");
-    related.edit.unwrap()
+    match click(sketch, tool, picks).unwrap_or_else(|e| panic!("{tool:?} {picks:?}: {e:?}")) {
+        Related::Edit {
+            revision: READ,
+            edit,
+            held,
+            message: None,
+        } if held.is_empty() => edit,
+        other => panic!("{tool:?} {picks:?} made {other:?}"),
+    }
+}
+
+/// `tool`'s click, which must send nothing, every constraint it would write held: the held
+/// constraints, and the message's words.
+fn all_held(sketch: &Sketch, tool: RelationTool, picks: &[&str]) -> (Vec<ElementId>, String) {
+    match click(sketch, tool, picks).unwrap_or_else(|e| panic!("{tool:?} {picks:?}: {e:?}")) {
+        Related::AllHeld {
+            revision: READ,
+            held,
+            message,
+        } => (held, message.text()),
+        other => panic!("{tool:?} {picks:?} made {other:?}"),
+    }
+}
+
+/// `tool`'s click, which must send an edit with some of what it would write held: the edit,
+/// the held constraints, and the message's words.
+fn some_held(
+    sketch: &Sketch,
+    tool: RelationTool,
+    picks: &[&str],
+) -> (RelateEdit, Vec<ElementId>, String) {
+    match click(sketch, tool, picks).unwrap_or_else(|e| panic!("{tool:?} {picks:?}: {e:?}")) {
+        Related::Edit {
+            revision: READ,
+            edit,
+            held,
+            message: Some(message),
+        } => (edit, held, message.text()),
+        other => panic!("{tool:?} {picks:?} made {other:?}"),
+    }
 }
 
 /// The constraints `tool`'s click adds, which must be a plain `sketch_add`.
@@ -199,6 +210,9 @@ fn gated(sketch: &Sketch, edit: &RelateEdit) -> Result<Sketch, Vec<String>> {
                 .map(|e| e.sketch)
                 .map_err(|r| messages(r.errors))
         }
+        RelateEdit::Remove(remove) => sketch_edit::remove(sketch, remove)
+            .map(|e| e.sketch)
+            .map_err(|r| messages(r.errors)),
     }
 }
 
@@ -214,8 +228,6 @@ fn constraint_of(sketch: &Sketch, name: &str) -> Option<Form> {
         .find(|c| c.id == id(name))
         .map(|c| c.form.clone())
 }
-
-use RelationTool::*;
 
 // --- The gate's assumptions Fable didn't run (Residual risk), first --------------------
 
@@ -629,14 +641,12 @@ fn symmetric_of_two_points_about_a_line() {
 fn vertical_on_a_line_held_vertical_adds_nothing_and_says_so() {
     // §7 11 (C6): kt000001 is that constraint.
     let s = s5();
-    let related = click(&s, Vertical, &["ne000002"]).unwrap();
     assert_eq!(
-        related,
-        Related {
-            edit: None,
-            already: vec![id("kt000001")],
-            message: Some("line ne000002 is already vertical: nothing was added".to_owned()),
-        }
+        all_held(&s, Vertical, &["ne000002"]),
+        (
+            vec![id("kt000001")],
+            "line ne000002 is already vertical: nothing was added".to_owned()
+        )
     );
 }
 
@@ -776,13 +786,14 @@ fn f6_tangent_with_the_place_picked_is_a_tangent_at_there() {
             },
         )]
     );
-    // A point that's neither place: Tangent's sentence.
+    // A point that's neither place: its own refusal, naming the places (R2).
     let picks = ["ne000007", "ae000002", "pe000012"];
     assert_eq!(
         refused(&s, Tangent, &picks),
         (
-            "Tangent takes two curves, at least one a circle or an arc".to_owned(),
-            named(&picks)
+            "point pe000012 isn't where line ne000007 and arc ae000002 meet: deselect it, or select pe000010 or pe000011"
+                .to_owned(),
+            named(&["ne000007", "ae000002", "pe000012", "pe000010", "pe000011"])
         )
     );
 }
@@ -865,12 +876,11 @@ fn tangent_again_where_a_tangent_on_holds_the_end_adds_nothing_and_replaces_noth
         ),
     ] {
         assert_eq!(
-            click(&after, Tangent, &picks).unwrap(),
-            Related {
-                edit: None,
-                already: vec![id("kt000101")],
-                message: Some(format!("{named} are already tangent: nothing was added")),
-            },
+            all_held(&after, Tangent, &picks),
+            (
+                vec![id("kt000101")],
+                format!("{named} are already tangent: nothing was added")
+            ),
             "{picks:?}"
         );
     }
@@ -999,20 +1009,27 @@ fn f8_tangent_of_a_circle_whose_centre_is_on_the_line_is_refused() {
     s.points.push(point("pe000015", 40.0, 11.0));
     s.circles.push(circle("ce000003", "pe000015", 3.0));
     let picks = ["ne000002", "ce000003"];
-    assert_eq!(
-        refused(&s, Tangent, &picks),
-        (
-            "the centre of circle ce000003 is on line ne000002: which side it's tangent on is unclear; move one off the other first"
-                .to_owned(),
-            named(&picks)
-        )
+    let on_it = (
+        "the centre of circle ce000003 is on line ne000002: which side it's tangent on is unclear; move one off the other first"
+            .to_owned(),
+        named(&picks),
     );
-    // Its centre 1e-9 mm to the left, (40 − 1e-9, 11): (0, 20) × (−1e-9, 10) = 2e-8 > 0, the
-    // left; to the right, right. Exactly zero is refused, nothing near it.
-    s.points.last_mut().unwrap().x = Coordinate::new(40.0 - 1e-9).unwrap();
+    assert_eq!(refused(&s, Tangent, &picks), on_it);
+    // The side is the centre's distance off the line, as Smart Dimension measures a point
+    // off its line (R1): 1e-9 mm off it is 0 nm, on it, refused either side; 1e-6 mm, 1 nm,
+    // is a side: to the left, (40 − 1e-6, 11), (0, 1) × (−1e-6, 10) = 1e-6 > 0, left; to
+    // the right, right.
+    for x in [40.0 - 1e-9, 40.0 + 1e-9] {
+        s.points.last_mut().unwrap().x = Coordinate::new(x).unwrap();
+        assert_eq!(refused(&s, Tangent, &picks), on_it.clone(), "{x}");
+    }
+    s.points.last_mut().unwrap().x = Coordinate::new(40.0 - 1e-6).unwrap();
     assert_eq!(side_of(&s, "ne000002", "ce000003"), TangentSide::Left);
-    s.points.last_mut().unwrap().x = Coordinate::new(40.0 + 1e-9).unwrap();
+    s.points.last_mut().unwrap().x = Coordinate::new(40.0 + 1e-6).unwrap();
     assert_eq!(side_of(&s, "ne000002", "ce000003"), TangentSide::Right);
+    // The round picked first says the same (T8).
+    s.points.last_mut().unwrap().x = Coordinate::new(40.0).unwrap();
+    assert_eq!(refused(&s, Tangent, &["ce000003", "ne000002"]).0, on_it.0);
 }
 
 /// The side of the edge tangent Tangent adds of `a` and `b`.
@@ -1258,12 +1275,11 @@ fn f18_fix_twice_adds_nothing_and_with_one_made_driven_adds_only_its_driving_twi
     // 14 applied, then Fix of pe000007 again: both its dimensions are there, at these values.
     let s = taken(&s5(), &edit(&s5(), Fix, &["pe000007"]));
     assert_eq!(
-        click(&s, Fix, &["pe000007"]).unwrap(),
-        Related {
-            edit: None,
-            already: vec![id("kt000101"), id("kt000102")],
-            message: Some("point pe000007 is already fixed: nothing was added".to_owned()),
-        }
+        all_held(&s, Fix, &["pe000007"]),
+        (
+            vec![id("kt000101"), id("kt000102")],
+            "point pe000007 is already fixed: nothing was added".to_owned()
+        )
     );
     // The distance_x made driven: a driving one isn't its repeat, and is added, only it.
     let mut s = s;
@@ -1275,11 +1291,10 @@ fn f18_fix_twice_adds_nothing_and_with_one_made_driven_adds_only_its_driving_twi
     {
         *driving = false;
     }
-    let related = click(&s, Fix, &["pe000007"]).unwrap();
     assert_eq!(
-        related,
-        Related {
-            edit: Some(RelateEdit::Add(Members {
+        some_held(&s, Fix, &["pe000007"]),
+        (
+            RelateEdit::Add(Members {
                 constraints: vec![kt(
                     "kt000103",
                     Form::DistanceX {
@@ -1290,12 +1305,10 @@ fn f18_fix_twice_adds_nothing_and_with_one_made_driven_adds_only_its_driving_twi
                     },
                 )],
                 ..Members::default()
-            })),
-            already: vec![id("kt000102")],
-            message: Some(
-                "1 of these constraints was already there: it wasn't added again".to_owned()
-            ),
-        }
+            }),
+            vec![id("kt000102")],
+            "1 of these constraints was already there: it wasn't added again".to_owned()
+        )
     );
 }
 
@@ -1379,22 +1392,20 @@ fn f20_a_repeat_either_way_round_adds_nothing() {
         },
     ));
     assert_eq!(
-        click(&s, Parallel, &["ne000001", "ne000003"]).unwrap(),
-        Related {
-            edit: None,
-            already: vec![id("kt000004")],
-            message: Some(
-                "lines ne000001 and ne000003 are already parallel: nothing was added".to_owned()
-            ),
-        }
+        all_held(&s, Parallel, &["ne000001", "ne000003"]),
+        (
+            vec![id("kt000004")],
+            "lines ne000001 and ne000003 are already parallel: nothing was added".to_owned()
+        )
     );
 }
 
 #[test]
 fn either_way_round_holds_for_the_interchangeable_forms_only() {
-    // horizontal_points, vertical_points, perpendicular, equal, and symmetric's a and b
-    // swapped are repeats; a tangent_at's a and b swapped isn't (its direction is read along
-    // a into b), nor a distance_x's.
+    // C6 with Fable's P2: horizontal_points, vertical_points, perpendicular, equal,
+    // symmetric (its about the same), tangent (its side the same), and tangent_at (its at and
+    // direction the same) with a and b swapped are repeats. A tangent_on's swapped would be
+    // another constraint, as would a distance_x's (its writer orders a and b).
     let mut s = s5();
     let held = [
         Form::HorizontalPoints {
@@ -1418,11 +1429,18 @@ fn either_way_round_holds_for_the_interchangeable_forms_only() {
             b: el("pe000007"),
             about: el("ne000005"),
         },
+        // §7 4's tangent_at of [ne000002, ae000001], swapped.
         Form::TangentAt {
             a: el("ae000001"),
             b: el("ne000002"),
             at: el("pe000003"),
             direction: Direction::Same,
+        },
+        // §7 4's tangent of [ne000002, ce000002] (right), swapped.
+        Form::Tangent {
+            a: el("ce000002"),
+            b: el("ne000002"),
+            side: TangentSide::Right,
         },
     ];
     for (k, form) in held.into_iter().enumerate() {
@@ -1434,17 +1452,11 @@ fn either_way_round_holds_for_the_interchangeable_forms_only() {
         (Perpendicular, &["ne000001", "ne000004"], "kt000202"),
         (Equal, &["ce000001", "ce000002"], "kt000203"),
         (Symmetric, &["pe000007", "pe000008", "ne000005"], "kt000204"),
+        (Tangent, &["ne000002", "ae000001"], "kt000205"),
+        (Tangent, &["ne000002", "ce000002"], "kt000206"),
     ] {
-        let related = click(&s, tool, picks).unwrap();
-        assert_eq!(related.edit, None, "{tool:?}");
-        assert_eq!(related.already, vec![id(held)], "{tool:?}");
+        assert_eq!(all_held(&s, tool, picks).0, vec![id(held)], "{tool:?}");
     }
-    // Tangent of [ne000002, ae000001] writes a: ne000002, b: ae000001: not the one held.
-    let related = click(&s, Tangent, &["ne000002", "ae000001"]).unwrap();
-    assert!(
-        related.edit.is_some() && related.already.is_empty(),
-        "{related:?}"
-    );
 }
 
 #[test]
@@ -1457,11 +1469,10 @@ fn f21_a_partial_repeat_adds_the_rest_and_counts_one_left_out() {
             line: el("ne000001"),
         },
     ));
-    let related = click(&s, Horizontal, &["ne000001", "ne000003"]).unwrap();
     assert_eq!(
-        related,
-        Related {
-            edit: Some(RelateEdit::Add(Members {
+        some_held(&s, Horizontal, &["ne000001", "ne000003"]),
+        (
+            RelateEdit::Add(Members {
                 constraints: vec![kt(
                     "kt000101",
                     Form::Horizontal {
@@ -1469,12 +1480,10 @@ fn f21_a_partial_repeat_adds_the_rest_and_counts_one_left_out() {
                     },
                 )],
                 ..Members::default()
-            })),
-            already: vec![id("kt000004")],
-            message: Some(
-                "1 of these constraints was already there: it wasn't added again".to_owned()
-            ),
-        }
+            }),
+            vec![id("kt000004")],
+            "1 of these constraints was already there: it wasn't added again".to_owned()
+        )
     );
     // Two of three left out: counted.
     s.constraints.push(kt(
@@ -1483,11 +1492,11 @@ fn f21_a_partial_repeat_adds_the_rest_and_counts_one_left_out() {
             line: el("ne000003"),
         },
     ));
-    let related = click(&s, Horizontal, &["ne000001", "ne000003", "ne000006"]).unwrap();
-    assert_eq!(related.already, vec![id("kt000004"), id("kt000005")]);
+    let (_, held, said) = some_held(&s, Horizontal, &["ne000001", "ne000003", "ne000006"]);
+    assert_eq!(held, vec![id("kt000004"), id("kt000005")]);
     assert_eq!(
-        related.message.as_deref(),
-        Some("2 of these constraints were already there: they weren't added again")
+        said,
+        "2 of these constraints were already there: they weren't added again"
     );
 }
 
@@ -1775,11 +1784,9 @@ fn every_message_for_a_click_left_out_whole() {
             "line ne000003 is already horizontal",
         ),
     ] {
-        let related = click(&s, tool, picks).unwrap();
-        assert_eq!(related.edit, None, "{tool:?}");
         assert_eq!(
-            related.message,
-            Some(format!("{said}: nothing was added")),
+            all_held(&s, tool, picks).1,
+            format!("{said}: nothing was added"),
             "{tool:?}"
         );
     }
@@ -1812,6 +1819,941 @@ fn a_member_the_read_doesnt_hold_is_refused_by_the_tools_sentence() {
     }
 }
 
+// --- Round 1: the reviewers' proofs ---------------------------------------------------------
+
+#[test]
+fn a1_a_clicks_work_is_in_proportion_to_what_it_writes_not_to_what_the_sketch_holds() {
+    // 50 points and 50 lines picked: 2,500 `on`s to write. The sketch holds 5,000
+    // `horizontal`s of those lines (100 each): each `on` is one lookup, which finds no
+    // constraint of its type and references, so none is compared. A scan would compare each
+    // `on` with every one of the 5,000.
+    let mut s = empty();
+    for i in 0..50 {
+        s.points
+            .push(point(&format!("p{i:07}"), f64::from(i), 100.0));
+        s = with_line(
+            s,
+            &format!("n{i:07}"),
+            [f64::from(i), 0.0],
+            [f64::from(i), 10.0],
+        );
+    }
+    let picks: Vec<Reference> = (0..50)
+        .map(|i| el(&format!("p{i:07}")))
+        .chain((0..50).map(|i| el(&format!("n{i:07}"))))
+        .collect();
+    for k in 0..5000 {
+        s.constraints.push(kt(
+            &format!("h{k:07}"),
+            Form::Horizontal {
+                line: el(&format!("n{:07}", k % 50)),
+            },
+        ));
+    }
+    let worked = |s: &Sketch| {
+        work::PLANNED.with(|n| n.set(0));
+        work::COMPARED.with(|n| n.set(0));
+        let related = relate(s, READ, Coincident, &picks, &mut kt_ids()).unwrap();
+        (
+            related,
+            work::PLANNED.with(|n| n.get()),
+            work::COMPARED.with(|n| n.get()),
+        )
+    };
+    let (related, planned, compared) = worked(&s);
+    assert_eq!((planned, compared), (2500, 0));
+    assert!(matches!(related.edit(), Some(RelateEdit::Add(add)) if add.constraints.len() == 2500));
+    // With every `on` held: one comparison each, and nothing to send.
+    let Some(RelateEdit::Add(add)) = related.edit() else {
+        panic!("{related:?}")
+    };
+    s.constraints.extend(add.constraints.iter().cloned());
+    let (related, planned, compared) = worked(&s);
+    assert_eq!((planned, compared), (2500, 2500));
+    assert_eq!(related.held().len(), 2500);
+    assert!(matches!(related, Related::AllHeld { .. }));
+}
+
+/// A sketch of `points` lone points and `lines` lines, and all of them as picks.
+fn many(points: usize, lines: usize) -> (Sketch, Vec<Reference>) {
+    let mut s = empty();
+    let mut picks = Vec::new();
+    for i in 0..points {
+        s.points.push(point(&format!("p{i:07}"), i as f64, 100.0));
+        picks.push(el(&format!("p{i:07}")));
+    }
+    for i in 0..lines {
+        s = with_line(s, &format!("n{i:07}"), [i as f64, 0.0], [i as f64, 10.0]);
+        picks.push(el(&format!("n{i:07}")));
+    }
+    (s, picks)
+}
+
+#[test]
+fn a1_a_coincident_past_what_the_solver_takes_is_refused_in_the_gates_words_unwritten() {
+    // 101 points on 100 lines: 10,100 `on`s, past the 10,000 constraints the sketch solver
+    // takes. Refused before one is planned, in the gate's words, the selection's first 100
+    // as its elements and all 201 counted.
+    let (s, picks) = many(101, 100);
+    work::PLANNED.with(|n| n.set(0));
+    let e = relate(&s, READ, Coincident, &picks, &mut kt_ids()).unwrap_err();
+    assert_eq!(work::PLANNED.with(|n| n.get()), 0);
+    assert_eq!(
+        e.message(),
+        "the sketch has 10100 constraints (counting each arc's rules as one), more than the 10000 the sketch solver takes"
+    );
+    assert_eq!(
+        e.suggestion(),
+        Some(
+            "split the sketch into smaller sketches: a single profile past this is more work than the sketch solver takes"
+        )
+    );
+    assert_eq!(e.elements().len(), 100);
+    assert_eq!(e.elements_total(), 201);
+    // The same words the gate gives the sketch with them added.
+    let written: Vec<SketchConstraint> = (0..101 * 100)
+        .map(|k| {
+            kt(
+                &format!("k{k:07}"),
+                Form::On {
+                    point: el(&format!("p{:07}", k / 100)),
+                    curve: el(&format!("n{:07}", k % 100)),
+                },
+            )
+        })
+        .collect();
+    let refusals = sketch_edit::add(
+        &s,
+        &Members {
+            constraints: written,
+            ..Members::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        refusals.errors.iter().any(|r| r.message() == e.message()),
+        "{refusals:?}"
+    );
+}
+
+#[test]
+fn a1_a_coincident_at_what_the_solver_takes_or_past_it_by_what_the_sketch_holds() {
+    // 100 points on 100 lines, 10,000 `on`s: at the limit, written whole.
+    let (s, picks) = many(100, 100);
+    let related = relate(&s, READ, Coincident, &picks, &mut kt_ids()).unwrap();
+    assert!(
+        matches!(related.edit(), Some(RelateEdit::Add(add)) if add.constraints.len() == 10_000)
+    );
+    // The sketch holding one of them: still 10,000, the held one left out.
+    let mut held = s.clone();
+    held.constraints.push(kt(
+        "k0000000",
+        Form::On {
+            point: el("p0000000"),
+            curve: el("n0000000"),
+        },
+    ));
+    let related = relate(&held, READ, Coincident, &picks, &mut kt_ids()).unwrap();
+    assert_eq!(related.held(), [id("k0000000")]);
+    assert!(matches!(related.edit(), Some(RelateEdit::Add(add)) if add.constraints.len() == 9_999));
+    // Holding one other constraint (a horizontal): 10,001, refused.
+    let mut other = s;
+    other.constraints.push(kt(
+        "k0000000",
+        Form::Horizontal {
+            line: el("n0000000"),
+        },
+    ));
+    let e = relate(&other, READ, Coincident, &picks, &mut kt_ids()).unwrap_err();
+    assert!(
+        e.message().starts_with("the sketch has 10001 constraints"),
+        "{e:?}"
+    );
+    // Each arc counts as one, as the gate counts it.
+    let mut arcs = held_arc(many(100, 100).0);
+    arcs.constraints.clear();
+    let e = relate(&arcs, READ, Coincident, &picks, &mut kt_ids()).unwrap_err();
+    assert!(
+        e.message().starts_with("the sketch has 10001 constraints"),
+        "{e:?}"
+    );
+}
+
+/// `s` with an arc about a point of its own, from (500, 0) to (500, 10) about (500, 5).
+fn held_arc(mut s: Sketch) -> Sketch {
+    s.points.push(point("q0000001", 500.0, 5.0));
+    s.points.push(point("q0000002", 500.0, 0.0));
+    s.points.push(point("q0000003", 500.0, 10.0));
+    s.arcs
+        .push(arc("r0000001", "q0000001", "q0000002", "q0000003"));
+    s
+}
+
+#[test]
+fn a1_any_tool_past_what_the_solver_takes_is_refused() {
+    // 9,999 held horizontals, and Horizontal of two lines: 10,001.
+    let (mut s, _) = many(0, 2);
+    for k in 0..9_999 {
+        s.constraints.push(kt(
+            &format!("h{k:07}"),
+            Form::Vertical {
+                line: el("n0000000"),
+            },
+        ));
+    }
+    let picks = [el("n0000000"), el("n0000001")];
+    let e = relate(&s, READ, Horizontal, &picks, &mut kt_ids()).unwrap_err();
+    assert_eq!(
+        e.message(),
+        "the sketch has 10001 constraints (counting each arc's rules as one), more than the 10000 the sketch solver takes"
+    );
+    // One line, 10,000: taken.
+    assert!(relate(&s, READ, Horizontal, &picks[..1], &mut kt_ids()).is_ok());
+}
+
+#[test]
+fn a2_the_reads_revision_comes_back_with_the_plan() {
+    // The click's plan is only good for the read it was made on: the edit, or the nothing
+    // to send, comes back with that read's revision, for the app to send it against.
+    let s = s5();
+    let later = Revision::OPENED.next().unwrap().next().unwrap();
+    let picks = [el("ne000001"), el("ne000003")];
+    let edit = relate(&s, later, Parallel, &picks, &mut kt_ids()).unwrap();
+    assert!(matches!(edit, Related::Edit { revision, .. } if revision == later));
+    assert_eq!(edit.revision(), later);
+    let held = relate(&s, later, Vertical, &[el("ne000002")], &mut kt_ids()).unwrap();
+    assert!(matches!(held, Related::AllHeld { revision, .. } if revision == later));
+    let merged = relate(
+        &s,
+        later,
+        Coincident,
+        &[el("pe000007"), el("pe000008")],
+        &mut kt_ids(),
+    )
+    .unwrap();
+    assert_eq!(merged.revision(), later);
+}
+
+#[test]
+fn r1_a_centre_on_a_slanted_line_is_on_it_at_the_nanometre() {
+    // The line ne000009 from (0, 0) to (3, 1) and a circle about (0.3, 0.1), on it: the
+    // cross product's rounding (3 × 0.1 − 1 × 0.3 = 5.6e-17 in floating point) isn't a side.
+    let mut s = s5();
+    s.points.push(point("pe000015", 0.0, 0.0));
+    s.points.push(point("pe000016", 3.0, 1.0));
+    s.points.push(point("pe000017", 0.3, 0.1));
+    s.lines.push(line("ne000009", "pe000015", "pe000016"));
+    s.circles.push(circle("ce000003", "pe000017", 1.0));
+    assert_eq!(
+        refused(&s, Tangent, &["ne000009", "ce000003"]).0,
+        "the centre of circle ce000003 is on line ne000009: which side it's tangent on is unclear; move one off the other first"
+    );
+}
+
+#[test]
+fn r1_a_line_of_no_length_has_no_side() {
+    // ne000009 from pe000015 to pe000016, both (5, 5).
+    let mut s = s5();
+    s.points.push(point("pe000015", 5.0, 5.0));
+    s.points.push(point("pe000016", 5.0, 5.0));
+    s.lines.push(line("ne000009", "pe000015", "pe000016"));
+    let picks = ["ne000009", "ce000001"];
+    assert_eq!(
+        refused(&s, Tangent, &picks),
+        (
+            "line ne000009 has no length, so it has no side for circle ce000001 to be tangent on"
+                .to_owned(),
+            named(&picks)
+        )
+    );
+}
+
+#[test]
+fn r2_a_point_that_isnt_where_the_curves_meet_is_refused_naming_where_they_do() {
+    let s = s5();
+    // No place: ne000002 and ce000002 meet nowhere.
+    let picks = ["ne000002", "ce000002", "pe000007"];
+    assert_eq!(
+        refused(&s, Tangent, &picks),
+        (
+            "point pe000007 isn't where line ne000002 and circle ce000002 meet: deselect it"
+                .to_owned(),
+            named(&picks)
+        )
+    );
+    // One place, pe000003.
+    let picks = ["ne000002", "ae000001", "pe000007"];
+    assert_eq!(
+        refused(&s, Tangent, &picks),
+        (
+            "point pe000007 isn't where line ne000002 and arc ae000001 meet: deselect it, or select pe000003"
+                .to_owned(),
+            named(&["ne000002", "ae000001", "pe000007", "pe000003"])
+        )
+    );
+    // The origin.
+    assert_eq!(
+        refused(&s, Tangent, &["origin", "ne000002", "ce000002"]).0,
+        "the origin isn't where line ne000002 and circle ce000002 meet: deselect it"
+    );
+    // A stale pick keeps Tangent's sentence.
+    assert_eq!(
+        refused(&s, Tangent, &["ne000002", "ce000002", "zz000001"]).0,
+        Tangent.takes()
+    );
+}
+
+#[test]
+fn r3_a_member_picked_twice_counts_once() {
+    let s = s5();
+    assert_eq!(
+        added(&s, Horizontal, &["ne000001", "ne000001"]),
+        vec![kt(
+            "kt000101",
+            Form::Horizontal {
+                line: el("ne000001"),
+            },
+        )]
+    );
+    assert_eq!(
+        added(&s, Fix, &["pe000007", "pe000007"]),
+        fixed(("origin", "pe000007", "20"), ("origin", "pe000007", "30"))
+    );
+    // Its refusal names it once.
+    assert_eq!(
+        refused(&s, Fix, &["ne000001", "ne000001"]).1,
+        named(&["ne000001"])
+    );
+}
+
+#[test]
+fn r4_fix_a_fraction_of_a_nanometre_off_level_is_written_as_level() {
+    // pe000007 at (−1e-16, 30): the difference rounds to 0 nm, so the origin, picked first,
+    // is `a`. Then at (0, 30), as a solve may leave it: Fix again is a repeat.
+    let mut s = s5();
+    s.points[6].x = Coordinate::new(-1e-16).unwrap();
+    assert_eq!(
+        added(&s, Fix, &["pe000007"]),
+        fixed(("origin", "pe000007", "0"), ("origin", "pe000007", "30"))
+    );
+    let mut s = taken(&s, &edit(&s, Fix, &["pe000007"]));
+    s.points[6].x = Coordinate::new(0.0).unwrap();
+    assert_eq!(
+        all_held(&s, Fix, &["pe000007"]).0,
+        vec![id("kt000101"), id("kt000102")]
+    );
+}
+
+#[test]
+fn t1_a_held_constraint_of_another_pair_is_no_repeat() {
+    // C6's either way round, negatively: a held parallel sharing one line with the click's,
+    // either way, and a held symmetric of the same two points about another mirror.
+    let s = s5();
+    for held in [
+        Form::Parallel {
+            a: el("ne000004"),
+            b: el("ne000001"),
+        },
+        Form::Parallel {
+            a: el("ne000003"),
+            b: el("ne000004"),
+        },
+    ] {
+        let mut s = s.clone();
+        s.constraints.push(kt("kt000004", held));
+        assert_eq!(
+            added(&s, Parallel, &["ne000001", "ne000003"]),
+            vec![kt(
+                "kt000101",
+                Form::Parallel {
+                    a: el("ne000001"),
+                    b: el("ne000003"),
+                },
+            )]
+        );
+    }
+    let mut s = s;
+    s.constraints.push(kt(
+        "kt000004",
+        Form::Symmetric {
+            a: el("pe000008"),
+            b: el("pe000007"),
+            about: el("ne000005"),
+        },
+    ));
+    assert_eq!(
+        added(&s, Symmetric, &["pe000007", "pe000008", "y_axis"]),
+        vec![kt(
+            "kt000101",
+            Form::Symmetric {
+                a: el("pe000007"),
+                b: el("pe000008"),
+                about: Reference::YAxis,
+            },
+        )]
+    );
+}
+
+#[test]
+fn t2_a_constraint_or_a_stale_pick_among_a_selection_otherwise_read_is_refused() {
+    // Each selection reads without the odd member out; with it (a constraint, or an ID the
+    // read doesn't hold), the tool's sentence.
+    let s = s5();
+    for odd in ["kt000001", "zz000001"] {
+        for (tool, picks) in [
+            (Horizontal, &["ne000001", "ne000003"][..]),
+            (Vertical, &["pe000007", "pe000005"]),
+            (Coincident, &["pe000007", "ne000003"]),
+            (Tangent, &["ne000002", "ce000002"]),
+            (Equal, &["ce000001", "ce000002"]),
+            (Parallel, &["ne000001", "ne000003"]),
+            (Perpendicular, &["ne000001"]),
+            (Midpoint, &["pe000007"]),
+            (Midpoint, &["ne000001"]),
+            (Symmetric, &["pe000007", "pe000008"]),
+            (Fix, &["pe000007"]),
+        ] {
+            let with: Vec<&str> = picks.iter().copied().chain([odd]).collect();
+            assert_eq!(
+                refused(&s, tool, &with),
+                (tool.takes().to_owned(), named(&with)),
+                "{tool:?} {with:?}"
+            );
+        }
+    }
+    // Midpoint with a third member, a round.
+    let picks = ["pe000007", "ne000001", "ce000001"];
+    assert_eq!(
+        refused(&s, Midpoint, &picks),
+        (Midpoint.takes().to_owned(), named(&picks))
+    );
+}
+
+#[test]
+fn t3_tangent_of_three_curves_or_two_points_is_refused() {
+    let s = s5();
+    for picks in [
+        &["ne000002", "ce000002", "ce000001"][..],
+        &["ne000007", "ae000002", "pe000011", "pe000010"],
+    ] {
+        assert_eq!(
+            refused(&s, Tangent, picks),
+            (Tangent.takes().to_owned(), named(picks)),
+            "{picks:?}"
+        );
+    }
+}
+
+#[test]
+fn t5_a_tangent_on_the_y_axis_reads_the_axis_running_toward_plus_y() {
+    // The x axis's test mirrored about y = x: the arc ae000003 about pe000017 (10, 0),
+    // counter-clockwise from pe000019 (10, 10), at 90°, to pe000018 (0, 0), at 180°, its end
+    // held on y_axis. The arc's own direction at (0, 0) is (−(0 − 0), 0 − 10) = (0, −10);
+    // leaving its end, the reverse, (0, 10); the axis runs (0, 1): same. Drawn the other way,
+    // from pe000018 to pe000019, held at its start: leaving it is (0, −10): opposite.
+    let mut s = s5();
+    s.points.push(point("pe000017", 10.0, 0.0));
+    s.points.push(point("pe000018", 0.0, 0.0));
+    s.points.push(point("pe000019", 10.0, 10.0));
+    s.arcs
+        .push(arc("ae000003", "pe000017", "pe000019", "pe000018"));
+    s.constraints.push(kt(
+        "kt000004",
+        Form::On {
+            point: el("pe000018"),
+            curve: Reference::YAxis,
+        },
+    ));
+    let want = |direction| RelateEdit::AddThenRemove {
+        add: Members {
+            constraints: vec![kt(
+                "kt000101",
+                Form::TangentOn {
+                    a: el("ae000003"),
+                    at: el("pe000018"),
+                    b: Reference::YAxis,
+                    direction,
+                },
+            )],
+            ..Members::default()
+        },
+        remove: vec![id("kt000004")],
+    };
+    let made = edit(&s, Tangent, &["y_axis", "ae000003"]);
+    assert_eq!(made, want(Direction::Same));
+    taken(&s, &made);
+    s.arcs[2] = arc("ae000003", "pe000017", "pe000018", "pe000019");
+    assert_eq!(
+        edit(&s, Tangent, &["y_axis", "ae000003"]),
+        want(Direction::Opposite)
+    );
+}
+
+#[test]
+fn t6_every_on_of_the_point_on_the_curve_is_removed() {
+    // A second `on` of pe000013 on ce000001, kt000006: Tangent removes both, in the
+    // sketch's order. Likewise a second of pe000008 on ne000001 for Midpoint.
+    let mut s = s5();
+    s.constraints.push(kt(
+        "kt000006",
+        Form::On {
+            point: el("pe000013"),
+            curve: el("ce000001"),
+        },
+    ));
+    s.constraints.push(kt(
+        "kt000007",
+        Form::On {
+            point: el("pe000008"),
+            curve: el("ne000001"),
+        },
+    ));
+    let RelateEdit::AddThenRemove { remove, .. } = edit(&s, Tangent, &["ne000008", "ce000001"])
+    else {
+        panic!()
+    };
+    assert_eq!(remove, vec![id("kt000002"), id("kt000006")]);
+    let RelateEdit::AddThenRemove { remove, .. } = edit(&s, Midpoint, &["pe000008", "ne000001"])
+    else {
+        panic!()
+    };
+    assert_eq!(remove, vec![id("kt000003"), id("kt000007")]);
+}
+
+#[test]
+fn t7_a_tangent_on_of_one_curve_is_no_place_for_another() {
+    // After f7's flow, kt000101 holds pe000013 on ce000001, not on ce000002: Tangent of
+    // ne000008 and ce000002 has no place, an edge tangent. ne000008 runs (20, 0) and the
+    // centre is (60, 10) − (0, 15) = (60, −5) from its start: (1, 0) × (60, −5) = −5, right.
+    let s = s5();
+    let after = taken(&s, &edit(&s, Tangent, &["ne000008", "ce000001"]));
+    assert_eq!(
+        added(&after, Tangent, &["ne000008", "ce000002"]),
+        vec![kt(
+            "kt000102",
+            Form::Tangent {
+                a: el("ne000008"),
+                b: el("ce000002"),
+                side: TangentSide::Right,
+            },
+        )]
+    );
+}
+
+#[test]
+fn t8_tangents_roles_with_the_round_picked_first() {
+    // [ce000001, x_axis]: a the circle, as picked; (1, 0) × (20, 10) = 10, left.
+    // [ae000001, ne000002]: the arc arrives at pe000003, its end, along (0, −10) (its own
+    // direction there, (0, −10), the reverse of its leaving (0, 10)); ne000002 leaves its
+    // `to` along (0, −20). The dot product is 200: same.
+    let s = s5();
+    assert_eq!(
+        added(&s, Tangent, &["ce000001", "x_axis"]),
+        vec![kt(
+            "kt000101",
+            Form::Tangent {
+                a: el("ce000001"),
+                b: Reference::XAxis,
+                side: TangentSide::Left,
+            },
+        )]
+    );
+    assert_eq!(
+        added(&s, Tangent, &["ae000001", "ne000002"]),
+        vec![kt(
+            "kt000101",
+            Form::TangentAt {
+                a: el("ae000001"),
+                b: el("ne000002"),
+                at: el("pe000003"),
+                direction: Direction::Same,
+            },
+        )]
+    );
+}
+
+#[test]
+fn t9_the_messages_plural_and_mixed_fix_too_far_and_an_axis_through_to_the_gate() {
+    let mut s = s5();
+    s.constraints.push(kt(
+        "kt000004",
+        Form::Horizontal {
+            line: el("ne000001"),
+        },
+    ));
+    s.constraints.push(kt(
+        "kt000005",
+        Form::Horizontal {
+            line: el("ne000003"),
+        },
+    ));
+    s.constraints.push(kt(
+        "kt000006",
+        Form::Equal {
+            a: el("ce000001"),
+            b: el("ae000001"),
+        },
+    ));
+    assert_eq!(
+        all_held(&s, Horizontal, &["ne000001", "ne000003"]).1,
+        "lines ne000001 and ne000003 are already horizontal: nothing was added"
+    );
+    assert_eq!(
+        all_held(&s, Equal, &["ce000001", "ae000001"]).1,
+        "circle ce000001 and arc ae000001 are already equal: nothing was added"
+    );
+    // Fix of a point at x = 1e13 mm: 1e19 nm, past what a length holds.
+    let mut far = s5();
+    far.points[6].x = Coordinate::new(1e13).unwrap();
+    assert_eq!(
+        refused(&far, Fix, &["pe000007"]),
+        (
+            "a sketch is drawn within a kilometre of its origin".to_owned(),
+            named(&["pe000007"])
+        )
+    );
+    // Horizontal of x_axis: written, and the gate's to refuse.
+    let edit = edit(&s5(), Horizontal, &["x_axis"]);
+    assert_eq!(
+        gated(&s5(), &edit),
+        Err(vec![
+            "constraints.kt000101.line x_axis is an axis, but a horizontal's line is a line of this sketch"
+                .to_owned()
+        ])
+    );
+}
+
+// --- Fable's P1 to P3 ----------------------------------------------------------------------
+
+/// Fable's P1 sketch: the arc ae000003 about pe000020 (100, 10), counter-clockwise from
+/// pe000021 (100, 0), at −90°, to pe000022 (110, 10), at 0°, radius 10; the line ne000010
+/// from pe000023 (90, 0) to pe000024 (110, 0), whose middle is (100, 0); and kt000004,
+/// `midpoint {point: pe000021, line: ne000010}`.
+fn held_at_a_midpoint() -> Sketch {
+    let mut s = s5();
+    for (name, x, y) in [
+        ("pe000020", 100.0, 10.0),
+        ("pe000021", 100.0, 0.0),
+        ("pe000022", 110.0, 10.0),
+        ("pe000023", 90.0, 0.0),
+        ("pe000024", 110.0, 0.0),
+    ] {
+        s.points.push(point(name, x, y));
+    }
+    s.arcs
+        .push(arc("ae000003", "pe000020", "pe000021", "pe000022"));
+    s.lines.push(line("ne000010", "pe000023", "pe000024"));
+    s.constraints.push(kt(
+        "kt000004",
+        Form::Midpoint {
+            point: el("pe000021"),
+            line: el("ne000010"),
+        },
+    ));
+    s
+}
+
+/// The tangent_on Fable's P1 tests write: ae000003's start on ne000010, same.
+fn on_the_midpoint(id_: &str) -> SketchConstraint {
+    kt(
+        id_,
+        Form::TangentOn {
+            a: el("ae000003"),
+            at: el("pe000021"),
+            b: el("ne000010"),
+            direction: Direction::Same,
+        },
+    )
+}
+
+#[test]
+fn p1_tangent_at_a_midpoints_hold_is_a_tangent_on_beside_it() {
+    // Fable 1: one place, pe000021, the arc's start, held on ne000010 by the midpoint. The
+    // arc's own direction there is (−(0 − 10), 100 − 100) = (10, 0), and leaving its start
+    // is its own direction; the line's is (20, 0): dot 200, same. An add alone: no `on` to
+    // remove, and the midpoint stays. Either order.
+    let s = held_at_a_midpoint();
+    for picks in [["ae000003", "ne000010"], ["ne000010", "ae000003"]] {
+        let made = edit(&s, Tangent, &picks);
+        assert_eq!(
+            made,
+            RelateEdit::Add(Members {
+                constraints: vec![on_the_midpoint("kt000101")],
+                ..Members::default()
+            }),
+            "{picks:?}"
+        );
+        let after = taken(&s, &made);
+        assert!(constraint_of(&after, "kt000004").is_some());
+    }
+    // Fable 2: again, nothing added.
+    let after = taken(&s, &edit(&s, Tangent, &["ae000003", "ne000010"]));
+    assert_eq!(
+        all_held(&after, Tangent, &["ae000003", "ne000010"]),
+        (
+            vec![id("kt000101")],
+            "arc ae000003 and line ne000010 are already tangent: nothing was added".to_owned()
+        )
+    );
+}
+
+#[test]
+fn p1_a_midpoint_on_another_line_or_of_another_point_is_no_place() {
+    // Fable 3: the midpoint of pe000021 on ne000001, or of the arc's centre pe000020 on
+    // ne000010: no hold of this pair, so an edge tangent. ne000010 runs (20, 0) and the
+    // centre is (100, 10) − (90, 0) = (10, 10) from its start: (1, 0) × (10, 10) = 10, left.
+    for held in [
+        Form::Midpoint {
+            point: el("pe000021"),
+            line: el("ne000001"),
+        },
+        Form::Midpoint {
+            point: el("pe000020"),
+            line: el("ne000010"),
+        },
+    ] {
+        let mut s = held_at_a_midpoint();
+        s.constraints[3].form = held;
+        assert_eq!(
+            added(&s, Tangent, &["ae000003", "ne000010"]),
+            vec![kt(
+                "kt000101",
+                Form::Tangent {
+                    a: el("ae000003"),
+                    b: el("ne000010"),
+                    side: TangentSide::Left,
+                },
+            )]
+        );
+    }
+}
+
+#[test]
+fn p1_a_midpoint_and_an_on_holding_the_end_the_on_is_replaced() {
+    // Fable 4: kt000005, an `on` of pe000021 on ne000010, beside the midpoint: the add, then
+    // the removal of the `on` alone.
+    let mut s = held_at_a_midpoint();
+    s.constraints.push(kt(
+        "kt000005",
+        Form::On {
+            point: el("pe000021"),
+            curve: el("ne000010"),
+        },
+    ));
+    let made = edit(&s, Tangent, &["ae000003", "ne000010"]);
+    assert_eq!(
+        made,
+        RelateEdit::AddThenRemove {
+            add: Members {
+                constraints: vec![on_the_midpoint("kt000101")],
+                ..Members::default()
+            },
+            remove: vec![id("kt000005")],
+        }
+    );
+    taken(&s, &made);
+}
+
+#[test]
+fn p2_a_tangent_held_with_its_curves_swapped_is_a_repeat_on_the_same_side_only() {
+    // Fable 6: held tangent {a: ce000001, b: ne000002, left}. Tangent [ne000002, ce000001]:
+    // ne000002 runs (0, 1), the centre is (20 − 40, 10 − 1) = (−20, 9) from its start:
+    // (0, 1) × (−20, 9) = 20, left. A repeat.
+    let held = |a: &str, b: &str, side| {
+        let mut s = s5();
+        s.constraints.push(kt(
+            "kt000004",
+            Form::Tangent {
+                a: el(a),
+                b: el(b),
+                side,
+            },
+        ));
+        s
+    };
+    let s = held("ce000001", "ne000002", TangentSide::Left);
+    assert_eq!(
+        all_held(&s, Tangent, &["ne000002", "ce000001"]).0,
+        vec![id("kt000004")]
+    );
+    // Fable 7: held {a: ce000002, b: ne000002, left}; the drawing says right: added.
+    let s = held("ce000002", "ne000002", TangentSide::Left);
+    assert_eq!(
+        added(&s, Tangent, &["ne000002", "ce000002"]),
+        vec![kt(
+            "kt000101",
+            Form::Tangent {
+                a: el("ne000002"),
+                b: el("ce000002"),
+                side: TangentSide::Right,
+            },
+        )]
+    );
+    // Fable 8: two rounds swapped, outside: a repeat; held inside: the outside one added.
+    let s = held("ce000002", "ce000001", TangentSide::Outside);
+    assert_eq!(
+        all_held(&s, Tangent, &["ce000001", "ce000002"]).0,
+        vec![id("kt000004")]
+    );
+    let s = held("ce000002", "ce000001", TangentSide::Inside);
+    assert_eq!(
+        added(&s, Tangent, &["ce000001", "ce000002"]),
+        vec![kt(
+            "kt000101",
+            Form::Tangent {
+                a: el("ce000001"),
+                b: el("ce000002"),
+                side: TangentSide::Outside,
+            },
+        )]
+    );
+}
+
+#[test]
+fn p2_a_tangent_at_held_swapped_is_a_repeat_at_the_same_point_and_direction_only() {
+    // Fable 9: held tangent_at {a: ae000002, b: ne000007, at: pe000011, same}; Tangent
+    // [ne000007, ae000002, pe000011] writes f6's form (same, dot 0): a repeat.
+    let held = |at: &str, direction| {
+        let mut s = s5();
+        s.constraints.push(kt(
+            "kt000004",
+            Form::TangentAt {
+                a: el("ae000002"),
+                b: el("ne000007"),
+                at: el(at),
+                direction,
+            },
+        ));
+        s
+    };
+    let picks = ["ne000007", "ae000002", "pe000011"];
+    assert_eq!(
+        all_held(&held("pe000011", Direction::Same), Tangent, &picks).0,
+        vec![id("kt000004")]
+    );
+    // Fable 10: held at pe000010, or opposite: f6's form is added each time.
+    for s in [
+        held("pe000010", Direction::Same),
+        held("pe000011", Direction::Opposite),
+    ] {
+        assert_eq!(
+            added(&s, Tangent, &picks),
+            vec![kt(
+                "kt000101",
+                Form::TangentAt {
+                    a: el("ne000007"),
+                    b: el("ae000002"),
+                    at: el("pe000011"),
+                    direction: Direction::Same,
+                },
+            )]
+        );
+    }
+}
+
+/// f7's tangent_on of ne000008's end on ce000001, as drawn (same), as `id_`.
+fn f7_tangent_on(id_: &str, direction: Direction) -> SketchConstraint {
+    kt(
+        id_,
+        Form::TangentOn {
+            a: el("ne000008"),
+            at: el("pe000013"),
+            b: el("ce000001"),
+            direction,
+        },
+    )
+}
+
+#[test]
+fn p2_a_tangent_on_held_the_other_way_is_no_repeat_and_the_on_is_still_replaced() {
+    // Fable 11: held tangent_on {ne000008, pe000013, ce000001, opposite} beside kt000002:
+    // Tangent writes f7's same one and removes kt000002.
+    let mut s = s5();
+    s.constraints
+        .push(f7_tangent_on("kt000004", Direction::Opposite));
+    assert_eq!(
+        edit(&s, Tangent, &["ne000008", "ce000001"]),
+        RelateEdit::AddThenRemove {
+            add: Members {
+                constraints: vec![f7_tangent_on("kt000101", Direction::Same)],
+                ..Members::default()
+            },
+            remove: vec![id("kt000002")],
+        }
+    );
+}
+
+#[test]
+fn p3_a_relation_held_with_its_on_still_there_removes_the_on_alone() {
+    // Fable 12: kt000004, f7's own tangent_on, beside kt000002's `on` (the pair interrupted).
+    // Tangent [ne000008, ce000001]: the remove of kt000002 alone, kt000004 held.
+    let mut s = s5();
+    s.constraints
+        .push(f7_tangent_on("kt000004", Direction::Same));
+    let related = click(&s, Tangent, &["ne000008", "ce000001"]).unwrap();
+    let Related::Edit {
+        revision: READ,
+        edit,
+        held,
+        message: Some(message),
+    } = related
+    else {
+        panic!("{related:?}")
+    };
+    assert_eq!(edit, RelateEdit::Remove(vec![id("kt000002")]));
+    assert_eq!(held, vec![id("kt000004")]);
+    assert_eq!(
+        message.text(),
+        "line ne000008 and circle ce000001 are already tangent: nothing was added, and constraint kt000002, which that makes redundant, was removed"
+    );
+    let after = taken(&s, &edit);
+    assert_eq!(constraint_of(&after, "kt000002"), None);
+    // The same click after it: nothing.
+    assert_eq!(
+        all_held(&after, Tangent, &["ne000008", "ce000001"]).1,
+        "line ne000008 and circle ce000001 are already tangent: nothing was added"
+    );
+    // Fable 14: a second `on`, kt000006: both removed, in the sketch's order.
+    s.constraints.push(kt(
+        "kt000006",
+        Form::On {
+            point: el("pe000013"),
+            curve: el("ce000001"),
+        },
+    ));
+    let related = click(&s, Tangent, &["ne000008", "ce000001"]).unwrap();
+    assert_eq!(
+        related.edit(),
+        Some(&RelateEdit::Remove(vec![id("kt000002"), id("kt000006")]))
+    );
+    assert_eq!(
+        related.message().map(Message::text).as_deref(),
+        Some(
+            "line ne000008 and circle ce000001 are already tangent: nothing was added, and constraints kt000002 and kt000006, which that makes redundant, were removed"
+        )
+    );
+}
+
+#[test]
+fn p3_a_midpoint_held_with_its_on_still_there_removes_the_on_alone() {
+    // Fable 13: kt000003, an `on` of pe000008 on ne000001, beside a midpoint of them.
+    let mut s = s5();
+    s.constraints.push(kt(
+        "kt000004",
+        Form::Midpoint {
+            point: el("pe000008"),
+            line: el("ne000001"),
+        },
+    ));
+    let related = click(&s, Midpoint, &["pe000008", "ne000001"]).unwrap();
+    assert_eq!(
+        related.edit(),
+        Some(&RelateEdit::Remove(vec![id("kt000003")]))
+    );
+    assert_eq!(related.held(), [id("kt000004")]);
+    taken(&s, related.edit().unwrap());
+}
+
 // --- Any tool, any selection ----------------------------------------------------------
 
 mod property {
@@ -1820,8 +2762,10 @@ mod property {
 
     use super::*;
 
-    /// The sketch, with a circle about a line's end and two arcs sharing a centre added, and
-    /// every member of it, the origin, and the axes, to pick from.
+    /// The sketch, with more to find: a circle about a line's end; an arc about the D's
+    /// centre sharing an end with ne000007 and its other end held on it (kt000004); and the
+    /// pair an interrupted Tangent leaves, kt000005's `tangent_on` of ne000008's end beside
+    /// kt000002's `on` of it. Every member of it, the origin, and the axes, to pick from.
     fn busy() -> (Sketch, Vec<Reference>) {
         let mut s = s5();
         s.circles.push(circle("ce000003", "pe000002", 3.0));
@@ -1835,6 +2779,15 @@ mod property {
                 curve: el("ne000007"),
             },
         ));
+        s.constraints.push(kt(
+            "kt000005",
+            Form::TangentOn {
+                a: el("ne000008"),
+                at: el("pe000013"),
+                b: el("ce000001"),
+                direction: Direction::Same,
+            },
+        ));
         let mut members: Vec<Reference> = s
             .elements()
             .map(|(id, _)| Reference::Element(id.clone()))
@@ -1843,7 +2796,13 @@ mod property {
         (s, members)
     }
 
-    /// The IDs `form` names.
+    #[test]
+    fn the_busy_sketch_is_one_the_gate_takes() {
+        let (s, _) = busy();
+        assert_eq!(crate::document::sketch_problems(&s), Vec::<Error>::new());
+    }
+
+    /// The references `form` holds.
     fn names(form: &Form) -> Vec<Reference> {
         form.references()
             .into_iter()
@@ -1863,6 +2822,11 @@ mod property {
         })
     }
 
+    /// Whether `point` is picked, or an end of a picked curve.
+    fn picked_or_an_end(s: &Sketch, picks: &[Reference], point: &Reference) -> bool {
+        picks.contains(point) || point.element().is_some_and(|id| an_end_of(s, picks, id))
+    }
+
     /// Whether every reference `form` holds is picked, or a picked curve's end it's
     /// tangent at, or Fix's origin.
     fn names_only_the_picks(
@@ -1878,87 +2842,149 @@ mod property {
         names(form).iter().all(|r| {
             picks.contains(r)
                 || (tool == RelationTool::Fix && *r == Reference::Origin)
-                || (Some(r) == at && r.element().is_some_and(|id| an_end_of(s, picks, id)))
+                || (Some(r) == at && picked_or_an_end(s, picks, r))
         })
+    }
+
+    /// How many edits of each kind the gate took: Add, Merge, AddThenRemove, Remove.
+    #[derive(Debug, Default)]
+    struct Taken([usize; 4]);
+
+    /// `tool`'s click on `picks` in `s`: an edit or a refusal, never a panic; a refusal says
+    /// something; nothing sent comes with what was held and a message; and an edit the gate
+    /// takes names only the picked members in what it adds (and a picked curve's end it's
+    /// tangent at, and Fix's origin), removes only `on`s of a picked point or a picked curve's
+    /// end on a picked curve (those the one it adds holds, where it adds one), and merges only
+    /// points picked. Counted in `taken`, by kind.
+    fn checked(
+        s: &Sketch,
+        tool: RelationTool,
+        picks: &[Reference],
+        taken: &mut Taken,
+    ) -> Result<(), String> {
+        let fail = |what: String| Err(format!("{tool:?} {picks:?}: {what}"));
+        let related = match relate(s, READ, tool, picks, &mut kt_ids()) {
+            Err(e) if e.message().is_empty() => return fail(format!("{e:?}")),
+            Err(_) => return Ok(()),
+            Ok(related) => related,
+        };
+        if related.revision() != READ {
+            return fail(format!("{related:?}"));
+        }
+        let edit = match &related {
+            Related::AllHeld { held, .. } if held.is_empty() => {
+                return fail(format!("{related:?}"));
+            }
+            Related::AllHeld { .. } => return Ok(()),
+            Related::Edit { edit, .. } => edit,
+        };
+        if gated(s, edit).is_err() {
+            return Ok(());
+        }
+        let removes_holds = |remove: &[ElementId], held: Option<(&Reference, &Reference)>| {
+            !remove.is_empty()
+                && remove.iter().all(|id| match constraint_of(s, id.as_str()) {
+                    Some(Form::On { point, curve }) => {
+                        picks.contains(&curve)
+                            && picked_or_an_end(s, picks, &point)
+                            && held.is_none_or(|held| held == (&point, &curve))
+                    }
+                    _ => false,
+                })
+        };
+        let adds_only_the_picks = |add: &Members| {
+            !add.constraints.is_empty()
+                && add
+                    .constraints
+                    .iter()
+                    .all(|c| names_only_the_picks(s, tool, picks, &c.form))
+        };
+        let (kind, ok) = match edit {
+            RelateEdit::Add(add) => (0, adds_only_the_picks(add)),
+            RelateEdit::Merge(points) => (
+                1,
+                points.len() >= 2
+                    && points
+                        .iter()
+                        .all(|p| picks.contains(&Reference::Element(p.clone()))),
+            ),
+            RelateEdit::AddThenRemove { add, remove } => (
+                2,
+                adds_only_the_picks(add)
+                    && matches!(add.constraints.as_slice(), [made] if removes_holds(remove, made.form.hold())),
+            ),
+            RelateEdit::Remove(remove) => (3, removes_holds(remove, None)),
+        };
+        if !ok {
+            return fail(format!("{edit:?}"));
+        }
+        taken.0[kind] += 1;
+        Ok(())
+    }
+
+    /// Every unordered selection of one or two of the busy sketch's members, and every
+    /// fourth of three, the origin and the axes among them, in the members' order, for every
+    /// tool: each click is [`checked`], and each kind of edit happens, taken by the gate.
+    /// Every selection of three, 11,480, as well takes about 8 s unoptimised on CI's VM, so
+    /// the threes are sampled, the same ones each run.
+    #[test]
+    fn every_tool_on_every_selection_of_one_or_two_and_a_fourth_of_three_is_an_edit_or_a_refusal_naming_only_whats_picked()
+     {
+        let (s, members) = busy();
+        let mut taken = Taken::default();
+        let n = members.len();
+        let mut selections: Vec<Vec<Reference>> = Vec::new();
+        let mut threes = 0usize;
+        for i in 0..n {
+            selections.push(vec![members[i].clone()]);
+            for j in i + 1..n {
+                selections.push(vec![members[i].clone(), members[j].clone()]);
+                for k in j + 1..n {
+                    threes += 1;
+                    if threes.is_multiple_of(4) {
+                        selections.push(vec![
+                            members[i].clone(),
+                            members[j].clone(),
+                            members[k].clone(),
+                        ]);
+                    }
+                }
+            }
+        }
+        // n + n(n - 1)/2 + a fourth of n(n - 1)(n - 2)/6 of them.
+        assert_eq!(threes, n * (n - 1) * (n - 2) / 6);
+        assert_eq!(selections.len(), n + n * (n - 1) / 2 + threes / 4);
+        for picks in &selections {
+            for tool in RelationTool::ALL {
+                if let Err(failed) = checked(&s, tool, picks, &mut taken) {
+                    panic!("{failed}");
+                }
+            }
+        }
+        assert!(taken.0.iter().all(|n| *n > 0), "{taken:?}");
     }
 
     proptest! {
         #![proptest_config(ProptestConfig {
-            cases: 2000,
+            cases: 500,
             failure_persistence: None,
             rng_seed: RngSeed::Fixed(0x5e1a7e),
             ..ProptestConfig::default()
         })]
 
-        /// For every tool and any selection of up to three members, the origin and the axes
-        /// among them, in any order: an edit or a refusal, never a panic; a refusal says
-        /// something; nothing left out comes with no message; and an edit the gate takes names
-        /// only the picked members (and a picked curve's end it's tangent at, and Fix's
-        /// origin), removes only `on`s of what it adds, and merges only points picked.
+        /// The same, in any pick order, up to four members, repeats among them.
         #[test]
-        fn any_tool_on_any_selection_is_an_edit_or_a_refusal_naming_only_whats_picked(
+        fn any_tool_on_any_selection_in_any_order_is_an_edit_or_a_refusal_naming_only_whats_picked(
             picks in {
                 let (_, members) = busy();
-                prop::sample::subsequence(members, 0..=3).prop_shuffle()
+                prop::collection::vec(prop::sample::select(members), 0..=4)
             },
         ) {
             let (s, _) = busy();
+            let mut taken = Taken::default();
             for tool in RelationTool::ALL {
-                let related = match relate(&s, tool, &picks, &mut Kt(100)) {
-                    Err(e) => {
-                        prop_assert!(!e.message().is_empty());
-                        continue;
-                    }
-                    Ok(related) => related,
-                };
-                let Some(edit) = &related.edit else {
-                    prop_assert!(!related.already.is_empty());
-                    prop_assert!(related.message.is_some());
-                    continue;
-                };
-                if gated(&s, edit).is_err() {
-                    continue;
-                }
-                match edit {
-                    RelateEdit::Merge(points) => {
-                        prop_assert!(points.len() >= 2);
-                        for p in points {
-                            prop_assert!(picks.contains(&Reference::Element(p.clone())));
-                        }
-                    }
-                    RelateEdit::Add(add) | RelateEdit::AddThenRemove { add, .. } => {
-                        prop_assert!(!add.constraints.is_empty());
-                        for c in &add.constraints {
-                            prop_assert!(
-                                names_only_the_picks(&s, tool, &picks, &c.form),
-                                "{:?} {:?}: {:?}", tool, picks, c.form
-                            );
-                        }
-                        if let RelateEdit::AddThenRemove { remove, .. } = edit {
-                            let [made] = add.constraints.as_slice() else {
-                                prop_assert!(false, "{:?}", add);
-                                continue;
-                            };
-                            let implied = match &made.form {
-                                Form::TangentOn { at, b, .. } => (at, b),
-                                Form::Midpoint { point, line } => (point, line),
-                                other => {
-                                    prop_assert!(false, "{:?}", other);
-                                    continue;
-                                }
-                            };
-                            prop_assert!(!remove.is_empty());
-                            for id in remove {
-                                prop_assert_eq!(
-                                    constraint_of(&s, id.as_str()),
-                                    Some(Form::On {
-                                        point: implied.0.clone(),
-                                        curve: implied.1.clone(),
-                                    })
-                                );
-                            }
-                        }
-                    }
+                if let Err(failed) = checked(&s, tool, &picks, &mut taken) {
+                    prop_assert!(false, "{}", failed);
                 }
             }
         }

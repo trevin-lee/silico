@@ -279,6 +279,18 @@ pub enum Message {
     /// Smart Dimension: the last dimension's offer (SD7) is open: no other is placed until
     /// it's answered.
     OfferOpen,
+    /// A constraint tool: every constraint the click would write is held already (C6), as
+    /// the phrase says ("line ne000002 is already vertical").
+    AllHeld(String),
+    /// A constraint tool: this many of the constraints the click would write were held
+    /// already, and left out (C6).
+    SomeHeld(usize),
+    /// A constraint tool: the relation is held already, as `said` says, and the `on`s it
+    /// makes redundant, `removed`, were removed (C5 with C6, Fable's P3).
+    HeldRemoved {
+        said: String,
+        removed: Vec<ElementId>,
+    },
 }
 
 impl Message {
@@ -318,6 +330,24 @@ impl Message {
                 "the last dimension is still solving: place this one once it has".to_owned()
             }
             Message::OfferOpen => "the last dimension over-defines the sketch: make it driven, leave it, or cancel it before placing another".to_owned(),
+            Message::AllHeld(said) => format!("{said}: nothing was added"),
+            Message::SomeHeld(1) => {
+                "1 of these constraints was already there: it wasn't added again".to_owned()
+            }
+            Message::SomeHeld(n) => {
+                format!("{n} of these constraints were already there: they weren't added again")
+            }
+            Message::HeldRemoved { said, removed } => {
+                let ids: Vec<String> = removed.iter().map(ElementId::to_string).collect();
+                let (noun, was) = match removed.len() {
+                    1 => ("constraint", "was"),
+                    _ => ("constraints", "were"),
+                };
+                format!(
+                    "{said}: nothing was added, and {noun} {}, which that makes redundant, {was} removed",
+                    crate::listed(&ids)
+                )
+            }
         }
     }
 }

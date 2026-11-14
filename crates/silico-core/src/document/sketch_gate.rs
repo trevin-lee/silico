@@ -884,11 +884,29 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         if n > most {
             add(refuse(
                 key,
-                format!("the sketch has {n} {what}, more than the {most} the sketch solver takes"),
-                "split the sketch into smaller sketches: a single profile past this is more work than the sketch solver takes".to_owned(),
+                past_the_solver(n, most, what),
+                SPLIT_THE_SKETCH.to_owned(),
             ));
         }
     }
+}
+
+/// The gate's refusal of a sketch with `n` of `what`, past the `most` the sketch solver takes,
+/// which a constraint tool says too, ahead of an add that would pass it.
+pub(crate) fn past_the_solver(n: usize, most: usize, what: &str) -> String {
+    format!("the sketch has {n} {what}, more than the {most} the sketch solver takes")
+}
+
+/// What to do about a sketch past a limit of the sketch solver's.
+pub(crate) const SPLIT_THE_SKETCH: &str = "split the sketch into smaller sketches: a single profile past this is more work than the sketch solver takes";
+
+/// What the gate counts against `MAX_SKETCH_CONSTRAINTS`, as its refusal says it.
+pub(crate) const CONSTRAINTS_COUNTED: &str = "constraints (counting each arc's rules as one)";
+
+/// How many constraints the gate counts in `sketch` against `MAX_SKETCH_CONSTRAINTS`: its
+/// constraints, and each arc's rules as one.
+pub(crate) fn counted_constraints(sketch: &Sketch) -> usize {
+    sketch.constraints.len() + sketch.arcs.len()
 }
 
 /// What a reference resolved to.
@@ -1089,7 +1107,7 @@ pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static st
     // The origin and the two axes are geometry too.
     let geometry =
         sketch.points.len() + sketch.lines.len() + sketch.circles.len() + sketch.arcs.len() + 3;
-    let constraints = sketch.constraints.len() + sketch.arcs.len();
+    let constraints = counted_constraints(sketch);
     let dimensions = sketch
         .constraints
         .iter()
@@ -1120,7 +1138,7 @@ pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static st
             "constraints",
             constraints,
             MAX_SKETCH_CONSTRAINTS,
-            "constraints (counting each arc's rules as one)",
+            CONSTRAINTS_COUNTED,
         ),
     ]
 }

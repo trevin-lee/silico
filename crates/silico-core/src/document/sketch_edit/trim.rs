@@ -836,7 +836,7 @@ fn cuts(sketch: &Sketch, curve: &ElementId, geo: &Geo) -> Vec<Cut> {
         let tangent = tangent(cutter);
         let mut found: Vec<Cut> = Vec::new();
         // Its ends on the curve.
-        for end in end_ids(sketch, cutter) {
+        for end in end_ids(sketch, cutter).into_iter().cloned() {
             let Some(xy) = point_at(sketch, &end) else {
                 continue;
             };
@@ -885,15 +885,15 @@ fn cuts(sketch: &Sketch, curve: &ElementId, geo: &Geo) -> Vec<Cut> {
 }
 
 /// A line's or arc's two end points' IDs; none for a circle.
-pub(crate) fn end_ids(sketch: &Sketch, curve: &ElementId) -> Vec<ElementId> {
+pub(crate) fn end_ids<'s>(sketch: &'s Sketch, curve: &ElementId) -> Vec<&'s ElementId> {
     if let Some(line) = sketch.lines.iter().find(|l| &l.id == curve) {
-        return vec![line.from.clone(), line.to.clone()];
+        return vec![&line.from, &line.to];
     }
     sketch
         .arcs
         .iter()
         .find(|a| &a.id == curve)
-        .map(|a| vec![a.start.clone(), a.end.clone()])
+        .map(|a| vec![&a.start, &a.end])
         .unwrap_or_default()
 }
 
@@ -1039,7 +1039,8 @@ impl Geo {
         }
     }
 
-    fn round(&self) -> Option<([f64; 2], f64)> {
+    /// A round's centre and radius; none for a line.
+    pub(crate) fn round(&self) -> Option<([f64; 2], f64)> {
         match self {
             Geo::Arc { center, radius, .. } | Geo::Circle { center, radius } => {
                 Some((*center, *radius))

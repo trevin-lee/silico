@@ -222,7 +222,7 @@ fn a_refused_add_mid_chain_is_forgotten_with_the_chain() {
         states: no_states(),
     };
     let mut tool = SketchTool::new(ToolKind::Line);
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     let keys = Modifiers::default();
     let mut click = |tool: &mut SketchTool, at: Xy| {
         tool.handle(&context, &mut ids, Event::Press(at), keys);
@@ -280,7 +280,7 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
     let other = FeatureId::new("s0000002").unwrap();
     let sid = sketch_id();
     let mut tool = SketchTool::new(ToolKind::Point);
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     let keys = Modifiers::default();
     let mut click = |tool: &mut SketchTool, sketch_id: &FeatureId, at: Xy| {
         let context = Context {
@@ -308,7 +308,7 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
         construction: false,
         states: no_states(),
     };
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     line.handle(&context(&sid), &mut ids, Event::Press([1.0, 2.0]), keys);
     line.handle(&context(&sid), &mut ids, Event::Release([1.0, 2.0]), keys);
     assert!(line.busy());
@@ -377,7 +377,7 @@ fn a_sketch_at_the_gates_limits_builds_each_shape_once_and_tries_few_crossings()
         states: no_states(),
     };
     let mut tool = SketchTool::new(ToolKind::Point);
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     let keys = Modifiers::default();
     infer::work::SHAPES.with(|c| c.set(0));
     infer::work::PAIRS.with(|c| c.set(0));
@@ -1958,7 +1958,7 @@ fn each_add_is_answered_by_its_token_whatever_the_order() {
     // click on either adds nothing.
     let sid = sketch_id();
     let mut tool = SketchTool::new(ToolKind::Point);
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     let keys = Modifiers::default();
     let mut click = |tool: &mut SketchTool, sketch: &Sketch, revision: u64, at: Xy| {
         let context = Context {
@@ -2190,7 +2190,7 @@ fn another_tools_token_answers_nothing() {
     let sid = sketch_id();
     let none = empty();
     let keys = Modifiers::default();
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     let mut click = |tool: &mut SketchTool, revision: u64, at: Xy| {
         let context = Context {
             sketch_id: &sid,

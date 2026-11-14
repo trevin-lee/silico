@@ -15,7 +15,7 @@ use super::sketch::{
     Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchPoint, TangentSide,
 };
 use super::{PROBLEMS_LISTED, nearest_ids, with_candidates};
-use crate::{Error, ErrorCode};
+use crate::{Error, ErrorCode, listed};
 
 mod add;
 mod join;
@@ -653,9 +653,10 @@ pub(crate) fn drawn(
     }
 }
 
-/// The direction the line or arc `curve` leaves its end `at` along, as the stored drawing
-/// shows it: its own direction there where it starts at `at`, the reverse where it ends
-/// there; none where `at` isn't one of its ends.
+/// The direction the line or arc `curve` leaves its end `at` along, into the curve (not off
+/// its end, as `View::ends_at`'s), as the stored drawing shows it: its own direction there
+/// where it starts at `at`, the reverse where it ends there; none where `at` isn't one of its
+/// ends.
 pub(crate) fn leaving(sketch: &Sketch, curve: &Reference, at: &Reference) -> Option<[f64; 2]> {
     let xy = split::reference_at(sketch, at)?;
     let starts = split::starts_at(sketch, curve, at)?;
@@ -805,15 +806,6 @@ fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Res
     Ok(())
 }
 
-/// `ids` as a message lists them: "a", "a and b", "a, b and c".
-fn listed(ids: &[String]) -> String {
-    match ids.split_last() {
-        Some((last, [])) => last.clone(),
-        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-        None => String::new(),
-    }
-}
-
 /// Why an edit that can find several problems ([`remove`]) was refused: the first
 /// [`PROBLEMS_LISTED`] as errors, in the order found, and how many there are, listed or not.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -929,7 +921,7 @@ fn point_in_use(
         .collect();
     let curves = match using.len() {
         n if n <= SAID => listed(&said),
-        n => format!("{} and {} more", said.join(", "), n - SAID),
+        n => format!("{}, and {} more", said.join(", "), n - SAID),
     };
     let elements = std::iter::once(point.to_string())
         .chain(using.iter().map(|(_, id, _)| id.to_string()))

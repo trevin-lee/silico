@@ -1042,6 +1042,20 @@ impl Form {
     pub fn is_dimension(&self) -> bool {
         self.driving().is_some()
     }
+
+    /// The point the form holds on a curve, and the curve, where it holds one (Fable's "a
+    /// hold is a hold", #478's port review): an `on`'s `point` on its `curve`, a
+    /// `tangent_on`'s `at` on its `b`, a `midpoint`'s `point` on its `line`. The constraint
+    /// tools' Tangent reads its places from these (C3). The gate's tangent rule still reads
+    /// an `on`'s and a `tangent_on`'s only, until a change of its own adds the midpoint's.
+    pub(crate) fn hold(&self) -> Option<(&Reference, &Reference)> {
+        match self {
+            Form::On { point, curve } => Some((point, curve)),
+            Form::TangentOn { at, b, .. } => Some((at, b)),
+            Form::Midpoint { point, line } => Some((point, line)),
+            _ => None,
+        }
+    }
 }
 
 /// Every constraint type, as the file writes it.
