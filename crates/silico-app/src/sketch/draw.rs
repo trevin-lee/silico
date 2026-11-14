@@ -18,6 +18,7 @@ use eframe::egui::{self, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Sha
 use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, ElementKind, Form, Reference};
 use silico_core::kernel::SketchPlane;
+use silico_core::profile;
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
 use silico_core::sketch_tools::{DimensionPreview, MeasureKind, Preview, Relation};
 
@@ -389,8 +390,8 @@ impl<'a> Geometry<'a> {
     /// The curve `id` as the core's profile takes it ([`silico_core::profile::Drawn`]), from
     /// the read's stored points, each zero +0 (`unsigned`): a line by its ends; an arc by its
     /// centre and ends; a circle by its centre and radius. None for a curve the read hasn't.
-    pub(crate) fn drawn(&self, id: &ElementId) -> Option<silico_core::profile::Drawn> {
-        use silico_core::profile::{Drawn, unsigned};
+    pub(crate) fn profile_curve(&self, id: &ElementId) -> Option<profile::Drawn> {
+        use profile::unsigned;
         let &(curve, kind) = self.curves.get(id)?;
         let ends = || {
             let (from, to) = self.ends.get(id)?;
@@ -402,20 +403,22 @@ impl<'a> Geometry<'a> {
         match (kind, curve) {
             (ElementKind::Line, Curve::Line { .. }) => {
                 let (from, to) = ends()?;
-                Some(Drawn::Line { from, to })
+                Some(profile::Drawn::Line { from, to })
             }
             (ElementKind::Arc, Curve::Round { centre, .. }) => {
                 let (start, end) = ends()?;
-                Some(Drawn::Arc {
+                Some(profile::Drawn::Arc {
                     center: unsigned(centre),
                     start,
                     end,
                 })
             }
-            (ElementKind::Circle, Curve::Round { centre, radius, .. }) => Some(Drawn::Circle {
-                center: unsigned(centre),
-                radius,
-            }),
+            (ElementKind::Circle, Curve::Round { centre, radius, .. }) => {
+                Some(profile::Drawn::Circle {
+                    center: unsigned(centre),
+                    radius,
+                })
+            }
             // Each kind is put in with its own curve ([`Geometry::of`]): a line's a line, an
             // arc's and a circle's a round; and no point or constraint is a curve.
             (ElementKind::Line, Curve::Round { .. })

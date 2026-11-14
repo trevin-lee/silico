@@ -228,19 +228,51 @@ fn a_hole_takes_its_area_away_whichever_way_its_circle_runs() {
         [(16_000.0 - 10.0 * hole) / (800.0 - hole), 10.0],
         1e-12,
     );
-    // An island in it, a disc of radius 2 about the same centre, a region of its own, added
-    // back: (16000 − 21π·10) / (800 − 21π) across.
+    // An island in it, a disc of radius 2 about (11, 9), off the diagonal (√2 from the hole's
+    // centre, so within it), a region of its own, added back: (16000 − 25π·10 + 4π·11,
+    // 8000 − 25π·10 + 4π·9) / (800 − 21π).
+    read.members.points.push(point("pd000001", 11.0, 9.0));
     read.members.circles.push(SketchCircle {
         id: id("cb000001"),
-        center: id("pc000001"),
+        center: id("pd000001"),
         radius: Coordinate::new(2.0).unwrap(),
         construction: false,
     });
     read.regions.push(region(&["cb000001"], &[]));
-    let ring = 21.0 * PI;
+    let (island, area) = (4.0 * PI, 800.0 - hole + 4.0 * PI);
     near(
         profile_centroid(&read).unwrap(),
-        [(16_000.0 - 10.0 * ring) / (800.0 - ring), 10.0],
+        [
+            (16_000.0 - 10.0 * hole + 11.0 * island) / area,
+            (8_000.0 - 10.0 * hole + 9.0 * island) / area,
+        ],
+        1e-12,
+    );
+}
+
+#[test]
+fn a_hole_off_the_diagonal_moves_the_centroid_by_its_own_centre() {
+    // #480's review, T4-1: the 40 × 20 rectangle less a circle of radius 5 about (12, 8):
+    // (16000 − 25π·12, 8000 − 25π·8) / (800 − 25π), by hand.
+    let mut read = rectangle_read();
+    read.members.points.push(point("pc000001", 12.0, 8.0));
+    read.members.circles.push(SketchCircle {
+        id: id("ca000001"),
+        center: id("pc000001"),
+        radius: Coordinate::new(5.0).unwrap(),
+        construction: false,
+    });
+    read.regions = vec![region(
+        &["na000001", "na000002", "na000003", "na000004"],
+        &[&["ca000001"]],
+    )];
+    let hole = 25.0 * PI;
+    near(
+        profile_centroid(&read).unwrap(),
+        [
+            (16_000.0 - 12.0 * hole) / (800.0 - hole),
+            (8_000.0 - 8.0 * hole) / (800.0 - hole),
+        ],
         1e-12,
     );
 }

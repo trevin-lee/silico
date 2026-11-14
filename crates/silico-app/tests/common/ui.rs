@@ -1005,6 +1005,19 @@ pub fn pads_extent<P: AppKernel>(sessions: &Sessions<P>, h: &AppUi<P>) -> Plain 
     written(sessions, h, "Pad", "extent").unwrap()
 }
 
+/// The text `tab`'s open dialog's Length input holds, as the tab has it (its field's,
+/// drawn or not): none with no dialog, or one with no Length.
+pub fn dialog_length(tab: &silico_app::tab::Tab) -> Option<String> {
+    tab.dialog.as_ref().and_then(|dialog| {
+        dialog.inputs.iter().find_map(|input| match &input.value {
+            silico_app::dialog::Value::Length(text) if input.label == "Length" => {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+    })
+}
+
 /// Whether the open dialog's Reversed is ticked.
 pub fn reversed_ticked<P: AppKernel>(h: &AppUi<P>) -> bool {
     dialog(h)

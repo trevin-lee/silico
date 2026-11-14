@@ -51,13 +51,13 @@
 //! An arrow changes only the dialog's inputs, as typing does: the tab sends what changed as the
 //! dialog's edits through the command API (`Tab::dialog_changed`), at most one in flight and the
 //! newest waiting in place of the one before (section 3, *Bursts of edits*), so a drag's moves
-//! never queue. And while a drag is under way, its newest value waits in the field (which
-//! still follows the pointer) until the last edit's preview has answered, so a steady drag
-//! keeps one preview rebuilding, as the sketch's drag keeps one solve in flight, rather than
-//! stopping and starting a rebuild each frame (`Tab::arrow_held_back`); the drag's end, OK, and
-//! a save that closes the tab send the value it held back at once. Esc ends a drag where it began (section 3's chain, an open drag first:
-//! `Tab::escape_first`), as the stream's cancel does; a dialog closed, or its tab beginning to
-//! close, mid-drag leaves the rest of its stream doing nothing.
+//! never queue. And while a drag is under way, its newest value waits in the field (which still
+//! follows the pointer) until the last edit's preview has answered, so a steady drag keeps one
+//! preview rebuilding, as the sketch's drag keeps one solve in flight, rather than stopping and
+//! starting a rebuild each frame (`Tab::arrow_held_back`); the drag's end, OK, and a save that
+//! closes the tab send the value it held back at once. Esc ends a drag where it began (section
+//! 3's chain, an open drag first: `Tab::escape_first`), as the stream's cancel does; a dialog
+//! closed, or its tab beginning to close, mid-drag leaves the rest of its stream doing nothing.
 //!
 //! Each arrow is data first, in model space ([`handles`], from the dialog, the sketch's plane,
 //! and its profile's centroid, [`profile_centroid`]) and then on the screen ([`arrows`], through
@@ -147,7 +147,7 @@ pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
                 .iter()
                 .zip(oriented(curves, &geometry)?)
                 .map(|(id, walked)| {
-                    silico_core::profile::sent(geometry.drawn(id)?, walked.backwards)
+                    silico_core::profile::sent(geometry.profile_curve(id)?, walked.backwards)
                 })
                 .collect::<Option<_>>()?;
             let measured = silico_protocol::area_moments(&sent);

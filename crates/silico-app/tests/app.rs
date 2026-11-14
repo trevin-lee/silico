@@ -39,11 +39,11 @@ use ui::{
     ARROW_BLUE, ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, FakeBrowser, In, PLATE,
     PLATE_END, TRIAD_DOT, added, advance, answer_question, anywhere, arrow_dots, arrow_shafts,
     begin_sketch_on, boxed, button_event, choose, chosen, click_at, click_canvas, close_window,
-    create, create_sketch, cursor, dialog, dialog_open, double_click, drag, everything, f2_typed,
-    field, fields_of, from_the_front, hand_clock, image_centre, in_status_bar,
-    lavapipe_render_state, leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at,
-    looks_from, meshes_settled, modify, modify_field, move_to, name_field, near_point, new_part,
-    ok_enabled, on_lavapipe, open_export, pad_extent, pads_extent, plain_read,
+    create, create_sketch, cursor, dialog, dialog_length, dialog_open, double_click, drag,
+    everything, f2_typed, field, fields_of, from_the_front, hand_clock, image_centre,
+    in_status_bar, lavapipe_render_state, leave_sketch, leave_sketch_unsettled, left_down_at,
+    left_up_at, looks_from, meshes_settled, modify, modify_field, move_to, name_field, near_point,
+    new_part, ok_enabled, on_lavapipe, open_export, pad_extent, pads_extent, plain_read,
     plates_pad_from_the_front, pointer_away, press, prompt, redo_by_key, rename_field,
     repaint_delay, retype, reversed_ticked, save_as_of, select, selected_names, settled,
     shapes_painted, sketch_mode, sketch_read, sorted_fields, step, step_until, tab_named,
@@ -30530,14 +30530,8 @@ fn a_refusal_from_the_adds_own_read_is_said_and_stands_while_the_tabs_timeline_i
         Some(sweep_fields("Pocket", "j0000001", "s0000009"))
     );
     assert!(ok_enabled(&h));
-    let sketch_of = |h: &AppHarness| {
-        fields_of(&text_of(&f.sessions, h), "Pocket")
-            .unwrap()
-            .into_iter()
-            .find(|(key, _)| key == "sketch")
-            .map(|(_, value)| format!("{value:?}"))
-            .unwrap()
-    };
+    let sketch_of =
+        |h: &AppHarness| format!("{:?}", written(&f.sessions, h, "Pocket", "sketch").unwrap());
     let pick_sketch2 = |h: &mut AppHarness| {
         h.get_by_role_and_label(Role::Pane, "Browser")
             .get_by_label("Sketch2")
@@ -44270,15 +44264,7 @@ fn an_arrows_drag_stops_editing_once_its_tab_begins_to_close() {
     move_to(&mut h, up(tip, 40.0));
     move_to(&mut h, up(tip, 60.0));
     let tab = &h.state().tabs()[0];
-    let length = tab.dialog.as_ref().and_then(|dialog| {
-        dialog.inputs.iter().find_map(|input| match &input.value {
-            silico_app::dialog::Value::Length(text) if input.label == "Length" => {
-                Some(text.clone())
-            }
-            _ => None,
-        })
-    });
-    assert_eq!(length.as_deref(), Some("15"));
+    assert_eq!(dialog_length(tab).as_deref(), Some("15"));
     assert!(tab.edits.idle(), "an edit queued while the tab closes");
     assert_eq!(tab.edits.sent, sent);
     left_up_at(&mut h, up(tip, 60.0));
@@ -44332,34 +44318,43 @@ fn while_an_arrow_is_dragged_the_hover_and_the_cursor_stay_as_they_were_at_its_p
 
 /// The plate's pad's dialog open from the front, a first drag to 15 answered; then every
 /// prism held, 16 sent with its preview held, and 17 held back behind it, the button still
-/// held at the arrow's place for 17. The harness, the image's centre, the hold, and the
-/// edits sent before 16.
+/// held at the arrow's place for 17 ([`hold_back_at_17`]). The harness, the image's centre,
+/// the hold, and the edits sent before 16.
 fn held_back_at_17(f: &Fixture) -> (AppHarness, eframe::egui::Pos2, Hold, u64) {
     let (mut h, _) = f.opened("plate.silico", PLATE);
-    let c = plates_pad_from_the_front(&mut h);
+    let (c, hold, sent) = hold_back_at_17(f, &mut h);
+    (h, c, hold, sent)
+}
+
+/// In `h`, the plate open in its first tab: its pad's dialog opened from the front, a first
+/// drag to 15 answered; then every prism held, 16 sent with its preview held, and 17 held back
+/// behind it, the button still held at the arrow's place for 17. The image's centre, the hold,
+/// and the edits sent before 16.
+fn hold_back_at_17(f: &Fixture, h: &mut AppHarness) -> (eframe::egui::Pos2, Hold, u64) {
+    let c = plates_pad_from_the_front(h);
     let tip = up(c, 56.0);
-    left_down_at(&mut h, tip);
-    move_to(&mut h, up(tip, 20.0));
-    settled(&mut h);
-    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("15", false));
+    left_down_at(h, tip);
+    move_to(h, up(tip, 20.0));
+    settled(h);
+    assert_eq!(pads_extent(&f.sessions, h), pad_extent("15", false));
     let sent = h.state().tabs()[0].edits.sent;
     let hold = f.kernel.hold(is_prism);
-    move_to(&mut h, up(tip, 24.0));
-    step_until(&mut h, "16 sent and answered", |h| {
+    move_to(h, up(tip, 24.0));
+    step_until(h, "16 sent and answered", |h| {
         let tab = &h.state().tabs()[0];
         tab.edits.sent == sent + 1 && tab.edits.idle()
     });
     assert!(f.kernel.wait_running(1, WAIT), "16's preview rebuilding");
-    move_to(&mut h, up(tip, 28.0));
+    move_to(h, up(tip, 28.0));
     for _ in 0..5 {
-        step(&mut h);
+        step(h);
     }
     assert_eq!(
-        field(&h, In::Dialog, "Length").value().as_deref(),
+        field(h, In::Dialog, "Length").value().as_deref(),
         Some("17")
     );
     assert_eq!(h.state().tabs()[0].edits.sent, sent + 1, "17 held back");
-    (h, c, hold, sent)
+    (c, hold, sent)
 }
 
 #[test]
@@ -44485,29 +44480,8 @@ fn a_value_held_back_when_an_untitled_parts_save_as_closes_it_is_saved() {
         .wait()
         .result
         .unwrap();
-    let c = plates_pad_from_the_front(&mut h);
+    let (c, hold, _) = hold_back_at_17(&f, &mut h);
     let tip = up(c, 56.0);
-    left_down_at(&mut h, tip);
-    move_to(&mut h, up(tip, 20.0));
-    settled(&mut h);
-    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("15", false));
-    let sent = h.state().tabs()[0].edits.sent;
-    let hold = f.kernel.hold(is_prism);
-    move_to(&mut h, up(tip, 24.0));
-    step_until(&mut h, "16 sent and answered", |h| {
-        let tab = &h.state().tabs()[0];
-        tab.edits.sent == sent + 1 && tab.edits.idle()
-    });
-    assert!(f.kernel.wait_running(1, WAIT), "16's preview rebuilding");
-    move_to(&mut h, up(tip, 28.0));
-    for _ in 0..5 {
-        step(&mut h);
-    }
-    assert_eq!(
-        field(&h, In::Dialog, "Length").value().as_deref(),
-        Some("17")
-    );
-    assert_eq!(h.state().tabs()[0].edits.sent, sent + 1, "17 held back");
     h.get_by_label("Close Untitled").click_accesskit();
     step_until(&mut h, "the question", |h| {
         anywhere(h, "Save changes to Untitled before closing?")
@@ -44593,6 +44567,8 @@ fn an_arrows_press_held_as_its_unedited_tab_closes_edits_nothing() {
     assert!(!h.state().tabs()[0].transaction);
     let tip = up(c, 56.0);
     left_down_at(&mut h, tip);
+    // The press took the arrow: drawn white, held.
+    assert_eq!(arrow_dots(&h)[0].1, ARROW_WHITE);
     // The session's queue held, so its close waits and the tab stays closing.
     let (hold, check) = hold_queue(&f, &h, 0);
     h.get_by_label("Close plate.silico").click_accesskit();
@@ -44601,15 +44577,7 @@ fn an_arrows_press_held_as_its_unedited_tab_closes_edits_nothing() {
     move_to(&mut h, up(tip, 20.0));
     move_to(&mut h, up(tip, 40.0));
     let tab = &h.state().tabs()[0];
-    let length = tab.dialog.as_ref().and_then(|dialog| {
-        dialog.inputs.iter().find_map(|input| match &input.value {
-            silico_app::dialog::Value::Length(text) if input.label == "Length" => {
-                Some(text.clone())
-            }
-            _ => None,
-        })
-    });
-    assert_eq!(length.as_deref(), Some("10"));
+    assert_eq!(dialog_length(tab).as_deref(), Some("10"));
     assert!(tab.edits.idle(), "an edit queued while the tab closes");
     assert_eq!(tab.edits.sent, sent);
     left_up_at(&mut h, up(tip, 40.0));
