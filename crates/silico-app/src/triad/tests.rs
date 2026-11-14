@@ -378,16 +378,15 @@ fn an_unnamed_view_in_perspective_says_perspective_alone() {
 }
 
 #[test]
-fn a_view_is_named_within_a_hundredth_of_a_radian_of_its_direction_and_its_up() {
-    // The prototype's `viewName`: within 0.01 of the named view. Turned about z by 0.0099
-    // from the front, still Front; by 0.0101, not. Tilted up as much, the same; rolled about
-    // the view (its up turned in the screen's plane) as much, the same.
+fn a_view_is_named_within_a_hundredth_of_a_radian_of_its_direction_whatever_its_up() {
+    // The prototype's `viewName`: its elevation and azimuth within 0.01 of the named view's,
+    // its up not looked at. Turned about z by 0.0099 from the front, still Front; by 0.0101,
+    // not. Tilted up as much, the same.
     for (angle, named) in [(0.0099f64, true), (0.0101, false)] {
         let (s, c) = (libm::sin(angle), libm::cos(angle));
         let turned = looking([s, -c, 0.0], [0.0, 0.0, 1.0]);
         let tilted = looking([0.0, -c, s], [0.0, s, c]);
-        let rolled = looking([0.0, -1.0, 0.0], [s, 0.0, c]);
-        for camera in [turned, tilted, rolled] {
+        for camera in [turned, tilted] {
             assert_eq!(
                 view_name(&camera).as_deref(),
                 named.then_some("Front"),
@@ -395,9 +394,26 @@ fn a_view_is_named_within_a_hundredth_of_a_radian_of_its_direction_and_its_up() 
             );
         }
     }
-    // Upside down from the back (+y, up −z), as an orbit over the top leaves it: not Back.
-    assert_eq!(view_name(&looking([0.0, 1.0, 0.0], [0.0, 0.0, -1.0])), None);
-    // Straight down whatever its up, as the prototype takes the top at any azimuth: Top.
+    // Rolled about the view, its up turned in the screen's plane by a hundredth, a quarter
+    // turn (up x), or upside down (up −z): still the front.
+    let r = 0.0101f64;
+    for up in [
+        [libm::sin(r), 0.0, libm::cos(r)],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0],
+    ] {
+        assert_eq!(
+            view_name(&looking([0.0, -1.0, 0.0], up)).as_deref(),
+            Some("Front"),
+            "{up:?}"
+        );
+    }
+    // Upside down from the back (+y, up −z), as an orbit over the top leaves it: Back.
+    assert_eq!(
+        view_name(&looking([0.0, 1.0, 0.0], [0.0, 0.0, -1.0])).as_deref(),
+        Some("Back")
+    );
+    // Straight down or up whatever its up: Top, or Bottom.
     for up in [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.6, 0.8, 0.0]] {
         assert_eq!(
             view_name(&looking([0.0, 0.0, 1.0], up)).as_deref(),
@@ -408,6 +424,12 @@ fn a_view_is_named_within_a_hundredth_of_a_radian_of_its_direction_and_its_up() 
             Some("Bottom")
         );
     }
+    // The home corner rolled a quarter turn (its up its right, (1, 1, 0)/√2): still Iso.
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    assert_eq!(
+        view_name(&looking([1.0, -1.0, 1.0], [q, q, 0.0])).as_deref(),
+        Some("Iso")
+    );
 }
 
 #[test]
@@ -487,8 +509,8 @@ fn an_up_all_but_along_the_view_turns_the_triad_by_what_is_left_of_it_across() {
     // From the front, its up (0, 1, 2e-9): along the view but for 2e-9 of z, over the least
     // a frame takes across (1e-9). Made square to the view, the up is z: the front's triad,
     // and its name. Its up (2e-9, 1, 0) instead: the up is x, so right = x × (−y) = −z: X
-    // runs 26 up the screen, Z 26 left, and the view is the front rolled a quarter turn,
-    // which no named view is.
+    // runs 26 up the screen, Z 26 left: the front rolled a quarter turn, which looks from
+    // the front still, and is named so.
     let nearly_z = looking([0.0, -1.0, 0.0], [0.0, 1.0, 2e-9]);
     assert_eq!(triad(&nearly_z, canvas()), triad(&front(), canvas()));
     assert_eq!(view_name(&nearly_z).as_deref(), Some("Front"));
@@ -497,5 +519,5 @@ fn an_up_all_but_along_the_view_turns_the_triad_by_what_is_left_of_it_across() {
     at(axis(&t, "X").end, pos2(144.0, 580.0));
     at(axis(&t, "Z").end, pos2(118.0, 606.0));
     assert_eq!(axis(&t, "Y").end, ORIGIN);
-    assert_eq!(view_name(&nearly_x), None);
+    assert_eq!(view_name(&nearly_x).as_deref(), Some("Front"));
 }

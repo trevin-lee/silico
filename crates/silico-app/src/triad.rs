@@ -22,7 +22,8 @@
 //! words, and its `iso`, the app's isometric view ([`navigate::ISOMETRIC`], the home view's
 //! corner). The ViewCube's other seven corners, which the prototype doesn't name, nor
 //! SolidWorks' standard views (*Isometric* alone among the corners), aren't named either.
-//! A view is at a named one by [`navigate::at_view`].
+//! A view is at a named one by its direction alone ([`navigate::at_view`]), as the
+//! prototype's `viewName` compares elevation and azimuth alone.
 //!
 //! Neither takes the pointer (`pointer-events: none`), and neither hides in sketch mode or
 //! under a dialog: the prototype draws both whenever the canvas shows. Each is data first

@@ -353,8 +353,7 @@ pub fn up_across(toward: [f64; 3]) -> [f64; 3] {
 
 /// How near a view must be to a named view to be at it, in radians: the prototype's
 /// (viewport.js's `viewName`, which takes a view whose elevation and azimuth are each within
-/// 0.01 of the named view's), here the angle between the two views' directions, and between
-/// their ups.
+/// 0.01 of the named view's), here the angle between the two views' directions.
 pub const AT_NAMED_VIEW: f64 = 0.01;
 
 /// The angle between the unit vectors `a` and `b`, in radians, from 0 to π: by its sine and
@@ -365,16 +364,14 @@ fn angle_between(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 /// Whether `camera` is at the named view `view`: looking from within [`AT_NAMED_VIEW`] of its
-/// direction, its up within as much of the view's ([`NamedView::up`]). Looking straight down
-/// or up, Top or Bottom whatever its up, as the prototype's `viewName` takes them at any
-/// azimuth. Never for a camera that makes no frame ([`Camera::frame`]).
+/// direction, whatever its up, as the prototype's `viewName` compares a view's elevation and
+/// azimuth alone. So a view turned about its own axis (a sketch's Look At whose y isn't the
+/// view's up, or an orbit over a pole, upside down) is still at the view it looks from.
+/// Never for a camera that makes no frame ([`Camera::frame`]).
 pub fn at_view(camera: &Camera, view: NamedView) -> bool {
-    let Ok(frame) = camera.frame() else {
-        return false;
-    };
-    let along = angle_between(frame.back, view.direction()) < AT_NAMED_VIEW;
-    let any_up = matches!(view, NamedView::Top | NamedView::Bottom);
-    along && (any_up || angle_between(frame.up, view.up()) < AT_NAMED_VIEW)
+    camera
+        .frame()
+        .is_ok_and(|frame| angle_between(frame.back, view.direction()) < AT_NAMED_VIEW)
 }
 
 /// The view switched to a perspective one (Fusion's ViewCube menu, *Camera*), at
