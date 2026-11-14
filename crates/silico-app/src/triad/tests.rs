@@ -483,6 +483,101 @@ fn a_view_is_named_by_its_elevation_and_azimuth_each_within_a_hundredth_as_the_p
 }
 
 #[test]
+fn near_the_top_or_the_bottom_any_azimuth_is_the_top_or_the_bottom() {
+    // The prototype's `Math.abs(v.el) > 1.5`: the top and the bottom (±π/2) take any azimuth.
+    // From π/2 − 0.005 at azimuths 1.0 and −2.5, far from the top's own (π, its direction's
+    // `atan2(0, −0)`: 2.14 and 0.64 away round the circle), only that clause names it: Top;
+    // as far below the bottom's, Bottom. At 0.011 off the pole, neither: no other named view
+    // is within a hundredth there.
+    let dir = |az: f64, el: f64| {
+        [
+            libm::cos(el) * libm::sin(az),
+            -libm::cos(el) * libm::cos(az),
+            libm::sin(el),
+        ]
+    };
+    let half = std::f64::consts::FRAC_PI_2;
+    let z = [0.0, 0.0, 1.0];
+    let y = [0.0, 1.0, 0.0];
+    for az in [1.0, -2.5] {
+        assert_eq!(
+            view_name(&looking(dir(az, half - 0.005), z)).as_deref(),
+            Some("Top"),
+            "{az}"
+        );
+        assert_eq!(
+            view_name(&looking(dir(az, -half + 0.005), y)).as_deref(),
+            Some("Bottom"),
+            "{az}"
+        );
+        assert_eq!(view_name(&looking(dir(az, half - 0.011), z)), None, "{az}");
+        assert_eq!(view_name(&looking(dir(az, -half + 0.011), y)), None, "{az}");
+    }
+}
+
+#[test]
+fn a_view_exactly_a_hundredth_off_in_elevation_is_not_named() {
+    // The prototype's `<`, not `≤`: this eye's direction has z = 0.009999833334166664 (bits
+    // 0x3f847acae915e807, whose `asin` is 0.01 exactly), so it's 0.01 above the front, to
+    // the bit: not Front.
+    let camera = looking(
+        [0.0, -0.9999500004166653, 0.009999833334166664],
+        [0.0, 0.0, 1.0],
+    );
+    let back = camera.frame().unwrap().back;
+    assert_eq!(back[2].to_bits(), 0x3f84_7aca_e915_e807);
+    assert_eq!(libm::asin(back[2]), 0.01);
+    assert_eq!(view_name(&camera), None);
+}
+
+#[test]
+fn a_view_a_hair_inside_or_outside_a_hundredth_in_azimuth_is_named_by_the_prototypes_sum() {
+    // At the azimuth's edge the name turns on the last bits of the prototype's sum as it's
+    // written, `((az − v.az + π) % 2π + 2π) % 2π − π`, the azimuth `atan2(x, −y)` (the
+    // inverse of `dirOf`). These eyes, on the horizon by a side view or the back, are 0.01 in
+    // azimuth from it to within 2.2e-16 or 1.6e-15, on one side or the other: each turn worked
+    // here by that sum, and each name as it gives.
+    use std::f64::consts::{PI, TAU};
+    let turn = |eye: [f64; 3], view_azimuth: f64| {
+        let azimuth = libm::atan2(eye[0], -eye[1]);
+        (((azimuth - view_azimuth + PI) % TAU + TAU) % TAU - PI).abs()
+    };
+    for (eye, view_azimuth, name) in [
+        (
+            [0.9999833334167019, 99.99500004166653, 0.0],
+            PI,
+            Some("Back"),
+        ),
+        (
+            [-99.99500004166653, -0.9999833334166958, 0.0],
+            -PI / 2.0,
+            Some("Left"),
+        ),
+        (
+            [99.99500004166653, -0.9999833334166958, 0.0],
+            PI / 2.0,
+            Some("Right"),
+        ),
+        (
+            [-99.99500004166653, 0.9999833334167056, 0.0],
+            -PI / 2.0,
+            None,
+        ),
+    ] {
+        let camera = Camera {
+            eye,
+            ..looking([0.0, -1.0, 0.0], [0.0, 0.0, 1.0])
+        };
+        let turned = turn(camera.frame().unwrap().back, view_azimuth);
+        assert!(
+            (turned - 0.01).abs() < 2e-15 && (turned < 0.01) == name.is_some(),
+            "{eye:?}: {turned:e}"
+        );
+        assert_eq!(view_name(&camera).as_deref(), name, "{eye:?}");
+    }
+}
+
+#[test]
 fn an_orbit_of_a_point_keeps_the_name_and_of_two_drops_it() {
     // Half a degree a point (`navigate::ORBIT_DEGREES_PER_POINT`): one point turns the view
     // 0.5° = 0.008727 rad, inside a hundredth; two turn it 1° = 0.017453, outside.
