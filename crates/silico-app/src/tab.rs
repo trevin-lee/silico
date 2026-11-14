@@ -1647,14 +1647,19 @@ impl Tab {
         frame: &crate::viewport::ViewFrame,
         left: Vec<crate::viewport::LeftEvent>,
     ) -> Vec<crate::viewport::LeftEvent> {
-        if self.dialog.is_none() && !self.grip.holding() {
+        let holding = self.grip.holding();
+        if self.dialog.is_none() && !holding {
             return left;
         }
         let arrows = self.dialog_arrows(frame);
+        // While the tab closes its dialog's inputs are off: a stream held goes as it would
+        // with the dialog gone, asking nothing more, and a press takes no arrow.
+        let closing = self.closing();
+        let dialog = self.dialog.as_ref().filter(|_| !closing);
         let (left, asked) = self.grip.frame(
             &left,
             arrows.as_ref(),
-            self.dialog.as_ref(),
+            dialog,
             frame.pixels_per_point,
             frame.rect.left_top(),
         );
@@ -1662,7 +1667,45 @@ impl Tab {
             // The dialog's field, maybe drawn already this frame, shows it in the next.
             painter.ctx().request_repaint();
         }
+        if holding && !self.grip.holding() && !closing {
+            // A drag's end sends the value it held back at once (`arrow_held_back`).
+            self.dialog_changed(sessions);
+        }
         left
+    }
+
+    /// The field an arrow's drag holds back (`crate::arrow`; the council's A1): while the
+    /// open dialog's last edit's preview hasn't answered ([`preview_pending`]), the drag's
+    /// newest value waits in the dialog's field, which still follows the pointer, so a steady
+    /// drag keeps one preview rebuilding with the newest value waiting, as the sketch's drag
+    /// keeps one solve in flight, rather than starting and stopping a rebuild each frame
+    /// (docs/design/m4.1-command-api.md, *Rebuilds and the models*). None once the drag
+    /// ends, which sends its value at once, or while it isn't held; typed values are never
+    /// held back.
+    ///
+    /// [`preview_pending`]: Self::preview_pending
+    fn arrow_held_back(&self) -> Option<&'static str> {
+        let dialog = self.dialog.as_ref()?;
+        let part = self.grip.dragging(Some(dialog.serial))?;
+        self.preview_pending(dialog).then(|| part.field())
+    }
+
+    /// Whether `dialog`'s last edit's preview hasn't answered: an edit of its feature in
+    /// flight or waiting, or, while its revision's rebuild isn't stopped, neither the model
+    /// the newest timeline read nor the model published yet of the session's revision.
+    fn preview_pending(&self, dialog: &Dialog) -> bool {
+        let Some(feature) = dialog.feature.as_ref() else {
+            return false;
+        };
+        if self.edits.pending_for(feature) {
+            return true;
+        }
+        if self.rebuild_stopped() {
+            return false;
+        }
+        let caught_up = |model: Option<Revision>| model.is_some_and(|model| model >= self.revision);
+        !(caught_up(self.timeline.as_ref().and_then(|timeline| timeline.model))
+            || caught_up(self.published))
     }
 
     /// What the arrows asked, done to the open dialog's inputs ([`crate::arrow::apply`]), and
@@ -4761,7 +4804,8 @@ impl Tab {
     /// Gives Esc to what takes it before the prototype's `escChain` (its `keydown` gives it
     /// to an open menu, a modal, and the Modify box first), if one is open, and acts on it:
     /// a sketch drag held ends from its begin state (section 3's first, before anything
-    /// else), and a dialog's arrow dragged ends where it began, the dialog left open
+    /// else), and so does an arrow's press held in the open dialog, a drag ending where it
+    /// began and a flip's doing nothing more, the dialog left open
     /// ([`cancel_arrow`](Self::cancel_arrow)); sketch mode's canvas menu closes; the
     /// over-define prompt is cancelled (its Cancel, the prototype's key), the edit undone; a
     /// placed dimension's Modify box closes, its value as it was. Whether one took it. The
@@ -4836,9 +4880,9 @@ impl Tab {
     }
 
     /// Esc with a dialog open (section 3's order): what takes it before the chain
-    /// ([`escape_first`](Self::escape_first): an arrow of the dialog's dragged, which ends
-    /// where it began, the dialog left open); or else
-    /// the preview's rebuild, if it's rebuilding, stopped, the dialog left open, as
+    /// ([`escape_first`](Self::escape_first): an arrow's press held, a drag ending where it
+    /// began, the dialog left open); or else the preview's rebuild, if it's rebuilding,
+    /// stopped, the dialog left open, as
     /// SolidWorks stops a slow preview (docs/ux/solidworks.md, §5); or else the dialog's
     /// Cancel, as Esc is in SolidWorks' PropertyManager. `status`, read at the frame's start,
     /// may say the preview rebuilds when its rebuild has ended since: the stop then finds
@@ -5961,6 +6005,7 @@ impl Tab {
             .as_ref()
             .and_then(|dialog| dialog.feature.as_ref())
             .is_some_and(|feature| self.edits.pending_for(feature));
+        let held_back = self.arrow_held_back();
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
         };
@@ -6007,7 +6052,17 @@ impl Tab {
         }
         let sketch_field = crate::dialog::Part::Sketch.field();
         let sketch_sent = dialog.sent(sketch_field).cloned();
-        let changes = dialog.changes(waiting);
+        let held_sent = held_back.and_then(|field| dialog.sent(field).cloned());
+        let mut changes = dialog.changes(waiting);
+        // An arrow's drag's newest value waits for the preview in flight
+        // ([`arrow_held_back`](Self::arrow_held_back)): taken as unsent, so it's offered again
+        // each frame, and sent once that preview answers or the drag ends.
+        if let Some(field) = held_back
+            && let Some(at) = changes.iter().position(|(changed, _)| *changed == field)
+        {
+            changes.remove(at);
+            dialog.unsend(field, held_sent);
+        }
         // A new sweep's sketch picked after its add: its base follows, to where an add from
         // that sketch would build (#443's review, H1), worked out from the newest timeline as
         // the add's was. A sweep's own dialog (Edit Feature) keeps the base it has.
@@ -6023,7 +6078,6 @@ impl Tab {
                 .map(|entries| (sketch.clone(), rebased(entries, &feature, sketch))),
             _ => None,
         };
-        let mut changes = changes;
         let moved_to = match moved {
             // A body no feature may take: the sketch isn't sent (nothing builds on another
             // body for it), OK is off, and the dialog says why.
@@ -6090,6 +6144,12 @@ impl Tab {
     pub fn close_dialog<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, ok: bool) {
         if self.closing() {
             return;
+        }
+        // An arrow's drag under way goes with the dialog, what's left of its stream asking
+        // nothing; OK first sends the value it held back, which its field shows and OK keeps.
+        self.grip.let_go();
+        if ok {
+            self.dialog_changed(sessions);
         }
         let closed = self.dialog.take();
         if closed.is_none() && self.loading.take().is_none() {

@@ -174,10 +174,14 @@ fn pad_handles(dialog: &Dialog, plane: SketchPlane) -> Handles {
 // ---- The profile's centroid ----
 
 #[test]
-fn a_rectangles_centroid_is_its_middle_exactly() {
-    // About the middle of its bounds, (20, 10): each corner ±20, ±10, each side's moment
-    // cancelling its opposite's, so (20, 10) to the bit.
-    assert_eq!(profile_centroid(&rectangle_read()), Some([20.0, 10.0]));
+fn a_rectangles_centroid_is_its_middle() {
+    // The 40 × 20 rectangle from the origin: (20, 10), to rounding (its moments are taken
+    // about its first corner, the origin, as the request's area is).
+    near(
+        profile_centroid(&rectangle_read()).unwrap(),
+        [20.0, 10.0],
+        1e-12,
+    );
 }
 
 #[test]
@@ -242,96 +246,43 @@ fn a_hole_takes_its_area_away_whichever_way_its_circle_runs() {
 }
 
 #[test]
-fn an_arc_run_clockwise_takes_its_bite_out() {
-    // A 20 × 20 square, a half disc of radius 5 about (10, 20) bitten from its top: the arc
-    // drawn counter-clockwise from (5, 20) round the bottom to (15, 20), and walked back,
-    // clockwise. 400 − 12.5π mm²; the bite's centroid 20/3π below (10, 20); so
-    // (4000 − 12.5π(20 − 20/3π)) / (400 − 12.5π) up, 10 across.
-    let sketch = Sketch {
-        plane: OriginPlane::Xy.into(),
-        points: vec![
-            point("pa000001", 0.0, 0.0),
-            point("pa000002", 20.0, 0.0),
-            point("pa000003", 20.0, 20.0),
-            point("pa000004", 15.0, 20.0),
-            point("pa000005", 5.0, 20.0),
-            point("pa000006", 0.0, 20.0),
-            point("pc000001", 10.0, 20.0),
-        ],
-        lines: vec![
-            line("na000001", "pa000001", "pa000002"),
-            line("na000002", "pa000002", "pa000003"),
-            line("na000003", "pa000003", "pa000004"),
-            line("na000005", "pa000005", "pa000006"),
-            line("na000006", "pa000006", "pa000001"),
-        ],
-        circles: Vec::new(),
-        arcs: vec![SketchArc {
-            id: id("ca000001"),
-            center: id("pc000001"),
-            start: id("pa000005"),
-            end: id("pa000004"),
-            construction: false,
-        }],
-        constraints: Vec::new(),
-    };
-    let mut read = under(sketch);
-    read.regions = vec![region(
-        &[
-            "na000001", "na000002", "na000003", "ca000001", "na000005", "na000006",
-        ],
-        &[],
-    )];
-    let bite = 12.5 * PI;
-    let up = (4000.0 - bite * (20.0 - 20.0 / (3.0 * PI))) / (400.0 - bite);
-    near(profile_centroid(&read).unwrap(), [10.0, up], 1e-12);
-}
-
-#[test]
-fn an_arcs_cap_counts_its_half_disc_whichever_way_the_loop_walks_it() {
-    // A 20 × 10 rectangle capped by a half circle of radius 10 about (10, 10), the arc drawn
-    // counter-clockwise from (20, 10) to (0, 10), the loop walking it so: 200 mm² about
-    // (10, 5) and 50π about (10, 10 + 40/3π). Across, 10 by symmetry; up,
-    // (1000 + 50π(10 + 40/3π)) / (200 + 50π), exactly.
-    let sketch = Sketch {
-        plane: OriginPlane::Xy.into(),
-        points: vec![
-            point("pa000001", 0.0, 0.0),
-            point("pa000002", 20.0, 0.0),
-            point("pa000003", 20.0, 10.0),
-            point("pa000004", 0.0, 10.0),
-            point("pc000001", 10.0, 10.0),
-        ],
-        lines: vec![
-            line("na000001", "pa000001", "pa000002"),
-            line("na000002", "pa000002", "pa000003"),
-            line("na000004", "pa000004", "pa000001"),
-        ],
-        circles: Vec::new(),
-        arcs: vec![SketchArc {
-            id: id("ca000001"),
-            center: id("pc000001"),
-            start: id("pa000003"),
-            end: id("pa000004"),
-            construction: false,
-        }],
-        constraints: Vec::new(),
-    };
-    let cap = 50.0 * PI;
-    let up = (1000.0 + cap * (10.0 + 40.0 / (3.0 * PI))) / (200.0 + cap);
-    let mut read = under(sketch);
-    read.regions = vec![region(
-        &["na000001", "na000002", "ca000001", "na000004"],
-        &[],
-    )];
-    near(profile_centroid(&read).unwrap(), [10.0, up], 1e-12);
-    // The loop listed the other way round, from the left side, the arc run clockwise: the
-    // same region.
-    read.regions = vec![region(
-        &["na000004", "ca000001", "na000002", "na000001"],
-        &[],
-    )];
-    near(profile_centroid(&read).unwrap(), [10.0, up], 1e-12);
+fn sectors_whose_arcs_turn_other_than_a_half_have_their_own_centroid_walked_either_way() {
+    // The council's proof (T1): a sector of radius 10 about the origin through π/2 and 3π/2,
+    // its centroid 2r·sin α / 3α along its bisector α. The arc formulas themselves are the
+    // protocol's (`silico_protocol::area_moments`, tested there at turns either side of a
+    // half, both ways); this is the read's arcs sent to them, walked as listed or the other way.
+    for (end, sweep) in [((0.0, 10.0), PI / 2.0), ((0.0, -10.0), 1.5 * PI)] {
+        let sketch = Sketch {
+            plane: OriginPlane::Xy.into(),
+            points: vec![
+                point("pa000001", 0.0, 0.0),
+                point("pa000002", 10.0, 0.0),
+                point("pa000003", end.0, end.1),
+                point("pc000001", 0.0, 0.0),
+            ],
+            lines: vec![
+                line("na000001", "pa000001", "pa000002"),
+                line("na000002", "pa000003", "pa000001"),
+            ],
+            circles: Vec::new(),
+            arcs: vec![SketchArc {
+                id: id("ca000001"),
+                center: id("pc000001"),
+                start: id("pa000002"),
+                end: id("pa000003"),
+                construction: false,
+            }],
+            constraints: Vec::new(),
+        };
+        let mut read = under(sketch);
+        let half: f64 = sweep / 2.0;
+        let reach = 2.0 * 10.0 * libm::sin(half) / (3.0 * half);
+        let want = [reach * libm::cos(half), reach * libm::sin(half)];
+        read.regions = vec![region(&["na000001", "ca000001", "na000002"], &[])];
+        near(profile_centroid(&read).unwrap(), want, 1e-12);
+        read.regions = vec![region(&["na000002", "ca000001", "na000001"], &[])];
+        near(profile_centroid(&read).unwrap(), want, 1e-12);
+    }
 }
 
 #[test]
@@ -761,8 +712,10 @@ fn a_press_takes_an_arrow_nearer_than_14_points_to_its_tip_or_6_to_its_shaft() {
         // Past the tip, square to the shaft: 13.9 is in, 14 isn't (`< 14`).
         ((153.9, 24.0), length),
         ((154.0, 24.0), None),
-        // The head's point, 12 past the tip.
+        // The head's point, 12 past the tip; 19 past it on the shaft's line, nothing (the
+        // shaft ends at the tip, and the tip's reach is 14).
         ((140.0, 12.0), length),
+        ((140.0, 5.0), None),
         // Beside the shaft, 16 below the tip (and 32 above the flip arrow's tip): 5.9 is
         // in, 6 isn't.
         ((145.9, 40.0), length),
@@ -825,19 +778,43 @@ fn a_move_along_the_arrow_moves_the_value_by_its_points_over_the_points_a_millim
 }
 
 #[test]
-fn a_value_off_the_half_millimetres_lands_on_them_at_the_first_move_as_the_prototypes_does() {
-    // `Math.round((D0 + dd) * 2) / 2` with dd 0: 10.3 is 10.5, 10.2 is 10, 10.25 is 10.5.
-    for (from, to) in [
-        ("10.3", "10.5"),
-        ("10.2", "10"),
-        ("10.25", "10.5"),
-        ("10.000001", "10"),
-    ] {
+fn a_drag_inside_the_values_own_step_leaves_it_exactly_as_it_was() {
+    // Main's rounding: where `round_half(D0 + dd)` is `round_half(D0)`, D0 exactly. Across the
+    // arrow, dd 0: 10.3, 10.2, 10.25, and 10.000001 each stay. Along it, 10.3's step is 10.5's,
+    // [10.25, 10.75): 0.4 up (10.7) or 0.04 down (10.26) stay 10.3.
+    for from in ["10.3", "10.2", "10.25", "10.000001"] {
         let mut dialog = dialog_of(Kind::Pad);
         set_text(&mut dialog, LENGTH, from);
         let arrow = tilted_arrow(&dialog);
-        assert_eq!(drag_by(&arrow, 30.0, 0.0), Some(mm(to)), "{from}");
+        assert_eq!(drag_by(&arrow, 30.0, 0.0), Some(mm(from)), "{from}");
+        assert_eq!(drag_by(&arrow, -500.0, 0.0), Some(mm(from)), "{from}");
     }
+    let mut dialog = dialog_of(Kind::Pad);
+    set_text(&mut dialog, LENGTH, "10.3");
+    let arrow = tilted_arrow(&dialog);
+    for by in [0.4, -0.04, 0.0] {
+        let points = -(by * SQRT_2) as f32;
+        assert_eq!(drag_by(&arrow, 0.0, points), Some(mm("10.3")), "{by}");
+    }
+}
+
+#[test]
+fn the_first_step_from_a_value_off_the_half_millimetres_lands_on_them() {
+    // 10.3: 0.5 up is 10.8, whose step is 11's; 0.1 down is 10.2, whose step is 10's; 3 up is
+    // 13.3, 13.5; 9.9 down is 0.4, at least 0.5. A value on the grid moves to the next step as
+    // the prototype's does: 10, a quarter and a bit up, 10.5.
+    let mut dialog = dialog_of(Kind::Pad);
+    set_text(&mut dialog, LENGTH, "10.3");
+    let arrow = tilted_arrow(&dialog);
+    for (by, to) in [(0.5, "11"), (-0.1, "10"), (3.0, "13.5"), (-9.9, "0.5")] {
+        let points = -(by * SQRT_2) as f32;
+        assert_eq!(drag_by(&arrow, 0.0, points), Some(mm(to)), "{by}");
+    }
+    let arrow = tilted_arrow(&dialog_of(Kind::Pad));
+    assert_eq!(
+        drag_by(&arrow, 0.0, -(0.26 * SQRT_2) as f32),
+        Some(mm("10.5"))
+    );
 }
 
 #[test]
@@ -1226,15 +1203,15 @@ fn the_drag_keeps_the_arrows_way_and_scale_from_its_press_whatever_the_arrows_do
 fn a_profiles_centroid_is_worked_out_once_a_read() {
     let mut grip = Grip::default();
     let read = Arc::new(rectangle_read());
-    assert_eq!(grip.centroid(&read), Some([20.0, 10.0]));
+    near(grip.centroid(&read).unwrap(), [20.0, 10.0], 1e-12);
     // Another read, equal or not, is worked out again; the same one is kept.
     let mut moved = rectangle_read();
     for p in &mut moved.members.points {
         p.x = Coordinate::new(p.x.mm() + 10.0).unwrap();
     }
     let moved = Arc::new(moved);
-    assert_eq!(grip.centroid(&moved), Some([30.0, 10.0]));
-    assert_eq!(grip.centroid(&moved), Some([30.0, 10.0]));
+    near(grip.centroid(&moved).unwrap(), [30.0, 10.0], 1e-12);
+    near(grip.centroid(&moved).unwrap(), [30.0, 10.0], 1e-12);
     assert_eq!(grip.centroid(&Arc::new(under(rectangle(Vec::new())))), None);
 }
 
@@ -1311,6 +1288,11 @@ fn its_shapes_are_the_prototypes_in_its_order_and_the_held_one_white() {
             };
             assert_eq!(text.galley.text(), "10 mm");
             assert!((text.pos.x - 152.0).abs() < 1e-4, "{:?}", text.pos);
+            // Its baseline 4 below the label's middle (`ly + 4`): at 2 + 4, its first glyph's
+            // baseline from the galley's top.
+            let row = &text.galley.rows[0];
+            let baseline = text.pos.y + row.pos.y + row.row.glyphs[0].pos.y;
+            assert!((baseline - 6.0).abs() < 1e-4, "{baseline}");
             assert_eq!(text.fallback_color, white);
         });
     }

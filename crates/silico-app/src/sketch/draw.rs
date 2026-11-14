@@ -1265,9 +1265,9 @@ fn walk(
 ) -> Option<Vec<[f64; 2]>> {
     let mut polygon = Vec::new();
     // A lone curve, a circle's whole turn, too: its ring closed by its last point let go.
-    for (curve, backwards) in oriented(curves, geometry)? {
-        let mut piece = polyline(curve, scale, tolerance);
-        if backwards {
+    for walked in oriented(curves, geometry)? {
+        let mut piece = polyline(walked.curve, scale, tolerance);
+        if walked.backwards {
             piece.reverse();
         }
         piece.pop();
@@ -1276,24 +1276,62 @@ fn walk(
     Some(polygon)
 }
 
-/// The curves a loop of `curves` walks, in order, each with whether the walk runs it
-/// backwards, from its end to its start: each from the end the last one ended at (the first,
-/// toward the one after it); a lone curve, a circle's whole turn, as drawn. None for a curve
-/// the read hasn't, or a loop whose curves don't meet end to end.
-pub(crate) fn oriented(curves: &[ElementId], geometry: &Geometry) -> Option<Vec<(Curve, bool)>> {
+/// A curve as a loop's walk runs it: as drawn, or `backwards`, from its end to its start.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Walked {
+    pub(crate) curve: Curve,
+    pub(crate) backwards: bool,
+}
+
+impl Walked {
+    /// Where the walk enters it and where it leaves it: a line's ends, an arc's (from its
+    /// angles), each the other way round when it's run backwards; a circle's whole turn
+    /// enters and leaves at its point at its start angle.
+    pub(crate) fn ends(&self) -> ([f64; 2], [f64; 2]) {
+        let (from, to) = match self.curve {
+            Curve::Line { from, to } => (from, to),
+            Curve::Round {
+                centre,
+                radius,
+                start,
+                sweep,
+            } => (
+                add(centre, mul(direction(start), radius)),
+                add(centre, mul(direction(start + sweep), radius)),
+            ),
+        };
+        if self.backwards {
+            (to, from)
+        } else {
+            (from, to)
+        }
+    }
+}
+
+/// The curves a loop of `curves` walks, in order, each as the walk runs it ([`Walked`]):
+/// each from the end the last one ended at (the first, toward the one after it); a lone
+/// curve, a circle's whole turn, as drawn. None for a curve the read hasn't, or a loop whose
+/// curves don't meet end to end.
+pub(crate) fn oriented(curves: &[ElementId], geometry: &Geometry) -> Option<Vec<Walked>> {
     let curve = |id: &ElementId| geometry.curves.get(id).map(|(curve, _)| *curve);
     let [first, rest @ ..] = curves else {
         return None;
     };
     if rest.is_empty() {
-        return Some(vec![(curve(first)?, false)]);
+        return Some(vec![Walked {
+            curve: curve(first)?,
+            backwards: false,
+        }]);
     }
     let ends = |id: &ElementId| geometry.ends.get(id).copied();
     let (start, end) = ends(first)?;
     let (next_start, next_end) = ends(&rest[0])?;
     let forward = end == next_start || end == next_end;
     let mut at = if forward { end } else { start };
-    let mut walked = vec![(curve(first)?, !forward)];
+    let mut walked = vec![Walked {
+        curve: curve(first)?,
+        backwards: !forward,
+    }];
     for id in rest {
         let (start, end) = ends(id)?;
         let backwards = if start == at {
@@ -1305,7 +1343,10 @@ pub(crate) fn oriented(curves: &[ElementId], geometry: &Geometry) -> Option<Vec<
         } else {
             return None;
         };
-        walked.push((curve(id)?, backwards));
+        walked.push(Walked {
+            curve: curve(id)?,
+            backwards,
+        });
     }
     Some(walked)
 }
@@ -2216,6 +2257,24 @@ pub(crate) fn foot(p: [f64; 2], from: [f64; 2], to: [f64; 2]) -> [f64; 2] {
         return from;
     }
     add(from, mul(d, dot(sub(p, from), d) / dd))
+}
+
+/// How far `at` is from the segment from `a` to `b`: from its nearest point on it, an end
+/// past either end (from `a` for a segment of no length).
+pub(crate) fn segment_distance(at: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let d = sub(b, a);
+    let dd = dot(d, d);
+    if dd <= 0.0 {
+        return length(sub(at, a));
+    }
+    let t = dot(sub(at, a), d) / dd;
+    if t <= 0.0 {
+        length(sub(at, a))
+    } else if t >= 1.0 {
+        length(sub(at, b))
+    } else {
+        length(sub(at, foot(at, a, b)))
+    }
 }
 
 /// Where the line through `a` along `da` meets the one through `b` along `db`: none if

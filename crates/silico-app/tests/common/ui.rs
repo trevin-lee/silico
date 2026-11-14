@@ -56,8 +56,10 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
 use silico_app::browse::{Answer, Ask, Browse};
+use silico_core::command::Sessions;
 use silico_core::disk::{Clock, Found};
 use silico_core::document::FeatureId;
+use silico_core::document::json::{self, Plain};
 use silico_core::fake::{FakeKernel, never_waits};
 use silico_core::kernel::{Clients, Op};
 use silico_core::pool::KernelPool;
@@ -917,6 +919,65 @@ pub fn edit_plates_pad<P: AppKernel>(h: &mut AppUi<P>) {
                 .held(&plate_sketch())
                 .is_some()
     });
+}
+
+/// The pad's dialog opened on the plate (open in `h`) as [`edit_plates_pad`] opens it, its
+/// answers settled, and the view from the front onto the pad's end at 4 points a millimetre
+/// ([`from_the_front`]): the image's centre, where the end is.
+pub fn plates_pad_from_the_front<P: AppKernel>(h: &mut AppUi<P>) -> Pos2 {
+    edit_plates_pad(h);
+    settled(h);
+    from_the_front(h, PLATE_END, 4.0);
+    image_centre(h)
+}
+
+/// `points` above `at` on the screen (below it for a negative number).
+pub fn up(at: Pos2, points: f32) -> Pos2 {
+    at - eframe::egui::vec2(0.0, points)
+}
+
+/// The extent of a one-sided pad of `length`, `reversed` or not, as JSON reads it.
+pub fn pad_extent(length: &str, reversed: bool) -> Plain {
+    Plain::of(
+        &json::read(
+            format!(r#"{{"type": "one_side", "length": {length}, "reversed": {reversed}}}"#)
+                .as_bytes(),
+        )
+        .unwrap(),
+    )
+}
+
+/// The extent of the pad of the first tab's document, as its session holds it now.
+pub fn pads_extent<P: AppKernel>(sessions: &Sessions<P>, h: &AppUi<P>) -> Plain {
+    let id = h.state().tabs()[0].id;
+    let text = sessions.text(&id, None).wait().result.unwrap().text;
+    let member = |plain: &Plain, name: &str| match plain {
+        Plain::Object(members) => members
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone()),
+        _ => None,
+    };
+    let Some(Plain::Array(features)) = member(
+        &Plain::of(&json::read(text.as_bytes()).unwrap()),
+        "features",
+    ) else {
+        panic!("no features: {text}");
+    };
+    let pad = features
+        .iter()
+        .find(|feature| member(feature, "type") == Some(Plain::String("pad".to_owned())))
+        .unwrap();
+    member(pad, "extent").unwrap()
+}
+
+/// Whether the open dialog's Reversed is ticked.
+pub fn reversed_ticked<P: AppKernel>(h: &AppUi<P>) -> bool {
+    dialog(h)
+        .get_by_role_and_label(Role::CheckBox, "Reversed")
+        .accesskit_node()
+        .toggled()
+        == Some(eframe::egui::accesskit::Toggled::True)
 }
 
 /// The view from the front onto `target`, Z up, orthographic at `per_mm` points a

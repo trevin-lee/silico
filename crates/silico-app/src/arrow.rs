@@ -18,10 +18,13 @@
 //! value it held at the press moved by that, to the nearest half millimetre (a half up, as
 //! `Math.round`), never under half a millimetre: the prototype's
 //! `Math.max(0.5, Math.round((D0 + dd) * 2) / 2)`, set only where it differs from the input's.
-//! So a drag past the profile stops at 0.5 mm and never turns the sweep over, and a move square
-//! across the arrow moves the value by nothing but still puts it on the half millimetres, as
-//! the prototype's does. Nothing caps a drag above: a value past what a sweep takes is the
-//! core's to refuse, as a typed one is. An arrow whose sweep the view foreshortens to under
+//! So a drag past the profile stops at 0.5 mm and never turns the sweep over. But a drag whose
+//! value so rounded is where the value at the press rounds to leaves that value exactly
+//! (Main's decision on the council's round 1; the prototype puts it on the half millimetres at
+//! the first move): a move square across the arrow, or one inside the value's own step, never
+//! rewrites an exact value, so 10.3, whose step is 10.5's, stays 10.3 until the drag takes it
+//! to 11 or to 10. Nothing caps a drag above: a value past what a sweep takes is the core's to
+//! refuse, as a typed one is. An arrow whose sweep the view foreshortens to under
 //! 0.6 points a millimetre (seen end on, or zoomed far out) isn't drawn and takes no press, as
 //! the prototype's `flat` one.
 //!
@@ -44,9 +47,13 @@
 //! An arrow changes only the dialog's inputs, as typing does: the tab sends what changed as the
 //! dialog's edits through the command API (`Tab::dialog_changed`), at most one in flight and the
 //! newest waiting in place of the one before (section 3, *Bursts of edits*), so a drag's moves
-//! never queue. Esc ends a drag where it began (section 3's chain, an open drag first:
-//! `Tab::escape_first`), as the stream's cancel does; a dialog closed mid-drag leaves the rest
-//! of its stream doing nothing.
+//! never queue. And while a drag is under way, its newest value waits in the field (which
+//! still follows the pointer) until the last edit's preview has answered, so a steady drag
+//! keeps one preview rebuilding, as the sketch's drag keeps one solve in flight, rather than
+//! stopping and starting a rebuild each frame (`Tab::arrow_held_back`); its end sends its value
+//! at once. Esc ends a drag where it began (section 3's chain, an open drag first:
+//! `Tab::escape_first`), as the stream's cancel does; a dialog closed, or its tab beginning to
+//! close, mid-drag leaves the rest of its stream doing nothing.
 //!
 //! Each arrow is data first, in model space ([`handles`], from the dialog, the sketch's plane,
 //! and its profile's centroid, [`profile_centroid`]) and then on the screen ([`arrows`], through
@@ -65,7 +72,9 @@ use silico_protocol::Camera;
 use silico_render::render::project;
 
 use crate::dialog::{self, Dialog, Kind, Part, Value};
-use crate::sketch::draw::{Curve, Geometry, add, direction, mul, oriented, sub};
+use crate::sketch::draw::{
+    Curve, Geometry, Walked, add, dot, length, mul, oriented, segment_distance, sub,
+};
 use crate::theme;
 use crate::viewport::{LeftEvent, LeftKind};
 
@@ -79,7 +88,7 @@ pub const FLAT: f64 = 0.6;
 
 /// Half a millimetre, in nanometres: a drag's value is a whole number of them, and at least
 /// one (`Math.max(0.5, Math.round(v * 2) / 2)`).
-pub const HALF_MM_NM: i64 = 500_000;
+pub const HALF_MM_NM: i64 = (crate::properties::NM_PER_MM / 2) as i64;
 
 /// A length of the extent a distance arrow drags, in model space.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -114,111 +123,72 @@ pub struct Handles {
 }
 
 /// The centroid of `read`'s profile, in the sketch's millimetres: of every region's area, its
-/// outer loop's less its holes', each loop's worked out exactly from its curves as the walk of
-/// its outline runs them ([`oriented`]; [`moments`]). None for a sketch that makes no
-/// profile, a loop that doesn't run end to end, or a profile whose area isn't above 0.
+/// outer loop's less its holes'. Each loop is its curves as the walk of its outline runs them
+/// ([`oriented`]), sent as the kernel's faces request takes them, and measured exactly by the
+/// request's own measure ([`silico_protocol::area_moments`], beside its area and perimeter).
+/// None for a sketch that makes no profile, a loop that doesn't run end to end, or a profile
+/// whose area isn't above 0.
 pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
     let geometry = Geometry::of(read);
-    let mut loops: Vec<(Vec<(Curve, bool)>, f64)> = Vec::new();
-    for region in &read.regions {
-        loops.push((oriented(&region.outer, &geometry)?, 1.0));
-        for hole in &region.holes {
-            loops.push((oriented(hole, &geometry)?, -1.0));
-        }
-    }
-    // Each loop about a corner of its own, then all about the first's: a profile far from the
+    // Each loop about a point of its own, then all about the first's: a profile far from the
     // sketch's origin, or a loop far from the others, keeps the precision its own size has.
     let mut about: Option<[f64; 2]> = None;
     let (mut area, mut moment) = (0.0, [0.0, 0.0]);
-    for (walked, role) in &loops {
-        let corner = first_point(walked)?;
-        let shift = sub(corner, *about.get_or_insert(corner));
-        let (loop_area, loop_moment) = moments(walked, corner);
-        // However a loop runs (a lone circle runs counter-clockwise, a hole or not), it counts
-        // by what it is: an outer loop's area added, a hole's taken away.
-        let sense = role * loop_area.signum();
-        area += sense * loop_area;
-        moment = add(moment, mul(add(loop_moment, mul(shift, loop_area)), sense));
+    for region in &read.regions {
+        let loops = std::iter::once((&region.outer, 1.0))
+            .chain(region.holes.iter().map(|hole| (hole, -1.0)));
+        for (curves, role) in loops {
+            let walked = oriented(curves, &geometry)?;
+            let lone = walked.len() == 1;
+            let as_sent: Vec<silico_protocol::Curve> =
+                walked.iter().map(|walked| sent(walked, lone)).collect();
+            let measured = silico_protocol::area_moments(&as_sent);
+            let shift = sub(measured.about, *about.get_or_insert(measured.about));
+            // However a loop runs (a lone circle counter-clockwise, a hole or not), it counts by
+            // what it is: an outer loop's area added, a hole's taken away.
+            let sense = role * measured.area.signum();
+            area += sense * measured.area;
+            let moment_here = add(measured.moment, mul(shift, measured.area));
+            moment = add(moment, mul(moment_here, sense));
+        }
     }
     let centroid = add(about?, mul(moment, 1.0 / area));
     (area > 0.0 && centroid.iter().all(|c| c.is_finite())).then_some(centroid)
 }
 
-/// Where a walk of `walked` starts: its first curve's first point as it's run.
-fn first_point(walked: &[(Curve, bool)]) -> Option<[f64; 2]> {
-    Some(match walked.first()? {
-        (Curve::Line { from, to }, backwards) => {
-            if *backwards {
-                *to
+/// `walked` as the kernel's faces request takes a curve: a line from where the walk enters it
+/// to where it leaves; an arc so, its angles swapped when it's run backwards (so it turns
+/// clockwise); and, `lone` in its loop, a circle's whole turn as a circle.
+fn sent(walked: &Walked, lone: bool) -> silico_protocol::Curve {
+    use silico_protocol::Curve as Sent;
+    let (start, end) = walked.ends();
+    match walked.curve {
+        Curve::Line { .. } => Sent::Line { start, end },
+        Curve::Round { centre, radius, .. } if lone => Sent::Circle {
+            center: centre,
+            radius,
+        },
+        Curve::Round {
+            centre,
+            radius,
+            start: from,
+            sweep,
+        } => {
+            let (start_angle, end_angle) = if walked.backwards {
+                (from + sweep, from)
             } else {
-                *from
+                (from, from + sweep)
+            };
+            Sent::Arc {
+                center: centre,
+                start,
+                end,
+                radius,
+                start_angle,
+                end_angle,
             }
         }
-        (
-            Curve::Round {
-                centre,
-                radius,
-                start,
-                sweep,
-            },
-            backwards,
-        ) => {
-            let first = if *backwards { start + sweep } else { *start };
-            add(*centre, mul(direction(first), *radius))
-        }
-    })
-}
-
-/// A closed walk of `walked`'s signed area (above 0 counter-clockwise) and first moments (its
-/// area times its centroid) about `about`, exactly, by Green's theorem: each curve's chord's
-/// share of the shoelace's sums, and each arc's or circle's segment between its chord and
-/// itself, of area r²(φ − sin φ)/2 for the turn φ it's run through (below 0 run clockwise),
-/// whose first moment about the circle's centre is (2/3)r³sin³(φ/2) along the turn's middle.
-fn moments(walked: &[(Curve, bool)], about: [f64; 2]) -> (f64, [f64; 2]) {
-    let (mut twice, mut x6, mut y6) = (0.0, 0.0, 0.0);
-    let (mut bulge, mut bulge_moment) = (0.0, [0.0, 0.0]);
-    for &(curve, backwards) in walked {
-        let (from, to) = match curve {
-            Curve::Line { from, to } if backwards => (to, from),
-            Curve::Line { from, to } => (from, to),
-            Curve::Round {
-                centre,
-                radius,
-                start,
-                sweep,
-            } => {
-                let (first, turn) = if backwards {
-                    (start + sweep, -sweep)
-                } else {
-                    (start, sweep)
-                };
-                let segment = radius * radius * (turn - libm::sin(turn)) / 2.0;
-                let half = libm::sin(turn / 2.0);
-                let reach = 2.0 / 3.0 * radius * radius * radius * half * half * half;
-                bulge += segment;
-                bulge_moment = add(
-                    bulge_moment,
-                    add(
-                        mul(sub(centre, about), segment),
-                        mul(direction(first + turn / 2.0), reach),
-                    ),
-                );
-                (
-                    add(centre, mul(direction(first), radius)),
-                    add(centre, mul(direction(first + turn), radius)),
-                )
-            }
-        };
-        let (p, q) = (sub(from, about), sub(to, about));
-        let cross = p[0] * q[1] - q[0] * p[1];
-        twice += cross;
-        x6 += (p[0] + q[0]) * cross;
-        y6 += (p[1] + q[1]) * cross;
     }
-    (
-        twice / 2.0 + bulge,
-        [x6 / 6.0 + bulge_moment[0], y6 / 6.0 + bulge_moment[1]],
-    )
 }
 
 /// `dialog`'s arrows in model space, its sketch on `plane` with its profile's centroid at
@@ -318,17 +288,14 @@ impl Arrow {
     /// The arrow from `base` along `unit` on the screen (a unit vector), `per_mm` points a
     /// millimetre, its shaft `length` points; none where a place of it isn't finite.
     fn new(base: [f64; 2], unit: [f64; 2], per_mm: f64, length: f32) -> Option<Arrow> {
-        let along = |from: [f64; 2], by: f32| {
-            [
-                from[0] + unit[0] * f64::from(by),
-                from[1] + unit[1] * f64::from(by),
-            ]
-        };
+        let along = |from: [f64; 2], by: f32| add(from, mul(unit, f64::from(by)));
         let tip = along(base, length);
         let across = [-unit[1], unit[0]];
         let side = |k: f64| {
-            let by = f64::from(theme::ARROW_HEAD_HALF_WIDTH) * k;
-            point([tip[0] + across[0] * by, tip[1] + across[1] * by])
+            point(add(
+                tip,
+                mul(across, f64::from(theme::ARROW_HEAD_HALF_WIDTH) * k),
+            ))
         };
         Some(Arrow {
             base: point(base)?,
@@ -348,7 +315,7 @@ impl Arrow {
     pub fn hit(&self, at: Pos2) -> bool {
         let at = wide(at);
         let (base, tip) = (wide(self.base), wide(self.tip));
-        libm::hypot(at[0] - tip[0], at[1] - tip[1]) < f64::from(theme::ARROW_HIT_TIP)
+        length(sub(at, tip)) < f64::from(theme::ARROW_HIT_TIP)
             || segment_distance(at, base, tip) < f64::from(theme::ARROW_HIT_SHAFT)
     }
 
@@ -372,18 +339,6 @@ fn point(p: [f64; 2]) -> Option<Pos2> {
 
 fn wide(p: Pos2) -> [f64; 2] {
     [f64::from(p.x), f64::from(p.y)]
-}
-
-/// How far `p` is from the segment from `a` to `b` (`segD`): from its nearest point on it.
-fn segment_distance(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let d = [b[0] - a[0], b[1] - a[1]];
-    let squared = d[0] * d[0] + d[1] * d[1];
-    let t = if squared > 0.0 {
-        (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / squared).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    libm::hypot(p[0] - a[0] - t * d[0], p[1] - a[1] - t * d[1])
 }
 
 /// A distance arrow on the screen, with what it drags and its label.
@@ -427,30 +382,29 @@ pub fn arrows(
     let ppp = f64::from(pixels_per_point);
     let on_screen = |at: [f64; 3]| -> Option<[f64; 2]> {
         let [x, y] = project(camera, size_px, at)?;
-        let p = [f64::from(origin.x) + x / ppp, f64::from(origin.y) + y / ppp];
+        let p = add(wide(origin), mul([x, y], 1.0 / ppp));
         (ppp > 0.0 && p.iter().all(|c| c.is_finite())).then_some(p)
     };
-    let arrow = |base: [f64; 3], way: [f64; 3], length: f32| -> Option<Arrow> {
+    let arrow = |base: [f64; 3], way: [f64; 3], shaft: f32| -> Option<Arrow> {
         let a = on_screen(base)?;
         let b = on_screen(std::array::from_fn(|k| base[k] + PROBE_MM * way[k]))?;
-        let d = [b[0] - a[0], b[1] - a[1]];
-        let per_mm = libm::hypot(d[0], d[1]) / PROBE_MM;
+        let d = sub(b, a);
+        let per_mm = length(d) / PROBE_MM;
         if !(per_mm >= FLAT && per_mm.is_finite()) {
             return None;
         }
-        let unit = [d[0] / (per_mm * PROBE_MM), d[1] / (per_mm * PROBE_MM)];
-        Arrow::new(a, unit, per_mm, length)
+        Arrow::new(a, mul(d, 1.0 / (per_mm * PROBE_MM)), per_mm, shaft)
     };
     let distances = handles
         .distances
         .iter()
         .filter_map(|distance| {
             let arrow = arrow(distance.base, distance.way, theme::ARROW_LENGTH)?;
-            let past = f64::from(theme::ARROW_LABEL_PAST);
-            let label_at = point([
-                f64::from(arrow.tip.x) + arrow.unit[0] * past + f64::from(theme::ARROW_LABEL_SHIFT),
-                f64::from(arrow.tip.y) + arrow.unit[1] * past,
-            ])?;
+            let past = add(
+                wide(arrow.tip),
+                mul(arrow.unit, f64::from(theme::ARROW_LABEL_PAST)),
+            );
+            let label_at = point(add(past, [f64::from(theme::ARROW_LABEL_SHIFT), 0.0]))?;
             Some(DistanceArrow {
                 distance: *distance,
                 arrow,
@@ -469,10 +423,9 @@ pub fn arrows(
 /// `value` in mm as the prototype's label writes it (`A.fmt(doc().p.D) + ' mm'`): to at most
 /// two decimals, its whole part grouped by threes.
 pub fn label(value: Length) -> String {
-    let nm_per_mm = 10_i128.pow(silico_core::document::LENGTH_DECIMALS);
     format!(
         "{} mm",
-        crate::properties::trimmed(i128::from(value.nm()), nm_per_mm)
+        crate::properties::trimmed(i128::from(value.nm()), crate::properties::NM_PER_MM)
     )
 }
 
@@ -561,13 +514,28 @@ pub fn cursor(hit: Hit) -> CursorIcon {
 /// `press`, the pointer now at `at` (`onPointerDrag`): the pointer's move along the arrow's way
 /// on the screen over its points a millimetre is how far the end moved, in mm; the value at
 /// the press moved by that times the arrow's factor, to the nearest half millimetre (a half up,
-/// as `Math.round`), and at least half a millimetre. None where that isn't a length (a move
-/// past what one holds).
+/// as `Math.round`), and at least half a millimetre ([`on_the_grid`]). But where that's where
+/// the value at the press itself rounds to (a move across the arrow, or one smaller than a
+/// step), the value at the press, exactly (Main's decision on the council's round 1): so an
+/// exact value is never rewritten by a drag that hasn't left its own step, and 10.3 stays 10.3
+/// until a drag takes it to 11 or 10. None where that isn't a length (a move past what one
+/// holds).
 pub fn dragged(distance: &Distance, arrow: &Arrow, press: Pos2, at: Pos2) -> Option<Length> {
-    let (at, press) = (wide(at), wide(press));
-    let moved =
-        ((at[0] - press[0]) * arrow.unit[0] + (at[1] - press[1]) * arrow.unit[1]) / arrow.per_mm;
-    let halves = round_half_up((distance.value.mm() + distance.factor * moved) * 2.0);
+    let moved = dot(sub(wide(at), wide(press)), arrow.unit) / arrow.per_mm;
+    let from = distance.value;
+    let to = on_the_grid(from.mm() + distance.factor * moved)?;
+    Some(if Some(to) == on_the_grid(from.mm()) {
+        from
+    } else {
+        to
+    })
+}
+
+/// `mm` on the half millimetres, as the prototype puts a drag's value
+/// (`Math.max(0.5, Math.round(v * 2) / 2)`): to the nearest, a half up, and at least half a
+/// millimetre. None where that isn't a length (not finite, or past what one holds).
+fn on_the_grid(mm: f64) -> Option<Length> {
+    let halves = round_half_up(mm * 2.0);
     if !halves.is_finite() || halves > (i64::MAX / HALF_MM_NM) as f64 {
         return None;
     }
@@ -701,12 +669,14 @@ impl Grip {
                     self.released = false;
                     // The viewport ends every stream before the next press; one still held
                     // here lost its end, and goes.
-                    self.held = took(arrows, dialog, at).map(|took| Held {
-                        serial: dialog.map_or(0, |dialog| dialog.serial),
-                        press: at,
-                        press_px: event.at_px,
-                        took,
-                        live: true,
+                    self.held = dialog.zip(arrows).and_then(|(dialog, arrows)| {
+                        Some(Held {
+                            serial: dialog.serial,
+                            press: at,
+                            press_px: event.at_px,
+                            took: took(arrows, dialog, at)?,
+                            live: true,
+                        })
                     });
                     if self.held.is_none() {
                         passed.push(*event);
@@ -777,6 +747,27 @@ impl Grip {
         })
     }
 
+    /// The input a distance arrow's drag under way in the dialog numbered `serial` drags,
+    /// while its stream still acts.
+    pub fn dragging(&self, serial: Option<u64>) -> Option<Part> {
+        let held = self
+            .held
+            .as_ref()
+            .filter(|held| held.live && Some(held.serial) == serial)?;
+        match &held.took {
+            Took::Distance { distance, .. } => Some(distance.part),
+            Took::Flip(_) => None,
+        }
+    }
+
+    /// The stream held let go of, if one is: what's left of it asks nothing (its dialog
+    /// closing by OK or Cancel).
+    pub fn let_go(&mut self) {
+        if let Some(held) = &mut self.held {
+            held.live = false;
+        }
+    }
+
     /// Whether an arrow holds the left button's stream, acting or not.
     pub fn holding(&self) -> bool {
         self.held.is_some()
@@ -809,10 +800,8 @@ impl Grip {
     }
 }
 
-/// What a press at `at` takes of `arrows`, the open `dialog`'s: none with no dialog, or off
-/// every arrow.
-fn took(arrows: Option<&Arrows>, dialog: Option<&Dialog>, at: Pos2) -> Option<Took> {
-    let (arrows, dialog) = (arrows?, dialog?);
+/// What a press at `at` takes of `arrows`, the open `dialog`'s: none off every arrow.
+fn took(arrows: &Arrows, dialog: &Dialog, at: Pos2) -> Option<Took> {
     match arrows.hit(at)? {
         Hit::Distance(part) => {
             let distance = arrows

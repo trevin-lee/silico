@@ -39,15 +39,15 @@ use ui::{
     ARROW_BLUE, ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, FakeBrowser, In, PLATE,
     PLATE_END, TRIAD_DOT, added, advance, answer_question, anywhere, arrow_dots, arrow_shafts,
     begin_sketch_on, boxed, button_event, choose, chosen, click_at, click_canvas, close_window,
-    create, create_sketch, cursor, dialog, dialog_open, double_click, drag, edit_plates_pad,
-    everything, f2_typed, field, from_the_front, hand_clock, image_centre, in_status_bar,
-    lavapipe_render_state, leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at,
-    looks_from, meshes_settled, modify, modify_field, move_to, name_field, near_point, new_part,
-    ok_enabled, on_lavapipe, open_export, plain_read, pointer_away, press, prompt, redo_by_key,
-    rename_field, repaint_delay, retype, save_as_of, select, selected_names, settled, sketch_mode,
-    sketch_read, step, step_until, tab_named, tessellated, the_viewport, tooltip_title,
-    triad_origin, type_name, undo_by_key, view, view_direction, view_label, view_label_node,
-    view_mut, wheel, window_told,
+    create, create_sketch, cursor, dialog, dialog_open, double_click, drag, everything, f2_typed,
+    field, from_the_front, hand_clock, image_centre, in_status_bar, lavapipe_render_state,
+    leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled,
+    modify, modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe,
+    open_export, pad_extent, pads_extent, plain_read, plates_pad_from_the_front, pointer_away,
+    press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of,
+    select, selected_names, settled, shapes_painted, sketch_mode, sketch_read, step, step_until,
+    tab_named, tessellated, the_viewport, tooltip_title, triad_origin, type_name, undo_by_key, up,
+    view, view_direction, view_label, view_label_node, view_mut, wheel, window_told,
 };
 
 /// The M2.1 document's example (docs/design/m2.1-document-format.md): a block, a pin, and
@@ -11917,7 +11917,7 @@ fn the_canvas_is_a_gradient_from_charcoal_at_its_top_to_grey_at_its_bottom_under
     let (mut h, _seen) = f.overlaid(EXAMPLE);
     step(&mut h);
     let canvas = the_viewport(&h);
-    let shapes = painted(&h);
+    let shapes = shapes_painted(&h);
     let top = eframe::egui::Color32::from_rgb(0x14, 0x15, 0x17);
     let bottom = eframe::egui::Color32::from_rgb(0x2a, 0x2c, 0x30);
     let gradient = shapes
@@ -12606,21 +12606,6 @@ impl Fixture {
     }
 }
 
-/// Every shape the last frame painted, in paint order, nested ones flattened.
-fn painted(h: &AppHarness) -> Vec<eframe::egui::Shape> {
-    fn flat(shape: &eframe::egui::Shape, into: &mut Vec<eframe::egui::Shape>) {
-        match shape {
-            eframe::egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| flat(s, into)),
-            other => into.push(other.clone()),
-        }
-    }
-    let mut shapes = Vec::new();
-    for clipped in &h.output().shapes {
-        flat(&clipped.shape, &mut shapes);
-    }
-    shapes
-}
-
 #[test]
 fn the_overlay_sees_the_frame_and_paints_over_the_bodies_and_under_the_view_cube() {
     let f = fixture();
@@ -12635,7 +12620,7 @@ fn the_overlay_sees_the_frame_and_paints_over_the_bodies_and_under_the_view_cube
         assert_eq!(Some(frame), view(&h).frame());
         assert_eq!(frame.session, h.state().tabs()[0].id);
     }
-    let shapes = painted(&h);
+    let shapes = shapes_painted(&h);
     let place = |what: &str, found: &dyn Fn(&eframe::egui::Shape) -> bool| {
         shapes
             .iter()
@@ -12687,7 +12672,7 @@ fn the_ground_grid_is_painted_over_the_canvas_and_under_the_bodies_frame() {
     let f = fixture();
     let (mut h, _seen) = f.overlaid(EXAMPLE);
     step(&mut h);
-    let shapes = painted(&h);
+    let shapes = shapes_painted(&h);
     let top = silico_app::theme::color32(silico_app::theme::VIEWPORT_BG_TOP);
     let canvas = shapes
         .iter()
@@ -12733,7 +12718,7 @@ fn the_bars_grid_shows_and_hides_the_ground_grid_and_the_renderer_is_given_none_
     let (mut h, record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     step(&mut h);
-    let grid = |h: &AppHarness| grid_places(&painted(h)).len();
+    let grid = |h: &AppHarness| grid_places(&shapes_painted(h)).len();
     // On at first, as the prototype's.
     assert!(view(&h).grid);
     assert!(grid(&h) > 0);
@@ -12783,7 +12768,7 @@ fn a_sketch_open_hides_the_ground_grid_and_leaving_it_shows_it_again() {
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     step(&mut h);
-    let grid = |h: &AppHarness| grid_places(&painted(h)).len();
+    let grid = |h: &AppHarness| grid_places(&shapes_painted(h)).len();
     assert!(grid(&h) > 0);
     // A sketch open: none, as the prototype hides it (sketch.js), the toggle left on.
     create_sketch(&mut h, "XY plane");
@@ -16194,7 +16179,7 @@ fn bar_button<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
 
 /// Every shape the last frame painted wholly inside `rect`.
 fn painted_in(h: &AppHarness, rect: eframe::egui::Rect) -> Vec<eframe::egui::Shape> {
-    painted(h)
+    shapes_painted(h)
         .into_iter()
         .filter(|shape| {
             let bounds = shape.visual_bounding_rect();
@@ -16317,7 +16302,7 @@ fn the_app_bar_holds_home_file_save_undo_and_redo_then_the_tabs_as_the_prototype
     let gray_250 = eframe::egui::Color32::from_rgb(0x27, 0x26, 0x26);
     let left_border = |tab: &str| {
         let x = rect(tab).left() + 0.5;
-        painted(&h).iter().any(|shape| {
+        shapes_painted(&h).iter().any(|shape| {
             matches!(shape, eframe::egui::Shape::LineSegment { points, stroke }
                 if *stroke == eframe::egui::Stroke::new(1.0, gray_250)
                     && points.iter().all(|point| (point.x - x).abs() < 1e-3))
@@ -16332,7 +16317,7 @@ fn the_app_bar_holds_home_file_save_undo_and_redo_then_the_tabs_as_the_prototype
 /// painted after the title's own (the tooltip is painted over everything else) on its row,
 /// so no other text on that row of the window (a path in the properties) is taken for one.
 fn tooltip_caps(h: &AppHarness, title: &str) -> Vec<String> {
-    let shapes = painted(h);
+    let shapes = shapes_painted(h);
     let is_title = |shape: &eframe::egui::Shape| matches!(shape, eframe::egui::Shape::Text(t) if t.galley.text() == title);
     let Some(at) = shapes.iter().rposition(is_title) else {
         panic!("{title} isn't painted");
@@ -21282,7 +21267,7 @@ fn triangle_in_sketch_mode(f: &Fixture) -> AppHarness {
 fn floating_frames(h: &AppHarness, border: eframe::egui::Color32) -> Vec<eframe::egui::Rect> {
     let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
     let navigation = bar_node(h).rect();
-    painted(h)
+    shapes_painted(h)
         .into_iter()
         .filter_map(|shape| match shape {
             eframe::egui::Shape::Rect(rect)
@@ -26845,7 +26830,7 @@ fn the_modify_boxs_buttons_are_its_icons_named_accept_and_cancel_with_no_glyph_d
         .into_iter()
         .map(|name| dialog.get_by_role_and_label(Role::Button, name).rect())
         .fold(field, |area, button| area.union(button));
-    let texts: Vec<(String, bool)> = painted(&h)
+    let texts: Vec<(String, bool)> = shapes_painted(&h)
         .iter()
         .filter_map(|shape| match shape {
             eframe::egui::Shape::Text(text) => Some((
@@ -30084,7 +30069,7 @@ fn a_pair_waiting_on_a_feature_that_failed_says_why_and_not_that_its_not_measure
             .next()
             .unwrap()
             .rect();
-        let cards: Vec<_> = painted(&h)
+        let cards: Vec<_> = shapes_painted(&h)
             .into_iter()
             .filter_map(|shape| match shape {
                 eframe::egui::Shape::Rect(card) if card.rect.contains_rect(at) => {
@@ -31078,7 +31063,7 @@ fn an_unstable_name_is_selectable_shown_with_its_reason_and_refused_by_a_store()
         .rect();
     let warn = eframe::egui::Color32::from_rgba_unmultiplied(223, 119, 0, 46);
     let warn_border = eframe::egui::Color32::from_rgb(0x5c, 0x3a, 0x08);
-    let cards: Vec<_> = painted(&h)
+    let cards: Vec<_> = shapes_painted(&h)
         .into_iter()
         .filter_map(|shape| match shape {
             eframe::egui::Shape::Rect(card) if card.rect.contains_rect(fix_at) => {
@@ -42684,7 +42669,7 @@ fn the_display_settings_menu_holds_what_the_app_draws_and_sets_the_projection_an
         ]
     );
     // Each marked as the prototype writes it: `✓ ` before the words, or three spaces.
-    let drawn: Vec<String> = painted(&h)
+    let drawn: Vec<String> = shapes_painted(&h)
         .into_iter()
         .filter_map(|shape| match shape {
             eframe::egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
@@ -42944,7 +42929,7 @@ fn triad_painted(
 ) {
     use eframe::egui::Shape;
     let origin = triad_origin(the_viewport(h));
-    let shapes = painted(h);
+    let shapes = shapes_painted(h);
     let strokes = shapes
         .iter()
         .enumerate()
@@ -43013,7 +42998,7 @@ fn the_triad_and_the_view_label_stand_at_the_canvass_bottom_left_over_the_bodies
     );
     assert!((line.height() - 16.0).abs() < 1e-3, "{line:?}");
     // Where each is painted among the rest.
-    let shapes = painted(&h);
+    let shapes = shapes_painted(&h);
     let place = |what: &str, found: &dyn Fn(&eframe::egui::Shape) -> bool| {
         shapes
             .iter()
@@ -43716,10 +43701,13 @@ fn the_view_cubes_home_and_its_down_arrow_are_filled_gray_200_at_rest_and_hovere
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     let last_fill = |h: &AppHarness, rect: eframe::egui::Rect| {
-        painted(h).iter().rev().find_map(|shape| match shape {
-            eframe::egui::Shape::Rect(r) if r.rect == rect => Some(r.fill),
-            _ => None,
-        })
+        shapes_painted(h)
+            .iter()
+            .rev()
+            .find_map(|shape| match shape {
+                eframe::egui::Shape::Rect(r) if r.rect == rect => Some(r.fill),
+                _ => None,
+            })
     };
     for label in ["Home view", "View cube options"] {
         let rect = h
@@ -43918,47 +43906,12 @@ fn a_dialogs_cancel_clicked_asks_for_the_next_frame_at_once() {
 // flip arrow from the profile's centroid on the plane, (20, 10, 0), 40 points below C, up 28
 // to C + (0, 12); and a move of 4 points along the arrow is a millimetre of its length.
 
-/// The extent of a one-sided pad of `length`, `reversed` or not, as JSON reads it.
-fn pad_extent(length: &str, reversed: bool) -> Plain {
-    Plain::of(
-        &json::read(
-            format!(r#"{{"type": "one_side", "length": {length}, "reversed": {reversed}}}"#)
-                .as_bytes(),
-        )
-        .unwrap(),
-    )
-}
-
-/// The pad's extent as the session's document holds it.
-fn pads_extent(f: &Fixture, h: &AppHarness) -> Plain {
-    fields_of(&text_of(f, h), "Pad")
-        .unwrap()
-        .into_iter()
-        .find(|(key, _)| key == "extent")
-        .unwrap()
-        .1
-}
-
-/// The plate opened, its pad's dialog open, and the view from the front at 4 points a
-/// millimetre: the image's centre, the pad's end.
-fn plates_pad_from_the_front(f: &Fixture) -> (AppHarness, eframe::egui::Pos2) {
-    let (mut h, _) = f.opened("plate.silico", PLATE);
-    edit_plates_pad(&mut h);
-    settled(&mut h);
-    from_the_front(&mut h, PLATE_END, 4.0);
-    let centre = image_centre(&h);
-    (h, centre)
-}
-
-fn below(at: eframe::egui::Pos2, points: f32) -> eframe::egui::Pos2 {
-    at + eframe::egui::vec2(0.0, points)
-}
-
 #[test]
 fn a_pads_arrow_stands_on_its_end_and_a_drag_up_it_lengthens_the_pad_a_millimetre_each_four_points()
 {
     let f = fixture();
-    let (mut h, c) = plates_pad_from_the_front(&f);
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
     // Drawn where worked out by hand: the distance arrow's dot over the end, its shaft up 56;
     // the flip arrow from 40 below up to 12 below.
     let dots = arrow_dots(&h);
@@ -43971,38 +43924,38 @@ fn a_pads_arrow_stands_on_its_end_and_a_drag_up_it_lengthens_the_pad_a_millimetr
             .iter()
             .any(|(ends, _)| near_point(ends[0], from) && near_point(ends[1], to))
     };
-    assert!(shaft(c, below(c, -56.0)), "{shafts:?}");
-    assert!(shaft(below(c, 40.0), below(c, 12.0)), "{shafts:?}");
+    assert!(shaft(c, up(c, 56.0)), "{shafts:?}");
+    assert!(shaft(up(c, -40.0), up(c, -12.0)), "{shafts:?}");
     // Over its tip, the prototype's grab; over the flip arrow, a hand.
-    let tip = below(c, -56.0);
+    let tip = up(c, 56.0);
     move_to(&mut h, tip);
     assert_eq!(cursor(&h), eframe::egui::CursorIcon::Grab);
-    move_to(&mut h, below(c, 30.0));
+    move_to(&mut h, up(c, -30.0));
     assert_eq!(cursor(&h), eframe::egui::CursorIcon::PointingHand);
     // Pressed on its tip and moved up 20 points, a frame each 5: 5 mm, 10 → 15. White while
     // it's held, and following the field: its dot 20 points up.
     left_down_at(&mut h, tip);
     for k in 1..=4 {
-        move_to(&mut h, below(tip, -5.0 * k as f32));
+        move_to(&mut h, up(tip, 5.0 * k as f32));
     }
     assert_eq!(
         field(&h, In::Dialog, "Length").value().as_deref(),
         Some("15")
     );
     let dots = arrow_dots(&h);
-    assert!(near_point(dots[0].0, below(c, -20.0)), "{dots:?}");
+    assert!(near_point(dots[0].0, up(c, 20.0)), "{dots:?}");
     assert_eq!(dots[0].1, ARROW_WHITE);
-    left_up_at(&mut h, below(tip, -20.0));
+    left_up_at(&mut h, up(tip, 20.0));
     assert_eq!(arrow_dots(&h)[0].1, ARROW_BLUE);
     settled(&mut h);
-    assert_eq!(pads_extent(&f, &h), pad_extent("15", false));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("15", false));
     // Nothing selected by the drag, nor a box drawn.
     assert!(selected_names(&h).is_empty());
     // OK keeps it.
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(pads_extent(&f, &h), pad_extent("15", false));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("15", false));
     assert!(arrow_dots(&h).is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
@@ -44010,41 +43963,36 @@ fn a_pads_arrow_stands_on_its_end_and_a_drag_up_it_lengthens_the_pad_a_millimetr
 #[test]
 fn cancel_after_a_drag_puts_the_pads_length_back() {
     let f = fixture();
-    let (mut h, c) = plates_pad_from_the_front(&f);
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
     // Up 40 points: 10 mm, 20.
     drag(
         &mut h,
         eframe::egui::PointerButton::Primary,
-        below(c, -56.0),
-        below(c, -96.0),
+        up(c, 56.0),
+        up(c, 96.0),
         4,
     );
     settled(&mut h);
-    assert_eq!(pads_extent(&f, &h), pad_extent("20", false));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("20", false));
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Cancel")
         .click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(pads_extent(&f, &h), pad_extent("10", false));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("10", false));
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
 fn a_click_on_the_flip_arrow_reverses_the_pad_and_changes_no_other_field() {
     let f = fixture();
-    let (mut h, c) = plates_pad_from_the_front(&f);
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
     let before = fields_of(&text_of(&f, &h), "Pad").unwrap();
     // On the flip arrow's shaft, 30 below the end: 30 from the distance arrow's base.
-    click_canvas(&mut h, below(c, 30.0), false);
-    let reversed = |h: &AppHarness| {
-        dialog(h)
-            .get_by_role_and_label(Role::CheckBox, "Reversed")
-            .accesskit_node()
-            .toggled()
-            == Some(eframe::egui::accesskit::Toggled::True)
-    };
-    step_until(&mut h, "Reversed ticked", reversed);
+    click_canvas(&mut h, up(c, -30.0), false);
+    step_until(&mut h, "Reversed ticked", reversed_ticked);
     settled(&mut h);
     let after = fields_of(&text_of(&f, &h), "Pad").unwrap();
     assert_eq!(after.len(), before.len());
@@ -44054,7 +44002,7 @@ fn a_click_on_the_flip_arrow_reverses_the_pad_and_changes_no_other_field() {
             assert_eq!(was, now, "{key}");
         }
     }
-    assert_eq!(pads_extent(&f, &h), pad_extent("10", true));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("10", true));
     assert_eq!(
         field(&h, In::Dialog, "Length").value().as_deref(),
         Some("10")
@@ -44063,30 +44011,31 @@ fn a_click_on_the_flip_arrow_reverses_the_pad_and_changes_no_other_field() {
     // C, its arrow pointing down; the flip arrow from 40 below, down to 68.
     step(&mut h);
     let dots = arrow_dots(&h);
-    assert!(near_point(dots[0].0, below(c, 80.0)), "{dots:?}");
+    assert!(near_point(dots[0].0, up(c, -80.0)), "{dots:?}");
     let shafts = arrow_shafts(&h);
     let shaft = |from: eframe::egui::Pos2, to: eframe::egui::Pos2| {
         shafts
             .iter()
             .any(|(ends, _)| near_point(ends[0], from) && near_point(ends[1], to))
     };
-    assert!(shaft(below(c, 80.0), below(c, 136.0)), "{shafts:?}");
-    assert!(shaft(below(c, 40.0), below(c, 68.0)), "{shafts:?}");
+    assert!(shaft(up(c, -80.0), up(c, -136.0)), "{shafts:?}");
+    assert!(shaft(up(c, -40.0), up(c, -68.0)), "{shafts:?}");
     // Clicked again: back.
-    click_canvas(&mut h, below(c, 50.0), false);
-    step_until(&mut h, "Reversed let go", |h| !reversed(h));
+    click_canvas(&mut h, up(c, -50.0), false);
+    step_until(&mut h, "Reversed let go", |h| !reversed_ticked(h));
     settled(&mut h);
-    assert_eq!(pads_extent(&f, &h), pad_extent("10", false));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("10", false));
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
 fn esc_mid_drag_puts_the_length_back_and_leaves_the_dialog_open_and_the_next_esc_cancels_it() {
     let f = fixture();
-    let (mut h, c) = plates_pad_from_the_front(&f);
-    let tip = below(c, -56.0);
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    let tip = up(c, 56.0);
     left_down_at(&mut h, tip);
-    move_to(&mut h, below(tip, -20.0));
+    move_to(&mut h, up(tip, 20.0));
     assert_eq!(
         field(&h, In::Dialog, "Length").value().as_deref(),
         Some("15")
@@ -44099,48 +44048,49 @@ fn esc_mid_drag_puts_the_length_back_and_leaves_the_dialog_open_and_the_next_esc
         Some("10")
     );
     // The rest of the stream does nothing: the arrow is let go, blue again.
-    move_to(&mut h, below(tip, -40.0));
+    move_to(&mut h, up(tip, 40.0));
     assert_eq!(
         field(&h, In::Dialog, "Length").value().as_deref(),
         Some("10")
     );
     assert_eq!(arrow_dots(&h)[0].1, ARROW_BLUE);
-    left_up_at(&mut h, below(tip, -40.0));
+    left_up_at(&mut h, up(tip, 40.0));
     settled(&mut h);
-    assert_eq!(pads_extent(&f, &h), pad_extent("10", false));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("10", false));
     assert!(selected_names(&h).is_empty());
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog cancelled", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(pads_extent(&f, &h), pad_extent("10", false));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("10", false));
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
 fn a_drags_many_moves_behind_an_edit_in_flight_send_one_more_edit_with_the_newest_value() {
     let f = fixture();
-    let (mut h, c) = plates_pad_from_the_front(&f);
-    let tip = below(c, -56.0);
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    let tip = up(c, 56.0);
     // A first drag, 4 points up, 11: the transaction begun and its edit answered.
     drag(
         &mut h,
         eframe::egui::PointerButton::Primary,
         tip,
-        below(tip, -4.0),
+        up(tip, 4.0),
         1,
     );
     settled(&mut h);
-    assert_eq!(pads_extent(&f, &h), pad_extent("11", false));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("11", false));
     let sent = h.state().tabs()[0].edits.sent;
     // The session's queue held: the next move's edit waits in it, in flight; the eleven after
     // it, each a half millimetre more, wait in the tab, each in place of the one before.
     let (hold, check) = hold_queue(&f, &h, 0);
-    let tip = below(c, -60.0);
+    let tip = up(c, 60.0);
     left_down_at(&mut h, tip);
     for k in 1..=12 {
-        move_to(&mut h, below(tip, -2.0 * k as f32));
+        move_to(&mut h, up(tip, 2.0 * k as f32));
     }
-    left_up_at(&mut h, below(tip, -24.0));
+    left_up_at(&mut h, up(tip, 24.0));
     assert_eq!(
         field(&h, In::Dialog, "Length").value().as_deref(),
         Some("17")
@@ -44159,7 +44109,7 @@ fn a_drags_many_moves_behind_an_edit_in_flight_send_one_more_edit_with_the_newes
             Sent::Edit("extent".to_owned())
         ]
     );
-    assert_eq!(pads_extent(&f, &h), pad_extent("17", false));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("17", false));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -44189,13 +44139,13 @@ fn a_new_pads_arrow_drags_its_length_before_and_after_its_add_and_ok_adds_it_so(
     });
     from_the_front(&mut h, PLATE_END, 4.0);
     let c = image_centre(&h);
-    let tip = below(c, -56.0);
+    let tip = up(c, 56.0);
     assert!(arrow_dots(&h).iter().any(|(at, _)| near_point(*at, c)));
     drag(
         &mut h,
         eframe::egui::PointerButton::Primary,
         tip,
-        below(tip, -24.0),
+        up(tip, 24.0),
         3,
     );
     assert_eq!(
@@ -44204,10 +44154,177 @@ fn a_new_pads_arrow_drags_its_length_before_and_after_its_add_and_ok_adds_it_so(
     );
     added(&mut h);
     settled(&mut h);
-    assert_eq!(pads_extent(&f, &h), pad_extent("16", false));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("16", false));
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(pads_extent(&f, &h), pad_extent("16", false));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("16", false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_steady_drag_keeps_one_preview_rebuilding_and_sends_the_newest_value_once_it_answers() {
+    // A1: a drag making a new value every frame mustn't stop and start a rebuild each.
+    let f = fixture();
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    // A first drag, 4 points up: 11, the transaction begun and its preview built.
+    drag(
+        &mut h,
+        eframe::egui::PointerButton::Primary,
+        up(c, 56.0),
+        up(c, 60.0),
+        1,
+    );
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("11", false));
+    let prisms = |f: &Fixture| {
+        f.kernel
+            .calls()
+            .iter()
+            .filter(|call| is_prism(&call.op))
+            .count()
+    };
+    let (prisms_before, sent) = (prisms(&f), h.state().tabs()[0].edits.sent);
+    // Every prism held from here: each preview's rebuild runs on, as a slow one does.
+    let hold = f.kernel.hold(is_prism);
+    let tip = up(c, 60.0);
+    left_down_at(&mut h, tip);
+    // Four moves of a millimetre, a frame each and then time for what they send to answer:
+    // the field follows each at once, 12 to 15.
+    for k in 1..=4 {
+        move_to(&mut h, up(tip, 4.0 * k as f32));
+        assert_eq!(
+            field(&h, In::Dialog, "Length").value(),
+            Some((11 + k).to_string())
+        );
+        for _ in 0..10 {
+            step(&mut h);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    // One preview rebuilding all along, the first move's: one edit sent, one prism started.
+    // (The document isn't read here: a read queues behind that preview's, held.)
+    assert_eq!(h.state().tabs()[0].edits.sent, sent + 1);
+    assert_eq!(prisms(&f), prisms_before + 1);
+    // Its preview answers: the newest value, 15, goes out at once, the button still held.
+    hold.release();
+    step_until(&mut h, "the newest value sent", |h| {
+        h.state().tabs()[0].edits.sent == sent + 2
+    });
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("15", false));
+    // Held again: the next move's value goes out (the last preview answered), the one after
+    // waits behind its preview, and the release sends it at once.
+    let hold = f.kernel.hold(is_prism);
+    move_to(&mut h, up(tip, 20.0));
+    step_until(&mut h, "16 sent", |h| {
+        h.state().tabs()[0].edits.sent == sent + 3
+    });
+    move_to(&mut h, up(tip, 24.0));
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("17")
+    );
+    for _ in 0..10 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(h.state().tabs()[0].edits.sent, sent + 3);
+    left_up_at(&mut h, up(tip, 24.0));
+    step_until(&mut h, "17 sent", |h| {
+        h.state().tabs()[0].edits.sent == sent + 4
+    });
+    hold.release();
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("17", false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_arrows_drag_stops_editing_once_its_tab_begins_to_close() {
+    // RL1: the dialog's inputs go off while the tab closes; a drag under way goes with them.
+    let f = fixture();
+    let (mut h, path) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    let tip = up(c, 56.0);
+    left_down_at(&mut h, tip);
+    move_to(&mut h, up(tip, 20.0));
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("15", false));
+    // The session's queue held behind a check; then the tab closed, saving (through the tree,
+    // the button still held): its save waits, and the tab is closing.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_label("Close plate.silico").click_accesskit();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to plate.silico before closing?")
+    });
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "closing", |h| h.state().tabs()[0].closing());
+    let sent = h.state().tabs()[0].edits.sent;
+    // The pointer on up the arrow: nothing more of the dialog's.
+    move_to(&mut h, up(tip, 40.0));
+    move_to(&mut h, up(tip, 60.0));
+    let tab = &h.state().tabs()[0];
+    let length = tab.dialog.as_ref().and_then(|dialog| {
+        dialog.inputs.iter().find_map(|input| match &input.value {
+            silico_app::dialog::Value::Length(text) if input.label == "Length" => {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+    });
+    assert_eq!(length.as_deref(), Some("15"));
+    assert!(tab.edits.idle(), "an edit queued while the tab closes");
+    assert_eq!(tab.edits.sent, sent);
+    left_up_at(&mut h, up(tip, 60.0));
+    hold.release();
+    check.wait();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains(r#""length": 15,"#), "{saved}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn while_an_arrow_is_dragged_the_hover_and_the_cursor_stay_as_they_were_at_its_press() {
+    // TL2: the prototype's hover waits out a drag (`onHover`'s `if (dragArrow) return`).
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    meshes_settled(&mut h);
+    let tip = up(c, 56.0);
+    // Nothing under the tip: no hover as it's pressed, and the cursor grab.
+    answering(&record, None, None);
+    move_to(&mut h, tip);
+    step(&mut h);
+    assert!(h.state().tabs()[0].selection().hovered().is_none());
+    assert_eq!(cursor(&h), eframe::egui::CursorIcon::Grab);
+    left_down_at(&mut h, tip);
+    // From here every pick finds the pad's front face; the pointer goes over it, 20 points
+    // below the end and 30 right, off both arrows' lines. The hover stays none, the cursor
+    // grab.
+    let over = up(c, -20.0) + eframe::egui::vec2(30.0, 0.0);
+    answering(&record, Some((1, Face(3), pixel_at(&h, over))), None);
+    for _ in 0..3 {
+        move_to(&mut h, over);
+        assert!(h.state().tabs()[0].selection().hovered().is_none());
+        assert_eq!(cursor(&h), eframe::egui::CursorIcon::Grab);
+    }
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(h.state().tabs()[0].selection().hovered().is_none());
+    }
+    // Let go: the hover is the pointer's again, the face, and the cursor no longer grab.
+    left_up_at(&mut h, over);
+    step_until(&mut h, "the face hovered", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    assert_ne!(cursor(&h), eframe::egui::CursorIcon::Grab);
     assert_eq!(never_waits::waits(), 0);
 }

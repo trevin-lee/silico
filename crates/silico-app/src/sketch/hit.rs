@@ -10,7 +10,7 @@ use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, ElementKind};
 
 use super::draw::{
-    Curve, Geometry, Scale, add, angle, direction, dot, foot, length, mul, placed, sub,
+    Curve, Geometry, Scale, add, angle, direction, length, mul, placed, segment_distance, sub,
 };
 use super::style::{CANVAS_TEXT_SIZE, SKETCH_DIMENSION_LABEL_PADDING, SKETCH_GLYPH_SIZE};
 
@@ -133,22 +133,5 @@ pub(crate) fn distance(curve: Curve, at: [f64; 2]) -> f64 {
                 length(sub(at, end(start))).min(length(sub(at, end(start + sweep))))
             }
         }
-    }
-}
-
-/// How far `at` is from the segment from `a` to `b`.
-fn segment_distance(at: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let d = sub(b, a);
-    let dd = dot(d, d);
-    if dd <= 0.0 {
-        return length(sub(at, a));
-    }
-    let t = dot(sub(at, a), d) / dd;
-    if t <= 0.0 {
-        length(sub(at, a))
-    } else if t >= 1.0 {
-        length(sub(at, b))
-    } else {
-        length(sub(at, foot(at, a, b)))
     }
 }

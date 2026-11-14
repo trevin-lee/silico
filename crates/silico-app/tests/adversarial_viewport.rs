@@ -34,8 +34,9 @@ use ui::{
     ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, In, PLATE, PLATE_END, TRIAD_DOT,
     advance, arrow_dots, arrow_shafts, button_event, dialog, dialog_open, drag, edit_plates_pad,
     field, from_the_front, hand_clock, image_centre, left_down_at, left_up_at, looks_from,
-    meshes_settled, meshes_settled_in, move_to, near_point, repaint_delay, settled, step,
-    step_until, tessellated, the_viewport, triad_origin, view, view_label, view_mut,
+    meshes_settled, meshes_settled_in, move_to, near_point, pad_extent, pads_extent,
+    plates_pad_from_the_front, repaint_delay, settled, step, step_until, tessellated, the_viewport,
+    triad_origin, up, view, view_label, view_mut,
 };
 
 const EXAMPLE: &str = r#"{
@@ -2378,47 +2379,14 @@ fn a_camera_that_makes_no_frame_draws_no_triad_and_the_label_says_the_projection
 /// onto its end at 4 points a millimetre: the image's centre.
 fn plates_pad(f: &Fixture) -> (AppHarness, egui::Pos2) {
     let (mut h, _) = f.drawn("plate.silico", PLATE, (1280.0, 800.0));
-    edit_plates_pad(&mut h);
-    settled(&mut h);
-    from_the_front(&mut h, PLATE_END, 4.0);
-    let centre = image_centre(&h);
+    let centre = plates_pad_from_the_front(&mut h);
     (h, centre)
 }
 
-fn up(at: egui::Pos2, points: f32) -> egui::Pos2 {
-    at - vec2(0.0, points)
-}
-
-/// The pad's length as the session's document holds it, as written.
-fn pads_length(f: &Fixture, h: &AppHarness) -> String {
-    let id = h.state().tabs()[0].id;
-    let text = f.sessions.text(&id, None).wait().result.unwrap().text;
-    let json::Plain::Object(members) = json::Plain::of(&json::read(text.as_bytes()).unwrap())
-    else {
-        panic!("not an object");
-    };
-    let features = members
-        .into_iter()
-        .find_map(|(key, value)| match (key.as_str(), value) {
-            ("features", json::Plain::Array(features)) => Some(features),
-            _ => None,
-        })
-        .unwrap();
-    let member = |plain: &json::Plain, name: &str| match plain {
-        json::Plain::Object(members) => members
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.clone()),
-        _ => None,
-    };
-    let pad = features
-        .iter()
-        .find(|feature| member(feature, "type") == Some(json::Plain::String("pad".to_owned())))
-        .unwrap();
-    match member(&member(pad, "extent").unwrap(), "length") {
-        Some(json::Plain::Number(length)) => length,
-        other => panic!("{other:?}"),
-    }
+/// The pad's extent as the session holds it is one side of `length`, not reversed.
+#[track_caller]
+fn pad_is(f: &Fixture, h: &AppHarness, length: &str) {
+    assert_eq!(pads_extent(&f.sessions, h), pad_extent(length, false));
 }
 
 fn length_field(h: &AppHarness) -> Option<String> {
@@ -2434,7 +2402,7 @@ fn a_drag_past_the_profile_stops_at_half_a_millimetre() {
     drag(&mut h, PointerButton::Primary, tip, up(tip, -200.0), 5);
     assert_eq!(length_field(&h).as_deref(), Some("0.5"));
     settled(&mut h);
-    assert_eq!(pads_length(&f, &h), "0.5");
+    pad_is(&f, &h, "0.5");
     assert!(
         !dialog(&h)
             .query_by_role_and_label(egui::accesskit::Role::CheckBox, "Reversed")
@@ -2458,14 +2426,14 @@ fn a_huge_drag_past_what_a_sweep_takes_is_refused_as_a_typed_value_and_back_with
     move_to(&mut h, up(tip, 1e7));
     assert_eq!(length_field(&h).as_deref(), Some("2500010"));
     settled(&mut h);
-    assert_eq!(pads_length(&f, &h), "10");
+    pad_is(&f, &h, "10");
     step_until(&mut h, "OK off", |h| !ui::ok_enabled(h));
     // The stream still the arrow's, its way and scale its press's.
     move_to(&mut h, up(tip, 40.0));
     assert_eq!(length_field(&h).as_deref(), Some("20"));
     left_up_at(&mut h, up(tip, 40.0));
     settled(&mut h);
-    assert_eq!(pads_length(&f, &h), "20");
+    pad_is(&f, &h, "20");
     step_until(&mut h, "OK on", ui::ok_enabled);
     assert!(ui::selected_names(&h).is_empty());
     assert_eq!(never_waits::waits(), 0);
@@ -2479,7 +2447,7 @@ fn the_kernel_refusing_the_pad_mid_drag_leaves_the_arrow_dragging_and_its_values
     left_down_at(&mut h, tip);
     move_to(&mut h, up(tip, 8.0));
     settled(&mut h);
-    assert_eq!(pads_length(&f, &h), "12");
+    pad_is(&f, &h, "12");
     // From here the kernel refuses every prism: each new length's rebuild fails.
     let refusing = Arc::new(AtomicBool::new(true));
     let on = Arc::clone(&refusing);
@@ -2490,7 +2458,7 @@ fn the_kernel_refusing_the_pad_mid_drag_leaves_the_arrow_dragging_and_its_values
     move_to(&mut h, up(tip, 16.0));
     assert_eq!(length_field(&h).as_deref(), Some("14"));
     settled(&mut h);
-    assert_eq!(pads_length(&f, &h), "14");
+    pad_is(&f, &h, "14");
     step_until(&mut h, "the pad's rebuild failed", |h| {
         h.state().tabs()[0].errors() > 0
     });
@@ -2505,7 +2473,7 @@ fn the_kernel_refusing_the_pad_mid_drag_leaves_the_arrow_dragging_and_its_values
     move_to(&mut h, up(tip, 28.0));
     left_up_at(&mut h, up(tip, 28.0));
     settled(&mut h);
-    assert_eq!(pads_length(&f, &h), "17");
+    pad_is(&f, &h, "17");
     step_until(&mut h, "the pad built again", |h| {
         h.state().tabs()[0].errors() == 0
     });
@@ -2533,7 +2501,7 @@ fn ok_mid_drag_keeps_the_value_so_far_and_the_rest_of_the_stream_does_nothing() 
         step(&mut h);
     }
     settled(&mut h);
-    assert_eq!(pads_length(&f, &h), "15");
+    pad_is(&f, &h, "15");
     assert!(ui::selected_names(&h).is_empty());
     // No box selection said (its toast, "Window selection: …").
     assert!(
@@ -2573,7 +2541,7 @@ fn seen_end_on_no_arrow_is_drawn_and_a_drag_where_it_would_be_changes_nothing() 
     }
     assert_eq!(length_field(&h).as_deref(), Some("10"));
     settled(&mut h);
-    assert_eq!(pads_length(&f, &h), "10");
+    pad_is(&f, &h, "10");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -2610,6 +2578,6 @@ fn a_sketch_that_makes_no_profile_shows_no_arrow_and_its_dialog_still_works() {
     // Typed, as ever.
     ui::type_over(&mut h, In::Dialog, "Length", "12");
     settled(&mut h);
-    assert_eq!(pads_length(&f, &h), "12");
+    pad_is(&f, &h, "12");
     assert_eq!(never_waits::waits(), 0);
 }
