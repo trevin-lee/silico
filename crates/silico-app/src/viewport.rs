@@ -4000,6 +4000,39 @@ mod tests {
     }
 
     #[test]
+    fn a_new_bodies_table_lets_a_hover_and_a_candidate_by_its_old_numbers_go() {
+        // Body 1 lit for the table it came in, Face1 drawn hovered and Face2 a candidate.
+        // A read's answer then numbers it 2: before the frame goes out, the selection's
+        // light lets both go (they're by the old numbers, body 1 being another body now).
+        // A menu holding the hover keeps its own row; the candidate goes either way.
+        let mut first = body(0.03125, [0.03125, 0.0625], CUT);
+        first.faces = Vec::new();
+        for held in [false, true] {
+            let mut view = view_with(&[(1, first.clone())], 3);
+            let mut selection = crate::selection::Selection::default();
+            selection.light(&mut view);
+            if held {
+                selection.hold_hover(None);
+            }
+            view.hovered = BTreeSet::from([(1, Element::Face(1))]);
+            view.candidate = Some((1, Element::Face(2)));
+            // The same table: nothing let go.
+            selection.light(&mut view);
+            assert_eq!(view.hovered, BTreeSet::from([(1, Element::Face(1))]));
+            assert_eq!(view.candidate, Some((1, Element::Face(2))));
+            let mesh = Arc::clone(&view.bodies[&1].mesh);
+            view.take_bodies(vec![meshed(2, 1, 0.03125, Some(mesh))]);
+            selection.light(&mut view);
+            assert_eq!(view.candidate, None, "held {held}");
+            if held {
+                assert_eq!(view.hovered, BTreeSet::from([(1, Element::Face(1))]));
+            } else {
+                assert!(view.hovered.is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn the_maker_tinted_is_the_feature_hovered_in_the_timeline_else_those_selected() {
         // viewport.js's `syncHighlight`: `maker = S.hoverFeature || S.selFeature`. Body 1's
         // faces 1 and 2 made by aaaaaaaa, its face 3 by bbbbbbbb; aaaaaaaa selected. Nothing

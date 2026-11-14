@@ -3423,6 +3423,23 @@ pub(crate) mod tests {
         selection.pick("aaaaaaaa.box.Face3", How::Replace);
         assert_eq!(selection.names(), ["aaaaaaaa.box.Face3"]);
         assert!(selection.wholes.is_empty(), "{:?}", selection.wholes);
+        // And names picked at once in its place (a box's), the same: with nothing a Cancel put
+        // back waiting to be read, and with something, where nothing is read again after.
+        for waiting in [false, true] {
+            if waiting {
+                let saved = selection.saved();
+                selection.restore(saved);
+            }
+            selection.select_body(fid("aaaaaaaa"));
+            assert!(selection.wholes.contains(&fid("aaaaaaaa")));
+            selection.pick_all(&["aaaaaaaa.box.Face2".to_owned()], How::Replace);
+            assert_eq!(selection.names(), ["aaaaaaaa.box.Face2"], "{waiting}");
+            assert!(
+                selection.wholes.is_empty(),
+                "{waiting}: {:?}",
+                selection.wholes
+            );
+        }
     }
 
     #[test]
