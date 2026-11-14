@@ -994,6 +994,20 @@ fn the_origin_nearer_than_a_point_wins() {
     assert_eq!(d.messages, [Message::PointThere(id("q0000001"))]);
 }
 
+#[test]
+fn a_point_at_the_origins_place_is_shared_from_any_side() {
+    // A point solved to (1e-15, 0), one place with the origin to the kernel, and a click at
+    // (−0.2, 0): 0.2 from the origin, 0.2 + 1e-15 from the point. The point stands for the
+    // origin, so the click is on it, and the point tool adds nothing (#278's D); a new point
+    // at the origin beside it would be a second at one place.
+    let mut s = empty();
+    s.points.push(point("q0000001", 1e-15, 0.0));
+    let mut d = Drive::new(ToolKind::Point, s);
+    d.click(-0.2, 0.0);
+    assert!(d.added.is_empty(), "{:?}", d.adds());
+    assert_eq!(d.messages, [Message::PointThere(id("q0000001"))]);
+}
+
 // --- #278's B: tangent arcs only --------------------------------------------------------
 
 /// A line from (10, 10) to (20, 10).

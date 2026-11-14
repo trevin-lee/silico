@@ -467,6 +467,37 @@ pub(super) struct Pointer<'v, 's> {
     pub(super) classes: &'v ViewClasses,
 }
 
+/// What a click at `at` picks of `view`, within `tolerance` millimetres, the axes `axes`
+/// allows among what it may pick ([`super::Axes`]): Smart Dimension's picks and sketch
+/// mode's selection both, by [`Pointer::pick`]'s one rule. A tolerance that isn't a finite
+/// number above 0 is taken as 0, as the tools take one; a place that isn't finite picks
+/// nothing.
+pub(super) fn pick_in(
+    view: &View<'_>,
+    tolerance: f64,
+    at: Xy,
+    axes: super::Axes,
+) -> Option<Reference> {
+    if !(at[0].is_finite() && at[1].is_finite()) {
+        return None;
+    }
+    let tolerance = if tolerance.is_finite() && tolerance > 0.0 {
+        tolerance
+    } else {
+        0.0
+    };
+    // A pick infers no relation, so it judges none: its pointer's classes are never built.
+    let classes = ViewClasses::default();
+    let pointer = Pointer {
+        view,
+        tolerance,
+        infer: true,
+        woken: &[],
+        classes: &classes,
+    };
+    pointer.pick(at, axes)
+}
+
 /// IDs for a gesture's point or line not named yet, none a point or curve of the view: what
 /// its relations are written with to be judged ([`Implied::rel`]), each of its points a
 /// class of its own until a relation joins it.
@@ -546,6 +577,33 @@ impl Pointer<'_, '_> {
         }))
     }
 
+    /// The point of the sketch or the origin a click at `at` takes, within the tolerance:
+    /// the nearer of the sketch's nearest point and the origin, the point on a tie. A point
+    /// at the origin's place (one place with it to the kernel, [`one_place`]) stands for
+    /// the origin, as a line along an axis stands for the axis ([`covers`](Self::covers)):
+    /// the origin is never taken over it, so which of the two is taken never turns on the
+    /// last bits of where a solve put the point. None for neither within the tolerance.
+    fn point_or_origin(&self, at: Xy) -> Option<Reference> {
+        let point = self.point_near(at);
+        let origin = distance(at, [0.0, 0.0]);
+        // The points at the origin's place, the nearest the click, ties by ID.
+        let stand_in = nearest(
+            self.view
+                .points
+                .iter()
+                .filter(|(_, p)| one_place(**p, [0.0, 0.0]))
+                .map(|(id, &p)| (distance(p, at), id.as_str(), id)),
+        );
+        match (point, stand_in) {
+            (Some((_, id)), Some(_)) => Some(Reference::Element(id)),
+            (None, Some(id)) if origin <= self.tolerance => Some(Reference::Element(id.clone())),
+            (Some((d, _)), None) if origin < d => Some(Reference::Origin),
+            (Some((_, id)), None) => Some(Reference::Element(id)),
+            (None, None) if origin <= self.tolerance => Some(Reference::Origin),
+            (None, _) => None,
+        }
+    }
+
     /// Where a click at `at` puts a point: a point of the sketch it shares, whatever the
     /// pointer infers; then, if it infers, the origin, a line's middle, two curves' crossing,
     /// or a curve; or nothing.
@@ -568,18 +626,14 @@ impl Pointer<'_, '_> {
                 None => Placed::new(at, Target::Free),
             };
         }
-        // The origin wins only over a point farther away: a point at the origin is shared,
-        // not placed there again.
-        let origin = distance(at, [0.0, 0.0]);
-        match point {
-            Some((d, _)) if origin < d => return Placed::new([0.0, 0.0], Target::Origin),
-            Some((_, id)) => return self.shared(id, at),
-            None if origin <= self.tolerance => {
-                return Placed::new([0.0, 0.0], Target::Origin);
-            }
+        // The origin wins only over a point farther away: a point at the origin's place is
+        // shared, not placed there again.
+        match self.point_or_origin(at) {
+            Some(Reference::Element(id)) => return self.shared(id, at),
+            Some(_) => return Placed::new([0.0, 0.0], Target::Origin),
             None => {}
         }
-        let near = self.curves_near(at);
+        let near = self.curves_near(at, super::Axes::BOTH);
         if let Some((mid, line)) = self.midpoint_near(at) {
             // Each other curve through the middle exactly, as where it crosses the line, but
             // one the sketch already holds the middle on (#278's G as amended).
@@ -648,22 +702,20 @@ impl Pointer<'_, '_> {
         kept
     }
 
-    /// What a click at `at` picks to dimension (Smart Dimension): a point of the sketch
-    /// within the tolerance, or the origin where it's nearer, as [`snap`](Self::snap) finds
-    /// them; else the curve nearest, within the tolerance, as `snap` finds curves (a line or
-    /// an arc where it's drawn, a circle all round, an axis anywhere along it but where a
-    /// line of the sketch lies along it), ties as `snap`'s (in [`Reference`]'s order); else
-    /// nothing. Whether relations are inferred plays no part: a pick is no relation.
-    pub(super) fn pick(&self, at: Xy) -> Option<Reference> {
-        let point = self.point_near(at);
-        let origin = distance(at, [0.0, 0.0]);
-        match point {
-            Some((d, _)) if origin < d => return Some(Reference::Origin),
-            Some((_, id)) => return Some(Reference::Element(id)),
-            None if origin <= self.tolerance => return Some(Reference::Origin),
-            None => {}
+    /// What a click at `at` picks to dimension (Smart Dimension), or selects in sketch mode
+    /// ([`pick_in`]): a point of the sketch within the tolerance, or the origin where it's
+    /// nearer but no point stands at its place, as [`snap`](Self::snap) finds them
+    /// ([`point_or_origin`](Self::point_or_origin)); else the curve nearest, within the
+    /// tolerance, as `snap` finds curves (a line or an arc where it's drawn, a circle all
+    /// round, an axis `axes` allows anywhere along it but where a line of the sketch lies
+    /// along it), ties as `snap`'s (in [`Reference`]'s order); else nothing. An axis `axes`
+    /// doesn't allow is no candidate, so the nearest of the rest is taken. Whether relations
+    /// are inferred plays no part: a pick is no relation.
+    fn pick(&self, at: Xy, axes: super::Axes) -> Option<Reference> {
+        if let Some(found) = self.point_or_origin(at) {
+            return Some(found);
         }
-        let near = self.curves_near(at);
+        let near = self.curves_near(at, axes);
         nearest(near.iter().map(|n| (n.off, &n.reference, n))).map(|n| n.reference.clone())
     }
 
@@ -694,17 +746,18 @@ impl Pointer<'_, '_> {
     }
 
     /// The curves within the tolerance of `at`: lines as drawn, circles, arcs where they're
-    /// drawn, and the axes, infinite, but where a line of the sketch lies along one
-    /// ([`covers`](Self::covers)).
-    fn curves_near(&self, at: Xy) -> Vec<Near> {
+    /// drawn, and the axes `axes` allows, infinite, but where a line of the sketch lies along
+    /// one ([`covers`](Self::covers)).
+    fn curves_near(&self, at: Xy, axes: super::Axes) -> Vec<Near> {
         let mut near = Vec::new();
         let tolerance = self.tolerance;
-        for (reference, foot) in [
-            (Reference::XAxis, [at[0], 0.0]),
-            (Reference::YAxis, [0.0, at[1]]),
+        for (allowed, reference, foot) in [
+            (axes.x, Reference::XAxis, [at[0], 0.0]),
+            (axes.y, Reference::YAxis, [0.0, at[1]]),
         ] {
             let off = distance(foot, at);
-            if off <= tolerance
+            if allowed
+                && off <= tolerance
                 && let Some(geo) = self.view.geo(&reference)
                 && !self.covers(&geo, foot, at)
             {
