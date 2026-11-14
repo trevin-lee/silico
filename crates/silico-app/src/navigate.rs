@@ -13,9 +13,10 @@
 //! orthographic view no smaller than their reach allows at the pane's height in pixels),
 //! which the viewport asks of every camera a control makes.
 
+use eframe::egui::Vec2;
 use silico_core::views::{self, NamedView};
 use silico_protocol::vec3::{cross, dot, sub};
-use silico_protocol::{Camera, Projection, least_view_height};
+use silico_protocol::{Camera, Frame, Projection, least_view_height};
 
 /// How far a drag of one point orbits, in degrees: half a turn across 360 points.
 pub const ORBIT_DEGREES_PER_POINT: f64 = 0.5;
@@ -349,6 +350,55 @@ pub fn up_across(toward: [f64; 3]) -> [f64; 3] {
         return [0.0, 1.0, 0.0];
     }
     across.map(|part| part / length)
+}
+
+/// Where the document's vector `v` points on the screen as a camera's `frame` sees it, at
+/// `scale` points per unit of `v` square across the view: its part along the view's right,
+/// rightward, and along its up, upward (the screen's y down). The ViewCube and the triad turn
+/// with the camera by it.
+pub fn screen_offset(frame: &Frame, v: [f64; 3], scale: f64) -> Vec2 {
+    let x = dot(v, frame.right) * scale;
+    let y = -dot(v, frame.up) * scale;
+    Vec2::new(x as f32, y as f32)
+}
+
+/// How near a view's elevation and its azimuth must each be to a named view's to be at it, in
+/// radians: the prototype's (viewport.js's `viewName`).
+pub const AT_NAMED_VIEW: f64 = 0.01;
+
+/// The elevation past which a named view takes any azimuth, in radians: the prototype's
+/// (`viewName`'s `Math.abs(v.el) > 1.5`), which only the top and the bottom (±π/2) pass.
+const ANY_AZIMUTH_PAST: f64 = 1.5;
+
+/// The azimuth and the elevation, in radians, of a unit direction `d` from the target to the
+/// eye, as the prototype's camera holds a view (viewport.js's `dirOf(az, el) = (cos el sin
+/// az, −cos el cos az, sin el)`): the elevation `asin(d.z)` (its z held to ±1, as the
+/// prototype's ViewCube holds it), the azimuth `atan2(d.x, −d.y)`, from the front (−y)
+/// toward +x.
+fn azimuth_and_elevation(d: [f64; 3]) -> (f64, f64) {
+    (libm::atan2(d[0], -d[1]), libm::asin(d[2].clamp(-1.0, 1.0)))
+}
+
+/// Whether `camera` is at the named view `view`, by the prototype's rule (viewport.js's
+/// `viewName`): its elevation within [`AT_NAMED_VIEW`] of the view's, and its azimuth too,
+/// compared round the circle (the difference brought into [−π, π) as the prototype brings it,
+/// `((a − b + π) % 2π + 2π) % 2π − π`), but for the top and the bottom, which take any
+/// azimuth. Each is [`azimuth_and_elevation`] of a direction: the camera's, and the view's
+/// ([`NamedView::direction`]; the prototype's iso is at its corner's elevation rounded,
+/// 35.264°, the app's at asin(1/√3) = 35.26439°). Its up isn't looked at, as the
+/// prototype's camera has none of its own: so a view turned about its own axis (a sketch's
+/// Look At whose y isn't the view's up, or an orbit over a pole, upside down) is still at the
+/// view it looks from. Never for a camera that makes no frame ([`Camera::frame`]).
+pub fn at_view(camera: &Camera, view: NamedView) -> bool {
+    use std::f64::consts::{PI, TAU};
+    let Ok(frame) = camera.frame() else {
+        return false;
+    };
+    let (azimuth, elevation) = azimuth_and_elevation(frame.back);
+    let (view_azimuth, view_elevation) = azimuth_and_elevation(view.direction());
+    let turned = (((azimuth - view_azimuth + PI) % TAU + TAU) % TAU - PI).abs();
+    (elevation - view_elevation).abs() < AT_NAMED_VIEW
+        && (turned < AT_NAMED_VIEW || view_elevation.abs() > ANY_AZIMUTH_PAST)
 }
 
 /// The view switched to a perspective one (Fusion's ViewCube menu, *Camera*), at
@@ -797,6 +847,26 @@ mod tests {
             look_at([0.0, -1.0, 0.0], [0.0, 0.0, 1.0], L, 1000, 800, BANDS),
             named_in(NamedView::Front, L, 1000, 800, BANDS)
         );
+    }
+
+    #[test]
+    fn each_named_views_camera_is_at_that_view_and_no_other_in_either_projection() {
+        // The nearest two named views are a face and a corner, acos(1/√3) = 54.7° apart, far
+        // past a hundredth of a radian: each view's own camera, fitted to a box off the
+        // origin, is at it alone, and in perspective too.
+        let bounds = [[10.0, -20.0, 5.0], [70.0, 15.0, 45.0]];
+        for view in views::NAMED_VIEWS {
+            let camera = named(view, bounds, 1000, 800).unwrap();
+            let seen = projected(&camera, true).unwrap();
+            for other in views::NAMED_VIEWS {
+                assert_eq!(at_view(&camera, other), other == view, "{view:?} {other:?}");
+                assert_eq!(at_view(&seen, other), other == view, "{view:?} {other:?}");
+            }
+        }
+        // A camera that makes no frame is at none.
+        let mut bad = front();
+        bad.eye = bad.target;
+        assert!(views::NAMED_VIEWS.iter().all(|v| !at_view(&bad, *v)));
     }
 
     #[test]
