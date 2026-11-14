@@ -30,6 +30,16 @@ pub(crate) fn listed_at_most<S: AsRef<str>>(names: &[S], conjunction: &str, most
     }
 }
 
+/// A view's projection in words, as the view label, the ViewCube's menu, and Display
+/// settings say it: "Perspective", or "Orthographic".
+pub(crate) fn projection_words(perspective: bool) -> &'static str {
+    if perspective {
+        "Perspective"
+    } else {
+        "Orthographic"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{listed, listed_at_most};

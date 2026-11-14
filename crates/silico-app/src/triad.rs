@@ -33,7 +33,7 @@
 //! overlay draws it first), and the label over that (the prototype's is HTML over the
 //! overlay), the label's words a label in the accessibility tree too.
 
-use eframe::egui::{FontId, Galley, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2};
+use eframe::egui::{FontId, Galley, Painter, Pos2, Rect, Shape, Stroke, pos2};
 use silico_core::views::NamedView;
 use silico_protocol::{Camera, Projection};
 
@@ -84,13 +84,12 @@ pub fn triad(camera: &Camera, rect: Rect) -> Option<Triad> {
     }
     let length = f64::from(theme::TRIAD_LENGTH);
     let past = f64::from(theme::TRIAD_LENGTH + theme::TRIAD_LABEL_PAST);
-    // An axis's direction on the screen, a unit of the document's along it, `scale` long
-    // square across the view: its parts along the view's right and up, the screen's y down.
+    // An axis on the screen, a unit of the document's along it `scale` points long square
+    // across the view.
     let across = |k: usize, scale: f64| {
-        Vec2::new(
-            (frame.right[k] * scale) as f32,
-            (-frame.up[k] * scale) as f32,
-        )
+        let mut unit = [0.0; 3];
+        unit[k] = 1.0;
+        crate::viewport::on_screen(&frame, unit, scale)
     };
     let axis = |k: usize, letter: &'static str, colour: theme::Rgba8| TriadAxis {
         letter,
@@ -196,10 +195,8 @@ pub struct ViewLabel {
 /// [`theme::VIEW_LABEL_LEFT`] in from the canvas's left and [`theme::VIEW_LABEL_BOTTOM`] up
 /// from its bottom.
 pub fn view_label(camera: &Camera, rect: Rect) -> ViewLabel {
-    let projection = match camera.projection {
-        Projection::Perspective { .. } => "Perspective",
-        Projection::Orthographic { .. } => "Orthographic",
-    };
+    let perspective = matches!(camera.projection, Projection::Perspective { .. });
+    let projection = crate::words::projection_words(perspective);
     let words = match view_name(camera) {
         Some(name) => format!("{projection} · {name}"),
         None => projection.to_owned(),
