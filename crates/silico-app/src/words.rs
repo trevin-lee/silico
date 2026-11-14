@@ -1,4 +1,4 @@
-//! Words the app's messages share.
+//! Words the app's messages and labels share.
 
 /// `names` as a list in words, joined by `conjunction` ("and" or "or"): "A", "A and B",
 /// "A, B, and C", with the serial comma, as the core's and the kernel's lists have it.
@@ -28,6 +28,21 @@ pub(crate) fn listed_at_most<S: AsRef<str>>(names: &[S], conjunction: &str, most
         }
         _ => listed(names, conjunction),
     }
+}
+
+/// Words as the ViewCube labels a view, the first a capital: `top front right` is "Top front
+/// right".
+pub(crate) fn capitalised(words: &str) -> String {
+    let mut chars = words.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// A named view's words, as the ViewCube labels it and the view label names a face:
+/// `top_front_right` is "Top front right", `front` "Front".
+pub(crate) fn view_words(view: silico_core::views::NamedView) -> String {
+    capitalised(&view.name().replace('_', " "))
 }
 
 /// A view's projection in words, as the view label, the ViewCube's menu, and Display

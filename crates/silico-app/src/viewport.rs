@@ -2487,20 +2487,6 @@ fn label_cube_face(painter: &egui::Painter, on: OnFace, per_unit: f32, words: &s
     }
 }
 
-/// Words as the ViewCube labels a view, the first a capital: `top front right` is "Top front
-/// right".
-fn capitalised(words: &str) -> String {
-    let mut chars = words.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
-}
-
-/// A named view's words, as the ViewCube labels it: `top_front_right` is "Top front right".
-pub(crate) fn words(view: NamedView) -> String {
-    capitalised(&view.name().replace('_', " "))
-}
-
 /// An edge's words, as the ViewCube labels it: the two faces it joins, named in the order a
 /// corner's are (`top_front_right`: top or bottom, then front or back, then left or right),
 /// so "Top front", "Front right", "Top right".
@@ -2523,7 +2509,7 @@ fn edge_words(edge: CubeEdge) -> String {
     .into_iter()
     .flatten()
     .collect();
-    capitalised(&named.join(" "))
+    crate::words::capitalised(&named.join(" "))
 }
 
 /// An edge's view (the prototype's cube clicked near an edge, viewport.js's `mouseup`: the
@@ -2760,7 +2746,7 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
             };
             paint_cube_face(&painter, on, cube_face_fill(face.view));
             if faced > CUBE_FACE_LABELLED {
-                let label = words(face.view);
+                let label = crate::words::view_words(face.view);
                 label_cube_face(&painter, on, scale as f32, &label.to_uppercase());
                 let part = Rect::from_center_size(on.centre, Vec2::splat(side * 0.3));
                 let response = cube_part(ui, part, &label);
@@ -2826,7 +2812,7 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
             let response = cube_part(
                 ui,
                 Rect::from_center_size(corner, Vec2::splat(CUBE_CORNER_SIDE)),
-                &words(named),
+                &crate::words::view_words(named),
             );
             if response.clicked() {
                 chosen = Some(ViewAsk::Named(named));
@@ -3379,8 +3365,9 @@ mod tests {
 
     #[test]
     fn the_view_cubes_labels_are_the_named_views_in_words() {
-        assert_eq!(words(NamedView::TopFrontRight), "Top front right");
-        assert_eq!(words(NamedView::Front), "Front");
+        use crate::words::view_words;
+        assert_eq!(view_words(NamedView::TopFrontRight), "Top front right");
+        assert_eq!(view_words(NamedView::Front), "Front");
     }
 
     #[test]

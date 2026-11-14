@@ -148,7 +148,7 @@ impl Triad {
 
 /// How far below a galley's top its first line's baseline is: its first glyph's (0 for a
 /// galley with none).
-pub fn baseline(galley: &Galley) -> f32 {
+fn baseline(galley: &Galley) -> f32 {
     galley.rows.first().map_or(0.0, |row| {
         row.pos.y + row.row.glyphs.first().map_or(0.0, |glyph| glyph.pos.y)
     })
@@ -178,7 +178,7 @@ pub fn view_name(camera: &Camera) -> Option<String> {
     Some(if view == navigate::ISOMETRIC {
         ISO.to_owned()
     } else {
-        crate::viewport::words(view)
+        crate::words::view_words(view)
     })
 }
 
