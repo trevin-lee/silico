@@ -112,8 +112,8 @@ pub fn triad(camera: &Camera, rect: Rect) -> Option<Triad> {
 impl Triad {
     /// Its shapes, in the order they're painted: for each axis in its order, its stroke from
     /// the origin to its end, [`theme::TRIAD_WIDTH`] wide in its colour with a round cap at
-    /// its end (a disc half the stroke's width across; the cap at the origin is under the
-    /// dot), then its letter, [`theme::TRIAD_LABEL_SIZE`] high in its colour, its middle
+    /// its end (a disc as wide as the stroke, its radius half the stroke's width; the cap at
+    /// the origin is under the dot), then its letter, [`theme::TRIAD_LABEL_SIZE`] high in its colour, its middle
     /// across at `letter_at` and its baseline [`theme::TRIAD_LABEL_DROP`] below; then the dot
     /// over the origin. An axis seen end on has no stroke, its letter at the origin, as the
     /// prototype draws it (a line of no length, its caps under the dot).
