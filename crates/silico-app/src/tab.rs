@@ -4762,11 +4762,12 @@ impl Tab {
     /// to an open menu, a modal, and the Modify box first), if one is open, and acts on it:
     /// a sketch drag held ends from its begin state (section 3's first, before anything
     /// else), and a dialog's arrow dragged ends where it began, the dialog left open
-    /// ([`cancel_arrow`](Self::cancel_arrow)); sketch mode's canvas menu closes; the over-define prompt is cancelled (its
-    /// Cancel, the prototype's key), the edit undone; a placed dimension's Modify box
-    /// closes, its value as it was. Whether one took it. The one list of them:
-    /// [`escape`](Self::escape) begins with it, and the app gives Esc to it before it lets
-    /// the navigation bar's tool, the chain's first, go.
+    /// ([`cancel_arrow`](Self::cancel_arrow)); sketch mode's canvas menu closes; the
+    /// over-define prompt is cancelled (its Cancel, the prototype's key), the edit undone; a
+    /// placed dimension's Modify box closes, its value as it was. Whether one took it. The
+    /// one list of them: [`escape`](Self::escape) and, with a dialog open,
+    /// [`dialog_escape`](Self::dialog_escape) begin with it, and the app gives Esc to it
+    /// before it lets the navigation bar's tool, the chain's first, go.
     pub fn escape_first<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
         if self.cancel_drag(sessions) || self.cancel_arrow(sessions) {
             return true;
