@@ -272,10 +272,10 @@ pub struct Frame<'a> {
     pub outlines: Outlines,
     /// The faces the app tints (the faces of a feature hovered in its timeline, or of the
     /// features selected), as `highlights` are given and checked as they are, each a face:
-    /// an edge or a vertex is refused. Each is drawn in [`tint`](Self::tint), its instance's own, so a tint, which
-    /// moves with the pointer, uploads nothing, outlines nothing, and changes no picking ID.
-    /// A face tinted and highlighted or hovered too is drawn both: which look wins is the
-    /// caller's to say, by what it lists.
+    /// an edge or a vertex is refused. Each is drawn in [`tint`](Self::tint), its instance's
+    /// own, so a tint, which moves with the pointer, uploads nothing, outlines nothing, and
+    /// changes no picking ID. A face tinted and highlighted or hovered too is drawn both:
+    /// which look wins is the caller's to say, by what it lists.
     pub tinted: &'a [(u32, Element)],
     /// What the tinted faces are tinted with: the caller's values, checked
     /// ([`Tint`]'s rules).
