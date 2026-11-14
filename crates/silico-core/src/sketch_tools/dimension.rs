@@ -1050,8 +1050,8 @@ fn points(
         _ => Measure::Distance,
     };
     let form = match measure {
-        Measure::DistanceX => distance_along(Along::X, (a, *p), (b, *q)).map_err(Some)?,
-        Measure::DistanceY => distance_along(Along::Y, (a, *p), (b, *q)).map_err(Some)?,
+        Measure::DistanceX => distance_along(DistanceAxis::X, (a, *p), (b, *q)).map_err(Some)?,
+        Measure::DistanceY => distance_along(DistanceAxis::Y, (a, *p), (b, *q)).map_err(Some)?,
         _ => {
             let value = rounded(distance(*p, *q))?;
             if value.nm() == 0 {
@@ -1070,7 +1070,7 @@ fn points(
 
 /// Which of the sketch's axes a dimension of two points runs along ([`distance_along`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Along {
+pub(super) enum DistanceAxis {
     /// `distance_x`.
     X,
     /// `distance_y`.
@@ -1086,14 +1086,14 @@ pub(super) enum Along {
 /// it again is C6's repeat). One writer, so the two tools can't spell one dimension two
 /// ways.
 pub(super) fn distance_along(
-    along: Along,
+    axis: DistanceAxis,
     first: (&Reference, Xy),
     second: (&Reference, Xy),
 ) -> Result<Form, Message> {
     let ((a, p), (b, q)) = (first, second);
-    let i = match along {
-        Along::X => 0,
-        Along::Y => 1,
+    let i = match axis {
+        DistanceAxis::X => 0,
+        DistanceAxis::Y => 1,
     };
     let signed = Length::rounded(q[i] - p[i]).ok_or(Message::TooFar)?;
     let value = signed
@@ -1106,14 +1106,14 @@ pub(super) fn distance_along(
     } else {
         (a.clone(), b.clone())
     };
-    Ok(match along {
-        Along::X => Form::DistanceX {
+    Ok(match axis {
+        DistanceAxis::X => Form::DistanceX {
             a,
             b,
             value,
             driving: true,
         },
-        Along::Y => Form::DistanceY {
+        DistanceAxis::Y => Form::DistanceY {
             a,
             b,
             value,

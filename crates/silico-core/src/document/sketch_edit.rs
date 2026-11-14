@@ -15,7 +15,7 @@ use super::sketch::{
     Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchPoint, TangentSide,
 };
 use super::{PROBLEMS_LISTED, nearest_ids, with_candidates};
-use crate::{Error, ErrorCode, listed};
+use crate::{Error, ErrorCode, listed, listed_first};
 
 mod add;
 mod join;
@@ -919,10 +919,7 @@ fn point_in_use(
         .take(SAID)
         .map(|(_, id, _)| id.to_string())
         .collect();
-    let curves = match using.len() {
-        n if n <= SAID => listed(&said),
-        n => format!("{}, and {} more", said.join(", "), n - SAID),
-    };
+    let curves = listed_first(&said, using.len());
     let elements = std::iter::once(point.to_string())
         .chain(using.iter().map(|(_, id, _)| id.to_string()))
         .take(PROBLEMS_LISTED);

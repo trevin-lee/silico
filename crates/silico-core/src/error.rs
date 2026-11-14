@@ -407,6 +407,17 @@ pub(crate) fn listed(items: &[String]) -> String {
     joined(items, "and")
 }
 
+/// The first of `total` items, `first`, as a message lists them, the rest counted: "a, b,
+/// and c" where they're all, "a, b, c, and 7 more" where there are ten, "a and 1 more" (the
+/// serial comma, as [`Error`]'s own elements read).
+pub(crate) fn listed_first(first: &[String], total: usize) -> String {
+    match (total.checked_sub(first.len()), first) {
+        (Some(more), [one]) if more > 0 => format!("{one} and {more} more"),
+        (Some(more), [_, ..]) if more > 0 => format!("{}, and {more} more", first.join(", ")),
+        _ => listed(first),
+    }
+}
+
 /// Items as a message offers a choice of them: "a", "a or b", "a, b, or c".
 pub(crate) fn either(items: &[String]) -> String {
     joined(items, "or")
@@ -859,7 +870,7 @@ impl Serialize for Warning {
 
 #[cfg(test)]
 mod tests {
-    use super::{either, listed};
+    use super::{either, listed, listed_first};
 
     #[test]
     fn a_list_reads_with_and_or_or_and_a_serial_comma() {
@@ -872,5 +883,9 @@ mod tests {
         assert_eq!(either(&items(1)), "1");
         assert_eq!(either(&items(2)), "1 or 2");
         assert_eq!(either(&items(3)), "1, 2, or 3");
+        assert_eq!(listed_first(&items(3), 3), "1, 2, and 3");
+        assert_eq!(listed_first(&items(3), 10), "1, 2, 3, and 7 more");
+        assert_eq!(listed_first(&items(1), 2), "1 and 1 more");
+        assert_eq!(listed_first(&items(2), 1), "1 and 2");
     }
 }

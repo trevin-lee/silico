@@ -120,29 +120,29 @@ fn edit(sketch: &Sketch, tool: RelationTool, picks: &[&str]) -> RelateEdit {
         Related::Edit {
             revision: READ,
             edit,
-            held,
+            repeated,
             message: None,
-        } if held.is_empty() => edit,
+        } if repeated.is_empty() => edit,
         other => panic!("{tool:?} {picks:?} made {other:?}"),
     }
 }
 
-/// `tool`'s click, which must send nothing, every constraint it would write held: the held
-/// constraints, and the message's words.
-fn all_held(sketch: &Sketch, tool: RelationTool, picks: &[&str]) -> (Vec<ElementId>, String) {
+/// `tool`'s click, which must send nothing, every constraint it would write there already:
+/// the sketch's constraints it repeats, and the message's words.
+fn all_there(sketch: &Sketch, tool: RelationTool, picks: &[&str]) -> (Vec<ElementId>, String) {
     match click(sketch, tool, picks).unwrap_or_else(|e| panic!("{tool:?} {picks:?}: {e:?}")) {
-        Related::AllHeld {
+        Related::AllThere {
             revision: READ,
-            held,
+            repeated,
             message,
-        } => (held, message.text()),
+        } => (repeated, message.text()),
         other => panic!("{tool:?} {picks:?} made {other:?}"),
     }
 }
 
-/// `tool`'s click, which must send an edit with some of what it would write held: the edit,
-/// the held constraints, and the message's words.
-fn some_held(
+/// `tool`'s click, which must send an edit with some of what it would write there already:
+/// the edit, the sketch's constraints it repeats, and the message's words.
+fn some_there(
     sketch: &Sketch,
     tool: RelationTool,
     picks: &[&str],
@@ -151,9 +151,9 @@ fn some_held(
         Related::Edit {
             revision: READ,
             edit,
-            held,
+            repeated,
             message: Some(message),
-        } => (edit, held, message.text()),
+        } => (edit, repeated, message.text()),
         other => panic!("{tool:?} {picks:?} made {other:?}"),
     }
 }
@@ -642,7 +642,7 @@ fn vertical_on_a_line_held_vertical_adds_nothing_and_says_so() {
     // §7 11 (C6): kt000001 is that constraint.
     let s = s5();
     assert_eq!(
-        all_held(&s, Vertical, &["ne000002"]),
+        all_there(&s, Vertical, &["ne000002"]),
         (
             vec![id("kt000001")],
             "line ne000002 is already vertical: nothing was added".to_owned()
@@ -786,7 +786,7 @@ fn f6_tangent_with_the_place_picked_is_a_tangent_at_there() {
             },
         )]
     );
-    // A point that's neither place: its own refusal, naming the places (R2).
+    // A point that's neither place: its own refusal, naming the places (#478 round 1, R2).
     let picks = ["ne000007", "ae000002", "pe000012"];
     assert_eq!(
         refused(&s, Tangent, &picks),
@@ -876,7 +876,7 @@ fn tangent_again_where_a_tangent_on_holds_the_end_adds_nothing_and_replaces_noth
         ),
     ] {
         assert_eq!(
-            all_held(&after, Tangent, &picks),
+            all_there(&after, Tangent, &picks),
             (
                 vec![id("kt000101")],
                 format!("{named} are already tangent: nothing was added")
@@ -1016,7 +1016,7 @@ fn f8_tangent_of_a_circle_whose_centre_is_on_the_line_is_refused() {
     );
     assert_eq!(refused(&s, Tangent, &picks), on_it);
     // The side is the centre's distance off the line, as Smart Dimension measures a point
-    // off its line (R1): 1e-9 mm off it is 0 nm, on it, refused either side; 1e-6 mm, 1 nm,
+    // off its line (#478 round 1, R1): 1e-9 mm off it is 0 nm, on it, refused either side; 1e-6 mm, 1 nm,
     // is a side: to the left, (40 − 1e-6, 11), (0, 1) × (−1e-6, 10) = 1e-6 > 0, left; to
     // the right, right.
     for x in [40.0 - 1e-9, 40.0 + 1e-9] {
@@ -1275,7 +1275,7 @@ fn f18_fix_twice_adds_nothing_and_with_one_made_driven_adds_only_its_driving_twi
     // 14 applied, then Fix of pe000007 again: both its dimensions are there, at these values.
     let s = taken(&s5(), &edit(&s5(), Fix, &["pe000007"]));
     assert_eq!(
-        all_held(&s, Fix, &["pe000007"]),
+        all_there(&s, Fix, &["pe000007"]),
         (
             vec![id("kt000101"), id("kt000102")],
             "point pe000007 is already fixed: nothing was added".to_owned()
@@ -1292,7 +1292,7 @@ fn f18_fix_twice_adds_nothing_and_with_one_made_driven_adds_only_its_driving_twi
         *driving = false;
     }
     assert_eq!(
-        some_held(&s, Fix, &["pe000007"]),
+        some_there(&s, Fix, &["pe000007"]),
         (
             RelateEdit::Add(Members {
                 constraints: vec![kt(
@@ -1392,7 +1392,7 @@ fn f20_a_repeat_either_way_round_adds_nothing() {
         },
     ));
     assert_eq!(
-        all_held(&s, Parallel, &["ne000001", "ne000003"]),
+        all_there(&s, Parallel, &["ne000001", "ne000003"]),
         (
             vec![id("kt000004")],
             "lines ne000001 and ne000003 are already parallel: nothing was added".to_owned()
@@ -1402,7 +1402,7 @@ fn f20_a_repeat_either_way_round_adds_nothing() {
 
 #[test]
 fn either_way_round_holds_for_the_interchangeable_forms_only() {
-    // C6 with Fable's P2: horizontal_points, vertical_points, perpendicular, equal,
+    // C6 as amended (#478): horizontal_points, vertical_points, perpendicular, equal,
     // symmetric (its about the same), tangent (its side the same), and tangent_at (its at and
     // direction the same) with a and b swapped are repeats. A tangent_on's swapped would be
     // another constraint, as would a distance_x's (its writer orders a and b).
@@ -1455,7 +1455,7 @@ fn either_way_round_holds_for_the_interchangeable_forms_only() {
         (Tangent, &["ne000002", "ae000001"], "kt000205"),
         (Tangent, &["ne000002", "ce000002"], "kt000206"),
     ] {
-        assert_eq!(all_held(&s, tool, picks).0, vec![id(held)], "{tool:?}");
+        assert_eq!(all_there(&s, tool, picks).0, vec![id(held)], "{tool:?}");
     }
 }
 
@@ -1470,7 +1470,7 @@ fn f21_a_partial_repeat_adds_the_rest_and_counts_one_left_out() {
         },
     ));
     assert_eq!(
-        some_held(&s, Horizontal, &["ne000001", "ne000003"]),
+        some_there(&s, Horizontal, &["ne000001", "ne000003"]),
         (
             RelateEdit::Add(Members {
                 constraints: vec![kt(
@@ -1492,7 +1492,7 @@ fn f21_a_partial_repeat_adds_the_rest_and_counts_one_left_out() {
             line: el("ne000003"),
         },
     ));
-    let (_, held, said) = some_held(&s, Horizontal, &["ne000001", "ne000003", "ne000006"]);
+    let (_, held, said) = some_there(&s, Horizontal, &["ne000001", "ne000003", "ne000006"]);
     assert_eq!(held, vec![id("kt000004"), id("kt000005")]);
     assert_eq!(
         said,
@@ -1556,7 +1556,7 @@ fn each_tools_sentence_is_the_decisions() {
         ),
         (
             Tangent,
-            "Tangent takes two curves, at least one a circle or an arc",
+            "Tangent takes two curves, at least one a circle or an arc, and at most one point where they meet",
         ),
         (
             Equal,
@@ -1785,7 +1785,7 @@ fn every_message_for_a_click_left_out_whole() {
         ),
     ] {
         assert_eq!(
-            all_held(&s, tool, picks).1,
+            all_there(&s, tool, picks).1,
             format!("{said}: nothing was added"),
             "{tool:?}"
         );
@@ -1819,7 +1819,7 @@ fn a_member_the_read_doesnt_hold_is_refused_by_the_tools_sentence() {
     }
 }
 
-// --- Round 1: the reviewers' proofs ---------------------------------------------------------
+// --- #478 round 1: the reviewers' proofs (a1_ to t9_, each named by its finding) ---------------------------------------------------------
 
 #[test]
 fn a1_a_clicks_work_is_in_proportion_to_what_it_writes_not_to_what_the_sketch_holds() {
@@ -1851,12 +1851,12 @@ fn a1_a_clicks_work_is_in_proportion_to_what_it_writes_not_to_what_the_sketch_ho
         ));
     }
     let worked = |s: &Sketch| {
-        work::PLANNED.with(|n| n.set(0));
+        work::BUILT.with(|n| n.set(0));
         work::COMPARED.with(|n| n.set(0));
         let related = relate(s, READ, Coincident, &picks, &mut kt_ids()).unwrap();
         (
             related,
-            work::PLANNED.with(|n| n.get()),
+            work::BUILT.with(|n| n.get()),
             work::COMPARED.with(|n| n.get()),
         )
     };
@@ -1870,8 +1870,8 @@ fn a1_a_clicks_work_is_in_proportion_to_what_it_writes_not_to_what_the_sketch_ho
     s.constraints.extend(add.constraints.iter().cloned());
     let (related, planned, compared) = worked(&s);
     assert_eq!((planned, compared), (2500, 2500));
-    assert_eq!(related.held().len(), 2500);
-    assert!(matches!(related, Related::AllHeld { .. }));
+    assert_eq!(related.repeated().len(), 2500);
+    assert!(matches!(related, Related::AllThere { .. }));
 }
 
 /// A sketch of `points` lone points and `lines` lines, and all of them as picks.
@@ -1895,9 +1895,9 @@ fn a1_a_coincident_past_what_the_solver_takes_is_refused_in_the_gates_words_unwr
     // takes. Refused before one is planned, in the gate's words, the selection's first 100
     // as its elements and all 201 counted.
     let (s, picks) = many(101, 100);
-    work::PLANNED.with(|n| n.set(0));
+    work::BUILT.with(|n| n.set(0));
     let e = relate(&s, READ, Coincident, &picks, &mut kt_ids()).unwrap_err();
-    assert_eq!(work::PLANNED.with(|n| n.get()), 0);
+    assert_eq!(work::BUILT.with(|n| n.get()), 0);
     assert_eq!(
         e.message(),
         "the sketch has 10100 constraints (counting each arc's rules as one), more than the 10000 the sketch solver takes"
@@ -1954,7 +1954,7 @@ fn a1_a_coincident_at_what_the_solver_takes_or_past_it_by_what_the_sketch_holds(
         },
     ));
     let related = relate(&held, READ, Coincident, &picks, &mut kt_ids()).unwrap();
-    assert_eq!(related.held(), [id("k0000000")]);
+    assert_eq!(related.repeated(), [id("k0000000")]);
     assert!(matches!(related.edit(), Some(RelateEdit::Add(add)) if add.constraints.len() == 9_999));
     // Holding one other constraint (a horizontal): 10,001, refused.
     let mut other = s;
@@ -2022,7 +2022,7 @@ fn a2_the_reads_revision_comes_back_with_the_plan() {
     assert!(matches!(edit, Related::Edit { revision, .. } if revision == later));
     assert_eq!(edit.revision(), later);
     let held = relate(&s, later, Vertical, &[el("ne000002")], &mut kt_ids()).unwrap();
-    assert!(matches!(held, Related::AllHeld { revision, .. } if revision == later));
+    assert!(matches!(held, Related::AllThere { revision, .. } if revision == later));
     let merged = relate(
         &s,
         later,
@@ -2139,7 +2139,7 @@ fn r4_fix_a_fraction_of_a_nanometre_off_level_is_written_as_level() {
     let mut s = taken(&s, &edit(&s, Fix, &["pe000007"]));
     s.points[6].x = Coordinate::new(0.0).unwrap();
     assert_eq!(
-        all_held(&s, Fix, &["pe000007"]).0,
+        all_there(&s, Fix, &["pe000007"]).0,
         vec![id("kt000101"), id("kt000102")]
     );
 }
@@ -2208,8 +2208,7 @@ fn t2_a_constraint_or_a_stale_pick_among_a_selection_otherwise_read_is_refused()
             (Equal, &["ce000001", "ce000002"]),
             (Parallel, &["ne000001", "ne000003"]),
             (Perpendicular, &["ne000001"]),
-            (Midpoint, &["pe000007"]),
-            (Midpoint, &["ne000001"]),
+            (Midpoint, &["pe000007", "ne000001"]),
             (Symmetric, &["pe000007", "pe000008"]),
             (Fix, &["pe000007"]),
         ] {
@@ -2395,11 +2394,11 @@ fn t9_the_messages_plural_and_mixed_fix_too_far_and_an_axis_through_to_the_gate(
         },
     ));
     assert_eq!(
-        all_held(&s, Horizontal, &["ne000001", "ne000003"]).1,
+        all_there(&s, Horizontal, &["ne000001", "ne000003"]).1,
         "lines ne000001 and ne000003 are already horizontal: nothing was added"
     );
     assert_eq!(
-        all_held(&s, Equal, &["ce000001", "ae000001"]).1,
+        all_there(&s, Equal, &["ce000001", "ae000001"]).1,
         "circle ce000001 and arc ae000001 are already equal: nothing was added"
     );
     // Fix of a point at x = 1e13 mm: 1e19 nm, past what a length holds.
@@ -2423,9 +2422,9 @@ fn t9_the_messages_plural_and_mixed_fix_too_far_and_an_axis_through_to_the_gate(
     );
 }
 
-// --- Fable's P1 to P3 ----------------------------------------------------------------------
+// --- #478's port review: C3, C5, and C6 as amended (p1_ to p3_, and its tests 1 to 15) ----------------------------------------------------------------------
 
-/// Fable's P1 sketch: the arc ae000003 about pe000020 (100, 10), counter-clockwise from
+/// #478's port review sketch: the arc ae000003 about pe000020 (100, 10), counter-clockwise from
 /// pe000021 (100, 0), at −90°, to pe000022 (110, 10), at 0°, radius 10; the line ne000010
 /// from pe000023 (90, 0) to pe000024 (110, 0), whose middle is (100, 0); and kt000004,
 /// `midpoint {point: pe000021, line: ne000010}`.
@@ -2453,7 +2452,7 @@ fn held_at_a_midpoint() -> Sketch {
     s
 }
 
-/// The tangent_on Fable's P1 tests write: ae000003's start on ne000010, same.
+/// The tangent_on the port review's P1 tests write: ae000003's start on ne000010, same.
 fn on_the_midpoint(id_: &str) -> SketchConstraint {
     kt(
         id_,
@@ -2468,7 +2467,7 @@ fn on_the_midpoint(id_: &str) -> SketchConstraint {
 
 #[test]
 fn p1_tangent_at_a_midpoints_hold_is_a_tangent_on_beside_it() {
-    // Fable 1: one place, pe000021, the arc's start, held on ne000010 by the midpoint. The
+    // port review test 1: one place, pe000021, the arc's start, held on ne000010 by the midpoint. The
     // arc's own direction there is (−(0 − 10), 100 − 100) = (10, 0), and leaving its start
     // is its own direction; the line's is (20, 0): dot 200, same. An add alone: no `on` to
     // remove, and the midpoint stays. Either order.
@@ -2486,10 +2485,10 @@ fn p1_tangent_at_a_midpoints_hold_is_a_tangent_on_beside_it() {
         let after = taken(&s, &made);
         assert!(constraint_of(&after, "kt000004").is_some());
     }
-    // Fable 2: again, nothing added.
+    // port review test 2: again, nothing added.
     let after = taken(&s, &edit(&s, Tangent, &["ae000003", "ne000010"]));
     assert_eq!(
-        all_held(&after, Tangent, &["ae000003", "ne000010"]),
+        all_there(&after, Tangent, &["ae000003", "ne000010"]),
         (
             vec![id("kt000101")],
             "arc ae000003 and line ne000010 are already tangent: nothing was added".to_owned()
@@ -2499,7 +2498,7 @@ fn p1_tangent_at_a_midpoints_hold_is_a_tangent_on_beside_it() {
 
 #[test]
 fn p1_a_midpoint_on_another_line_or_of_another_point_is_no_place() {
-    // Fable 3: the midpoint of pe000021 on ne000001, or of the arc's centre pe000020 on
+    // port review test 3: the midpoint of pe000021 on ne000001, or of the arc's centre pe000020 on
     // ne000010: no hold of this pair, so an edge tangent. ne000010 runs (20, 0) and the
     // centre is (100, 10) − (90, 0) = (10, 10) from its start: (1, 0) × (10, 10) = 10, left.
     for held in [
@@ -2530,7 +2529,7 @@ fn p1_a_midpoint_on_another_line_or_of_another_point_is_no_place() {
 
 #[test]
 fn p1_a_midpoint_and_an_on_holding_the_end_the_on_is_replaced() {
-    // Fable 4: kt000005, an `on` of pe000021 on ne000010, beside the midpoint: the add, then
+    // port review test 4: kt000005, an `on` of pe000021 on ne000010, beside the midpoint: the add, then
     // the removal of the `on` alone.
     let mut s = held_at_a_midpoint();
     s.constraints.push(kt(
@@ -2556,7 +2555,7 @@ fn p1_a_midpoint_and_an_on_holding_the_end_the_on_is_replaced() {
 
 #[test]
 fn p2_a_tangent_held_with_its_curves_swapped_is_a_repeat_on_the_same_side_only() {
-    // Fable 6: held tangent {a: ce000001, b: ne000002, left}. Tangent [ne000002, ce000001]:
+    // port review test 6: held tangent {a: ce000001, b: ne000002, left}. Tangent [ne000002, ce000001]:
     // ne000002 runs (0, 1), the centre is (20 − 40, 10 − 1) = (−20, 9) from its start:
     // (0, 1) × (−20, 9) = 20, left. A repeat.
     let held = |a: &str, b: &str, side| {
@@ -2573,10 +2572,10 @@ fn p2_a_tangent_held_with_its_curves_swapped_is_a_repeat_on_the_same_side_only()
     };
     let s = held("ce000001", "ne000002", TangentSide::Left);
     assert_eq!(
-        all_held(&s, Tangent, &["ne000002", "ce000001"]).0,
+        all_there(&s, Tangent, &["ne000002", "ce000001"]).0,
         vec![id("kt000004")]
     );
-    // Fable 7: held {a: ce000002, b: ne000002, left}; the drawing says right: added.
+    // port review test 7: held {a: ce000002, b: ne000002, left}; the drawing says right: added.
     let s = held("ce000002", "ne000002", TangentSide::Left);
     assert_eq!(
         added(&s, Tangent, &["ne000002", "ce000002"]),
@@ -2589,10 +2588,10 @@ fn p2_a_tangent_held_with_its_curves_swapped_is_a_repeat_on_the_same_side_only()
             },
         )]
     );
-    // Fable 8: two rounds swapped, outside: a repeat; held inside: the outside one added.
+    // port review test 8: two rounds swapped, outside: a repeat; held inside: the outside one added.
     let s = held("ce000002", "ce000001", TangentSide::Outside);
     assert_eq!(
-        all_held(&s, Tangent, &["ce000001", "ce000002"]).0,
+        all_there(&s, Tangent, &["ce000001", "ce000002"]).0,
         vec![id("kt000004")]
     );
     let s = held("ce000002", "ce000001", TangentSide::Inside);
@@ -2611,7 +2610,7 @@ fn p2_a_tangent_held_with_its_curves_swapped_is_a_repeat_on_the_same_side_only()
 
 #[test]
 fn p2_a_tangent_at_held_swapped_is_a_repeat_at_the_same_point_and_direction_only() {
-    // Fable 9: held tangent_at {a: ae000002, b: ne000007, at: pe000011, same}; Tangent
+    // port review test 9: held tangent_at {a: ae000002, b: ne000007, at: pe000011, same}; Tangent
     // [ne000007, ae000002, pe000011] writes f6's form (same, dot 0): a repeat.
     let held = |at: &str, direction| {
         let mut s = s5();
@@ -2628,10 +2627,10 @@ fn p2_a_tangent_at_held_swapped_is_a_repeat_at_the_same_point_and_direction_only
     };
     let picks = ["ne000007", "ae000002", "pe000011"];
     assert_eq!(
-        all_held(&held("pe000011", Direction::Same), Tangent, &picks).0,
+        all_there(&held("pe000011", Direction::Same), Tangent, &picks).0,
         vec![id("kt000004")]
     );
-    // Fable 10: held at pe000010, or opposite: f6's form is added each time.
+    // port review test 10: held at pe000010, or opposite: f6's form is added each time.
     for s in [
         held("pe000010", Direction::Same),
         held("pe000011", Direction::Opposite),
@@ -2666,7 +2665,7 @@ fn f7_tangent_on(id_: &str, direction: Direction) -> SketchConstraint {
 
 #[test]
 fn p2_a_tangent_on_held_the_other_way_is_no_repeat_and_the_on_is_still_replaced() {
-    // Fable 11: held tangent_on {ne000008, pe000013, ce000001, opposite} beside kt000002:
+    // port review test 11: held tangent_on {ne000008, pe000013, ce000001, opposite} beside kt000002:
     // Tangent writes f7's same one and removes kt000002.
     let mut s = s5();
     s.constraints
@@ -2685,7 +2684,7 @@ fn p2_a_tangent_on_held_the_other_way_is_no_repeat_and_the_on_is_still_replaced(
 
 #[test]
 fn p3_a_relation_held_with_its_on_still_there_removes_the_on_alone() {
-    // Fable 12: kt000004, f7's own tangent_on, beside kt000002's `on` (the pair interrupted).
+    // port review test 12: kt000004, f7's own tangent_on, beside kt000002's `on` (the pair interrupted).
     // Tangent [ne000008, ce000001]: the remove of kt000002 alone, kt000004 held.
     let mut s = s5();
     s.constraints
@@ -2694,14 +2693,14 @@ fn p3_a_relation_held_with_its_on_still_there_removes_the_on_alone() {
     let Related::Edit {
         revision: READ,
         edit,
-        held,
+        repeated,
         message: Some(message),
     } = related
     else {
         panic!("{related:?}")
     };
     assert_eq!(edit, RelateEdit::Remove(vec![id("kt000002")]));
-    assert_eq!(held, vec![id("kt000004")]);
+    assert_eq!(repeated, vec![id("kt000004")]);
     assert_eq!(
         message.text(),
         "line ne000008 and circle ce000001 are already tangent: nothing was added, and constraint kt000002, which that makes redundant, was removed"
@@ -2710,10 +2709,10 @@ fn p3_a_relation_held_with_its_on_still_there_removes_the_on_alone() {
     assert_eq!(constraint_of(&after, "kt000002"), None);
     // The same click after it: nothing.
     assert_eq!(
-        all_held(&after, Tangent, &["ne000008", "ce000001"]).1,
+        all_there(&after, Tangent, &["ne000008", "ce000001"]).1,
         "line ne000008 and circle ce000001 are already tangent: nothing was added"
     );
-    // Fable 14: a second `on`, kt000006: both removed, in the sketch's order.
+    // port review test 14: a second `on`, kt000006: both removed, in the sketch's order.
     s.constraints.push(kt(
         "kt000006",
         Form::On {
@@ -2736,7 +2735,7 @@ fn p3_a_relation_held_with_its_on_still_there_removes_the_on_alone() {
 
 #[test]
 fn p3_a_midpoint_held_with_its_on_still_there_removes_the_on_alone() {
-    // Fable 13: kt000003, an `on` of pe000008 on ne000001, beside a midpoint of them.
+    // port review test 13: kt000003, an `on` of pe000008 on ne000001, beside a midpoint of them.
     let mut s = s5();
     s.constraints.push(kt(
         "kt000004",
@@ -2750,8 +2749,137 @@ fn p3_a_midpoint_held_with_its_on_still_there_removes_the_on_alone() {
         related.edit(),
         Some(&RelateEdit::Remove(vec![id("kt000003")]))
     );
-    assert_eq!(related.held(), [id("kt000004")]);
+    assert_eq!(related.repeated(), [id("kt000004")]);
     taken(&s, related.edit().unwrap());
+}
+
+// --- #478 round 2 ----------------------------------------------------------------------------
+
+#[test]
+fn t10_a_symmetric_of_three_points_held_with_its_roles_permuted_is_no_repeat() {
+    // The held `symmetric {a: pe000008, b: pe000005, about: pe000007}` has the click's three
+    // references in other roles: Symmetric [pe000007, pe000008, pe000005] mirrors pe000007
+    // and pe000008 about pe000005, another constraint, and adds it.
+    let mut s = s5();
+    s.constraints.push(kt(
+        "kt000004",
+        Form::Symmetric {
+            a: el("pe000008"),
+            b: el("pe000005"),
+            about: el("pe000007"),
+        },
+    ));
+    let made = edit(&s, Symmetric, &["pe000007", "pe000008", "pe000005"]);
+    assert_eq!(
+        made,
+        RelateEdit::Add(Members {
+            constraints: vec![kt(
+                "kt000101",
+                Form::Symmetric {
+                    a: el("pe000007"),
+                    b: el("pe000008"),
+                    about: el("pe000005"),
+                },
+            )],
+            ..Members::default()
+        })
+    );
+    taken(&s, &made);
+}
+
+#[test]
+fn t13_tangent_of_a_round_too_far_off_the_line_is_refused_as_too_far() {
+    // A circle about (1e13, 10): its centre is 1e13 mm off ne000002, 1e19 nm, past what a
+    // length holds.
+    let mut s = s5();
+    s.points.push(point("pe000015", 1e13, 10.0));
+    s.circles.push(circle("ce000003", "pe000015", 3.0));
+    let picks = ["ne000002", "ce000003"];
+    assert_eq!(
+        refused(&s, Tangent, &picks),
+        (
+            "a sketch is drawn within a kilometre of its origin".to_owned(),
+            named(&picks)
+        )
+    );
+}
+
+#[test]
+fn r6_tangent_with_two_points_says_it_takes_one() {
+    let s = s5();
+    let picks = ["ne000007", "ae000002", "pe000010", "pe000011"];
+    assert_eq!(
+        refused(&s, Tangent, &picks),
+        (
+            "Tangent takes two curves, at least one a circle or an arc, and at most one point where they meet"
+                .to_owned(),
+            named(&picks)
+        )
+    );
+}
+
+#[test]
+fn r7_a_toast_names_the_first_three_and_counts_the_rest() {
+    // Horizontal of 50 lines, each held horizontal already.
+    let (mut s, picks) = many(0, 50);
+    for i in 0..50 {
+        s.constraints.push(kt(
+            &format!("h{i:07}"),
+            Form::Horizontal {
+                line: el(&format!("n{i:07}")),
+            },
+        ));
+    }
+    let related = relate(&s, READ, Horizontal, &picks, &mut kt_ids()).unwrap();
+    assert_eq!(
+        related.message().map(Message::text).as_deref(),
+        Some(
+            "lines n0000000, n0000001, n0000002, and 47 more are already horizontal: nothing was added"
+        )
+    );
+    // Five `on`s of pe000013 on ce000001 beside f7's tangent_on: three named, two counted.
+    let mut s = s5();
+    s.constraints
+        .push(f7_tangent_on("kt000004", Direction::Same));
+    for k in 6..10 {
+        s.constraints.push(kt(
+            &format!("kt00000{k}"),
+            Form::On {
+                point: el("pe000013"),
+                curve: el("ce000001"),
+            },
+        ));
+    }
+    let related = click(&s, Tangent, &["ne000008", "ce000001"]).unwrap();
+    assert_eq!(
+        related.message().map(Message::text).as_deref(),
+        Some(
+            "line ne000008 and circle ce000001 are already tangent: nothing was added, and constraints kt000002, kt000006, kt000007, and 2 more, which that makes redundant, were removed"
+        )
+    );
+    // Mixed kinds: four points and the origin, each on a line already: named one by one,
+    // the first three, the rest counted.
+    let (mut s, mut picks) = many(4, 1);
+    picks.insert(1, Reference::Origin);
+    for (k, p) in ["p0000000", "origin", "p0000001", "p0000002", "p0000003"]
+        .into_iter()
+        .enumerate()
+    {
+        s.constraints.push(kt(
+            &format!("k{k:07}"),
+            Form::On {
+                point: r(p),
+                curve: el("n0000000"),
+            },
+        ));
+    }
+    let related = relate(&s, READ, Coincident, &picks, &mut kt_ids()).unwrap();
+    assert_eq!(
+        related.message().map(Message::text).as_deref(),
+        Some(
+            "point p0000000, the origin, point p0000001, and 2 more are already on line n0000000: nothing was added"
+        )
+    );
 }
 
 // --- Any tool, any selection ----------------------------------------------------------
@@ -2872,10 +3000,10 @@ mod property {
             return fail(format!("{related:?}"));
         }
         let edit = match &related {
-            Related::AllHeld { held, .. } if held.is_empty() => {
+            Related::AllThere { repeated, .. } if repeated.is_empty() => {
                 return fail(format!("{related:?}"));
             }
-            Related::AllHeld { .. } => return Ok(()),
+            Related::AllThere { .. } => return Ok(()),
             Related::Edit { edit, .. } => edit,
         };
         if gated(s, edit).is_err() {

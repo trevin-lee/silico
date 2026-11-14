@@ -1043,8 +1043,8 @@ impl Form {
         self.driving().is_some()
     }
 
-    /// The point the form holds on a curve, and the curve, where it holds one (Fable's "a
-    /// hold is a hold", #478's port review): an `on`'s `point` on its `curve`, a
+    /// The point the form holds on a curve, and the curve, where it holds one (C3 as
+    /// amended, #478: a hold is a hold): an `on`'s `point` on its `curve`, a
     /// `tangent_on`'s `at` on its `b`, a `midpoint`'s `point` on its `line`. The constraint
     /// tools' Tangent reads its places from these (C3). The gate's tangent rule still reads
     /// an `on`'s and a `tangent_on`'s only, until a change of its own adds the midpoint's.

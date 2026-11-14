@@ -106,6 +106,11 @@ pub use relate::{NOTHING_SELECTED, RelateEdit, Related, RelationTool, relate};
 /// A point or a vector in the sketch's plane, `[x, y]`, in millimetres.
 pub type Xy = [f64; 2];
 
+/// How many members a constraint tool's words name before counting the rest ("lines
+/// ne000001, ne000002, ne000003, and 47 more"), as an error's elements read, so a toast for
+/// a large selection stays short.
+pub(crate) const NAMED: usize = 3;
+
 /// Which tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {
@@ -279,15 +284,16 @@ pub enum Message {
     /// Smart Dimension: the last dimension's offer (SD7) is open: no other is placed until
     /// it's answered.
     OfferOpen,
-    /// A constraint tool: every constraint the click would write is held already (C6), as
+    /// A constraint tool: every constraint the click would write is there already (C6), as
     /// the phrase says ("line ne000002 is already vertical").
-    AllHeld(String),
-    /// A constraint tool: this many of the constraints the click would write were held
+    AllThere(String),
+    /// A constraint tool: this many of the constraints the click would write were there
     /// already, and left out (C6).
-    SomeHeld(usize),
-    /// A constraint tool: the relation is held already, as `said` says, and the `on`s it
-    /// makes redundant, `removed`, were removed (C5 with C6, Fable's P3).
-    HeldRemoved {
+    SomeThere(usize),
+    /// A constraint tool: the relation is there already, as `said` says, and the `on`s it
+    /// makes redundant, `removed`, were removed (C5 and C6 as amended, #478): the first
+    /// [`NAMED`] named, the rest counted.
+    RedundantRemoved {
         said: String,
         removed: Vec<ElementId>,
     },
@@ -330,22 +336,26 @@ impl Message {
                 "the last dimension is still solving: place this one once it has".to_owned()
             }
             Message::OfferOpen => "the last dimension over-defines the sketch: make it driven, leave it, or cancel it before placing another".to_owned(),
-            Message::AllHeld(said) => format!("{said}: nothing was added"),
-            Message::SomeHeld(1) => {
+            Message::AllThere(said) => format!("{said}: nothing was added"),
+            Message::SomeThere(1) => {
                 "1 of these constraints was already there: it wasn't added again".to_owned()
             }
-            Message::SomeHeld(n) => {
+            Message::SomeThere(n) => {
                 format!("{n} of these constraints were already there: they weren't added again")
             }
-            Message::HeldRemoved { said, removed } => {
-                let ids: Vec<String> = removed.iter().map(ElementId::to_string).collect();
+            Message::RedundantRemoved { said, removed } => {
+                let ids: Vec<String> = removed
+                    .iter()
+                    .take(NAMED)
+                    .map(ElementId::to_string)
+                    .collect();
                 let (noun, was) = match removed.len() {
                     1 => ("constraint", "was"),
                     _ => ("constraints", "were"),
                 };
                 format!(
                     "{said}: nothing was added, and {noun} {}, which that makes redundant, {was} removed",
-                    crate::listed(&ids)
+                    crate::listed_first(&ids, removed.len())
                 )
             }
         }

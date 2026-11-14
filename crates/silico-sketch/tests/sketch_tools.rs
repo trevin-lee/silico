@@ -2274,7 +2274,7 @@ fn ended_on() -> String {
     r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{"id": "pe000001", "x": 0, "y": 15, "construction": false}, {"id": "pe000002", "x": 20, "y": 15, "construction": false}, {"id": "pe000003", "x": 20, "y": 10, "construction": false}], "lines": [{"id": "ne000001", "from": "pe000001", "to": "pe000002", "construction": false}], "circles": [{"id": "ce000001", "center": "pe000003", "radius": 5, "construction": false}], "arcs": [], "constraints": [{"id": "kt000001", "type": "on", "point": "pe000002", "curve": "ce000001"}]}]}"#.to_owned()
 }
 
-/// Fable's P1 sketch: the arc ae000003 about pe000020 (100, 10), counter-clockwise from
+/// #478's port review sketch: the arc ae000003 about pe000020 (100, 10), counter-clockwise from
 /// pe000021 (100, 0) to pe000022 (110, 10), radius 10; the line ne000010 from pe000023
 /// (90, 0) to pe000024 (110, 0); and kt000004, `midpoint {point: pe000021, line:
 /// ne000010}`, which the arc's start is drawn at.
@@ -2372,7 +2372,7 @@ fn tangent_over_an_on_replaces_it_and_the_solve_flags_nothing_where_the_add_alon
     assert_eq!(read.states.dofs, 5);
     assert_eq!(read.members.constraints.len(), 2);
     assert_eq!(flagged_in(&read).len(), 1, "{:?}", read.states.constraints);
-    // Fable's 15: Tangent again finishes it, the remove of kt000001 alone (P3): five
+    // #478's port review test 15: Tangent again finishes it, the remove of kt000001 alone (C5 and C6 as amended, #478): five
     // freedoms, as after the pair, and nothing flagged.
     let edit = f.tangent("ne000001", "ce000001");
     assert_eq!(edit, RelateEdit::Remove(vec![element("kt000001")]));
@@ -2389,8 +2389,8 @@ fn tangent_over_an_on_replaces_it_and_the_solve_flags_nothing_where_the_add_alon
 
 #[test]
 fn tangent_at_a_midpoints_hold_solves_where_drawn_with_the_point_on_the_line_said_twice() {
-    // Fable's 5. A line has four freedoms and an arc five: nine. The midpoint takes two;
-    // Tangent writes a tangent_on beside it (P1), its point-on-line said by the midpoint
+    // #478's port review test 5. A line has four freedoms and an arc five: nine. The midpoint takes two;
+    // Tangent writes a tangent_on beside it (C3 as amended, #478), its point-on-line said by the midpoint
     // already and its angle one more: six freedoms, exactly one constraint flagged
     // redundant. It solves where it's drawn: the arc's start at (100, 0), its centre at
     // (100, 10).

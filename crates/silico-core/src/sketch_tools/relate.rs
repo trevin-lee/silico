@@ -20,14 +20,14 @@
 //!     picked surviving (C1), refused where its solve is worse, as every merge is;
 //!   - a `tangent_on` or a `midpoint` that implies an `on` the sketch holds replaces it: the
 //!     add, then a `sketch_remove` of the `on` (C5), one undo step for the app; where the
-//!     relation is held already, the remove alone (Fable's P3).
+//!     relation is there already, the remove alone (C5 and C6 as amended, #478).
 //! - **Roles.** `a` is the first picked and `b` the second wherever the structure doesn't
 //!   fix them. Several members are a star, each after the first paired with the first (C8),
 //!   the origin as any other.
 //! - **Already there** (C6): a constraint the click would write is left out where the sketch
 //!   holds one equal to it in everything but its ID, `a` and `b` either way round in the
 //!   forms where they're interchangeable. With every one left out (and no `on` to remove),
-//!   nothing is sent ([`Related::AllHeld`]), and the message says so; with some, it counts
+//!   nothing is sent ([`Related::AllThere`]), and the message says so; with some, it counts
 //!   them.
 //! - **Read from the drawing,** the newest read's coordinates: a tangent's `side` (the side
 //!   of the line the round's centre is on, at Smart Dimension's nanometre), a `tangent_at`'s
@@ -43,10 +43,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use silico_protocol::MAX_SKETCH_CONSTRAINTS;
 
 use super::build::Builder;
-use super::dimension::{Along, NotOff, distance_along, off_line};
+use super::dimension::{DistanceAxis, NotOff, distance_along, off_line};
 use super::geometry::dot;
 use super::infer::{View, at_origin};
-use super::{Message, NewIds, Xy};
+use super::{Message, NAMED, NewIds, Xy};
 use crate::command::Revision;
 use crate::document::sketch_edit::{self, Geo, Members, end_ids};
 use crate::document::{
@@ -54,7 +54,7 @@ use crate::document::{
     Reference, SPLIT_THE_SKETCH, Sketch, SketchConstraint, TWO_LINES_TANGENT, TangentSide,
     counted_constraints, past_the_solver,
 };
-use crate::{Error, ErrorCode, either, listed};
+use crate::{Error, ErrorCode, either, listed, listed_first};
 
 /// What every tool says with nothing selected: the approved prototype's words.
 pub const NOTHING_SELECTED: &str =
@@ -114,7 +114,9 @@ impl RelationTool {
             RelationTool::Coincident => {
                 "Coincident takes points and the curves they lie on, or two or more points to make one"
             }
-            RelationTool::Tangent => "Tangent takes two curves, at least one a circle or an arc",
+            RelationTool::Tangent => {
+                "Tangent takes two curves, at least one a circle or an arc, and at most one point where they meet"
+            }
             RelationTool::Equal => "Equal takes two or more lines, or two or more circles and arcs",
             RelationTool::Parallel => "Parallel takes two or more lines",
             RelationTool::Perpendicular => "Perpendicular takes two lines",
@@ -143,27 +145,27 @@ pub enum RelateEdit {
         add: Members,
         remove: Vec<ElementId>,
     },
-    /// A `sketch_remove` alone of the `on`s a relation the sketch holds already implies
-    /// (C5 with C6, Fable's P3): the pair an interrupted click, or an agent, left.
+    /// A `sketch_remove` alone of the `on`s a relation already there implies (C5 and C6 as
+    /// amended, #478): the pair an interrupted click, or an agent, left.
     Remove(Vec<ElementId>),
 }
 
 /// What a click on a constraint tool makes ([`relate`]), planned on the read of `revision`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Related {
-    /// An edit to send against `revision`: `held` the sketch's constraints the click would
-    /// have written again, left out (C6), and what the app's toast says, if anything.
+    /// An edit to send against `revision`: `repeated` the sketch's constraints the click
+    /// would have written again, left out (C6), and what the app's toast says, if anything.
     Edit {
         revision: Revision,
         edit: RelateEdit,
-        held: Vec<ElementId>,
+        repeated: Vec<ElementId>,
         message: Option<Message>,
     },
-    /// Nothing to send: every constraint the click would write is held already (C6), by
-    /// `held`, and nothing it implies is left to remove. The toast says so.
-    AllHeld {
+    /// Nothing to send: every constraint the click would write is there already (C6), as
+    /// `repeated`, and nothing it implies is left to remove. The toast says so.
+    AllThere {
         revision: Revision,
-        held: Vec<ElementId>,
+        repeated: Vec<ElementId>,
         message: Message,
     },
 }
@@ -173,7 +175,7 @@ impl Related {
     /// so a session that has moved on refuses it as a conflict (decision 12).
     pub fn revision(&self) -> Revision {
         match self {
-            Related::Edit { revision, .. } | Related::AllHeld { revision, .. } => *revision,
+            Related::Edit { revision, .. } | Related::AllThere { revision, .. } => *revision,
         }
     }
 
@@ -181,15 +183,15 @@ impl Related {
     pub fn edit(&self) -> Option<&RelateEdit> {
         match self {
             Related::Edit { edit, .. } => Some(edit),
-            Related::AllHeld { .. } => None,
+            Related::AllThere { .. } => None,
         }
     }
 
     /// The sketch's constraints the click would have written again, left out (C6), in the
     /// order it would have written them.
-    pub fn held(&self) -> &[ElementId] {
+    pub fn repeated(&self) -> &[ElementId] {
         match self {
-            Related::Edit { held, .. } | Related::AllHeld { held, .. } => held,
+            Related::Edit { repeated, .. } | Related::AllThere { repeated, .. } => repeated,
         }
     }
 
@@ -197,7 +199,7 @@ impl Related {
     pub fn message(&self) -> Option<&Message> {
         match self {
             Related::Edit { message, .. } => message.as_ref(),
-            Related::AllHeld { message, .. } => Some(message),
+            Related::AllThere { message, .. } => Some(message),
         }
     }
 }
@@ -216,13 +218,13 @@ enum Kind {
 }
 
 /// What a tool writes, before C6 and the IDs: constraints, with the `on`s the one it writes
-/// implies (C5) and what it says if they're all held already; or a merge.
+/// implies (C5) and what it says if they're all there already; or a merge.
 enum Plan {
     Constraints {
         forms: Vec<Form>,
         replaces: Vec<ElementId>,
         /// "line ne000002 is already vertical", for C6's message.
-        said_if_held: String,
+        said_if_there: String,
     },
     Merge(Vec<ElementId>),
 }
@@ -248,8 +250,10 @@ enum Place<'p> {
 /// no edit the app has sent since. The app sends the edit against [`Related::revision`], so
 /// if anything changed the session since that read (the click before, its read not in yet),
 /// decision 12's check refuses it as a `conflict`, and nothing is written twice or half (the
-/// app's double-click test comes with the buttons). A [`RelateEdit::AddThenRemove`] is sent
-/// as its doc says.
+/// app's double-click test comes with the buttons). A `conflict` answered to a relate edit
+/// means only that its plan was stale: the app plans the click again on the next read (or
+/// says it's still solving, as Smart Dimension does) rather than showing the conflict. A
+/// [`RelateEdit::AddThenRemove`] is sent as its doc says.
 ///
 /// Refused with the tool's sentence ([`RelationTool::takes`]) for a selection it can't read,
 /// the selection as the error's elements; with [`NOTHING_SELECTED`] for none; for Tangent,
@@ -329,49 +333,47 @@ pub fn relate(
         RelationTool::Symmetric => picked.symmetric()?,
         RelationTool::Fix => picked.fix(&view)?,
     };
-    let (forms, replaces, said_if_held) = match plan {
+    let (forms, replaces, said_if_there) = match plan {
         Plan::Merge(points) => {
             return Ok(Related::Edit {
                 revision,
                 edit: RelateEdit::Merge(points),
-                held: Vec::new(),
+                repeated: Vec::new(),
                 message: None,
             });
         }
         Plan::Constraints {
             forms,
             replaces,
-            said_if_held,
-        } => (forms, replaces, said_if_held),
+            said_if_there,
+        } => (forms, replaces, said_if_there),
     };
-    #[cfg(test)]
-    work::PLANNED.with(|n| n.set(n.get() + forms.len()));
     // C6: each the sketch holds already left out, found by one lookup.
-    let index = Held::of(read);
+    let index = Repeats::of(read);
     let mut new = Vec::new();
-    let mut held = Vec::new();
+    let mut repeated = Vec::new();
     for form in forms {
         match index.find(&form) {
-            Some(id) => held.push(id.clone()),
+            Some(id) => repeated.push(id.clone()),
             None => new.push(form),
         }
     }
     if new.is_empty() {
         return Ok(if replaces.is_empty() {
-            Related::AllHeld {
+            Related::AllThere {
                 revision,
-                held,
-                message: Message::AllHeld(said_if_held),
+                repeated,
+                message: Message::AllThere(said_if_there),
             }
         } else {
             Related::Edit {
                 revision,
-                message: Some(Message::HeldRemoved {
-                    said: said_if_held,
+                message: Some(Message::RedundantRemoved {
+                    said: said_if_there,
                     removed: replaces.clone(),
                 }),
                 edit: RelateEdit::Remove(replaces),
-                held,
+                repeated,
             }
         });
     }
@@ -389,11 +391,11 @@ pub fn relate(
             remove: replaces,
         }
     };
-    let message = (!held.is_empty()).then_some(Message::SomeHeld(held.len()));
+    let message = (!repeated.is_empty()).then_some(Message::SomeThere(repeated.len()));
     Ok(Related::Edit {
         revision,
         edit,
-        held,
+        repeated,
         message,
     })
 }
@@ -401,15 +403,15 @@ pub fn relate(
 /// The sketch's constraints, by their type and their references in order of [`Reference`]
 /// (so `a` and `b` either way round find the same entry), each entry's in the sketch's
 /// order: built once a click, so each constraint the click would write is one lookup (C6).
-struct Held<'s>(BTreeMap<(&'static str, Vec<&'s Reference>), Vec<&'s SketchConstraint>>);
+struct Repeats<'s>(BTreeMap<(&'static str, Vec<&'s Reference>), Vec<&'s SketchConstraint>>);
 
-impl<'s> Held<'s> {
+impl<'s> Repeats<'s> {
     fn of(read: &'s Sketch) -> Self {
         let mut index: BTreeMap<_, Vec<&SketchConstraint>> = BTreeMap::new();
         for c in &read.constraints {
             index.entry(key(&c.form)).or_default().push(c);
         }
-        Held(index)
+        Repeats(index)
     }
 
     /// The first of the sketch's constraints that `form` repeats, if any.
@@ -422,7 +424,7 @@ impl<'s> Held<'s> {
     }
 }
 
-/// A form's entry in [`Held`]: its type, and its references sorted.
+/// A form's entry in [`Repeats`]: its type, and its references sorted.
 fn key(form: &Form) -> (&'static str, Vec<&Reference>) {
     let mut references: Vec<&Reference> =
         form.references().into_iter().map(|(_, r, _)| r).collect();
@@ -430,15 +432,15 @@ fn key(form: &Form) -> (&'static str, Vec<&Reference>) {
     (form.type_name(), references)
 }
 
-/// Whether `form` is `held` in everything but an ID (C6): equal, or, in the forms whose `a`
+/// Whether `form` repeats `other` in everything but an ID (C6): equal, or, in the forms whose `a`
 /// and `b` are interchangeable, equal with them swapped: `horizontal_points`,
 /// `vertical_points`, `parallel`, `perpendicular`, `equal`, `symmetric` (its `about` the
 /// same), `tangent` (its `side` the same: the line's, or symmetric in two rounds), and
 /// `tangent_at` (its `at` and `direction` the same: a smooth path is smooth both ways)
-/// (Fable's P2).
-fn repeats(form: &Form, held: &Form) -> bool {
-    form == held
-        || match (form, held) {
+/// (C6 as amended, #478).
+fn repeats(form: &Form, other: &Form) -> bool {
+    form == other
+        || match (form, other) {
             (Form::HorizontalPoints { a, b }, Form::HorizontalPoints { a: c, b: d })
             | (Form::VerticalPoints { a, b }, Form::VerticalPoints { a: c, b: d })
             | (Form::Parallel { a, b }, Form::Parallel { a: c, b: d })
@@ -457,9 +459,9 @@ fn repeats(form: &Form, held: &Form) -> bool {
                 Form::Tangent {
                     a: c,
                     b: d,
-                    side: held_side,
+                    side: other_side,
                 },
-            ) => side == held_side && a == d && b == c,
+            ) => side == other_side && a == d && b == c,
             (
                 Form::TangentAt {
                     a,
@@ -470,10 +472,10 @@ fn repeats(form: &Form, held: &Form) -> bool {
                 Form::TangentAt {
                     a: c,
                     b: d,
-                    at: held_at,
-                    direction: held_direction,
+                    at: other_at,
+                    direction: other_direction,
                 },
-            ) => at == held_at && direction == held_direction && a == d && b == c,
+            ) => at == other_at && direction == other_direction && a == d && b == c,
             _ => false,
         }
 }
@@ -567,22 +569,22 @@ impl<'p> Picked<'p> {
     }
 
     /// References as messages name them together: "lines ne000001 and ne000003" where all are
-    /// members of one kind, else each by its own noun, "point pe000007 and the origin".
+    /// members of one kind, else each by its own noun, "point pe000007 and the origin"; the
+    /// first [`NAMED`] named, the rest counted ("lines ne000001, ne000002, ne000003, and 47
+    /// more").
     fn named(&self, references: &[&Reference]) -> String {
-        let kinds: Vec<Option<ElementKind>> = references
-            .iter()
-            .map(|r| r.element().and_then(|id| self.kinds.get(id).copied()))
-            .collect();
-        match kinds.first() {
-            Some(Some(first))
-                if references.len() > 1 && kinds.iter().all(|k| *k == Some(*first)) =>
+        let kind = |r: &Reference| r.element().and_then(|id| self.kinds.get(id).copied());
+        let first = &references[..references.len().min(NAMED)];
+        match references.first().and_then(|r| kind(r)) {
+            Some(one)
+                if references.len() > 1 && references.iter().all(|r| kind(r) == Some(one)) =>
             {
-                let ids: Vec<String> = references.iter().map(|r| r.as_str().to_owned()).collect();
-                format!("{} {}", first.list(), listed(&ids))
+                let ids: Vec<String> = first.iter().map(|r| r.as_str().to_owned()).collect();
+                format!("{} {}", one.list(), listed_first(&ids, references.len()))
             }
             _ => {
-                let nouns: Vec<String> = references.iter().map(|r| self.noun(r)).collect();
-                listed(&nouns)
+                let nouns: Vec<String> = first.iter().map(|r| self.noun(r)).collect();
+                listed_first(&nouns, references.len())
             }
         }
     }
@@ -616,9 +618,9 @@ impl<'p> Picked<'p> {
         let all: Vec<&Reference> = self.picks.iter().collect();
         let word = if vertical { "vertical" } else { "horizontal" };
         Ok(Plan::Constraints {
-            forms,
+            forms: built(forms),
             replaces: Vec::new(),
-            said_if_held: format!("{} {} already {word}", self.named(&all), be(all.len())),
+            said_if_there: format!("{} {} already {word}", self.named(&all), be(all.len())),
         })
     }
 
@@ -642,7 +644,7 @@ impl<'p> Picked<'p> {
                 points.iter().copied().collect(),
                 curves.iter().copied().collect(),
             );
-            let held: BTreeSet<(&Reference, &Reference)> = self
+            let there: BTreeSet<(&Reference, &Reference)> = self
                 .read
                 .constraints
                 .iter()
@@ -659,21 +661,18 @@ impl<'p> Picked<'p> {
                 points
                     .len()
                     .saturating_mul(curves.len())
-                    .saturating_sub(held.len()),
+                    .saturating_sub(there.len()),
             )?;
-            let forms = points
-                .iter()
-                .flat_map(|point| {
-                    curves.iter().map(|curve| Form::On {
-                        point: (*point).clone(),
-                        curve: (*curve).clone(),
-                    })
+            let forms = built(points.iter().flat_map(|point| {
+                curves.iter().map(|curve| Form::On {
+                    point: (*point).clone(),
+                    curve: (*curve).clone(),
                 })
-                .collect();
+            }));
             return Ok(Plan::Constraints {
                 forms,
                 replaces: Vec::new(),
-                said_if_held: format!(
+                said_if_there: format!(
                     "{} {} already on {}",
                     self.named(&points),
                     be(points.len()),
@@ -692,8 +691,8 @@ impl<'p> Picked<'p> {
             (2, [point]) => {
                 let point = Reference::Element((*point).clone());
                 Ok(Plan::Constraints {
-                    said_if_held: format!("{} is already at the origin", self.noun(&point)),
-                    forms: at_origin(point).into(),
+                    said_if_there: format!("{} is already at the origin", self.noun(&point)),
+                    forms: built(at_origin(point)),
                     replaces: Vec::new(),
                 })
             }
@@ -714,9 +713,9 @@ impl<'p> Picked<'p> {
         }
         let all: Vec<&Reference> = self.picks.iter().collect();
         Ok(Plan::Constraints {
-            forms: star(self.picks, form),
+            forms: built(star(self.picks, form)),
             replaces: Vec::new(),
-            said_if_held: format!("{} are already {word}", self.named(&all)),
+            said_if_there: format!("{} are already {word}", self.named(&all)),
         })
     }
 
@@ -729,12 +728,12 @@ impl<'p> Picked<'p> {
             return Err(self.refused(RelationTool::Perpendicular));
         }
         Ok(Plan::Constraints {
-            forms: vec![Form::Perpendicular {
+            forms: built([Form::Perpendicular {
                 a: a.clone(),
                 b: b.clone(),
-            }],
+            }]),
             replaces: Vec::new(),
-            said_if_held: format!("{} are already perpendicular", self.named(&[a, b])),
+            said_if_there: format!("{} are already perpendicular", self.named(&[a, b])),
         })
     }
 
@@ -746,12 +745,12 @@ impl<'p> Picked<'p> {
             return Err(self.refused(RelationTool::Midpoint));
         };
         Ok(Plan::Constraints {
-            forms: vec![Form::Midpoint {
+            forms: built([Form::Midpoint {
                 point: (*point).clone(),
                 line: (*line).clone(),
-            }],
+            }]),
             replaces: holds(self.read, point, line).ons,
-            said_if_held: format!(
+            said_if_there: format!(
                 "{} is already the midpoint of {}",
                 self.noun(point),
                 self.noun(line)
@@ -773,13 +772,13 @@ impl<'p> Picked<'p> {
             _ => return Err(refused()),
         };
         Ok(Plan::Constraints {
-            forms: vec![Form::Symmetric {
+            forms: built([Form::Symmetric {
                 a: a.clone(),
                 b: b.clone(),
                 about: about.clone(),
-            }],
+            }]),
             replaces: Vec::new(),
-            said_if_held: format!(
+            said_if_there: format!(
                 "{} and {} are already symmetric about {}",
                 self.noun(a),
                 self.noun(b),
@@ -800,17 +799,17 @@ impl<'p> Picked<'p> {
             let Some(at) = place(view, point) else {
                 return Err(self.refused(RelationTool::Fix));
             };
-            for along in [Along::X, Along::Y] {
-                let form = distance_along(along, origin, (point, at))
+            for axis in [DistanceAxis::X, DistanceAxis::Y] {
+                let form = distance_along(axis, origin, (point, at))
                     .map_err(|message| self.refusal(message.text()))?;
                 forms.push(form);
             }
         }
         let all: Vec<&Reference> = self.picks.iter().collect();
         Ok(Plan::Constraints {
-            forms,
+            forms: built(forms),
             replaces: Vec::new(),
-            said_if_held: format!("{} {} already fixed", self.named(&all), be(all.len())),
+            said_if_there: format!("{} {} already fixed", self.named(&all), be(all.len())),
         })
     }
 
@@ -869,7 +868,7 @@ impl<'p> Picked<'p> {
                 }
             },
         };
-        let said_if_held = format!("{} and {} are already tangent", self.noun(a), self.noun(b));
+        let said_if_there = format!("{} and {} are already tangent", self.noun(a), self.noun(b));
         let (form, replaces) = match chosen {
             None => (self.edge_tangent(view, a, b)?, Vec::new()),
             Some((at, Place::Shared)) => {
@@ -915,9 +914,9 @@ impl<'p> Picked<'p> {
             }
         };
         Ok(Plan::Constraints {
-            forms: vec![form],
+            forms: built([form]),
             replaces,
-            said_if_held,
+            said_if_there,
         })
     }
 
@@ -939,12 +938,12 @@ impl<'p> Picked<'p> {
         }
         for (ending, held_on, ending_ends) in [(a, b, &ends_a), (b, a, &ends_b)] {
             for end in ending_ends {
-                let held = holds(self.read, &Reference::Element((*end).clone()), held_on);
-                if held.any {
+                let holding = holds(self.read, &Reference::Element((*end).clone()), held_on);
+                if holding.any {
                     places.entry(*end).or_insert(Place::Held {
                         ending,
                         held_on,
-                        ons: held.ons,
+                        ons: holding.ons,
                     });
                 }
             }
@@ -1012,6 +1011,18 @@ impl<'p> Picked<'p> {
     }
 }
 
+/// `forms` collected for a plan, each counted in tests as it's built ([`work::BUILT`]), so a
+/// click refused before its forms are built is seen to build none.
+fn built(forms: impl IntoIterator<Item = Form>) -> Vec<Form> {
+    forms
+        .into_iter()
+        .inspect(|_| {
+            #[cfg(test)]
+            work::BUILT.with(|n| n.set(n.get() + 1));
+        })
+        .collect()
+}
+
 /// Each member of `picks` after the first, paired with the first (C8), `form(first, other)`.
 fn star(picks: &[Reference], form: impl Fn(Reference, Reference) -> Form) -> Vec<Form> {
     let Some((first, rest)) = picks.split_first() else {
@@ -1059,14 +1070,14 @@ fn be(n: usize) -> &'static str {
     if n == 1 { "is" } else { "are" }
 }
 
-/// How much work a click did, counted in tests: each constraint planned, and each held
-/// constraint one was compared with for C6.
+/// How much work a click did, counted in tests: each constraint built for a plan, and each
+/// of the sketch's constraints one was compared with for C6.
 #[cfg(test)]
 pub(super) mod work {
     use std::cell::Cell;
 
     thread_local! {
-        pub(in crate::sketch_tools) static PLANNED: Cell<usize> = const { Cell::new(0) };
+        pub(in crate::sketch_tools) static BUILT: Cell<usize> = const { Cell::new(0) };
         pub(in crate::sketch_tools) static COMPARED: Cell<usize> = const { Cell::new(0) };
     }
 }
