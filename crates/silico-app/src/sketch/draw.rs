@@ -386,6 +386,44 @@ impl<'a> Geometry<'a> {
         }
     }
 
+    /// The curve `id` as the core's profile takes it ([`silico_core::profile::Drawn`]), from
+    /// the read's stored points, each zero +0 (`unsigned`): a line by its ends; an arc by its
+    /// centre and ends; a circle by its centre and radius. None for a curve the read hasn't.
+    pub(crate) fn drawn(&self, id: &ElementId) -> Option<silico_core::profile::Drawn> {
+        use silico_core::profile::{Drawn, unsigned};
+        let &(curve, kind) = self.curves.get(id)?;
+        let ends = || {
+            let (from, to) = self.ends.get(id)?;
+            Some((
+                unsigned(*self.points.get(*from)?),
+                unsigned(*self.points.get(*to)?),
+            ))
+        };
+        match (kind, curve) {
+            (ElementKind::Line, Curve::Line { .. }) => {
+                let (from, to) = ends()?;
+                Some(Drawn::Line { from, to })
+            }
+            (ElementKind::Arc, Curve::Round { centre, .. }) => {
+                let (start, end) = ends()?;
+                Some(Drawn::Arc {
+                    center: unsigned(centre),
+                    start,
+                    end,
+                })
+            }
+            (ElementKind::Circle, Curve::Round { centre, radius, .. }) => Some(Drawn::Circle {
+                center: unsigned(centre),
+                radius,
+            }),
+            // Each kind is put in with its own curve ([`Geometry::of`]): a line's a line, an
+            // arc's and a circle's a round; and no point or constraint is a curve.
+            (ElementKind::Line, Curve::Round { .. })
+            | (ElementKind::Arc | ElementKind::Circle, Curve::Line { .. })
+            | (ElementKind::Point | ElementKind::Constraint, _) => None,
+        }
+    }
+
     /// Each point, by ID.
     pub(crate) fn points(&self) -> impl Iterator<Item = (&'a ElementId, [f64; 2])> + '_ {
         self.points.iter().map(|(id, at)| (*id, *at))
@@ -1276,47 +1314,21 @@ fn walk(
     Some(polygon)
 }
 
-/// A curve as a loop's walk runs it: as drawn, or `backwards`, from its end to its start;
-/// with its kind and its end points as the read stores them.
+/// A curve as a loop's walk runs it: as drawn, or `backwards`, from its end to its start.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Walked {
     pub(crate) curve: Curve,
-    pub(crate) kind: ElementKind,
-    /// A line's or an arc's end points as stored, from and to as drawn; none for a circle.
-    pub(crate) points: Option<([f64; 2], [f64; 2])>,
     pub(crate) backwards: bool,
 }
 
-impl Walked {
-    /// Where the walk enters it and where it leaves it: its stored end points, the other way
-    /// round when it's run backwards; none for a circle.
-    pub(crate) fn ends(&self) -> Option<([f64; 2], [f64; 2])> {
-        self.points.map(|(from, to)| {
-            if self.backwards {
-                (to, from)
-            } else {
-                (from, to)
-            }
-        })
-    }
-}
-
-/// The curves a loop of `curves` walks, in order, each as the walk runs it ([`Walked`]):
+/// The curves a loop of `curves` walks, in `curves`' order, each as the walk runs it ([`Walked`]):
 /// each from the end the last one ended at (the first, toward the one after it); a lone
 /// curve, a circle's whole turn, as drawn. None for a curve the read hasn't, or a loop whose
 /// curves don't meet end to end.
 pub(crate) fn oriented(curves: &[ElementId], geometry: &Geometry) -> Option<Vec<Walked>> {
     let walked = |id: &ElementId, backwards: bool| {
-        let &(curve, kind) = geometry.curves.get(id)?;
-        let points = geometry.ends.get(id).and_then(|(from, to)| {
-            Some((*geometry.points.get(*from)?, *geometry.points.get(*to)?))
-        });
-        Some(Walked {
-            curve,
-            kind,
-            points,
-            backwards,
-        })
+        let &(curve, _) = geometry.curves.get(id)?;
+        Some(Walked { curve, backwards })
     };
     let [first, rest @ ..] = curves else {
         return None;

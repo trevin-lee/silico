@@ -48,7 +48,7 @@ use ui::{
     repaint_delay, retype, reversed_ticked, save_as_of, select, selected_names, settled,
     shapes_painted, sketch_mode, sketch_read, sorted_fields, step, step_until, tab_named,
     tessellated, text_of, the_viewport, tooltip_title, triad_origin, type_name, undo_by_key, up,
-    view, view_direction, view_label, view_label_node, view_mut, wheel, window_told,
+    view, view_direction, view_label, view_label_node, view_mut, wheel, window_told, written,
 };
 
 /// The M2.1 document's example (docs/design/m2.1-document-format.md): a block, a pin, and
@@ -6315,11 +6315,11 @@ fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
     assert!(dialog(&h).query_by_label("Reversed").is_none());
     type_into(&mut h, "Length 2", "1");
     settled(&mut h);
-    let pocket = fields_of(&text_of(&f.sessions, &h), "Pocket").unwrap();
-    let extent = pocket.iter().find(|(key, _)| key == "extent").unwrap();
     assert_eq!(
-        extent.1,
-        Plain::of(&json::read(br#"{"type": "two_sides", "length": 5, "length2": 51}"#).unwrap())
+        written(&f.sessions, &h, "Pocket", "extent"),
+        Some(Plain::of(
+            &json::read(br#"{"type": "two_sides", "length": 5, "length2": 51}"#).unwrap()
+        ))
     );
     choose(&mut h, "Extent", "Through all");
     step_until(&mut h, "through all", |h| {
@@ -6329,11 +6329,11 @@ fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
     });
     assert!(dialog(&h).query_by_label("Reversed").is_some());
     settled(&mut h);
-    let pocket = fields_of(&text_of(&f.sessions, &h), "Pocket").unwrap();
-    let extent = pocket.iter().find(|(key, _)| key == "extent").unwrap();
     assert_eq!(
-        extent.1,
-        Plain::of(&json::read(br#"{"type": "through_all", "reversed": false}"#).unwrap())
+        written(&f.sessions, &h, "Pocket", "extent"),
+        Some(Plain::of(
+            &json::read(br#"{"type": "through_all", "reversed": false}"#).unwrap()
+        ))
     );
     assert_eq!(never_waits::waits(), 0);
 }
@@ -6484,11 +6484,8 @@ fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits(
     type_into(&mut h, "Length", "2");
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f.sessions, &h), "Pad")
-            .unwrap()
-            .into_iter()
-            .find(|(key, _)| key == "extent"),
-        Some(("extent".to_owned(), one_side("102")))
+        written(&f.sessions, &h, "Pad", "extent"),
+        Some(one_side("102"))
     );
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Cancel")
@@ -7014,15 +7011,9 @@ fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back()
     let after = text_of(&f.sessions, &h);
     let ok_at = h.state().tabs()[0].revision;
     assert_eq!(
-        fields_of(&after, "Pad")
-            .unwrap()
-            .into_iter()
-            .find(|(key, _)| key == "extent"),
-        Some((
-            "extent".to_owned(),
-            Plain::of(
-                &json::read(br#"{"type": "one_side", "length": 101, "reversed": true}"#).unwrap()
-            )
+        written(&f.sessions, &h, "Pad", "extent"),
+        Some(Plain::of(
+            &json::read(br#"{"type": "one_side", "length": 101, "reversed": true}"#).unwrap()
         ))
     );
     step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
@@ -8186,12 +8177,9 @@ fn pads_base(text: &str) -> Plain {
     create(&mut h, "Pad");
     added(&mut h);
     settled(&mut h);
-    let pad = fields_of(&text_of(&f.sessions, &h), "Pad").unwrap();
+    let base = written(&f.sessions, &h, "Pad", "base");
     assert_eq!(never_waits::waits(), 0);
-    pad.into_iter()
-        .find(|(key, _)| key == "base")
-        .map(|(_, base)| base)
-        .unwrap_or(Plain::Null)
+    base.unwrap_or(Plain::Null)
 }
 
 #[test]
@@ -32828,14 +32816,6 @@ fn plain(text: &str) -> Plain {
     Plain::of(&json::read(text.as_bytes()).unwrap())
 }
 
-/// The field `field` of the feature named `name`, as the session's document holds it.
-fn written(f: &Fixture, h: &AppHarness, name: &str, field: &str) -> Option<Plain> {
-    fields_of(&text_of(&f.sessions, h), name)?
-        .into_iter()
-        .find(|(key, _)| key == field)
-        .map(|(_, value)| value)
-}
-
 /// The ID the open dialog's feature was given.
 fn dialog_feature(h: &AppHarness) -> String {
     h.state().tabs()[0]
@@ -32954,7 +32934,7 @@ fn in_the_fillet_dialog_a_ctrl_click_adds_an_edge_and_a_click_on_a_listed_edge_r
     );
     settled(&mut h);
     assert_eq!(
-        written(&f, &h, "Fillet", "edges"),
+        written(&f.sessions, &h, "Fillet", "edges"),
         Some(plain(
             r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5", "k7f2qx3m.box.Edge7"]"#
         ))
@@ -32966,7 +32946,7 @@ fn in_the_fillet_dialog_a_ctrl_click_adds_an_edge_and_a_click_on_a_listed_edge_r
     selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]);
     settled(&mut h);
     assert_eq!(
-        written(&f, &h, "Fillet", "edges"),
+        written(&f.sessions, &h, "Fillet", "edges"),
         Some(plain(r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]"#))
     );
     // A face under the pointer, no edge: the box takes edges alone, so nothing is picked
@@ -32999,7 +32979,7 @@ fn in_the_fillet_dialog_a_ctrl_click_adds_an_edge_and_a_click_on_a_listed_edge_r
     selected_until(&mut h, &["k7f2qx3m.box.Edge7"]);
     settled(&mut h);
     assert_eq!(
-        written(&f, &h, "Fillet", "edges"),
+        written(&f.sessions, &h, "Fillet", "edges"),
         Some(plain(r#"["k7f2qx3m.box.Edge7"]"#))
     );
     // Closed, the canvas picks as before: a plain click replaces the selection.
@@ -33048,7 +33028,7 @@ fn in_the_fillet_dialog_a_box_over_faces_and_edges_toggles_only_the_edges_into_i
             .join(", ")
     );
     assert_eq!(
-        written(&f, &h, "Fillet", "edges"),
+        written(&f.sessions, &h, "Fillet", "edges"),
         Some(plain(&written_edges))
     );
     // Shift held, the same window again: toggled, not added, so all 11 let go and Edge3
@@ -33142,11 +33122,11 @@ fn a_fillet_dialog_refuses_an_unstable_selected_name_saying_why_and_writes_nothi
     added(&mut h);
     settled(&mut h);
     assert_eq!(
-        written(&f, &h, "Fillet", "edges"),
+        written(&f.sessions, &h, "Fillet", "edges"),
         Some(plain(r#"["aaaaaaaa.box.Edge2"]"#))
     );
     assert_eq!(
-        written(&f, &h, "Fillet", "base"),
+        written(&f.sessions, &h, "Fillet", "base"),
         Some(plain(r#""rrrrrrrr""#))
     );
     assert_eq!(never_waits::waits(), 0);
@@ -33227,9 +33207,12 @@ fn a_fillet_dialogs_cancel_after_earlier_unsaved_edits_leaves_the_text_as_before
     click_edge(&mut h, &record, 1, 5, true);
     boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
     settled(&mut h);
-    assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("12")));
     assert_eq!(
-        written(&f, &h, "Fillet", "edges"),
+        written(&f.sessions, &h, "Fillet", "radius"),
+        Some(plain("12"))
+    );
+    assert_eq!(
+        written(&f.sessions, &h, "Fillet", "edges"),
         Some(plain(r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]"#))
     );
     // The preview consumed both edges: gone from the selection, unsaid, the box holding
@@ -33330,7 +33313,10 @@ fn a_fillet_too_large_shows_the_kernels_refusal_naming_its_edge_and_the_rest_sti
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("13")));
+    assert_eq!(
+        written(&f.sessions, &h, "Fillet", "radius"),
+        Some(plain("13"))
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -33481,7 +33467,10 @@ fn a_fillets_radius_opens_at_the_last_okd_cancel_leaves_it_and_edit_feature_show
     );
     retype(&mut h, In::Dialog, "Radius", "2.5");
     settled(&mut h);
-    assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("2.5")));
+    assert_eq!(
+        written(&f.sessions, &h, "Fillet", "radius"),
+        Some(plain("2.5"))
+    );
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
@@ -33566,11 +33555,11 @@ fn edit_feature_on_a_fillet_a_later_feature_builds_on_takes_its_bases_edges_from
     settled(&mut h);
     assert_eq!(box_said(&h), None);
     assert_eq!(
-        written(&f, &h, "Round", "edges"),
+        written(&f.sessions, &h, "Round", "edges"),
         Some(plain(r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]"#))
     );
     assert_eq!(
-        written(&f, &h, "Round", "base"),
+        written(&f.sessions, &h, "Round", "base"),
         Some(plain(r#""k7f2qx3m""#))
     );
     // Tool's Edge1, Joined's Edge13 (the fake's fuse numbers the tool's edges after the
@@ -33607,11 +33596,11 @@ fn edit_feature_on_a_fillet_a_later_feature_builds_on_takes_its_bases_edges_from
     assert_eq!(box_said(&h), None);
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(
-        written(&f, &h, "Round", "edges"),
+        written(&f.sessions, &h, "Round", "edges"),
         Some(plain(r#"["k7f2qx3m.box.Edge7"]"#))
     );
     assert_eq!(
-        written(&f, &h, "Round", "base"),
+        written(&f.sessions, &h, "Round", "base"),
         Some(plain(r#""k7f2qx3m""#))
     );
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
@@ -33649,7 +33638,7 @@ fn the_fillet_dialog_opened_on_a_face_and_an_edge_takes_the_edge_and_notes_the_f
     assert!(dialog(&h).query_by_label(note).is_some());
     assert_eq!(selected_names(&h), ["k7f2qx3m.box.Edge3"]);
     assert_eq!(
-        written(&f, &h, "Fillet", "edges"),
+        written(&f.sessions, &h, "Fillet", "edges"),
         Some(plain(r#"["k7f2qx3m.box.Edge3"]"#))
     );
     assert_eq!(never_waits::waits(), 0);
@@ -33717,7 +33706,7 @@ fn a_click_on_an_edge_the_box_lists_removes_it_though_the_timeline_replaced_the_
     assert_eq!(h.state().tabs()[0].selection().feature(), Some(&block));
     settled(&mut h);
     assert_eq!(
-        written(&f, &h, "Fillet", "edges"),
+        written(&f.sessions, &h, "Fillet", "edges"),
         Some(plain(r#"["k7f2qx3m.box.Edge3"]"#))
     );
     assert_eq!(never_waits::waits(), 0);
@@ -34035,7 +34024,7 @@ fn a_union_opens_on_the_body_selected_and_a_second_pick_in_a_box_replaces_its_bo
     settled(&mut h);
     assert_eq!(said_under(&h, "Tool Body"), None);
     assert_eq!(
-        written(&f, &h, "Union", "tool"),
+        written(&f.sessions, &h, "Union", "tool"),
         Some(plain(r#""c0000001""#))
     );
     // A second pick in the tool's box, Third's face: it replaces First, written as the
@@ -34046,7 +34035,7 @@ fn a_union_opens_on_the_body_selected_and_a_second_pick_in_a_box_replaces_its_bo
     bodies_boxed_until(&mut h, &[Some("a0000001"), Some("b0000001")]);
     settled(&mut h);
     assert_eq!(
-        written(&f, &h, "Union", "tool"),
+        written(&f.sessions, &h, "Union", "tool"),
         Some(plain(r#""b0000001""#))
     );
     assert_eq!(active_box(&h), Some("Tool Body"));
@@ -34073,7 +34062,7 @@ fn a_union_opens_on_the_body_selected_and_a_second_pick_in_a_box_replaces_its_bo
     bodies_boxed_until(&mut h, &[Some("c0000001"), Some("b0000001")]);
     settled(&mut h);
     assert_eq!(
-        written(&f, &h, "Union", "base"),
+        written(&f.sessions, &h, "Union", "base"),
         Some(plain(r#""c0000001""#))
     );
     assert_eq!(active_box(&h), Some("Target Body"));
@@ -34083,7 +34072,7 @@ fn a_union_opens_on_the_body_selected_and_a_second_pick_in_a_box_replaces_its_bo
     bodies_boxed_until(&mut h, &[Some("a0000001"), Some("b0000001")]);
     settled(&mut h);
     assert_eq!(
-        written(&f, &h, "Union", "base"),
+        written(&f.sessions, &h, "Union", "base"),
         Some(plain(r#""a0000001""#))
     );
     // The union's own row: built through the union, so refused, nothing sent.
@@ -34615,7 +34604,7 @@ fn edit_feature_on_a_union_refuses_a_body_made_after_it_in_the_box() {
         held(&[Some("a0000001"), Some("c0000001")])
     );
     assert_eq!(
-        written(&f, &h, "Joined", "tool"),
+        written(&f.sessions, &h, "Joined", "tool"),
         Some(plain(r#""c0000001""#))
     );
     assert_eq!(
@@ -36854,7 +36843,7 @@ fn remove_the_edge_drops_the_broken_name_alone_and_undo_puts_it_back() {
     );
     assert_ne!(removed, before);
     assert_eq!(
-        written(&f, &h, "Inside corner", "edges"),
+        written(&f.sessions, &h, "Inside corner", "edges"),
         Some(plain(r#"["k7f2qx3m.box.Edge1"]"#))
     );
     assert_eq!(
@@ -37006,7 +36995,7 @@ fn the_fillets_own_dialog_shows_its_candidates_and_use_puts_one_in_its_box_in_th
     boxed_until(&mut h, &["k7f2qx3m.box.Edge1", EDGE4]);
     settled(&mut h);
     assert_eq!(
-        written(&f, &h, "Inside corner", "edges"),
+        written(&f.sessions, &h, "Inside corner", "edges"),
         Some(plain(&format!(r#"["k7f2qx3m.box.Edge1", "{EDGE4}"]"#)))
     );
     // In the dialog, Undo is off: its Cancel puts the broken name back, and after OK one
@@ -37155,7 +37144,7 @@ fn use_in_the_fillets_dialog_then_cancel_puts_the_text_back_byte_for_byte() {
     settled(&mut h);
     // Sent as the dialog's edit, said done, and how it's taken back.
     assert_eq!(
-        written(&f, &h, "Inside corner", "edges"),
+        written(&f.sessions, &h, "Inside corner", "edges"),
         Some(plain(&format!(r#"["k7f2qx3m.box.Edge1", "{EDGE6}"]"#)))
     );
     assert_eq!(
@@ -37225,7 +37214,7 @@ fn two_broken_edges_each_take_the_candidate_used_at_their_own_place() {
     assert_ne!(second, first);
     assert_eq!(text_of(&f.sessions, &h), second);
     assert_eq!(
-        written(&f, &h, "Inside corner", "edges"),
+        written(&f.sessions, &h, "Inside corner", "edges"),
         Some(plain(&format!(
             r#"["k7f2qx3m.box.Edge1", "{EDGE4}", "{EDGE8}"]"#
         )))
@@ -44343,8 +44332,8 @@ fn while_an_arrow_is_dragged_the_hover_and_the_cursor_stay_as_they_were_at_its_p
 
 /// The plate's pad's dialog open from the front, a first drag to 15 answered; then every
 /// prism held, 16 sent with its preview held, and 17 held back behind it, the button still
-/// held at the arrow's place for 17. The harness, its centre, the place pressed, the hold,
-/// and the edits sent before 16.
+/// held at the arrow's place for 17. The harness, the image's centre, the hold, and the
+/// edits sent before 16.
 fn held_back_at_17(f: &Fixture) -> (AppHarness, eframe::egui::Pos2, Hold, u64) {
     let (mut h, _) = f.opened("plate.silico", PLATE);
     let c = plates_pad_from_the_front(&mut h);
@@ -44477,5 +44466,156 @@ fn a_drag_after_its_preview_was_stopped_sends_its_first_value_at_once() {
     left_up_at(&mut h, up(tip, 4.0));
     settled(&mut h);
     assert_eq!(pads_extent(&f.sessions, &h), pad_extent("12", false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_value_held_back_when_an_untitled_parts_save_as_closes_it_is_saved() {
+    // #480's review, T3-1: the Save As half of R2-1, the Close's Save of an untitled part.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    settled(&mut h);
+    let id = h.state().tabs()[0].id;
+    let revision = h.state().tabs()[0].revision;
+    f.sessions.begin(&id).wait().result.unwrap();
+    f.sessions
+        .replace_text(&id, revision, PLATE.to_owned())
+        .wait()
+        .result
+        .unwrap();
+    let c = plates_pad_from_the_front(&mut h);
+    let tip = up(c, 56.0);
+    left_down_at(&mut h, tip);
+    move_to(&mut h, up(tip, 20.0));
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("15", false));
+    let sent = h.state().tabs()[0].edits.sent;
+    let hold = f.kernel.hold(is_prism);
+    move_to(&mut h, up(tip, 24.0));
+    step_until(&mut h, "16 sent and answered", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.edits.sent == sent + 1 && tab.edits.idle()
+    });
+    assert!(f.kernel.wait_running(1, WAIT), "16's preview rebuilding");
+    move_to(&mut h, up(tip, 28.0));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("17")
+    );
+    assert_eq!(h.state().tabs()[0].edits.sent, sent + 1, "17 held back");
+    h.get_by_label("Close Untitled").click_accesskit();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to Untitled before closing?")
+    });
+    answer_question(&mut h, "Save");
+    step_until(&mut h, "the typed Save As", |h| {
+        anywhere(h, "Save Untitled as")
+    });
+    let one = f.dir.path().join("one.silico");
+    type_path(&mut h, &one);
+    answer_question(&mut h, "Save");
+    step_until(&mut h, "closing", |h| h.state().tabs()[0].closing());
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("17")
+    );
+    hold.release();
+    left_up_at(&mut h, up(tip, 28.0));
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    let saved = std::fs::read_to_string(&one).unwrap();
+    assert!(saved.contains(r#""length": 17,"#), "saved: {saved}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_plain_save_mid_drag_saves_nothing_and_leaves_the_drag_dragging() {
+    // #480's review, TL3-2: only a save that closes the tab ends a drag. A plain Save waits
+    // for the open dialog's OK or Cancel (section 9: the bar's Save is off, Ctrl+S does
+    // nothing), so Ctrl+S mid-drag saves nothing, and the drag goes on, its value following
+    // the pointer and its release sending it; after OK, Ctrl+S saves what it sent.
+    let f = fixture();
+    let (mut h, path) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    let tip = up(c, 56.0);
+    left_down_at(&mut h, tip);
+    move_to(&mut h, up(tip, 20.0));
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("15", false));
+    let saves = h.state().tabs()[0].saves;
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].saves, saves);
+    assert!(h.state().tabs()[0].transaction);
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains(r#""length": 10,"#), "saved: {saved}");
+    // The drag goes on: 8 points more, 17, in the field at once and the arrow still held.
+    move_to(&mut h, up(tip, 28.0));
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("17")
+    );
+    assert_eq!(arrow_dots(&h)[0].1, ARROW_WHITE);
+    left_up_at(&mut h, up(tip, 28.0));
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("17", false));
+    // OK, then Ctrl+S: saved as dragged.
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "the save landed", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.saves == saves + 1 && !tab.transaction && tab.edits.idle()
+    });
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains(r#""length": 17,"#), "saved: {saved}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_arrows_press_held_as_its_unedited_tab_closes_edits_nothing() {
+    // #480's review, RL1: a tab with nothing to save closes at once, no save flushing a drag
+    // before it; so the moves of an arrow's press held then must edit nothing while it
+    // closes (`arrows_frame`'s own check of the closing).
+    let f = fixture();
+    let (mut h, path) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    assert!(!h.state().tabs()[0].transaction);
+    let tip = up(c, 56.0);
+    left_down_at(&mut h, tip);
+    // The session's queue held, so its close waits and the tab stays closing.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_label("Close plate.silico").click_accesskit();
+    step_until(&mut h, "closing", |h| h.state().tabs()[0].closing());
+    let sent = h.state().tabs()[0].edits.sent;
+    move_to(&mut h, up(tip, 20.0));
+    move_to(&mut h, up(tip, 40.0));
+    let tab = &h.state().tabs()[0];
+    let length = tab.dialog.as_ref().and_then(|dialog| {
+        dialog.inputs.iter().find_map(|input| match &input.value {
+            silico_app::dialog::Value::Length(text) if input.label == "Length" => {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+    });
+    assert_eq!(length.as_deref(), Some("10"));
+    assert!(tab.edits.idle(), "an edit queued while the tab closes");
+    assert_eq!(tab.edits.sent, sent);
+    left_up_at(&mut h, up(tip, 40.0));
+    hold.release();
+    check.wait();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), PLATE);
     assert_eq!(never_waits::waits(), 0);
 }

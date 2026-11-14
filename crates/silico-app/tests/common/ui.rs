@@ -985,15 +985,24 @@ pub fn sorted_fields(fields: Vec<(String, Plain)>) -> Vec<(String, Plain)> {
     fields
 }
 
-/// The extent of the feature named Pad in the first tab's document, as its session holds it
-/// now ([`fields_of`]).
-pub fn pads_extent<P: AppKernel>(sessions: &Sessions<P>, h: &AppUi<P>) -> Plain {
-    fields_of(&text_of(sessions, h), "Pad")
-        .unwrap()
+/// The field `field` of the feature named `name` in the first tab's document, as its session
+/// holds it now ([`fields_of`]): none if no feature has that name, or it has no such field.
+pub fn written<P: AppKernel>(
+    sessions: &Sessions<P>,
+    h: &AppUi<P>,
+    name: &str,
+    field: &str,
+) -> Option<Plain> {
+    fields_of(&text_of(sessions, h), name)?
         .into_iter()
-        .find(|(key, _)| key == "extent")
-        .unwrap()
-        .1
+        .find(|(key, _)| key == field)
+        .map(|(_, value)| value)
+}
+
+/// The extent of the feature named Pad in the first tab's document, as its session holds it
+/// now ([`written`]).
+pub fn pads_extent<P: AppKernel>(sessions: &Sessions<P>, h: &AppUi<P>) -> Plain {
+    written(sessions, h, "Pad", "extent").unwrap()
 }
 
 /// Whether the open dialog's Reversed is ticked.

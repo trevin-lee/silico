@@ -6139,11 +6139,6 @@ impl Tab {
     /// an edit of each field that changed, coalesced as the property panel's are. Whether
     /// anything was.
     pub fn dialog_changed<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
-        // Nothing once the tab closes: what it saves was queued before its save
-        // ([`flush_arrow`](Self::flush_arrow)), and the dialog's inputs are off.
-        if self.closing() {
-            return false;
-        }
         // An edit of its feature still to answer: its boxes of one body wait for it.
         let waiting = self
             .dialog

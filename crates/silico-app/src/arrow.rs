@@ -54,8 +54,8 @@
 //! never queue. And while a drag is under way, its newest value waits in the field (which
 //! still follows the pointer) until the last edit's preview has answered, so a steady drag
 //! keeps one preview rebuilding, as the sketch's drag keeps one solve in flight, rather than
-//! stopping and starting a rebuild each frame (`Tab::arrow_held_back`); its end sends its value
-//! at once. Esc ends a drag where it began (section 3's chain, an open drag first:
+//! stopping and starting a rebuild each frame (`Tab::arrow_held_back`); the drag's end, OK, and
+//! a save that closes the tab send the value it held back at once. Esc ends a drag where it began (section 3's chain, an open drag first:
 //! `Tab::escape_first`), as the stream's cancel does; a dialog closed, or its tab beginning to
 //! close, mid-drag leaves the rest of its stream doing nothing.
 //!
@@ -70,15 +70,13 @@ use eframe::egui::{
     CornerRadius, CursorIcon, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, pos2, vec2,
 };
 use silico_core::command::sketch::SketchRead;
-use silico_core::document::{ElementKind, Length};
+use silico_core::document::Length;
 use silico_core::kernel::SketchPlane;
 use silico_protocol::Camera;
 use silico_render::render::project;
 
 use crate::dialog::{self, Dialog, Kind, Part, Value};
-use crate::sketch::draw::{
-    Curve, Geometry, Walked, add, dot, length, mul, oriented, segment_distance, sub,
-};
+use crate::sketch::draw::{Geometry, add, dot, length, mul, oriented, segment_distance, sub};
 use crate::theme;
 use crate::viewport::{LeftEvent, LeftKind};
 
@@ -129,11 +127,11 @@ pub struct Handles {
 
 /// The centroid of `read`'s profile, in the sketch's millimetres: of every region's area, its
 /// outer loop's less its holes'. Each loop is its curves as the walk of its outline runs them
-/// ([`oriented`]), rebuilt from the read's stored points as the faces request would take
-/// them ([`rebuilt`], for display alone), and measured exactly by the request's own measure
-/// ([`silico_protocol::area_moments`], beside its area and perimeter). None for a sketch that
-/// makes no profile, a loop that doesn't run end to end or whose arc makes none, or a profile
-/// whose area isn't above 0.
+/// ([`oriented`]), sent from the read's stored points by the core's own conversion of a
+/// profile's curve ([`silico_core::profile::sent`]), and measured exactly by the request's
+/// own measure ([`silico_protocol::area_moments`], beside its area and perimeter). None for a
+/// sketch that makes no profile, a loop that doesn't run end to end or whose arc makes none,
+/// or a profile whose area isn't above 0.
 pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
     let geometry = Geometry::of(read);
     // Each loop about a point of its own, then all about the first's: a profile far from the
@@ -144,11 +142,15 @@ pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
         let loops = std::iter::once((&region.outer, 1.0))
             .chain(region.holes.iter().map(|hole| (hole, -1.0)));
         for (curves, role) in loops {
-            let rebuilt: Vec<silico_protocol::Curve> = oriented(curves, &geometry)?
+            // The walk's curves, in `curves`' order, each as the core's profile sends it.
+            let sent: Vec<silico_protocol::Curve> = curves
                 .iter()
-                .map(rebuilt)
+                .zip(oriented(curves, &geometry)?)
+                .map(|(id, walked)| {
+                    silico_core::profile::sent(geometry.drawn(id)?, walked.backwards)
+                })
                 .collect::<Option<_>>()?;
-            let measured = silico_protocol::area_moments(&rebuilt);
+            let measured = silico_protocol::area_moments(&sent);
             let shift = sub(measured.about, *about.get_or_insert(measured.about));
             // However a loop runs (a lone circle counter-clockwise, a hole or not), it counts by
             // what it is: an outer loop's area added, a hole's taken away.
@@ -160,59 +162,6 @@ pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
     }
     let centroid = add(about?, mul(moment, 1.0 / area));
     (area > 0.0 && centroid.iter().all(|c| c.is_finite())).then_some(centroid)
-}
-
-/// `walked` rebuilt as the kernel's faces request takes a curve, for the app's display alone:
-/// the profile's centroid the arrows stand on, measured with the request's own
-/// `area_moments`. It isn't the core's conversion of a profile (`sketch` gives the regions'
-/// curves by ID, not as sent), but follows its rules from the read's stored points: each
-/// point's zeros taken as +0; a line from the stored point the walk enters it at to the one it
-/// leaves by; an arc by `silico_protocol::arc_from_points` from its stored centre and ends,
-/// sent end first with its angles swapped when the walk runs it backwards; a circle, by its
-/// kind, its centre and radius. None for an arc its points make none of (its ends at one angle
-/// from its centre), or a curve whose stored points the read hasn't.
-fn rebuilt(walked: &Walked) -> Option<silico_protocol::Curve> {
-    use silico_protocol::Curve as Sent;
-    let unsigned = |[x, y]: [f64; 2]| [x + 0.0, y + 0.0];
-    Some(match (walked.kind, walked.curve) {
-        (ElementKind::Circle, Curve::Round { centre, radius, .. }) => Sent::Circle {
-            center: unsigned(centre),
-            radius,
-        },
-        (ElementKind::Arc, Curve::Round { centre, .. }) => {
-            let (from, to) = walked.points?;
-            let (center, start, end) = (unsigned(centre), unsigned(from), unsigned(to));
-            let [radius, start_angle, end_angle] =
-                silico_protocol::arc_from_points(center, start, end)?;
-            if walked.backwards {
-                Sent::Arc {
-                    center,
-                    start: end,
-                    end: start,
-                    radius,
-                    start_angle: end_angle,
-                    end_angle: start_angle,
-                }
-            } else {
-                Sent::Arc {
-                    center,
-                    start,
-                    end,
-                    radius,
-                    start_angle,
-                    end_angle,
-                }
-            }
-        }
-        (ElementKind::Line, Curve::Line { .. }) => {
-            let (start, end) = walked.ends()?;
-            Sent::Line {
-                start: unsigned(start),
-                end: unsigned(end),
-            }
-        }
-        _ => return None,
-    })
 }
 
 /// `dialog`'s arrows in model space, its sketch on `plane` with its profile's centroid at
