@@ -51,7 +51,7 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 - Hovering an item in the list highlights it in the model; Tab or the wheel steps through the list; a click in the list or the graphics area selects; right-clicking the model hides a face to reveal what's behind it ([Select Other](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_SelectOther_dlg.htm)).
 - The right-click toolbar on empty space offers Box, Lasso, Selection Filters, Select Other, and the magnifier ([Selection Context Toolbar](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Selection_Tool_access.htm)).
 
-## 2. Sketch inference and automatic relations
+## 2. Sketch relations: inferred, automatic, and added by hand
 
 ### Relations added while sketching
 
@@ -66,6 +66,14 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 - A tangent arc started at a line's, arc's, ellipse's, or spline's endpoint is tangent or normal to it as the pointer's first motion says (four intent zones); returning to the endpoint and leaving in another direction switches ([Sketching Tangent Arcs](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_Sketching_Tangent_Arcs.htm)).
 - A line being edited that is nearly horizontal or vertical gets *Make Horizontal* or *Make Vertical* highlighted on its context toolbar: offered, not added ([Horizontal and Vertical Sketch Relations](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_horizontal_vertical_sketch_relations.htm)).
 - A rectangle's PropertyManager lists "relations inferenced automatically during sketching" ([Rectangle PropertyManager](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_DVE_SKETCH_RECTANGLES.htm)). The help doesn't say which. *Unofficial:* a corner rectangle is four lines with a vertical relation on each side and a horizontal one on the top and bottom ([LinkedIn Learning, *SOLIDWORKS 2020 Essential Training*, "Using the Rectangle tool"](https://www.linkedin.com/learning/solidworks-2020-essential-training/using-the-rectangle-tool)).
+
+### Relations added by hand
+
+- Relations are added to a selection: "Ctrl + select two lines. On the context toolbar, click Make Parallel" ([Controlling Dimensions with the Context Toolbar](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_Control_Dimension_Context_Toolbar.htm)); or from *Add Relations*, whose list "includes only relations that are possible for the selected entity" ([Line Properties PropertyManager](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_DVE_SKETCH_LINE.htm)).
+- The context toolbar "stays visible to allow you to add multiple relations" to the same selection ([Sketch Relations Overview](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Sketch_Relations_Overview.htm)).
+- What each takes ([Description of Sketch Relations](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Description_of_Sketch_Relations.htm)): Horizontal or Vertical, "One or more lines or two or more points"; Coincident, "A point and a line, arc, or ellipse"; Merge Points, "Two sketch points or endpoints"; Tangent, "An arc, ellipse, or spline, and a line or arc"; Equal, "Two or more lines or two or more arcs"; Parallel, "Two or more lines"; Perpendicular, "Two lines"; Midpoint, "Two lines or a point and a line"; Symmetric, "A centerline and two points, lines, arcs, or ellipses"; Fix, "Any entity".
+- A relation that conflicts is added, and the sketch reads over defined; a redundant one is added, and "The sketch is still fully defined" ([FAQ Sketch Relations](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_FAQ_Sketch_Relations.htm)). No page offers to make a relation driven.
+- Silico's tools, and where they differ (among them Fix as two dimensions, Symmetric of points only, and a merge refused where its solve is worse), are M5.0's open item 34. The full study is docs/study/constraint-tools.md.
 
 ### Inference lines and snaps
 
@@ -271,5 +279,6 @@ What this note looked for and couldn't source from the help:
 - Starting a sketch beyond the view: which planes and faces may be picked. (*Auto-rotate view normal to sketch plane on sketch creation and sketch edit* is an option, and the view reverts if the changes are discarded: [Sketch Options](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_OPTIONS_SKETCH.htm).)
 - The export dialog (M5.12), what happens to a selection when a rebuild removes its entity (M5.7), and the pick tolerance.
 - Whether a sketch a feature absorbs is hidden (only from unofficial sources: §4, *Sketch visibility*).
+- Relations added by hand: which entity moves; which point a merge keeps; whether a relation already present is offered again; what Symmetric holds of two lines' ends or two arcs' radii; what Midpoint does with two lines; what the context toolbar offers for each selection.
 
 The draft M5 plan's corner rectangle (M5.11) and suppression (M5.1) follow §4 and §5 above.

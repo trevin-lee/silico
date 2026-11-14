@@ -1497,6 +1497,57 @@ fn a_three_point_arc_passes_through_its_third_click() {
 }
 
 #[test]
+fn an_arcs_second_point_never_lines_up_with_its_own_shared_first_point() {
+    // The point q0000001 at (10, 10). A point the pointer places 0.3 mm off its vertical or
+    // its horizontal is lined up with it as a guide (#278's E), unless it's the entity's own:
+    // an arc whose first point is q0000001 itself (`besides`, arc.rs's `start_at` and
+    // `end_at`) leaves its second point where the pointer is, with no guide but the arc's
+    // own radius or chord, drawn as a guide while the arc is under way.
+    let mut s = empty();
+    s.points.push(point("q0000001", 10.0, 10.0));
+
+    // The control: a centrepoint arc about a new centre (0, 30), its start toward (10.3, 50),
+    // 0.3 mm off q0000001's vertical: lined up with it, at (10, 50), its radius from (0, 30)
+    // and a guide up from (10, 10).
+    let mut d = Drive::new(ToolKind::CenterpointArc, s.clone());
+    d.to(10.1, 10.1).click(0.0, 30.0).to(10.3, 50.0);
+    let preview = d.tool.preview();
+    assert_eq!(preview.pointer, Some([10.0, 50.0]));
+    assert_eq!(
+        preview.guides,
+        [[[0.0, 30.0], [10.0, 50.0]], [[10.0, 10.0], [10.0, 50.0]]]
+    );
+
+    // A centrepoint arc about q0000001 itself: its start toward (10.3, 30), 0.3 mm off the
+    // centre's vertical, stays where the pointer is, its radius the only guide.
+    let mut d = Drive::new(ToolKind::CenterpointArc, s.clone());
+    d.to(10.1, 10.1).click(10.1, 10.1).to(10.3, 30.0);
+    let preview = d.tool.preview();
+    assert_eq!(preview.pointer, Some([10.3, 30.0]));
+    assert_eq!(preview.guides, [[[10.0, 10.0], [10.3, 30.0]]]);
+
+    // The control for an end: a three-point arc from a new start (30, 40), its end toward
+    // (50, 10.3), 0.3 mm off q0000001's horizontal: lined up with it, at (50, 10), its chord
+    // from (30, 40) and a guide across from (10, 10).
+    let mut d = Drive::new(ToolKind::ThreePointArc, s.clone());
+    d.to(10.1, 10.1).click(30.0, 40.0).to(50.0, 10.3);
+    let preview = d.tool.preview();
+    assert_eq!(preview.pointer, Some([50.0, 10.0]));
+    assert_eq!(
+        preview.guides,
+        [[[30.0, 40.0], [50.0, 10.0]], [[10.0, 10.0], [50.0, 10.0]]]
+    );
+
+    // A three-point arc from q0000001: its end toward (30, 10.3), 0.3 mm off the start's
+    // horizontal, stays where the pointer is, its chord the only guide.
+    let mut d = Drive::new(ToolKind::ThreePointArc, s);
+    d.to(10.1, 10.1).click(10.1, 10.1).to(30.0, 10.3);
+    let preview = d.tool.preview();
+    assert_eq!(preview.pointer, Some([30.0, 10.3]));
+    assert_eq!(preview.guides, [[[10.0, 10.0], [30.0, 10.3]]]);
+}
+
+#[test]
 fn a_three_point_arc_through_a_point_in_line_adds_nothing_and_waits() {
     let mut d = Drive::new(ToolKind::ThreePointArc, empty());
     d.click(10.0, 10.0).click(30.0, 20.0).click(50.0, 30.0);
